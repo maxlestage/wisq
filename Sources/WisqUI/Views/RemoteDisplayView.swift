@@ -214,11 +214,11 @@ public final class RemoteDisplayScrollView: UIScrollView, UIScrollViewDelegate, 
     }
 
     @objc private func handleTwoPan(_ gesture: UIPanGestureRecognizer) {
-        perform(model?.machine.input.twoFingerPanAction ?? .none, pan: gesture)
+        perform(model?.machine.input.twoFingerPanAction ?? GestureAction.none, pan: gesture)
     }
 
     @objc private func handleThreePan(_ gesture: UIPanGestureRecognizer) {
-        perform(model?.machine.input.threeFingerPanAction ?? .none, pan: gesture)
+        perform(model?.machine.input.threeFingerPanAction ?? GestureAction.none, pan: gesture)
     }
 
     private func perform(_ action: GestureAction, pan gesture: UIPanGestureRecognizer) {

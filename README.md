@@ -51,9 +51,15 @@ Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est
 retirée du paquet là-bas, précisément pour que ce soit possible :
 
 ```sh
-swift build -Xswiftc -strict-concurrency=complete
-swift test
+./scripts/verify.sh          # cœur : compilation stricte + 46 tests
+./scripts/verify.sh --app    # ajoute la compilation de l'app (macOS + Xcode)
 ```
+
+> **GitHub Actions est bloqué sur ce dépôt.** Chaque job meurt à
+> l'ordonnancement en ~3 secondes sans qu'aucun runner ne lui soit attribué —
+> `ubuntu-latest` comme `macos-latest`, depuis la toute première exécution. Le
+> symptôme est celui d'un blocage de facturation au niveau du compte, pas d'un
+> problème de code. En attendant, `scripts/verify.sh` est la vérification.
 
 ## Essayer sans matériel
 
