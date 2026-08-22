@@ -35,8 +35,13 @@ et le port avant d'ouvrir la session (`ConsoleResolver`, testé bout-à-bout
 contre le démon réel) ; et « Importer depuis un agent » liste les VM d'un hôte
 pour les ajouter en machines, liaison comprise.
 
+L'appairage et la découverte sont faits : lien `wisq://agent` imprimé par le
+démon (QR via `qrencode` quand il est là), schéma enregistré côté app avec
+ouverture directe de l'import pré-rempli, annonce Bonjour best effort côté
+démon et navigation `NWBrowser` côté app.
+
 Reste dans ce lot : le TLS de l'agent (v1 en clair + jeton, réseau de confiance
-ou tunnel), l'appairage par QR code côté application, et la découverte Bonjour.
+ou tunnel).
 La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.

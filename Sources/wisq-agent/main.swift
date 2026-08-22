@@ -2,6 +2,12 @@
 import Foundation
 import WisqAgentKit
 import WisqCore
+/// Unbuffered stdout: a daemon's startup lines must reach journald or a log
+/// file as they happen, not when a stdio buffer fills. `print` buffers when
+/// stdout is a pipe; a direct FileHandle write does not.
+func emit(_ line: String) {
+    FileHandle.standardOutput.write(Data((line + "\n").utf8))
+}
 
 // wisq-agent: the daemon that lets the phone power VMs on before connecting.
 //
@@ -31,7 +37,7 @@ while let argument = arguments.popFirst() {
     case "--virsh":
         virshPath = arguments.popFirst() ?? virshPath
     case "--help", "-h":
-        print("""
+        emit("""
         wisq-agent [--port N] [--token SECRET] [--demo] [--virsh CHEMIN]
 
         Sert le protocole décrit dans docs/AGENT-PROTOCOL.md. Sans --token, un
@@ -78,10 +84,28 @@ do {
     exit(1)
 }
 
-print("""
+let hostName = ProcessInfo.processInfo.hostName
+emit("""
 wisq-agent en écoute sur le port \(server.port) (\(useDemo ? "démo" : "virsh"))
 jeton : \(resolvedToken)
 """)
+
+// Pairing: one URL per reachable address; the app's "Importer depuis un agent"
+// screen opens pre-filled from any of them, and the QR carries the first.
+let pairingURLs = Pairing.urls(port: server.port, token: resolvedToken, hostName: hostName)
+if !pairingURLs.isEmpty {
+    emit("appairage :")
+    for url in pairingURLs {
+        emit("  \(url.absoluteString)")
+    }
+    emit("")
+    Pairing.printQRCodeIfPossible(for: pairingURLs[0])
+}
+
+let advertiser = BonjourAdvertiser()
+// The service name doubles as the address: mDNS makes host "nas" reachable at
+// nas.local, so the app can offer "<name>.local" without resolving SRV records.
+advertiser.start(port: server.port, name: hostName)
 
 dispatchMain()
 #endif

@@ -8,6 +8,7 @@ public struct RootView: View {
     @State private var editing: MachineDraft?
     @State private var connecting: Machine?
     @State private var importingFromAgent = false
+    @State private var pairingPrefill: AgentPairing.Payload?
 
     public init() {}
 
@@ -23,8 +24,20 @@ public struct RootView: View {
         }
         .sheet(isPresented: $importingFromAgent) {
             NavigationStack {
-                AgentImportView(library: library) { importingFromAgent = false }
+                AgentImportView(library: library, prefill: pairingPrefill) {
+                    importingFromAgent = false
+                    pairingPrefill = nil
+                }
             }
+        }
+        .onOpenURL { url in
+            // A wisq:// pairing link — from the daemon's QR code or pasted —
+            // lands straight in the import screen, credentials filled in.
+            guard let payload = try? AgentPairing.parse(url) else { return }
+            pairingPrefill = payload
+            editing = nil
+            connecting = nil
+            importingFromAgent = true
         }
         .sheet(item: $editing) { draft in
             NavigationStack {
