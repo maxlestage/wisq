@@ -1,0 +1,73 @@
+name: Release
+
+# Tag a commit on master as vX.Y.Z and this builds the agent binaries, runs the
+# full test suite one last time, and publishes a GitHub release with artifacts.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Tests (gate)
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build -Xswiftc -strict-concurrency=complete
+      - run: swift test
+
+  agent-linux:
+    name: wisq-agent (Linux x86_64)
+    needs: test
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release binary
+        run: |
+          swift build -c release --product wisq-agent
+          mkdir -p dist
+          cp .build/release/wisq-agent dist/
+          tar -C dist -czf wisq-agent-${{ github.ref_name }}-linux-x86_64.tar.gz wisq-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux
+          path: wisq-agent-*.tar.gz
+
+  agent-macos:
+    name: wisq-agent (macOS arm64)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release binary
+        run: |
+          swift build -c release --product wisq-agent
+          mkdir -p dist
+          cp "$(swift build -c release --product wisq-agent --show-bin-path)/wisq-agent" dist/
+          tar -C dist -czf wisq-agent-${{ github.ref_name }}-macos-arm64.tar.gz wisq-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-macos
+          path: wisq-agent-*.tar.gz
+
+  publish:
+    name: Publish release
+    needs: [agent-linux, agent-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "wisq ${{ github.ref_name }}" \
+            --notes "See CHANGELOG.md for details." \
+            wisq-agent-*.tar.gz

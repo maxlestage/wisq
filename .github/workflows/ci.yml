@@ -33,6 +33,16 @@ jobs:
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
 
+  lint:
+    name: Lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Lint
+        run: swiftlint lint --strict
+
   app:
     name: App iOS
     runs-on: macos-latest
