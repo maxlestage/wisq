@@ -18,7 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fetch Linux test kernel (best effort)
+        # The swift image ships without curl or unzip; install them first. Any
+        # failure here leaves the image absent and the boot test skips loudly.
         run: |
+          (apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates) || true
           mkdir -p /tmp/wisq-test-linux-image
           curl -sSL --max-time 120 -o /tmp/kernel.zip \
             https://github.com/cnlohr/mini-rv32ima-images/raw/master/images/linux-6.1.14-rv32nommu-cnl-1.zip \
