@@ -1,4 +1,8 @@
 import Foundation
+#if canImport(FoundationNetworking)
+// URLSession lives in a separate module in the open-source Foundation.
+import FoundationNetworking
+#endif
 import WisqCore
 
 /// What the host agent reports about one VM.

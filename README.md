@@ -34,9 +34,10 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | SPICE, RDP | à faire |
 | Agent hôte (démarrage des VM à distance) | protocole défini, client fait, démon à faire |
 
-Le code n'a pas encore été compilé : ce conteneur n'a pas de toolchain Swift.
-Le premier `xcodegen generate && xcodebuild` corrigera sans doute quelques
-détails de compilation.
+`WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni avertissement
+sous Swift 6.1, y compris en concurrence stricte complète, et leurs 46 tests
+passent. La couche `WisqUI` et la cible application demandent UIKit : elles ne
+sont vérifiées que par le job macOS de la CI.
 
 ## Construire
 
@@ -46,9 +47,11 @@ xcodegen generate
 open Wisq.xcodeproj
 ```
 
-Les tests unitaires du cœur tournent sans Xcode :
+Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est
+retirée du paquet là-bas, précisément pour que ce soit possible :
 
 ```sh
+swift build -Xswiftc -strict-concurrency=complete
 swift test
 ```
 

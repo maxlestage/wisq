@@ -299,15 +299,35 @@ public actor VNCSession: RemoteSession {
     }
 
     static func cutTextMessage(_ text: String) -> Data {
-        // RFB carries clipboard text as latin-1. Converting lossily keeps the
-        // parts a guest can use instead of dropping the whole paste over one emoji.
-        let payload = text.data(using: .isoLatin1, allowLossyConversion: true) ?? Data()
+        let payload = latin1Payload(text)
         var writer = ByteWriter()
         writer.write(RFB.ClientMessage.clientCutText.rawValue)
         writer.pad(3)
         writer.write(UInt32(payload.count))
         writer.write(payload)
         return writer.data
+    }
+
+    /// RFB carries clipboard text as latin-1 with LF-only line endings (RFC 6143 §7.5.6).
+    ///
+    /// Foundation's own lossy conversion is not usable here: on swift-corelibs it
+    /// returns nothing at all for a string containing one emoji, which would drop
+    /// the entire paste. Substituting per scalar keeps the text a guest can use and
+    /// behaves identically on every platform.
+    static func latin1Payload(_ text: String) -> Data {
+        var data = Data()
+        data.reserveCapacity(text.unicodeScalars.count)
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\r":
+                continue                        // the spec forbids CR
+            case let scalar where scalar.value < 0x100:
+                data.append(UInt8(scalar.value))
+            default:
+                data.append(0x3F)               // '?'
+            }
+        }
+        return data
     }
 
     /// SetDesktopSize (client message 251) from the ExtendedDesktopSize extension:

@@ -1,24 +1,30 @@
 name: CI
 
+# `pull_request` already covers branch work; without limiting `push` to the
+# default branch every PR commit would run the whole suite twice.
 on:
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
 
 jobs:
-  package:
-    name: Swift package
-    runs-on: macos-14
+  core:
+    name: Cœur (Linux)
+    runs-on: ubuntu-latest
+    # WisqCore, WisqNet and WisqRemote are Foundation-only, with the platform
+    # frameworks behind `canImport` guards. Building them here gives real signal
+    # on the protocol work without waiting on a macOS runner.
+    container: swift:6.1
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: swift build -v
+      - name: Build (concurrence stricte)
+        run: swift build -Xswiftc -strict-concurrency=complete
       - name: Test
-        run: swift test -v
+        run: swift test
 
   app:
-    name: iOS app
-    runs-on: macos-14
+    name: App iOS
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
@@ -26,9 +32,11 @@ jobs:
       - name: Generate project
         run: xcodegen generate
       - name: Build for simulator
+        # A generic destination avoids pinning a simulator model that the runner
+        # image may drop from one release to the next.
         run: |
           xcodebuild build \
             -project Wisq.xcodeproj \
             -scheme Wisq \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO

@@ -67,8 +67,11 @@ final class RFBMessageTests: XCTestCase {
 
     func testCutTextKeepsWhatItCanWhenTheTextIsNotLatin1() {
         // The spec is latin-1 only. Losing one emoji must not drop the whole paste.
-        let data = VNCSession.cutTextMessage("café 🚀")
-        let length = UInt32(data[4]) << 24 | UInt32(data[5]) << 16 | UInt32(data[6]) << 8 | UInt32(data[7])
-        XCTAssertGreaterThanOrEqual(length, 5)
+        XCTAssertEqual(VNCSession.latin1Payload("café 🚀"), Data([0x63, 0x61, 0x66, 0xE9, 0x20, 0x3F]))
+    }
+
+    func testCutTextStripsCarriageReturns() {
+        // RFB mandates LF-only line endings; a CR left in place confuses guests.
+        XCTAssertEqual(VNCSession.latin1Payload("a\r\nb"), Data([0x61, 0x0A, 0x62]))
     }
 }
