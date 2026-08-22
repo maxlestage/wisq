@@ -26,8 +26,8 @@ final class ReconnectingSessionTests: XCTestCase {
     func testReconnectsAfterANetworkDrop() async throws {
         let attempts = Attempts()
         let session = ReconnectingSession(policy: Self.fastPolicy) { framebuffer in
-            let attempt = attempts.next()
-            let script = attempt == 1 ? Data("RFB 003.008\n".utf8) : Self.healthyScript()
+            // `let` binding: a captured var would race under Swift 6 rules.
+            let script: Data = attempts.next() == 1 ? Data("RFB 003.008\n".utf8) : Self.healthyScript()
             return VNCSession(
                 configuration: SessionConfiguration(host: "10.0.0.5", port: 5900),
                 framebuffer: framebuffer,
