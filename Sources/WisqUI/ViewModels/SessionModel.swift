@@ -42,6 +42,7 @@ public final class SessionModel {
     public private(set) var session: (any RemoteSession)?
 
     private var eventTask: Task<Void, Never>?
+    private var inputChain: Task<Void, Never>?
     /// Modifier keys held down by the on-screen key bar, released after the next keypress.
     private var stickyModifiers: Set<UInt32> = []
     /// Virtual cursor for trackpad mode, in framebuffer coordinates.
@@ -72,6 +73,8 @@ public final class SessionModel {
     public func disconnect() {
         eventTask?.cancel()
         eventTask = nil
+        inputChain?.cancel()
+        inputChain = nil
         if let session {
             Task { await session.stop() }
         }
@@ -128,12 +131,17 @@ public final class SessionModel {
         sendPointer()
     }
 
+    /// Press and release, with a gap in between: a guest that samples input on a
+    /// timer sees nothing at all when both edges land in the same instant.
     public func click(_ button: MouseButtons, at point: CGPoint? = nil) {
         if let point { pointer = clamp(point) }
-        heldButtons.insert(button)
-        sendPointer()
-        heldButtons.remove(button)
-        sendPointer()
+        let position = pointer
+        let held = heldButtons
+        enqueue { session in
+            await session.send(.pointer(x: Int(position.x), y: Int(position.y), buttons: held.union(button)))
+            try? await Task.sleep(for: InputTiming.pressReleaseGap)
+            await session.send(.pointer(x: Int(position.x), y: Int(position.y), buttons: held))
+        }
     }
 
     public func setButton(_ button: MouseButtons, down: Bool) {
@@ -162,14 +170,20 @@ public final class SessionModel {
     /// Sends a keypress with any sticky modifiers wrapped around it, then clears them.
     public func press(_ keysym: UInt32) {
         let modifiers = stickyModifiers
-        Task { [session] in
-            guard let session else { return }
+        stickyModifiers.removeAll()
+        enqueue { session in
             for modifier in modifiers { await session.send(.key(keysym: modifier, down: true)) }
             await session.send(.key(keysym: keysym, down: true))
+            try? await Task.sleep(for: InputTiming.pressReleaseGap)
             await session.send(.key(keysym: keysym, down: false))
             for modifier in modifiers.reversed() { await session.send(.key(keysym: modifier, down: false)) }
         }
-        stickyModifiers.removeAll()
+    }
+
+    /// Raw key edge, for a hardware keyboard where the OS reports press and
+    /// release separately and modifiers are genuinely held.
+    public func setKey(_ keysym: UInt32, down: Bool) {
+        enqueue { session in await session.send(.key(keysym: keysym, down: down)) }
     }
 
     public func toggleModifier(_ keysym: UInt32) {
@@ -185,19 +199,29 @@ public final class SessionModel {
     }
 
     public func sendClipboard(_ text: String) {
-        Task { [session] in await session?.send(.clipboard(text)) }
+        enqueue { session in await session.send(.clipboard(text)) }
     }
 
     public func viewportChanged(to size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        Task { [session] in
-            await session?.setPreferredSize(width: Int(size.width), height: Int(size.height))
-        }
+        guard size.width > 0, size.height > 0, let session else { return }
+        Task { await session.setPreferredSize(width: Int(size.width), height: Int(size.height)) }
     }
 
     private func sendPointer() {
         let event = InputEvent.pointer(x: Int(pointer.x), y: Int(pointer.y), buttons: heldButtons)
-        Task { [session] in await session?.send(event) }
+        enqueue { session in await session.send(event) }
+    }
+
+    /// Input has to reach the guest in the order it happened: a click that races
+    /// ahead of the move that positioned it lands in the wrong place. Chaining
+    /// the tasks costs one allocation per event and removes the whole class of bug.
+    private func enqueue(_ work: @escaping @Sendable (any RemoteSession) async -> Void) {
+        guard let session else { return }
+        let previous = inputChain
+        inputChain = Task { @MainActor in
+            await previous?.value
+            await work(session)
+        }
     }
 
     private func clamp(_ point: CGPoint) -> CGPoint {

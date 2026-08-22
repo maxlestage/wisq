@@ -52,23 +52,62 @@ fait `VNCHandshakeTests`.
 ## Le modèle tactile
 
 Un bureau suppose un curseur, deux boutons et une molette. Un iPhone n'a rien de
-tout cela. La répartition retenue :
+tout cela. Un doigt pilote toujours le pointeur ; le reste est configurable, par
+machine :
 
-| Geste | Effet |
-|---|---|
-| un doigt qui glisse | déplace le curseur (relatif en mode trackpad, absolu en tactile direct) |
-| tape | clic gauche |
-| tape à deux doigts | clic droit |
-| appui long | clic droit |
-| deux doigts qui glissent | molette si l'écran est entièrement visible, sinon déplacement de la vue |
-| pincement | zoom |
-| double-tape | affiche ou masque la barre d'outils |
+| Geste | Par défaut | Configurable |
+|---|---|---|
+| un doigt qui glisse | déplace le pointeur (relatif en trackpad, absolu en tactile direct) | non |
+| tape | clic gauche | non |
+| tape à deux doigts | clic droit | oui |
+| appui long | clic droit | oui (dont « glisser ») |
+| deux doigts qui glissent | molette | oui |
+| trois doigts qui glissent | déplace la vue | oui |
+| balayage à trois doigts | affiche / masque le clavier | oui |
+| pincement | zoom | non |
+| double-tape | affiche ou masque la barre d'outils | non |
+
+Rendre ces gestes configurables plutôt que d'en figer un jeu est la leçon d'UTM :
+personne ne s'accorde sur ce que deux doigts devraient faire, et la bonne réponse
+dépend surtout de si le bureau distant tient sur l'écran du téléphone. Déplacer
+une vue qui n'a nulle part où aller est du geste gaspillé.
 
 Le mode trackpad est le défaut : viser un bouton de 12 pixels avec un doigt de
 9 mm ne marche pas, et le curseur virtuel donne le retour visuel qui manque.
 
+Trois détails font toute la différence de toucher :
+
+**L'inertie.** Le pointeur et la molette continuent sur leur lancée quand le
+doigt se lève. UIKit intègre déjà vitesse et résistance à chaque image :
+`InertialTracker` se conforme à `UIDynamicItem` et laisse
+`UIDynamicItemBehavior` faire le travail, sans boucle d'animation maison. Le
+pointeur glisse loin (résistance 50), la molette s'arrête vite (résistance 10).
+
+**Le délai entre l'appui et le relâchement.** Un clic ou une frappe synthétisés
+envoient leurs deux fronts à 50 ms d'intervalle. Les envoyer dans le même instant
+est le bug classique du bureau distant : un invité qui échantillonne ses entrées
+sur une horloge ne voit rien du tout.
+
+**L'arbitrage des reconnaisseurs.** Sans `shouldRequireFailureOf`, une tape à
+deux doigts se lit aussi comme une tape simple, et l'appui long se déclenche sous
+chaque tape qui s'attarde.
+
 Le curseur virtuel est dessiné dans un `CAShapeLayer` séparé de la couche des
 pixels : il peut bouger à 120 Hz sans re-rastériser le bureau.
+
+## Les deux claviers
+
+Une seule vue invisible (`KeyCaptureUIView`) porte les deux. Elle reste premier
+répondeur toute la session — c'est la condition pour recevoir les frappes d'un
+clavier matériel — et bascule son `inputView` entre `nil` et une vue vide pour
+faire apparaître ou non le clavier logiciel.
+
+Le clavier matériel rapporte des codes HID ; RFB et SPICE parlent des keysyms
+X11. `HIDKeyMap` fait la traduction. C'est le pendant de la table HID → PS/2
+d'UTM, en plus court : SPICE veut des scancodes, RFB veut des keysyms.
+
+Les modificateurs de la barre de touches sont collants — ctrl, puis une lettre,
+et la paire part ensemble — puis relâchés après la frappe suivante.
 
 ## Sécurité
 
