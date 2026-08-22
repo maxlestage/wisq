@@ -4,6 +4,19 @@ import PackageDescription
 // The UI layer is UIKit/SwiftUI and only exists on Apple platforms. Dropping it on
 // Linux lets the protocol work — which is where the bugs live — be built and tested
 // on a runner that costs nothing, instead of waiting on a macOS one.
+// The host agent runs where the VMs run — macOS and Linux, never iOS.
+#if os(iOS)
+let agentProducts: [Product] = []
+let agentTargets: [Target] = []
+#else
+let agentProducts: [Product] = [.executable(name: "wisq-agent", targets: ["wisq-agent"])]
+let agentTargets: [Target] = [
+    .target(name: "WisqAgentKit", dependencies: ["WisqCore"]),
+    .executableTarget(name: "wisq-agent", dependencies: ["WisqAgentKit", "WisqCore"]),
+    .testTarget(name: "WisqAgentKitTests", dependencies: ["WisqAgentKit", "WisqRemote"]),
+]
+#endif
+
 #if os(Linux)
 let uiProducts: [Product] = []
 let uiTargets: [Target] = []
@@ -19,7 +32,7 @@ let package = Package(
         .library(name: "WisqCore", targets: ["WisqCore"]),
         .library(name: "WisqNet", targets: ["WisqNet"]),
         .library(name: "WisqRemote", targets: ["WisqRemote"]),
-    ] + uiProducts,
+    ] + uiProducts + agentProducts,
     targets: [
         // Pure domain model. Foundation only, no platform frameworks.
         .target(name: "WisqCore"),
@@ -36,5 +49,5 @@ let package = Package(
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
-    ] + uiTargets
+    ] + uiTargets + agentTargets
 )
