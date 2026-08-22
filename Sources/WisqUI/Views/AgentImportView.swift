@@ -7,6 +7,8 @@ import WisqRemote
 /// tap to add them as machines — endpoint, guest OS and agent binding filled in.
 struct AgentImportView: View {
     let library: MachineLibraryModel
+    /// Filled from a wisq:// pairing link; the query then fires by itself.
+    var prefill: AgentPairing.Payload?
     let onClose: () -> Void
 
     @State private var address = ""
@@ -15,6 +17,7 @@ struct AgentImportView: View {
     @State private var isQuerying = false
     @State private var errorMessage: String?
     @State private var importedIDs: Set<String> = []
+    @State private var browser = AgentBrowser()
 
     var body: some View {
         Form {
@@ -38,6 +41,18 @@ struct AgentImportView: View {
                 Text("Agent hôte")
             } footer: {
                 Text("Le jeton est affiché par `wisq-agent` à son lancement. Il sera conservé dans le trousseau, une fois par agent.")
+            }
+
+            if vms == nil, !browser.agents.isEmpty {
+                Section("Agents détectés sur ce réseau") {
+                    ForEach(browser.agents) { agent in
+                        Button {
+                            address = agent.address
+                        } label: {
+                            Label(agent.name, systemImage: "dot.radiowaves.left.and.right")
+                        }
+                    }
+                }
             }
 
             if let errorMessage {
@@ -84,6 +99,17 @@ struct AgentImportView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button(importedIDs.isEmpty ? "Fermer" : "Terminé", action: onClose)
             }
+        }
+        .onAppear {
+            browser.start()
+            if let prefill {
+                address = prefill.port == 7442 ? prefill.host : "\(prefill.host):\(prefill.port)"
+                token = prefill.token ?? ""
+                query()
+            }
+        }
+        .onDisappear {
+            browser.stop()
         }
     }
 

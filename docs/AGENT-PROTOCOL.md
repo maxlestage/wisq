@@ -17,8 +17,22 @@ Authorization: Bearer <jeton>
 ```
 
 Le jeton est généré au premier lancement, conservé dans `~/.wisq-agent/token`
-(mode 600), et destiné à être transmis au téléphone par QR code. Il n'y a pas
-de compte, pas de mot de passe : un jeton, révocable en supprimant le fichier.
+(mode 600). Il n'y a pas de compte, pas de mot de passe : un jeton, révocable
+en supprimant le fichier.
+
+## Appairage
+
+Au lancement, le démon imprime un lien d'appairage par interface réseau :
+
+```
+wisq://agent?host=nas.local&port=7442&token=…&name=nas
+```
+
+Ouvert sur l'iPhone — scanné depuis le QR que le démon affiche quand
+`qrencode` est installé, ou collé — le lien ouvre wisq directement sur l'écran
+d'import, adresse et jeton remplis, interrogation lancée. Le format est défini
+par `AgentPairing` (WisqCore), partagé par les deux côtés pour que génération
+et analyse ne puissent pas diverger.
 
 La v1 parle en clair : le TLS auto-hébergé sans dépendance est un chantier à
 part entière, et le jeton reste obligatoire. À réserver au réseau local ou à un
@@ -78,10 +92,12 @@ Le message est affiché tel quel à l'utilisateur, il doit donc être lisible.
 
 ## Découverte
 
-L'agent s'annonce en Bonjour sous `_wisq-agent._tcp`, ce qui permet à
-l'application de proposer les hôtes du réseau local sans saisie d'adresse.
-`NSBonjourServices` de l'`Info.plist` déclare ce service ainsi que `_rfb._tcp`,
-utilisé pour repérer les serveurs VNC déjà présents.
+L'agent s'annonce en Bonjour sous `_wisq-agent._tcp`, au mieux des outils
+présents (`avahi-publish-service` sur Linux, `dns-sd` sur macOS) — et
+silencieusement pas du tout sinon : une commodité absente ne doit jamais
+empêcher le démon de servir. Le nom annoncé est le nom d'hôte, si bien que
+l'application propose `<nom>.local` sans résoudre d'enregistrement SRV.
+L'écran d'import affiche les agents détectés ; une tape remplit l'adresse.
 
 ## Implémentation
 

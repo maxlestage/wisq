@@ -27,6 +27,17 @@
 	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>wisq se connecte aux machines de votre réseau local pour afficher leur écran.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.wisq.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>wisq</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_rfb._tcp</string>

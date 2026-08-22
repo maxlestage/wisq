@@ -36,10 +36,11 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | SPICE, RDP | à faire |
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
+| Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
 avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
-leurs 93 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
+leurs 99 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

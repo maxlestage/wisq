@@ -96,3 +96,25 @@ final class ConsoleResolverTests: XCTestCase {
     }
 }
 #endif
+
+#if os(macOS) || os(Linux)
+final class PairingTests: XCTestCase {
+    /// The full loop the QR code closes: the daemon builds a URL, the app parses
+    /// it back to exactly the endpoint and token the daemon meant.
+    func testDaemonURLsParseBackToTheirPayload() throws {
+        let urls = Pairing.urls(port: 7442, token: "jeton-secret", hostName: "nas.local")
+        XCTAssertFalse(urls.isEmpty, "au moins le nom d'hôte doit produire une URL")
+
+        for url in urls {
+            let payload = try AgentPairing.parse(url)
+            XCTAssertEqual(payload.port, 7442)
+            XCTAssertEqual(payload.token, "jeton-secret")
+        }
+        XCTAssertEqual(try AgentPairing.parse(urls[0]).host, "nas.local")
+    }
+
+    func testLocalAddressesExcludeLoopback() {
+        XCTAssertFalse(Pairing.localIPv4Addresses().contains("127.0.0.1"))
+    }
+}
+#endif
