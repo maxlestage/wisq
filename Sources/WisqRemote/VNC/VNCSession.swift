@@ -11,7 +11,7 @@ public actor VNCSession: RemoteSession {
     public typealias StreamProvider = @Sendable (SessionConfiguration) async throws -> any ByteStream
 
     public nonisolated let events: AsyncStream<SessionEvent>
-    public nonisolated let framebuffer = Framebuffer(width: 0, height: 0)
+    public nonisolated let framebuffer: Framebuffer
 
     private let continuation: AsyncStream<SessionEvent>.Continuation
     private let configuration: SessionConfiguration
@@ -26,8 +26,15 @@ public actor VNCSession: RemoteSession {
     private var supportsResize = false
     private var hasFinished = false
 
-    public init(configuration: SessionConfiguration, streamProvider: StreamProvider? = nil) {
+    public init(
+        configuration: SessionConfiguration,
+        framebuffer: Framebuffer? = nil,
+        streamProvider: StreamProvider? = nil
+    ) {
         self.configuration = configuration
+        // Injectable so a reconnecting wrapper can keep one framebuffer alive
+        // across the sessions it creates.
+        self.framebuffer = framebuffer ?? Framebuffer(width: 0, height: 0)
         self.makeStream = streamProvider ?? VNCSession.defaultStreamProvider
         var escapee: AsyncStream<SessionEvent>.Continuation!
         // `.bufferingNewest` keeps the UI from stalling the decoder if a redraw

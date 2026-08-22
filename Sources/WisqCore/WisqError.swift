@@ -39,3 +39,21 @@ extension WisqError: LocalizedError {
         }
     }
 }
+
+public extension WisqError {
+    /// Whether reconnecting could plausibly succeed.
+    ///
+    /// Network failures are transient by nature on a phone — every cell handoff
+    /// kills the socket. Authentication and handshake failures are not: retrying
+    /// a wrong password hammers the server and can lock the account.
+    var isRetryable: Bool {
+        switch self {
+        case .connectionFailed, .connectionClosed, .timedOut, .malformedMessage:
+            return true
+        case .invalidHost, .invalidPort, .handshakeFailed, .authenticationFailed,
+             .authenticationRequired, .unsupportedProtocol, .unsupportedEncoding,
+             .certificateRejected, .storageFailure, .agentFailure, .notImplemented:
+            return false
+        }
+    }
+}
