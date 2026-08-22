@@ -17,10 +17,18 @@ jobs:
     container: swift:6.1
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch Linux test kernel (best effort)
+        run: |
+          mkdir -p /tmp/wisq-test-linux-image
+          curl -sSL --max-time 120 -o /tmp/kernel.zip \
+            https://github.com/cnlohr/mini-rv32ima-images/raw/master/images/linux-6.1.14-rv32nommu-cnl-1.zip \
+            && unzip -o /tmp/kernel.zip -d /tmp/wisq-test-linux-image || true
       - name: Build (concurrence stricte)
         run: swift build -Xswiftc -strict-concurrency=complete
       - name: Test
         run: swift test
+        env:
+          WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
 
   app:
     name: App iOS

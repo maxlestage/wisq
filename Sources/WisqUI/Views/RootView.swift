@@ -8,6 +8,7 @@ public struct RootView: View {
     @State private var editing: MachineDraft?
     @State private var connecting: Machine?
     @State private var importingFromAgent = false
+    @State private var showingLocalVMs = false
     @State private var pairingPrefill: AgentPairing.Payload?
 
     public init() {}
@@ -19,8 +20,14 @@ public struct RootView: View {
                 onConnect: { connecting = $0 },
                 onEdit: { editing = MachineDraft(machine: $0) },
                 onNew: { editing = MachineDraft() },
-                onImportFromAgent: { importingFromAgent = true }
+                onImportFromAgent: { importingFromAgent = true },
+                onLocalVMs: { showingLocalVMs = true }
             )
+        }
+        .sheet(isPresented: $showingLocalVMs) {
+            NavigationStack {
+                LocalVMListView { showingLocalVMs = false }
+            }
         }
         .sheet(isPresented: $importingFromAgent) {
             NavigationStack {

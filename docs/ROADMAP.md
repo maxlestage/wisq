@@ -46,6 +46,15 @@ La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.
 
+## Lot 4 bis — Linux local (fait en v1)
+
+`WisqVM` : émulateur rv32ima interprété en Swift, boot d'un vrai noyau 6.1
+jusqu'au shell, terminal ligne à ligne dans l'app, import d'images par
+Fichiers. Suite possible : grille VT100 complète, images téléchargeables
+depuis l'app, stockage persistant (un bloc device 9P ou virtio-blk), et un
+cœur rv64 avec MMU pour des distributions complètes — chacun un chantier
+distinct.
+
 ## Lot 5 — SPICE
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
