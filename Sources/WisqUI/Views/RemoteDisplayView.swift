@@ -373,6 +373,9 @@ final class RemoteCanvasView: UIView {
 
     private let imageLayer = CALayer()
     private let cursorLayer = CAShapeLayer()
+    /// Carries the guest's real cursor image when the server provides one.
+    private let cursorImageLayer = CALayer()
+    private var cursorStamp: Int = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -393,6 +396,10 @@ final class RemoteCanvasView: UIView {
         cursorLayer.shadowOffset = .zero
         cursorLayer.isHidden = true
         layer.addSublayer(cursorLayer)
+
+        cursorImageLayer.magnificationFilter = .nearest
+        cursorImageLayer.isHidden = true
+        layer.addSublayer(cursorImageLayer)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -418,19 +425,62 @@ final class RemoteCanvasView: UIView {
     }
 
     func updateCursor() {
-        guard let model, model.machine.input.pointerMode == .trackpad, model.status.isLive else {
+        // The cursor shows in trackpad mode always, and in direct-touch mode once
+        // the server delegates its drawing to us — at that point nobody else will.
+        guard let model, model.status.isLive,
+              model.machine.input.pointerMode == .trackpad || model.remoteCursor != nil else {
             cursorLayer.isHidden = true
+            cursorImageLayer.isHidden = true
             return
         }
-        cursorLayer.isHidden = false
-        let radius: CGFloat = 9
-        let origin = CGPoint(x: model.pointer.x - radius, y: model.pointer.y - radius)
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorLayer.path = UIBezierPath(
-            ovalIn: CGRect(origin: origin, size: CGSize(width: radius * 2, height: radius * 2))
-        ).cgPath
-        CATransaction.commit()
+        defer { CATransaction.commit() }
+
+        if let cursor = model.remoteCursor {
+            // The guest's own cursor image, anchored at its hotspot.
+            cursorLayer.isHidden = true
+            cursorImageLayer.isHidden = false
+            if cursorStamp != cursor.hashValue {
+                cursorStamp = cursor.hashValue
+                cursorImageLayer.contents = RemoteCanvasView.makeCursorImage(cursor)
+            }
+            cursorImageLayer.frame = CGRect(
+                x: model.pointer.x - CGFloat(cursor.hotspotX),
+                y: model.pointer.y - CGFloat(cursor.hotspotY),
+                width: CGFloat(cursor.width),
+                height: CGFloat(cursor.height)
+            )
+        } else {
+            // Fallback ring, until the server sends a cursor (or never does).
+            cursorImageLayer.isHidden = true
+            cursorLayer.isHidden = false
+            let radius: CGFloat = 9
+            let origin = CGPoint(x: model.pointer.x - radius, y: model.pointer.y - radius)
+            cursorLayer.path = UIBezierPath(
+                ovalIn: CGRect(origin: origin, size: CGSize(width: radius * 2, height: radius * 2))
+            ).cgPath
+        }
+    }
+
+    static func makeCursorImage(_ cursor: RemoteCursor) -> CGImage? {
+        guard !cursor.isEmpty,
+              let provider = CGDataProvider(data: Data(cursor.bgra) as CFData) else { return nil }
+        return CGImage(
+            width: cursor.width,
+            height: cursor.height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: cursor.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.first.rawValue)
+                .union(.byteOrder32Little),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
     }
 
     /// Wraps the BGRA snapshot in a `CGImage`. The pixel layout matches

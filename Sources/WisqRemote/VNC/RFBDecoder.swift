@@ -20,6 +20,7 @@ struct RFBDecoder {
         case resized(width: Int, height: Int)
         case renamed(String)
         case serverSupportsResize
+        case cursorChanged(RemoteCursor)
         case endOfRectangles
         case ignored
     }
@@ -57,6 +58,9 @@ struct RFBDecoder {
             try await TightDecoder(stream: stream, streams: streams, framebuffer: framebuffer)
                 .decode(rect: rect)
             return .painted(rect)
+        case .cursor:
+            // x,y carry the hotspot rather than a position.
+            return .cursorChanged(try await decodeCursor(rect))
         case .desktopSize:
             return .resized(width: width, height: height)
         case .extendedDesktopSize:
@@ -177,6 +181,33 @@ struct RFBDecoder {
             }
             tileY += 16
         }
+    }
+
+    /// Cursor pseudo-encoding: pixels in the negotiated format, then a 1-bit mask,
+    /// each row of which is padded to a whole byte, MSB = leftmost pixel.
+    private func decodeCursor(_ rect: Rect) async throws -> RemoteCursor {
+        guard rect.width > 0, rect.height > 0 else {
+            return RemoteCursor(width: 0, height: 0, hotspotX: 0, hotspotY: 0, bgra: [])
+        }
+        guard rect.width <= 256, rect.height <= 256 else {
+            throw WisqError.malformedMessage("curseur démesuré (\(rect.width)×\(rect.height))")
+        }
+
+        var pixels = [UInt8](try await stream.read(exactly: rect.width * rect.height * 4))
+        let maskRowBytes = (rect.width + 7) / 8
+        let mask = [UInt8](try await stream.read(exactly: maskRowBytes * rect.height))
+
+        for row in 0..<rect.height {
+            for column in 0..<rect.width {
+                let bit = (mask[row * maskRowBytes + column / 8] >> (7 - UInt8(column % 8))) & 1
+                pixels[(row * rect.width + column) * 4 + 3] = bit == 1 ? 255 : 0
+            }
+        }
+        return RemoteCursor(
+            width: rect.width, height: rect.height,
+            hotspotX: rect.x, hotspotY: rect.y,
+            bgra: pixels
+        )
     }
 
     private func consumeExtendedDesktopSize() async throws {

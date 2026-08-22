@@ -49,6 +49,8 @@ final class RFBMessageTests: XCTestCase {
             RFB.Encoding.zlib.rawValue,
             RFB.Encoding.tight.rawValue,
             RFB.Encoding.zrle.rawValue,
+            RFB.Encoding.cursor.rawValue,
+            RFB.Encoding.continuousUpdates.rawValue,
             RFB.Encoding.desktopSize.rawValue,
             RFB.Encoding.extendedDesktopSize.rawValue,
             RFB.Encoding.desktopName.rawValue,

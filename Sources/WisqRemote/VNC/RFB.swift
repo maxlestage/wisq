@@ -19,6 +19,7 @@ public enum RFB {
         case keyEvent = 4
         case pointerEvent = 5
         case clientCutText = 6
+        case enableContinuousUpdates = 150
     }
 
     public enum ServerMessage: UInt8 {
@@ -26,6 +27,10 @@ public enum RFB {
         case setColourMapEntries = 1
         case bell = 2
         case serverCutText = 3
+        /// Doubles as the capability announcement: a server that supports
+        /// continuous updates sends this once, unprompted, right after
+        /// SetEncodings advertises the pseudo-encoding.
+        case endOfContinuousUpdates = 150
     }
 
     public enum Encoding: Int32 {
@@ -41,6 +46,7 @@ public enum RFB {
         case lastRect = -224
         case desktopName = -307
         case extendedDesktopSize = -308
+        case continuousUpdates = -313
     }
 
     /// Encodings this build can decode, most preferred first.
@@ -53,7 +59,7 @@ public enum RFB {
     /// Nothing is advertised that this build cannot decode: a rectangle in an
     /// unknown encoding has no length prefix, so it would strand the stream with
     /// no way to resynchronise.
-    public static func preferredEncodings(lowBandwidth: Bool) -> [Int32] {
+    public static func preferredEncodings(lowBandwidth: Bool, localCursor: Bool = true) -> [Int32] {
         var encodings: [Int32] = [Encoding.copyRect.rawValue]
         if lowBandwidth {
             encodings += [Encoding.tight.rawValue, Encoding.zrle.rawValue, Encoding.zlib.rawValue,
@@ -65,10 +71,14 @@ public enum RFB {
                           Encoding.zlib.rawValue, Encoding.rre.rawValue]
         }
         encodings += [Encoding.raw.rawValue]
+        if localCursor {
+            encodings.append(Encoding.cursor.rawValue)
+        }
         encodings += [
             Encoding.desktopSize.rawValue,
             Encoding.extendedDesktopSize.rawValue,
             Encoding.desktopName.rawValue,
+            Encoding.continuousUpdates.rawValue,
             Encoding.lastRect.rawValue,
         ]
         return encodings

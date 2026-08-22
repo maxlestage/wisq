@@ -39,6 +39,9 @@ public final class SessionModel {
     /// Bumped on every framebuffer change so the renderer knows to redraw.
     public private(set) var frameGeneration: UInt64 = 0
     public private(set) var clipboardFromGuest: String?
+    /// The guest's cursor image, when the server sends one. Nil until then, and
+    /// reset to nil when the server sends an empty cursor to hide it.
+    public private(set) var remoteCursor: RemoteCursor?
 
     public let machine: Machine
     public private(set) var session: (any RemoteSession)?
@@ -116,6 +119,8 @@ public final class SessionModel {
             break
         case .reconnecting(let attempt):
             status = .reconnecting(attempt: attempt)
+        case .cursor(let cursor):
+            remoteCursor = cursor.isEmpty ? nil : cursor
         case .disconnected(let error):
             status = error.map { .failed($0.localizedDescription) } ?? .closed
             session = nil

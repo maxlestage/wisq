@@ -15,6 +15,8 @@ public enum SessionEvent: Sendable {
     /// The connection dropped and is being rebuilt. Purely informational for the
     /// UI; input sent meanwhile is silently dropped.
     case reconnecting(attempt: Int)
+    /// The guest's cursor image changed. An empty cursor means "hide it".
+    case cursor(RemoteCursor)
     /// Terminal. `error` is nil when the user hung up.
     case disconnected(WisqError?)
 }
