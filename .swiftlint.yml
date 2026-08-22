@@ -18,6 +18,10 @@ disabled_rules:
   - for_where
   - multiple_closures_with_trailing_closure
   - nesting
+  # Deliberate: UART/console chunks can split a UTF-8 character across reads.
+  # The failable String(bytes:encoding:) would drop the whole chunk; the
+  # decoding initializer substitutes U+FFFD and keeps the console alive.
+  - optional_data_string_conversion
 
 opt_in_rules:
   - empty_count
