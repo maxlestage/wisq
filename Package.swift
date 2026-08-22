@@ -24,13 +24,17 @@ let package = Package(
         // Pure domain model. Foundation only, no platform frameworks.
         .target(name: "WisqCore"),
 
+        // zlib, for the persistent inflate streams RFB's compressed encodings need.
+        .systemLibrary(name: "CZlib", path: "Sources/CZlib"),
+
         // Byte transport (TCP/TLS) built on Network.framework.
-        .target(name: "WisqNet", dependencies: ["WisqCore"]),
+        .target(name: "WisqNet", dependencies: ["WisqCore", "CZlib"]),
 
         // Remote desktop protocols: RFB/VNC (implemented), SPICE and RDP (planned).
         .target(name: "WisqRemote", dependencies: ["WisqCore", "WisqNet"]),
 
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
+        .testTarget(name: "WisqNetTests", dependencies: ["WisqNet"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
     ] + uiTargets
 )

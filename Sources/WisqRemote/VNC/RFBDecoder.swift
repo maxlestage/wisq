@@ -9,6 +9,9 @@ import WisqNet
 struct RFBDecoder {
     let stream: any ByteStream
     let framebuffer: Framebuffer
+    /// Session-lived zlib streams. Compressed encodings depend on their
+    /// dictionaries surviving from one rectangle to the next.
+    let streams: RFBStreams
 
     /// Result of decoding one rectangle: either it painted pixels, or it carried
     /// out-of-band information the session needs to act on.
@@ -44,6 +47,16 @@ struct RFBDecoder {
         case .hextile:
             try await decodeHextile(rect)
             return .painted(rect)
+        case .zlib:
+            try await decodeZlib(rect)
+            return .painted(rect)
+        case .zrle:
+            try await decodeZRLE(rect)
+            return .painted(rect)
+        case .tight:
+            try await TightDecoder(stream: stream, streams: streams, framebuffer: framebuffer)
+                .decode(rect: rect)
+            return .painted(rect)
         case .desktopSize:
             return .resized(width: width, height: height)
         case .extendedDesktopSize:
@@ -70,6 +83,29 @@ struct RFBDecoder {
         // The X byte is undefined on the wire; Core Graphics reads it as alpha.
         for index in stride(from: 3, to: pixels.count, by: 4) { pixels[index] = 255 }
         framebuffer.write(rect: rect, bgra: pixels)
+    }
+
+    /// Zlib (encoding 6) is Raw pixels through the session's zlib stream — the
+    /// simplest possible win, and the fallback when a server speaks neither ZRLE
+    /// nor Tight.
+    private func decodeZlib(_ rect: Rect) async throws {
+        let length = Int(try await stream.readUInt32())
+        let compressed = try await stream.read(exactly: length)
+        var pixels = [UInt8](try streams.zlib.inflate(compressed))
+        guard pixels.count == rect.width * rect.height * 4 else {
+            throw WisqError.malformedMessage(
+                "zlib a produit \(pixels.count) octets au lieu de \(rect.width * rect.height * 4)"
+            )
+        }
+        for index in stride(from: 3, to: pixels.count, by: 4) { pixels[index] = 255 }
+        framebuffer.write(rect: rect, bgra: pixels)
+    }
+
+    private func decodeZRLE(_ rect: Rect) async throws {
+        let length = Int(try await stream.readUInt32())
+        let compressed = try await stream.read(exactly: length)
+        let tiles = try streams.zrle.inflate(compressed)
+        try ZRLEDecoder.decode(rect: rect, data: tiles, into: framebuffer)
     }
 
     private func decodeRRE(_ rect: Rect) async throws {

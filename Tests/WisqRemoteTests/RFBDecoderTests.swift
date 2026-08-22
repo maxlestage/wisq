@@ -12,7 +12,7 @@ final class RFBDecoderTests: XCTestCase {
         data.append(contentsOf: [10, 20, 30, 0, 40, 50, 60, 0])     // two BGRX pixels
 
         let framebuffer = Framebuffer(width: 4, height: 4)
-        let decoder = RFBDecoder(stream: MemoryByteStream(inbound: data), framebuffer: framebuffer)
+        let decoder = RFBDecoder(stream: MemoryByteStream(inbound: data), framebuffer: framebuffer, streams: try RFBStreams())
 
         guard case .painted(let rect) = try await decoder.decodeRectangle() else {
             return XCTFail("le rectangle aurait dû être dessiné")
@@ -36,7 +36,7 @@ final class RFBDecoderTests: XCTestCase {
         data.append(contentsOf: [0, 1, 0, 1, 0, 1, 0, 1])           // at (1,1), 1 × 1
 
         let framebuffer = Framebuffer(width: 2, height: 2)
-        let decoder = RFBDecoder(stream: MemoryByteStream(inbound: data), framebuffer: framebuffer)
+        let decoder = RFBDecoder(stream: MemoryByteStream(inbound: data), framebuffer: framebuffer, streams: try RFBStreams())
         _ = try await decoder.decodeRectangle()
 
         let pixels = framebuffer.snapshot().pixels
@@ -52,7 +52,8 @@ final class RFBDecoderTests: XCTestCase {
 
         let decoder = RFBDecoder(
             stream: MemoryByteStream(inbound: data),
-            framebuffer: Framebuffer(width: 1, height: 1)
+            framebuffer: Framebuffer(width: 1, height: 1),
+            streams: try RFBStreams()
         )
         guard case .resized(let width, let height) = try await decoder.decodeRectangle() else {
             return XCTFail("DesktopSize aurait dû être signalé comme un redimensionnement")
@@ -68,7 +69,8 @@ final class RFBDecoderTests: XCTestCase {
 
         let decoder = RFBDecoder(
             stream: MemoryByteStream(inbound: data),
-            framebuffer: Framebuffer(width: 1, height: 1)
+            framebuffer: Framebuffer(width: 1, height: 1),
+            streams: try RFBStreams()
         )
         do {
             _ = try await decoder.decodeRectangle()

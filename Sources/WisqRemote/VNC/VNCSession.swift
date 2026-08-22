@@ -20,6 +20,9 @@ public actor VNCSession: RemoteSession {
     private var stream: (any ByteStream)?
     private var pump: Task<Void, Never>?
     private var desktopName = ""
+    /// Created on connect and thrown away on disconnect: a zlib dictionary from a
+    /// previous session would decode to garbage.
+    private var streams: RFBStreams?
     private var supportsResize = false
     private var hasFinished = false
 
@@ -56,6 +59,7 @@ public actor VNCSession: RemoteSession {
         pump = nil
         await stream?.close()
         stream = nil
+        streams = nil
         finish(with: nil)
     }
 
@@ -85,6 +89,8 @@ public actor VNCSession: RemoteSession {
 
     private func run() async throws {
         continuation.yield(.connecting)
+        let streams = try RFBStreams()
+        self.streams = streams
         let stream = try await makeStream(configuration)
         self.stream = stream
 
@@ -197,7 +203,8 @@ public actor VNCSession: RemoteSession {
     private func handleFramebufferUpdate(_ stream: any ByteStream) async throws {
         _ = try await stream.read(exactly: 1)
         let rectangleCount = Int(try await stream.readUInt16())
-        let decoder = RFBDecoder(stream: stream, framebuffer: framebuffer)
+        guard let streams else { throw WisqError.connectionClosed }
+        let decoder = RFBDecoder(stream: stream, framebuffer: framebuffer, streams: streams)
 
         var painted: [Rect] = []
         var resizedTo: (width: Int, height: Int)?

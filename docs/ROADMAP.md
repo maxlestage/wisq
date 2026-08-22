@@ -5,22 +5,27 @@
 Modules, modèle, persistance, trousseau, transport, client VNC RFB 3.8, interface
 SwiftUI, gestes tactiles, tests unitaires.
 
-## Lot 2 — VNC utilisable en mobilité
+## Lot 2 — VNC utilisable en mobilité (fait, sauf JPEG)
 
-Aujourd'hui le client parle Raw, CopyRect, RRE et Hextile — tous sans
-compression. Sur un LAN c'est confortable ; en 4G c'est intenable : un bureau
-1080p en Raw, c'est 8 Mo par image complète.
+ZRLE, Tight et zlib sont implémentés, adossés à des flux zlib persistants pour
+toute la session. Voir `docs/ARCHITECTURE.md`, section « La compression ».
 
-- **ZRLE et Tight.** Les deux s'appuient sur un flux zlib *persistant* pour toute
-  la session, pas par rectangle. Cela impose de garder un `compression_stream`
-  (framework Compression, mode `ZLIB`) vivant dans le décodeur et de le nourrir
-  incrémentalement. C'est le vrai travail du lot.
+Ce qui reste dans ce lot :
+
+- **JPEG dans Tight.** Absent volontairement : un serveur n'envoie du JPEG que
+  si le client annonce un niveau de qualité, et nous n'en annonçons aucun. Cela
+  garde la couche protocolaire testable sur Linux. Sur un lien cellulaire c'est
+  pourtant exactement ce qu'on veut — l'ajouter demande d'annoncer une qualité
+  et de décoder via ImageIO côté Apple, derrière une interface que Linux laisse
+  vide.
 - **Mises à jour continues** (`EnableContinuousUpdates`) pour cesser de demander
   chaque image.
 - **Curseur distant** (pseudo-encodage `Cursor`, -239) pour dessiner le vrai
   curseur de l'invité au lieu du rond blanc.
 - **Reconnexion automatique** quand le téléphone change de réseau : c'est le
-  défaut le plus visible de tous les clients VNC iOS existants.
+  défaut le plus visible de tous les clients VNC iOS existants. Attention, la
+  reconnexion doit repartir de flux zlib neufs — un dictionnaire hérité de la
+  session précédente décode en bouillie.
 
 ## Lot 3 — RDP
 
