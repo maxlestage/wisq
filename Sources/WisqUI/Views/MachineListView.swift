@@ -8,6 +8,7 @@ public struct MachineListView: View {
     let onConnect: (Machine) -> Void
     let onEdit: (Machine) -> Void
     let onNew: () -> Void
+    let onImportFromAgent: () -> Void
 
     @State private var search = ""
 
@@ -48,7 +49,14 @@ public struct MachineListView: View {
         .navigationTitle("Machines")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(action: onNew) {
+                Menu {
+                    Button(action: onNew) {
+                        Label("Nouvelle machine", systemImage: "plus")
+                    }
+                    Button(action: onImportFromAgent) {
+                        Label("Importer depuis un agent", systemImage: "server.rack")
+                    }
+                } label: {
                     Label("Ajouter", systemImage: "plus")
                 }
             }

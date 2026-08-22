@@ -29,6 +29,12 @@ Démon écrit et testé bout-à-bout contre le client de l'application : serveur
 HTTP POSIX sans dépendance, backend libvirt via `virsh`, backend démo pour
 essayer sans hyperviseur. Voir `docs/AGENT-PROTOCOL.md`.
 
+L'application est branchée dessus : à la connexion d'une machine liée à un
+agent, wisq démarre la VM si nécessaire, attend sa console et résout l'adresse
+et le port avant d'ouvrir la session (`ConsoleResolver`, testé bout-à-bout
+contre le démon réel) ; et « Importer depuis un agent » liste les VM d'un hôte
+pour les ajouter en machines, liaison comprise.
+
 Reste dans ce lot : le TLS de l'agent (v1 en clair + jeton, réseau de confiance
 ou tunnel), l'appairage par QR code côté application, et la découverte Bonjour.
 La question push contre interrogation est tranchée pour l'instant du côté de
