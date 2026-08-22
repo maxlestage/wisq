@@ -24,6 +24,9 @@ public actor VNCSession: RemoteSession {
     /// previous session would decode to garbage.
     private var streams: RFBStreams?
     private var supportsResize = false
+    /// Set once the server has answered our ContinuousUpdates advertisement.
+    /// While active, the per-frame incremental requests stop entirely.
+    private var continuousUpdatesActive = false
     private var hasFinished = false
 
     public init(
@@ -110,7 +113,10 @@ public actor VNCSession: RemoteSession {
         // Negotiate the format and ask for the first full frame before announcing
         // readiness, so anything observing `.ready` sees a fully configured session.
         try await stream.write(Self.setPixelFormatMessage())
-        try await stream.write(Self.setEncodingsMessage(lowBandwidth: configuration.display.lowBandwidth))
+        try await stream.write(Self.setEncodingsMessage(
+            lowBandwidth: configuration.display.lowBandwidth,
+            localCursor: configuration.display.localCursor
+        ))
         try await requestUpdate(incremental: false, width: width, height: height)
 
         continuation.yield(.ready(desktopName: desktopName, width: width, height: height))
@@ -195,6 +201,17 @@ public actor VNCSession: RemoteSession {
                 let length = Int(try await stream.readUInt32())
                 let text = try await stream.readLatin1(count: length)
                 continuation.yield(.clipboard(text))
+            case .endOfContinuousUpdates:
+                // Unprompted, this is the server announcing support; enable it
+                // for the whole screen and stop asking for every frame.
+                if !continuousUpdatesActive {
+                    continuousUpdatesActive = true
+                    let (width, height, _) = framebuffer.snapshot()
+                    try await stream.write(Self.enableContinuousUpdatesMessage(
+                        enabled: true,
+                        rect: Rect(x: 0, y: 0, width: width, height: height)
+                    ))
+                }
             case .setColourMapEntries:
                 // We always negotiate true colour, so this should never arrive.
                 // Consume it rather than desynchronising the stream.
@@ -228,6 +245,8 @@ public actor VNCSession: RemoteSession {
                 supportsResize = true
             case .renamed(let name):
                 desktopName = name
+            case .cursorChanged(let cursor):
+                continuation.yield(.cursor(cursor))
             case .endOfRectangles:
                 // LastRect: the server sent a placeholder count and ends here.
                 break rectangles
@@ -238,13 +257,25 @@ public actor VNCSession: RemoteSession {
 
         if let resizedTo {
             continuation.yield(.resized(width: resizedTo.width, height: resizedTo.height))
+            // The continuous-updates region is absolute, so a resize means
+            // re-registering interest in the new geometry.
+            if continuousUpdatesActive, let stream = self.stream {
+                try await stream.write(Self.enableContinuousUpdatesMessage(
+                    enabled: true,
+                    rect: Rect(x: 0, y: 0, width: resizedTo.width, height: resizedTo.height)
+                ))
+            }
             try await requestUpdate(incremental: false, width: resizedTo.width, height: resizedTo.height)
         } else {
             if !painted.isEmpty {
                 continuation.yield(.framebufferChanged(painted))
             }
-            let (width, height, _) = framebuffer.snapshot()
-            try await requestUpdate(incremental: true, width: width, height: height)
+            // In continuous mode the server pushes updates on its own; asking
+            // per frame would defeat the point of the extension.
+            if !continuousUpdatesActive {
+                let (width, height, _) = framebuffer.snapshot()
+                try await requestUpdate(incremental: true, width: width, height: height)
+            }
         }
     }
 
@@ -273,8 +304,8 @@ public actor VNCSession: RemoteSession {
         return writer.data
     }
 
-    static func setEncodingsMessage(lowBandwidth: Bool) -> Data {
-        let encodings = RFB.preferredEncodings(lowBandwidth: lowBandwidth)
+    static func setEncodingsMessage(lowBandwidth: Bool, localCursor: Bool = true) -> Data {
+        let encodings = RFB.preferredEncodings(lowBandwidth: lowBandwidth, localCursor: localCursor)
         var writer = ByteWriter()
         writer.write(RFB.ClientMessage.setEncodings.rawValue)
         writer.pad(1)
@@ -309,6 +340,17 @@ public actor VNCSession: RemoteSession {
         writer.write(down ? 1 as UInt8 : 0)
         writer.pad(2)
         writer.write(keysym)
+        return writer.data
+    }
+
+    static func enableContinuousUpdatesMessage(enabled: Bool, rect: Rect) -> Data {
+        var writer = ByteWriter()
+        writer.write(RFB.ClientMessage.enableContinuousUpdates.rawValue)
+        writer.write(enabled ? 1 as UInt8 : 0)
+        writer.write(UInt16(clamping: rect.x))
+        writer.write(UInt16(clamping: rect.y))
+        writer.write(UInt16(clamping: rect.width))
+        writer.write(UInt16(clamping: rect.height))
         return writer.data
     }
 
