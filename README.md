@@ -1,107 +1,104 @@
 # wisq
 
-Client de machines virtuelles distantes pour iPhone, en Swift.
+[![CI](https://github.com/maxlestage/wisq/actions/workflows/ci.yml/badge.svg)](https://github.com/maxlestage/wisq/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Swift](https://img.shields.io/badge/swift-6.1-orange.svg)](Package.swift)
 
-wisq se place face à UTM sur deux fronts à la fois :
+Virtual machines on your iPhone, both ways UTM cannot: **remote at full
+speed, local within the rules**. *([Version française](README.fr.md).)*
 
-- **Distant** : l'iPhone est un client rapide vers des VM qui tournent là où il
-  y a du silicium — un Mac, un PC, un NAS, un serveur. C'est le mode principal,
-  celui qui donne un vrai bureau à pleine vitesse.
-- **Local** : un émulateur RISC-V rv32ima interprété, écrit en Swift, boote un
-  vrai noyau Linux **sur le téléphone** en une à deux secondes — sans réseau,
-  sans serveur, shell compris. Interprété, donc sans JIT : conforme aux règles
-  d'iOS, là où UTM SE vit dans une zone grise.
+- **Remote** — the VM runs where the silicon is (a Mac, a PC, a NAS, a
+  server); the iPhone is a fast client. iOS grants executable memory only
+  to development-signed apps, so any on-device emulation of a desktop OS is
+  interpreted and an order of magnitude slow — that is UTM SE's glass
+  ceiling, and no amount of better code breaks it. Moving execution off the
+  phone does.
+- **Local** — an interpreted rv32ima RISC-V machine written in Swift boots
+  a real Linux kernel **on the phone** in a couple of seconds, shell
+  included, fully offline. Interpretation needs no JIT, which keeps it
+  clean under App Store rules (precedent: iSH).
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
-| Exécution | émulation locale QEMU, interprétée | la VM tourne sur l'hôte |
-| Vitesse | très lente (pas de JIT sur iOS) | limitée par le réseau, pas par le CPU |
-| Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau classique |
-| Licence | GPL (QEMU) | code applicatif sous notre contrôle |
-| Autonomie | l'émulation vide la batterie | décodage d'image seulement |
+| Execution | local QEMU, interpreted | on the host — or a purpose-built local interpreter |
+| Speed | very slow (no JIT on iOS) | network-bound (remote), ~1 s to a Linux shell (local) |
+| App Store | grey area, rule 4.7 | network client + interpreter, both clean |
+| License | GPL (QEMU) | Apache-2.0, all first-party code |
 
-## État
+## Status
 
-Ce dépôt contient le squelette complet de l'application et un client **VNC/RFB 3.8
-fonctionnel** écrit à la main. SPICE et RDP ont leur place réservée dans
-l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
+Everything below is implemented, tested (117 tests) and green in CI, which
+among other things **boots a real Linux kernel inside the emulator** as a
+test. The one deliberate v1 limitation: the host agent speaks plain HTTP
+behind a mandatory token — trusted network or tunnel, like unencrypted VNC.
 
-| Composant | État |
+| Component | State |
 |---|---|
-| Modèle de données, persistance, trousseau | fait |
-| Transport TCP/TLS (Network.framework) | fait |
-| VNC : handshake, auth VNC (DES), Raw / CopyRect / RRE / Hextile | fait |
-| VNC : redimensionnement de bureau, presse-papiers | fait |
-| VNC : ZRLE, Tight (JPEG compris), zlib — flux persistants | fait |
-| VNC : mises à jour continues, curseur distant | fait |
-| Reconnexion automatique (repli exponentiel, jamais sur erreur d'auth) | fait |
-| Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
-| Gestes tactiles configurables, inertie, arbitrage | fait |
-| Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
-| SPICE, RDP | à faire |
-| Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
-| App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
-| Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
-| Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
+| RFB 3.8 client: handshake, DES auth, Raw/CopyRect/RRE/Hextile | done |
+| Compressed encodings over session-lived zlib: zlib, ZRLE, Tight (+JPEG) | done |
+| Continuous updates, server cursor drawn locally, desktop resize, clipboard | done |
+| Automatic reconnection (exponential backoff, never on auth failures) | done |
+| Touch model: configurable gestures, inertia, 50 ms press/release, ordered input | done |
+| Hardware + software keyboards (HID → X11 keysyms) | done |
+| `wisq-agent` daemon (libvirt via virsh + demo backend), end-to-end tested | done |
+| Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
+| Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
+| Agent TLS · SPICE · RDP | roadmap |
 
-`WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
-avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
-leurs 117 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
-le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
-sont vérifiées que par le job macOS de la CI.
+## Try it
 
-## Construire
+Any VNC server works for the remote path:
 
 ```sh
-brew install xcodegen
-xcodegen generate
-open Wisq.xcodeproj
+qemu-system-x86_64 -m 2048 -vnc :1 -hda disk.qcow2   # or: x11vnc -display :0
 ```
 
-Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est
-retirée du paquet là-bas, précisément pour que ce soit possible :
+The agent turns "one more VNC client" into "my VMs, from my phone" — a
+powered-off VM boots when you tap it:
 
 ```sh
-./scripts/verify.sh          # cœur : compilation stricte + tests
-./scripts/verify.sh --app    # ajoute la compilation de l'app (macOS + Xcode)
+swift run wisq-agent --demo    # two fake VMs, no hypervisor needed
+swift run wisq-agent           # libvirt via virsh, port 7442
 ```
 
-Sur Linux, le paquet a besoin des en-têtes zlib (`zlib1g-dev` ; l'image Docker
-officielle Swift les a déjà).
+It prints `wisq://` pairing links (and a QR code when `qrencode` is
+installed); opening one on the iPhone lands in the import screen,
+pre-filled. For the local path, import an rv32ima nommu kernel image via
+the Files app — ready-made ones live in the
+[mini-rv32ima](https://github.com/cnlohr/mini-rv32ima) project.
 
-## Essayer sans matériel
-
-N'importe quel serveur VNC fait l'affaire :
+## Building
 
 ```sh
-# une VM QEMU avec console VNC
-qemu-system-x86_64 -m 2048 -vnc :1 -hda disk.qcow2
-
-# ou un bureau Linux existant
-x11vnc -display :0 -rfbport 5900 -passwd secret
+./scripts/verify.sh          # core: strict-concurrency build + full tests
+./scripts/verify.sh --app    # + the iOS app (macOS with Xcode)
 ```
 
-Puis dans wisq : **+**, adresse `hôte:5901`, mot de passe, connexion.
+The core (protocols, emulator, agent) is Foundation-only and builds on
+Linux; on Debian/Ubuntu you need `zlib1g-dev` (the official Swift Docker
+image has it). The app project is generated: `brew install xcodegen &&
+xcodegen generate`.
 
-Et pour essayer l'agent sans hyperviseur :
-
-```sh
-swift run wisq-agent --demo
-```
-
-## Structure
+## Layout
 
 ```
-Sources/WisqCore     modèle de domaine, persistance, trousseau (Foundation seul)
-Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les tests
-Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SPICE/RDP
-Sources/WisqUI       SwiftUI, pensé téléphone d'abord
-Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
-Sources/WisqAgentKit démon hôte : serveur HTTP POSIX, backends virsh et démo
-Sources/wisq-agent   exécutable du démon
-App                  cible application
-docs                 architecture, protocole de l'agent, feuille de route
+Sources/WisqCore     domain model, persistence, Keychain, HID table, pairing codec
+Sources/WisqNet      byte transport: TCP/TLS, persistent zlib streams, test pipes
+Sources/WisqRemote   RFB/VNC client, reconnection, agent client, SPICE/RDP slots
+Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
+Sources/WisqUI       SwiftUI, phone-first
+Sources/WisqAgentKit host daemon: POSIX HTTP server, virsh + demo backends
+Sources/wisq-agent   the daemon executable
+docs/                architecture, agent wire protocol, roadmap
 ```
 
-Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
-la suite.
+`docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
+pixel format, session-lived zlib dictionaries, the touch model, why JPEG is
+gated on a decoder — and `docs/ROADMAP.md` what comes next.
+
+## Contributing & security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for provenance
+(the emulator reimplements mini-rv32ima's semantics, MIT; the touch design
+studies UTM, Apache-2.0 — no third-party code is vendored).
