@@ -62,7 +62,7 @@ public final class LinuxMachine: @unchecked Sendable {
         }
 
         let dtbPointer = Self.ramSize - UInt32(dtb.count) - Self.stateReserve
-        guard kernelImage.count > 0,
+        guard !kernelImage.isEmpty,
               UInt32(kernelImage.count) <= dtbPointer else {
             throw LinuxMachineError.imageTooLarge
         }

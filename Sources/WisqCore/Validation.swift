@@ -24,7 +24,7 @@ public enum Validation {
     public static func splitHostPort(_ raw: String) -> (host: String, port: Int?) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if trimmed.hasPrefix("[") , let close = trimmed.firstIndex(of: "]") {
+        if trimmed.hasPrefix("["), let close = trimmed.firstIndex(of: "]") {
             let host = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
             let rest = trimmed[trimmed.index(after: close)...]
             if rest.hasPrefix(":"), let port = Int(rest.dropFirst()) {

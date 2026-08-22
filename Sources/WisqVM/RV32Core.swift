@@ -98,7 +98,7 @@ public final class RV32Core {
         if newTimer < timerl { timerh &+= 1 }
         timerl = newTimer
 
-        if (timerh > timermatchh || (timerh == timermatchh && timerl > timermatchl)),
+        if timerh > timermatchh || (timerh == timermatchh && timerl > timermatchl),
            timermatchh != 0 || timermatchl != 0 {
             extraflags &= ~4                     // wake from WFI
             mip |= 1 << 7                        // MTIP
@@ -243,14 +243,22 @@ public final class RV32Core {
                         case 2: rval = UInt32(truncatingIfNeeded: (Int64(s1) * Int64(UInt64(rs2))) >> 32)
                         case 3: rval = UInt32(truncatingIfNeeded: (UInt64(rs1) * UInt64(rs2)) >> 32)
                         case 4:
-                            if rs2 == 0 { rval = 0xFFFF_FFFF }
-                            else if s1 == Int32.min && s2 == -1 { rval = rs1 }
-                            else { rval = UInt32(bitPattern: s1 / s2) }
+                            if rs2 == 0 {
+                                rval = 0xFFFF_FFFF
+                            } else if s1 == Int32.min && s2 == -1 {
+                                rval = rs1
+                            } else {
+                                rval = UInt32(bitPattern: s1 / s2)
+                            }
                         case 5: rval = rs2 == 0 ? 0xFFFF_FFFF : rs1 / rs2
                         case 6:
-                            if rs2 == 0 { rval = rs1 }
-                            else if s1 == Int32.min && s2 == -1 { rval = 0 }
-                            else { rval = UInt32(bitPattern: s1 % s2) }
+                            if rs2 == 0 {
+                                rval = rs1
+                            } else if s1 == Int32.min && s2 == -1 {
+                                rval = 0
+                            } else {
+                                rval = UInt32(bitPattern: s1 % s2)
+                            }
                         case 7: rval = rs2 == 0 ? rs1 : rs1 % rs2
                         default: break
                         }
