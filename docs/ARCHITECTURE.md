@@ -164,6 +164,38 @@ derniers pour-cent de ratio.
   auto-signé ; refuser sèchement ferait retomber les gens sur du texte clair,
   ce qui est pire.
 
+## Le Linux local
+
+`WisqVM` est l'exception assumée au « la VM tourne sur l'hôte » : un émulateur
+rv32ima interprété, portage Swift de la sémantique de mini-rv32ima (Charles
+Lohr, MIT) — la plus petite machine connue qui boote un vrai noyau Linux. Un
+hart RV32 IMA + Zicsr, modes machine et utilisateur, pas de MMU ; 64 Mo de RAM,
+un UART 8250, un CLINT, un syscon. Le device tree est celui de la machine de
+référence, embarqué tel quel.
+
+L'interprétation est le choix, pas un pis-aller : iOS n'accorde de mémoire
+exécutable qu'aux applications signées pour le développement, donc un JIT
+n'a jamais été une option — et un interprète est irréprochable côté App Store
+(précédent : iSH). En pratique l'interprète Swift dépasse le milliard
+d'instructions par seconde en build release sur x86 ; un noyau 6.1 atteint son
+invite de connexion en une à deux secondes.
+
+L'horloge virtuelle avance avec les instructions exécutées, pas avec le temps
+réel : un démarrage est déterministe sur toute machine qui l'exécute, ce qui
+rend le boot testable en CI. Le test de référence charge le même noyau que
+l'émulateur d'origine et lit sa bannière sur l'UART ; en local, le même
+harnais va jusqu'au shell et fait exécuter une commande par l'invité.
+
+Deux détails qui ont mordu :
+
+- Les invites se terminent sans saut de ligne. Le tampon de sortie de l'UART
+  était vidé sur `\n` ou 256 octets : une invite restait invisible exactement
+  au moment où la machine attendait l'utilisateur. D'où le vidage périodique.
+- La console série émet des séquences ANSI ; la vue terminal v1 est du texte
+  brut, donc `ANSIFilter` retire les séquences et rejoue `\r` et retour
+  arrière comme un terminal le ferait. Une vraie grille de cellules VT100
+  pourra remplacer cela plus tard.
+
 ## Ce qui n'est pas là
 
 `SPICESession` et `RDPSession` existent, se conforment à `RemoteSession` et

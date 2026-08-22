@@ -2,10 +2,15 @@
 
 Client de machines virtuelles distantes pour iPhone, en Swift.
 
-wisq se place face à UTM sur un axe différent : plutôt que d'émuler une VM sur le
-téléphone — ce qu'iOS punit lourdement en interdisant le JIT — wisq fait de
-l'iPhone un client rapide vers des VM qui tournent là où il y a du silicium :
-un Mac, un PC, un NAS, un serveur.
+wisq se place face à UTM sur deux fronts à la fois :
+
+- **Distant** : l'iPhone est un client rapide vers des VM qui tournent là où il
+  y a du silicium — un Mac, un PC, un NAS, un serveur. C'est le mode principal,
+  celui qui donne un vrai bureau à pleine vitesse.
+- **Local** : un émulateur RISC-V rv32ima interprété, écrit en Swift, boote un
+  vrai noyau Linux **sur le téléphone** en une à deux secondes — sans réseau,
+  sans serveur, shell compris. Interprété, donc sans JIT : conforme aux règles
+  d'iOS, là où UTM SE vit dans une zone grise.
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
@@ -37,10 +42,11 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
 | Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
+| Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
 avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
-leurs 99 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
+leurs 117 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -90,6 +96,7 @@ Sources/WisqCore     modèle de domaine, persistance, trousseau (Foundation seul
 Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les tests
 Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SPICE/RDP
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
+Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
 Sources/WisqAgentKit démon hôte : serveur HTTP POSIX, backends virsh et démo
 Sources/wisq-agent   exécutable du démon
 App                  cible application

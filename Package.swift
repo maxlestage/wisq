@@ -22,7 +22,7 @@ let uiProducts: [Product] = []
 let uiTargets: [Target] = []
 #else
 let uiProducts: [Product] = [.library(name: "WisqUI", targets: ["WisqUI"])]
-let uiTargets: [Target] = [.target(name: "WisqUI", dependencies: ["WisqCore", "WisqRemote"])]
+let uiTargets: [Target] = [.target(name: "WisqUI", dependencies: ["WisqCore", "WisqRemote", "WisqVM"])]
 #endif
 
 let package = Package(
@@ -32,6 +32,7 @@ let package = Package(
         .library(name: "WisqCore", targets: ["WisqCore"]),
         .library(name: "WisqNet", targets: ["WisqNet"]),
         .library(name: "WisqRemote", targets: ["WisqRemote"]),
+        .library(name: "WisqVM", targets: ["WisqVM"]),
     ] + uiProducts + agentProducts,
     targets: [
         // Pure domain model. Foundation only, no platform frameworks.
@@ -46,8 +47,13 @@ let package = Package(
         // Remote desktop protocols: RFB/VNC (implemented), SPICE and RDP (planned).
         .target(name: "WisqRemote", dependencies: ["WisqCore", "WisqNet"]),
 
+        // Local Linux VMs: an interpreted rv32ima machine. Foundation only, so
+        // the same core that ships on the phone boots real kernels in CI.
+        .target(name: "WisqVM"),
+
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet"]),
+        .testTarget(name: "WisqVMTests", dependencies: ["WisqVM"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
     ] + uiTargets + agentTargets
 )
