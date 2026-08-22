@@ -30,19 +30,25 @@ public struct DisplaySettings: Codable, Hashable, Sendable {
     /// Render the remote cursor locally instead of letting it be drawn into the framebuffer.
     public var localCursor: Bool
     public var keepScreenAwake: Bool
+    /// Tight JPEG quality, 0…9. Nil keeps the session lossless: no quality is
+    /// advertised, so a compliant server never sends a JPEG rectangle. On a
+    /// cellular link, lossy is usually the right trade.
+    public var jpegQuality: Int?
 
     public init(
         scaling: Scaling = .fit,
         followDeviceResolution: Bool = true,
         lowBandwidth: Bool = false,
         localCursor: Bool = true,
-        keepScreenAwake: Bool = true
+        keepScreenAwake: Bool = true,
+        jpegQuality: Int? = nil
     ) {
         self.scaling = scaling
         self.followDeviceResolution = followDeviceResolution
         self.lowBandwidth = lowBandwidth
         self.localCursor = localCursor
         self.keepScreenAwake = keepScreenAwake
+        self.jpegQuality = jpegQuality.map { min(max($0, 0), 9) }
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,6 +61,8 @@ public struct DisplaySettings: Codable, Hashable, Sendable {
         self.localCursor = try container.decodeIfPresent(Bool.self, forKey: .localCursor) ?? defaults.localCursor
         self.keepScreenAwake = try container.decodeIfPresent(Bool.self, forKey: .keepScreenAwake)
             ?? defaults.keepScreenAwake
+        self.jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality)
+            .map { min(max($0, 0), 9) }
     }
 }
 

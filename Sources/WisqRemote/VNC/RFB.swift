@@ -59,7 +59,11 @@ public enum RFB {
     /// Nothing is advertised that this build cannot decode: a rectangle in an
     /// unknown encoding has no length prefix, so it would strand the stream with
     /// no way to resynchronise.
-    public static func preferredEncodings(lowBandwidth: Bool, localCursor: Bool = true) -> [Int32] {
+    public static func preferredEncodings(
+        lowBandwidth: Bool,
+        localCursor: Bool = true,
+        jpegQuality: Int? = nil
+    ) -> [Int32] {
         var encodings: [Int32] = [Encoding.copyRect.rawValue]
         if lowBandwidth {
             encodings += [Encoding.tight.rawValue, Encoding.zrle.rawValue, Encoding.zlib.rawValue,
@@ -73,6 +77,11 @@ public enum RFB {
         encodings += [Encoding.raw.rawValue]
         if localCursor {
             encodings.append(Encoding.cursor.rawValue)
+        }
+        // Advertising a JPEG quality level is what licenses the server to send
+        // lossy rectangles — so it is gated on an actual decoder being present.
+        if let quality = jpegQuality, JPEGDecoder.isAvailable {
+            encodings.append(-32 + Int32(min(max(quality, 0), 9)))
         }
         encodings += [
             Encoding.desktopSize.rawValue,

@@ -9,11 +9,10 @@ import WisqNet
 /// bytes, do not bother compressing" rule. That complexity buys the best ratio of
 /// any lossless RFB encoding.
 ///
-/// JPEG is deliberately absent. A server may only send JPEG rectangles if the
-/// client advertised a quality level, and wisq advertises none — so this decoder
-/// never has to deal with them, and nothing platform-specific creeps into the
-/// protocol layer. Adding JPEG later means advertising a quality level and
-/// decoding through ImageIO on Apple platforms; see docs/ROADMAP.md.
+/// JPEG rides on `JPEGDecoder`: ImageIO on Apple platforms, unavailable
+/// elsewhere. The negotiation only advertises a quality level where a decoder
+/// exists, so on a platform without one a compliant server never sends JPEG —
+/// and if one arrives anyway it fails loudly rather than painting garbage.
 struct TightDecoder {
     let stream: any ByteStream
     let streams: RFBStreams
@@ -52,7 +51,18 @@ struct TightDecoder {
             framebuffer.write(rect: rect, bgra: pixels)
 
         case 0x9:
-            throw WisqError.unsupportedEncoding(RFB.Encoding.tight.rawValue)
+            // Only reachable when we advertised a quality level: a compliant
+            // server never sends JPEG otherwise, and if the decoder is missing
+            // this fails loudly rather than painting garbage.
+            let length = try await readCompactLength()
+            let payload = try await stream.read(exactly: length)
+            let (width, height, bgra) = try JPEGDecoder.decode(payload)
+            guard width == rect.width, height == rect.height else {
+                throw WisqError.malformedMessage(
+                    "JPEG \(width)×\(height) pour un rectangle \(rect.width)×\(rect.height)"
+                )
+            }
+            framebuffer.write(rect: rect, bgra: bgra)
 
         case 0xA...0xF:
             throw WisqError.malformedMessage("octet de contrôle Tight réservé (\(control))")

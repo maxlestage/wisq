@@ -91,15 +91,21 @@ final class TightDecoderTests: XCTestCase {
         }
     }
 
-    /// We never advertise a JPEG quality level, so a compliant server never sends
-    /// JPEG. If one does anyway, fail loudly rather than paint garbage.
-    func testJPEGIsRejectedRatherThanMisdecoded() async throws {
+    /// A JPEG rectangle that cannot be decoded — no decoder on this platform, or
+    /// invalid data — must interrupt the session rather than paint garbage.
+    func testUndecodableJPEGFailsLoudly() async throws {
         let framebuffer = Framebuffer(width: 2, height: 2)
+        // Control 0x90 (JPEG), compact length 2, two bytes of non-JPEG data.
         do {
-            try await decode([0x90], rect: Rect(x: 0, y: 0, width: 2, height: 2), into: framebuffer)
-            XCTFail("le JPEG doit être signalé comme non pris en charge")
+            try await decode([0x90, 0x02, 0xAB, 0xCD], rect: Rect(x: 0, y: 0, width: 2, height: 2), into: framebuffer)
+            XCTFail("un JPEG indécodable doit interrompre la session")
         } catch let error as WisqError {
-            XCTAssertEqual(error, .unsupportedEncoding(RFB.Encoding.tight.rawValue))
+            switch error {
+            case .notImplemented, .malformedMessage:
+                break   // pas de décodeur sur cette plateforme, ou données invalides : les deux sont corrects
+            default:
+                XCTFail("erreur inattendue : \(error)")
+            }
         }
     }
 }

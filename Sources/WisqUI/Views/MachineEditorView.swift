@@ -79,6 +79,22 @@ public struct MachineEditorView: View {
                 }
                 Toggle("Suivre la résolution de l'appareil", isOn: $draft.machine.display.followDeviceResolution)
                 Toggle("Mode bas débit", isOn: $draft.machine.display.lowBandwidth)
+                Toggle("JPEG (avec pertes)", isOn: Binding(
+                    get: { draft.machine.display.jpegQuality != nil },
+                    set: { draft.machine.display.jpegQuality = $0 ? 6 : nil }
+                ))
+                if let quality = draft.machine.display.jpegQuality {
+                    LabeledContent("Qualité JPEG : \(quality)") {
+                        Slider(
+                            value: Binding(
+                                get: { Double(quality) },
+                                set: { draft.machine.display.jpegQuality = Int($0.rounded()) }
+                            ),
+                            in: 0...9,
+                            step: 1
+                        )
+                    }
+                }
                 Toggle("Garder l'écran allumé", isOn: $draft.machine.display.keepScreenAwake)
             }
 

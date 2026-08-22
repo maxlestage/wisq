@@ -115,7 +115,8 @@ public actor VNCSession: RemoteSession {
         try await stream.write(Self.setPixelFormatMessage())
         try await stream.write(Self.setEncodingsMessage(
             lowBandwidth: configuration.display.lowBandwidth,
-            localCursor: configuration.display.localCursor
+            localCursor: configuration.display.localCursor,
+            jpegQuality: configuration.display.jpegQuality
         ))
         try await requestUpdate(incremental: false, width: width, height: height)
 
@@ -304,8 +305,14 @@ public actor VNCSession: RemoteSession {
         return writer.data
     }
 
-    static func setEncodingsMessage(lowBandwidth: Bool, localCursor: Bool = true) -> Data {
-        let encodings = RFB.preferredEncodings(lowBandwidth: lowBandwidth, localCursor: localCursor)
+    static func setEncodingsMessage(
+        lowBandwidth: Bool,
+        localCursor: Bool = true,
+        jpegQuality: Int? = nil
+    ) -> Data {
+        let encodings = RFB.preferredEncodings(
+            lowBandwidth: lowBandwidth, localCursor: localCursor, jpegQuality: jpegQuality
+        )
         var writer = ByteWriter()
         writer.write(RFB.ClientMessage.setEncodings.rawValue)
         writer.pad(1)
