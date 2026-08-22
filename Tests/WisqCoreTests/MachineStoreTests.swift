@@ -45,6 +45,6 @@ final class MachineStoreTests: XCTestCase {
     func testDefaultPortFollowsTheProtocol() {
         XCTAssertEqual(Machine(name: "a", host: "h", proto: .rdp).port, 3389)
         XCTAssertEqual(Machine(name: "a", host: "h", proto: .spice).port, 5930)
-        XCTAssertEqual(Machine(name: "a", host: "h", proto: .vnc, port: 5905).port, 5905)
+        XCTAssertEqual(Machine(name: "a", host: "h", port: 5905, proto: .vnc).port, 5905)
     }
 }
