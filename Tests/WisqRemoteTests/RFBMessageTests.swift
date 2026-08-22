@@ -37,12 +37,18 @@ final class RFBMessageTests: XCTestCase {
         XCTAssertEqual(decoded, .bgra32)
     }
 
+    /// Guard rail: a rectangle in an unknown encoding has no length prefix, so
+    /// advertising one we cannot decode strands the stream with no way back.
+    /// This list must grow every time a decoder does.
     func testAdvertisedEncodingsAreAllDecodable() {
         let decodable: Set<Int32> = [
             RFB.Encoding.raw.rawValue,
             RFB.Encoding.copyRect.rawValue,
             RFB.Encoding.rre.rawValue,
             RFB.Encoding.hextile.rawValue,
+            RFB.Encoding.zlib.rawValue,
+            RFB.Encoding.tight.rawValue,
+            RFB.Encoding.zrle.rawValue,
             RFB.Encoding.desktopSize.rawValue,
             RFB.Encoding.extendedDesktopSize.rawValue,
             RFB.Encoding.desktopName.rawValue,

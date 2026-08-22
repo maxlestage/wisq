@@ -27,15 +27,16 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Transport TCP/TLS (Network.framework) | fait |
 | VNC : handshake, auth VNC (DES), Raw / CopyRect / RRE / Hextile | fait |
 | VNC : redimensionnement de bureau, presse-papiers | fait |
+| VNC : ZRLE, Tight (hors JPEG), zlib — flux persistants | fait |
 | Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
 | Gestes tactiles configurables, inertie, arbitrage | fait |
 | Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
-| VNC : ZRLE / Tight (compression zlib) | à faire |
+| VNC : JPEG dans Tight | à faire |
 | SPICE, RDP | à faire |
 | Agent hôte (démarrage des VM à distance) | protocole défini, client fait, démon à faire |
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni avertissement
-sous Swift 6.1, y compris en concurrence stricte complète, et leurs 46 tests
+sous Swift 6.1, y compris en concurrence stricte complète, et leurs 67 tests
 passent. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -51,15 +52,12 @@ Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est
 retirée du paquet là-bas, précisément pour que ce soit possible :
 
 ```sh
-./scripts/verify.sh          # cœur : compilation stricte + 46 tests
+./scripts/verify.sh          # cœur : compilation stricte + 67 tests
 ./scripts/verify.sh --app    # ajoute la compilation de l'app (macOS + Xcode)
 ```
 
-> **GitHub Actions est bloqué sur ce dépôt.** Chaque job meurt à
-> l'ordonnancement en ~3 secondes sans qu'aucun runner ne lui soit attribué —
-> `ubuntu-latest` comme `macos-latest`, depuis la toute première exécution. Le
-> symptôme est celui d'un blocage de facturation au niveau du compte, pas d'un
-> problème de code. En attendant, `scripts/verify.sh` est la vérification.
+Sur Linux, le paquet a besoin des en-têtes zlib (`zlib1g-dev` ; l'image Docker
+officielle Swift les a déjà).
 
 ## Essayer sans matériel
 

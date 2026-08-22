@@ -109,6 +109,47 @@ d'UTM, en plus court : SPICE veut des scancodes, RFB veut des keysyms.
 Les modificateurs de la barre de touches sont collants — ctrl, puis une lettre,
 et la paire part ensemble — puis relâchés après la frappe suivante.
 
+## La compression
+
+C'est ce qui sépare un client de LAN d'un client utilisable en mobilité. Un
+bureau 1080p en Raw, c'est 8 Mo par image complète.
+
+Trois encodages compressés, tous adossés à zlib :
+
+| Encodage | Ce que c'est |
+|---|---|
+| **zlib** (6) | des pixels Raw passés dans le flux. Le repli minimal. |
+| **ZRLE** (16) | tuiles de 64×64, chacune choisissant entre pixels bruts, couleur unie, palette compactée ou séries. |
+| **Tight** (7) | quatre flux zlib au choix du serveur, trois filtres, et « sous douze octets, ne compresse pas ». Le meilleur ratio sans perte. |
+
+**Les flux zlib vivent aussi longtemps que la session.** C'est le point qui rend
+ces encodages délicats : le dictionnaire se construit d'un rectangle à l'autre,
+et c'est de là que vient le taux de compression. Corollaire désagréable — un
+seul octet mal analysé corrompt toutes les images suivantes, pas seulement
+celle en cours. D'où le soin mis à rejeter explicitement tout sous-encodage
+réservé plutôt que de tenter une interprétation.
+
+Deux pièges de format valent d'être notés, parce qu'ils se ressemblent
+exactement assez pour qu'on les confonde :
+
+- Le **CPIXEL** de ZRLE porte les trois octets de couleur *dans l'ordre du
+  format négocié*. Chez nous, petit-boutiste, cela donne B, G, R.
+- Le **TPIXEL** de Tight est **toujours** R, G, B, quels que soient les
+  décalages négociés.
+
+Les inverser produit une image en fausses couleurs, pas une erreur.
+
+Le **JPEG est délibérément absent** de Tight. Un serveur n'a le droit d'envoyer
+du JPEG que si le client a annoncé un niveau de qualité ; wisq n'en annonce
+aucun. Ce n'est pas un contournement : c'est ce qui garde la couche protocolaire
+libre de tout décodeur d'image spécifique à une plateforme, et donc testable sur
+Linux. L'ajouter voudra dire annoncer un niveau de qualité et décoder via
+ImageIO côté Apple.
+
+Le choix d'ordre des encodages annoncés dépend du débit : sur lien rapide ZRLE
+passe devant Tight, parce que le coût de décodage compte alors plus que les
+derniers pour-cent de ratio.
+
 ## Sécurité
 
 - Les mots de passe vont dans le trousseau

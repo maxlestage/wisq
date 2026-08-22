@@ -33,6 +33,8 @@ public enum RFB {
         case copyRect = 1
         case rre = 2
         case hextile = 5
+        case zlib = 6
+        case tight = 7
         case zrle = 16
         case cursor = -239
         case desktopSize = -223
@@ -41,15 +43,28 @@ public enum RFB {
         case extendedDesktopSize = -308
     }
 
-    /// Encodings this build can decode, most preferred first. Advertising an
-    /// encoding we cannot decode would strand the stream mid-rectangle.
+    /// Encodings this build can decode, most preferred first.
+    ///
+    /// Order matters: servers honour it. The compressed encodings come first
+    /// because a 1080p desktop in Raw is 8 MB per full frame, which is fine on a
+    /// LAN and hopeless on a cellular link. CopyRect stays near the top regardless
+    /// — moving a window costs four bytes with it, whatever the codec.
+    ///
+    /// Nothing is advertised that this build cannot decode: a rectangle in an
+    /// unknown encoding has no length prefix, so it would strand the stream with
+    /// no way to resynchronise.
     public static func preferredEncodings(lowBandwidth: Bool) -> [Int32] {
-        var encodings: [Int32] = []
+        var encodings: [Int32] = [Encoding.copyRect.rawValue]
         if lowBandwidth {
-            encodings += [Encoding.hextile.rawValue, Encoding.rre.rawValue, Encoding.copyRect.rawValue, Encoding.raw.rawValue]
+            encodings += [Encoding.tight.rawValue, Encoding.zrle.rawValue, Encoding.zlib.rawValue,
+                          Encoding.hextile.rawValue, Encoding.rre.rawValue]
         } else {
-            encodings += [Encoding.copyRect.rawValue, Encoding.hextile.rawValue, Encoding.rre.rawValue, Encoding.raw.rawValue]
+            // On a fast link, decode cost matters more than the last few percent
+            // of ratio, and ZRLE is markedly cheaper to decode than Tight.
+            encodings += [Encoding.zrle.rawValue, Encoding.tight.rawValue, Encoding.hextile.rawValue,
+                          Encoding.zlib.rawValue, Encoding.rre.rawValue]
         }
+        encodings += [Encoding.raw.rawValue]
         encodings += [
             Encoding.desktopSize.rawValue,
             Encoding.extendedDesktopSize.rawValue,
