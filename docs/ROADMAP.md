@@ -41,6 +41,14 @@ transforme wisq d'« un client VNC de plus » en « mes VM, depuis mon télépho
 on ouvre l'application, on tape une VM éteinte, elle démarre, la console
 s'affiche.
 
+À trancher au moment de l'écrire : notre protocole interroge l'agent en boucle
+pendant un démarrage, là où UTM Remote garde une connexion permanente et pousse
+les changements d'état (`virtualMachineDidTransition`). Le push donne un état
+instantané ; l'interrogation survit mieux à un téléphone qui change de réseau
+toutes les dix minutes. Le bon compromis est sans doute le push avec repli sur
+l'interrogation à la reconnexion — mais cela se décide avec le démon sous les
+yeux, pas avant.
+
 ## Lot 5 — SPICE
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
@@ -49,10 +57,19 @@ défaut de QEMU/libvirt, donc de l'écrasante majorité des VM que l'agent gére
 
 ## Lot 6 — finition
 
-- iPad et clavier matériel : `onKeyPress`, curseur système, multi-fenêtres.
+- iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
 - Raccourcis Siri et widgets « se connecter à … ».
 - Import depuis les fichiers `.vv` (SPICE) et `.rdp`.
 - Partage de fichiers via un dossier monté côté agent.
+
+## Ce qu'on doit à UTM
+
+Leur client iOS a dix ans d'avance sur le toucher, et il est sous Apache 2.0.
+Rien n'a été copié — tout est réécrit en Swift — mais quatre idées viennent de
+là : l'inertie confiée à `UIDynamicItem` plutôt qu'à une boucle maison, le délai
+de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs de
+gestes, et le principe même de rendre l'affectation des gestes configurable
+plutôt que de figer un jeu.
 
 ## Contraintes à garder en tête
 

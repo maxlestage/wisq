@@ -24,19 +24,25 @@ public struct SessionView: View {
             Color.black.ignoresSafeArea()
 
             if model.status.isLive {
-                RemoteDisplayView(model: model)
-                    .ignoresSafeArea()
-                    .onTapGesture(count: 2) {
-                        withAnimation(.snappy) { showChrome.toggle() }
-                    }
+                RemoteDisplayView(model: model) { wantsKeyboard in
+                    keyboardVisible = wantsKeyboard
+                }
+                .ignoresSafeArea()
+                .onTapGesture(count: 2) {
+                    withAnimation(.snappy) { showChrome.toggle() }
+                }
             } else {
                 StatusOverlay(model: model, onRetry: connect, onClose: close)
             }
 
+            // Always mounted: it carries the hardware keyboard too, not just the
+            // on-screen one.
             KeyboardCaptureView(
-                isActive: keyboardVisible,
+                showsSoftwareKeyboard: keyboardVisible,
                 onText: { model.type($0) },
-                onBackspace: { model.press(Keysym.backspace) }
+                onBackspace: { model.press(Keysym.backspace) },
+                onKey: { keysym, down in model.setKey(keysym, down: down) },
+                commandIsSuper: model.machine.input.mapCommandToSuper
             )
             .frame(width: 0, height: 0)
 

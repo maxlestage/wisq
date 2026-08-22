@@ -28,7 +28,8 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | VNC : handshake, auth VNC (DES), Raw / CopyRect / RRE / Hextile | fait |
 | VNC : redimensionnement de bureau, presse-papiers | fait |
 | Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
-| Gestes tactiles (trackpad + tactile direct, molette, zoom) | fait |
+| Gestes tactiles configurables, inertie, arbitrage | fait |
+| Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
 | VNC : ZRLE / Tight (compression zlib) | à faire |
 | SPICE, RDP | à faire |
 | Agent hôte (démarrage des VM à distance) | protocole défini, client fait, démon à faire |

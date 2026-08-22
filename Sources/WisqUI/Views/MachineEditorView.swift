@@ -92,8 +92,21 @@ public struct MachineEditorView: View {
                     }
                 }
                 Toggle("Défilement naturel", isOn: $draft.machine.input.naturalScrolling)
-                Toggle("Clic droit par appui long", isOn: $draft.machine.input.longPressRightClick)
+                Toggle("Inertie", isOn: $draft.machine.input.inertia)
                 Toggle("Retour haptique", isOn: $draft.machine.input.hapticFeedback)
+                Toggle("⌘ vers la touche Super", isOn: $draft.machine.input.mapCommandToSuper)
+            }
+
+            Section {
+                gesturePicker("Appui long", selection: $draft.machine.input.longPressAction)
+                gesturePicker("Tape à deux doigts", selection: $draft.machine.input.twoFingerTapAction)
+                gesturePicker("Glissé à deux doigts", selection: $draft.machine.input.twoFingerPanAction)
+                gesturePicker("Glissé à trois doigts", selection: $draft.machine.input.threeFingerPanAction)
+                Toggle("Balayage à trois doigts = clavier", isOn: $draft.machine.input.threeFingerSwipeShowsKeyboard)
+            } header: {
+                Text("Gestes")
+            } footer: {
+                Text("Un doigt pilote toujours le pointeur. Ce que font deux et trois doigts dépend de votre bureau : déplacer la vue n'a de sens que si l'écran distant ne tient pas sur celui du téléphone.")
             }
 
             if let validationError {
@@ -113,6 +126,12 @@ public struct MachineEditorView: View {
                 Button("Enregistrer", action: save)
                     .disabled(draft.address.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+        }
+    }
+
+    private func gesturePicker(_ title: String, selection: Binding<GestureAction>) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(GestureAction.allCases, id: \.self) { Text($0.displayName).tag($0) }
         }
     }
 
