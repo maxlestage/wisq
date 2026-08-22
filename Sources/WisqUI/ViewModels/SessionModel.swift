@@ -14,6 +14,7 @@ public final class SessionModel {
         case connecting
         case authenticating
         case connected
+        case reconnecting(attempt: Int)
         case failed(String)
         case closed
 
@@ -25,6 +26,7 @@ public final class SessionModel {
             case .connecting: return "Connexion…"
             case .authenticating: return "Authentification…"
             case .connected: return "Connecté"
+            case .reconnecting(let attempt): return "Reconnexion (tentative \(attempt))…"
             case .failed(let message): return message
             case .closed: return "Déconnecté"
             }
@@ -112,6 +114,8 @@ public final class SessionModel {
             clipboardFromGuest = text
         case .bell:
             break
+        case .reconnecting(let attempt):
+            status = .reconnecting(attempt: attempt)
         case .disconnected(let error):
             status = error.map { .failed($0.localizedDescription) } ?? .closed
             session = nil

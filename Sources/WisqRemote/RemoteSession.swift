@@ -12,6 +12,9 @@ public enum SessionEvent: Sendable {
     case resized(width: Int, height: Int)
     case clipboard(String)
     case bell
+    /// The connection dropped and is being rebuilt. Purely informational for the
+    /// UI; input sent meanwhile is silently dropped.
+    case reconnecting(attempt: Int)
     /// Terminal. `error` is nil when the user hung up.
     case disconnected(WisqError?)
 }
@@ -78,7 +81,13 @@ public enum SessionFactory {
 
         switch machine.proto {
         case .vnc:
-            return VNCSession(configuration: configuration)
+            // Reconnection lives outside the protocol backend: the wrapper owns
+            // the framebuffer, each attempt gets a fresh session — and with it
+            // fresh zlib streams, since an inherited dictionary decodes to
+            // garbage.
+            return ReconnectingSession { framebuffer in
+                VNCSession(configuration: configuration, framebuffer: framebuffer)
+            }
         case .spice:
             throw WisqError.unsupportedProtocol(.spice)
         case .rdp:
