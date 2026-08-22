@@ -12,12 +12,28 @@ public final class MachineDraft: Identifiable {
     /// Free-form `host` or `host:port` field; the port is split out on save.
     public var address: String
 
+    // Agent binding, unpacked into editable fields.
+    public var agentEnabled: Bool
+    public var agentAddress: String
+    public var agentVMID: String
+    public var agentAutoStart: Bool
+    public var agentToken: String
+
     public init(machine: Machine? = nil) {
         let base = machine ?? Machine(name: "", host: "")
         self.machine = base
         self.password = ""
         self.isNew = machine == nil
         self.address = base.host.isEmpty ? "" : "\(base.host):\(base.port)"
+        self.agentEnabled = base.agent != nil
+        if let agent = base.agent, let host = agent.baseURL.host {
+            self.agentAddress = agent.baseURL.port.map { "\(host):\($0)" } ?? host
+        } else {
+            self.agentAddress = ""
+        }
+        self.agentVMID = base.agent?.vmIdentifier ?? ""
+        self.agentAutoStart = base.agent?.autoStart ?? true
+        self.agentToken = ""
     }
 }
 
@@ -70,6 +86,27 @@ public struct MachineEditorView: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.orange)
+                }
+            }
+
+            Section {
+                Toggle("Démarrer via un agent", isOn: $draft.agentEnabled)
+                if draft.agentEnabled {
+                    TextField("Adresse de l'agent (hôte ou hôte:port)", text: $draft.agentAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("Identifiant de la VM", text: $draft.agentVMID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("Jeton (laisser vide pour conserver)", text: $draft.agentToken)
+                    Toggle("Démarrer la VM à la connexion", isOn: $draft.agentAutoStart)
+                }
+            } header: {
+                Text("Agent hôte")
+            } footer: {
+                if draft.agentEnabled {
+                    Text("À la connexion, wisq demande à l'agent de démarrer la VM si nécessaire, attend sa console, puis s'y connecte — l'adresse et le port ci-dessus sont alors résolus automatiquement.")
                 }
             }
 
@@ -159,6 +196,31 @@ public struct MachineEditorView: View {
             machine.port = try Validation.validatedPort(port ?? machine.proto.defaultPort)
             if machine.name.trimmingCharacters(in: .whitespaces).isEmpty {
                 machine.name = machine.host
+            }
+            if draft.agentEnabled {
+                let (agentHost, agentPort) = Validation.splitHostPort(draft.agentAddress)
+                let normalizedAgentHost = try Validation.normalizedHost(agentHost)
+                let resolvedPort = try Validation.validatedPort(agentPort ?? 7442)
+                guard let baseURL = URL(string: "http://\(normalizedAgentHost):\(resolvedPort)") else {
+                    throw WisqError.invalidHost(draft.agentAddress)
+                }
+                guard !draft.agentVMID.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    throw WisqError.agentFailure("l'identifiant de la VM est requis")
+                }
+                // One token per agent host, shared by all its VMs. Only written
+                // when the field was actually filled in.
+                let tokenRef = "agent.\(normalizedAgentHost):\(resolvedPort)"
+                if !draft.agentToken.isEmpty {
+                    try library.credentialStore.setSecret(draft.agentToken, for: tokenRef)
+                }
+                machine.agent = AgentBinding(
+                    baseURL: baseURL,
+                    vmIdentifier: draft.agentVMID,
+                    autoStart: draft.agentAutoStart,
+                    credentialRef: tokenRef
+                )
+            } else {
+                machine.agent = nil
             }
             // Only write the secret when the field was actually edited, so opening
             // an existing machine and saving does not wipe its stored password.

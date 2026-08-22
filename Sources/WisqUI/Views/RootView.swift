@@ -7,6 +7,7 @@ public struct RootView: View {
     @State private var library = MachineLibraryModel.makeDefault()
     @State private var editing: MachineDraft?
     @State private var connecting: Machine?
+    @State private var importingFromAgent = false
 
     public init() {}
 
@@ -16,8 +17,14 @@ public struct RootView: View {
                 library: library,
                 onConnect: { connecting = $0 },
                 onEdit: { editing = MachineDraft(machine: $0) },
-                onNew: { editing = MachineDraft() }
+                onNew: { editing = MachineDraft() },
+                onImportFromAgent: { importingFromAgent = true }
             )
+        }
+        .sheet(isPresented: $importingFromAgent) {
+            NavigationStack {
+                AgentImportView(library: library) { importingFromAgent = false }
+            }
         }
         .sheet(item: $editing) { draft in
             NavigationStack {

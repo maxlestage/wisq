@@ -134,7 +134,7 @@ struct StatusOverlay: View {
     var body: some View {
         VStack(spacing: 18) {
             switch model.status {
-            case .connecting, .authenticating, .idle, .reconnecting:
+            case .connecting, .authenticating, .idle, .reconnecting, .startingVM:
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)

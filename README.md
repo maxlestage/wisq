@@ -35,10 +35,11 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
 | SPICE, RDP | à faire |
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
+| App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
 avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
-leurs 89 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
+leurs 93 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

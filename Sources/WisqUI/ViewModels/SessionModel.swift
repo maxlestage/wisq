@@ -11,6 +11,7 @@ import WisqRemote
 public final class SessionModel {
     public enum Status: Equatable {
         case idle
+        case startingVM
         case connecting
         case authenticating
         case connected
@@ -23,6 +24,7 @@ public final class SessionModel {
         public var label: String {
             switch self {
             case .idle: return "Prêt"
+            case .startingVM: return "Démarrage de la machine virtuelle…"
             case .connecting: return "Connexion…"
             case .authenticating: return "Authentification…"
             case .connected: return "Connecté"
@@ -48,6 +50,7 @@ public final class SessionModel {
 
     private var eventTask: Task<Void, Never>?
     private var inputChain: Task<Void, Never>?
+    private var prepareTask: Task<Void, Never>?
     /// Modifier keys held down by the on-screen key bar, released after the next keypress.
     private var stickyModifiers: Set<UInt32> = []
     /// Virtual cursor for trackpad mode, in framebuffer coordinates.
@@ -61,21 +64,34 @@ public final class SessionModel {
     public var framebuffer: Framebuffer? { session?.framebuffer }
 
     public func connect(credentials: CredentialStore) {
-        guard session == nil else { return }
-        status = .connecting
-        do {
-            let session = try SessionFactory.makeSession(machine: machine, credentials: credentials)
-            self.session = session
-            observe(session)
-            Task { await session.start() }
-        } catch let error as WisqError {
-            status = .failed(error.localizedDescription)
-        } catch {
-            status = .failed(error.localizedDescription)
+        guard session == nil, prepareTask == nil else { return }
+        status = machine.agent != nil ? .startingVM : .connecting
+
+        // Resolving may boot the VM through the host agent, so it runs before —
+        // and apart from — the connection itself.
+        prepareTask = Task { [machine] in
+            defer { prepareTask = nil }
+            do {
+                let resolved = try await ConsoleResolver.resolve(machine, credentials: credentials)
+                guard !Task.isCancelled else { return }
+                status = .connecting
+                let session = try SessionFactory.makeSession(machine: resolved, credentials: credentials)
+                self.session = session
+                observe(session)
+                await session.start()
+            } catch is CancellationError {
+                status = .closed
+            } catch let error as WisqError {
+                status = .failed(error.localizedDescription)
+            } catch {
+                status = .failed(error.localizedDescription)
+            }
         }
     }
 
     public func disconnect() {
+        prepareTask?.cancel()
+        prepareTask = nil
         eventTask?.cancel()
         eventTask = nil
         inputChain?.cancel()
