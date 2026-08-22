@@ -10,11 +10,17 @@ import XCTest
 /// path and skips, loudly, when absent. CI downloads it in a dedicated step.
 final class LinuxBootTests: XCTestCase {
     private static func imageURL() -> URL? {
-        if let path = ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"] {
+        // The environment names where CI *tried* to put the image; when the
+        // download failed the file is simply absent, and that must be a skip,
+        // not a failure blaming the emulator.
+        let candidates = [
+            ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"],
+            "/tmp/wisq-test-linux-image/Image",
+        ]
+        for case let path? in candidates where FileManager.default.fileExists(atPath: path) {
             return URL(fileURLWithPath: path)
         }
-        let fallback = URL(fileURLWithPath: "/tmp/wisq-test-linux-image/Image")
-        return FileManager.default.fileExists(atPath: fallback.path) ? fallback : nil
+        return nil
     }
 
     func testBootsARealKernelToItsBanner() throws {
