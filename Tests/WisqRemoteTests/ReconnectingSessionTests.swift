@@ -69,8 +69,7 @@ final class ReconnectingSessionTests: XCTestCase {
         let attempts = Attempts()
         let session = ReconnectingSession(policy: Self.fastPolicy) { framebuffer in
             _ = attempts.next()
-            var script = Data("RFB 003.008\n".utf8)
-            script.append(contentsOf: [1, RFB.SecurityType.vncAuth.rawValue])
+            let script = Data("RFB 003.008\n".utf8) + Data([1, RFB.SecurityType.vncAuth.rawValue])
             return VNCSession(
                 configuration: SessionConfiguration(host: "10.0.0.5", port: 5900),
                 framebuffer: framebuffer,
