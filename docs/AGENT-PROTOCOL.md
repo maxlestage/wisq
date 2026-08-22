@@ -9,15 +9,22 @@ Sans agent, wisq fonctionne — il faut simplement que la VM soit déjà démarr
 
 ## Transport
 
-HTTP/1.1 sur TLS, port 7442 par défaut. Toutes les routes sont préfixées par
-`/v1`. Authentification par jeton porteur :
+HTTP/1.1, port 7442 par défaut. Toutes les routes sont préfixées par `/v1`.
+Authentification par jeton porteur :
 
 ```
 Authorization: Bearer <jeton>
 ```
 
-Le jeton est généré par l'agent à l'installation et transmis au téléphone par
-QR code. Il n'y a pas de compte, pas de mot de passe : un jeton, révocable.
+Le jeton est généré au premier lancement, conservé dans `~/.wisq-agent/token`
+(mode 600), et destiné à être transmis au téléphone par QR code. Il n'y a pas
+de compte, pas de mot de passe : un jeton, révocable en supprimant le fichier.
+
+La v1 parle en clair : le TLS auto-hébergé sans dépendance est un chantier à
+part entière, et le jeton reste obligatoire. À réserver au réseau local ou à un
+tunnel existant (WireGuard, Tailscale) — la même consigne que pour le VNC non
+chiffré. Le TLS avec épinglage est prévu ; `TransportSecurity.tlsPinned` existe
+déjà côté client.
 
 ## Routes
 
@@ -78,6 +85,21 @@ utilisé pour repérer les serveurs VNC déjà présents.
 
 ## Implémentation
 
-Le client (`AgentClient`) est écrit. Le démon ne l'est pas encore — voir
-`docs/ROADMAP.md`, lot 4. L'intention est un binaire Swift unique s'appuyant sur
-libvirt quand il est présent, et sur un lancement QEMU direct sinon.
+Les deux côtés sont écrits et testés l'un contre l'autre : les tests
+bout-à-bout démarrent un vrai serveur sur un port éphémère et l'interrogent
+avec le même `AgentClient` que l'application embarque.
+
+Le démon (`wisq-agent`, module `WisqAgentKit`) tient en trois pièces :
+
+- un serveur HTTP/1.1 minimal sur sockets POSIX — zéro dépendance, un agent de
+  réseau local n'a pas besoin de SwiftNIO ;
+- `AgentService`, le routage du protocole ci-dessus ;
+- deux backends : `VirshBackend` pilote libvirt via la CLI `virsh` (pas de
+  liaison C, dégradation propre si libvirt est absent), et `DemoBackend` sert
+  deux VM factices avec de vraies transitions d'état — `wisq-agent --demo`
+  donne au téléphone quelque chose d'honnête à interroger sans hyperviseur.
+
+```sh
+swift run wisq-agent --demo        # essai sans libvirt
+swift run wisq-agent               # libvirt via virsh, port 7442
+```

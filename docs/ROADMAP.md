@@ -5,27 +5,12 @@
 Modules, modèle, persistance, trousseau, transport, client VNC RFB 3.8, interface
 SwiftUI, gestes tactiles, tests unitaires.
 
-## Lot 2 — VNC utilisable en mobilité (fait, sauf JPEG)
+## Lot 2 — VNC utilisable en mobilité (fait)
 
-ZRLE, Tight et zlib sont implémentés, adossés à des flux zlib persistants pour
-toute la session. Voir `docs/ARCHITECTURE.md`, section « La compression ».
-
-Ce qui reste dans ce lot :
-
-- **JPEG dans Tight.** Absent volontairement : un serveur n'envoie du JPEG que
-  si le client annonce un niveau de qualité, et nous n'en annonçons aucun. Cela
-  garde la couche protocolaire testable sur Linux. Sur un lien cellulaire c'est
-  pourtant exactement ce qu'on veut — l'ajouter demande d'annoncer une qualité
-  et de décoder via ImageIO côté Apple, derrière une interface que Linux laisse
-  vide.
-- **Mises à jour continues** (`EnableContinuousUpdates`) pour cesser de demander
-  chaque image.
-- **Curseur distant** (pseudo-encodage `Cursor`, -239) pour dessiner le vrai
-  curseur de l'invité au lieu du rond blanc.
-- **Reconnexion automatique** quand le téléphone change de réseau : c'est le
-  défaut le plus visible de tous les clients VNC iOS existants. Attention, la
-  reconnexion doit repartir de flux zlib neufs — un dictionnaire hérité de la
-  session précédente décode en bouillie.
+ZRLE, Tight (JPEG compris, verrouillé sur la présence d'un décodeur), zlib,
+flux persistants, mises à jour continues, curseur distant, reconnexion
+automatique avec repli exponentiel — le tout testé, reconnexion comprise,
+contre des serveurs scriptés. Voir `docs/ARCHITECTURE.md`.
 
 ## Lot 3 — RDP
 
@@ -38,21 +23,17 @@ FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière
   problème de licence qui contraint les concurrents fondés sur QEMU.
 - NLA/CredSSP d'abord — sans lui, aucun Windows moderne n'accepte la connexion.
 
-## Lot 4 — agent hôte
+## Lot 4 — agent hôte (fait en v1)
 
-Le démon décrit dans `docs/AGENT-PROTOCOL.md` : un binaire Swift, libvirt quand
-il est disponible, QEMU direct sinon. Appairage par QR code. C'est ce qui
-transforme wisq d'« un client VNC de plus » en « mes VM, depuis mon téléphone » :
-on ouvre l'application, on tape une VM éteinte, elle démarre, la console
-s'affiche.
+Démon écrit et testé bout-à-bout contre le client de l'application : serveur
+HTTP POSIX sans dépendance, backend libvirt via `virsh`, backend démo pour
+essayer sans hyperviseur. Voir `docs/AGENT-PROTOCOL.md`.
 
-À trancher au moment de l'écrire : notre protocole interroge l'agent en boucle
-pendant un démarrage, là où UTM Remote garde une connexion permanente et pousse
-les changements d'état (`virtualMachineDidTransition`). Le push donne un état
-instantané ; l'interrogation survit mieux à un téléphone qui change de réseau
-toutes les dix minutes. Le bon compromis est sans doute le push avec repli sur
-l'interrogation à la reconnexion — mais cela se décide avec le démon sous les
-yeux, pas avant.
+Reste dans ce lot : le TLS de l'agent (v1 en clair + jeton, réseau de confiance
+ou tunnel), l'appairage par QR code côté application, et la découverte Bonjour.
+La question push contre interrogation est tranchée pour l'instant du côté de
+l'interrogation — elle survit aux changements de réseau du téléphone, et le
+démon reste sans état par connexion.
 
 ## Lot 5 — SPICE
 

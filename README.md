@@ -27,17 +27,19 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Transport TCP/TLS (Network.framework) | fait |
 | VNC : handshake, auth VNC (DES), Raw / CopyRect / RRE / Hextile | fait |
 | VNC : redimensionnement de bureau, presse-papiers | fait |
-| VNC : ZRLE, Tight (hors JPEG), zlib — flux persistants | fait |
+| VNC : ZRLE, Tight (JPEG compris), zlib — flux persistants | fait |
+| VNC : mises à jour continues, curseur distant | fait |
+| Reconnexion automatique (repli exponentiel, jamais sur erreur d'auth) | fait |
 | Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
 | Gestes tactiles configurables, inertie, arbitrage | fait |
 | Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
-| VNC : JPEG dans Tight | à faire |
 | SPICE, RDP | à faire |
-| Agent hôte (démarrage des VM à distance) | protocole défini, client fait, démon à faire |
+| Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 
-`WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni avertissement
-sous Swift 6.1, y compris en concurrence stricte complète, et leurs 67 tests
-passent. La couche `WisqUI` et la cible application demandent UIKit : elles ne
+`WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
+avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
+leurs 89 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
+le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
 ## Construire
@@ -52,7 +54,7 @@ Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est
 retirée du paquet là-bas, précisément pour que ce soit possible :
 
 ```sh
-./scripts/verify.sh          # cœur : compilation stricte + 67 tests
+./scripts/verify.sh          # cœur : compilation stricte + tests
 ./scripts/verify.sh --app    # ajoute la compilation de l'app (macOS + Xcode)
 ```
 
@@ -73,6 +75,12 @@ x11vnc -display :0 -rfbport 5900 -passwd secret
 
 Puis dans wisq : **+**, adresse `hôte:5901`, mot de passe, connexion.
 
+Et pour essayer l'agent sans hyperviseur :
+
+```sh
+swift run wisq-agent --demo
+```
+
 ## Structure
 
 ```
@@ -80,6 +88,8 @@ Sources/WisqCore     modèle de domaine, persistance, trousseau (Foundation seul
 Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les tests
 Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SPICE/RDP
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
+Sources/WisqAgentKit démon hôte : serveur HTTP POSIX, backends virsh et démo
+Sources/wisq-agent   exécutable du démon
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route
 ```
