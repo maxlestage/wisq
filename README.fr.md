@@ -68,7 +68,7 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
 | Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
 
-`WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
+`WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
 leurs 128 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
@@ -132,7 +132,7 @@ Puis dans wisq : **+**, adresse `hôte:5901`, mot de passe, connexion.
 Et pour essayer l'agent sans hyperviseur :
 
 ```sh
-swift run wisq-agent --demo
+cargo run -p wisq-agent -- --demo
 ```
 
 ## Structure
@@ -143,12 +143,20 @@ Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les 
 Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SPICE/RDP
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
-Sources/WisqAgentKit démon hôte : serveur HTTP POSIX, backends virsh et démo
+crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo
+crates/wisq-vm       interpréteur rv32ima (Rust) avec une ABI C pour l'application
 site/                page de présentation : React 19 sur Bun, pré-rendue
-Sources/wisq-agent   exécutable du démon
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route
 ```
+
+Deux langages, répartis selon ce que chaque partie est réellement. Swift
+tient l'application, l'interface et le client de bureau distant — du travail
+de forme Apple, sur Network.framework. Rust tient ce qui n'est ni l'un ni
+l'autre : un démon sans interface, et un interpréteur qui n'est que du calcul
+sur un tableau d'octets. Ni l'un ni l'autre n'a de raison d'embarquer un
+runtime de langage, et le téléchargement du démon est passé de 58 Mo à moins
+de 600 Ko en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
 la suite.

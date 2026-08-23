@@ -10,3 +10,6 @@ xcuserdata/
 # site
 site/dist/
 site/node_modules/
+
+# Rust build output
+/target/

@@ -10,20 +10,15 @@
 class WisqAgent < Formula
   desc "Host daemon that lets wisq on iPhone power VMs on and connect to them"
   homepage "https://github.com/maxlestage/wisq"
-  url "https://github.com/maxlestage/wisq.git", tag: "v0.2.0"
+  url "https://github.com/maxlestage/wisq.git", tag: "v0.3.0"
   license "Apache-2.0"
   head "https://github.com/maxlestage/wisq.git", branch: "master"
 
-  depends_on xcode: ["15.0", :build] if OS.mac?
-  on_linux do
-    depends_on "swift" => :build
-  end
+  # The daemon is Rust with no dependencies, so this is the whole build.
+  depends_on "rust" => :build
 
   def install
-    # --disable-sandbox: SwiftPM's own sandbox cannot nest inside Homebrew's.
-    system "swift", "build", "-c", "release", "--product", "wisq-agent",
-           "--disable-sandbox"
-    bin.install ".build/release/wisq-agent"
+    system "cargo", "install", *std_cargo_args(path: "crates/wisq-agent")
   end
 
   service do
