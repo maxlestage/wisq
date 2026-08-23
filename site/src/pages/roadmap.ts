@@ -10,15 +10,16 @@ export const roadmapEn: Doc = {
         "Nothing here has a date. The order reflects what would make wisq better for someone using it today, not what is most interesting to build.",
     },
 
+    {
+      kind: "note",
+      tone: "info",
+      text: "TLS for the agent shipped: the daemon signs its own certificate and the pairing link pins it. What follows is what remains.",
+    },
+
     { kind: "h2", text: "Next" },
     {
       kind: "dl",
       items: [
-        {
-          term: "TLS for the agent, with pinning",
-          detail:
-            "The one deliberate weakness in version 1. The client already carries the setting; what is missing is a certificate story that does not require the person installing a daemon on a NAS to also run a certificate authority.",
-        },
         {
           term: "The Rust interpreter inside the app",
           detail:
@@ -100,15 +101,16 @@ export const roadmapFr: Doc = {
         "Rien ici n'a de date. L'ordre reflète ce qui améliorerait wisq pour quelqu'un qui s'en sert aujourd'hui, pas ce qui serait le plus intéressant à construire.",
     },
 
+    {
+      kind: "note",
+      tone: "info",
+      text: "Le TLS de l'agent est livré : le démon signe son propre certificat et le lien d'appairage l'épingle. Ce qui suit est ce qui reste.",
+    },
+
     { kind: "h2", text: "Ensuite" },
     {
       kind: "dl",
       items: [
-        {
-          term: "TLS pour l'agent, avec épinglage",
-          detail:
-            "La seule faiblesse assumée de la version 1. Le client en porte déjà le réglage ; ce qui manque est une histoire de certificats qui n'oblige pas la personne installant un démon sur un NAS à exploiter aussi une autorité de certification.",
-        },
         {
           term: "L'interpréteur Rust dans l'application",
           detail:

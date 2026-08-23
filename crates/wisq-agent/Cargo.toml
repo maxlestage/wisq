@@ -8,11 +8,21 @@ license = "Apache-2.0"
 description = "Host daemon that lets wisq on iPhone power VMs on and find their consoles"
 repository = "https://github.com/maxlestage/wisq"
 
-# No dependencies. This is a daemon people install on a NAS or a laptop with a
-# one-line curl; every crate in it is something they have to trust, and the
-# protocol is small enough that a hand-written HTTP/1.1 server and JSON writer
-# are less code than the glue a framework would need.
+# The dependency budget is spent on exactly one thing: cryptography. This is a
+# daemon people install on a NAS with a one-line curl; every crate in it is
+# something they have to trust, so the HTTP/1.1 server and the JSON writer stay
+# hand-written — less code than a framework's glue. TLS is the opposite case:
+# the one thing you must never hand-write is crypto, so it comes from the
+# rustls project (rustls and rcgen both), on the ring provider, and nothing
+# else gets in.
 [dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+ring = "0.17"
+
+[dev-dependencies]
+# The tests connect as a client that pins the certificate, which is exactly
+# what the app does; webpki-roots is deliberately absent — there is no CA.
 
 [[bin]]
 name = "wisq-agent"

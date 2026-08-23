@@ -9,6 +9,34 @@ final class AgentPairingTests: XCTestCase {
     }
 
     /// Tokens are random bytes; the URL layer must carry whatever they contain.
+    func testFingerprintRoundTripsThroughTheLink() throws {
+        let fingerprint = Data((0..<32).map { UInt8($0) })
+        let payload = AgentPairing.Payload(
+            host: "nas.local",
+            token: "t",
+            certificateFingerprint: fingerprint
+        )
+        let url = try XCTUnwrap(AgentPairing.url(for: payload))
+        XCTAssertTrue(url.absoluteString.contains("fp=000102"), url.absoluteString)
+        XCTAssertEqual(try AgentPairing.parse(url).certificateFingerprint, fingerprint)
+    }
+
+    func testLinkWithoutFingerprintStaysPlain() throws {
+        let url = try XCTUnwrap(URL(string: "wisq://agent?host=nas&port=7442&token=t"))
+        XCTAssertNil(try AgentPairing.parse(url).certificateFingerprint)
+    }
+
+    /// Dropping a bad fingerprint instead of failing would downgrade the
+    /// connection to plain HTTP — the exact outcome an attacker mangling the
+    /// link would be after.
+    func testAMalformedFingerprintIsAnErrorNotADowngrade() {
+        for bad in ["fp=abc", "fp=", "fp=zz" + String(repeating: "ab", count: 31),
+                    "fp=" + String(repeating: "ab", count: 33)] {
+            let url = URL(string: "wisq://agent?host=nas&\(bad)")!
+            XCTAssertThrowsError(try AgentPairing.parse(url), bad)
+        }
+    }
+
     func testTokenSurvivesURLHostileCharacters() throws {
         let payload = AgentPairing.Payload(host: "10.0.0.5", token: "a&b=c d/é+?#")
         let url = try XCTUnwrap(AgentPairing.url(for: payload))
