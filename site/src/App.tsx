@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
   copy as allCopy,
   CHANGELOG,
@@ -13,64 +13,54 @@ import { Install } from "./components/Install";
 import { DocPage } from "./components/Doc";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Logo } from "./components/Logo";
+import { ThemeSwitch } from "./components/ThemeSwitch";
 import { PAGES, type DocRouteId } from "./pages";
-import { ROUTES, routeById, routeHref, type Route, type RouteId } from "./routes";
+import { LANGS, ROUTES, routeById, routeHref, type Page, type RouteId } from "./routes";
 
 const LANG_KEY = "wisq.lang";
 
-/// Pages are separate documents with real addresses, so the language choice has
-/// to outlive a navigation. It lives in local storage rather than in the URL:
-/// a link someone shares should open in the reader's language, not the
-/// sender's.
-function storedLang(): Lang | null {
-  try {
-    const value = localStorage.getItem(LANG_KEY);
-    return value === "en" || value === "fr" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function rememberLang(lang: Lang) {
+/// The language is the address, not a setting.
+///
+/// Every page exists twice — `docs/` and `fr/docs/` — each pre-rendered in its
+/// own language, so the first paint is already right, a shared link opens in
+/// the language it was written in, and a search engine can index both. The one
+/// thing local storage still holds is whether the reader has ever chosen, and
+/// it is used for exactly one decision: see `useHomeLanguage` below.
+function rememberChoice(lang: Lang) {
   try {
     localStorage.setItem(LANG_KEY, lang);
   } catch {
-    /* the choice simply does not survive the navigation */
+    /* the redirect below simply keeps offering; nothing else depends on it */
   }
+}
+
+/// Sends a French-speaking reader from the English home page to the French one.
+///
+/// Only from the home page, and only when they have never chosen: a redirect
+/// on every page would break a deep link someone deliberately shared in
+/// English, which is worse than a reader clicking FR once.
+function useHomeLanguage(page: Page) {
+  useEffect(() => {
+    if (page.route.id !== "home" || page.lang !== "en") return;
+    try {
+      if (localStorage.getItem(LANG_KEY)) return;
+    } catch {
+      /* no storage: fall through and read the browser instead */
+    }
+    if (!navigator.language?.toLowerCase().startsWith("fr")) return;
+    location.replace(new URL("./fr/", location.href).href);
+  }, [page.route.id, page.lang]);
 }
 
 export function App({
   route: routeId = "home",
-  lang: forcedLang,
+  lang = "en",
 }: { route?: RouteId; lang?: Lang } = {}) {
-  const route = routeById(routeId);
-
-  // The page is pre-rendered in English at build time, so the first client
-  // render must be English too or hydration mismatches. A French reader is
-  // switched over in the effect below, one frame later.
-  const [lang, setLang] = useState<Lang>(forcedLang ?? "en");
-  const [touched, setTouched] = useState(forcedLang !== undefined);
+  const page: Page = { route: routeById(routeId), lang };
+  const route = page.route;
   const copy = allCopy[lang];
 
-  useEffect(() => {
-    if (touched) return;
-    const stored = storedLang();
-    if (stored) {
-      setLang(stored);
-      return;
-    }
-    if (navigator.language?.toLowerCase().startsWith("fr")) setLang("fr");
-  }, [touched]);
-
-  useEffect(() => {
-    document.documentElement.lang = lang;
-  }, [lang]);
-
-  const choose = (code: Lang) => {
-    setTouched(true);
-    setLang(code);
-    rememberLang(code);
-  };
+  useHomeLanguage(page);
 
   return (
     <>
@@ -80,28 +70,33 @@ export function App({
 
       <header className="site-header">
         <div className="wrap header-bar">
-          <a className="brand" href={routeHref(route, routeById("home"))}>
+          <a className="brand" href={routeHref(page, routeById("home"))}>
             wisq<span>▚</span>
           </a>
-          <div className="lang-switch">
-            {(["en", "fr"] as const).map((code) => (
-              <button
+          <ThemeSwitch copy={copy} />
+          {/* Links, not buttons: each one is a real address, so it can be
+              opened in a new tab, bookmarked, and followed with no JavaScript
+              at all. */}
+          <nav className="lang-switch" aria-label={copy.nav.language}>
+            {LANGS.map((code) => (
+              <a
                 key={code}
-                type="button"
-                aria-pressed={lang === code}
-                onClick={() => choose(code)}
+                href={routeHref(page, route, code)}
+                hrefLang={code}
+                aria-current={code === lang ? "true" : undefined}
+                onClick={() => rememberChoice(code)}
               >
                 {code.toUpperCase()}
-              </button>
+              </a>
             ))}
-          </div>
+          </nav>
         </div>
         <nav className="site-nav" aria-label={copy.footer.docs}>
           <div className="wrap site-nav-inner">
             {ROUTES.filter((candidate) => candidate.listed).map((candidate) => (
               <a
                 key={candidate.id}
-                href={routeHref(route, candidate)}
+                href={routeHref(page, candidate)}
                 aria-current={candidate.id === route.id ? "page" : undefined}
               >
                 {copy.pages[candidate.id]}
@@ -114,13 +109,13 @@ export function App({
 
       <main id="main">
         {route.id === "home" ? (
-          <Landing copy={copy} route={route} />
+          <Landing copy={copy} page={page} />
         ) : (
           <DocPage doc={PAGES[lang][route.id as DocRouteId]} />
         )}
       </main>
 
-      <Footer copy={copy} route={route} />
+      <Footer copy={copy} page={page} />
       <InstallPrompt copy={copy} />
     </>
   );
@@ -133,9 +128,9 @@ export function App({
 /// licence is, whether they are being tracked. Grouping those by what the
 /// reader wants — use it, understand it, contribute to it — beats one long row
 /// of links in which everything is equally hard to find.
-function Footer({ copy, route }: { copy: (typeof allCopy)["en"]; route: Route }) {
-  const to = (id: Parameters<typeof routeById>[0]) => routeHref(route, routeById(id));
-  const home = routeHref(route, routeById("home"));
+function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
+  const to = (id: Parameters<typeof routeById>[0]) => routeHref(page, routeById(id));
+  const home = routeHref(page, routeById("home"));
 
   const groups: { title: string; links: { label: string; href: string }[] }[] = [
     {
@@ -213,7 +208,7 @@ function Footer({ copy, route }: { copy: (typeof allCopy)["en"]; route: Route })
   );
 }
 
-function Landing({ copy, route }: { copy: (typeof allCopy)["en"]; route: Route }) {
+function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
   return (
     <>
       <section className="hero">
@@ -226,7 +221,7 @@ function Landing({ copy, route }: { copy: (typeof allCopy)["en"]; route: Route }
               <a className="btn btn-primary" href="#install">
                 {copy.hero.ctaInstall}
               </a>
-              <a className="btn btn-secondary" href={routeHref(route, routeById("docs"))}>
+              <a className="btn btn-secondary" href={routeHref(page, routeById("docs"))}>
                 {copy.pages.docs}
               </a>
             </div>

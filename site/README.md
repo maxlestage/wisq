@@ -27,6 +27,56 @@ the single renderer. A missing translation is a type error, an empty one fails
 a test, and the two languages are checked block-for-block so a page cannot be
 richer in English than in French.
 
+## Light, dark, and neither
+
+Three states, not a toggle: a two-way switch cannot say "follow my phone", and
+that is the state most readers want. Light and dark set `data-theme` on the
+root element; auto removes it and lets `prefers-color-scheme` decide.
+
+Two details make it actually work. The dark palette is defined twice — once
+under `@media (prefers-color-scheme: dark)` guarded by
+`:root:not([data-theme="light"])`, once under `:root[data-theme="dark"]` — so a
+choice beats the system in *both* directions; without the guard, choosing light
+on a dark device silently does nothing. And the choice is applied by a small
+inline script in the document head rather than by a React effect, because an
+effect runs after the page has painted: a reader who chose light on a dark
+system would otherwise see a flash of dark on every navigation.
+
+Verified by driving a browser with the system set each way in turn, checking
+the computed background, the `theme-color` metas, that the attribute is already
+present at `domcontentloaded` on the next page, and that returning to auto
+leaves nothing behind.
+
+## Two languages, two sets of addresses
+
+English is served from the site root, French from `fr/`. Every page exists
+twice and each one is pre-rendered in its own language, with its own
+`<html lang>`, title, description, canonical and `hreflang` alternates.
+
+This is not how the site started, and the reason it changed is worth keeping.
+The copy was bilingual from the first commit, but the *build* rendered every
+page in English and let the browser swap the language after hydration. That
+reads fine in `bun run dev` and is broken everywhere it matters: a French
+reader's first paint was English, a shared link opened in the sender's
+language rather than the reader's, a reader with no JavaScript never saw
+French, and a search engine indexed half the site. A language a URL cannot
+express is a language the web cannot see.
+
+So the URL is the language. The switch in the header is two links — real
+addresses, openable in a new tab, followable with no JavaScript — pointing at
+the same page in the other language. The one piece of cleverness left is a
+redirect from the English home page to the French one for a French-speaking
+browser that has never chosen; it is scoped to the home page so a deep link
+somebody deliberately shared in English is never hijacked, and choosing a
+language explicitly ends it.
+
+Tests hold the French pages to the same standard as the English ones rather
+than exempting them: the footer check reads its expectations out of
+`content.ts` per language, titles and descriptions must be unique *within* a
+language (across languages they may legitimately collide — "Architecture" is
+the same word in French), and a French page whose title and description both
+match its English counterpart fails as untranslated.
+
 ## Every path is relative
 
 The site is served from `/wisq/` on GitHub Pages today and from the root of a

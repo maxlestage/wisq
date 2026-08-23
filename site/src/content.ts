@@ -11,7 +11,11 @@ export interface Command {
 }
 
 export interface Copy {
-  nav: { install: string; how: string; source: string };
+  nav: { install: string; how: string; source: string; language: string };
+  /// The theme control. Every label is a real accessible name — the buttons
+  /// show icons, and an icon with no name is a button a screen reader cannot
+  /// announce.
+  theme: { label: string; light: string; dark: string; auto: string };
   hero: { tagline: string; lede: string; ctaInstall: string; ctaSource: string; badge: string };
   modes: {
     title: string;
@@ -89,7 +93,8 @@ export interface Copy {
 }
 
 const en: Copy = {
-  nav: { install: "Install", how: "How it works", source: "Source" },
+  nav: { install: "Install", how: "How it works", source: "Source", language: "Language" },
+  theme: { label: "Theme", light: "Light", dark: "Dark", auto: "Match system" },
   hero: {
     tagline: "Virtual machines on your iPhone.",
     lede:
@@ -265,7 +270,8 @@ const en: Copy = {
 };
 
 const fr: Copy = {
-  nav: { install: "Installer", how: "Fonctionnement", source: "Sources" },
+  nav: { install: "Installer", how: "Fonctionnement", source: "Sources", language: "Langue" },
+  theme: { label: "Thème", light: "Clair", dark: "Sombre", auto: "Selon le système" },
   hero: {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:

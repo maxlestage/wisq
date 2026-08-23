@@ -7,6 +7,30 @@
 /// per address instead of one shell that has to boot before it knows what it
 /// is showing.
 
+import type { Lang } from "./content";
+
+/// English is served from the site root and French from `fr/`.
+///
+/// The alternative — one address per page and the language chosen in the
+/// browser — is what this site did first, and it was wrong in a way that only
+/// shows once the site is published: the pre-rendered HTML could only be in
+/// one language, so a French reader's first paint was English, a shared link
+/// opened in the sender's language rather than the reader's, and a search
+/// engine indexed half the site. A language a URL cannot express is a language
+/// the web cannot see.
+export const LANGS: readonly Lang[] = ["en", "fr"];
+
+export function langPrefix(lang: Lang): string {
+  return lang === "en" ? "" : "fr/";
+}
+
+/// A page is a route in a language. Nothing on the site is addressable without
+/// both.
+export interface Page {
+  route: Route;
+  lang: Lang;
+}
+
 export type RouteId =
   | "home"
   | "notFound"
@@ -47,22 +71,36 @@ export const ROUTES: Route[] = [
   { id: "notFound", path: "", listed: false, output: "404.html" },
 ];
 
-/// How deep a route sits, which is how many `../` its assets need.
+/// The address of a page, relative to the site root: `""`, `"docs/"`,
+/// `"fr/"`, `"fr/docs/"`.
+export function pagePath(route: Route, lang: Lang): string {
+  return `${langPrefix(lang)}${route.path ? `${route.path}/` : ""}`;
+}
+
+export function outputPath(route: Route, lang: Lang): string {
+  return route.output
+    ? `${langPrefix(lang)}${route.output}`
+    : `${pagePath(route, lang)}index.html`;
+}
+
+/// How deep a page sits, which is how many `../` its assets need.
 ///
 /// Everything the pages reference is relative on purpose: the site is served
 /// from `/wisq/` on GitHub Pages today, and from the root of a domain the day
 /// it moves. A path that starts with `/` would work in exactly one of those.
-export function relativeBase(route: Route): string {
-  return route.path === "" ? "./" : "../";
+/// Counted from the file that gets written rather than from the route, because
+/// French adds a directory the route does not know about.
+export function relativeBase(route: Route, lang: Lang): string {
+  const depth = outputPath(route, lang).split("/").length - 1;
+  return depth === 0 ? "./" : "../".repeat(depth);
 }
 
-export function outputPath(route: Route): string {
-  return route.output ?? (route.path === "" ? "index.html" : `${route.path}/index.html`);
-}
-
-export function routeHref(from: Route, to: Route): string {
-  const base = relativeBase(from);
-  return to.path === "" ? base : `${base}${to.path}/`;
+/// A link from one page to another, in the same language unless asked
+/// otherwise — which is how the language switch reaches its counterpart.
+export function routeHref(from: Page, to: Route, lang: Lang = from.lang): string {
+  const base = relativeBase(from.route, from.lang);
+  const path = pagePath(to, lang);
+  return path ? `${base}${path}` : base;
 }
 
 export function routeById(id: RouteId): Route {
