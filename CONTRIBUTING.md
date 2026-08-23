@@ -19,6 +19,20 @@ xcodegen generate
 open Wisq.xcodeproj
 ```
 
+## The landing page
+
+`site/` is a separate Bun workspace, not part of the Swift build:
+
+```sh
+cd site && bun install && bun run dev
+bun run build && bun test
+```
+
+Copy lives in `src/content.ts` in both languages — never inline strings in
+components. Numbers the page claims about the codebase are verified against the
+repository in `tests/claims.test.ts`, so changing the test count means updating
+the page too (the test will tell you).
+
 ## What CI checks
 
 Every pull request runs three gates, and all of them block:
@@ -28,6 +42,8 @@ Every pull request runs three gates, and all of them block:
    rv32ima emulator.
 2. **App iOS** — XcodeGen + simulator build of the app.
 3. **Lint** — SwiftLint over the Swift sources.
+4. **Site** — builds and tests `site/` when it changes, and publishes to
+   GitHub Pages from `master`.
 
 Match them locally before pushing; `scripts/verify.sh` covers the first.
 

@@ -1,0 +1,53 @@
+name: Site
+
+# Builds the landing page on every change to it, and publishes it to GitHub
+# Pages from master. Pages must be enabled once in the repository settings
+# (Settings → Pages → Source: GitHub Actions) and the repository has to be
+# public, or on a plan that allows Pages for private repositories.
+on:
+  push:
+    branches: [master]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/site.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install
+        working-directory: site
+        run: bun install --frozen-lockfile
+      - name: Build
+        working-directory: site
+        run: bun run build
+      - name: Test
+        working-directory: site
+        run: bun test
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy to Pages
+    # Only from master: a pull request builds and tests, it does not publish.
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

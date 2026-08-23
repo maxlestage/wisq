@@ -49,6 +49,19 @@ The scope of the initial pull request, in one line each.
   `scripts/install-ios.sh` builds and installs straight onto a connected
   iPhone with Xcode.
 
+### Added — the landing page
+- `site/`: React 19 on Bun, no framework, pre-rendered at build time so the
+  page paints before its JavaScript loads and still reads without it.
+- Mobile-first in the literal sense: base styles target a phone, breakpoints
+  only add room, tap targets clear 48 px, wide tables scroll inside their own
+  box.
+- Bilingual (English/French) from one typed content module; language follows
+  the browser and can be switched.
+- Twelve tests: server-render both languages, content integrity, built-artefact
+  checks (relative asset paths, viewport, readable without JS), and claims
+  checked against the repository so page statistics cannot rot.
+- Publishes to GitHub Pages from `master`.
+
 ### Security
 - Secrets live in the Keychain, never in the machine library JSON.
 - The agent v1 speaks plain HTTP behind a mandatory bearer token: trusted
