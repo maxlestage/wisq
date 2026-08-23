@@ -92,6 +92,13 @@ browser.
 `bun run build` also emits a manifest, four PNG icons, a social card, a service
 worker, a sitemap, `robots.txt` and a 404 page.
 
+`bun run logo` exports the full mark as standalone SVG, in two shapes: with
+its rounded plate, and full-bleed square. The second is the one to hand a
+platform that applies its own mask — iOS rounds whatever it is given, so a
+pre-rounded image comes out rounded twice. It renders the same React component
+the site uses rather than a copy, so an exported icon cannot drift from the
+logo on the page.
+
 The icons are **drawn and encoded at build time**, not committed. The artwork
 is four rectangles and a pixel wordmark, and a PNG is a header, one deflated
 block and a checksum — `scripts/icons.ts` does both in about a hundred lines.

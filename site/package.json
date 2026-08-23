@@ -9,7 +9,8 @@
     "build": "bun run build.tsx",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "preview": "bun run scripts/serve.ts"
+    "preview": "bun run scripts/serve.ts",
+    "logo": "bun run scripts/export-logo.tsx"
   },
   "dependencies": {
     "react": "^19.2.8",
