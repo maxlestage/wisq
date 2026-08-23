@@ -7,6 +7,34 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- The site is a **site** rather than a landing page: a guide, the agent
+  protocol reference, the architecture decisions, questions answered plainly,
+  a roadmap and a release history — seven pages, bilingual, each pre-rendered
+  into its own address so it arrives readable and a search engine sees a real
+  URL. Written pages are data against a small block model, so a missing
+  translation is a type error and the two languages are checked block for
+  block.
+- The site is an **installable progressive web app**: a manifest, a service
+  worker that precaches every page, an offline fallback, and an install
+  affordance that offers a button where the browser has an API for it and the
+  Share-sheet instructions on iOS, which does not. Verified by driving a real
+  browser — worker active and controlling, a page read offline after one
+  visit, an unknown address falling back, no console errors.
+- Icons and the social card are drawn and PNG-encoded at build time
+  (`site/scripts/icons.ts`) rather than committed. They are PNG because iOS
+  will not put an SVG on the Home Screen.
+- `bun run preview` serves the build with real content types, which is what the
+  PWA needs and what `bun run dev` cannot give it.
+- `sitemap.xml`, `robots.txt`, canonical links, Open Graph and Twitter cards,
+  JSON-LD on the landing page only, and a 404 page that can still navigate.
+
+### Fixed
+- The service worker precached the offline page twice. `Cache.addAll` rejects
+  the whole list on a duplicate URL and leaves no worker at all, so the site
+  kept working and silently stopped being installable — the failure nobody
+  notices. Found by driving a browser, and now covered by a test.
+
 ### Changed
 - **The host agent is Rust.** A daemon that installs on a NAS or a laptop, has
   no interface and no platform framework, had no reason to carry a language

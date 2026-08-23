@@ -145,7 +145,7 @@ Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
 crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo
 crates/wisq-vm       interpréteur rv32ima (Rust) avec une ABI C pour l'application
-site/                page de présentation : React 19 sur Bun, pré-rendue
+site/                le site du projet : React 19 sur Bun, pré-rendu, PWA installable
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route
 ```

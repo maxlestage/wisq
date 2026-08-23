@@ -38,6 +38,30 @@ export interface Copy {
   how: { title: string; steps: { title: string; body: string }[] };
   facts: { title: string; items: { value: string; label: string }[] };
   footer: { license: string; source: string; docs: string; note: string };
+  /// Navigation labels for the written pages, keyed by route.
+  pages: {
+    home: string;
+    notFound: string;
+    docs: string;
+    protocol: string;
+    architecture: string;
+    faq: string;
+    roadmap: string;
+    releases: string;
+    offline: string;
+  };
+  /// The install affordance. Two shapes, because the platforms differ: a
+  /// browser that fires beforeinstallprompt gets a button, and iOS — which
+  /// never fires it, and is the platform this project is about — gets the
+  /// three taps that actually work there.
+  pwa: {
+    title: string;
+    body: string;
+    action: string;
+    iosTitle: string;
+    iosBody: string;
+    dismiss: string;
+  };
 }
 
 const en: Copy = {
@@ -176,6 +200,26 @@ const en: Copy = {
     docs: "Docs",
     note:
       "The agent v1 speaks plain HTTP behind a mandatory token: trusted network or tunnel, like unencrypted VNC. TLS is on the roadmap.",
+  },
+
+  pages: {
+    home: "Home",
+    notFound: "Not found",
+    docs: "Guide",
+    protocol: "Agent protocol",
+    architecture: "Architecture",
+    faq: "Questions",
+    roadmap: "Roadmap",
+    releases: "Releases",
+    offline: "Offline",
+  },
+  pwa: {
+    title: "Keep wisq one tap away",
+    body: "Install this site and it opens like an app, works without a network, and stops asking.",
+    action: "Install",
+    iosTitle: "Add to your Home Screen",
+    iosBody: "Tap the Share button, then Add to Home Screen.",
+    dismiss: "Not now",
   },
 };
 
@@ -317,6 +361,26 @@ const fr: Copy = {
     docs: "Docs",
     note:
       "L'agent v1 parle en HTTP clair derrière un jeton obligatoire : réseau de confiance ou tunnel, comme le VNC non chiffré. Le TLS est dans la feuille de route.",
+  },
+
+  pages: {
+    home: "Accueil",
+    notFound: "Page introuvable",
+    docs: "Guide",
+    protocol: "Protocole de l'agent",
+    architecture: "Architecture",
+    faq: "Questions",
+    roadmap: "Feuille de route",
+    releases: "Versions",
+    offline: "Hors ligne",
+  },
+  pwa: {
+    title: "Gardez wisq à une touche",
+    body: "Installez ce site : il s'ouvre comme une application, fonctionne sans réseau, et cesse de demander.",
+    action: "Installer",
+    iosTitle: "Ajouter à l'écran d'accueil",
+    iosBody: "Touchez le bouton Partager, puis « Sur l'écran d'accueil ».",
+    dismiss: "Plus tard",
   },
 };
 

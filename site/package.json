@@ -6,7 +6,8 @@
     "dev": "bun --hot src/index.html",
     "build": "bun run build.tsx",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "preview": "bun run scripts/serve.ts"
   },
   "dependencies": {
     "react": "^19.2.8",
