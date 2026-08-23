@@ -7,6 +7,41 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **The host agent is Rust.** A daemon that installs on a NAS or a laptop, has
+  no interface and no platform framework, had no reason to carry a language
+  runtime — and statically linked against the Swift one it was a **58 MB**
+  download to serve four routes. It is now **582 KB**, one static musl binary
+  that runs on any Linux including Alpine, with nothing installed first. A
+  hundred times smaller for the same protocol.
+- The protocol is now guarded by a test that crosses both languages: the Swift
+  suite launches the real Rust binary on an ephemeral port and queries it with
+  the same `AgentClient` the app embeds. That is stronger than what it replaced
+  — a Swift server answering a Swift client proved the wire format agreed with
+  itself. The daemon's pairing links are parsed back by the app's own parser in
+  the same suite.
+- `Formula/wisq-agent.rb` and `scripts/install.sh` build with cargo; the
+  published asset names are unchanged, so an existing install line still works.
+- The token comparison is constant-time. It is a bearer credential on a network
+  the daemon does not control, and a byte-at-a-time comparison leaks its prefix
+  to anyone patient enough to measure.
+- The generated token comes from `/dev/urandom`, and the daemon refuses to start
+  rather than invent a weaker one.
+
+### Added
+- `crates/wisq-vm`: the rv32ima interpreter in Rust, with a C ABI for the app to
+  link. Measured against the Swift core on the same kernel boot, same 44.6 M
+  instructions: **170 MIPS against 162**. Not yet linked into the app — CI now
+  cross-compiles it for `aarch64-apple-ios` on every change, which is the
+  ground-truth that has to hold before that switch is worth making.
+- `cargo fmt`, `clippy -D warnings` and `cargo test` are CI gates, on pull
+  requests and on the release.
+
+### Removed
+- `Sources/WisqAgentKit` and the Swift `wisq-agent` executable, replaced by the
+  Rust daemon. Their parsing tests moved to Rust; their end-to-end tests became
+  the cross-language ones described above.
+
 ## [0.2.0] — 2026-08-23
 
 ### Changed

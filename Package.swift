@@ -4,17 +4,21 @@ import PackageDescription
 // The UI layer is UIKit/SwiftUI and only exists on Apple platforms. Dropping it on
 // Linux lets the protocol work — which is where the bugs live — be built and tested
 // on a runner that costs nothing, instead of waiting on a macOS one.
-// The host agent runs where the VMs run — macOS and Linux, never iOS.
+//
+// The host agent is no longer here: it moved to Rust (crates/wisq-agent), because
+// a daemon with no interface and no platform framework had no reason to carry a
+// language runtime — statically linked it was a 58 MB download to serve four
+// routes, and it is now 454 KB. What stays on this side is the client that talks
+// to it, and a test that runs the real Rust binary against that client, so the
+// two halves of the protocol cannot drift apart unnoticed.
 #if os(iOS)
 let agentProducts: [Product] = []
 let agentTargets: [Target] = []
 #else
-let agentProducts: [Product] = [.executable(name: "wisq-agent", targets: ["wisq-agent"])]
+let agentProducts: [Product] = []
 let agentTargets: [Target] = [
-    .target(name: "WisqAgentKit", dependencies: ["WisqCore"]),
-    .executableTarget(name: "wisq-agent", dependencies: ["WisqAgentKit", "WisqCore"]),
     .executableTarget(name: "wisq-bench", dependencies: ["WisqVM"]),
-    .testTarget(name: "WisqAgentKitTests", dependencies: ["WisqAgentKit", "WisqRemote"]),
+    .testTarget(name: "WisqAgentTests", dependencies: ["WisqRemote", "WisqCore"]),
 ]
 #endif
 

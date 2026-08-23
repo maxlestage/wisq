@@ -48,7 +48,7 @@ const en: Copy = {
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
     ctaInstall: "Install",
     ctaSource: "View source",
-    badge: "Apache-2.0 · Swift · open source",
+    badge: "Apache-2.0 · Swift + Rust · open source",
   },
   modes: {
     title: "Two ways, one app",
@@ -68,7 +68,7 @@ const en: Copy = {
       name: "Local",
       head: "A real Linux kernel, on the phone",
       body:
-        "An interpreted RISC-V machine written in Swift boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak.",
+        "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak.",
       points: [
         "rv32ima core, 64 MB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
@@ -164,8 +164,8 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "128", label: "tests" },
-      { value: "4", label: "blocking CI gates" },
+      { value: "146", label: "tests" },
+      { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
     ],
@@ -187,7 +187,7 @@ const fr: Copy = {
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
     ctaInstall: "Installer",
     ctaSource: "Voir les sources",
-    badge: "Apache-2.0 · Swift · open source",
+    badge: "Apache-2.0 · Swift + Rust · open source",
   },
   modes: {
     title: "Deux voies, une application",
@@ -207,7 +207,7 @@ const fr: Copy = {
       name: "Local",
       head: "Un vrai noyau Linux, sur le téléphone",
       body:
-        "Une machine RISC-V interprétée, écrite en Swift, amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak.",
+        "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak.",
       points: [
         "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
@@ -305,8 +305,8 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "128", label: "tests" },
-      { value: "4", label: "portes CI bloquantes" },
+      { value: "146", label: "tests" },
+      { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
     ],

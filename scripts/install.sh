@@ -73,15 +73,14 @@ install_binary() {
 }
 
 install_from_source() {
-  command -v swift >/dev/null || fail "aucun binaire pour $OS/$ARCH et pas de toolchain Swift : installez Swift (swift.org) puis relancez"
+  command -v cargo >/dev/null || fail "aucun binaire pour $OS/$ARCH et pas de toolchain Rust : installez Rust (rustup.rs) puis relancez"
   command -v git >/dev/null || fail "git est requis pour construire depuis les sources"
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   echo "construction depuis les sources ($REPO)…"
   git clone --depth 1 "$REPO" "$TMP/wisq" >/dev/null 2>&1 || fail "clonage impossible : $REPO"
-  (cd "$TMP/wisq" && swift build -c release --product wisq-agent >/dev/null)
-  BIN="$(cd "$TMP/wisq" && swift build -c release --product wisq-agent --show-bin-path)/wisq-agent"
-  install -m 755 "$BIN" "$PREFIX/wisq-agent"
+  (cd "$TMP/wisq" && cargo build --release -p wisq-agent >/dev/null)
+  install -m 755 "$TMP/wisq/target/release/wisq-agent" "$PREFIX/wisq-agent"
 }
 
 if [ "$FROM_SOURCE" = 1 ] || [ -z "$ASSET_SUFFIX" ]; then
