@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Everything CI would run, in one command.
-#
-# GitHub Actions is currently unavailable on this repository — every job dies at
-# scheduling in ~3 seconds with no runner assigned, on Linux runners as well as
-# macOS ones. Until that is unblocked this script is the verification story.
+# Everything CI would run, in one command — so a contributor can get the same
+# answer locally, before pushing, that the pull request will give them.
 #
 #   ./scripts/verify.sh          core only (works on Linux and macOS)
 #   ./scripts/verify.sh --app    also builds the iOS app (macOS + Xcode required)
