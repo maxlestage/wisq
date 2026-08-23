@@ -77,8 +77,8 @@ break APIs.
   `xhtml:link` alternates.
 - The footer carries the mark too, small, beside its wordmark — so the pair a
   reader learns on the landing page is what they see on every other page.
-- The landing page's mark is now a **lockup**: the drawing with the name set
-  large beside it. The mark alone says what the product does and not what it is
+- The landing page's mark is now a **lockup**: the name set large — larger
+  than the drawing — with the mark beside it. The mark alone says what the product does and not what it is
   called; the two together are what a reader recognises later. The name is real
   text rather than part of the drawing, so it is selectable, searchable and
   read aloud.
@@ -97,6 +97,13 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- The hero split into two columns at 40em, which left the text 103 px and the
+  headline five lines anywhere between 640 and 900 px — a layout that reads
+  correctly at 1280 px and is broken in a range nobody thinks to open. It now
+  splits at 60em, once both halves fit. Found by measuring twelve widths rather
+  than the two that get looked at.
+- The hero overflowed horizontally at 320 px. Both halves of the lockup are now
+  sized against the viewport rather than fixed.
 - The mark's SVG gradients used fixed ids, so drawing it twice on one page —
   the hero and the footer — produced duplicate ids. Harmless while both copies
   are identical, and a silent wrong-colour bug the day they are not. Each
