@@ -13,6 +13,7 @@ let agentProducts: [Product] = [.executable(name: "wisq-agent", targets: ["wisq-
 let agentTargets: [Target] = [
     .target(name: "WisqAgentKit", dependencies: ["WisqCore"]),
     .executableTarget(name: "wisq-agent", dependencies: ["WisqAgentKit", "WisqCore"]),
+    .executableTarget(name: "wisq-bench", dependencies: ["WisqVM"]),
     .testTarget(name: "WisqAgentKitTests", dependencies: ["WisqAgentKit", "WisqRemote"]),
 ]
 #endif

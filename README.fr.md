@@ -11,7 +11,7 @@ wisq se place face à UTM sur deux fronts à la fois :
   y a du silicium — un Mac, un PC, un NAS, un serveur. C'est le mode principal,
   celui qui donne un vrai bureau à pleine vitesse.
 - **Local** : un émulateur RISC-V rv32ima interprété, écrit en Swift, boote un
-  vrai noyau Linux **sur le téléphone** en une à deux secondes — sans réseau,
+  vrai noyau Linux **sur le téléphone** en moins d'une seconde — sans réseau,
   sans serveur, shell compris. Interprété, donc sans JIT : conforme aux règles
   d'iOS, là où UTM SE vit dans une zone grise.
 
@@ -22,6 +22,27 @@ wisq se place face à UTM sur deux fronts à la fois :
 | Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau classique |
 | Licence | GPL (QEMU) | code applicatif sous notre contrôle |
 | Autonomie | l'émulation vide la batterie | décodage d'image seulement |
+
+## Vitesse
+
+La machine locale est un interpréteur, et elle est faite pour être rapide.
+Démarrez un vrai noyau et mesurez vous-même :
+
+```sh
+swift run -c release wisq-bench --image /chemin/vers/Image
+```
+
+Sur le conteneur Linux x86_64 de développement, cela donne environ **160
+millions d'instructions invitées par seconde** : l'invite `buildroot login:`
+arrive après 44,6 M d'instructions en 0,27 s environ, la RAM invitée étant
+obtenue en moins de 0,1 ms. La CI relance le même banc à chaque changement et
+publie son propre chiffre, donc une régression se voit dans le journal.
+
+Ces chiffres sont à lire pour ce qu'ils sont : ils viennent d'un conteneur
+Linux, pas d'un téléphone — aucun iPhone n'est passé par cette boucle, et un
+cœur A-series est une autre machine. Ce qui se transporte, c'est la forme : le
+même chemin de code tourne sur le téléphone, il n'y a aucun JIT dedans, et rien
+n'y exige de jailbreak ni d'autorisation particulière.
 
 ## État
 
@@ -48,8 +69,8 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqAgentKit` compilent sans erreur ni
-avertissement sous Swift 6.1, y compris en concurrence stricte complète, et
-leurs 119 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
+avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
+leurs 128 tests passent — dont un bout-à-bout où le vrai démon est interrogé par
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

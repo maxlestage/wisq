@@ -32,6 +32,19 @@ jobs:
         run: swift test
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+      - name: Benchmark (boot to prompt)
+        # Not a threshold — a shared runner cannot hold one without flaking.
+        # It boots a real kernel in the release configuration and prints the
+        # throughput, so a regression is visible in the log, and a guest that
+        # stops reaching its prompt fails the job outright.
+        run: |
+          if [ ! -f /tmp/wisq-test-linux-image/Image ]; then
+            echo "image Linux absente : banc ignoré"
+            exit 0
+          fi
+          swift run -c release wisq-bench
+        env:
+          WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
 
   lint:
     name: Lint
