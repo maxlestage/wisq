@@ -41,10 +41,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build release binary
+        # Statically linked: a dynamically linked Swift binary needs
+        # libswiftCore.so on the target machine, which a Linux box that has
+        # never installed a Swift toolchain does not have. Distributing one
+        # would hand every such user an executable that dies on the first
+        # line. macOS ships the Swift runtime in the OS, so only Linux needs
+        # this. The binary is stripped: it costs nothing and the download is
+        # what the user waits on.
         run: |
-          swift build -c release --product wisq-agent
+          swift build -c release --product wisq-agent --static-swift-stdlib
           mkdir -p dist
-          cp .build/release/wisq-agent dist/
+          cp "$(swift build -c release --product wisq-agent --static-swift-stdlib --show-bin-path)/wisq-agent" dist/
+          strip dist/wisq-agent
+          env -i dist/wisq-agent --help > /dev/null
           tar -C dist -czf wisq-agent-${{ env.VERSION }}-linux-x86_64.tar.gz wisq-agent
       - uses: actions/upload-artifact@v7
         with:
