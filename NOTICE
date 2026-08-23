@@ -1,5 +1,5 @@
 wisq
-Copyright 2026 Max Lestage
+Copyright 2026 Maxime Nathan Lestage
 
 This product includes a Swift reimplementation of the rv32ima execution
 semantics of mini-rv32ima by Charles Lohr (https://github.com/cnlohr/mini-rv32ima),
