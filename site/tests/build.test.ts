@@ -1,12 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
-import { ROUTES, outputPath } from "../src/routes";
+import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
+import { copy } from "../src/content";
 
 /// The built artefact, not the source. `bun run build` must run before this;
 /// CI does exactly that.
 const dist = join(import.meta.dir, "..", "dist");
 const read = (relative: string) => readFileSync(join(dist, relative), "utf8");
+
+/// Every document the build writes: each route, in each language. Tests that
+/// used to walk the routes walk this instead, or they check half the site.
+const BUILT = LANGS.flatMap((lang) =>
+  ROUTES.map((route) => ({ route, lang, file: outputPath(route, lang) })),
+);
+
+/// The stylesheet's name is hashed, so tests that read the CSS have to find it
+/// rather than assume it.
+function styleFile(): string {
+  const name = readdirSync(dist).find((entry) => entry.endsWith(".css"));
+  if (!name) throw new Error("aucune feuille de style dans dist");
+  return name;
+}
 
 function pngSize(relative: string): { width: number; height: number } {
   const bytes = readFileSync(join(dist, relative));
@@ -27,8 +42,9 @@ describe("built output", () => {
   });
 
   test("every route produced a document", () => {
-    for (const route of ROUTES) {
-      const file = outputPath(route);
+    for (const { route, lang, file } of BUILT) {
+      void route;
+      void lang;
       expect(existsSync(join(dist, file)), `${file} manquant`).toBe(true);
     }
   });
@@ -50,8 +66,9 @@ describe("built output", () => {
   /// fine, deploys fine, and 404s in the browser.
   test("every relative reference resolves to a file that exists", () => {
     let checked = 0;
-    for (const route of ROUTES) {
-      const file = outputPath(route);
+    for (const { route, lang, file } of BUILT) {
+      void route;
+      void lang;
       const html = read(file);
       const here = dirname(join(dist, file));
       const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]!);
@@ -76,8 +93,9 @@ describe("built output", () => {
   });
 
   test("every document carries the head a shared link needs", () => {
-    for (const route of ROUTES) {
-      const file = outputPath(route);
+    for (const { route, lang, file } of BUILT) {
+      void route;
+      void lang;
       const html = read(file);
       expect(html, `${file} : viewport`).toContain("width=device-width");
       expect(html, `${file} : viewport-fit`).toContain("viewport-fit=cover");
@@ -85,36 +103,65 @@ describe("built output", () => {
       expect(html, `${file} : manifeste`).toContain('rel="manifest"');
       expect(html, `${file} : icône iOS`).toContain('rel="apple-touch-icon"');
       expect(html, `${file} : image sociale`).toContain('property="og:image"');
-      expect(html, `${file} : description`).toMatch(/<meta name="description" content="[^"]{40,}"/);
+      // Catches an empty or placeholder description. The bound is deliberately
+      // below the shortest real one — the French 404's complete sentence is 39
+      // characters — because the guard is against a stub, not against brevity.
+      expect(html, `${file} : description`).toMatch(/<meta name="description" content="[^"]{30,}"/);
     }
   });
 
+  /// Within a language, not across it: "Architecture" is the same word in
+  /// French, so two pages sharing a title across languages is correct and
+  /// telling them apart is what the hreflang links are for.
   test("each page has its own title and description", () => {
-    const titles = new Set<string>();
-    const descriptions = new Set<string>();
-    for (const route of ROUTES) {
-      const html = read(outputPath(route));
-      titles.add(html.match(/<title>([^<]+)<\/title>/)![1]!);
-      descriptions.add(html.match(/<meta name="description" content="([^"]+)"/)![1]!);
-    }
-    // 404 borrows nothing from another page; every route is distinct.
-    expect(titles.size).toBe(ROUTES.length);
-    expect(descriptions.size).toBe(ROUTES.length);
-  });
-
-  test("hydration knows which page it is on", () => {
-    for (const route of ROUTES) {
-      const html = read(outputPath(route));
-      expect(html, `${outputPath(route)} : route`).toContain(`data-route="${route.id}"`);
-      expect(html, `${outputPath(route)} : base`).toMatch(/data-base="\.\.?\/"/);
+    for (const lang of LANGS) {
+      const pages = BUILT.filter((page) => page.lang === lang);
+      const titles = new Set<string>();
+      const descriptions = new Set<string>();
+      for (const { file } of pages) {
+        const html = read(file);
+        titles.add(html.match(/<title>([^<]+)<\/title>/)![1]!);
+        descriptions.add(html.match(/<meta name="description" content="([^"]+)"/)![1]!);
+      }
+      expect(titles.size, `titres distincts en ${lang}`).toBe(pages.length);
+      expect(descriptions.size, `descriptions distinctes en ${lang}`).toBe(pages.length);
     }
   });
 
-  test("structured data appears once, on the landing page", () => {
-    const withJsonLd = ROUTES.filter((route) =>
-      read(outputPath(route)).includes("application/ld+json"),
-    );
-    expect(withJsonLd.map((route) => route.id)).toEqual(["home"]);
+  /// The whole point of the French build: a French page must not be an English
+  /// page wearing a French address.
+  test("each French page is actually in French", () => {
+    for (const { route, file } of BUILT.filter((page) => page.lang === "fr")) {
+      const html = read(file);
+      const english = read(outputPath(route, "en"));
+      expect(html, `${file} : langue déclarée`).toContain('<html lang="fr">');
+      const title = (raw: string) => raw.match(/<title>([^<]+)<\/title>/)![1]!;
+      const lede = (raw: string) => raw.match(/<meta name="description" content="([^"]+)"/)![1]!;
+      // Titles may legitimately match — "Architecture" — but a page whose
+      // title *and* description both match the English one was never
+      // translated.
+      expect(
+        title(html) === title(english) && lede(html) === lede(english),
+        `${file} : identique à la version anglaise`,
+      ).toBe(false);
+    }
+  });
+
+  test("hydration knows which page it is on and in which language", () => {
+    for (const { route, lang, file } of BUILT) {
+      const html = read(file);
+      expect(html, `${file} : route`).toContain(`data-route="${route.id}"`);
+      expect(html, `${file} : langue`).toContain(`data-lang="${lang}"`);
+      expect(html, `${file} : base`).toMatch(/data-base="(\.\/|(\.\.\/)+)"/);
+    }
+  });
+
+  test("structured data appears once per language, on the landing pages", () => {
+    const withJsonLd = BUILT.filter(({ file }) => read(file).includes("application/ld+json"));
+    expect(withJsonLd.map(({ route, lang }) => `${lang}:${route.id}`)).toEqual([
+      "en:home",
+      "fr:home",
+    ]);
   });
 });
 
@@ -123,8 +170,9 @@ describe("the mark", () => {
   /// point of drawing a second one: the header wordmark names the site on every
   /// page, and the full mark gets the room the hero has and no other page does.
   test("the full mark is on the landing page and nowhere else", () => {
-    for (const route of ROUTES) {
-      const file = outputPath(route);
+    for (const { route, lang, file } of BUILT) {
+      void route;
+      void lang;
       const html = read(file);
       const marks = html.split('class="hero-logo"').length - 1;
       expect(marks, `${file} : nombre de marques complètes`).toBe(
@@ -152,22 +200,71 @@ describe("the mark", () => {
   });
 });
 
+describe("theme", () => {
+  /// The guard that makes an explicit choice mean anything. Without
+  /// `:not([data-theme="light"])` a reader whose system is dark and who asked
+  /// for light keeps the media query's colours — the switch appears to work in
+  /// one direction and silently fails in the other, which is the kind of
+  /// half-working nobody reports.
+  test("an explicit choice outranks the system setting, both ways", () => {
+    // Read with the quotes optional: the minifier drops them, so asserting the
+    // source spelling would test the bundler rather than the behaviour.
+    const css = readFileSync(join(dist, styleFile()), "utf8");
+    expect(css, "la requête média doit céder à un choix explicite").toMatch(
+      /:root:not\(\[data-theme=["']?light["']?\]\)/,
+    );
+    expect(css, "le choix sombre doit exister hors requête média").toMatch(
+      /:root\[data-theme=["']?dark["']?\]/,
+    );
+    // ...and the dark tokens must really be in both places, not just selected.
+    const media = css.slice(css.indexOf("prefers-color-scheme:dark"));
+    expect(media, "la requête média doit porter les couleurs sombres").toContain("--bg:#0b0d10");
+  });
+
+  /// An effect runs after the page has painted, so the theme cannot come from
+  /// React: a reader who chose light on a dark system would see a flash of
+  /// dark on every navigation.
+  test("the theme is applied before the first paint, on every page", () => {
+    for (const { file } of BUILT) {
+      const html = read(file);
+      const head = html.slice(0, html.indexOf("</head>"));
+      expect(head, `${file} : script de thème absent de la tête`).toContain("wisq.theme");
+      expect(head, `${file} : le script doit poser data-theme`).toContain("data-theme");
+    }
+  });
+
+  /// Inline and dependency-free on purpose: it must not wait for the bundle,
+  /// and it must not be able to fail to load.
+  test("the theme script is inline and cannot fail to load", () => {
+    const head = read("index.html").slice(0, read("index.html").indexOf("</head>"));
+    const script = head.match(/<script>[^<]*wisq\.theme[\s\S]*?<\/script>/)?.[0];
+    expect(script, "le script de thème doit être en ligne").toBeDefined();
+    expect(script).not.toContain("src=");
+    expect(script, "il doit échouer sans bruit plutôt que casser la page").toContain("catch");
+  });
+});
+
 describe("footer", () => {
   /// A footer is where someone goes when the page did not answer them. It is
   /// on every page or it is not a footer, so this checks every page rather
   /// than the landing one.
-  test("every page carries the whole footer", () => {
-    for (const route of ROUTES) {
-      const file = outputPath(route);
+  /// Read against the copy rather than against hard-coded English, so the
+  /// French pages are held to the same standard in their own language instead
+  /// of being exempt from the check.
+  test("every page carries the whole footer, in its own language", () => {
+    const escape = (text: string) =>
+      text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#x27;");
+    for (const { lang, file } of BUILT) {
       const html = read(file);
-      for (const heading of ["Product", "Documentation", "Project"]) {
-        expect(html, `${file} : groupe ${heading}`).toContain(`>${heading}</h2>`);
+      const footer = copy[lang].footer;
+      for (const heading of Object.values(footer.groups)) {
+        expect(html, `${file} : groupe ${heading}`).toContain(`>${escape(heading)}</h2>`);
       }
-      for (const label of ["Install", "Issues", "Contributing", "Security", "Changelog"]) {
-        expect(html, `${file} : lien ${label}`).toContain(`>${label}</a>`);
+      for (const label of Object.values(footer.links)) {
+        expect(html, `${file} : lien ${label}`).toContain(`>${escape(label)}</a>`);
       }
-      expect(html, `${file} : confidentialité`).toContain(">Privacy</a>");
-      expect(html, `${file} : retour en haut`).toContain(">Back to top</a>");
+      expect(html, `${file} : retour en haut`).toContain(`>${escape(footer.backToTop)}</a>`);
+      expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
       expect(html, `${file} : licence`).toContain("Apache-2.0");
     }
   });
@@ -272,9 +369,24 @@ describe("progressive web app", () => {
     expect(sw, "l'installation doit dédupliquer").toContain("new Set(");
   });
 
-  test("the service worker has an offline fallback that was built", () => {
-    expect(read("sw.js")).toContain('const OFFLINE = "./offline/"');
-    expect(existsSync(join(dist, "offline", "index.html"))).toBe(true);
+  /// One fallback per language, or a reader browsing in French falls out of
+  /// French the moment the network goes.
+  test("the service worker has an offline fallback per language, and both were built", () => {
+    const sw = read("sw.js");
+    for (const lang of LANGS) {
+      expect(sw, `repli hors ligne ${lang}`).toContain(`${lang}: "./${pagePath(routeById("offline"), lang)}"`);
+      expect(existsSync(join(dist, outputPath(routeById("offline"), lang))), `${lang} : page hors ligne`).toBe(true);
+    }
+    expect(sw, "le repli suit la langue de l'adresse").toContain("offlineFor");
+  });
+
+  /// A 404 from a mistyped link, or a 500 from a half-finished deploy, must not
+  /// be kept and served back later. Found by watching the cache grow by one
+  /// entry per unknown address while driving a browser.
+  test("only pages that actually loaded are cached", () => {
+    const sw = read("sw.js");
+    const navigation = sw.slice(sw.indexOf('request.mode === "navigate"'));
+    expect(navigation.slice(0, navigation.indexOf("cache.put"))).toContain("response.ok");
   });
 
   test("the cache is versioned, so an old one cannot outlive a deploy", () => {
@@ -285,15 +397,22 @@ describe("progressive web app", () => {
 });
 
 describe("discoverability", () => {
-  test("the sitemap lists every page meant to be found, and nothing else", () => {
+  test("the sitemap lists every page meant to be found, in both languages", () => {
     const sitemap = read("sitemap.xml");
     const listed = ROUTES.filter((route) => route.listed);
-    for (const route of listed) {
-      expect(sitemap, `${route.id} absent du sitemap`).toContain(
-        route.path ? `${route.path}/</loc>` : "/</loc>",
-      );
+    for (const lang of LANGS) {
+      for (const route of listed) {
+        expect(sitemap, `${lang}/${route.id} absent du sitemap`).toContain(
+          `/wisq/${pagePath(route, lang)}</loc>`,
+        );
+      }
     }
-    expect([...sitemap.matchAll(/<loc>/g)].length).toBe(listed.length);
+    expect([...sitemap.matchAll(/<loc>/g)].length).toBe(listed.length * LANGS.length);
+    // Each entry names its counterpart, so a search engine shows a reader the
+    // one in their language rather than picking for them.
+    expect([...sitemap.matchAll(/hreflang=/g)].length).toBe(
+      listed.length * LANGS.length * LANGS.length,
+    );
     // The offline page and the 404 are not destinations.
     expect(sitemap).not.toContain("offline/");
     expect(sitemap).not.toContain("404");

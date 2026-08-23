@@ -36,6 +36,33 @@ break APIs.
   A test asserts every page carries the whole thing, that each project link
   points at a file that exists in this repository, and that the version shown
   matches the newest dated section of this changelog.
+- **A theme control**: light, dark, or whatever the system says. Three states
+  rather than a toggle, because a toggle cannot express "follow my phone" — a
+  reader whose device turns dark at sunset wants the site to do the same, and a
+  two-way switch silently opts them out of that the first time they touch it.
+  The choice is applied by a small inline script in the document head, before
+  the first paint: an effect in the bundle runs after the page has painted, so
+  a reader who chose light on a dark system would see a flash of dark on every
+  navigation. The browser's own chrome colour follows the choice too.
+- **Both languages are now published**, not merely written. Every page exists
+  twice — `docs/` and `fr/docs/` — each pre-rendered in its own language, with
+  its own `<html lang>`, title, description and canonical, and `hreflang`
+  alternates naming its counterpart. The French copy was already complete; what
+  was missing was any address that could serve it. Before this, the built HTML
+  was English for everyone: a French reader's first paint was English, a shared
+  link opened in the sender's language rather than the reader's, a reader with
+  no JavaScript never saw French at all, and a search engine indexed half the
+  site. A language a URL cannot express is a language the web cannot see.
+- The language switch is two links rather than two buttons, so each language is
+  an address that can be opened in a new tab, bookmarked and followed with no
+  JavaScript. A French-speaking browser landing on the English home page is
+  still sent to the French one — from the home page only, so a deep link
+  someone deliberately shared in English is never redirected — and choosing a
+  language explicitly stops that for good.
+- The service worker precaches both languages and falls back to the offline
+  page matching the address that failed, so losing the network does not also
+  lose the language. The sitemap lists every page in both languages with
+  `xhtml:link` alternates.
 - **The full mark**, on the landing page, beside the wordmark the header
   carries everywhere. `▚` is the site's mark and stays the Home Screen icon
   untouched, because at 60 px anything more becomes mush; the hero has room to
@@ -51,6 +78,15 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- The dark palette lived only inside a `prefers-color-scheme` media query, so
+  it could not be turned off. Choosing light on a device set to dark would have
+  appeared to work in one direction and silently failed in the other; the query
+  now yields to an explicit choice, and a test asserts both directions.
+- The service worker cached *any* navigation response, including 404s and
+  500s. A mistyped link or a half-finished deploy was kept and served from the
+  cache afterwards, including once the site was fine again — the asset branch
+  had always checked `response.ok`, navigations never did. Found by watching
+  the cache grow by one entry per unknown address while driving a browser.
 - The landing page printed two of its section headings twice: an eyebrow above
   the heading repeating it word for word, which a screen reader read out twice
   and a reader read as a stutter.
