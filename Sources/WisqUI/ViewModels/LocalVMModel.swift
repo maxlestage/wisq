@@ -17,13 +17,11 @@ public final class LocalVMModel {
     }
 
     public private(set) var status: Status = .idle
-    /// Console text, ANSI-stripped and line-edited, capped so a chatty guest
-    /// cannot grow it without bound.
+    /// Console text, ANSI-stripped and line-edited, bounded in lines.
     public private(set) var consoleText = ""
 
     private var machine: LinuxMachine?
-    private var rawConsole = ""
-    private static let consoleCap = 200_000
+    private let sink = ConsoleSink()
 
     public init() {}
 
@@ -31,19 +29,26 @@ public final class LocalVMModel {
         guard machine == nil else { return }
         status = .running
         consoleText = ""
-        rawConsole = ""
+        sink.reset()
 
-        let machine = LinuxMachine { [weak self] chunk in
-            let text = String(decoding: chunk, as: UTF8.self)
+        // One refresh in flight at a time. The guest writes on its own thread
+        // and can produce console faster than the main actor can render it; a
+        // hop per chunk would queue work without bound and the interface would
+        // fall behind the machine it is meant to be showing.
+        let machine = LinuxMachine { [sink] chunk in
+            guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
-                self?.appendConsole(text)
+                self?.consoleText = sink.takeText()
             }
         }
         self.machine = machine
 
         // The emulator owns a whole thread for its lifetime: it is a CPU, not a
-        // callback. Detached so the UI never inherits its priority.
-        Thread.detachNewThread { [weak self] in
+        // callback. The quality of service is explicit because the default lets
+        // the scheduler park it on an efficiency core, where an interpreter
+        // runs several times slower — and this is the thread whose speed the
+        // user is watching.
+        let thread = Thread { [weak self] in
             let outcome: LinuxMachine.Outcome
             do {
                 let image = try Data(contentsOf: kernelURL)
@@ -63,6 +68,9 @@ public final class LocalVMModel {
                 }
             }
         }
+        thread.name = "app.wisq.vm"
+        thread.qualityOfService = .userInitiated
+        thread.start()
     }
 
     public func send(_ text: String) {
@@ -77,18 +85,48 @@ public final class LocalVMModel {
         machine?.stop()
     }
 
-    private func appendConsole(_ text: String) {
-        rawConsole += ANSIFilter.strip(text)
-        if rawConsole.count > Self.consoleCap {
-            rawConsole = String(rawConsole.suffix(Self.consoleCap / 2))
-        }
-        consoleText = ANSIFilter.applyLineEdits(rawConsole)
-    }
-
     private func finish(with message: String) {
         machine = nil
         status = .finished(message)
-        appendConsole("\n[\(message)]\n")
+        _ = sink.append(Data("\n[\(message)]\n".utf8))
+        consoleText = sink.takeText()
+    }
+}
+
+/// Carries console bytes from the emulation thread to the main actor.
+///
+/// Two jobs, both about not letting a fast guest overwhelm a slow renderer:
+/// it applies each chunk to the console once, incrementally, on the thread
+/// that produced it; and it reports whether a refresh is already pending, so
+/// the main actor is woken once per render rather than once per write.
+private final class ConsoleSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var console = ConsoleBuffer()
+    private var refreshPending = false
+
+    /// Buffers the chunk. Returns true only for the write that should schedule
+    /// a refresh — every write until that refresh happens returns false.
+    func append(_ data: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        console.append(data)
+        if refreshPending { return false }
+        refreshPending = true
+        return true
+    }
+
+    func takeText() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        refreshPending = false
+        return console.text
+    }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        console.removeAll()
+        refreshPending = false
     }
 }
 
