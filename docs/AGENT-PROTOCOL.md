@@ -101,21 +101,35 @@ L'écran d'import affiche les agents détectés ; une tape remplit l'adresse.
 
 ## Implémentation
 
-Les deux côtés sont écrits et testés l'un contre l'autre : les tests
-bout-à-bout démarrent un vrai serveur sur un port éphémère et l'interrogent
-avec le même `AgentClient` que l'application embarque.
+Le démon est en **Rust** (`crates/wisq-agent`), le client en **Swift** — ils
+n'ont pas les mêmes contraintes. Le démon s'installe sur un NAS ou un portable
+et n'a ni interface ni framework de plateforme : rien qui justifie d'embarquer
+un runtime de langage. Statiquement lié au runtime Swift il pesait 58 Mo pour
+servir quatre routes ; il en fait aujourd'hui moins de 600 Ko, en un seul
+fichier statique qui tourne sur n'importe quel Linux, Alpine compris.
 
-Le démon (`wisq-agent`, module `WisqAgentKit`) tient en trois pièces :
+Zéro dépendance, délibérément. Un programme qu'on installe par un `curl | sh`
+est un programme dont on hérite les dépendances, et le protocole ci-dessus est
+assez petit pour qu'un serveur HTTP/1.1 et un écrivain JSON écrits à la main
+représentent moins de code que la glu qu'un framework demanderait.
 
-- un serveur HTTP/1.1 minimal sur sockets POSIX — zéro dépendance, un agent de
-  réseau local n'a pas besoin de SwiftNIO ;
-- `AgentService`, le routage du protocole ci-dessus ;
-- deux backends : `VirshBackend` pilote libvirt via la CLI `virsh` (pas de
-  liaison C, dégradation propre si libvirt est absent), et `DemoBackend` sert
-  deux VM factices avec de vraies transitions d'état — `wisq-agent --demo`
-  donne au téléphone quelque chose d'honnête à interroger sans hyperviseur.
+Trois pièces :
+
+- `http.rs`, un serveur HTTP/1.1 sur la bibliothèque standard, un fil par
+  connexion, avec des plafonds sur les en-têtes et le corps ;
+- `service.rs`, le routage du protocole ci-dessus, jeton comparé en temps
+  constant ;
+- `backend.rs`, deux backends : `VirshBackend` pilote libvirt via la CLI
+  `virsh` (pas de liaison C, dégradation propre si libvirt est absent), et
+  `DemoBackend` sert deux VM factices avec de vraies transitions d'état.
+
+**Le format de fil est gardé par un test qui traverse les deux langages** : la
+suite Swift lance le vrai binaire Rust sur un port éphémère et l'interroge avec
+le même `AgentClient` que l'application embarque. C'est le seul endroit où une
+divergence entre les deux moitiés du protocole peut se voir, et depuis qu'elles
+ne sont plus écrites dans la même langue, c'est le test qui compte.
 
 ```sh
-swift run wisq-agent --demo        # essai sans libvirt
-swift run wisq-agent               # libvirt via virsh, port 7442
+cargo run -p wisq-agent -- --demo   # essai sans libvirt
+cargo run -p wisq-agent             # libvirt via virsh, port 7442
 ```

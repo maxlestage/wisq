@@ -8,19 +8,23 @@ import { copy } from "../src/content";
 /// being true — the same discipline as the protocol guard rails.
 const repoRoot = join(import.meta.dir, "..", "..");
 
-function swiftTestFunctionCount(): number {
+/// Both languages: the daemon and the VM core are Rust, and a count that only
+/// saw Swift would advertise a smaller number than the repository actually
+/// carries — the exact kind of quiet rot this file exists to prevent.
+function testCount(): number {
   let total = 0;
-  const walk = (dir: string) => {
+  const walk = (dir: string, extension: string, pattern: RegExp) => {
     for (const entry of readdirSync(dir)) {
       const path = join(dir, entry);
       if (statSync(path).isDirectory()) {
-        walk(path);
-      } else if (entry.endsWith(".swift")) {
-        total += readFileSync(path, "utf8").match(/^\s*func test[A-Z_]/gm)?.length ?? 0;
+        walk(path, extension, pattern);
+      } else if (entry.endsWith(extension)) {
+        total += readFileSync(path, "utf8").match(pattern)?.length ?? 0;
       }
     }
   };
-  walk(join(repoRoot, "Tests"));
+  walk(join(repoRoot, "Tests"), ".swift", /^\s*func test[A-Z_]/gm);
+  walk(join(repoRoot, "crates"), ".rs", /^\s*#\[test\]/gm);
   return total;
 }
 
@@ -32,7 +36,7 @@ function claimedValue(label: RegExp): number {
 
 describe("advertised claims match the repository", () => {
   test("the test count is the real one", () => {
-    expect(claimedValue(/tests/)).toBe(swiftTestFunctionCount());
+    expect(claimedValue(/tests/)).toBe(testCount());
   });
 
   test("the CI gate count matches the workflow", () => {

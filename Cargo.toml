@@ -1,0 +1,19 @@
+# Rust side of wisq: the parts that are pure computation or a plain daemon, and
+# therefore have no reason to be tied to a platform runtime.
+#
+#   crates/wisq-vm     the rv32ima interpreter — a static library for the iPhone
+#                      app, and the benchmark that measures it
+#   crates/wisq-agent  the host daemon for Mac and Linux
+#
+# The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
+# desktop client built on Network.framework.
+[workspace]
+resolver = "2"
+members = ["crates/wisq-vm", "crates/wisq-agent"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
