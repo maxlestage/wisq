@@ -56,6 +56,16 @@ body {
 
 a { color: var(--accent); }
 
+/* Keyboard users had nothing to go on before this: the browser default outline
+   disappears against the dark theme, and no rule replaced it. `:focus-visible`
+   rather than `:focus` so a mouse click does not draw a ring nobody asked for. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
 h1, h2, h3 { line-height: 1.18; letter-spacing: -0.02em; margin: 0; }
 h1 { font-size: 2rem; }
 h2 { font-size: 1.5rem; }
@@ -118,6 +128,12 @@ section + section { border-top: 1px solid var(--line); }
   color: var(--fg);
   text-decoration: none;
   margin-right: auto;
+  /* The word is only 20px tall, which is a link too small to hit reliably and
+     below the 24px WCAG 2.5.8 minimum. The box is what gets tapped, so the box
+     is what has to be big — the text stays the size it looks best at. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 .brand span { color: var(--accent); }
 
@@ -399,14 +415,73 @@ pre code { white-space: pre; }
 
 /* ---------- footer ---------- */
 
-.site-footer { border-top: 1px solid var(--line); padding-block: 32px 44px; }
-.footer-links { display: flex; flex-wrap: wrap; gap: 18px; font-size: 0.9rem; }
-.footer-note { margin-top: 18px; font-size: 0.8rem; color: var(--fg-soft); max-width: 62ch; }
+/* The footer is a destination, not a margin: someone scrolls here on purpose,
+   looking for the source, the licence, or whether they are being tracked. It
+   stacks on a phone and becomes columns when there is room, and it never hides
+   behind a disclosure. */
+.site-footer {
+  border-top: 1px solid var(--line);
+  background: var(--bg-soft);
+  padding-block: 40px 0;
+  margin-top: 8px;
+}
+
+.footer-top { display: grid; gap: 32px; }
+
+.footer-brand p {
+  margin: 12px 0 0;
+  font-size: 0.9rem;
+  color: var(--fg-soft);
+  max-width: 42ch;
+}
+.footer-version {
+  font-family: var(--mono);
+  font-size: 0.78rem !important;
+  letter-spacing: -0.01em;
+}
+
+.footer-groups { display: grid; gap: 28px; grid-template-columns: 1fr 1fr; }
+.footer-groups h2 {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+.footer-groups ul { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.footer-groups a {
+  display: block;
+  /* Comfortable to hit with a thumb without turning the footer into a page. */
+  padding-block: 7px;
+  font-size: 0.92rem;
+  color: var(--fg);
+  text-decoration: none;
+}
+.footer-groups a:hover { color: var(--accent); }
+
+.footer-bottom {
+  margin-top: 36px;
+  padding-block: 22px 32px;
+  border-top: 1px solid var(--line);
+}
+.footer-note { margin: 0 0 8px; font-size: 0.8rem; color: var(--fg-soft); max-width: 68ch; }
+.footer-note:last-of-type { margin-bottom: 0; }
+
+.footer-legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin-top: 18px;
+  font-size: 0.82rem;
+}
+.footer-legal a { color: var(--fg-soft); text-decoration: none; padding-block: 4px; }
+.footer-legal a:hover { color: var(--fg); text-decoration: underline; }
 
 /* ---------- breakpoints: only add room ---------- */
 
 @media (min-width: 40em) {
   body { font-size: 18px; }
+  .footer-groups { grid-template-columns: repeat(3, 1fr); }
   section { padding-block: 76px; }
   .hero { padding-block: 76px 84px; }
   .hero h1 { font-size: 3rem; }
@@ -536,4 +611,24 @@ pre code { white-space: pre; }
 @media (min-width: 40em) {
   .doc-head h1 { font-size: 2.2rem; }
   .doc h2 { font-size: 1.5rem; }
+}
+
+
+/* ---------- print ---------- */
+
+/* The written pages are reference material, and reference material gets
+   printed. Chrome offered a header that sticks over the first paragraph of
+   every page and a footer of links that cannot be clicked on paper. */
+@media print {
+  .site-header,
+  .site-footer,
+  .install-banner,
+  .skip-link { display: none !important; }
+
+  body { font-size: 11pt; background: #fff; color: #000; }
+  .doc > .wrap > * { max-width: none; }
+  .doc h2, .doc h3 { break-after: avoid; }
+  .doc-code, .doc-note, .table-scroll { break-inside: avoid; }
+  .doc-code { background: #fff; border: 1px solid #999; }
+  .doc-code pre { color: #000; }
 }
