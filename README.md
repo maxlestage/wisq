@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/maxlestage/wisq/actions/workflows/ci.yml/badge.svg)](https://github.com/maxlestage/wisq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Swift](https://img.shields.io/badge/swift-6.1-orange.svg)](Package.swift)
+[![Swift](https://img.shields.io/badge/swift-6.3-orange.svg)](Package.swift)
+[![Bun](https://img.shields.io/badge/bun-1.4-black.svg)](site/package.json)
 
 Virtual machines on your iPhone, both ways UTM cannot: **remote at full
 speed, local within the rules**. *([Version française](README.fr.md) · [site](site/)).*
@@ -29,7 +30,7 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
 
 Everything below is implemented, tested (117 tests) and green in CI, which
 among other things **boots a real Linux kernel inside the emulator** as a
-test. The one deliberate v1 limitation: the host agent speaks plain HTTP
+test. The package builds in the **Swift 6 language mode** with no warnings. The one deliberate v1 limitation: the host agent speaks plain HTTP
 behind a mandatory token — trusted network or tunnel, like unencrypted VNC.
 
 | Component | State |
@@ -105,8 +106,8 @@ the Files app — ready-made ones live in the
 ```
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
-Linux; on Debian/Ubuntu you need `zlib1g-dev` (the official Swift Docker
-image has it). The app project is generated: `brew install xcodegen &&
+Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official
+Swift Docker image has it). The app project is generated: `brew install xcodegen &&
 xcodegen generate`.
 
 ## Layout

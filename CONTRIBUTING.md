@@ -37,9 +37,9 @@ the page too (the test will tell you).
 
 Every pull request runs three gates, and all of them block:
 
-1. **Cœur (Linux)** — strict-concurrency build of every non-UI module plus
+1. **Cœur (Linux)** — Swift 6 language mode build of every non-UI module plus
    the full test suite, including booting a real Linux kernel in the
-   rv32ima emulator.
+   rv32ima emulator. Runs on the `swift:6.3` image.
 2. **App iOS** — XcodeGen + simulator build of the app.
 3. **Lint** — SwiftLint over the Swift sources.
 4. **Site** — builds and tests `site/` when it changes, and publishes to
@@ -49,8 +49,8 @@ Match them locally before pushing; `scripts/verify.sh` covers the first.
 
 ## Ground rules the codebase already follows
 
-- **Zero warnings**, including under `-strict-concurrency=complete`. A
-  warning in CI is a failure.
+- **Zero warnings** in the Swift 6 language mode, which the package opts into
+  via `swift-tools-version: 6.0`. A warning in CI is a failure.
 - **Never advertise what you cannot decode.** Guard-rail tests enforce it
   for RFB; keep the pattern for any new protocol.
 - **Secrets go to the Keychain**, never into JSON stores or logs.

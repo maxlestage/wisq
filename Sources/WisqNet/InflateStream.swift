@@ -8,7 +8,14 @@ import WisqCore
 /// them awkward: the stream is *not* restarted per rectangle. Its dictionary carries
 /// across the whole session, which is where the compression ratio comes from — and
 /// which means one dropped or mis-parsed byte corrupts every frame after it.
-public final class InflateStream {
+///
+/// Marked `@unchecked Sendable` on the strength of an actual lock rather than a
+/// promise: a decoder runs as a nonisolated async call made from the session
+/// actor, so the stream is handed between executors even though only one decode
+/// is ever in flight. The lock makes that transfer safe rather than merely
+/// unlikely to hurt.
+public final class InflateStream: @unchecked Sendable {
+    private let lock = NSLock()
     private var stream = z_stream()
     private var isOpen = false
     /// Reused across calls so a 60 Hz stream of updates does not allocate a
@@ -28,6 +35,8 @@ public final class InflateStream {
     /// A call may legitimately produce nothing: zlib buffers until it has a
     /// complete block. The caller must not treat empty output as an error.
     public func inflate(_ input: Data) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
         guard isOpen else { throw WisqError.malformedMessage("flux zlib fermé") }
         guard !input.isEmpty else { return Data() }
 
@@ -69,6 +78,8 @@ public final class InflateStream {
     /// Restarts the stream, discarding its dictionary. Tight uses this: its
     /// compression-control byte can ask for any of its four streams to be reset.
     public func reset() throws {
+        lock.lock()
+        defer { lock.unlock() }
         if isOpen {
             inflateEnd(&stream)
             isOpen = false

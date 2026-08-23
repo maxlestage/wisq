@@ -7,6 +7,17 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- The package now builds in the **Swift 6 language mode**
+  (`swift-tools-version: 6.0`), warning-free, on Swift 6.3.
+- Toolchains moved to the current releases: Swift 6.3, Bun 1.4,
+  TypeScript 7, React 19.2, and the current major of every GitHub Action.
+
+### Fixed
+- `InflateStream` is now genuinely thread-safe behind a lock, which makes
+  `RFBStreams` properly `Sendable`. Swift 6.3 flagged the decoder being sent
+  across an isolation boundary — a real finding that older compilers missed.
+
 ## [0.1.0] — pending first release
 
 The scope of the initial pull request, in one line each.
