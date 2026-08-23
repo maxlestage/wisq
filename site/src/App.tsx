@@ -238,7 +238,15 @@ function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
               </a>
             </div>
           </div>
-          <Logo className="hero-logo" />
+          {/* The mark and the name as one block. The mark alone is a picture
+              of `▚`, which says what the product does but not what it is
+              called; the two together are the thing a reader recognises later.
+              The wordmark is real text rather than part of the drawing, so it
+              is selectable, searchable, and read aloud. */}
+          <div className="hero-lockup">
+            <Logo className="hero-logo" />
+            <p className="hero-wordmark">wisq</p>
+          </div>
         </div>
       </section>
 

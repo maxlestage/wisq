@@ -75,6 +75,11 @@ break APIs.
   page matching the address that failed, so losing the network does not also
   lose the language. The sitemap lists every page in both languages with
   `xhtml:link` alternates.
+- The landing page's mark is now a **lockup**: the drawing with the name set
+  large beside it. The mark alone says what the product does and not what it is
+  called; the two together are what a reader recognises later. The name is real
+  text rather than part of the drawing, so it is selectable, searchable and
+  read aloud.
 - **The full mark**, on the landing page, beside the wordmark the header
   carries everywhere. `▚` is the site's mark and stays the Home Screen icon
   untouched, because at 60 px anything more becomes mush; the hero has room to
