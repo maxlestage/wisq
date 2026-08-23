@@ -39,6 +39,16 @@ The scope of the initial pull request, in one line each.
   through the Files app.
 - CI boots the real kernel and reads its banner as a test.
 
+### Added — installation
+- One-line installer for the agent (`scripts/install.sh`): release binary
+  per platform with source-build fallback, optional launchd/systemd
+  service.
+- Homebrew formula served from this repository as a tap, `brew services`
+  support included.
+- Releases attach an unsigned IPA for AltStore/Sideloadly sideloading;
+  `scripts/install-ios.sh` builds and installs straight onto a connected
+  iPhone with Xcode.
+
 ### Security
 - Secrets live in the Keychain, never in the machine library JSON.
 - The agent v1 speaks plain HTTP behind a mandatory bearer token: trusted
