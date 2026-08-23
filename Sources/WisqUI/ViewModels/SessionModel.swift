@@ -107,7 +107,7 @@ public final class SessionModel {
         eventTask = Task { [weak self] in
             for await event in session.events {
                 guard let self else { return }
-                await self.apply(event)
+                self.apply(event)
             }
         }
     }

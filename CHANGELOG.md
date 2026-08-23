@@ -17,6 +17,12 @@ break APIs.
 - `InflateStream` is now genuinely thread-safe behind a lock, which makes
   `RFBStreams` properly `Sendable`. Swift 6.3 flagged the decoder being sent
   across an isolation boundary — a real finding that older compilers missed.
+- A double-resume crash in `NetworkByteStream.open()`: the flag guarding the
+  continuation was a captured `var` mutated from `NWConnection`'s state
+  handler, which runs on Network's own queue. Two state transitions racing
+  would have resumed the continuation twice, which traps. Replaced by
+  `ResumeOnce`, a locked once-guard that lives outside the platform guard so
+  it is compiled and race-tested on every platform.
 
 ## [0.1.0] — pending first release
 

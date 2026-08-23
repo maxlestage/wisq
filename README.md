@@ -28,7 +28,7 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
 
 ## Status
 
-Everything below is implemented, tested (117 tests) and green in CI, which
+Everything below is implemented, tested (119 tests) and green in CI, which
 among other things **boots a real Linux kernel inside the emulator** as a
 test. The package builds in the **Swift 6 language mode** with no warnings. The one deliberate v1 limitation: the host agent speaks plain HTTP
 behind a mandatory token — trusted network or tunnel, like unencrypted VNC.
