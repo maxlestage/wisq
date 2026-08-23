@@ -10,8 +10,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> Building the core under complete strict concurrency"
-swift build -Xswiftc -strict-concurrency=complete
+echo "==> Building the core (Swift 6 language mode)"
+swift build
 
 echo "==> Running the core tests"
 swift test

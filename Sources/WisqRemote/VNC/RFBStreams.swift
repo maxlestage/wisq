@@ -6,7 +6,11 @@ import WisqNet
 ///
 /// One per compressed encoding, plus Tight's four. They are session state, not
 /// rectangle state: the whole point is that the dictionary carries across frames.
-final class RFBStreams {
+///
+/// Genuinely `Sendable`: every stored property is a `let` holding an
+/// individually thread-safe `InflateStream`, which is what lets a decoder be
+/// handed to a nonisolated async call without an escape hatch.
+final class RFBStreams: Sendable {
     let zrle: InflateStream
     let zlib: InflateStream
     private let tightStreams: [InflateStream]
