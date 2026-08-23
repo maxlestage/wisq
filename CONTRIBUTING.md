@@ -1,14 +1,33 @@
 # Contributing to wisq
 
+## Two languages, and why
+
+Swift holds the app, the UI and the remote desktop client: work built on
+Network.framework that belongs on the platform it targets. Rust holds the
+host daemon and the rv32ima interpreter — a program with no interface and a
+loop over a byte array, neither of which has a reason to carry a language
+runtime. That split is what took the daemon's download from 58 MB to 582 KB.
+
+If you are adding something, the question is which of those two it looks
+like, not which language you would rather write.
+
 ## Building and testing
 
-The protocol and emulator work — where the bugs live — builds and tests on
-Linux and macOS with nothing but a Swift 6 toolchain:
+Linux and macOS, with a Swift 6 toolchain and a Rust one:
 
 ```sh
-./scripts/verify.sh          # strict-concurrency build + full test suite
+./scripts/verify.sh          # Rust build + tests, then the Swift ones
 ./scripts/verify.sh --app    # additionally builds the iOS app (macOS + Xcode)
 ```
+
+`verify.sh` builds the Rust agent before running the Swift suite on purpose:
+the protocol tests launch the real daemon and query it with the app's own
+client, and without the binary they skip rather than check anything.
+
+**Keep your toolchains current.** CI tracks stable for both, and a lint that
+only exists in a newer clippy or a warning that only a newer Swift emits will
+fail there and not here. `rustup update` and matching the Swift version CI
+runs costs a minute and saves a round trip.
 
 The iOS app itself needs Xcode; the project file is generated, never
 committed:
