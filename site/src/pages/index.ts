@@ -13,6 +13,7 @@ import { architectureEn, architectureFr } from "./architecture";
 import { faqEn, faqFr } from "./faq";
 import { roadmapEn, roadmapFr } from "./roadmap";
 import { releasesEn, releasesFr } from "./releases";
+import { privacyEn, privacyFr } from "./privacy";
 import { offlineEn, offlineFr, notFoundEn, notFoundFr } from "./offline";
 
 export type DocRouteId = Exclude<RouteId, "home">;
@@ -25,6 +26,7 @@ export const PAGES: Record<Lang, Record<DocRouteId, Doc>> = {
     faq: faqEn,
     roadmap: roadmapEn,
     releases: releasesEn,
+    privacy: privacyEn,
     offline: offlineEn,
     notFound: notFoundEn,
   },
@@ -35,6 +37,7 @@ export const PAGES: Record<Lang, Record<DocRouteId, Doc>> = {
     faq: faqFr,
     roadmap: roadmapFr,
     releases: releasesFr,
+    privacy: privacyFr,
     offline: offlineFr,
     notFound: notFoundFr,
   },

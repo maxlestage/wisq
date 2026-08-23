@@ -56,9 +56,15 @@ function drawMark(canvas: Canvas, inset: number) {
   const side = Math.min(canvas.width, canvas.height) * inset;
   const x = (canvas.width - side) / 2;
   const y = (canvas.height - side) / 2;
-  const half = side / 2;
-  canvas.rect(x, y, half, half, MARK);
-  canvas.rect(x + half, y + half, half, half, MARK);
+  // The same proportions as the full mark in `src/components/Logo.tsx`: the two
+  // quadrants stand apart rather than touching at a point, because what is
+  // between them is the product. Here there is no room to draw the link, only
+  // the space it runs through — an icon is the mark with the detail removed,
+  // not a different mark.
+  const gap = side * 0.1;
+  const quadrant = (side - gap) / 2;
+  canvas.rect(x, y, quadrant, quadrant, MARK);
+  canvas.rect(x + quadrant + gap, y + quadrant + gap, quadrant, quadrant, MARK);
 }
 
 // A 5×7 bitmap for the four letters the wordmark needs. Blocky on purpose: the

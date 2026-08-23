@@ -56,13 +56,19 @@ describe("built output", () => {
       const here = dirname(join(dist, file));
       const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]!);
 
-      for (const ref of refs) {
-        if (/^(https?:|data:|mailto:|#)/.test(ref)) continue;
-        expect(ref.startsWith("/"), `chemin absolu dans ${file} : ${ref}`).toBe(false);
+      for (const raw of refs) {
+        if (/^(https?:|data:|mailto:|#)/.test(raw)) continue;
+        expect(raw.startsWith("/"), `chemin absolu dans ${file} : ${raw}`).toBe(false);
+
+        // A fragment addresses a place inside a document, not a file:
+        // `./#install` is the landing page's install section and resolves to
+        // the landing page itself.
+        const ref = raw.split("#")[0]!;
+        if (ref === "") continue;
 
         // A directory reference means that directory's index.
         const target = normalize(join(here, ref.endsWith("/") ? `${ref}index.html` : ref));
-        expect(existsSync(target), `${file} référence ${ref}, absent du build`).toBe(true);
+        expect(existsSync(target), `${file} référence ${raw}, absent du build`).toBe(true);
         checked += 1;
       }
     }
@@ -109,6 +115,87 @@ describe("built output", () => {
       read(outputPath(route)).includes("application/ld+json"),
     );
     expect(withJsonLd.map((route) => route.id)).toEqual(["home"]);
+  });
+});
+
+describe("the mark", () => {
+  /// Two logos on the landing page and one everywhere else, which is the whole
+  /// point of drawing a second one: the header wordmark names the site on every
+  /// page, and the full mark gets the room the hero has and no other page does.
+  test("the full mark is on the landing page and nowhere else", () => {
+    for (const route of ROUTES) {
+      const file = outputPath(route);
+      const html = read(file);
+      const marks = html.split('class="hero-logo"').length - 1;
+      expect(marks, `${file} : nombre de marques complètes`).toBe(
+        route.id === "home" ? 1 : 0,
+      );
+      // The wordmark is the one logo every page carries.
+      expect(html, `${file} : mot-marque`).toContain('class="brand"');
+    }
+  });
+
+  /// Drawn, not fetched. An <img> here would be a second request before the
+  /// hero can paint, and a committed binary nobody can diff.
+  test("the mark is inline and costs no request", () => {
+    const home = read("index.html");
+    expect(home).toContain('<svg class="hero-logo"');
+    expect(home.match(/<img[^>]*hero-logo/)).toBeNull();
+  });
+
+  /// The header brand and the heading already say what this is, so announcing
+  /// it a third time is noise for anyone listening rather than looking.
+  test("the mark is decorative", () => {
+    const svg = read("index.html").match(/<svg class="hero-logo"[^>]*>/)?.[0];
+    expect(svg).toBeDefined();
+    expect(svg).toContain('aria-hidden="true"');
+  });
+});
+
+describe("footer", () => {
+  /// A footer is where someone goes when the page did not answer them. It is
+  /// on every page or it is not a footer, so this checks every page rather
+  /// than the landing one.
+  test("every page carries the whole footer", () => {
+    for (const route of ROUTES) {
+      const file = outputPath(route);
+      const html = read(file);
+      for (const heading of ["Product", "Documentation", "Project"]) {
+        expect(html, `${file} : groupe ${heading}`).toContain(`>${heading}</h2>`);
+      }
+      for (const label of ["Install", "Issues", "Contributing", "Security", "Changelog"]) {
+        expect(html, `${file} : lien ${label}`).toContain(`>${label}</a>`);
+      }
+      expect(html, `${file} : confidentialité`).toContain(">Privacy</a>");
+      expect(html, `${file} : retour en haut`).toContain(">Back to top</a>");
+      expect(html, `${file} : licence`).toContain("Apache-2.0");
+    }
+  });
+
+  test("the footer's project links point at files the repository has", () => {
+    const html = read("index.html");
+    for (const path of [
+      "/blob/master/LICENSE",
+      "/blob/master/CONTRIBUTING.md",
+      "/blob/master/SECURITY.md",
+      "/blob/master/CHANGELOG.md",
+      "/issues",
+    ]) {
+      expect(html, `lien projet manquant : ${path}`).toContain(`github.com/maxlestage/wisq${path}`);
+    }
+    const repoRoot = join(dist, "..", "..");
+    for (const file of ["LICENSE", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]) {
+      expect(existsSync(join(repoRoot, file)), `${file} absent du dépôt`).toBe(true);
+    }
+  });
+
+  test("the version shown is the newest released one", () => {
+    const changelog = readFileSync(join(dist, "..", "..", "CHANGELOG.md"), "utf8");
+    const newest = changelog.match(/^## \[(\d+\.\d+\.\d+)\] —/m)?.[1];
+    expect(newest, "aucune version datée dans le CHANGELOG").toBeDefined();
+    expect(read("index.html"), "la version du pied de page a dérivé").toContain(
+      `Version ${newest}`,
+    );
   });
 });
 
@@ -223,6 +310,50 @@ describe("discoverability", () => {
     expect(html).toContain("Not found");
     // And it can still navigate: a dead end is not a 404 page.
     expect(html).toContain('href="./docs/"');
+  });
+
+  /// The privacy page says the site loads nothing from anyone else. That is a
+  /// claim about the built artefact, so it is checked against the built
+  /// artefact rather than trusted.
+  test("no external stylesheet, script, font, image or frame is loaded", () => {
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((entry) => {
+        const full = join(dir, entry);
+        return statSync(full).isDirectory() ? walk(full) : [full];
+      });
+
+    for (const file of walk(dist).filter((f) => f.endsWith(".html"))) {
+      const html = readFileSync(file, "utf8");
+      const loaders = [
+        ...html.matchAll(/<script[^>]+src="([^"]+)"/g),
+        ...html.matchAll(/<link[^>]+rel="(?:stylesheet|preload|preconnect|dns-prefetch)"[^>]+href="([^"]+)"/g),
+        ...html.matchAll(/<img[^>]+src="([^"]+)"/g),
+        ...html.matchAll(/<iframe[^>]+src="([^"]+)"/g),
+      ];
+      for (const match of loaders) {
+        expect(
+          /^https?:/.test(match[1]!),
+          `${file} charge une ressource externe : ${match[1]}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  test("the stylesheet and the script fetch nothing from another host", () => {
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((entry) => {
+        const full = join(dir, entry);
+        return statSync(full).isDirectory() ? walk(full) : [full];
+      });
+
+    for (const file of walk(dist).filter((f) => /\.(css|js)$/.test(f))) {
+      const text = readFileSync(file, "utf8");
+      // @import and url() in CSS, and fetch/import in JS, are the ways an
+      // asset pulls in a third party without the HTML showing it.
+      for (const match of text.matchAll(/(?:@import\s+|url\(|fetch\(|import\()["']?(https?:\/\/[^"')\s]+)/g)) {
+        expect(false, `${file} contacte ${match[1]}`).toBe(true);
+      }
+    }
   });
 
   test("nothing in the build leaks an absolute deploy path", () => {

@@ -37,7 +37,30 @@ export interface Copy {
   };
   how: { title: string; steps: { title: string; body: string }[] };
   facts: { title: string; items: { value: string; label: string }[] };
-  footer: { license: string; source: string; docs: string; note: string };
+  footer: {
+    license: string;
+    source: string;
+    docs: string;
+    note: string;
+    /// A one-line description under the wordmark, for a reader who arrived at
+    /// the footer without reading the page above it.
+    tagline: string;
+    groups: { product: string; documentation: string; project: string };
+    links: {
+      install: string;
+      issues: string;
+      contributing: string;
+      security: string;
+      changelog: string;
+      privacy: string;
+    };
+    /// Stated because it is true and checkable, not as a slogan: a test fails
+    /// the build if any third-party address appears in the built site.
+    privacyNote: string;
+    attribution: string;
+    backToTop: string;
+    version: string;
+  };
   /// Navigation labels for the written pages, keyed by route.
   pages: {
     home: string;
@@ -48,6 +71,7 @@ export interface Copy {
     faq: string;
     roadmap: string;
     releases: string;
+    privacy: string;
     offline: string;
   };
   /// The install affordance. Two shapes, because the platforms differ: a
@@ -196,6 +220,22 @@ const en: Copy = {
   },
   footer: {
     license: "Apache-2.0",
+    tagline:
+      "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
+    groups: { product: "Product", documentation: "Documentation", project: "Project" },
+    links: {
+      install: "Install",
+      issues: "Issues",
+      contributing: "Contributing",
+      security: "Security",
+      changelog: "Changelog",
+      privacy: "Privacy",
+    },
+    privacyNote:
+      "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
+    attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
+    backToTop: "Back to top",
+    version: "Version",
     source: "Source",
     docs: "Docs",
     note:
@@ -211,6 +251,7 @@ const en: Copy = {
     faq: "Questions",
     roadmap: "Roadmap",
     releases: "Releases",
+    privacy: "Privacy",
     offline: "Offline",
   },
   pwa: {
@@ -357,6 +398,22 @@ const fr: Copy = {
   },
   footer: {
     license: "Apache-2.0",
+    tagline:
+      "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
+    groups: { product: "Produit", documentation: "Documentation", project: "Projet" },
+    links: {
+      install: "Installer",
+      issues: "Signalements",
+      contributing: "Contribuer",
+      security: "Sécurité",
+      changelog: "Journal",
+      privacy: "Confidentialité",
+    },
+    privacyNote:
+      "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
+    attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
+    backToTop: "Haut de page",
+    version: "Version",
     source: "Sources",
     docs: "Docs",
     note:
@@ -372,6 +429,7 @@ const fr: Copy = {
     faq: "Questions",
     roadmap: "Feuille de route",
     releases: "Versions",
+    privacy: "Confidentialité",
     offline: "Hors ligne",
   },
   pwa: {
@@ -389,3 +447,11 @@ export const copy: Record<Lang, Copy> = { en, fr };
 export const REPO = "https://github.com/maxlestage/wisq";
 export const RELEASES = `${REPO}/releases/latest`;
 export const DOCS = `${REPO}/tree/master/docs`;
+export const ISSUES = `${REPO}/issues`;
+export const CONTRIBUTING = `${REPO}/blob/master/CONTRIBUTING.md`;
+export const SECURITY = `${REPO}/blob/master/SECURITY.md`;
+export const CHANGELOG = `${REPO}/blob/master/CHANGELOG.md`;
+
+/// The version the footer shows. Checked against CHANGELOG.md by a test, so it
+/// cannot quietly describe a release the repository does not have.
+export const SITE_VERSION = "0.2.0";
