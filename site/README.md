@@ -63,6 +63,41 @@ another, because `Cache.addAll` rejects the entire list when two entries
 resolve to the same URL and leaves no worker at all. Both are now covered by
 tests, but neither was findable without driving a real browser.
 
+## Two logos, one mark
+
+The header carries the wordmark on every page. The landing page also carries
+the full mark, which is what `▚` means when there is room to draw it: the
+upper-left quadrant is a window on a machine somewhere else, the lower-right
+one is the phone in your hand, and the gap between them holds the link. In the
+character the quadrants touch at a point; here they stand apart, because what
+is between them is the product.
+
+The Home Screen icon stays the simplified version — two quadrants, no detail —
+because at 60 px anything more becomes mush. That is a logo system rather than
+two drawings, so `scripts/icons.ts` and `src/components/Logo.tsx` share the
+same proportions and a test asserts the full mark appears on the landing page
+and on no other.
+
+It is inline SVG rather than a file: the hero paints in the first response with
+no second request, and the artwork stays something you can diff.
+
+## The footer, and what gets checked in a browser
+
+The footer is on every page and carries what the header cannot: three groups —
+use it, understand it, contribute to it — the version the site was built from,
+the licence, the privacy page. Tests assert every page carries the whole
+footer, that each project link points at a file that actually exists in this
+repository, and that the version shown equals the newest dated section of
+`CHANGELOG.md`, so the footer cannot quietly describe a release that never
+happened.
+
+Layout and target sizes are checked by driving a real browser at 390 px and
+1280 px, because a stylesheet cannot tell you what it renders as. That check
+is what caught the wordmark being a 20 px-tall link — comfortably below the
+24 px minimum — in both the header and the footer, and the missing
+`:focus-visible` rule that made keyboard navigation invisible. Neither was
+visible in the markup or in a test that only reads HTML.
+
 ## Claims are checked against the repository
 
 Numbers on the site — the test count, the CI gate count, the versions the

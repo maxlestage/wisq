@@ -13,7 +13,6 @@ export function Install({ copy }: { copy: Copy }) {
   return (
     <section id="install">
       <div className="wrap">
-        <p className="eyebrow">{copy.install.title}</p>
         <h2>{copy.install.title}</h2>
         <p className="lede">{copy.install.lede}</p>
 
