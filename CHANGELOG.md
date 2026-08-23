@@ -22,6 +22,13 @@ break APIs.
   is a parse error, never a silent downgrade. The dependency budget of the
   agent is spent on exactly this and nothing else: rustls and rcgen, both from
   the rustls project, on the ring provider.
+- **The app says where it comes from.** An "About" section on the machine
+  list links the source repository, the issue tracker and the licence, and
+  credits mini-rv32ima — because Apache-2.0 is a promise to the person
+  holding the phone, and it is empty if they would have to find a website to
+  learn the source exists. The links live in `ProjectLinks` (WisqCore), and a
+  test asserts they point at this repository over HTTPS and that the files
+  they promise exist in the checkout.
 - A plain-HTTP client against the TLS port gets an immediate
   `426 Upgrade Required` explaining what to do — https, re-pair, or
   `--no-tls` — instead of a stalled connection. rustls reads `GET /` as a TLS
