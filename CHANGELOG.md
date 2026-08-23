@@ -8,6 +8,22 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The Rust core is packaged for Apple, and proven on an iPhone.**
+  `scripts/build-xcframework.sh` assembles `WisqVMCore.xcframework` — the
+  device slice, plus universal simulator and macOS slices — and checks the
+  result contains three slices rather than trusting that `xcodebuild`
+  succeeded. `scripts/test-ios.sh` boots a real Linux kernel through the C
+  ABI *inside a booted iPhone simulator* via `simctl spawn`. Both run in the
+  "App iOS" CI job. The question the Rust switch rested on was never "does it
+  compile for iOS" — every other check answered that — but "does the
+  interpreter run on the device the app ships to", and that now has an answer
+  on every commit.
+- `crates/wisq-vm/include/wisq_vm.h`, the C ABI as C sees it, with a test that
+  compiles it against the real static library and boots a kernel through it.
+  A hand-written header is a promise nothing enforces: a signature that drifts
+  from `src/ffi.rs` is not a Rust error, not a Swift error, and not a crash
+  until memory is already wrong — on a phone. The test was checked by breaking
+  the header on purpose and watching it fail.
 - **The agent speaks TLS, and the pairing link is the certificate story.** On
   first run the daemon signs itself an ECDSA P-256 certificate and keeps it
   beside its token; the certificate's SHA-256 fingerprint travels in the
