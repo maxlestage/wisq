@@ -28,8 +28,39 @@ break APIs.
   PWA needs and what `bun run dev` cannot give it.
 - `sitemap.xml`, `robots.txt`, canonical links, Open Graph and Twitter cards,
   JSON-LD on the landing page only, and a 404 page that can still navigate.
+- **A full footer**, on every page: the brand and the version the site was
+  built from, then three groups — use it, understand it, contribute to it —
+  and a bottom bar carrying the licence, the privacy page and a way back to
+  the top. A footer is where a reader goes when the page did not answer their
+  question, and one long row of links makes everything equally hard to find.
+  A test asserts every page carries the whole thing, that each project link
+  points at a file that exists in this repository, and that the version shown
+  matches the newest dated section of this changelog.
+- **The full mark**, on the landing page, beside the wordmark the header
+  carries everywhere. `▚` is the site's mark and stays the Home Screen icon
+  untouched, because at 60 px anything more becomes mush; the hero has room to
+  say what the two quadrants are — a window on a machine somewhere else, the
+  phone in your hand, and the link between them. Drawn as inline SVG in
+  `site/src/components/Logo.tsx`, so it paints in the first response and costs
+  no request. The PNG icons now share its geometry rather than only its idea.
+- **A privacy page** that can be checked rather than believed: no analytics, no
+  cookies, no third-party requests, the two local-storage keys named, what the
+  service worker keeps, what GitHub Pages sees, and the app's own plain-HTTP
+  caveat stated rather than buried. Tests assert the built pages reference no
+  external stylesheet, script, image or frame, and that neither the CSS nor
+  the JavaScript reaches off-origin.
 
 ### Fixed
+- The landing page printed two of its section headings twice: an eyebrow above
+  the heading repeating it word for word, which a screen reader read out twice
+  and a reader read as a stutter.
+- Every link and button now meets the 24 px minimum target size; the wordmark
+  was a 20 px-tall link in both the header and the footer. The text stays the
+  size it looks best at — the box around it is what got bigger, because the
+  box is what gets tapped. Found by measuring every target in a real browser
+  at 390 px and 1280 px, not by reading the stylesheet.
+- Keyboard focus was invisible: the stylesheet had no `:focus-visible` rule at
+  all, so anyone navigating by keyboard could not see where they were.
 - The service worker precached the offline page twice. `Cache.addAll` rejects
   the whole list on a duplicate URL and leaves no worker at all, so the site
   kept working and silently stopped being installable — the failure nobody

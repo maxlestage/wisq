@@ -16,6 +16,7 @@ export type RouteId =
   | "faq"
   | "roadmap"
   | "releases"
+  | "privacy"
   | "offline";
 
 export interface Route {
@@ -37,6 +38,9 @@ export const ROUTES: Route[] = [
   { id: "faq", path: "faq", listed: true },
   { id: "roadmap", path: "roadmap", listed: true },
   { id: "releases", path: "releases", listed: true },
+  // Reachable from the footer rather than the header: a reader looks for it
+  // where the legal lines are, and the top navigation is already full.
+  { id: "privacy", path: "privacy", listed: false },
   // Shown only when the network is gone and the address was never cached, so
   // it has no place in navigation or in a sitemap.
   { id: "offline", path: "offline", listed: false },
