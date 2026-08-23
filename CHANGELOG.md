@@ -8,6 +8,34 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The agent speaks TLS, and the pairing link is the certificate story.** On
+  first run the daemon signs itself an ECDSA P-256 certificate and keeps it
+  beside its token; the certificate's SHA-256 fingerprint travels in the
+  `wisq://` link as `fp=`, and the app pins exactly that certificate — no
+  authority to run, no chain, no name checks, because nobody installing a
+  daemon on a NAS with one curl line will also operate a CA. The certificate
+  never rotates on its own (old links must keep working; deleting the
+  `tls-*.der` files is the rotation) and barely expires (year 9999 — under
+  pinning, expiry could only strand a phone against a healthy daemon).
+  `--no-tls` keeps plain HTTP for pre-0.3 clients and for tunnels that already
+  encrypt; a link without `fp=` means plain HTTP, and a malformed fingerprint
+  is a parse error, never a silent downgrade. The dependency budget of the
+  agent is spent on exactly this and nothing else: rustls and rcgen, both from
+  the rustls project, on the ring provider.
+- **The app says where it comes from.** An "About" section on the machine
+  list links the source repository, the issue tracker and the licence, and
+  credits mini-rv32ima — because Apache-2.0 is a promise to the person
+  holding the phone, and it is empty if they would have to find a website to
+  learn the source exists. The links live in `ProjectLinks` (WisqCore), and a
+  test asserts they point at this repository over HTTPS and that the files
+  they promise exist in the checkout.
+- A plain-HTTP client against the TLS port gets an immediate
+  `426 Upgrade Required` explaining what to do — https, re-pair, or
+  `--no-tls` — instead of a stalled connection. rustls reads `GET /` as a TLS
+  record header announcing kilobytes that never arrive; one peeked byte
+  settles it, because every TLS session opens with 0x16 and no HTTP method
+  does.
+
 - The site is a **site** rather than a landing page: a guide, the agent
   protocol reference, the architecture decisions, questions answered plainly,
   a roadmap and a release history — seven pages, bilingual, each pre-rendered
@@ -97,6 +125,17 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- Generating a token on first run read `/dev/urandom` to end-of-file — an end
+  that never comes on a random device. The daemon grew a buffer until
+  allocation failed before its fallback path could run; masked for two
+  releases because every test passes `--token`. It now reads exactly the 32
+  bytes it needs.
+- A transport-level failure in the agent — a vanished socket, a failed TLS
+  handshake — is now closed without an HTTP answer instead of being answered
+  with a 400. Writing a response into a failed handshake makes rustls try to
+  continue that handshake against a client that is itself blocked reading: a
+  deadlock, one leaked thread per outdated client. Connection sockets also
+  carry 20 s deadlines, so no client can park a thread forever.
 - The hero split into two columns at 40em, which left the text 103 px and the
   headline five lines anywhere between 640 and 900 px — a layout that reads
   correctly at 1280 px and is broken in a range nobody thinks to open. It now

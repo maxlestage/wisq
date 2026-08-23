@@ -16,7 +16,11 @@ public enum ConsoleResolver {
         guard let binding = machine.agent else { return machine }
 
         let token = try binding.credentialRef.flatMap { try credentials.secret(for: $0) }
-        let client = AgentClient(baseURL: binding.baseURL, token: token)
+        let client: AgentClient = if let fingerprint = binding.certificateFingerprint {
+            AgentClient(baseURL: binding.baseURL, token: token, pinnedFingerprint: fingerprint)
+        } else {
+            AgentClient(baseURL: binding.baseURL, token: token)
+        }
 
         var vm = try await client.status(vm: binding.vmIdentifier)
         if vm.state != .running || vm.consolePort == nil {

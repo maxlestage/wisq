@@ -49,10 +49,12 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (128 tests) and green in CI, which
-among other things **boots a real Linux kernel inside the emulator** as a
-test. The package builds in the **Swift 6 language mode** with no warnings. The one deliberate v1 limitation: the host agent speaks plain HTTP
-behind a mandatory token — trusted network or tunnel, like unencrypted VNC.
+Everything below is implemented, tested (159 tests across Swift and Rust) and
+green in CI, which among other things **boots a real Linux kernel inside the
+emulator** as a test. The package builds in the **Swift 6 language mode** with
+no warnings. The agent speaks TLS by default: a self-signed certificate whose
+SHA-256 fingerprint travels in the pairing link, pinned by the app — no CA to
+operate, and `--no-tls` for tunnels that already encrypt.
 
 | Component | State |
 |---|---|

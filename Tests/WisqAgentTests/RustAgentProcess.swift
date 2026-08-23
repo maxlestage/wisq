@@ -38,19 +38,28 @@ final class RustAgentProcess {
     }
 
     /// Starts the daemon on an ephemeral port and waits until it says which one.
-    init(demoDelayMilliseconds: Int = 50) throws {
+    ///
+    /// Plain HTTP by default: the protocol tests exercise routes and JSON, and
+    /// URLSession on Linux cannot override trust for a self-signed certificate.
+    /// `tls: true` starts the daemon as it really ships, for the tests that
+    /// check the pairing link carries the certificate story.
+    init(demoDelayMilliseconds: Int = 50, tls: Bool = false) throws {
         guard let binary = Self.binaryPath() else {
             throw XCTSkip("wisq-agent absent : lancez `cargo build --release` d'abord")
         }
 
         process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = [
+        var arguments = [
             "--demo",
             "--demo-delay", String(demoDelayMilliseconds),
             "--port", "0",
             "--token", token,
         ]
+        if !tls {
+            arguments.append("--no-tls")
+        }
+        process.arguments = arguments
         // A private HOME so a test never reads or writes the developer's own
         // pairing token.
         var environment = ProcessInfo.processInfo.environment
