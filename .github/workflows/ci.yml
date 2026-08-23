@@ -61,3 +61,13 @@ jobs:
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
+      - name: Build unsigned device app
+        # The same build the release workflow ships as a sideloadable IPA —
+        # validated on every PR so cutting a release cannot surprise us.
+        run: |
+          xcodebuild build \
+            -project Wisq.xcodeproj \
+            -scheme Wisq \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

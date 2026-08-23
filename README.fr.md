@@ -53,6 +53,28 @@ leurs 117 tests passent — dont un bout-à-bout où le vrai démon est interrog
 le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
+## Installer
+
+**iPhone** : téléchargez l'IPA non signé de la
+[dernière release](https://github.com/maxlestage/wisq/releases) et
+installez-le avec AltStore ou Sideloadly — ou, avec un Mac et Xcode,
+`./scripts/install-ios.sh` compile et installe directement sur l'iPhone
+branché (signature personnelle gratuite : à renouveler tous les 7 jours).
+
+**Mac / Linux (l'agent hôte)**, en une ligne :
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service
+```
+
+Ou par Homebrew, servi depuis ce dépôt :
+
+```sh
+brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git
+brew install maxlestage/wisq/wisq-agent
+brew services start wisq-agent
+```
+
 ## Construire
 
 ```sh
