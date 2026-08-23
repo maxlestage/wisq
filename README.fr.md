@@ -123,6 +123,7 @@ Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SP
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
 Sources/WisqAgentKit démon hôte : serveur HTTP POSIX, backends virsh et démo
+site/                page de présentation : React 19 sur Bun, pré-rendue
 Sources/wisq-agent   exécutable du démon
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route

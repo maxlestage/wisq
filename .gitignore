@@ -6,3 +6,7 @@ DerivedData/
 !*.xcodeproj/project.pbxproj
 xcuserdata/
 *.xcuserstate
+
+# site
+site/dist/
+site/node_modules/

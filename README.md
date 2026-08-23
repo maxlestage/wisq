@@ -5,7 +5,7 @@
 [![Swift](https://img.shields.io/badge/swift-6.1-orange.svg)](Package.swift)
 
 Virtual machines on your iPhone, both ways UTM cannot: **remote at full
-speed, local within the rules**. *([Version française](README.fr.md).)*
+speed, local within the rules**. *([Version française](README.fr.md) · [site](site/)).*
 
 - **Remote** — the VM runs where the silicon is (a Mac, a PC, a NAS, a
   server); the iPhone is a fast client. iOS grants executable memory only
@@ -119,12 +119,26 @@ Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
 Sources/WisqUI       SwiftUI, phone-first
 Sources/WisqAgentKit host daemon: POSIX HTTP server, virsh + demo backends
 Sources/wisq-agent   the daemon executable
+site/                landing page: React 19 on Bun, pre-rendered, mobile-first
 docs/                architecture, agent wire protocol, roadmap
 ```
 
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is
 gated on a decoder — and `docs/ROADMAP.md` what comes next.
+
+## The landing page
+
+`site/` holds the project page — React 19 on Bun, pre-rendered at build time so
+it paints before its JavaScript arrives, and mobile-first in the literal sense
+(every base rule targets a phone; breakpoints only add room).
+
+```sh
+cd site && bun install && bun run dev
+```
+
+It publishes to GitHub Pages from `master` via `.github/workflows/site.yml`;
+enable Pages once under Settings → Pages → Source: GitHub Actions.
 
 ## Contributing & security
 
