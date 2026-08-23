@@ -460,7 +460,7 @@ export const REPO = "https://github.com/maxlestage/wisq";
 
 /// The author, as the repository already states it in NOTICE and LICENSE.
 /// One place, so the site cannot disagree with the copyright line.
-export const AUTHOR = "Max Lestage";
+export const AUTHOR = "Maxime Nathan Lestage";
 export const AUTHOR_URL = "https://github.com/maxlestage";
 export const RELEASES = `${REPO}/releases/latest`;
 export const DOCS = `${REPO}/tree/master/docs`;

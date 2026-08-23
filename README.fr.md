@@ -163,5 +163,5 @@ la suite.
 
 ## Auteur
 
-Créé et développé par [Max Lestage](https://github.com/maxlestage).
-Copyright 2026 Max Lestage, sous licence Apache-2.0.
+Créé et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
+Copyright 2026 Maxime Nathan Lestage, sous licence Apache-2.0.
