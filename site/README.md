@@ -27,6 +27,26 @@ the single renderer. A missing translation is a type error, an empty one fails
 a test, and the two languages are checked block-for-block so a page cannot be
 richer in English than in French.
 
+## Light, dark, and neither
+
+Three states, not a toggle: a two-way switch cannot say "follow my phone", and
+that is the state most readers want. Light and dark set `data-theme` on the
+root element; auto removes it and lets `prefers-color-scheme` decide.
+
+Two details make it actually work. The dark palette is defined twice — once
+under `@media (prefers-color-scheme: dark)` guarded by
+`:root:not([data-theme="light"])`, once under `:root[data-theme="dark"]` — so a
+choice beats the system in *both* directions; without the guard, choosing light
+on a dark device silently does nothing. And the choice is applied by a small
+inline script in the document head rather than by a React effect, because an
+effect runs after the page has painted: a reader who chose light on a dark
+system would otherwise see a flash of dark on every navigation.
+
+Verified by driving a browser with the system set each way in turn, checking
+the computed background, the `theme-color` metas, that the attribute is already
+present at `domcontentloaded` on the next page, and that returning to auto
+leaves nothing behind.
+
 ## Two languages, two sets of addresses
 
 English is served from the site root, French from `fr/`. Every page exists

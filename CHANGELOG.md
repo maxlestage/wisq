@@ -36,6 +36,14 @@ break APIs.
   A test asserts every page carries the whole thing, that each project link
   points at a file that exists in this repository, and that the version shown
   matches the newest dated section of this changelog.
+- **A theme control**: light, dark, or whatever the system says. Three states
+  rather than a toggle, because a toggle cannot express "follow my phone" — a
+  reader whose device turns dark at sunset wants the site to do the same, and a
+  two-way switch silently opts them out of that the first time they touch it.
+  The choice is applied by a small inline script in the document head, before
+  the first paint: an effect in the bundle runs after the page has painted, so
+  a reader who chose light on a dark system would see a flash of dark on every
+  navigation. The browser's own chrome colour follows the choice too.
 - **Both languages are now published**, not merely written. Every page exists
   twice — `docs/` and `fr/docs/` — each pre-rendered in its own language, with
   its own `<html lang>`, title, description and canonical, and `hreflang`
@@ -70,6 +78,10 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- The dark palette lived only inside a `prefers-color-scheme` media query, so
+  it could not be turned off. Choosing light on a device set to dark would have
+  appeared to work in one direction and silently failed in the other; the query
+  now yields to an explicit choice, and a test asserts both directions.
 - The service worker cached *any* navigation response, including 404s and
   500s. A mistyped link or a half-finished deploy was kept and served from the
   cache afterwards, including once the site was fine again — the asset branch

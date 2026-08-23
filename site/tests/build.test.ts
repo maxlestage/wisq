@@ -15,6 +15,14 @@ const BUILT = LANGS.flatMap((lang) =>
   ROUTES.map((route) => ({ route, lang, file: outputPath(route, lang) })),
 );
 
+/// The stylesheet's name is hashed, so tests that read the CSS have to find it
+/// rather than assume it.
+function styleFile(): string {
+  const name = readdirSync(dist).find((entry) => entry.endsWith(".css"));
+  if (!name) throw new Error("aucune feuille de style dans dist");
+  return name;
+}
+
 function pngSize(relative: string): { width: number; height: number } {
   const bytes = readFileSync(join(dist, relative));
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -189,6 +197,50 @@ describe("the mark", () => {
     const svg = read("index.html").match(/<svg class="hero-logo"[^>]*>/)?.[0];
     expect(svg).toBeDefined();
     expect(svg).toContain('aria-hidden="true"');
+  });
+});
+
+describe("theme", () => {
+  /// The guard that makes an explicit choice mean anything. Without
+  /// `:not([data-theme="light"])` a reader whose system is dark and who asked
+  /// for light keeps the media query's colours — the switch appears to work in
+  /// one direction and silently fails in the other, which is the kind of
+  /// half-working nobody reports.
+  test("an explicit choice outranks the system setting, both ways", () => {
+    // Read with the quotes optional: the minifier drops them, so asserting the
+    // source spelling would test the bundler rather than the behaviour.
+    const css = readFileSync(join(dist, styleFile()), "utf8");
+    expect(css, "la requête média doit céder à un choix explicite").toMatch(
+      /:root:not\(\[data-theme=["']?light["']?\]\)/,
+    );
+    expect(css, "le choix sombre doit exister hors requête média").toMatch(
+      /:root\[data-theme=["']?dark["']?\]/,
+    );
+    // ...and the dark tokens must really be in both places, not just selected.
+    const media = css.slice(css.indexOf("prefers-color-scheme:dark"));
+    expect(media, "la requête média doit porter les couleurs sombres").toContain("--bg:#0b0d10");
+  });
+
+  /// An effect runs after the page has painted, so the theme cannot come from
+  /// React: a reader who chose light on a dark system would see a flash of
+  /// dark on every navigation.
+  test("the theme is applied before the first paint, on every page", () => {
+    for (const { file } of BUILT) {
+      const html = read(file);
+      const head = html.slice(0, html.indexOf("</head>"));
+      expect(head, `${file} : script de thème absent de la tête`).toContain("wisq.theme");
+      expect(head, `${file} : le script doit poser data-theme`).toContain("data-theme");
+    }
+  });
+
+  /// Inline and dependency-free on purpose: it must not wait for the bundle,
+  /// and it must not be able to fail to load.
+  test("the theme script is inline and cannot fail to load", () => {
+    const head = read("index.html").slice(0, read("index.html").indexOf("</head>"));
+    const script = head.match(/<script>[^<]*wisq\.theme[\s\S]*?<\/script>/)?.[0];
+    expect(script, "le script de thème doit être en ligne").toBeDefined();
+    expect(script).not.toContain("src=");
+    expect(script, "il doit échouer sans bruit plutôt que casser la page").toContain("catch");
   });
 });
 

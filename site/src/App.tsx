@@ -13,6 +13,7 @@ import { Install } from "./components/Install";
 import { DocPage } from "./components/Doc";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Logo } from "./components/Logo";
+import { ThemeSwitch } from "./components/ThemeSwitch";
 import { PAGES, type DocRouteId } from "./pages";
 import { LANGS, ROUTES, routeById, routeHref, type Page, type RouteId } from "./routes";
 
@@ -72,6 +73,7 @@ export function App({
           <a className="brand" href={routeHref(page, routeById("home"))}>
             wisq<span>▚</span>
           </a>
+          <ThemeSwitch copy={copy} />
           {/* Links, not buttons: each one is a real address, so it can be
               opened in a new tab, bookmarked, and followed with no JavaScript
               at all. */}

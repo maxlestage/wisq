@@ -105,6 +105,18 @@ function escapeHTML(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/// Applies a stored theme before the first paint.
+///
+/// This has to be an inline, blocking script in the head, and it has to be
+/// here rather than in the React bundle: an effect runs after the page has
+/// painted, so a reader who chose light on a dark system would see a flash of
+/// dark on every navigation. Twelve lines in the head buys that away.
+///
+/// Kept deliberately dumb — no bundler, no module, no dependency on anything
+/// that could fail to load. If it throws, the page is simply on the system
+/// theme, which is where it was before this feature existed.
+const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("wisq.theme");if(t!=="light"&&t!=="dark")return;document.documentElement.setAttribute("data-theme",t);var c=t==="dark"?"#0b0d10":"#ffffff";var m=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<m.length;i++){m[i].content=c;}}catch(e){}})();</script>`;
+
 const HOME_TITLE: Record<Lang, string> = {
   en: "wisq — virtual machines on your iPhone",
   fr: "wisq — des machines virtuelles sur votre iPhone",
@@ -172,6 +184,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     <meta name="apple-mobile-web-app-title" content="wisq" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▚</text></svg>" />
     <link rel="stylesheet" href="${base}${styleName}" />${jsonLd}
+    ${THEME_SCRIPT}
   </head>
   <body>
     <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>
