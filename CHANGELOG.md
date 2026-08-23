@@ -22,6 +22,21 @@ break APIs.
   is a parse error, never a silent downgrade. The dependency budget of the
   agent is spent on exactly this and nothing else: rustls and rcgen, both from
   the rustls project, on the ring provider.
+- **The local console is a terminal now** (`TerminalGrid`, replacing
+  `ConsoleBuffer`). The old console stripped escape sequences and replayed
+  carriage returns — readable for a boot log, and not a terminal: an editor,
+  a pager or `top` addresses cells, clears regions, scrolls a window and
+  repaints in place, and a view with no cells shows repaints as a growing
+  smear. The grid implements the dialect Linux console programs actually
+  emit: cursor addressing, erases, insert/delete of lines and characters,
+  the scroll region, the alternate screen (quitting an editor gives the
+  shell back instead of dumping the last frame into the log), save/restore
+  cursor, and SGR attributes recorded per cell for a renderer to use.
+  Deferred wrap is honoured — writing column 80 does not move the cursor
+  until the next character — because without it every full-width repaint
+  walks the screen down by one line. Scrollback is what leaves the top of
+  the main screen, bounded, and the alternate screen never feeds it. 32
+  tests, including the boot-log behaviours the old console's tests held.
 - **The app says where it comes from.** An "About" section on the machine
   list links the source repository, the issue tracker and the licence, and
   credits mini-rv32ima — because Apache-2.0 is a promise to the person
