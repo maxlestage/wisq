@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+!*.xcodeproj/project.pbxproj
+xcuserdata/
+*.xcuserstate
+
+# site
+site/dist/
+site/node_modules/
