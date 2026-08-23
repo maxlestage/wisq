@@ -25,11 +25,36 @@ public enum RV32StepResult: Equatable {
     case halted(code: UInt32)
 }
 
+/// The 32 integer registers, addressable without a bounds check.
+///
+/// A Swift array would be re-fetched and re-checked constantly: `regs` is a
+/// public property of a class that also calls out to an opaque bus, so the
+/// optimiser cannot prove the buffer survives the call and reloads it after
+/// every one. At tens of millions of instructions a second that is not free.
+/// The checking lives here, at the public boundary, where callers are rare;
+/// the interpreter indexes the storage directly with values it has already
+/// masked to 5 bits.
+public struct RegisterFile {
+    fileprivate let storage: UnsafeMutablePointer<UInt32>
+
+    public subscript(index: Int) -> UInt32 {
+        get {
+            precondition(index >= 0 && index < 32, "registre hors bornes : \(index)")
+            return storage[index]
+        }
+        nonmutating set {
+            precondition(index >= 0 && index < 32, "registre hors bornes : \(index)")
+            storage[index] = newValue
+        }
+    }
+}
+
 public final class RV32Core {
     public static let ramBase: UInt32 = 0x8000_0000
 
     // Register file. x0 is stored but never written.
-    public var regs = [UInt32](repeating: 0, count: 32)
+    private let x: UnsafeMutablePointer<UInt32>
+    public var regs: RegisterFile { RegisterFile(storage: x) }
     public var pc: UInt32 = RV32Core.ramBase
 
     // Machine CSRs.
@@ -59,6 +84,13 @@ public final class RV32Core {
         self.ram = ram
         self.ramSize = ramSize
         self.bus = bus
+        self.x = .allocate(capacity: 32)
+        self.x.initialize(repeating: 0, count: 32)
+    }
+
+    deinit {
+        x.deinitialize(count: 32)
+        x.deallocate()
     }
 
     // MARK: - Memory (little-endian, like the host)
@@ -86,6 +118,36 @@ public final class RV32Core {
         (0x1000_0000..<0x1200_0000).contains(address)
     }
 
+    // MARK: - Immediates
+    //
+    // Every RISC-V immediate is sign-extended from its top bit. Testing that
+    // bit and OR-ing in the fill costs a branch on the three hottest opcode
+    // groups; an arithmetic shift of the whole instruction word produces the
+    // same fill with no branch at all, because `ir`'s bit 31 *is* the sign bit
+    // of every immediate format that has one.
+
+    /// I-type: ir[31:20], sign-extended. Loads, JALR, OP-IMM.
+    @inline(__always) private static func immI(_ ir: UInt32) -> UInt32 {
+        UInt32(bitPattern: Int32(bitPattern: ir) >> 20)
+    }
+
+    /// S-type: ir[31:25] | ir[11:7], sign-extended. Stores.
+    @inline(__always) private static func immS(_ ir: UInt32) -> UInt32 {
+        (immI(ir) & ~0x1F) | ((ir >> 7) & 0x1F)
+    }
+
+    /// B-type: the branch displacement, sign-extended. Bit 0 is always zero.
+    @inline(__always) private static func immB(_ ir: UInt32) -> UInt32 {
+        UInt32(bitPattern: (Int32(bitPattern: ir) >> 31) << 12)
+            | ((ir & 0x80) << 4) | ((ir >> 20) & 0x7E0) | ((ir >> 7) & 0x1E)
+    }
+
+    /// J-type: the JAL displacement, sign-extended. Bit 0 is always zero.
+    @inline(__always) private static func immJ(_ ir: UInt32) -> UInt32 {
+        UInt32(bitPattern: (Int32(bitPattern: ir) >> 31) << 20)
+            | (ir & 0x000F_F000) | ((ir & 0x0010_0000) >> 9) | ((ir & 0x7FE0_0000) >> 20)
+    }
+
     // MARK: - Execution
 
     /// Advances the virtual timer, then runs up to `count` instructions.
@@ -94,6 +156,20 @@ public final class RV32Core {
     /// the behaviour looks odd (the `pc - 4` dance around traps, mepc pointing
     /// at the faulting instruction), it is what the kernel expects.
     public func step(elapsedMicroseconds: UInt32, count: Int) -> RV32StepResult {
+        // A hart in WFI retires nothing until an interrupt arrives, and the
+        // only interrupt this machine can raise is the timer — whose firing
+        // moment is already written in mtimecmp. Creeping toward it in 64 µs
+        // hops costs real CPU, and on a phone real battery, to reach an instant
+        // we can already name. Jump to it.
+        if extraflags & 4 != 0, timermatchh != 0 || timermatchl != 0 {
+            let now = (UInt64(timerh) << 32) | UInt64(timerl)
+            let match = (UInt64(timermatchh) << 32) | UInt64(timermatchl)
+            if now < match {
+                timerh = UInt32(truncatingIfNeeded: match >> 32)
+                timerl = UInt32(truncatingIfNeeded: match)
+            }
+        }
+
         let newTimer = timerl &+ elapsedMicroseconds
         if newTimer < timerl { timerh &+= 1 }
         timerl = newTimer
@@ -143,24 +219,17 @@ public final class RV32Core {
                     rval = pc &+ (ir & 0xFFFF_F000)
 
                 case 0x6F:                       // JAL
-                    var rel: UInt32 = ((ir & 0x8000_0000) >> 11) | ((ir & 0x7FE0_0000) >> 20)
-                        | ((ir & 0x0010_0000) >> 9) | (ir & 0x000F_F000)
-                    if rel & 0x0010_0000 != 0 { rel |= 0xFFE0_0000 }
                     rval = pc &+ 4
-                    pc = pc &+ rel &- 4
+                    pc = pc &+ Self.immJ(ir) &- 4
 
                 case 0x67:                       // JALR
-                    let imm = ir >> 20
-                    let immSE = imm | (imm & 0x800 != 0 ? 0xFFFF_F000 : 0)
                     rval = pc &+ 4
-                    pc = ((regs[Int((ir >> 15) & 0x1F)] &+ immSE) & ~1) &- 4
+                    pc = ((x[Int((ir >> 15) & 0x1F)] &+ Self.immI(ir)) & ~1) &- 4
 
                 case 0x63:                       // branches
-                    var imm: UInt32 = ((ir & 0xF00) >> 7) | ((ir & 0x7E00_0000) >> 20)
-                        | ((ir & 0x80) << 4) | ((ir >> 31) << 12)
-                    if imm & 0x1000 != 0 { imm |= 0xFFFF_E000 }
-                    let rs1 = Int32(bitPattern: regs[Int((ir >> 15) & 0x1F)])
-                    let rs2 = Int32(bitPattern: regs[Int((ir >> 20) & 0x1F)])
+                    let imm = Self.immB(ir)
+                    let rs1 = Int32(bitPattern: x[Int((ir >> 15) & 0x1F)])
+                    let rs2 = Int32(bitPattern: x[Int((ir >> 20) & 0x1F)])
                     let target = pc &+ imm &- 4
                     rdid = 0
                     switch (ir >> 12) & 0x7 {
@@ -174,10 +243,8 @@ public final class RV32Core {
                     }
 
                 case 0x03:                       // loads
-                    let rs1 = regs[Int((ir >> 15) & 0x1F)]
-                    let imm = ir >> 20
-                    let immSE = imm | (imm & 0x800 != 0 ? 0xFFFF_F000 : 0)
-                    var address = rs1 &+ immSE &- Self.ramBase
+                    let rs1 = x[Int((ir >> 15) & 0x1F)]
+                    var address = rs1 &+ Self.immI(ir) &- Self.ramBase
                     if address >= ramSize &- 3 {
                         address &+= Self.ramBase
                         if Self.isMMIO(address) {
@@ -198,11 +265,9 @@ public final class RV32Core {
                     }
 
                 case 0x23:                       // stores
-                    let rs1 = regs[Int((ir >> 15) & 0x1F)]
-                    let rs2 = regs[Int((ir >> 20) & 0x1F)]
-                    var address = ((ir >> 7) & 0x1F) | ((ir & 0xFE00_0000) >> 20)
-                    if address & 0x800 != 0 { address |= 0xFFFF_F000 }
-                    address = address &+ rs1 &- Self.ramBase
+                    let rs1 = x[Int((ir >> 15) & 0x1F)]
+                    let rs2 = x[Int((ir >> 20) & 0x1F)]
+                    var address = Self.immS(ir) &+ rs1 &- Self.ramBase
                     rdid = 0
                     if address >= ramSize &- 3 {
                         address &+= Self.ramBase
@@ -227,11 +292,10 @@ public final class RV32Core {
                     }
 
                 case 0x13, 0x33:                 // ALU, immediate and register forms
-                    var imm = ir >> 20
-                    imm |= (imm & 0x800 != 0 ? 0xFFFF_F000 : 0)
-                    let rs1 = regs[Int((ir >> 15) & 0x1F)]
+                    let imm = Self.immI(ir)
+                    let rs1 = x[Int((ir >> 15) & 0x1F)]
                     let isReg = ir & 0x20 != 0
-                    let rs2 = isReg ? regs[Int(imm & 0x1F)] : imm
+                    let rs2 = isReg ? x[Int(imm & 0x1F)] : imm
 
                     if isReg, ir & 0x0200_0000 != 0 {
                         // RV32M
@@ -287,7 +351,7 @@ public final class RV32Core {
                     let microop = (ir >> 12) & 0x7
                     if microop & 3 != 0 {
                         let rs1imm = (ir >> 15) & 0x1F
-                        let rs1 = regs[Int(rs1imm)]
+                        let rs1 = x[Int(rs1imm)]
                         var writeval = rs1
 
                         switch csrno {
@@ -358,8 +422,8 @@ public final class RV32Core {
                     }
 
                 case 0x2F:                       // RV32A
-                    var rs1 = regs[Int((ir >> 15) & 0x1F)]
-                    var rs2 = regs[Int((ir >> 20) & 0x1F)]
+                    var rs1 = x[Int((ir >> 15) & 0x1F)]
+                    var rs2 = x[Int((ir >> 20) & 0x1F)]
                     let op = (ir >> 27) & 0x1F
                     rs1 &-= Self.ramBase
 
@@ -400,7 +464,7 @@ public final class RV32Core {
                     break instructionLoop
                 }
                 if rdid != 0 {
-                    regs[Int(rdid)] = rval
+                    x[Int(rdid)] = rval
                 }
                 pc &+= 4
             }

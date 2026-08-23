@@ -7,6 +7,47 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- The local Linux VM runs about **three times faster**: 55 → 163 million guest
+  instructions a second, measured over a real kernel boot on the same machine.
+  Boot to the login prompt went from 0.81 s to 0.27 s, for the same 44.6 M
+  instructions — the semantics did not move, only the cost of running them.
+  Two changes account for it:
+  - the register file moved off a Swift array. `regs` was a public property of
+    a class that also calls an opaque bus, so the optimiser could not prove the
+    buffer survived the call and reloaded it, bounds check included, after
+    every one. That alone was 2.7×.
+  - immediates are sign-extended by an arithmetic shift of the instruction word
+    instead of a test-and-OR, which removes a branch from the load, store,
+    branch and ALU paths — 47 % of a boot is loads and stores.
+- Guest RAM is mapped rather than allocated and cleared. Anonymous pages are
+  zero by definition, so the 64 MB memset disappears and pages fault in as the
+  guest touches them: machine construction went from 33–194 ms to under
+  0.1 ms, and the app no longer commits 64 MB before the guest has used a byte.
+- The emulation thread now declares `.userInitiated`. Without it the scheduler
+  is free to park an interpreter on an efficiency core, which is the one thread
+  in the app whose speed the user is watching.
+- `ConsoleBuffer` replaces `ANSIFilter`. The old console kept every byte the
+  guest ever printed and re-derived the visible text on each arrival, which is
+  quadratic in the output: 2 000 lines took 36.7 s of processing against 0.22 s
+  now. The new buffer applies each chunk once, keeps its escape-parser state
+  between chunks — so a sequence split across two writes is finally handled —
+  and bounds scrollback in lines. Console updates are also coalesced, so a
+  chatty guest wakes the main actor once per render rather than once per write.
+- WFI no longer creeps toward the timer deadline in 64 µs hops: the firing
+  moment is already in `mtimecmp`, so the hart jumps to it. This is an
+  accounting and battery fix rather than a throughput one — measured, it does
+  not move the boot time.
+- `LinuxMachine.run(instructionBudget:)` counts instructions the guest actually
+  retired. It counted slices offered, so an idle guest could spend a whole
+  budget without executing anything.
+
+### Added
+- `wisq-bench`: boots a real kernel and reports construction cost, instructions
+  retired, wall time and throughput. CI runs it on every change, so a
+  regression is visible in the log and a guest that stops reaching its prompt
+  fails the job.
+
 ## [0.1.1] — 2026-08-23
 
 ### Fixed
