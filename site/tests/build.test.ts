@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
-import { copy } from "../src/content";
+import { AUTHOR, copy } from "../src/content";
 
 /// The built artefact, not the source. `bun run build` must run before this;
 /// CI does exactly that.
@@ -267,6 +267,41 @@ describe("footer", () => {
       expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
       expect(html, `${file} : licence`).toContain("Apache-2.0");
     }
+  });
+
+  /// On every page, in both languages, and naming the same person the
+  /// repository's own copyright line names — a site that credits someone the
+  /// LICENSE does not is a site making a claim nothing backs.
+  test("every page says who made it, and agrees with the licence", () => {
+    for (const { lang, file } of BUILT) {
+      const html = read(file);
+      expect(html, `${file} : ligne d'auteur`).toContain(copy[lang].footer.author);
+      expect(html, `${file} : nom de l'auteur`).toContain(`>${AUTHOR}</a>`);
+      expect(html, `${file} : meta author`).toContain(`<meta name="author" content="${AUTHOR}" />`);
+    }
+    const repoRoot = join(dist, "..", "..");
+    for (const file of ["LICENSE", "NOTICE"]) {
+      expect(
+        readFileSync(join(repoRoot, file), "utf8"),
+        `${file} doit nommer le même titulaire`,
+      ).toContain(`Copyright 2026 ${AUTHOR}`);
+    }
+  });
+
+  /// Saying what is mine must not quietly stop saying what is not. The
+  /// third-party credit is the thing most easily lost when an author line is
+  /// added next to it.
+  test("crediting the author does not displace the credit to others", () => {
+    // The credited name and work, rather than the sentence around them: the
+    // sentence differs per language and its apostrophes come out escaped.
+    for (const { file } of BUILT) {
+      const html = read(file);
+      expect(html, `${file} : auteur crédité`).toContain("Charles Lohr");
+      expect(html, `${file} : travail crédité`).toContain("mini-rv32ima");
+    }
+    const notice = readFileSync(join(dist, "..", "..", "NOTICE"), "utf8");
+    expect(notice, "NOTICE doit garder la provenance mini-rv32ima").toContain("Charles Lohr");
+    expect(notice, "NOTICE doit garder la mention UTM").toContain("UTM");
   });
 
   test("the footer's project links point at files the repository has", () => {

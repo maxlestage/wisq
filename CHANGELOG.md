@@ -36,6 +36,18 @@ break APIs.
   A test asserts every page carries the whole thing, that each project link
   points at a file that exists in this repository, and that the version shown
   matches the newest dated section of this changelog.
+- **Authorship, stated where it was missing.** `LICENSE` still carried Apache's
+  unfilled `Copyright [yyyy] [name of copyright owner]` placeholder, so an
+  Apache-2.0 project had no declared copyright holder at all; it now names the
+  same holder `NOTICE` always did. The site footer credits the author on every
+  page in both languages, with `<meta name="author">` and a `Person` in the
+  landing pages' structured data; both crates declare `authors`, the site
+  package declares `author` and `license`, and both READMEs gained an author
+  section. A test asserts the site and the licence name the same person, so
+  they cannot drift apart.
+- The credit to other people's work is unchanged and now guarded: a test fails
+  if any page stops naming Charles Lohr and mini-rv32ima. Saying what is mine
+  must not quietly stop saying what is not.
 - **A theme control**: light, dark, or whatever the system says. Three states
   rather than a toggle, because a toggle cannot express "follow my phone" — a
   reader whose device turns dark at sunset wants the site to do the same, and a
