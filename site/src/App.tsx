@@ -168,8 +168,14 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
     <footer className="site-footer">
       <div className="wrap footer-top">
         <div className="footer-brand">
-          <a className="brand" href={home}>
-            wisq<span>▚</span>
+          {/* The mark and the name, the same pair as the hero at a size the
+              footer can hold. Inside the link, so the whole lockup is the way
+              home rather than only the four letters. */}
+          <a className="brand footer-brand-link" href={home}>
+            <Logo className="footer-logo" />
+            <span className="footer-wordmark">
+              wisq<span>▚</span>
+            </span>
           </a>
           <p>{copy.footer.tagline}</p>
           {/* One string rather than three children: React separates adjacent
@@ -238,7 +244,15 @@ function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
               </a>
             </div>
           </div>
-          <Logo className="hero-logo" />
+          {/* The mark and the name as one block. The mark alone is a picture
+              of `▚`, which says what the product does but not what it is
+              called; the two together are the thing a reader recognises later.
+              The wordmark is real text rather than part of the drawing, so it
+              is selectable, searchable, and read aloud. */}
+          <div className="hero-lockup">
+            <Logo className="hero-logo" />
+            <p className="hero-wordmark">wisq</p>
+          </div>
         </div>
       </section>
 
