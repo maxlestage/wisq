@@ -95,10 +95,13 @@ jobs:
         # hold both toolchains at once.
         #
         # gcc is not optional: rustc drives `cc` to link, and the Swift image
-        # ships clang under its own name only.
+        # ships clang under its own name only. curl and ca-certificates are
+        # installed here rather than relied on from the kernel-fetch step above,
+        # which is deliberately best-effort — an absent image must skip a test,
+        # but an absent curl must not silently become "no toolchain".
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends gcc libc6-dev
+          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable
       - name: Les deux cœurs, comparés sur le même noyau
