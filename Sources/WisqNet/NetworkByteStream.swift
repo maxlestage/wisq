@@ -48,24 +48,23 @@ public actor NetworkByteStream: ByteStream {
     public func open() async throws {
         guard !isOpen else { return }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var resumed = false
+            let once = ResumeOnce()
             connection.stateUpdateHandler = { state in
-                guard !resumed else { return }
                 switch state {
                 case .ready:
-                    resumed = true
-                    continuation.resume()
+                    if once.claim() { continuation.resume() }
                 case .failed(let error):
-                    resumed = true
-                    continuation.resume(throwing: WisqError.connectionFailed(error.localizedDescription))
+                    if once.claim() {
+                        continuation.resume(throwing: WisqError.connectionFailed(error.localizedDescription))
+                    }
                 case .cancelled:
-                    resumed = true
-                    continuation.resume(throwing: WisqError.connectionClosed)
+                    if once.claim() { continuation.resume(throwing: WisqError.connectionClosed) }
                 case .waiting(let error):
                     // `.waiting` means no route yet; surface it instead of hanging
                     // on a phone that just lost Wi-Fi.
-                    resumed = true
-                    continuation.resume(throwing: WisqError.connectionFailed(error.localizedDescription))
+                    if once.claim() {
+                        continuation.resume(throwing: WisqError.connectionFailed(error.localizedDescription))
+                    }
                 default:
                     break
                 }
