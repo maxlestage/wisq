@@ -11,7 +11,7 @@ export interface Command {
 }
 
 export interface Copy {
-  nav: { install: string; how: string; source: string };
+  nav: { install: string; how: string; source: string; language: string };
   hero: { tagline: string; lede: string; ctaInstall: string; ctaSource: string; badge: string };
   modes: {
     title: string;
@@ -89,7 +89,7 @@ export interface Copy {
 }
 
 const en: Copy = {
-  nav: { install: "Install", how: "How it works", source: "Source" },
+  nav: { install: "Install", how: "How it works", source: "Source", language: "Language" },
   hero: {
     tagline: "Virtual machines on your iPhone.",
     lede:
@@ -265,7 +265,7 @@ const en: Copy = {
 };
 
 const fr: Copy = {
-  nav: { install: "Installer", how: "Fonctionnement", source: "Sources" },
+  nav: { install: "Installer", how: "Fonctionnement", source: "Sources", language: "Langue" },
   hero: {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:

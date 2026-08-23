@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { App } from "./App";
 import type { RouteId } from "./routes";
+import type { Lang } from "./content";
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root introuvable");
@@ -11,6 +12,7 @@ if (!container) throw new Error("#root introuvable");
 // location.pathname — would have to know where the site is deployed, and this
 // one is served from /wisq/ today and from a domain root tomorrow.
 const route = (container.dataset.route ?? "home") as RouteId;
+const lang = (container.dataset.lang ?? "en") as Lang;
 const base = container.dataset.base ?? "./";
 
 // The HTML arrives pre-rendered, so this attaches behaviour to existing markup
@@ -18,7 +20,7 @@ const base = container.dataset.base ?? "./";
 hydrateRoot(
   container,
   <StrictMode>
-    <App route={route} />
+    <App route={route} lang={lang} />
   </StrictMode>,
 );
 
