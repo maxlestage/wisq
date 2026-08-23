@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import {
+  AUTHOR,
+  AUTHOR_URL,
   copy as allCopy,
   CHANGELOG,
   CONTRIBUTING,
@@ -175,6 +177,16 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
               the line harder to read for anything that reads HTML. */}
           <p className="footer-version">
             {`${copy.footer.version} ${SITE_VERSION} · ${copy.footer.license}`}
+          </p>
+          {/* Authorship sits with the wordmark, where a reader looks for who
+              made a thing. The credit to other people's work stays in the
+              bottom bar and is not touched by this: a line saying what is mine
+              must never read as a claim over what is not. */}
+          <p className="footer-author">
+            {`${copy.footer.author} `}
+            <a href={AUTHOR_URL} rel="author">
+              {AUTHOR}
+            </a>
           </p>
         </div>
 
