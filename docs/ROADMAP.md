@@ -47,6 +47,25 @@ La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.
 
+## Le cœur Rust sur Apple (empaquetage fait, bascule à venir)
+
+`scripts/build-xcframework.sh` produit `WisqVMCore.xcframework` — tranche
+appareil, tranches simulateur et macOS universelles — et
+`scripts/test-ios.sh` fait démarrer un vrai noyau Linux à travers l'ABI C
+*dans un iPhone simulé*, via `simctl spawn`. Les deux tournent dans le job
+« App iOS » de la CI : la question n'était pas « est-ce que ça compile pour
+iOS » mais « est-ce que l'interpréteur tourne sur l'appareil visé », et la
+réponse est vérifiée à chaque commit.
+
+L'en-tête `crates/wisq-vm/include/wisq_vm.h` est écrit à la main, donc un
+test le compile contre la vraie bibliothèque et démarre un noyau au travers,
+sur Linux, à chaque commit : une signature qui dérive de `src/ffi.rs` casse
+un test au lieu de corrompre la mémoire sur un téléphone.
+
+Reste la bascule elle-même : `WisqVM` (Swift) et le cœur Rust coexistent, et
+choisir lequel l'application utilise demande de trancher comment le paquet
+Swift lie la bibliothèque — un chantier distinct de l'empaquetage.
+
 ## Lot 4 bis — Linux local (fait en v1)
 
 `WisqVM` : émulateur rv32ima interprété en Swift, boot d'un vrai noyau 6.1
