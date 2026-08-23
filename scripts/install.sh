@@ -64,6 +64,11 @@ install_binary() {
   trap 'rm -rf "$TMP"' EXIT
   curl -fsSL "$URL" -o "$TMP/agent.tar.gz" || return 1
   tar -C "$TMP" -xzf "$TMP/agent.tar.gz"
+  # Run it before installing it. A downloaded binary can be the wrong libc,
+  # the wrong architecture, or miss a shared library the machine never had;
+  # every one of those looks like a successful install and fails on first
+  # use. Failing here instead falls back to the source build below.
+  "$TMP/wisq-agent" --help >/dev/null 2>&1 || return 1
   install -m 755 "$TMP/wisq-agent" "$PREFIX/wisq-agent"
 }
 
@@ -83,7 +88,7 @@ if [ "$FROM_SOURCE" = 1 ] || [ -z "$ASSET_SUFFIX" ]; then
   install_from_source
 else
   install_binary || {
-    echo "pas de binaire publié ($VERSION) : repli sur la construction depuis les sources"
+    echo "binaire publié indisponible ou inutilisable ici : repli sur la construction depuis les sources"
     install_from_source
   }
 fi

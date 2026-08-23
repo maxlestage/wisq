@@ -2,7 +2,7 @@
 #
 #   brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git
 #   brew install --head maxlestage/wisq/wisq-agent    # from master, today
-#   brew install maxlestage/wisq/wisq-agent           # from the v0.1.0 tag, once pushed
+#   brew install maxlestage/wisq/wisq-agent           # from the latest tag
 #   brew services start wisq-agent                    # launchd/systemd service
 #
 # The stable URL is a git tag rather than a tarball so no sha256 needs
@@ -10,7 +10,7 @@
 class WisqAgent < Formula
   desc "Host daemon that lets wisq on iPhone power VMs on and connect to them"
   homepage "https://github.com/maxlestage/wisq"
-  url "https://github.com/maxlestage/wisq.git", tag: "v0.1.0"
+  url "https://github.com/maxlestage/wisq.git", tag: "v0.1.1"
   license "Apache-2.0"
   head "https://github.com/maxlestage/wisq.git", branch: "master"
 
