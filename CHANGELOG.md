@@ -37,13 +37,6 @@ break APIs.
   walks the screen down by one line. Scrollback is what leaves the top of
   the main screen, bounded, and the alternate screen never feeds it. 32
   tests, including the boot-log behaviours the old console's tests held.
-- **The app says where it comes from.** An "About" section on the machine
-  list links the source repository, the issue tracker and the licence, and
-  credits mini-rv32ima — because Apache-2.0 is a promise to the person
-  holding the phone, and it is empty if they would have to find a website to
-  learn the source exists. The links live in `ProjectLinks` (WisqCore), and a
-  test asserts they point at this repository over HTTPS and that the files
-  they promise exist in the checkout.
 - A plain-HTTP client against the TLS port gets an immediate
   `426 Upgrade Required` explaining what to do — https, re-pair, or
   `--no-tls` — instead of a stalled connection. rustls reads `GET /` as a TLS
