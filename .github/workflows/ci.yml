@@ -106,15 +106,32 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Cross-compile the VM core for iOS
-        # Ground-truth for linking the Rust interpreter into the app: the static
-        # library has to build for a real device target before that switch is
-        # worth making. Nothing links it yet — this is the probe that says the
-        # ground is solid.
+      - name: Package the VM core as an XCFramework
+        # The Rust switch has been waiting on "work that needs a Mac". CI has
+        # one. This builds every Apple slice — device, fat simulator, fat
+        # macOS — and checks the result contains what it should rather than
+        # trusting that xcodebuild succeeded.
+        run: scripts/build-xcframework.sh
+      - name: Fetch the Linux test kernel
+        # Best effort, like the Linux job: an absent image makes the simulator
+        # test skip loudly rather than fail.
         run: |
-          rustup target add aarch64-apple-ios
-          cargo build --release --target aarch64-apple-ios -p wisq-vm
-          ls -l target/aarch64-apple-ios/release/libwisq_vm.a
+          mkdir -p /tmp/wisq-test-linux-image
+          curl -sSL --max-time 120 -o /tmp/kernel.zip \
+            https://github.com/cnlohr/mini-rv32ima-images/raw/master/images/linux-6.1.14-rv32nommu-cnl-1.zip \
+            && unzip -o /tmp/kernel.zip -d /tmp/wisq-test-linux-image || true
+      - name: Boot a real kernel through the Rust core, inside an iPhone
+        # The question the Rust switch actually rests on is not "does it
+        # compile for iOS" — every other check answers that — but "does the
+        # interpreter run on the device the app ships to". This runs the C ABI
+        # conformance program inside a booted simulator and fails if the guest
+        # never reaches its Linux banner.
+        run: |
+          if [ -f /tmp/wisq-test-linux-image/Image ]; then
+            scripts/test-ios.sh /tmp/wisq-test-linux-image/Image
+          else
+            echo "::warning::image de noyau absente, test simulateur ignoré"
+          fi
       - name: Generate project
         run: xcodegen generate
       - name: Build for simulator
