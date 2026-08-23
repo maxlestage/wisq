@@ -118,6 +118,40 @@ describe("built output", () => {
   });
 });
 
+describe("the mark", () => {
+  /// Two logos on the landing page and one everywhere else, which is the whole
+  /// point of drawing a second one: the header wordmark names the site on every
+  /// page, and the full mark gets the room the hero has and no other page does.
+  test("the full mark is on the landing page and nowhere else", () => {
+    for (const route of ROUTES) {
+      const file = outputPath(route);
+      const html = read(file);
+      const marks = html.split('class="hero-logo"').length - 1;
+      expect(marks, `${file} : nombre de marques complètes`).toBe(
+        route.id === "home" ? 1 : 0,
+      );
+      // The wordmark is the one logo every page carries.
+      expect(html, `${file} : mot-marque`).toContain('class="brand"');
+    }
+  });
+
+  /// Drawn, not fetched. An <img> here would be a second request before the
+  /// hero can paint, and a committed binary nobody can diff.
+  test("the mark is inline and costs no request", () => {
+    const home = read("index.html");
+    expect(home).toContain('<svg class="hero-logo"');
+    expect(home.match(/<img[^>]*hero-logo/)).toBeNull();
+  });
+
+  /// The header brand and the heading already say what this is, so announcing
+  /// it a third time is noise for anyone listening rather than looking.
+  test("the mark is decorative", () => {
+    const svg = read("index.html").match(/<svg class="hero-logo"[^>]*>/)?.[0];
+    expect(svg).toBeDefined();
+    expect(svg).toContain('aria-hidden="true"');
+  });
+});
+
 describe("footer", () => {
   /// A footer is where someone goes when the page did not answer them. It is
   /// on every page or it is not a footer, so this checks every page rather

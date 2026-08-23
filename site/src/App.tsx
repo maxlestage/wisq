@@ -12,6 +12,7 @@ import {
 import { Install } from "./components/Install";
 import { DocPage } from "./components/Doc";
 import { InstallPrompt } from "./components/InstallPrompt";
+import { Logo } from "./components/Logo";
 import { PAGES, type DocRouteId } from "./pages";
 import { ROUTES, routeById, routeHref, type Route, type RouteId } from "./routes";
 
@@ -216,24 +217,26 @@ function Landing({ copy, route }: { copy: (typeof allCopy)["en"]; route: Route }
   return (
     <>
       <section className="hero">
-        <div className="wrap">
-          <p className="badge">{copy.hero.badge}</p>
-          <h1>{copy.hero.tagline}</h1>
-          <p className="lede">{copy.hero.lede}</p>
-          <div className="cta-row">
-            <a className="btn btn-primary" href="#install">
-              {copy.hero.ctaInstall}
-            </a>
-            <a className="btn btn-secondary" href={routeHref(route, routeById("docs"))}>
-              {copy.pages.docs}
-            </a>
+        <div className="wrap hero-grid">
+          <div className="hero-text">
+            <p className="badge">{copy.hero.badge}</p>
+            <h1>{copy.hero.tagline}</h1>
+            <p className="lede">{copy.hero.lede}</p>
+            <div className="cta-row">
+              <a className="btn btn-primary" href="#install">
+                {copy.hero.ctaInstall}
+              </a>
+              <a className="btn btn-secondary" href={routeHref(route, routeById("docs"))}>
+                {copy.pages.docs}
+              </a>
+            </div>
           </div>
+          <Logo className="hero-logo" />
         </div>
       </section>
 
       <section id="modes">
         <div className="wrap">
-          <p className="eyebrow">{copy.modes.title}</p>
           <h2>{copy.modes.title}</h2>
           <div className="cards">
             {[copy.modes.remote, copy.modes.local].map((mode) => (

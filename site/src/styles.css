@@ -91,15 +91,6 @@ p { margin: 0; }
 section { padding-block: 56px; }
 section + section { border-top: 1px solid var(--line); }
 
-.eyebrow {
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-soft);
-  margin-bottom: 10px;
-}
-
 .lede { color: var(--fg-soft); margin-top: 14px; }
 
 /* ---------- header ---------- */
@@ -207,6 +198,24 @@ section + section { border-top: 1px solid var(--line); }
 /* ---------- hero ---------- */
 
 .hero { padding-block: 48px 56px; }
+
+/* The full mark leads on a phone, the way an app's own screen would, and moves
+   beside the text once there is a second column to put it in. It is sized in
+   rem rather than pixels so it grows with the reader's text size instead of
+   shrinking against it. */
+.hero-grid { display: grid; gap: 30px; }
+.hero-logo {
+  width: 7.4rem;
+  height: auto;
+  order: -1;
+  /* The plate is dark in both themes, so it needs its own separation from a
+     white page rather than borrowing the page's. The radius matches the rx the
+     SVG draws — 54 of 240 — or the glow has squarer corners than the logo. */
+  border-radius: 22.5%;
+  box-shadow:
+    0 1px 2px rgb(16 21 27 / 0.16),
+    0 12px 30px -12px rgb(79 70 229 / 0.45);
+}
 
 .badge {
   display: inline-block;
@@ -482,6 +491,12 @@ pre code { white-space: pre; }
 @media (min-width: 40em) {
   body { font-size: 18px; }
   .footer-groups { grid-template-columns: repeat(3, 1fr); }
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 48px;
+  }
+  .hero-logo { order: 0; width: 12.5rem; }
   section { padding-block: 76px; }
   .hero { padding-block: 76px 84px; }
   .hero h1 { font-size: 3rem; }

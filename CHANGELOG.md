@@ -36,6 +36,13 @@ break APIs.
   A test asserts every page carries the whole thing, that each project link
   points at a file that exists in this repository, and that the version shown
   matches the newest dated section of this changelog.
+- **The full mark**, on the landing page, beside the wordmark the header
+  carries everywhere. `▚` is the site's mark and stays the Home Screen icon
+  untouched, because at 60 px anything more becomes mush; the hero has room to
+  say what the two quadrants are — a window on a machine somewhere else, the
+  phone in your hand, and the link between them. Drawn as inline SVG in
+  `site/src/components/Logo.tsx`, so it paints in the first response and costs
+  no request. The PNG icons now share its geometry rather than only its idea.
 - **A privacy page** that can be checked rather than believed: no analytics, no
   cookies, no third-party requests, the two local-storage keys named, what the
   service worker keeps, what GitHub Pages sees, and the app's own plain-HTTP
@@ -44,6 +51,9 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- The landing page printed two of its section headings twice: an eyebrow above
+  the heading repeating it word for word, which a screen reader read out twice
+  and a reader read as a stutter.
 - Every link and button now meets the 24 px minimum target size; the wordmark
   was a 20 px-tall link in both the header and the footer. The text stays the
   size it looks best at — the box around it is what got bigger, because the
