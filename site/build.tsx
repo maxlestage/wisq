@@ -14,7 +14,7 @@ import { renderToString } from "react-dom/server";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { App } from "./src/App";
-import { copy } from "./src/content";
+import { AUTHOR, AUTHOR_URL, copy } from "./src/content";
 import { PAGES } from "./src/pages";
 import {
   LANGS,
@@ -156,6 +156,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
         description: copy[lang].hero.lede,
         url: canonical,
         inLanguage: lang,
+        author: { "@type": "Person", name: AUTHOR, url: AUTHOR_URL },
         license: "https://www.apache.org/licenses/LICENSE-2.0",
         isAccessibleForFree: true,
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
@@ -169,6 +170,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>${escapeHTML(title)}</title>
     <meta name="description" content="${escapeHTML(description)}" />
+    <meta name="author" content="${escapeHTML(AUTHOR)}" />
     <link rel="canonical" href="${canonical}" />${alternates}
     <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />

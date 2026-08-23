@@ -179,3 +179,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for provenance
 (the emulator reimplements mini-rv32ima's semantics, MIT; the touch design
 studies UTM, Apache-2.0 — no third-party code is vendored).
+
+## Author
+
+Created and developed by [Max Lestage](https://github.com/maxlestage).
+Copyright 2026 Max Lestage, licensed under Apache-2.0.
