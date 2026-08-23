@@ -1,6 +1,8 @@
 {
   "name": "wisq-site",
   "private": true,
+  "author": "Max Lestage (https://github.com/maxlestage)",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "bun --hot src/index.html",

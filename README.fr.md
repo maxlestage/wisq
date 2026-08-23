@@ -160,3 +160,8 @@ de 600 Ko en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
 la suite.
+
+## Auteur
+
+Créé et développé par [Max Lestage](https://github.com/maxlestage).
+Copyright 2026 Max Lestage, sous licence Apache-2.0.

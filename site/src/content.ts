@@ -61,6 +61,10 @@ export interface Copy {
     /// Stated because it is true and checkable, not as a slogan: a test fails
     /// the build if any third-party address appears in the built site.
     privacyNote: string;
+    /// Who wrote this. Kept distinct from `attribution`, which credits the
+    /// work of others: one line saying what is mine must never read as a
+    /// claim over what is not.
+    author: string;
     attribution: string;
     backToTop: string;
     version: string;
@@ -238,6 +242,7 @@ const en: Copy = {
     },
     privacyNote:
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
+    author: "Created and developed by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
     backToTop: "Back to top",
     version: "Version",
@@ -417,6 +422,7 @@ const fr: Copy = {
     },
     privacyNote:
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
+    author: "Créé et développé par",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
     backToTop: "Haut de page",
     version: "Version",
@@ -451,6 +457,11 @@ const fr: Copy = {
 export const copy: Record<Lang, Copy> = { en, fr };
 
 export const REPO = "https://github.com/maxlestage/wisq";
+
+/// The author, as the repository already states it in NOTICE and LICENSE.
+/// One place, so the site cannot disagree with the copyright line.
+export const AUTHOR = "Max Lestage";
+export const AUTHOR_URL = "https://github.com/maxlestage";
 export const RELEASES = `${REPO}/releases/latest`;
 export const DOCS = `${REPO}/tree/master/docs`;
 export const ISSUES = `${REPO}/issues`;
