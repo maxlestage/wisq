@@ -25,7 +25,7 @@ env:
 
 jobs:
   test:
-    name: Tests (gate)
+    name: Tests Swift (gate)
     runs-on: ubuntu-latest
     container: swift:6.3
     steps:
@@ -33,26 +33,34 @@ jobs:
       - run: swift build
       - run: swift test
 
+  test-rust:
+    name: Tests Rust (gate)
+    # The release ships Rust binaries, so a Swift-only gate would let a broken
+    # daemon through.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --release
+
   agent-linux:
     name: wisq-agent (Linux x86_64)
-    needs: test
+    needs: test-rust
     runs-on: ubuntu-latest
-    container: swift:6.3
     steps:
       - uses: actions/checkout@v7
       - name: Build release binary
-        # Statically linked: a dynamically linked Swift binary needs
-        # libswiftCore.so on the target machine, which a Linux box that has
-        # never installed a Swift toolchain does not have. Distributing one
-        # would hand every such user an executable that dies on the first
-        # line. macOS ships the Swift runtime in the OS, so only Linux needs
-        # this. The binary is stripped: it costs nothing and the download is
-        # what the user waits on.
+        # musl, so the result is one static file that runs on any Linux with
+        # nothing installed first — including Alpine. The crate has no C
+        # dependencies, which is what makes that free. It is also why the daemon
+        # left Swift: statically linked against the Swift runtime it was 58 MB
+        # to serve four routes, and this is under 600 KB.
         run: |
-          swift build -c release --product wisq-agent --static-swift-stdlib
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
           mkdir -p dist
-          cp "$(swift build -c release --product wisq-agent --static-swift-stdlib --show-bin-path)/wisq-agent" dist/
-          strip dist/wisq-agent
+          cp target/x86_64-unknown-linux-musl/release/wisq-agent dist/
           env -i dist/wisq-agent --help > /dev/null
           tar -C dist -czf wisq-agent-${{ env.VERSION }}-linux-x86_64.tar.gz wisq-agent
       - uses: actions/upload-artifact@v7
@@ -62,15 +70,16 @@ jobs:
 
   agent-macos:
     name: wisq-agent (macOS arm64)
-    needs: test
+    needs: test-rust
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - name: Build release binary
         run: |
-          swift build -c release --product wisq-agent
+          cargo build --release -p wisq-agent
           mkdir -p dist
-          cp "$(swift build -c release --product wisq-agent --show-bin-path)/wisq-agent" dist/
+          cp target/release/wisq-agent dist/
+          dist/wisq-agent --help > /dev/null
           tar -C dist -czf wisq-agent-${{ env.VERSION }}-macos-arm64.tar.gz wisq-agent
       - uses: actions/upload-artifact@v7
         with:
@@ -109,7 +118,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [agent-linux, agent-macos, ios-ipa]
+    needs: [test, agent-linux, agent-macos, ios-ipa]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

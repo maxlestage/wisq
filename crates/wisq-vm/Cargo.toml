@@ -1,0 +1,22 @@
+[package]
+name = "wisq-vm"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+description = "Interpreted rv32ima machine that boots Linux, with a C ABI for the iOS app"
+repository = "https://github.com/maxlestage/wisq"
+
+# No dependencies, on purpose. This is linked into an iOS app as a static
+# library; every crate that comes with it is another thing to audit, another
+# build that has to cross-compile, and another reason a release can break.
+[dependencies]
+
+[lib]
+# rlib for the Rust binaries in this workspace, staticlib for the iOS and macOS
+# link. cdylib is deliberately absent: iOS does not load third-party dylibs.
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "wisq-bench-rs"
+path = "src/bin/bench.rs"

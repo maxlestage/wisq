@@ -109,8 +109,8 @@ The agent turns "one more VNC client" into "my VMs, from my phone" — a
 powered-off VM boots when you tap it:
 
 ```sh
-swift run wisq-agent --demo    # two fake VMs, no hypervisor needed
-swift run wisq-agent           # libvirt via virsh, port 7442
+cargo run -p wisq-agent -- --demo   # two fake VMs, no hypervisor needed
+cargo run -p wisq-agent             # libvirt via virsh, port 7442
 ```
 
 It prints `wisq://` pairing links (and a QR code when `qrencode` is
@@ -122,9 +122,13 @@ the Files app — ready-made ones live in the
 ## Building
 
 ```sh
+cargo test                   # the Rust side: daemon and VM core
 ./scripts/verify.sh          # core: strict-concurrency build + full tests
 ./scripts/verify.sh --app    # + the iOS app (macOS with Xcode)
 ```
+
+`verify.sh` builds the Rust agent first, because the cross-language
+protocol tests run the real daemon against the app's own client.
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
 Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official
@@ -139,11 +143,18 @@ Sources/WisqNet      byte transport: TCP/TLS, persistent zlib streams, test pipe
 Sources/WisqRemote   RFB/VNC client, reconnection, agent client, SPICE/RDP slots
 Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
 Sources/WisqUI       SwiftUI, phone-first
-Sources/WisqAgentKit host daemon: POSIX HTTP server, virsh + demo backends
-Sources/wisq-agent   the daemon executable
+crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
+crates/wisq-vm       rv32ima interpreter (Rust) with a C ABI for the app
 site/                landing page: React 19 on Bun, pre-rendered, mobile-first
 docs/                architecture, agent wire protocol, roadmap
 ```
+
+Two languages, split by what each part actually is. Swift holds the app,
+the UI and the remote-desktop client — Apple-shaped work on
+Network.framework. Rust holds the parts that are neither: a daemon with no
+interface, and an interpreter that is pure computation over a byte array.
+Neither has a reason to carry a language runtime, and the daemon's download
+went from 58 MB to under 600 KB by not carrying one.
 
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is

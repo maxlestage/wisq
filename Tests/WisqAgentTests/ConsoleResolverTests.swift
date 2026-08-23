@@ -2,27 +2,22 @@
 import XCTest
 import WisqCore
 import WisqRemote
-@testable import WisqAgentKit
 
 /// The boot-before-connect flow, against a real agent: the resolver contacts the
 /// daemon, powers the VM on, waits for its console, and rewrites the machine's
 /// endpoint with what the agent reports.
 final class ConsoleResolverTests: XCTestCase {
-    private var server: HTTPServer!
+    private var agent: RustAgentProcess!
     private var credentials: EphemeralCredentialStore!
 
     override func setUpWithError() throws {
-        let service = AgentService(
-            backend: DemoBackend(startupDelay: 0.05),
-            token: "secret-token"
-        )
-        server = HTTPServer { service.handle($0) }
-        try server.start(port: 0)
-        credentials = EphemeralCredentialStore(seed: ["agent.test": "secret-token"])
+        agent = try RustAgentProcess()
+        credentials = EphemeralCredentialStore(seed: ["agent.test": agent.token])
     }
 
     override func tearDown() {
-        server.stop()
+        agent?.stop()
+        agent = nil
     }
 
     private func machine(autoStart: Bool = true) -> Machine {
@@ -32,7 +27,7 @@ final class ConsoleResolverTests: XCTestCase {
             port: 9999,
             proto: .vnc,
             agent: AgentBinding(
-                baseURL: URL(string: "http://127.0.0.1:\(server.port)")!,
+                baseURL: agent.baseURL,
                 vmIdentifier: "debian-13",
                 autoStart: autoStart,
                 credentialRef: "agent.test"
@@ -98,23 +93,43 @@ final class ConsoleResolverTests: XCTestCase {
 #endif
 
 #if os(macOS) || os(Linux)
+/// The full loop the QR code closes: the daemon builds a URL, the app parses it
+/// back to exactly the endpoint and token the daemon meant.
 final class PairingTests: XCTestCase {
-    /// The full loop the QR code closes: the daemon builds a URL, the app parses
-    /// it back to exactly the endpoint and token the daemon meant.
-    func testDaemonURLsParseBackToTheirPayload() throws {
-        let urls = Pairing.urls(port: 7442, token: "jeton-secret", hostName: "nas.local")
-        XCTAssertFalse(urls.isEmpty, "au moins le nom d'hôte doit produire une URL")
+    private var agent: RustAgentProcess!
+
+    override func setUpWithError() throws {
+        agent = try RustAgentProcess()
+    }
+
+    override func tearDown() {
+        agent?.stop()
+        agent = nil
+    }
+
+    /// The pairing links the daemon prints must be the ones the app can read.
+    /// Generation is Rust now and parsing is Swift, so this is the seam where a
+    /// drift would show up — and it would show up as a link that silently does
+    /// nothing when a person taps it.
+    func testTheDaemonsPairingLinksParseWithTheAppsParser() throws {
+        let urls = agent.pairingURLs
+        XCTAssertFalse(urls.isEmpty, "le démon doit proposer au moins un lien d'appairage")
 
         for url in urls {
             let payload = try AgentPairing.parse(url)
-            XCTAssertEqual(payload.port, 7442)
-            XCTAssertEqual(payload.token, "jeton-secret")
+            XCTAssertEqual(payload.token, agent.token)
+            XCTAssertEqual("http://127.0.0.1:\(payload.port)", agent.baseURL.absoluteString)
+            XCTAssertFalse(payload.host.isEmpty)
         }
-        XCTAssertEqual(try AgentPairing.parse(urls[0]).host, "nas.local")
     }
 
-    func testLocalAddressesExcludeLoopback() {
-        XCTAssertFalse(Pairing.localIPv4Addresses().contains("127.0.0.1"))
+    func testPairingLinksNeverOfferLoopback() {
+        for url in agent.pairingURLs {
+            XCTAssertFalse(
+                url.absoluteString.contains("host=127."),
+                "un lien vers la boucle locale ne sert à rien depuis un téléphone : \(url)"
+            )
+        }
     }
 }
 #endif

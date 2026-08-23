@@ -7,11 +7,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "==> Building the Rust side (daemon + VM core)"
+cargo build --release
+
+echo "==> Running the Rust tests"
+cargo test --release
+
 echo "==> Building the core (Swift 6 language mode)"
 swift build
 
 echo "==> Running the core tests"
-swift test
+# The cross-language protocol tests run the real daemon; without this they skip
+# loudly and the seam between the two languages goes unchecked.
+WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test
 
 if [[ "${1:-}" == "--app" ]]; then
   if [[ "$(uname)" != "Darwin" ]]; then

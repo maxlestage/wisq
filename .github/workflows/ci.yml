@@ -8,9 +8,42 @@ on:
   pull_request:
 
 jobs:
+  rust:
+    name: Rust (agent + cœur VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add x86_64-unknown-linux-musl
+          rustc --version
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (strict)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --release
+      - name: Build the agent, statically
+        # musl rather than glibc: the crate has no C dependencies, so the result
+        # runs on any Linux including Alpine, with nothing to install first.
+        # That is the whole reason the daemon moved off Swift — the statically
+        # linked Swift build was 58 MB to serve four routes.
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
+          ls -l target/x86_64-unknown-linux-musl/release/wisq-agent
+          env -i target/x86_64-unknown-linux-musl/release/wisq-agent --help > /dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-linux-ci
+          path: target/x86_64-unknown-linux-musl/release/wisq-agent
+
   core:
     name: Cœur (Linux)
     runs-on: ubuntu-latest
+    # The cross-language protocol tests run the real daemon, so they need the
+    # binary the Rust job just built and verified.
+    needs: rust
     # WisqCore, WisqNet and WisqRemote are Foundation-only, with the platform
     # frameworks behind `canImport` guards. Building them here gives real signal
     # on the protocol work without waiting on a macOS runner.
@@ -26,12 +59,21 @@ jobs:
           curl -sSL --max-time 120 -o /tmp/kernel.zip \
             https://github.com/cnlohr/mini-rv32ima-images/raw/master/images/linux-6.1.14-rv32nommu-cnl-1.zip \
             && unzip -o /tmp/kernel.zip -d /tmp/wisq-test-linux-image || true
+      - uses: actions/download-artifact@v8
+        with:
+          name: agent-linux-ci
+          path: /tmp/wisq-agent-bin
+      - name: Make the agent runnable
+        run: chmod +x /tmp/wisq-agent-bin/wisq-agent
       - name: Build (mode langage Swift 6)
         run: swift build
       - name: Test
         run: swift test
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+          # Without this the cross-language tests skip loudly instead of
+          # checking the daemon and the app's client against each other.
+          WISQ_AGENT_BINARY: /tmp/wisq-agent-bin/wisq-agent
       - name: Benchmark (boot to prompt)
         # Not a threshold — a shared runner cannot hold one without flaking.
         # It boots a real kernel in the release configuration and prints the
@@ -63,6 +105,15 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Cross-compile the VM core for iOS
+        # Ground-truth for linking the Rust interpreter into the app: the static
+        # library has to build for a real device target before that switch is
+        # worth making. Nothing links it yet — this is the probe that says the
+        # ground is solid.
+        run: |
+          rustup target add aarch64-apple-ios
+          cargo build --release --target aarch64-apple-ios -p wisq-vm
+          ls -l target/aarch64-apple-ios/release/libwisq_vm.a
       - name: Generate project
         run: xcodegen generate
       - name: Build for simulator
