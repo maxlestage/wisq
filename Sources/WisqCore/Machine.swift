@@ -95,11 +95,22 @@ public struct AgentBinding: Codable, Hashable, Sendable {
     /// Ask the agent to boot the VM when the user taps Connect.
     public var autoStart: Bool
     public var credentialRef: String?
+    /// SHA-256 of the agent's TLS certificate, recorded at pairing. Optional
+    /// and absent from machines saved before 0.3, which keep speaking the
+    /// plain HTTP they were paired over.
+    public var certificateFingerprint: Data?
 
-    public init(baseURL: URL, vmIdentifier: String, autoStart: Bool = true, credentialRef: String? = nil) {
+    public init(
+        baseURL: URL,
+        vmIdentifier: String,
+        autoStart: Bool = true,
+        credentialRef: String? = nil,
+        certificateFingerprint: Data? = nil
+    ) {
         self.baseURL = baseURL
         self.vmIdentifier = vmIdentifier
         self.autoStart = autoStart
         self.credentialRef = credentialRef
+        self.certificateFingerprint = certificateFingerprint
     }
 }

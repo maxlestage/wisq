@@ -40,8 +40,9 @@ démon (QR via `qrencode` quand il est là), schéma enregistré côté app avec
 ouverture directe de l'import pré-rempli, annonce Bonjour best effort côté
 démon et navigation `NWBrowser` côté app.
 
-Reste dans ce lot : le TLS de l'agent (v1 en clair + jeton, réseau de confiance
-ou tunnel).
+Le TLS de l'agent est fait : certificat auto-signé persistant, empreinte
+SHA-256 dans le lien d'appairage, épinglage côté app, `--no-tls` pour les
+tunnels. Voir « Transport » dans AGENT-PROTOCOL.md.
 La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.

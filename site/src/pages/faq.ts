@@ -44,7 +44,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "Not in this version, and the site would rather say so than bury it. Plain VNC is unencrypted by design, and the agent speaks HTTP behind a mandatory token. Use a network you trust or a tunnel you already run. TLS with certificate pinning is the next security item on the roadmap and the client already carries the setting.",
+        "The agent side, yes: the daemon speaks TLS by default behind its mandatory token, with a self-signed certificate whose fingerprint travels in the pairing link — the app pins exactly that certificate, so there is no authority to run. Plain VNC remains unencrypted by design: for the console itself, use a network you trust or a tunnel you already run.",
     },
 
     { kind: "h2", text: "Where are my passwords kept?" },
@@ -135,7 +135,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Pas dans cette version, et le site préfère le dire que l'enterrer. Le VNC nu n'est pas chiffré par construction, et l'agent parle HTTP derrière un jeton obligatoire. Utilisez un réseau de confiance ou un tunnel que vous exploitez déjà. Le TLS avec épinglage de certificat est le prochain point de sécurité de la feuille de route, et le client en porte déjà le réglage.",
+        "Côté agent, oui : le démon parle TLS par défaut derrière son jeton obligatoire, avec un certificat auto-signé dont l'empreinte voyage dans le lien d'appairage — l'app épingle exactement ce certificat, donc aucune autorité à exploiter. Le VNC nu reste non chiffré par construction : pour la console elle-même, réseau de confiance ou tunnel existant.",
     },
 
     { kind: "h2", text: "Où sont conservés mes mots de passe ?" },

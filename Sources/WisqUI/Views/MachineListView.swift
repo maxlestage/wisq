@@ -44,6 +44,25 @@ public struct MachineListView: View {
                     .tint(.indigo)
                 }
             }
+
+            // The app says where it comes from. Apache-2.0 is a promise to the
+            // person holding the phone, and it is empty if they would have to
+            // find a website to learn the source exists.
+            Section {
+                Link(destination: ProjectLinks.repository) {
+                    Label("Code source", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Link(destination: ProjectLinks.issues) {
+                    Label("Signaler un problème", systemImage: "ladybug")
+                }
+                Link(destination: ProjectLinks.license) {
+                    Label("Licence Apache-2.0", systemImage: "doc.text")
+                }
+            } header: {
+                Text("À propos")
+            } footer: {
+                Text("wisq \(ProjectLinks.version) — libre et open source. Sémantique RISC-V portée de mini-rv32ima (Charles Lohr, MIT).")
+            }
         }
         .listStyle(.insetGrouped)
         .searchable(text: $search, prompt: "Rechercher une machine")

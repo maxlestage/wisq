@@ -26,7 +26,7 @@ export const protocolEn: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "Version 1 speaks in the clear. Self-hosted TLS without a dependency is a project of its own, and the token stays mandatory meanwhile. Trusted network or existing tunnel only — the same advice as for unencrypted VNC.",
+        "The daemon speaks TLS by default. It signs its own certificate on first run and keeps it beside the token; the certificate's SHA-256 fingerprint travels in the pairing link, and the app pins exactly that certificate — no authority, no chain, no name checks. A plain-HTTP client gets an immediate 426 telling it what to do, and --no-tls turns encryption off for a tunnel that already provides it. The token stays mandatory either way.",
     },
 
     { kind: "h2", text: "Routes" },
@@ -135,7 +135,7 @@ export const protocolFr: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "La version 1 parle en clair. Le TLS auto-hébergé sans dépendance est un chantier à part entière, et le jeton reste obligatoire en attendant. À réserver au réseau de confiance ou à un tunnel existant — la même consigne que pour le VNC non chiffré.",
+        "Le démon parle TLS par défaut. Il signe son propre certificat au premier lancement et le garde à côté du jeton ; l'empreinte SHA-256 du certificat voyage dans le lien d'appairage, et l'app épingle exactement ce certificat — pas d'autorité, pas de chaîne, pas de vérification de nom. Un client en HTTP clair reçoit immédiatement un 426 qui lui dit quoi faire, et --no-tls coupe le chiffrement pour un tunnel qui le fournit déjà. Le jeton reste obligatoire dans tous les cas.",
     },
 
     { kind: "h2", text: "Routes" },

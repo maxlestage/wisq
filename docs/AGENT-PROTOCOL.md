@@ -34,11 +34,27 @@ d'import, adresse et jeton remplis, interrogation lancée. Le format est défini
 par `AgentPairing` (WisqCore), partagé par les deux côtés pour que génération
 et analyse ne puissent pas diverger.
 
-La v1 parle en clair : le TLS auto-hébergé sans dépendance est un chantier à
-part entière, et le jeton reste obligatoire. À réserver au réseau local ou à un
-tunnel existant (WireGuard, Tailscale) — la même consigne que pour le VNC non
-chiffré. Le TLS avec épinglage est prévu ; `TransportSecurity.tlsPinned` existe
-déjà côté client.
+## Transport : TLS épinglé par le lien
+
+Le démon parle TLS par défaut. Au premier lancement il se signe un certificat
+(ECDSA P-256) et le conserve à côté du jeton dans `~/.wisq-agent` ; l'empreinte
+SHA-256 du certificat (DER) voyage dans le lien d'appairage sous `fp=`, et
+l'app épingle exactement ce certificat — pas d'autorité, pas de chaîne, pas de
+vérification de nom. L'histoire de certificats d'un NAS familial, c'est de ne
+pas en avoir : le lien qui porte déjà le jeton porte aussi la confiance.
+
+Trois conséquences voulues. Le certificat ne tourne jamais tout seul — les
+liens déjà imprimés doivent continuer de marcher ; supprimer les deux fichiers
+`tls-*.der` est la rotation, et elle invalide les anciens liens à dessein. Il
+n'expire pratiquement pas (année 9999), l'expiration étant une précaution du
+monde des autorités qui, sous épinglage, ne saurait qu'échouer contre un démon
+sain. Et un client en HTTP clair reçoit immédiatement un `426 Upgrade
+Required` expliquant quoi faire, plutôt qu'un silence.
+
+`--no-tls` repasse en HTTP clair : pour un client d'avant 0.3, ou un tunnel
+(WireGuard, Tailscale) qui chiffre déjà. Un lien sans `fp=` signifie HTTP
+clair ; une empreinte malformée est une erreur d'analyse, jamais un repli
+silencieux vers le clair. Le jeton reste obligatoire dans tous les cas.
 
 ## Routes
 

@@ -17,6 +17,9 @@ struct AgentImportView: View {
     @State private var isQuerying = false
     @State private var errorMessage: String?
     @State private var importedIDs: Set<String> = []
+    /// From the pairing link only: pinning is a promise the link made, and an
+    /// address typed by hand never made it.
+    @State private var fingerprint: Data?
     @State private var browser = AgentBrowser()
 
     var body: some View {
@@ -105,6 +108,7 @@ struct AgentImportView: View {
             if let prefill {
                 address = prefill.port == 7442 ? prefill.host : "\(prefill.host):\(prefill.port)"
                 token = prefill.token ?? ""
+                fingerprint = prefill.certificateFingerprint
                 query()
             }
         }
@@ -113,11 +117,15 @@ struct AgentImportView: View {
         }
     }
 
-    /// v1 agents speak plain HTTP behind a token; the URL is built accordingly.
+    /// The pairing link decides the scheme: a fingerprint means the agent
+    /// speaks TLS and the connection pins it; no fingerprint means a pre-0.3
+    /// agent, or one deliberately run with --no-tls, and stays plain HTTP. An
+    /// address typed by hand has no fingerprint to pin.
     private var agentBaseURL: URL? {
         let (host, port) = Validation.splitHostPort(address)
         guard let normalized = try? Validation.normalizedHost(host) else { return nil }
-        return URL(string: "http://\(normalized):\(port ?? 7442)")
+        let scheme = fingerprint == nil ? "http" : "https"
+        return URL(string: "\(scheme)://\(normalized):\(port ?? 7442)")
     }
 
     private var tokenRef: String? {
@@ -134,7 +142,15 @@ struct AgentImportView: View {
         Task {
             defer { isQuerying = false }
             do {
-                let client = AgentClient(baseURL: baseURL, token: token.isEmpty ? nil : token)
+                let client: AgentClient = if let fingerprint {
+                    AgentClient(
+                        baseURL: baseURL,
+                        token: token.isEmpty ? nil : token,
+                        pinnedFingerprint: fingerprint
+                    )
+                } else {
+                    AgentClient(baseURL: baseURL, token: token.isEmpty ? nil : token)
+                }
                 vms = try await client.listVMs()
                 // The token worked: keep it, keyed per agent so every VM on this
                 // host shares the one secret.
@@ -163,7 +179,8 @@ struct AgentImportView: View {
                 baseURL: baseURL,
                 vmIdentifier: vm.id,
                 autoStart: true,
-                credentialRef: token.isEmpty ? nil : tokenRef
+                credentialRef: token.isEmpty ? nil : tokenRef,
+                certificateFingerprint: fingerprint
             )
         )
         library.save(machine, password: nil)

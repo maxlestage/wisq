@@ -6,7 +6,18 @@
 use std::process::{Command, Stdio};
 
 /// One pairing URL per reachable address, hostname first when it resolves.
-pub fn urls(port: u16, token: &str, host_name: Option<&str>) -> Vec<String> {
+///
+/// `fingerprint` is the SHA-256 of the daemon's TLS certificate, when TLS is
+/// on. Its presence in the link is what tells the phone to speak HTTPS and to
+/// pin exactly that certificate — the link is the certificate story, the same
+/// way it is already the token story. An old link without `fp` still means
+/// plain HTTP, so nothing already printed on a screen somewhere breaks.
+pub fn urls(
+    port: u16,
+    token: &str,
+    host_name: Option<&str>,
+    fingerprint: Option<&str>,
+) -> Vec<String> {
     let mut hosts: Vec<String> = Vec::new();
     if let Some(name) = host_name {
         if !name.is_empty() && name != "localhost" {
@@ -19,13 +30,18 @@ pub fn urls(port: u16, token: &str, host_name: Option<&str>) -> Vec<String> {
     hosts
         .iter()
         .map(|host| {
-            format!(
+            let mut url = format!(
                 "wisq://agent?host={}&port={}&token={}&name={}",
                 percent_encode(host),
                 port,
                 percent_encode(token),
                 percent_encode(label)
-            )
+            );
+            if let Some(fingerprint) = fingerprint {
+                url.push_str("&fp=");
+                url.push_str(fingerprint);
+            }
+            url
         })
         .collect()
 }
@@ -143,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_pairing_url_carries_host_port_token_and_name() {
-        let urls = urls(7442, "abc123", Some("nas"));
+        let urls = urls(7442, "abc123", Some("nas"), None);
         assert!(!urls.is_empty());
         let first = &urls[0];
         assert!(first.starts_with("wisq://agent?"));
@@ -155,14 +171,22 @@ mod tests {
 
     #[test]
     fn values_that_would_break_the_query_are_encoded() {
-        let urls = urls(1, "a b&c=d", Some("my host"));
+        let urls = urls(1, "a b&c=d", Some("my host"), None);
         assert!(urls[0].contains("token=a%20b%26c%3Dd"));
         assert!(urls[0].contains("host=my%20host"));
     }
 
     #[test]
+    fn the_fingerprint_rides_the_link_only_when_tls_is_on() {
+        let with = urls(7442, "t", Some("nas"), Some("aa11bb22"));
+        assert!(with[0].ends_with("&fp=aa11bb22"), "{}", with[0]);
+        let without = urls(7442, "t", Some("nas"), None);
+        assert!(!without[0].contains("fp="), "{}", without[0]);
+    }
+
+    #[test]
     fn loopback_is_never_offered_as_a_pairing_address() {
-        for url in urls(7442, "t", Some("host")) {
+        for url in urls(7442, "t", Some("host"), None) {
             assert!(!url.contains("host=127."), "{url}");
         }
     }

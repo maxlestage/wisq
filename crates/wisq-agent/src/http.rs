@@ -11,6 +11,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
+/// What sits between the socket and the protocol. The request reader below is
+/// written against `Read + Write`, so TLS is a wrapper here and not a second
+/// server.
+pub enum Transport {
+    Plain,
+    Tls(Arc<rustls::ServerConfig>),
+}
+
 /// Caps, so a hostile or broken client cannot make the daemon allocate.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -47,6 +55,7 @@ impl Response {
             404 => "Not Found",
             405 => "Method Not Allowed",
             413 => "Payload Too Large",
+            426 => "Upgrade Required",
             500 => "Internal Server Error",
             _ => "OK",
         }
@@ -74,34 +83,110 @@ impl Server {
 
     /// Serves until the process ends. One thread per connection: the client is
     /// a phone making a handful of short requests, so a thread pool would be
-    /// machinery guarding against a load that does not exist.
-    pub fn serve<H>(&self, handler: H) -> !
+    /// machinery guarding against a load that does not exist. The TLS
+    /// handshake happens on the connection's own thread for the same reason a
+    /// slow request must not block accept.
+    pub fn serve<H>(&self, transport: Transport, handler: H) -> !
     where
         H: Fn(Request) -> Response + Send + Sync + 'static,
     {
         let handler = Arc::new(handler);
+        let transport = Arc::new(transport);
         for stream in self.listener.incoming() {
             let Ok(stream) = stream else { continue };
             if self.stop.load(Ordering::Acquire) {
                 break;
             }
             let handler = Arc::clone(&handler);
+            let transport = Arc::clone(&transport);
             thread::spawn(move || {
-                let _ = handle_connection(stream, handler.as_ref());
+                let _ = handle_connection(stream, &transport, handler.as_ref());
             });
         }
         std::process::exit(0)
     }
 }
 
-fn handle_connection<H>(mut stream: TcpStream, handler: &H) -> std::io::Result<()>
+fn handle_connection<H>(
+    mut stream: TcpStream,
+    transport: &Transport,
+    handler: &H,
+) -> std::io::Result<()>
 where
     H: Fn(Request) -> Response,
 {
     stream.set_nodelay(true).ok();
-    let response = match read_request(&mut stream) {
+    // A connection thread must be reclaimable: without deadlines, a client
+    // that connects and never speaks — or a half-open TLS handshake — parks a
+    // thread forever.
+    let deadline = Some(std::time::Duration::from_secs(20));
+    stream.set_read_timeout(deadline).ok();
+    stream.set_write_timeout(deadline).ok();
+    match transport {
+        Transport::Plain => {
+            let result = exchange(&mut stream, handler);
+            stream.shutdown(Shutdown::Both).ok();
+            result?;
+        }
+        Transport::Tls(config) => {
+            // A plain-HTTP client — an app from before 0.3, or someone's curl
+            // without https:// — deserves an answer, not a stall: rustls reads
+            // "GET /" as a TLS record header announcing kilobytes that never
+            // come, and sits on the socket until its deadline. One peeked byte
+            // settles it, because every TLS connection opens with a handshake
+            // record (0x16) and no HTTP method starts with one.
+            let mut first = [0u8; 1];
+            if !matches!(stream.peek(&mut first), Ok(1)) || first[0] != 0x16 {
+                let response = Response::error(
+                    426,
+                    "cet agent parle TLS : utilisez https, ré-appairez, ou relancez-le avec --no-tls",
+                );
+                let body = response.body.as_bytes();
+                let head = format!(
+                    "HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).ok();
+                stream.write_all(body).ok();
+                stream.flush().ok();
+                stream.shutdown(Shutdown::Both).ok();
+                return Ok(());
+            }
+            let connection = rustls::ServerConnection::new(Arc::clone(config))
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut tls = rustls::StreamOwned::new(connection, stream);
+            let result = exchange(&mut tls, handler);
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+            tls.sock.shutdown(Shutdown::Both).ok();
+            result?;
+        }
+    }
+    Ok(())
+}
+
+/// Why a request could not be read. The distinction decides whether answering
+/// is possible at all: a malformed request on a healthy stream deserves a 400,
+/// but a dead transport — socket gone, TLS handshake failed — must be closed
+/// without a reply. Writing an HTTP response into a failed TLS handshake makes
+/// rustls try to continue that handshake, which blocks on a client that is
+/// itself blocked reading: a deadlock, one leaked thread per hostile or merely
+/// outdated client.
+enum ReadFailure {
+    Protocol(Response),
+    Transport,
+}
+
+/// One request, one response, then close — over whatever the transport gives.
+fn exchange<S, H>(stream: &mut S, handler: &H) -> std::io::Result<()>
+where
+    S: Read + Write,
+    H: Fn(Request) -> Response,
+{
+    let response = match read_request(stream) {
         Ok(request) => handler(request),
-        Err(response) => response,
+        Err(ReadFailure::Protocol(response)) => response,
+        Err(ReadFailure::Transport) => return Ok(()),
     };
 
     let body = response.body.as_bytes();
@@ -114,18 +199,20 @@ where
     stream.write_all(head.as_bytes())?;
     stream.write_all(body)?;
     stream.flush()?;
-    stream.shutdown(Shutdown::Both).ok();
     Ok(())
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, Response> {
+fn read_request<S: Read>(stream: &mut S) -> Result<Request, ReadFailure> {
     let mut reader = BufReader::new(stream);
 
     let mut request_line = String::new();
     read_line(&mut reader, &mut request_line)?;
     let mut parts = request_line.trim_end().split(' ');
     let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
-        return Err(Response::error(400, "requête malformée"));
+        return Err(ReadFailure::Protocol(Response::error(
+            400,
+            "requête malformée",
+        )));
     };
     let (method, path) = (method.to_string(), path.to_string());
 
@@ -138,7 +225,10 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, Response> {
         read_line(&mut reader, &mut line)?;
         header_bytes += line.len();
         if header_bytes > MAX_HEADER_BYTES {
-            return Err(Response::error(413, "en-têtes trop volumineux"));
+            return Err(ReadFailure::Protocol(Response::error(
+                413,
+                "en-têtes trop volumineux",
+            )));
         }
         let line = line.trim_end();
         if line.is_empty() {
@@ -152,11 +242,14 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, Response> {
         match name.to_ascii_lowercase().as_str() {
             "authorization" => authorization = Some(value.to_string()),
             "content-length" => {
-                content_length = value
-                    .parse()
-                    .map_err(|_| Response::error(400, "Content-Length invalide"))?;
+                content_length = value.parse().map_err(|_| {
+                    ReadFailure::Protocol(Response::error(400, "Content-Length invalide"))
+                })?;
                 if content_length > MAX_BODY_BYTES {
-                    return Err(Response::error(413, "corps trop volumineux"));
+                    return Err(ReadFailure::Protocol(Response::error(
+                        413,
+                        "corps trop volumineux",
+                    )));
                 }
             }
             _ => {}
@@ -167,7 +260,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, Response> {
     if content_length > 0 {
         reader
             .read_exact(&mut body)
-            .map_err(|_| Response::error(400, "corps incomplet"))?;
+            .map_err(|_| ReadFailure::Transport)?;
     }
 
     Ok(Request {
@@ -178,15 +271,159 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, Response> {
     })
 }
 
-fn read_line<R: BufRead>(reader: &mut R, out: &mut String) -> Result<(), Response> {
+fn read_line<R: BufRead>(reader: &mut R, out: &mut String) -> Result<(), ReadFailure> {
     let mut raw = Vec::new();
     let read = reader
         .take(MAX_HEADER_BYTES as u64)
         .read_until(b'\n', &mut raw)
-        .map_err(|_| Response::error(400, "lecture impossible"))?;
+        // A read that errors is a transport problem — a vanished socket or a
+        // failed TLS handshake — and both are streams no answer can cross.
+        .map_err(|_| ReadFailure::Transport)?;
     if read == 0 {
-        return Err(Response::error(400, "connexion fermée"));
+        return Err(ReadFailure::Transport);
     }
     *out = String::from_utf8_lossy(&raw).into_owned();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpStream;
+
+    /// The client half of the pinning story, as the app implements it: trust
+    /// exactly the certificate whose SHA-256 matches the pairing link, and
+    /// nothing else — no CA, no names, no dates.
+    #[derive(Debug)]
+    struct PinnedVerifier {
+        fingerprint: String,
+    }
+
+    impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
+        fn verify_server_cert(
+            &self,
+            end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            if crate::tls::fingerprint_hex(end_entity) == self.fingerprint {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            } else {
+                Err(rustls::Error::General("empreinte inattendue".into()))
+            }
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    fn tls_server() -> (u16, String) {
+        let directory = std::env::temp_dir().join(format!(
+            "wisq-http-tls-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let identity = crate::tls::load_or_create(&directory).expect("identité");
+        let fingerprint = identity.fingerprint.clone();
+        let server = Server::bind(0).expect("bind");
+        let port = server.port();
+        let config = identity.config;
+        thread::spawn(move || {
+            server.serve(Transport::Tls(config), |request| {
+                Response::json(200, format!("{{\"echo\":\"{}\"}}", request.path))
+            });
+        });
+        let _ = std::fs::remove_dir_all(&directory);
+        (port, fingerprint)
+    }
+
+    fn pinned_client(fingerprint: &str) -> Arc<rustls::ClientConfig> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinnedVerifier {
+                fingerprint: fingerprint.to_string(),
+            }))
+            .with_no_client_auth();
+        Arc::new(config)
+    }
+
+    fn request_over_tls(port: u16, config: Arc<rustls::ClientConfig>) -> std::io::Result<String> {
+        let name = rustls::pki_types::ServerName::try_from("wisq-agent").expect("nom");
+        let connection = rustls::ClientConnection::new(config, name)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let socket = TcpStream::connect(("127.0.0.1", port))?;
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        stream.write_all(b"GET /v1/vms HTTP/1.1\r\nHost: x\r\n\r\n")?;
+        let mut body = String::new();
+        stream.read_to_string(&mut body)?;
+        Ok(body)
+    }
+
+    #[test]
+    fn a_client_pinning_the_right_fingerprint_gets_served() {
+        let (port, fingerprint) = tls_server();
+        let body = request_over_tls(port, pinned_client(&fingerprint)).expect("échange TLS");
+        assert!(body.contains("\"echo\":\"/v1/vms\""), "{body}");
+    }
+
+    #[test]
+    fn a_client_pinning_the_wrong_fingerprint_never_reaches_the_service() {
+        let (port, _) = tls_server();
+        let wrong = "00".repeat(32);
+        let error = request_over_tls(port, pinned_client(&wrong))
+            .expect_err("le mauvais certificat doit être refusé");
+        assert!(error.to_string().contains("empreinte"), "{error}");
+    }
+
+    /// A plain client must learn what went wrong in milliseconds. The first
+    /// version of this path stalled such clients for the whole socket
+    /// deadline: rustls read "GET /" as a TLS record header and waited for
+    /// kilobytes that were never coming.
+    #[test]
+    fn plain_http_against_the_tls_port_is_told_to_upgrade_quickly() {
+        let (port, _) = tls_server();
+        let started = std::time::Instant::now();
+        let mut socket = TcpStream::connect(("127.0.0.1", port)).expect("connexion");
+        socket
+            .write_all(b"GET /v1/vms HTTP/1.1\r\nHost: x\r\n\r\n")
+            .expect("écriture");
+        let mut reply = Vec::new();
+        let _ = socket.read_to_end(&mut reply);
+        let reply = String::from_utf8_lossy(&reply);
+        assert!(reply.starts_with("HTTP/1.1 426"), "{reply}");
+        assert!(reply.contains("--no-tls"), "{reply}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "la réponse doit être immédiate, pas au bout du délai de socket"
+        );
+    }
 }

@@ -25,11 +25,12 @@ jobs:
       - name: Test
         run: cargo test --release
       - name: Build the agent, statically
-        # musl rather than glibc: the crate has no C dependencies, so the result
-        # runs on any Linux including Alpine, with nothing to install first.
-        # That is the whole reason the daemon moved off Swift — the statically
-        # linked Swift build was 58 MB to serve four routes.
+        # musl rather than glibc, so the result runs on any Linux including
+        # Alpine with nothing to install first. musl-tools is for ring: TLS
+        # brought the agent its one C dependency, and ring's build wants a
+        # musl-targeting C compiler.
         run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
           cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
           ls -l target/x86_64-unknown-linux-musl/release/wisq-agent
           env -i target/x86_64-unknown-linux-musl/release/wisq-agent --help > /dev/null
