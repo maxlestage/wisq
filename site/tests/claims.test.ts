@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { copy } from "../src/content";
+import { RELEASED_VERSIONS } from "../src/pages";
+import { PAGES } from "../src/pages";
 
 /// The site advertises numbers about the codebase. Numbers on a landing page
 /// rot silently, so this reads the repository and fails when a claim stops
@@ -37,6 +39,29 @@ function claimedValue(label: RegExp): number {
 describe("advertised claims match the repository", () => {
   test("the test count is the real one", () => {
     expect(claimedValue(/tests/)).toBe(testCount());
+  });
+
+  test("every version the site announces has a dated changelog entry", () => {
+    // The releases page restates what shipped. Restated content rots, so this
+    // reads the changelog and fails when the page starts describing versions
+    // the repository does not have.
+    const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
+    for (const version of RELEASED_VERSIONS) {
+      expect(changelog, `version absente du CHANGELOG : ${version}`).toContain(
+        `## [${version}] —`,
+      );
+    }
+  });
+
+  test("the releases page covers every version it lists", () => {
+    for (const lang of ["en", "fr"] as const) {
+      const headings = PAGES[lang].releases.blocks
+        .filter((block) => block.kind === "h2")
+        .map((block) => (block as { text: string }).text);
+      for (const version of RELEASED_VERSIONS) {
+        expect(headings, `${lang} : section manquante pour ${version}`).toContain(version);
+      }
+    }
   });
 
   test("the CI gate count matches the workflow", () => {

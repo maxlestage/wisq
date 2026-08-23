@@ -145,7 +145,7 @@ Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
 crates/wisq-vm       rv32ima interpreter (Rust) with a C ABI for the app
-site/                landing page: React 19 on Bun, pre-rendered, mobile-first
+site/                the project site: React 19 on Bun, pre-rendered, an installable PWA
 docs/                architecture, agent wire protocol, roadmap
 ```
 

@@ -103,7 +103,7 @@ section + section { border-top: 1px solid var(--line); }
   border-bottom: 1px solid var(--line);
 }
 
-.site-header .wrap {
+.header-bar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -121,11 +121,53 @@ section + section { border-top: 1px solid var(--line); }
 }
 .brand span { color: var(--accent); }
 
-/* Nav links are the first thing to go on a narrow screen: the logo, the
-   language switch and the source link carry the header on a phone. */
-.nav-links { display: none; gap: 20px; }
-.nav-links a { color: var(--fg-soft); text-decoration: none; font-size: 0.92rem; }
-.nav-links a:hover { color: var(--fg); }
+/* Seven pages will not fit across a phone, and hiding them behind a hamburger
+   hides the site. The nav scrolls sideways instead: every destination stays
+   visible and reachable with a thumb, and the fade at the edge says there is
+   more. */
+.site-nav {
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+.site-nav::-webkit-scrollbar { display: none; }
+
+.site-nav-inner {
+  display: flex;
+  gap: 4px;
+  padding-block: 2px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  color: var(--fg-soft);
+  text-decoration: none;
+}
+.site-nav a:hover { color: var(--fg); background: var(--bg-soft); }
+.site-nav a[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--accent-soft); }
+
+/* Visible only once it has focus, which is the entire point of it. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-radius: 0 0 10px 0;
+}
+.skip-link:focus { left: 0; }
 
 .lang-switch {
   display: inline-flex;
@@ -380,4 +422,118 @@ pre code { white-space: pre; }
   .nav-links { display: flex; }
   .hero h1 { font-size: 3.5rem; }
   .steps { grid-template-columns: repeat(3, 1fr); gap: 28px; }
+}
+
+
+/* ---------- written pages ---------- */
+
+.doc { padding-block: 32px 56px; }
+
+.doc-head { margin-bottom: 30px; }
+.doc-head h1 { font-size: 1.9rem; max-width: 20ch; }
+.doc-head .lede { font-size: 1.03rem; max-width: 54ch; }
+
+/* Measure before decoration: a documentation page is read, and a line that
+   runs the width of a laptop is a line people lose their place in. */
+.doc > .wrap > * { max-width: 68ch; }
+.doc > .wrap > .table-scroll { max-width: 100%; }
+
+.doc h2 {
+  font-size: 1.35rem;
+  margin-top: 44px;
+  padding-top: 8px;
+  scroll-margin-top: 110px;
+}
+.doc h3 {
+  font-size: 1.05rem;
+  margin-top: 30px;
+  scroll-margin-top: 110px;
+}
+.doc p { margin: 14px 0 0; color: var(--fg-soft); }
+.doc h2 + p, .doc h3 + p { margin-top: 12px; }
+
+.doc .anchor { color: inherit; text-decoration: none; }
+.doc .anchor:hover { color: var(--accent); }
+
+.doc-list { margin: 16px 0 0; padding-left: 22px; color: var(--fg-soft); display: grid; gap: 8px; }
+.doc-list li::marker { color: var(--accent); }
+.doc-steps { counter-reset: step; }
+
+.doc-code {
+  margin: 20px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-code);
+}
+.doc-code figcaption {
+  padding: 9px 14px;
+  font-size: 0.8rem;
+  color: var(--fg-soft);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--line);
+}
+.doc-code pre {
+  margin: 0;
+  padding: 14px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--fg-code);
+}
+
+.doc-note {
+  margin: 22px 0 0;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  background: var(--bg-soft);
+}
+.doc-note p { margin: 0; color: var(--fg); font-size: 0.93rem; }
+.doc-note-info { border-left-color: var(--accent); }
+.doc-note-warn { border-left-color: #d97706; }
+
+.doc-dl { margin: 18px 0 0; display: grid; gap: 18px; }
+.doc-dl dt { font-weight: 600; }
+.doc-dl dd { margin: 5px 0 0; color: var(--fg-soft); font-size: 0.95rem; }
+
+/* ---------- install banner ---------- */
+
+/* Anchored to the bottom, clear of the home indicator, and never covering the
+   last line of a page the reader is in the middle of. */
+.install-banner {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: saturate(160%) blur(12px);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.install-banner-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-block: 12px;
+}
+.install-banner strong { display: block; font-size: 0.95rem; }
+.install-banner p { margin: 3px 0 0; font-size: 0.86rem; color: var(--fg-soft); max-width: 46ch; }
+
+.install-banner-actions { display: flex; gap: 8px; margin-left: auto; }
+.install-banner-actions .btn { padding: 9px 16px; font-size: 0.88rem; }
+
+.btn-quiet {
+  background: transparent;
+  color: var(--fg-soft);
+  border-color: transparent;
+}
+.btn-quiet:hover { color: var(--fg); }
+
+@media (min-width: 40em) {
+  .doc-head h1 { font-size: 2.2rem; }
+  .doc h2 { font-size: 1.5rem; }
 }
