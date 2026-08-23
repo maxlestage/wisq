@@ -89,8 +89,11 @@ public struct ConsoleBuffer: Sendable {
             return
 
         case .osc:
-            if scalar.value == 0x07 { state = .text }
-            else if scalar.value == 0x1B { state = .oscEscape }
+            switch scalar.value {
+            case 0x07: state = .text
+            case 0x1B: state = .oscEscape
+            default: break
+            }
             return
 
         case .oscEscape:
