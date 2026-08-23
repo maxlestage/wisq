@@ -32,15 +32,29 @@ public final class LinuxMachine: @unchecked Sendable {
 
     public init(onOutput: @escaping @Sendable (Data) -> Void) {
         self.onOutput = onOutput
-        self.ram = UnsafeMutableRawPointer.allocate(
-            byteCount: Int(Self.ramSize), alignment: 8
-        )
-        ram.initializeMemory(as: UInt8.self, repeating: 0, count: Int(Self.ramSize))
+        self.ram = Self.allocateGuestRAM(Int(Self.ramSize))
         self.core = RV32Core(ram: ram, ramSize: Self.ramSize, bus: self)
     }
 
     deinit {
-        ram.deallocate()
+        munmap(ram, Int(Self.ramSize))
+    }
+
+    /// 64 MB of guest RAM, mapped rather than allocated-and-cleared.
+    ///
+    /// `malloc` makes no promise about contents, so the buffer had to be
+    /// memset — 64 MB of stores that also make every page resident before the
+    /// guest has touched one. An anonymous mapping is zero-filled by
+    /// definition, so the clear disappears and the pages fault in as the
+    /// kernel actually uses them. On a phone that is both the tap-to-boot
+    /// pause and the resident footprint the system judges the app on.
+    private static func allocateGuestRAM(_ bytes: Int) -> UnsafeMutableRawPointer {
+        let mapping = mmap(nil, bytes, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+        guard let mapping, mapping != MAP_FAILED else {
+            fatalError("RAM invitée : impossible de mapper \(bytes) octets")
+        }
+        return mapping
     }
 
     // MARK: - Boot
@@ -84,6 +98,10 @@ public final class LinuxMachine: @unchecked Sendable {
 
     /// Runs until shutdown, reboot, stop, or the instruction budget runs out.
     ///
+    /// The budget counts instructions the guest actually retired. Counting
+    /// slices offered instead would let an idle guest spend the whole budget
+    /// without executing anything.
+    ///
     /// Blocking by design: the caller owns the thread (a Task in the app, the
     /// test runner in CI). The virtual clock advances with executed
     /// instructions rather than wall time, so a boot is deterministic on every
@@ -91,17 +109,16 @@ public final class LinuxMachine: @unchecked Sendable {
     @discardableResult
     public func run(instructionBudget: UInt64 = .max) -> Outcome {
         let slice = 1024
-        var executed: UInt64 = 0
+        let startCycles = retiredInstructions
         var slicesSinceFlush = 0
 
-        while executed < instructionBudget {
+        while retiredInstructions &- startCycles < instructionBudget {
             lock.lock()
             let stopped = stopRequested
             lock.unlock()
             if stopped { flushOutput(); return .stopped }
 
             let result = core.step(elapsedMicroseconds: UInt32(slice / 16), count: slice)
-            executed += UInt64(slice)
 
             // Prompts end without a newline; without a periodic flush they
             // would sit in the batch buffer forever and the console would look
@@ -126,6 +143,16 @@ public final class LinuxMachine: @unchecked Sendable {
         }
         flushOutput()
         return .stopped
+    }
+
+    /// Instructions actually retired since boot.
+    ///
+    /// Not the same as the budget spent: a hart in WFI burns wall time without
+    /// retiring anything, so a throughput figure computed from the budget
+    /// flatters an idle guest and punishes one that stops idling. This is the
+    /// honest denominator.
+    public var retiredInstructions: UInt64 {
+        (UInt64(core.cycleh) << 32) | UInt64(core.cyclel)
     }
 
     /// Asks a running `run()` to return. Safe from any thread.
