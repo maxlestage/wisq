@@ -1,5 +1,64 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
+
+// The Rust interpreter is off by default, and that is a deliberate cost.
+//
+// Linking it means a static library must already exist, which means `cargo
+// build --release -p wisq-vm` must have run — a second toolchain in the way of
+// `swift build`. So the target only joins the package when WISQ_RUST_CORE is
+// set: a clone with Swift and nothing else still builds and still passes its
+// tests, and the switch is one environment variable away for anyone who wants
+// the faster core.
+//
+// What the flag buys, beyond the app: a Linux CI job can build both
+// interpreters and run a differential test that boots the same kernel through
+// each and compares them checkpoint by checkpoint. Two implementations of the
+// same machine are only trustworthy if something makes them prove they agree.
+let rustCoreEnabled = ProcessInfo.processInfo.environment["WISQ_RUST_CORE"] != nil
+
+// Where `cargo build --release` leaves libwisq_vm.a. Absolute, derived from this
+// file, because the linker's working directory is not the package root during a
+// test run and a relative -L silently finds nothing.
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let rustLibraryDirectory = ProcessInfo.processInfo.environment["WISQ_RUST_LIB_DIR"]
+    ?? "\(packageRoot)/target/release"
+
+#if os(macOS) || os(iOS)
+// Rust's staticlib pulls in libSystem's unwinder and the objc runtime shims.
+let rustSystemLibraries: [LinkerSetting] = []
+#else
+// On Linux the staticlib needs the pthread/dl/m symbols the Rust runtime uses;
+// Swift's driver does not add them for a C library it knows nothing about.
+let rustSystemLibraries: [LinkerSetting] = [
+    .linkedLibrary("pthread"),
+    .linkedLibrary("dl"),
+    .linkedLibrary("m"),
+]
+#endif
+
+let rustCoreTargets: [Target] = rustCoreEnabled ? [
+    // The crate's own hand-written header, reached in place rather than copied.
+    .systemLibrary(name: "CWisqVM", path: "Sources/CWisqVM"),
+
+    // Swift's view of the Rust interpreter: the same public surface as WisqVM's
+    // LinuxMachine, so the app can be pointed at either.
+    .target(
+        name: "WisqVMRust",
+        dependencies: ["CWisqVM"],
+        linkerSettings: [
+            .unsafeFlags(["-L\(rustLibraryDirectory)"]),
+            .linkedLibrary("wisq_vm"),
+        ] + rustSystemLibraries
+    ),
+
+    // Both cores, driven through the same script and compared.
+    .testTarget(name: "WisqVMRustTests", dependencies: ["WisqVMRust", "WisqVM"]),
+] : []
+
+let rustCoreProducts: [Product] = rustCoreEnabled
+    ? [.library(name: "WisqVMRust", targets: ["WisqVMRust"])]
+    : []
 
 // The UI layer is UIKit/SwiftUI and only exists on Apple platforms. Dropping it on
 // Linux lets the protocol work — which is where the bugs live — be built and tested
@@ -38,7 +97,7 @@ let package = Package(
         .library(name: "WisqNet", targets: ["WisqNet"]),
         .library(name: "WisqRemote", targets: ["WisqRemote"]),
         .library(name: "WisqVM", targets: ["WisqVM"]),
-    ] + uiProducts + agentProducts,
+    ] + uiProducts + agentProducts + rustCoreProducts,
     targets: [
         // Pure domain model. Foundation only, no platform frameworks.
         .target(name: "WisqCore"),
@@ -60,5 +119,5 @@ let package = Package(
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet"]),
         .testTarget(name: "WisqVMTests", dependencies: ["WisqVM"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
-    ] + uiTargets + agentTargets
+    ] + uiTargets + agentTargets + rustCoreTargets
 )

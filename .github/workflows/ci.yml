@@ -88,6 +88,30 @@ jobs:
           swift run -c release wisq-bench
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+      - name: Rust toolchain (pour le test différentiel)
+        # Installed here rather than shipping the library from the `rust` job:
+        # a static archive built against another image's glibc is a link error
+        # waiting for a base-image bump, and this is the one job that has to
+        # hold both toolchains at once.
+        #
+        # gcc is not optional: rustc drives `cc` to link, and the Swift image
+        # ships clang under its own name only.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+      - name: Les deux cœurs, comparés sur le même noyau
+        # The Rust interpreter is the faster one, so it is the one the app will
+        # run — which means nobody exercises the Swift one any more, and a
+        # divergence between them stops being noticed. This boots the same
+        # kernel through both and compares them instruction count by
+        # instruction count, console byte by console byte.
+        run: |
+          . "$HOME/.cargo/env"
+          scripts/test-rust-core.sh
+        env:
+          WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
 
   lint:
     name: Lint

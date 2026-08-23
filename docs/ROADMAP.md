@@ -47,7 +47,7 @@ La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.
 
-## Le cœur Rust sur Apple (empaquetage fait, bascule à venir)
+## Le cœur Rust (empaquetage fait, câblage fait, bascule de l'app à venir)
 
 `scripts/build-xcframework.sh` produit `WisqVMCore.xcframework` — tranche
 appareil, tranches simulateur et macOS universelles — et
@@ -62,9 +62,27 @@ test le compile contre la vraie bibliothèque et démarre un noyau au travers,
 sur Linux, à chaque commit : une signature qui dérive de `src/ffi.rs` casse
 un test au lieu de corrompre la mémoire sur un téléphone.
 
-Reste la bascule elle-même : `WisqVM` (Swift) et le cœur Rust coexistent, et
-choisir lequel l'application utilise demande de trancher comment le paquet
-Swift lie la bibliothèque — un chantier distinct de l'empaquetage.
+Le cœur Rust est maintenant câblé dans le paquet Swift, mais **absent par
+défaut** : la cible `WisqVMRust` n'existe que si `WISQ_RUST_CORE` est définie,
+parce que la lier suppose un `cargo build` préalable et qu'un clone avec Swift
+et rien d'autre doit continuer à se construire et à passer ses tests. Ce que le
+drapeau achète : la CI Linux construit les deux interpréteurs et fait démarrer
+le *même* noyau à travers chacun, en comparant tous les millions
+d'instructions le nombre d'instructions retirées et les octets de console.
+`scripts/test-rust-core.sh` fait tourner ça d'une commande.
+
+Ce test a trouvé un vrai défaut le jour où il a été écrit : le bus Rust
+répondait aux lectures CLINT `mtime` avec un instantané pris *avant* que le pas
+n'avance l'horloge. L'invité voyait donc une horloge en retard d'une tranche —
+et de toute la période d'inactivité quand le hart venait d'être réveillé d'un
+WFI par un saut d'horloge. Corrigé (`Bus::set_time`) ; les deux cœurs retirent
+désormais exactement les mêmes instructions et écrivent exactement les mêmes
+octets.
+
+Reste la bascule de l'application elle-même : sur iPhone la bibliothèque
+n'arrive pas par `-L target/release` mais par le `WisqVMCore.xcframework`, donc
+pointer `WisqUI` sur le cœur Rust est le chantier suivant, distinct de
+celui-ci.
 
 ## Lot 4 bis — Linux local (fait en v1)
 

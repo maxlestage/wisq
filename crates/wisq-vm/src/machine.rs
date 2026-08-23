@@ -248,6 +248,11 @@ impl Bus for MachineBus<'_> {
         }
     }
 
+    fn set_time(&mut self, low: u32, high: u32) {
+        self.timerl = low;
+        self.timerh = high;
+    }
+
     fn mmio_store(&mut self, address: u32, value: u32) -> Option<u32> {
         match address {
             // UART TX

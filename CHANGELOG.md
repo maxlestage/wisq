@@ -7,7 +7,35 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **The Rust core handed the guest a clock that ran behind its own machine.**
+  The borrow checker forces the devices to be built apart from the CPU, and the
+  bus was built with the timer as it stood *before* the step advanced it. CLINT
+  `mtime` reads therefore answered with the previous slice's time — and, worse,
+  with the pre-sleep time whenever the hart had just been jumped forward out of
+  wait-for-interrupt, which is a jump of the entire idle period rather than of
+  64 µs. Kernel log timestamps were visibly wrong against the Swift core.
+  `Bus::set_time` now hands the devices the live clock once per step. Found by
+  the differential test below on the day it was written, which is the whole
+  argument for having written it.
+
 ### Added
+- **Both interpreters are made to prove they agree.** wisq has an rv32ima core
+  written twice, and the Rust one is faster, so it is the one the app will run
+  — which means nobody exercises the Swift one any more and a divergence
+  between them stops being noticed. `WisqVMRust` wires the Rust core into the
+  Swift package behind `WISQ_RUST_CORE`, with the same public surface as
+  `LinuxMachine` method for method, and a test boots the same kernel through
+  both and compares them every million instructions: the same count retired,
+  the same console bytes. Not "roughly the same output" — the same bytes.
+  The target is absent by default on purpose: linking it presumes a `cargo
+  build`, and a clone with Swift and nothing else must still build and still
+  pass its tests. `scripts/test-rust-core.sh` runs the comparison in one
+  command, and deletes any test bundle older than the library first — SwiftPM
+  does not know a `-L` archive is an input, so without that the suite happily
+  re-runs the previous binary against the previous library and passes without
+  having seen the change. That trap cost a false green here before it was
+  closed.
 - **The Rust core is packaged for Apple, and proven on an iPhone.**
   `scripts/build-xcframework.sh` assembles `WisqVMCore.xcframework` — the
   device slice, plus universal simulator and macOS slices — and checks the
