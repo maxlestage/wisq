@@ -7,6 +7,8 @@ break APIs.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-23
+
 ### Changed
 - The local Linux VM runs about **three times faster**: 55 → 163 million guest
   instructions a second, measured over a real kernel boot on the same machine.
