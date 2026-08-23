@@ -166,21 +166,31 @@ describe("built output", () => {
 });
 
 describe("the mark", () => {
-  /// Two logos on the landing page and one everywhere else, which is the whole
-  /// point of drawing a second one: the header wordmark names the site on every
-  /// page, and the full mark gets the room the hero has and no other page does.
-  test("the full mark is on the landing page and nowhere else", () => {
-    for (const { route, lang, file } of BUILT) {
-      void route;
-      void lang;
+  /// Where each size of the mark belongs. The hero lockup — mark plus the name
+  /// set large — is the landing page's alone, because no other page has that
+  /// room. The footer carries the mark small on every page, beside the
+  /// wordmark, so the pair is what a reader sees wherever they end up.
+  test("the hero lockup is the landing page's, the footer mark is everywhere", () => {
+    for (const { route, file } of BUILT) {
       const html = read(file);
-      const marks = html.split('class="hero-logo"').length - 1;
-      expect(marks, `${file} : nombre de marques complètes`).toBe(
-        route.id === "home" ? 1 : 0,
-      );
-      // The wordmark is the one logo every page carries.
-      expect(html, `${file} : mot-marque`).toContain('class="brand"');
+      const hero = html.split('class="hero-logo"').length - 1;
+      expect(hero, `${file} : marque du hero`).toBe(route.id === "home" ? 1 : 0);
+      expect(
+        html.split('class="footer-logo"').length - 1,
+        `${file} : marque du pied de page`,
+      ).toBe(1);
+      expect(html, `${file} : mot-marque`).toContain('class="brand');
     }
+  });
+
+  /// Two copies of the same drawing on one page means two elements sharing an
+  /// id, which is invalid and resolves to whichever came first. Harmless while
+  /// the gradients are identical, and a silent wrong-colour bug the day they
+  /// are not.
+  test("two marks on a page do not share an id", () => {
+    const ids = [...read("index.html").matchAll(/id="(wisq-[^"]+)"/g)].map((m) => m[1]!);
+    expect(ids.length, "l'accueil porte deux marques, donc six identifiants").toBe(6);
+    expect(new Set(ids).size, "identifiant dupliqué entre les deux marques").toBe(ids.length);
   });
 
   /// Drawn, not fetched. An <img> here would be a second request before the

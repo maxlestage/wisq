@@ -16,6 +16,8 @@
 /// the reader's system settings is not a logo, and the plate is dark in both
 /// themes for the same reason an app icon is: it is the app icon.
 
+import { useId } from "react";
+
 /// The two quadrants of U+259A, in a 240×240 box.
 ///
 /// In the character the quadrants meet at a single point. Here they are pulled
@@ -27,6 +29,16 @@ const LR = 128;
 const GAP = LR - (UL + SIDE);
 
 export function Logo({ className }: { className?: string }) {
+  // The mark appears more than once on a page — the hero and the footer — and
+  // two copies of `id="wisq-plate"` is invalid HTML that only looks fine
+  // because both gradients happen to be identical. React's useId is stable
+  // across the server render and hydration, so the markup still matches; the
+  // colons it produces are legal in an id but noisy inside a URL reference.
+  const uid = useId().replace(/:/g, "");
+  const plate = `wisq-plate-${uid}`;
+  const mark = `wisq-mark-${uid}`;
+  const clip = `wisq-window-${uid}`;
+
   return (
     <svg
       className={className}
@@ -39,20 +51,20 @@ export function Logo({ className }: { className?: string }) {
       focusable="false"
     >
       <defs>
-        <linearGradient id="wisq-plate" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={plate} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stopColor="#171d26" />
           <stop offset="1" stopColor="#0b0d10" />
         </linearGradient>
-        <linearGradient id="wisq-mark" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={mark} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stopColor="#a8a2ff" />
           <stop offset="1" stopColor="#6f64ff" />
         </linearGradient>
-        <clipPath id="wisq-window">
+        <clipPath id={clip}>
           <rect x={UL} y={UL} width={SIDE} height={SIDE} rx="13" />
         </clipPath>
       </defs>
 
-      <rect width="240" height="240" rx="54" fill="url(#wisq-plate)" />
+      <rect width="240" height="240" rx="54" fill={`url(#${plate})`} />
       <rect
         x="0.75"
         y="0.75"
@@ -79,15 +91,15 @@ export function Logo({ className }: { className?: string }) {
       ))}
 
       {/* Upper left: a machine somewhere else, so it is a window. */}
-      <g clipPath="url(#wisq-window)">
-        <rect x={UL} y={UL} width={SIDE} height={SIDE} fill="url(#wisq-mark)" />
+      <g clipPath={`url(#${clip})`}>
+        <rect x={UL} y={UL} width={SIDE} height={SIDE} fill={`url(#${mark})`} />
         <rect x={UL} y={UL} width={SIDE} height="19" fill="#0b0d10" fillOpacity="0.3" />
         <circle cx={UL + 13} cy={UL + 9.5} r="3" fill="#0b0d10" fillOpacity="0.42" />
         <circle cx={UL + 25} cy={UL + 9.5} r="3" fill="#0b0d10" fillOpacity="0.42" />
       </g>
 
       {/* Lower right: the phone in your hand, screen and all. */}
-      <rect x={LR} y={LR} width={SIDE} height={SIDE} rx="13" fill="url(#wisq-mark)" />
+      <rect x={LR} y={LR} width={SIDE} height={SIDE} rx="13" fill={`url(#${mark})`} />
       <rect
         x={LR + 19}
         y={LR + 11}
