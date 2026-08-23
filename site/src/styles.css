@@ -251,10 +251,33 @@ section + section { border-top: 1px solid var(--line); }
    rem rather than pixels so it grows with the reader's text size instead of
    shrinking against it. */
 .hero-grid { display: grid; gap: 30px; }
-.hero-logo {
-  width: 7.4rem;
-  height: auto;
+
+/* The lockup, not the logo, is what the grid places: the name travels with the
+   mark rather than being laid out beside it by coincidence. */
+.hero-lockup {
+  display: flex;
+  align-items: center;
+  gap: 20px;
   order: -1;
+}
+.hero-wordmark {
+  margin: 0;
+  font-family: var(--mono);
+  font-weight: 700;
+  /* The name leads and the mark accompanies it, so the letters are sized to
+     stand as tall as the plate rather than to sit politely beside it. The
+     mark shrinks to make room: two things cannot both dominate 350px. */
+  /* Clamped rather than fixed: at 320px a fixed 6.4rem is 44px wider than the
+     screen, and a hero that overflows on the smallest phone is a hero nobody
+     checked. The middle term is what the name actually gets on a phone. */
+  font-size: clamp(2.8rem, 24vw, 6.4rem);
+  letter-spacing: -0.055em;
+  line-height: 0.9;
+}
+.hero-logo {
+  width: clamp(3.4rem, 20vw, 5rem);
+  flex: none;
+  height: auto;
   /* The plate is dark in both themes, so it needs its own separation from a
      white page rather than borrowing the page's. The radius matches the rx the
      SVG draws — 54 of 240 — or the glow has squarer corners than the logo. */
@@ -490,6 +513,21 @@ pre code { white-space: pre; }
   color: var(--fg-soft);
   max-width: 42ch;
 }
+.footer-brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.footer-logo {
+  /* Small enough to be a footer mark, large enough that the two quadrants and
+     the link between them still read as three shapes rather than a smudge. */
+  width: 46px;
+  height: auto;
+  flex: none;
+  border-radius: 22.5%;
+}
+.footer-wordmark { font-size: 1.35rem; letter-spacing: -0.03em; }
+
 /* Scoped through .footer-brand rather than shouted with !important: these sit
    inside `.footer-brand p`, which is more specific than a bare class. */
 .footer-brand .footer-author {
@@ -547,12 +585,6 @@ pre code { white-space: pre; }
 @media (min-width: 40em) {
   body { font-size: 18px; }
   .footer-groups { grid-template-columns: repeat(3, 1fr); }
-  .hero-grid {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 48px;
-  }
-  .hero-logo { order: 0; width: 12.5rem; }
   section { padding-block: 76px; }
   .hero { padding-block: 76px 84px; }
   .hero h1 { font-size: 3rem; }
@@ -561,6 +593,21 @@ pre code { white-space: pre; }
   .cards { grid-template-columns: 1fr 1fr; gap: 22px; }
   .facts { grid-template-columns: repeat(4, 1fr); }
   .card { padding: 26px; }
+}
+
+/* The hero splits in two only once both halves fit. At 40em the lockup is
+   449px wide and the text column was left with 103px, which turned the
+   headline into five lines — a layout that reads fine at 1280px and is broken
+   at 700px, in a range nobody thinks to open. */
+@media (min-width: 60em) {
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 48px;
+  }
+  .hero-lockup { order: 0; gap: 22px; }
+  .hero-logo { width: 7rem; }
+  .hero-wordmark { font-size: 9rem; }
 }
 
 @media (min-width: 64em) {
