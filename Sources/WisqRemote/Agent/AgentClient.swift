@@ -3,6 +3,10 @@ import Foundation
 // URLSession lives in a separate module in the open-source Foundation.
 import FoundationNetworking
 #endif
+#if canImport(CryptoKit) && canImport(Security)
+import CryptoKit
+import Security
+#endif
 import WisqCore
 
 /// Client for the wisq host agent: a small daemon on the machine that actually runs
@@ -17,6 +21,33 @@ public struct AgentClient: Sendable {
         self.baseURL = baseURL
         self.token = token
         self.session = session
+    }
+
+    /// A client pinned to the agent's certificate, as recorded at pairing.
+    ///
+    /// The trust model is the pairing link's: no CA, no chain, no name checks —
+    /// the server is authentic exactly when the SHA-256 of the certificate it
+    /// presents equals the fingerprint the link carried. Standard validation
+    /// would be strictly worse here: it would reject every self-signed agent
+    /// and accept any certificate a public CA would sign for the same name.
+    public init(baseURL: URL, token: String?, pinnedFingerprint: Data) {
+        self.baseURL = baseURL
+        self.token = token
+        #if canImport(CryptoKit) && canImport(Security)
+        let configuration = URLSessionConfiguration.ephemeral
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: PinnedCertificateDelegate(fingerprint: pinnedFingerprint),
+            delegateQueue: nil
+        )
+        #else
+        // The open-source Foundation cannot evaluate server trust, so a pinned
+        // client cannot exist there. Standard validation stays on, and it
+        // rejects the agent's self-signed certificate: closed, with a blunter
+        // error than Apple platforms give — never open, which is what quietly
+        // ignoring the fingerprint would be.
+        self.session = URLSession(configuration: .ephemeral)
+        #endif
     }
 
     public func listVMs() async throws -> [AgentVM] {
@@ -95,3 +126,37 @@ public struct AgentClient: Sendable {
         let error: String
     }
 }
+
+#if canImport(CryptoKit) && canImport(Security)
+/// Accepts exactly one server certificate: the one whose DER hashes to the
+/// pinned fingerprint. Everything else — other certificates, other challenge
+/// kinds — is rejected, and rejection cancels the connection rather than
+/// falling back to the system's idea of trust.
+private final class PinnedCertificateDelegate: NSObject, URLSessionDelegate {
+    private let fingerprint: Data
+
+    init(fingerprint: Data) {
+        self.fingerprint = fingerprint
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = chain.first else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        let der = SecCertificateCopyData(leaf) as Data
+        guard Data(SHA256.hash(data: der)) == fingerprint else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+#endif

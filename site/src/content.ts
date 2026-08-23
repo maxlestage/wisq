@@ -221,7 +221,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "146", label: "tests" },
+      { value: "159", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -249,7 +249,7 @@ const en: Copy = {
     source: "Source",
     docs: "Docs",
     note:
-      "The agent v1 speaks plain HTTP behind a mandatory token: trusted network or tunnel, like unencrypted VNC. TLS is on the roadmap.",
+      "The agent speaks TLS by default, pinned by the pairing link — no certificate authority to run. Plain VNC itself stays unencrypted: trusted network or tunnel for the console.",
   },
 
   pages: {
@@ -401,7 +401,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "146", label: "tests" },
+      { value: "159", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
@@ -429,7 +429,7 @@ const fr: Copy = {
     source: "Sources",
     docs: "Docs",
     note:
-      "L'agent v1 parle en HTTP clair derrière un jeton obligatoire : réseau de confiance ou tunnel, comme le VNC non chiffré. Le TLS est dans la feuille de route.",
+      "L'agent parle TLS par défaut, épinglé par le lien d'appairage — aucune autorité de certification à exploiter. Le VNC nu reste non chiffré : réseau de confiance ou tunnel pour la console.",
   },
 
   pages: {

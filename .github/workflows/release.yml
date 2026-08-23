@@ -52,11 +52,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build release binary
         # musl, so the result is one static file that runs on any Linux with
-        # nothing installed first — including Alpine. The crate has no C
-        # dependencies, which is what makes that free. It is also why the daemon
+        # nothing installed first — including Alpine. It is also why the daemon
         # left Swift: statically linked against the Swift runtime it was 58 MB
-        # to serve four routes, and this is under 600 KB.
+        # to serve four routes; with TLS on board this is ~1.7 MB. musl-tools
+        # is for ring, the agent's one C dependency.
         run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
           rustup target add x86_64-unknown-linux-musl
           cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
           mkdir -p dist
