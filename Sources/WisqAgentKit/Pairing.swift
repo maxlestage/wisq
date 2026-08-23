@@ -28,7 +28,11 @@ public enum Pairing {
                 &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST
             ) == 0 else { continue }
 
-            let text = String(cString: host)
+            // `String(cString:)` is deprecated; getnameinfo writes a
+            // NUL-terminated string into a fixed NI_MAXHOST buffer, so the
+            // decode has to stop at the terminator rather than at the end.
+            let bytes = host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            let text = String(decoding: bytes, as: UTF8.self)
             if text != "127.0.0.1", !text.isEmpty {
                 addresses.append(text)
             }

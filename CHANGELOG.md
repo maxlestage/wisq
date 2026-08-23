@@ -7,6 +7,22 @@ break APIs.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-08-23
+
+### Fixed
+- The published Linux agent is now statically linked against the Swift
+  standard library. The 0.1.0 tarball was dynamically linked, so it needed
+  `libswiftCore.so` on the target machine — which a host that has never
+  installed a Swift toolchain does not have. Anyone downloading it got a
+  binary that died on its first line. macOS ships the Swift runtime in the
+  OS and was never affected.
+- `scripts/install.sh` runs the downloaded binary before installing it, and
+  falls back to the source build if it will not start. A wrong libc, a wrong
+  architecture, or a missing shared library all used to look like a
+  successful install and fail on first use.
+
+## [0.1.0] — 2026-08-23
+
 ### Changed
 - The package now builds in the **Swift 6 language mode**
   (`swift-tools-version: 6.0`), warning-free, on Swift 6.3.
@@ -24,7 +40,7 @@ break APIs.
   `ResumeOnce`, a locked once-guard that lives outside the platform guard so
   it is compiled and race-tested on every platform.
 
-## [0.1.0] — pending first release
+### Scope of the initial release
 
 The scope of the initial pull request, in one line each.
 

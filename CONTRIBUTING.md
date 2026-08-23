@@ -63,11 +63,18 @@ Match them locally before pushing; `scripts/verify.sh` covers the first.
 ## Releasing
 
 Releases happen from `master`. Update `CHANGELOG.md` (move `Unreleased`
-into a dated version section), then tag:
+into a dated version section), then either tag:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-The release workflow re-runs the test gate, builds `wisq-agent` for
-Linux x86_64 and macOS arm64, and publishes both on the GitHub release.
+or run the **Release** workflow from the Actions tab with the version as
+its input. The second path exists because not every environment can push
+tags; both produce the same release, and the workflow creates the tag when
+it is missing.
+
+The workflow re-runs the test gate, builds `wisq-agent` for Linux x86_64
+(statically linked, so it runs on hosts without a Swift toolchain) and for
+macOS arm64, packages the unsigned IPA, and attaches all three to the
+GitHub release.
