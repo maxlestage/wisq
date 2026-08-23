@@ -318,7 +318,15 @@ impl Core {
                                         (s1 / s2) as u32
                                     }
                                 }
-                                5 => rval = if rs2 == 0 { 0xFFFF_FFFF } else { rs1 / rs2 },
+                                // DIVU and REMU: the spec's answer for a zero
+                                // divisor is all-ones and the dividend
+                                // respectively, which is exactly what the
+                                // checked forms fall back to. The signed pair
+                                // above cannot use them — `checked_div` returns
+                                // None for both a zero divisor and the
+                                // INT_MIN / -1 overflow, and RISC-V wants a
+                                // different answer for each.
+                                5 => rval = rs1.checked_div(rs2).unwrap_or(0xFFFF_FFFF),
                                 6 => {
                                     rval = if rs2 == 0 {
                                         rs1
@@ -328,7 +336,7 @@ impl Core {
                                         (s1 % s2) as u32
                                     }
                                 }
-                                7 => rval = if rs2 == 0 { rs1 } else { rs1 % rs2 },
+                                7 => rval = rs1.checked_rem(rs2).unwrap_or(rs1),
                                 _ => {}
                             }
                         } else {
