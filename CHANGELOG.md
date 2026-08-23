@@ -75,6 +75,8 @@ break APIs.
   page matching the address that failed, so losing the network does not also
   lose the language. The sitemap lists every page in both languages with
   `xhtml:link` alternates.
+- The footer carries the mark too, small, beside its wordmark — so the pair a
+  reader learns on the landing page is what they see on every other page.
 - The landing page's mark is now a **lockup**: the drawing with the name set
   large beside it. The mark alone says what the product does and not what it is
   called; the two together are what a reader recognises later. The name is real
@@ -95,6 +97,10 @@ break APIs.
   the JavaScript reaches off-origin.
 
 ### Fixed
+- The mark's SVG gradients used fixed ids, so drawing it twice on one page —
+  the hero and the footer — produced duplicate ids. Harmless while both copies
+  are identical, and a silent wrong-colour bug the day they are not. Each
+  instance now derives its own, and a test counts them.
 - The dark palette lived only inside a `prefers-color-scheme` media query, so
   it could not be turned off. Choosing light on a device set to dark would have
   appeared to work in one direction and silently failed in the other; the query

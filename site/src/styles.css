@@ -509,6 +509,21 @@ pre code { white-space: pre; }
   color: var(--fg-soft);
   max-width: 42ch;
 }
+.footer-brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.footer-logo {
+  /* Small enough to be a footer mark, large enough that the two quadrants and
+     the link between them still read as three shapes rather than a smudge. */
+  width: 46px;
+  height: auto;
+  flex: none;
+  border-radius: 22.5%;
+}
+.footer-wordmark { font-size: 1.35rem; letter-spacing: -0.03em; }
+
 /* Scoped through .footer-brand rather than shouted with !important: these sit
    inside `.footer-brand p`, which is more specific than a bare class. */
 .footer-brand .footer-author {

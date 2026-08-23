@@ -168,8 +168,14 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
     <footer className="site-footer">
       <div className="wrap footer-top">
         <div className="footer-brand">
-          <a className="brand" href={home}>
-            wisq<span>▚</span>
+          {/* The mark and the name, the same pair as the hero at a size the
+              footer can hold. Inside the link, so the whole lockup is the way
+              home rather than only the four letters. */}
+          <a className="brand footer-brand-link" href={home}>
+            <Logo className="footer-logo" />
+            <span className="footer-wordmark">
+              wisq<span>▚</span>
+            </span>
           </a>
           <p>{copy.footer.tagline}</p>
           {/* One string rather than three children: React separates adjacent
