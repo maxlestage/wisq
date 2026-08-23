@@ -1,0 +1,11 @@
+wisq
+Copyright 2026 Max Lestage
+
+This product includes a Swift reimplementation of the rv32ima execution
+semantics of mini-rv32ima by Charles Lohr (https://github.com/cnlohr/mini-rv32ima),
+used under the MIT license, and embeds its `sixtyfourmb.dtb` device tree
+verbatim. No mini-rv32ima source code is included.
+
+The touch-input design of the iOS client is informed by studying UTM
+(https://github.com/utmapp/UTM), Apache License 2.0. No UTM source code is
+included.

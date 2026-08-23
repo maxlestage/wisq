@@ -1,0 +1,103 @@
+name: Release
+
+# Tag a commit on master as vX.Y.Z and this builds the agent binaries, runs the
+# full test suite one last time, and publishes a GitHub release with artifacts.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Tests (gate)
+    runs-on: ubuntu-latest
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v7
+      - run: swift build
+      - run: swift test
+
+  agent-linux:
+    name: wisq-agent (Linux x86_64)
+    needs: test
+    runs-on: ubuntu-latest
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build release binary
+        run: |
+          swift build -c release --product wisq-agent
+          mkdir -p dist
+          cp .build/release/wisq-agent dist/
+          tar -C dist -czf wisq-agent-${{ github.ref_name }}-linux-x86_64.tar.gz wisq-agent
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-linux
+          path: wisq-agent-*.tar.gz
+
+  agent-macos:
+    name: wisq-agent (macOS arm64)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build release binary
+        run: |
+          swift build -c release --product wisq-agent
+          mkdir -p dist
+          cp "$(swift build -c release --product wisq-agent --show-bin-path)/wisq-agent" dist/
+          tar -C dist -czf wisq-agent-${{ github.ref_name }}-macos-arm64.tar.gz wisq-agent
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-macos
+          path: wisq-agent-*.tar.gz
+
+  ios-ipa:
+    name: wisq (unsigned IPA)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build unsigned device app
+        run: |
+          xcodegen generate
+          xcodebuild build \
+            -project Wisq.xcodeproj \
+            -scheme Wisq \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/ios \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+      - name: Package IPA
+        # An unsigned .ipa is just Payload/<app> zipped; AltStore, Sideloadly
+        # and friends re-sign it with the user's own Apple ID at install time.
+        run: |
+          mkdir Payload
+          cp -R .build/ios/Build/Products/Release-iphoneos/Wisq.app Payload/
+          zip -qry wisq-${{ github.ref_name }}-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ios-ipa
+          path: wisq-*-unsigned.ipa
+
+  publish:
+    name: Publish release
+    needs: [agent-linux, agent-macos, ios-ipa]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "wisq ${{ github.ref_name }}" \
+            --notes "See CHANGELOG.md for details." \
+            wisq-agent-*.tar.gz wisq-*-unsigned.ipa
