@@ -101,7 +101,7 @@ public final class LocalVMModel {
 /// the main actor is woken once per render rather than once per write.
 private final class ConsoleSink: @unchecked Sendable {
     private let lock = NSLock()
-    private var console = ConsoleBuffer()
+    private var console = TerminalGrid()
     private var refreshPending = false
 
     /// Buffers the chunk. Returns true only for the write that should schedule

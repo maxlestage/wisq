@@ -50,11 +50,12 @@ démon reste sans état par connexion.
 ## Lot 4 bis — Linux local (fait en v1)
 
 `WisqVM` : émulateur rv32ima interprété en Swift, boot d'un vrai noyau 6.1
-jusqu'au shell, terminal ligne à ligne dans l'app, import d'images par
-Fichiers. Suite possible : grille VT100 complète, images téléchargeables
-depuis l'app, stockage persistant (un bloc device 9P ou virtio-blk), et un
-cœur rv64 avec MMU pour des distributions complètes — chacun un chantier
-distinct.
+jusqu'au shell, import d'images par Fichiers, et une vraie grille VT100
+(`TerminalGrid`) : adressage curseur, effacements, région de défilement,
+écran alterné, retour à la ligne différé — de quoi faire vivre un éditeur,
+un pager, `top`. Suite possible : images téléchargeables depuis l'app,
+stockage persistant (un bloc device 9P ou virtio-blk), et un cœur rv64 avec
+MMU pour des distributions complètes — chacun un chantier distinct.
 
 ## Lot 5 — SPICE
 

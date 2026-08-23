@@ -13,7 +13,7 @@ export const roadmapEn: Doc = {
     {
       kind: "note",
       tone: "info",
-      text: "TLS for the agent shipped: the daemon signs its own certificate and the pairing link pins it. What follows is what remains.",
+      text: "Shipped since this page was written: TLS for the agent (the daemon signs its own certificate and the pairing link pins it), and a real VT100 cell grid for the local console. What follows is what remains.",
     },
 
     { kind: "h2", text: "Next" },
@@ -24,11 +24,6 @@ export const roadmapEn: Doc = {
           term: "The Rust interpreter inside the app",
           detail:
             "The core exists, is measurably faster than the Swift one, and CI already cross-compiles it for a real device target. What remains is packaging it as an XCFramework and switching the app over — small work, but work that has to be done on a Mac.",
-        },
-        {
-          term: "A VT100 cell grid for the local console",
-          detail:
-            "The console today strips escape sequences and applies carriage returns and backspaces. That is readable, and it is not a terminal. Anything full-screen — an editor, a pager, top — needs a real grid.",
         },
       ],
     },
@@ -104,7 +99,7 @@ export const roadmapFr: Doc = {
     {
       kind: "note",
       tone: "info",
-      text: "Le TLS de l'agent est livré : le démon signe son propre certificat et le lien d'appairage l'épingle. Ce qui suit est ce qui reste.",
+      text: "Livré depuis l'écriture de cette page : le TLS de l'agent (le démon signe son propre certificat et le lien d'appairage l'épingle), et une vraie grille VT100 pour la console locale. Ce qui suit est ce qui reste.",
     },
 
     { kind: "h2", text: "Ensuite" },
@@ -115,11 +110,6 @@ export const roadmapFr: Doc = {
           term: "L'interpréteur Rust dans l'application",
           detail:
             "Le cœur existe, il est mesurablement plus rapide que celui en Swift, et la CI le compile déjà pour une cible appareil réelle. Reste à l'empaqueter en XCFramework et à basculer l'application — peu de travail, mais du travail qui se fait sur un Mac.",
-        },
-        {
-          term: "Une grille VT100 pour la console locale",
-          detail:
-            "La console retire aujourd'hui les séquences d'échappement et applique retours chariot et retours arrière. C'est lisible, et ce n'est pas un terminal. Tout ce qui occupe l'écran — un éditeur, un pager, top — réclame une vraie grille.",
         },
       ],
     },
