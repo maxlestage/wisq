@@ -32,6 +32,23 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **`.vv` connection files are read.** The one virt-manager, oVirt and Proxmox
+  hand out when you click "console": host, port, transport, and a one-shot
+  ticket nobody could retype. The user has already done the work; retyping any
+  of it is a chance to get it wrong.
+
+  Options this client has no use for are ignored rather than refused — real
+  files are mostly those options, and failing on the first would reject good
+  ones for saying something extra. What is malformed is refused: a port that is
+  not a number would otherwise be replaced by a default and connect somewhere
+  the file never named. `tls-port` wins over `port`, since a file offering both
+  is offering a choice and the encrypted one is the answer. A second section
+  ends the reading, so an appended one cannot quietly redirect the connection.
+
+  The password never appears in the type's description. That description is
+  what ends up in a log or a crash report, and the synthesised one would carry
+  a live console ticket into it.
+
 - **The SPICE inputs channel, and the scancode table it needs.** RFB takes X11
   keysyms; SPICE takes PC AT scancodes. `InputEvent.key` claimed in its own
   comment that its keysym was "as used by both RFB and SPICE" — it is not, and

@@ -238,7 +238,20 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
 - Raccourcis Siri et widgets « se connecter à … ».
-- Import depuis les fichiers `.vv` (SPICE) et `.rdp`.
+- Import depuis les fichiers `.rdp`. Celui des `.vv` est fait : `VirtViewerFile`
+  lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
+  « console » — hôte, port, transport, et le ticket à usage unique que personne
+  ne peut retaper. Du pur décodage, donc entièrement testé.
+
+  Ce que les tests tiennent : les options que ce client n'a pas sont ignorées
+  plutôt que refusées, sans quoi la plupart des vrais fichiers seraient rejetés
+  pour avoir dit quelque chose en plus ; `tls-port` l'emporte sur `port`, car un
+  fichier qui offre les deux offre un choix et le chiffré est la réponse ;
+  `port=-1` n'est pas lu comme un port ; un port illisible est refusé plutôt que
+  remplacé par un défaut, qui connecterait ailleurs que là où le fichier le dit ;
+  une seconde section arrête la lecture, sinon une section ajoutée redirigerait
+  la connexion ; et le mot de passe n'apparaît jamais dans la description, parce
+  que c'est elle qui finit dans un journal ou un rapport de plantage.
 - Partage de fichiers via un dossier monté côté agent.
 
 ## Ce qu'on doit à UTM
