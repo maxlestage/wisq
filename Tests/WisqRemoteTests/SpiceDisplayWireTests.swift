@@ -260,15 +260,44 @@ final class SpiceDisplayWireTests: XCTestCase {
         XCTAssertNil(try SpiceDisplayWire.copy(payload).source)
     }
 
-    /// A compressed image is named and left alone. Reading fields out of a QUIC
-    /// or LZ payload here would be inventing a layout — those headers belong to
-    /// their codecs, and this decoder has neither.
-    func testACompressedImageIsNamedRatherThanHalfRead() throws {
-        let payload = u64(9) + [1 /* QUIC */, 0] + u32(64) + u32(48) + u32(999)
+    /// A compressed image is carried whole, not half-read.
+    ///
+    /// The length belongs to the display channel, so it is read here; the bytes
+    /// belong to the codec, so they are handed on untouched. Reading fields out
+    /// of a QUIC or LZ payload at this layer would be inventing a layout.
+    func testACompressedImageIsCarriedWholeRatherThanHalfRead() throws {
+        let codecBytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02]
+        let payload = u64(9) + [1 /* QUIC */, 0] + u32(64) + u32(48)
+            + u32(UInt32(codecBytes.count)) + codecBytes
         let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
+
         let image = try SpiceDisplayWire.image(at: 4, in: body)
         XCTAssertEqual(image?.descriptor.type, .quic)
         XCTAssertNil(image?.bitmap, "rien ne prétend connaître la forme d'un QUIC")
+        XCTAssertEqual(image?.payload, codecBytes)
+    }
+
+    /// A length larger than the message is refused rather than believed. It is
+    /// the one number in a compressed image that this layer does read, so it is
+    /// the one that has to be checked.
+    func testACompressedImageLongerThanItsMessageIsRefused() {
+        let payload = u64(9) + [1, 0] + u32(64) + u32(48) + u32(0xFFFF_FFFF)
+        let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
+        XCTAssertThrowsError(try SpiceDisplayWire.image(at: 4, in: body)) { error in
+            XCTAssertEqual(error as? SpiceError, .truncated)
+        }
+    }
+
+    /// The encodings whose message shape is *not* a plain length and bytes are
+    /// left alone entirely rather than read with the wrong shape.
+    func testAnEncodingWithADifferentMessageShapeIsNotReadWithThisOne() throws {
+        for type in [UInt8(100 /* LZ_PLT */), 103 /* FROM_CACHE */, 104 /* SURFACE */] {
+            let payload = u64(9) + [type, 0] + u32(64) + u32(48) + u32(6) + [1, 2, 3, 4, 5, 6]
+            let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
+            let image = try SpiceDisplayWire.image(at: 4, in: body)
+            XCTAssertNil(image?.payload, "type \(type)")
+            XCTAssertNil(image?.bitmap, "type \(type)")
+        }
     }
 
     func testAnUnknownImageTypeIsRefused() {

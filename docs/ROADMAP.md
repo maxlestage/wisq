@@ -262,8 +262,42 @@ sur la liste des canaux. Une troisième est restée, avec une note disant
 honnêtement qu'aucun chemin actuel ne peut boucler et qu'elle attend
 `DRAW_ROP3` et `DRAW_OPAQUE`.
 
-Reste : les codecs d'image, puis brancher `SPICESession` — un lien qui aboutit
-sans rien à afficher ne serait pas une session.
+`SpiceLZ` défait le premier des codecs. LZ avant QUIC et avant JPEG pour une
+raison qui tient à ce dépôt plutôt qu'au codec : c'est du calcul entier sur des
+octets, sans plateforme derrière, donc un runner Linux qui ne coûte rien peut
+en éprouver chaque branche. JPEG voudrait dire `ImageIO` sur Apple et rien sur
+Linux — la forme de `WisqNet.SHA256`, qui rend `Data()` vide sans CryptoKit et
+n'est donc d'accord qu'avec lui-même.
+
+Deux choses s'y seraient écrites faux de mémoire, et les deux l'ont été avant
+d'être corrigées : **l'en-tête du flux est gros-boutiste**, dans un protocole
+petit-boutiste partout ailleurs ; et **les longueurs sont biaisées, différemment
+selon le type de pixel** — plus un pour du RGB32, plus deux pour du RGB16, plus
+trois pour les palettes. Une correspondance manque alors un pixel, ce qui donne
+une image presque juste : la pire sorte de faux.
+
+Ce qui l'a attrapé : les fixtures ne sont pas écrites à la main. `lz.c`, la
+mise en œuvre de référence, est liée dans un petit harnais qui comprime des
+images faites pour contenir des bandes plates, un motif répété et du bruit —
+littéraux, correspondances courtes, longues et la distance longue à deux octets
+s'y produisent toutes. Une fixture écrite à la main n'aurait fait que confirmer
+que la même personne a fait deux fois la même hypothèse ; celles-ci échouent
+quand l'hypothèse est fausse, et elles ont échoué. Voir
+`scripts/spice-lz-fixtures/`.
+
+Une branche restait non couverte même ainsi — la frontière de l'échappement de
+distance longue ne sort pas de l'encodeur à ces tailles. Ce flux-là est
+fabriqué à la main puis **validé par le décodeur de référence**, pas par une
+attente.
+
+Le tout est branché : un `DRAW_COPY` portant une image LZ_RGB ressort en pixels,
+et un test traverse la couture. GLZ est refusé bien que son format soit le même,
+parce que ses correspondances remontent dans un dictionnaire bâti à partir des
+*images précédentes du canal* : le décoder seul assemblerait une image à partir
+de ce qui traînait.
+
+Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
+un lien qui aboutit sans rien à afficher ne serait pas une session.
 
 ## Lot 6 — finition
 
