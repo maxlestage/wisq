@@ -49,7 +49,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (224 tests across Swift and Rust) and
+Everything below is implemented, tested (227 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -78,6 +78,10 @@ cargo test                   # the Rust side: daemon and VM core
 ./scripts/test-rust-core.sh  # both interpreters, on the same kernel, compared
 ./scripts/test-app.sh        # the app layer, in a simulated iPhone (macOS)
 ```
+
+`verify.sh` lints first: SwiftLint where it is installed, and
+`scripts/check-whitespace.sh` — the text-level rules, reimplemented — always,
+because SwiftLint is a Homebrew formula and the Linux side cannot run it.
 
 `verify.sh` builds the Rust agent first, because the cross-language
 protocol tests run the real daemon against the app's own client.

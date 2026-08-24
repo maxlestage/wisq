@@ -51,6 +51,17 @@ break APIs.
   machine, and the scene-phase decision moved out of the view's `body` — a
   decision in a `body` is a decision nothing runs in a test.
 
+- **`verify.sh` now lints, and there is a floor that runs without SwiftLint.**
+  The script said "everything CI would run" and did not lint — and SwiftLint is
+  a Homebrew formula, so on the Linux container most of this is written in
+  there was no way to run that job at all. A trailing blank line reached a pull
+  request and turned it red. `scripts/check-whitespace.sh` implements the three
+  rules that are pure text — one trailing newline, no trailing whitespace, no
+  double blank lines — over exactly the files `.swiftlint.yml` covers, tracked
+  and untracked alike, because the file about to be pushed is the one not yet
+  committed. `verify.sh` runs it first and then SwiftLint itself wherever it is
+  installed.
+
 - **The suspension rules are a tested type, not inline conditions.**
   `MachineLifecycle` decides what each event does to the saved machine — the
   user stopping it, the screen going away, iOS backgrounding the app, the guest

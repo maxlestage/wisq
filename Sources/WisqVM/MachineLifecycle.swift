@@ -102,4 +102,3 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// on — rather than the one suspending asked for.
     public var reportsGuestExit: Bool { state == .running || state == .ended }
 }
-

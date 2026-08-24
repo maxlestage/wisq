@@ -13,24 +13,49 @@ import XCTest
 /// "Arrêter" saved the machine it had just ended, and a machine put away when
 /// the app went to the background was never picked up when it came back.
 ///
-/// The guest is four bytes — a `nop` the machine executes forever. Nothing here
-/// is about Linux; the boot is covered elsewhere. What is under test is the
-/// wiring: a thread that has to be waited for, a file that has to be written
-/// while iOS is taking the app away, and a machine that has to come back.
+/// The guest is six instructions, not Linux: booting a real kernel here would
+/// test the kernel, take seconds, and depend on a downloaded image. It writes
+/// one line to the UART and then spins quietly, which is the shape these tests
+/// need — a machine that produces console, keeps running, and has to be *told*
+/// to stop. `TinyGuestTests` in the Linux suite is what says the hand-assembled
+/// code really does that; a fixture nothing checks is a fixture that rots.
+///
+/// What is under test here is the wiring: a thread that has to be waited for, a
+/// file that has to be written while iOS is taking the app away, and a machine
+/// that has to come back.
 final class LocalVMModelTests: XCTestCase {
     private var folder: URL!
     private var kernel: URL!
 
-    /// `nop`, and nothing else. `run()` never returns on its own, which is
-    /// exactly the shape a real guest has: the model must stop it to save it.
-    private static let nop = Data([0x13, 0x00, 0x00, 0x00])
+    /// ```
+    /// lui  x1, 0x10000   # the UART
+    /// addi x2, x0, 65    # 'A'
+    /// sb   x2, 0(x1)
+    /// addi x2, x0, 10    # newline: what makes the console flush
+    /// sb   x2, 0(x1)
+    /// beq  x0, x0, 0     # then spin, quietly, forever
+    /// ```
+    ///
+    /// `run()` never returns on its own, which is exactly the shape a real
+    /// guest has: the model must stop it before it can save it.
+    private static let guestProgram: [UInt32] = [
+        0x1000_00B7, 0x0410_0113, 0x0020_8023, 0x00A0_0113, 0x0020_8023, 0x0000_0063,
+    ]
+
+    private static var guestImage: Data {
+        var data = Data()
+        for word in guestProgram {
+            withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
 
     override func setUpWithError() throws {
         folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-model-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         kernel = folder.appendingPathComponent("Image")
-        try Self.nop.write(to: kernel)
+        try Self.guestImage.write(to: kernel)
     }
 
     override func tearDownWithError() throws {
@@ -65,10 +90,10 @@ final class LocalVMModelTests: XCTestCase {
     /// The feature, end to end: run, leave, and find a machine on disk that a
     /// real interpreter will take back.
     ///
-    /// The size of the file is deliberately not asserted. A machine running
-    /// four bytes of `nop` has 64 MB of zeroed RAM, which the snapshot folds
-    /// away to almost nothing — an assertion on bytes would be an assertion
-    /// about the compression, not about the machine.
+    /// The size of the file is deliberately not asserted. This guest leaves
+    /// 64 MB of RAM zeroed, which the snapshot folds away to almost nothing —
+    /// an assertion on bytes would be an assertion about the compression, not
+    /// about the machine.
     @MainActor
     func testLeavingTheScreenWritesTheMachineToDisk() throws {
         let model = self.model()
@@ -235,16 +260,38 @@ final class LocalVMModelTests: XCTestCase {
     /// Console text survives a suspension: it is the same session, and clearing
     /// the grid would make a resumption look like the reboot this whole feature
     /// exists to avoid.
+    ///
+    /// The wait for real output is what keeps this test honest. An earlier
+    /// version ran a guest that printed nothing, so it compared two empty
+    /// strings and would have passed against an implementation that wiped the
+    /// console on every resume — which is the bug it is meant to catch.
     @MainActor
     func testTheConsoleSurvivesASuspension() {
         let model = self.model()
         model.boot(kernelURL: kernel)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        waitUntil("l'invité doit avoir écrit quelque chose") { !model.consoleText.isEmpty }
         let before = model.consoleText
+        XCTAssertTrue(before.contains("A"), "l'invité écrit « A » ; obtenu « \(before) »")
 
         model.scenePhaseChanged(to: .background, kernelURL: kernel)
         model.scenePhaseChanged(to: .active, kernelURL: kernel)
         XCTAssertEqual(model.consoleText, before, "la console ne doit pas être vidée")
+    }
+
+    /// And a machine that comes back from a *fresh* model — the app killed and
+    /// relaunched — starts with an empty console, because the grid it had lived
+    /// in the process that is gone. Resuming is not the same as never having
+    /// left, and the test says which is which.
+    @MainActor
+    func testAResumeInANewProcessStartsWithAnEmptyConsole() {
+        let first = model()
+        first.boot(kernelURL: kernel)
+        waitUntil("l'invité doit avoir écrit quelque chose") { !first.consoleText.isEmpty }
+        first.suspend()
+
+        let second = model()
+        second.boot(kernelURL: kernel)
+        XCTAssertEqual(second.consoleText, "", "une nouvelle instance repart d'une console vide")
     }
 
     /// Two kernels, two saved machines: opening one must never resume the
@@ -252,7 +299,7 @@ final class LocalVMModelTests: XCTestCase {
     @MainActor
     func testEachKernelKeepsItsOwnMachine() throws {
         let other = folder.appendingPathComponent("autre-noyau")
-        try Self.nop.write(to: other)
+        try Self.guestImage.write(to: other)
 
         let first = model()
         first.boot(kernelURL: kernel)
