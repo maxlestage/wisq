@@ -301,6 +301,12 @@ parce que ses correspondances remontent dans un dictionnaire bâti à partir des
 *images précédentes du canal* : le décoder seul assemblerait une image à partir
 de ce qui traînait.
 
+Le 16 bits est fait aussi, avec sa particularité : ses deux octets atterrissent
+en mémoire dans l'ordre inverse du flux, parce que le codec lit un pixel comme
+`(premier << 8) | second` et le range en mot machine. Écrit explicitement
+plutôt que laissé à l'hôte, pour que la sortie soit la même partout et qu'un
+test puisse dire ce qu'elle doit être.
+
 Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
 un lien qui aboutit sans rien à afficher ne serait pas une session.
 

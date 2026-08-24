@@ -22,6 +22,18 @@ break APIs.
   shrugging.
 
 ### Added
+- **LZ's 16-bit form decodes too.** Its two stream bytes land in memory the
+  other way round: the codec reads a pixel as `(first << 8) | second` and
+  stores it as a machine word, so on the little-endian machines wisq ships to
+  the order flips. Written out explicitly rather than left to whatever the host
+  does, so the output is the same everywhere and a test can say what it should
+  be — and its match length is biased by two where the 24- and 32-bit forms use
+  one. Both facts are sabotage-checked against reference streams.
+
+  Found while adding it: the fixture harness printed four bytes a pixel for
+  every type, which reads past what a 16-bit decode writes and reports zeroed
+  memory as pixels. The harness was wrong, not the codec.
+
 - **SPICE's LZ codec decodes, checked against SPICE's LZ encoder.** The first
   of the compressed forms the display channel stopped at. LZ before QUIC and
   before JPEG for a reason about this repository rather than about the codec:

@@ -154,15 +154,13 @@ enum SpiceLZ {
         switch type {
         case .rgb32: return (3, 4, 1)
         case .rgb24: return (3, 3, 1)
-        case .rgb16, .rgba, .xxxa,
+        case .rgb16: return (2, 2, 2)
+        case .rgba, .xxxa,
              .palette1LE, .palette1BE, .palette4LE, .palette4BE, .palette8, .a8:
             // Valid streams this does not decode, each for its own reason. The
             // palette types need the palette travelling beside them and expand
             // one byte into several pixels. `a8` is a mask, not a picture.
             // `rgba` and `xxxa` are encoded as two passes, colour then alpha.
-            // `rgb16`'s output pixel is a native `uint16` built from two
-            // stream bytes, so its byte order in memory depends on the host —
-            // a thing to settle deliberately rather than in passing.
             //
             // Named rather than half-decoded into something that would look
             // like an image.
@@ -194,9 +192,23 @@ enum SpiceLZ {
                 // A run of literals, biased by one: a control of 0 means one
                 // pixel, not none.
                 for _ in 0...ctrl {
-                    for _ in 0..<bytesRead { out.append(try reader.u8()) }
-                    // The padding byte `rgb32` never transmits.
-                    for _ in bytesRead..<bytesPerPixel { out.append(0) }
+                    if header.type == .rgb16 {
+                        // The codec reads a 16-bit pixel as `(first << 8) |
+                        // second` and stores it as a machine word, so on the
+                        // little-endian machines this ships to, the two bytes
+                        // land in memory the other way round from the stream.
+                        // Written out explicitly rather than left to whatever
+                        // the host happens to do, so the output is the same
+                        // everywhere and a test can say what it should be.
+                        let high = try reader.u8()
+                        let low = try reader.u8()
+                        out.append(low)
+                        out.append(high)
+                    } else {
+                        for _ in 0..<bytesRead { out.append(try reader.u8()) }
+                        // The padding byte `rgb32` never transmits.
+                        for _ in bytesRead..<bytesPerPixel { out.append(0) }
+                    }
                 }
                 continue
             }
