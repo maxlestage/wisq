@@ -22,11 +22,24 @@ public final class LocalVMModel {
 
     private var machine: LocalMachine?
     private let sink = ConsoleSink()
+    /// Signalled when the emulation thread leaves `run()`. Suspending has to
+    /// wait for that: `snapshot()` reads the machine's state, and reading it
+    /// while the interpreter is writing it would save something that never
+    /// existed.
+    private var runFinished: DispatchSemaphore?
+    /// Set while suspending, so the thread's exit is not reported to the user
+    /// as the machine having stopped. Leaving the screen is not a crash.
+    private var suspending = false
+    private var kernelName = ""
 
     public init() {}
 
+    /// Whether leaving and coming back would resume rather than restart.
+    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName) }
+
     public func boot(kernelURL: URL) {
         guard machine == nil else { return }
+        kernelName = kernelURL.lastPathComponent
         status = .running
         consoleText = ""
         sink.reset()
@@ -48,11 +61,24 @@ public final class LocalVMModel {
         // the scheduler park it on an efficiency core, where an interpreter
         // runs several times slower — and this is the thread whose speed the
         // user is watching.
+        let finished = DispatchSemaphore(value: 0)
+        runFinished = finished
+        let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent)
+
         let thread = Thread { [weak self] in
+            defer { finished.signal() }
             let outcome: LocalMachine.Outcome
             do {
-                let image = try Data(contentsOf: kernelURL)
-                try machine.load(kernelImage: image)
+                // A saved machine is resumed in place of booting. If the file
+                // is not a snapshot — an older format, a truncated write — the
+                // restore throws and the kernel is booted instead, which is the
+                // only useful answer and better than refusing to start.
+                if let saved, (try? machine.restore(saved)) != nil {
+                    // nothing else to do: the guest is already mid-life
+                } else {
+                    let image = try Data(contentsOf: kernelURL)
+                    try machine.load(kernelImage: image)
+                }
                 outcome = machine.run()
             } catch {
                 Task { @MainActor [weak self] in
@@ -61,10 +87,18 @@ public final class LocalVMModel {
                 return
             }
             Task { @MainActor [weak self] in
+                guard let self, !self.suspending else { return }
                 switch outcome {
-                case .powerOff: self?.finish(with: "La machine s'est éteinte.")
-                case .reboot: self?.finish(with: "La machine a redémarré ; relancez-la.")
-                case .stopped: self?.finish(with: "Arrêtée.")
+                // A machine that has powered off or rebooted has nothing worth
+                // coming back to, so its saved state goes with it.
+                case .powerOff:
+                    SuspendedMachine.clear(kernel: self.kernelName)
+                    self.finish(with: "La machine s'est éteinte.")
+                case .reboot:
+                    SuspendedMachine.clear(kernel: self.kernelName)
+                    self.finish(with: "La machine a redémarré ; relancez-la.")
+                case .stopped:
+                    self.finish(with: "Arrêtée.")
                 }
             }
         }
@@ -81,8 +115,41 @@ public final class LocalVMModel {
         send(line + "\n")
     }
 
+    /// Ends the machine for good, at the user's request. The saved state goes
+    /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
+        SuspendedMachine.clear(kernel: kernelName)
         machine?.stop()
+    }
+
+    /// Saves the machine and lets it go, so the next visit resumes it.
+    ///
+    /// Deliberately synchronous. It runs when iOS is taking the app away or the
+    /// screen is going, and both of those are moments where returning before
+    /// the file is written means not writing it at all. The wait is bounded:
+    /// `stop()` takes effect within one 1024-instruction slice, and the write
+    /// is a few megabytes. Given the choice between a brief hitch and a machine
+    /// that silently fails to save, the hitch is the right one.
+    public func suspend() {
+        guard let machine, let finished = runFinished else { return }
+        suspending = true
+        machine.stop()
+        // If the interpreter has not come back in time, saving would read state
+        // it is still writing. Better to lose the session than to save a
+        // machine that never existed.
+        guard finished.wait(timeout: .now() + 5) == .success else {
+            suspending = false
+            return
+        }
+        do {
+            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName)
+        } catch {
+            SuspendedMachine.clear(kernel: kernelName)
+        }
+        self.machine = nil
+        runFinished = nil
+        suspending = false
+        status = .idle
     }
 
     private func finish(with message: String) {

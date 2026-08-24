@@ -107,6 +107,7 @@ struct LocalVMTerminalView: View {
     @State private var commandLine = ""
     @FocusState private var inputFocused: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
@@ -161,9 +162,18 @@ struct LocalVMTerminalView: View {
             inputFocused = true
             UIApplication.shared.isIdleTimerDisabled = true
         }
+        // Leaving the screen suspends rather than stops: the machine is put
+        // down where it stands and picked up on the next visit. Only the
+        // "Arrêter" button ends it, which is what that word has to mean.
         .onDisappear {
-            model.stop()
+            model.suspend()
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+        // And the same when iOS takes the app away, which it can do without
+        // the view ever disappearing. Saving here is the whole reason the
+        // machine survives being backgrounded and killed.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { model.suspend() }
         }
     }
 

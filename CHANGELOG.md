@@ -8,6 +8,27 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The local machine survives leaving the app.** Going back from the console,
+  or iOS taking the app away, saves the machine where it stands; the next visit
+  picks it up mid-life instead of booting again. Only "Arrêter" ends it, and
+  ending it clears the saved state — that word has to mean stopped, not hidden.
+  A machine that powers off or reboots clears itself too, having nothing worth
+  coming back to.
+
+  Saving is synchronous on purpose. It runs exactly when the system is taking
+  the app away, and returning before the file is written means not writing it;
+  the wait is bounded because `stop()` lands within one 1024-instruction slice.
+  It waits for the interpreter to leave `run()` before reading the machine —
+  snapshotting a machine that is still executing would save a state that never
+  existed — and gives up rather than saving if that does not happen in five
+  seconds.
+
+  A snapshot is keyed to the kernel it came from, through the file name rather
+  than a marker file beside it: a mismatch then simply means "nothing saved",
+  with no window where two files disagree. Kernel names come from files the
+  user picked, so the name is sanitised — `../../etc/passwd` cannot escape the
+  directory, and a test says so.
+
 - **A suspended machine has somewhere to wait.** `SuspendedMachine` is the
   file the local VM is saved into and read back from, deliberately in `WisqVM`
   rather than in the app: the app layer only builds on Apple platforms, so
