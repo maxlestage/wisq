@@ -8,6 +8,52 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **SPICE's LZ codec decodes, checked against SPICE's LZ encoder.** The first
+  of the compressed forms the display channel stopped at. LZ before QUIC and
+  before JPEG for a reason about this repository rather than about the codec:
+  it is integer work on bytes with no platform behind it, so a Linux runner
+  that costs nothing can exercise every branch. JPEG would mean `ImageIO` on
+  Apple and nothing on Linux — the shape of `WisqNet.SHA256`, which returns
+  empty `Data` without CryptoKit and therefore agrees with itself about
+  nothing.
+
+  Two things here would have been written wrong from memory, and both were,
+  before the fixtures caught them: **the stream header is big-endian**, inside
+  a protocol that is little-endian everywhere else; and **the lengths are
+  biased differently per pixel type** — one for 32-bit, two for 16-bit, three
+  for the palette forms. A missed bias makes every match a pixel short, which
+  produces an image that is almost right.
+
+  A third: `rgb32` transmits three bytes a pixel and writes a fourth zero byte
+  of padding that was never sent. Reading four takes the next pixel's blue as
+  this one's padding and shears the whole image.
+
+- **The fixtures come from the reference implementation.** `spice-common`'s own
+  `lz.c` is linked into a harness that compresses images built to contain flat
+  bands, a repeating pattern and noise, so literal runs, short matches, long
+  matches and the two-byte far distance all occur. A fixture written by hand
+  could only confirm that the same person made the same assumptions twice —
+  all three mistakes above would have survived it. The harness is committed at
+  `scripts/spice-lz-fixtures/` so the fixtures can be rebuilt rather than
+  trusted.
+
+  One branch stayed uncovered even so: the far-distance boundary — a match
+  whose low distance byte is 255 while the control byte's five distance bits
+  are not all ones — does not come out of the encoder at these sizes. That
+  stream is crafted by hand and then **validated against the reference
+  decoder**, not against an expectation. Removing the condition now fails a
+  test; before that fixture existed it did not.
+
+- **A `DRAW_COPY` carrying an LZ image comes out as pixels**, with one test
+  crossing the seam. Structure and codecs stay apart — that is what lets each
+  be checked against its own reference — so exactly one test joins them.
+
+  GLZ is refused despite having the same stream format. Its matches reach back
+  into a dictionary built from *earlier images on the channel*, so decoding one
+  alone assembles a picture from whatever was lying around. Sharing the entry
+  point would be the kind of mistake that shows a plausible image.
+
+### Added
 - **The SPICE display channel is decoded.** Geometry, clips, surfaces, image
   descriptors, `DRAW_FILL` and `DRAW_COPY` — written with the specification
   open rather than from memory, which is why it did not exist before. The trap
