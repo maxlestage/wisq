@@ -157,10 +157,15 @@ const en: Copy = {
       },
     ],
   },
+  // Do not increment these by hand and hope. `site/tests/claims.test.ts` reads
+  // the repository and fails when a figure stops being true — the test count
+  // by counting `func test` under Tests/ and `#[test]` under crates/, the gate
+  // count from the jobs in the CI workflow. Run `bun test` and it will tell
+  // you the number rather than leaving you to work it out.
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "301", label: "tests" },
+      { value: "340", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -276,7 +281,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "301", label: "tests" },
+      { value: "340", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },

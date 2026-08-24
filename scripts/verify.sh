@@ -14,6 +14,12 @@ cd "$(dirname "$0")/.."
 echo "==> Mise en forme (les règles de texte, sans SwiftLint)"
 ./scripts/check-whitespace.sh
 
+# Also instant, and also a check that exists because removing something once
+# was not enough: the Apache-2.0 claim was taken out of the site and survived
+# in the app bundle and in the Homebrew formula.
+echo "==> Licence (rien ne doit en annoncer une)"
+./scripts/check-licence-claims.sh
+
 if command -v swiftlint > /dev/null 2>&1; then
   echo "==> SwiftLint (strict, comme la CI)"
   swiftlint lint --strict
