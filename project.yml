@@ -58,6 +58,13 @@ targets:
       # by name.
       - package: Wisq
         product: WisqVM
+      # Likewise for the model: reading a connection file rests on what
+      # Foundation does with a byte order mark, and Foundation on Darwin is not
+      # the same implementation as Foundation on Linux. That claim is checked
+      # here, on the platform that ships, rather than inferred from the Linux
+      # job.
+      - package: Wisq
+        product: WisqCore
     settings:
       base:
         SWIFT_VERSION: "6.0"
