@@ -117,6 +117,17 @@ enum SpiceWire {
             return value
         }
 
+        /// A reader positioned inside a message body.
+        ///
+        /// The display channel needs this: its pointers are offsets from the
+        /// start of the message, so following one means reading from a place
+        /// the cursor has already passed — or has not reached yet.
+        init(_ raw: [UInt8], from start: Int) throws {
+            guard start >= 0, start <= raw.count else { throw SpiceError.truncated }
+            bytes = raw
+            offset = start
+        }
+
         /// Reads to the end. Used by messages whose tail is a variable payload.
         mutating func rest() -> [UInt8] {
             defer { offset = bytes.count }
