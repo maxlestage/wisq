@@ -87,6 +87,22 @@ export function App({
             ))}
           </nav>
         </div>
+        {/* Every page of the site, one scrollable strip. Links rather than a
+            menu: each is a real address, so it can be opened in a new tab,
+            bookmarked, and followed with no JavaScript at all. */}
+        <nav className="site-nav" aria-label={copy.footer.docs}>
+          <div className="wrap site-nav-inner">
+            {ROUTES.filter((candidate) => candidate.listed).map((candidate) => (
+              <a
+                key={candidate.id}
+                href={routeHref(page, candidate)}
+                aria-current={candidate.id === route.id ? "page" : undefined}
+              >
+                {copy.pages[candidate.id]}
+              </a>
+            ))}
+          </div>
+        </nav>
       </header>
 
       <main id="main">
@@ -112,7 +128,33 @@ export function App({
 /// of links in which everything is equally hard to find.
 function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
   const to = (id: Parameters<typeof routeById>[0]) => routeHref(page, routeById(id));
-  const home = routeHref(page, routeById("home"));
+  const home = to("home");
+
+  const groups: { title: string; links: { label: string; href: string }[] }[] = [
+    {
+      title: copy.footer.groups.product,
+      links: [
+        { label: copy.pages.docs, href: to("docs") },
+        { label: copy.pages.releases, href: to("releases") },
+        { label: copy.pages.roadmap, href: to("roadmap") },
+      ],
+    },
+    {
+      title: copy.footer.groups.documentation,
+      links: [
+        { label: copy.pages.protocol, href: to("protocol") },
+        { label: copy.pages.architecture, href: to("architecture") },
+        { label: copy.pages.faq, href: to("faq") },
+      ],
+    },
+    {
+      title: copy.footer.groups.project,
+      links: [
+        { label: copy.pages.home, href: to("home") },
+        { label: copy.pages.privacy, href: to("privacy") },
+      ],
+    },
+  ];
 
   return (
     <footer className="site-footer">
@@ -146,6 +188,20 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
           </p>
         </div>
 
+        <nav className="footer-groups" aria-label={copy.footer.docs}>
+          {groups.map((group) => (
+            <div key={group.title}>
+              <h2>{group.title}</h2>
+              <ul>
+                {group.links.map((link) => (
+                  <li key={link.label}>
+                    <a href={link.href}>{link.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </nav>
       </div>
 
       <div className="wrap footer-bottom">
@@ -229,6 +285,23 @@ function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="how">
+        <div className="wrap">
+          <h2>{copy.how.title}</h2>
+          <div className="steps">
+            {copy.how.steps.map((step) => (
+              <div className="step" key={step.title}>
+                <div className="step-num" aria-hidden="true" />
+                <div>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </section>
