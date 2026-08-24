@@ -11,12 +11,12 @@ export interface Command {
 }
 
 export interface Copy {
-  nav: { install: string; how: string; source: string; language: string };
+  nav: { install: string; how: string; language: string };
   /// The theme control. Every label is a real accessible name — the buttons
   /// show icons, and an icon with no name is a button a screen reader cannot
   /// announce.
   theme: { label: string; light: string; dark: string; auto: string };
-  hero: { tagline: string; lede: string; ctaInstall: string; ctaSource: string; badge: string };
+  hero: { tagline: string; lede: string; ctaInstall: string; badge: string };
   modes: {
     title: string;
     remote: { name: string; head: string; body: string; points: string[] };
@@ -43,7 +43,6 @@ export interface Copy {
   facts: { title: string; items: { value: string; label: string }[] };
   footer: {
     license: string;
-    source: string;
     docs: string;
     note: string;
     /// A one-line description under the wordmark, for a reader who arrived at
@@ -52,9 +51,6 @@ export interface Copy {
     groups: { product: string; documentation: string; project: string };
     links: {
       install: string;
-      issues: string;
-      contributing: string;
-      security: string;
       changelog: string;
       privacy: string;
     };
@@ -97,15 +93,14 @@ export interface Copy {
 }
 
 const en: Copy = {
-  nav: { install: "Install", how: "How it works", source: "Source", language: "Language" },
+  nav: { install: "Install", how: "How it works", language: "Language" },
   theme: { label: "Theme", light: "Light", dark: "Dark", auto: "Match system" },
   hero: {
     tagline: "Virtual machines on your iPhone.",
     lede:
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
     ctaInstall: "Install",
-    ctaSource: "View source",
-    badge: "Apache-2.0 · Swift + Rust · open source",
+    badge: "Apache-2.0 · Rust · hybrid mobile app",
   },
   modes: {
     title: "Two ways, one app",
@@ -234,9 +229,6 @@ const en: Copy = {
     groups: { product: "Product", documentation: "Documentation", project: "Project" },
     links: {
       install: "Install",
-      issues: "Issues",
-      contributing: "Contributing",
-      security: "Security",
       changelog: "Changelog",
       privacy: "Privacy",
     },
@@ -246,7 +238,6 @@ const en: Copy = {
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
     backToTop: "Back to top",
     version: "Version",
-    source: "Source",
     docs: "Docs",
     note:
       "The agent speaks TLS by default, pinned by the pairing link — no certificate authority to run. Plain VNC itself stays unencrypted: trusted network or tunnel for the console.",
@@ -275,15 +266,14 @@ const en: Copy = {
 };
 
 const fr: Copy = {
-  nav: { install: "Installer", how: "Fonctionnement", source: "Sources", language: "Langue" },
+  nav: { install: "Installer", how: "Fonctionnement", language: "Langue" },
   theme: { label: "Thème", light: "Clair", dark: "Sombre", auto: "Selon le système" },
   hero: {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
     ctaInstall: "Installer",
-    ctaSource: "Voir les sources",
-    badge: "Apache-2.0 · Swift + Rust · open source",
+    badge: "Apache-2.0 · Rust · application mobile hybride",
   },
   modes: {
     title: "Deux voies, une application",
@@ -414,9 +404,6 @@ const fr: Copy = {
     groups: { product: "Produit", documentation: "Documentation", project: "Projet" },
     links: {
       install: "Installer",
-      issues: "Signalements",
-      contributing: "Contribuer",
-      security: "Sécurité",
       changelog: "Journal",
       privacy: "Confidentialité",
     },
@@ -426,7 +413,6 @@ const fr: Copy = {
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
     backToTop: "Haut de page",
     version: "Version",
-    source: "Sources",
     docs: "Docs",
     note:
       "L'agent parle TLS par défaut, épinglé par le lien d'appairage — aucune autorité de certification à exploiter. Le VNC nu reste non chiffré : réseau de confiance ou tunnel pour la console.",

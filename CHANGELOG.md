@@ -9,8 +9,21 @@ break APIs.
 
 ## [0.3.0] — 2026-08-24
 
+### Removed
+- **The site no longer calls wisq open source, or points anyone at its
+  sources.** It was not accurate, and the repository is not something to open
+  on a website's schedule. Gone: the "open source" badge, the Source link in
+  the header and the footer, and the footer links that browsed the repository
+  or invited contributions. The changelog moved to the releases page the site
+  already serves, and the licence is stated as text instead of a link into the
+  tree. A test on the built pages now fails if an "open source" claim or a
+  source link comes back, because copy decisions do not survive on good
+  intentions. The release download stays — it is how someone installs the
+  thing, not an invitation to read the code.
+
 ### Changed
-- **The Rust interpreter is the default now**, and the one the app ships with:
+- **Everything is Rust now except the phone app, which is hybrid.** The Rust
+  interpreter is the default and the one the app ships with:
   about +8 % over a full boot, and held to the Swift core instruction for
   instruction by the differential test, which is what turns a preference into
   a measurement. The price is a second toolchain — `cargo build --release -p

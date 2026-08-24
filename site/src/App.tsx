@@ -3,11 +3,6 @@ import {
   AUTHOR,
   AUTHOR_URL,
   copy as allCopy,
-  CHANGELOG,
-  CONTRIBUTING,
-  ISSUES,
-  REPO,
-  SECURITY,
   SITE_VERSION,
   type Lang,
 } from "./content";
@@ -104,7 +99,6 @@ export function App({
                 {copy.pages[candidate.id]}
               </a>
             ))}
-            <a href={REPO}>{copy.nav.source}</a>
           </div>
         </nav>
       </header>
@@ -155,11 +149,8 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
     {
       title: copy.footer.groups.project,
       links: [
-        { label: copy.footer.source, href: REPO },
-        { label: copy.footer.links.issues, href: ISSUES },
-        { label: copy.footer.links.contributing, href: CONTRIBUTING },
-        { label: copy.footer.links.security, href: SECURITY },
-        { label: copy.footer.links.changelog, href: CHANGELOG },
+        { label: copy.footer.links.changelog, href: to("releases") },
+        { label: copy.pages.privacy, href: to("privacy") },
       ],
     },
   ];
@@ -217,7 +208,7 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
         <p className="footer-note">{copy.footer.privacyNote}</p>
         <p className="footer-note">{copy.footer.attribution}</p>
         <div className="footer-legal">
-          <a href={`${REPO}/blob/master/LICENSE`}>{copy.footer.license}</a>
+          <span>{copy.footer.license}</span>
           <a href={to("privacy")}>{copy.footer.links.privacy}</a>
           <a href="#main">{copy.footer.backToTop}</a>
         </div>

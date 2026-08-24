@@ -21,9 +21,9 @@ export const roadmapEn: Doc = {
       kind: "dl",
       items: [
         {
-          term: "The Rust interpreter inside the app",
+          term: "Persistent storage for the local machine",
           detail:
-            "The core exists, is measurably faster than the Swift one, and CI already cross-compiles it for a real device target. What remains is packaging it as an XCFramework and switching the app over — small work, but work that has to be done on a Mac.",
+            "The local Linux boots to a shell and forgets everything on exit. A block device — 9P or virtio-blk — is what turns it from a demonstration into somewhere you can leave a file.",
         },
       ],
     },
@@ -107,9 +107,9 @@ export const roadmapFr: Doc = {
       kind: "dl",
       items: [
         {
-          term: "L'interpréteur Rust dans l'application",
+          term: "Un stockage persistant pour la machine locale",
           detail:
-            "Le cœur existe, il est mesurablement plus rapide que celui en Swift, et la CI le compile déjà pour une cible appareil réelle. Reste à l'empaqueter en XCFramework et à basculer l'application — peu de travail, mais du travail qui se fait sur un Mac.",
+            "Le Linux local démarre jusqu'à un shell et oublie tout en sortant. Un périphérique bloc — 9P ou virtio-blk — est ce qui le fait passer de démonstration à endroit où l'on peut laisser un fichier.",
         },
       ],
     },
