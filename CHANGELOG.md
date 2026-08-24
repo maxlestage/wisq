@@ -7,19 +7,23 @@ break APIs.
 
 ## [Unreleased]
 
-### Changed
-- **The site signs itself with the project, not with a person.** The footer
-  named its author and linked a personal GitHub profile, and the same name sat
-  in `<meta name="author">` and in the structured data — three places a reader,
-  a crawler and a scraper each find on their own. All three now say `wisq`, and
-  the profile link is gone. The copyright line in LICENSE and NOTICE still
-  names the human who owns the code: that claim is not something a website
-  should dilute. The test that held the site's author against the LICENSE has
-  flipped accordingly — it used to require the two to agree, and now requires
-  that no built page names the copyright holder at all. Checked by putting the
-  name back and watching it fail.
+### Added
+- **The app itself says who made it.** `NSHumanReadableCopyright` was missing
+  from the bundle, so the one place a person holding the app could read the
+  author's name did not have it.
+
+### Fixed
+- **The shipped app reported version 0.1.0.** `Info.plist` hard-coded it while
+  `project.yml` carried `MARKETING_VERSION` — two sources for one number, and
+  the number had already drifted through two releases. The plist now reads the
+  build setting, so there is one place to change and nothing to keep in sync.
 
 ### Removed
+- **The site no longer explains how to install wisq, and neither does the
+  repository.** The README's install and try-it sections are gone in both
+  languages: the sideload instructions, the one-line agent installer, the
+  Homebrew tap and the commands for running a VNC server to point it at.
+
 - **The site is one page now.** The guide, the agent protocol reference, the
   architecture note, the questions, the roadmap and the release history are
   gone, along with the install tabs, every command, the pairing walkthrough

@@ -69,58 +69,6 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
 | Agent TLS · SPICE · RDP | roadmap |
 
-## Install
-
-**iPhone** — two paths until the App Store listing exists:
-
-- *Sideload the release IPA*: grab `wisq-vX.Y.Z-unsigned.ipa` from the
-  [latest release](https://github.com/maxlestage/wisq/releases) and install
-  it with [AltStore](https://altstore.io) or Sideloadly, which re-sign it
-  with your own Apple ID.
-- *Build straight onto your phone* (macOS + Xcode, iPhone in developer
-  mode): `./scripts/install-ios.sh` generates the project, signs with your
-  personal team and installs over USB. Free-team signatures expire after
-  7 days; re-run to refresh.
-
-**Mac / Linux (the host agent)** — one line:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service
-```
-
-It grabs the release binary for your platform (or builds from source when
-there is none), installs it, and `--service` keeps it running via launchd
-or a systemd user unit — the pairing token lands in the service log.
-Homebrew works too, served straight from this repository:
-
-```sh
-brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git
-brew install maxlestage/wisq/wisq-agent    # --head before the first tag
-brew services start wisq-agent
-```
-
-## Try it
-
-Any VNC server works for the remote path:
-
-```sh
-qemu-system-x86_64 -m 2048 -vnc :1 -hda disk.qcow2   # or: x11vnc -display :0
-```
-
-The agent turns "one more VNC client" into "my VMs, from my phone" — a
-powered-off VM boots when you tap it:
-
-```sh
-cargo run -p wisq-agent -- --demo   # two fake VMs, no hypervisor needed
-cargo run -p wisq-agent             # libvirt via virsh, port 7442
-```
-
-It prints `wisq://` pairing links (and a QR code when `qrencode` is
-installed); opening one on the iPhone lands in the import screen,
-pre-filled. For the local path, import an rv32ima nommu kernel image via
-the Files app — ready-made ones live in the
-[mini-rv32ima](https://github.com/cnlohr/mini-rv32ima) project.
-
 ## Building
 
 ```sh

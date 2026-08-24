@@ -278,29 +278,22 @@ describe("footer", () => {
   /// On every page, in both languages, and naming the same person the
   /// repository's own copyright line names — a site that credits someone the
   /// LICENSE does not is a site making a claim nothing backs.
-  /// The site signs itself with the project, not with a person.
-  ///
-  /// It used to name its author and link a personal profile, and this test
-  /// held that name against the LICENSE so the two could not disagree. They
-  /// disagree on purpose now: the copyright line still names the human who
-  /// owns the code — that claim is not something a website should dilute —
-  /// while the site itself names only wisq. So what is checked has flipped,
-  /// from "these agree" to "no person is named here", across every built page
-  /// including the metadata a crawler reads rather than a reader.
-  test("no page names a person as the author", () => {
-    const repoRoot = join(dist, "..", "..");
-    const holder = readFileSync(join(repoRoot, "LICENSE"), "utf8")
-      .match(/Copyright \d{4} (.+)/)?.[1]
-      ?.trim();
-    expect(holder, "LICENSE doit nommer un titulaire").toBeTruthy();
-
+  /// On every page, in both languages, and naming the same person the
+  /// repository's own copyright line names — a site that credits someone the
+  /// LICENSE does not is a site making a claim nothing backs.
+  test("every page says who made it, and agrees with the licence", () => {
     for (const { lang, file } of BUILT) {
       const html = read(file);
       expect(html, `${file} : ligne d'auteur`).toContain(copy[lang].footer.author);
-      expect(html, `${file} : nom de l'auteur`).toContain(`>${AUTHOR}</span>`);
+      expect(html, `${file} : nom de l'auteur`).toContain(`>${AUTHOR}</a>`);
       expect(html, `${file} : meta author`).toContain(`<meta name="author" content="${AUTHOR}" />`);
-      expect(html, `${file} : le nom du titulaire ne doit pas y figurer`).not.toContain(holder!);
-      expect(html, `${file} : profil personnel`).not.toContain('rel="author" href="https://github.com');
+    }
+    const repoRoot = join(dist, "..", "..");
+    for (const file of ["LICENSE", "NOTICE"]) {
+      expect(
+        readFileSync(join(repoRoot, file), "utf8"),
+        `${file} doit nommer le même titulaire`,
+      ).toContain(`Copyright 2026 ${AUTHOR}`);
     }
   });
 

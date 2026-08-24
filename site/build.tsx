@@ -14,7 +14,7 @@ import { renderToString } from "react-dom/server";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { App } from "./src/App";
-import { AUTHOR, copy } from "./src/content";
+import { AUTHOR, AUTHOR_URL, copy } from "./src/content";
 import { PAGES } from "./src/pages";
 import {
   LANGS,
@@ -156,7 +156,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
         description: copy[lang].hero.lede,
         url: canonical,
         inLanguage: lang,
-        author: { "@type": "Organization", name: AUTHOR },
+        author: { "@type": "Person", name: AUTHOR, url: AUTHOR_URL },
         license: "https://www.apache.org/licenses/LICENSE-2.0",
         isAccessibleForFree: true,
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
