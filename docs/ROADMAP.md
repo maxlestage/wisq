@@ -266,6 +266,17 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
   illisible ; un champ `i` contenant du texte est refusé plutôt que deviné ; et
   le mot de passe enregistré — chiffré vers la machine qui a écrit le fichier,
   donc inutilisable ici — n'est ni décodé, ni stocké, ni porté.
+
+  `ConnectionImport` fait le pont : un fichier lu devient une `Machine`. Ce sont
+  des décisions sur des valeurs que wisq n'a pas choisies, d'où un type à part
+  plutôt qu'un initialiseur. Le mot de passe **revient à côté de la machine et
+  jamais dedans** — `Machine` est `Codable` et va sur le disque, un secret qui
+  l'atteindrait serait persisté en clair à côté de l'hôte qu'il ouvre. La
+  référence de credential reste vide tant que personne n'a stocké le secret : une
+  machine pointant vers un credential jamais écrit échoue à la connexion au lieu
+  de demander. Un `.rdp` ne se voit attribuer aucun transport, parce qu'il n'en
+  déclare pas. Et la géométrie n'est pas portée : elle décrit l'écran de celui
+  qui a enregistré le fichier, pas ce que veut un téléphone.
 - Partage de fichiers via un dossier monté côté agent.
 
 ## Ce qu'on doit à UTM

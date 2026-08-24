@@ -32,6 +32,23 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **The two readers are wired to the model.** `ConnectionImport` turns a parsed
+  file into a `Machine`. Its own type rather than an initialiser, because every
+  line of it is a decision about a value wisq did not choose.
+
+  The password comes back *beside* the machine and never inside it: `Machine`
+  is `Codable` and is written to disk, so a secret reaching it would be
+  persisted in the clear next to the host it opens. A test serialises the
+  machine and asserts the secret is absent. The credential reference stays nil
+  until someone has actually stored the secret — a machine pointing at a
+  credential that was never written fails at connect time instead of asking.
+
+  An `.rdp` import claims no transport, because the file states none: RDP
+  negotiates its TLS inside the connection. And the file's geometry is not
+  carried — it describes the monitor of whoever saved it, which on a phone is
+  somebody else's screen. `DisplaySettings` has no field for it, and adding one
+  would have been growing the model to satisfy a file rather than a user.
+
 - **`.rdp` connection files are read too.** The ones Windows, Azure Bastion and
   every RDP gateway hand out. One option per line, `key:type:value`, and the
   value keeps every colon it has — which is what makes
