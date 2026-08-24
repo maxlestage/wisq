@@ -7,6 +7,35 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **The site is a site again: seven pages, a nav strip and a full footer.**
+  Reducing it to one page took the strip under the header, the three link
+  columns above the bottom bar, the pairing section, and six pages with them —
+  Guide, Agent protocol, Architecture, Questions, Roadmap, Releases. They are
+  back, along with the CSS that had been sitting there unused ever since,
+  describing a footer nothing rendered.
+
+  What did not come back is how to get this. There is no clone, no tap, no
+  script to pipe into a shell, no download link, and no page saying where a
+  build lives. The Guide lost its "Getting the app" section outright; the
+  agent's install commands are gone while the prose explaining what the agent
+  is for stays; the protocol page's demo command and the FAQ's benchmark
+  command are gone.
+
+  The guard that used to enforce this was too blunt: it forbade the pairing
+  section along with the install commands, on the reasoning that both were "how
+  to run the project". They are not the same thing — a reader deciding whether
+  this is for them needs to know that an agent prints a link and the phone
+  scans it, and none of that hands them a build. The test now lists commands
+  and download paths only, and it caught two of these while they were being
+  removed. Verified by putting an install command back and watching it fail.
+
+  The FAQ's licence answer said Apache-2.0. It now says none has been chosen,
+  which is true, and the App Store answer no longer leans on a licence
+  comparison that stopped holding. The unused `REPO`, `RELEASES`,
+  `CONTRIBUTING` and `SECURITY` constants are gone with the links that used
+  them.
+
 ### Fixed
 - **A machine told to stop while it was resuming ignored it, and then could
   not be stopped at all.** `restore` cleared the stop flag along with the rest
