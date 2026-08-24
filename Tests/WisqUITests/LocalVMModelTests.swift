@@ -83,8 +83,14 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertTrue(condition(), description, file: file, line: line)
     }
 
+    /// A saved machine is filed under the image's bytes, not its name, so a
+    /// test has to ask the same way the model does.
     private var savedMachine: Data? {
-        SuspendedMachine.load(kernel: "Image", in: folder)
+        SuspendedMachine.load(kernel: identity(named: "Image"), in: folder)
+    }
+
+    private func identity(named name: String) -> String {
+        SuspendedMachine.identity(of: Self.guestImage, named: name)
     }
 
     /// The feature, end to end: run, leave, and find a machine on disk that a
@@ -311,12 +317,59 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertNotNil(savedMachine, "la machine du premier noyau est intacte")
         second.suspend()
 
-        XCTAssertNotNil(SuspendedMachine.load(kernel: "Image", in: folder))
-        XCTAssertNotNil(SuspendedMachine.load(kernel: "autre-noyau", in: folder))
+        XCTAssertNotNil(SuspendedMachine.load(kernel: identity(named: "Image"), in: folder))
+        XCTAssertNotNil(SuspendedMachine.load(kernel: identity(named: "autre-noyau"), in: folder))
         XCTAssertNotEqual(
-            SuspendedMachine.load(kernel: "Image", in: folder),
-            SuspendedMachine.load(kernel: "autre-noyau", in: folder)
+            SuspendedMachine.load(kernel: identity(named: "Image"), in: folder),
+            SuspendedMachine.load(kernel: identity(named: "autre-noyau"), in: folder)
         )
+    }
+
+    /// `Image` is what almost every kernel is called. Importing a second one
+    /// under that name must not hand it the first one's session — the guest
+    /// would resume into a kernel that never ran it.
+    @MainActor
+    func testASecondKernelNamedTheSameDoesNotInheritTheFirstsMachine() throws {
+        let first = model()
+        first.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        first.suspend()
+        XCTAssertNotNil(savedMachine, "préalable : le premier noyau a bien enregistré")
+
+        // Same file name, different bytes — a longer program that still spins.
+        let replacement = folder.appendingPathComponent("second/Image")
+        try FileManager.default.createDirectory(
+            at: replacement.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try (Self.guestImage + Self.guestImage).write(to: replacement)
+
+        let second = model()
+        second.boot(kernelURL: replacement)
+        XCTAssertFalse(
+            second.willResume,
+            "un autre noyau du même nom ne doit pas hériter de la machine du premier"
+        )
+        second.stop()
+    }
+
+    /// "Oublier" throws the saved machine away without ending the session the
+    /// user is looking at.
+    @MainActor
+    func testForgettingClearsTheSavedMachineWithoutStoppingTheRunningOne() {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        XCTAssertNotNil(savedMachine)
+
+        model.boot(kernelURL: kernel)
+        XCTAssertTrue(model.hasSavedMachine, "il y a bien quelque chose à oublier")
+
+        model.forgetSavedMachine()
+        XCTAssertNil(savedMachine, "la machine enregistrée doit être partie")
+        XCTAssertFalse(model.hasSavedMachine)
+        XCTAssertEqual(model.status, .running, "celle qui tourne ne doit pas être touchée")
+        model.stop()
     }
 }
 #endif
