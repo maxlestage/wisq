@@ -51,6 +51,15 @@ break APIs.
   no QEMU inside, so no copyleft to carry — which holds whatever licence gets
   chosen later.
 
+  Taking it out left two holes, and nothing said so: the badge went from
+  three items to two, and the footer's legal row from three to two, while the
+  build stayed green and the footer visibly thinned. What filled them is true
+  without a licence — the badge names the platform it targets, the version
+  line ends with the plain default, and the legal row carries the copyright,
+  which says who wrote this rather than what anyone else may do with it. The
+  footer test now checks those two lines, because the whole point of a footer
+  check is that a footer loses a line quietly.
+
   The site test that *required* "Apache-2.0" in the footer is inverted: naming
   a licence now fails, and the list includes the URL forms, because the visible
   page had already been cleaned once while the JSON-LD still carried the claim.

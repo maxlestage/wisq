@@ -271,6 +271,13 @@ describe("footer", () => {
       );
       expect(html, `${file} : retour en haut`).toContain(`>${escape(footer.backToTop)}</a>`);
       expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
+      // These two are here because they were once removed and nothing said
+      // so. Taking the licence out of the footer took the end of the version
+      // line and one of the three items in the legal row with it, and the
+      // build stayed green while the footer visibly thinned. A footer is
+      // checked line by line or it is not checked.
+      expect(html, `${file} : droits`).toContain(escape(footer.rights));
+      expect(html, `${file} : copyright`).toContain(escape(footer.copyright));
     }
   });
 

@@ -577,6 +577,9 @@ pre code { white-space: pre; }
   margin-top: 18px;
   font-size: 0.82rem;
 }
+/* The copyright reads as part of the row rather than louder than the links
+   beside it: it is a notice, not a call to action. */
+.footer-legal span { color: var(--fg-soft); padding-block: 4px; }
 .footer-legal a { color: var(--fg-soft); text-decoration: none; padding-block: 4px; }
 .footer-legal a:hover { color: var(--fg); text-decoration: underline; }
 

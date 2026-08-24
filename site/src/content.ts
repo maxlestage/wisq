@@ -42,6 +42,14 @@ export interface Copy {
     /// claim over what is not.
     author: string;
     attribution: string;
+    /// What the version line used to end with was a licence. There is none, so
+    /// it ends with the plain default instead — true whatever gets chosen, and
+    /// the line keeps its shape rather than trailing off after a number.
+    rights: string;
+    /// The copyright notice in the bottom bar. A copyright is not a licence:
+    /// it says who wrote this, which is true and settled, where the licence
+    /// said what others may do with it, which is not.
+    copyright: string;
     backToTop: string;
     version: string;
   };
@@ -73,7 +81,7 @@ const en: Copy = {
     tagline: "Virtual machines on your iPhone.",
     lede:
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
-    badge: "Rust · hybrid mobile app",
+    badge: "Rust · hybrid mobile app · iOS 17+",
   },
   modes: {
     title: "Two ways, one app",
@@ -130,6 +138,8 @@ const en: Copy = {
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
     author: "Created and developed by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
+    rights: "All rights reserved",
+    copyright: "© 2026 Maxime Nathan Lestage",
     backToTop: "Back to top",
     version: "Version",
     note:
@@ -159,7 +169,7 @@ const fr: Copy = {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
-    badge: "Rust · application mobile hybride",
+    badge: "Rust · application mobile hybride · iOS 17+",
   },
   modes: {
     title: "Deux voies, une application",
@@ -216,6 +226,8 @@ const fr: Copy = {
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
     author: "Créé et développé par",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
+    rights: "Tous droits réservés",
+    copyright: "© 2026 Maxime Nathan Lestage",
     backToTop: "Haut de page",
     version: "Version",
     note:
