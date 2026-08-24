@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import {
   AUTHOR,
-  AUTHOR_URL,
   copy as allCopy,
   SITE_VERSION,
   type Lang,
@@ -140,9 +139,7 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
               must never read as a claim over what is not. */}
           <p className="footer-author">
             {`${copy.footer.author} `}
-            <a href={AUTHOR_URL} rel="author">
-              {AUTHOR}
-            </a>
+            <span rel="author">{AUTHOR}</span>
           </p>
         </div>
 

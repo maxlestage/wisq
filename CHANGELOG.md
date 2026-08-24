@@ -7,6 +7,18 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **The site signs itself with the project, not with a person.** The footer
+  named its author and linked a personal GitHub profile, and the same name sat
+  in `<meta name="author">` and in the structured data — three places a reader,
+  a crawler and a scraper each find on their own. All three now say `wisq`, and
+  the profile link is gone. The copyright line in LICENSE and NOTICE still
+  names the human who owns the code: that claim is not something a website
+  should dilute. The test that held the site's author against the LICENSE has
+  flipped accordingly — it used to require the two to agree, and now requires
+  that no built page names the copyright holder at all. Checked by putting the
+  name back and watching it fail.
+
 ### Removed
 - **The site is one page now.** The guide, the agent protocol reference, the
   architecture note, the questions, the roadmap and the release history are

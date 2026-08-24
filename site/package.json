@@ -1,7 +1,7 @@
 {
   "name": "wisq-site",
   "private": true,
-  "author": "Maxime Nathan Lestage (https://github.com/maxlestage)",
+  "author": "wisq",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {

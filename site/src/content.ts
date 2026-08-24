@@ -130,7 +130,7 @@ const en: Copy = {
       "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
     privacyNote:
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
-    author: "Created and developed by",
+    author: "A project by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
     backToTop: "Back to top",
     version: "Version",
@@ -217,7 +217,7 @@ const fr: Copy = {
       "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
     privacyNote:
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
-    author: "Créé et développé par",
+    author: "Un projet de",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
     backToTop: "Haut de page",
     version: "Version",
@@ -245,13 +245,15 @@ export const copy: Record<Lang, Copy> = { en, fr };
 
 export const REPO = "https://github.com/maxlestage/wisq";
 
-/// The author, as the repository already states it in NOTICE and LICENSE.
-/// One place, so the site cannot disagree with the copyright line.
-export const AUTHOR = "Maxime Nathan Lestage";
-export const AUTHOR_URL = "https://github.com/maxlestage";
+/// The site signs itself with the project rather than with a person.
+///
+/// It used to carry a name and a link to a personal profile, in the footer, in
+/// `<meta name="author">` and in the structured data — three places a reader,
+/// a crawler and a scraper each find on their own. The project is the author
+/// as far as this site is concerned; the copyright line in LICENSE and NOTICE
+/// is where the legal claim lives, and it is unchanged.
+export const AUTHOR = "wisq";
 export const RELEASES = `${REPO}/releases/latest`;
-export const DOCS = `${REPO}/tree/master/docs`;
-export const ISSUES = `${REPO}/issues`;
 export const CONTRIBUTING = `${REPO}/blob/master/CONTRIBUTING.md`;
 export const SECURITY = `${REPO}/blob/master/SECURITY.md`;
 export const CHANGELOG = `${REPO}/blob/master/CHANGELOG.md`;
