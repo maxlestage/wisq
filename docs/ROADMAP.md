@@ -307,6 +307,28 @@ en mémoire dans l'ordre inverse du flux, parce que le codec lit un pixel comme
 plutôt que laissé à l'hôte, pour que la sortie soit la même partout et qu'un
 test puisse dire ce qu'elle doit être.
 
+`SpiceDisplayClient` porte ce que le client *dit* au canal display, et sa
+raison d'être n'est pas petite : **wisq décode le LZ, et c'est comme ça qu'on
+lui envoie du LZ.** Un serveur SPICE choisit son encodage selon sa propre
+configuration, et le défaut habituel est « automatique » — QUIC pour le
+photographique, GLZ pour le graphique. Aucun des deux n'est décodé ici. Sans ce
+message, un client qui n'a qu'un décodeur LZ regarde arriver l'essentiel de
+l'écran dans un encodage qu'il doit sauter : décoder un codec et se faire
+envoyer ce codec sont deux réussites distinctes, et seule la seconde met une
+image sur un téléphone.
+
+`SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION` demande donc `LZ` — pas `AUTO_LZ`,
+qui laisserait le serveur libre d'envoyer du QUIC pour le photographique, c'est
+le sens même d'« automatique ». Et seulement si le serveur a annoncé
+`SPICE_DISPLAY_CAP_PREF_COMPRESSION` : un message que l'autre bout a dit ne pas
+comprendre n'est pas une demande, c'est du bruit. Une capacité est un **numéro
+de bit**, pas une valeur — lue comme une valeur, la vérification serait fausse
+d'une manière qui tombe juste pour les capacités 1 et 2.
+
+Ça change l'ordre du travail restant : porter QUIC — deux mille lignes de
+codage prédictif — devient une optimisation *après*, et non un prérequis
+*avant*.
+
 Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
 un lien qui aboutit sans rien à afficher ne serait pas une session.
 
