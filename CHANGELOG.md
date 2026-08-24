@@ -32,6 +32,21 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **The SPICE inputs channel, and the scancode table it needs.** RFB takes X11
+  keysyms; SPICE takes PC AT scancodes. `InputEvent.key` claimed in its own
+  comment that its keysym was "as used by both RFB and SPICE" — it is not, and
+  a backend forwarding one unchanged to a SPICE guest would type nothing
+  recognisable. `SpiceScancode` is the conversion, and the comment is corrected
+  alongside it.
+
+  14 tests, spot-checked against the set-1 layout rather than against the
+  table's own output. They hold: the `0xE0` prefix on extended keys, without
+  which the arrows become the numeric keypad; an unknown key sending nothing
+  rather than a guess, because a keyboard that lies is worse than one that is
+  incomplete; the wheel staying out of the held-button mask while a drag's
+  button stays in it; and a negative coordinate clamped rather than wrapped to
+  four billion.
+
 - **The SPICE link, and the main channel up to its list of channels.**
   `SpiceLink` runs the handshake over any byte stream; `SpiceMainChannel` reads
   `MAIN_INIT`, asks for the channel list, and answers pings and acknowledgement
