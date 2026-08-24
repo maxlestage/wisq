@@ -9,8 +9,8 @@ break APIs.
 
 ### Added
 - **The local machine can be saved and brought back.** `Machine::snapshot`
-  writes RAM, the hart's registers, the halt latch and the keystrokes still
-  queued for the UART; `restore` puts them back. The guest is not consulted and
+  writes RAM, the hart's registers and the keystrokes still queued for the
+  UART; `restore` puts them back. The guest is not consulted and
   does not need to be, which is the whole point — the obvious approach, a
   virtio-blk disk, has nobody to talk to: the reference rv32 nommu kernel ships
   the virtio-mmio transport but no block driver, and its entire filesystem list
