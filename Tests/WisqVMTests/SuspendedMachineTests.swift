@@ -67,11 +67,72 @@ final class SuspendedMachineTests: XCTestCase {
         XCTAssertFalse(SuspendedMachine.exists(kernel: "autre-noyau", in: folder))
     }
 
+    /// The defect the name-only key had: `Image` is what almost every kernel
+    /// downloaded from anywhere is called. Two different ones, a week apart,
+    /// must not share a saved machine — the second would resume the first's
+    /// session into a kernel that never ran it.
+    func testTwoDifferentKernelsWithTheSameNameDoNotShareAMachine() throws {
+        let first = Data([0x13, 0x00, 0x00, 0x00])
+        let second = Data([0x13, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00])
+        let one = SuspendedMachine.identity(of: first, named: "Image")
+        let other = SuspendedMachine.identity(of: second, named: "Image")
+        XCTAssertNotEqual(one, other, "deux images distinctes, même nom")
+
+        try SuspendedMachine.save(Data(repeating: 9, count: 128), kernel: one, in: folder)
+        XCTAssertNotNil(SuspendedMachine.load(kernel: one, in: folder))
+        XCTAssertNil(
+            SuspendedMachine.load(kernel: other, in: folder),
+            "l'autre noyau ne doit rien trouver"
+        )
+    }
+
+    /// And the same image is the same machine whatever the file was renamed to
+    /// in between — the name is a label for a human reading the directory, not
+    /// the key.
+    func testTheSameKernelIsFoundAgainAfterBeingRenamed() throws {
+        let image = Data((0..<2048).map { UInt8($0 % 251) })
+        let before = SuspendedMachine.identity(of: image, named: "Image")
+        let after = SuspendedMachine.identity(of: image, named: "linux-6.1")
+        XCTAssertNotEqual(before, after, "le nom reste visible dans l'identité")
+        XCTAssertEqual(
+            SuspendedMachine.digest(image), SuspendedMachine.digest(image),
+            "le condensé ne dépend que des octets"
+        )
+    }
+
+    /// A digest that misses a change is a digest that resurrects the wrong
+    /// machine. Every single-byte flip has to be seen, including in the last
+    /// byte, and a longer image must not collide with a shorter one.
+    func testTheDigestNoticesEverySingleByteChange() {
+        let image = Data((0..<4096).map { UInt8($0 % 251) })
+        let base = SuspendedMachine.digest(image)
+
+        for position in [0, 1, 1000, 2048, 4094, 4095] {
+            var altered = image
+            altered[position] = altered[position] &+ 1
+            XCTAssertNotEqual(
+                SuspendedMachine.digest(altered), base,
+                "un octet changé en position \(position) doit changer le condensé"
+            )
+        }
+
+        XCTAssertNotEqual(
+            SuspendedMachine.digest(image + Data([0])), base,
+            "un zéro ajouté à la fin doit changer le condensé"
+        )
+        XCTAssertNotEqual(
+            SuspendedMachine.digest(Data()), SuspendedMachine.digest(Data([0])),
+            "vide et un octet nul sont deux images différentes"
+        )
+    }
+
     /// Kernel names come from files the user picked, so they can carry
     /// separators and worse. None of that may escape the directory.
     func testAHostileKernelNameCannotEscapeTheDirectory() {
         for hostile in ["../../etc/passwd", "a/b", "..", "", "nom avec espaces"] {
-            let name = SuspendedMachine.fileName(kernel: hostile)
+            let name = SuspendedMachine.fileName(
+                kernel: SuspendedMachine.identity(of: Data([1, 2, 3]), named: hostile)
+            )
             XCTAssertFalse(name.contains("/"), "séparateur dans « \(name) »")
             XCTAssertFalse(name.contains(".."), "remontée dans « \(name) »")
             XCTAssertTrue(name.hasPrefix("machine-"), name)

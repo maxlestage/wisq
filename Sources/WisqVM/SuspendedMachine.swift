@@ -11,14 +11,55 @@ import Foundation
 /// that costs nothing — and "write a file, read it back, survive a first launch
 /// with nothing there" is worth testing rather than reasoning about.
 public enum SuspendedMachine {
-    /// One saved machine per kernel, and the kernel is in the file name.
+    /// What a saved machine belongs to: the kernel image itself, not its name.
     ///
-    /// A snapshot only means anything against the image it was taken from:
-    /// restoring a machine booted from one kernel into a session the user
-    /// opened with another would resurrect the wrong thing. Putting the kernel
-    /// in the name makes a mismatch simply mean "nothing saved", which needs no
-    /// consistency rule at all — the alternative, a marker file beside the
-    /// snapshot, has a window where the two disagree.
+    /// The name alone was the first answer and it is not enough. Kernel images
+    /// arrive through Files, and `Image` is what almost every one of them is
+    /// called — two different kernels a user imports a week apart share that
+    /// name, and keying on it hands the second one the first one's machine.
+    /// The bytes are what a snapshot was taken against, so the bytes are what
+    /// it is filed under.
+    ///
+    /// The name is kept in front of the digest anyway. It is not load-bearing;
+    /// it is so that a person looking in the directory can tell which file is
+    /// which, which a wall of hex cannot.
+    public static func identity(of image: Data, named name: String) -> String {
+        let safe = String(name.map { character -> Character in
+            character.isLetter || character.isNumber || character == "-" ? character : "_"
+        }.prefix(40))
+        return "\(safe)-\(String(digest(image), radix: 16))"
+    }
+
+    /// FNV-1a, 64 bits, over every byte.
+    ///
+    /// Deliberately not SHA-256. The one in `WisqNet` returns empty `Data` on
+    /// any platform without CryptoKit, which is the platform every test here
+    /// runs on — every image would digest to the same nothing, the tests would
+    /// pass, and the behaviour on a phone would be a different one nobody had
+    /// checked. A hash that only works where it is not tested is worse than no
+    /// hash.
+    ///
+    /// Nothing here needs to resist an adversary: the question is "is this the
+    /// same file as last time", about a file the user picked themselves. What
+    /// it does need is to notice a single changed byte anywhere in a few
+    /// megabytes, which is what the tests pin down.
+    ///
+    /// It mixes no length. A first version did, on the theory that trailing
+    /// zeros could make a long image digest like a short one — but FNV-1a
+    /// already folds every byte in, zeros included, so appending one changes
+    /// the result. Removing the step broke no test, which is what said it was
+    /// doing nothing. A line kept because it sounds prudent is a line nobody
+    /// can check.
+    static func digest(_ image: Data) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in image {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01b3
+        }
+        return hash
+    }
+
+    /// The file a machine with this identity waits in.
     public static func fileName(kernel: String) -> String {
         let safe = kernel.map { character -> Character in
             character.isLetter || character.isNumber || character == "-" ? character : "_"

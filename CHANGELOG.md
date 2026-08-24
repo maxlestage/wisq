@@ -7,7 +7,36 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **A second kernel called `Image` inherited the first one's saved machine.**
+  Saved machines were filed under the kernel's *name*, and `Image` is what
+  almost every kernel image downloaded from anywhere is called. Two different
+  ones imported a week apart shared a file, so the second resumed a session
+  that had run under a kernel it had never seen.
+
+  They are filed under the image's bytes now. The name stays in front of the
+  digest, but only so a person looking in the directory can tell the files
+  apart — it is not the key.
+
+  The digest is an FNV-1a 64 written in `WisqVM` rather than `WisqNet`'s
+  `SHA256`, which returns empty `Data` on any platform without CryptoKit —
+  which is the platform every test here runs on. Every image would have
+  digested to the same nothing, the tests would have passed, and the phone
+  would have done something else. A hash that only works where it is not
+  tested is worse than no hash. It is checked against a single flipped byte at
+  six positions including the last, and against an appended zero.
+
+  A first version also mixed the image length in, on the theory that trailing
+  zeros could make a long image collide with a short one. Removing that step
+  broke no test, which is how it was found to be doing nothing — FNV-1a
+  already folds every byte in, zeros included. It is gone.
+
 ### Added
+- **« Oublier » throws the saved machine away without ending the running one.**
+  "Arrêter" already cleared it, but only by ending the session; there was no
+  way to say "keep going, just do not come back to this next time". A user
+  whose guest is wedged wants exactly that: leave now, start clean later. The
+  button appears only when there is something to forget.
 - **The site is a site again: seven pages, a nav strip and a full footer.**
   Reducing it to one page took the strip under the header, the three link
   columns above the bottom bar, the pairing section, and six pages with them —

@@ -57,7 +57,6 @@ public final class LocalVMModel {
 
     public func boot(kernelURL: URL) {
         guard machine == nil else { return }
-        kernelName = kernelURL.lastPathComponent
         // Coming back from a suspension keeps the console: this is the same
         // model instance the user was looking at a moment ago, so its grid
         // still holds their session. Clearing it would make a resumption look
@@ -91,7 +90,25 @@ public final class LocalVMModel {
         runFinished = finished
         run += 1
         let thisRun = run
-        let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent, in: storage)
+
+        // The image is read here rather than on the emulation thread because
+        // its bytes are what a saved machine is filed under, and `kernelName`
+        // has to be settled before `stop()` or `suspend()` can be called — both
+        // of which the view can trigger the instant this returns. A few
+        // megabytes off local storage is a few milliseconds, and this method
+        // already read a larger snapshot synchronously.
+        let image: Data
+        do {
+            image = try Data(contentsOf: kernelURL)
+        } catch {
+            _ = life.guestFinished()
+            finish(with: "Démarrage impossible : \(error.localizedDescription)")
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+        kernelName = SuspendedMachine.identity(of: image, named: kernelURL.lastPathComponent)
+        let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -104,7 +121,6 @@ public final class LocalVMModel {
                 if let saved, (try? machine.restore(saved)) != nil {
                     // nothing else to do: the guest is already mid-life
                 } else {
-                    let image = try Data(contentsOf: kernelURL)
                     try machine.load(kernelImage: image)
                 }
                 outcome = machine.run()
@@ -160,6 +176,20 @@ public final class LocalVMModel {
         }
         machine?.stop()
     }
+
+    /// Throws the saved machine away without touching the one running.
+    ///
+    /// "Arrêter" already clears it, but only by ending the session — there was
+    /// no way to say "keep running, just do not come back to this next time".
+    /// A user who has wedged their guest wants exactly that: leave now, and
+    /// start clean.
+    public func forgetSavedMachine() {
+        SuspendedMachine.clear(kernel: kernelName, in: storage)
+    }
+
+    /// Whether there is a saved machine to forget, so the interface can offer
+    /// the command only when it would do something.
+    public var hasSavedMachine: Bool { willResume }
 
     /// Saves the machine and lets it go, so the next visit resumes it.
     ///

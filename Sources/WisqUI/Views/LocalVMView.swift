@@ -156,6 +156,17 @@ struct LocalVMTerminalView: View {
                     dismiss()
                 }
             }
+            // Offered only when there is something to forget. "Arrêter" also
+            // clears the saved machine, but only by ending the session; this is
+            // for the user whose guest is wedged and who wants to walk away now
+            // and come back to a clean boot.
+            if model.hasSavedMachine {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Oublier", systemImage: "trash") {
+                        model.forgetSavedMachine()
+                    }
+                }
+            }
         }
         .onAppear {
             model.boot(kernelURL: kernelURL)
