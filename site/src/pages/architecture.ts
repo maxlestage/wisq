@@ -10,11 +10,11 @@ export const architectureEn: Doc = {
         "Most of wisq is unremarkable. These are the parts that are not: places where the obvious approach is wrong, and where knowing why saves the next person a day.",
     },
 
-    { kind: "h2", text: "Two languages, split by shape" },
+    { kind: "h2", text: "Rust, and one hybrid app" },
     {
       kind: "p",
       text:
-        "Swift holds the app, the interface and the remote desktop client — work built on Network.framework that belongs on the platform it targets. Rust holds the host daemon and the RISC-V interpreter: a program with no interface, and a loop over a byte array. Neither has a reason to carry a language runtime.",
+        "Everything is Rust except the phone app, which is hybrid. The host daemon and the RISC-V interpreter are Rust — a program with no interface, and a loop over a byte array; neither has a reason to carry a language runtime. The app is the exception because it has to be: the interface, the touch model and the remote desktop client are built on UIKit and Network.framework, which belong to the platform they target. So the app is a Swift shell around a Rust core, and the seam between them is a C ABI of seven functions.",
     },
     {
       kind: "p",
@@ -103,11 +103,11 @@ export const architectureFr: Doc = {
         "L'essentiel de wisq est sans surprise. Voici les parties qui ne le sont pas : là où l'approche évidente est fausse, et où savoir pourquoi épargne une journée à la personne suivante.",
     },
 
-    { kind: "h2", text: "Deux langages, répartis par forme" },
+    { kind: "h2", text: "Du Rust, et une application hybride" },
     {
       kind: "p",
       text:
-        "Swift tient l'application, l'interface et le client de bureau distant — du travail bâti sur Network.framework, qui appartient à la plateforme qu'il vise. Rust tient le démon hôte et l'interpréteur RISC-V : un programme sans interface, et une boucle sur un tableau d'octets. Ni l'un ni l'autre n'a de raison d'embarquer un runtime de langage.",
+        "Tout est en Rust sauf l'application mobile, qui est hybride. Le démon hôte et l'interpréteur RISC-V sont en Rust — un programme sans interface, et une boucle sur un tableau d'octets ; ni l'un ni l'autre n'a de raison d'embarquer un runtime de langage. L'application fait exception parce qu'elle le doit : l'interface, le modèle tactile et le client de bureau distant reposent sur UIKit et Network.framework, qui appartiennent à la plateforme qu'ils visent. C'est donc une coquille Swift autour d'un cœur Rust, et la couture entre les deux est une ABI C de sept fonctions.",
     },
     {
       kind: "p",
