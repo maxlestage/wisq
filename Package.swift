@@ -2,20 +2,16 @@
 import Foundation
 import PackageDescription
 
-// The Rust interpreter is off by default, and that is a deliberate cost.
+// The Rust interpreter is the one the app runs. It is about 8 % faster than the
+// Swift one over a full boot, and the differential test in WisqVMRustTests holds
+// the two to identical retired-instruction counts and identical console bytes —
+// which is what makes preferring one of them a measurement rather than a taste.
 //
-// Linking it means a static library must already exist, which means `cargo
-// build --release -p wisq-vm` must have run — a second toolchain in the way of
-// `swift build`. So the target only joins the package when WISQ_RUST_CORE is
-// set: a clone with Swift and nothing else still builds and still passes its
-// tests, and the switch is one environment variable away for anyone who wants
-// the faster core.
-//
-// What the flag buys, beyond the app: a Linux CI job can build both
-// interpreters and run a differential test that boots the same kernel through
-// each and compares them checkpoint by checkpoint. Two implementations of the
-// same machine are only trustworthy if something makes them prove they agree.
-let rustCoreEnabled = ProcessInfo.processInfo.environment["WISQ_RUST_CORE"] != nil
+// The cost is a second toolchain: linking it means `cargo build --release -p
+// wisq-vm` (or, on Apple, `scripts/build-xcframework.sh`) must have run first.
+// `WISQ_SWIFT_CORE=1` opts back out, for someone who has Swift and nothing else
+// and only wants to work on the protocol side.
+let rustCoreEnabled = ProcessInfo.processInfo.environment["WISQ_SWIFT_CORE"] == nil
 
 // Where `cargo build --release` leaves libwisq_vm.a. Absolute, derived from this
 // file, because the linker's working directory is not the package root during a
@@ -52,6 +48,41 @@ let xcframeworkPath = "dist/CWisqVM.xcframework"
 let haveXCFramework = FileManager.default.fileExists(
     atPath: "\(packageRoot)/\(xcframeworkPath)"
 )
+
+let haveArchive = FileManager.default.fileExists(
+    atPath: "\(rustLibraryDirectory)/libwisq_vm.a"
+)
+
+// Now that the Rust core is the default, a missing library has to stop the
+// build and say so.
+//
+// The tempting alternative — fall back to the Swift core when the archive is
+// absent — is the one thing that must not happen: it would make which
+// interpreter ships depend on whether the machine doing the building happened
+// to have run cargo, and a release cut on a machine without it would quietly
+// carry the slower core with nothing to show for the difference. A build that
+// stops with the command to run is worth more than one that silently gives you
+// something else.
+//
+// Written to stderr and exited rather than raised with fatalError: a manifest
+// that traps buries the one useful sentence under a Swift backtrace, and the
+// point of stopping here is to be read.
+if rustCoreEnabled && !haveXCFramework && !haveArchive {
+    FileHandle.standardError.write(Data("""
+
+        wisq : le cœur Rust est le défaut, et sa bibliothèque est absente.
+
+        Construisez-la :
+            cargo build --release -p wisq-vm
+            scripts/build-xcframework.sh      # en plus, sur macOS, pour l'app
+
+        Ou revenez au cœur Swift — plus lent, mais sans cargo :
+            WISQ_SWIFT_CORE=1 swift build
+
+
+        """.utf8))
+    exit(1)
+}
 
 let rustLibraryTarget: Target = haveXCFramework
     ? .binaryTarget(name: "CWisqVM", path: xcframeworkPath)
