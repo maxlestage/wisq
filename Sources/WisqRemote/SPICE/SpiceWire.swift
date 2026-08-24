@@ -343,4 +343,9 @@ enum SpiceError: Error, Equatable {
     case invalidData
     case refused(SpiceWire.LinkError)
     case ticketUnavailable
+    /// The server talked, but never got to the point. Kept apart from each
+    /// other because they say different things: one means the session never
+    /// started, the other that it started and stalled.
+    case noMainInit
+    case noChannelList
 }

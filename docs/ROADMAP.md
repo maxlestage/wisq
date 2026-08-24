@@ -179,7 +179,7 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Lot 5 — SPICE (le lien est fait)
+## Lot 5 — SPICE (format, lien et entrées faits)
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
 inputs, display, cursor. Intéressant surtout parce que c'est la console par
@@ -197,6 +197,42 @@ code RFB d'à côté : les lecteurs de `ByteStream` sont gros-boutistes parce qu
 RFB l'est, et les réutiliser ici serait faux d'une manière qui marcherait quand
 même la plupart du temps — une longueur de 1 se lit pareil dans les deux sens.
 D'où un lecteur à part plutôt qu'un emprunt.
+
+`SpiceLink` mène la poignée de main sur n'importe quel flux d'octets, et
+`SpiceMainChannel` la boucle du canal principal jusqu'à la liste des canaux —
+`MAIN_INIT`, `ATTACH_CHANNELS`, ping, acquittements, notifications.
+
+Le chiffrement du ticket est **une fermeture, pas un appel**, et c'est toute la
+raison pour laquelle le lien est testable. SPICE chiffre son ticket en RSA :
+sur Apple cela veut dire `Security`, sur Linux cela ne veut rien dire du tout.
+L'appeler directement aurait mis toute la séquence derrière une plateforme que
+la CI n'a pas, et l'ordre, la négociation de capacités, le cadrage et chaque
+refus seraient passés sans vérification. `WisqNet.SHA256` a déjà fait cette
+erreur dans l'autre sens — il rend `Data()` vide sans CryptoKit, donc un
+condensé bâti dessus passe ses tests en étant d'accord avec lui-même sur rien.
+
+Ce qu'un bouchon ne vérifie pas, c'est le chiffrement lui-même, et les tests ne
+prétendent pas le contraire. Ils vérifient tout ce qui l'entoure, là où sont les
+défauts.
+
+`SpiceInputs` encode le canal des entrées, et `SpiceScancode` fait la traduction
+qui va avec. C'est là qu'est le vrai travail : **RFB prend des keysyms, SPICE
+prend des scancodes PC AT**. `InputEvent.key` affirmait en commentaire que son
+keysym valait « pour RFB et SPICE » ; c'était faux, et un backend qui l'aurait
+transmis tel quel n'aurait rien tapé de reconnaissable. Le commentaire est
+corrigé en même temps que la table existe.
+
+Les pièges que les tests tiennent : le préfixe `0xE0` des touches étendues, sans
+lequel les flèches deviennent le pavé numérique ; une touche inconnue qui
+n'envoie rien plutôt qu'un code deviné, parce qu'un clavier qui ment est pire
+qu'un clavier incomplet ; la molette qui n'entre pas dans le masque des boutons
+tenus, mais qui garde le bouton d'un glisser en cours ; et une coordonnée
+négative bornée plutôt qu'enroulée à quatre milliards.
+
+Reste : brancher `SPICESession` dessus, ce qui demande d'abord le canal display —
+un lien qui aboutit sans rien à afficher ne serait pas une session. Ce canal-là
+est le gros morceau, et ses structures de dessin sont marshalées avec des
+pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
 
 ## Lot 6 — finition
 

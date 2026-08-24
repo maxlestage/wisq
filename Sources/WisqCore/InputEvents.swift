@@ -18,7 +18,13 @@ public struct MouseButtons: OptionSet, Hashable, Sendable {
 public enum InputEvent: Hashable, Sendable {
     /// Absolute pointer position in framebuffer coordinates, plus the buttons held down.
     case pointer(x: Int, y: Int, buttons: MouseButtons)
-    /// X11 keysym, as used by both RFB and SPICE.
+    /// X11 keysym.
+    ///
+    /// This said "as used by both RFB and SPICE", which is wrong: RFB takes
+    /// keysyms, SPICE takes PC AT scancodes. A backend that forwarded one of
+    /// these to a SPICE guest unchanged would type nothing recognisable —
+    /// `SpiceScancode` is the conversion, and this comment used to say it was
+    /// unnecessary.
     case key(keysym: UInt32, down: Bool)
     /// Text pasted from the device clipboard, latin-1 as the RFB spec requires.
     case clipboard(String)
