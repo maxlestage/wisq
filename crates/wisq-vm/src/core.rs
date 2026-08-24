@@ -19,6 +19,15 @@ pub trait Bus {
     fn mmio_load(&mut self, address: u32) -> u32;
     /// `Some(code)` halts the machine with that code — the syscon path.
     fn mmio_store(&mut self, address: u32, value: u32) -> Option<u32>;
+    /// The machine clock, handed to the devices once per step, after the timer
+    /// has advanced and after any wait-for-interrupt jump.
+    ///
+    /// It exists because the borrow checker forces the devices to be built
+    /// apart from the core, and a device built with last step's time answers
+    /// the guest's CLINT reads with a clock that runs behind the machine's own
+    /// — by one slice normally, and by the whole idle period whenever the hart
+    /// has just been jumped forward out of WFI.
+    fn set_time(&mut self, low: u32, high: u32);
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -152,6 +161,7 @@ impl Core {
             self.timerh = self.timerh.wrapping_add(1);
         }
         self.timerl = new_timer;
+        bus.set_time(self.timerl, self.timerh);
 
         if (self.timerh > self.timermatchh
             || (self.timerh == self.timermatchh && self.timerl > self.timermatchl))
