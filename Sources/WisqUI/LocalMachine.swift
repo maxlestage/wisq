@@ -13,11 +13,12 @@ import WisqVMRust
 /// reckless — without it, swapping the engine under the app would be a change
 /// nobody could check.
 ///
-/// The Rust one is the faster of the two (measured at about +8 % on a full
-/// boot), so it is what ships when the package is built with WISQ_RUST_CORE.
-/// The Swift one remains the default, because linking the other presumes a
-/// `cargo build` and an XCFramework, and `swift build` has to keep working for
-/// someone who has only Swift.
+/// The Rust one is the faster of the two — about +8 % over a full boot — so it
+/// is the default, and the one the app ships with. `WISQ_SWIFT_CORE=1` picks
+/// the Swift one instead, for someone who has Swift and nothing else and only
+/// wants to work on the protocol side; the manifest stops the build with the
+/// command to run rather than quietly falling back, because which interpreter
+/// ships must not depend on whether the build machine happened to have cargo.
 ///
 /// Only the CPU changes. The console is `TerminalGrid` either way — the
 /// terminal was never the part that needed rewriting.

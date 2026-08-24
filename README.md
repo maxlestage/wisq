@@ -136,9 +136,13 @@ protocol tests run the real daemon against the app's own client.
 The rv32ima interpreter exists twice — once in Swift, once in Rust — and
 `test-rust-core.sh` is what keeps the two honest: it boots the same kernel
 through both and compares the instructions retired and the console bytes at
-every checkpoint. The Rust core joins the Swift package only when
-`WISQ_RUST_CORE` is set, so a clone with Swift and no cargo still builds and
-still passes its tests.
+every checkpoint. The Rust one is about 8 % faster over a full boot, so it is
+the default and the one the app ships with; that means `cargo build --release
+-p wisq-vm` has to have run before `swift build`, and on macOS
+`scripts/build-xcframework.sh` before the app. Without cargo at all, set
+`WISQ_SWIFT_CORE=1` for the Swift interpreter — the manifest stops with that
+instruction rather than picking a core for you, because which one ships must
+not depend on what happened to be installed.
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
 Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official
