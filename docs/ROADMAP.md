@@ -1,5 +1,10 @@
 # Feuille de route
 
+> Les sessions où le travail avance sans personne devant l'écran sont
+> consignées dans [`JOURNAL.md`](JOURNAL.md) — l'autorisation qui les a
+> ouvertes, et ce qui a été décidé.
+
+
 ## Lot 1 — socle (fait)
 
 Modules, modèle, persistance, trousseau, transport, client VNC RFB 3.8, interface
