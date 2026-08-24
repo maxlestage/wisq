@@ -31,7 +31,17 @@ export interface Page {
   lang: Lang;
 }
 
-export type RouteId = "home" | "notFound" | "privacy" | "offline";
+export type RouteId =
+  | "home"
+  | "notFound"
+  | "docs"
+  | "protocol"
+  | "architecture"
+  | "faq"
+  | "roadmap"
+  | "releases"
+  | "privacy"
+  | "offline";
 
 export interface Route {
   id: RouteId;
@@ -44,16 +54,16 @@ export interface Route {
   output?: string;
 }
 
-/// One page, and the two the web requires around it.
-///
-/// The site used to carry a guide, an agent protocol reference, an
-/// architecture note, questions, a roadmap and a release history. They are
-/// gone on purpose: the site says what wisq is and stops there. Nothing here
-/// explains how to run it, and no page invites anyone to try.
 export const ROUTES: Route[] = [
   { id: "home", path: "", listed: true },
-  // Reachable from the footer rather than the header, where a reader looks for
-  // the legal lines.
+  { id: "docs", path: "docs", listed: true },
+  { id: "protocol", path: "protocol", listed: true },
+  { id: "architecture", path: "architecture", listed: true },
+  { id: "faq", path: "faq", listed: true },
+  { id: "roadmap", path: "roadmap", listed: true },
+  { id: "releases", path: "releases", listed: true },
+  // Reachable from the footer rather than the header: a reader looks for it
+  // where the legal lines are, and the top navigation is already full.
   { id: "privacy", path: "privacy", listed: false },
   // Shown only when the network is gone and the address was never cached, so
   // it has no place in navigation or in a sitemap.
