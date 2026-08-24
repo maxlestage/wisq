@@ -179,7 +179,7 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Lot 5 — SPICE (format, lien et entrées faits)
+## Lot 5 — SPICE (format, lien, entrées et décodage de l'affichage faits)
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
 inputs, display, cursor. Intéressant surtout parce que c'est la console par
@@ -229,10 +229,41 @@ qu'un clavier incomplet ; la molette qui n'entre pas dans le masque des boutons
 tenus, mais qui garde le bouton d'un glisser en cours ; et une coordonnée
 négative bornée plutôt qu'enroulée à quatre milliards.
 
-Reste : brancher `SPICESession` dessus, ce qui demande d'abord le canal display —
-un lien qui aboutit sans rien à afficher ne serait pas une session. Ce canal-là
-est le gros morceau, et ses structures de dessin sont marshalées avec des
-pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
+`SpiceDisplayWire` décode le canal display : géométrie, découpe, surfaces,
+descripteurs d'image, `DRAW_FILL` et `DRAW_COPY`. Écrit **avec la spécification
+sous les yeux** — `spice.proto` et le démarshaleur que `spice_codegen.py` en
+engendre — et pas de mémoire, parce que c'est là qu'était le piège annoncé :
+
+**Un pointeur SPICE est un `uint32` qui vaut un décalage depuis le début du
+message**, pas depuis le champ qui le porte, et pas une longueur. Zéro vaut
+nul. Un décalage au-delà de la fin est une erreur, pas un plafonnement. Ces
+quatre lignes sont toute la raison pour laquelle ce fichier n'existait pas
+avant : un décodeur qui devine ce qu'est un pointeur produit un analyseur
+plausible qui lit les mauvais octets.
+
+Ce que les tests tiennent : l'ordre `top, left, bottom, right` d'un rectangle,
+qui n'est pas celui qu'on suppose et qui transpose tout si on le suppose ; la
+découpe est **en ligne** et non derrière un pointeur, parce que le `@to_ptr` de
+la spécification parle de la structure C et pas du fil ; un type de découpe
+inconnu est refusé plutôt que pris pour « aucune découpe », ce qui peindrait
+par-dessus ce que le serveur demandait d'épargner ; un format de surface
+inconnu est nommé plutôt que supposé ; et un pointeur au-delà du message est
+refusé.
+
+Ce que le décodeur ne fait pas, et le dit : il ne dessine pas, et il s'arrête
+aux charges compressées. QUIC, LZ, GLZ et JPEG sont chacun leur propre travail,
+et prétendre les avoir ici donnerait un décodeur qui annonce avoir compris une
+image dont il ne sait produire aucun pixel.
+
+Deux gardes ont été écrites puis retirées après qu'un sabotage a montré
+qu'elles ne changeaient rien : une borne sur le nombre de rectangles — la
+sûreté vient de ne rien réserver, pas de vérifier — et, plus tôt, la même leçon
+sur la liste des canaux. Une troisième est restée, avec une note disant
+honnêtement qu'aucun chemin actuel ne peut boucler et qu'elle attend
+`DRAW_ROP3` et `DRAW_OPAQUE`.
+
+Reste : les codecs d'image, puis brancher `SPICESession` — un lien qui aboutit
+sans rien à afficher ne serait pas une session.
 
 ## Lot 6 — finition
 
