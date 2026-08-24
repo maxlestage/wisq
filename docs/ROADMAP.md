@@ -159,8 +159,23 @@ le modèle bloqué sur une machine qu'il ne relâchait plus. Aucun n'était visi
 à la compilation. `scripts/test-app.sh` fait tourner le vrai modèle contre le
 vrai interprète dans un iPhone simulé, à chaque commit.
 
-Reste à faire : une commande explicite « oublier cette machine » dans
-l'interface, et une reprise partielle quand l'instantané est plus vieux que
+Une machine enregistrée est classée sous **les octets** de son noyau, pas sous
+son nom. Le nom seul était la première réponse et ne suffisait pas : les images
+arrivent par Fichiers, et `Image` est le nom de presque toutes — deux noyaux
+différents importés à une semaine d'écart partagent ce nom, et le second
+héritait de la machine du premier. Le nom reste devant le condensé, mais
+seulement pour qu'un humain qui ouvre le dossier puisse s'y retrouver.
+
+Le condensé est un FNV-1a 64 bits écrit ici plutôt que le `SHA256` de `WisqNet`,
+qui rend `Data()` vide sur toute plateforme sans CryptoKit — c'est-à-dire celle
+où tournent tous ces tests. Un condensé qui ne fonctionne que là où il n'est pas
+vérifié est pire que pas de condensé.
+
+Et « Oublier » jette la machine enregistrée sans arrêter celle qui tourne :
+« Arrêter » l'efface aussi, mais en mettant fin à la session, alors qu'un
+utilisateur dont l'invité est coincé veut partir maintenant et revenir propre.
+
+Reste à faire : une reprise partielle quand l'instantané est plus vieux que
 l'image dont il vient.
 
 ## Lot 5 — SPICE
