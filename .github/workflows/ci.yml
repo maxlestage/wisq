@@ -66,6 +66,29 @@ jobs:
           path: /tmp/wisq-agent-bin
       - name: Make the agent runnable
         run: chmod +x /tmp/wisq-agent-bin/wisq-agent
+      - name: Rust toolchain, et le cœur qu'elle construit
+        # First, not last: the Rust core is the package's default now, so
+        # `swift build` below needs libwisq_vm.a to exist or the manifest stops
+        # with instructions. Building it here is also what makes every step
+        # after this one exercise the interpreter that actually ships.
+        #
+        # Built here rather than shipped from the `rust` job: a static archive
+        # built against another image's glibc is a link error waiting for a
+        # base-image bump, and this is the one job that has to hold both
+        # toolchains at once.
+        #
+        # gcc is not optional: rustc drives `cc` to link, and the Swift image
+        # ships clang under its own name only. curl and ca-certificates are
+        # installed here rather than relied on from the kernel-fetch step above,
+        # which is deliberately best-effort — an absent image must skip a test,
+        # but an absent curl must not silently become "no toolchain".
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          cargo build --release -p wisq-vm
       - name: Build (mode langage Swift 6)
         run: swift build
       - name: Test
@@ -75,6 +98,10 @@ jobs:
           # Without this the cross-language tests skip loudly instead of
           # checking the daemon and the app's client against each other.
           WISQ_AGENT_BINARY: /tmp/wisq-agent-bin/wisq-agent
+      - name: Build sans cargo (l'échappatoire WISQ_SWIFT_CORE)
+        # The manifest tells anyone without cargo to set this. That sentence is
+        # only worth printing if the path it points at is known to work.
+        run: WISQ_SWIFT_CORE=1 swift build
       - name: Benchmark (boot to prompt)
         # Not a threshold — a shared runner cannot hold one without flaking.
         # It boots a real kernel in the release configuration and prints the
@@ -88,22 +115,6 @@ jobs:
           swift run -c release wisq-bench
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
-      - name: Rust toolchain (pour le test différentiel)
-        # Installed here rather than shipping the library from the `rust` job:
-        # a static archive built against another image's glibc is a link error
-        # waiting for a base-image bump, and this is the one job that has to
-        # hold both toolchains at once.
-        #
-        # gcc is not optional: rustc drives `cc` to link, and the Swift image
-        # ships clang under its own name only. curl and ca-certificates are
-        # installed here rather than relied on from the kernel-fetch step above,
-        # which is deliberately best-effort — an absent image must skip a test,
-        # but an absent curl must not silently become "no toolchain".
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain stable
       - name: Les deux cœurs, comparés sur le même noyau
         # The Rust interpreter is the faster one, so it is the one the app will
         # run — which means nobody exercises the Swift one any more, and a
@@ -170,25 +181,24 @@ jobs:
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
-      - name: Build for simulator on the Rust core
-        # The Rust core is opt-in, so the builds either side of this one stay on
-        # the Swift core — that is what ships today. This proves the other half
-        # of the switch: that the XCFramework built above actually links into a
-        # real iOS app and that the wrapper compiles for the device the app runs
-        # on. Without it, "the app can use the Rust core" would be a claim no
-        # check ever tests.
+      - name: Build for simulator on the Swift core
+        # The builds either side of this one are now the Rust core — it is the
+        # default, and the XCFramework built above is what they link. This one
+        # checks the way back still exists: the Swift interpreter is the
+        # fallback the manifest points people at when they have no cargo, and a
+        # fallback nothing compiles is a fallback that has already rotted.
         #
         # A separate derived data path because the package graph was already
         # resolved without the flag by the step above, and Xcode would happily
         # reuse it.
         env:
-          WISQ_RUST_CORE: "1"
+          WISQ_SWIFT_CORE: "1"
         run: |
           xcodebuild build \
             -project Wisq.xcodeproj \
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/derived-rust-core" \
+            -derivedDataPath "$RUNNER_TEMP/derived-swift-core" \
             CODE_SIGNING_ALLOWED=NO
       - name: Build unsigned device app
         # The same build the release workflow ships as a sideloadable IPA —

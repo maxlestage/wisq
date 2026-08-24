@@ -30,6 +30,18 @@ jobs:
     container: swift:6.3
     steps:
       - uses: actions/checkout@v7
+      - name: Rust toolchain, et le cœur qu'elle construit
+        # The Rust interpreter is the package's default, so the library has to
+        # exist before `swift build` — the manifest stops with instructions
+        # otherwise. A release must never be cut against the fallback core by
+        # accident, which is exactly why the manifest refuses to guess.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          cargo build --release -p wisq-vm
       - run: swift build
       - run: swift test
 
@@ -95,6 +107,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Package the VM core as an XCFramework
+        # The shipped app runs the Rust interpreter, so the IPA cannot be built
+        # without this. It is also the step that decides which core the release
+        # actually carries: build it and the app links Rust, and if it were
+        # missing the manifest would stop rather than quietly fall back.
+        run: scripts/build-xcframework.sh
       - name: Build unsigned device app
         run: |
           xcodegen generate
