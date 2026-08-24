@@ -8,6 +8,49 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The SPICE display channel is decoded.** Geometry, clips, surfaces, image
+  descriptors, `DRAW_FILL` and `DRAW_COPY` — written with the specification
+  open rather than from memory, which is why it did not exist before. The trap
+  it was waiting on: **a SPICE pointer is a `uint32` holding an offset from the
+  start of the message**, not from the field that carries it and not a length.
+  Zero is null; an offset at or past the end is an error, not a clamp. A
+  decoder that guesses at that produces a plausible parser reading the wrong
+  bytes.
+
+  The other layouts that would have been guessed wrong: a rectangle is
+  `top, left, bottom, right`, which is not the order anyone assumes and
+  transposes every rectangle if assumed; and the clip is **inline**, not behind
+  a pointer — the specification's `@to_ptr` describes the C struct, not the
+  wire, and reading it as a pointer would treat a rectangle count as an offset.
+
+  An unknown clip type is refused rather than treated as "no clip", which would
+  paint over the part of the screen the server asked to be left alone. An
+  unknown surface format is named rather than assumed, because assuming means
+  every pixel after it is wrong in a way that still fills the screen.
+
+  What it does not do, and says so: it does not draw, and it stops at the
+  compressed payloads. QUIC, LZ, GLZ and JPEG are each their own work, and
+  claiming them here would mean a decoder that says it understood an image it
+  cannot produce one pixel of.
+
+### Changed
+- **Two guards were written and removed after a sabotage showed they did
+  nothing.** A bound on the rectangle count did not change the outcome: the
+  decoder appends one at a time and reserves nothing, so a count of four
+  billion ends on the first read past the end either way — the safety is in not
+  reserving, exactly as with the channel list earlier. A third guard, against
+  following an offset already on the path, stayed, with a note saying honestly
+  that no path can cycle today and that it is there for `DRAW_ROP3` and
+  `DRAW_OPAQUE`. Its first test passed with the guard deleted — it had agreed
+  with the guarded code for an unrelated reason — and was rewritten against
+  `follow` itself.
+
+- **A failing decoder test crashed the run instead of failing it.** The clip
+  test subscripted a rectangle list after asserting its count, so a wrong
+  decoder killed the process and took seventeen other results with it. It
+  compares the list as a whole now.
+
+### Added
 - **A connection file opens as a machine.** `.vv` and `.rdp` had readers and
   nothing called them; the menu now has "Ouvrir un fichier .vv ou .rdp", and
   what comes back opens in the editor rather than landing in the library
