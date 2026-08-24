@@ -170,6 +170,26 @@ jobs:
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
+      - name: Build for simulator on the Rust core
+        # The Rust core is opt-in, so the builds either side of this one stay on
+        # the Swift core — that is what ships today. This proves the other half
+        # of the switch: that the XCFramework built above actually links into a
+        # real iOS app and that the wrapper compiles for the device the app runs
+        # on. Without it, "the app can use the Rust core" would be a claim no
+        # check ever tests.
+        #
+        # A separate derived data path because the package graph was already
+        # resolved without the flag by the step above, and Xcode would happily
+        # reuse it.
+        env:
+          WISQ_RUST_CORE: "1"
+        run: |
+          xcodebuild build \
+            -project Wisq.xcodeproj \
+            -scheme Wisq \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/derived-rust-core" \
+            CODE_SIGNING_ALLOWED=NO
       - name: Build unsigned device app
         # The same build the release workflow ships as a sideloadable IPA —
         # validated on every PR so cutting a release cannot surprise us.

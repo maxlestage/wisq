@@ -13,3 +13,9 @@ site/node_modules/
 
 # Rust build output
 /target/
+
+# XCFramework built by scripts/build-xcframework.sh. Its presence is what makes
+# Package.swift link the Rust core as a binary target, so it must never be
+# committed: a stale 20 MB archive in the tree would silently outrank the
+# freshly built one.
+/dist/

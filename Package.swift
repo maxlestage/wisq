@@ -37,19 +37,42 @@ let rustSystemLibraries: [LinkerSetting] = [
 ]
 #endif
 
-let rustCoreTargets: [Target] = rustCoreEnabled ? [
+// How the library reaches the linker depends on what it is being linked into.
+//
+// A bare `.a` carries no platform, so linking the iOS slice into a simulator
+// build fails late and confusingly. On Apple the library therefore arrives as
+// an XCFramework — `scripts/build-xcframework.sh` builds it — and Xcode picks
+// the slice. Everywhere else, and on a Mac before that script has been run, it
+// is the plain archive through a `-L`.
+//
+// The manifest decides by looking, rather than by asking for a second flag:
+// build the XCFramework and it is used; don't and the archive is. Both vend a
+// module named CWisqVM, so the Swift wrapper is the same source either way.
+let xcframeworkPath = "dist/CWisqVM.xcframework"
+let haveXCFramework = FileManager.default.fileExists(
+    atPath: "\(packageRoot)/\(xcframeworkPath)"
+)
+
+let rustLibraryTarget: Target = haveXCFramework
+    ? .binaryTarget(name: "CWisqVM", path: xcframeworkPath)
     // The crate's own hand-written header, reached in place rather than copied.
-    .systemLibrary(name: "CWisqVM", path: "Sources/CWisqVM"),
+    : .systemLibrary(name: "CWisqVM", path: "Sources/CWisqVM")
+
+// A binary target brings its own library; only the loose archive needs pointing at.
+let rustLinkerSettings: [LinkerSetting] = haveXCFramework ? [] : [
+    .unsafeFlags(["-L\(rustLibraryDirectory)"]),
+    .linkedLibrary("wisq_vm"),
+] + rustSystemLibraries
+
+let rustCoreTargets: [Target] = rustCoreEnabled ? [
+    rustLibraryTarget,
 
     // Swift's view of the Rust interpreter: the same public surface as WisqVM's
     // LinuxMachine, so the app can be pointed at either.
     .target(
         name: "WisqVMRust",
         dependencies: ["CWisqVM"],
-        linkerSettings: [
-            .unsafeFlags(["-L\(rustLibraryDirectory)"]),
-            .linkedLibrary("wisq_vm"),
-        ] + rustSystemLibraries
+        linkerSettings: rustLinkerSettings
     ),
 
     // Both cores, driven through the same script and compared.
@@ -86,7 +109,16 @@ let uiProducts: [Product] = []
 let uiTargets: [Target] = []
 #else
 let uiProducts: [Product] = [.library(name: "WisqUI", targets: ["WisqUI"])]
-let uiTargets: [Target] = [.target(name: "WisqUI", dependencies: ["WisqCore", "WisqRemote", "WisqVM"])]
+// WisqVM stays a dependency even when the Rust core is in: only the CPU is
+// swapped, and the console (TerminalGrid) was never the part worth rewriting.
+let uiTargets: [Target] = [
+    .target(
+        name: "WisqUI",
+        dependencies: ["WisqCore", "WisqRemote", "WisqVM"]
+            + (rustCoreEnabled ? [Target.Dependency.target(name: "WisqVMRust")] : []),
+        swiftSettings: rustCoreEnabled ? [.define("WISQ_RUST_CORE")] : []
+    ),
+]
 #endif
 
 let package = Package(

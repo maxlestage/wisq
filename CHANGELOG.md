@@ -20,6 +20,18 @@ break APIs.
   argument for having written it.
 
 ### Added
+- **The app can run on the Rust core.** `LocalVMModel` no longer names an
+  interpreter: it uses `LocalMachine`, an alias `WISQ_RUST_CORE` points at
+  either one. Only the CPU is swapped — the console stays `TerminalGrid`,
+  which was never the part worth rewriting. The manifest works out for itself
+  how the library arrives, because a bare `.a` carries no platform and linking
+  an iOS slice into a simulator build fails late and confusingly: find
+  `dist/CWisqVM.xcframework` and it is linked as a binary target with Xcode
+  picking the slice, otherwise the plain archive through a `-L`. Both vend a
+  module named `CWisqVM`, so the wrapper is one source either way. CI builds
+  the app both ways — the builds that ship stay on the Swift core, and one
+  extra simulator build with the flag proves the XCFramework really links into
+  a real iOS app.
 - **Both interpreters are made to prove they agree.** wisq has an rv32ima core
   written twice, and the Rust one is faster, so it is the one the app will run
   — which means nobody exercises the Swift one any more and a divergence
@@ -37,7 +49,7 @@ break APIs.
   having seen the change. That trap cost a false green here before it was
   closed.
 - **The Rust core is packaged for Apple, and proven on an iPhone.**
-  `scripts/build-xcframework.sh` assembles `WisqVMCore.xcframework` — the
+  `scripts/build-xcframework.sh` assembles `CWisqVM.xcframework` — the
   device slice, plus universal simulator and macOS slices — and checks the
   result contains three slices rather than trusting that `xcodebuild`
   succeeded. `scripts/test-ios.sh` boots a real Linux kernel through the C

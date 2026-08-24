@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Packages the Rust VM core as WisqVMCore.xcframework.
+# Packages the Rust VM core as CWisqVM.xcframework.
 #
 # The switch from the Swift interpreter to the Rust one has been waiting on
 # "work that has to be done on a Mac". That was never quite true: it is work
@@ -46,13 +46,15 @@ done
 
 lib() { echo "$root/target/$1/release/libwisq_vm.a"; }
 
-# The headers every slice shares. The module map is what lets Swift write
-# `import WisqVMCore` instead of a bridging header the app target would own.
+# The headers every slice shares. The module map names the module CWisqVM —
+# the same name Sources/CWisqVM/module.modulemap gives it on Linux — so the one
+# Swift wrapper compiles whether the library arrives as an xcframework here or
+# as a bare archive through a -L flag there.
 headers="$staging/include"
 mkdir -p "$headers"
 cp "$root/crates/wisq-vm/include/wisq_vm.h" "$headers/"
 cat > "$headers/module.modulemap" <<'MODULE'
-module WisqVMCore {
+module CWisqVM {
     header "wisq_vm.h"
     export *
 }
@@ -65,25 +67,25 @@ lipo -create -output "$staging/ios-simulator/libwisq_vm.a" \
 lipo -create -output "$staging/macos/libwisq_vm.a" \
   "$(lib "${macos_targets[0]}")" "$(lib "${macos_targets[1]}")"
 
-rm -rf "$out/WisqVMCore.xcframework"
+rm -rf "$out/CWisqVM.xcframework"
 mkdir -p "$out"
 xcodebuild -create-xcframework \
   -library "$(lib "$device_target")" -headers "$headers" \
   -library "$staging/ios-simulator/libwisq_vm.a" -headers "$headers" \
   -library "$staging/macos/libwisq_vm.a" -headers "$headers" \
-  -output "$out/WisqVMCore.xcframework"
+  -output "$out/CWisqVM.xcframework"
 
 echo "==> Vérification"
 # An xcframework that builds is not an xcframework that contains what it
 # should: three slices, and the simulator and macOS ones fat.
-slices="$(find "$out/WisqVMCore.xcframework" -name 'libwisq_vm.a' | wc -l | tr -d ' ')"
+slices="$(find "$out/CWisqVM.xcframework" -name 'libwisq_vm.a' | wc -l | tr -d ' ')"
 if [ "$slices" != "3" ]; then
   echo "attendu 3 tranches, trouvé $slices" >&2
   exit 1
 fi
-find "$out/WisqVMCore.xcframework" -name 'libwisq_vm.a' -print0 | while IFS= read -r -d '' slice; do
-  printf '  %s : ' "${slice#"$out/WisqVMCore.xcframework/"}"
+find "$out/CWisqVM.xcframework" -name 'libwisq_vm.a' -print0 | while IFS= read -r -d '' slice; do
+  printf '  %s : ' "${slice#"$out/CWisqVM.xcframework/"}"
   lipo -archs "$slice"
 done
 
-echo "==> $out/WisqVMCore.xcframework"
+echo "==> $out/CWisqVM.xcframework"
