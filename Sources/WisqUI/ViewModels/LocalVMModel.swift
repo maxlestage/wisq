@@ -20,7 +20,7 @@ public final class LocalVMModel {
     /// Console text, ANSI-stripped and line-edited, bounded in lines.
     public private(set) var consoleText = ""
 
-    private var machine: LinuxMachine?
+    private var machine: LocalMachine?
     private let sink = ConsoleSink()
 
     public init() {}
@@ -35,7 +35,7 @@ public final class LocalVMModel {
         // and can produce console faster than the main actor can render it; a
         // hop per chunk would queue work without bound and the interface would
         // fall behind the machine it is meant to be showing.
-        let machine = LinuxMachine { [sink] chunk in
+        let machine = LocalMachine { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
                 self?.consoleText = sink.takeText()
@@ -49,7 +49,7 @@ public final class LocalVMModel {
         // runs several times slower — and this is the thread whose speed the
         // user is watching.
         let thread = Thread { [weak self] in
-            let outcome: LinuxMachine.Outcome
+            let outcome: LocalMachine.Outcome
             do {
                 let image = try Data(contentsOf: kernelURL)
                 try machine.load(kernelImage: image)

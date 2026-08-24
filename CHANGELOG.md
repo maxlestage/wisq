@@ -7,9 +7,49 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **The Rust core handed the guest a clock that ran behind its own machine.**
+  The borrow checker forces the devices to be built apart from the CPU, and the
+  bus was built with the timer as it stood *before* the step advanced it. CLINT
+  `mtime` reads therefore answered with the previous slice's time — and, worse,
+  with the pre-sleep time whenever the hart had just been jumped forward out of
+  wait-for-interrupt, which is a jump of the entire idle period rather than of
+  64 µs. Kernel log timestamps were visibly wrong against the Swift core.
+  `Bus::set_time` now hands the devices the live clock once per step. Found by
+  the differential test below on the day it was written, which is the whole
+  argument for having written it.
+
 ### Added
+- **The app can run on the Rust core.** `LocalVMModel` no longer names an
+  interpreter: it uses `LocalMachine`, an alias `WISQ_RUST_CORE` points at
+  either one. Only the CPU is swapped — the console stays `TerminalGrid`,
+  which was never the part worth rewriting. The manifest works out for itself
+  how the library arrives, because a bare `.a` carries no platform and linking
+  an iOS slice into a simulator build fails late and confusingly: find
+  `dist/CWisqVM.xcframework` and it is linked as a binary target with Xcode
+  picking the slice, otherwise the plain archive through a `-L`. Both vend a
+  module named `CWisqVM`, so the wrapper is one source either way. CI builds
+  the app both ways — the builds that ship stay on the Swift core, and one
+  extra simulator build with the flag proves the XCFramework really links into
+  a real iOS app.
+- **Both interpreters are made to prove they agree.** wisq has an rv32ima core
+  written twice, and the Rust one is faster, so it is the one the app will run
+  — which means nobody exercises the Swift one any more and a divergence
+  between them stops being noticed. `WisqVMRust` wires the Rust core into the
+  Swift package behind `WISQ_RUST_CORE`, with the same public surface as
+  `LinuxMachine` method for method, and a test boots the same kernel through
+  both and compares them every million instructions: the same count retired,
+  the same console bytes. Not "roughly the same output" — the same bytes.
+  The target is absent by default on purpose: linking it presumes a `cargo
+  build`, and a clone with Swift and nothing else must still build and still
+  pass its tests. `scripts/test-rust-core.sh` runs the comparison in one
+  command, and deletes any test bundle older than the library first — SwiftPM
+  does not know a `-L` archive is an input, so without that the suite happily
+  re-runs the previous binary against the previous library and passes without
+  having seen the change. That trap cost a false green here before it was
+  closed.
 - **The Rust core is packaged for Apple, and proven on an iPhone.**
-  `scripts/build-xcframework.sh` assembles `WisqVMCore.xcframework` — the
+  `scripts/build-xcframework.sh` assembles `CWisqVM.xcframework` — the
   device slice, plus universal simulator and macOS slices — and checks the
   result contains three slices rather than trusting that `xcodebuild`
   succeeded. `scripts/test-ios.sh` boots a real Linux kernel through the C

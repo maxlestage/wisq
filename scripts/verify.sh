@@ -21,6 +21,10 @@ echo "==> Running the core tests"
 # loudly and the seam between the two languages goes unchecked.
 WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test
 
+# The rv32ima interpreter exists twice. Running only one of them in the suite
+# above is how the other quietly drifts.
+./scripts/test-rust-core.sh
+
 if [[ "${1:-}" == "--app" ]]; then
   if [[ "$(uname)" != "Darwin" ]]; then
     echo "--app requires macOS; the UI layer is UIKit." >&2
