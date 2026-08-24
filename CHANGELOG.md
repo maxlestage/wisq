@@ -29,6 +29,26 @@ break APIs.
   user picked, so the name is sanitised — `../../etc/passwd` cannot escape the
   directory, and a test says so.
 
+- **The suspension rules are a tested type, not inline conditions.**
+  `MachineLifecycle` decides what each event does to the saved machine — the
+  user stopping it, the screen going away, iOS backgrounding the app, the guest
+  halting itself — and the view model does what it says. It lives in `WisqVM`
+  because the view model does not build on the runner that runs on every
+  commit, and two defects had already reached a pull request while these rules
+  were inline conditions there:
+
+  "Arrêter" dismisses the console, so the stop and the departure arrived one
+  after the other and the departure saved a snapshot of the machine the stop
+  had just ended — the machine came back on the next launch despite having been
+  stopped. And a machine put away when iOS backgrounded the app was never
+  picked up when the app returned, leaving a dead terminal the user could only
+  escape by leaving the screen. Neither was visible to the compiler; both are
+  now one assertion each, and returning to the foreground resumes.
+
+  Coming back from a suspension also keeps the console rather than clearing it:
+  it is the same session, and blanking it would make a resumption look like the
+  reboot the whole feature exists to avoid.
+
 - **A suspended machine has somewhere to wait.** `SuspendedMachine` is the
   file the local VM is saved into and read back from, deliberately in `WisqVM`
   rather than in the app: the app layer only builds on Apple platforms, so

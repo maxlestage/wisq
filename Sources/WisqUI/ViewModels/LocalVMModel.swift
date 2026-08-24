@@ -27,22 +27,40 @@ public final class LocalVMModel {
     /// while the interpreter is writing it would save something that never
     /// existed.
     private var runFinished: DispatchSemaphore?
-    /// Set while suspending, so the thread's exit is not reported to the user
-    /// as the machine having stopped. Leaving the screen is not a crash.
-    private var suspending = false
+    /// What becomes of the saved machine on each event, decided by a type that
+    /// builds on Linux and is therefore covered by tests — this wiring is not.
+    private var life = MachineLifecycle()
     private var kernelName = ""
+    /// Which run a thread's completion belongs to. Suspending releases the
+    /// machine while its thread is still unwinding, so a completion can arrive
+    /// after the next machine has already booted; without this it would report
+    /// the old machine's exit over the new one and delete its saved state.
+    private var run = 0
 
     public init() {}
 
     /// Whether leaving and coming back would resume rather than restart.
     public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName) }
 
+    /// Whether returning to the foreground should pick the machine back up.
+    /// The view asks, because iOS can take the app away and give it back
+    /// without the screen ever disappearing.
+    public var shouldResumeOnReturn: Bool { life.shouldResumeOnReturn }
+
     public func boot(kernelURL: URL) {
         guard machine == nil else { return }
         kernelName = kernelURL.lastPathComponent
+        // Coming back from a suspension keeps the console: this is the same
+        // model instance the user was looking at a moment ago, so its grid
+        // still holds their session. Clearing it would make a resumption look
+        // like a reboot — the one thing the whole feature exists to avoid.
+        let resuming = life.shouldResumeOnReturn
+        life.booted()
         status = .running
-        consoleText = ""
-        sink.reset()
+        if !resuming {
+            consoleText = ""
+            sink.reset()
+        }
 
         // One refresh in flight at a time. The guest writes on its own thread
         // and can produce console faster than the main actor can render it; a
@@ -63,6 +81,8 @@ public final class LocalVMModel {
         // user is watching.
         let finished = DispatchSemaphore(value: 0)
         runFinished = finished
+        run += 1
+        let thisRun = run
         let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent)
 
         let thread = Thread { [weak self] in
@@ -82,23 +102,25 @@ public final class LocalVMModel {
                 outcome = machine.run()
             } catch {
                 Task { @MainActor [weak self] in
-                    self?.finish(with: "Démarrage impossible : \(error.localizedDescription)")
+                    guard let self, thisRun == self.run else { return }
+                    self.finish(with: "Démarrage impossible : \(error.localizedDescription)")
                 }
                 return
             }
             Task { @MainActor [weak self] in
-                guard let self, !self.suspending else { return }
+                guard let self, thisRun == self.run else { return }
+                // The interpreter also returns when we asked it to — suspending
+                // stops it on purpose — so the lifecycle decides whether this
+                // exit is the machine's own, and only then is it reported.
+                let reports = self.life.reportsGuestExit
+                if self.life.guestFinished() == .forget {
+                    SuspendedMachine.clear(kernel: self.kernelName)
+                }
+                guard reports else { return }
                 switch outcome {
-                // A machine that has powered off or rebooted has nothing worth
-                // coming back to, so its saved state goes with it.
-                case .powerOff:
-                    SuspendedMachine.clear(kernel: self.kernelName)
-                    self.finish(with: "La machine s'est éteinte.")
-                case .reboot:
-                    SuspendedMachine.clear(kernel: self.kernelName)
-                    self.finish(with: "La machine a redémarré ; relancez-la.")
-                case .stopped:
-                    self.finish(with: "Arrêtée.")
+                case .powerOff: self.finish(with: "La machine s'est éteinte.")
+                case .reboot: self.finish(with: "La machine a redémarré ; relancez-la.")
+                case .stopped: self.finish(with: "Arrêtée.")
                 }
             }
         }
@@ -118,7 +140,9 @@ public final class LocalVMModel {
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
-        SuspendedMachine.clear(kernel: kernelName)
+        if life.userStopped() == .forget {
+            SuspendedMachine.clear(kernel: kernelName)
+        }
         machine?.stop()
     }
 
@@ -132,28 +156,28 @@ public final class LocalVMModel {
     /// that silently fails to save, the hitch is the right one.
     public func suspend() {
         guard let machine, let finished = runFinished else { return }
-        suspending = true
+        guard life.steppedAway() == .save else { return }
         machine.stop()
         // If the interpreter has not come back in time, saving would read state
         // it is still writing. Better to lose the session than to save a
         // machine that never existed.
         guard finished.wait(timeout: .now() + 5) == .success else {
-            suspending = false
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName) }
             return
         }
         do {
             try SuspendedMachine.save(machine.snapshot(), kernel: kernelName)
         } catch {
-            SuspendedMachine.clear(kernel: kernelName)
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName) }
         }
         self.machine = nil
         runFinished = nil
-        suspending = false
         status = .idle
     }
 
     private func finish(with message: String) {
         machine = nil
+        runFinished = nil
         status = .finished(message)
         _ = sink.append(Data("\n[\(message)]\n".utf8))
         consoleText = sink.takeText()

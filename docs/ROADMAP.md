@@ -111,6 +111,49 @@ un pager, `top`. Suite possible : images téléchargeables depuis l'app,
 stockage persistant (un bloc device 9P ou virtio-blk), et un cœur rv64 avec
 MMU pour des distributions complètes — chacun un chantier distinct.
 
+## La machine suspendue (fait)
+
+Une VM locale qui s'efface quand on quitte l'application n'est pas une machine,
+c'est une démonstration. iOS reprend le processus dès que l'écran s'éteint, donc
+la question n'est pas *si* la machine est interrompue mais ce qu'il en reste.
+
+Le format d'instantané (`crates/wisq-vm/src/snapshot.rs`, et son jumeau
+`Sources/WisqVM/Snapshot.swift`) écrit l'état entier : les 48 mots du CPU, la
+RAM, la file d'entrée en attente et la sortie pas encore remise à la console.
+Les longues plages de zéros sont repliées en paires (zéros, littéraux), ce qui
+ramène 64 Mio de RAM fraîchement démarrée à une quinzaine de mégaoctets — la
+mémoire d'un Linux qui vient de démarrer est surtout vide.
+
+Le disque aurait été l'autre réponse, et c'est la mauvaise ici : un bloc device
+persiste les *fichiers*, pas la session. L'utilisateur qui revient veut son
+shell là où il l'a laissé, pas un second démarrage de quarante secondes vers un
+disque qui contient ses fichiers.
+
+Trois propriétés sont tenues par des tests plutôt que par un raisonnement :
+
+- **Les deux cœurs écrivent les mêmes octets.** `SnapshotAgreementTests` compare
+  les instantanés Swift et Rust octet pour octet, puis fait reprendre chaque
+  cœur depuis l'instantané de l'autre et vérifie qu'ils arrivent au même futur.
+  Sans ça, le jour où l'application change de cœur, les machines enregistrées
+  cessent de s'ouvrir.
+- **Un fichier tronqué est refusé, pas exécuté.** Chaque troncature possible est
+  testée, en Rust comme en Swift : un instantané abîmé produit une erreur, jamais
+  une machine à moitié restaurée.
+- **Le premier enregistrement fonctionne.** C'est le cas qu'une implémentation
+  bâtie sur « remplacer le fichier existant » rate — et ratait ici, avant
+  `testTheFirstSaveWorksWithNothingToReplace`.
+
+Côté application, `SuspendedMachine` range un instantané par noyau, le nom du
+noyau étant dans le nom de fichier : restaurer une machine démarrée depuis une
+image dans une session ouverte avec une autre ressusciterait la mauvaise chose,
+et un noyau qui ne correspond pas doit simplement vouloir dire « rien
+d'enregistré ». L'écriture est atomique parce que le moment où elle se produit
+est exactement celui où iOS retire l'application.
+
+Reste à faire : une commande explicite « oublier cette machine » dans
+l'interface, et une reprise partielle quand l'instantané est plus vieux que
+l'image dont il vient.
+
 ## Lot 5 — SPICE
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,

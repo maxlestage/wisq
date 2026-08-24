@@ -171,9 +171,15 @@ struct LocalVMTerminalView: View {
         }
         // And the same when iOS takes the app away, which it can do without
         // the view ever disappearing. Saving here is the whole reason the
-        // machine survives being backgrounded and killed.
+        // machine survives being backgrounded and killed — and picking it back
+        // up on the way in is what stops the user from returning to a dead
+        // terminal they can only escape by leaving the screen.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { model.suspend() }
+            switch phase {
+            case .background: model.suspend()
+            case .active where model.shouldResumeOnReturn: model.boot(kernelURL: kernelURL)
+            default: break
+            }
         }
     }
 
