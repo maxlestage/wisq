@@ -1,0 +1,225 @@
+import Foundation
+
+/// The display channel's messages, decoded.
+///
+/// This is the channel the other three exist to serve, and it is the one whose
+/// layouts could not be written from memory: its draw messages address their
+/// operands by **pointer**, and a decoder that guesses what a pointer is on the
+/// wire produces a plausible parser that reads the wrong bytes. So the rules
+/// below come from `spice.proto` and from the demarshaller `spice_codegen.py`
+/// generates from it, not from recall:
+///
+///   * a pointer is a `uint32`, four bytes, little-endian like everything else;
+///   * its value is an **offset from the start of the message body**, not from
+///     the field, and not a length;
+///   * `0` means null;
+///   * an offset at or past the end of the body is an error, not a clamp.
+///
+/// Those four lines are the whole reason this file was not written earlier.
+///
+/// What this does *not* do is draw. It decodes structure — which surface, which
+/// rectangle, which clip, which image and in what encoding — and stops at the
+/// compressed payloads, which it reports by type and hands on as bytes. QUIC,
+/// LZ, GLZ and JPEG are each their own piece of work, and pretending to have
+/// them here would mean a decoder that says it understood an image it cannot
+/// produce a single pixel of.
+enum SpiceDisplayWire {
+    // MARK: - Message identifiers
+    //
+    // From `enums.h`. The gaps are real: the protocol numbers these in blocks
+    // and the missing values belong to messages this does not decode yet.
+
+    enum Message: UInt16, Equatable, Sendable {
+        case mode = 101
+        case mark = 102
+        case reset = 103
+        case copyBits = 104
+        case invalList = 105
+        case invalAllPixmaps = 106
+        case invalPalette = 107
+        case invalAllPalettes = 108
+        case streamCreate = 122
+        case streamData = 123
+        case streamClip = 124
+        case streamDestroy = 125
+        case streamDestroyAll = 126
+        case drawFill = 302
+        case drawOpaque = 303
+        case drawCopy = 304
+        case drawBlend = 305
+        case drawBlackness = 306
+        case drawWhiteness = 307
+        case drawInvers = 308
+        case drawRop3 = 309
+        case drawStroke = 310
+        case drawText = 311
+        case drawTransparent = 312
+        case drawAlphaBlend = 313
+        case surfaceCreate = 314
+        case surfaceDestroy = 315
+    }
+
+    // MARK: - Geometry
+
+    /// `top`, `left`, `bottom`, `right` — in that order, which is not the order
+    /// anyone expects and is the order the protocol uses. Read as
+    /// left/top/right/bottom, every rectangle is transposed and every draw
+    /// lands somewhere else.
+    struct Rect: Equatable, Sendable {
+        var top: Int32
+        var left: Int32
+        var bottom: Int32
+        var right: Int32
+
+        var width: Int32 { right - left }
+        var height: Int32 { bottom - top }
+    }
+
+    struct Point: Equatable, Sendable {
+        var x: Int32
+        var y: Int32
+    }
+
+    /// A clip is either nothing or a list of rectangles.
+    ///
+    /// `SPICE_CLIP_TYPE_PATH` existed once and was removed from the protocol;
+    /// a server still sending it gets refused rather than silently treated as
+    /// "no clip", which would draw over parts of the screen the server asked to
+    /// keep.
+    enum Clip: Equatable, Sendable {
+        case none
+        case rects([Rect])
+    }
+
+    /// The header every draw message begins with: which surface, the bounding
+    /// box, and the clip.
+    struct Base: Equatable, Sendable {
+        var surfaceID: UInt32
+        var box: Rect
+        var clip: Clip
+    }
+
+    // MARK: - Surfaces
+
+    /// Surface pixel formats, by the numbers the protocol assigns. The values
+    /// are sparse on purpose — they encode depth in the number.
+    enum SurfaceFormat: UInt32, Equatable, Sendable {
+        case alpha1 = 1
+        case alpha8 = 8
+        case rgb16_555 = 16
+        case xrgb32 = 32
+        case rgb16_565 = 80
+        case argb32 = 96
+    }
+
+    struct SurfaceCreate: Equatable, Sendable {
+        var surfaceID: UInt32
+        var width: UInt32
+        var height: UInt32
+        var format: SurfaceFormat
+        var flags: UInt32
+    }
+
+    /// The legacy "here is the screen" message, sent before surfaces existed
+    /// and still sent first by every server that supports them.
+    struct Mode: Equatable, Sendable {
+        var width: UInt32
+        var height: UInt32
+        var bits: UInt32
+    }
+
+    // MARK: - Images
+
+    enum ImageType: UInt8, Equatable, Sendable {
+        case bitmap = 0
+        case quic = 1
+        case lzPalette = 100
+        case lzRGB = 101
+        case glzRGB = 102
+        case fromCache = 103
+        case surface = 104
+        case jpeg = 105
+        case fromCacheLossless = 106
+        case zlibGlzRGB = 107
+        case jpegAlpha = 108
+        case lz4 = 109
+    }
+
+    enum BitmapFormat: UInt8, Equatable, Sendable {
+        case oneBitLE = 1
+        case oneBitBE = 2
+        case fourBitLE = 3
+        case fourBitBE = 4
+        case eightBit = 5
+        case sixteenBit = 6
+        case twentyFourBit = 7
+        case thirtyTwoBit = 8
+        case rgba = 9
+        case eightBitAlpha = 10
+    }
+
+    /// The header on every image, whatever its encoding.
+    struct ImageDescriptor: Equatable, Sendable {
+        var id: UInt64
+        var type: ImageType
+        var flags: UInt8
+        var width: UInt32
+        var height: UInt32
+    }
+
+    /// An uncompressed bitmap's shape. The pixels themselves are not read here:
+    /// `stride` and `y` say how many bytes they occupy, and the caller that
+    /// actually paints is the one that should decide whether to copy them.
+    struct Bitmap: Equatable, Sendable {
+        var format: BitmapFormat
+        var flags: UInt8
+        var width: UInt32
+        var height: UInt32
+        var stride: UInt32
+        /// Set when the palette lives in the client's cache rather than in this
+        /// message.
+        var cachedPaletteID: UInt64?
+    }
+
+    /// An image as far as this decoder goes: always its descriptor, and its
+    /// shape when the encoding is one whose shape is plain.
+    struct Image: Equatable, Sendable {
+        var descriptor: ImageDescriptor
+        var bitmap: Bitmap?
+    }
+
+    // MARK: - Brushes and masks
+
+    enum Brush: Equatable, Sendable {
+        case none
+        case solid(UInt32)
+        /// The pattern's image and where it is anchored. The image is behind a
+        /// pointer like every other one.
+        case pattern(image: Image?, origin: Point)
+    }
+
+    struct Mask: Equatable, Sendable {
+        var flags: UInt8
+        var origin: Point
+        var bitmap: Image?
+    }
+
+    // MARK: - Draw messages
+
+    struct Fill: Equatable, Sendable {
+        var base: Base
+        var brush: Brush
+        var rop: UInt16
+        var mask: Mask
+    }
+
+    struct Copy: Equatable, Sendable {
+        var base: Base
+        /// Null when the server refers to an image it has already cached.
+        var source: Image?
+        var sourceArea: Rect
+        var rop: UInt16
+        var scaleMode: UInt8
+        var mask: Mask
+    }
+}
