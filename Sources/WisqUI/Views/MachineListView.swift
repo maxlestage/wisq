@@ -9,6 +9,7 @@ public struct MachineListView: View {
     let onEdit: (Machine) -> Void
     let onNew: () -> Void
     let onImportFromAgent: () -> Void
+    let onOpenConnectionFile: () -> Void
     let onLocalVMs: () -> Void
 
     @State private var search = ""
@@ -56,6 +57,9 @@ public struct MachineListView: View {
                     }
                     Button(action: onImportFromAgent) {
                         Label("Importer depuis un agent", systemImage: "server.rack")
+                    }
+                    Button(action: onOpenConnectionFile) {
+                        Label("Ouvrir un fichier .vv ou .rdp", systemImage: "doc.badge.plus")
                     }
                     Button(action: onLocalVMs) {
                         Label("Linux local (sur ce téléphone)", systemImage: "terminal")

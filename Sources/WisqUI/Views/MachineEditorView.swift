@@ -9,6 +9,16 @@ public final class MachineDraft: Identifiable {
     public var machine: Machine
     public var password: String
     public var isNew: Bool
+    /// Set when the password was filled in from somewhere other than the
+    /// keyboard — a connection file, so far.
+    ///
+    /// The editor only writes the secret when the field was *edited*, so that
+    /// opening an existing machine and saving does not wipe its stored
+    /// password. An imported ticket is filled in and never touched, so without
+    /// this it would be dropped on save: the machine would be created with no
+    /// credential, and connecting would ask for a password the user does not
+    /// have and cannot guess — it was a one-shot ticket from a server.
+    public var passwordCameFilledIn = false
     /// Free-form `host` or `host:port` field; the port is split out on save.
     public var address: String
 
@@ -34,6 +44,24 @@ public final class MachineDraft: Identifiable {
         self.agentVMID = base.agent?.vmIdentifier ?? ""
         self.agentAutoStart = base.agent?.autoStart ?? true
         self.agentToken = ""
+    }
+
+    /// A draft from a connection file somebody sent.
+    ///
+    /// It is a new machine even though it arrives filled in, and the title has
+    /// to say so: `MachineDraft(machine:)` reads a non-nil machine as one the
+    /// library already holds, which would head the sheet with a host name and
+    /// let it pass for something the user had saved before.
+    ///
+    /// The password comes in beside the machine rather than inside it, and it
+    /// is set here so the editor's field is filled: a one-shot console ticket
+    /// is exactly the sort of thing the user wants to see before saving, and
+    /// the sort of thing they will never type in by hand.
+    public convenience init(imported: ConnectionImport.Imported) {
+        self.init(machine: imported.machine)
+        self.isNew = true
+        self.password = imported.password ?? ""
+        self.passwordCameFilledIn = imported.password?.isEmpty == false
     }
 }
 
@@ -223,8 +251,11 @@ public struct MachineEditorView: View {
                 machine.agent = nil
             }
             // Only write the secret when the field was actually edited, so opening
-            // an existing machine and saving does not wipe its stored password.
-            library.save(machine, password: passwordTouched ? draft.password : nil)
+            // an existing machine and saving does not wipe its stored password —
+            // or when it arrived filled in from a connection file, which is an
+            // edit the user did not have to make.
+            let writeSecret = passwordTouched || draft.passwordCameFilledIn
+            library.save(machine, password: writeSecret ? draft.password : nil)
             onClose()
         } catch let error as WisqError {
             validationError = error.localizedDescription

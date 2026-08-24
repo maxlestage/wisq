@@ -238,8 +238,7 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
 - Raccourcis Siri et widgets « se connecter à … ».
-- Import depuis les fichiers `.rdp`. Celui des `.vv` est fait : `VirtViewerFile`
-  lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
+- Import depuis les fichiers `.vv` et `.rdp` : fait. `VirtViewerFile` lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
   « console » — hôte, port, transport, et le ticket à usage unique que personne
   ne peut retaper. Du pur décodage, donc entièrement testé.
 
@@ -252,6 +251,54 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
   une seconde section arrête la lecture, sinon une section ajoutée redirigerait
   la connexion ; et le mot de passe n'apparaît jamais dans la description, parce
   que c'est elle qui finit dans un journal ou un rapport de plantage.
+
+  `RemoteDesktopFile` fait la même chose pour les `.rdp` que Windows, Azure et
+  les passerelles remettent. Le format est une ligne par option, `clé:type:valeur`,
+  et la valeur garde tous ses deux-points — c'est ce qui fait que
+  `full address:s:[2001:db8::1]:3390` est une ligne légale, et pourquoi c'est un
+  parseur et pas un `split(separator: ":")`.
+
+  Les pièges tenus par les tests : un IPv6 entre crochets a cinq deux-points et
+  un seul sépare un port, donc couper au premier donne un hôte `[2001` et une
+  connexion nulle part ; un IPv6 **nu** ne porte pas de port du tout, et prendre
+  son dernier groupe pour un port tronquerait silencieusement l'adresse ; le
+  port 3389 s'applique quand aucun n'est donné, jamais à la place d'un port
+  illisible ; un champ `i` contenant du texte est refusé plutôt que deviné ; et
+  le mot de passe enregistré — chiffré vers la machine qui a écrit le fichier,
+  donc inutilisable ici — n'est ni décodé, ni stocké, ni porté.
+
+  `ConnectionImport` fait le pont : un fichier lu devient une `Machine`. Ce sont
+  des décisions sur des valeurs que wisq n'a pas choisies, d'où un type à part
+  plutôt qu'un initialiseur. Le mot de passe **revient à côté de la machine et
+  jamais dedans** — `Machine` est `Codable` et va sur le disque, un secret qui
+  l'atteindrait serait persisté en clair à côté de l'hôte qu'il ouvre. La
+  référence de credential reste vide tant que personne n'a stocké le secret : une
+  machine pointant vers un credential jamais écrit échoue à la connexion au lieu
+  de demander. Un `.rdp` ne se voit attribuer aucun transport, parce qu'il n'en
+  déclare pas. Et la géométrie n'est pas portée : elle décrit l'écran de celui
+  qui a enregistré le fichier, pas ce que veut un téléphone.
+
+  Et c'est branché : « Ouvrir un fichier .vv ou .rdp » dans le menu, et ce qui
+  en sort s'ouvre dans l'éditeur au lieu d'atterrir dans la bibliothèque sans
+  être vu. Un fichier de connexion est la description d'une machine faite par
+  quelqu'un d'autre — son nom est un hôte, son port vient d'un serveur, son mot
+  de passe est souvent un ticket à usage unique — et l'utilisateur doit voir
+  tout ça avant que ce soit à lui.
+
+  Le sélecteur accepte tous les types plutôt que de déclarer `.vv` et `.rdp` :
+  ces fichiers arrivent par mail et par AirDrop avec le nom que l'expéditeur a
+  choisi, et un sélecteur qui grise `connexion.txt` refuse un fichier que wisq
+  lit très bien. C'est le contenu qui décide, et c'est la seule chose qui puisse
+  décider — accessoirement, cela retire à l'expéditeur le choix du parseur.
+
+  L'encodage est traité, et ce n'est pas un détail : le client Remote Desktop de
+  Windows enregistre les `.rdp` en UTF-16 petit-boutiste avec une marque
+  d'ordre. Lus en UTF-8, ces octets ne sont pas le fichier et aucune ligne ne
+  se lit — c'est-à-dire le `.rdp` le plus répandu qui existe. Un cas pour la
+  marque UTF-8 avait été écrit à côté puis retiré : c'était du code mort, parce
+  que Foundation la retire lui-même. Le test est resté, et il tourne aussi dans
+  le simulateur : ce qu'il garde repose désormais sur Foundation, et Foundation
+  sur Darwin n'est pas la même implémentation que sur Linux.
 - Partage de fichiers via un dossier monté côté agent.
 
 ## Ce qu'on doit à UTM

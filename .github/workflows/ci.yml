@@ -136,6 +136,12 @@ jobs:
         run: brew install swiftlint
       - name: Lint
         run: swiftlint lint --strict
+      - name: Check nothing claims a licence
+        # No licence has been chosen. This guards the places that state one to
+        # other software — the app bundle's copyright string and the Homebrew
+        # formula's field — both of which survived the claim being removed from
+        # the site.
+        run: scripts/check-licence-claims.sh
 
   app:
     name: App iOS
