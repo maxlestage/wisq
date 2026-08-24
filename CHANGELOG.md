@@ -7,6 +7,8 @@ break APIs.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-24
+
 ### Changed
 - **The Rust interpreter is the default now**, and the one the app ships with:
   about +8 % over a full boot, and held to the Swift core instruction for

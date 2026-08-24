@@ -221,7 +221,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "178", label: "tests" },
+      { value: "181", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -401,7 +401,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "178", label: "tests" },
+      { value: "181", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
@@ -471,4 +471,4 @@ export const CHANGELOG = `${REPO}/blob/master/CHANGELOG.md`;
 
 /// The version the footer shows. Checked against CHANGELOG.md by a test, so it
 /// cannot quietly describe a release the repository does not have.
-export const SITE_VERSION = "0.2.0";
+export const SITE_VERSION = "0.3.0";

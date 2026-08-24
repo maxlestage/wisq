@@ -2,7 +2,7 @@ import type { Doc } from "../doc";
 
 /// Versions listed on the page. A test checks each one has a dated section in
 /// CHANGELOG.md, so this page cannot quietly fall behind the repository.
-export const RELEASED_VERSIONS = ["0.2.0", "0.1.1", "0.1.0"] as const;
+export const RELEASED_VERSIONS = ["0.3.0", "0.2.0", "0.1.1", "0.1.0"] as const;
 
 export const releasesEn: Doc = {
   title: "Releases",
@@ -12,6 +12,24 @@ export const releasesEn: Doc = {
       kind: "p",
       text:
         "Versions follow semantic versioning. Before 1.0.0 a minor version may break an API — the changelog says when one does.",
+    },
+
+    { kind: "h2", text: "0.3.0" },
+    {
+      kind: "p",
+      text:
+        "The local machine now runs a Rust interpreter, and the agent no longer talks in the clear. The rv32ima core exists twice — Swift and Rust — and a differential test boots the same kernel through both, comparing retired instructions and console bytes at every checkpoint, which is what makes preferring the faster one a measurement rather than a taste.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "The Rust core is the default and what the app ships: about 8% faster over a full boot. WISQ_SWIFT_CORE=1 returns to the Swift one; a missing library stops the build with the command to run, so which interpreter ships never depends on what the build machine happened to have.",
+        "That differential test found a real defect on the day it was written: the Rust bus answered CLINT mtime from a snapshot taken before the step advanced the clock, so the guest read a clock behind its own machine — by a whole idle period after a wait-for-interrupt jump.",
+        "The core is proven where it runs: an XCFramework with device, simulator and macOS slices, and a real Linux kernel booted through the C ABI inside a booted iPhone simulator on every commit.",
+        "The agent speaks TLS. A self-signed certificate on first run, its SHA-256 fingerprint carried in the wisq:// pairing link, pinned by the app — no authority to operate. A malformed fingerprint is an error, never a silent downgrade to plain HTTP.",
+        "The local console is a real terminal: cursor addressing, erases, scroll region, alternate screen, deferred wrap. Editors, pagers and top now behave instead of smearing.",
+        "The site is bilingual throughout, with a light/dark/system theme control and a privacy page that can be checked rather than believed.",
+      ],
     },
 
     { kind: "h2", text: "0.2.0" },
@@ -72,6 +90,24 @@ export const releasesFr: Doc = {
       kind: "p",
       text:
         "Les versions suivent le versionnage sémantique. Avant 1.0.0, une version mineure peut rompre une API — le journal le signale quand c'est le cas.",
+    },
+
+    { kind: "h2", text: "0.3.0" },
+    {
+      kind: "p",
+      text:
+        "La machine locale tourne désormais sur un interpréteur Rust, et l'agent ne parle plus en clair. Le cœur rv32ima existe en double — Swift et Rust — et un test différentiel démarre le même noyau à travers les deux, en comparant les instructions retirées et les octets de console à chaque point de contrôle : c'est ce qui fait de la préférence pour le plus rapide une mesure et non un goût.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "Le cœur Rust est le défaut et ce que l'application embarque : environ 8 % plus rapide sur un démarrage complet. WISQ_SWIFT_CORE=1 rend le cœur Swift ; une bibliothèque absente arrête la construction avec la commande à lancer, pour que l'interprète expédié ne dépende jamais de ce que la machine de build avait sous la main.",
+        "Ce test différentiel a trouvé un vrai défaut le jour où il a été écrit : le bus Rust répondait aux lectures CLINT mtime avec un instantané pris avant que le pas n'avance l'horloge, donc l'invité lisait une horloge en retard sur sa propre machine — de toute une période d'inactivité après un réveil de WFI.",
+        "Le cœur est prouvé là où il tourne : un XCFramework avec les tranches appareil, simulateur et macOS, et un vrai noyau Linux démarré à travers l'ABI C dans un iPhone simulé, à chaque commit.",
+        "L'agent parle TLS. Un certificat auto-signé au premier lancement, son empreinte SHA-256 portée par le lien d'appairage wisq://, épinglée par l'application — aucune autorité à opérer. Une empreinte malformée est une erreur, jamais un repli silencieux vers HTTP en clair.",
+        "La console locale est un vrai terminal : adressage curseur, effacements, région de défilement, écran alterné, retour à la ligne différé. Les éditeurs, les pagers et top se comportent enfin au lieu de baver.",
+        "Le site est bilingue de bout en bout, avec un contrôle de thème clair/sombre/système et une page vie privée vérifiable plutôt que déclarative.",
+      ],
     },
 
     { kind: "h2", text: "0.2.0" },
