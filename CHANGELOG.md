@@ -7,6 +7,23 @@ break APIs.
 
 ## [Unreleased]
 
+### Removed
+- **The site is one page now.** The guide, the agent protocol reference, the
+  architecture note, the questions, the roadmap and the release history are
+  gone, along with the install tabs, every command, the pairing walkthrough
+  and the download link. What is left says what wisq is — what it does, why
+  not UTM, what is tested — and nothing about how to run it. Twenty
+  pre-rendered pages became eight (home, privacy, an offline fallback and a
+  404, in two languages), and the sitemap now lists two addresses.
+
+  The tests that asserted the removed pages existed were rewritten rather than
+  deleted, because the point they made has inverted: one now renders every
+  page in both languages and fails if an install command, a clone line, a
+  download link or a pairing section reappears anywhere. Two tests about the
+  releases page were dropped outright, with the reason recorded in their
+  place — the claim they protected, that the version the site shows matches
+  the changelog, is still checked against the built footer.
+
 ## [0.3.0] — 2026-08-24
 
 ### Removed

@@ -53,11 +53,10 @@ describe("built output", () => {
     // The whole point of pre-rendering: content in the first response.
     const home = read("index.html");
     expect(home).toContain("Virtual machines on your iPhone.");
-    expect(home).toContain("How pairing works");
+    expect(home).toContain("A real Linux kernel, on the phone");
 
-    const guide = read("docs/index.html");
-    expect(guide).toContain("Remote: a VM on your own hardware");
-    expect(guide).toContain("wisq-agent");
+    const privacy = read("privacy/index.html");
+    expect(privacy).toContain("No analytics");
   });
 
   /// The strongest guard here: resolve every relative reference against the
@@ -267,12 +266,9 @@ describe("footer", () => {
     for (const { lang, file } of BUILT) {
       const html = read(file);
       const footer = copy[lang].footer;
-      for (const heading of Object.values(footer.groups)) {
-        expect(html, `${file} : groupe ${heading}`).toContain(`>${escape(heading)}</h2>`);
-      }
-      for (const label of Object.values(footer.links)) {
-        expect(html, `${file} : lien ${label}`).toContain(`>${escape(label)}</a>`);
-      }
+      expect(html, `${file} : vie privée`).toContain(
+        `>${escape(copy[lang].pages.privacy)}</a>`,
+      );
       expect(html, `${file} : retour en haut`).toContain(`>${escape(footer.backToTop)}</a>`);
       expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
       expect(html, `${file} : licence`).toContain("Apache-2.0");
@@ -342,11 +338,8 @@ describe("footer", () => {
     }
   });
 
-  test("the footer's project links stay inside the site", () => {
-    // The changelog is not dropped, only relocated: the releases page carries
-    // the same history, and it is a page this site actually serves.
+  test("the footer's links stay inside the site", () => {
     const html = read("index.html");
-    expect(html, "le pied de page doit mener aux releases du site").toContain('href="./releases/"');
     expect(html, "le pied de page doit mener à la page vie privée").toContain('href="./privacy/"');
   });
 
@@ -491,8 +484,9 @@ describe("discoverability", () => {
   test("an unknown address gets a page, not a bare server error", () => {
     const html = read("404.html");
     expect(html).toContain("Not found");
-    // And it can still navigate: a dead end is not a 404 page.
-    expect(html).toContain('href="./docs/"');
+    // And it can still navigate. With one page left, home is the whole of it —
+    // a dead end is not a 404 page.
+    expect(html).toContain('class="brand"');
   });
 
   /// The privacy page says the site loads nothing from anyone else. That is a
