@@ -181,11 +181,18 @@ enum SpiceDisplayWire {
         var cachedPaletteID: UInt64?
     }
 
-    /// An image as far as this decoder goes: always its descriptor, and its
-    /// shape when the encoding is one whose shape is plain.
+    /// An image as far as this decoder goes: always its descriptor, its shape
+    /// when the encoding is one whose shape is plain, and the codec's own bytes
+    /// when it is not.
+    ///
+    /// `payload` is deliberately undecoded. Reading structure and running a
+    /// codec are different jobs with different failure modes, and keeping them
+    /// apart is what lets the codecs be tested against their own reference
+    /// implementations rather than through a display message.
     struct Image: Equatable, Sendable {
         var descriptor: ImageDescriptor
         var bitmap: Bitmap?
+        var payload: [UInt8]?
     }
 
     // MARK: - Brushes and masks

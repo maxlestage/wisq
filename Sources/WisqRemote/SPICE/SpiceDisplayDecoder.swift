@@ -163,13 +163,30 @@ extension SpiceDisplayWire {
             height: try reader.u32()
         )
 
-        // Only the uncompressed case has a shape this decoder can state. The
-        // rest are named and left alone rather than half-read: a QUIC or LZ
-        // payload's own header is part of its codec, and reading fields out of
-        // it here would be inventing a layout.
-        guard type == .bitmap else {
+        // The compressed forms whose message shape is a plain length and that
+        // many bytes. Their *contents* are the codec's business and are not
+        // touched here — reading fields out of a QUIC or LZ payload would be
+        // inventing a layout — but the length is the display channel's, so it
+        // is read here and the bytes are carried out whole.
+        //
+        // The types left out are the ones whose message shape is not this:
+        // `lzPalette` and `jpegAlpha` carry extra fields before their data,
+        // `zlibGlzRGB` carries an uncompressed size, `fromCache` and `surface`
+        // name something the client already has rather than carrying an image.
+        // Each is named rather than read with the wrong shape.
+        switch type {
+        case .quic, .lzRGB, .glzRGB, .jpeg, .lz4:
+            let size = try reader.u32()
+            return Image(
+                descriptor: descriptor,
+                bitmap: nil,
+                payload: try reader.bytes(Int(size))
+            )
+        case .bitmap:
+            break
+        default:
             _ = nested
-            return Image(descriptor: descriptor, bitmap: nil)
+            return Image(descriptor: descriptor, bitmap: nil, payload: nil)
         }
 
         let rawFormat = try reader.u8()
@@ -191,8 +208,33 @@ extension SpiceDisplayWire {
             bitmap: Bitmap(
                 format: format, flags: flags, width: width, height: height,
                 stride: stride, cachedPaletteID: cachedPaletteID
-            )
+            ),
+            payload: nil
         )
+    }
+
+    /// Runs the codec on an image's payload, when it is one wisq decodes.
+    ///
+    /// Returns `nil` rather than throwing for an encoding that is simply not
+    /// implemented yet: the caller's answer to "no pixels this time" is to
+    /// leave that part of the screen alone, which is a different thing from
+    /// "this message was malformed" and should not travel as the same error.
+    ///
+    /// `glzRGB` is refused rather than handed to the LZ decoder even though its
+    /// stream format is the same. GLZ matches reach back into a dictionary
+    /// built from *earlier images on the channel*, so decoding one on its own
+    /// produces a picture assembled from whatever happened to be in memory.
+    /// Sharing the entry point would be the kind of mistake that shows a
+    /// plausible image.
+    static func pixels(of image: Image) throws -> (pixels: [UInt8], width: Int, height: Int)? {
+        guard let payload = image.payload else { return nil }
+        switch image.descriptor.type {
+        case .lzRGB:
+            let (header, pixels) = try SpiceLZ.decompress(payload)
+            return (pixels, header.width, header.height)
+        default:
+            return nil
+        }
     }
 
     static func brush(from reader: inout SpiceWire.Reader, in body: Body) throws -> Brush {
