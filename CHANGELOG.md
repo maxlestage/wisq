@@ -26,6 +26,15 @@ break APIs.
   truncation of a valid snapshot is tested, along with a foreign buffer, a
   trailing byte and a snapshot taken at a different RAM size.
 
+  The Swift core writes and reads the **same bytes**, and that is checked
+  rather than intended: one test requires the two cores' snapshots of the same
+  machine to be identical byte for byte, another makes each core resume from
+  the other's file and continue to the same instruction count. A snapshot
+  outlives the process that wrote it, so a format only one interpreter can
+  read would break someone's saved machine the day the app switches cores.
+  Proven to bite by swapping two control registers in the Swift writer, which
+  fails both tests.
+
   The C ABI carries it too — `wisq_vm_snapshot`, `wisq_vm_free_snapshot` and
   `wisq_vm_restore`. The snapshot is returned as an allocation the caller owns
   rather than written into a caller's buffer, because the size-then-write dance
