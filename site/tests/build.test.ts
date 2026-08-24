@@ -314,21 +314,40 @@ describe("footer", () => {
     expect(notice, "NOTICE doit garder la mention UTM").toContain("UTM");
   });
 
-  test("the footer's project links point at files the repository has", () => {
+  /// The site does not present wisq as open source and does not send anyone to
+  /// browse its sources. That is a decision about what is published, not a
+  /// detail of wording, so it is checked on the built pages rather than left to
+  /// whoever next edits the copy: an "open source" badge or a "Source" link
+  /// would come back the moment someone added one, and nothing would object.
+  ///
+  /// The release download survives on purpose — it is how a reader installs the
+  /// thing, not an invitation to read the code.
+  test("the site neither claims to be open source nor links to its sources", () => {
+    const forbidden = [
+      "github.com/maxlestage/wisq/blob/",
+      "github.com/maxlestage/wisq/tree/",
+      "github.com/maxlestage/wisq/issues",
+    ];
+    for (const { file } of BUILT) {
+      const html = read(file);
+      expect(html.toLowerCase(), `${file} : revendication « open source »`).not.toContain(
+        "open source",
+      );
+      for (const link of forbidden) {
+        expect(html, `${file} : lien vers les sources`).not.toContain(link);
+      }
+      expect(html, `${file} : lien « Source » nu vers le dépôt`).not.toContain(
+        '"https://github.com/maxlestage/wisq"',
+      );
+    }
+  });
+
+  test("the footer's project links stay inside the site", () => {
+    // The changelog is not dropped, only relocated: the releases page carries
+    // the same history, and it is a page this site actually serves.
     const html = read("index.html");
-    for (const path of [
-      "/blob/master/LICENSE",
-      "/blob/master/CONTRIBUTING.md",
-      "/blob/master/SECURITY.md",
-      "/blob/master/CHANGELOG.md",
-      "/issues",
-    ]) {
-      expect(html, `lien projet manquant : ${path}`).toContain(`github.com/maxlestage/wisq${path}`);
-    }
-    const repoRoot = join(dist, "..", "..");
-    for (const file of ["LICENSE", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]) {
-      expect(existsSync(join(repoRoot, file)), `${file} absent du dépôt`).toBe(true);
-    }
+    expect(html, "le pied de page doit mener aux releases du site").toContain('href="./releases/"');
+    expect(html, "le pied de page doit mener à la page vie privée").toContain('href="./privacy/"');
   });
 
   test("the version shown is the newest released one", () => {
