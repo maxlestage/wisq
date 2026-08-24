@@ -32,6 +32,23 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **The SPICE wire format, as bytes rather than as a plan.** `SpiceWire`
+  encodes and decodes the link handshake, the 18-byte data header, `MAIN_INIT`,
+  the channel list, pings, acknowledgements and notices — pure functions over
+  `Data`, with no socket and no actor. SPICE is the default console of
+  QEMU/libvirt, so it is what most of the machines the agent manages actually
+  speak.
+
+  Little-endian throughout, which is the first thing that separates it from the
+  RFB code next door: `ByteStream`'s readers are big-endian because RFB is, and
+  borrowing them here would be wrong in a way that still mostly works — a length
+  of 1 reads the same either way. It brings its own reader instead.
+
+  22 tests, asserting the bytes literally against the specified layout rather
+  than against whatever this code happens to produce, and refusing every
+  truncation of a link reply. Four guards were sabotaged to check they bite; the
+  two that did not led to real changes rather than to a shrug.
+
 - **« Oublier » throws the saved machine away without ending the running one.**
   "Arrêter" already cleared it, but only by ending the session; there was no
   way to say "keep going, just do not come back to this next time". A user

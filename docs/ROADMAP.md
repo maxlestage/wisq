@@ -175,14 +175,28 @@ Et « Oublier » jette la machine enregistrée sans arrêter celle qui tourne :
 « Arrêter » l'efface aussi, mais en mettant fin à la session, alors qu'un
 utilisateur dont l'invité est coincé veut partir maintenant et revenir propre.
 
-Reste à faire : une reprise partielle quand l'instantané est plus vieux que
-l'image dont il vient.
+La question de « l'instantané plus vieux que son image » ne se pose plus : une
+image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
+C'était la réponse complète, pas une réponse partielle.
 
-## Lot 5 — SPICE
+## Lot 5 — SPICE (le lien est fait)
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
 inputs, display, cursor. Intéressant surtout parce que c'est la console par
 défaut de QEMU/libvirt, donc de l'écrasante majorité des VM que l'agent gérera.
+
+`SpiceWire` porte le format : magie `REDQ`, versions, message de lien et sa
+réponse, en-tête de données de 18 octets, `MAIN_INIT`, liste des canaux, ping,
+acquittements, notifications. C'est du pur encodage sur des octets, sans socket
+ni acteur — donc chaque règle de cadrage est vérifiée par un test qui n'a besoin
+ni de serveur ni de réseau. C'est là que vivent les défauts de protocole, et
+c'est la couche qu'un runner qui ne coûte rien peut éprouver à fond.
+
+Petit-boutiste de bout en bout, ce qui est la première chose qui sépare SPICE du
+code RFB d'à côté : les lecteurs de `ByteStream` sont gros-boutistes parce que
+RFB l'est, et les réutiliser ici serait faux d'une manière qui marcherait quand
+même la plupart du temps — une longueur de 1 se lit pareil dans les deux sens.
+D'où un lecteur à part plutôt qu'un emprunt.
 
 ## Lot 6 — finition
 
