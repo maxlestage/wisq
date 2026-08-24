@@ -132,7 +132,7 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
               text nodes with comment markers, which land in the HTML and make
               the line harder to read for anything that reads HTML. */}
           <p className="footer-version">
-            {`${copy.footer.version} ${SITE_VERSION} · ${copy.footer.license}`}
+            {`${copy.footer.version} ${SITE_VERSION}`}
           </p>
           {/* Authorship sits with the wordmark, where a reader looks for who
               made a thing. The credit to other people's work stays in the
@@ -153,7 +153,6 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
         <p className="footer-note">{copy.footer.privacyNote}</p>
         <p className="footer-note">{copy.footer.attribution}</p>
         <div className="footer-legal">
-          <span>{copy.footer.license}</span>
           <a href={to("privacy")}>{copy.pages.privacy}</a>
           <a href="#main">{copy.footer.backToTop}</a>
         </div>

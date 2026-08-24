@@ -20,7 +20,7 @@ wisq se place face à UTM sur deux fronts à la fois :
 | Exécution | émulation locale QEMU, interprétée | la VM tourne sur l'hôte |
 | Vitesse | très lente (pas de JIT sur iOS) | limitée par le réseau, pas par le CPU |
 | Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau classique |
-| Licence | GPL (QEMU) | code applicatif sous notre contrôle |
+| Licence | GPL (QEMU) | pas de QEMU dedans, donc pas de copyleft à porter |
 | Autonomie | l'émulation vide la batterie | décodage d'image seulement |
 
 ## Vitesse
@@ -122,4 +122,4 @@ la suite.
 ## Auteur
 
 Créé et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
-Copyright 2026 Maxime Nathan Lestage, sous licence Apache-2.0.
+Copyright 2026 Maxime Nathan Lestage. Tous droits réservés.

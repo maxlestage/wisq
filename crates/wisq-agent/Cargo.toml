@@ -4,7 +4,6 @@ version = "0.3.0"
 edition = "2021"
 authors = ["Maxime Nathan Lestage"]
 rust-version = "1.82"
-license = "Apache-2.0"
 description = "Host daemon that lets wisq on iPhone power VMs on and find their consoles"
 repository = "https://github.com/maxlestage/wisq"
 

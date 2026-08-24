@@ -30,7 +30,6 @@ export interface Copy {
   };
   facts: { title: string; items: { value: string; label: string }[] };
   footer: {
-    license: string;
     note: string;
     /// A one-line description under the wordmark, for a reader who arrived at
     /// the footer without reading the page above it.
@@ -74,7 +73,7 @@ const en: Copy = {
     tagline: "Virtual machines on your iPhone.",
     lede:
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
-    badge: "Apache-2.0 · Rust · hybrid mobile app",
+    badge: "Rust · hybrid mobile app",
   },
   modes: {
     title: "Two ways, one app",
@@ -112,7 +111,7 @@ const en: Copy = {
       ["Execution", "local QEMU, interpreted", "on the host — or a purpose-built local interpreter"],
       ["Speed", "very slow (no JIT on iOS)", "network-bound remote · ~1 s to a Linux shell locally"],
       ["App Store", "grey area, rule 4.7", "network client + interpreter, both clean"],
-      ["License", "GPL (QEMU)", "Apache-2.0, all first-party code"],
+      ["License", "GPL (QEMU)", "no QEMU inside, so no copyleft to carry"],
     ],
   },
   facts: {
@@ -125,7 +124,6 @@ const en: Copy = {
     ],
   },
   footer: {
-    license: "Apache-2.0",
     tagline:
       "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
     privacyNote:
@@ -161,7 +159,7 @@ const fr: Copy = {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
-    badge: "Apache-2.0 · Rust · application mobile hybride",
+    badge: "Rust · application mobile hybride",
   },
   modes: {
     title: "Deux voies, une application",
@@ -199,7 +197,7 @@ const fr: Copy = {
       ["Exécution", "QEMU local, interprété", "sur l'hôte — ou un interprète local dédié"],
       ["Vitesse", "très lente (pas de JIT sur iOS)", "limitée par le réseau · ~1 s jusqu'au shell en local"],
       ["App Store", "zone grise, règle 4.7", "client réseau + interprète, tous deux propres"],
-      ["Licence", "GPL (QEMU)", "Apache-2.0, tout le code est premier parti"],
+      ["Licence", "GPL (QEMU)", "pas de QEMU dedans, donc pas de copyleft à porter"],
     ],
   },
   facts: {
@@ -212,7 +210,6 @@ const fr: Copy = {
     ],
   },
   footer: {
-    license: "Apache-2.0",
     tagline:
       "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
     privacyNote:

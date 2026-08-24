@@ -1,7 +1,6 @@
 # wisq
 
 [![CI](https://github.com/maxlestage/wisq/actions/workflows/ci.yml/badge.svg)](https://github.com/maxlestage/wisq/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Swift](https://img.shields.io/badge/swift-6.3-orange.svg)](Package.swift)
 [![Bun](https://img.shields.io/badge/bun-1.4-black.svg)](site/package.json)
 
@@ -24,7 +23,7 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
 | Execution | local QEMU, interpreted | on the host — or a purpose-built local interpreter |
 | Speed | very slow (no JIT on iOS) | network-bound (remote), ~0.3 s to a Linux login prompt (local, see below) |
 | App Store | grey area, rule 4.7 | network client + interpreter, both clean |
-| License | GPL (QEMU) | Apache-2.0, all first-party code |
+| License | GPL (QEMU) | no QEMU inside, so no copyleft to carry |
 
 ## Speed
 
@@ -149,11 +148,14 @@ enable Pages once under Settings → Pages → Source: GitHub Actions.
 ## Contributing & security
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for provenance
-(the emulator reimplements mini-rv32ima's semantics, MIT; the touch design
-studies UTM, Apache-2.0 — no third-party code is vendored).
+
+**No licence has been chosen yet**, so no rights are granted: this is
+source-available to read, not to reuse. See [NOTICE](NOTICE) for provenance —
+the emulator reimplements mini-rv32ima's semantics (MIT) and the touch design
+studies UTM (Apache-2.0); no third-party code is vendored, so nothing here
+carries someone else's terms.
 
 ## Author
 
 Created and developed by [Maxime Nathan Lestage](https://github.com/maxlestage).
-Copyright 2026 Maxime Nathan Lestage, licensed under Apache-2.0.
+Copyright 2026 Maxime Nathan Lestage. All rights reserved.

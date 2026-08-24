@@ -7,6 +7,35 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **No licence is claimed any more, because none has been chosen.** The site
+  announced Apache-2.0 in the hero badge, in the comparison table, twice in the
+  footer and — the one that mattered most — in the JSON-LD block, which is the
+  machine-readable version search engines read and repeat. The repository
+  carried the full Apache-2.0 text, a shields.io badge, and the field in two
+  `Cargo.toml` files and `package.json`. None of it had been decided; it came
+  along with the scaffolding.
+
+  Granting rights nobody chose to grant is not a neutral default, so all of it
+  is gone, `LICENSE` included. The repository is source-available to read and
+  nothing more until its author picks something. Removing the file does not
+  retract anything already granted to anyone who took a copy under those terms
+  — that grant is irrevocable — it only stops the offer from continuing.
+
+  Facts about *other people's* licences stay, because they are true and are not
+  claims about this project: QEMU is GPL, mini-rv32ima is MIT, UTM is
+  Apache-2.0, FreeRDP is Apache-2.0. The comparison row that used to read
+  "Apache-2.0, all first-party code" now says what it was really getting at —
+  no QEMU inside, so no copyleft to carry — which holds whatever licence gets
+  chosen later.
+
+  The site test that *required* "Apache-2.0" in the footer is inverted: naming
+  a licence now fails, and the list includes the URL forms, because the visible
+  page had already been cleaned once while the JSON-LD still carried the claim.
+  Verified by putting the badge back and watching it fail. The authorship check
+  read the copyright holder out of `LICENSE`; it reads NOTICE and both READMEs
+  instead, since what it guards is authorship, which has not changed.
+
 ### Added
 - **The local machine survives leaving the app.** Going back from the console,
   or iOS taking the app away, saves the machine where it stands; the next visit
