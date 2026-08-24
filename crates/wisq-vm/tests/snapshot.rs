@@ -222,3 +222,53 @@ fn queued_keystrokes_survive() {
         "la file d'entrée doit revenir telle quelle"
     );
 }
+
+/// The same six instructions the app-layer tests use: write one line to the
+/// UART, then spin quietly. Small enough to need no kernel image, so this runs
+/// on every commit rather than only where one has been downloaded.
+const TINY_GUEST: [u32; 6] = [
+    0x1000_00B7, // lui  x1, 0x10000   — the UART
+    0x0410_0113, // addi x2, x0, 65    — 'A'
+    0x0020_8023, // sb   x2, 0(x1)
+    0x00A0_0113, // addi x2, x0, 10    — newline
+    0x0020_8023, // sb   x2, 0(x1)
+    0x0000_0063, // beq  x0, x0, 0     — then spin
+];
+
+fn tiny_guest_image() -> Vec<u8> {
+    TINY_GUEST.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// A stop that arrives while the machine is resuming must survive the resume.
+///
+/// `restore` used to clear the stop flag along with everything else, on the
+/// reasoning that it restores the machine's whole state. That flag is not part
+/// of the machine's state — it is the owner asking this machine to come back —
+/// and clearing it threw the request away. The app restores on a background
+/// thread and can be told to stop from the main one before that finishes, which
+/// is what leaving the screen the instant it opens does; the machine then ran
+/// with nothing able to end it, on a phone, until the process died.
+///
+/// The assertion is on retired instructions, not on the outcome: `Stopped` is
+/// also what an exhausted budget returns, so the outcome alone cannot tell the
+/// two apart. The bounded budget is what keeps a regression a failing test
+/// rather than a hanging one.
+#[test]
+fn a_stop_asked_for_while_resuming_is_not_lost() {
+    let mut machine = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_: &[u8]| {}));
+    machine.load(&tiny_guest_image(), None).unwrap();
+    machine.run(10_000);
+    let saved = machine.snapshot();
+
+    let mut resumed = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_: &[u8]| {}));
+    resumed.handle().stop();
+    resumed.restore(&saved).unwrap();
+
+    let before = resumed.retired_instructions();
+    resumed.run(1_000_000);
+    assert_eq!(
+        resumed.retired_instructions(),
+        before,
+        "un arrêt demandé avant la reprise doit être honoré : rien ne doit s'exécuter"
+    );
+}

@@ -1,7 +1,6 @@
 # wisq
 
 [![CI](https://github.com/maxlestage/wisq/actions/workflows/ci.yml/badge.svg)](https://github.com/maxlestage/wisq/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Swift](https://img.shields.io/badge/swift-6.3-orange.svg)](Package.swift)
 [![Bun](https://img.shields.io/badge/bun-1.4-black.svg)](site/package.json)
 
@@ -24,7 +23,7 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
 | Execution | local QEMU, interpreted | on the host — or a purpose-built local interpreter |
 | Speed | very slow (no JIT on iOS) | network-bound (remote), ~0.3 s to a Linux login prompt (local, see below) |
 | App Store | grey area, rule 4.7 | network client + interpreter, both clean |
-| License | GPL (QEMU) | Apache-2.0, all first-party code |
+| License | GPL (QEMU) | no QEMU inside, so no copyleft to carry |
 
 ## Speed
 
@@ -49,7 +48,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (178 tests across Swift and Rust) and
+Everything below is implemented, tested (229 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -76,7 +75,12 @@ cargo test                   # the Rust side: daemon and VM core
 ./scripts/verify.sh          # core: strict-concurrency build + full tests
 ./scripts/verify.sh --app    # + the iOS app (macOS with Xcode)
 ./scripts/test-rust-core.sh  # both interpreters, on the same kernel, compared
+./scripts/test-app.sh        # the app layer, in a simulated iPhone (macOS)
 ```
+
+`verify.sh` lints first: SwiftLint where it is installed, and
+`scripts/check-whitespace.sh` — the text-level rules, reimplemented — always,
+because SwiftLint is a Homebrew formula and the Linux side cannot run it.
 
 `verify.sh` builds the Rust agent first, because the cross-language
 protocol tests run the real daemon against the app's own client.
@@ -91,6 +95,12 @@ the default and the one the app ships with; that means `cargo build --release
 `WISQ_SWIFT_CORE=1` for the Swift interpreter — the manifest stops with that
 instruction rather than picking a core for you, because which one ships must
 not depend on what happened to be installed.
+
+`test-app.sh` is the answer to a layer that was, for a while, written off as
+untestable: `WisqUI` is `#if os(iOS)`, so no Linux runner ever compiles it — and
+two defects in the suspend/resume wiring reached a pull request while that was
+the story. It needs an iOS runtime, and CI has one, so the real view model is
+driven against the real interpreter inside a booted simulator on every change.
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
 Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official
@@ -138,11 +148,14 @@ enable Pages once under Settings → Pages → Source: GitHub Actions.
 ## Contributing & security
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for provenance
-(the emulator reimplements mini-rv32ima's semantics, MIT; the touch design
-studies UTM, Apache-2.0 — no third-party code is vendored).
+
+**No licence has been chosen yet**, so no rights are granted: this is
+source-available to read, not to reuse. See [NOTICE](NOTICE) for provenance —
+the emulator reimplements mini-rv32ima's semantics (MIT) and the touch design
+studies UTM (Apache-2.0); no third-party code is vendored, so nothing here
+carries someone else's terms.
 
 ## Author
 
 Created and developed by [Maxime Nathan Lestage](https://github.com/maxlestage).
-Copyright 2026 Maxime Nathan Lestage, licensed under Apache-2.0.
+Copyright 2026 Maxime Nathan Lestage. All rights reserved.

@@ -4,7 +4,6 @@ version = "0.3.0"
 edition = "2021"
 authors = ["Maxime Nathan Lestage"]
 rust-version = "1.82"
-license = "Apache-2.0"
 description = "Interpreted rv32ima machine that boots Linux, with a C ABI for the iOS app"
 repository = "https://github.com/maxlestage/wisq"
 

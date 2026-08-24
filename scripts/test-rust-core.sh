@@ -36,8 +36,11 @@ if [ ! -f "$image" ]; then
   echo "::warning::image Linux absente ($image) : la comparaison des deux cœurs sera ignorée"
 fi
 
-echo "==> Test différentiel : les deux cœurs, le même noyau"
+# Filtered on the target, not on one class: the target grew a second suite
+# (snapshot agreement between the cores) and a filter naming one class
+# silently stopped covering it.
+echo "==> Les deux cœurs : même noyau, mêmes instantanés"
 WISQ_RUST_CORE=1 WISQ_LINUX_IMAGE="$image" \
-  swift test -c "$configuration" --filter DifferentialBootTests
+  swift test -c "$configuration" --filter WisqVMRustTests
 
 echo "==> Les deux interpréteurs sont d'accord."

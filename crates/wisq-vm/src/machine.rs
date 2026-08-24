@@ -246,7 +246,12 @@ impl Machine {
                 .input_ready
                 .store(!input.is_empty(), Ordering::Release);
         }
-        self.shared.stop.store(false, Ordering::Release);
+        // `stop` is deliberately left alone. It is not part of the guest's
+        // state — it is the owner asking this machine to come back — and
+        // clearing it here threw away a stop that arrived while the machine
+        // was resuming. The app restores on a background thread and can be
+        // told to stop from the main one before the restore finishes; the
+        // machine then ran forever with nothing able to end it.
         self.pending_output = pending;
         Ok(())
     }

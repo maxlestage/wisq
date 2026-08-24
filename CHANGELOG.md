@@ -7,7 +7,157 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **A machine told to stop while it was resuming ignored it, and then could
+  not be stopped at all.** `restore` cleared the stop flag along with the rest
+  of the state, in both cores. That flag is not part of the guest's state — it
+  is the owner asking this machine to come back — so clearing it threw the
+  request away.
+
+  It is not a corner case. The app restores on a background thread and can be
+  told to stop from the main one before the restore finishes, which is exactly
+  what leaving the console the instant it opens does. The emulator thread then
+  ran with nothing able to end it: on a phone, a core spinning until the
+  process died.
+
+  Found by the new simulator tests on their first run, in the one assertion
+  that says "Arrêter" has to actually conclude — which is the whole argument
+  for running that layer rather than reasoning about it. Both cores are fixed
+  and both now have a regression test that asserts on retired instructions
+  rather than on the outcome: `stopped` is also what an exhausted budget
+  returns, so the outcome alone cannot tell an honoured stop from a machine
+  that ran the whole budget. The budget stays bounded so a regression is a
+  failing test, not a hanging one.
+
+### Changed
+- **No licence is claimed any more, because none has been chosen.** The site
+  announced Apache-2.0 in the hero badge, in the comparison table, twice in the
+  footer and — the one that mattered most — in the JSON-LD block, which is the
+  machine-readable version search engines read and repeat. The repository
+  carried the full Apache-2.0 text, a shields.io badge, and the field in two
+  `Cargo.toml` files and `package.json`. None of it had been decided; it came
+  along with the scaffolding.
+
+  Granting rights nobody chose to grant is not a neutral default, so all of it
+  is gone, `LICENSE` included. The repository is source-available to read and
+  nothing more until its author picks something. Removing the file does not
+  retract anything already granted to anyone who took a copy under those terms
+  — that grant is irrevocable — it only stops the offer from continuing.
+
+  Facts about *other people's* licences stay, because they are true and are not
+  claims about this project: QEMU is GPL, mini-rv32ima is MIT, UTM is
+  Apache-2.0, FreeRDP is Apache-2.0. The comparison row that used to read
+  "Apache-2.0, all first-party code" now says what it was really getting at —
+  no QEMU inside, so no copyleft to carry — which holds whatever licence gets
+  chosen later.
+
+  Taking it out left two holes, and nothing said so: the badge went from
+  three items to two, and the footer's legal row from three to two, while the
+  build stayed green and the footer visibly thinned. What filled them is true
+  without a licence — the badge names the platform it targets, the version
+  line ends with the plain default, and the legal row carries the copyright,
+  which says who wrote this rather than what anyone else may do with it. The
+  footer test now checks those two lines, because the whole point of a footer
+  check is that a footer loses a line quietly.
+
+  The site test that *required* "Apache-2.0" in the footer is inverted: naming
+  a licence now fails, and the list includes the URL forms, because the visible
+  page had already been cleaned once while the JSON-LD still carried the claim.
+  Verified by putting the badge back and watching it fail. The authorship check
+  read the copyright holder out of `LICENSE`; it reads NOTICE and both READMEs
+  instead, since what it guards is authorship, which has not changed.
+
 ### Added
+- **The local machine survives leaving the app.** Going back from the console,
+  or iOS taking the app away, saves the machine where it stands; the next visit
+  picks it up mid-life instead of booting again. Only "Arrêter" ends it, and
+  ending it clears the saved state — that word has to mean stopped, not hidden.
+  A machine that powers off or reboots clears itself too, having nothing worth
+  coming back to.
+
+  Saving is synchronous on purpose. It runs exactly when the system is taking
+  the app away, and returning before the file is written means not writing it;
+  the wait is bounded because `stop()` lands within one 1024-instruction slice.
+  It waits for the interpreter to leave `run()` before reading the machine —
+  snapshotting a machine that is still executing would save a state that never
+  existed — and gives up rather than saving if that does not happen in five
+  seconds.
+
+  A snapshot is keyed to the kernel it came from, through the file name rather
+  than a marker file beside it: a mismatch then simply means "nothing saved",
+  with no window where two files disagree. Kernel names come from files the
+  user picked, so the name is sanitised — `../../etc/passwd` cannot escape the
+  directory, and a test says so.
+
+- **The app layer is tested in a simulated iPhone, not written off.**
+  `WisqUI` is `#if os(iOS)`, so no Linux runner compiles it, and it had been
+  described in its own comments as the part CI could not check. That was a
+  choice, not a fact: it needs an iOS runtime, and CI has one. A new
+  `WisqUITests` bundle drives the real `LocalVMModel` against the real
+  interpreter, on its real thread, writing real files — booting, suspending,
+  resuming, stopping, and being backgrounded and brought back. `xcodebuild`
+  runs it in a booted simulator on every change (`scripts/test-app.sh`), and
+  the simulator is chosen from what the machine actually has rather than named,
+  so a runner image dropping a model does not break the build.
+
+  Writing those tests immediately found a third defect the inline version had
+  hidden: the exit that follows "Arrêter" was being swallowed as
+  already-reported, so the model stayed in `running` holding a machine it would
+  never release. Only a suspension's exit should be ignored, because only that
+  one is an exit we asked for.
+
+  Two seams made it testable rather than merely compilable: the model takes the
+  directory it saves into, so a test cannot see or outlive another run's
+  machine, and the scene-phase decision moved out of the view's `body` — a
+  decision in a `body` is a decision nothing runs in a test.
+
+- **`verify.sh` now lints, and there is a floor that runs without SwiftLint.**
+  The script said "everything CI would run" and did not lint — and SwiftLint is
+  a Homebrew formula, so on the Linux container most of this is written in
+  there was no way to run that job at all. A trailing blank line reached a pull
+  request and turned it red. `scripts/check-whitespace.sh` implements the three
+  rules that are pure text — one trailing newline, no trailing whitespace, no
+  double blank lines — over exactly the files `.swiftlint.yml` covers, tracked
+  and untracked alike, because the file about to be pushed is the one not yet
+  committed. `verify.sh` runs it first and then SwiftLint itself wherever it is
+  installed.
+
+- **The suspension rules are a tested type, not inline conditions.**
+  `MachineLifecycle` decides what each event does to the saved machine — the
+  user stopping it, the screen going away, iOS backgrounding the app, the guest
+  halting itself — and the view model does what it says. It lives in `WisqVM`
+  because the view model does not build on the runner that runs on every
+  commit, and two defects had already reached a pull request while these rules
+  were inline conditions there:
+
+  "Arrêter" dismisses the console, so the stop and the departure arrived one
+  after the other and the departure saved a snapshot of the machine the stop
+  had just ended — the machine came back on the next launch despite having been
+  stopped. And a machine put away when iOS backgrounded the app was never
+  picked up when the app returned, leaving a dead terminal the user could only
+  escape by leaving the screen. Neither was visible to the compiler; both are
+  now one assertion each, and returning to the foreground resumes.
+
+  Coming back from a suspension also keeps the console rather than clearing it:
+  it is the same session, and blanking it would make a resumption look like the
+  reboot the whole feature exists to avoid.
+
+- **A suspended machine has somewhere to wait.** `SuspendedMachine` is the
+  file the local VM is saved into and read back from, deliberately in `WisqVM`
+  rather than in the app: the app layer only builds on Apple platforms, so
+  anything living there cannot be tested on a runner that costs nothing, and
+  "survive a first launch with nothing there" is worth testing rather than
+  reasoning about. It is named for what it holds because `WisqCore` already has
+  a `MachineStore`, which keeps the list of remote machines — two types with
+  one name in one app is a reading error waiting to happen.
+
+  The first version replaced the existing file, which fails on the one save
+  every user makes: the first. `Data.write(options: .atomic)` does the work
+  instead, writing to an auxiliary file and renaming, so the visible file is
+  always whole — the previous machine if the new save never finished, never a
+  torn mixture. That matters because the moment this runs is the moment iOS is
+  taking the app away.
+
 - **The local machine can be saved and brought back.** `Machine::snapshot`
   writes RAM, the hart's registers and the keystrokes still queued for the
   UART; `restore` puts them back. The guest is not consulted and
@@ -56,6 +206,12 @@ break APIs.
 - **The app itself says who made it.** `NSHumanReadableCopyright` was missing
   from the bundle, so the one place a person holding the app could read the
   author's name did not have it.
+
+### Changed
+- `scripts/test-rust-core.sh` filters on the test target rather than on one
+  class. The target grew a second suite — snapshot agreement between the two
+  cores — and a filter naming `DifferentialBootTests` had silently stopped
+  covering it. Six tests now, not three.
 
 ### Fixed
 - **The shipped app reported version 0.1.0.** `Info.plist` hard-coded it while

@@ -32,3 +32,34 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         SWIFT_STRICT_CONCURRENCY: complete
+    scheme:
+      testTargets:
+        - WisqUITests
+
+  # The app layer used to be the part nothing checked: `WisqUI` is `#if
+  # os(iOS)`, so the Linux runner never compiles it, let alone runs it. It
+  # needs an iOS runtime — and CI has one, so this bundle runs in a booted
+  # simulator against the real interpreter instead of the layer being written
+  # off as untestable. Two defects reached a pull request while it was.
+  #
+  # No host application: these are unit tests over `WisqUI`, and hosting them
+  # in the app would mean a launch, a window, and a scene phase the test does
+  # not control.
+  WisqUITests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/WisqUITests
+    dependencies:
+      - package: Wisq
+        product: WisqUI
+      # Explicit rather than transitive: the tests restore a saved machine into
+      # a fresh interpreter to check it is really there, which needs the core
+      # by name.
+      - package: Wisq
+        product: WisqVM
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES

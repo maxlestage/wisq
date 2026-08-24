@@ -7,6 +7,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# First, because it is instant and because it is the check this script used to
+# be missing: CI lints, and a script that claims to run everything CI runs has
+# to lint too. A trailing blank line reached a pull request and turned it red
+# while this said "everything CI would run".
+echo "==> Mise en forme (les règles de texte, sans SwiftLint)"
+./scripts/check-whitespace.sh
+
+if command -v swiftlint > /dev/null 2>&1; then
+  echo "==> SwiftLint (strict, comme la CI)"
+  swiftlint lint --strict
+else
+  echo "==> SwiftLint absent : la CI le passera (formule Homebrew, donc pas sur Linux)"
+fi
+
 echo "==> Building the Rust side (daemon + VM core)"
 cargo build --release
 

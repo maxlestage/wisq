@@ -16,8 +16,8 @@
 //! where it was, mid-syscall if that is where it was. Any kernel, no driver
 //! required, and no filesystem to corrupt on a hard kill.
 //!
-//! The format is deliberately dull: a magic, a version, the CPU words, the
-//! halt latch, then RAM. Zero runs are folded, because a 64 MB image whose
+//! The format is deliberately dull: a magic, a version, the CPU words, then
+//! RAM. Zero runs are folded, because a 64 MB image whose
 //! interesting part is a few megabytes is the difference between a snapshot a
 //! phone can take on every backgrounding and one it cannot.
 
