@@ -30,7 +30,6 @@ export interface Copy {
   };
   facts: { title: string; items: { value: string; label: string }[] };
   footer: {
-    license: string;
     note: string;
     /// A one-line description under the wordmark, for a reader who arrived at
     /// the footer without reading the page above it.
@@ -43,6 +42,14 @@ export interface Copy {
     /// claim over what is not.
     author: string;
     attribution: string;
+    /// What the version line used to end with was a licence. There is none, so
+    /// it ends with the plain default instead — true whatever gets chosen, and
+    /// the line keeps its shape rather than trailing off after a number.
+    rights: string;
+    /// The copyright notice in the bottom bar. A copyright is not a licence:
+    /// it says who wrote this, which is true and settled, where the licence
+    /// said what others may do with it, which is not.
+    copyright: string;
     backToTop: string;
     version: string;
   };
@@ -74,7 +81,7 @@ const en: Copy = {
     tagline: "Virtual machines on your iPhone.",
     lede:
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
-    badge: "Apache-2.0 · Rust · hybrid mobile app",
+    badge: "Rust · hybrid mobile app · iOS 17+",
   },
   modes: {
     title: "Two ways, one app",
@@ -112,26 +119,27 @@ const en: Copy = {
       ["Execution", "local QEMU, interpreted", "on the host — or a purpose-built local interpreter"],
       ["Speed", "very slow (no JIT on iOS)", "network-bound remote · ~1 s to a Linux shell locally"],
       ["App Store", "grey area, rule 4.7", "network client + interpreter, both clean"],
-      ["License", "GPL (QEMU)", "Apache-2.0, all first-party code"],
+      ["License", "GPL (QEMU)", "no QEMU inside, so no copyleft to carry"],
     ],
   },
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "194", label: "tests" },
+      { value: "229", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
     ],
   },
   footer: {
-    license: "Apache-2.0",
     tagline:
       "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
     privacyNote:
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
     author: "Created and developed by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
+    rights: "All rights reserved",
+    copyright: "© 2026 Maxime Nathan Lestage",
     backToTop: "Back to top",
     version: "Version",
     note:
@@ -161,7 +169,7 @@ const fr: Copy = {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
-    badge: "Apache-2.0 · Rust · application mobile hybride",
+    badge: "Rust · application mobile hybride · iOS 17+",
   },
   modes: {
     title: "Deux voies, une application",
@@ -199,26 +207,27 @@ const fr: Copy = {
       ["Exécution", "QEMU local, interprété", "sur l'hôte — ou un interprète local dédié"],
       ["Vitesse", "très lente (pas de JIT sur iOS)", "limitée par le réseau · ~1 s jusqu'au shell en local"],
       ["App Store", "zone grise, règle 4.7", "client réseau + interprète, tous deux propres"],
-      ["Licence", "GPL (QEMU)", "Apache-2.0, tout le code est premier parti"],
+      ["Licence", "GPL (QEMU)", "pas de QEMU dedans, donc pas de copyleft à porter"],
     ],
   },
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "194", label: "tests" },
+      { value: "229", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
     ],
   },
   footer: {
-    license: "Apache-2.0",
     tagline:
       "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
     privacyNote:
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
     author: "Créé et développé par",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
+    rights: "Tous droits réservés",
+    copyright: "© 2026 Maxime Nathan Lestage",
     backToTop: "Haut de page",
     version: "Version",
     note:

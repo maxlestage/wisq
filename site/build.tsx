@@ -157,7 +157,9 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
         url: canonical,
         inLanguage: lang,
         author: { "@type": "Person", name: AUTHOR, url: AUTHOR_URL },
-        license: "https://www.apache.org/licenses/LICENSE-2.0",
+        // No `license` key: schema.org's is the machine-readable version of
+        // the claim, the one a search engine reads and repeats, and there is
+        // no licence to declare. It goes back when one is chosen.
         isAccessibleForFree: true,
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
       })}</script>`

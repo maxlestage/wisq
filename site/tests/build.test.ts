@@ -271,17 +271,60 @@ describe("footer", () => {
       );
       expect(html, `${file} : retour en haut`).toContain(`>${escape(footer.backToTop)}</a>`);
       expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
-      expect(html, `${file} : licence`).toContain("Apache-2.0");
+      // These two are here because they were once removed and nothing said
+      // so. Taking the licence out of the footer took the end of the version
+      // line and one of the three items in the legal row with it, and the
+      // build stayed green while the footer visibly thinned. A footer is
+      // checked line by line or it is not checked.
+      expect(html, `${file} : droits`).toContain(escape(footer.rights));
+      expect(html, `${file} : copyright`).toContain(escape(footer.copyright));
+    }
+  });
+
+  /// The site used to announce a licence in the badge, in the comparison table
+  /// and twice in the footer. None had been chosen — it was inherited from a
+  /// template and nobody had picked it, which makes it a claim about what
+  /// someone may do with this code, published without anyone deciding it.
+  ///
+  /// So the guard is inverted: naming a licence here has to fail until there
+  /// is one to name. When there is, this test is the place that says so, and
+  /// changing it is a deliberate act rather than a copy edit.
+  test("no page claims a licence for wisq", () => {
+    // GPL is allowed: it appears as a fact about QEMU, which is somebody
+    // else's project and really is under it.
+    //
+    // The URL forms are in the list because of where the first one hid: the
+    // visible page had been cleaned while the JSON-LD block still carried
+    // `"license": "https://www.apache.org/licenses/LICENSE-2.0"` — the
+    // machine-readable claim, which is the one a search engine repeats.
+    const claims = [
+      "Apache-2.0",
+      "Apache 2.0",
+      "MIT License",
+      "Licence MIT",
+      "BSD-",
+      "apache.org/licenses",
+      "opensource.org/licenses",
+      "\"license\"",
+    ];
+    for (const { file } of BUILT) {
+      const html = read(file);
+      for (const claim of claims) {
+        expect(html, `${file} annonce « ${claim} »`).not.toContain(claim);
+      }
     }
   });
 
   /// On every page, in both languages, and naming the same person the
   /// repository's own copyright line names — a site that credits someone the
-  /// LICENSE does not is a site making a claim nothing backs.
-  /// On every page, in both languages, and naming the same person the
-  /// repository's own copyright line names — a site that credits someone the
-  /// LICENSE does not is a site making a claim nothing backs.
-  test("every page says who made it, and agrees with the licence", () => {
+  /// repository does not is a site making a claim nothing backs.
+  ///
+  /// It used to read that line out of LICENSE. There is no LICENSE now: none
+  /// had been chosen, and a file granting rights nobody decided to grant is
+  /// worse than no file. NOTICE still carries the copyright holder, and so
+  /// does the README, so the check moved there rather than being dropped —
+  /// the claim it guards is about authorship, which did not change.
+  test("every page says who made it, and agrees with the repository", () => {
     for (const { lang, file } of BUILT) {
       const html = read(file);
       expect(html, `${file} : ligne d'auteur`).toContain(copy[lang].footer.author);
@@ -289,7 +332,11 @@ describe("footer", () => {
       expect(html, `${file} : meta author`).toContain(`<meta name="author" content="${AUTHOR}" />`);
     }
     const repoRoot = join(dist, "..", "..");
-    for (const file of ["LICENSE", "NOTICE"]) {
+    expect(
+      readFileSync(join(repoRoot, "NOTICE"), "utf8"),
+      "NOTICE doit nommer le même titulaire",
+    ).toContain(`Copyright 2026 ${AUTHOR}`);
+    for (const file of ["README.md", "README.fr.md"]) {
       expect(
         readFileSync(join(repoRoot, file), "utf8"),
         `${file} doit nommer le même titulaire`,

@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import Observation
+import SwiftUI
 import WisqVM
 
 /// Drives one local Linux VM: owns the machine, runs it on its own thread, and
@@ -22,14 +23,52 @@ public final class LocalVMModel {
 
     private var machine: LocalMachine?
     private let sink = ConsoleSink()
+    /// Signalled when the emulation thread leaves `run()`. Suspending has to
+    /// wait for that: `snapshot()` reads the machine's state, and reading it
+    /// while the interpreter is writing it would save something that never
+    /// existed.
+    private var runFinished: DispatchSemaphore?
+    /// What becomes of the saved machine on each event, decided by a type that
+    /// builds on Linux and is therefore covered by tests — this wiring is not.
+    private var life = MachineLifecycle()
+    private var kernelName = ""
+    /// Which run a thread's completion belongs to. Suspending releases the
+    /// machine while its thread is still unwinding, so a completion can arrive
+    /// after the next machine has already booted; without this it would report
+    /// the old machine's exit over the new one and delete its saved state.
+    private var run = 0
 
-    public init() {}
+    /// Where suspended machines are written. `nil` means Application Support,
+    /// which is what the app uses; a test passes its own directory so a run
+    /// cannot see — or outlive — another one's saved machine.
+    private let storage: URL?
+
+    public init(storageDirectory: URL? = nil) {
+        storage = storageDirectory
+    }
+
+    /// Whether leaving and coming back would resume rather than restart.
+    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName, in: storage) }
+
+    /// Whether returning to the foreground should pick the machine back up.
+    /// The view asks, because iOS can take the app away and give it back
+    /// without the screen ever disappearing.
+    public var shouldResumeOnReturn: Bool { life.shouldResumeOnReturn }
 
     public func boot(kernelURL: URL) {
         guard machine == nil else { return }
+        kernelName = kernelURL.lastPathComponent
+        // Coming back from a suspension keeps the console: this is the same
+        // model instance the user was looking at a moment ago, so its grid
+        // still holds their session. Clearing it would make a resumption look
+        // like a reboot — the one thing the whole feature exists to avoid.
+        let resuming = life.shouldResumeOnReturn
+        life.booted()
         status = .running
-        consoleText = ""
-        sink.reset()
+        if !resuming {
+            consoleText = ""
+            sink.reset()
+        }
 
         // One refresh in flight at a time. The guest writes on its own thread
         // and can produce console faster than the main actor can render it; a
@@ -48,23 +87,55 @@ public final class LocalVMModel {
         // the scheduler park it on an efficiency core, where an interpreter
         // runs several times slower — and this is the thread whose speed the
         // user is watching.
+        let finished = DispatchSemaphore(value: 0)
+        runFinished = finished
+        run += 1
+        let thisRun = run
+        let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent, in: storage)
+
         let thread = Thread { [weak self] in
+            defer { finished.signal() }
             let outcome: LocalMachine.Outcome
             do {
-                let image = try Data(contentsOf: kernelURL)
-                try machine.load(kernelImage: image)
+                // A saved machine is resumed in place of booting. If the file
+                // is not a snapshot — an older format, a truncated write — the
+                // restore throws and the kernel is booted instead, which is the
+                // only useful answer and better than refusing to start.
+                if let saved, (try? machine.restore(saved)) != nil {
+                    // nothing else to do: the guest is already mid-life
+                } else {
+                    let image = try Data(contentsOf: kernelURL)
+                    try machine.load(kernelImage: image)
+                }
                 outcome = machine.run()
             } catch {
                 Task { @MainActor [weak self] in
-                    self?.finish(with: "Démarrage impossible : \(error.localizedDescription)")
+                    guard let self, thisRun == self.run else { return }
+                    // A boot that never happened still ends the session, so the
+                    // lifecycle has to hear about it: leaving it in `running`
+                    // would let a later departure try to save a machine that
+                    // does not exist.
+                    if self.life.guestFinished() == .forget {
+                        SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
+                    }
+                    self.finish(with: "Démarrage impossible : \(error.localizedDescription)")
                 }
                 return
             }
             Task { @MainActor [weak self] in
+                guard let self, thisRun == self.run else { return }
+                // The interpreter also returns when we asked it to — suspending
+                // stops it on purpose — so the lifecycle decides whether this
+                // exit is the machine's own, and only then is it reported.
+                let reports = self.life.reportsGuestExit
+                if self.life.guestFinished() == .forget {
+                    SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
+                }
+                guard reports else { return }
                 switch outcome {
-                case .powerOff: self?.finish(with: "La machine s'est éteinte.")
-                case .reboot: self?.finish(with: "La machine a redémarré ; relancez-la.")
-                case .stopped: self?.finish(with: "Arrêtée.")
+                case .powerOff: self.finish(with: "La machine s'est éteinte.")
+                case .reboot: self.finish(with: "La machine a redémarré ; relancez-la.")
+                case .stopped: self.finish(with: "Arrêtée.")
                 }
             }
         }
@@ -81,12 +152,63 @@ public final class LocalVMModel {
         send(line + "\n")
     }
 
+    /// Ends the machine for good, at the user's request. The saved state goes
+    /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
+        if life.userStopped() == .forget {
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
+        }
         machine?.stop()
+    }
+
+    /// Saves the machine and lets it go, so the next visit resumes it.
+    ///
+    /// Deliberately synchronous. It runs when iOS is taking the app away or the
+    /// screen is going, and both of those are moments where returning before
+    /// the file is written means not writing it at all. The wait is bounded:
+    /// `stop()` takes effect within one 1024-instruction slice, and the write
+    /// is a few megabytes. Given the choice between a brief hitch and a machine
+    /// that silently fails to save, the hitch is the right one.
+    public func suspend() {
+        guard let machine, let finished = runFinished else { return }
+        guard life.steppedAway() == .save else { return }
+        machine.stop()
+        // If the interpreter has not come back in time, saving would read state
+        // it is still writing. Better to lose the session than to save a
+        // machine that never existed.
+        guard finished.wait(timeout: .now() + 5) == .success else {
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
+            return
+        }
+        do {
+            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
+        } catch {
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
+        }
+        self.machine = nil
+        runFinished = nil
+        status = .idle
+    }
+
+    /// What a change of scene phase means for the machine.
+    ///
+    /// This lives here rather than in the view because it is a decision, and
+    /// decisions in a `body` are decisions nothing runs in a test. iOS can take
+    /// the app away and give it back without the screen ever disappearing, so
+    /// the way in matters as much as the way out: a machine put away on
+    /// `.background` and not picked up on `.active` leaves the user looking at
+    /// a dead terminal they can only escape by leaving the screen.
+    public func scenePhaseChanged(to phase: ScenePhase, kernelURL: URL) {
+        switch phase {
+        case .background: suspend()
+        case .active where shouldResumeOnReturn: boot(kernelURL: kernelURL)
+        default: break
+        }
     }
 
     private func finish(with message: String) {
         machine = nil
+        runFinished = nil
         status = .finished(message)
         _ = sink.append(Data("\n[\(message)]\n".utf8))
         consoleText = sink.takeText()

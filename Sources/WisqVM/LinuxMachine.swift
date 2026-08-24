@@ -246,7 +246,13 @@ public final class LinuxMachine: @unchecked Sendable {
         lock.lock()
         inputQueue = queued
         pendingOutput = Data(pending)
-        stopRequested = false
+        // `stopRequested` is deliberately left alone. It is not part of the
+        // guest's state — it is the owner asking this machine to come back —
+        // and clearing it here threw away a stop that arrived while the
+        // machine was resuming. That is not a corner: the app restores on a
+        // background thread and can be told to stop from the main one before
+        // the restore finishes, and the machine then ran forever with nothing
+        // able to end it.
         lock.unlock()
     }
 
