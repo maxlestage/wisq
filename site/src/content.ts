@@ -160,7 +160,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "256", label: "tests" },
+      { value: "273", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -276,7 +276,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "256", label: "tests" },
+      { value: "273", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },

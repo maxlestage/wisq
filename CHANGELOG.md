@@ -32,6 +32,21 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **The SPICE link, and the main channel up to its list of channels.**
+  `SpiceLink` runs the handshake over any byte stream; `SpiceMainChannel` reads
+  `MAIN_INIT`, asks for the channel list, and answers pings and acknowledgement
+  windows on the way. 17 tests, driven by a scripted server in memory.
+
+  The ticket encryptor is a closure rather than a call, and that is the whole
+  reason any of this is testable. SPICE encrypts its ticket with RSA, which on
+  Apple means `Security` and on Linux means nothing at all. Calling it directly
+  would have put the sequence, the capability negotiation, the framing and every
+  refusal behind a platform CI does not have. What a stub cannot check is the
+  encryption itself, and the tests do not pretend otherwise.
+
+  Not yet wired into `SPICESession`, which still reports the protocol
+  unsupported: a link that completes with nothing to draw is not a session.
+
 - **The SPICE wire format, as bytes rather than as a plan.** `SpiceWire`
   encodes and decodes the link handshake, the 18-byte data header, `MAIN_INIT`,
   the channel list, pings, acknowledgements and notices — pure functions over
