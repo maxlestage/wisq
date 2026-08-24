@@ -47,6 +47,13 @@ typedef void (*wisq_vm_output_callback)(void *context, const uint8_t *bytes, siz
 #define WISQ_VM_LOAD_IMAGE_TOO_LARGE    -4
 #define WISQ_VM_LOAD_COMMAND_LINE_LONG  -5
 
+/* wisq_vm_restore. */
+#define WISQ_VM_SNAPSHOT_OK              0
+#define WISQ_VM_SNAPSHOT_NULL           -1
+#define WISQ_VM_SNAPSHOT_NOT_A_SNAPSHOT -2
+#define WISQ_VM_SNAPSHOT_CORRUPT        -3
+#define WISQ_VM_SNAPSHOT_RAM_MISMATCH   -4
+
 /*
  * A machine with `ram_size` bytes of guest RAM.
  *
@@ -76,6 +83,36 @@ void wisq_vm_stop(WisqVM *vm);
 
 /* Instructions the guest has actually retired — retired, not offered. */
 uint64_t wisq_vm_retired_instructions(const WisqVM *vm);
+
+/*
+ * Saves the whole machine: RAM, the hart, and the keystrokes still queued.
+ *
+ * On success writes a buffer and its length through the out-parameters and
+ * returns WISQ_VM_SNAPSHOT_OK; the caller owns the buffer and must hand it
+ * back to wisq_vm_free_snapshot, not to free(). Not the console output — that
+ * has already been delivered to the callback and belongs to whoever draws the
+ * terminal.
+ *
+ * A booted 64 MB machine saves in roughly 9 MB: runs of untouched memory are
+ * folded rather than written.
+ *
+ * Must not be called while wisq_vm_run is in progress on this machine.
+ */
+int wisq_vm_snapshot(const WisqVM *vm, uint8_t **out_bytes, size_t *out_len);
+
+/* Releases a buffer from wisq_vm_snapshot. Both arguments must be as returned. */
+void wisq_vm_free_snapshot(uint8_t *bytes, size_t len);
+
+/*
+ * Puts a saved machine back, replacing everything this one holds.
+ *
+ * Returns WISQ_VM_SNAPSHOT_OK, or a negative code. On any failure the machine
+ * is left exactly as it was rather than half-written — a guest holding half of
+ * yesterday's memory is worse than a refused restore.
+ *
+ * Must not be called while wisq_vm_run is in progress on this machine.
+ */
+int wisq_vm_restore(WisqVM *vm, const uint8_t *bytes, size_t len);
 
 /* Frees a machine. Must not be called while wisq_vm_run is in progress. */
 void wisq_vm_free(WisqVM *vm);

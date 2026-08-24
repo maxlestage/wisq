@@ -11,12 +11,12 @@ export interface Command {
 }
 
 export interface Copy {
-  nav: { install: string; how: string; language: string };
+  nav: { language: string };
   /// The theme control. Every label is a real accessible name — the buttons
   /// show icons, and an icon with no name is a button a screen reader cannot
   /// announce.
   theme: { label: string; light: string; dark: string; auto: string };
-  hero: { tagline: string; lede: string; ctaInstall: string; badge: string };
+  hero: { tagline: string; lede: string; badge: string };
   modes: {
     title: string;
     remote: { name: string; head: string; body: string; points: string[] };
@@ -28,32 +28,13 @@ export interface Copy {
     columns: [string, string, string];
     rows: [string, string, string][];
   };
-  install: {
-    title: string;
-    lede: string;
-    tabs: { iphone: string; mac: string; linux: string };
-    iphone: { intro: string; commands: Command[] };
-    mac: { intro: string; commands: Command[] };
-    linux: { intro: string; commands: Command[] };
-    releaseLink: string;
-    copy: string;
-    copied: string;
-  };
-  how: { title: string; steps: { title: string; body: string }[] };
   facts: { title: string; items: { value: string; label: string }[] };
   footer: {
     license: string;
-    docs: string;
     note: string;
     /// A one-line description under the wordmark, for a reader who arrived at
     /// the footer without reading the page above it.
     tagline: string;
-    groups: { product: string; documentation: string; project: string };
-    links: {
-      install: string;
-      changelog: string;
-      privacy: string;
-    };
     /// Stated because it is true and checkable, not as a slogan: a test fails
     /// the build if any third-party address appears in the built site.
     privacyNote: string;
@@ -69,12 +50,6 @@ export interface Copy {
   pages: {
     home: string;
     notFound: string;
-    docs: string;
-    protocol: string;
-    architecture: string;
-    faq: string;
-    roadmap: string;
-    releases: string;
     privacy: string;
     offline: string;
   };
@@ -93,13 +68,12 @@ export interface Copy {
 }
 
 const en: Copy = {
-  nav: { install: "Install", how: "How it works", language: "Language" },
+  nav: { language: "Language" },
   theme: { label: "Theme", light: "Light", dark: "Dark", auto: "Match system" },
   hero: {
     tagline: "Virtual machines on your iPhone.",
     lede:
       "Reach a VM running on your Mac, PC or NAS at full speed — or boot a real Linux kernel on the phone itself, offline.",
-    ctaInstall: "Install",
     badge: "Apache-2.0 · Rust · hybrid mobile app",
   },
   modes: {
@@ -141,82 +115,10 @@ const en: Copy = {
       ["License", "GPL (QEMU)", "Apache-2.0, all first-party code"],
     ],
   },
-  install: {
-    title: "Install",
-    lede: "The agent installs in one line. The app sideloads until there is an App Store listing.",
-    tabs: { iphone: "iPhone", mac: "Mac", linux: "Linux" },
-    iphone: {
-      intro:
-        "Grab the unsigned IPA from the latest release and install it with AltStore or Sideloadly — they re-sign it with your own Apple ID. With a Mac and Xcode you can also build straight onto a connected phone.",
-      commands: [
-        {
-          label: "Build onto a connected iPhone",
-          code: "git clone https://github.com/maxlestage/wisq.git\ncd wisq && ./scripts/install-ios.sh",
-          note: "Free personal signatures expire after 7 days; re-run to refresh.",
-        },
-      ],
-    },
-    mac: {
-      intro:
-        "The host agent is what lets the phone power VMs on. Homebrew keeps it updated and runs it as a service.",
-      commands: [
-        {
-          label: "Homebrew",
-          code:
-            "brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git\nbrew install maxlestage/wisq/wisq-agent\nbrew services start wisq-agent",
-        },
-        {
-          label: "One-line installer",
-          code:
-            "curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service",
-          note: "Installs a LaunchAgent; the pairing token lands in ~/Library/Logs/wisq-agent.log",
-        },
-      ],
-    },
-    linux: {
-      intro: "Same installer, systemd instead of launchd. It drives libvirt through virsh when present.",
-      commands: [
-        {
-          label: "One-line installer",
-          code:
-            "curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service",
-          note: "Pairing token: journalctl --user -u wisq-agent",
-        },
-        {
-          label: "Try it without a hypervisor",
-          code: "wisq-agent --demo",
-          note: "Two fake VMs with real state transitions.",
-        },
-      ],
-    },
-    releaseLink: "Download the latest release",
-    copy: "Copy",
-    copied: "Copied",
-  },
-  how: {
-    title: "How pairing works",
-    steps: [
-      {
-        title: "Run the agent",
-        body:
-          "It prints a wisq:// link per network interface — and a QR code when qrencode is installed. It also announces itself over Bonjour.",
-      },
-      {
-        title: "Scan it",
-        body:
-          "Opening the link on the iPhone lands directly in the import screen, address and token filled in, already querying.",
-      },
-      {
-        title: "Tap a VM",
-        body:
-          "Powered off? The agent boots it, wisq waits for the console and resolves the endpoint late — the port moves between boots.",
-      },
-    ],
-  },
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "181", label: "tests" },
+      { value: "194", label: "tests" },
       { value: "5", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -226,19 +128,12 @@ const en: Copy = {
     license: "Apache-2.0",
     tagline:
       "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
-    groups: { product: "Product", documentation: "Documentation", project: "Project" },
-    links: {
-      install: "Install",
-      changelog: "Changelog",
-      privacy: "Privacy",
-    },
     privacyNote:
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
     author: "Created and developed by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
     backToTop: "Back to top",
     version: "Version",
-    docs: "Docs",
     note:
       "The agent speaks TLS by default, pinned by the pairing link — no certificate authority to run. Plain VNC itself stays unencrypted: trusted network or tunnel for the console.",
   },
@@ -246,12 +141,6 @@ const en: Copy = {
   pages: {
     home: "Home",
     notFound: "Not found",
-    docs: "Guide",
-    protocol: "Agent protocol",
-    architecture: "Architecture",
-    faq: "Questions",
-    roadmap: "Roadmap",
-    releases: "Releases",
     privacy: "Privacy",
     offline: "Offline",
   },
@@ -266,13 +155,12 @@ const en: Copy = {
 };
 
 const fr: Copy = {
-  nav: { install: "Installer", how: "Fonctionnement", language: "Langue" },
+  nav: { language: "Langue" },
   theme: { label: "Thème", light: "Clair", dark: "Sombre", auto: "Selon le système" },
   hero: {
     tagline: "Des machines virtuelles sur votre iPhone.",
     lede:
       "Atteignez à pleine vitesse une VM qui tourne sur votre Mac, PC ou NAS — ou faites démarrer un vrai noyau Linux sur le téléphone lui-même, hors ligne.",
-    ctaInstall: "Installer",
     badge: "Apache-2.0 · Rust · application mobile hybride",
   },
   modes: {
@@ -314,84 +202,10 @@ const fr: Copy = {
       ["Licence", "GPL (QEMU)", "Apache-2.0, tout le code est premier parti"],
     ],
   },
-  install: {
-    title: "Installer",
-    lede:
-      "L'agent s'installe en une ligne. L'application se sideload tant qu'il n'y a pas de fiche App Store.",
-    tabs: { iphone: "iPhone", mac: "Mac", linux: "Linux" },
-    iphone: {
-      intro:
-        "Récupérez l'IPA non signé de la dernière release et installez-le avec AltStore ou Sideloadly — ils le re-signent avec votre Apple ID. Avec un Mac et Xcode, vous pouvez aussi compiler directement sur le téléphone branché.",
-      commands: [
-        {
-          label: "Compiler sur l'iPhone branché",
-          code: "git clone https://github.com/maxlestage/wisq.git\ncd wisq && ./scripts/install-ios.sh",
-          note: "Les signatures personnelles gratuites expirent au bout de 7 jours ; relancez pour renouveler.",
-        },
-      ],
-    },
-    mac: {
-      intro:
-        "L'agent hôte est ce qui permet au téléphone d'allumer les VM. Homebrew le tient à jour et le lance en service.",
-      commands: [
-        {
-          label: "Homebrew",
-          code:
-            "brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git\nbrew install maxlestage/wisq/wisq-agent\nbrew services start wisq-agent",
-        },
-        {
-          label: "Installeur en une ligne",
-          code:
-            "curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service",
-          note: "Installe un LaunchAgent ; le jeton d'appairage atterrit dans ~/Library/Logs/wisq-agent.log",
-        },
-      ],
-    },
-    linux: {
-      intro:
-        "Le même installeur, systemd au lieu de launchd. Il pilote libvirt via virsh quand il est présent.",
-      commands: [
-        {
-          label: "Installeur en une ligne",
-          code:
-            "curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service",
-          note: "Jeton d'appairage : journalctl --user -u wisq-agent",
-        },
-        {
-          label: "Essayer sans hyperviseur",
-          code: "wisq-agent --demo",
-          note: "Deux VM factices avec de vraies transitions d'état.",
-        },
-      ],
-    },
-    releaseLink: "Télécharger la dernière release",
-    copy: "Copier",
-    copied: "Copié",
-  },
-  how: {
-    title: "L'appairage",
-    steps: [
-      {
-        title: "Lancez l'agent",
-        body:
-          "Il affiche un lien wisq:// par interface réseau — et un QR code si qrencode est installé. Il s'annonce aussi en Bonjour.",
-      },
-      {
-        title: "Scannez-le",
-        body:
-          "Ouvrir le lien sur l'iPhone atterrit directement dans l'écran d'import, adresse et jeton remplis, interrogation déjà lancée.",
-      },
-      {
-        title: "Tapez une VM",
-        body:
-          "Éteinte ? L'agent la démarre, wisq attend sa console et résout l'adresse tardivement — le port change d'un démarrage à l'autre.",
-      },
-    ],
-  },
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "181", label: "tests" },
+      { value: "194", label: "tests" },
       { value: "5", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
@@ -401,33 +215,20 @@ const fr: Copy = {
     license: "Apache-2.0",
     tagline:
       "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
-    groups: { product: "Produit", documentation: "Documentation", project: "Projet" },
-    links: {
-      install: "Installer",
-      changelog: "Journal",
-      privacy: "Confidentialité",
-    },
     privacyNote:
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
     author: "Créé et développé par",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
     backToTop: "Haut de page",
     version: "Version",
-    docs: "Docs",
     note:
       "L'agent parle TLS par défaut, épinglé par le lien d'appairage — aucune autorité de certification à exploiter. Le VNC nu reste non chiffré : réseau de confiance ou tunnel pour la console.",
   },
 
   pages: {
     home: "Accueil",
-    notFound: "Page introuvable",
-    docs: "Guide",
-    protocol: "Protocole de l'agent",
-    architecture: "Architecture",
-    faq: "Questions",
-    roadmap: "Feuille de route",
-    releases: "Versions",
-    privacy: "Confidentialité",
+    notFound: "Introuvable",
+    privacy: "Vie privée",
     offline: "Hors ligne",
   },
   pwa: {
@@ -449,8 +250,6 @@ export const REPO = "https://github.com/maxlestage/wisq";
 export const AUTHOR = "Maxime Nathan Lestage";
 export const AUTHOR_URL = "https://github.com/maxlestage";
 export const RELEASES = `${REPO}/releases/latest`;
-export const DOCS = `${REPO}/tree/master/docs`;
-export const ISSUES = `${REPO}/issues`;
 export const CONTRIBUTING = `${REPO}/blob/master/CONTRIBUTING.md`;
 export const SECURITY = `${REPO}/blob/master/SECURITY.md`;
 export const CHANGELOG = `${REPO}/blob/master/CHANGELOG.md`;

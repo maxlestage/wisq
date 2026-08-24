@@ -169,6 +169,87 @@ public final class LinuxMachine: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Saving and restoring
+
+    /// The whole machine as bytes: RAM, the hart, and whatever is queued for
+    /// the UART.
+    ///
+    /// Not the console output — that has already gone to the callback and
+    /// belongs to whoever draws the terminal, not to the machine. The bytes
+    /// are the same ones the Rust core writes, so a machine saved by one
+    /// interpreter opens in the other.
+    public func snapshot() -> Data {
+        var writer = Snapshot.Writer()
+        for index in 0..<32 { writer.u32(core.regs[index]) }
+        writer.u32(core.pc)
+        writer.u32(core.mstatus)
+        writer.u32(core.cyclel)
+        writer.u32(core.cycleh)
+        writer.u32(core.timerl)
+        writer.u32(core.timerh)
+        writer.u32(core.timermatchl)
+        writer.u32(core.timermatchh)
+        writer.u32(core.mscratch)
+        writer.u32(core.mtvec)
+        writer.u32(core.mie)
+        writer.u32(core.mip)
+        writer.u32(core.mepc)
+        writer.u32(core.mtval)
+        writer.u32(core.mcause)
+        writer.u32(core.extraflags)
+        writer.ram(UnsafeRawBufferPointer(start: ram, count: Int(Self.ramSize)))
+        lock.lock()
+        let queued = inputQueue
+        let pending = Array(pendingOutput)
+        lock.unlock()
+        writer.blob(queued)
+        writer.blob(pending)
+        return Data(writer.bytes)
+    }
+
+    /// Puts a saved machine back, replacing everything this one holds.
+    ///
+    /// On failure the machine is left as it was rather than half-written: RAM
+    /// is read into a scratch buffer that only replaces the live one once the
+    /// whole snapshot has been accepted. A guest holding half of yesterday's
+    /// memory is worse than a refused restore.
+    public func restore(_ data: Data) throws {
+        var reader = try Snapshot.Reader(Array(data))
+        var words = [UInt32](repeating: 0, count: Snapshot.coreWords)
+        for index in 0..<Snapshot.coreWords { words[index] = try reader.u32() }
+
+        var scratch = [UInt8](repeating: 0, count: Int(Self.ramSize))
+        try scratch.withUnsafeMutableBytes { try reader.ram($0) }
+        let queued = try reader.blob()
+        let pending = try reader.blob()
+        try reader.finish()
+
+        for index in 0..<32 { core.regs[index] = words[index] }
+        core.pc = words[32]
+        core.mstatus = words[33]
+        core.cyclel = words[34]
+        core.cycleh = words[35]
+        core.timerl = words[36]
+        core.timerh = words[37]
+        core.timermatchl = words[38]
+        core.timermatchh = words[39]
+        core.mscratch = words[40]
+        core.mtvec = words[41]
+        core.mie = words[42]
+        core.mip = words[43]
+        core.mepc = words[44]
+        core.mtval = words[45]
+        core.mcause = words[46]
+        core.extraflags = words[47]
+
+        scratch.withUnsafeBytes { ram.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+        lock.lock()
+        inputQueue = queued
+        pendingOutput = Data(pending)
+        stopRequested = false
+        lock.unlock()
+    }
+
     // MARK: - Output batching
 
     private func flushOutput() {

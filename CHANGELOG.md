@@ -7,6 +7,84 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **The local machine can be saved and brought back.** `Machine::snapshot`
+  writes RAM, the hart's registers and the keystrokes still queued for the
+  UART; `restore` puts them back. The guest is not consulted and
+  does not need to be, which is the whole point — the obvious approach, a
+  virtio-blk disk, has nobody to talk to: the reference rv32 nommu kernel ships
+  the virtio-mmio transport but no block driver, and its entire filesystem list
+  is devtmpfs, proc, ramfs and sysfs. Saving underneath the kernel works with
+  any image the user imports, needs no driver, and cannot corrupt a filesystem
+  on a hard kill.
+
+  Runs of zeros are folded, because a phone has to write this every time the
+  app goes to the background: a booted machine saves in **9.2 MB** rather than
+  64. A refused restore changes nothing — RAM is filled into a scratch buffer
+  that only replaces the live one once the whole snapshot has been read, so a
+  truncated file cannot leave a guest holding half of yesterday's memory. Every
+  truncation of a valid snapshot is tested, along with a foreign buffer, a
+  trailing byte and a snapshot taken at a different RAM size.
+
+  The Swift core writes and reads the **same bytes**, and that is checked
+  rather than intended: one test requires the two cores' snapshots of the same
+  machine to be identical byte for byte, another makes each core resume from
+  the other's file and continue to the same instruction count. A snapshot
+  outlives the process that wrote it, so a format only one interpreter can
+  read would break someone's saved machine the day the app switches cores.
+  Proven to bite by swapping two control registers in the Swift writer, which
+  fails both tests.
+
+  The C ABI carries it too — `wisq_vm_snapshot`, `wisq_vm_free_snapshot` and
+  `wisq_vm_restore`. The snapshot is returned as an allocation the caller owns
+  rather than written into a caller's buffer, because the size-then-write dance
+  would mean building a 15 MB snapshot twice. The conformance program exercises
+  the round trip from C, where the app will call it: save, restore into a
+  second machine, require the retired counts to agree, and require a buffer of
+  rubbish to be refused by name. Proven to bite by swapping two parameters in
+  the header and watching the compile fail.
+
+  The test that matters does not check that the machine boots afterwards — a
+  snapshot missing a register does that too, then diverges where nobody is
+  looking. It runs a machine, saves it, carries the original on, restores the
+  copy and runs it the same distance, and requires the two futures to be
+  identical: same instructions retired, same console bytes. Verified by
+  dropping a single timer register from the format and watching it fail. A
+  compile-time assertion on the size of `Core` means a new register cannot be
+  added without the format being updated.
+
+- **The app itself says who made it.** `NSHumanReadableCopyright` was missing
+  from the bundle, so the one place a person holding the app could read the
+  author's name did not have it.
+
+### Fixed
+- **The shipped app reported version 0.1.0.** `Info.plist` hard-coded it while
+  `project.yml` carried `MARKETING_VERSION` — two sources for one number, and
+  the number had already drifted through two releases. The plist now reads the
+  build setting, so there is one place to change and nothing to keep in sync.
+
+### Removed
+- **The site no longer explains how to install wisq, and neither does the
+  repository.** The README's install and try-it sections are gone in both
+  languages: the sideload instructions, the one-line agent installer, the
+  Homebrew tap and the commands for running a VNC server to point it at.
+
+- **The site is one page now.** The guide, the agent protocol reference, the
+  architecture note, the questions, the roadmap and the release history are
+  gone, along with the install tabs, every command, the pairing walkthrough
+  and the download link. What is left says what wisq is — what it does, why
+  not UTM, what is tested — and nothing about how to run it. Twenty
+  pre-rendered pages became eight (home, privacy, an offline fallback and a
+  404, in two languages), and the sitemap now lists two addresses.
+
+  The tests that asserted the removed pages existed were rewritten rather than
+  deleted, because the point they made has inverted: one now renders every
+  page in both languages and fails if an install command, a clone line, a
+  download link or a pairing section reappears anywhere. Two tests about the
+  releases page were dropped outright, with the reason recorded in their
+  place — the claim they protected, that the version the site shows matches
+  the changelog, is still checked against the built footer.
+
 ## [0.3.0] — 2026-08-24
 
 ### Removed
