@@ -8,6 +8,33 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The local machine can be saved and brought back.** `Machine::snapshot`
+  writes RAM, the hart's registers, the halt latch and the keystrokes still
+  queued for the UART; `restore` puts them back. The guest is not consulted and
+  does not need to be, which is the whole point — the obvious approach, a
+  virtio-blk disk, has nobody to talk to: the reference rv32 nommu kernel ships
+  the virtio-mmio transport but no block driver, and its entire filesystem list
+  is devtmpfs, proc, ramfs and sysfs. Saving underneath the kernel works with
+  any image the user imports, needs no driver, and cannot corrupt a filesystem
+  on a hard kill.
+
+  Runs of zeros are folded, because a phone has to write this every time the
+  app goes to the background: a booted machine saves in **9.2 MB** rather than
+  64. A refused restore changes nothing — RAM is filled into a scratch buffer
+  that only replaces the live one once the whole snapshot has been read, so a
+  truncated file cannot leave a guest holding half of yesterday's memory. Every
+  truncation of a valid snapshot is tested, along with a foreign buffer, a
+  trailing byte and a snapshot taken at a different RAM size.
+
+  The test that matters does not check that the machine boots afterwards — a
+  snapshot missing a register does that too, then diverges where nobody is
+  looking. It runs a machine, saves it, carries the original on, restores the
+  copy and runs it the same distance, and requires the two futures to be
+  identical: same instructions retired, same console bytes. Verified by
+  dropping a single timer register from the format and watching it fail. A
+  compile-time assertion on the size of `Core` means a new register cannot be
+  added without the format being updated.
+
 - **The app itself says who made it.** `NSHumanReadableCopyright` was missing
   from the bundle, so the one place a person holding the app could read the
   author's name did not have it.

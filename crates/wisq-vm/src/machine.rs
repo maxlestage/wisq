@@ -7,6 +7,7 @@
 
 use crate::core::{Bus, Core, StepResult, RAM_BASE};
 use crate::dtb;
+use crate::snapshot::{Reader, SnapshotError, Writer};
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -203,6 +204,59 @@ impl Machine {
         }
         self.flush_output();
         Outcome::Stopped
+    }
+
+    /// The whole machine as bytes: RAM, the hart, the halt latch and whatever
+    /// is queued for the UART.
+    ///
+    /// Not the console output — that has already been handed to the callback
+    /// and belongs to whoever owns the terminal, not to the machine. Restoring
+    /// into a fresh machine with a fresh callback is the point: the guest
+    /// continues, the interface decides for itself what to show.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer.core(&self.core);
+        writer.u32(self.halt.unwrap_or(0));
+        writer.u32(u32::from(self.halt.is_some()));
+        writer.ram(&self.ram);
+        let queued: Vec<u8> = self.shared.input.lock().unwrap().iter().copied().collect();
+        writer.bytes(&queued);
+        writer.bytes(&self.pending_output);
+        writer.finish()
+    }
+
+    /// Puts a saved machine back, replacing everything this one holds.
+    ///
+    /// On any error the machine is left as it was rather than half-written:
+    /// the RAM is filled from a scratch buffer that only replaces the live one
+    /// once the whole snapshot has been read. A guest with half of yesterday's
+    /// memory is worse than a refused restore.
+    pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
+        let mut reader = Reader::new(bytes)?;
+        let mut core = Core::new();
+        reader.core(&mut core)?;
+        let halt_code = reader.u32()?;
+        let halted = reader.u32()? != 0;
+        let mut ram = vec![0u8; self.ram.len()].into_boxed_slice();
+        reader.ram(&mut ram)?;
+        let queued = reader.bytes()?.to_vec();
+        let pending = reader.bytes()?.to_vec();
+        reader.finish()?;
+
+        self.core = core;
+        self.halt = halted.then_some(halt_code);
+        self.ram = ram;
+        {
+            let mut input = self.shared.input.lock().unwrap();
+            input.clear();
+            input.extend(queued.iter().copied());
+            self.shared
+                .input_ready
+                .store(!input.is_empty(), Ordering::Release);
+        }
+        self.shared.stop.store(false, Ordering::Release);
+        self.pending_output = pending;
+        Ok(())
     }
 
     fn flush_output(&mut self) {
