@@ -7,7 +7,63 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **A connection file opens as a machine.** `.vv` and `.rdp` had readers and
+  nothing called them; the menu now has "Ouvrir un fichier .vv ou .rdp", and
+  what comes back opens in the editor rather than landing in the library
+  unseen. A connection file is somebody else's description of a machine — its
+  name is a host, its port came from a server, its password is often a ticket
+  good for one connection — and the user should see all of that before it is
+  theirs.
+
+  The picker allows every file type rather than declaring `.vv` and `.rdp`.
+  These arrive from Mail and AirDrop with whatever name the sender chose, and
+  a picker that greys out `connexion.txt` refuses a file wisq reads perfectly
+  well. What the file *is* gets decided by reading it, which is the only thing
+  that can decide it — and it means the sender does not get to pick which
+  parser runs on their file.
+
+- **Connection files saved by Windows are read.** Its Remote Desktop client
+  writes `.rdp` as UTF-16 little-endian with a byte order mark. Read as UTF-8
+  those bytes are not the file, every line fails to parse, and the import
+  fails on what is probably the commonest `.rdp` in existence.
+
+  A branch for the UTF-8 mark was written alongside it and then removed: it
+  turned out to be dead code, because Foundation strips that one itself. The
+  test stayed. What it guards now rests on Foundation rather than on wisq's
+  own code, and it runs in the simulator as well as on Linux — Foundation on
+  Darwin and Foundation on Linux are two implementations, and the phone is
+  where the file actually gets opened.
+
+- **Every way a connection file can fail has a sentence in French.** They live
+  beside the readers rather than in the view, because a view writing them
+  would have to know which failures exist and would quietly stop covering
+  them the day a reader gained one. A test walks all eleven and fails on any
+  that falls through to `localizedDescription` — which, for a Swift enum, is
+  a type name and a case name in English.
+
 ### Fixed
+- **An imported password was dropped on save.** The editor writes a secret only
+  when its field was *edited*, so that opening an existing machine and saving
+  does not wipe the password it already has. A password from a connection file
+  arrives filled in and is never touched, which is exactly the shape that rule
+  drops — the machine would have been created with no credential, and
+  connecting would have asked for a password the user does not have and cannot
+  guess, because it was a one-shot ticket issued by a server. The draft now
+  records that its password came from a file, and the simulator tests say so.
+
+- **The Apache-2.0 claim was still shipping.** It was removed from the site,
+  and it survived in the two places that state a licence to *other software*:
+  the copyright string inside the app bundle, and the `license` field of the
+  Homebrew formula, which is published through the tap. No licence has been
+  chosen for wisq, so both were claims nobody had made.
+
+  `scripts/check-licence-claims.sh` now fails the build on any of them, plus a
+  `license` field in any `Cargo.toml` and the reappearance of a `LICENSE` file.
+  It is deliberately narrow: naming Apache-2.0 is *correct* in the README, in
+  NOTICE and in the roadmap, where it is a fact about UTM, FreeRDP and QEMU —
+  other people's projects, which really are under it.
+
 - **A second kernel called `Image` inherited the first one's saved machine.**
   Saved machines were filed under the kernel's *name*, and `Image` is what
   almost every kernel image downloaded from anywhere is called. Two different

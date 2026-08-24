@@ -129,4 +129,194 @@ final class ConnectionImportTests: XCTestCase {
         XCTAssertNotEqual(first.machine.id, second.machine.id)
         XCTAssertEqual(first.machine.host, second.machine.host)
     }
+
+    // MARK: - Choosing a reader
+
+    private let vvText = """
+    [virt-viewer]
+    type=spice
+    host=spice.example.net
+    port=5900
+    """
+
+    private let rdpText = """
+    full address:s:rdp.example.net:3390
+    username:s:ana
+    screen mode id:i:2
+    """
+
+    /// The contents decide, and that is the whole point: these files arrive by
+    /// mail and by AirDrop, where the name is chosen by the sender. If the
+    /// extension picked the parser, the sender would be picking it.
+    func testTheContentsChooseTheReaderRatherThanTheFileName() throws {
+        XCTAssertEqual(ConnectionImport.kind(of: vvText), .virtViewer)
+        XCTAssertEqual(ConnectionImport.kind(of: rdpText), .remoteDesktop)
+
+        let fromVV = try ConnectionImport.machine(fromContentsOf: vvText)
+        XCTAssertEqual(fromVV.machine.host, "spice.example.net")
+        XCTAssertEqual(fromVV.machine.proto, .spice)
+
+        let fromRDP = try ConnectionImport.machine(fromContentsOf: rdpText)
+        XCTAssertEqual(fromRDP.machine.host, "rdp.example.net")
+        XCTAssertEqual(fromRDP.machine.port, 3390)
+        XCTAssertEqual(fromRDP.machine.proto, .rdp)
+    }
+
+    /// A `.vv` file carries lines with colons in them — `title=fedora:%d` is
+    /// the common one. None of them is a `key:type:value` triple, and this
+    /// checks that none of them is mistaken for one.
+    func testAVirtViewerFileIsNotMistakenForARemoteDesktopOne() {
+        XCTAssertEqual(ConnectionImport.kind(of: """
+        [virt-viewer]
+        host=h.example.net
+        port=5900
+        title=fedora:%d
+        toggle-fullscreen=shift+f11
+        """), .virtViewer)
+    }
+
+    /// Text that is neither is named as neither, rather than handed to a parser
+    /// to see what falls out. What falls out of a parser given arbitrary text
+    /// is a connection to somewhere nobody asked for.
+    func testSomethingThatIsNeitherKindIsRefusedRatherThanGuessedAt() {
+        // The last one is a triple with no key. `key:type:value` needs the
+        // key; without it the line names nothing, and a file made only of
+        // those names nothing either.
+        for text in ["", "bonjour", "{\"host\": \"h\"}", "host=h\nport=5900", ":s:x"] {
+            XCTAssertNil(ConnectionImport.kind(of: text), "« \(text) »")
+            XCTAssertThrowsError(try ConnectionImport.machine(fromContentsOf: text)) { error in
+                XCTAssertEqual(error as? ConnectionImport.Failure, .unrecognisedFile)
+            }
+        }
+    }
+
+    /// Once the contents have said which kind of file this is, the reader's own
+    /// complaint is what the user needs to see. Flattening it into
+    /// "unrecognised" would hide the one sentence that says what to fix.
+    func testTheReadersOwnFailureIsPassedThroughRatherThanFlattened() {
+        XCTAssertThrowsError(
+            try ConnectionImport.machine(fromContentsOf: "[virt-viewer]\nhost=h\nport=abc")
+        ) { error in
+            XCTAssertEqual(error as? VirtViewerFile.Failure, .badPort("abc"))
+        }
+        XCTAssertThrowsError(
+            try ConnectionImport.machine(fromContentsOf: "username:s:ana\nscreen mode id:i:2")
+        ) { error in
+            XCTAssertEqual(error as? RemoteDesktopFile.Failure, .missingAddress)
+        }
+    }
+
+    // MARK: - Bytes
+
+    /// The one that matters most in practice. Windows' own client saves `.rdp`
+    /// files as UTF-16 little-endian with a byte order mark, so a reader that
+    /// only speaks UTF-8 fails on the files the dominant tool writes — which
+    /// is most of the files anyone will ever try to import.
+    func testAnRDPFileSavedByWindowsInUTF16IsRead() throws {
+        var bytes = Data([0xFF, 0xFE])
+        bytes.append(contentsOf: Array(rdpText.utf16).flatMap {
+            [UInt8($0 & 0xFF), UInt8($0 >> 8)]
+        })
+
+        // First, the point: read as UTF-8 those bytes are not this file.
+        XCTAssertNotEqual(String(data: bytes, encoding: .utf8), rdpText)
+
+        let imported = try ConnectionImport.machine(fromContentsOf: bytes)
+        XCTAssertEqual(imported.machine.host, "rdp.example.net")
+        XCTAssertEqual(imported.machine.port, 3390)
+    }
+
+    func testABigEndianMarkIsReadTheOtherWayRound() throws {
+        var bytes = Data([0xFE, 0xFF])
+        bytes.append(contentsOf: Array(rdpText.utf16).flatMap {
+            [UInt8($0 >> 8), UInt8($0 & 0xFF)]
+        })
+        XCTAssertEqual(try ConnectionImport.machine(fromContentsOf: bytes).machine.host,
+                       "rdp.example.net")
+    }
+
+    /// A UTF-8 mark is legal and Notepad writes it. Left in the text it would
+    /// become an invisible first character of the first key, so the first line
+    /// would stop being recognised — here, the one line the file cannot do
+    /// without.
+    ///
+    /// There is no code in `text(from:)` for this: a branch was written, and
+    /// removing it changed nothing, because Foundation strips a leading UTF-8
+    /// mark itself. The test stays anyway. It guards the behaviour rather than
+    /// the branch, and the behaviour is now resting on what Foundation does —
+    /// which is exactly the kind of thing worth having a test sitting on.
+    func testAUTF8MarkIsDroppedRatherThanBecomingPartOfTheFirstKey() throws {
+        var bytes = Data([0xEF, 0xBB, 0xBF])
+        bytes.append(rdpText.data(using: .utf8)!)
+        XCTAssertEqual(try ConnectionImport.machine(fromContentsOf: bytes).machine.host,
+                       "rdp.example.net")
+    }
+
+    func testPlainUTF8WithNoMarkIsStillTheDefault() throws {
+        let bytes = vvText.data(using: .utf8)!
+        XCTAssertEqual(try ConnectionImport.machine(fromContentsOf: bytes).machine.host,
+                       "spice.example.net")
+    }
+
+    /// Bytes that are not text in any of these encodings are named as such
+    /// rather than reported as an unrecognised file: it points at a different
+    /// problem, and at a different thing for the user to try.
+    func testBytesThatAreNotTextAreNamedAsSuch() {
+        let bytes = Data([0xFF, 0xFF, 0xC0, 0x80, 0xED, 0xA0, 0x80])
+        XCTAssertThrowsError(try ConnectionImport.machine(fromContentsOf: bytes)) { error in
+            XCTAssertEqual(error as? ConnectionImport.Failure, .unreadableEncoding)
+        }
+    }
+
+    // MARK: - Saying what went wrong
+
+    /// Every failure either reader can produce has a sentence of its own.
+    ///
+    /// Written as a walk over the whole list rather than a few spot checks,
+    /// because the failure this guards against is a new case being added to a
+    /// reader and quietly falling through to `localizedDescription` — which,
+    /// for a Swift enum with no `LocalizedError`, is a type name and a case
+    /// name in English.
+    func testEveryFailureTheReadersCanProduceHasItsOwnSentence() {
+        let failures: [Error] = [
+            ConnectionImport.Failure.unrecognisedFile,
+            ConnectionImport.Failure.unreadableEncoding,
+            VirtViewerFile.Failure.notAVirtViewerFile,
+            VirtViewerFile.Failure.missingHost,
+            VirtViewerFile.Failure.missingPort,
+            VirtViewerFile.Failure.badPort("abc"),
+            VirtViewerFile.Failure.unsupportedProtocol("telnet"),
+            RemoteDesktopFile.Failure.notARemoteDesktopFile,
+            RemoteDesktopFile.Failure.missingAddress,
+            RemoteDesktopFile.Failure.badPort("abc"),
+            RemoteDesktopFile.Failure.badInteger(key: "desktopwidth", value: "large"),
+        ]
+
+        for failure in failures {
+            let message = ConnectionImport.message(for: failure)
+            XCTAssertFalse(message.isEmpty, "\(failure)")
+            // `localizedDescription` for these enums is the type and case name.
+            // If a message is that, the case fell through the switch.
+            XCTAssertNotEqual(message, failure.localizedDescription, "\(failure) : non traduit")
+            XCTAssertFalse(message.contains("Failure"), "\(failure) : nom de type visible")
+        }
+
+        // The values the file gave are quoted back, so the user can see which
+        // line to look at rather than being told only that something is wrong.
+        XCTAssertTrue(
+            ConnectionImport.message(for: VirtViewerFile.Failure.badPort("99999")).contains("99999")
+        )
+        XCTAssertTrue(
+            ConnectionImport.message(for: RemoteDesktopFile.Failure.badInteger(
+                key: "desktopwidth", value: "large"
+            )).contains("desktopwidth")
+        )
+    }
+
+    /// Anything else — a file that could not be read off the disk, most often —
+    /// keeps its own text, which says more than a sentence invented here.
+    func testAnErrorFromSomewhereElseKeepsItsOwnText() {
+        let error = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError)
+        XCTAssertEqual(ConnectionImport.message(for: error), error.localizedDescription)
+    }
 }

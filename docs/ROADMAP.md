@@ -277,6 +277,28 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
   de demander. Un `.rdp` ne se voit attribuer aucun transport, parce qu'il n'en
   déclare pas. Et la géométrie n'est pas portée : elle décrit l'écran de celui
   qui a enregistré le fichier, pas ce que veut un téléphone.
+
+  Et c'est branché : « Ouvrir un fichier .vv ou .rdp » dans le menu, et ce qui
+  en sort s'ouvre dans l'éditeur au lieu d'atterrir dans la bibliothèque sans
+  être vu. Un fichier de connexion est la description d'une machine faite par
+  quelqu'un d'autre — son nom est un hôte, son port vient d'un serveur, son mot
+  de passe est souvent un ticket à usage unique — et l'utilisateur doit voir
+  tout ça avant que ce soit à lui.
+
+  Le sélecteur accepte tous les types plutôt que de déclarer `.vv` et `.rdp` :
+  ces fichiers arrivent par mail et par AirDrop avec le nom que l'expéditeur a
+  choisi, et un sélecteur qui grise `connexion.txt` refuse un fichier que wisq
+  lit très bien. C'est le contenu qui décide, et c'est la seule chose qui puisse
+  décider — accessoirement, cela retire à l'expéditeur le choix du parseur.
+
+  L'encodage est traité, et ce n'est pas un détail : le client Remote Desktop de
+  Windows enregistre les `.rdp` en UTF-16 petit-boutiste avec une marque
+  d'ordre. Lus en UTF-8, ces octets ne sont pas le fichier et aucune ligne ne
+  se lit — c'est-à-dire le `.rdp` le plus répandu qui existe. Un cas pour la
+  marque UTF-8 avait été écrit à côté puis retiré : c'était du code mort, parce
+  que Foundation la retire lui-même. Le test est resté, et il tourne aussi dans
+  le simulateur : ce qu'il garde repose désormais sur Foundation, et Foundation
+  sur Darwin n'est pas la même implémentation que sur Linux.
 - Partage de fichiers via un dossier monté côté agent.
 
 ## Ce qu'on doit à UTM
