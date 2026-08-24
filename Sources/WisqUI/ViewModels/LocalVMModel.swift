@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import Observation
+import SwiftUI
 import WisqVM
 
 /// Drives one local Linux VM: owns the machine, runs it on its own thread, and
@@ -37,10 +38,17 @@ public final class LocalVMModel {
     /// the old machine's exit over the new one and delete its saved state.
     private var run = 0
 
-    public init() {}
+    /// Where suspended machines are written. `nil` means Application Support,
+    /// which is what the app uses; a test passes its own directory so a run
+    /// cannot see — or outlive — another one's saved machine.
+    private let storage: URL?
+
+    public init(storageDirectory: URL? = nil) {
+        storage = storageDirectory
+    }
 
     /// Whether leaving and coming back would resume rather than restart.
-    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName) }
+    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName, in: storage) }
 
     /// Whether returning to the foreground should pick the machine back up.
     /// The view asks, because iOS can take the app away and give it back
@@ -83,7 +91,7 @@ public final class LocalVMModel {
         runFinished = finished
         run += 1
         let thisRun = run
-        let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent)
+        let saved = SuspendedMachine.load(kernel: kernelURL.lastPathComponent, in: storage)
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -103,6 +111,13 @@ public final class LocalVMModel {
             } catch {
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
+                    // A boot that never happened still ends the session, so the
+                    // lifecycle has to hear about it: leaving it in `running`
+                    // would let a later departure try to save a machine that
+                    // does not exist.
+                    if self.life.guestFinished() == .forget {
+                        SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
+                    }
                     self.finish(with: "Démarrage impossible : \(error.localizedDescription)")
                 }
                 return
@@ -114,7 +129,7 @@ public final class LocalVMModel {
                 // exit is the machine's own, and only then is it reported.
                 let reports = self.life.reportsGuestExit
                 if self.life.guestFinished() == .forget {
-                    SuspendedMachine.clear(kernel: self.kernelName)
+                    SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
                 }
                 guard reports else { return }
                 switch outcome {
@@ -141,7 +156,7 @@ public final class LocalVMModel {
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
         if life.userStopped() == .forget {
-            SuspendedMachine.clear(kernel: kernelName)
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
         }
         machine?.stop()
     }
@@ -162,17 +177,33 @@ public final class LocalVMModel {
         // it is still writing. Better to lose the session than to save a
         // machine that never existed.
         guard finished.wait(timeout: .now() + 5) == .success else {
-            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName) }
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
             return
         }
         do {
-            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName)
+            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
         } catch {
-            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName) }
+            if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
         }
         self.machine = nil
         runFinished = nil
         status = .idle
+    }
+
+    /// What a change of scene phase means for the machine.
+    ///
+    /// This lives here rather than in the view because it is a decision, and
+    /// decisions in a `body` are decisions nothing runs in a test. iOS can take
+    /// the app away and give it back without the screen ever disappearing, so
+    /// the way in matters as much as the way out: a machine put away on
+    /// `.background` and not picked up on `.active` leaves the user looking at
+    /// a dead terminal they can only escape by leaving the screen.
+    public func scenePhaseChanged(to phase: ScenePhase, kernelURL: URL) {
+        switch phase {
+        case .background: suspend()
+        case .active where shouldResumeOnReturn: boot(kernelURL: kernelURL)
+        default: break
+        }
     }
 
     private func finish(with message: String) {

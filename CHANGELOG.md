@@ -29,6 +29,28 @@ break APIs.
   user picked, so the name is sanitised — `../../etc/passwd` cannot escape the
   directory, and a test says so.
 
+- **The app layer is tested in a simulated iPhone, not written off.**
+  `WisqUI` is `#if os(iOS)`, so no Linux runner compiles it, and it had been
+  described in its own comments as the part CI could not check. That was a
+  choice, not a fact: it needs an iOS runtime, and CI has one. A new
+  `WisqUITests` bundle drives the real `LocalVMModel` against the real
+  interpreter, on its real thread, writing real files — booting, suspending,
+  resuming, stopping, and being backgrounded and brought back. `xcodebuild`
+  runs it in a booted simulator on every change (`scripts/test-app.sh`), and
+  the simulator is chosen from what the machine actually has rather than named,
+  so a runner image dropping a model does not break the build.
+
+  Writing those tests immediately found a third defect the inline version had
+  hidden: the exit that follows "Arrêter" was being swallowed as
+  already-reported, so the model stayed in `running` holding a machine it would
+  never release. Only a suspension's exit should be ignored, because only that
+  one is an exit we asked for.
+
+  Two seams made it testable rather than merely compilable: the model takes the
+  directory it saves into, so a test cannot see or outlive another run's
+  machine, and the scene-phase decision moved out of the view's `body` — a
+  decision in a `body` is a decision nothing runs in a test.
+
 - **The suspension rules are a tested type, not inline conditions.**
   `MachineLifecycle` decides what each event does to the saved machine — the
   user stopping it, the screen going away, iOS backgrounding the app, the guest

@@ -175,11 +175,7 @@ struct LocalVMTerminalView: View {
         // up on the way in is what stops the user from returning to a dead
         // terminal they can only escape by leaving the screen.
         .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .background: model.suspend()
-            case .active where model.shouldResumeOnReturn: model.boot(kernelURL: kernelURL)
-            default: break
-            }
+            model.scenePhaseChanged(to: phase, kernelURL: kernelURL)
         }
     }
 

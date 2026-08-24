@@ -74,17 +74,22 @@ public struct MachineLifecycle: Equatable, Sendable {
 
     /// The interpreter returned on its own.
     ///
-    /// Meaningful only while the machine was running: after a suspension the
-    /// exit is one we asked for, and after a stop it is one we already told the
-    /// user about. Reporting either would show "Arrêtée." over a screen the
-    /// user is leaving.
+    /// The one exit that must be ignored is the one we caused: suspending
+    /// stops the interpreter on purpose, and acting on that would delete the
+    /// snapshot just written and tell the user their machine stopped as they
+    /// left the screen.
     ///
-    /// It takes no outcome because none of them change the answer. A machine
-    /// that powered off or rebooted has no session worth keeping, and one that
-    /// stopped was never saved, so nothing on disk matches where it is now —
-    /// the saved machine goes in every case.
+    /// Every other exit counts, including the one after "Arrêter". That button
+    /// does not end the machine by itself — it asks the interpreter to stop,
+    /// and the machine is only really gone when the thread comes back. A first
+    /// version treated that exit as already-reported and swallowed it, which
+    /// left the model in `running` with a machine it would never release.
+    ///
+    /// It takes no outcome because none of them change the answer: a machine
+    /// that powered off, rebooted, or was stopped has no session on disk that
+    /// matches where it is now.
     public mutating func guestFinished() -> Action {
-        guard state == .running else { return .nothing }
+        guard state == .running || state == .ended else { return .nothing }
         state = .ended
         return .forget
     }
@@ -93,7 +98,8 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// than leave the user looking at a dead terminal.
     public var shouldResumeOnReturn: Bool { state == .suspended }
 
-    /// Whether the guest's own exit should be shown to the user.
-    public var reportsGuestExit: Bool { state == .running }
+    /// Whether the guest's exit is the machine's own — and so worth acting
+    /// on — rather than the one suspending asked for.
+    public var reportsGuestExit: Bool { state == .running || state == .ended }
 }
 

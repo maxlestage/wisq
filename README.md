@@ -49,7 +49,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (212 tests across Swift and Rust) and
+Everything below is implemented, tested (224 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -76,6 +76,7 @@ cargo test                   # the Rust side: daemon and VM core
 ./scripts/verify.sh          # core: strict-concurrency build + full tests
 ./scripts/verify.sh --app    # + the iOS app (macOS with Xcode)
 ./scripts/test-rust-core.sh  # both interpreters, on the same kernel, compared
+./scripts/test-app.sh        # the app layer, in a simulated iPhone (macOS)
 ```
 
 `verify.sh` builds the Rust agent first, because the cross-language
@@ -91,6 +92,12 @@ the default and the one the app ships with; that means `cargo build --release
 `WISQ_SWIFT_CORE=1` for the Swift interpreter — the manifest stops with that
 instruction rather than picking a core for you, because which one ships must
 not depend on what happened to be installed.
+
+`test-app.sh` is the answer to a layer that was, for a while, written off as
+untestable: `WisqUI` is `#if os(iOS)`, so no Linux runner ever compiles it — and
+two defects in the suspend/resume wiring reached a pull request while that was
+the story. It needs an iOS runtime, and CI has one, so the real view model is
+driven against the real interpreter inside a booted simulator on every change.
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
 Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official

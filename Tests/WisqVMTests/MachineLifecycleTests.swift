@@ -76,13 +76,30 @@ final class MachineLifecycleTests: XCTestCase {
         XCTAssertFalse(life.reportsGuestExit)
     }
 
-    /// Same for the exit that "Arrêter" causes: the user has already been told.
-    func testTheExitCausedByStoppingIsNotReportedTwice() {
+    /// The exit after "Arrêter" is a different matter, and treating it like a
+    /// suspension is a bug this assertion exists to hold shut. That button only
+    /// *asks* the interpreter to stop; the machine is gone when the thread
+    /// comes back. Swallowing that exit leaves the model still holding a
+    /// machine it will never let go of.
+    func testTheExitAfterStoppingStillCounts() {
         var life = MachineLifecycle()
         life.booted()
         _ = life.userStopped()
-        XCTAssertEqual(life.guestFinished(), .nothing)
-        XCTAssertFalse(life.reportsGuestExit)
+        XCTAssertTrue(life.reportsGuestExit, "l'arrêt doit encore être conclu")
+        XCTAssertEqual(life.guestFinished(), .forget)
+        XCTAssertEqual(life.state, .ended)
+    }
+
+    /// And once concluded it stays concluded: a machine already suspended is
+    /// the only state whose exit is ignored.
+    func testOnlyASuspensionSwallowsTheExit() {
+        var suspended = MachineLifecycle()
+        suspended.booted()
+        _ = suspended.steppedAway()
+        XCTAssertFalse(suspended.reportsGuestExit)
+
+        var fresh = MachineLifecycle()
+        XCTAssertFalse(fresh.reportsGuestExit, "rien n'a tourné : rien à conclure")
     }
 
     /// A save that could not be made leaves a snapshot describing a moment the

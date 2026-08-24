@@ -150,6 +150,15 @@ et un noyau qui ne correspond pas doit simplement vouloir dire « rien
 d'enregistré ». L'écriture est atomique parce que le moment où elle se produit
 est exactement celui où iOS retire l'application.
 
+La couche application n'est plus l'angle mort. `WisqUI` est `#if os(iOS)`,
+donc aucun runner Linux ne la compile — et c'est exactement là que trois
+défauts se sont logés : « Arrêter » sauvegardait la machine qu'il venait de
+terminer, une machine mise de côté quand iOS retirait l'application n'était
+jamais reprise au retour, et la sortie qui suit un arrêt était avalée, laissant
+le modèle bloqué sur une machine qu'il ne relâchait plus. Aucun n'était visible
+à la compilation. `scripts/test-app.sh` fait tourner le vrai modèle contre le
+vrai interprète dans un iPhone simulé, à chaque commit.
+
 Reste à faire : une commande explicite « oublier cette machine » dans
 l'interface, et une reprise partielle quand l'instantané est plus vieux que
 l'image dont il vient.

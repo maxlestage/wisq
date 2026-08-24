@@ -172,6 +172,18 @@ jobs:
           fi
       - name: Generate project
         run: xcodegen generate
+      - name: Run the app layer's tests in a simulated iPhone
+        # `WisqUI` is `#if os(iOS)`, so the Linux job never compiles it — which
+        # is how two defects in the suspend/resume wiring reached a pull
+        # request: a stop that saved the machine it had just ended, and a
+        # machine backgrounded and never picked back up. Neither was visible to
+        # a compiler, and both are one assertion each here.
+        #
+        # This drives the real view model against the real interpreter, on its
+        # real thread, writing real files. The guest is four bytes of `nop`:
+        # booting Linux is covered elsewhere, and what is under test is the
+        # wiring around the machine, not the machine.
+        run: scripts/test-app.sh
       - name: Build for simulator
         # A generic destination avoids pinning a simulator model that the runner
         # image may drop from one release to the next.
