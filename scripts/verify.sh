@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 # be missing: CI lints, and a script that claims to run everything CI runs has
 # to lint too. A trailing blank line reached a pull request and turned it red
 # while this said "everything CI would run".
-echo "==> Mise en forme (les règles de texte, sans SwiftLint)"
+echo "==> Mise en forme (les règles de texte)"
 ./scripts/check-whitespace.sh
 
 # Also instant, and also a check that exists because removing something once
@@ -22,9 +22,37 @@ echo "==> Licence (rien ne doit en annoncer une)"
 
 if command -v swiftlint > /dev/null 2>&1; then
   echo "==> SwiftLint (strict, comme la CI)"
-  swiftlint lint --strict
+  # SwiftLint *does* run on Linux, which this script used to claim it did not.
+  # What it needs is `libsourcekitdInProc.so`, which ships inside the Swift
+  # toolchain and is not on the loader's path; without it the binary dies with
+  # "Loading libsourcekitdInProc.so failed" rather than with a lint result.
+  #
+  # This is worth the six lines. The comment above said "the CI will run it",
+  # and the CI did — twice, on changes that were otherwise finished, for a
+  # trailing blank line and then for an `.enumerated()` whose index the closure
+  # did not use. A gate a contributor cannot run locally is a gate that finds
+  # things after the pull request is open.
+  if [ "$(uname -s)" = "Linux" ]; then
+    swift_lib="$(dirname "$(command -v swift)")/../lib"
+    if [ -f "$swift_lib/libsourcekitdInProc.so" ]; then
+      LD_LIBRARY_PATH="$swift_lib:${LD_LIBRARY_PATH:-}" swiftlint lint --strict
+    else
+      echo "    (libsourcekitdInProc.so introuvable ; SwiftLint va probablement échouer)"
+      swiftlint lint --strict
+    fi
+  else
+    swiftlint lint --strict
+  fi
 else
-  echo "==> SwiftLint absent : la CI le passera (formule Homebrew, donc pas sur Linux)"
+  cat <<'EOF'
+==> SwiftLint absent — et la CI, elle, le fera tourner en --strict.
+
+    macOS :  brew install swiftlint
+    Linux :  binaire depuis https://github.com/realm/SwiftLint/releases
+             (l'archive « swiftlint_linux.zip »), puis mis sur le PATH.
+             Il lui faut libsourcekitdInProc.so, qui est dans la toolchain
+             Swift ; ce script s'en occupe une fois le binaire trouvé.
+EOF
 fi
 
 echo "==> Building the Rust side (daemon + VM core)"
