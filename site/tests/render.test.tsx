@@ -48,7 +48,6 @@ describe("page rendering", () => {
     const html = renderToString(<App lang="en" />);
     expect(html).toContain("Virtual machines on your iPhone.");
     expect(html).toContain("A real Linux kernel, on the phone");
-    expect(html).toContain(REPO);
   });
 
   test("renders the French landing page, with no English left in it", () => {
@@ -58,22 +57,38 @@ describe("page rendering", () => {
     expect(html).not.toContain("Virtual machines on your iPhone.");
   });
 
-  test("the install section defaults to iPhone", () => {
-    const html = renderToString(<App lang="en" />);
-    expect(html).toContain('id="panel-iphone"');
-    expect(html).toContain("./scripts/install-ios.sh");
+  /// The site says what wisq is and stops there. It carried install tabs, a
+  /// pairing walkthrough, a guide and an agent protocol reference; all of it
+  /// was removed deliberately, so what is checked now is the absence — a
+  /// section like that comes back the moment someone adds one, and nothing
+  /// would object.
+  test("no page explains how to run the project", () => {
+    for (const lang of ["en", "fr"] as Lang[]) {
+      for (const route of ROUTES) {
+        const html = renderToString(<App route={route.id} lang={lang} />);
+        for (const trace of [
+          "install-ios.sh",
+          "install.sh",
+          "brew tap",
+          "git clone",
+          "cargo run",
+          "wisq-agent --",
+          'id="install"',
+          'id="how"',
+          "releases/latest",
+        ]) {
+          expect(html, `${lang}/${route.id} : mode d'emploi (${trace})`).not.toContain(trace);
+        }
+      }
+    }
   });
 
-  test("navigation reaches every listed page, and marks the current one", () => {
+  /// Whatever else the site sheds, every page has to lead back to the one
+  /// page that is left.
+  test("every page leads home", () => {
     for (const route of ROUTES) {
       const html = renderToString(<App route={route.id} lang="en" />);
-      for (const other of ROUTES.filter((candidate) => candidate.listed)) {
-        const href = other.path === "" ? "" : `${other.path}/`;
-        expect(html, `${route.id} ne mène pas à ${other.id}`).toContain(href || 'class="brand"');
-      }
-      if (route.listed) {
-        expect(html, `${route.id} : page courante non marquée`).toContain('aria-current="page"');
-      }
+      expect(html, `${route.id} ne mène pas à l'accueil`).toContain('class="brand"');
     }
   });
 

@@ -10,6 +10,7 @@
 //! `stop` take a separate handle and are safe from any thread.
 
 use crate::machine::{Handle, Machine, Outcome};
+use crate::snapshot::SnapshotError;
 use std::os::raw::{c_char, c_int, c_void};
 
 /// Opaque to C: a machine plus the handle other threads use to reach it.
@@ -137,6 +138,69 @@ pub unsafe extern "C" fn wisq_vm_retired_instructions(vm: *const WisqVM) -> u64 
     match vm.as_ref() {
         Some(vm) => vm.machine.retired_instructions(),
         None => 0,
+    }
+}
+
+/// Saves the whole machine into a freshly allocated buffer.
+///
+/// The buffer is handed to C by leaking a boxed slice; `wisq_vm_free_snapshot`
+/// is what reconstitutes and drops it. Returning an allocation rather than
+/// filling a caller's buffer avoids the two-call size-then-write dance, which
+/// for a 9 MB snapshot would mean building it twice.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new` and must not be running; `out_bytes` and
+/// `out_len` must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_snapshot(
+    vm: *const WisqVM,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    let (Some(vm), false, false) = (vm.as_ref(), out_bytes.is_null(), out_len.is_null()) else {
+        return -1;
+    };
+    let mut saved = vm.machine.snapshot().into_boxed_slice();
+    let (pointer, len) = (saved.as_mut_ptr(), saved.len());
+    std::mem::forget(saved);
+    *out_bytes = pointer;
+    *out_len = len;
+    0
+}
+
+/// Releases a buffer from `wisq_vm_snapshot`.
+///
+/// # Safety
+/// `bytes` and `len` must be exactly what `wisq_vm_snapshot` produced, and the
+/// buffer must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_free_snapshot(bytes: *mut u8, len: usize) {
+    if !bytes.is_null() {
+        // `slice_from_raw_parts_mut` rather than `from_raw_parts_mut`: building
+        // the fat pointer directly avoids materialising a `&mut [u8]` over memory
+        // we are about to drop.
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            bytes, len,
+        )));
+    }
+}
+
+/// Puts a saved machine back. Returns 0, or a negative code.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new` and must not be running; `bytes` must
+/// point at `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_restore(vm: *mut WisqVM, bytes: *const u8, len: usize) -> c_int {
+    let Some(vm) = vm.as_mut() else { return -1 };
+    if bytes.is_null() {
+        return -1;
+    }
+    match vm.machine.restore(std::slice::from_raw_parts(bytes, len)) {
+        Ok(()) => 0,
+        Err(SnapshotError::NotASnapshot) => -2,
+        Err(SnapshotError::Corrupt) => -3,
+        Err(SnapshotError::RamSizeMismatch { .. }) => -4,
     }
 }
 
