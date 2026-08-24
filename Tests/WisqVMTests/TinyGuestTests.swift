@@ -70,4 +70,37 @@ final class TinyGuestTests: XCTestCase {
         XCTAssertEqual(machine.run(instructionBudget: 50_000), .stopped)
         XCTAssertEqual(machine.run(instructionBudget: 50_000), .stopped)
     }
+
+    /// A stop that arrives while the machine is resuming must survive the
+    /// resume.
+    ///
+    /// `restore` used to clear the stop flag along with everything else, on the
+    /// reasoning that it was restoring the machine's whole state. It is not
+    /// part of the machine's state: it is the owner asking this machine to come
+    /// back. The app restores on a background thread and can be told to stop
+    /// from the main one before that finishes — leaving the screen the instant
+    /// it opens does exactly that — and the machine then ran with nothing able
+    /// to end it, on a phone, until the process died.
+    ///
+    /// The assertion is on retired instructions rather than on the outcome,
+    /// because `.stopped` is also what an exhausted budget returns: the two are
+    /// indistinguishable from the outcome alone, and a bounded budget is what
+    /// keeps a regression here a failing test rather than a hanging one.
+    func testAStopAskedForWhileResumingIsNotLost() throws {
+        let machine = LinuxMachine { _ in }
+        try machine.load(kernelImage: TinyGuest.image)
+        machine.run(instructionBudget: 10_000)
+        let saved = machine.snapshot()
+
+        let resumed = LinuxMachine { _ in }
+        resumed.stop()
+        try resumed.restore(saved)
+
+        let before = resumed.retiredInstructions
+        XCTAssertEqual(resumed.run(instructionBudget: 1_000_000), .stopped)
+        XCTAssertEqual(
+            resumed.retiredInstructions, before,
+            "un arrêt demandé avant la reprise doit être honoré : rien ne doit s'exécuter"
+        )
+    }
 }

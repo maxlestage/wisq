@@ -7,6 +7,28 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **A machine told to stop while it was resuming ignored it, and then could
+  not be stopped at all.** `restore` cleared the stop flag along with the rest
+  of the state, in both cores. That flag is not part of the guest's state — it
+  is the owner asking this machine to come back — so clearing it threw the
+  request away.
+
+  It is not a corner case. The app restores on a background thread and can be
+  told to stop from the main one before the restore finishes, which is exactly
+  what leaving the console the instant it opens does. The emulator thread then
+  ran with nothing able to end it: on a phone, a core spinning until the
+  process died.
+
+  Found by the new simulator tests on their first run, in the one assertion
+  that says "Arrêter" has to actually conclude — which is the whole argument
+  for running that layer rather than reasoning about it. Both cores are fixed
+  and both now have a regression test that asserts on retired instructions
+  rather than on the outcome: `stopped` is also what an exhausted budget
+  returns, so the outcome alone cannot tell an honoured stop from a machine
+  that ran the whole budget. The budget stays bounded so a regression is a
+  failing test, not a hanging one.
+
 ### Changed
 - **No licence is claimed any more, because none has been chosen.** The site
   announced Apache-2.0 in the hero badge, in the comparison table, twice in the
