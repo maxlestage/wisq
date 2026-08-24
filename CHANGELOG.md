@@ -8,6 +8,22 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **A suspended machine has somewhere to wait.** `SuspendedMachine` is the
+  file the local VM is saved into and read back from, deliberately in `WisqVM`
+  rather than in the app: the app layer only builds on Apple platforms, so
+  anything living there cannot be tested on a runner that costs nothing, and
+  "survive a first launch with nothing there" is worth testing rather than
+  reasoning about. It is named for what it holds because `WisqCore` already has
+  a `MachineStore`, which keeps the list of remote machines — two types with
+  one name in one app is a reading error waiting to happen.
+
+  The first version replaced the existing file, which fails on the one save
+  every user makes: the first. `Data.write(options: .atomic)` does the work
+  instead, writing to an auxiliary file and renaming, so the visible file is
+  always whole — the previous machine if the new save never finished, never a
+  torn mixture. That matters because the moment this runs is the moment iOS is
+  taking the app away.
+
 - **The local machine can be saved and brought back.** `Machine::snapshot`
   writes RAM, the hart's registers and the keystrokes still queued for the
   UART; `restore` puts them back. The guest is not consulted and
@@ -56,6 +72,12 @@ break APIs.
 - **The app itself says who made it.** `NSHumanReadableCopyright` was missing
   from the bundle, so the one place a person holding the app could read the
   author's name did not have it.
+
+### Changed
+- `scripts/test-rust-core.sh` filters on the test target rather than on one
+  class. The target grew a second suite — snapshot agreement between the two
+  cores — and a filter naming `DifferentialBootTests` had silently stopped
+  covering it. Six tests now, not three.
 
 ### Fixed
 - **The shipped app reported version 0.1.0.** `Info.plist` hard-coded it while
