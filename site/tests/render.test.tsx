@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
 import { App } from "../src/App";
-import { copy, REPO, type Lang } from "../src/content";
+import { copy, type Lang } from "../src/content";
 import { documentStrings } from "../src/doc";
 import { PAGES } from "../src/pages";
 import { ROUTES } from "../src/routes";
@@ -57,12 +57,19 @@ describe("page rendering", () => {
     expect(html).not.toContain("Virtual machines on your iPhone.");
   });
 
-  /// The site says what wisq is and stops there. It carried install tabs, a
-  /// pairing walkthrough, a guide and an agent protocol reference; all of it
-  /// was removed deliberately, so what is checked now is the absence — a
-  /// section like that comes back the moment someone adds one, and nothing
-  /// would object.
-  test("no page explains how to run the project", () => {
+  /// The site explains what wisq is and how it fits together. What it does not
+  /// do is tell anyone how to install it — no clone, no tap, no script to
+  /// pipe into a shell, no download link.
+  ///
+  /// The distinction matters, and this test used to blur it: it forbade the
+  /// pairing section along with the install commands, on the reasoning that
+  /// both were "how to run the project". They are not the same thing. A
+  /// reader deciding whether this is for them needs to know that an agent
+  /// prints a link and the phone scans it; none of that hands them a build.
+  ///
+  /// So the list here is commands and download paths only. Everything else on
+  /// these pages describes the thing rather than distributing it.
+  test("no page hands out a way to install the project", () => {
     for (const lang of ["en", "fr"] as Lang[]) {
       for (const route of ROUTES) {
         const html = renderToString(<App route={route.id} lang={lang} />);
@@ -70,12 +77,16 @@ describe("page rendering", () => {
           "install-ios.sh",
           "install.sh",
           "brew tap",
+          "brew install",
           "git clone",
           "cargo run",
+          "cargo build",
+          "xcodegen",
           "wisq-agent --",
+          "githubusercontent",
           'id="install"',
-          'id="how"',
           "releases/latest",
+          ".ipa",
         ]) {
           expect(html, `${lang}/${route.id} : mode d'emploi (${trace})`).not.toContain(trace);
         }

@@ -28,8 +28,17 @@ export interface Copy {
     columns: [string, string, string];
     rows: [string, string, string][];
   };
+  /// Three steps, because pairing is the part a reader has to believe works
+  /// before anything else on the page matters.
+  how: { title: string; steps: { title: string; body: string }[] };
   facts: { title: string; items: { value: string; label: string }[] };
   footer: {
+    /// The accessible name of the two link groups — the strip under the header
+    /// and the columns above the bottom bar. Both are navigation, and an
+    /// unnamed nav landmark is one a screen reader announces as "navigation"
+    /// and nothing more.
+    docs: string;
+    groups: { product: string; documentation: string; project: string };
     note: string;
     /// A one-line description under the wordmark, for a reader who arrived at
     /// the footer without reading the page above it.
@@ -57,6 +66,12 @@ export interface Copy {
   pages: {
     home: string;
     notFound: string;
+    docs: string;
+    protocol: string;
+    architecture: string;
+    faq: string;
+    roadmap: string;
+    releases: string;
     privacy: string;
     offline: string;
   };
@@ -122,6 +137,26 @@ const en: Copy = {
       ["License", "GPL (QEMU)", "no QEMU inside, so no copyleft to carry"],
     ],
   },
+  how: {
+    title: "How pairing works",
+    steps: [
+      {
+        title: "Run the agent",
+        body:
+          "It prints a wisq:// link per network interface — and a QR code when qrencode is installed. It also announces itself over Bonjour.",
+      },
+      {
+        title: "Scan it",
+        body:
+          "Opening the link on the iPhone lands directly in the import screen, address and token filled in, already querying.",
+      },
+      {
+        title: "Tap a VM",
+        body:
+          "Powered off? The agent boots it, wisq waits for the console and resolves the endpoint late — the port moves between boots.",
+      },
+    ],
+  },
   facts: {
     title: "Built to be trusted",
     items: [
@@ -136,6 +171,8 @@ const en: Copy = {
       "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
     privacyNote:
       "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
+    docs: "Site",
+    groups: { product: "Product", documentation: "Documentation", project: "Project" },
     author: "Created and developed by",
     attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
     rights: "All rights reserved",
@@ -149,6 +186,12 @@ const en: Copy = {
   pages: {
     home: "Home",
     notFound: "Not found",
+    docs: "Docs",
+    protocol: "Agent protocol",
+    architecture: "Architecture",
+    faq: "Questions",
+    roadmap: "Roadmap",
+    releases: "Releases",
     privacy: "Privacy",
     offline: "Offline",
   },
@@ -210,6 +253,26 @@ const fr: Copy = {
       ["Licence", "GPL (QEMU)", "pas de QEMU dedans, donc pas de copyleft à porter"],
     ],
   },
+  how: {
+    title: "L'appairage",
+    steps: [
+      {
+        title: "Lancez l'agent",
+        body:
+          "Il affiche un lien wisq:// par interface réseau — et un QR code si qrencode est installé. Il s'annonce aussi en Bonjour.",
+      },
+      {
+        title: "Scannez-le",
+        body:
+          "Ouvrir le lien sur l'iPhone atterrit directement dans l'écran d'import, adresse et jeton remplis, interrogation déjà lancée.",
+      },
+      {
+        title: "Tapez une VM",
+        body:
+          "Éteinte ? L'agent la démarre, wisq attend sa console et résout l'adresse tardivement — le port change d'un démarrage à l'autre.",
+      },
+    ],
+  },
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
@@ -224,6 +287,8 @@ const fr: Copy = {
       "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
     privacyNote:
       "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
+    docs: "Site",
+    groups: { product: "Produit", documentation: "Documentation", project: "Projet" },
     author: "Créé et développé par",
     attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
     rights: "Tous droits réservés",
@@ -237,6 +302,12 @@ const fr: Copy = {
   pages: {
     home: "Accueil",
     notFound: "Introuvable",
+    docs: "Docs",
+    protocol: "Protocole de l'agent",
+    architecture: "Architecture",
+    faq: "Questions",
+    roadmap: "Feuille de route",
+    releases: "Versions",
     privacy: "Vie privée",
     offline: "Hors ligne",
   },
@@ -252,16 +323,10 @@ const fr: Copy = {
 
 export const copy: Record<Lang, Copy> = { en, fr };
 
-export const REPO = "https://github.com/maxlestage/wisq";
-
-/// The author, as the repository already states it in NOTICE and LICENSE.
-/// One place, so the site cannot disagree with the copyright line.
+/// The author, as the repository already states it in NOTICE. One place, so
+/// the site cannot disagree with the copyright line.
 export const AUTHOR = "Maxime Nathan Lestage";
 export const AUTHOR_URL = "https://github.com/maxlestage";
-export const RELEASES = `${REPO}/releases/latest`;
-export const CONTRIBUTING = `${REPO}/blob/master/CONTRIBUTING.md`;
-export const SECURITY = `${REPO}/blob/master/SECURITY.md`;
-export const CHANGELOG = `${REPO}/blob/master/CHANGELOG.md`;
 
 /// The version the footer shows. Checked against CHANGELOG.md by a test, so it
 /// cannot quietly describe a release the repository does not have.
