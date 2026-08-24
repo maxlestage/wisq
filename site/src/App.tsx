@@ -6,7 +6,6 @@ import {
   SITE_VERSION,
   type Lang,
 } from "./content";
-import { Install } from "./components/Install";
 import { DocPage } from "./components/Doc";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Logo } from "./components/Logo";
@@ -88,19 +87,6 @@ export function App({
             ))}
           </nav>
         </div>
-        <nav className="site-nav" aria-label={copy.footer.docs}>
-          <div className="wrap site-nav-inner">
-            {ROUTES.filter((candidate) => candidate.listed).map((candidate) => (
-              <a
-                key={candidate.id}
-                href={routeHref(page, candidate)}
-                aria-current={candidate.id === route.id ? "page" : undefined}
-              >
-                {copy.pages[candidate.id]}
-              </a>
-            ))}
-          </div>
-        </nav>
       </header>
 
       <main id="main">
@@ -127,33 +113,6 @@ export function App({
 function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
   const to = (id: Parameters<typeof routeById>[0]) => routeHref(page, routeById(id));
   const home = routeHref(page, routeById("home"));
-
-  const groups: { title: string; links: { label: string; href: string }[] }[] = [
-    {
-      title: copy.footer.groups.product,
-      links: [
-        { label: copy.footer.links.install, href: `${home}#install` },
-        { label: copy.pages.docs, href: to("docs") },
-        { label: copy.pages.releases, href: to("releases") },
-        { label: copy.pages.roadmap, href: to("roadmap") },
-      ],
-    },
-    {
-      title: copy.footer.groups.documentation,
-      links: [
-        { label: copy.pages.protocol, href: to("protocol") },
-        { label: copy.pages.architecture, href: to("architecture") },
-        { label: copy.pages.faq, href: to("faq") },
-      ],
-    },
-    {
-      title: copy.footer.groups.project,
-      links: [
-        { label: copy.footer.links.changelog, href: to("releases") },
-        { label: copy.pages.privacy, href: to("privacy") },
-      ],
-    },
-  ];
 
   return (
     <footer className="site-footer">
@@ -187,20 +146,6 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
           </p>
         </div>
 
-        <nav className="footer-groups" aria-label={copy.footer.docs}>
-          {groups.map((group) => (
-            <div key={group.title}>
-              <h2>{group.title}</h2>
-              <ul>
-                {group.links.map((link) => (
-                  <li key={link.label}>
-                    <a href={link.href}>{link.label}</a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </nav>
       </div>
 
       <div className="wrap footer-bottom">
@@ -209,7 +154,7 @@ function Footer({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
         <p className="footer-note">{copy.footer.attribution}</p>
         <div className="footer-legal">
           <span>{copy.footer.license}</span>
-          <a href={to("privacy")}>{copy.footer.links.privacy}</a>
+          <a href={to("privacy")}>{copy.pages.privacy}</a>
           <a href="#main">{copy.footer.backToTop}</a>
         </div>
       </div>
@@ -226,14 +171,6 @@ function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
             <p className="badge">{copy.hero.badge}</p>
             <h1>{copy.hero.tagline}</h1>
             <p className="lede">{copy.hero.lede}</p>
-            <div className="cta-row">
-              <a className="btn btn-primary" href="#install">
-                {copy.hero.ctaInstall}
-              </a>
-              <a className="btn btn-secondary" href={routeHref(page, routeById("docs"))}>
-                {copy.pages.docs}
-              </a>
-            </div>
           </div>
           {/* The mark and the name as one block. The mark alone is a picture
               of `▚`, which says what the product does but not what it is
@@ -292,25 +229,6 @@ function Landing({ copy, page }: { copy: (typeof allCopy)["en"]; page: Page }) {
                 ))}
               </tbody>
             </table>
-          </div>
-        </div>
-      </section>
-
-      <Install copy={copy} />
-
-      <section id="how">
-        <div className="wrap">
-          <h2>{copy.how.title}</h2>
-          <div className="steps">
-            {copy.how.steps.map((step) => (
-              <div className="step" key={step.title}>
-                <div className="step-num" aria-hidden="true" />
-                <div>
-                  <h3>{step.title}</h3>
-                  <p>{step.body}</p>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </section>

@@ -203,3 +203,101 @@ private struct Runner {
         send = { machine.send(Data($0.utf8)) }
     }
 }
+
+/// A snapshot is a file that outlives the process that wrote it, so the two
+/// interpreters have to agree on it byte for byte — otherwise the day the app
+/// switches cores, someone's saved machine stops opening.
+///
+/// This is stricter than "both can save and restore themselves". It requires
+/// the bytes to be identical, and then makes each core resume from the other's
+/// snapshot and continue to the same future.
+final class SnapshotAgreementTests: XCTestCase {
+    private final class Console: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bytes = Data()
+        func append(_ chunk: Data) { lock.lock(); bytes.append(chunk); lock.unlock() }
+        var snapshot: Data { lock.lock(); defer { lock.unlock() }; return bytes }
+    }
+
+    private func imageURL() -> URL? {
+        let candidates = [
+            ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"],
+            "/tmp/wisq-test-linux-image/Image",
+        ]
+        for case let path? in candidates where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
+    func testBothCoresWriteTheSameSnapshotBytes() throws {
+        guard let url = imageURL() else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: url)
+        let budget: UInt64 = 30_000_000
+
+        let swiftConsole = Console(), rustConsole = Console()
+        let swiftMachine = LinuxMachine { swiftConsole.append($0) }
+        let rustMachine = RustLinuxMachine { rustConsole.append($0) }
+        try swiftMachine.load(kernelImage: image, commandLine: "console=ttyS0")
+        try rustMachine.load(kernelImage: image, commandLine: "console=ttyS0")
+        swiftMachine.run(instructionBudget: budget)
+        rustMachine.run(instructionBudget: budget)
+
+        let fromSwift = swiftMachine.snapshot()
+        let fromRust = rustMachine.snapshot()
+        XCTAssertEqual(
+            fromSwift.count, fromRust.count,
+            "les deux cœurs doivent écrire un instantané de la même taille"
+        )
+        XCTAssertEqual(
+            fromSwift, fromRust,
+            "les deux cœurs doivent écrire exactement les mêmes octets"
+        )
+        XCTAssertFalse(
+            swiftConsole.snapshot.isEmpty,
+            "l'instantané doit être pris sur une machine qui a réellement tourné"
+        )
+    }
+
+    func testEachCoreResumesFromTheOthersSnapshot() throws {
+        guard let url = imageURL() else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: url)
+        let budget: UInt64 = 30_000_000
+        let after: UInt64 = 6_000_000
+
+        // One machine runs, saves, and keeps going: that continuation is the
+        // reference both restored machines have to reproduce.
+        let reference = LinuxMachine { _ in }
+        try reference.load(kernelImage: image, commandLine: "console=ttyS0")
+        reference.run(instructionBudget: budget)
+        let saved = reference.snapshot()
+        reference.run(instructionBudget: after)
+        let expected = reference.retiredInstructions
+
+        let intoSwift = LinuxMachine { _ in }
+        try intoSwift.restore(saved)
+        intoSwift.run(instructionBudget: after)
+        XCTAssertEqual(
+            intoSwift.retiredInstructions, expected,
+            "le cœur Swift doit reprendre l'instantané à l'identique"
+        )
+
+        let intoRust = RustLinuxMachine { _ in }
+        try intoRust.restore(saved)
+        intoRust.run(instructionBudget: after)
+        XCTAssertEqual(
+            intoRust.retiredInstructions, expected,
+            "le cœur Rust doit reprendre un instantané écrit par le cœur Swift"
+        )
+    }
+
+    func testRubbishIsRefusedByBothCores() {
+        let rubbish = Data([1, 2, 3, 4, 5, 6, 7, 8])
+        XCTAssertThrowsError(try LinuxMachine { _ in }.restore(rubbish))
+        XCTAssertThrowsError(try RustLinuxMachine { _ in }.restore(rubbish))
+    }
+}

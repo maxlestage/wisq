@@ -106,6 +106,35 @@ public final class RustLinuxMachine: @unchecked Sendable {
         wisq_vm_stop(vm)
     }
 
+    /// The whole machine as bytes, in the format the Swift core also writes.
+    ///
+    /// The buffer comes from Rust and goes straight back to it; copying it
+    /// into `Data` before freeing is what keeps the ownership rule from
+    /// leaking into every caller.
+    public func snapshot() -> Data {
+        var bytes: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        guard wisq_vm_snapshot(vm, &bytes, &length) == WISQ_VM_SNAPSHOT_OK,
+              let bytes else {
+            fatalError("instantané impossible")
+        }
+        defer { wisq_vm_free_snapshot(bytes, length) }
+        return Data(UnsafeBufferPointer(start: bytes, count: length))
+    }
+
+    /// Puts a saved machine back. On failure nothing has changed.
+    public func restore(_ data: Data) throws {
+        let code: Int32 = data.withUnsafeBytes { raw in
+            wisq_vm_restore(vm, raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
+        }
+        switch code {
+        case WISQ_VM_SNAPSHOT_OK: return
+        case WISQ_VM_SNAPSHOT_NOT_A_SNAPSHOT: throw RustLinuxMachineError.notASnapshot
+        case WISQ_VM_SNAPSHOT_RAM_MISMATCH: throw RustLinuxMachineError.snapshotRamMismatch
+        default: throw RustLinuxMachineError.snapshotCorrupt
+        }
+    }
+
     /// Feeds keyboard bytes to the guest's UART. Safe from any thread.
     public func send(_ data: Data) {
         guard !data.isEmpty else { return }
@@ -118,6 +147,9 @@ public final class RustLinuxMachine: @unchecked Sendable {
 public enum RustLinuxMachineError: Error, Sendable, Equatable {
     case imageTooLarge
     case commandLineTooLong
+    case notASnapshot
+    case snapshotCorrupt
+    case snapshotRamMismatch
     /// A code the header defines but this wrapper does not name yet — reported
     /// rather than swallowed, so a new failure mode in the crate surfaces here
     /// as a readable error instead of a silent success.

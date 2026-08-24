@@ -74,28 +74,6 @@ leurs tests passent (178 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
-## Installer
-
-**iPhone** : téléchargez l'IPA non signé de la
-[dernière release](https://github.com/maxlestage/wisq/releases) et
-installez-le avec AltStore ou Sideloadly — ou, avec un Mac et Xcode,
-`./scripts/install-ios.sh` compile et installe directement sur l'iPhone
-branché (signature personnelle gratuite : à renouveler tous les 7 jours).
-
-**Mac / Linux (l'agent hôte)**, en une ligne :
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service
-```
-
-Ou par Homebrew, servi depuis ce dépôt :
-
-```sh
-brew tap maxlestage/wisq https://github.com/maxlestage/wisq.git
-brew install maxlestage/wisq/wisq-agent
-brew services start wisq-agent
-```
-
 ## Construire
 
 ```sh
@@ -114,26 +92,6 @@ retirée du paquet là-bas, précisément pour que ce soit possible :
 
 Sur Linux, le paquet a besoin des en-têtes zlib (`zlib1g-dev` ; l'image Docker
 officielle Swift les a déjà).
-
-## Essayer sans matériel
-
-N'importe quel serveur VNC fait l'affaire :
-
-```sh
-# une VM QEMU avec console VNC
-qemu-system-x86_64 -m 2048 -vnc :1 -hda disk.qcow2
-
-# ou un bureau Linux existant
-x11vnc -display :0 -rfbport 5900 -passwd secret
-```
-
-Puis dans wisq : **+**, adresse `hôte:5901`, mot de passe, connexion.
-
-Et pour essayer l'agent sans hyperviseur :
-
-```sh
-cargo run -p wisq-agent -- --demo
-```
 
 ## Structure
 
