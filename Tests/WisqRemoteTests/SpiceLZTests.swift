@@ -41,12 +41,12 @@ final class SpiceLZTests: XCTestCase {
             if pixels != expected {
                 // Reported as the first disagreeing byte rather than as two
                 // thousand hex characters, which no one reads.
-                let at = zip(pixels, expected).enumerated().first { $0.element.0 != $0.element.1 }
+                let at = (0..<min(pixels.count, expected.count)).first { pixels[$0] != expected[$0] }
                 XCTFail("""
                 \(fixture.name) (\(fixture.note)) : \
-                premier octet différent à \(at?.offset ?? -1) — \
-                obtenu \(at.map { String($0.element.0, radix: 16) } ?? "?"), \
-                attendu \(at.map { String($0.element.1, radix: 16) } ?? "?")
+                premier octet différent à \(at ?? -1) — \
+                obtenu \(at.map { String(pixels[$0], radix: 16) } ?? "?"), \
+                attendu \(at.map { String(expected[$0], radix: 16) } ?? "?")
                 """)
             }
         }

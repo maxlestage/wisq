@@ -7,6 +7,20 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **`verify.sh` runs SwiftLint on Linux now, instead of saying it cannot.** It
+  can: the binary needs `libsourcekitdInProc.so`, which ships inside the Swift
+  toolchain and is not on the loader's path, and without it the process dies
+  with a loader error rather than a lint result. Six lines of `LD_LIBRARY_PATH`
+  and the gate a contributor can run locally is the same gate CI runs.
+
+  This is the second time the missing check found something after a pull
+  request was open — a trailing blank line, and now an `.enumerated()` whose
+  index the closure never used. The script's own comment said "the CI will run
+  it", and that was true and not good enough. When SwiftLint is absent
+  entirely, the message now says where to get it for each platform rather than
+  shrugging.
+
 ### Added
 - **SPICE's LZ codec decodes, checked against SPICE's LZ encoder.** The first
   of the compressed forms the display channel stopped at. LZ before QUIC and
