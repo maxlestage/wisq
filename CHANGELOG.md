@@ -26,6 +26,15 @@ break APIs.
   truncation of a valid snapshot is tested, along with a foreign buffer, a
   trailing byte and a snapshot taken at a different RAM size.
 
+  The C ABI carries it too — `wisq_vm_snapshot`, `wisq_vm_free_snapshot` and
+  `wisq_vm_restore`. The snapshot is returned as an allocation the caller owns
+  rather than written into a caller's buffer, because the size-then-write dance
+  would mean building a 15 MB snapshot twice. The conformance program exercises
+  the round trip from C, where the app will call it: save, restore into a
+  second machine, require the retired counts to agree, and require a buffer of
+  rubbish to be refused by name. Proven to bite by swapping two parameters in
+  the header and watching the compile fail.
+
   The test that matters does not check that the machine boots afterwards — a
   snapshot missing a register does that too, then diverges where nobody is
   looking. It runs a machine, saves it, carries the original on, restores the

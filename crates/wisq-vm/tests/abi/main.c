@@ -97,6 +97,48 @@ int main(int argc, char **argv) {
         ok = 0;
     }
 
+    /* The snapshot pair, exercised from C because that is where the app will
+     * call it: save this machine, restore it into a second one, and require
+     * the second to agree with the first on what it has executed. A wrapper
+     * that mixes up the out-parameters or frees the wrong buffer fails here
+     * rather than on a phone. */
+    uint8_t *saved = NULL;
+    size_t saved_len = 0;
+    if (wisq_vm_snapshot(vm, &saved, &saved_len) != WISQ_VM_SNAPSHOT_OK || !saved) {
+        fprintf(stderr, "ABI: wisq_vm_snapshot a échoué\n");
+        ok = 0;
+    } else {
+        struct console restored_console = {.len = 0};
+        /* The same RAM size as the original: a snapshot carries its size and
+         * a machine built with another one refuses it, which is the point. */
+        WisqVM *restored =
+            wisq_vm_new(64 * 1024 * 1024, on_output, &restored_console);
+        if (!restored) {
+            fprintf(stderr, "ABI: seconde machine non allouée\n");
+            ok = 0;
+        } else {
+            int back = wisq_vm_restore(restored, saved, saved_len);
+            if (back != WISQ_VM_SNAPSHOT_OK) {
+                fprintf(stderr, "ABI: wisq_vm_restore a renvoyé %d\n", back);
+                ok = 0;
+            } else if (wisq_vm_retired_instructions(restored) != retired) {
+                fprintf(stderr, "ABI: la machine restaurée a un autre compteur\n");
+                ok = 0;
+            }
+            /* And a buffer that is not a snapshot must be refused by name
+             * rather than read as one. */
+            const uint8_t rubbish[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+            if (wisq_vm_restore(restored, rubbish, sizeof rubbish)
+                != WISQ_VM_SNAPSHOT_NOT_A_SNAPSHOT) {
+                fprintf(stderr, "ABI: des octets quelconques ont été acceptés\n");
+                ok = 0;
+            }
+            wisq_vm_free(restored);
+        }
+        printf("instantané : %zu octets, restauré dans une seconde machine\n", saved_len);
+        wisq_vm_free_snapshot(saved, saved_len);
+    }
+
     /* stop() must be safe on a machine that is no longer running, which is
      * exactly what the app does when a view disappears mid-boot. */
     wisq_vm_stop(vm);
