@@ -127,10 +127,18 @@ the Files app — ready-made ones live in the
 cargo test                   # the Rust side: daemon and VM core
 ./scripts/verify.sh          # core: strict-concurrency build + full tests
 ./scripts/verify.sh --app    # + the iOS app (macOS with Xcode)
+./scripts/test-rust-core.sh  # both interpreters, on the same kernel, compared
 ```
 
 `verify.sh` builds the Rust agent first, because the cross-language
 protocol tests run the real daemon against the app's own client.
+
+The rv32ima interpreter exists twice — once in Swift, once in Rust — and
+`test-rust-core.sh` is what keeps the two honest: it boots the same kernel
+through both and compares the instructions retired and the console bytes at
+every checkpoint. The Rust core joins the Swift package only when
+`WISQ_RUST_CORE` is set, so a clone with Swift and no cargo still builds and
+still passes its tests.
 
 The core (protocols, emulator, agent) is Foundation-only and builds on
 Linux with Swift 6.3; on Debian/Ubuntu you need `zlib1g-dev` (the official

@@ -47,9 +47,9 @@ La question push contre interrogation est tranchée pour l'instant du côté de
 l'interrogation — elle survit aux changements de réseau du téléphone, et le
 démon reste sans état par connexion.
 
-## Le cœur Rust sur Apple (empaquetage fait, bascule à venir)
+## Le cœur Rust (empaquetage, câblage et bascule faits ; défaut à trancher)
 
-`scripts/build-xcframework.sh` produit `WisqVMCore.xcframework` — tranche
+`scripts/build-xcframework.sh` produit `CWisqVM.xcframework` — tranche
 appareil, tranches simulateur et macOS universelles — et
 `scripts/test-ios.sh` fait démarrer un vrai noyau Linux à travers l'ABI C
 *dans un iPhone simulé*, via `simctl spawn`. Les deux tournent dans le job
@@ -62,9 +62,40 @@ test le compile contre la vraie bibliothèque et démarre un noyau au travers,
 sur Linux, à chaque commit : une signature qui dérive de `src/ffi.rs` casse
 un test au lieu de corrompre la mémoire sur un téléphone.
 
-Reste la bascule elle-même : `WisqVM` (Swift) et le cœur Rust coexistent, et
-choisir lequel l'application utilise demande de trancher comment le paquet
-Swift lie la bibliothèque — un chantier distinct de l'empaquetage.
+Le cœur Rust est maintenant câblé dans le paquet Swift, mais **absent par
+défaut** : la cible `WisqVMRust` n'existe que si `WISQ_RUST_CORE` est définie,
+parce que la lier suppose un `cargo build` préalable et qu'un clone avec Swift
+et rien d'autre doit continuer à se construire et à passer ses tests. Ce que le
+drapeau achète : la CI Linux construit les deux interpréteurs et fait démarrer
+le *même* noyau à travers chacun, en comparant tous les millions
+d'instructions le nombre d'instructions retirées et les octets de console.
+`scripts/test-rust-core.sh` fait tourner ça d'une commande.
+
+Ce test a trouvé un vrai défaut le jour où il a été écrit : le bus Rust
+répondait aux lectures CLINT `mtime` avec un instantané pris *avant* que le pas
+n'avance l'horloge. L'invité voyait donc une horloge en retard d'une tranche —
+et de toute la période d'inactivité quand le hart venait d'être réveillé d'un
+WFI par un saut d'horloge. Corrigé (`Bus::set_time`) ; les deux cœurs retirent
+désormais exactement les mêmes instructions et écrivent exactement les mêmes
+octets.
+
+L'application peut désormais tourner dessus. `LocalVMModel` ne nomme plus un
+interprète mais `LocalMachine`, un alias que `WISQ_RUST_CORE` fait pointer sur
+l'un ou sur l'autre ; seul le CPU change, la console reste `TerminalGrid`. Et
+le manifeste choisit tout seul comment la bibliothèque arrive : un `.a` ne
+porte aucune plateforme, donc s'il trouve `dist/CWisqVM.xcframework` il le lie
+comme cible binaire — c'est Xcode qui prend la bonne tranche — sinon il retombe
+sur l'archive et un `-L`. Les deux vendent un module nommé `CWisqVM`, donc
+l'enrobage Swift est le même code des deux côtés.
+
+La CI construit l'application des deux façons : les compilations qui expédient
+restent sur le cœur Swift, et une compilation simulateur supplémentaire, avec
+le drapeau, prouve que l'XCFramework se lie vraiment dans une vraie app iOS.
+Sans elle, « l'app peut utiliser le cœur Rust » serait une affirmation que rien
+ne vérifie.
+
+Le cœur Swift reste le défaut, et le restera tant que la bascule suppose un
+`cargo build` : `swift build` doit continuer à marcher pour qui n'a que Swift.
 
 ## Lot 4 bis — Linux local (fait en v1)
 

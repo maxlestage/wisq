@@ -1,0 +1,10 @@
+// The Rust interpreter, as Swift sees it.
+//
+// The header is not copied here: it is the one the Rust crate ships and the one
+// the C conformance test compiles against, reached by relative path. Two copies
+// of a hand-written ABI header is one copy too many — the second drifts, and it
+// drifts silently.
+module CWisqVM {
+    header "../../crates/wisq-vm/include/wisq_vm.h"
+    export *
+}
