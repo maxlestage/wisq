@@ -32,6 +32,23 @@ break APIs.
   already folds every byte in, zeros included. It is gone.
 
 ### Added
+- **`.rdp` connection files are read too.** The ones Windows, Azure Bastion and
+  every RDP gateway hand out. One option per line, `key:type:value`, and the
+  value keeps every colon it has — which is what makes
+  `full address:s:[2001:db8::1]:3390` a legal line and this a parser rather
+  than a `split(separator: ":")`.
+
+  An IPv6 literal in brackets has five colons and only the last separates a
+  port; cutting at any other gives a host of `[2001` and a connection to
+  nowhere. A *bare* IPv6 literal carries no port at all, and taking its last
+  group for one would silently truncate the address. Port 3389 applies when
+  none is given, never in place of one that could not be read. An `i` field
+  holding text is refused rather than guessed.
+
+  The saved password blob is encrypted to the machine that wrote the file and
+  would be useless here even if it were read. It is not decoded, not stored and
+  not carried, and a test walks the parsed value's fields to say so.
+
 - **`.vv` connection files are read.** The one virt-manager, oVirt and Proxmox
   hand out when you click "console": host, port, transport, and a one-shot
   ticket nobody could retype. The user has already done the work; retyping any

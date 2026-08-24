@@ -238,8 +238,7 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
 - Raccourcis Siri et widgets « se connecter à … ».
-- Import depuis les fichiers `.rdp`. Celui des `.vv` est fait : `VirtViewerFile`
-  lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
+- Import depuis les fichiers `.vv` et `.rdp` : fait. `VirtViewerFile` lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
   « console » — hôte, port, transport, et le ticket à usage unique que personne
   ne peut retaper. Du pur décodage, donc entièrement testé.
 
@@ -252,6 +251,21 @@ pointeurs : à écrire avec la spécification sous les yeux, pas de mémoire.
   une seconde section arrête la lecture, sinon une section ajoutée redirigerait
   la connexion ; et le mot de passe n'apparaît jamais dans la description, parce
   que c'est elle qui finit dans un journal ou un rapport de plantage.
+
+  `RemoteDesktopFile` fait la même chose pour les `.rdp` que Windows, Azure et
+  les passerelles remettent. Le format est une ligne par option, `clé:type:valeur`,
+  et la valeur garde tous ses deux-points — c'est ce qui fait que
+  `full address:s:[2001:db8::1]:3390` est une ligne légale, et pourquoi c'est un
+  parseur et pas un `split(separator: ":")`.
+
+  Les pièges tenus par les tests : un IPv6 entre crochets a cinq deux-points et
+  un seul sépare un port, donc couper au premier donne un hôte `[2001` et une
+  connexion nulle part ; un IPv6 **nu** ne porte pas de port du tout, et prendre
+  son dernier groupe pour un port tronquerait silencieusement l'adresse ; le
+  port 3389 s'applique quand aucun n'est donné, jamais à la place d'un port
+  illisible ; un champ `i` contenant du texte est refusé plutôt que deviné ; et
+  le mot de passe enregistré — chiffré vers la machine qui a écrit le fichier,
+  donc inutilisable ici — n'est ni décodé, ni stocké, ni porté.
 - Partage de fichiers via un dossier monté côté agent.
 
 ## Ce qu'on doit à UTM
