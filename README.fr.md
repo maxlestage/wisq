@@ -20,7 +20,7 @@ wisq se place face à UTM sur deux fronts à la fois :
 | Exécution | émulation locale QEMU, interprétée | la VM tourne sur l'hôte |
 | Vitesse | très lente (pas de JIT sur iOS) | limitée par le réseau, pas par le CPU |
 | Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau classique |
-| Licence | GPL (QEMU) | code applicatif sous notre contrôle |
+| Licence | GPL (QEMU) | pas de QEMU dedans, donc pas de copyleft à porter |
 | Autonomie | l'émulation vide la batterie | décodage d'image seulement |
 
 ## Vitesse
@@ -70,7 +70,7 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (178 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (229 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -122,4 +122,4 @@ la suite.
 ## Auteur
 
 Créé et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
-Copyright 2026 Maxime Nathan Lestage, sous licence Apache-2.0.
+Copyright 2026 Maxime Nathan Lestage. Tous droits réservés.

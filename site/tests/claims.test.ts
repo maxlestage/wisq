@@ -39,6 +39,20 @@ describe("advertised claims match the repository", () => {
     expect(claimedValue(/tests/)).toBe(testCount());
   });
 
+  /// The same number is printed in both READMEs, and nothing was watching
+  /// them: they sat at 178 while the repository had grown past 200. A claim
+  /// with no guard behind it is a claim that will be wrong, so the two files
+  /// that state it are read here rather than trusted.
+  test.each([
+    ["README.md", /tested \((\d+) tests across Swift and Rust\)/],
+    ["README.fr.md", /\((\d+) avec ceux du Rust\)/],
+  ])("%s states the real test count", (file, pattern) => {
+    const text = readFileSync(join(repoRoot, file), "utf8");
+    const found = text.match(pattern);
+    if (!found) throw new Error(`${file} n'annonce plus de nombre de tests`);
+    expect(Number(found[1])).toBe(testCount());
+  });
+
   // Two tests lived here, both about the releases page: that every version it
   // listed had a dated changelog entry, and that it carried a section for
   // each. The page is gone, and with it the restated content that could rot.
