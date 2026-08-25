@@ -1456,3 +1456,80 @@ Quatre décisions, et trois portent sur le fait de **ne pas** vibrer :
   `.framebufferChanged` : il arrive des dizaines de fois par seconde, et un
   `default` qui renverrait un haptique ferait du téléphone un vibreur pour toute
   la durée de la session. Un test l'énumère explicitement.
+
+## Les tracés, et une propriété qui n'en prouvait que la moitié
+
+`DRAW_STROKE` : un chemin, des attributs de ligne, une brosse, un descripteur de
+rop, et aucune largeur de trait nulle part. Ce sont les stylos *cosmétiques* de
+Windows — `canvas_draw_stroke` pose `lineWidth = 0` sans condition.
+
+Le format ne vient pas de `draw.h`, qui ment sur trois points, mais du
+démarshaller que la référence **engendre** depuis `spice.proto` : les drapeaux
+d'un segment font un octet sur le fil et quatre en C ; `style_nseg` et `style`
+n'existent que si `STYLED` est posé ; `@ptr_array` décrit le côté C et pas le
+fil. Générer ce fichier a pris une minute et a répondu à trois questions que
+j'aurais tranchées de travers.
+
+### La bonne propriété, et ce qu'elle ne voyait pas
+
+Le biais d'octant de X11 existe pour une raison précise : rendre une ligne
+**réversible**. Bresenham doit trancher chaque fois que la ligne idéale passe
+entre deux pixels, et trancher pareil partout ferait qu'une ligne A→B n'allume
+pas les mêmes pixels que B→A. `DEFAULTZEROLINEBIAS` retire un à l'erreur
+initiale dans quatre octants sur huit — les quatre inverses des quatre autres.
+
+J'en ai fait mon test principal : un éventail de 1 680 lignes tracées dans les
+deux sens, ensembles de pixels comparés. Ça teste toute la table plutôt qu'une
+entrée, et le sabotage « biais nul » le fait échouer 595 fois. Bon test.
+
+**Et il ne suffisait pas.** Un sabotage qui échange les rôles de x et de y dans
+l'indice d'octant produit une *autre* table qui biaise toujours exactement un
+membre de chaque paire de directions inverses. Elle reste donc parfaitement
+réversible, et elle a survécu à la suite entière.
+
+C'est une forme nouvelle du fil rouge de la journée. Les autres fois, le test
+était trop faible. Ici il était *bon* — il tenait une vraie propriété, pour la
+vraie raison — mais la propriété avait plus d'un modèle. Une invariance
+n'identifie pas ce qu'elle laisse invariant.
+
+La réponse est `scripts/spice-zero-line/`, qui transcrit `miZeroLine` et imprime
+les coordonnées pour les pentes à égalité. L'asymétrie qui distingue les deux
+tables se lit à l'œil dans sa sortie : `(0,0)→(8,4)` avance en y dès le premier
+pas, `(0,0)→(-8,4)` attend un pas de plus. Le gabarit épingle ça.
+
+Le conteneur est mort pendant le second passage de sabotage, en laissant
+l'octant échangé en place — ce qui a permis de vérifier la correction en vrai
+plutôt que par raisonnement : le gabarit échoue sur trois lignes, la
+réversibilité reste verte. Exactement la lacune qu'il comble.
+
+### Trois autres survivants, tous des valeurs neutres
+
+  * **le rop lu avec la mauvaise étiquette** : `.source` au lieu de `.brush`.
+    Tous mes tracés utilisaient `PUT` et `XOR`, des descripteurs sans bit
+    d'inversion — et sans inversion les deux étiquettes donnent la même
+    opération. Il faut un `INVERS_BRUSH` pour les séparer ;
+  * **le cycle de tirets qui redémarre à chaque sommet** : mon test de
+    pointillés n'avait qu'un segment droit, donc pas de second sommet. Deux
+    segments et un coin le voient ;
+  * **`ady > adx` au lieu de `ady >= adx`** : sur une diagonale parfaite les
+    deux lectures allument les mêmes pixels, parce que le terme d'erreur reste
+    positif quel que soit le biais. Vraie équivalence — mais la référence écrit
+    `if (adx > ady) x-major else y-major`, donc l'égalité est y-majeure, et
+    s'aligner coûte un caractère.
+
+Dix-huit sabotages, treize attrapés du premier coup. Les quatre survivants ont
+chacun produit un test qui les mord maintenant.
+
+### Deux prémisses fausses avant d'y arriver
+
+Deux fois un test a échoué et j'ai d'abord regardé le code : `−1/16` arrondit à
+0, pas à −1 ; `−23/16` à −1, pas à −2. J'ai arrêté de calculer de tête et fait
+évaluer la formule de la référence sur toute la plage. La règle réelle est plus
+propre que ce que j'écrivais : **une demie va toujours vers moins l'infini**,
++0,5 → 0 et −0,5 → −1. Aucune fonction d'arrondi courante ne fait ça — ni « half
+up », ni « half away from zero », ni « half to even ».
+
+Et le parcours du chemin : `BEGIN` dépense son premier point comme *position*,
+`CLOSE` n'agit qu'à l'intérieur d'un `END`, et fermer rejoint le premier point
+de la figure accumulée. Ma première version se trompait sur les trois. Un
+rectangle dessiné en un segment ne pouvait pas le voir ; une courbe l'a montré.

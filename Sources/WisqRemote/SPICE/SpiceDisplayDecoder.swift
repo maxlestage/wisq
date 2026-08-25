@@ -785,6 +785,106 @@ extension SpiceDisplayWire {
         return try reader.u32()
     }
 
+    // MARK: - Strokes
+
+    /// `DRAW_STROKE`.
+    ///
+    /// The field order is not the C struct's — it is the wire's, and the two
+    /// differ in three places that would each silently misalign everything
+    /// after them. The authority used here is the demarshaller the reference
+    /// *generates* from `spice.proto`, not `draw.h`:
+    ///
+    ///   * the path is behind a **pointer**, like an image;
+    ///   * `attr.style_nseg` and `attr.style` exist on the wire only when
+    ///     `STYLED` is set. `SpiceLineAttr` in C always has both fields, so
+    ///     transcribing the struct reads a length and a pointer out of the
+    ///     brush that follows;
+    ///   * `style` is itself a pointer to an array of `int32`, not an inline
+    ///     run of them.
+    static func stroke(_ payload: [UInt8]) throws -> Stroke {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let pathPointer = try reader.u32()
+
+        let flags = try reader.u8()
+        var style: [Fixed28Point4] = []
+        if flags & LineAttr.styled != 0 {
+            let count = Int(try reader.u8())
+            let stylePointer = try reader.u32()
+            style = try dashStyle(count: count, at: stylePointer, in: body)
+        }
+
+        return Stroke(
+            base: header,
+            path: try path(at: pathPointer, in: body),
+            attr: LineAttr(flags: flags, style: style),
+            brush: try brush(from: &reader, in: body),
+            foreMode: try reader.u16(),
+            backMode: try reader.u16()
+        )
+    }
+
+    /// The dash lengths, from wherever the attribute pointed.
+    ///
+    /// A null pointer with a non-zero count is a message contradicting itself,
+    /// and is refused rather than quietly drawn solid — a stroke that should
+    /// have been dotted arriving as a solid line is a wrong picture, not a
+    /// missing feature.
+    private static func dashStyle(
+        count: Int, at pointer: UInt32, in body: Body
+    ) throws -> [Fixed28Point4] {
+        guard count > 0 else { return [] }
+        guard let followed = try body.follow(pointer) else { throw SpiceError.invalidData }
+        var reader = followed.reader
+        return try (0..<count).map { _ in Fixed28Point4(raw: Int32(bitPattern: try reader.u32())) }
+    }
+
+    /// A path, from wherever the stroke pointed.
+    ///
+    /// Segments sit one after another, each `5 + 8 × count` bytes:
+    ///
+    ///     uint8  flags      // one byte on the wire; `uint32_t` in the C struct
+    ///     uint32 count
+    ///     count × { int32 x, int32 y }
+    ///
+    /// **`@ptr_array` in `spice.proto` describes the C side, not the wire.**
+    /// The generated parser walks the segments consecutively and only builds an
+    /// array of pointers into its own arena afterwards — the same distinction
+    /// already made for the clip's `@to_ptr`. Reading an array of offsets here
+    /// would take the first segment's flags and count for a pointer.
+    ///
+    /// Reading `flags` as four bytes is the other way to lose: every segment
+    /// after the first lands three bytes late, and the count read from the
+    /// middle of a coordinate is large enough to be refused rather than drawn —
+    /// which is the good outcome of a bad read, and not one to rely on.
+    static func path(at pointer: UInt32, in body: Body) throws -> Path {
+        guard let followed = try body.follow(pointer) else { throw SpiceError.invalidData }
+        var reader = followed.reader
+        let count = Int(try reader.u32())
+        // Each segment costs at least five bytes, so a count larger than the
+        // body could hold is refused before anything is reserved for it.
+        guard count >= 0, count * 5 <= body.bytes.count else { throw SpiceError.truncated }
+
+        var segments: [PathSegment] = []
+        segments.reserveCapacity(count)
+        for _ in 0..<count {
+            let flags = try reader.u8()
+            let points = Int(try reader.u32())
+            guard points >= 0, points * 8 <= body.bytes.count else { throw SpiceError.truncated }
+            var run: [PointFix] = []
+            run.reserveCapacity(points)
+            for _ in 0..<points {
+                run.append(PointFix(
+                    x: Fixed28Point4(raw: Int32(bitPattern: try reader.u32())),
+                    y: Fixed28Point4(raw: Int32(bitPattern: try reader.u32()))
+                ))
+            }
+            segments.append(PathSegment(flags: flags, points: run))
+        }
+        return Path(segments: segments)
+    }
+
     /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
     /// descriptor was.
     ///
