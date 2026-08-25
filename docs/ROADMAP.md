@@ -635,7 +635,59 @@ sans qu'un seul test tombe. Le harnais règle maintenant le seuil à la main pou
 atteindre la frontière, et la référence répond sans ambiguïté — pile sur le
 seuil, rien n'est divisé.
 
-Reste : la boucle de décodage QUIC elle-même, puis GLZ.
+**La boucle de décodage est la quatrième tranche**, et la première qui ne se
+vérifie pas en morceaux. L'en-tête, les tables de famille, le lecteur de bits
+et le modèle avaient chacun une comparaison exacte disponible ; une boucle de
+décodage ne se compare que sur ce qu'elle produit. Elle est donc comparée sur
+tout : chaque gabarit, chaque octet, contre ce que le décodeur de SPICE a tiré
+du même flux.
+
+Trois choses que la référence impose et qui ont chacune coûté une divergence :
+
+* **L'ordre des canaux sur le fil est rouge, vert, bleu**, et `rgb32_pixel_t`
+  est `b, g, r, pad`. Les deux vont en sens contraire. Se tromper ne mélange
+  pas seulement les couleurs : chaque canal porte son propre modèle et sa
+  propre ligne de symboles, donc le mauvais appariement désynchronise le
+  décodage en quelques pixels et le flux se termine trop tôt.
+* **Chaque seau démarre au code le plus haut**, `bpc - 1`, pas à zéro. C'est le
+  code avec lequel le tout premier pixel de l'image est lu. Un modèle testé
+  isolément ne peut pas le montrer : le test lui fournit le seau initial qu'il
+  a lui-même construit.
+* **`correlate_row[-1]` est écrit avant chaque ligne** : zéro pour la première,
+  et ensuite le premier symbole de la ligne du dessus. C'est le contexte qui
+  choisit le seau du pixel 0.
+
+Ce dernier point avait d'abord été noté à l'envers — « jamais écrit, donc
+zéro » — et une expérience semblait le confirmer. Elle ne le confirmait pas :
+elle empoisonnait une case que la ligne suivante réécrivait avant de la lire.
+La correction est consignée telle quelle dans le journal, parce qu'une
+conclusion fausse qu'on remplace en silence est une conclusion qu'on reprendra.
+
+**`rgba` n'est pas quatre canaux en une passe.** La référence sépare son état
+en deux : rouge, vert et bleu partagent `encoder->rgb_state` — un compteur
+d'attente, une graine, un codeur de séries pour les trois — tandis que les
+chemins un-octet et quatre-octets utilisent `channel_a->state`, celui du canal.
+Donc `uncompress_rgba` fait une passe couleur puis une passe alpha
+*entièrement séparée*, ligne après ligne. Les fusionner décode correctement la
+couleur puis part à la dérive sur l'alpha, qui hériterait du compteur d'attente
+de la première passe. Le décodeur est donc organisé en **plans** : un plan par
+groupe de canaux qui partagent un état.
+
+Deux gabarits ont été ajoutés pour ces chemins, parce qu'aucun des cinq
+premiers ne les atteignait : `rgba 24x18` pour les deux passes, et
+`rgb32 64x96` — 6144 pixels — pour que le masque d'attente avance, ce qui
+demande 2048 pixels et n'arrivait jamais.
+
+**Et les gabarits ne se reconstruisaient plus.** Le `qgen.c` commité avait été
+mis au propre avant le commit sans régénérer ce qu'il produisait, donc sa bande
+de bruit ne correspondait plus. Les cinq flux d'origine restaient honnêtes — ils
+se vérifient toujours contre le décodeur de référence — mais la procédure
+écrite dans le README ne les reproduisait pas. Les sept ont été régénérés avec
+le harnais tel qu'il est, et le README donne maintenant la commande exacte de
+chacun. Un gabarit qu'on ne peut pas reconstruire est un gabarit que personne
+ne peut vérifier.
+
+Reste : brancher `.quic` sur le chemin des images, puis GLZ.
 
 ## Lot 6 — finition
 
