@@ -1274,6 +1274,48 @@ son débit et ne mettent rien à l'écran — ils sont ignorés pour de bon, ce 
 fait d'eux les seuls exemples de « message ignoré » qu'un test puisse citer sans
 qu'il expire.
 
+### Le canal audio : le son de la machine distante
+
+Fait pour la lecture. Sept messages, un codec d'état, et du PCM signé seize bits
+petit-boutiste entrelacé par canal. Le canal a sa propre connexion, pour la même
+raison que le pointeur : un son qui attend derrière un écran de pixels arrive en
+retard, et un son en retard est pire que pas de son.
+
+**Seul le PCM brut est décodé.** CELT 0.5.1 est marqué obsolète dans l'en-tête
+de la référence, Opus est ce que négocient les serveurs modernes, et wisq
+n'embarque de décodeur pour ni l'un ni l'autre. Ils sont **nommés** plutôt que
+rassemblés sous « inconnu » : « le serveur a choisi Opus » est une explication
+sur laquelle un utilisateur peut agir, le silence n'en est pas une. Et des
+octets Opus lus comme des échantillons ne sont pas un échec discret — c'est du
+bruit à plein volume, sorti d'un téléphone, à l'heure qu'il est.
+
+Quatre décisions que la référence impose ou justifie :
+
+  * **`PLAYBACK_MODE` porte son propre paquet.** Il a le même `time` et les
+    mêmes octets de queue qu'un `DATA`, donc un changement de codec peut livrer
+    ses premiers échantillons dans le même message. Ne lire que le mode les
+    perd ;
+  * **le codec vaut `raw` tant qu'aucun `MODE` n'est arrivé**, parce qu'un
+    serveur qui n'en envoie jamais envoie du PCM. Traiter « pas encore de
+    mode » comme « inconnu » couperait le début de chaque flux — et le début
+    est la partie qu'on remarque ;
+  * **`STOP` oublie le flux et garde le codec.** Un serveur qui arrête puis
+    reprend ne renvoie pas `MODE` ; le remettre à zéro rendrait indécodable
+    tout ce qui suit la reprise, avec pour symptôme un son qui marche une fois
+    et plus jamais ;
+  * **le muet jette le paquet au lieu de le mettre à zéro.** Des échantillons
+    nuls restent des échantillons : ils tiennent l'horloge et la longueur du
+    tampon. Les jeter est ce que fait la référence, et c'est aussi ce qui évite
+    qu'une session muette dépense la batterie en silence.
+
+Le volume et la latence sont retenus tels que le serveur les envoie, sans être
+appliqués : le volume de SPICE est le réglage du mixeur **de l'invité**, et
+l'appliquer ici atténuerait deux fois.
+
+Ce qui reste sur l'audio : le canal `record` — le micro du téléphone vers
+l'invité — et la sortie elle-même, qui demande AVAudioEngine et n'existe donc
+que côté Apple.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).

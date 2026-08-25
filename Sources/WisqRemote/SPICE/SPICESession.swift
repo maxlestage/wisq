@@ -35,6 +35,8 @@ public actor SPICESession: RemoteSession {
     private var cursor: (any ByteStream)?
     private var pump: Task<Void, Never>?
     private var cursorPump: Task<Void, Never>?
+    private var playback: (any ByteStream)?
+    private var playbackPump: Task<Void, Never>?
     private var mainPump: Task<Void, Never>?
 
     /// The main channel's agent, which owns its own state.
@@ -78,19 +80,23 @@ public actor SPICESession: RemoteSession {
     public func stop() async {
         pump?.cancel()
         cursorPump?.cancel()
+        playbackPump?.cancel()
         mainPump?.cancel()
         pump = nil
         cursorPump = nil
+        playbackPump = nil
         mainPump = nil
         agent = nil
         await main?.close()
         await display?.close()
         await inputs?.close()
         await cursor?.close()
+        await playback?.close()
         main = nil
         display = nil
         inputs = nil
         cursor = nil
+        playback = nil
         continuation.yield(.disconnected(nil))
         continuation.finish()
     }
@@ -245,6 +251,91 @@ public actor SPICESession: RemoteSession {
                 cursor = nil
             }
         }
+
+        // Sound, on a connection of its own for the same reason the pointer has
+        // one: audio that waits behind a screenful of pixels arrives late, and
+        // late audio is worse than none. Best effort — a session with no sound
+        // is a session, and a server may not offer the channel at all.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.playback.rawValue }) {
+            do {
+                let playbackStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: playbackStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .playback,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                playback = playbackStream
+                playbackPump = Task { [weak self] in
+                    await self?.followPlayback(on: playbackStream)
+                }
+            } catch {
+                playback = nil
+            }
+        }
+    }
+
+    /// Reads the playback channel and hands frames to whoever is listening.
+    ///
+    /// Failures here end this task and nothing else, like the cursor's: losing
+    /// sound is losing sound, and tearing down a working screen for it would be
+    /// the wrong trade.
+    private func followPlayback(on stream: any ByteStream) async {
+        var state = SpicePlayback()
+        var serial: UInt64 = 1
+        while !Task.isCancelled {
+            do {
+                let header = try SpiceWire.decodeDataHeader(
+                    try await stream.read(exactly: SpiceWire.dataHeaderBytes)
+                )
+                guard header.size <= 1 << 22 else { return }
+                let payload = header.size == 0
+                    ? Data() : try await stream.read(exactly: Int(header.size))
+
+                switch header.type {
+                case SpiceWire.Message.ping:
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.pong, serial: serial, payload: payload
+                    ))
+                    serial += 1
+                case SpicePlaybackWire.Message.start.rawValue:
+                    state.start(try SpicePlaybackWire.start([UInt8](payload)))
+                case SpicePlaybackWire.Message.stop.rawValue:
+                    state.stop()
+                case SpicePlaybackWire.Message.mode.rawValue:
+                    // A mode change carries its own first packet, so the samples
+                    // in it are played rather than dropped.
+                    let change = try SpicePlaybackWire.modeChange([UInt8](payload))
+                    state.setMode(change.mode)
+                    publish(state.frames(from: SpicePlaybackWire.Packet(
+                        time: change.time, data: change.data
+                    )))
+                case SpicePlaybackWire.Message.data.rawValue:
+                    publish(state.frames(from: try SpicePlaybackWire.packet([UInt8](payload))))
+                case SpicePlaybackWire.Message.mute.rawValue:
+                    state.setMuted(try SpicePlaybackWire.mute([UInt8](payload)))
+                case SpicePlaybackWire.Message.volume.rawValue:
+                    state.setVolume(try SpicePlaybackWire.volume([UInt8](payload)).levels)
+                case SpicePlaybackWire.Message.latency.rawValue:
+                    state.setLatency(try SpicePlaybackWire.latency([UInt8](payload)))
+                default:
+                    continue
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Only frames with something in them reach the UI. A packet that decoded to
+    /// nothing — muted, a codec with no decoder, no whole frame — is silence,
+    /// and silence is not an event worth waking a renderer for.
+    private func publish(_ frames: SpicePlayback.Frames?) {
+        guard let frames, !frames.samples.isEmpty else { return }
+        continuation.yield(.audio(AudioFrames(
+            samples: frames.samples, channels: frames.channels,
+            frequency: frames.frequency, time: frames.time
+        )))
     }
 
     /// Reads the main channel for as long as the session lasts.

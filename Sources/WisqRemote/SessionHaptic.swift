@@ -41,6 +41,11 @@ extension SessionEvent {
     ///     rule is written as an allow-list rather than a deny-list: it arrives
     ///     tens of times a second, and one slip would turn the phone into a
     ///     buzzer for the length of the session.
+    ///
+    /// The allow-list has since earned itself once: adding `.audio` broke this
+    /// switch and made the question unavoidable. Audio packets arrive tens of
+    /// times a second too, so the answer was the same as the framebuffer's —
+    /// but a deny-list would not have asked.
     public var haptic: SessionHaptic? {
         switch self {
         case .ready:
@@ -50,7 +55,7 @@ extension SessionEvent {
         case .disconnected(let error):
             return error == nil ? nil : .error
         case .connecting, .authenticating, .framebufferChanged, .resized,
-             .clipboard, .bell, .cursor:
+             .clipboard, .bell, .cursor, .audio:
             return nil
         }
     }

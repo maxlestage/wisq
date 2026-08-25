@@ -1597,3 +1597,48 @@ deux lectures », et vérifier que la mienne en est une.
 
 C'est aussi arrivé sur les tirets, la veille : j'avais écrit un test de coin pour
 attraper un cycle qui redémarre, avec un segment long d'exactement une période.
+
+## Le son, et un test qui échouait pour une raison qui n'était pas la sienne
+
+Le canal `playback` de SPICE est petit : sept messages, un codec d'état, du PCM
+signé seize bits. Il est écrit comme `TransportTuning` — une valeur qui décide
+tout ce qui se décide sans haut-parleur (quel codec est en vigueur, si un paquet
+est jouable, combien de trames il porte, si c'est muet), et rien de plus. Ce qui
+reste à la plateforme, c'est de donner les trames à AVAudioEngine.
+
+Onze sabotages sur onze attrapés du premier coup, ce qui n'était jamais arrivé.
+Deux raisons, je crois : le domaine est petit, et j'ai écrit les tests en
+cherchant l'entrée qui sépare les deux lectures plutôt qu'en illustrant le code.
+`0x0102` et `0x0201` sont des nombres différents ; `0x0101` ne l'aurait pas été.
+
+Un douzième sabotage a survécu, et il ne portait pas sur l'audio : faire buzzer
+le téléphone à chaque paquet audio. `SessionHapticTests` ne connaissait pas le
+nouveau cas. La liste blanche de `SessionHaptic` avait pourtant fait son travail
+— ajouter `.audio` à `SessionEvent` casse la compilation du `switch` et rend la
+question inévitable — mais elle force à *répondre*, pas à *tester la réponse*.
+Une liste blanche empêche l'oubli ; elle n'empêche pas une mauvaise réponse.
+
+### Le test avait raison de tomber, pour la mauvaise raison
+
+Le test de bout en bout — une trame qui part du fil et sort par le flux
+d'événements — a échoué trois fois de suite, et aucune n'était le canal audio.
+
+D'abord : `AsyncStream` ne supporte qu'une itération. Mon test attendait
+`.ready`, puis attendait `.audio` sur le même flux ; la seconde boucle ne rend
+rien.
+
+Ensuite, et c'est le plus intéressant : le faux serveur d'affichage épuisait sa
+socket, la pompe display terminait la session, et le flux d'événements se
+fermait. La trame audio était produite *après*, dans une continuation close, et
+disparaissait. Le canal marchait depuis le début — les diagnostics montraient
+les deux messages lus et décodés — mais l'échafaudage du test le tuait avant
+qu'il ait fini de parler.
+
+C'est une variante de plus du fil rouge : un test peut être rouge sans que le
+code soit faux, exactement comme il peut être vert sans que le code soit juste.
+Les deux fois, ce qu'on croit mesurer n'est pas ce qu'on mesure. J'ai d'abord
+soupçonné le décodage, et il a fallu imprimer les octets de l'en-tête pour voir
+que tout se passait bien.
+
+La correction est que le faux serveur continue de parler — cent messages ignorés
+— plutôt qu'un `sleep` qui aurait rendu le test lent et lunatique.

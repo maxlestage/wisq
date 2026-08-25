@@ -44,14 +44,18 @@ final class SPICESessionTests: XCTestCase {
         return SpiceWire.message(SpiceWire.Message.mainInit, serial: 1, payload: Data(body))
     }
 
-    private func channelsList(withInputs: Bool = false, withCursor: Bool = false) -> Data {
+    private func channelsList(
+        withInputs: Bool = false, withCursor: Bool = false, withPlayback: Bool = false
+    ) -> Data {
         var count: UInt32 = 1
         if withInputs { count += 1 }
         if withCursor { count += 1 }
+        if withPlayback { count += 1 }
         var body = u32(count)
         body += [SpiceWire.Channel.display.rawValue, 0]
         if withInputs { body += [SpiceWire.Channel.inputs.rawValue, 0] }
         if withCursor { body += [SpiceWire.Channel.cursor.rawValue, 0] }
+        if withPlayback { body += [SpiceWire.Channel.playback.rawValue, 0] }
         return SpiceWire.message(
             SpiceWire.Message.mainChannelsList, serial: 2, payload: Data(body)
         )
@@ -393,6 +397,104 @@ final class SPICESessionTests: XCTestCase {
     /// Input goes down a third connection of its own, presenting the same
     /// session identifier. Sending keystrokes on the display socket would be a
     /// protocol error dressed up as a shortcut.
+    /// **Sound reaches the UI from the wire.**
+    ///
+    /// A decoder nothing calls is a decoder that does not exist — `lzPalette`
+    /// showed that once and two later draws had the same gap survive a
+    /// sabotage. So the channel is not merely opened here: a `START` and a
+    /// `DATA` go down the socket, and the samples come back out of the session's
+    /// event stream.
+    func testSoundGoesFromThePlaybackSocketToTheEventStream() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 9) + channelsList(withPlayback: true)
+        )
+        // **Le faux serveur d'affichage doit continuer à parler.** Quand sa
+        // socket s'épuise, la pompe display termine la session — et le flux
+        // d'événements avec elle. Une trame audio produite après ce moment est
+        // écrite dans une continuation close et disparaît. C'est ce qui faisait
+        // échouer ce test alors que le canal fonctionnait : la course, pas le
+        // code. Cent messages ignorés suffisent à couvrir le temps que la pompe
+        // audio prend à livrer.
+        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        for serial in 0..<100 {
+            displayInbound += SpiceWire.message(
+                SpiceDisplayWire.Message.mark.rawValue, serial: UInt64(serial + 2)
+            )
+        }
+        let displaySocket = MemoryByteStream(inbound: displayInbound)
+        // Deux canaux, S16, 48 kHz, puis une trame stéréo : 0x0102 et 0x0304.
+        let start = SpiceWire.message(
+            SpicePlaybackWire.Message.start.rawValue, serial: 1,
+            payload: Data(u32(2) + [1, 0] + u32(48_000) + u32(0))
+        )
+        let data = SpiceWire.message(
+            SpicePlaybackWire.Message.data.rawValue, serial: 2,
+            payload: Data(u32(11) + [0x02, 0x01, 0x04, 0x03])
+        )
+        let playbackSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + start + data
+        )
+        let sockets = Sockets([mainSocket, displaySocket, playbackSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+
+        // Une seule itération du flux : `AsyncStream` n'en supporte qu'une, et
+        // un second `for await` sur le même flux ne rend rien. C'est ce qui a
+        // fait échouer la première version de ce test alors que le canal
+        // fonctionnait — la panne était dans le test.
+        let heard = await waitFor(session) {
+            if case .audio = $0 { return true } else { return false }
+        }
+        guard case let .audio(frames)? = heard else {
+            XCTFail("aucune trame audio n'est sortie de la session")
+            await session.stop()
+            return
+        }
+        XCTAssertEqual(frames.samples, [0x0102, 0x0304])
+        XCTAssertEqual(frames.channels, 2)
+        XCTAssertEqual(frames.frequency, 48_000)
+        XCTAssertEqual(frames.time, 11, "l'horloge du serveur est conservée")
+
+        var reader = SpiceWire.Reader(await playbackSocket.written)
+        _ = try reader.bytes(SpiceWire.headerBytes)
+        XCTAssertEqual(try reader.u32(), 9)
+        XCTAssertEqual(try reader.u8(), SpiceWire.Channel.playback.rawValue)
+
+        await session.stop()
+    }
+
+    /// A server with no playback channel opens no socket for it, and the
+    /// session is a session all the same.
+    func testAServerWithNoSoundOpensNoSocketForIt() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList()
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let sockets = Sockets([mainSocket, displaySocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        let opened = await sockets.count
+        XCTAssertEqual(opened, 2, "aucune connexion ouverte pour un canal non offert")
+
+        await session.stop()
+    }
+
     func testInputOpensAThirdConnectionAndPresentsTheSessionIdentifier() async throws {
         let sessionID: UInt32 = 0x1234
         let mainSocket = MemoryByteStream(
