@@ -115,8 +115,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.updates, [
             SpiceDisplayChannel.Update(
@@ -136,8 +137,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        _ = try await channel.pump(into: &surfaces, serial: 1, limit: 2)
+        _ = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
         XCTAssertTrue(surfaces.surfaces.isEmpty)
     }
 
@@ -150,8 +152,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
         XCTAssertTrue(progress.updates.isEmpty)
         XCTAssertEqual(progress.undrawable, 0, "ce n'est pas un refus, c'est un rien")
     }
@@ -166,8 +169,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 7, limit: 1)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 7, limit: 1)
         XCTAssertTrue(progress.ignored.isEmpty)
 
         var reader = SpiceWire.Reader(await server.written)
@@ -188,8 +192,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 1, limit: 3)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 3)
         XCTAssertEqual(progress.ignored[unhandled], 2)
         XCTAssertEqual(progress.ignored[SpiceDisplayWire.Message.streamCreate.rawValue], 1)
     }
@@ -218,8 +223,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
         XCTAssertEqual(progress.undrawable, 1)
         XCTAssertTrue(progress.updates.isEmpty)
         XCTAssertTrue(surfaces.surfaces[0]!.pixels.allSatisfy { $0 == 0 }, "rien n'a été peint")
@@ -237,9 +243,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
         do {
-            _ = try await channel.pump(into: &surfaces, serial: 1, limit: 1)
+            _ = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 1)
             XCTFail("un message malformé doit arrêter la pompe")
         } catch {
             XCTAssertEqual(error as? SpiceError, .invalidData)
@@ -254,9 +261,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         let server = MemoryByteStream(inbound: header)
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
         do {
-            _ = try await channel.pump(into: &surfaces, serial: 1, limit: 1)
+            _ = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 1)
             XCTFail("une taille absurde doit être refusée")
         } catch {
             XCTAssertEqual(error as? SpiceError, .invalidData)
@@ -282,11 +290,12 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let first = try await channel.pump(into: &surfaces, serial: 10, limit: 1)
+        let first = try await channel.pump(into: &surfaces, glz: &glz, serial: 10, limit: 1)
         XCTAssertEqual(first.nextSerial, 11, "un pong envoyé, donc un cran")
 
-        let second = try await channel.pump(into: &surfaces, serial: first.nextSerial, limit: 1)
+        let second = try await channel.pump(into: &surfaces, glz: &glz, serial: first.nextSerial, limit: 1)
         XCTAssertEqual(second.nextSerial, 12)
 
         // And the wire agrees: two pongs, with consecutive serials.
@@ -306,8 +315,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
 
-        let progress = try await channel.pump(into: &surfaces, serial: 5, limit: 1)
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 5, limit: 1)
         XCTAssertEqual(progress.nextSerial, 5)
     }
 }

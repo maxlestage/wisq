@@ -241,6 +241,15 @@ enum SpiceDisplayWire {
         }
         var jpegAlpha: JPEGAlpha?
 
+        /// The **inflated** size of a `zlibGlzRGB` payload.
+        ///
+        /// Its message carries two lengths, which is why this type is not in
+        /// the plain "a length and that many bytes" case: `glz_data_size` says
+        /// how big the GLZ stream will be once unzipped, and `data_size` says
+        /// how many zlib bytes follow. Reading the first as the second gives a
+        /// length that is usually larger than the message.
+        var inflatedSize: Int?
+
         /// The colour table for a compressed palettised stream.
         ///
         /// Apart from `bitmap.palette` because the two arrive by different

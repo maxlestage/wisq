@@ -797,7 +797,60 @@ fuit toute la session précédente. Rien dans le protocole ne le demande — c'e
 un oubli dans une fonction. Ici `oldest` est remis à zéro, et la raison est
 écrite à l'endroit où elle se lit.
 
-Reste : la boucle de correspondance, puis le branchement. Une image seule ne peut
+**La boucle de correspondance est la troisième tranche**, et le codage lui-même
+n'a pas résisté longtemps. Ce qui a coûté, c'est la couverture : douze
+sabotages, cinq survivants au premier passage, et **aucun n'était une
+équivalence**. Cinq chemins qu'aucun gabarit n'atteignait, chacun demandant un
+gabarit construit pour lui. Deux avaient un seuil de taille facile à rater —
+notamment l'offset long, où 128×64 ne suffit pas parce que les offsets locaux
+sont biaisés de un et qu'une demi-répétition sur 8192 pixels reste dans le
+chemin court à un près.
+
+**Le branchement est la quatrième**, et c'est là que « fonctionnalité de
+session » cesse d'être une figure de style. La fenêtre circule en `inout` à
+côté des surfaces, pour la même raison et avec la même durée de vie : un flux
+renvoie à des images décodées plus tôt *sur cette connexion*, et à rien
+d'avant. Elle naît dans `run()`, comme les surfaces, et une reconnexion repart
+d'une fenêtre vide comme elle repart d'un écran vide.
+
+Pas de surcharge de commodité sans fenêtre, délibérément. Appelée en boucle,
+elle repartirait d'une fenêtre neuve à chaque image et les correspondances
+entre images échoueraient en silence — tous les tests de codec resteraient
+verts, il manquerait juste des mises à jour à l'écran. Mieux vaut dix appels de
+test à corriger qu'une API qui rend ce bug facile.
+
+Seules les images GLZ entrent dans la fenêtre, et seul `rgb32` est décodé pour
+l'instant — les autres types diffèrent par leurs biais de longueur et leur
+largeur de pixel, donc les passer dans la boucle 32 bits produirait une image
+plutôt qu'une erreur.
+
+**`zlibGlzRGB` est la cinquième tranche**, et elle est courte parce que le
+format ne cache rien : c'est un flux GLZ avec du zlib autour.
+`canvas_get_zlib_glz_rgb` dézippe puis appelle exactement le même chemin GLZ.
+
+Deux détails, et le second aurait fait mal :
+
+* **Le message porte deux longueurs.** `glz_data_size` dit la taille du flux
+  GLZ une fois dézippé, `data_size` combien d'octets zlib suivent. C'est
+  précisément pour ça que ce type ne pouvait pas passer par la forme
+  « une longueur puis autant d'octets ». Lu de travers, la première est prise
+  pour la seconde — une longueur normalement plus grande que le message, donc
+  la lecture déborde au lieu de produire une image fausse. C'est le bon échec.
+* **`decode-zlib.c` appelle `inflateReset` avant chaque image.** Chaque image
+  est donc comprimée indépendamment, sans dictionnaire qui traverse. Or
+  l'`InflateStream` de wisq a été écrit pour Zlib et ZRLE de RFB, où le
+  dictionnaire *traverse* justement. En réutiliser un ici décode correctement
+  la première image et corrompt la seconde. Vérifié plutôt que supposé : un
+  inflateur partagé échoue sur la seconde avec `Z_DATA_ERROR`.
+
+Un inflateur neuf par image a exactement la sémantique de la référence, pour le
+prix d'une initialisation zlib — des microsecondes contre un décodage. Et une
+sévérité de plus que la référence, qui avertit et garde ce qui a été écrit quand
+le dézippage n'atteint pas la taille promise : ici c'est refusé. Un flux qui ne
+produit pas la taille que son propre message annonce est un message malformé,
+pas une image.
+
+Reste : les types GLZ autres que `rgb32`. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
