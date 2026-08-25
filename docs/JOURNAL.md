@@ -603,3 +603,53 @@ après le test d'ordre du canal qui figeait l'encodage demandé. À chaque fois 
 question est la même : le test tombe-t-il parce que le code a régressé, ou
 parce que sa prémisse a expiré ? Ici la prémisse a expiré, et le retirer n'est
 pas contourner un test — c'est constater qu'il parlait d'un état révolu.
+
+## GLZ : rgb24 gratuit, rgb16 et la troncature du C
+
+### Une mesure qui rend le travail inutile
+
+`rgb24` s'annonçait comme la tranche suivante, avec pour piège supposé le pixel
+à trois octets. Il n'y avait pas de tranche : `DECODE_TO_RGB32` envoie les types
+7, 8 et 9 au même décodeur. Un littéral rgb24 fait trois octets sur le fil comme
+un rgb32 ; seule la largeur de *sortie* différait, et spice-gtk décode toujours
+en 32 bits.
+
+Vérifié en encodant le même contenu des deux façons : les flux diffèrent en
+exactement deux octets, l'octet type/top_down et le mot de foulée. La charge
+compressée est la même.
+
+Conséquence sur le gabarit, et il faut le dire plutôt que de le laisser croire :
+**il n'apporte aucune couverture à la boucle**. Mon premier commentaire le
+présentait comme « transformant une lecture plausible en fait vérifié », ce qui
+surestimait ce qu'il fait. Il épingle une chose plus étroite — que l'en-tête se
+lit en rgb24 et que la charge derrière est une charge rgb32 — et c'est tout.
+
+### Le vert faux, et pourquoi la référence avait raison
+
+`rgb16` a échoué du premier coup avec un symptôme précieux : bleu et rouge
+justes, **vert faux**. Pas un décalage général, pas un ordre d'octets inversé —
+un seul canal.
+
+La cause est dans le langage, pas dans l'algorithme. Dans la référence,
+`out->g`, `out->r` et `out->b` sont des champs `uint8_t` d'un `rgb32_pixel_t`.
+Donc `out->g = ((out->r) << 6) | ((out->b) >> 2) & ~0x07` **tronque à huit
+bits**, et le `out->g |= (out->g >> 5)` de la ligne suivante opère sur la valeur
+déjà tronquée. En Swift j'avais tout calculé en `UInt32` et tronqué à
+l'écriture : les bits qui auraient dû tomber revenaient par le décalage.
+
+C'est un genre d'erreur que la relecture attrape mal, parce que le C ne dit
+nulle part « tronquer » — c'est le type des champs qui le dit, trois lignes plus
+haut. Seul le gabarit de référence le montre, et il le montre proprement : un
+canal sur trois.
+
+### Une quatrième catégorie de sabotage survivant
+
+Jusqu'ici je triais les sabotages survivants en trois : ligne fausse, test
+manquant, équivalence réelle. Celui-ci en révèle une quatrième — **code mort**.
+J'avais ajouté à `Literal` une propriété `bytes` qui disait combien d'octets un
+littéral consomme ; la lire ne servait à rien, la lecture se faisant en ligne
+dans le `switch`. Le sabotage passait donc sans rien casser, à juste titre.
+
+La bonne réponse n'était ni un test ni une correction : c'était de la
+supprimer. Une propriété qui a l'air de porter une règle et que personne ne lit
+est pire qu'absente — elle invite à la croire appliquée.
