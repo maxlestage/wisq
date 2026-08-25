@@ -227,6 +227,20 @@ enum SpiceDisplayWire {
         var descriptor: ImageDescriptor
         var bitmap: Bitmap?
         var payload: [UInt8]?
+        /// Where the JPEG ends and the alpha stream begins, for `jpegAlpha`.
+        ///
+        /// Two codecs share one payload there, and the boundary is a number in
+        /// the message rather than something the bytes announce — a JPEG's end
+        /// marker would be a guess, and the alpha stream has no magic of its
+        /// own that could not also occur inside JPEG data.
+        struct JPEGAlpha: Equatable, Sendable {
+            /// `SPICE_JPEG_ALPHA_FLAGS_TOP_DOWN`, bit 0. Its own flag word,
+            /// not the bitmap one: `TOP_DOWN` is bit 0 here and bit 2 there.
+            var topDown: Bool
+            var jpegBytes: Int
+        }
+        var jpegAlpha: JPEGAlpha?
+
         /// The colour table for a compressed palettised stream.
         ///
         /// Apart from `bitmap.palette` because the two arrive by different

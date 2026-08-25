@@ -541,11 +541,33 @@ extérieurs, bien que ceux-ci portent aussi un `TOP_DOWN`. Vérifié dans
 pour `LZ_PLT` et ne passe les drapeaux extérieurs qu'au cache de palette. Lire
 le mauvais des deux aurait mis à l'envers les seules images palettisées.
 
-Reste : QUIC, GLZ, JPEG. JPEG attendait une question préalable : le décodeur
-existe depuis le travail sur Tight, mais **aucun job de CI ne l'exécutait** —
-les tests du paquet ne tournent que sur Linux, où ImageIO n'existe pas, et le
-job iOS ne lance que les tests de l'interface. Le job `Cœur (Apple)` corrige
-ça avant qu'on empile du SPICE derrière.
+**JPEG est branché, les deux formes.** Il attendait une question préalable :
+le décodeur existe depuis le travail sur Tight, mais **aucun job de CI ne
+l'exécutait** — les tests du paquet ne tournaient que sur Linux, où ImageIO
+n'existe pas, et le job iOS ne lance que les tests de l'interface. Le job
+`Cœur (Apple)` a corrigé ça d'abord, pour ne pas empiler du SPICE derrière un
+décodeur que rien ne vérifie.
+
+`jpeg` (105) était le cas facile : sa forme de message est la forme commune,
+donc seule la répartition manquait. `jpegAlpha` (108) est l'intéressant :
+**deux codecs sur les mêmes pixels**, un JPEG pour la couleur puis un flux LZ
+`xxxa` pour l'opacité, bout à bout dans une seule charge utile. La frontière
+entre les deux est un nombre du message, pas quelque chose que les octets
+annoncent — chercher un marqueur de fin de JPEG serait une devinette, et le
+flux alpha n'a pas de magie propre qui ne puisse apparaître dans des données
+JPEG.
+
+`SpiceLZ.applyAlpha` est le point d'entrée que ça demandait : la passe alpha
+écrit dans un tampon que ce codec n'a pas produit, ce que `decompressWithAlpha`
+ne sait pas faire puisqu'il alloue le sien.
+
+Trois refus valent d'être nommés, et ce sont ceux du canevas de référence :
+largeur, hauteur, et **orientation** doivent concorder entre les deux moitiés.
+Un `TOP_DOWN` qui diffère donnerait une image dont l'opacité est à l'envers.
+Et ce drapeau est **le bit 0** ici, là où celui du bitmap est le bit 2 : deux
+mots de drapeaux, deux positions, un seul nom.
+
+Reste : QUIC, GLZ.
 
 ## Lot 6 — finition
 

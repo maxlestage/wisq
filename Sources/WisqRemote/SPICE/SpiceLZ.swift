@@ -454,6 +454,30 @@ enum SpiceLZ {
         return (header, pixels)
     }
 
+    /// Applies an alpha-only stream over pixels somebody else decoded.
+    ///
+    /// `jpegAlpha` is the only caller, and it is the reason this exists at all:
+    /// SPICE sends that image as **two codecs over the same pixels** — a JPEG
+    /// for the colour and an `xxxa` LZ stream for the opacity. So the alpha
+    /// pass has to write into a buffer this codec did not produce, which
+    /// `decompressWithAlpha` cannot do because it allocates its own.
+    ///
+    /// Refuses anything but `xxxa`: another type here would be a second colour
+    /// pass silently overwriting the JPEG with whatever the stream held.
+    static func applyAlpha(_ payload: [UInt8], to pixels: inout [UInt8]) throws -> Header {
+        var reader = Reader(payload)
+        let header = try header(from: &reader)
+        guard header.type == .xxxa else {
+            throw Failure.unsupportedImageType(header.type)
+        }
+        let count = header.width * header.height
+        guard pixels.count >= count * 4 else { throw Failure.truncated }
+
+        try run(&reader, into: &pixels, count: count,
+                pass: Pass(read: 1, stride: 4, offset: 3, lengthBias: 3))
+        return header
+    }
+
     /// Which bytes of each pixel a pass owns, and how its lengths are biased.
     ///
     /// Its own type because the two passes differ only in these four numbers,
