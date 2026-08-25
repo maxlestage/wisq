@@ -1227,9 +1227,52 @@ qu'un blanc couvre, ce que le commentaire de la référence appelle de ses vœux
 Les pixels allumés sont un sous-ensemble de ceux de la ligne pleine — jamais à
 côté — ce qui est la propriété qu'un utilisateur pourrait remarquer.
 
-Ce qui reste sur le canal display : le texte (`DRAW_TEXT`), et les rapports de
-flux (`STREAM_ACTIVATE_REPORT`), délibérément ignorés — ils permettent au
-serveur d'adapter son débit, pas au client d'afficher quoi que ce soit.
+### `DRAW_TEXT` : des glyphes, et deux modes dont aucun n'est un rop
+
+Fait, et c'est le dernier message du canal display. Une chaîne de glyphes
+matriciels, un rectangle de fond, **deux** brosses, et deux descripteurs de rop.
+
+**Aucun des deux modes n'est une opération raster.** `canvas_draw_text` remplit
+le fond en `SPICE_ROP_COPY` et compose les glyphes en `PIXMAN_OP_OVER`, sans
+jamais lire `back_mode` et sans lire `fore_mode` autrement que dans une
+assertion qu'il vaut `PUT`. Son propre commentaire le dit : « *Nothing else
+makes sense for text and we should deprecate it and actually it means OVER
+really* ». Les deux sont décodés parce qu'ils sont sur le fil ; agir dessus
+dessinerait ce qu'aucun autre client ne dessine.
+
+**Les deux points d'un glyphe s'additionnent.** `render_pos` est là où se trouve
+le curseur de texte, `glyph_origin` le décalage propre du glyphe — négatif pour
+une jambage sous la ligne de base, vers la gauche pour une paire crénée.
+`canvas_raster_glyph_box` écrit `render_pos.y + glyph_origin.y`. N'en prendre
+qu'un met chaque accent au mauvais endroit, et ça ressemble à un problème de
+police plutôt qu'à un problème de décodage.
+
+**Trois profondeurs, trois règles de rembourrage différentes.** Le parseur
+engendré les dimensionne `((l+7)/8)·h`, `((4l+7)/8)·h` et `l·h` : A1 et A4
+complètent chaque rangée à l'octet, **A8 pas du tout**. Supposer une règle
+commune cisaille chaque rangée de deux des trois.
+
+**Les rangées se lisent du bas vers le haut**, à toutes les profondeurs, et le
+drapeau `TOP_DOWN` n'y change rien : `canvas_put_glyph_bits` porte un
+`//todo: support SPICE_STRING_FLAGS_RASTER_TOP_DOWN` et part de la fin des
+données. Décodé et délibérément ignoré, parce que l'honorer dessinerait le texte
+à l'envers de tous les autres clients face au même serveur.
+
+**Un quartet A4 plein vaut 240, pas 255.** La référence écrit
+`dest[i] = MAX(dest[i], *now & 0xf0)` : elle décale le quartet dans la moitié
+haute au lieu de le mettre à l'échelle. Le texte A4 n'est donc jamais tout à
+fait opaque. Le mettre à l'échelle serait plus joli et ne serait pas ce que le
+serveur a dessiné.
+
+Et les glyphes se combinent par `max`, pas par écrasement : accents et paires
+crénées se recouvrent, et le glyphe suivant ne doit pas percer un trou dans le
+précédent là où sa propre couverture est nulle.
+
+Le canal display est complet. Ce qui reste n'est pas du dessin : les rapports de
+flux (`STREAM_ACTIVATE_REPORT`, `STREAM_REPORT`) permettent au serveur d'adapter
+son débit et ne mettent rien à l'écran — ils sont ignorés pour de bon, ce qui
+fait d'eux les seuls exemples de « message ignoré » qu'un test puisse citer sans
+qu'il expire.
 
 ## Lot 6 — finition
 
