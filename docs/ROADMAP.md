@@ -567,7 +567,37 @@ Un `TOP_DOWN` qui diffère donnerait une image dont l'opacité est à l'envers.
 Et ce drapeau est **le bit 0** ici, là où celui du bitmap est le bit 2 : deux
 mots de drapeaux, deux positions, un seul nom.
 
-Reste : QUIC, GLZ.
+**QUIC commence, et il arrive en plusieurs fois.** C'est le codec propre à
+SPICE et de loin le plus gros : codage de Golomb-Rice adaptatif, modèle par
+canal qui se remodèle en cours de route, sous-état de répétition emprunté à
+MELCODE, prédiction depuis les pixels du dessus et de gauche. La référence fait
+2 250 lignes de C réparties sur `quic.c` et trois gabarits instanciés une fois
+par format de pixel. Le découper est une décision, pas un renoncement : une
+seule PR de cette taille ne se relit pas.
+
+Cette première tranche est celle qui rend le reste vérifiable :
+
+* le **harnais de gabarits** (`scripts/spice-quic-fixtures/`), qui lie
+  l'encodeur *et* le décodeur de référence. QUIC n'a aucune seconde
+  implémentation ailleurs avec qui être en désaccord, donc l'encodeur livré
+  avec lui est la seule autorité honnête disponible ;
+* l'**en-tête** du flux — petit-boutiste, contrairement à celui de LZ juste à
+  côté qui est gros-boutiste. Deux codecs du même protocole qui ne s'accordent
+  pas sur l'ordre des octets, c'est précisément ce qu'on reporte du fichier
+  qu'on vient de lire ;
+* les **tables de famille**, celles que le codeur consulte à chaque symbole.
+  Elles valent d'être faites en premier parce qu'elles sont pures : une
+  profondeur de bits et une limite de longueur les déterminent entièrement, et
+  elles ne bougent pas pendant un décodage. Elles peuvent donc être comparées
+  nombre par nombre à celles que la référence construit — ce que rien de plus
+  tard dans ce codec ne permettra d'aussi propre.
+
+Deux choses que le harnais a apprises, consignées dans les gabarits : `rgb32`
+ne transmet jamais le quatrième octet (le décodeur y écrit zéro, quoi qu'ait
+contenu l'original), et `gray` ne se décode qu'en `gray` — demander du 32 bits
+pour un flux gris est une erreur.
+
+Reste : la boucle de décodage QUIC elle-même, puis GLZ.
 
 ## Lot 6 — finition
 
