@@ -108,3 +108,38 @@ l'implémentation de référence (#30). Trois fusions, trois branches repartant
 de `master`.
 
 Ce qui suit est écrit au fil de la nuit.
+
+### Une couche qui n'existait pas
+
+Le transport de l'agent avait été écrit depuis `vd_agent.h`, qui définit un
+`VDIChunkHeader` — port et taille — devant chaque `VDAgentMessage`. Il y avait
+donc un codec pour lui, des tests pour ce codec, et une fonction qui le posait
+sur le fil.
+
+Il n'a rien à y faire. `channel-main.c` de spice-gtk écrit le `VDAgentMessage`
+nu dans `AGENT_DATA` et découpe à `VD_AGENT_MAX_DATA_SIZE` ; aucun en-tête de
+morceau. Cet en-tête appartient au tuyau virtio entre le serveur et l'agent
+dans l'invité, et ne traverse jamais le réseau.
+
+Même famille que `attachChannels = 101` : du code juste, pour quelque chose qui
+n'est pas là. La différence est qu'il a été trouvé avant d'être commis, et
+seulement parce que la question « qu'écrit un vrai client, exactement » a été
+posée à la source plutôt qu'aux en-têtes. Les en-têtes décrivent les structures ;
+ils ne disent pas laquelle voyage où.
+
+Retiré : le codec, ses tests, et le type `Port`. Gardé : le réassembleur, qui
+était juste pour une autre raison que celle écrite dans son commentaire.
+
+### Un sabotage qui n'a pas mordu
+
+Quatre sabotages sur le transport n'avaient rien affiché lors de la session
+précédente. La cause n'était pas qu'ils passaient : `swift` n'était pas dans le
+`PATH` de ces shells-là. Rejoués un par un, les quatre mordent.
+
+Sur le nouveau code, six sabotages sur sept mordent. Le septième — retirer la
+garde qui empêche deux drains simultanés — laissait tout vert, et l'enquête a
+montré que le commentaire de cette garde était faux : les octets ne peuvent pas
+s'entrelacer, la file est FIFO et un message y entre d'un bloc. Ce qui casse,
+c'est le numéro de séquence, lu avant l'`await` et incrémenté après. Le test
+manquant a été écrit ; sans la garde : huit messages, sept numéros. Commentaire
+corrigé pour dire la vraie raison.

@@ -184,7 +184,7 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Lot 5 — SPICE (format, lien, entrées et décodage de l'affichage faits)
+## Lot 5 — SPICE (format, lien, entrées, affichage, curseur et presse-papiers faits)
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
 inputs, display, cursor. Intéressant surtout parce que c'est la console par
@@ -455,8 +455,45 @@ sous une capacité encore différente. Un client qui en suppose une marche contr
 le serveur pour lequel il a été écrit et lit tout de travers avec le suivant.
 La disposition est donc calculée depuis les capacités négociées, jamais fixée.
 
-Reste : QUIC, GLZ, JPEG ; et brancher le presse-papiers dans la session, ce qui
-demande le transport `AGENT_DATA` et sa gestion de jetons.
+**Le presse-papiers est branché, et une couche qui n'existe pas a été
+retirée.** `vd_agent.h` définit un `VDIChunkHeader` — port et taille — devant
+chaque `VDAgentMessage`, et un client écrit depuis les en-têtes seuls le pose
+sur le fil. Il ne devrait pas : **cet en-tête appartient au tuyau virtio entre
+le serveur SPICE et l'agent dans l'invité, et ne traverse jamais le réseau.**
+Vérifié dans `channel-main.c` de spice-gtk, qui écrit le `VDAgentMessage` nu
+dans `AGENT_DATA` et découpe à 2048 octets. Un premier jet de ce dépôt encodait
+la couche fantôme ; elle a été enlevée avant d'être commise, avec le décodeur
+et les tests qui l'accompagnaient. C'est la même famille d'erreur que
+`attachChannels = 101` : du code correct pour quelque chose qui n'est pas là.
+
+Ce qui survit du découpage, c'est sa conséquence : **un message d'agent arrive
+en plusieurs `AGENT_DATA`**, coupé n'importe où, y compris au milieu de
+l'en-tête. Un lecteur qui prend chaque `AGENT_DATA` pour un message entier
+marche sur du texte court et tronque le texte long en silence — la panne qui
+n'apparaît que le jour où quelqu'un copie un vrai document. Le réassembleur est
+testé sur toutes les coupures possibles d'un même message.
+
+Deux autres choses manquaient, et la seconde cachait la première. **Personne ne
+lisait le canal principal après la poignée de main** : les pings du serveur
+tombaient dans un tampon de réception qui se remplissait sans bruit, et un
+serveur qui ping sans réponse conclut que le client est parti. `SpiceAgentChannel`
+le lit, répond aux pings et aux fenêtres d'acquittement, et porte le
+presse-papiers.
+
+Le presse-papiers est **à la demande, dans les deux sens**, ce qui surprend qui
+attend qu'une copie envoie le texte : l'invité copie → il envoie `GRAB` en
+nommant les types → le client envoie `REQUEST` → l'invité envoie `CLIPBOARD`.
+Et l'inverse. Le texte copié sur le téléphone est donc *gardé* jusqu'à ce que
+l'invité le demande, ce qui peut ne jamais arriver.
+
+Les jetons sont l'autre moitié : chaque `AGENT_DATA` en dépense un, et ce qui
+n'en a pas attend au lieu de partir impayé ou d'être jeté. Un seul drain à la
+fois — pas pour l'ordre des octets, que la file FIFO garantit déjà, mais pour
+le **numéro de séquence** : il est lu pour bâtir un message et incrémenté après
+le retour de l'écriture, donc deux drains simultanés tamponnent le même numéro.
+Le sabotage le montre : huit messages, sept numéros.
+
+Reste : QUIC, GLZ, JPEG.
 
 ## Lot 6 — finition
 
