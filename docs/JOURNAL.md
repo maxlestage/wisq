@@ -215,3 +215,23 @@ lesquels.
 Ajouter le job `Cœur (Apple)` avant de brancher JPEG dans SPICE, plutôt
 qu'après : sinon la nouvelle branche serait posée derrière le même décodeur
 non vérifié, et on ne l'apprendrait qu'en le découvrant.
+
+### Le job Apple, mesuré plutôt que supposé
+
+Il est passé en soixante secondes, ce qui m'a d'abord paru trop court pour une
+compilation macOS plus 445 tests. Journal brut : **446 tests, 0 échec,
+`arm64e-apple-macos14.0`**. La minute, c'était juste un runner Apple Silicon.
+
+Ce que le job apporte, vérifié nommément : `testDecodesARealJPEG` a tourné et
+est passé. C'est la première fois en CI. Avec lui `testGarbageIsRejected`,
+`testUndecodableJPEGFailsLoudly`, et `testQualityIsClampedIntoTheSpecRange` qui
+affirme enfin quelque chose au lieu de sortir avant.
+
+**Ma prédiction était fausse sur un point** : j'avais écrit « 0 sauté attendu
+sur Apple ». Il y en a quinze. Tous s'expliquent — quatorze dans
+`WisqAgentTests` et `LinuxBootTests`, qui réclament le binaire de l'agent et le
+noyau de test que ce job ne va pas chercher, et un
+(`testTheShippedEncryptorRefusesWhereThereIsNoRSA`) sauté justement parce qu'il
+*y a* RSA sur Apple. Aucun n'est un trou que ce job devait combler. Le compte
+est maintenant écrit dans le workflow, pour que personne ne lise « quinze
+sautés » comme un problème.

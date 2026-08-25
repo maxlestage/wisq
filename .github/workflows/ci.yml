@@ -144,6 +144,16 @@ jobs:
       # The same argument the app job already makes for `WisqUI`: a platform
       # the compiler never sees is a platform the tests never covered.
       - name: Test (mode langage Swift 6)
+        # Expect around fifteen skipped, and they are the expected ones rather
+        # than a hole: the `WisqAgentTests` and `LinuxBootTests` cases need the
+        # agent binary and the Linux test kernel, which this job deliberately
+        # does not fetch — the Linux job runs them with both. The odd one out is
+        # `testTheShippedEncryptorRefusesWhereThereIsNoRSA`, skipped here
+        # precisely *because* there is RSA on Apple; Linux is where it runs.
+        #
+        # What this job adds over Linux is the other direction:
+        # `testDecodesARealJPEG` and its neighbours, which need ImageIO and had
+        # never executed in CI before this job existed.
         run: swift test
         env:
           # No Rust core here: this job is for the protocol and platform layers,
