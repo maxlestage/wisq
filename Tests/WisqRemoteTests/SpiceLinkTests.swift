@@ -214,9 +214,38 @@ final class SpiceLinkTests: XCTestCase {
 
         let written = await server.written
         let header = try SpiceWire.decodeDataHeader(written)
-        XCTAssertEqual(header.type, SpiceWire.ClientMessage.attachChannels)
+
+        // The literal is the point. This line used to read
+        // `SpiceWire.ClientMessage.attachChannels`, which asserts that what
+        // went out equals the constant — true however wrong the constant is,
+        // and it was wrong: 101, which is `CLIENT_INFO`. A number checked
+        // against itself is not checked.
+        //
+        // 104 comes from the protocol description: the main channel's client
+        // messages number from 101 in declaration order, and this is the
+        // fourth.
+        XCTAssertEqual(header.type, 104, "SPICE_MSGC_MAIN_ATTACH_CHANNELS")
         XCTAssertEqual(header.size, 0)
         XCTAssertEqual(header.serial, 1, "les messages client sont numérotés depuis un")
+    }
+
+    /// Every client message number this file sends, against the protocol's own
+    /// values rather than against the constants that produce them.
+    ///
+    /// A whole family in one place, because the bug that prompted it was a
+    /// single number nobody had ever compared with anything outside this
+    /// codebase.
+    func testTheClientMessageNumbersAreTheProtocolsOwn() {
+        XCTAssertEqual(SpiceWire.ClientMessage.ackSync, 1)
+        XCTAssertEqual(SpiceWire.ClientMessage.ack, 2)
+        XCTAssertEqual(SpiceWire.ClientMessage.pong, 3)
+        XCTAssertEqual(SpiceWire.ClientMessage.attachChannels, 104)
+
+        // And the server-side ones the main channel reads, for the same reason.
+        XCTAssertEqual(SpiceWire.Message.ping, 3)
+        XCTAssertEqual(SpiceWire.Message.notify, 6)
+        XCTAssertEqual(SpiceWire.Message.mainInit, 103)
+        XCTAssertEqual(SpiceWire.Message.mainChannelsList, 104)
     }
 
     /// A ping has to come back exactly, or the server's round-trip figure is

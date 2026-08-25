@@ -411,8 +411,37 @@ depuis un cache que ce client ne tient pas, et une forme non décodée (mono,
 palette). Un curseur vide veut dire « cache le pointeur » ; renvoyer ça pour
 « je ne l'ai pas » fait exactement l'inverse de ce que le serveur demande.
 
-Reste : QUIC, GLZ, JPEG et les types à palette ; le presse-papiers, qui passe
-par l'agent du canal principal et non par les entrées.
+**Les formes à palette sont faites** : PLT8, PLT4 et PLT1, dans les deux ordres
+chacune. Trois règles y donnent une image quand on les écrit à l'envers plutôt
+qu'une erreur — le quartet bas ou haut d'abord, le bit 0 ou le bit 7 d'abord, et
+la palette petite-boutiste alors que l'en-tête LZ juste au-dessus est
+gros-boutiste. À l'envers, on obtient une image miroir par paires, par groupes
+de huit, ou dans les mauvaises couleurs. Rien ne lève d'erreur. Les trois ont
+donc été vérifiées contre la sortie du décodeur de référence **avant** que le
+décodeur ne soit écrit, ce qui est le seul ordre où cette vérification veut dire
+quelque chose.
+
+Un défaut trouvé en chemin : la boucle de décompression comptait une unité de
+sortie par pixel. Pour une image 4 bits, une ligne de huit pixels tient en
+quatre octets, pas huit — tous les flux à palette semblaient tronqués. Et
+chaque ligne commence sur une frontière d'octet : une ligne de cinq pixels en
+1 bit dépense un octet et en gâche trois bits, sans quoi tout décale à partir de
+la deuxième ligne.
+
+**`rgba` et `xxxa` sont faits, et LZ est complet.** Ce sont **deux flux LZ bout
+à bout dans une seule charge** : la passe couleur, puis une passe alpha qui
+reparcourt les mêmes pixels et ne touche que leur quatrième octet, en
+continuant la lecture là où la première s'est arrêtée. C'est pour ça qu'ils
+étaient refusés : la boucle à une passe aurait lu la couleur, déclaré l'image
+finie, et laissé tous les pixels opaques pendant que la moitié de la charge
+restait non lue — une image, et une fausse.
+
+`xxxa` est la passe alpha seule : ses octets de couleur ne sont jamais
+transmis, donc ils ressortent à zéro plutôt qu'avec ce que le tampon
+contenait. En C, c'est de la mémoire non initialisée qui arrive à l'écran.
+
+Reste : QUIC, GLZ, JPEG ; le presse-papiers, qui passe par l'agent du canal
+principal et non par les entrées.
 
 ## Lot 6 — finition
 
