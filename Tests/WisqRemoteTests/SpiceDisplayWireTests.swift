@@ -301,14 +301,63 @@ final class SpiceDisplayWireTests: XCTestCase {
 
     /// The encodings whose message shape is *not* a plain length and bytes are
     /// left alone entirely rather than read with the wrong shape.
+    ///
+    /// `LZ_PLT` used to be in this list and no longer is: its shape is read
+    /// now, by the test below. The others still name something the client
+    /// already holds, or carry a field this decoder does not read yet.
     func testAnEncodingWithADifferentMessageShapeIsNotReadWithThisOne() throws {
-        for type in [UInt8(100 /* LZ_PLT */), 103 /* FROM_CACHE */, 104 /* SURFACE */] {
+        for type in [UInt8(103 /* FROM_CACHE */), 104 /* SURFACE */, 107 /* ZLIB_GLZ */] {
             let payload = u64(9) + [type, 0] + u32(64) + u32(48) + u32(6) + [1, 2, 3, 4, 5, 6]
             let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
             let image = try SpiceDisplayWire.image(at: 4, in: body)
             XCTAssertNil(image?.payload, "type \(type)")
             XCTAssertNil(image?.bitmap, "type \(type)")
         }
+    }
+
+    /// `LZ_PLT`'s shape is its own: flags, then the size, then the colour
+    /// table, and only then the stream. Read with the plain shape the other
+    /// compressed types use, the size comes out of the flags byte — a length
+    /// read from the wrong place, which is how a decoder ends up asking for
+    /// several megabytes because a flag was set.
+    func testAPalettisedLZImageIsReadWithItsOwnShape() throws {
+        let paletteOffset = UInt32(48)
+        var message = [UInt8](repeating: 0, count: 4)
+        let offset = UInt32(message.count)
+        message += u64(9) + [100 /* LZ_PLT */, 0]
+        message += u32(4) + u32(1)
+        message += [0]                       // flags: palette inline
+        message += u32(6)                    // the stream's length
+        message += u32(paletteOffset)
+        message += [1, 2, 3, 4, 5, 6]        // the stream itself, not decoded here
+        message += [UInt8](repeating: 0, count: Int(paletteOffset) - message.count)
+        message += u64(0xFEED) + SpiceWire.u16(2) + u32(0x0011_2233) + u32(0x0044_5566)
+
+        let image = try SpiceDisplayWire.image(at: offset, in: SpiceDisplayWire.Body(message))
+        XCTAssertEqual(image?.descriptor.type, .lzPalette)
+        XCTAssertEqual(image?.payload, [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(image?.palette?.unique, 0xFEED)
+        XCTAssertEqual(image?.palette?.colours, [0x0011_2233, 0x0044_5566])
+        XCTAssertNil(image?.bitmap, "il n'y a pas de bitmap ici, seulement un flux")
+    }
+
+    /// A table named from a cache this client does not keep leaves the image
+    /// with no colours. The stream is still read, so the message stays in
+    /// step — the alternative is a decoder that loses its place over a flag.
+    func testAPalettisedLZImageNamingACachedTableKeepsItsPlace() throws {
+        var message = [UInt8](repeating: 0, count: 4)
+        let offset = UInt32(message.count)
+        message += u64(9) + [100 /* LZ_PLT */, 0]
+        message += u32(4) + u32(1)
+        message += [0x02]                    // PAL_FROM_CACHE
+        message += u32(3)
+        message += u64(0xCAFE)               // the identifier, in place of a pointer
+        message += [7, 8, 9]
+
+        let image = try SpiceDisplayWire.image(at: offset, in: SpiceDisplayWire.Body(message))
+        XCTAssertEqual(image?.payload, [7, 8, 9], "le flux est lu quand même")
+        XCTAssertNil(image?.palette)
+        XCTAssertNil(try SpiceDisplayWire.pixels(of: XCTUnwrap(image)), "donc rien à dessiner")
     }
 
     func testAnUnknownImageTypeIsRefused() {
