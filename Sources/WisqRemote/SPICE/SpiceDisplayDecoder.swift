@@ -685,6 +685,106 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// A stream frame's pixels, when it is a codec wisq decodes.
+    ///
+    /// `nil` for a codec it does not, which is "leave that part of the screen
+    /// alone" and not "this message was malformed" — the same distinction the
+    /// image codecs make, and it matters more here: a stream this client cannot
+    /// decode is a region that freezes, while a dropped connection is the whole
+    /// screen going away.
+    ///
+    /// **Only MJPEG.** VP8, VP9, H.264 and H.265 would each need a real video
+    /// decoder — on Apple that is VideoToolbox and on Linux nothing wisq ships.
+    /// They are named rather than lumped together because "the server chose
+    /// H.264" is an explanation a user could act on.
+    static func frame(
+        _ data: StreamData, codec: VideoCodec
+    ) throws -> (pixels: [UInt8], width: Int, height: Int)? {
+        // **This guard changes no result, and is not there for one.** A VP8
+        // frame is not valid JPEG, so handing it to the decoder anyway would
+        // return nil just the same — a sabotage removing this line survives the
+        // whole suite, on every platform, and that is a real equivalence rather
+        // than a missing test.
+        //
+        // It stays because of what it stops, not what it returns: without it,
+        // arbitrary bytes from a stream in a codec nobody here decodes would
+        // reach the platform's image decoder. On Apple that is ImageIO, a large
+        // C surface being fed network data for no reason at all. The cheapest
+        // way not to have that conversation is not to make the call.
+        guard codec.isDecoded else { return nil }
+        // Each MJPEG frame is a complete JPEG image, which is the whole reason
+        // this codec costs nothing extra: the decoder is the one `.jpeg` images
+        // already use, absent on Linux and present on Apple.
+        guard JPEGDecoder.isAvailable,
+              let decoded = try? JPEGDecoder.decode(Data(data.frame)) else { return nil }
+        return (decoded.bgra, decoded.width, decoded.height)
+    }
+
+    // MARK: - Streams
+
+    /// `STREAM_CREATE`.
+    ///
+    /// Two pairs of dimensions that are easy to take for one: `stream_width`
+    /// and `stream_height` are the size of the frames arriving on the wire,
+    /// `src_width` and `src_height` the size of the region on the server's
+    /// screen. They differ whenever the server scales before encoding, which it
+    /// does routinely to save bandwidth — so using the wrong pair puts the
+    /// video in the right place at the wrong size.
+    static func streamCreate(_ payload: [UInt8]) throws -> StreamCreate {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let surfaceID = try reader.u32()
+        let id = try reader.u32()
+        let flags = try reader.u8()
+        let rawCodec = try reader.u8()
+        guard let codec = VideoCodec(rawValue: rawCodec) else { throw SpiceError.invalidData }
+        return StreamCreate(
+            surfaceID: surfaceID, id: id, flags: flags, codec: codec,
+            stamp: try reader.u64(),
+            streamWidth: try reader.u32(), streamHeight: try reader.u32(),
+            sourceWidth: try reader.u32(), sourceHeight: try reader.u32(),
+            destination: try rect(from: &reader),
+            clip: try clip(from: &reader)
+        )
+    }
+
+    /// `STREAM_DATA` and `STREAM_DATA_SIZED`.
+    ///
+    /// The sized form inserts a width, a height and a destination between the
+    /// header and the length — so the two cannot share a reader, and reading a
+    /// sized frame with the plain shape takes the width for the frame length.
+    static func streamData(_ payload: [UInt8], sized: Bool) throws -> StreamData {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let id = try reader.u32()
+        let time = try reader.u32()
+        var geometry: StreamData.Sized?
+        if sized {
+            geometry = StreamData.Sized(
+                width: try reader.u32(), height: try reader.u32(),
+                destination: try rect(from: &reader)
+            )
+        }
+        let size = Int(try reader.u32())
+        return StreamData(
+            id: id, multimediaTime: time, sized: geometry, frame: try reader.bytes(size)
+        )
+    }
+
+    /// `STREAM_CLIP` — an id and a new clip, nothing else.
+    static func streamClip(_ payload: [UInt8]) throws -> (id: UInt32, clip: Clip) {
+        let body = Body(payload)
+        var reader = try body.reader()
+        return (id: try reader.u32(), clip: try clip(from: &reader))
+    }
+
+    /// `STREAM_DESTROY` — one word.
+    static func streamDestroy(_ payload: [UInt8]) throws -> UInt32 {
+        let body = Body(payload)
+        var reader = try body.reader()
+        return try reader.u32()
+    }
+
     /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
     /// descriptor was.
     ///
