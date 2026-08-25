@@ -1065,10 +1065,33 @@ Trois détails viennent de `spice_pixman_blit_colorkey` :
   règle de ce fichier qui tient le quatrième octet à zéro sur une surface sans
   alpha.
 
-Ce qui reste sur le canal display : `DRAW_ALPHA_BLEND` (une composition
-« source-over » avec alpha prémultiplié et un alpha global), `DRAW_ROP3` (une
-opération ternaire parmi 256, sur trois opérandes), les tracés et le texte
-(`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
+### `DRAW_ALPHA_BLEND` : la seule vraie composition
+
+Fait. `__blend_image` fabrique un masque uni dont l'alpha est celui du message —
+et seulement quand il n'est pas `0xff` — puis appelle
+`pixman_image_composite32` avec `PIXMAN_OP_OVER`. L'arithmétique est donc celle
+de pixman, pas celle de SPICE.
+
+**La source est prémultipliée, et personne ne l'écrit nulle part.** Ni le
+protocole, ni `canvas_base.c`, ni `sw_canvas.c` n'en parlent, et rien ne divise
+jamais par l'alpha. Ce qui tranche est la chaîne :
+`SPICE_BITMAP_FMT_RGBA` devient `PIXMAN_a8r8g8b8`, et le `OVER` de pixman est
+défini sur une source prémultipliée. Prémultiplié est donc ce que la chaîne
+*veut dire* plutôt que ce que quelqu'un a énoncé, et le lire autrement produit
+des halos — une image, et une fausse.
+
+Affirmation mesurée plutôt qu'argumentée : `scripts/spice-alpha-blend/` fait
+tourner la formule de wisq et pixman côte à côte sur **43 008 000** combinaisons
+de source, destination, des deux alphas et du drapeau. Aucune différence.
+
+Deux détails de la même lecture : un alpha global nul ne dessine rien du tout,
+et `DEST_HAS_ALPHA` décide si le quatrième octet de la destination est son
+alpha. `SRC_SURFACE_HAS_ALPHA` n'est pas lu ici — la référence ne le passe que
+sur le chemin surface-vers-surface.
+
+Ce qui reste sur le canal display : `DRAW_ROP3` (une opération ternaire parmi
+256, sur trois opérandes), les tracés et le texte (`DRAW_STROKE`, `DRAW_TEXT`),
+et les flux vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 

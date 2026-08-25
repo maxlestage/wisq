@@ -329,6 +329,30 @@ enum SpiceDisplayWire {
         var trueColour: UInt32
     }
 
+    /// `DRAW_ALPHA_BLEND` — the one draw that really composites.
+    ///
+    /// The flags and the alpha come *before* the image pointer, which no other
+    /// draw does: every other one starts with the pointer straight after the
+    /// base.
+    struct AlphaBlend: Equatable, Sendable {
+        /// `SPICE_ALPHA_FLAGS_DEST_HAS_ALPHA`, bit 0: read the destination's
+        /// fourth byte as its alpha instead of treating it as opaque.
+        static let destinationHasAlpha: UInt8 = 0x01
+        /// `SPICE_ALPHA_FLAGS_SRC_SURFACE_HAS_ALPHA`, bit 1. It applies only
+        /// when the source is another *surface*; on the image path the
+        /// reference never passes it, and neither does this.
+        static let sourceSurfaceHasAlpha: UInt8 = 0x02
+
+        var base: Base
+        var flags: UInt8
+        /// An overall alpha applied on top of the source's own.
+        var alpha: UInt8
+        var source: Image?
+        var sourceArea: Rect
+
+        var readsDestinationAlpha: Bool { flags & Self.destinationHasAlpha != 0 }
+    }
+
     /// `DRAW_COPY_BITS` — the surface copying from itself.
     ///
     /// The smallest draw message in the protocol and one of the most used: a
