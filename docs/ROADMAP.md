@@ -744,7 +744,31 @@ la forme du travail :
   la session plutôt qu'à un appel : c'est là que « fonctionnalité de session »
   cesse d'être une figure de style.
 
-La difficulté n'est pas la boucle, c'est le harnais. Une image seule ne peut
+**Le harnais est fait, et c'est la première tranche.** Il réunit trois dépôts —
+l'encodeur dans spice-server, le décodeur dans spice-gtk, les en-têtes dans
+spice-common — et il encode des *suites* d'images contre un dictionnaire
+partagé, puis les relit par le décodeur de référence à travers une seule
+fenêtre.
+
+Que la suite exerce vraiment le chemin qui distingue GLZ de LZ est **mesuré** :
+les mêmes quatre images, chacune contre un dictionnaire neuf, font 615 octets à
+chaque fois ; contre un dictionnaire partagé, 615, 201, 205, 194. L'écart, c'est
+la correspondance entre images et rien d'autre.
+
+Un piège s'y est présenté qui aurait empoisonné tous les gabarits : **le
+dictionnaire GLZ conserve des pointeurs vers les tampons de pixels de
+l'appelant**, il ne les copie pas. Encoder une suite depuis un seul tampon
+réutilisé fait correspondre l'image *N* à une mémoire qui contient déjà l'image
+*N+1*. Les flux se décodent quand même — vers une image que l'encodeur n'a
+jamais vue. Un tampon par image, tous maintenus en vie.
+
+L'en-tête suit dans la même tranche, parce que c'est la seule partie de GLZ qui
+se suffit à elle-même et donc la seule vérifiable exactement avant qu'une
+fenêtre existe. Les deux en-têtes s'accordent sur leurs huit premiers octets —
+magie et version — et divergent juste après : un lecteur qui prend du GLZ pour
+du LZ passe son seul contrôle bon marché puis se trompe sur tout le reste.
+
+La difficulté restante n'est pas la boucle, c'était le harnais. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
