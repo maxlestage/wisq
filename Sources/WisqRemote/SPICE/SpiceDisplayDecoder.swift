@@ -665,6 +665,26 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// `DRAW_ALPHA_BLEND`: **two bytes before the image pointer.**
+    ///
+    /// Every other draw with an image puts the pointer straight after the base.
+    /// This one puts the flags and the alpha first, so a decoder reusing the
+    /// copy reader takes those two bytes plus the first two of the pointer as
+    /// the pointer, and follows an offset into the middle of the message.
+    static func alphaBlend(_ payload: [UInt8]) throws -> AlphaBlend {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let flags = try reader.u8()
+        let alpha = try reader.u8()
+        let sourcePointer = try reader.u32()
+        return AlphaBlend(
+            base: header, flags: flags, alpha: alpha,
+            source: try image(at: sourcePointer, in: body),
+            sourceArea: try rect(from: &reader)
+        )
+    }
+
     /// `DRAW_COPY_BITS`: the base, and then two words that are a point.
     ///
     /// Read as a rectangle by mistake it would consume sixteen bytes instead of

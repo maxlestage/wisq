@@ -141,6 +141,12 @@ struct SpiceDisplayChannel {
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
                 progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
 
+            case SpiceDisplayWire.Message.drawAlphaBlend.rawValue:
+                let blend = try SpiceDisplayWire.alphaBlend([UInt8](payload))
+                progress.record(
+                    try draw(blend, into: &surfaces, glz: &glz), on: blend.base.surfaceID
+                )
+
             case SpiceDisplayWire.Message.drawTransparent.rawValue:
                 let transparent = try SpiceDisplayWire.transparent([UInt8](payload))
                 progress.record(
@@ -211,6 +217,24 @@ struct SpiceDisplayChannel {
     ) throws -> [SpiceDisplayWire.Rect]? {
         do {
             return try surfaces.raster(raster)
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        }
+    }
+
+    private func draw(
+        _ blend: SpiceDisplayWire.AlphaBlend, into surfaces: inout SpiceSurfaces,
+        glz: inout SpiceGLZ.Window
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        guard let image = blend.source,
+              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+        else { return nil }
+        do {
+            return try surfaces.alphaBlend(
+                blend, source: decoded,
+                bytesPerSourcePixel: decoded.pixels.count
+                    / max(decoded.width * decoded.height, 1)
+            )
         } catch SpiceSurfaces.Failure.notDrawable {
             return nil
         }
