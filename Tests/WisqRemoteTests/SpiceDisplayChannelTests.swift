@@ -41,12 +41,12 @@ final class SpiceDisplayChannelTests: XCTestCase {
     /// `DRAW_COPY_BITS`: the base, then two words that are a point.
     private func copyBits(
         surface: UInt32 = 0, _ top: Int32, _ left: Int32, _ bottom: Int32, _ right: Int32,
-        fromX: Int32, fromY: Int32
+        from source: SpiceDisplayWire.Point
     ) -> Data {
         var body = u32(surface)
         body += i32(top) + i32(left) + i32(bottom) + i32(right)
         body += [0]                                    // no clip
-        body += i32(fromX) + i32(fromY)
+        body += i32(source.x) + i32(source.y)
         return message(SpiceDisplayWire.Message.copyBits.rawValue, body)
     }
 
@@ -165,7 +165,7 @@ final class SpiceDisplayChannelTests: XCTestCase {
         let server = MemoryByteStream(
             inbound: surfaceCreate(8, 8)
                 + fill(0, 0, 4, 8, colour: 0x00FF_0000)
-                + copyBits(4, 0, 8, 8, fromX: 0, fromY: 0)
+                + copyBits(4, 0, 8, 8, from: SpiceDisplayWire.Point(x: 0, y: 0))
                 + raster(SpiceDisplayWire.Message.drawWhiteness.rawValue, 0, 0, 2, 8)
                 + raster(SpiceDisplayWire.Message.drawInvers.rawValue, 2, 0, 3, 8)
         )
