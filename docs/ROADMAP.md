@@ -614,6 +614,27 @@ Le test compare **pas à pas** l'état du lecteur à celui de la référence, tr
 par `qbits.c`. Ne comparer que la réponse finale laisserait un lecteur se
 tromper au milieu et retomber juste à la fin.
 
+**Le modèle adaptatif est la troisième tranche**, et encore vérifiable
+isolément. Trois choses y vivent : le calendrier des mises à jour, piloté par
+une table fixe de 256 mots (`tabrand`) qu'encodeur et décodeur parcourent
+identiquement sans jamais transmettre leurs décisions ; les seaux, dont la
+taille double — 1, 2, 4, 8… — pour que les valeurs proches de zéro, où une
+image bien prédite passe presque tout son temps, aient leurs propres
+statistiques ; et `golomb_decoding`, fonction pure du niveau et de la fenêtre.
+
+Trois détails que la référence impose : le tirage incrémente **avant** de
+consulter la table, donc le premier tirage est l'entrée 0 et non l'entrée 255 ;
+le balayage des compteurs **descend**, donc à égalité c'est le code le plus
+haut qui reste ; et les compteurs sont divisés par deux quand le total dépasse
+*strictement* le seuil.
+
+Ce dernier point a demandé un gabarit fabriqué exprès. Le seuil ne prend que
+onze valeurs tabulées et aucune séquence ordinaire ne tombe pile dessus, donc
+la différence entre `>` et `>=` était intestable : un sabotage la remplaçait
+sans qu'un seul test tombe. Le harnais règle maintenant le seuil à la main pour
+atteindre la frontière, et la référence répond sans ambiguïté — pile sur le
+seuil, rien n'est divisé.
+
 Reste : la boucle de décodage QUIC elle-même, puis GLZ.
 
 ## Lot 6 — finition

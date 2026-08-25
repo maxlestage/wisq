@@ -88,6 +88,164 @@ enum SpiceQUIC {
         return Header(type: type, width: width, height: height)
     }
 
+    // MARK: - The model's schedule
+
+    /// `DEFevol`. Which of three bucket-growth shapes the codec uses; 3 gives
+    /// buckets of 1, 2, 4, 8 … contexts. Only 1, 3 and 5 were ever valid, and
+    /// the shipped value has been 3 throughout.
+    static let evolution = 3
+
+    /// `tabrand_chaos`, 256 words the codec walks to decide *when* to update
+    /// its model.
+    ///
+    /// Not randomness in any meaningful sense and not a seed anyone chooses: a
+    /// fixed table walked by an incrementing index, so encoder and decoder
+    /// take the same decisions in the same order without transmitting any of
+    /// them. Getting it wrong desynchronises the model rather than corrupting
+    /// a pixel, which is why the picture then degrades gradually instead of
+    /// breaking.
+    static let chaosTable: [UInt32] = SpiceQUICChaos.table
+
+    /// `stabrand()`. The starting index, which is the mask itself.
+    static let chaosSeed: UInt32 = 0xFF
+
+    /// `tabrand()`: pre-increment, mask, look up.
+    ///
+    /// The increment happens **before** the lookup, so the first value drawn is
+    /// entry 0 rather than entry 255. Reading it as post-increment shifts the
+    /// whole schedule by one draw.
+    static func chaos(_ seed: inout UInt32) -> UInt32 {
+        seed &+= 1
+        return chaosTable[Int(seed & 0xFF)]
+    }
+
+    /// `besttrigtab`, indexed by `DEFevol / 2` then by the wait-mask index.
+    static let triggerTable: [[UInt32]] = [
+        [550, 900, 800, 700, 500, 350, 300, 200, 180, 180, 160],
+        [110, 550, 900, 800, 550, 400, 350, 250, 140, 160, 140],
+        [100, 120, 550, 900, 700, 500, 400, 300, 220, 250, 160]
+    ]
+
+    /// `set_wm_trigger`. The counter total past which the model halves itself.
+    ///
+    /// The index is clamped at ten rather than wrapped: the table has eleven
+    /// columns and the index can legitimately walk past them.
+    static func trigger(waitMaskIndex index: Int) -> UInt32 {
+        triggerTable[evolution / 2][min(index, 10)]
+    }
+
+    // MARK: - The model
+
+    /// How many code numbers each bucket keeps a running cost for.
+    static let counterCount = 8
+
+    /// One context's running costs, and the code that is cheapest so far.
+    struct Bucket: Equatable, Sendable {
+        var counters: [UInt32]
+        var bestCode: Int = 0
+
+        init(counterCount: Int) {
+            counters = [UInt32](repeating: 0, count: counterCount)
+        }
+    }
+
+    /// The adaptive model for one channel at one bit depth.
+    ///
+    /// Buckets grow geometrically — 1, 2, 4, 8 … contexts — so that values
+    /// near zero, where a well-predicted image spends nearly all its time, get
+    /// their own statistics while the long tail shares.
+    struct Model: Equatable, Sendable {
+        private(set) var buckets: [Bucket]
+        /// Which bucket each possible value falls in.
+        let bucketOfValue: [Int]
+        let bitsPerChannel: Int
+
+        init(bitsPerChannel bpc: Int) {
+            self.bitsPerChannel = bpc
+            let levels = 1 << bpc
+
+            // `find_model_params` and `fill_model_structures`, which between
+            // them only ever walk this one loop: a run of buckets whose size
+            // doubles, with the last one stretched to cover whatever is left
+            // rather than starting a bucket that would overshoot.
+            var ofValue = [Int](repeating: 0, count: levels)
+            var size = 1
+            var end = -1
+            var index = 0
+            var untilGrowth = 2          // repfirst + 1
+            repeat {
+                let start = index == 0 ? 0 : end + 1
+                untilGrowth -= 1
+                if untilGrowth == 0 {
+                    untilGrowth = 1      // repnext
+                    size *= 2            // mulsize
+                }
+                end = start + size - 1
+                if end + size >= levels { end = levels - 1 }
+                for value in start...end { ofValue[value] = index }
+                index += 1
+            } while end < levels - 1
+
+            bucketOfValue = ofValue
+            buckets = (0..<index).map { _ in Bucket(counterCount: SpiceQUIC.counterCount) }
+        }
+
+        /// `update_model`: charge every code number for what it would have
+        /// spent on this value, remember the cheapest, and halve everything if
+        /// the cheapest has grown past the trigger.
+        ///
+        /// The scan runs **downwards** from the highest code number and
+        /// replaces only on a strict improvement, so a tie keeps the *higher*
+        /// code. Scanning upwards would break ties the other way and drift
+        /// away from the encoder over an image.
+        mutating func update(
+            value: UInt8, context: UInt8, family: Family, trigger: UInt32
+        ) {
+            let bucketIndex = bucketOfValue[Int(context) & (bucketOfValue.count - 1)]
+            let bpc = bitsPerChannel
+            var bucket = buckets[bucketIndex]
+
+            var bestCode = bpc - 1
+            bucket.counters[bestCode] &+= family.codeLength[Int(value)][bestCode]
+            var bestLength = bucket.counters[bestCode]
+
+            for code in stride(from: bpc - 2, through: 0, by: -1) {
+                bucket.counters[code] &+= family.codeLength[Int(value)][code]
+                if bucket.counters[code] < bestLength {
+                    bestCode = code
+                    bestLength = bucket.counters[code]
+                }
+            }
+            bucket.bestCode = bestCode
+
+            if bestLength > trigger {
+                for code in 0..<bpc { bucket.counters[code] >>= 1 }
+            }
+            buckets[bucketIndex] = bucket
+        }
+    }
+
+    /// `golomb_decoding`: one symbol out of the top of the window.
+    ///
+    /// Two shapes share the space. A codeword whose leading zeroes are few
+    /// enough is plain Golomb-Rice; past that the coder escapes to a
+    /// fixed-length form, which is what stops one unlucky symbol costing
+    /// hundreds of bits. Which shape it is, is decided by comparing the whole
+    /// window against a mask — not by counting anything first.
+    static func golombDecode(
+        level: Int, bits: UInt32, family: Family
+    ) -> (value: UInt32, length: Int) {
+        if bits > family.escapePrefixMask[level] {
+            let zeroes = UInt32(bits.leadingZeroBitCount)
+            let length = Int(zeroes) + 1 + level
+            return (zeroes << UInt32(level) | (bits >> UInt32(32 - length)) & bitMask(level),
+                    length)
+        }
+        let length = Int(family.escapeLength[level])
+        let suffix = bitMask(Int(family.escapeSuffixLength[level]))
+        return (family.golombCodewords[level] + (bits >> UInt32(32 - length)) & suffix, length)
+    }
+
     // MARK: - The bit reader
 
     /// Bits out of a QUIC stream.

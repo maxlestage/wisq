@@ -20,6 +20,13 @@ and `SpiceQUICFamilyFixtures.swift` is produced by it rather than written here.
   `decode_eatbits(len)`, for lengths given on the command line. Comparing only
   a final answer would let a reader be wrong in the middle and right at the
   end; this says which call diverged.
+* `qmodel.c` dumps the adaptive model: the bucket layout `find_model_params`
+  and `fill_model_structures` produce, the `tabrand` draws, `set_wm_trigger`
+  across its whole index range, and an `update_model` trace under a fixed
+  sequence. It also sets `wm_trigger` **by hand** to reach the halving
+  boundary exactly — `set_wm_trigger` can only produce eleven tabulated
+  values, and no ordinary sequence lands on one of them, so without that the
+  difference between halving on `>` and on `>=` is untestable.
 * `qstub.c` supplies `spice_log`, which `quic.c` calls and which lives
   elsewhere in spice-common.
 
@@ -51,10 +58,13 @@ cc -I. -Icommon -Ispice $(pkg-config --cflags glib-2.0) \
    -o qfam qfam.c qstub.c $(pkg-config --libs glib-2.0)
 cc -I. -Icommon -Ispice $(pkg-config --cflags glib-2.0) \
    -o qbits qbits.c qstub.c $(pkg-config --libs glib-2.0)
+cc -I. -Icommon -Ispice $(pkg-config --cflags glib-2.0) \
+   -o qmodel qmodel.c qstub.c $(pkg-config --libs glib-2.0)
 
 # type: 1 gray, 2 rgb16, 3 rgb24, 4 rgb32, 5 rgba
 ./qgen 4 8 6 1 > stream.hex 2> original.hex
 ./qdec < stream.hex > decoded.hex
 ./qfam > families.txt
 ./qbits 16 16 3 31 1 < stream.hex > trace.txt
+./qmodel > model.txt
 ```

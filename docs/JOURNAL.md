@@ -280,3 +280,24 @@ d'une couverture supplémentaire sans en être.
 Le commentaire disait « la référence l'interdit », ce qui était vrai mais
 laissait croire que le découpage comptait. Il dit maintenant lequel des deux
 faits est le vrai, et que l'autre a été mesuré.
+
+### Un sabotage qui ne mord pas, et cette fois c'est un test manquant
+
+Sept sabotages sur le modèle, six mordent. Le septième — diviser les compteurs
+quand le total *atteint* le seuil au lieu de le *dépasser* — laisse tout vert.
+
+Contrairement au cas du lecteur de bits la tranche d'avant, les deux versions
+ne sont pas équivalentes. Elles diffèrent exactement quand le total tombe pile
+sur le seuil. Le problème est qu'aucune séquence ordinaire n'y arrive : le
+seuil vient d'une table de onze valeurs, et les totaux passent à côté.
+
+La distinction entre « équivalent » et « intestable » vaut d'être faite à
+chaque fois, parce qu'elles se ressemblent depuis la suite de tests : dans les
+deux cas tout est vert. La question à poser est « existe-t-il une entrée qui
+les distingue », pas « est-ce que mes tests actuels les distinguent ».
+
+Ici la réponse est oui, et il a fallu la fabriquer : le harnais règle
+`wm_trigger` directement, ce que `set_wm_trigger` ne permet pas. La référence
+répond alors sans ambiguïté — pile sur le seuil, les compteurs ne sont pas
+divisés ; un cran en dessous, ils le sont. Test ajouté, sabotage rejoué, il
+mord.
