@@ -653,3 +653,58 @@ dans le `switch`. Le sabotage passait donc sans rien casser, à juste titre.
 La bonne réponse n'était ni un test ni une correction : c'était de la
 supprimer. Une propriété qui a l'air de porter une règle et que personne ne lit
 est pire qu'absente — elle invite à la croire appliquée.
+
+## GLZ : la passe alpha, et un `git checkout` qui efface
+
+`rgba` a marché du premier coup, ce qui est rare ici et mérite qu'on dise
+pourquoi : la référence était lisible sans piège. Deux passes sur un tampon,
+la seconde partant de l'octet où la première s'est arrêtée, ne touchant que le
+quatrième octet, biais de longueur 2. Rien de caché dans un type de champ cette
+fois.
+
+Le seul choix à faire concernait le gabarit : donner à l'alpha des valeurs qui
+varient. Un alpha constant aurait laissé passer un décodeur qui ne lance jamais
+la seconde passe — le tampon étant déjà rempli de la bonne valeur par hasard.
+Un test l'affirme désormais sur le gabarit lui-même, plutôt que de faire
+confiance au générateur.
+
+### L'erreur à ne pas refaire
+
+Pour rejouer un sabotage j'ai modifié le *fichier de test*, puis je l'ai
+restauré avec `git checkout` — ce qui l'a ramené à HEAD et **effacé les deux
+tests que je venais d'écrire et qui n'étaient pas encore commités**.
+
+J'avais sauvegardé le fichier source avant de le saboter, par réflexe, mais pas
+le fichier de test. La règle est la même pour les deux : `git checkout` sur un
+fichier qui porte du travail non commité le détruit sans avertir. Coût réel
+faible ici — j'avais le texte exact sous la main — mais la même distraction sur
+une heure de travail aurait été coûteuse.
+
+### GLZ palettisé : un manque qui n'en était pas un
+
+La feuille de route annonçait les formes palettisées comme la dernière tranche
+de GLZ. Il n'y avait pas de tranche.
+
+`canvas_get_glz_rgb_common` passe `NULL` là où irait la palette, et le
+commentaire au-dessus de son appelant explique pourquoi : un bitmap palettisé
+est comprimé en RGB32 globalement, « because same byte sequence can be
+transformed to different RGB pixels by different plts ». C'est exactement ce
+qu'un dictionnaire partagé entre images ne peut pas supporter — deux images
+avec des palettes différentes ne peuvent pas se référencer l'une l'autre par
+octets.
+
+Confirmation indépendante côté serveur : `get_compression_for_bitmap`
+rétrograde GLZ vers LZ simple dès que `bitmap_fmt_has_graduality` est faux, et
+ce prédicat exige `bitmap_fmt_is_rgb`, dont la table met à zéro les six
+premiers formats — tous les palettisés.
+
+J'ai voulu une troisième confirmation en faisant refuser un type palettisé par
+`glz_encode`. Il l'a refusé, et **ça ne prouvait rien** : mon générateur passait
+une foulée de `width * 4` pour un type qui en veut une par pixel-par-octet,
+donc l'encodeur rejetait ma foulée, pas le type. Je ne l'ai pas compté. Deux
+preuves qui tiennent valent mieux que trois dont une est fausse.
+
+Le refus reste dans le code — un serveur hostile peut toujours envoyer ce
+qu'il veut — mais le commentaire et le test disent désormais que c'est un refus
+définitif et non un trou à combler. La différence compte pour qui lira ça dans
+six mois : « pas encore fait » invite à le faire.
