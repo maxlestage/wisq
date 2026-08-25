@@ -66,6 +66,10 @@ public final class SessionModel {
     public func connect(credentials: CredentialStore) {
         guard session == nil, prepareTask == nil else { return }
         status = machine.agent != nil ? .startingVM : .connecting
+        // Connecting ends in a haptic either way, and the engine takes a moment
+        // to wake. Asking now means the confirmation lands with the screen
+        // rather than after it.
+        if machine.input.hapticFeedback { SessionHaptics.prepare() }
 
         // Resolving may boot the VM through the host agent, so it runs before —
         // and apart from — the connection itself.
@@ -113,6 +117,9 @@ public final class SessionModel {
     }
 
     private func apply(_ event: SessionEvent) {
+        if let haptic = event.haptic, machine.input.hapticFeedback {
+            SessionHaptics.play(haptic)
+        }
         switch event {
         case .connecting:
             status = .connecting
