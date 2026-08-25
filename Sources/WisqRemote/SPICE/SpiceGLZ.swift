@@ -56,6 +56,13 @@ enum SpiceGLZ {
         case unknownImageType(UInt32)
         case badGeometry
         case truncated
+        /// A local match reaching back before the start of the output, or a
+        /// cross-image one reaching past the end of the image it names.
+        case referenceBeforeStart
+        /// A match naming an image the window no longer holds. Named rather
+        /// than filled with whatever sits in that slot: the slot is
+        /// `id % capacity`, so the wrong image is a real image.
+        case referenceOutsideTheWindow
     }
 
     /// Reads a GLZ stream header.

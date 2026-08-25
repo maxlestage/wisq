@@ -93,8 +93,14 @@ struct SpiceDisplayChannel {
     ///
     /// `limit` remains for callers that want to bound a burst, and for tests
     /// that script an exact number of messages.
+    /// `glz` is threaded alongside `surfaces` and for the same reason: it is
+    /// state the pump owns for as long as it runs. A GLZ stream refers to
+    /// images decoded earlier **on this connection**, so the window's honest
+    /// lifetime is the connection's — a reconnect starts with an empty one,
+    /// exactly as it starts with a blank screen.
     func pump(
-        into surfaces: inout SpiceSurfaces, serial: UInt64, limit: Int = 1
+        into surfaces: inout SpiceSurfaces, glz: inout SpiceGLZ.Window,
+        serial: UInt64, limit: Int = 1
     ) async throws -> Progress {
         var progress = Progress()
         var serial = serial
@@ -128,7 +134,7 @@ struct SpiceDisplayChannel {
 
             case SpiceDisplayWire.Message.drawCopy.rawValue:
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
-                progress.record(try draw(copy, into: &surfaces), on: copy.base.surfaceID)
+                progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
 
             default:
                 progress.ignored[header.type, default: 0] += 1
@@ -157,10 +163,13 @@ struct SpiceDisplayChannel {
     }
 
     private func draw(
-        _ copy: SpiceDisplayWire.Copy, into surfaces: inout SpiceSurfaces
+        _ copy: SpiceDisplayWire.Copy, into surfaces: inout SpiceSurfaces,
+        glz: inout SpiceGLZ.Window
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = copy.source,
-              let decoded = try SpiceDisplayWire.pixels(of: image) else { return nil }
+              let decoded = try SpiceDisplayWire.pixels(
+                of: image, glzWindow: &glz
+              ) else { return nil }
 
         // Three bytes for a 24-bit stream, four for a 32-bit one. Taken from
         // what the decoder produced rather than from the message, because the

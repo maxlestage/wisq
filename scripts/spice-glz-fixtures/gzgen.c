@@ -51,10 +51,54 @@ int main(int argc, char **argv) {
         /* Each image is the previous one with a moving band painted over it,
            so most of it matches the image before and some of it cannot. */
         unsigned r = (seed + n) * 2654435761u;
+        const char *mode = getenv("GZMODE");
+        int repeats = mode && mode[0] == 'r';      /* flat blocks: local matches */
+        int farback = mode && mode[0] == 'f';      /* last image repeats image 0 */
+        int deep = mode && mode[0] == 'd';         /* last image = source's 2nd half */
+        int longofs = mode && mode[0] == 'l';      /* bottom half repeats top half */
+        if (farback && (n == 0 || n == count - 1)) r = seed * 2654435761u;
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
                 uint8_t *p = pixels + (size_t)y * stride + (size_t)x * 4;
-                if (n > 0 && y >= (n * 3) % h && y < (n * 3) % h + 3) {
+                if (deep) {
+                    /* Image 0 is noise. The last image reproduces image 0's
+                       BOTTOM half in its own top half, so the match lands at a
+                       high absolute offset inside an earlier image: a
+                       cross-image reference that also takes the long-offset
+                       path. */
+                    int sy = (n == count - 1) ? (y + h / 2) % h : y;
+                    /* Smooth, so the base images compress to almost nothing
+                       and the fixture stays small, but with the two halves
+                       distinct so the deep match is unambiguous. */
+                    int band = sy / 8;
+                    p[0] = (uint8_t)(band * 24 + (n == 1 ? 7 : 0));
+                    p[1] = (uint8_t)(band * 11 + (n == 1 ? 3 : 0));
+                    p[2] = (uint8_t)(band * 37 + (n == 1 ? 5 : 0));
+                    p[3] = 0;
+                } else if (longofs) {
+                    /* The bottom half is the top half again, so a match at the
+                       midpoint reaches back half an image — past the 4095
+                       pixels the short offset field can hold. */
+                    int sy = y % (h / 2);
+                    unsigned q = (seed * 2654435761u) + (unsigned)(sy * 7919 + x * 104729);
+                    q = q * 1103515245u + 12345u;
+                    p[0] = (uint8_t)(q >> 16); p[1] = (uint8_t)(q >> 8);
+                    p[2] = (uint8_t)(q >> 24); p[3] = 0;
+                } else if (repeats) {
+                    /* Wide flat blocks, so a match can be found inside the
+                       very first image, where no window exists yet. */
+                    p[0] = (uint8_t)((x / 8) * 40); p[1] = (uint8_t)((y / 4) * 30);
+                    p[2] = (uint8_t)(((x / 8) ^ (y / 4)) * 20); p[3] = 0;
+                } else if (farback) {
+                    if (n == 0 || n == count - 1) {
+                        p[0] = (uint8_t)(x * 11); p[1] = (uint8_t)(y * 13);
+                        p[2] = (uint8_t)((x + y) * 17); p[3] = 0;
+                    } else {
+                        r = r * 1103515245u + 12345u;
+                        p[0] = (uint8_t)(r >> 16); p[1] = (uint8_t)(r >> 8);
+                        p[2] = (uint8_t)(r >> 24); p[3] = 0;
+                    }
+                } else if (n > 0 && y >= (n * 3) % h && y < (n * 3) % h + 3) {
                     r = r * 1103515245u + 12345u;
                     p[0] = (uint8_t)(r >> 16); p[1] = (uint8_t)(r >> 8);
                     p[2] = (uint8_t)(r >> 24); p[3] = 0;

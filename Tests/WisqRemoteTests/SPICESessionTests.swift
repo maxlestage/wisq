@@ -220,6 +220,85 @@ final class SPICESessionTests: XCTestCase {
         await session.stop()
     }
 
+    /// **The GLZ window lives as long as the connection**, which is what makes
+    /// GLZ decodable at all: image 1 refers back to image 0.
+    ///
+    /// `run()` pumps one message at a time, so two GLZ images are two pump
+    /// calls. A window rebuilt between them leaves the second image undrawn —
+    /// and this test exists because that mistake is invisible everywhere else:
+    /// every codec test still passes, and the screen is simply missing an
+    /// update.
+    func testTheGLZWindowSurvivesAcrossTheConnection() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList()
+        )
+        var inbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(16, 16)
+        for fixture in SpiceGLZFixtures.sequence.prefix(2) {
+            inbound += glzCopy(fixture)
+        }
+        let sockets = Sockets([mainSocket, MemoryByteStream(inbound: inbound)])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) {
+            if case .framebufferChanged = $0 { return true } else { return false }
+        }
+
+        // Pixel 48 — row 3, column 0 — and not the top-left one, which is the
+        // trap this test fell into first: both images decode to zero there and
+        // so does an untouched framebuffer, so asserting on it is a test that
+        // passes while checking nothing. Pixel 48 is inside image 1's noise
+        // band: it differs from image 0 *and* from zero.
+        let first = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].decoded)
+        let second = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[1].decoded)
+        let at = 48 * 4
+        XCTAssertNotEqual(
+            Array(second[at..<(at + 3)]), Array(first[at..<(at + 3)]),
+            "le gabarit doit distinguer les deux images à ce pixel"
+        )
+        XCTAssertNotEqual(
+            Array(second[at..<(at + 3)]), [0, 0, 0],
+            "et le distinguer d'un framebuffer intact"
+        )
+
+        var painted = false
+        for _ in 0..<50 where !painted {
+            let snapshot = session.framebuffer.snapshot()
+            painted = Array(snapshot.pixels[at..<(at + 3)]) == Array(second[at..<(at + 3)])
+            if !painted { try await Task.sleep(nanoseconds: 20_000_000) }
+        }
+        XCTAssertTrue(
+            painted,
+            "l'image 1 renvoie à l'image 0 : sans fenêtre conservée, elle n'est jamais dessinée"
+        )
+
+        await session.stop()
+    }
+
+    private func glzCopy(_ fixture: SpiceGLZFixtures.Case) -> Data {
+        let payload = SpiceGLZFixtures.bytes(fixture.stream)
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(12) + i32(16)      // box: top, left, bottom, right
+        body += [0]
+        let imageOffset = UInt32(body.count + 4 + 16 + 2 + 1 + 13)
+        body += u32(imageOffset)
+        body += i32(0) + i32(0) + i32(12) + i32(16)      // src_area
+        body += [0, 0] + [0]
+        body += [0] + i32(0) + i32(0) + u32(0)
+        body += u32(UInt32(fixture.id)) + u32(0)
+        body += [UInt8(SpiceDisplayWire.ImageType.glzRGB.rawValue), 0]
+        body += u32(16) + u32(12)
+        body += u32(UInt32(payload.count)) + payload
+        return SpiceWire.message(
+            SpiceDisplayWire.Message.drawCopy.rawValue, serial: 2, payload: Data(body)
+        )
+    }
+
     /// A server offering no display channel is a session that cannot show
     /// anything, and it says so rather than waiting.
     func testAServerWithNoDisplayChannelFailsRatherThanHanging() async throws {
