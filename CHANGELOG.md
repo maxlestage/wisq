@@ -7,6 +7,29 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **SPICE asked for the channel list with the wrong message number, and could
+  never have connected to a real server.** `ATTACH_CHANNELS` is 104; the client
+  sent 101, which is `CLIENT_INFO`. The main channel's client messages number
+  from 101 in declaration order — `client_info`, `migrate_connected`,
+  `migrate_connect_error`, then this — and the first is the one an eye lands
+  on.
+
+  The effect against a real server is total: the channel list never arrives,
+  `bringUp` runs to its limit and throws, and every channel built on top is
+  unreachable. Everything else in this protocol had been built above a
+  handshake that does not complete.
+
+  **Nothing caught it, and both reasons are worth keeping.** The test asserted
+  that what went out equalled the constant — true however wrong the constant
+  is; a number checked against itself is not checked. And the scripted server
+  sent its channel list whether or not it had been asked, so a wrong request
+  looked exactly like a right one.
+
+  The assertion is a literal now, with the protocol's own numbering written
+  beside it, and a new test pins the whole family of message numbers against
+  the specification rather than against the constants that produce them.
+
 ### Added
 - **`rgba` and `xxxa` decode, and LZ is complete.** They are **two LZ streams
   end to end in one payload**: the colour pass, then an alpha pass over the
