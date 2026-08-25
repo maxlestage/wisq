@@ -47,6 +47,36 @@ bits and `win_head_dist` as 32 more. 33 bytes, big-endian, laid out
 differently. Confirmed by parsing what `gzgen` produces, not only by reading
 the C.
 
+## Every fixture, and the command that rebuilds it
+
+| fixture | command |
+| --- | --- |
+| `sequence` | `./gzgen 16 12 4 1` |
+| `repeating` | `GZMODE=r ./gzgen 16 12 2 4` |
+| `farBack` | `GZMODE=f ./gzgen 16 12 70 5` |
+| `longOffset` | `GZMODE=l ./gzgen 128 80 1 6` |
+| `deep` | `GZMODE=d ./gzgen 128 80 3 7` |
+| `rgb24` | `GZTYPE=7 ./gzgen 16 12 2 3` |
+| `rgb16` | `GZTYPE=6 ./gzgen 16 12 2 5` |
+| `rgba` | `GZTYPE=9 ./gzgen 16 12 2 4` |
+
+Two are not `gzgen`'s. `zlibWrapped` is the first two `sequence` streams put
+through `zlib.compress(..., 9)`. `craftedVeryLongOffset` is written by hand —
+no encoder output small enough to keep as a fixture reaches a pixel offset past
+2^17 — and then run through `gzdec`, which is where its authority comes from;
+what is stored is the reference decoder's FNV-1a digest of the result.
+
+All ten were re-verified against this table before it was written: the seven
+`gzgen` ones byte for byte, `zlibWrapped` by recompressing, and the crafted one
+by re-running the reference decoder and recomputing the digest.
+
+**This table exists because the generator drifted from the fixtures once
+already** — the same failure the QUIC harness had, recreated here by the same
+hand. Three fixture sets (`rgb24`, `rgb16`, `rgba`) needed a `GZTYPE` the
+committed `gzgen.c` did not have, so they could not be rebuilt at all. A
+fixture nobody can rebuild is a fixture nobody can check, and writing that
+sentence down for QUIC did not stop me doing it again for GLZ.
+
 ## Modes, and the paths that needed them
 
 `gzgen` takes `GZMODE` because four decoder paths turned out to be unreachable
@@ -60,6 +90,13 @@ reading.
 | `f` | 70 images, the last repeating the first | an image distance past 63 |
 | `l` | 128x80, bottom half repeats top half | a pixel offset past the short field |
 | `d` | the last image repeats an earlier one's bottom half | cross-image **and** long offset at once |
+
+`GZTYPE` is separate from `GZMODE` and picks the `LzImageType` to encode: 6 for
+rgb16, 7 for rgb24, 9 for rgba, and 8 (rgb32) by default. It also sets the
+bytes per pixel of the source image — two for rgb16, three for rgb24 — because
+`glz_encode` checks the stride against the type and refuses a mismatch. That
+refusal is worth knowing about: it looks exactly like "this type is not
+supported" and is not.
 
 Two of those have a size floor that is easy to get wrong. A local offset only
 takes the long path once it passes `MAX_PIXEL_SHORT_DISTANCE` (4096), and the

@@ -708,3 +708,31 @@ Le refus reste dans le code — un serveur hostile peut toujours envoyer ce
 qu'il veut — mais le commentaire et le test disent désormais que c'est un refus
 définitif et non un trou à combler. La différence compte pour qui lira ça dans
 six mois : « pas encore fait » invite à le faire.
+
+### La même faute, deux fois, de la même main
+
+Trois PR après avoir écrit « un gabarit qu'on ne peut pas reconstruire est un
+gabarit que personne ne peut vérifier » — et régénéré les sept gabarits QUIC
+pour cette raison — j'ai livré trois jeux GLZ irreproductibles.
+
+Le générateur commité n'avait pas la variable `GZTYPE` que j'avais ajoutée dans
+le scratchpad pour produire `rgb24`, `rgb16` et `rgba`. Huit variantes du
+générateur traînaient hors du dépôt (`gzgen` à `gzgen8`) et c'est la cinquième
+qui était commitée. Rien ne signalait le problème : les tests passaient, la CI
+était verte, et le README affirmait une procédure de reconstruction qui ne
+reconstruisait plus qu'une partie.
+
+Ce qui l'a rattrapé n'est pas une relecture mais un inventaire : lister les
+jeux de gabarits d'un côté, les modes du générateur de l'autre, et comparer.
+Dix contre six.
+
+Réparé, et vérifié plutôt qu'affirmé : les sept jeux issus de `gzgen` se
+reconstruisent octet pour octet, `zlibWrapped` en recomprimant, le flux
+fabriqué en repassant par le décodeur de référence et en recalculant
+l'empreinte. La table est dans le README.
+
+La leçon n'est pas « faire attention ». C'est qu'**écrire une règle ne la fait
+pas respecter par soi-même** : entre le moment où je l'ai formulée pour QUIC et
+celui où je l'ai enfreinte pour GLZ, rien dans le dépôt ne pouvait me le dire.
+Un test qui recompilerait le harnais et comparerait aurait pu ; il n'existe pas,
+et le noter ici est le minimum.
