@@ -434,6 +434,115 @@ struct SpiceSurfaces {
         return written
     }
 
+    /// pixman's eight-bit multiply, `MUL_UN8`.
+    ///
+    /// `a · b / 255`, rounded the way pixman rounds it: add a half, then fold
+    /// the carry back in. The obvious `(a * b) / 255` and the cheap
+    /// `(a * b) >> 8` both disagree with it on real inputs, and the whole point
+    /// of this file is to produce what the reference produces.
+    static func multiply(_ lhs: UInt8, _ rhs: UInt8) -> UInt8 {
+        let product = UInt32(lhs) * UInt32(rhs) + 0x80
+        return UInt8(truncatingIfNeeded: (product + (product >> 8)) >> 8)
+    }
+
+    /// `DRAW_ALPHA_BLEND` — source-over, on premultiplied alpha.
+    ///
+    /// The only draw on this channel that really composites. `__blend_image`
+    /// builds a solid mask whose alpha is the message's overall alpha — and
+    /// only when that is not `0xff` — then calls `pixman_image_composite32`
+    /// with `PIXMAN_OP_OVER`. So the arithmetic is pixman's, not SPICE's:
+    ///
+    ///     s' = src · overall
+    ///     out = s' + dst · (1 − s'ₐ)
+    ///
+    /// **The source is premultiplied**, and nothing in SPICE says so. There is
+    /// no mention of it in the protocol or in `canvas_base.c`, and nothing
+    /// anywhere divides by alpha: `SPICE_BITMAP_FMT_RGBA` maps to
+    /// `PIXMAN_a8r8g8b8` and pixman's `OVER` is defined on premultiplied
+    /// source. Premultiplied is therefore what the pipeline *means* rather than
+    /// what anyone wrote down, and reading it the other way produces halos —
+    /// a picture, and a wrong one.
+    ///
+    /// That claim is measured rather than argued. `scripts/spice-alpha-blend/`
+    /// runs this formula and pixman itself over 43,008,000 combinations of
+    /// source, destination, both alphas and the flag; they agree on every one.
+    ///
+    /// Two details from the same reading:
+    ///
+    ///   * **an overall alpha of zero draws nothing at all**, and the reference
+    ///     returns before it even looks at the region;
+    ///   * **`DEST_HAS_ALPHA` decides whether the destination's fourth byte is
+    ///     its alpha.** Clear, pixman is handed an `x8r8g8b8` destination whose
+    ///     alpha is implicitly one. `SRC_SURFACE_HAS_ALPHA` is not read here:
+    ///     the reference passes it only on the surface-to-surface path.
+    @discardableResult
+    mutating func alphaBlend(
+        _ operation: SpiceDisplayWire.AlphaBlend,
+        source: (pixels: [UInt8], width: Int, height: Int),
+        bytesPerSourcePixel: Int
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        guard bytesPerSourcePixel == 3 || bytesPerSourcePixel == 4 else {
+            throw Failure.notDrawable
+        }
+        guard source.pixels.count >= source.width * source.height * bytesPerSourcePixel else {
+            throw Failure.notDrawable
+        }
+        // Nothing to do, and nothing to report: an alpha of zero contributes no
+        // pixels, so a renderer has no reason to re-upload the rectangle.
+        guard operation.alpha != 0 else { return [] }
+
+        let box = operation.base.box
+        let area = operation.sourceArea
+        guard area.width > 0, area.height > 0, box.width > 0, box.height > 0 else { return [] }
+        let overall = operation.alpha
+        let readsDestinationAlpha = operation.readsDestinationAlpha
+
+        let written = Self.regions(of: operation.base, in: surface)
+        for rect in written {
+            for y in Int(rect.top)..<Int(rect.bottom) {
+                let sourceY = Int(area.top) + (y - Int(box.top)) * Int(area.height)
+                    / Int(box.height)
+                guard sourceY >= 0, sourceY < source.height else { continue }
+
+                for x in Int(rect.left)..<Int(rect.right) {
+                    let sourceX = Int(area.left) + (x - Int(box.left)) * Int(area.width)
+                        / Int(box.width)
+                    guard sourceX >= 0, sourceX < source.width else { continue }
+
+                    let from = (sourceY * source.width + sourceX) * bytesPerSourcePixel
+                    let to = (y * surface.width + x) * 4
+                    // A three-byte source has no alpha of its own, so it is
+                    // opaque — which is what pixman sees when it is handed an
+                    // `x8r8g8b8` image.
+                    let sourceAlpha = bytesPerSourcePixel == 4 ? source.pixels[from + 3] : 0xFF
+                    let scaledAlpha = Self.multiply(sourceAlpha, overall)
+                    let keep = 0xFF - scaledAlpha
+
+                    for channel in 0..<3 {
+                        let scaled = Self.multiply(source.pixels[from + channel], overall)
+                        surface.pixels[to + channel] = scaled
+                            &+ Self.multiply(surface.pixels[to + channel], keep)
+                    }
+                    if surface.hasAlpha {
+                        let destinationAlpha = readsDestinationAlpha
+                            ? surface.pixels[to + 3] : 0xFF
+                        surface.pixels[to + 3] = scaledAlpha
+                            &+ Self.multiply(destinationAlpha, keep)
+                    } else {
+                        // `clear_dest_alpha` in the reference, and this file's
+                        // standing rule: an xRGB surface's fourth byte is zero.
+                        surface.pixels[to + 3] = 0
+                    }
+                }
+            }
+        }
+        surfaces[operation.base.surfaceID] = surface
+        return written
+    }
+
     // MARK: - The draws that need no codec
 
     /// `DRAW_COPY_BITS` — the surface copying from itself.
