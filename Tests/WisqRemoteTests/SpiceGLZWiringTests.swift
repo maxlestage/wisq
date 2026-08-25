@@ -66,12 +66,33 @@ final class SpiceGLZWiringTests: XCTestCase {
         XCTAssertEqual(window.count, 0, "seul GLZ garnit la fenêtre")
     }
 
+    /// `rgb16`, `rgb24` and `rgba` all reach the decoder through the channel.
+    func testEveryHandledTypeReachesTheDecoder() throws {
+        for (name, cases) in [
+            ("rgb24", SpiceGLZFixtures.rgb24),
+            ("rgb16", SpiceGLZFixtures.rgb16),
+            ("rgba", SpiceGLZFixtures.rgba)
+        ] {
+            var window = SpiceGLZ.Window()
+            for (index, fixture) in cases.enumerated() {
+                let decoded = try XCTUnwrap(
+                    try SpiceDisplayWire.pixels(of: glzImage(fixture), glzWindow: &window),
+                    "\(name) image \(index)"
+                )
+                XCTAssertEqual(
+                    decoded.pixels, SpiceGLZFixtures.bytes(fixture.decoded),
+                    "\(name) image \(index)"
+                )
+            }
+        }
+    }
+
     /// A GLZ type this decoder does not handle yet answers "no pixels" rather
-    /// than being run through the 32-bit loop, which would produce an image.
-    func testAGLZTypeThatIsNotRGB32IsNotAttempted() throws {
+    /// than being run through a loop that would produce an image.
+    func testAPaletteGLZTypeIsNotAttempted() throws {
         var window = SpiceGLZ.Window()
         var raw = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].stream)
-        raw[8] = 0x16                       // rgb16, top_down
+        raw[8] = 0x15                       // plt8, top_down
         let image = SpiceDisplayWire.Image(
             descriptor: SpiceDisplayWire.ImageDescriptor(
                 id: 0, type: .glzRGB, flags: 0,

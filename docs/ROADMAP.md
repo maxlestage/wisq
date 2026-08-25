@@ -868,7 +868,21 @@ tronquée. Calculer plus large et ne tronquer qu'à l'écriture donne un vert
 différent — bleu et rouge justes, vert faux. C'est exactement ce qui s'est
 passé, et seul le gabarit de référence l'a montré.
 
-Reste : la passe alpha de `rgba`, et les formes palettisées. Une image seule ne peut
+**`rgba` est deux passes sur un seul tampon.** `decode()` fait tourner
+`glz_rgb32_decode` sur la couleur, note combien d'octets il a consommés, puis
+lance `glz_rgb_alpha_decode` exactement à partir de là — un second jeu d'octets
+de contrôle, de correspondances et de séries couvrant à nouveau toute l'image,
+ne touchant que le quatrième octet de chaque pixel. Son biais de longueur est
+2, et ses correspondances doivent laisser intacte la couleur que la première
+passe a écrite.
+
+Le gabarit a un alpha qui varie dans l'image et entre les deux trames, à
+dessein : un alpha constant laisserait un décodeur qui saute la seconde passe
+donner quand même la bonne réponse. Un test l'affirme sur le gabarit plutôt que
+de se fier à la façon dont il a été produit.
+
+Reste : les formes palettisées, qui demandent la table de couleurs du message
+et des distances remises à l'échelle par le nombre de pixels par octet. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le

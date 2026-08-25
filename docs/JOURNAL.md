@@ -653,3 +653,29 @@ dans le `switch`. Le sabotage passait donc sans rien casser, à juste titre.
 La bonne réponse n'était ni un test ni une correction : c'était de la
 supprimer. Une propriété qui a l'air de porter une règle et que personne ne lit
 est pire qu'absente — elle invite à la croire appliquée.
+
+## GLZ : la passe alpha, et un `git checkout` qui efface
+
+`rgba` a marché du premier coup, ce qui est rare ici et mérite qu'on dise
+pourquoi : la référence était lisible sans piège. Deux passes sur un tampon,
+la seconde partant de l'octet où la première s'est arrêtée, ne touchant que le
+quatrième octet, biais de longueur 2. Rien de caché dans un type de champ cette
+fois.
+
+Le seul choix à faire concernait le gabarit : donner à l'alpha des valeurs qui
+varient. Un alpha constant aurait laissé passer un décodeur qui ne lance jamais
+la seconde passe — le tampon étant déjà rempli de la bonne valeur par hasard.
+Un test l'affirme désormais sur le gabarit lui-même, plutôt que de faire
+confiance au générateur.
+
+### L'erreur à ne pas refaire
+
+Pour rejouer un sabotage j'ai modifié le *fichier de test*, puis je l'ai
+restauré avec `git checkout` — ce qui l'a ramené à HEAD et **effacé les deux
+tests que je venais d'écrire et qui n'étaient pas encore commités**.
+
+J'avais sauvegardé le fichier source avant de le saboter, par réflexe, mais pas
+le fichier de test. La règle est la même pour les deux : `git checkout` sur un
+fichier qui porte du travail non commité le détruit sans avertir. Coût réel
+faible ici — j'avais le texte exact sous la main — mais la même distraction sur
+une heure de travail aurait été coûteuse.

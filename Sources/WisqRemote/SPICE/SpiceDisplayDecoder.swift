@@ -375,20 +375,37 @@ extension SpiceDisplayWire {
         // between the two templates, and spice-gtk always decodes to 32 bits.
         // Checked with an rgb24 fixture rather than taken on trust.
         //
-        // The rest are still refused. `rgb16` packs two bytes per pixel and
-        // needs its own expansion; `rgba` needs a second pass over the alpha;
-        // the palette forms need the colour table and rescaled distances.
-        // Running any of them through this loop would produce an image rather
-        // than an error, which is the worse failure.
-        guard header.type == .rgb32 || header.type == .rgb24 else { return nil }
+        // The palette forms are still refused: they need the colour table from
+        // the message and distances rescaled by the pixels-per-byte, so running
+        // them through this loop would produce an image rather than an error —
+        // the worse failure.
+        let literal: SpiceGLZ.Literal
+        switch header.type {
+        case .rgb32, .rgb24: literal = .threeBytes
+        case .rgb16: literal = .fiveFiveFive
+        case .rgba: literal = .threeBytes      // the colour pass; alpha follows
+        default: return nil
+        }
         guard header.width == Int(image.descriptor.width),
               header.height == Int(image.descriptor.height) else { return nil }
 
-        let decoded = try SpiceGLZ.decodeRGB32(
-            payload, from: SpiceGLZ.headerBytes,
-            pixels: header.width * header.height,
-            imageID: header.id, window: window
+        let pixelCount = header.width * header.height
+        var decoded = try SpiceGLZ.decodeRGB32(
+            payload, from: SpiceGLZ.headerBytes, pixels: pixelCount,
+            imageID: header.id, window: window, literal: literal
         )
+
+        // `rgba` is two passes over one buffer: the colour, then the alpha
+        // starting exactly where the colour stopped, with its own control
+        // bytes and its own matches. `decode()` in the reference does the same,
+        // advancing `in_now` by what the first pass reported.
+        if header.type == .rgba {
+            decoded = try SpiceGLZ.decodeRGB32(
+                payload, from: SpiceGLZ.headerBytes + decoded.bytesRead,
+                pixels: pixelCount, imageID: header.id, window: window,
+                literal: .alpha, into: decoded.pixels
+            )
+        }
 
         window.add(SpiceGLZ.Window.Image(
             id: header.id, winHeadDistance: header.winHeadDistance,
