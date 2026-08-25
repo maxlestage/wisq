@@ -707,17 +707,20 @@ codec qui n'existe pas — `lzPalette` l'a déjà montré une fois.
   vérifié octet par octet. Si l'avertissement de la référence dit vrai le cas
   n'arrive jamais ; s'il dit faux, une image vaut mieux qu'un trou.
 
-**Et le client demande maintenant `autoLZ` au lieu de `lz`.** Il demandait du
-LZ simple précisément parce que QUIC n'était pas décodé, et cette raison n'existe
-plus. `get_compression_for_bitmap`, dans le `dcc.cpp` du serveur, sépare
+**Et le client demande maintenant `autoGLZ`**, après être passé par `lz` puis
+`autoLZ`. `get_compression_for_bitmap`, dans le `dcc.cpp` du serveur, sépare
 exactement les deux modes automatiques : tous deux envoient du QUIC pour un
-bitmap à forte gradualité, puis l'un retombe sur LZ et l'autre sur GLZ. Donc
-`autoLZ` ne peut produire que du QUIC ou du LZ — les deux décodés — là où
-`autoGLZ` peut encore produire du GLZ, qui reste refusé.
+bitmap à forte gradualité, puis l'un retombe sur LZ et l'autre sur GLZ.
 
-Le gain n'est pas théorique : « forte gradualité » est le mot du serveur pour
-les photos et les dégradés, c'est-à-dire ce que LZ comprime le plus mal, et
-c'est la plus grande partie d'un bureau avec un fond d'écran.
+Le passage à `autoLZ` valait déjà pour lui-même : « forte gradualité » est le
+mot du serveur pour les photos et les dégradés, c'est-à-dire ce que LZ comprime
+le plus mal, et c'est la plus grande partie d'un bureau avec un fond d'écran.
+Le passage à `autoGLZ` ajoute l'autre moitié — les widgets, les polices, les
+bordures — que LZ recomprime intégralement à chaque image et que GLZ retrouve
+dans le dictionnaire de la précédente.
+
+Ce qui l'interdisait n'était pas GLZ mais **la fenêtre**, et ce n'était pas une
+question de rendement. Voir plus bas.
 
 **Reste GLZ, et c'est une fonctionnalité de session, pas une tranche de codec.**
 La lecture de `decode-glz.c` et `decode-glz-tmpl.c` dans spice-gtk — le
@@ -936,11 +939,10 @@ celle de la référence, et parce que son inatteignabilité est une propriété 
 wisq annonce désormais la capacité `LZ4_COMPRESSION`, ce qui est une permission
 et non une demande : le serveur la vérifie avant d'envoyer une image LZ4, et ce
 qu'il envoie reste décidé par sa configuration ou par le message de préférence.
-Ce dernier demande toujours `autoLZ` et non `lz4` : demander LZ4 c'est le
-demander *à la place* des modes automatiques, et QUIC vaut plusieurs fois le
-rapport de LZ4 sur le contenu photographique qui domine un bureau avec un fond
-d'écran. Sur un réseau mobile, c'est la bande passante qui est rare, pas le
-décodage.
+Ce dernier ne demande pas `lz4` : demander LZ4 c'est le demander *à la place*
+des modes automatiques, et QUIC vaut plusieurs fois le rapport de LZ4 sur le
+contenu photographique qui domine un bureau avec un fond d'écran. Sur un réseau
+mobile, c'est la bande passante qui est rare, pas le décodage.
 
 ### Les dessins qui n'ont pas de codec
 
@@ -1341,6 +1343,65 @@ grossir, ce qui est le contraire de ce que demande quelqu'un qui coupe son micro
 Ce qui reste sur l'audio : la capture et la sortie elles-mêmes, qui demandent
 AVAudioEngine et n'existent donc que côté Apple. Tout ce qui se décide sans
 haut-parleur ni micro est ici, et testé.
+
+### La fenêtre GLZ : un nombre qui n'était pas un réglage
+
+Fait, et ce n'était pas l'optimisation que le titre annonçait.
+
+`SPICE_MSGC_DISPLAY_INIT` porte deux tailles — le cache de pixmaps et la
+fenêtre du dictionnaire GLZ — l'une à côté de l'autre, dans le même message,
+avec la même forme. Rien ne dit qu'elles ne se comportent pas pareil. wisq
+annonçait **zéro pixel** de fenêtre, avec un commentaire qui l'expliquait par
+« wisq ne décode pas GLZ ».
+
+Les deux moitiés étaient fausses. GLZ est décodé depuis que sa fenêtre a été
+branchée dans la pompe. Et zéro n'est pas une petite fenêtre :
+
+    if ((uint32_t)new_image_size > dict->window.size_limit) {
+        dict->cur_usr->error(dict->cur_usr, "image is bigger than window\n");
+    }
+
+`glz_dictionary_window_get_new_head` est appelé en tête de *chaque* encodage
+GLZ. Ce `error` est `glz_usr_error`, qui appelle `spice_critical`, qui appelle
+`abort()`. Il n'y a pas de repli, pas d'encodage plus petit tenté : un client
+qui annonce une fenêtre plus petite qu'une image **tue le processus serveur** à
+la première image GLZ.
+
+Et ce n'était pas hypothétique en attendant un éventuel passage à `autoGLZ`.
+`reds.cpp` initialise la compression du serveur à `AUTO_GLZ`. Un serveur qui
+n'annonce pas la capacité `preferred_compression` ne reçoit jamais notre
+message et garde donc GLZ pour toute la session ; sur les autres, il reste la
+fenêtre entre `DISPLAY_INIT` et l'arrivée du message. wisq ne choisissait pas
+GLZ — il y était exposé par défaut, avec une fenêtre qui faisait tomber le
+serveur.
+
+**La lecture ne suffisait pas, donc c'est mesuré.**
+`scripts/spice-glz-window/` compile l'encodeur de référence et lui donne des
+fenêtres choisies. Une image 64×64 passe à 4096 pixels et fait abandonner à
+4095. La borne est `image_size > size_limit`, ce qui change la nature du
+nombre : ce n'est pas « une fenêtre non nulle » qu'il faut, c'est **une fenêtre
+au moins aussi grande que la plus grande image**. Pour tout ce qui atteint GLZ,
+`__get_pixels_num` la donne exactement en largeur × hauteur, `can_lz_compress`
+ayant déjà écarté les strides excédentaires.
+
+D'où `1 << 23` : 8 388 608 pixels, une image entière jusqu'en 3840×2160. Ce
+n'est pas un avis sur la quantité d'historique utile — la résolution de
+l'invité n'est pas connue quand ce message part. spice-gtk arrive au même
+endroit par l'autre bout, en bornant sa propre fenêtre à 12 Mio au minimum et
+en choisissant 32 Mio d'ordinaire, soit les mêmes 8 Mi pixels.
+
+La fenêtre corrigée, le troisième obstacle à `autoGLZ` tombe et les deux
+décisions se prennent enfin ensemble — c'était le sujet de la tâche. Les deux
+autres tenaient déjà : GLZ décode, et `get_compression_for_bitmap` rétrograde
+`GLZ` en `LZ` dès que `bitmap_fmt_has_graduality` est faux, ce qui exclut tous
+les formats à palette. Un test lie désormais les deux valeurs, pour qu'aucune
+ne puisse revenir en arrière seule.
+
+**Ce que ça dit du reste.** Le cache de pixmaps, lui, est bien un budget :
+`dcc_add_to_cache` évince, et quand il n'y arrive pas il renvoie `FALSE` et
+l'image part sans être mise en cache. Une valeur trop basse coûte de la bande
+passante. Deux nombres voisins, de même forme, dont l'un se dégrade et l'autre
+tue.
 
 ## Lot 6 — finition
 

@@ -2,21 +2,16 @@ import Foundation
 
 /// What the client says to the display channel, rather than what it hears.
 ///
-/// Small, and the reason it exists is not: **wisq decodes LZ, and this is how
-/// it gets sent LZ.**
+/// Small, and what it decides is not. A SPICE server picks its image encoding
+/// from its own configuration, and `reds.cpp` defaults that to `AUTO_GLZ`. So
+/// every number in here is answering the same question — *what has this client
+/// promised a server it can cope with* — and the server believes the answers
+/// without checking them.
 ///
-/// A SPICE server chooses its image encoding from its own configuration, and
-/// the usual default is "automatic", which means QUIC for photographic content
-/// and GLZ for graphic. Neither is decoded here yet. Without this message a
-/// client that has an LZ decoder and nothing else watches most of the screen
-/// arrive in an encoding it must skip — decoding a codec and being sent that
-/// codec are two different achievements, and only the second puts a picture on
-/// a phone.
-///
-/// So this is not a nicety deferred until the codecs are done. It is the piece
-/// that makes the one finished codec worth having, and porting QUIC — some two
-/// thousand lines of predictive coding — is an optimisation after it rather
-/// than a prerequisite before it.
+/// The two sizes in `initialise()` show how little that is a formality: they
+/// sit in one message, they are both "how much this client will remember", and
+/// the server treats one as a budget it may exceed and the other as a floor it
+/// will die below. Neither is a hint.
 enum SpiceDisplayClient {
     /// Client-to-server message types on the display channel.
     enum Message: UInt16, Equatable, Sendable {
@@ -76,26 +71,60 @@ enum SpiceDisplayClient {
 
     // MARK: - Messages
 
+    /// The GLZ window this client declares, in pixels.
+    ///
+    /// **This is a floor, not a budget, and the difference is a crash.** The
+    /// number goes into `SPICE_MSGC_DISPLAY_INIT`, `dcc_handle_init` hands it
+    /// unchecked to `glz_enc_dictionary_create`, and every GLZ encode then
+    /// starts at `glz_dictionary_window_get_new_head`, whose first act is:
+    ///
+    /// ```c
+    /// if ((uint32_t)new_image_size > dict->window.size_limit) {
+    ///     dict->cur_usr->error(dict->cur_usr, "image is bigger than window\n");
+    /// }
+    /// ```
+    ///
+    /// That `error` is `glz_usr_error`, which calls `spice_critical`, which
+    /// calls `abort()`. There is no fallback path and no smaller encoding
+    /// tried: a client that declares a window smaller than one image kills the
+    /// server process the first time the server encodes one. `scripts/spice-glz-window/`
+    /// builds the reference encoder and shows the boundary — a 64×64 image is
+    /// clean at 4096 and aborts at 4095.
+    ///
+    /// So the size is not chosen for how much history is worth keeping. It is
+    /// chosen so that **one whole frame always fits**, and the frame is the
+    /// guest's, decided long after this message goes out. `1 << 23` is
+    /// 8 388 608 pixels, which covers 3840×2160 with room over; a guest larger
+    /// than that would trip the check, and there is nothing here that could
+    /// know about it in time. spice-gtk lands in the same place from the other
+    /// direction, clamping its own window to at least 12 MiB and normally
+    /// choosing 32 MiB — the same 8 Mi pixels, since it divides bytes by four.
+    ///
+    /// The ceiling this puts on wisq's own memory is that many pixels of
+    /// decoded history, 32 MiB at four bytes each, and only when a server
+    /// actually fills the window: `SpiceGLZ.Window` holds what the server's
+    /// `winHeadDistance` says is still reachable, not the declared maximum.
+    static let glzWindowPixels: Int32 = 1 << 23
+
     /// `SPICE_MSGC_DISPLAY_INIT`, which the server waits for before it draws.
     ///
-    /// The two sizes are the client saying how much it will remember. They are
-    /// promises about this client's own memory, so they are chosen here rather
-    /// than taken from the server: a phone is not a workstation, and a cache
-    /// sized for one is a cache the other cannot hold.
+    /// The two sizes are the client saying how much it will remember, and they
+    /// are chosen here rather than taken from the server because they are
+    /// promises about *this* client's memory: a phone is not a workstation, and
+    /// a cache sized for one is a cache the other cannot hold.
     ///
-    /// The GLZ dictionary window is zero, and that is now a statement of a
-    /// different kind from when it was written. It used to mean "wisq does not
-    /// decode GLZ"; GLZ is decoded, and the zero stays because wisq asks for
-    /// `autoLZ`, under which the server never sends GLZ. Raising it would
-    /// promise the server memory for a history no image will reference. If the
-    /// request ever becomes `autoGLZ`, this is the line that has to move with
-    /// it — the window is the client's promise, and a zero one invites a server
-    /// to build a dictionary this client did not agree to hold.
+    /// **They are not the same kind of promise, which reading the message does
+    /// not reveal.** `pixmap_cache_get` takes the cache size as a budget: when
+    /// an image does not fit, `dcc_add_to_cache` evicts, and when eviction
+    /// cannot free enough it returns `FALSE` and the image is simply sent
+    /// uncached. Too small a cache costs bandwidth. Too small a GLZ window
+    /// aborts the server — see `glzWindowPixels`. One number degrades and the
+    /// other kills, and they sit next to each other.
     static func initialise(
         pixmapCacheID: UInt8 = 0,
         pixmapCachePixels: Int64 = 4 << 20,
         glzDictionaryID: UInt8 = 0,
-        glzWindowPixels: Int32 = 0
+        glzWindowPixels: Int32 = SpiceDisplayClient.glzWindowPixels
     ) -> [UInt8] {
         var body: [UInt8] = [pixmapCacheID]
         body += SpiceWire.u64(UInt64(bitPattern: pixmapCachePixels))
@@ -116,54 +145,50 @@ enum SpiceDisplayClient {
     /// `preferredCompression` will not act on the message, and sending it
     /// anyway is a message the other end has said it does not understand.
     ///
-    /// `autoLZ` rather than `lz`, now that QUIC is decoded.
+    /// **`nil` is also the case that matters most, and it is not the quiet
+    /// one.** A server this client cannot make a request of keeps the
+    /// preference from its own configuration, and `reds.cpp` initialises that
+    /// to `SPICE_IMAGE_COMPRESSION_AUTO_GLZ`. So GLZ is not something wisq opts
+    /// into — it is the default everywhere, and asking for `autoLZ` only ever
+    /// steered the servers that were listening. The same gap exists on every
+    /// server for the images encoded between `DISPLAY_INIT` and this message
+    /// landing. Whatever is preferred here, this client has to survive being
+    /// sent GLZ, which is why `glzWindowPixels` is a correctness matter and not
+    /// a tuning one.
     ///
-    /// This asked for plain `lz` for as long as QUIC was a stream this client
-    /// could only drop. The two automatic modes differ in exactly the way that
-    /// matters here, and `get_compression_for_bitmap` in the server's `dcc.cpp`
-    /// says how: both send QUIC for a high-graduality bitmap, and then one
-    /// falls back to LZ and the other to GLZ.
+    /// **`autoGLZ` rather than `autoLZ`.** Both send QUIC for a high-graduality
+    /// bitmap and differ only in the fallback, and three things had to hold
+    /// before preferring the GLZ one. All three now do:
     ///
-    /// **Why not `autoGLZ`, which would compress better.** This used to say
-    /// "GLZ is refused", and that stopped being true when the GLZ window was
-    /// threaded through the pump — `.glzRGB` and `.zlibGlzRGB` both decode, with
-    /// their own tests. Two thirds of the case for switching is therefore
-    /// established, and checked in the reference rather than assumed:
+    ///   * GLZ decodes. `.glzRGB` and `.zlibGlzRGB` both have their own tests,
+    ///     and the window is threaded through the display pump;
+    ///   * the forms this client refuses cannot arrive.
+    ///     `get_compression_for_bitmap` downgrades `GLZ` to `LZ` whenever
+    ///     `bitmap_fmt_has_graduality` is false, and that is
+    ///     `bitmap_fmt_is_rgb(fmt) && fmt != SPICE_BITMAP_FMT_8BIT_A` — every
+    ///     palette format fails it. So palette-GLZ is unreachable under
+    ///     `autoGLZ`; the output is QUIC, GLZ-RGB, LZ or uncompressed;
+    ///   * the window is large enough to encode against. It was zero, which
+    ///     was not a smaller window but an `abort()` in the server.
     ///
-    ///   * `get_compression_for_bitmap` only keeps `GLZ` when the bitmap's
-    ///     format has graduality, which the palette formats do not — so the
-    ///     palette-GLZ forms this client refuses cannot arrive under `autoGLZ`.
-    ///     Its whole output is QUIC, GLZ-RGB, LZ or uncompressed, all decoded;
-    ///   * the gain is what GLZ is for: one dictionary across the images of a
-    ///     channel, which is most of what a desktop sends.
+    /// The gain is what GLZ is for: one dictionary spanning the images of a
+    /// channel, where LZ starts again at every image. A desktop mostly sends
+    /// the same widgets, fonts and wallpaper repeatedly, and matching across
+    /// frames is the difference. Bandwidth is the scarce thing over a mobile
+    /// network.
     ///
-    /// What is *not* established is the third thing, and it is why this still
-    /// asks for `autoLZ`: `initialise()` above declares a GLZ window of **zero
-    /// pixels**, and `dcc_handle_init` hands that number straight to
-    /// `glz_enc_dictionary_create`. What a zero-size dictionary does there is
-    /// not something this repository can currently check — `glz_encoder_dictionary.c`
-    /// is not in the vendored sources. Asking a server to compress against a
-    /// window we have told it is empty is not a change to make on a guess, and
-    /// this is a bandwidth optimisation rather than a fix. The window size and
-    /// the preference have to move together, with the reference in hand.
-    ///
-    /// The gain is real: "high graduality" is the server's word for
-    /// photographs and gradients, the content LZ compresses worst, and it is
-    /// most of a desktop with a wallpaper on it.
-    ///
-    /// **Not `lz4`, now that LZ4 is decoded too**, and the reason is worth
-    /// stating because the opposite looks obvious on a phone: LZ4 is the
-    /// cheapest of these to decode by a wide margin. But asking for it is
-    /// asking for it *instead of* the automatic modes — `get_compression_for_bitmap`
-    /// never reaches QUIC once the preference is `LZ4` — and QUIC is worth
-    /// several times LZ4's ratio on the photographic content that dominates a
-    /// desktop with a wallpaper. Bandwidth is the scarce thing over a mobile
-    /// network; the decode is not.
+    /// **Not `lz4`, though LZ4 is decoded**, and the reason is worth stating
+    /// because the opposite looks obvious on a phone: LZ4 is the cheapest of
+    /// these to decode by a wide margin. But asking for it is asking for it
+    /// *instead of* the automatic modes — `get_compression_for_bitmap` never
+    /// reaches QUIC once the preference is `LZ4` — and QUIC is worth several
+    /// times LZ4's ratio on the photographic content that dominates a desktop
+    /// with a wallpaper. The decode is not the scarce thing.
     ///
     /// wisq still advertises the LZ4 capability, which is a different
     /// statement: it is permission for a server whose own configuration says
     /// LZ4, and for the images that go out before this message lands.
     static func compressionToRequest(givenServerCapabilities caps: [UInt32]) -> Compression? {
-        supports(.preferredCompression, in: caps) ? .autoLZ : nil
+        supports(.preferredCompression, in: caps) ? .autoGLZ : nil
     }
 }
