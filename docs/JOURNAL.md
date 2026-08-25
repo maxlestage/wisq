@@ -1189,3 +1189,66 @@ dépendance rend une branche entière inatteignable, et le code derrière est ve
 sans avoir jamais tourné. La CI Apple l'exécute, mais la CI Apple ne sabote pas.
 Quand une garde de disponibilité protège une branche, il faut une porte de
 service — sinon tout ce qui est derrière est du texte.
+
+## Le site publiait React en mode développement
+
+Une relecture extérieure a proposé une liste d'optimisations. La plupart
+étaient déjà faites — la pile TCP est réglée (`noDelay`, `connectionTimeout`,
+`serviceClass`), le profil Rust est déjà `lto = "fat"`, `codegen-units = 1`,
+`strip = true`, la parité des deux cœurs est tenue en CI, JPEG dans Tight
+existe. Une piste visait le mauvais cœur : optimiser l'interpréteur Swift avec
+des `UnsafePointer`, alors que celui qui tourne sur le téléphone est le Rust.
+
+Mais une mesure a montré autre chose. Le bundle du site pesait 479 Ko bruts,
+147 Ko gzippés. Il en pèse 207 et 66 maintenant, pour le même site. Deux causes,
+et les deux sont des fautes de construction plutôt que de code.
+
+### React a deux versions derrière un seul import
+
+Celle de développement porte chaque avertissement, chaque contrôle de clé,
+chaque invariant de hook — et c'est **celle qu'on obtient par défaut**. Le job
+de déploiement lançait `bun run build` sans rien poser dans l'environnement, et
+`Bun.build` n'invente pas de `NODE_ENV`. Résultat : 211 Ko de plus par visiteur,
+et une exécution plus lente à chaque rendu, publiés depuis le premier jour.
+
+La valeur est maintenant écrite dans `build.tsx` plutôt que laissée au shell.
+Une construction qui produit un artefact différent selon la façon dont on l'a
+lancée est une construction qui a un bug. Le build refuse en plus de publier un
+bundle qui contient encore deux chaînes que seule la version de développement
+porte.
+
+### Chaque visiteur téléchargeait toutes les pages, dans les deux langues
+
+`App` faisait `PAGES[lang][route]`, et cet import unique mettait la politique de
+confidentialité, la FAQ, la feuille de route et la note d'architecture — en
+anglais **et** en français — dans le fichier que tout le monde télécharge.
+Mesuré en retirant l'import : 61 Ko bruts, 21,6 Ko sur le fil, de prose que
+presque personne ne lira.
+
+Le document voyage désormais dans la page qui le contient déjà, en JSON à côté
+du balisage. Coût mesuré : 236 à 319 octets gzippés par page, parce que les deux
+copies tiennent dans la fenêtre de gzip et que la seconde n'est presque que des
+références arrière. Pas de requête supplémentaire, pas de frontière de suspense
+au milieu d'un document, et l'hydratation a toujours son texte de façon
+synchrone.
+
+### La garde ne tournait pas quand son sujet changeait
+
+`site/tests/claims.test.ts` existe précisément pour empêcher les chiffres
+annoncés de rôtir : il lit le dépôt et échoue quand une affirmation cesse d'être
+vraie. Il annonçait 462 tests là où il y en a 723, et 5 portes CI là où il y en
+a 6.
+
+La raison n'est pas que le test est faible : c'est que `site.yml` était filtré
+sur `paths: ["site/**"]`. Ajouter un test Swift ne pouvait donc pas le
+déclencher. **Une garde qui ne s'exécute que lorsque son sujet n'a pas changé
+n'est pas une garde.** Le filtre est retiré ; le coût est une minute de CI sur
+des changements qui ne touchent pas le site.
+
+C'est la même leçon que la semaine dernière sous un autre angle : là, une
+dépendance absente rendait une branche inatteignable ; ici, un filtre de chemin
+rendait un test inatteignable. Dans les deux cas le vert ne voulait rien dire.
+
+Quatre sabotages plus un témoin : trois attrapés, le témoin vivant. Celui qui
+retire l'échappement du chevron mord — donc au moins un document contient un
+`<`, et le test n'est pas vide.

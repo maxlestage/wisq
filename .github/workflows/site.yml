@@ -4,12 +4,20 @@ name: Site
 # Pages from master. Pages must be enabled once in the repository settings
 # (Settings → Pages → Source: GitHub Actions) and the repository has to be
 # public, or on a plan that allows Pages for private repositories.
+# No path filter, and that is deliberate. `site/tests/claims.test.ts` guards
+# numbers the site advertises about the *repository* — the test count, the
+# number of blocking CI gates — by reading the repository and failing when a
+# figure stops being true. Filtered to `site/**`, it never ran when the thing
+# it guards changed: adding a Swift test could not trip it, and the advertised
+# count drifted from 462 to 723 without a single red job. A guard that only
+# runs when its subject did not change is not a guard.
+#
+# The cost of dropping the filter is a bun install, a build and a test run —
+# under a minute — on changes that do not touch the site.
 on:
   push:
     branches: [master]
-    paths: ["site/**", ".github/workflows/site.yml"]
   pull_request:
-    paths: ["site/**", ".github/workflows/site.yml"]
 
 permissions:
   contents: read
