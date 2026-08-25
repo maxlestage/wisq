@@ -5246,4 +5246,52 @@ enum SpiceGLZFixtures {
             id: 2, winHeadDistance: 2, digest: 0x1ff0ca1b1315c325
         ),
     ]
+
+    /// The first two streams of `sequence`, with zlib wrapped round them.
+    ///
+    /// `zlibGlzRGB` is a GLZ stream and nothing else — the reference inflates
+    /// and calls the very same GLZ path — so these are the plain fixtures
+    /// compressed, and they must decode to the plain fixtures' `decoded`.
+    ///
+    /// Two of them rather than one on purpose: `decode-zlib.c` calls
+    /// `inflateReset` before every image, so each is compressed independently.
+    /// One image cannot show an inflater that wrongly carries its dictionary
+    /// over; two can.
+    struct Zlib {
+        let compressed: String
+        let inflatedSize: Int
+        let id: UInt64
+    }
+
+    static let zlibWrapped: [Zlib] = [
+        Zlib(
+            compressed: """
+                78da4dceb1aaa6301040e1b9481443701649204199ffca0886c014a6899d5b59ad9dd5da
+                d9f9fe2fb0b7dc035f7fbebffffe812ff8f200f0eb87f9f11bfeebf3a382a686ae056760
+                44e01e9283d5c336c04e704c70ce702d702778045e504da5a056ae559d518c6aecd5ea54
+                f26a1fd446ea9cd431ab7b515752afa8e703baabb4ab35b4ba313aa15e7b3d3acd5e1f83
+                3e496f93de67fd2cfa4dfa127d03ba0abb1a9b16c1e08a987a6487a3c773c083709f709b
+                f15df049780b5e1fb06365b9b6a9b5abb180b6e96de7acf3f61aec4df699ec3bdb6db17b
+                b287d813025761acc3da8664428301fae05ce87cb887705178a7f0cc615fc296c229e1f8
+                00a58ad69ac696d85087e47a02478da767a097e89ae89ee958e84cb409edc06bc5a9666e
+                79343febdcf5dc3806cfefc00ff13df135f3b9f0917817de3e10b72aee753cda789a7861
+                bcfbf8b8f8fa08436c28765374731c97c82926892bc85ec956cbd9ca61e446b97a799d3c
+                5e9a4180c44dd2cdc28b8c495691f4817c54f9acf3d6e6dde407f3dbe7cbe5dbe76ec88e
+                324cb999735af29af22899a19c5539eab2b76533e5c5f2f4e576e5f2c50da5a3d24c05e6
+                b22e25a5c252c67f15b04ef7
+                """,
+            inflatedSize: 615, id: 0
+        ),
+        Zlib(
+            compressed: """
+                78da535088f261606460946060601000621e207660800046100611cc0cec8fd41918e50d
+                d7ac3c7577318fc9e6338fb718a8aeffa1a2c3f5529ebd67fae7e36b023605b5da6f14dc
+                7595353f53c9b8fc6b418addcfddf377c8bf143a6c5bf9bc7f8a2837434f4dad56b2d889
+                3d336277266aff8a6de03e7493f9e23ea51dd38b13e377ecfeb2f954097fc2829eb02f3a
+                877e1b975f7cd255ce3edfb159dcce31f943ecc5f096bda64f3631f91ff89c1523ebe152
+                1d7cbbf1f58c0cc307e16c8c8c5ae6cabae63200685d4c87
+                """,
+            inflatedSize: 201, id: 1
+        ),
+    ]
 }

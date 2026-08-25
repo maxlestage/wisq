@@ -160,5 +160,81 @@ final class SpiceGLZWiringTests: XCTestCase {
         SpiceWire.message(type, serial: 1, payload: Data(body))
     }
 
+    // MARK: - zlibGlzRGB
+
+    /// Zipped GLZ decodes to exactly what unzipped GLZ decodes to, which is the
+    /// whole claim: the wrapper is a wrapper.
+    func testZlibWrappedGLZDecodesToTheSamePixels() throws {
+        var window = SpiceGLZ.Window()
+        for (index, wrapped) in SpiceGLZFixtures.zlibWrapped.enumerated() {
+            let decoded = try XCTUnwrap(
+                try SpiceDisplayWire.pixels(of: zlibImage(wrapped), glzWindow: &window),
+                "image \(index)"
+            )
+            XCTAssertEqual(
+                decoded.pixels,
+                SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[index].decoded),
+                "image \(index)"
+            )
+        }
+    }
+
+    /// **Two images, because one cannot show a dictionary carried wrongly.**
+    /// `decode-zlib.c` resets before every image, so each is compressed on its
+    /// own; an inflater reused with its dictionary intact gets the first right
+    /// and the second wrong.
+    func testTheSecondZippedImageIsNotCorruptedByTheFirst() throws {
+        var window = SpiceGLZ.Window()
+        _ = try SpiceDisplayWire.pixels(
+            of: zlibImage(SpiceGLZFixtures.zlibWrapped[0]), glzWindow: &window
+        )
+        let second = try XCTUnwrap(try SpiceDisplayWire.pixels(
+            of: zlibImage(SpiceGLZFixtures.zlibWrapped[1]), glzWindow: &window
+        ))
+        XCTAssertEqual(
+            second.pixels, SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[1].decoded)
+        )
+    }
+
+    /// The message promises an inflated size. A stream that does not produce it
+    /// is a malformed message, not a picture — stricter than the reference,
+    /// which warns and keeps whatever was written.
+    func testAnInflatedSizeThatTheStreamDoesNotProduceIsRefused() throws {
+        var window = SpiceGLZ.Window()
+        var wrapped = SpiceGLZFixtures.zlibWrapped[0]
+        wrapped = SpiceGLZFixtures.Zlib(
+            compressed: wrapped.compressed,
+            inflatedSize: wrapped.inflatedSize + 1, id: wrapped.id
+        )
+        XCTAssertNil(try SpiceDisplayWire.pixels(of: zlibImage(wrapped), glzWindow: &window))
+    }
+
+    /// Payload that is not zlib at all throws rather than drawing.
+    func testAPayloadThatIsNotZlibIsRefused() {
+        var window = SpiceGLZ.Window()
+        let image = SpiceDisplayWire.Image(
+            descriptor: SpiceDisplayWire.ImageDescriptor(
+                id: 0, type: .zlibGlzRGB, flags: 0,
+                width: UInt32(SpiceGLZFixtures.width),
+                height: UInt32(SpiceGLZFixtures.height)
+            ),
+            bitmap: nil, payload: [UInt8](repeating: 0x41, count: 64), inflatedSize: 100
+        )
+        XCTAssertThrowsError(try SpiceDisplayWire.pixels(of: image, glzWindow: &window))
+    }
+
+    private func zlibImage(_ wrapped: SpiceGLZFixtures.Zlib) -> SpiceDisplayWire.Image {
+        SpiceDisplayWire.Image(
+            descriptor: SpiceDisplayWire.ImageDescriptor(
+                id: wrapped.id, type: .zlibGlzRGB, flags: 0,
+                width: UInt32(SpiceGLZFixtures.width),
+                height: UInt32(SpiceGLZFixtures.height)
+            ),
+            bitmap: nil,
+            payload: SpiceGLZFixtures.bytes(wrapped.compressed),
+            inflatedSize: wrapped.inflatedSize
+        )
+    }
+
     private func bytes(_ hex: String) -> [UInt8] { SpiceGLZFixtures.bytes(hex) }
 }

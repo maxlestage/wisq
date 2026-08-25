@@ -824,7 +824,33 @@ l'instant — les autres types diffèrent par leurs biais de longueur et leur
 largeur de pixel, donc les passer dans la boucle 32 bits produirait une image
 plutôt qu'une erreur.
 
-Reste : `zlibGlzRGB`, et les types GLZ autres que `rgb32`. Une image seule ne peut
+**`zlibGlzRGB` est la cinquième tranche**, et elle est courte parce que le
+format ne cache rien : c'est un flux GLZ avec du zlib autour.
+`canvas_get_zlib_glz_rgb` dézippe puis appelle exactement le même chemin GLZ.
+
+Deux détails, et le second aurait fait mal :
+
+* **Le message porte deux longueurs.** `glz_data_size` dit la taille du flux
+  GLZ une fois dézippé, `data_size` combien d'octets zlib suivent. C'est
+  précisément pour ça que ce type ne pouvait pas passer par la forme
+  « une longueur puis autant d'octets ». Lu de travers, la première est prise
+  pour la seconde — une longueur normalement plus grande que le message, donc
+  la lecture déborde au lieu de produire une image fausse. C'est le bon échec.
+* **`decode-zlib.c` appelle `inflateReset` avant chaque image.** Chaque image
+  est donc comprimée indépendamment, sans dictionnaire qui traverse. Or
+  l'`InflateStream` de wisq a été écrit pour Zlib et ZRLE de RFB, où le
+  dictionnaire *traverse* justement. En réutiliser un ici décode correctement
+  la première image et corrompt la seconde. Vérifié plutôt que supposé : un
+  inflateur partagé échoue sur la seconde avec `Z_DATA_ERROR`.
+
+Un inflateur neuf par image a exactement la sémantique de la référence, pour le
+prix d'une initialisation zlib — des microsecondes contre un décodage. Et une
+sévérité de plus que la référence, qui avertit et garde ce qui a été écrit quand
+le dézippage n'atteint pas la taille promise : ici c'est refusé. Un flux qui ne
+produit pas la taille que son propre message annonce est un message malformé,
+pas une image.
+
+Reste : les types GLZ autres que `rgb32`. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le

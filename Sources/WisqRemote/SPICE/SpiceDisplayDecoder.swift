@@ -1,4 +1,5 @@
 import Foundation
+import WisqNet
 
 /// Decoding for the display channel's messages.
 ///
@@ -183,6 +184,19 @@ extension SpiceDisplayWire {
                 payload: try reader.bytes(Int(size))
             )
 
+        case .zlibGlzRGB:
+            // Two lengths, and they are not interchangeable: the first is how
+            // big the GLZ stream will be once unzipped, the second how many
+            // zlib bytes are actually here.
+            let inflated = Int(try reader.u32())
+            let size = Int(try reader.u32())
+            return Image(
+                descriptor: descriptor,
+                bitmap: nil,
+                payload: try reader.bytes(size),
+                inflatedSize: inflated
+            )
+
         case .jpegAlpha:
             // Its own shape again, and a different flag word from the bitmap's:
             // `TOP_DOWN` is bit 0 here where it is bit 2 there.
@@ -292,6 +306,44 @@ extension SpiceDisplayWire {
     /// bits and `win_head_dist` as 32 more: 33 bytes against 28, laid out
     /// differently. The LZ reader would take GLZ's packed byte for a full word
     /// and every field after it would be wrong.
+    /// `zlibGlzRGB`: a GLZ stream with zlib wrapped round it.
+    ///
+    /// Nothing about GLZ changes — `canvas_get_zlib_glz_rgb` inflates and then
+    /// calls the very same GLZ path — so this unwraps and delegates.
+    ///
+    /// **A fresh inflater per image, deliberately.** `decode-zlib.c` calls
+    /// `inflateReset` at the top of every image, so each one is compressed
+    /// independently and no dictionary carries across them. wisq's
+    /// `InflateStream` was built for RFB's Zlib and ZRLE, where the dictionary
+    /// *does* carry, and reusing one here would decode the first image
+    /// correctly and corrupt the second — a plausible picture. A new stream has
+    /// exactly the reference's semantics; the cost is a zlib init per image,
+    /// which is microseconds against a decode.
+    ///
+    /// Stricter than the reference in one place: it warns and keeps whatever
+    /// was written when the inflate falls short, and this refuses. A stream
+    /// that does not produce the size its own message promised is a malformed
+    /// message, not a picture.
+    private static func pixels(
+        ofZlibGLZ image: Image, glzWindow window: inout SpiceGLZ.Window
+    ) throws -> (pixels: [UInt8], width: Int, height: Int)? {
+        guard let payload = image.payload, let inflatedSize = image.inflatedSize else {
+            return nil
+        }
+        // Bounded before anything is allocated from it: the size is the
+        // message's word and the message is the network's.
+        guard inflatedSize > 0, inflatedSize <= 1 << 28 else { return nil }
+
+        let inflated = try InflateStream().inflate(Data(payload))
+        guard inflated.count == inflatedSize else { return nil }
+
+        var unwrapped = image
+        unwrapped.descriptor.type = .glzRGB
+        unwrapped.payload = [UInt8](inflated)
+        unwrapped.inflatedSize = nil
+        return try pixels(of: unwrapped, glzWindow: &window)
+    }
+
     /// The same, for a channel that keeps a GLZ window.
     ///
     /// GLZ is the one codec whose entry point cannot be static: a stream means
@@ -306,7 +358,11 @@ extension SpiceDisplayWire {
     static func pixels(
         of image: Image, glzWindow window: inout SpiceGLZ.Window
     ) throws -> (pixels: [UInt8], width: Int, height: Int)? {
-        guard image.descriptor.type == .glzRGB else {
+        switch image.descriptor.type {
+        case .glzRGB: break
+        case .zlibGlzRGB:
+            return try pixels(ofZlibGLZ: image, glzWindow: &window)
+        default:
             return try pixels(of: image)
         }
         guard let payload = image.payload else { return nil }

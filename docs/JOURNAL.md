@@ -559,3 +559,47 @@ d'ajouter une surcharge sans fenêtre plutôt que de les corriger. Elle aurait
 repartirait d'une fenêtre neuve, les correspondances entre images échoueraient,
 et rien ne le dirait. Les dix appels ont été corrigés. Une API où l'on ne peut
 pas pomper sans décider où vit la fenêtre est une API qui dit la vérité.
+
+## GLZ tranche 5 : zlib autour, et le dictionnaire qui ne traverse pas
+
+Le format ne cache rien — un flux GLZ avec du zlib autour, et la référence
+dézippe puis appelle le même chemin. Ce qui valait la lecture, c'est
+`decode-zlib.c` :
+
+    inflateReset(&d->_z_strm);
+
+au début de **chaque** image. Chaque image zlib-GLZ est donc comprimée
+indépendamment, sans dictionnaire partagé.
+
+C'est le contraire de ce que fait RFB, pour qui l'`InflateStream` de ce dépôt a
+été écrit : là-bas le dictionnaire traverse les rectangles, et c'est même le
+gain. Réutiliser cet objet ici décode la première image correctement puis
+corrompt la seconde.
+
+Je ne l'ai pas laissé au raisonnement : sabotage avec un inflateur partagé et
+jamais réinitialisé, et la seconde image échoue en `Z_DATA_ERROR`. La
+différence est donc réelle et testée, et il fallait deux images dans le gabarit
+pour la voir — une seule n'aurait rien montré.
+
+Un inflateur neuf par image plutôt qu'un `reset()` sur un objet conservé : même
+sémantique que la référence, et ça évite de loger un type référence dans une
+structure de valeur qui circule en `inout`. Le prix est une initialisation zlib
+par image, des microsecondes contre un décodage.
+
+Une sévérité de plus que la référence, assumée : elle avertit et garde ce qui a
+été écrit quand le dézippage n'atteint pas la taille annoncée ; ici c'est
+refusé. Un flux qui ne produit pas la taille que son propre message promet est
+un message malformé.
+
+### Une prémisse de test périmée, la troisième
+
+`testAnEncodingWithADifferentMessageShapeIsNotReadWithThisOne` listait
+`ZLIB_GLZ` parmi les types dont la forme n'est pas lue. Elle l'est maintenant,
+donc il sort de la liste et gagne son propre test.
+
+Troisième fois dans ce projet qu'un test tombe parce que son sujet a cessé
+d'être vrai — après `.quic` dans la liste des encodages non implémentés, et
+après le test d'ordre du canal qui figeait l'encodage demandé. À chaque fois la
+question est la même : le test tombe-t-il parce que le code a régressé, ou
+parce que sa prémisse a expiré ? Ici la prémisse a expiré, et le retirer n'est
+pas contourner un test — c'est constater qu'il parlait d'un état révolu.
