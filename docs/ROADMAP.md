@@ -719,7 +719,37 @@ Le gain n'est pas théorique : « forte gradualité » est le mot du serveur pou
 les photos et les dégradés, c'est-à-dire ce que LZ comprime le plus mal, et
 c'est la plus grande partie d'un bureau avec un fond d'écran.
 
-Reste : GLZ.
+**Reste GLZ, et c'est une fonctionnalité de session, pas une tranche de codec.**
+La lecture de `decode-glz.c` et `decode-glz-tmpl.c` dans spice-gtk — le
+décodeur GLZ ne vit pas dans spice-common, contrairement à LZ et QUIC — donne
+la forme du travail :
+
+* **L'en-tête n'est pas celui de LZ.** `lz_encode` écrit sept mots de 32 bits,
+  28 octets, avec le type et `top_down` chacun dans son mot, et laisse en
+  commentaire l'idée de les réunir dans un octet. GLZ le fait, et ajoute
+  l'identifiant de l'image sur 64 bits puis `win_head_dist` sur 32 : 33 octets,
+  disposés autrement. C'est petit et vérifiable exactement, donc c'est par là
+  qu'on commence.
+* **La fenêtre** est un anneau d'images décodées indexé par
+  `id % nimages`, avec des trous possibles — les images de plusieurs écrans
+  arrivent par des sockets différentes et donc dans le désordre. Une référence
+  se résout par `glz_decoder_window_bits(id, dist, offset)` : l'image `id -
+  dist`, à `offset` pixels de son début. Les images sont libérées jusqu'au plus
+  ancien `id - win_head_dist` encore utile.
+* **La boucle de correspondance** est celle de LZ plus un champ `image_dist`
+  encodé en longueur variable à côté du décalage de pixel. À zéro, la
+  correspondance est dans l'image courante et le décalage est biaisé de un ;
+  sinon elle est dans une image précédente et ne l'est pas.
+* **Le branchement** touche `glzRGB` et `zlibGlzRGB`, et la fenêtre appartient à
+  la session plutôt qu'à un appel : c'est là que « fonctionnalité de session »
+  cesse d'être une figure de style.
+
+La difficulté n'est pas la boucle, c'est le harnais. Une image seule ne peut
+pas produire de correspondance entre images, donc les gabarits doivent être des
+*suites* d'images encodées contre un même dictionnaire, ce qui demande
+l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
+chemin qui distingue GLZ de LZ resterait non testé — exactement le genre de
+trou que les deux gabarits ajoutés pour QUIC viennent de combler.
 
 ## Lot 6 — finition
 
