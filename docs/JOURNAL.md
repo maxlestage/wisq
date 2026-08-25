@@ -188,3 +188,50 @@ Le test manquant a été écrit : un gabarit réel, un seul octet de drapeau
 changé, et le trajet complet par `pixels(of:)` — pas un appel direct à la
 fonction de retournement, qui aurait passé le sabotage aussi. Première
 tentative écrite justement comme ça, et rejouée : elle ne mordait pas non plus.
+
+### Un décodeur que personne n'exécutait
+
+Avant de brancher JPEG dans SPICE, une question : où le décodeur JPEG est-il
+testé ? Réponse mesurée, pas lue : nulle part.
+
+`JPEGDecoder` enveloppe ImageIO et se déclare indisponible ailleurs. Les tests
+du paquet ne tournent en CI que sur Linux, où `canImport(ImageIO)` est faux.
+`swift test --filter JPEGTests` sur Linux exécute trois tests ; `testDecodesARealJPEG`
+n'en fait pas partie. Et le job iOS ne lance que `Tests/WisqUITests` — les tests
+du paquet n'y sont pas. Donc le code qui transforme des octets en pixels
+n'était vérifié par aucun job.
+
+Pire : `testQualityIsClampedIntoTheSpecRange` commençait par
+`guard JPEGDecoder.isAvailable else { return }`. Sur Linux il sortait
+immédiatement et était compté **réussi**. Une coche verte pour un corps qui ne
+s'exécute jamais est pire qu'une rouge : c'est la forme de la couverture sans
+la substance. Remplacé par `XCTSkipUnless`, qui le compte sauté.
+
+Conséquence sur ma propre habitude de vérification : je lisais « 0 sauté »
+comme un critère. Il y aura désormais 1 sauté sur Linux et 0 sur Apple. Le
+critère devient : les tests sautés sont ceux qu'on attend, et on sait
+lesquels.
+
+Ajouter le job `Cœur (Apple)` avant de brancher JPEG dans SPICE, plutôt
+qu'après : sinon la nouvelle branche serait posée derrière le même décodeur
+non vérifié, et on ne l'apprendrait qu'en le découvrant.
+
+### Le job Apple, mesuré plutôt que supposé
+
+Il est passé en soixante secondes, ce qui m'a d'abord paru trop court pour une
+compilation macOS plus 445 tests. Journal brut : **446 tests, 0 échec,
+`arm64e-apple-macos14.0`**. La minute, c'était juste un runner Apple Silicon.
+
+Ce que le job apporte, vérifié nommément : `testDecodesARealJPEG` a tourné et
+est passé. C'est la première fois en CI. Avec lui `testGarbageIsRejected`,
+`testUndecodableJPEGFailsLoudly`, et `testQualityIsClampedIntoTheSpecRange` qui
+affirme enfin quelque chose au lieu de sortir avant.
+
+**Ma prédiction était fausse sur un point** : j'avais écrit « 0 sauté attendu
+sur Apple ». Il y en a quinze. Tous s'expliquent — quatorze dans
+`WisqAgentTests` et `LinuxBootTests`, qui réclament le binaire de l'agent et le
+noyau de test que ce job ne va pas chercher, et un
+(`testTheShippedEncryptorRefusesWhereThereIsNoRSA`) sauté justement parce qu'il
+*y a* RSA sur Apple. Aucun n'est un trou que ce job devait combler. Le compte
+est maintenant écrit dans le workflow, pour que personne ne lise « quinze
+sautés » comme un problème.
