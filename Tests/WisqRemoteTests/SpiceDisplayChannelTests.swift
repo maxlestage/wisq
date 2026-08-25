@@ -114,6 +114,28 @@ final class SpiceDisplayChannelTests: XCTestCase {
         return message(SpiceDisplayWire.Message.drawTransparent.rawValue, body + image)
     }
 
+    /// `DRAW_ALPHA_BLEND`: base, then a flags byte and an alpha byte, and only
+    /// then the image pointer.
+    private func alphaBlendDraw(colour: UInt32, alpha: UInt8) -> Data {
+        let width = 4, height = 2
+        var image = u32(1) + u32(0)
+        image += [0, 0]
+        image += u32(UInt32(width)) + u32(UInt32(height))
+        image += [9, 0x04]                             // RGBA, TOP_DOWN
+        image += u32(UInt32(width)) + u32(UInt32(height)) + u32(UInt32(width * 4))
+        image += u32(0)
+        for _ in 0..<(width * height) { image += u32(colour) }
+
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        body += [0]
+        body += [0, alpha]
+        let fixed = 4 + 16 + 1 + 2 + 4 + 16
+        body += u32(UInt32(fixed))
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        return message(SpiceDisplayWire.Message.drawAlphaBlend.rawValue, body + image)
+    }
+
     private func capabilities(preferredCompression: Bool) -> [UInt32] {
         preferredCompression
             ? SpiceDisplayClient.capabilityWords([.preferredCompression])
@@ -315,6 +337,24 @@ final class SpiceDisplayChannelTests: XCTestCase {
         // The image is a solid red that does not match the blue key, so it is
         // copied whole.
         XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
+    }
+
+    /// `DRAW_ALPHA_BLEND` reaches a draw, and its two extra bytes are read in
+    /// the right place — no other draw puts anything between the base and the
+    /// image pointer.
+    func testAlphaBlendReachesTheSurface() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(4, 2) + alphaBlendDraw(colour: 0xFFFF_FFFF, alpha: 0x80)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
+
+        XCTAssertEqual(progress.ignored, [:], "alpha blend n'est plus un message ignoré")
+        XCTAssertEqual(progress.updates.count, 1)
+        // An opaque white source at half alpha over a black surface: half white.
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<3]), [0x80, 0x80, 0x80])
     }
 
     func testASurfaceIsDestroyedWhenTheServerSaysSo() async throws {

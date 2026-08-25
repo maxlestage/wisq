@@ -1025,3 +1025,43 @@ Une fois honnête, la séance a rendu deux vrais trous :
   tests commençaient à la même colonne que leur boîte.
 
 Neuf sabotages, neuf attrapés une fois les trous comblés.
+
+## L'alpha prémultiplié, que personne n'écrit
+
+`DRAW_ALPHA_BLEND` est la seule vraie composition du canal, et son arithmétique
+n'appartient pas à SPICE : `__blend_image` construit un masque uni et appelle
+`PIXMAN_OP_OVER`. Tout le travail était donc de répondre à une question que la
+référence ne pose jamais — **la source est-elle prémultipliée ?**
+
+Aucune des sources ne le dit. Pas le protocole, pas `canvas_base.c`, pas
+`sw_canvas.c` ; et rien, nulle part, ne divise par l'alpha. Ce qui tranche est
+une chaîne de trois maillons : `SPICE_BITMAP_FMT_RGBA` devient
+`PIXMAN_a8r8g8b8`, pixman définit `OVER` sur une source prémultipliée, et
+personne ne convertit entre les deux. Prémultiplié est ce que la chaîne *fait*,
+pas ce qu'elle déclare.
+
+C'est le genre de conclusion que j'aurais pu écrire par raisonnement et croire.
+pixman est installé sur cette machine, donc je ne l'ai pas fait : le harnais
+appelle pixman lui-même, exactement comme `__blend_image`, et compare. **43 008 000
+combinaisons, aucune différence.** Les attentes des tests sont la sortie de
+pixman, pas la formule réécrite sous une autre forme — recalculer la formule
+dans le test l'aurait mise d'accord avec une formule fausse.
+
+Le premier harnais laissait la destination opaque partout. Il annonçait 4 096 000
+accords et n'avait jamais exercé `DEST_HAS_ALPHA`. Corrigé avant d'écrire quoi
+que ce soit.
+
+### Le sabotage, et un test noir sur noir
+
+Onze sabotages, dix attrapés, plus un cas témoin qui survit comme il doit. Le
+survivant : traiter une source à trois octets comme transparente au lieu
+d'opaque. J'avais un test pour ça — `testAThreeByteSourceIsOpaque` — et il
+passait dans les deux cas, parce que je l'avais écrit **sur une surface noire**.
+Sur du noir, `src` et `src + 0` sont le même nombre ; opaque et transparent sont
+indiscernables. Destination non nulle, et le sabotage mord.
+
+La série de la semaine continue, et la forme se précise : ce n'est pas « mes
+tests sont insuffisants », c'est que **les valeurs neutres — zéro, noir, une clé
+symétrique, un descripteur nul — rendent deux implémentations différentes égales
+par accident**. Un gabarit choisi sans y penser tombe presque toujours sur l'une
+d'elles.
