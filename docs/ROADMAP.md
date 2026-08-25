@@ -440,8 +440,23 @@ restait non lue — une image, et une fausse.
 transmis, donc ils ressortent à zéro plutôt qu'avec ce que le tampon
 contenait. En C, c'est de la mémoire non initialisée qui arrive à l'écran.
 
-Reste : QUIC, GLZ, JPEG ; le presse-papiers, qui passe par l'agent du canal
-principal et non par les entrées.
+**Le presse-papiers est encodé et décodé.** Il ne passe pas par le canal des
+entrées — c'est la supposition qu'on fait en lisant — mais par l'agent qui
+tourne *dans* l'invité : le presse-papiers est celui de l'invité, donc il va au
+programme et non au matériel virtuel. Les messages voyagent sur le canal
+principal enveloppés dans `AGENT_DATA`.
+
+Le piège, et il est plus vicieux que les précédents : **ces structures n'ont
+pas une disposition, elles en ont quatre.** Deux préfixes optionnels
+apparaissent ou disparaissent selon ce que les deux bouts ont négocié —
+`selection`, qui fait **quatre octets** (un de sélection, trois réservés,
+alignés sur un mot) et non un ; et `serial`, sur le message `grab` seulement,
+sous une capacité encore différente. Un client qui en suppose une marche contre
+le serveur pour lequel il a été écrit et lit tout de travers avec le suivant.
+La disposition est donc calculée depuis les capacités négociées, jamais fixée.
+
+Reste : QUIC, GLZ, JPEG ; et brancher le presse-papiers dans la session, ce qui
+demande le transport `AGENT_DATA` et sa gestion de jetons.
 
 ## Lot 6 — finition
 

@@ -7,6 +7,31 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **The clipboard's protocol is encoded and decoded.** It does not travel on
+  the inputs channel — the guess a reader makes — but through the agent running
+  *inside* the guest: the clipboard is the guest's, so it goes to the program
+  rather than to the virtual hardware, wrapped in `AGENT_DATA` on the main
+  channel.
+
+  **These structures do not have one layout; they have four.** Two optional
+  prefixes appear or vanish with what the two ends negotiated: `selection`,
+  which is **four bytes** — one of selection and three reserved, padded to a
+  word — not one; and `serial`, on the grab message only, under a different
+  capability again.
+
+  Read the selection as a single byte and every field after it shifts by three,
+  while the payload still decodes into *something*. A client that assumes one
+  layout works against the server it was written for and misreads every
+  clipboard message from the next. The layout is computed from the negotiated
+  capabilities rather than fixed, and a test reads the same bytes under both
+  agreements to show they mean different things.
+
+  Text that is not valid UTF-8 yields nothing rather than replacement
+  characters: pasting `\u{FFFD}\u{FFFD}\u{FFFD}` into a document is worse than
+  pasting nothing. A trailing NUL — which some agents include — is trimmed,
+  since otherwise every paste ends with an invisible character.
+
 ### Fixed
 - **SPICE asked for the channel list with the wrong message number, and could
   never have connected to a real server.** `ATTACH_CHANNELS` is 104; the client
