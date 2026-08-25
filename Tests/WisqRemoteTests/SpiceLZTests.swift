@@ -231,11 +231,21 @@ final class SpiceLZTests: XCTestCase {
         XCTAssertEqual(decoded.pixels, bytes(fixture.original))
     }
 
-    /// GLZ has the same stream format as LZ and must not be handed to the LZ
-    /// decoder anyway: its matches reach back into a dictionary built from
-    /// *earlier images on the channel*, so decoding one alone assembles a
-    /// picture out of whatever happened to be around. Sharing the entry point
-    /// would be the kind of mistake that produces a plausible image.
+    /// GLZ must not be handed to the LZ decoder, and the reason this test used
+    /// to give was only half of it.
+    ///
+    /// The half that was right: GLZ matches reach back into a dictionary built
+    /// from *earlier images on the channel*, so decoding one alone assembles a
+    /// picture out of whatever happened to be around — the kind of mistake that
+    /// produces a plausible image.
+    ///
+    /// The half that was wrong: "the same stream format". It is not.
+    /// `lz_encode` writes magic, version, type, width, height, stride and
+    /// top_down as seven 32-bit words — 28 bytes — with a note wondering
+    /// whether type and top_down could share a byte. GLZ's `decode_header`
+    /// does share them, then adds a 64-bit image id and a 32-bit
+    /// `win_head_dist`: 33 bytes, laid out differently. An LZ reader would take
+    /// the packed byte for a whole word and misread every field after it.
     func testAGLZImageIsNotDecodedAsIfItWereLZ() throws {
         let image = SpiceDisplayWire.Image(
             descriptor: SpiceDisplayWire.ImageDescriptor(

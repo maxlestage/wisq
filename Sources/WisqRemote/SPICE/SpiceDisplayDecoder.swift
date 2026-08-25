@@ -276,12 +276,22 @@ extension SpiceDisplayWire {
     /// leave that part of the screen alone, which is a different thing from
     /// "this message was malformed" and should not travel as the same error.
     ///
-    /// `glzRGB` is refused rather than handed to the LZ decoder even though its
-    /// stream format is the same. GLZ matches reach back into a dictionary
-    /// built from *earlier images on the channel*, so decoding one on its own
-    /// produces a picture assembled from whatever happened to be in memory.
-    /// Sharing the entry point would be the kind of mistake that shows a
-    /// plausible image.
+    /// `glzRGB` is refused rather than handed to the LZ decoder, for two
+    /// reasons and not the one that looks obvious.
+    ///
+    /// The first is that its matches reach back into a dictionary built from
+    /// *earlier images on the channel*, so decoding one on its own produces a
+    /// picture assembled from whatever happened to be in memory. Sharing the
+    /// entry point would be the kind of mistake that shows a plausible image.
+    ///
+    /// The second is that **the two headers are not the same**, which this
+    /// comment used to claim they were. `lz_encode` writes seven 32-bit words
+    /// — magic, version, type, width, height, stride, top_down — and leaves a
+    /// note wondering whether type and top_down could share a byte. GLZ's
+    /// `decode_header` does exactly that, and then adds the image `id` as 64
+    /// bits and `win_head_dist` as 32 more: 33 bytes against 28, laid out
+    /// differently. The LZ reader would take GLZ's packed byte for a full word
+    /// and every field after it would be wrong.
     static func pixels(of image: Image) throws -> (pixels: [UInt8], width: Int, height: Int)? {
         guard let payload = image.payload else { return nil }
         switch image.descriptor.type {
