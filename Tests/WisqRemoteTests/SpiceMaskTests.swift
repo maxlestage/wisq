@@ -248,6 +248,23 @@ final class SpiceMaskTests: XCTestCase {
         XCTAssertEqual(picture(surfaces), [".#.#", "#.#."], "le noir n'a touché que les bits à un")
     }
 
+    /// The ternary operation is masked too. It is the last draw to gain a mask,
+    /// and the easiest to forget because its pixel loop is the busiest.
+    func testTheTernaryOperationIsMaskedToo() throws {
+        var surfaces = try makeSurface(4, 2)
+        let source = [UInt8](repeating: 0xFF, count: 4 * 2 * 4)
+        _ = try surfaces.rop3(
+            SpiceDisplayWire.Rop3(
+                base: SpiceDisplayWire.Base(surfaceID: 0, box: rect(0, 0, 2, 4), clip: .none),
+                source: nil, sourceArea: rect(0, 0, 2, 4), brush: .solid(0x0000_0000),
+                rop3: 0xCC,                                   // SRCCOPY: white where it lands
+                scaleMode: 0, mask: maskBitmap(["#.#.", ".#.#"])
+            ),
+            source: (pixels: source, width: 4, height: 2), bytesPerSourcePixel: 4
+        )
+        XCTAssertEqual(picture(surfaces), ["#.#.", ".#.#"])
+    }
+
     // MARK: - Masks that cannot be used
 
     func testAMaskThatIsNotOneBitIsRefused() throws {

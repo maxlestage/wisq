@@ -685,6 +685,27 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
+    /// descriptor was.
+    ///
+    /// One byte rather than two, so reading it with the opaque decoder would
+    /// take the scale mode as the descriptor's high half and shift the mask.
+    static func rop3(_ payload: [UInt8]) throws -> Rop3 {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let sourcePointer = try reader.u32()
+        return Rop3(
+            base: header,
+            source: try image(at: sourcePointer, in: body),
+            sourceArea: try rect(from: &reader),
+            brush: try brush(from: &reader, in: body),
+            rop3: try reader.u8(),
+            scaleMode: try reader.u8(),
+            mask: try mask(from: &reader, in: body)
+        )
+    }
+
     /// `DRAW_COPY_BITS`: the base, and then two words that are a point.
     ///
     /// Read as a rectangle by mistake it would consume sixteen bytes instead of
