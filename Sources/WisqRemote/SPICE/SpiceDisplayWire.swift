@@ -57,6 +57,7 @@ enum SpiceDisplayWire {
         case drawAlphaBlend = 313
         case surfaceCreate = 314
         case surfaceDestroy = 315
+        case streamDataSized = 316
     }
 
     // MARK: - Geometry
@@ -351,6 +352,79 @@ enum SpiceDisplayWire {
         var sourceArea: Rect
 
         var readsDestinationAlpha: Bool { flags & Self.destinationHasAlpha != 0 }
+    }
+
+    /// How a stream's frames are encoded.
+    ///
+    /// Only `mjpeg` is decoded. The other four are named rather than lumped
+    /// together as "unknown", because a stream this client cannot decode is a
+    /// specific thing a user might want told to them — the region freezes, and
+    /// "the server chose H.264" is the explanation.
+    enum VideoCodec: UInt8, Equatable, Sendable, CaseIterable {
+        case mjpeg = 1
+        case vp8 = 2
+        case h264 = 3
+        case vp9 = 4
+        case h265 = 5
+
+        /// Whether wisq has a decoder for this codec at all.
+        ///
+        /// A property rather than a branch buried in `frame(_:codec:)`, and
+        /// that is a testability decision worth explaining. On a runner with no
+        /// JPEG decoder — which is every Linux runner here — both sides of that
+        /// branch return `nil`, so removing it changes nothing observable and a
+        /// test cannot tell the two apart. Pulled out here, the decision is a
+        /// value, and a test can check all five without decoding anything.
+        ///
+        /// MJPEG is the only one: each of its frames is a whole JPEG, so it
+        /// costs nothing beyond the decoder `.jpeg` images already use. The
+        /// other four need a real video decoder — VideoToolbox on Apple, and
+        /// nothing wisq ships on Linux.
+        var isDecoded: Bool { self == .mjpeg }
+    }
+
+    /// `STREAM_CREATE` — the server switching a region to video.
+    ///
+    /// A SPICE server watches for a rectangle that keeps changing and, past a
+    /// threshold, stops sending it as draws and starts sending it as a video
+    /// stream. On a desktop playing anything at all, that is where most of the
+    /// pixels go — so a client that ignores streams shows a frozen rectangle
+    /// exactly where the motion is.
+    struct StreamCreate: Equatable, Sendable {
+        var surfaceID: UInt32
+        var id: UInt32
+        /// `SPICE_STREAM_FLAGS_TOP_DOWN` is bit 0 — a *third* flags byte with
+        /// its own bit for the same idea. A bitmap's is bit 2 and a
+        /// `jpegAlpha`'s is bit 0 of a different byte.
+        var flags: UInt8
+        var codec: VideoCodec
+        var stamp: UInt64
+        /// The size of the frames on the wire.
+        var streamWidth: UInt32
+        var streamHeight: UInt32
+        /// The size of the region on the server's screen, which need not match.
+        var sourceWidth: UInt32
+        var sourceHeight: UInt32
+        var destination: Rect
+        var clip: Clip
+
+        var topDown: Bool { flags & 0x01 != 0 }
+    }
+
+    /// `STREAM_DATA`, and `STREAM_DATA_SIZED` which carries its own geometry.
+    struct StreamData: Equatable, Sendable {
+        var id: UInt32
+        var multimediaTime: UInt32
+        /// Present only for the sized form. When it is, it replaces the
+        /// stream's own frame size and destination for this frame alone.
+        var sized: Sized?
+        var frame: [UInt8]
+
+        struct Sized: Equatable, Sendable {
+            var width: UInt32
+            var height: UInt32
+            var destination: Rect
+        }
     }
 
     /// `DRAW_ROP3` — a ternary raster operation over pattern, source and
