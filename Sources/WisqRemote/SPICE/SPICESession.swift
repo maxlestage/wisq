@@ -164,7 +164,17 @@ public actor SPICESession: RemoteSession {
                 channel: .display,
                 connectionID: session.initialisation.sessionID,
                 password: password,
-                channelCaps: SpiceDisplayClient.capabilityWords([.preferredCompression])
+                // `lz4Compression` is not a request; it is permission. The
+                // server checks it before it will send an LZ4 image at all
+                // (`dcc_compress_image` falls through to plain LZ without it),
+                // and what it sends is decided separately by its own
+                // configuration or by the preference message below. So this
+                // matters exactly where the preference does not reach: a
+                // server without `preferredCompression`, and the images that
+                // go out before ours arrives.
+                channelCaps: SpiceDisplayClient.capabilityWords(
+                    [.preferredCompression, .lz4Compression]
+                )
             )
 
         let channel = SpiceDisplayChannel(stream: displayStream)

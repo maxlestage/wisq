@@ -899,13 +899,51 @@ parce qu'il est instancié mécaniquement pour chaque type. Elles restent
 refusées ici, et le test qui l'épingle dit que c'est un refus définitif plutôt
 qu'un manque.
 
-Ce qui reste sur le canal display, hors GLZ : `lz4`, et les types QUIC autres
-que ceux déjà couverts. Une image seule ne peut
-pas produire de correspondance entre images, donc les gabarits doivent être des
-*suites* d'images encodées contre un même dictionnaire, ce qui demande
-l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
-chemin qui distingue GLZ de LZ resterait non testé — exactement le genre de
-trou que les deux gabarits ajoutés pour QUIC viennent de combler.
+### LZ4 : le dernier codec du canal display
+
+Fait. `SpiceLZ4` lit les images `lz4`, et c'est le seul des quatre codecs du
+canal qui n'appartient pas à SPICE : du LZ4 standard, avec deux octets d'en-tête
+devant et une longueur avant chaque bloc. L'intéressant n'est donc pas le codec
+mais l'emballage, et trois choses s'y écrivent de travers si on se dit « ce
+n'est que du LZ4 » :
+
+* **les longueurs de bloc sont en gros-boutien**, dans un protocole qui est en
+  petit-boutien partout ailleurs. À l'envers, le premier bloc annonce quelques
+  centaines de mégaoctets et l'erreur parle de troncature sur un message
+  complet ;
+* **les blocs partagent un dictionnaire.** Le serveur comprime avec un seul
+  `LZ4_stream_t` par image, donc une correspondance du quatrième bloc désigne
+  couramment des octets produits par le premier. Décoder chaque bloc isolément
+  donne une image plate exactement juste et une vraie image fausse par bandes —
+  sept des onze gabarits le prouvent, et ils le prouvent parce que le décodeur
+  de référence a été relancé avec le dictionnaire remis à zéro entre les blocs ;
+* **le second octet est un `bitmap_fmt`**, et c'est lui qui fixe la longueur des
+  lignes dont tout le reste dépend.
+
+Deux endroits où wisq décide autrement que la référence, tous deux trouvés en
+comparant les deux décodeurs sur 550 000 charges utiles plutôt qu'en relisant le
+C : un décodage qui ne remplit pas la surface (la référence laisse voir ce que
+son allocation contenait, wisq refuse), et une distance nulle (le format la dit
+corrompue, lz4 la tolère et écrit des zéros, wisq refuse).
+
+Le sabotage a aussi produit une réponse inattendue : la règle de lz4 selon
+laquelle une correspondance ne peut pas finir dans les cinq derniers octets est
+**inatteignable**. La retirer ne change aucun résultat, et l'arithmétique qui
+dit pourquoi est dans `SpiceLZ4Tests`. Elle reste dans le code parce qu'elle est
+celle de la référence, et parce que son inatteignabilité est une propriété des
+*autres* bornes.
+
+wisq annonce désormais la capacité `LZ4_COMPRESSION`, ce qui est une permission
+et non une demande : le serveur la vérifie avant d'envoyer une image LZ4, et ce
+qu'il envoie reste décidé par sa configuration ou par le message de préférence.
+Ce dernier demande toujours `autoLZ` et non `lz4` : demander LZ4 c'est le
+demander *à la place* des modes automatiques, et QUIC vaut plusieurs fois le
+rapport de LZ4 sur le contenu photographique qui domine un bureau avec un fond
+d'écran. Sur un réseau mobile, c'est la bande passante qui est rare, pas le
+décodage.
+
+Ce qui reste sur le canal display : les types QUIC autres que ceux déjà
+couverts.
 
 ## Lot 6 — finition
 
