@@ -7,6 +7,28 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **LZ's palette forms decode: PLT8, PLT4 and PLT1, both orders each.** Three
+  of the rules here produce an *image* when written backwards rather than an
+  error, which is the kind of wrong that ships: a 4-bit `LE` byte gives the low
+  nibble first and `BE` the high one; a 1-bit `LE` byte starts at bit 0 and
+  `BE` at bit 7; and the palette is little-endian while the LZ stream header
+  immediately above it is big-endian, because the palette belongs to the
+  display channel's message and the stream to the codec.
+
+  Backwards, each gives a picture — mirrored in pairs, mirrored in groups of
+  eight, or in the wrong colours. All three were checked against the reference
+  decoder's own output **before** the decoder was written, which is the only
+  order in which that check means anything. `scripts/spice-lz-fixtures/genplt.c`
+  is the harness.
+
+### Fixed
+- **The decompression loop counted one output unit per pixel.** For a 4-bit
+  image an eight-pixel row is four bytes, not eight, so every palette stream
+  looked truncated. And rows start on byte boundaries: a five-pixel 1-bit row
+  spends one byte and wastes three bits — read straight through, everything
+  after the first row shears.
+
 ### Changed
 - **`verify.sh` runs SwiftLint on Linux now, instead of saying it cannot.** It
   can: the binary needs `libsourcekitdInProc.so`, which ships inside the Swift

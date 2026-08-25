@@ -135,9 +135,12 @@ final class SpiceLZTests: XCTestCase {
     /// one is work not done, the other is a broken stream.
     func testAValidTypeThisDecoderDoesNotHandleIsNamedApart() {
         var stream = bytes(SpiceLZFixtures.all[0].stream)
-        stream[11] = 5 // PLT8, a real type, not decoded here
+        // `rgba` rather than a palette form: the palette ones decode now, and
+        // this test used to name PLT8 here. It failed the moment they did,
+        // which is the right way for a test of "not supported" to age.
+        stream[11] = 9
         XCTAssertThrowsError(try SpiceLZ.decompress(stream)) { error in
-            XCTAssertEqual(error as? SpiceLZ.Failure, .unsupportedImageType(.palette8))
+            XCTAssertEqual(error as? SpiceLZ.Failure, .unsupportedImageType(.rgba))
         }
 
         stream[11] = 99 // not a type at all

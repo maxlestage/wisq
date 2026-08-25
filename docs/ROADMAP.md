@@ -411,8 +411,26 @@ depuis un cache que ce client ne tient pas, et une forme non décodée (mono,
 palette). Un curseur vide veut dire « cache le pointeur » ; renvoyer ça pour
 « je ne l'ai pas » fait exactement l'inverse de ce que le serveur demande.
 
-Reste : QUIC, GLZ, JPEG et les types à palette ; le presse-papiers, qui passe
-par l'agent du canal principal et non par les entrées.
+**Les formes à palette sont faites** : PLT8, PLT4 et PLT1, dans les deux ordres
+chacune. Trois règles y donnent une image quand on les écrit à l'envers plutôt
+qu'une erreur — le quartet bas ou haut d'abord, le bit 0 ou le bit 7 d'abord, et
+la palette petite-boutiste alors que l'en-tête LZ juste au-dessus est
+gros-boutiste. À l'envers, on obtient une image miroir par paires, par groupes
+de huit, ou dans les mauvaises couleurs. Rien ne lève d'erreur. Les trois ont
+donc été vérifiées contre la sortie du décodeur de référence **avant** que le
+décodeur ne soit écrit, ce qui est le seul ordre où cette vérification veut dire
+quelque chose.
+
+Un défaut trouvé en chemin : la boucle de décompression comptait une unité de
+sortie par pixel. Pour une image 4 bits, une ligne de huit pixels tient en
+quatre octets, pas huit — tous les flux à palette semblaient tronqués. Et
+chaque ligne commence sur une frontière d'octet : une ligne de cinq pixels en
+1 bit dépense un octet et en gâche trois bits, sans quoi tout décale à partir de
+la deuxième ligne.
+
+Reste : QUIC, GLZ, JPEG, `rgba`/`xxxa` (encodés en deux passes) ; le
+presse-papiers, qui passe par l'agent du canal principal et non par les
+entrées.
 
 ## Lot 6 — finition
 

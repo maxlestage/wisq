@@ -72,6 +72,10 @@ enum SpiceLZ {
         /// A match reaching back before the start of the output. In C this
         /// reads whatever preceded the buffer; here it is a refusal.
         case referenceBeforeStart
+        /// A palette form arrived without the palette it needs. Named rather
+        /// than filled with black: a screen of black is a picture, and a wrong
+        /// one.
+        case missingPalette
     }
 
     /// A big-endian cursor.
@@ -98,6 +102,29 @@ enum SpiceLZ {
         mutating func u32() throws -> UInt32 {
             var value: UInt32 = 0
             for _ in 0..<4 { value = value << 8 | UInt32(try u8()) }
+            return value
+        }
+
+        // The palette is little-endian while everything above is big-endian.
+        // It belongs to the display channel's message rather than to the LZ
+        // stream, and that channel is little-endian throughout — so the two
+        // orders genuinely meet inside one buffer, and reading either with the
+        // other's helper is a colour table full of nonsense.
+
+        mutating func u16LittleEndian() throws -> UInt16 {
+            let low = try u8()
+            return UInt16(low) | UInt16(try u8()) << 8
+        }
+
+        mutating func u32LittleEndian() throws -> UInt32 {
+            var value: UInt32 = 0
+            for shift in 0..<4 { value |= UInt32(try u8()) << (8 * shift) }
+            return value
+        }
+
+        mutating func u64LittleEndian() throws -> UInt64 {
+            var value: UInt64 = 0
+            for shift in 0..<8 { value |= UInt64(try u8()) << (8 * shift) }
             return value
         }
     }
@@ -155,17 +182,123 @@ enum SpiceLZ {
         case .rgb32: return (3, 4, 1)
         case .rgb24: return (3, 3, 1)
         case .rgb16: return (2, 2, 2)
-        case .rgba, .xxxa,
-             .palette1LE, .palette1BE, .palette4LE, .palette4BE, .palette8, .a8:
-            // Valid streams this does not decode, each for its own reason. The
-            // palette types need the palette travelling beside them and expand
-            // one byte into several pixels. `a8` is a mask, not a picture.
-            // `rgba` and `xxxa` are encoded as two passes, colour then alpha.
+        case .palette1LE, .palette1BE, .palette4LE, .palette4BE, .palette8:
+            // One byte in, one byte out — the palette forms decompress to
+            // *indices*, and turning those into pixels is a separate step that
+            // needs the palette travelling beside them. Their match length is
+            // biased by three, the third distinct bias in this codec.
+            return (1, 1, 3)
+        case .rgba, .xxxa, .a8:
+            // Still not decoded, each for its own reason. `a8` is a mask, not a
+            // picture; `rgba` and `xxxa` are encoded as two passes, colour then
+            // alpha, so one run of this loop is half an image.
             //
             // Named rather than half-decoded into something that would look
             // like an image.
             throw Failure.unsupportedImageType(type)
         }
+    }
+
+    // MARK: - Palettes
+
+    /// A palette as it travels: a cache identifier, a count, and that many
+    /// colours.
+    ///
+    /// Kept as its own type rather than a bare `[UInt32]` because the count is
+    /// a number the server chose, and the thing that stops it becoming an
+    /// allocation is reading the colours one at a time rather than reserving
+    /// for them.
+    struct Palette: Equatable, Sendable {
+        var unique: UInt64
+        var colours: [UInt32]
+    }
+
+    static func palette(from reader: inout Reader) throws -> Palette {
+        // The palette is little-endian, unlike the LZ stream header above it.
+        // It belongs to the display channel's message rather than to the codec,
+        // and the display channel is little-endian throughout.
+        let unique = try reader.u64LittleEndian()
+        let count = Int(try reader.u16LittleEndian())
+        var colours: [UInt32] = []
+        for _ in 0..<count { colours.append(try reader.u32LittleEndian()) }
+        return Palette(unique: unique, colours: colours)
+    }
+
+    /// How many pixels one byte of indices holds, for each palette form.
+    static func pixelsPerByte(_ type: ImageType) -> Int? {
+        switch type {
+        case .palette1LE, .palette1BE: return 8
+        case .palette4LE, .palette4BE: return 2
+        case .palette8: return 1
+        default: return nil
+        }
+    }
+
+    /// Expands decompressed indices into BGRA pixels through a palette.
+    ///
+    /// The orders here are the two that would have been written backwards, and
+    /// each was checked against the reference decoder's own output rather than
+    /// against a reading of the template macros:
+    ///
+    ///   * a 4-bit `LE` byte gives the **low** nibble first, `BE` the **high**;
+    ///   * a 1-bit `LE` byte starts at **bit 0**, `BE` at **bit 7**.
+    ///
+    /// Backwards, either one produces an image — mirrored in pairs of pixels,
+    /// or in groups of eight — which is exactly the kind of wrong that ships.
+    ///
+    /// A palette entry is `0x00RRGGBB` and the output is BGRA, so the bytes come
+    /// out low-first with a zero pad: the codec never carries alpha here.
+    static func pixels(
+        fromIndices indices: [UInt8], type: ImageType, width: Int, height: Int,
+        palette: Palette
+    ) throws -> [UInt8] {
+        guard let perByte = pixelsPerByte(type) else {
+            throw Failure.unsupportedImageType(type)
+        }
+        guard !palette.colours.isEmpty else { throw Failure.missingPalette }
+
+        // Each row starts on a byte boundary: a 5-pixel wide 4-bit image uses
+        // three bytes a row, and the sixth pixel of the third byte is padding.
+        // Reading straight through would shear every row after the first.
+        let bytesPerRow = (width + perByte - 1) / perByte
+        guard indices.count >= bytesPerRow * height else { throw Failure.truncated }
+
+        var out: [UInt8] = []
+        out.reserveCapacity(width * height * 4)
+
+        for row in 0..<height {
+            var written = 0
+            for byteIndex in 0..<bytesPerRow {
+                let byte = indices[row * bytesPerRow + byteIndex]
+                for slot in 0..<perByte where written < width {
+                    let index: Int
+                    switch type {
+                    case .palette8:
+                        index = Int(byte)
+                    case .palette4LE:
+                        index = slot == 0 ? Int(byte & 0x0F) : Int(byte >> 4)
+                    case .palette4BE:
+                        index = slot == 0 ? Int(byte >> 4) : Int(byte & 0x0F)
+                    case .palette1LE:
+                        index = Int(byte >> UInt8(slot) & 1)
+                    case .palette1BE:
+                        index = Int(byte >> UInt8(7 - slot) & 1)
+                    default:
+                        throw Failure.unsupportedImageType(type)
+                    }
+                    // Modulo the palette's size, which is what the codec itself
+                    // does: an index past the end is a broken image, not a
+                    // reason to drop the connection.
+                    let colour = palette.colours[index % palette.colours.count]
+                    out.append(UInt8(colour & 0xFF))
+                    out.append(UInt8(colour >> 8 & 0xFF))
+                    out.append(UInt8(colour >> 16 & 0xFF))
+                    out.append(0)
+                    written += 1
+                }
+            }
+        }
+        return out
     }
 
     /// Decompresses one image into its pixels, in the codec's own byte order.
@@ -180,10 +313,28 @@ enum SpiceLZ {
         let header = try header(from: &reader)
         let (bytesRead, bytesPerPixel, lengthBias) = try shape(of: header.type)
 
-        let pixelCount = header.width * header.height
+        // How many output units the stream holds, which is *not* one per pixel
+        // for the palette forms: a 4-bit image packs two pixels into a byte, so
+        // an eight-wide row is four bytes and not eight. Demanding one unit per
+        // pixel makes every palette stream look truncated — which is exactly
+        // what happened before this was written this way.
+        //
+        // Each row starts on a byte boundary, so the count is per row rather
+        // than over the whole image: a five-pixel 4-bit row spends three bytes
+        // and wastes half of the third.
+        let unitsPerRow: Int
+        if let perByte = Self.pixelsPerByte(header.type) {
+            unitsPerRow = (header.width + perByte - 1) / perByte
+        } else {
+            unitsPerRow = header.width
+        }
+        // The header carries a stride too, and it is deliberately not used: it
+        // is the server's number, and the codec's own documentation says it
+        // must equal the minimum a row needs. Computing it here means a server
+        // cannot size this buffer.
         var out: [UInt8] = []
-        out.reserveCapacity(pixelCount * bytesPerPixel)
-        let limit = pixelCount * bytesPerPixel
+        out.reserveCapacity(unitsPerRow * header.height * bytesPerPixel)
+        let limit = unitsPerRow * header.height * bytesPerPixel
 
         while out.count < limit {
             let ctrl = Int(try reader.u8())
