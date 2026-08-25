@@ -397,9 +397,22 @@ d'être montré sans le clavier et que refuser de démarrer échangerait quelque
 chose contre rien. Chaque canal compte ses propres numéros de série : un
 compteur partagé entre deux connexions donnerait à chacune une suite trouée.
 
-Reste : QUIC, GLZ, JPEG et les types à palette ; le canal curseur ; le
-presse-papiers, qui passe par l'agent du canal principal et non par les
-entrées.
+**Le canal curseur est fait** : décodage et branchement, sur sa propre
+connexion — pour que le pointeur continue de bouger pendant que le canal
+display envoie un écran entier de pixels. Deux largeurs s'y seraient écrites
+faux de mémoire : `cursor_flags` fait seize bits là où `cursor_type` en fait
+huit, donc l'en-tête ne commence pas où on le croit ; et la position est un
+`Point16` — deux entiers signés de seize bits — pas les deux de trente-deux du
+canal display.
+
+Trois absences y sont distinctes, et les confondre donne un pointeur faux
+plutôt qu'une erreur : le drapeau `NONE` (aucune image), un curseur nommé
+depuis un cache que ce client ne tient pas, et une forme non décodée (mono,
+palette). Un curseur vide veut dire « cache le pointeur » ; renvoyer ça pour
+« je ne l'ai pas » fait exactement l'inverse de ce que le serveur demande.
+
+Reste : QUIC, GLZ, JPEG et les types à palette ; le presse-papiers, qui passe
+par l'agent du canal principal et non par les entrées.
 
 ## Lot 6 — finition
 

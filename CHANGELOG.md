@@ -22,6 +22,27 @@ break APIs.
   shrugging.
 
 ### Added
+- **The pointer, on a connection of its own.** So it keeps moving while the
+  display channel is sending a screenful of pixels — on a phone that is the
+  difference between a cursor that follows the finger and one that lags a
+  repaint.
+
+  Two widths here would have been written wrong from memory, and both produce a
+  cursor rather than an error: **`cursor_flags` is sixteen bits where
+  `cursor_type` is eight**, so a guess puts the header two bytes off; and the
+  position is a `Point16` — two *signed sixteen-bit* values, not the two 32-bit
+  ones the display channel uses.
+
+  Three absences are kept distinct, because conflating them shows a wrong
+  pointer rather than raising an error: the `NONE` flag, a cursor named from a
+  cache this client does not keep, and a form that is not decoded (mono,
+  palette). An empty cursor means "hide the pointer", so forwarding one for "I
+  do not have it" does the opposite of what the server asked.
+
+  A failure on this channel ends the cursor and nothing else. Losing the
+  pointer is losing the pointer; tearing down a working screen for it would
+  trade a lot for a little.
+
 - **SPICE takes input.** A third connection, presenting the same session
   identifier as the display one. `SpiceInputs` was already encoded and tested;
   what it needed was a socket of its own, because sending keystrokes down the

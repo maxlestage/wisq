@@ -44,10 +44,14 @@ final class SPICESessionTests: XCTestCase {
         return SpiceWire.message(SpiceWire.Message.mainInit, serial: 1, payload: Data(body))
     }
 
-    private func channelsList(withInputs: Bool = false) -> Data {
-        var body = u32(withInputs ? 2 : 1)
+    private func channelsList(withInputs: Bool = false, withCursor: Bool = false) -> Data {
+        var count: UInt32 = 1
+        if withInputs { count += 1 }
+        if withCursor { count += 1 }
+        var body = u32(count)
         body += [SpiceWire.Channel.display.rawValue, 0]
         if withInputs { body += [SpiceWire.Channel.inputs.rawValue, 0] }
+        if withCursor { body += [SpiceWire.Channel.cursor.rawValue, 0] }
         return SpiceWire.message(
             SpiceWire.Message.mainChannelsList, serial: 2, payload: Data(body)
         )
@@ -396,6 +400,165 @@ final class SPICESessionTests: XCTestCase {
         XCTAssertEqual(second.serial, 2, "et n'a pas de trou")
         XCTAssertEqual(first.type, SpiceInputs.ClientMessage.keyDown)
         XCTAssertEqual(second.type, SpiceInputs.ClientMessage.keyUp)
+
+        await session.stop()
+    }
+    // MARK: - The pointer
+
+    /// A cursor image on its own connection reaches the UI.
+    ///
+    /// Its own socket so the pointer keeps moving while the display channel is
+    /// sending a screenful of pixels — on a phone that is a cursor that follows
+    /// the finger rather than one that lags a repaint.
+    func testACursorImageArrivesOnItsOwnConnection() async throws {
+        func u16(_ v: UInt16) -> [UInt8] { [UInt8(v & 0xFF), UInt8(v >> 8)] }
+        func u64v(_ v: UInt64) -> [UInt8] { (0..<8).map { UInt8(v >> (8 * $0) & 0xFF) } }
+
+        var cursorBody = u16(10) + u16(20)          // position
+        cursorBody += [1]                            // visible
+        cursorBody += u16(0)                         // flags: none set
+        cursorBody += u64v(1)                        // unique
+        cursorBody += [0]                            // ALPHA
+        cursorBody += u16(2) + u16(2)                // 2x2
+        cursorBody += u16(1) + u16(1)                // hotspot
+        cursorBody += (0..<16).map { UInt8($0) }     // pixels
+
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 9) + channelsList(withCursor: true)
+        )
+        // The display socket is given a long tail of pings. Without it, its
+        // pump runs the stream dry, the session ends, and the event stream
+        // closes before the cursor task has read its one message — the cursor
+        // would lose a race it does not lose against a real socket, which
+        // blocks rather than reporting the end of the world.
+        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        for serial in 0..<200 {
+            displayInbound += SpiceWire.message(
+                SpiceWire.Message.ping, serial: UInt64(serial), payload: Data([0])
+            )
+        }
+        let displaySocket = MemoryByteStream(inbound: displayInbound)
+        let cursorSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + SpiceWire.message(
+                    SpiceCursorWire.Message.set.rawValue, serial: 1, payload: Data(cursorBody)
+                )
+        )
+        let sockets = Sockets([mainSocket, displaySocket, cursorSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+
+        let seen = await waitFor(session) {
+            if case .cursor = $0 { return true } else { return false }
+        }
+        guard case let .cursor(pointer) = seen else {
+            return XCTFail("aucun curseur n'est arrivé")
+        }
+        XCTAssertEqual(pointer.width, 2)
+        XCTAssertEqual(pointer.hotspotX, 1)
+        XCTAssertEqual(pointer.bgra.count, 16)
+
+        let opened = await sockets.count
+        XCTAssertEqual(opened, 3, "display, curseur, et le principal")
+
+        await session.stop()
+    }
+
+    /// A server offering no cursor channel still gives a working session. The
+    /// system pointer is a perfectly good fallback; a black screen is not.
+    func testAServerWithNoCursorChannelStillShowsTheScreen() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList()
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(20, 10)
+        )
+        let sockets = Sockets([mainSocket, displaySocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+
+        let ready = await waitFor(session) {
+            if case .ready = $0 { return true } else { return false }
+        }
+        guard case let .ready(_, width, _) = ready else {
+            return XCTFail("la session devait être prête sans canal curseur")
+        }
+        XCTAssertEqual(width, 20)
+        await session.stop()
+    }
+    /// A cursor the server names from a cache this client does not keep must
+    /// not reach the UI as an empty one.
+    ///
+    /// An empty cursor means "hide the pointer", which is the opposite of what
+    /// the server asked for. This test exists because a sabotage found it
+    /// missing: forwarding the absence as an empty cursor passed everything.
+    func testACursorNamedFromACacheIsNotForwardedAsAnEmptyOne() async throws {
+        func u16(_ v: UInt16) -> [UInt8] { [UInt8(v & 0xFF), UInt8(v >> 8)] }
+        func u64v(_ v: UInt64) -> [UInt8] { (0..<8).map { UInt8(v >> (8 * $0) & 0xFF) } }
+
+        var cached = u16(5) + u16(5)                       // position
+        cached += [1]                                       // visible
+        cached += u16(1 << 2)                               // FROM_CACHE
+        cached += u64v(77) + [0] + u16(2) + u16(2) + u16(0) + u16(0)
+
+        // A real cursor after it, so the test can tell "nothing yet" from
+        // "nothing ever": the first must be skipped and the second must arrive.
+        var real = u16(6) + u16(6) + [1]
+        real += u16(0) + u64v(1) + [0] + u16(2) + u16(2) + u16(1) + u16(1)
+        real += (0..<16).map { UInt8($0) }
+
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList(withCursor: true)
+        )
+        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        for serial in 0..<200 {
+            displayInbound += SpiceWire.message(
+                SpiceWire.Message.ping, serial: UInt64(serial), payload: Data([0])
+            )
+        }
+        let cursorSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + SpiceWire.message(
+                    SpiceCursorWire.Message.set.rawValue, serial: 1, payload: Data(cached)
+                )
+                + SpiceWire.message(
+                    SpiceCursorWire.Message.set.rawValue, serial: 2, payload: Data(real)
+                )
+        )
+        let sockets = Sockets([
+            mainSocket, MemoryByteStream(inbound: displayInbound), cursorSocket,
+        ])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+
+        let seen = await waitFor(session) {
+            if case .cursor = $0 { return true } else { return false }
+        }
+        guard case let .cursor(pointer) = seen else {
+            return XCTFail("le vrai curseur devait arriver")
+        }
+        // The first event to arrive must be the real cursor, not an empty one
+        // standing in for the cached message.
+        XCTAssertEqual(pointer.width, 2)
+        XCTAssertFalse(pointer.isEmpty, "le message « depuis le cache » ne doit rien émettre")
 
         await session.stop()
     }

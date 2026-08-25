@@ -32,7 +32,9 @@ public actor SPICESession: RemoteSession {
     private var main: (any ByteStream)?
     private var display: (any ByteStream)?
     private var inputs: (any ByteStream)?
+    private var cursor: (any ByteStream)?
     private var pump: Task<Void, Never>?
+    private var cursorPump: Task<Void, Never>?
     /// Serial for the inputs channel, counted apart from the display's.
     ///
     /// Each channel is its own connection with its own message sequence, so one
@@ -66,13 +68,17 @@ public actor SPICESession: RemoteSession {
 
     public func stop() async {
         pump?.cancel()
+        cursorPump?.cancel()
         pump = nil
+        cursorPump = nil
         await main?.close()
         await display?.close()
         await inputs?.close()
+        await cursor?.close()
         main = nil
         display = nil
         inputs = nil
+        cursor = nil
         continuation.yield(.disconnected(nil))
         continuation.finish()
     }
@@ -167,6 +173,87 @@ public actor SPICESession: RemoteSession {
         pump = Task { [weak self] in
             await self?.run(channel, from: serial)
         }
+
+        // The pointer gets a connection of its own so it keeps moving while the
+        // display channel is sending a screenful of pixels. On a phone that is
+        // the difference between a cursor that follows the finger and one that
+        // lags a repaint. Best effort, like input.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.cursor.rawValue }) {
+            do {
+                let cursorStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: cursorStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .cursor,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                cursor = cursorStream
+                cursorPump = Task { [weak self] in
+                    await self?.followCursor(on: cursorStream)
+                }
+            } catch {
+                cursor = nil
+            }
+        }
+    }
+
+    /// Reads the cursor channel and reports what the pointer looks like.
+    ///
+    /// Failures here end this task and nothing else. Losing the cursor is
+    /// losing the cursor; the display channel is what decides whether the
+    /// session is still alive, and tearing it down because the pointer stopped
+    /// would throw away a working screen.
+    private func followCursor(on stream: any ByteStream) async {
+        var serial: UInt64 = 1
+        while !Task.isCancelled {
+            do {
+                let header = try SpiceWire.decodeDataHeader(
+                    try await stream.read(exactly: SpiceWire.dataHeaderBytes)
+                )
+                guard header.size <= 1 << 22 else { return }
+                let payload = header.size == 0
+                    ? Data() : try await stream.read(exactly: Int(header.size))
+
+                switch header.type {
+                case SpiceWire.Message.ping:
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.pong, serial: serial, payload: payload
+                    ))
+                    serial += 1
+                case SpiceCursorWire.Message.initialise.rawValue:
+                    publish(try SpiceCursorWire.initialise([UInt8](payload)))
+                case SpiceCursorWire.Message.set.rawValue:
+                    publish(try SpiceCursorWire.set([UInt8](payload)))
+                case SpiceCursorWire.Message.hide.rawValue:
+                    continuation.yield(.cursor(RemoteCursor(
+                        width: 0, height: 0, hotspotX: 0, hotspotY: 0, bgra: []
+                    )))
+                default:
+                    // `MOVE` and the trail and cache messages are read and
+                    // dropped: the pointer's position on screen is the phone's
+                    // to decide, since the finger is what moved it.
+                    continue
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Only an actual image reaches the UI.
+    ///
+    /// A cursor named from a cache this client does not keep is not an empty
+    /// cursor: forwarding one would read as "hide the pointer", which is the
+    /// opposite of what the server asked for.
+    private func publish(_ update: SpiceCursorWire.Update) {
+        guard update.visible else {
+            continuation.yield(.cursor(RemoteCursor(
+                width: 0, height: 0, hotspotX: 0, hotspotY: 0, bgra: []
+            )))
+            return
+        }
+        guard let cursor = update.cursor else { return }
+        continuation.yield(.cursor(cursor))
     }
 
     /// Reads the display channel until it stops or the task is cancelled.
