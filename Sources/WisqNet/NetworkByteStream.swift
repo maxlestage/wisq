@@ -30,10 +30,17 @@ public actor NetworkByteStream: ByteStream {
         case .tlsPinned:
             parameters = NetworkByteStream.pinnedParameters(fingerprint: pinnedFingerprint)
         }
-        // Remote desktop is interactive: coalescing keystrokes costs more than the bytes save.
+        // The numbers live in `TransportTuning`, where a Linux runner can read
+        // them; what is left here is the handful of assignments that need
+        // Network.framework to exist.
+        let tuning = TransportTuning.interactive
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-            tcp.noDelay = true
-            tcp.connectionTimeout = 15
+            tcp.noDelay = tuning.noDelay
+            tcp.connectionTimeout = tuning.connectionTimeout
+            tcp.enableKeepalive = tuning.keepaliveEnabled
+            tcp.keepaliveIdle = tuning.keepaliveIdle
+            tcp.keepaliveInterval = tuning.keepaliveInterval
+            tcp.keepaliveCount = tuning.keepaliveCount
         }
         parameters.serviceClass = .responsiveData
 

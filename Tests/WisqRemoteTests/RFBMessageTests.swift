@@ -57,11 +57,135 @@ final class RFBMessageTests: XCTestCase {
             RFB.Encoding.lastRect.rawValue,
         ]
         // Advertising something we cannot decode would strand the stream mid-rectangle.
-        for encoding in RFB.preferredEncodings(lowBandwidth: false) {
-            XCTAssertTrue(decodable.contains(encoding), "encodage annoncé mais non décodable : \(encoding)")
+        //
+        // The two settings ranges are exempt, and only those two. A value in
+        // them is a request — how lossy, how hard to compress — and never comes
+        // back as a rectangle, so there is nothing to decode. Written as ranges
+        // rather than added to the set above so that a *new* pseudo-encoding
+        // still has to be justified rather than quietly slipping through.
+        func isSettingRatherThanRectangle(_ encoding: Int32) -> Bool {
+            (RFB.qualityLevel...(RFB.qualityLevel + 9)).contains(encoding)
+                || (RFB.compressLevel...(RFB.compressLevel + 9)).contains(encoding)
         }
-        for encoding in RFB.preferredEncodings(lowBandwidth: true) {
-            XCTAssertTrue(decodable.contains(encoding), "encodage annoncé mais non décodable : \(encoding)")
+        for lowBandwidth in [false, true] {
+            for quality in [nil, 6] as [Int?] {
+                for encoding in RFB.preferredEncodings(
+                    lowBandwidth: lowBandwidth, jpegQuality: quality
+                ) {
+                    XCTAssertTrue(
+                        decodable.contains(encoding) || isSettingRatherThanRectangle(encoding),
+                        "encodage annoncé mais non décodable : \(encoding)"
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Le niveau de compression
+
+    /// A slow link asks for more effort than the server's default; a fast one
+    /// asks for nothing and lets the server keep it.
+    func testOnlyASlowLinkAsksForACompressionLevel() {
+        let slow = RFB.preferredEncodings(lowBandwidth: true)
+        let fast = RFB.preferredEncodings(lowBandwidth: false)
+        let range = RFB.compressLevel...(RFB.compressLevel + 9)
+
+        XCTAssertEqual(
+            slow.filter { range.contains($0) }, [RFB.compressLevel + 6],
+            "un lien lent demande le niveau 6"
+        )
+        XCTAssertTrue(
+            fast.filter { range.contains($0) }.isEmpty,
+            "un lien rapide laisse au serveur son propre défaut"
+        )
+    }
+
+    /// **Never zero and never one**, whatever else changes.
+    ///
+    /// `VNCSConnectionST::getComparerState` reads a level below two as "this
+    /// client wants CPU over bandwidth" and turns off the comparing update
+    /// tracker — the server stops checking whether a region actually changed
+    /// before sending it. Asking for less compression would fetch more data.
+    /// The number above is a judgement; this is not.
+    func testTheLevelAskedForNeverTurnsOffTheServersChangeDetection() {
+        for lowBandwidth in [false, true] {
+            for quality in [nil, 0, 9] as [Int?] {
+                let advertised = RFB.preferredEncodings(
+                    lowBandwidth: lowBandwidth, jpegQuality: quality
+                )
+                for level in [0, 1] {
+                    XCTAssertFalse(
+                        advertised.contains(RFB.compressLevel + Int32(level)),
+                        "niveau \(level) annoncé : le serveur cesserait de comparer"
+                    )
+                }
+            }
+        }
+    }
+
+    /// One level, or the server picks between them by an order nothing here
+    /// states. `ClientParams::setEncodings` walks the list **backwards**, so
+    /// two compression levels would silently mean the earlier one — a rule this
+    /// client should not be relying on.
+    func testAtMostOneOfEachSettingIsAdvertised() {
+        for lowBandwidth in [false, true] {
+            for quality in [nil, 3] as [Int?] {
+                let advertised = RFB.preferredEncodings(
+                    lowBandwidth: lowBandwidth, jpegQuality: quality
+                )
+                XCTAssertLessThanOrEqual(
+                    advertised.filter {
+                        (RFB.compressLevel...(RFB.compressLevel + 9)).contains($0)
+                    }.count, 1
+                )
+                XCTAssertLessThanOrEqual(
+                    advertised.filter {
+                        (RFB.qualityLevel...(RFB.qualityLevel + 9)).contains($0)
+                    }.count, 1
+                )
+                XCTAssertEqual(
+                    advertised.count, Set(advertised).count,
+                    "un encodage annoncé deux fois"
+                )
+            }
+        }
+    }
+
+    /// The four numbers that come from outside this repository, written out.
+    ///
+    /// Every other test here is expressed relative to `compressLevel` and
+    /// `qualityLevel` — `compressLevel + 6`, "inside the quality range" — which
+    /// means a wrong base moves the expectations with it and nothing notices.
+    /// Sabotage said so plainly: shifting either base by one left the whole
+    /// suite green. The quality base looked pinned by `JPEGTests`, but that
+    /// test skips wherever there is no JPEG decoder, which is every Linux
+    /// runner here.
+    ///
+    /// So the bases are asserted as literals, against the reference:
+    /// `pseudoEncodingQualityLevel0 = -32` and `QualityLevel9 = -23`,
+    /// `pseudoEncodingCompressLevel0 = -256` and `CompressLevel9 = -247`, in
+    /// TigerVNC's `common/rfb/encodings.h`. Both ends of each range, because
+    /// the reference states both — so a base that slipped and a range that is
+    /// the wrong width fail separately rather than cancelling out.
+    func testTheTwoBasesAreTheReferencesAndNotThisFilesArithmetic() {
+        XCTAssertEqual(RFB.qualityLevel, -32)
+        XCTAssertEqual(RFB.qualityLevel + 9, -23)
+        XCTAssertEqual(RFB.compressLevel, -256)
+        XCTAssertEqual(RFB.compressLevel + 9, -247)
+        XCTAssertEqual(RFB.compressLevel + Int32(RFB.slowLinkCompression), -250)
+    }
+
+    /// The two ranges do not overlap each other, nor any encoding this build
+    /// advertises as a rectangle codec. They are ten apart in the reference and
+    /// two hundred apart from each other; a transcription slip in either base
+    /// would land one range on top of something real.
+    func testTheTwoSettingRangesCollideWithNothing() {
+        let quality = Set((RFB.qualityLevel...(RFB.qualityLevel + 9)))
+        let compress = Set((RFB.compressLevel...(RFB.compressLevel + 9)))
+        XCTAssertTrue(quality.isDisjoint(with: compress))
+        for encoding in RFB.Encoding.allCases {
+            XCTAssertFalse(quality.contains(encoding.rawValue), "\(encoding)")
+            XCTAssertFalse(compress.contains(encoding.rawValue), "\(encoding)")
         }
     }
 
