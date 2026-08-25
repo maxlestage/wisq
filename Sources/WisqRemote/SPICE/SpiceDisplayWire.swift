@@ -295,6 +295,23 @@ enum SpiceDisplayWire {
         var mask: Mask
     }
 
+    /// `DRAW_OPAQUE` — a copy with a brush combined onto it.
+    ///
+    /// The same fields as a copy, with a `Brush` inserted before the rop. What
+    /// makes it its own message is not the shape but the order of operations:
+    /// the image is blitted *plainly*, and the rop then combines the brush with
+    /// it. So the rop's two operands are the brush and the image, and the
+    /// destination is not one of them at all.
+    struct Opaque: Equatable, Sendable {
+        var base: Base
+        var source: Image?
+        var sourceArea: Rect
+        var brush: Brush
+        var rop: UInt16
+        var scaleMode: UInt8
+        var mask: Mask
+    }
+
     /// `DRAW_COPY_BITS` — the surface copying from itself.
     ///
     /// The smallest draw message in the protocol and one of the most used: a

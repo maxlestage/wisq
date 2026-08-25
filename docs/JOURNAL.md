@@ -933,3 +933,55 @@ dans son propre commentaire : « une barrière qu'un contributeur ne peut pas
 lancer localement est une barrière qui trouve les choses après l'ouverture de la
 PR ». C'est exactement ce qui s'est passé. Le commentaire avait raison ; il n'a
 pas empêché la chose, il l'a seulement prédite.
+
+## Le rop, et un sabotage qui ne s'était pas appliqué
+
+Chaque message de dessin porte un descripteur d'opération raster. wisq le lisait
+et le jetait. Pour l'immense majorité des messages c'est sans conséquence — le
+descripteur usuel veut dire « copie » — mais un rectangle de sélection, un
+curseur de texte et un tracé élastique sont dessinés en XOR pour que le second
+passage efface le premier. Traités en copie, ils s'affichent et restent.
+
+La partie amusante est que tout est pur : seize fonctions booléennes et un
+réducteur de 2048 descripteurs vers elles. Rien à fabriquer, rien à échantillonner.
+Les tests couvrent **tout** : les seize opérations sur les 65 536 paires
+d'octets, et les 2048 descripteurs sous les trois étiquetages qu'un message peut
+leur donner.
+
+**La valeur brute d'une opération X11 *est* sa table de vérité** — le bit
+`3 − (2·src + dst)` du numéro est le résultat pour cette paire. `apply` ne s'en
+sert pas : il écrit les seize cas en opérateurs bit à bit, lisibles à côté de
+leur commentaire. La dérivation gagne sa place dans le test, où elle est la
+seconde opinion indépendante.
+
+Deux comportements recopiés plutôt que corrigés, et l'un des deux a été trouvé
+par un test qui avait tort : j'avais modélisé « INVERS_RES s'applique toujours »,
+ce qui est la règle sensée. La dernière ligne de la référence est un
+`return SPICE_ROP_COPY` nu qui ne regarde aucun drapeau. Le test était faux et la
+transcription juste — l'ordre dans lequel ces deux-là sont censés être
+découverts.
+
+### Le sabotage qui ne s'était pas appliqué
+
+Douze sabotages, dix attrapés du premier coup. Les deux survivants ont été plus
+instructifs que les dix.
+
+Le premier était une vraie redondance : `opaque` construisait sa copie interne
+avec `rop: 0` *et* passait `blitROP: .copy`. Deux façons de dire la même chose,
+donc supprimer l'une ne changeait rien. Réparé en portant le vrai descripteur et
+en laissant l'override porter la décision — maintenant le sabotage mord.
+
+Le second n'existait pas. Le motif que je remplaçais — les deux lignes
+`brush: try brush(...)` suivies de `rop: try reader.u16()` — **apparaît deux fois**
+dans le fichier, et `replace(..., 1)` a touché celle de `fill`, pas celle
+d'`opaque`. Puis, en vérifiant, mon filtre de tests ne contenait pas la suite qui
+couvre `fill`. Deux couches de « rien ne s'est passé » qui ressemblaient à
+« la ligne est morte ».
+
+C'est la quatrième fois cette semaine, et la variante est nouvelle : cette fois
+ce n'était ni le code ni les tests, **c'était le harnais de sabotage lui-même**.
+La règle que j'en tire est concrète plutôt que morale : lancer les sabotages
+contre la suite entière et pas contre un filtre choisi à la main, et vérifier que
+le remplacement a changé le contenu du fichier — pas seulement qu'il n'a pas
+échoué. Passé à la suite entière, la même modification sur `fill` fait tomber
+neuf tests.

@@ -152,30 +152,63 @@ struct SpiceSurfaces {
             throw Failure.notDrawable
         }
         let mask = try Self.mask(operation.mask, box: operation.base.box)
+        // **A fill's rop combines the brush with the destination**, so the flag
+        // that inverts its source is `INVERS_BRUSH`. Reading `INVERS_SRC` here
+        // would give a fill that never inverts anything.
+        let rop = SpiceROP.descriptor(
+            operation.rop, source: .brush, destination: .destination
+        )
 
+        let written = Self.regions(of: operation.base, in: surface)
+        Self.paint(
+            colour, rop: rop, over: written, mask: mask, into: &surface
+        )
+        surfaces[operation.base.surfaceID] = surface
+        return written
+    }
+
+    /// A solid colour combined with what is already there.
+    ///
+    /// Shared by `fill` and `opaque`, which differ in where the rop comes from
+    /// and in what has been drawn underneath by the time it runs — not in this.
+    private static func paint(
+        _ colour: UInt32, rop: SpiceROP, over regions: [SpiceDisplayWire.Rect],
+        mask: SpiceMask.Resolved?, into surface: inout Surface
+    ) {
         // The colour is a 32-bit word in the surface's own order, so it lands
         // as four bytes little-endian: blue, green, red, then the pad.
         let blue = UInt8(colour & 0xFF)
         let green = UInt8(colour >> 8 & 0xFF)
         let red = UInt8(colour >> 16 & 0xFF)
-        let alpha: UInt8 = surface.hasAlpha ? UInt8(colour >> 24 & 0xFF) : 0
+        let alpha = UInt8(colour >> 24 & 0xFF)
 
-        let written = Self.regions(of: operation.base, in: surface)
-        for rect in written {
+        for rect in regions {
             for y in Int(rect.top)..<Int(rect.bottom) {
                 var index = (y * surface.width + Int(rect.left)) * 4
                 for x in Int(rect.left)..<Int(rect.right) {
                     defer { index += 4 }
                     guard mask?.allows(x, y) ?? true else { continue }
-                    surface.pixels[index] = blue
-                    surface.pixels[index + 1] = green
-                    surface.pixels[index + 2] = red
-                    surface.pixels[index + 3] = alpha
+                    surface.pixels[index] = rop.apply(
+                        source: blue, destination: surface.pixels[index]
+                    )
+                    surface.pixels[index + 1] = rop.apply(
+                        source: green, destination: surface.pixels[index + 1]
+                    )
+                    surface.pixels[index + 2] = rop.apply(
+                        source: red, destination: surface.pixels[index + 2]
+                    )
+                    // The reference applies the rop to the whole 32-bit word,
+                    // alpha included. On a surface without one the fourth byte
+                    // is held at zero instead, the rule the rest of this file
+                    // follows — otherwise `invert` would fill the pad with
+                    // 0xFF and every pixel would claim an alpha it does not
+                    // have.
+                    surface.pixels[index + 3] = surface.hasAlpha
+                        ? rop.apply(source: alpha, destination: surface.pixels[index + 3])
+                        : 0
                 }
             }
         }
-        surfaces[operation.base.surfaceID] = surface
-        return written
     }
 
     /// `DRAW_COPY` from a decoded image.
@@ -187,7 +220,8 @@ struct SpiceSurfaces {
     mutating func copy(
         _ operation: SpiceDisplayWire.Copy,
         source: (pixels: [UInt8], width: Int, height: Int),
-        bytesPerSourcePixel: Int
+        bytesPerSourcePixel: Int,
+        blitROP: SpiceROP? = nil
     ) throws -> [SpiceDisplayWire.Rect] {
         guard var surface = surfaces[operation.base.surfaceID] else {
             throw Failure.unknownSurface(operation.base.surfaceID)
@@ -200,6 +234,11 @@ struct SpiceSurfaces {
         }
 
         let mask = try Self.mask(operation.mask, box: operation.base.box)
+        // A copy's rop combines the image with the destination — the literal
+        // reading, and the only one of the three messages for which it is.
+        let rop = blitROP ?? SpiceROP.descriptor(
+            operation.rop, source: .source, destination: .destination
+        )
         let box = operation.base.box
         let area = operation.sourceArea
         guard area.width > 0, area.height > 0, box.width > 0, box.height > 0 else { return [] }
@@ -224,11 +263,16 @@ struct SpiceSurfaces {
 
                     let from = (sourceY * source.width + sourceX) * bytesPerSourcePixel
                     let to = (y * surface.width + x) * 4
-                    surface.pixels[to] = source.pixels[from]
-                    surface.pixels[to + 1] = source.pixels[from + 1]
-                    surface.pixels[to + 2] = source.pixels[from + 2]
+                    for channel in 0..<3 {
+                        surface.pixels[to + channel] = rop.apply(
+                            source: source.pixels[from + channel],
+                            destination: surface.pixels[to + channel]
+                        )
+                    }
                     surface.pixels[to + 3] = surface.hasAlpha && bytesPerSourcePixel == 4
-                        ? source.pixels[from + 3]
+                        ? rop.apply(
+                            source: source.pixels[from + 3], destination: surface.pixels[to + 3]
+                        )
                         : 0
                 }
             }
@@ -258,6 +302,59 @@ struct SpiceSurfaces {
         } catch {
             throw Failure.notDrawable
         }
+    }
+
+    /// `DRAW_OPAQUE` — the image, then the brush combined onto it.
+    ///
+    /// **The order is the whole message.** The reference blits the image with
+    /// no raster operation at all and only then calls `draw_brush` with one, so
+    /// what the rop combines is the brush with the *image* — the destination
+    /// has already been overwritten and is not an operand. That is why the rop
+    /// is resolved with `.brush` as its source and `.source` as its
+    /// destination, which reads backwards until you know the order.
+    ///
+    /// Implemented as exactly that composition rather than as a fused loop:
+    /// a plain copy, then the shared solid paint. Fusing them would save one
+    /// pass over the region and would make the order an implementation detail
+    /// instead of the thing the message says.
+    @discardableResult
+    mutating func opaque(
+        _ operation: SpiceDisplayWire.Opaque,
+        source: (pixels: [UInt8], width: Int, height: Int),
+        bytesPerSourcePixel: Int
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard case let .solid(colour) = operation.brush else {
+            // A pattern brush, or none at all. `fill` refuses the same two.
+            throw Failure.notDrawable
+        }
+
+        // The descriptor is carried through unchanged and then *overridden*,
+        // rather than replaced with a zero that would collapse to `copy` on its
+        // own. Two ways of saying the same thing is one too many: with a zero
+        // there, `blitROP` could be deleted and nothing would notice, and the
+        // fact that this blit ignores the rop would stop being written down
+        // anywhere.
+        let written = try copy(
+            SpiceDisplayWire.Copy(
+                base: operation.base, source: operation.source,
+                sourceArea: operation.sourceArea, rop: operation.rop,
+                scaleMode: operation.scaleMode, mask: operation.mask
+            ),
+            source: source, bytesPerSourcePixel: bytesPerSourcePixel,
+            blitROP: .copy
+        )
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        Self.paint(
+            colour,
+            rop: SpiceROP.descriptor(operation.rop, source: .brush, destination: .source),
+            over: written,
+            mask: try Self.mask(operation.mask, box: operation.base.box),
+            into: &surface
+        )
+        surfaces[operation.base.surfaceID] = surface
+        return written
     }
 
     // MARK: - The draws that need no codec
