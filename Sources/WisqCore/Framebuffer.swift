@@ -2,14 +2,40 @@ import Foundation
 
 /// A remote screen held as 32-bit BGRA, the layout Core Graphics and Metal both
 /// consume without a conversion pass.
+///
+/// `@unchecked Sendable` on the strength of the lock below, and a lock only
+/// keeps that promise if **every** path in and out of the state goes through
+/// it. The three stored properties used to be `public private(set)`: written
+/// under the lock, readable by anyone without it.
+///
+/// Nothing in the app actually did — the renderer has always gone through
+/// `snapshot()` — but that is a habit, not a guarantee, and the failure it
+/// leaves open is not a stale pixel. Reading a `[UInt8]` on one thread while
+/// `replaceSubrange` grows it on another is a torn read of the array's own
+/// buffer reference. The state is private now, and the only way to look at it
+/// takes the lock, so the promise is one the type keeps rather than one its
+/// callers have to.
 public final class Framebuffer: @unchecked Sendable {
-    public private(set) var width: Int
-    public private(set) var height: Int
-    /// Row stride in bytes. Always `width * 4` here; kept explicit for the renderer.
-    public var bytesPerRow: Int { width * 4 }
-    public private(set) var pixels: [UInt8]
+    private var width: Int
+    private var height: Int
+    private var pixels: [UInt8]
 
     private let lock = NSLock()
+
+    /// The screen's size, as a pair.
+    ///
+    /// One accessor rather than two, because two could straddle a resize and
+    /// between them describe a screen that never existed.
+    public var size: (width: Int, height: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (width, height)
+    }
+
+    /// Row stride in bytes for a screen of this width. Always four bytes a
+    /// pixel here; spelled out because a renderer has to be handed it next to
+    /// the pixels it belongs to rather than deriving it from a width it read
+    /// separately.
+    public static func bytesPerRow(width: Int) -> Int { width * 4 }
 
     public init(width: Int, height: Int) {
         self.width = max(0, width)
