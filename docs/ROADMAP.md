@@ -1177,10 +1177,59 @@ un JPEG valide, le décodeur rendrait `nil` de toute façon — et il reste pour
 qu'il empêche : des octets arbitraires venus du réseau qui entrent dans ImageIO
 sans raison.
 
-Ce qui reste sur le canal display : les tracés et le texte (`DRAW_STROKE`,
-`DRAW_TEXT`), qui demandent tous deux un rastériseur, et les rapports de flux
-(`STREAM_ACTIVATE_REPORT`), délibérément ignorés — ils permettent au serveur
-d'adapter son débit, pas au client d'afficher quoi que ce soit.
+### `DRAW_STROKE` : des lignes d'un pixel, et pourquoi c'est un pixel
+
+Fait. Un chemin, des attributs de ligne, une brosse et un descripteur de rop —
+et **aucune largeur de trait nulle part**. Ce n'est pas un oubli du message :
+`canvas_draw_stroke` pose `lineWidth = 0` sans condition. Ce sont les stylos
+*cosmétiques* de Windows, un pixel quelle que soit l'échelle de la surface.
+
+**Le point final n'est jamais dessiné.** La référence demande `CapNotLast`,
+parce qu'une ligne cosmétique Win32 est exclusive de son extrémité. Ce n'est pas
+un détail d'arrondi : un rectangle élastique est fait de quatre tracés qui se
+partagent quatre coins, et dessiner l'extrémité peint chaque coin deux fois —
+sous le `XOR` qu'un élastique utilise, deux fois veut dire *absent*, et faire
+glisser une sélection laisserait quatre trous.
+
+**Le biais d'octant existe pour une raison précise.** Bresenham doit trancher
+chaque fois que la ligne idéale passe exactement entre deux pixels. Trancher
+pareil dans toutes les directions, et une ligne A→B n'allume pas les mêmes
+pixels que la même ligne B→A. `DEFAULTZEROLINEBIAS` retire un à l'erreur
+initiale dans quatre octants sur huit — les quatre qui sont les inverses des
+quatre autres — et les deux se rejoignent. C'est aussi la propriété que les
+tests vérifient : un éventail de lignes tracées dans les deux sens doit donner
+le même ensemble de pixels, ce qui teste toute la table plutôt qu'une entrée.
+
+**Trois pièges de format**, tous tranchés par le démarshaller que la référence
+*engendre* depuis `spice.proto`, pas par `draw.h` :
+
+  * les drapeaux d'un segment font **un octet sur le fil**, là où
+    `SpicePathSeg.flags` est un `uint32_t` en C ;
+  * `style_nseg` et `style` n'existent sur le fil que si `STYLED` est posé —
+    `LineAttr` est un aiguillage sur ses propres drapeaux, donc un attribut sans
+    style tient en un octet, et lire une longueur et un pointeur quand même
+    avale cinq octets de la brosse qui suit ;
+  * `@ptr_array` décrit le côté C et non le fil : les segments se suivent, et
+    lire un tableau d'offsets prendrait les drapeaux du premier pour un
+    pointeur.
+
+Et trois règles de parcours qui ne sont pas ce que les noms suggèrent : `BEGIN`
+dépense son premier point comme *position* et non comme sommet ; `CLOSE` n'agit
+qu'à l'intérieur d'un `END` ; et fermer rejoint le premier point de la figure
+accumulée, pas celui du segment qui porte le drapeau.
+
+**Une divergence assumée, sur les pointillés.** La référence ne pointille pas
+une ligne d'épaisseur nulle : `miZeroDashLine` met la largeur à un, appelle le
+pointilleur des lignes *épaisses*, et la remet à zéro — au-dessus d'un
+commentaire qui dit « XXX kludge until real zero-width dash code is written ».
+wisq parcourt les mêmes pixels de Bresenham dans les deux cas et saute ceux
+qu'un blanc couvre, ce que le commentaire de la référence appelle de ses vœux.
+Les pixels allumés sont un sous-ensemble de ceux de la ligne pleine — jamais à
+côté — ce qui est la propriété qu'un utilisateur pourrait remarquer.
+
+Ce qui reste sur le canal display : le texte (`DRAW_TEXT`), et les rapports de
+flux (`STREAM_ACTIVATE_REPORT`), délibérément ignorés — ils permettent au
+serveur d'adapter son débit, pas au client d'afficher quoi que ce soit.
 
 ## Lot 6 — finition
 
