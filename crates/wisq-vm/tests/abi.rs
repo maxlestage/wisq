@@ -96,9 +96,42 @@ fn the_c_header_matches_the_library_it_describes() {
         String::from_utf8_lossy(&ran.stdout),
         String::from_utf8_lossy(&ran.stderr)
     );
+    let stdout = String::from_utf8_lossy(&ran.stdout);
     assert!(
-        String::from_utf8_lossy(&ran.stdout).contains("ABI conforme"),
-        "sortie inattendue :\n{}",
-        String::from_utf8_lossy(&ran.stdout)
+        stdout.contains("ABI conforme"),
+        "sortie inattendue :\n{stdout}"
+    );
+
+    // The throughput line, because it is the only performance figure the
+    // repository takes from the Apple toolchain — scripts/test-ios.sh spawns
+    // this same program inside a booted iPhone, and what it prints is what the
+    // CI log carries. Nothing there would notice the line quietly disappearing,
+    // or a clock that returns zero and makes the whole thing vanish behind its
+    // guard, so it is checked here where a test can run.
+    //
+    // No *lower* threshold: a shared runner cannot hold one without flaking, and
+    // the number this machine produces has no bearing on the number a phone
+    // would. There is an upper one, and it is not decoration — sabotage moved
+    // the stopwatch to after the run, which measures nothing, and a "greater
+    // than zero" check waved through a throughput of 4 × 10¹⁶ instructions a
+    // second. A stopwatch that measures nothing produces an enormous number,
+    // not a small one.
+    //
+    // Ten billion guest instructions a second is impossible by an order of
+    // magnitude for any machine this could run on: a core retires perhaps 10¹⁰
+    // of its *own* instructions a second at the very best, and an interpreter
+    // spends many of those on each guest instruction. Anything above it is a
+    // broken clock rather than a fast computer.
+    const IMPOSSIBLE_MILLIONS_PER_SECOND: f64 = 10_000.0;
+    let throughput = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("débit "))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|number| number.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("aucun débit mesuré :\n{stdout}"));
+    assert!(
+        throughput > 0.0 && throughput < IMPOSSIBLE_MILLIONS_PER_SECOND,
+        "débit implausible ({throughput} M inst/s) : le chronomètre ne mesure \
+         probablement pas l'exécution\n{stdout}"
     );
 }

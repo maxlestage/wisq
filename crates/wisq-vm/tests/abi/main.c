@@ -22,6 +22,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+/* Seconds on a clock that does not go backwards when the machine's does.
+ *
+ * CLOCK_MONOTONIC rather than wall time: this runs inside a simulator on a
+ * shared CI runner, and an NTP step in the middle of a boot would otherwise
+ * turn a throughput figure into fiction. */
+static double monotonic_seconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0.0;
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
 
 /* What the guest printed, capped: a boot log is tens of kilobytes and this
  * only needs enough to recognise the banner. */
@@ -83,11 +95,32 @@ int main(int argc, char **argv) {
 
     /* Enough to reach the banner, bounded so a broken core fails the test
      * instead of hanging a CI runner. */
+    double started = monotonic_seconds();
     int outcome = wisq_vm_run(vm, 400ull * 1000 * 1000);
+    double elapsed = monotonic_seconds() - started;
     uint64_t retired = wisq_vm_retired_instructions(vm);
 
     printf("sortie %d, %llu instructions retirées, %zu octets de console\n",
            outcome, (unsigned long long)retired, console.len);
+
+    /* The throughput, on whatever machine this is.
+     *
+     * Every other check here answers "does the interpreter behave"; this one
+     * answers "how fast, here". It matters because the two are measured in
+     * different places: `wisq-bench` runs on the Linux job, and this program is
+     * also spawned inside a booted iPhone by scripts/test-ios.sh — which is the
+     * only figure the repository has from the Apple toolchain at all.
+     *
+     * Deliberately not a threshold. A shared runner cannot hold one without
+     * flaking, and a simulator is not a phone: same architecture on Apple
+     * Silicon, but no thermal ceiling and no memory pressure, so this is an
+     * upper bound and a regression detector rather than a number to quote. It
+     * is printed so that a change that halves it is visible in the log. */
+    if (elapsed > 0.0) {
+        printf("débit %.1f M inst/s (%llu en %.2f s)\n",
+               (double)retired / elapsed / 1e6,
+               (unsigned long long)retired, elapsed);
+    }
 
     int ok = 1;
     if (retired == 0) { fprintf(stderr, "ABI: aucune instruction retirée\n"); ok = 0; }
