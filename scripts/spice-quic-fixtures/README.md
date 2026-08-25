@@ -68,3 +68,33 @@ cc -I. -Icommon -Ispice $(pkg-config --cflags glib-2.0) \
 ./qbits 16 16 3 31 1 < stream.hex > trace.txt
 ./qmodel > model.txt
 ```
+
+The seven cases in `SpiceQUICFixtures.swift`, with the arguments that produce
+them. `qdec` takes the output type: gray and rgba decode only to themselves,
+everything else to 32-bit.
+
+| case | qgen | qdec |
+| --- | --- | --- |
+| `rgb32 8x6` | `./qgen 4 8 6 1` | `./qdec` |
+| `rgb32 32x24` | `./qgen 4 32 24 7` | `./qdec` |
+| `rgb24 16x12` | `./qgen 3 16 12 3` | `./qdec` |
+| `rgb16 16x12` | `./qgen 2 16 12 11` | `./qdec` |
+| `gray 16x12` | `./qgen 1 16 12 5` | `./qdec 1` |
+| `rgba 24x18` | `./qgen 5 24 18 3` | `./qdec 5` |
+| `rgb32 64x96` | `./qgen 4 64 96 9` | `./qdec` |
+
+The last two are there for the decode loop rather than for coverage of the
+formats: `rgba` is the only type that decodes as two passes per row, and
+64×96 is 6144 pixels, enough for the wait mask to advance three times. Nothing
+smaller reaches that path at all — it takes 2048 pixels to advance once.
+
+A third thing the harness taught, this one the hard way:
+
+* **The generator drifted from the fixtures.** The table above was added after
+  finding that `./qgen 1 16 12 5` no longer produced the committed `gray 16x12`
+  stream. The five original fixtures still verified against the reference
+  decoder — they were honest — but the `qgen.c` committed here had been tidied
+  before the commit without regenerating them, so its pseudo-random noise band
+  no longer matched. All seven were regenerated with the harness as it now
+  stands, and the rebuild instructions above reproduce every one of them byte
+  for byte. Fixtures that cannot be rebuilt are fixtures nobody can check.

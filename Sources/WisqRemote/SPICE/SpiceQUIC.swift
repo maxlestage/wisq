@@ -142,10 +142,20 @@ enum SpiceQUIC {
     /// One context's running costs, and the code that is cheapest so far.
     struct Bucket: Equatable, Sendable {
         var counters: [UInt32]
-        var bestCode: Int = 0
+        var bestCode: Int
 
-        init(counterCount: Int) {
+        /// Every bucket starts at the **highest** code number, not the lowest.
+        ///
+        /// `encoder_reset_channels` sets `bestcode = bpc - 1`, and it matters
+        /// from the very first symbol: that number is the code the first pixel
+        /// of the image is read with. Starting at zero decodes a codeword of
+        /// the wrong length and the stream is lost immediately — which is what
+        /// happened, and which only the end-to-end test could show, because a
+        /// model tested on its own is handed whatever initial bucket the test
+        /// itself built.
+        init(counterCount: Int, bestCode: Int) {
             counters = [UInt32](repeating: 0, count: counterCount)
+            self.bestCode = bestCode
         }
     }
 
@@ -187,7 +197,9 @@ enum SpiceQUIC {
             } while end < levels - 1
 
             bucketOfValue = ofValue
-            buckets = (0..<index).map { _ in Bucket(counterCount: SpiceQUIC.counterCount) }
+            buckets = (0..<index).map { _ in
+                Bucket(counterCount: SpiceQUIC.counterCount, bestCode: bpc - 1)
+            }
         }
 
         /// `update_model`: charge every code number for what it would have
