@@ -111,6 +111,56 @@ final class SPICESessionTests: XCTestCase {
 
     // MARK: - The shape
 
+    /// The display channel tells the server it can read LZ4.
+    ///
+    /// This is permission rather than a request: `dcc_compress_image` checks
+    /// `SPICE_DISPLAY_CAP_LZ4_COMPRESSION` and falls through to plain LZ
+    /// without it, whatever the server was configured to prefer. Which is why
+    /// it is worth asserting on the wire rather than trusting the array
+    /// literal — the capability is a *bit position*, so a list that reads
+    /// correctly can still set the wrong bit.
+    func testTheDisplayLinkAdvertisesLZ4AndPreferredCompression() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + mainInit(sessionID: 7) + channelsList()
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply(channelCaps: SpiceDisplayClient.capabilityWords(
+                [.preferredCompression]
+            )) + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let sockets = Sockets([mainSocket, displaySocket])
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x"),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        var reader = SpiceWire.Reader(await displaySocket.written)
+        _ = try reader.bytes(SpiceWire.headerBytes)
+        _ = try reader.u32()                        // connection ID
+        _ = try reader.bytes(2)                     // channel, channel ID
+        let commonCount = Int(try reader.u32())
+        let channelCount = Int(try reader.u32())
+        _ = try reader.u32()                        // where the words start
+        for _ in 0..<commonCount { _ = try reader.u32() }
+        var channelCaps: [UInt32] = []
+        for _ in 0..<channelCount { channelCaps.append(try reader.u32()) }
+
+        XCTAssertTrue(
+            SpiceDisplayClient.supports(.lz4Compression, in: channelCaps),
+            "sans cette capacité le serveur n'enverra jamais de LZ4"
+        )
+        XCTAssertTrue(SpiceDisplayClient.supports(.preferredCompression, in: channelCaps))
+        // And nothing wisq cannot honour: advertising a capability is a promise
+        // about this client, not a wish list.
+        XCTAssertFalse(SpiceDisplayClient.supports(.glScanout, in: channelCaps))
+        XCTAssertFalse(SpiceDisplayClient.supports(.sizedStream, in: channelCaps))
+
+        await session.stop()
+    }
+
     /// Two sockets, and the second presents the first's session identifier.
     ///
     /// The identifier is read straight back out of the display channel's link
