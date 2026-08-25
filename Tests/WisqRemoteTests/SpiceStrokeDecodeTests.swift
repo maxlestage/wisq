@@ -66,12 +66,12 @@ final class SpiceStrokeDecodeTests: XCTestCase {
     /// the boundary and an expression built from the same constant could not
     /// see it move.
     func testExactlyAHalfRoundsDownTheWayTheReferenceDoes() {
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 0).rounded, 0)
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 16).rounded, 1)
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 16 + 7).rounded, 1)
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 16 + 8).rounded, 1, "une demie exacte descend")
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 16 + 9).rounded, 2)
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 16 + 15).rounded, 2)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 0).rounded, 0)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 16).rounded, 1)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 16 + 7).rounded, 1)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 16 + 8).rounded, 1, "une demie exacte descend")
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 16 + 9).rounded, 2)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 16 + 15).rounded, 2)
     }
 
     /// The rounding has **one rule and no special case for sign**: a half
@@ -89,19 +89,19 @@ final class SpiceStrokeDecodeTests: XCTestCase {
     /// The values below come from evaluating `rem = fixed & 0x0f; val = fixed
     /// >> 4; if (rem > 8) val++` over the range, not from reasoning about it.
     func testTheRoundingHasOneRuleAndNoSpecialCaseForSign() {
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: 8).rounded, 0, "+0,5 descend")
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -8).rounded, -1, "−0,5 descend aussi")
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: 8).rounded, 0, "+0,5 descend")
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -8).rounded, -1, "−0,5 descend aussi")
 
         // The whole neighbourhood of −1.5, where the boundary sits.
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -22).rounded, -1)   // −1,3750
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -23).rounded, -1)   // −1,4375
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -24).rounded, -2)   // −1,5000
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -25).rounded, -2)   // −1,5625
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -22).rounded, -1)   // −1,3750
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -23).rounded, -1)   // −1,4375
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -24).rounded, -2)   // −1,5000
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -25).rounded, -2)   // −1,5625
 
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -1).rounded, 0)     // −0,0625
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -7).rounded, 0)     // −0,4375
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -16).rounded, -1)
-        XCTAssertEqual(SpiceDisplayWire.Fixed28_4(raw: -32).rounded, -2)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -1).rounded, 0)     // −0,0625
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -7).rounded, 0)     // −0,4375
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -16).rounded, -1)
+        XCTAssertEqual(SpiceDisplayWire.Fixed28Point4(raw: -32).rounded, -2)
     }
 
     // MARK: - Les drapeaux

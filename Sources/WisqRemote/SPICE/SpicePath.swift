@@ -4,11 +4,16 @@ extension SpiceDisplayWire {
     /// A coordinate in SPICE's fixed-point format: 28 integer bits and four
     /// fractional ones, in an `int32`.
     ///
+    /// The protocol calls it `SPICE_FIXED28_4`. Spelled with a `Point` here
+    /// because SwiftLint's `type_name` refuses the underscore, and the name is
+    /// worth keeping close to the wire's rather than shortened to something
+    /// that no longer says which format it is.
+    ///
     /// A distinct type rather than a bare `Int32`, because the whole risk here
     /// is treating one as the other. A stroke's points arrive multiplied by
     /// sixteen; used as pixels they would draw a line sixteen times too long
     /// and mostly off the surface.
-    struct Fixed28_4: Equatable, Hashable, Sendable {
+    struct Fixed28Point4: Equatable, Hashable, Sendable {
         var raw: Int32
 
         init(raw: Int32) { self.raw = raw }
@@ -41,15 +46,15 @@ extension SpiceDisplayWire {
         /// rounded to one.
         var truncated: Int { Int(raw >> 4) }
 
-        static func whole(_ value: Int) -> Fixed28_4 {
-            Fixed28_4(raw: Int32(clamping: value) << 4)
+        static func whole(_ value: Int) -> Fixed28Point4 {
+            Fixed28Point4(raw: Int32(clamping: value) << 4)
         }
     }
 
     /// A point on a stroke's path.
     struct PointFix: Equatable, Sendable {
-        var x: Fixed28_4
-        var y: Fixed28_4
+        var x: Fixed28Point4
+        var y: Fixed28Point4
 
         var rounded: Point { Point(x: Int32(clamping: x.rounded), y: Int32(clamping: y.rounded)) }
     }
@@ -105,7 +110,7 @@ extension SpiceDisplayWire {
         var flags: UInt8
         /// The dash lengths as they arrived, in fixed point. Empty when the
         /// line is solid.
-        var style: [Fixed28_4]
+        var style: [Fixed28Point4]
 
         var isStyled: Bool { flags & Self.styled != 0 }
         var startsWithAGap: Bool { flags & Self.startWithGap != 0 }

@@ -315,8 +315,8 @@ final class SpiceStrokeRasterTests: XCTestCase {
 
     private func fix(_ x: Int32, _ y: Int32) -> SpiceDisplayWire.PointFix {
         SpiceDisplayWire.PointFix(
-            x: SpiceDisplayWire.Fixed28_4.whole(Int(x)),
-            y: SpiceDisplayWire.Fixed28_4.whole(Int(y))
+            x: SpiceDisplayWire.Fixed28Point4.whole(Int(x)),
+            y: SpiceDisplayWire.Fixed28Point4.whole(Int(y))
         )
     }
 }

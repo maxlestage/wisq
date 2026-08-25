@@ -785,11 +785,6 @@ extension SpiceDisplayWire {
         return try reader.u32()
     }
 
-    /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
-    /// descriptor was.
-    ///
-    /// One byte rather than two, so reading it with the opaque decoder would
-    /// take the scale mode as the descriptor's high half and shift the mask.
     // MARK: - Strokes
 
     /// `DRAW_STROKE`.
@@ -813,7 +808,7 @@ extension SpiceDisplayWire {
         let pathPointer = try reader.u32()
 
         let flags = try reader.u8()
-        var style: [Fixed28_4] = []
+        var style: [Fixed28Point4] = []
         if flags & LineAttr.styled != 0 {
             let count = Int(try reader.u8())
             let stylePointer = try reader.u32()
@@ -838,11 +833,11 @@ extension SpiceDisplayWire {
     /// missing feature.
     private static func dashStyle(
         count: Int, at pointer: UInt32, in body: Body
-    ) throws -> [Fixed28_4] {
+    ) throws -> [Fixed28Point4] {
         guard count > 0 else { return [] }
         guard let followed = try body.follow(pointer) else { throw SpiceError.invalidData }
         var reader = followed.reader
-        return try (0..<count).map { _ in Fixed28_4(raw: Int32(bitPattern: try reader.u32())) }
+        return try (0..<count).map { _ in Fixed28Point4(raw: Int32(bitPattern: try reader.u32())) }
     }
 
     /// A path, from wherever the stroke pointed.
@@ -881,8 +876,8 @@ extension SpiceDisplayWire {
             run.reserveCapacity(points)
             for _ in 0..<points {
                 run.append(PointFix(
-                    x: Fixed28_4(raw: Int32(bitPattern: try reader.u32())),
-                    y: Fixed28_4(raw: Int32(bitPattern: try reader.u32()))
+                    x: Fixed28Point4(raw: Int32(bitPattern: try reader.u32())),
+                    y: Fixed28Point4(raw: Int32(bitPattern: try reader.u32()))
                 ))
             }
             segments.append(PathSegment(flags: flags, points: run))
@@ -890,6 +885,11 @@ extension SpiceDisplayWire {
         return Path(segments: segments)
     }
 
+    /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
+    /// descriptor was.
+    ///
+    /// One byte rather than two, so reading it with the opaque decoder would
+    /// take the scale mode as the descriptor's high half and shift the mask.
     static func rop3(_ payload: [UInt8]) throws -> Rop3 {
         let body = Body(payload)
         var reader = try body.reader()

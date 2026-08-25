@@ -18,7 +18,7 @@ final class SpiceStrokeSurfaceTests: XCTestCase {
 
     private func fix(_ x: Int, _ y: Int) -> SpiceDisplayWire.PointFix {
         SpiceDisplayWire.PointFix(
-            x: SpiceDisplayWire.Fixed28_4.whole(x), y: SpiceDisplayWire.Fixed28_4.whole(y)
+            x: SpiceDisplayWire.Fixed28Point4.whole(x), y: SpiceDisplayWire.Fixed28Point4.whole(y)
         )
     }
 
@@ -43,7 +43,7 @@ final class SpiceStrokeSurfaceTests: XCTestCase {
             ]),
             attr: SpiceDisplayWire.LineAttr(
                 flags: lineFlags,
-                style: style.map { SpiceDisplayWire.Fixed28_4.whole($0) }
+                style: style.map { SpiceDisplayWire.Fixed28Point4.whole($0) }
             ),
             brush: .solid(colour),
             foreMode: foreMode,
