@@ -328,9 +328,24 @@ public final class RemoteDisplayScrollView: UIScrollView, UIScrollViewDelegate, 
         onKeyboardRequest?(gesture.direction == .up)
     }
 
+    /// Held rather than made per touch, and told to get ready afterwards.
+    ///
+    /// A generator created and fired in the same breath has to wake the Taptic
+    /// Engine first, which puts tens of milliseconds between the finger and the
+    /// tap. On a gesture that is the difference between the phone answering the
+    /// touch and the phone twitching afterwards — and it was doing the latter
+    /// on every tap, because a fresh generator is never warm.
+    private let impact: [UIImpactFeedbackGenerator.FeedbackStyle: UIImpactFeedbackGenerator] = [
+        .light: UIImpactFeedbackGenerator(style: .light),
+        .medium: UIImpactFeedbackGenerator(style: .medium),
+    ]
+
     private func feedback(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
         guard model?.machine.input.hapticFeedback == true else { return }
-        UIImpactFeedbackGenerator(style: style).impactOccurred()
+        guard let generator = impact[style] else { return }
+        generator.impactOccurred()
+        // Touching once usually means touching again shortly.
+        generator.prepare()
     }
 
     // MARK: - Gesture arbitration
@@ -495,7 +510,7 @@ final class RemoteCanvasView: UIView {
             height: height,
             bitsPerComponent: 8,
             bitsPerPixel: 32,
-            bytesPerRow: width * 4,
+            bytesPerRow: Framebuffer.bytesPerRow(width: width),
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue)
                 .union(.byteOrder32Little),

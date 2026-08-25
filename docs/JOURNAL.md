@@ -1367,3 +1367,92 @@ Deux sabotages relancés — le chrono qui démarre trop tard, et un `elapsed` f
 Note de méthode, parce qu'elle m'a coûté dix minutes : `while pgrep -f
 mon-script.sh` ne se termine jamais, parce que la ligne de commande du `pgrep`
 contient elle-même le motif. Le harnais attendait un script déjà mort.
+
+## Douze échappatoires, et ce qu'un verrou ne promet pas
+
+Le paquet est en mode langage Swift 6 depuis un moment, sans avertissement. Il
+reste douze `@unchecked Sendable` — l'endroit exact où le compilateur arrête de
+vérifier et où quelqu'un affirme à sa place. Je les ai relus un par un.
+
+Onze tiennent. Le motif est bon partout : un verrou réel plutôt qu'une promesse,
+et `InflateStream` comme `ResumeOnce` expliquent déjà pourquoi. Mais deux d'entre
+eux avaient le même défaut, et ce n'est pas le verrou qui manquait.
+
+### Un verrou qui ne garde que les écritures ne garde rien
+
+`Framebuffer` écrivait sous verrou et exposait `width`, `height` et `pixels` en
+`public private(set)` — c'est-à-dire lisibles par n'importe qui, sans verrou.
+
+Personne ne le faisait : le rendu passe par `snapshot()`, qui prend le verrou.
+Mais c'est une habitude, pas une garantie, et ce qu'elle laisse ouvert n'est pas
+un pixel périmé. Lire un `[UInt8]` sur un fil pendant qu'un autre l'agrandit avec
+`replaceSubrange` est une lecture déchirée de la référence de tampon du tableau
+lui-même. `@unchecked Sendable` est une promesse sur **tous** les chemins, pas
+seulement sur ceux qui écrivent.
+
+L'état est privé maintenant, et la seule façon de le regarder prend le verrou.
+`size` rend une paire plutôt que deux propriétés : lues séparément, elles
+pourraient enjamber un redimensionnement et décrire un écran qui n'a jamais
+existé. `OutputCounter` du banc avait exactement la même forme sur son compteur
+d'octets ; corrigé pareil.
+
+### Et une vraie course, qui perdait des machines
+
+`MachineStore.upsert` faisait `load()` puis `save()`, deux passages séparés dans
+sa file. Deux écrivains lisent alors la même liste, écrivent chacun sa version,
+et celui qui arrive second efface la machine de l'autre. Rien ne plante, rien
+n'est journalisé : la machine que l'utilisateur vient d'ajouter n'est simplement
+plus là.
+
+La lecture, la modification et l'écriture tiennent désormais dans un seul
+passage. D'où la paire `…OnQueue` privée : `DispatchQueue.sync` dans
+`DispatchQueue.sync` sur une file sérielle se bloque, donc les opérations
+composées ne peuvent pas appeler les `load` et `save` publiques.
+
+Le test met vingt écrivains concurrents plutôt que deux, sur un vrai fichier
+temporaire. Un entrelacement sur deux est un tirage à pile ou face ; vingt est
+une certitude. Vérifié en remettant l'ancienne forme cinq fois de suite :
+échec les cinq fois. Un test de concurrence qui n'attrape la faute qu'une fois
+sur deux est un test qui rendra la CI clignotante et se fera désactiver.
+
+## L'haptique, et la règle qui empêche le téléphone de devenir un vibreur
+
+L'haptique existait déjà sur les gestes, derrière un réglage. Deux choses
+manquaient, et une troisième était cassée sans que ça se voie.
+
+**Le générateur n'était ni retenu ni préparé.** `UIImpactFeedbackGenerator(style:)
+.impactOccurred()` sur une seule ligne crée un générateur froid : le moteur
+Taptic doit se réveiller avant de jouer, ce qui met des dizaines de
+millisecondes entre le doigt et la réponse. Sur un geste, c'est la différence
+entre un téléphone qui répond au toucher et un téléphone qui tressaille après.
+Et comme un générateur neuf n'est jamais chaud, c'était le cas à **chaque**
+appui. Ils sont retenus maintenant, et rappelés à `prepare()` après usage.
+
+**Rien ne signalait la connexion ni la coupure**, qui sont pourtant les moments
+où le téléphone est dans une poche ou dans une main occupée à autre chose.
+
+### La décision est sortie de la vue
+
+`WisqUI` n'est pas construit sur Linux du tout — le `Package.swift` l'exclut.
+Une règle écrite dans la vue est donc une règle qu'aucun runner d'ici ne peut
+atteindre, et j'ai passé la journée à trouver ce que ça coûte.
+
+`SessionEvent.haptic` vit donc dans `WisqRemote`, qui se teste ici. Il ne reste
+dans la vue que la traduction vers `UINotificationFeedbackGenerator`, où il n'y
+a rien à se tromper.
+
+Quatre décisions, et trois portent sur le fait de **ne pas** vibrer :
+
+* `.ready` mérite le tap — c'est ce que l'utilisateur attendait.
+* **Seule la première tentative de reconnexion.** Un lien coupé réessaie tant
+  que l'application est ouverte ; une vibration par tentative, c'est un
+  téléphone qui bourdonne toutes les quelques secondes dans une poche jusqu'à
+  vider la batterie. L'information est « la connexion a lâché », et elle est
+  vraie une fois.
+* **Raccrocher n'est pas une erreur.** `.disconnected(nil)`, c'est l'utilisateur
+  qui ferme ; le lui redire avec le motif d'échec de la plateforme se lit comme
+  « quelque chose a mal tourné ».
+* Et la règle est écrite en liste blanche, pas en liste noire, à cause de
+  `.framebufferChanged` : il arrive des dizaines de fois par seconde, et un
+  `default` qui renverrait un haptique ferait du téléphone un vibreur pour toute
+  la durée de la session. Un test l'énumère explicitement.

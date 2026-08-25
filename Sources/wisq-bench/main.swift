@@ -79,7 +79,16 @@ guard counter.sawBanner else {
 final class OutputCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var text = ""
-    private(set) var bytes = 0
+    private var byteCount = 0
+
+    /// Behind the lock like everything else here. It was `private(set)`, which
+    /// is written under the lock and read without it — the same shape as the
+    /// framebuffer's, and the same reason to close it: `@unchecked Sendable`
+    /// is a promise about every path in and out, not only the writing ones.
+    var bytes: Int {
+        lock.lock(); defer { lock.unlock() }
+        return byteCount
+    }
     var consoleText: String {
         lock.lock(); defer { lock.unlock() }
         return text
@@ -91,7 +100,7 @@ final class OutputCounter: @unchecked Sendable {
     }
     func add(_ data: Data) {
         lock.lock(); defer { lock.unlock() }
-        bytes += data.count
+        byteCount += data.count
         if text.count < 65_536 { text += String(decoding: data, as: UTF8.self) }
     }
 }
