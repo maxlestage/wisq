@@ -92,6 +92,28 @@ final class SpiceDisplayChannelTests: XCTestCase {
         return message(type, body + image)
     }
 
+    /// `DRAW_TRANSPARENT`: base, image, area, and two colour words — no rop, no
+    /// scale mode and no mask, unlike every other draw that carries an image.
+    private func transparentDraw(colour: UInt32, key: UInt32) -> Data {
+        let width = 4, height = 2
+        var image = u32(1) + u32(0)
+        image += [0, 0]
+        image += u32(UInt32(width)) + u32(UInt32(height))
+        image += [8, 0x04]
+        image += u32(UInt32(width)) + u32(UInt32(height)) + u32(UInt32(width * 4))
+        image += u32(0)
+        for _ in 0..<(width * height) { image += u32(colour) }
+
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        body += [0]
+        let fixed = 4 + 16 + 1 + 4 + 16 + 4 + 4
+        body += u32(UInt32(fixed))
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        body += u32(0) + u32(key)
+        return message(SpiceDisplayWire.Message.drawTransparent.rawValue, body + image)
+    }
+
     private func capabilities(preferredCompression: Bool) -> [UInt32] {
         preferredCompression
             ? SpiceDisplayClient.capabilityWords([.preferredCompression])
@@ -272,6 +294,27 @@ final class SpiceDisplayChannelTests: XCTestCase {
         // The image is blitted plainly and the brush is combined with a
         // descriptor of zero, which is a copy — so the brush wins outright.
         XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0xFF, 0, 0, 0])
+    }
+
+    /// `DRAW_TRANSPARENT` reaches a draw rather than being counted as ignored.
+    ///
+    /// Its wire shape is shorter than every other draw carrying an image — no
+    /// rop, no scale mode, no mask — so this also pins that the pump hands it
+    /// to a decoder that knows that.
+    func testTransparentReachesTheSurface() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(4, 2) + transparentDraw(colour: 0x00FF_0000, key: 0x0000_00FF)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
+
+        XCTAssertEqual(progress.ignored, [:], "transparent n'est plus un message ignoré")
+        XCTAssertEqual(progress.updates.count, 1)
+        // The image is a solid red that does not match the blue key, so it is
+        // copied whole.
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
     }
 
     func testASurfaceIsDestroyedWhenTheServerSaysSo() async throws {

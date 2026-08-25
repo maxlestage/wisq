@@ -1041,8 +1041,32 @@ Deux comportements de la référence sont recopiés plutôt que corrigés :
 fonction avec le commentaire « copy and blend are the same », et le protocole
 donne à blend le type C de copy. C'est un message avec deux numéros.
 
-Ce qui reste sur le canal display : `DRAW_ALPHA_BLEND` et `DRAW_TRANSPARENT`
-(qui composent vraiment, avec un alpha ou une couleur-clé), `DRAW_ROP3` (une
+### `DRAW_TRANSPARENT` : la couleur qui ne se dessine pas
+
+Fait. Une couleur de l'image veut dire « laisse ce qu'il y a dessous », tout le
+reste est copié. C'est la composition la plus simple du canal, et c'est ainsi
+qu'une icône ou un curseur à silhouette nette se dessine sans canal alpha.
+
+C'est aussi le seul dessin porteur d'image qui **n'a ni masque ni rop** : sa
+forme entière est une image, une aire et deux couleurs. Un décodeur qui suppose
+la disposition de `DRAW_COPY` lit les deux couleurs là où le rop et le mode
+d'échelle se trouvent, puis déborde.
+
+Trois détails viennent de `spice_pixman_blit_colorkey` :
+
+* **la comparaison porte sur vingt-quatre bits.** La référence masque la clé par
+  `0xffffff` avant la boucle puis compare `0xffffff & pixel`. Sur trente-deux
+  bits, la clé ne correspondrait jamais à une source dont le quatrième octet
+  n'est pas nul — c'est-à-dire la plupart ;
+* **`src_color` n'est jamais lu.** Il est dans le message et la référence utilise
+  `true_color`. Lire le mauvais des deux donne une image avec les mauvais trous,
+  ce qui reste une image ;
+* le mot entier est copié quand il ne correspond pas, alpha compris — modulo la
+  règle de ce fichier qui tient le quatrième octet à zéro sur une surface sans
+  alpha.
+
+Ce qui reste sur le canal display : `DRAW_ALPHA_BLEND` (une composition
+« source-over » avec alpha prémultiplié et un alpha global), `DRAW_ROP3` (une
 opération ternaire parmi 256, sur trois opérandes), les tracés et le texte
 (`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
 
