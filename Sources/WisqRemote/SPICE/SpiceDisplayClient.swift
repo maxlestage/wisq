@@ -83,9 +83,14 @@ enum SpiceDisplayClient {
     /// than taken from the server: a phone is not a workstation, and a cache
     /// sized for one is a cache the other cannot hold.
     ///
-    /// The GLZ dictionary window is zero, and that is a statement rather than a
-    /// default: wisq does not decode GLZ, so a window would be memory reserved
-    /// to hold history for images it will never assemble.
+    /// The GLZ dictionary window is zero, and that is now a statement of a
+    /// different kind from when it was written. It used to mean "wisq does not
+    /// decode GLZ"; GLZ is decoded, and the zero stays because wisq asks for
+    /// `autoLZ`, under which the server never sends GLZ. Raising it would
+    /// promise the server memory for a history no image will reference. If the
+    /// request ever becomes `autoGLZ`, this is the line that has to move with
+    /// it — the window is the client's promise, and a zero one invites a server
+    /// to build a dictionary this client did not agree to hold.
     static func initialise(
         pixmapCacheID: UInt8 = 0,
         pixmapCachePixels: Int64 = 4 << 20,
@@ -126,6 +131,19 @@ enum SpiceDisplayClient {
     /// The gain is real: "high graduality" is the server's word for
     /// photographs and gradients, the content LZ compresses worst, and it is
     /// most of a desktop with a wallpaper on it.
+    ///
+    /// **Not `lz4`, now that LZ4 is decoded too**, and the reason is worth
+    /// stating because the opposite looks obvious on a phone: LZ4 is the
+    /// cheapest of these to decode by a wide margin. But asking for it is
+    /// asking for it *instead of* the automatic modes — `get_compression_for_bitmap`
+    /// never reaches QUIC once the preference is `LZ4` — and QUIC is worth
+    /// several times LZ4's ratio on the photographic content that dominates a
+    /// desktop with a wallpaper. Bandwidth is the scarce thing over a mobile
+    /// network; the decode is not.
+    ///
+    /// wisq still advertises the LZ4 capability, which is a different
+    /// statement: it is permission for a server whose own configuration says
+    /// LZ4, and for the images that go out before this message lands.
     static func compressionToRequest(givenServerCapabilities caps: [UInt32]) -> Compression? {
         supports(.preferredCompression, in: caps) ? .autoLZ : nil
     }

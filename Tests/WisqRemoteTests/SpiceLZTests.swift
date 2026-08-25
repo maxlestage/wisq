@@ -261,13 +261,18 @@ final class SpiceLZTests: XCTestCase {
     /// message". The caller's response to the first is to leave that part of
     /// the screen alone; to the second, to drop the connection.
     ///
-    /// `quic` used to be in this list and no longer belongs: it is decoded now,
-    /// so a payload that is not a QUIC stream is a malformed message and throws,
-    /// the same way `lzRGB` throws on a bad magic. `SpiceQUICWiringTests` pins
-    /// that. The distinction this test is about is "not implemented", not
-    /// "implemented and handed rubbish".
+    /// The list keeps shrinking, and each departure is the same story. `quic`
+    /// left it when QUIC was decoded, and `lz4` has just left it too: a payload
+    /// that is not an LZ4 image is now a malformed message and throws, the same
+    /// way `lzRGB` throws on a bad magic. `SpiceQUICWiringTests` and
+    /// `SpiceLZ4Tests` pin the two. The distinction this test is about is "not
+    /// implemented", not "implemented and handed rubbish".
+    ///
+    /// What is left is `jpeg`, and it is here for a different reason from the
+    /// others: it is implemented, and answers nothing where `ImageIO` is
+    /// absent. On Linux that is the platform talking, not the codec.
     func testAnUndecodedEncodingAnswersNoPixelsRatherThanAnError() throws {
-        for type in [SpiceDisplayWire.ImageType.jpeg, .lz4] {
+        for type in [SpiceDisplayWire.ImageType.jpeg] {
             let image = SpiceDisplayWire.Image(
                 descriptor: SpiceDisplayWire.ImageDescriptor(
                     id: 1, type: type, flags: 0, width: 8, height: 8

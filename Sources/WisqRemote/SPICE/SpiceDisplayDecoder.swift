@@ -521,6 +521,40 @@ extension SpiceDisplayWire {
                   decoded.height == Int(image.descriptor.height) else { return nil }
             return decoded
 
+        case .lz4:
+            // The geometry comes from the descriptor because the LZ4 header has
+            // none, and the conversion is `SpiceBitmap`'s because what comes out
+            // of the blocks is exactly a bitmap: packed rows, a `bitmap_fmt`,
+            // and a direction. Building a synthetic `Bitmap` rather than
+            // repeating four format conversions here is not tidiness — it is
+            // that the 0555 expansion and the "the fourth byte of xRGB is not
+            // alpha" rule are already written once and already tested, and a
+            // second copy of them is a second thing to get wrong.
+            //
+            // The stride is `width × bytes-per-pixel` with no padding. That is
+            // the encoder's layout, not an assumption: `canvas_fix_alignment`
+            // exists in the reference solely to spread those packed rows out to
+            // pixman's wider stride afterwards.
+            let width = Int(image.descriptor.width)
+            let height = Int(image.descriptor.height)
+            let decoded = try SpiceLZ4.decode(payload, width: width, height: height)
+            guard let bytesPerPixel = SpiceLZ4.bytesPerPixel(decoded.header.format) else {
+                return nil
+            }
+            return (
+                try SpiceBitmap.pixels(
+                    Bitmap(
+                        format: decoded.header.format,
+                        flags: decoded.header.topDown ? 0x04 : 0,
+                        width: UInt32(width), height: UInt32(height),
+                        stride: UInt32(width * bytesPerPixel),
+                        cachedPaletteID: nil, palette: nil
+                    ),
+                    data: decoded.rows
+                ),
+                width, height
+            )
+
         case .bitmap:
             guard let bitmap = image.bitmap else { return nil }
             // `pixels(_:data:)` puts the rows the right way up itself: it reads
