@@ -679,3 +679,32 @@ le fichier de test. La règle est la même pour les deux : `git checkout` sur un
 fichier qui porte du travail non commité le détruit sans avertir. Coût réel
 faible ici — j'avais le texte exact sous la main — mais la même distraction sur
 une heure de travail aurait été coûteuse.
+
+### GLZ palettisé : un manque qui n'en était pas un
+
+La feuille de route annonçait les formes palettisées comme la dernière tranche
+de GLZ. Il n'y avait pas de tranche.
+
+`canvas_get_glz_rgb_common` passe `NULL` là où irait la palette, et le
+commentaire au-dessus de son appelant explique pourquoi : un bitmap palettisé
+est comprimé en RGB32 globalement, « because same byte sequence can be
+transformed to different RGB pixels by different plts ». C'est exactement ce
+qu'un dictionnaire partagé entre images ne peut pas supporter — deux images
+avec des palettes différentes ne peuvent pas se référencer l'une l'autre par
+octets.
+
+Confirmation indépendante côté serveur : `get_compression_for_bitmap`
+rétrograde GLZ vers LZ simple dès que `bitmap_fmt_has_graduality` est faux, et
+ce prédicat exige `bitmap_fmt_is_rgb`, dont la table met à zéro les six
+premiers formats — tous les palettisés.
+
+J'ai voulu une troisième confirmation en faisant refuser un type palettisé par
+`glz_encode`. Il l'a refusé, et **ça ne prouvait rien** : mon générateur passait
+une foulée de `width * 4` pour un type qui en veut une par pixel-par-octet,
+donc l'encodeur rejetait ma foulée, pas le type. Je ne l'ai pas compté. Deux
+preuves qui tiennent valent mieux que trois dont une est fausse.
+
+Le refus reste dans le code — un serveur hostile peut toujours envoyer ce
+qu'il veut — mais le commentaire et le test disent désormais que c'est un refus
+définitif et non un trou à combler. La différence compte pour qui lira ça dans
+six mois : « pas encore fait » invite à le faire.

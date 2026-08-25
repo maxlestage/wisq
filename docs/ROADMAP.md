@@ -881,8 +881,26 @@ dessein : un alpha constant laisserait un décodeur qui saute la seconde passe
 donner quand même la bonne réponse. Un test l'affirme sur le gabarit plutôt que
 de se fier à la façon dont il a été produit.
 
-Reste : les formes palettisées, qui demandent la table de couleurs du message
-et des distances remises à l'échelle par le nombre de pixels par octet. Une image seule ne peut
+**Et GLZ est fini là**, pas parce qu'on s'arrête mais parce qu'il ne reste
+rien. Les formes palettisées ne sont pas du travail en attente : rien ne les
+produit.
+
+`canvas_get_glz_rgb_common` passe `NULL` à la place de la palette, et le
+commentaire juste au-dessus dit pourquoi — un bitmap palettisé est comprimé en
+RGB32 globalement, « because same byte sequence can be transformed to different
+RGB pixels by different plts ». C'est précisément ce qu'un dictionnaire partagé
+entre images ne peut pas supporter. Le serveur le confirme de son côté :
+`get_compression_for_bitmap` rétrograde GLZ vers LZ simple dès que
+`bitmap_fmt_has_graduality` est faux, et ce prédicat exige un format RGB —
+qu'aucun format palettisé n'est.
+
+Les variantes palettisées n'existent donc dans le gabarit de spice-gtk que
+parce qu'il est instancié mécaniquement pour chaque type. Elles restent
+refusées ici, et le test qui l'épingle dit que c'est un refus définitif plutôt
+qu'un manque.
+
+Ce qui reste sur le canal display, hors GLZ : `lz4`, et les types QUIC autres
+que ceux déjà couverts. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le

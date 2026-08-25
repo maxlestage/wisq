@@ -87,8 +87,16 @@ final class SpiceGLZWiringTests: XCTestCase {
         }
     }
 
-    /// A GLZ type this decoder does not handle yet answers "no pixels" rather
-    /// than being run through a loop that would produce an image.
+    /// A palettised GLZ type is refused — and not as unfinished work.
+    ///
+    /// Nothing produces one. `canvas_get_glz_rgb_common` passes `NULL` for the
+    /// palette, because a palettised bitmap is compressed to RGB32 globally:
+    /// the same bytes mean different colours under different palettes, which a
+    /// dictionary shared across images cannot survive. The server downgrades
+    /// GLZ to plain LZ for any non-RGB format for the same reason.
+    ///
+    /// So this pins a refusal that should stay a refusal, rather than a gap
+    /// waiting to be filled.
     func testAPaletteGLZTypeIsNotAttempted() throws {
         var window = SpiceGLZ.Window()
         var raw = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].stream)

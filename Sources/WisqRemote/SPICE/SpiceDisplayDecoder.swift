@@ -375,10 +375,22 @@ extension SpiceDisplayWire {
         // between the two templates, and spice-gtk always decodes to 32 bits.
         // Checked with an rgb24 fixture rather than taken on trust.
         //
-        // The palette forms are still refused: they need the colour table from
-        // the message and distances rescaled by the pixels-per-byte, so running
-        // them through this loop would produce an image rather than an error —
-        // the worse failure.
+        // The palette forms are refused, and **not** because they are unfinished
+        // work. Nothing produces them.
+        //
+        // `canvas_get_glz_rgb_common` passes `NULL` where the palette would go,
+        // with the reason written above it: a palettised bitmap is compressed
+        // to RGB32 globally, "because same byte sequence can be transformed to
+        // different RGB pixels by different plts" — which is exactly what a
+        // dictionary shared across images cannot survive. The server agrees
+        // from its own side: `get_compression_for_bitmap` downgrades GLZ to
+        // plain LZ whenever `bitmap_fmt_has_graduality` is false, and that
+        // predicate requires an RGB format, which no palettised one is.
+        //
+        // So the palette variants exist in spice-gtk's template only because it
+        // is instantiated mechanically for every type. They are refused here
+        // for the same reason the reference has no palette to hand them, and a
+        // stream claiming one is a stream no honest server sent.
         let literal: SpiceGLZ.Literal
         switch header.type {
         case .rgb32, .rgb24: literal = .threeBytes
