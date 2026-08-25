@@ -307,6 +307,105 @@ struct SpiceSurfaces {
         }
     }
 
+    /// `DRAW_TEXT` — glyphs painted through a brush.
+    ///
+    /// **Neither of the message's two modes is a raster operation.** The
+    /// reference fills the background with `SPICE_ROP_COPY` and composites the
+    /// foreground with `PIXMAN_OP_OVER`, never reading `back_mode` and reading
+    /// `fore_mode` only to assert that it is `PUT`. Its own comment says so:
+    /// *"Nothing else makes sense for text and we should deprecate it and
+    /// actually it means OVER really"*. So this ignores both, deliberately, and
+    /// a reader looking for `SpiceROP.descriptor` here will not find it.
+    ///
+    /// The two steps are separate for a reason a test can see: the background
+    /// covers `back_area` whether or not a glyph lands on it, and the glyphs
+    /// cover their own union whether or not there is a background. An empty
+    /// `back_area` — the common case, transparent text — draws no background at
+    /// all rather than a zero-sized one.
+    @discardableResult
+    mutating func text(
+        _ operation: SpiceDisplayWire.Text
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        guard case let .solid(foreground) = operation.foreBrush else {
+            throw Failure.notDrawable
+        }
+        let regions = Self.regions(of: operation.base, in: surface)
+        guard !regions.isEmpty else { return [] }
+
+        if !Self.isEmpty(operation.backArea) {
+            guard case let .solid(background) = operation.backBrush else {
+                throw Failure.notDrawable
+            }
+            let behind = regions.compactMap { Self.intersect(operation.backArea, $0) }
+            // `SPICE_ROP_COPY`, not the descriptor: the background is written,
+            // not combined.
+            Self.paint(background, rop: .copy, over: behind, mask: nil, into: &surface)
+        }
+
+        if let coverage = SpiceGlyphMask.build(operation.string) {
+            Self.paint(foreground, coverage: coverage, over: regions, into: &surface)
+        }
+
+        surfaces[operation.base.surfaceID] = surface
+        return regions
+    }
+
+    static func isEmpty(_ rect: SpiceDisplayWire.Rect) -> Bool {
+        rect.right <= rect.left || rect.bottom <= rect.top
+    }
+
+    /// A solid colour over the destination, weighted by a coverage mask.
+    ///
+    /// `PIXMAN_OP_OVER` with a solid source and an alpha mask, which for an
+    /// opaque brush comes to `destination + (source − destination) × coverage`.
+    /// Written as pixman writes it — `MUL_UN8` on each channel — rather than as
+    /// a float multiply, so that A4's 240 and A8's 255 land exactly where the
+    /// reference puts them.
+    ///
+    /// A1 coverage is 0 or 255 and this reduces to a copy, which is why the
+    /// same path serves all three depths.
+    private static func paint(
+        _ colour: UInt32, coverage: SpiceGlyphMask.Coverage,
+        over regions: [SpiceDisplayWire.Rect], into surface: inout Surface
+    ) {
+        let blue = UInt8(colour & 0xFF)
+        let green = UInt8(colour >> 8 & 0xFF)
+        let red = UInt8(colour >> 16 & 0xFF)
+
+        for rect in regions {
+            for y in max(Int(rect.top), coverage.top)..<min(Int(rect.bottom),
+                                                            coverage.top + coverage.height) {
+                guard y >= 0, y < surface.height else { continue }
+                for x in max(Int(rect.left), coverage.left)..<min(Int(rect.right),
+                                                                  coverage.left + coverage.width) {
+                    guard x >= 0, x < surface.width else { continue }
+                    let alpha = coverage.at(x - coverage.left, y - coverage.top)
+                    guard alpha > 0 else { continue }
+                    let index = (y * surface.width + x) * 4
+                    surface.pixels[index] = over(blue, surface.pixels[index], alpha)
+                    surface.pixels[index + 1] = over(green, surface.pixels[index + 1], alpha)
+                    surface.pixels[index + 2] = over(red, surface.pixels[index + 2], alpha)
+                    // The brush is opaque, so where it covers at all it makes
+                    // the destination that much more opaque. On a surface with
+                    // no alpha channel the pad stays at zero, the rule the rest
+                    // of this file follows.
+                    surface.pixels[index + 3] = surface.hasAlpha
+                        ? max(surface.pixels[index + 3], alpha)
+                        : 0
+                }
+            }
+        }
+    }
+
+    /// One channel of `PIXMAN_OP_OVER` against an opaque source.
+    private static func over(_ source: UInt8, _ destination: UInt8, _ alpha: UInt8) -> UInt8 {
+        // destination × (1 − alpha) + source × alpha, in pixman's arithmetic.
+        multiply(destination, 255 &- alpha) &+ multiply(source, alpha)
+    }
+
     /// `DRAW_COPY` from a decoded image.
     ///
     /// The source is passed in already decoded rather than decoded here: which

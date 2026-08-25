@@ -885,6 +885,78 @@ extension SpiceDisplayWire {
         return Path(segments: segments)
     }
 
+    // MARK: - Text
+
+    /// `DRAW_TEXT`.
+    ///
+    /// The string is behind a pointer; both brushes are inline, and there are
+    /// two of them — the foreground the glyphs are painted with and the
+    /// background the `back_area` is filled with. Reading one brush would take
+    /// the second one's bytes for the two modes.
+    static func text(_ payload: [UInt8]) throws -> Text {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let stringPointer = try reader.u32()
+        return Text(
+            base: header,
+            string: try string(at: stringPointer, in: body),
+            backArea: try rect(from: &reader),
+            foreBrush: try brush(from: &reader, in: body),
+            backBrush: try brush(from: &reader, in: body),
+            foreMode: try reader.u16(),
+            backMode: try reader.u16()
+        )
+    }
+
+    /// A run of glyphs, from wherever the text pointed.
+    ///
+    /// The layout, from the generated parser:
+    ///
+    ///     uint16 length            // glyphs, not bytes
+    ///     uint8  flags             // one of A1/A4/A8, plus TOP_DOWN
+    ///     length × {
+    ///         int32 render_pos.x, render_pos.y
+    ///         int32 glyph_origin.x, glyph_origin.y
+    ///         uint16 width, height
+    ///         uint8 data[bytesPerRow(width, depth) × height]
+    ///     }
+    ///
+    /// Each glyph's data length depends on its *own* width, so the glyphs
+    /// cannot be skipped over without decoding them — there is no table of
+    /// offsets, `@ptr_array` in the protocol description being about the C side
+    /// as it is for a path.
+    static func string(at pointer: UInt32, in body: Body) throws -> TextString {
+        guard let followed = try body.follow(pointer) else { throw SpiceError.invalidData }
+        var reader = followed.reader
+        let count = Int(try reader.u16())
+        let flags = try reader.u8()
+        // A depth is needed to know how long each glyph's data is, so a string
+        // this cannot measure is refused rather than half-read. Vector glyphs
+        // are the real case here, and the reference draws nothing for them too.
+        guard let depth = TextString(flags: flags, glyphs: []).depth else {
+            throw SpiceError.invalidData
+        }
+
+        var glyphs: [RasterGlyph] = []
+        glyphs.reserveCapacity(min(count, 1024))
+        for _ in 0..<count {
+            let renderPos = try point(from: &reader)
+            let glyphOrigin = try point(from: &reader)
+            let width = try reader.u16()
+            let height = try reader.u16()
+            let stride = TextString.bytesPerRow(width: Int(width), depth: depth)
+            let length = stride * Int(height)
+            guard length <= body.bytes.count else { throw SpiceError.truncated }
+            glyphs.append(RasterGlyph(
+                renderPos: renderPos, glyphOrigin: glyphOrigin,
+                width: width, height: height,
+                data: try reader.bytes(length)
+            ))
+        }
+        return TextString(flags: flags, glyphs: glyphs)
+    }
+
     /// `DRAW_ROP3`: `DRAW_OPAQUE`'s shape with one byte where its two-byte rop
     /// descriptor was.
     ///

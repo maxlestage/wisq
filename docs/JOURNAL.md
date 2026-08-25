@@ -1533,3 +1533,67 @@ Et le parcours du chemin : `BEGIN` dépense son premier point comme *position*,
 `CLOSE` n'agit qu'à l'intérieur d'un `END`, et fermer rejoint le premier point
 de la figure accumulée. Ma première version se trompait sur les trois. Un
 rectangle dessiné en un segment ne pouvait pas le voir ; une courbe l'a montré.
+
+## Le texte, et le nombre de fois qu'un test peut expirer
+
+`DRAW_TEXT` était le dernier message du canal display. Rien de conceptuellement
+difficile — des glyphes matriciels, un fond, deux brosses — mais six pièges
+dont aucun ne se devine, et une leçon sur les tests que je croyais avoir déjà
+apprise trois fois.
+
+Les pièges, tous tranchés par la référence : les deux points d'un glyphe
+s'additionnent ; A1 et A4 complètent leurs rangées à l'octet et A8 pas du tout ;
+les rangées se lisent du bas vers le haut quel que soit `TOP_DOWN` ; un quartet
+A4 plein vaut 240 et pas 255 ; les glyphes se combinent par `max` ; et **aucun
+des deux modes n'est une opération raster**, le fond étant un `COPY` et les
+glyphes un `OVER`, ce que le commentaire de la référence assume franchement.
+
+### Le test qui a expiré quatre fois
+
+`testAMessageThisDoesNotHandleIsCountedByType` vérifie que la pompe compte les
+messages qu'elle ne traite pas. Il lui faut donc un exemple de message non
+traité. Il a nommé `streamCreate`, puis `drawStroke`, puis `drawText` — et
+chaque fois que ce message a été implémenté, le test a cessé de tester le
+compteur pour tester un décodeur qui échoue sur une charge bidon.
+
+La dernière réécriture disait, dans son propre commentaire, « `DRAW_TEXT` est le
+prochain à partir » — et l'utilisait quand même comme exemple principal.
+
+La correction n'est pas un meilleur choix d'exemple, c'est un choix d'une autre
+nature : `STREAM_ACTIVATE_REPORT` et `STREAM_REPORT` ne dessinent rien. Il n'y a
+donc rien à implémenter, donc ils ne peuvent pas expirer. **Un test qui a besoin
+d'un exemple de « pas encore fait » doit citer quelque chose qui ne sera jamais
+fait**, sinon il périme au rythme du progrès.
+
+### Cinq survivants, dont deux dans des tests écrits pour les attraper
+
+Dix-huit sabotages, douze attrapés. Sur les six survivants, un était un sabotage
+mal formé de ma part. Les cinq autres :
+
+  * **l'ordre des bits A1** : mon octet de test était `0b1000_0001`, qui se lit
+    pareil à l'endroit et à l'envers. Inverser l'ordre ne changeait rien ;
+  * **le recouvrement des glyphes** : mon second glyphe avait une couverture
+    *nulle* là où le premier était opaque, et le code saute les zéros avant
+    d'écrire. Écraser et maximiser donnaient donc le même résultat. Il fallait
+    une couverture faible mais non nulle ;
+  * **la chaîne sans profondeur** : mon test demandait seulement que « quelque
+    chose » soit lancé, et le repli silencieux sur huit bits lançait aussi —
+    une troncature, parce qu'il manquait des octets. Même vert, autre raison ;
+  * **le fond peint même quand `back_area` est vide** : un rectangle vide ne
+    coupe rien et ne peint rien de toute façon. La différence n'apparaît qu'avec
+    une brosse de fond que ce client ne sait pas peindre : vérifier la brosse
+    avant la vacuité refuse tout le message — donc pas de texte du tout — pour
+    une brosse qui n'allait servir à rien. C'est le cas courant du texte
+    transparent ;
+  * **le bit de `TOP_DOWN`** : il est décodé et jamais utilisé, donc rien ne
+    pouvait voir sa valeur bouger. Épinglé en toutes lettres, comme les autres
+    constantes venues d'ailleurs.
+
+Les deux premiers sont la même chose que la veille : **une valeur neutre choisie
+sans y penser**. La nouveauté est qu'ils étaient dans des tests que j'écrivais
+précisément pour fermer ce genre de trou. Le réflexe « ce test attrape-t-il ce
+qu'il dit ? » ne suffit pas ; il faut se demander « quelle entrée sépare les
+deux lectures », et vérifier que la mienne en est une.
+
+C'est aussi arrivé sur les tirets, la veille : j'avais écrit un test de coin pour
+attraper un cycle qui redémarre, avec un segment long d'exactement une période.

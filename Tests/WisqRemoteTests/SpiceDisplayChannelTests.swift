@@ -9,8 +9,16 @@ import XCTest
 /// said back, which is how the ordering rules below can be asserted rather than
 /// hoped for. The same shape the link and handshake tests use.
 final class SpiceDisplayChannelTests: XCTestCase {
+    /// `STREAM_ACTIVATE_REPORT`, by its raw number because there is no case for
+    /// it. A message that draws nothing and that this client will therefore
+    /// never implement — which is the only kind that can safely stand for
+    /// "ignored" in a test. Every draw used here before it eventually got
+    /// implemented and broke the test that named it.
+    private static let permanentlyIgnored: UInt16 = 319
+
     private func u32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(value >> (8 * $0) & 0xFF) } }
     private func i32(_ value: Int32) -> [UInt8] { u32(UInt32(bitPattern: value)) }
+    private func u16(_ value: UInt16) -> [UInt8] { (0..<2).map { UInt8(value >> (8 * $0) & 0xFF) } }
 
     /// A server message, framed the way the protocol frames one.
     private func message(_ type: UInt16, _ payload: [UInt8], serial: UInt64 = 1) -> Data {
@@ -405,6 +413,49 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
     }
 
+    /// A run of glyphs reaches the surface through the pump.
+    ///
+    /// Its own tests exercise `SpiceSurfaces.text` directly, which says nothing
+    /// about whether anything calls it — the gap that survived a sabotage on an
+    /// earlier draw, and is now checked for every new one.
+    func testTextReachesTheSurfaceThroughThePump() async throws {
+        let fixedLength = 21 + 4 + 16 + 5 + 5 + 2 + 2
+        var body = u32(0) + i32(0) + i32(0) + i32(16) + i32(16) + [0]   // base
+        body += u32(UInt32(fixedLength))                                // pointeur de chaîne
+        body += i32(0) + i32(0) + i32(0) + i32(0)                       // back_area vide
+        body += [1] + u32(0x00FF_FFFF)                                  // brosse avant
+        body += [1] + u32(0x0000_0080)                                  // brosse arrière
+        body += [0x08, 0] + [0x08, 0]                                   // fore_mode, back_mode
+        XCTAssertEqual(body.count, fixedLength)
+
+        body += u16(1) + [SpiceDisplayWire.TextString.rasterA8]         // un glyphe, A8
+        body += i32(3) + i32(4)                                         // render_pos
+        body += i32(0) + i32(0)                                         // glyph_origin
+        body += u16(1) + u16(1) + [0xFF]                                // 1×1, opaque
+
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(16, 16)
+                + message(SpiceDisplayWire.Message.drawText.rawValue, body)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2
+        )
+        XCTAssertEqual(progress.ignored, [:], "le texte n'est plus un message ignoré")
+        XCTAssertEqual(progress.updates.count, 1)
+
+        let surface = surfaces.surfaces[0]!
+        let at = (4 * surface.width + 3) * 4
+        XCTAssertEqual(
+            Array(surface.pixels[at..<(at + 4)]), [0xFF, 0xFF, 0xFF, 0],
+            "le glyphe est passé du fil jusqu'aux pixels"
+        )
+    }
+
     /// A stroke reaches the surface through the pump.
     ///
     /// Its own tests exercise `SpiceSurfaces.stroke` directly, which says
@@ -748,22 +799,25 @@ final class SpiceDisplayChannelTests: XCTestCase {
     /// each stopped being unhandled and the test failed on a truncated payload
     /// rather than on its claim. What is left is the drawing that needs a
     /// rasteriser — strokes and text — so those are the examples now.
-    /// This test's examples keep expiring, and that is worth saying out loud:
-    /// it has been rewritten each time a message moved off the ignored list —
-    /// `streamCreate`, then `drawStroke`. Whatever it names has to be something
-    /// this client genuinely still does not handle, or it stops testing the
-    /// counter and starts testing a decoder that now throws on the stub payload.
+    /// **Both examples are now messages that will never be handled**, and it
+    /// took four rewrites to get there.
     ///
-    /// `DRAW_TEXT` is next in line to go, so the second example is
-    /// `STREAM_ACTIVATE_REPORT` (319) by its raw number: it lets a server tune
-    /// its own bitrate, draws nothing, and is deliberately ignored for good —
-    /// which makes it the one example here that should never expire.
+    /// This test named `streamCreate`, then `drawStroke`, then `drawText`, and
+    /// each time that message was implemented it stopped testing the counter
+    /// and started testing a decoder that throws on a stub payload. The last
+    /// rewrite even said "`DRAW_TEXT` is next in line to go" and used it
+    /// anyway.
+    ///
+    /// The stream reports — `STREAM_ACTIVATE_REPORT` and `STREAM_REPORT`, by
+    /// their raw numbers because there is no case for them — let a server tune
+    /// its own bitrate. They draw nothing, so there is nothing for this client
+    /// to implement, so they cannot expire the way a draw does.
     func testAMessageThisDoesNotHandleIsCountedByType() async throws {
-        let unhandled = SpiceDisplayWire.Message.drawText.rawValue
-        let permanentlyIgnored: UInt16 = 319
+        let unhandled = Self.permanentlyIgnored
+        let alsoIgnored: UInt16 = 320   // STREAM_REPORT, pour la même raison
         let server = MemoryByteStream(
             inbound: message(unhandled, [0]) + message(unhandled, [0])
-                + message(permanentlyIgnored, [0])
+                + message(alsoIgnored, [0])
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
@@ -772,7 +826,7 @@ final class SpiceDisplayChannelTests: XCTestCase {
 
         let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 3)
         XCTAssertEqual(progress.ignored[unhandled], 2)
-        XCTAssertEqual(progress.ignored[permanentlyIgnored], 1)
+        XCTAssertEqual(progress.ignored[alsoIgnored], 1)
     }
 
     /// An encoding wisq cannot decode leaves that part of the screen alone and
@@ -891,7 +945,7 @@ final class SpiceDisplayChannelTests: XCTestCase {
     /// this client said, not what it heard.
     func testAMessageNeedingNoReplyDoesNotAdvanceTheSerial() async throws {
         let server = MemoryByteStream(
-            inbound: message(SpiceDisplayWire.Message.drawText.rawValue, [0])
+            inbound: message(Self.permanentlyIgnored, [0])
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
