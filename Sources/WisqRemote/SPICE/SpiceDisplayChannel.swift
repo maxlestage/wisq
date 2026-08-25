@@ -136,6 +136,22 @@ struct SpiceDisplayChannel {
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
                 progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
 
+            case SpiceDisplayWire.Message.copyBits.rawValue:
+                let bits = try SpiceDisplayWire.copyBits([UInt8](payload))
+                progress.record(try draw(bits, into: &surfaces), on: bits.base.surfaceID)
+
+            case SpiceDisplayWire.Message.drawBlackness.rawValue,
+                 SpiceDisplayWire.Message.drawWhiteness.rawValue,
+                 SpiceDisplayWire.Message.drawInvers.rawValue:
+                let operation: SpiceDisplayWire.MaskedRaster.Operation =
+                    switch header.type {
+                    case SpiceDisplayWire.Message.drawBlackness.rawValue: .blackness
+                    case SpiceDisplayWire.Message.drawWhiteness.rawValue: .whiteness
+                    default: .invers
+                    }
+                let raster = try SpiceDisplayWire.maskedRaster([UInt8](payload), operation)
+                progress.record(try draw(raster, into: &surfaces), on: raster.base.surfaceID)
+
             default:
                 progress.ignored[header.type, default: 0] += 1
             }
@@ -157,6 +173,26 @@ struct SpiceDisplayChannel {
     ) throws -> [SpiceDisplayWire.Rect]? {
         do {
             return try surfaces.fill(fill)
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        }
+    }
+
+    private func draw(
+        _ bits: SpiceDisplayWire.CopyBits, into surfaces: inout SpiceSurfaces
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        do {
+            return try surfaces.copyBits(bits)
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        }
+    }
+
+    private func draw(
+        _ raster: SpiceDisplayWire.MaskedRaster, into surfaces: inout SpiceSurfaces
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        do {
+            return try surfaces.raster(raster)
         } catch SpiceSurfaces.Failure.notDrawable {
             return nil
         }
