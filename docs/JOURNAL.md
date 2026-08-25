@@ -410,3 +410,52 @@ listait `.quic` parmi les encodages non implémentés. Il ne l'est plus, donc un
 charge qui n'est pas du QUIC est un message malformé et lève, comme `lzRGB`
 lève sur une mauvaise magie. Retirer `.quic` de cette liste n'est pas contourner
 un test qui tombe : c'est que sa prémisse a cessé d'être vraie.
+
+## GLZ, première tranche : le harnais avant le codec
+
+### Le piège du dictionnaire, qui aurait empoisonné tous les gabarits
+
+Le harnais GLZ a produit, du premier coup, quatre flux dont les trois derniers
+faisaient 51 octets. C'était trop beau, et c'était faux.
+
+Le décodeur de référence les relisait vers le contenu de l'image 0 là où
+aurait dû se trouver la bande neuve de chaque image. La cause n'était pas dans
+le décodeur : **le dictionnaire GLZ conserve des pointeurs vers les tampons de
+pixels de l'appelant**, il ne les copie pas. J'encodais la suite depuis un seul
+tampon réutilisé, donc l'encodeur faisait correspondre l'image *N* à une mémoire
+qui contenait déjà l'image *N+1*. Les flux étaient parfaitement valides et
+décodaient vers une image que l'encodeur n'avait jamais vue.
+
+Ce qui l'a rendu visible n'est pas le round-trip seul mais la conjonction de
+deux signaux : le contenu décodé était *exactement* celui de l'image 0, et les
+tailles étaient absurdes. Un seul des deux aurait pu passer pour une bizarrerie
+du codec. Un tampon par image, tous maintenus en vie, et les quatre images font
+l'aller-retour exact.
+
+La leçon vaut au-delà de GLZ : quand un harnais donne un résultat meilleur que
+prévu, c'est un symptôme, pas une bonne nouvelle.
+
+### Mesurer que le gabarit exerce ce qu'on croit
+
+Un gabarit GLZ qui ne contiendrait aucune correspondance entre images serait un
+gabarit LZ déguisé, et tous les tests passeraient sans rien prouver. Plutôt que
+de le supposer d'après les tailles, je l'ai mesuré : les mêmes quatre images,
+dictionnaire neuf à chaque fois, 615 octets partout ; dictionnaire partagé,
+615/201/205/194. L'écart est la correspondance entre images, et rien d'autre.
+
+C'est le même défaut que les deux gabarits ajoutés pour QUIC venaient de
+combler — un chemin que le code sait prendre et qu'aucune entrée ne lui fait
+prendre. Autant le vérifier avant d'écrire le décodeur plutôt qu'après.
+
+### Six sabotages, six qui mordent
+
+Sur l'en-tête : `top_down` lu au bit 7 au lieu du bit 4, le type lu sur l'octet
+entier au lieu du quartet bas, `id` lu sur 32 bits, `id` et `winHeadDistance`
+intervertis, `headerBytes` à 28 (la longueur de LZ), et `id` lu en
+petit-boutiste.
+
+Un septième n'a pas mordu — mais parce que `sed` avait refusé de l'appliquer, le
+motif contenant un `|`. « Aucune sortie » et « le sabotage survit » se
+ressemblent beaucoup depuis le terminal ; c'est la troisième fois dans ce projet
+qu'un sabotage muet vient de l'outillage et non du code. Rejoué en Python avec
+une assertion sur l'application du motif, il mord.
