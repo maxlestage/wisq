@@ -211,6 +211,102 @@ struct SpiceSurfaces {
         }
     }
 
+    /// `DRAW_STROKE` — a path drawn as one-pixel lines.
+    ///
+    /// The rop reads the brush as its source and the destination as its
+    /// destination, the same pairing a fill uses:
+    /// `ropd_descriptor_to_rop(fore_mode, ROP_INPUT_BRUSH, ROP_INPUT_DEST)`.
+    /// That matters more here than anywhere else, because the descriptor a
+    /// stroke arrives with is very often `XOR` — a rubber-band outline, a caret,
+    /// a selection rectangle are all drawn twice so the second one takes the
+    /// first off. Read as a copy, they go on and stay on.
+    ///
+    /// **A pixel is painted once even where a path crosses itself.** Under an
+    /// `XOR` the difference is visible: a figure-of-eight painted twice at its
+    /// crossing has a hole there. The reference gets this from spans that do
+    /// not overlap within one `FillSpans` call; here the walk collects
+    /// coordinates first and paints each one once.
+    ///
+    /// A stroke carries no mask — `SpiceStroke` has no `SpiceQMask` field at
+    /// all — so unlike a fill there is nothing to reduce it beyond the clip.
+    @discardableResult
+    mutating func stroke(
+        _ operation: SpiceDisplayWire.Stroke
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        guard case let .solid(colour) = operation.brush else {
+            // A pattern brush is a real thing this does not do yet, and a
+            // `none` brush writes nothing at all.
+            throw Failure.notDrawable
+        }
+        let rop = SpiceROP.descriptor(
+            operation.foreMode, source: .brush, destination: .destination
+        )
+        let regions = Self.regions(of: operation.base, in: surface)
+        guard !regions.isEmpty else { return [] }
+
+        var touched = Set<Int>()
+        for figure in SpiceStrokeRaster.polylines(operation.path) {
+            // The dash cycle runs along the whole figure rather than restarting
+            // at each vertex: a dashed rectangle's pattern carries around its
+            // corners, and restarting would put a dash at every one of them.
+            var cycle = operation.attr.dashes.map {
+                SpiceStrokeRaster.DashCycle(lengths: $0.lengths, offset: $0.offset)
+            }
+            for (start, end) in zip(figure, figure.dropFirst()) {
+                SpiceStrokeRaster.line(from: start, to: end) { x, y in
+                    let drawn = cycle == nil || cycle!.step()
+                    guard drawn else { return }
+                    guard x >= 0, y >= 0, x < surface.width, y < surface.height else { return }
+                    guard regions.contains(where: { rect in
+                        x >= Int(rect.left) && x < Int(rect.right)
+                            && y >= Int(rect.top) && y < Int(rect.bottom)
+                    }) else { return }
+                    touched.insert(y * surface.width + x)
+                }
+            }
+        }
+        guard !touched.isEmpty else { return [] }
+
+        Self.paint(colour, rop: rop, atPixels: touched, into: &surface)
+        surfaces[operation.base.surfaceID] = surface
+        return regions
+    }
+
+    /// A solid colour combined with what is already at a scattered set of
+    /// pixels, rather than over rectangles.
+    ///
+    /// A stroke's shape is a diagonal run, not a box, so the rectangle-shaped
+    /// `paint` above cannot express it. The rop and the alpha rule are the
+    /// same, and deliberately so: a stroke inverting a surface without an alpha
+    /// channel must leave its pad at zero exactly as a fill does, or the line
+    /// would claim an opacity the surface does not have.
+    private static func paint(
+        _ colour: UInt32, rop: SpiceROP, atPixels pixels: Set<Int>, into surface: inout Surface
+    ) {
+        let blue = UInt8(colour & 0xFF)
+        let green = UInt8(colour >> 8 & 0xFF)
+        let red = UInt8(colour >> 16 & 0xFF)
+        let alpha = UInt8(colour >> 24 & 0xFF)
+
+        for pixel in pixels {
+            let index = pixel * 4
+            guard index + 3 < surface.pixels.count else { continue }
+            surface.pixels[index] = rop.apply(source: blue, destination: surface.pixels[index])
+            surface.pixels[index + 1] = rop.apply(
+                source: green, destination: surface.pixels[index + 1]
+            )
+            surface.pixels[index + 2] = rop.apply(
+                source: red, destination: surface.pixels[index + 2]
+            )
+            surface.pixels[index + 3] = surface.hasAlpha
+                ? rop.apply(source: alpha, destination: surface.pixels[index + 3])
+                : 0
+        }
+    }
+
     /// `DRAW_COPY` from a decoded image.
     ///
     /// The source is passed in already decoded rather than decoded here: which

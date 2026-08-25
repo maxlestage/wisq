@@ -163,6 +163,12 @@ struct SpiceDisplayChannel {
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
                 progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
 
+            case SpiceDisplayWire.Message.drawStroke.rawValue:
+                let stroke = try SpiceDisplayWire.stroke([UInt8](payload))
+                progress.record(
+                    try draw(stroke, into: &surfaces), on: stroke.base.surfaceID
+                )
+
             case SpiceDisplayWire.Message.drawRop3.rawValue:
                 let rop3 = try SpiceDisplayWire.rop3([UInt8](payload))
                 progress.record(
@@ -325,6 +331,24 @@ struct SpiceDisplayChannel {
         } catch SpiceSurfaces.Failure.unknownSurface {
             // The stream outlived its surface. The server sends the destroys in
             // its own order and this client is not entitled to an opinion.
+            return nil
+        }
+    }
+
+    /// A stroke onto its surface.
+    ///
+    /// A brush this cannot paint with — a pattern, or none at all — leaves the
+    /// screen alone rather than stopping the pump. The same reading every other
+    /// draw here uses: a picture missing one outline is a picture, and a dropped
+    /// connection is the whole screen going away.
+    private func draw(
+        _ stroke: SpiceDisplayWire.Stroke, into surfaces: inout SpiceSurfaces
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        do {
+            return try surfaces.stroke(stroke)
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        } catch SpiceSurfaces.Failure.unknownSurface {
             return nil
         }
     }
