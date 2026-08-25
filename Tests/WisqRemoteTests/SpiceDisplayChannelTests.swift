@@ -62,6 +62,36 @@ final class SpiceDisplayChannelTests: XCTestCase {
         return message(type, body)
     }
 
+    /// A draw whose source is an inline uncompressed bitmap of one colour.
+    ///
+    /// Shared by the copy, blend and opaque tests because the only thing that
+    /// differs between them is the message number and, for opaque, one extra
+    /// brush before the rop.
+    private func drawFromBitmap(_ type: UInt16, colour: UInt32, brush: UInt32? = nil) -> Data {
+        let width = 4, height = 2
+        var image = u32(1) + u32(0)                    // image id
+        image += [0, 0]                                // type: bitmap, flags
+        image += u32(UInt32(width)) + u32(UInt32(height))
+        image += [8, 0x04]                             // 32-bit, TOP_DOWN
+        image += u32(UInt32(width)) + u32(UInt32(height)) + u32(UInt32(width * 4))
+        image += u32(0)                                // palette: null
+        for _ in 0..<(width * height) { image += u32(colour) }
+
+        var body = u32(0)                                                  // surface
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))   // box
+        body += [0]                                                        // clip: none
+        // The image sits after the fixed part, and the pointer is an offset
+        // from the start of the body.
+        let fixed = 4 + 16 + 1 + 4 + 16 + (brush == nil ? 0 : 5) + 2 + 1 + 13
+        body += u32(UInt32(fixed))                                         // src_bitmap
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))   // src_area
+        if let brush { body += [1] + u32(brush) }
+        body += [0, 0]                                                     // rop
+        body += [0]                                                        // scale mode
+        body += [0] + i32(0) + i32(0) + u32(0)                             // mask
+        return message(type, body + image)
+    }
+
     private func capabilities(preferredCompression: Bool) -> [UInt32] {
         preferredCompression
             ? SpiceDisplayClient.capabilityWords([.preferredCompression])
@@ -187,6 +217,61 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(pixel(0, 1), [0xFF, 0xFF, 0xFF, 0], "blanc")
         // Row 2 was red, then inverted: 0x0000FF becomes 0xFFFF00.
         XCTAssertEqual(pixel(0, 2), [0xFF, 0xFF, 0, 0], "inversé")
+    }
+
+    /// `DRAW_BLEND` is `DRAW_COPY` under another number.
+    ///
+    /// Not "close enough to share a decoder": the reference wires them to the
+    /// same function with the comment `// copy and blend are the same`, and the
+    /// protocol gives blend copy's own C type. The test sends the identical
+    /// body under both numbers and asserts the identical outcome — which is the
+    /// claim, rather than that each one draws something.
+    func testBlendIsCopyUnderAnotherNumber() async throws {
+        func run(_ type: UInt16) async throws -> (SpiceDisplayChannel.Progress, [UInt8]) {
+            let server = MemoryByteStream(
+                inbound: surfaceCreate(4, 2) + drawFromBitmap(type, colour: 0x00FF_0000)
+            )
+            let channel = SpiceDisplayChannel(stream: server)
+            var surfaces = SpiceSurfaces()
+            var glz = SpiceGLZ.Window()
+            let progress = try await channel.pump(
+                into: &surfaces, glz: &glz, serial: 1, limit: 2
+            )
+            return (progress, surfaces.surfaces[0]!.pixels)
+        }
+
+        let (copyProgress, copyPixels) = try await run(
+            SpiceDisplayWire.Message.drawCopy.rawValue
+        )
+        let (blendProgress, blendPixels) = try await run(
+            SpiceDisplayWire.Message.drawBlend.rawValue
+        )
+        XCTAssertEqual(copyProgress.ignored, [:])
+        XCTAssertEqual(blendProgress.ignored, [:], "blend n'est pas un message ignoré")
+        XCTAssertEqual(copyProgress.updates, blendProgress.updates)
+        XCTAssertEqual(copyPixels, blendPixels)
+        XCTAssertTrue(copyPixels.contains { $0 != 0 }, "sinon les deux ne dessinent rien")
+    }
+
+    /// `DRAW_OPAQUE` reaches a draw rather than being counted as ignored.
+    func testOpaqueReachesTheSurface() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(4, 2)
+                + drawFromBitmap(
+                    SpiceDisplayWire.Message.drawOpaque.rawValue,
+                    colour: 0x00FF_0000, brush: 0x0000_00FF
+                )
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
+
+        XCTAssertEqual(progress.ignored, [:])
+        XCTAssertEqual(progress.updates.count, 1)
+        // The image is blitted plainly and the brush is combined with a
+        // descriptor of zero, which is a copy — so the brush wins outright.
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0xFF, 0, 0, 0])
     }
 
     func testASurfaceIsDestroyedWhenTheServerSaysSo() async throws {
