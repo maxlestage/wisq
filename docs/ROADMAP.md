@@ -635,7 +635,121 @@ sans qu'un seul test tombe. Le harnais règle maintenant le seuil à la main pou
 atteindre la frontière, et la référence répond sans ambiguïté — pile sur le
 seuil, rien n'est divisé.
 
-Reste : la boucle de décodage QUIC elle-même, puis GLZ.
+**La boucle de décodage est la quatrième tranche**, et la première qui ne se
+vérifie pas en morceaux. L'en-tête, les tables de famille, le lecteur de bits
+et le modèle avaient chacun une comparaison exacte disponible ; une boucle de
+décodage ne se compare que sur ce qu'elle produit. Elle est donc comparée sur
+tout : chaque gabarit, chaque octet, contre ce que le décodeur de SPICE a tiré
+du même flux.
+
+Trois choses que la référence impose et qui ont chacune coûté une divergence :
+
+* **L'ordre des canaux sur le fil est rouge, vert, bleu**, et `rgb32_pixel_t`
+  est `b, g, r, pad`. Les deux vont en sens contraire. Se tromper ne mélange
+  pas seulement les couleurs : chaque canal porte son propre modèle et sa
+  propre ligne de symboles, donc le mauvais appariement désynchronise le
+  décodage en quelques pixels et le flux se termine trop tôt.
+* **Chaque seau démarre au code le plus haut**, `bpc - 1`, pas à zéro. C'est le
+  code avec lequel le tout premier pixel de l'image est lu. Un modèle testé
+  isolément ne peut pas le montrer : le test lui fournit le seau initial qu'il
+  a lui-même construit.
+* **`correlate_row[-1]` est écrit avant chaque ligne** : zéro pour la première,
+  et ensuite le premier symbole de la ligne du dessus. C'est le contexte qui
+  choisit le seau du pixel 0.
+
+Ce dernier point avait d'abord été noté à l'envers — « jamais écrit, donc
+zéro » — et une expérience semblait le confirmer. Elle ne le confirmait pas :
+elle empoisonnait une case que la ligne suivante réécrivait avant de la lire.
+La correction est consignée telle quelle dans le journal, parce qu'une
+conclusion fausse qu'on remplace en silence est une conclusion qu'on reprendra.
+
+**`rgba` n'est pas quatre canaux en une passe.** La référence sépare son état
+en deux : rouge, vert et bleu partagent `encoder->rgb_state` — un compteur
+d'attente, une graine, un codeur de séries pour les trois — tandis que les
+chemins un-octet et quatre-octets utilisent `channel_a->state`, celui du canal.
+Donc `uncompress_rgba` fait une passe couleur puis une passe alpha
+*entièrement séparée*, ligne après ligne. Les fusionner décode correctement la
+couleur puis part à la dérive sur l'alpha, qui hériterait du compteur d'attente
+de la première passe. Le décodeur est donc organisé en **plans** : un plan par
+groupe de canaux qui partagent un état.
+
+Deux gabarits ont été ajoutés pour ces chemins, parce qu'aucun des cinq
+premiers ne les atteignait : `rgba 24x18` pour les deux passes, et
+`rgb32 64x96` — 6144 pixels — pour que le masque d'attente avance, ce qui
+demande 2048 pixels et n'arrivait jamais.
+
+**Et les gabarits ne se reconstruisaient plus.** Le `qgen.c` commité avait été
+mis au propre avant le commit sans régénérer ce qu'il produisait, donc sa bande
+de bruit ne correspondait plus. Les cinq flux d'origine restaient honnêtes — ils
+se vérifient toujours contre le décodeur de référence — mais la procédure
+écrite dans le README ne les reproduisait pas. Les sept ont été régénérés avec
+le harnais tel qu'il est, et le README donne maintenant la commande exacte de
+chacun. Un gabarit qu'on ne peut pas reconstruire est un gabarit que personne
+ne peut vérifier.
+
+**La cinquième tranche branche le codec**, et c'est elle qui rend les quatre
+précédentes visibles. Un codec fini que `pixels(of:)` ne rappelle pas est un
+codec qui n'existe pas — `lzPalette` l'a déjà montré une fois.
+
+`canvas_get_quic` règle trois questions d'un coup :
+
+* **QUIC ne porte aucune orientation.** Son en-tête s'arrête au type, à la
+  largeur et à la hauteur ; la référence ne consulte aucun drapeau et ne
+  retourne rien. LZ prend le sien dans le flux, `jpegAlpha` dans son propre
+  octet ; ici il n'y a rien à prendre, et aller le chercher dans les drapeaux
+  du bitmap posés juste à côté donnerait toutes les images QUIC à l'envers.
+  Un test le fige : mettre `TOP_DOWN` ne doit rien changer.
+* **La taille doit concorder** avec ce que le message a déjà annoncé. La
+  référence l'affirme avant d'allouer.
+* **`gray` est dessiné ici alors que la référence le refuse.** Son refus vient
+  de son chemin pixman, qui n'a pas de format gris où dessiner, pas du
+  protocole. Ce décodeur produit du BGRA depuis le gris comme depuis le reste,
+  vérifié octet par octet. Si l'avertissement de la référence dit vrai le cas
+  n'arrive jamais ; s'il dit faux, une image vaut mieux qu'un trou.
+
+**Et le client demande maintenant `autoLZ` au lieu de `lz`.** Il demandait du
+LZ simple précisément parce que QUIC n'était pas décodé, et cette raison n'existe
+plus. `get_compression_for_bitmap`, dans le `dcc.cpp` du serveur, sépare
+exactement les deux modes automatiques : tous deux envoient du QUIC pour un
+bitmap à forte gradualité, puis l'un retombe sur LZ et l'autre sur GLZ. Donc
+`autoLZ` ne peut produire que du QUIC ou du LZ — les deux décodés — là où
+`autoGLZ` peut encore produire du GLZ, qui reste refusé.
+
+Le gain n'est pas théorique : « forte gradualité » est le mot du serveur pour
+les photos et les dégradés, c'est-à-dire ce que LZ comprime le plus mal, et
+c'est la plus grande partie d'un bureau avec un fond d'écran.
+
+**Reste GLZ, et c'est une fonctionnalité de session, pas une tranche de codec.**
+La lecture de `decode-glz.c` et `decode-glz-tmpl.c` dans spice-gtk — le
+décodeur GLZ ne vit pas dans spice-common, contrairement à LZ et QUIC — donne
+la forme du travail :
+
+* **L'en-tête n'est pas celui de LZ.** `lz_encode` écrit sept mots de 32 bits,
+  28 octets, avec le type et `top_down` chacun dans son mot, et laisse en
+  commentaire l'idée de les réunir dans un octet. GLZ le fait, et ajoute
+  l'identifiant de l'image sur 64 bits puis `win_head_dist` sur 32 : 33 octets,
+  disposés autrement. C'est petit et vérifiable exactement, donc c'est par là
+  qu'on commence.
+* **La fenêtre** est un anneau d'images décodées indexé par
+  `id % nimages`, avec des trous possibles — les images de plusieurs écrans
+  arrivent par des sockets différentes et donc dans le désordre. Une référence
+  se résout par `glz_decoder_window_bits(id, dist, offset)` : l'image `id -
+  dist`, à `offset` pixels de son début. Les images sont libérées jusqu'au plus
+  ancien `id - win_head_dist` encore utile.
+* **La boucle de correspondance** est celle de LZ plus un champ `image_dist`
+  encodé en longueur variable à côté du décalage de pixel. À zéro, la
+  correspondance est dans l'image courante et le décalage est biaisé de un ;
+  sinon elle est dans une image précédente et ne l'est pas.
+* **Le branchement** touche `glzRGB` et `zlibGlzRGB`, et la fenêtre appartient à
+  la session plutôt qu'à un appel : c'est là que « fonctionnalité de session »
+  cesse d'être une figure de style.
+
+La difficulté n'est pas la boucle, c'est le harnais. Une image seule ne peut
+pas produire de correspondance entre images, donc les gabarits doivent être des
+*suites* d'images encodées contre un même dictionnaire, ce qui demande
+l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
+chemin qui distingue GLZ de LZ resterait non testé — exactement le genre de
+trou que les deux gabarits ajoutés pour QUIC viennent de combler.
 
 ## Lot 6 — finition
 

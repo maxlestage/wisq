@@ -34,24 +34,35 @@ final class SpiceDisplayClientTests: XCTestCase {
         XCTAssertNil(SpiceDisplayClient.compressionToRequest(givenServerCapabilities: []))
     }
 
-    /// The decision this whole file exists for. wisq decodes LZ; a server left
-    /// to its own default sends QUIC or GLZ for most of the screen, and neither
-    /// is decoded here. Asking is what turns one finished codec into a picture.
-    func testAServerThatCanBeAskedIsAskedForLZ() {
+    /// The decision this whole file exists for. A server left to its own
+    /// default sends whatever it likes; asking is what turns finished codecs
+    /// into a picture.
+    ///
+    /// This asked for plain `lz` until QUIC was decoded. It asks for `autoLZ`
+    /// now, which is what makes the QUIC work visible: photographs and
+    /// gradients stop going through the codec that compresses them worst.
+    func testAServerThatCanBeAskedIsAskedForAutomaticLZ() {
         let caps = SpiceDisplayClient.capabilityWords([.preferredCompression])
-        XCTAssertEqual(SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps), .lz)
+        XCTAssertEqual(
+            SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps), .autoLZ
+        )
+        XCTAssertEqual(SpiceDisplayClient.preferredCompression(.autoLZ), [3])
     }
 
-    /// `lz`, not `autoLZ`. The automatic modes leave the server free to send
-    /// QUIC for photographic content — that is what automatic means — so asking
-    /// for one would be asking for an encoding this client cannot read, some of
-    /// the time, which is the hardest kind of bug to see.
-    func testTheRequestIsPlainLZRatherThanAnAutomaticMode() {
+    /// `autoLZ`, never `autoGLZ`, and the difference is not cosmetic.
+    ///
+    /// `get_compression_for_bitmap` in the server's `dcc.cpp` sends QUIC for a
+    /// high-graduality bitmap under either mode, and then falls back to LZ
+    /// under one and GLZ under the other. So `autoLZ` produces only QUIC or LZ
+    /// — both decoded here — while `autoGLZ` can still produce GLZ, whose
+    /// matches reach into a dictionary built from earlier images on the
+    /// channel. Asking for it would be asking for a stream this client refuses,
+    /// some of the time, which is the hardest kind of bug to see.
+    func testTheRequestIsNeverTheModeThatCanStillSendGLZ() {
         let caps = SpiceDisplayClient.capabilityWords([.preferredCompression])
         let asked = SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps)
-        XCTAssertNotEqual(asked, .autoLZ)
         XCTAssertNotEqual(asked, .autoGLZ)
-        XCTAssertEqual(SpiceDisplayClient.preferredCompression(.lz), [6])
+        XCTAssertNotEqual(asked, .glz)
     }
 
     /// The init message the server waits for before it draws anything.
