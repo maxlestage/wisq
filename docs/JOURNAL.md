@@ -874,3 +874,62 @@ des deux bouts, ce que le protocole veut dire.
 Dix sabotages, dix attrapés, plus deux sur le routage de la pompe. Le routage
 mérite les siens : un `case` manquant est silencieux, donc seule une assertion
 sur ce que la pompe a compté comme ignoré s'en aperçoit.
+
+## Le masque, et un test qui a survécu à ce qu'il prétendait tenir
+
+La tranche précédente refusait tout dessin masqué et disait, dans son propre
+commentaire, que la vraie réponse était de décoder le bitmap A1. Celle-ci le
+fait : `SpiceMask` résout le masque contre la boîte, et `fill`, `copy` et les
+trois rasters le consultent par pixel.
+
+Le point de conception vaut d'être écrit dans ce sens : le masque **ne rejoint
+pas** les rectangles. La région des bits à un est une forme quelconque, dont la
+décomposition en rectangles fait au pire un rectangle par pixel. Les rectangles
+gardent donc leur sens — où le dessin *peut* écrire — et le masque répond s'il
+écrit. Et ce sont toujours les rectangles qui remontent au rendu, parce qu'une
+région de mise à jour est une indication de ce qu'il faut re-téléverser : un
+sur-ensemble coûte de la bande passante, un sous-ensemble perd des pixels.
+
+### Le test qui a survécu
+
+En lançant la suite après avoir branché le masque, les 569 tests passaient — y
+compris `testADrawCarryingAMaskIsRefusedRatherThanOverPainted`, qui dit dans son
+nom que les dessins masqués sont refusés. Ils ne le sont plus. Le test passait
+parce que le masque qu'il fabrique n'a pas de bitmap derrière son pointeur : il
+est inutilisable pour une raison — un masque qui nomme quelque chose que ce
+client n'a pas — et pas pour celle que le nom annonçait.
+
+C'est la même famille que le sabotage LZ4 qui se faisait refuser trois séquences
+trop tôt, et la troisième fois cette semaine que je tombe dessus : **un test
+vert qui tient autre chose que ce qu'il dit**. Renommé pour ce qu'il épingle
+vraiment, et les vrais masques sont testés à côté.
+
+Ce qui rend cette famille difficile à voir, c'est qu'il n'y a rien à remarquer.
+Un test qui échoue se signale ; un test qui passe pour la mauvaise raison
+ressemble exactement à un test qui passe. La seule chose qui l'a trouvé ici est
+d'avoir attendu que quelque chose *casse* en branchant le masque, et de m'être
+demandé pourquoi rien n'avait cassé.
+
+### Douze sabotages, douze attrapés — dont un qui a d'abord survécu
+
+Les trois réflexions — ordre des bits, sens des lignes, position du masque — plus
+« hors du masque = autorisé », qui est celle qui produit l'image la plus
+convaincante : pour un petit masque sur une grande boîte, tout peindre ressemble
+beaucoup à un masque qui fonctionne.
+
+Le douzième est arrivé après coup et vaut mieux que les onze autres : avancer
+d'une ligne de `(width + 7) / 8` octets au lieu de la `stride` du bitmap. Tous
+les gabarits utilisaient la stride minimale, donc tous passaient. La référence,
+elle, lit `ALIGN(x, 8) >> 3` octets *par* ligne et avance de la stride — ce ne
+sont pas le même nombre, et un serveur a le droit de remplir. Le gabarit ajouté
+remplit délibérément, avec des octets à un dans le remplissage pour que le lire
+se voie.
+
+### Et SwiftLint, qui a fait son travail depuis la CI
+
+Un helper de test à six paramètres a rendu la CI rouge sur la PR précédente.
+SwiftLint n'est pas installé sur cette machine, et `scripts/verify.sh` le dit
+dans son propre commentaire : « une barrière qu'un contributeur ne peut pas
+lancer localement est une barrière qui trouve les choses après l'ouverture de la
+PR ». C'est exactement ce qui s'est passé. Le commentaire avait raison ; il n'a
+pas empêché la chose, il l'a seulement prédite.

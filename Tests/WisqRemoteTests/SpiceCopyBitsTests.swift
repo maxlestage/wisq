@@ -336,20 +336,20 @@ final class SpiceCopyBitsTests: XCTestCase {
         XCTAssertEqual(pixel(surfaces, 2, 2), [0, 0, 0, 0], "l'inversion ne remplit pas le pad")
     }
 
-    // MARK: - The mask that is not honoured
+    // MARK: - The mask this client cannot use
 
-    /// A masked draw is refused, and it is worth being plain about why.
+    /// A mask that names something wisq does not have is refused.
     ///
-    /// A `QMask` reduces what a draw touches. wisq does not decode it, so both
-    /// available answers are wrong: painting the whole box destroys pixels the
-    /// server wanted kept, and painting nothing leaves pixels stale. Refusing
-    /// is what this file does everywhere else it cannot carry out a draw, and a
-    /// black rectangle across a window is worse to look at than one that did
-    /// not change.
+    /// This test used to say a masked draw was refused *at all*, and it kept
+    /// passing when that stopped being true — because the mask it builds has no
+    /// bitmap data behind its pointer, so it is unusable for a different reason
+    /// than the one the name claimed. Renamed to what it actually pins, and the
+    /// real masks are tested in `SpiceMaskTests`.
     ///
-    /// This test pins the behaviour so that decoding the mask later is a change
-    /// something notices.
-    func testADrawCarryingAMaskIsRefusedRatherThanOverPainted() throws {
+    /// A mask can name a cached image or another surface. wisq keeps no image
+    /// cache and does not render surface-to-surface masks, so both are "leave
+    /// that part of the screen alone" rather than "drop the connection".
+    func testAMaskNamingSomethingThisClientDoesNotHaveIsRefused() throws {
         var surfaces = try makeSurface(8, 8)
         try paintGradient(&surfaces)
         let before = surfaces.surfaces[0]!.pixels

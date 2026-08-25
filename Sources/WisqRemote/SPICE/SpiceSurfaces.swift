@@ -151,9 +151,7 @@ struct SpiceSurfaces {
             // `none` brush writes nothing at all.
             throw Failure.notDrawable
         }
-        // See `masked` below. This used to paint the whole box regardless,
-        // which writes over pixels the server asked to be left alone.
-        guard !Self.masked(operation.mask) else { throw Failure.notDrawable }
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
 
         // The colour is a 32-bit word in the surface's own order, so it lands
         // as four bytes little-endian: blue, green, red, then the pad.
@@ -166,12 +164,13 @@ struct SpiceSurfaces {
         for rect in written {
             for y in Int(rect.top)..<Int(rect.bottom) {
                 var index = (y * surface.width + Int(rect.left)) * 4
-                for _ in Int(rect.left)..<Int(rect.right) {
+                for x in Int(rect.left)..<Int(rect.right) {
+                    defer { index += 4 }
+                    guard mask?.allows(x, y) ?? true else { continue }
                     surface.pixels[index] = blue
                     surface.pixels[index + 1] = green
                     surface.pixels[index + 2] = red
                     surface.pixels[index + 3] = alpha
-                    index += 4
                 }
             }
         }
@@ -200,6 +199,7 @@ struct SpiceSurfaces {
             throw Failure.notDrawable
         }
 
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
         let box = operation.base.box
         let area = operation.sourceArea
         guard area.width > 0, area.height > 0, box.width > 0, box.height > 0 else { return [] }
@@ -217,6 +217,7 @@ struct SpiceSurfaces {
                 guard sourceY >= 0, sourceY < source.height else { continue }
 
                 for x in Int(rect.left)..<Int(rect.right) {
+                    guard mask?.allows(x, y) ?? true else { continue }
                     let sourceX = Int(area.left) + (x - Int(box.left)) * Int(area.width)
                         / Int(box.width)
                     guard sourceX >= 0, sourceX < source.width else { continue }
@@ -236,27 +237,30 @@ struct SpiceSurfaces {
         return written
     }
 
-    // MARK: - The draws that need no codec
+    // MARK: - The mask every draw carries
 
-    /// Whether a draw carries a mask this cannot honour.
+    /// A draw's mask, resolved against its box.
     ///
-    /// A `QMask` is a 1-bit bitmap that *reduces* what a draw touches —
-    /// `canvas_mask_pixman` intersects the destination region with the bits
-    /// that are set. wisq does not decode it, and the region model here is a
-    /// list of rectangles, which a per-pixel mask cannot be expressed as
-    /// without exploding.
+    /// `nil` for the common case of no mask at all. A mask that exists but
+    /// cannot be used — one naming a cached image, another surface, or a format
+    /// that is not 1-bit — becomes `notDrawable`, which leaves that part of the
+    /// screen alone rather than dropping the connection.
     ///
-    /// So a masked draw is refused, and the honest form of that is: **both
-    /// answers are wrong.** Painting the whole box writes over pixels the
-    /// server wanted kept, and it will not send them again. Painting nothing
-    /// leaves pixels stale, and it will not send those again either. Refusing
-    /// is chosen because it is what this file already does everywhere else it
-    /// cannot carry out a draw, and because a black rectangle across a window
-    /// is worse to look at than a rectangle that did not change.
-    ///
-    /// The real answer is to decode the A1 bitmap and carry a mask alongside
-    /// the rectangles. That is its own slice and is on the roadmap.
-    static func masked(_ mask: SpiceDisplayWire.Mask) -> Bool { mask.bitmap != nil }
+    /// This used to refuse *every* masked draw, and before that `fill` used to
+    /// ignore the mask and paint its whole box. Both were wrong in opposite
+    /// directions: painting everything destroys pixels the server wanted kept,
+    /// painting nothing leaves pixels stale, and the server resends neither.
+    static func mask(
+        _ mask: SpiceDisplayWire.Mask, box: SpiceDisplayWire.Rect
+    ) throws -> SpiceMask.Resolved? {
+        do {
+            return try SpiceMask.resolve(mask, box: box)
+        } catch {
+            throw Failure.notDrawable
+        }
+    }
+
+    // MARK: - The draws that need no codec
 
     /// `DRAW_COPY_BITS` — the surface copying from itself.
     ///
@@ -362,13 +366,15 @@ struct SpiceSurfaces {
         guard var surface = surfaces[operation.base.surfaceID] else {
             throw Failure.unknownSurface(operation.base.surfaceID)
         }
-        guard !Self.masked(operation.mask) else { throw Failure.notDrawable }
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
 
         let written = Self.regions(of: operation.base, in: surface)
         for rect in written {
             for y in Int(rect.top)..<Int(rect.bottom) {
                 var index = (y * surface.width + Int(rect.left)) * 4
-                for _ in Int(rect.left)..<Int(rect.right) {
+                for x in Int(rect.left)..<Int(rect.right) {
+                    defer { index += 4 }
+                    guard mask?.allows(x, y) ?? true else { continue }
                     switch operation.operation {
                     case .blackness:
                         surface.pixels[index] = 0
@@ -392,7 +398,6 @@ struct SpiceSurfaces {
                     } else {
                         surface.pixels[index + 3] = 0
                     }
-                    index += 4
                 }
             }
         }

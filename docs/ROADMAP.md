@@ -971,28 +971,40 @@ l'un la vide et l'autre la remplit. Écrire `0xff000000` pour le noir serait
 *changer* le comportement du protocole en quelque chose de plus sensé, et le
 serveur dessine en attendant l'autre.
 
-### Le masque, qui n'est toujours pas décodé
+### Le masque, décodé
 
-Un `QMask` est un bitmap 1 bit qui *réduit* ce qu'un dessin touche.
-`canvas_mask_pixman` intersecte la région de destination avec les bits à un.
-wisq ne le décode pas, et le modèle de régions ici est une liste de rectangles,
-qu'un masque par pixel ne peut pas exprimer sans exploser.
+Fait. Un `QMask` est un bitmap 1 bit qui *réduit* ce qu'un dessin touche :
+`canvas_mask_pixman` intersecte la région de destination avec la région des bits
+à un. `SpiceMask` le décode et `fill`, `copy` et les trois rasters le consultent
+par pixel.
 
-Un dessin masqué est donc refusé — y compris `DRAW_FILL`, qui jusqu'ici peignait
-toute sa boîte. **Les deux réponses sont fausses** : peindre toute la boîte
-écrase des pixels que le serveur voulait garder et qu'il ne renverra pas ;
-ne rien peindre laisse des pixels périmés qu'il ne renverra pas non plus.
-Refuser est ce que ce fichier fait partout ailleurs quand il ne peut pas
-exécuter un dessin, et un rectangle noir en travers d'une fenêtre est pire à
-regarder qu'un rectangle qui n'a pas changé.
+Il ne rejoint pas les rectangles, et c'est une décision plutôt qu'une limite :
+la région des bits à un d'un bitmap 1 bit est une forme quelconque, dont la
+décomposition en rectangles fait au pire un rectangle par pixel. Les rectangles
+restent donc *où le dessin peut écrire* et le masque répond *s'il écrit*. Ce sont
+toujours les rectangles qui sont signalés au rendu, délibérément : une région de
+mise à jour est une indication de ce qu'il faut re-téléverser, donc un
+sur-ensemble coûte un peu de bande passante et un sous-ensemble perd des pixels.
 
-La vraie réponse est de décoder le bitmap A1 et de porter un masque à côté des
-rectangles. C'est la tranche suivante sur ce canal.
+Trois choses s'y trompent d'une réflexion, et chacune produit une image :
 
-Ce qui reste sur le canal display : le masque ci-dessus, les dessins qui
-composent (`DRAW_OPAQUE`, `DRAW_BLEND`, `DRAW_ALPHA_BLEND`, `DRAW_TRANSPARENT`,
-`DRAW_ROP3`), les tracés et le texte (`DRAW_STROKE`, `DRAW_TEXT`), et les flux
-vidéo (`STREAM_*`).
+* **quel bit d'un octet est le pixel de gauche** — `1BIT_LE` commence au bit 0,
+  `1BIT_BE` au bit 7. À l'envers, le masque est en miroir par groupes de huit ;
+* **le sens des lignes** — un masque est bas-en-haut par défaut comme tout
+  bitmap de ce canal ;
+* **où le masque se pose** — le pixel de destination *(x, y)* est le pixel de
+  masque *(x − box.left + pos.x, y − box.top + pos.y)*. Oublier `box.left` passe
+  tous les tests dont la boîte part de l'origine.
+
+Et une quatrième qui n'est pas une réflexion : **hors du masque, c'est refusé,
+pas autorisé.** La référence découpe les extents puis *intersecte*, donc un pixel
+de destination sans pixel de masque au-dessus est retiré. Le traiter comme permis
+peint tout ce que le masque n'atteint pas — ce qui, pour un petit masque sur une
+grande boîte, ressemble beaucoup à un masque qui marche.
+
+Ce qui reste sur le canal display : les dessins qui composent (`DRAW_OPAQUE`,
+`DRAW_BLEND`, `DRAW_ALPHA_BLEND`, `DRAW_TRANSPARENT`, `DRAW_ROP3`), les tracés et
+le texte (`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 
