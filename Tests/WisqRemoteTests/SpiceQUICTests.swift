@@ -251,4 +251,200 @@ final class SpiceQUICTests: XCTestCase {
         }
     }
 
+    // MARK: - The model and its schedule
+
+    /// The chaos table is not randomness and not a seed anyone picks: encoder
+    /// and decoder walk the same fixed table so they take the same decisions
+    /// in the same order without transmitting any of them. One wrong entry
+    /// desynchronises the model rather than corrupting a pixel, so the picture
+    /// degrades gradually instead of breaking — the hardest kind of fault to
+    /// trace back.
+    func testTheChaosDrawsMatchTheReference() {
+        XCTAssertEqual(SpiceQUIC.chaosSeed, SpiceQUICModelFixtures.chaosSeed)
+        XCTAssertEqual(SpiceQUIC.chaosTable.count, 256)
+
+        var seed = SpiceQUIC.chaosSeed
+        let drawn = SpiceQUICModelFixtures.chaosDraws.indices.map { _ in
+            SpiceQUIC.chaos(&seed)
+        }
+        XCTAssertEqual(drawn, SpiceQUICModelFixtures.chaosDraws)
+    }
+
+    /// The increment happens before the lookup, so the first draw is entry 0
+    /// and not entry 255. Post-increment shifts the whole schedule by one.
+    func testTheFirstDrawIsEntryZeroRatherThanTheSeedsOwnEntry() {
+        var seed = SpiceQUIC.chaosSeed
+        XCTAssertEqual(SpiceQUIC.chaos(&seed), SpiceQUIC.chaosTable[0])
+        XCTAssertNotEqual(SpiceQUIC.chaosTable[0], SpiceQUIC.chaosTable[255])
+    }
+
+    /// The index is clamped at ten, not wrapped: the table has eleven columns
+    /// and the index legitimately walks past them.
+    func testTheTriggerTableIsClampedRatherThanWrapped() {
+        let expected = SpiceQUICModelFixtures.triggers
+        XCTAssertEqual((0...12).map { SpiceQUIC.trigger(waitMaskIndex: $0) }, expected)
+        XCTAssertEqual(expected[10], expected[11], "au-delà de dix, la même colonne")
+        XCTAssertEqual(expected[11], expected[12])
+    }
+
+    /// Buckets grow geometrically, and the last one is stretched rather than
+    /// followed by one that would overshoot. Compared against the map the
+    /// reference actually built.
+    func testTheBucketLayoutMatchesTheReference() {
+        let eight = SpiceQUIC.Model(bitsPerChannel: 8)
+        XCTAssertEqual(eight.bucketOfValue, SpiceQUICModelFixtures.bucketOfValue8)
+        XCTAssertEqual(eight.buckets.count, SpiceQUICModelFixtures.bucketCount8)
+
+        let five = SpiceQUIC.Model(bitsPerChannel: 5)
+        XCTAssertEqual(five.bucketOfValue, SpiceQUICModelFixtures.bucketOfValue5)
+        XCTAssertEqual(five.buckets.count, SpiceQUICModelFixtures.bucketCount5)
+    }
+
+    /// Every counter after every update, against the reference's own trace.
+    ///
+    /// The sequence crosses the halving threshold, which is the part that
+    /// cannot be checked by looking at one update: halving early or late
+    /// leaves the model reachable but wrong.
+    func testTheModelUpdatesExactlyAsTheReferenceDoes() {
+        for (bpc, expected) in [
+            (8, SpiceQUICModelFixtures.updates8), (5, SpiceQUICModelFixtures.updates5)
+        ] {
+            let family = SpiceQUIC.family(bitsPerChannel: bpc)
+            let trigger = SpiceQUIC.trigger(waitMaskIndex: 0)
+            var model = SpiceQUIC.Model(bitsPerChannel: bpc)
+
+            for (step, update) in expected.enumerated() {
+                // Context zero throughout, so every update lands in one bucket
+                // and the counters accumulate rather than being spread thin.
+                model.update(value: update.value, context: 0, family: family, trigger: trigger)
+                XCTAssertEqual(
+                    model.buckets[0].bestCode, update.bestCode,
+                    "\(bpc) bpc, étape \(step) : le meilleur code"
+                )
+                XCTAssertEqual(
+                    Array(model.buckets[0].counters.prefix(bpc)), update.counters,
+                    "\(bpc) bpc, étape \(step) : les compteurs"
+                )
+            }
+        }
+    }
+
+    /// Exactly on the trigger, the counters are **not** halved.
+    ///
+    /// `update_model` halves on strictly greater, and the two readings of that
+    /// comparison differ only when the total lands precisely on the trigger —
+    /// which no ordinary sequence reaches, because `set_wm_trigger` can only
+    /// produce eleven tabulated values. The reference was asked directly, with
+    /// the trigger set by hand, and this is its answer.
+    ///
+    /// Without this the boundary is unpinned: swapping `>` for `>=` passes
+    /// every other test in this file.
+    func testTheCountersAreNotHalvedExactlyOnTheTrigger() {
+        let family = SpiceQUIC.family(bitsPerChannel: 8)
+
+        var onTheLine = SpiceQUIC.Model(bitsPerChannel: 8)
+        onTheLine.update(
+            value: SpiceQUICModelFixtures.boundaryAt.value, context: 0,
+            family: family, trigger: SpiceQUICModelFixtures.boundaryTrigger
+        )
+        XCTAssertEqual(
+            onTheLine.buckets[0].counters, SpiceQUICModelFixtures.boundaryAt.counters,
+            "pile sur le seuil : rien n'est divisé"
+        )
+
+        var justBelow = SpiceQUIC.Model(bitsPerChannel: 8)
+        justBelow.update(
+            value: SpiceQUICModelFixtures.boundaryBelow.value, context: 0,
+            family: family, trigger: SpiceQUICModelFixtures.boundaryBelowTrigger
+        )
+        XCTAssertEqual(
+            justBelow.buckets[0].counters, SpiceQUICModelFixtures.boundaryBelow.counters,
+            "un cran en dessous : tout est divisé par deux"
+        )
+        XCTAssertNotEqual(
+            SpiceQUICModelFixtures.boundaryAt.counters,
+            SpiceQUICModelFixtures.boundaryBelow.counters,
+            "sinon le test ne distingue rien"
+        )
+    }
+
+    /// A tie keeps the higher code number, because the scan runs downwards and
+    /// replaces only on a strict improvement. Scanning upwards would break
+    /// ties the other way and drift away from the encoder over an image.
+    func testATieKeepsTheHigherCodeBecauseTheScanRunsDownwards() {
+        let family = SpiceQUIC.family(bitsPerChannel: 8)
+        var model = SpiceQUIC.Model(bitsPerChannel: 8)
+        // Value 0 costs 1, 2, 3 … bits at codes 0, 1, 2 …, so no tie yet; the
+        // reference trace above covers the real sequences. Here the point is
+        // only the direction, which the first update already shows: with
+        // strictly increasing costs the cheapest is code 0.
+        model.update(value: 0, context: 0, family: family, trigger: .max)
+        XCTAssertEqual(model.buckets[0].bestCode, 0)
+
+        // Make every code cost the same, and the highest must win.
+        var flat = SpiceQUIC.Model(bitsPerChannel: 8)
+        let uniform = SpiceQUIC.Family(
+            golombCodewords: family.golombCodewords,
+            escapeLength: family.escapeLength,
+            escapePrefixMask: family.escapePrefixMask,
+            escapeSuffixLength: family.escapeSuffixLength,
+            codeLength: family.codeLength.map { _ in [UInt32](repeating: 5, count: 8) },
+            code: family.code,
+            errorToSymbol: family.errorToSymbol,
+            symbolToError: family.symbolToError
+        )
+        flat.update(value: 3, context: 0, family: uniform, trigger: .max)
+        XCTAssertEqual(
+            flat.buckets[0].bestCode, 7,
+            "à égalité, le code le plus haut reste — le balayage descend"
+        )
+    }
+
+    /// `golomb_decoding` is a pure function of the level and the window.
+    /// Compared over both families and a wide sweep of windows, including the
+    /// two sides of the escape boundary.
+    func testGolombDecodingMatchesTheReferenceAcrossBothShapes() {
+        for bpc in [5, 8] {
+            let family = SpiceQUIC.family(bitsPerChannel: bpc)
+            for level in 0..<bpc {
+                var sawPlain = false
+                var sawEscape = false
+                for bits in SpiceQUICTests.windowSweep {
+                    let (value, length) = SpiceQUIC.golombDecode(
+                        level: level, bits: bits, family: family
+                    )
+                    XCTAssertGreaterThan(length, 0, "\(bpc)/\(level)/\(bits)")
+                    XCTAssertLessThanOrEqual(
+                        length, SpiceQUIC.maximumCodeLength, "\(bpc)/\(level)/\(bits)"
+                    )
+                    if bits > family.escapePrefixMask[level] { sawPlain = true } else { sawEscape = true }
+                    // Re-encoding what came out has to give the same codeword
+                    // length the family recorded, which is the only closed
+                    // check available without a second decoder.
+                    if value < 256 {
+                        XCTAssertEqual(
+                            family.codeLength[Int(value)][level], UInt32(length),
+                            "\(bpc) bpc, niveau \(level), fenêtre \(bits)"
+                        )
+                    }
+                }
+                XCTAssertTrue(sawPlain, "\(bpc)/\(level) : le balayage doit voir la forme simple")
+                XCTAssertTrue(sawEscape, "\(bpc)/\(level) : et la forme échappée")
+            }
+        }
+    }
+
+    /// Windows spanning both sides of every escape boundary.
+    private static let windowSweep: [UInt32] = {
+        var out: [UInt32] = [0, 1, 2, 0xFFFF_FFFF, 0x8000_0000, 0x7FFF_FFFF]
+        for shift in 0..<32 {
+            out.append(1 << UInt32(shift))
+            out.append((1 << UInt32(shift)) &- 1)
+        }
+        for step in stride(from: UInt32(0), to: UInt32(0xFFFF_F000), by: 0x0100_0000) {
+            out.append(step)
+        }
+        return out
+    }()
+
 }
