@@ -22,6 +22,38 @@ break APIs.
   shrugging.
 
 ### Added
+- **wisq now asks the server for the codec it can actually decode.** A SPICE
+  server picks its image encoding from its own configuration, and the usual
+  default is "automatic" — QUIC for photographic content, GLZ for graphic.
+  Neither is decoded here. Without asking, a client holding an LZ decoder and
+  nothing else watches most of the screen arrive in an encoding it must skip.
+
+  `SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION` requests `LZ` — not `AUTO_LZ`,
+  which would leave the server free to send QUIC for photographic content,
+  since that is what "automatic" means. And only when the server has advertised
+  `SPICE_DISPLAY_CAP_PREF_COMPRESSION`: a message the other end has said it
+  does not understand is noise, not a request.
+
+  A capability is a **bit position**, not a value. Read as a value the check
+  would be wrong in a way that happens to be right for capabilities 1 and 2 —
+  the kind of error that survives a casual test.
+
+  This reorders the work that is left: porting QUIC, some two thousand lines of
+  predictive coding, becomes an optimisation *after* rather than a prerequisite
+  *before*.
+
+- **LZ's 16-bit form decodes too.** Its two stream bytes land in memory the
+  other way round: the codec reads a pixel as `(first << 8) | second` and
+  stores it as a machine word, so on the little-endian machines wisq ships to
+  the order flips. Written out explicitly rather than left to whatever the host
+  does, so the output is the same everywhere and a test can say what it should
+  be — and its match length is biased by two where the 24- and 32-bit forms use
+  one. Both facts are sabotage-checked against reference streams.
+
+  Found while adding it: the fixture harness printed four bytes a pixel for
+  every type, which reads past what a 16-bit decode writes and reports zeroed
+  memory as pixels. The harness was wrong, not the codec.
+
 - **SPICE's LZ codec decodes, checked against SPICE's LZ encoder.** The first
   of the compressed forms the display channel stopped at. LZ before QUIC and
   before JPEG for a reason about this repository rather than about the codec:
