@@ -22,6 +22,28 @@ break APIs.
   shrugging.
 
 ### Added
+- **SPICE connects.** `SessionFactory` returns a SPICE session where it used to
+  throw `unsupportedProtocol`. The shape that separates SPICE from RFB next
+  door: **one TCP connection per channel** — the main one first, because it is
+  the only one that learns the session identifier, and every channel after it
+  must present that identifier as its connection ID. Without it the server sees
+  an unrelated client and gives it a display of its own: a black screen that
+  looks exactly like a broken decoder. Driven against a scripted two-socket
+  server, with the identifier read straight back out of the display channel's
+  link message.
+
+  Two defects found in the wiring, neither by an existing test:
+
+  The pump handled **256 messages before reporting anything**. A first frame of
+  three messages would have sat unpainted waiting for the two hundred and
+  fifty-third — on a quiet desktop, never. The default is one message per call
+  now, and the caller publishes damage as it happens.
+
+  The serial did not survive between calls and nothing checked it. A `defer`
+  meant to carry it was dead code: a `defer` runs after the return value has
+  been copied, so it cannot change what comes back. Confirmed with a five-line
+  program rather than reasoned about. Removed, and a test holds it now.
+
 - **The display channel runs: messages in, pixels out.** A `struct` over a
   `ByteStream` like the main channel, so it can be driven against a scripted
   server with no socket — which is how its ordering rules get asserted rather

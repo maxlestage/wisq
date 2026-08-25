@@ -252,4 +252,52 @@ final class SpiceDisplayChannelTests: XCTestCase {
             XCTAssertEqual(error as? SpiceError, .invalidData)
         }
     }
+    /// The serial has to survive between calls.
+    ///
+    /// The pump is a `struct` and the caller is what persists, so the next
+    /// serial comes back in the result. A caller passing the same number in
+    /// every time hands a server that acknowledges by serial a sequence full of
+    /// holes — and the default is now one message per call, so this happens on
+    /// every single message rather than once per batch.
+    ///
+    /// This test exists because a sabotage found it missing: deleting the line
+    /// that sets `nextSerial` changed nothing, since nothing looked at it. The
+    /// `defer` that also set it turned out to be dead code — a `defer` runs
+    /// after the return value has been copied, so it cannot change what comes
+    /// back. Both were fixed rather than one.
+    func testTheNextSerialComesBackSoItCanSurviveBetweenCalls() async throws {
+        let server = MemoryByteStream(
+            inbound: message(SpiceWire.Message.ping, [1])
+                + message(SpiceWire.Message.ping, [2])
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+
+        let first = try await channel.pump(into: &surfaces, serial: 10, limit: 1)
+        XCTAssertEqual(first.nextSerial, 11, "un pong envoyé, donc un cran")
+
+        let second = try await channel.pump(into: &surfaces, serial: first.nextSerial, limit: 1)
+        XCTAssertEqual(second.nextSerial, 12)
+
+        // And the wire agrees: two pongs, with consecutive serials.
+        var reader = SpiceWire.Reader(await server.written)
+        let one = try SpiceWire.decodeDataHeader(Data(try reader.bytes(18)))
+        _ = try reader.bytes(Int(one.size))
+        let two = try SpiceWire.decodeDataHeader(Data(try reader.bytes(18)))
+        XCTAssertEqual(one.serial, 10)
+        XCTAssertEqual(two.serial, 11, "pas de trou dans la suite")
+    }
+
+    /// A message that needs no reply does not burn a serial. Serials count what
+    /// this client said, not what it heard.
+    func testAMessageNeedingNoReplyDoesNotAdvanceTheSerial() async throws {
+        let server = MemoryByteStream(
+            inbound: message(SpiceDisplayWire.Message.drawText.rawValue, [0])
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+
+        let progress = try await channel.pump(into: &surfaces, serial: 5, limit: 1)
+        XCTAssertEqual(progress.nextSerial, 5)
+    }
 }

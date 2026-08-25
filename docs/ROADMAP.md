@@ -367,8 +367,31 @@ traités sont comptés par type — un client qui ignore la moitié d'un protoco
 devrait au moins savoir dire laquelle, et c'est ce chiffre qui dit quoi
 construire ensuite.
 
-Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
-un lien qui aboutit sans rien à afficher ne serait pas une session.
+**`SPICESession` est branché.** `SessionFactory` rend une session SPICE là où il
+levait `unsupportedProtocol`. La forme qui distingue SPICE de RFB d'à côté :
+**une connexion TCP par canal**. Le canal principal d'abord, parce que c'est le
+seul qui apprend l'identifiant de session, et chaque canal suivant doit le
+présenter comme identifiant de connexion — sans quoi le serveur voit un client
+non apparenté et lui donne un affichage à lui, c'est-à-dire un écran noir qui
+ressemble exactement à un décodeur cassé.
+
+Éprouvé contre un serveur scripté à deux sockets : l'identifiant est relu tel
+quel dans le message de lien du canal display.
+
+Deux défauts trouvés en branchant, et pas par un test qui existait :
+
+- La pompe traitait **256 messages avant de rendre quoi que ce soit**. Une
+  première image de trois messages serait restée non peinte en attendant la
+  253ᵉ — sur un bureau tranquille, jamais. Le défaut est maintenant **un**
+  message par appel, et l'appelant publie les dégâts au fur et à mesure.
+- Le numéro de série ne survivait pas entre les appels, et rien ne le
+  vérifiait. Un `defer` censé le poser était du code mort : un `defer` s'exécute
+  après la copie de la valeur de retour, donc il ne peut pas la changer.
+  Vérifié par un petit programme plutôt que raisonné. Retiré, et un test le
+  tient désormais.
+
+Reste : QUIC, GLZ, JPEG et les types à palette ; le canal des entrées (encodé
+et testé, il lui faut sa propre connexion) ; le canal curseur.
 
 ## Lot 6 — finition
 

@@ -32,6 +32,14 @@ struct SpiceDisplayChannel {
         /// Distinct from `ignored`: the message was understood and could not be
         /// carried out, which is the count that says what to build next.
         var undrawable = 0
+        /// The serial to use for the next message this client sends.
+        ///
+        /// Returned rather than kept, because the pump is a `struct` and the
+        /// caller is what persists between calls. A server that acknowledges by
+        /// serial is entitled to a sequence with no holes, and a caller that
+        /// passed the same number back in every time would give it one full of
+        /// them.
+        var nextSerial: UInt64 = 0
     }
 
     private static let firstSerial: UInt64 = 1
@@ -76,11 +84,17 @@ struct SpiceDisplayChannel {
 
     /// Reads up to `limit` messages, drawing what it understands.
     ///
-    /// `limit` bounds the work rather than the time. A server that only ever
-    /// pings would otherwise keep this running for as long as it likes, which
-    /// is the same reason the main channel has one.
+    /// The default is **one**, and that is a decision rather than a timid
+    /// number. A batch only reports what it drew once the whole batch is done,
+    /// so a first frame of three messages would sit unpainted until the two
+    /// hundred and fifty-third arrived — which on a quiet desktop is never. One
+    /// message per call means the caller publishes damage as it happens, and
+    /// the cost is a function call per message.
+    ///
+    /// `limit` remains for callers that want to bound a burst, and for tests
+    /// that script an exact number of messages.
     func pump(
-        into surfaces: inout SpiceSurfaces, serial: UInt64, limit: Int = 256
+        into surfaces: inout SpiceSurfaces, serial: UInt64, limit: Int = 1
     ) async throws -> Progress {
         var progress = Progress()
         var serial = serial
@@ -120,6 +134,7 @@ struct SpiceDisplayChannel {
                 progress.ignored[header.type, default: 0] += 1
             }
         }
+        progress.nextSerial = serial
         return progress
     }
 
