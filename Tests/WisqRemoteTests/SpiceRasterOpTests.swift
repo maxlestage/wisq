@@ -224,11 +224,100 @@ final class SpiceRasterOpTests: XCTestCase {
         }
     }
 
+    // MARK: - The ternary operation on a surface
+
+    /// `DRAW_ROP3` combines all three operands at the pixel.
+    ///
+    /// The opcode is `0xE2` — one that needs pattern, source *and* destination,
+    /// so no two of the three can be muddled without the answer changing. A
+    /// degenerate opcode like `SRCCOPY` would pass with the pattern wired to
+    /// anything at all.
+    func testARop3CombinesPatternSourceAndDestination() throws {
+        var surfaces = try makeSurface(4, 2)
+        _ = try surfaces.fill(fill(0x000F_0F0F, rop: 0, rect(0, 0, 2, 4)))
+
+        let pattern: UInt32 = 0x0033_3333
+        let sourceByte: UInt8 = 0x55
+        let image = [UInt8](repeating: sourceByte, count: 4 * 2 * 4)
+        _ = try surfaces.rop3(
+            SpiceDisplayWire.Rop3(
+                base: SpiceDisplayWire.Base(surfaceID: 0, box: rect(0, 0, 2, 4), clip: .none),
+                source: nil, sourceArea: rect(0, 0, 2, 4), brush: .solid(pattern),
+                rop3: 0xE2, scaleMode: 0, mask: noMask()
+            ),
+            source: (pixels: image, width: 4, height: 2), bytesPerSourcePixel: 4
+        )
+        let expected = SpiceROP3(0xE2).apply(
+            pattern: 0x33, source: sourceByte, destination: 0x0F
+        )
+        XCTAssertEqual(pixel(surfaces)[0], expected)
+        // The three operands really are distinguishable here.
+        XCTAssertNotEqual(expected, 0x33)
+        XCTAssertNotEqual(expected, sourceByte)
+        XCTAssertNotEqual(expected, 0x0F)
+    }
+
+    /// One of the 38 the reference aborts on. wisq evaluates the table, so it
+    /// simply works — and `SRCCOPY` is the clearest of them to assert.
+    func testAnOpcodeTheReferenceRefusesStillWorks() throws {
+        var surfaces = try makeSurface(4, 2)
+        _ = try surfaces.fill(fill(0x000F_0F0F, rop: 0, rect(0, 0, 2, 4)))
+        let image = [UInt8](repeating: 0x77, count: 4 * 2 * 4)
+        _ = try surfaces.rop3(
+            SpiceDisplayWire.Rop3(
+                base: SpiceDisplayWire.Base(surfaceID: 0, box: rect(0, 0, 2, 4), clip: .none),
+                source: nil, sourceArea: rect(0, 0, 2, 4), brush: .solid(0x0033_3333),
+                rop3: 0xCC, scaleMode: 0, mask: noMask()          // SRCCOPY
+            ),
+            source: (pixels: image, width: 4, height: 2), bytesPerSourcePixel: 4
+        )
+        XCTAssertEqual(pixel(surfaces)[0], 0x77, "la source l'emporte")
+    }
+
+    func testARop3WithABrushItCannotPaintIsRefused() throws {
+        var surfaces = try makeSurface(4, 2)
+        let image = [UInt8](repeating: 0x77, count: 4 * 2 * 4)
+        XCTAssertThrowsError(try surfaces.rop3(
+            SpiceDisplayWire.Rop3(
+                base: SpiceDisplayWire.Base(surfaceID: 0, box: rect(0, 0, 2, 4), clip: .none),
+                source: nil, sourceArea: rect(0, 0, 2, 4), brush: .none,
+                rop3: 0xE2, scaleMode: 0, mask: noMask()
+            ),
+            source: (pixels: image, width: 4, height: 2), bytesPerSourcePixel: 4
+        )) { error in
+            XCTAssertEqual(error as? SpiceSurfaces.Failure, .notDrawable)
+        }
+    }
+
     // MARK: - The wire
 
     /// `DRAW_OPAQUE` is a copy with a brush wedged in before the rop. Read with
     /// the copy decoder, the brush's type byte becomes the low half of the rop
     /// and everything after it shifts.
+    /// `DRAW_ROP3` is `DRAW_OPAQUE`'s shape with **one** byte where the rop
+    /// descriptor's two were. Read with the opaque decoder, the scale mode
+    /// becomes the descriptor's high half and everything after it shifts.
+    func testRop3IsOpaquesShapeWithAOneByteOpcode() throws {
+        func u32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(value >> (8 * $0) & 0xFF) } }
+        var payload: [UInt8] = []
+        payload += u32(0)
+        payload += u32(0) + u32(0) + u32(2) + u32(4)
+        payload += [0]
+        payload += u32(0)
+        payload += u32(0) + u32(0) + u32(2) + u32(4)
+        payload += [1] + u32(0x0012_3456)
+        payload += [0xE2]                                     // rop3, one byte
+        payload += [3]                                        // scale mode
+        payload += [0] + u32(0) + u32(0) + u32(0)             // mask
+
+        let decoded = try SpiceDisplayWire.rop3(payload)
+        XCTAssertEqual(decoded.rop3, 0xE2)
+        XCTAssertEqual(decoded.scaleMode, 3, "le mode d'échelle suit immédiatement")
+        XCTAssertEqual(decoded.brush, .solid(0x0012_3456))
+        XCTAssertNil(decoded.mask.bitmap)
+        XCTAssertThrowsError(try SpiceDisplayWire.rop3(Array(payload.dropLast())))
+    }
+
     func testOpaqueIsACopyWithABrushBeforeTheRop() throws {
         func u32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(value >> (8 * $0) & 0xFF) } }
         var payload: [UInt8] = []

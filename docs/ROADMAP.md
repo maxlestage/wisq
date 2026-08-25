@@ -1089,9 +1089,41 @@ et `DEST_HAS_ALPHA` décide si le quatrième octet de la destination est son
 alpha. `SRC_SURFACE_HAS_ALPHA` n'est pas lu ici — la référence ne le passe que
 sur le chemin surface-vers-surface.
 
-Ce qui reste sur le canal display : `DRAW_ROP3` (une opération ternaire parmi
-256, sur trois opérandes), les tracés et le texte (`DRAW_STROKE`, `DRAW_TEXT`),
-et les flux vidéo (`STREAM_*`).
+### `DRAW_ROP3` : le cas général, en une ligne
+
+Fait. C'est l'opération dont `DRAW_FILL`, `DRAW_COPY` et les trois rasters sans
+opérande sont des cas particuliers : une fonction booléenne parmi 256, sur un
+motif, une source et une destination. Windows appelle le même octet une
+« opération raster ternaire » et donne des noms aux valeurs courantes —
+`SRCCOPY` vaut `0xCC`, `PATCOPY` `0xF0`.
+
+**L'opcode est sa propre table de vérité** :
+
+    résultat = (opcode >> ((motif << 2) | (source << 1) | destination)) & 1
+
+Cette ligne remplace les 256 gestionnaires générés de la référence, et ce n'est
+pas une supposition. `common/rop3.c` enregistre chaque opcode avec sa formule
+écrite à côté — `ROP3_HANDLERS(DPSoon, ~(*pat | *src | *dest), 0x01)` et 217
+autres. `scripts/spice-rop3/check-rop3.py` les relit, évalue chacune sur les
+huit combinaisons des trois bits, et compare : **218 formules, 0 désaccord**.
+
+**La référence n'en implémente que 218, et les 38 qui manquent sont exactement
+les 38 qui ignorent au moins un de leurs trois opérandes.** Mesuré aussi : les
+deux ensembles coïncident élément par élément. Ce sont ceux qu'un serveur envoie
+sous forme de message plus simple — `0xCC` en `DRAW_COPY`, `0xF0` en
+`DRAW_FILL`, `0x00` en `DRAW_BLACKNESS` — et la référence appelle
+`spice_critical("not implemented")` si l'un d'eux arrive quand même. wisq évalue
+la table, donc les 256 fonctionnent.
+
+**L'ordre des bits n'est pas celui de l'opération binaire.** `SpiceROP` indexe sa
+table de quatre bits par `3 − (2·src + dst)`, en partant du haut ; celle-ci
+indexe directement. Écrire l'une des deux conventions à la place de l'autre donne
+une table en miroir — une image, et une fausse. Les deux sont épinglées par des
+tests exhaustifs, et la ternaire aussi par les noms Windows : `SRCCOPY` veut dire
+« la source », ce qui n'est vrai que sous un des deux ordres.
+
+Ce qui reste sur le canal display : les tracés et le texte (`DRAW_STROKE`,
+`DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 

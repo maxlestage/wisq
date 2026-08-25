@@ -1065,3 +1065,42 @@ tests sont insuffisants », c'est que **les valeurs neutres — zéro, noir, une
 symétrique, un descripteur nul — rendent deux implémentations différentes égales
 par accident**. Un gabarit choisi sans y penser tombe presque toujours sur l'une
 d'elles.
+
+## Le rop3 : 256 gestionnaires contre une ligne
+
+`DRAW_ROP3` est le cas général dont les autres dessins sont des particularisations.
+La référence l'implémente avec une table de 256 gestionnaires générés par macro,
+chacun portant sa formule. wisq l'implémente avec une expression :
+
+    résultat = (opcode >> ((motif << 2) | (source << 1) | destination)) & 1
+
+Remplacer 256 fonctions par une ligne est le genre de raccourci qui mérite d'être
+prouvé plutôt que trouvé élégant. Le script `check-rop3.py` relit les formules
+dans `rop3.c`, les évalue sur les huit combinaisons et compare : 218 formules,
+zéro désaccord. C'est la référence qui valide la ligne, pas l'inverse.
+
+Deux choses trouvées en le faisant, aucune des deux cherchée.
+
+**Les 38 opcodes que la référence n'implémente pas sont exactement les 38 qui
+ignorent au moins un opérande.** J'avais d'abord noté « il en manque 38 » comme
+un fait sans intérêt. En listant lesquels — `0x00`, `0xCC`, `0xF0`, `0xAA`… —
+la régularité saute aux yeux, et elle se vérifie : les deux ensembles coïncident
+élément par élément. Ce sont ceux qu'un serveur envoie sous forme de message
+dédié. La référence appelle `spice_critical("not implemented")` si l'un arrive ;
+wisq les traite tous, non par ambition mais parce qu'un `switch` sur 218 cas plus
+un plantage serait plus de code que la ligne.
+
+**L'ordre des bits n'est pas celui du rop binaire.** `SpiceROP` compte depuis le
+haut, `SpiceROP3` directement. Rien ne le signale : les deux sont des « tables de
+vérité dans un entier », et écrire la première convention dans la seconde donne
+une table en miroir qui dessine quelque chose. Ce qui l'épingle sans dépendre de
+mon propre raisonnement, ce sont les noms Windows — `SRCCOPY` vaut `0xCC` et veut
+dire « la source », ce qui n'est vrai que sous un des deux ordres. Une preuve
+externe au dépôt, pour une convention que le dépôt ne pouvait pas trancher seul.
+
+Huit sabotages. Cinq attrapés, un invalide (ne compilait pas — compté comme rien,
+pas comme une survie), et deux vraies survies : ni la pompe ni le masque
+n'étaient testés pour ce message. C'est la même leçon que la semaine entière, et
+elle est maintenant dans la routine : un nouveau dessin a besoin de son test de
+routage *et* de son test de masque, parce que ces deux-là sont invisibles depuis
+les tests de la fonction elle-même.
