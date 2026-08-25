@@ -37,7 +37,11 @@ int main(void) {
     LzImageType type; int w, h, npix, top_down;
     lz_decode_begin(lz, in, n, &type, &w, &h, &npix, &top_down, NULL);
 
-    int bpp = (type == LZ_IMAGE_TYPE_RGB24) ? 3 : 4;
+    /* The output pixel width is the stream's own type, not always four:
+       rgb16 writes two bytes a pixel and rgb24 three. Printing four for all of
+       them reads past what was written and reports zeros as pixels. */
+    int bpp = (type == LZ_IMAGE_TYPE_RGB24) ? 3
+            : (type == LZ_IMAGE_TYPE_RGB16) ? 2 : 4;
     uint8_t *out = calloc((size_t)npix + 64, bpp);
     lz_decode(lz, type, out);
 

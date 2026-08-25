@@ -1,5 +1,10 @@
 # Feuille de route
 
+> Les sessions où le travail avance sans personne devant l'écran sont
+> consignées dans [`JOURNAL.md`](JOURNAL.md) — l'autorisation qui les a
+> ouvertes, et ce qui a été décidé.
+
+
 ## Lot 1 — socle (fait)
 
 Modules, modèle, persistance, trousseau, transport, client VNC RFB 3.8, interface
@@ -295,6 +300,34 @@ et un test traverse la couture. GLZ est refusé bien que son format soit le mêm
 parce que ses correspondances remontent dans un dictionnaire bâti à partir des
 *images précédentes du canal* : le décoder seul assemblerait une image à partir
 de ce qui traînait.
+
+Le 16 bits est fait aussi, avec sa particularité : ses deux octets atterrissent
+en mémoire dans l'ordre inverse du flux, parce que le codec lit un pixel comme
+`(premier << 8) | second` et le range en mot machine. Écrit explicitement
+plutôt que laissé à l'hôte, pour que la sortie soit la même partout et qu'un
+test puisse dire ce qu'elle doit être.
+
+`SpiceDisplayClient` porte ce que le client *dit* au canal display, et sa
+raison d'être n'est pas petite : **wisq décode le LZ, et c'est comme ça qu'on
+lui envoie du LZ.** Un serveur SPICE choisit son encodage selon sa propre
+configuration, et le défaut habituel est « automatique » — QUIC pour le
+photographique, GLZ pour le graphique. Aucun des deux n'est décodé ici. Sans ce
+message, un client qui n'a qu'un décodeur LZ regarde arriver l'essentiel de
+l'écran dans un encodage qu'il doit sauter : décoder un codec et se faire
+envoyer ce codec sont deux réussites distinctes, et seule la seconde met une
+image sur un téléphone.
+
+`SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION` demande donc `LZ` — pas `AUTO_LZ`,
+qui laisserait le serveur libre d'envoyer du QUIC pour le photographique, c'est
+le sens même d'« automatique ». Et seulement si le serveur a annoncé
+`SPICE_DISPLAY_CAP_PREF_COMPRESSION` : un message que l'autre bout a dit ne pas
+comprendre n'est pas une demande, c'est du bruit. Une capacité est un **numéro
+de bit**, pas une valeur — lue comme une valeur, la vérification serait fausse
+d'une manière qui tombe juste pour les capacités 1 et 2.
+
+Ça change l'ordre du travail restant : porter QUIC — deux mille lignes de
+codage prédictif — devient une optimisation *après*, et non un prérequis
+*avant*.
 
 Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
 un lien qui aboutit sans rien à afficher ne serait pas une session.
