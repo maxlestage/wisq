@@ -541,7 +541,11 @@ extérieurs, bien que ceux-ci portent aussi un `TOP_DOWN`. Vérifié dans
 pour `LZ_PLT` et ne passe les drapeaux extérieurs qu'au cache de palette. Lire
 le mauvais des deux aurait mis à l'envers les seules images palettisées.
 
-Reste : QUIC, GLZ, JPEG.
+Reste : QUIC, GLZ, JPEG. JPEG attendait une question préalable : le décodeur
+existe depuis le travail sur Tight, mais **aucun job de CI ne l'exécutait** —
+les tests du paquet ne tournent que sur Linux, où ImageIO n'existe pas, et le
+job iOS ne lance que les tests de l'interface. Le job `Cœur (Apple)` corrige
+ça avant qu'on empile du SPICE derrière.
 
 ## Lot 6 — finition
 
