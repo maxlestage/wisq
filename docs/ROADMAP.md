@@ -868,7 +868,39 @@ tronquée. Calculer plus large et ne tronquer qu'à l'écriture donne un vert
 différent — bleu et rouge justes, vert faux. C'est exactement ce qui s'est
 passé, et seul le gabarit de référence l'a montré.
 
-Reste : la passe alpha de `rgba`, et les formes palettisées. Une image seule ne peut
+**`rgba` est deux passes sur un seul tampon.** `decode()` fait tourner
+`glz_rgb32_decode` sur la couleur, note combien d'octets il a consommés, puis
+lance `glz_rgb_alpha_decode` exactement à partir de là — un second jeu d'octets
+de contrôle, de correspondances et de séries couvrant à nouveau toute l'image,
+ne touchant que le quatrième octet de chaque pixel. Son biais de longueur est
+2, et ses correspondances doivent laisser intacte la couleur que la première
+passe a écrite.
+
+Le gabarit a un alpha qui varie dans l'image et entre les deux trames, à
+dessein : un alpha constant laisserait un décodeur qui saute la seconde passe
+donner quand même la bonne réponse. Un test l'affirme sur le gabarit plutôt que
+de se fier à la façon dont il a été produit.
+
+**Et GLZ est fini là**, pas parce qu'on s'arrête mais parce qu'il ne reste
+rien. Les formes palettisées ne sont pas du travail en attente : rien ne les
+produit.
+
+`canvas_get_glz_rgb_common` passe `NULL` à la place de la palette, et le
+commentaire juste au-dessus dit pourquoi — un bitmap palettisé est comprimé en
+RGB32 globalement, « because same byte sequence can be transformed to different
+RGB pixels by different plts ». C'est précisément ce qu'un dictionnaire partagé
+entre images ne peut pas supporter. Le serveur le confirme de son côté :
+`get_compression_for_bitmap` rétrograde GLZ vers LZ simple dès que
+`bitmap_fmt_has_graduality` est faux, et ce prédicat exige un format RGB —
+qu'aucun format palettisé n'est.
+
+Les variantes palettisées n'existent donc dans le gabarit de spice-gtk que
+parce qu'il est instancié mécaniquement pour chaque type. Elles restent
+refusées ici, et le test qui l'épingle dit que c'est un refus définitif plutôt
+qu'un manque.
+
+Ce qui reste sur le canal display, hors GLZ : `lz4`, et les types QUIC autres
+que ceux déjà couverts. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le

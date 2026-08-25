@@ -208,6 +208,47 @@ final class SpiceGLZDecodeTests: XCTestCase {
         XCTAssertNotEqual(sixteen.count, thirtyTwo.count)
     }
 
+    /// `rgba`: the colour pass, then the alpha pass starting where it stopped.
+    func testRGBADecodesBothPasses() throws {
+        var window = SpiceGLZ.Window()
+        let count = SpiceGLZFixtures.width * SpiceGLZFixtures.height
+
+        for (index, fixture) in SpiceGLZFixtures.rgba.enumerated() {
+            let stream = SpiceGLZFixtures.bytes(fixture.stream)
+            let header = try SpiceGLZ.header(stream)
+            XCTAssertEqual(header.type, .rgba, "le gabarit doit bien être du rgba")
+
+            let colour = try SpiceGLZ.decodeRGB32(
+                stream, from: SpiceGLZ.headerBytes, pixels: count,
+                imageID: header.id, window: window
+            )
+            let both = try SpiceGLZ.decodeRGB32(
+                stream, from: SpiceGLZ.headerBytes + colour.bytesRead, pixels: count,
+                imageID: header.id, window: window,
+                literal: .alpha, into: colour.pixels
+            )
+            XCTAssertEqual(
+                both.pixels, SpiceGLZFixtures.bytes(fixture.decoded), "image \(index)"
+            )
+            window.add(SpiceGLZ.Window.Image(
+                id: header.id, winHeadDistance: header.winHeadDistance,
+                pixels: both.pixels, width: header.width, height: header.height
+            ))
+            window.releaseAfterAdding()
+        }
+    }
+
+    /// The alpha genuinely varies, so a decoder that skipped the second pass
+    /// could not accidentally be right. Worth asserting on the fixture rather
+    /// than trusting how it was generated.
+    func testTheRGBAFixtureHasAlphaWorthDecoding() throws {
+        for fixture in SpiceGLZFixtures.rgba {
+            let pixels = SpiceGLZFixtures.bytes(fixture.decoded)
+            let alphas = Set(stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] })
+            XCTAssertGreaterThan(alphas.count, 1, "un alpha constant ne prouverait rien")
+        }
+    }
+
     /// The whole point, stated as a test: images after the first genuinely
     /// depend on the window. Decoding one with an empty window must fail rather
     /// than produce a picture out of nothing.
