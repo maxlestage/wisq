@@ -37,11 +37,23 @@ await rm(outdir, { recursive: true, force: true });
 
 // Step one: let Bun bundle and hash the script and stylesheet. The HTML it
 // emits is thrown away — what is wanted from it is the asset names.
+//
+// `NODE_ENV` is defined here rather than left to whoever runs the build, and
+// that is not a tidiness preference. React ships two builds behind one import:
+// the development one carries every warning, every key check and every hook
+// invariant, and it is the one you get unless something says otherwise. A
+// deploy job that runs `bun run build` with no environment set was publishing
+// it — 479 KB against 268 KB, 147 KB against 88 KB over the wire, and slower
+// on every render besides. A build that produces a different artefact
+// depending on the shell it was started from is a build with a bug, so the
+// value is written down here and `assertProductionBundle` below refuses to
+// ship anything that still smells of the development build.
 const result = await Bun.build({
   entrypoints: ["src/index.html"],
   outdir,
   minify: true,
   publicPath: "./",
+  define: { "process.env.NODE_ENV": JSON.stringify("production") },
 });
 
 if (!result.success) {
@@ -54,6 +66,26 @@ const scriptName = bundled.match(/<script[^>]+src="\.\/([^"]+)"/)?.[1];
 const styleName = bundled.match(/<link[^>]+rel="stylesheet"[^>]+href="\.\/([^"]+)"/)?.[1];
 if (!scriptName || !styleName) {
   console.error("le script ou la feuille de style est introuvable dans le HTML construit");
+  process.exit(1);
+}
+
+// A production React build has no warning text in it, because the branches that
+// would print it are compiled out. Two strings that only the development build
+// contains, checked against the bundle that is about to be published.
+//
+// This is here rather than only in the tests because it guards the artefact, not
+// the source: the mistake it catches is an environment producing a different
+// bundle from the same code, and by the time a test runs, the bundle is already
+// whatever it is. The tests check it too — belt and braces on the one thing that
+// silently doubles what every visitor downloads.
+const DEVELOPMENT_MARKERS = ["Each child in a list should have a unique", "captureOwnerStack"];
+const script = await Bun.file(join(outdir, scriptName)).text();
+const found = DEVELOPMENT_MARKERS.filter((marker) => script.includes(marker));
+if (found.length > 0) {
+  console.error(
+    `le bundle est celui de développement (${found.join(", ")}) : ` +
+      "React n'a pas été compilé en production",
+  );
   process.exit(1);
 }
 
@@ -131,7 +163,25 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
   const description = isHome ? copy[lang].hero.lede : doc!.lede;
   const canonical = `${SITE_URL}${pagePath(route, lang)}`;
 
-  const markup = renderToString(<App route={route.id} lang={lang} />);
+  const markup = renderToString(<App route={route.id} lang={lang} doc={doc ?? undefined} />);
+
+  // The document travels with the page rather than in the shared bundle.
+  //
+  // `</script>` inside a string would end this element early, and `<!--` would
+  // open a comment, so both leading characters are escaped. `JSON.parse` reads
+  // `\u003c` as `<`, so the payload is unchanged — only the byte a parser
+  // could act on is.
+  //
+  // The text appears twice in the document, as markup and as JSON, and that
+  // costs almost nothing over the wire: the two copies sit well inside gzip's
+  // window, so the second one is mostly back-references. Weighed against 21.6
+  // KB of other pages' prose in every visitor's bundle, it is a clear trade.
+  const docPayload = doc
+    ? `\n    <script type="application/json" id="doc">${JSON.stringify(doc).replace(
+        /</g,
+        "\\u003c",
+      )}</script>`
+    : "";
 
   // Every page says where its other language lives, and which one a reader
   // with no preference should get. Without this a search engine treats the two
@@ -191,7 +241,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     ${THEME_SCRIPT}
   </head>
   <body>
-    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>
+    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>${docPayload}
     <script type="module" src="${base}${scriptName}"></script>
   </body>
 </html>

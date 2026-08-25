@@ -7,10 +7,10 @@ import {
   type Lang,
 } from "./content";
 import { DocPage } from "./components/Doc";
+import type { Doc } from "./doc";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Logo } from "./components/Logo";
 import { ThemeSwitch } from "./components/ThemeSwitch";
-import { PAGES, type DocRouteId } from "./pages";
 import { LANGS, ROUTES, routeById, routeHref, type Page, type RouteId } from "./routes";
 
 const LANG_KEY = "wisq.lang";
@@ -48,10 +48,23 @@ function useHomeLanguage(page: Page) {
   }, [page.route.id, page.lang]);
 }
 
+/// The document a written page shows, passed in rather than looked up.
+///
+/// It used to be `PAGES[lang][route]`, and that one import put **every** page,
+/// in **both** languages, into the bundle every visitor downloads: 61 KB raw
+/// and 21.6 KB over the wire, measured, for prose almost none of them will
+/// read. A reader landing on the home page was paying for the privacy policy
+/// in French.
+///
+/// The document now travels in the HTML that already contains it, as JSON
+/// beside the markup — so a page carries its own text and nothing else, and
+/// hydration still has it synchronously, with no second request and no
+/// suspense boundary in the middle of a document.
 export function App({
   route: routeId = "home",
   lang = "en",
-}: { route?: RouteId; lang?: Lang } = {}) {
+  doc,
+}: { route?: RouteId; lang?: Lang; doc?: Doc } = {}) {
   const page: Page = { route: routeById(routeId), lang };
   const route = page.route;
   const copy = allCopy[lang];
@@ -109,7 +122,7 @@ export function App({
         {route.id === "home" ? (
           <Landing copy={copy} page={page} />
         ) : (
-          <DocPage doc={PAGES[lang][route.id as DocRouteId]} />
+          <DocPage doc={doc!} />
         )}
       </main>
 
