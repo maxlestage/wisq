@@ -646,6 +646,25 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// `DRAW_TRANSPARENT`: image, area, and two colour words.
+    ///
+    /// Shorter than every other draw with an image in it — no rop, no scale
+    /// mode, no mask — so a decoder that assumed the copy layout would read two
+    /// colours where the rop and scale mode belong and then run off the end.
+    static func transparent(_ payload: [UInt8]) throws -> Transparent {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let sourcePointer = try reader.u32()
+        return Transparent(
+            base: header,
+            source: try image(at: sourcePointer, in: body),
+            sourceArea: try rect(from: &reader),
+            sourceColour: try reader.u32(),
+            trueColour: try reader.u32()
+        )
+    }
+
     /// `DRAW_COPY_BITS`: the base, and then two words that are a point.
     ///
     /// Read as a rectangle by mistake it would consume sixteen bytes instead of

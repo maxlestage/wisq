@@ -312,6 +312,23 @@ enum SpiceDisplayWire {
         var mask: Mask
     }
 
+    /// `DRAW_TRANSPARENT` — a colour-key blit.
+    ///
+    /// The odd one out among the draws: **it carries no mask and no rop.** Its
+    /// whole shape is an image, an area, and two colours — and the reference
+    /// reads only the second of those two. `src_color` is in the structure and
+    /// `canvas_draw_transparent` never touches it.
+    struct Transparent: Equatable, Sendable {
+        var base: Base
+        var source: Image?
+        var sourceArea: Rect
+        /// Present in the message and unused by the reference decoder. Kept so
+        /// that the field is read rather than skipped by arithmetic.
+        var sourceColour: UInt32
+        /// The colour that does not get drawn.
+        var trueColour: UInt32
+    }
+
     /// `DRAW_COPY_BITS` — the surface copying from itself.
     ///
     /// The smallest draw message in the protocol and one of the most used: a
