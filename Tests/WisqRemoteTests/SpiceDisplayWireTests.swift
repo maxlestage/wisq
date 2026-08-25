@@ -302,17 +302,43 @@ final class SpiceDisplayWireTests: XCTestCase {
     /// The encodings whose message shape is *not* a plain length and bytes are
     /// left alone entirely rather than read with the wrong shape.
     ///
-    /// `LZ_PLT` used to be in this list and no longer is: its shape is read
-    /// now, by the test below. The others still name something the client
-    /// already holds, or carry a field this decoder does not read yet.
+    /// `LZ_PLT` used to be in this list, and `ZLIB_GLZ` after it; both have
+    /// their shapes read now, by the tests below. What is left names something
+    /// the client already holds rather than carrying an image at all.
     func testAnEncodingWithADifferentMessageShapeIsNotReadWithThisOne() throws {
-        for type in [UInt8(103 /* FROM_CACHE */), 104 /* SURFACE */, 107 /* ZLIB_GLZ */] {
+        for type in [UInt8(103 /* FROM_CACHE */), 104 /* SURFACE */] {
             let payload = u64(9) + [type, 0] + u32(64) + u32(48) + u32(6) + [1, 2, 3, 4, 5, 6]
             let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
             let image = try SpiceDisplayWire.image(at: 4, in: body)
             XCTAssertNil(image?.payload, "type \(type)")
             XCTAssertNil(image?.bitmap, "type \(type)")
         }
+    }
+
+    /// `ZLIB_GLZ`'s shape is its own too, and for a reason worth naming: it
+    /// carries **two** lengths. `glz_data_size` says how big the GLZ stream
+    /// will be once unzipped; `data_size` says how many zlib bytes follow.
+    ///
+    /// Read with the plain shape, the first is taken for the second — a length
+    /// that is normally larger than the message, so the read runs off the end
+    /// rather than producing a wrong picture. That is the good failure, and it
+    /// is why this type sat in the list above until its shape was read.
+    func testAZlibWrappedGLZImageIsReadWithItsOwnShape() throws {
+        var message = [UInt8](repeating: 0, count: 4)
+        let offset = UInt32(message.count)
+        message += u64(9) + [107 /* ZLIB_GLZ */, 0]
+        message += u32(64) + u32(48)
+        message += u32(4096)                 // glz_data_size, once inflated
+        message += u32(6)                    // data_size, the zlib bytes here
+        message += [1, 2, 3, 4, 5, 6]
+
+        let image = try XCTUnwrap(
+            try SpiceDisplayWire.image(at: offset, in: SpiceDisplayWire.Body(message))
+        )
+        XCTAssertEqual(image.payload, [1, 2, 3, 4, 5, 6], "les octets zlib, et eux seuls")
+        XCTAssertEqual(image.inflatedSize, 4096, "et la taille que le flux fera une fois dézippé")
+        XCTAssertEqual(image.descriptor.width, 64)
+        XCTAssertEqual(image.descriptor.height, 48)
     }
 
     /// `LZ_PLT`'s shape is its own: flags, then the size, then the colour

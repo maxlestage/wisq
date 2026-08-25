@@ -47,6 +47,31 @@ bits and `win_head_dist` as 32 more. 33 bytes, big-endian, laid out
 differently. Confirmed by parsing what `gzgen` produces, not only by reading
 the C.
 
+## Modes, and the paths that needed them
+
+`gzgen` takes `GZMODE` because four decoder paths turned out to be unreachable
+from any ordinary sequence — each was found by a sabotage that survived, not by
+reading.
+
+| mode | what it produces | the path it reaches |
+| --- | --- | --- |
+| *(none)* | a moving band over a stable image | cross-image matches |
+| `r` | flat blocks in the first image | local matches, where no window exists |
+| `f` | 70 images, the last repeating the first | an image distance past 63 |
+| `l` | 128x80, bottom half repeats top half | a pixel offset past the short field |
+| `d` | the last image repeats an earlier one's bottom half | cross-image **and** long offset at once |
+
+Two of those have a size floor that is easy to get wrong. A local offset only
+takes the long path once it passes `MAX_PIXEL_SHORT_DISTANCE` (4096), and the
+decoder biases a local offset by one — so a half-repeat over 8192 pixels
+encodes 4096 as 4095 and stays short by exactly one. 128x80 is the first size
+that works. And `d` uses smooth content on purpose: with noise its first two
+streams are 31 kB each, with bands they are 153 bytes.
+
+The very-long offset (past 2^17) has no mode, because no encoder output small
+enough to keep as a fixture reaches it. That one stream is written by hand and
+then run through `gzdec`, which is where its authority comes from.
+
 ## Files
 
 * `gzgen.c` — encodes N images against one dictionary. Streams to stdout as
