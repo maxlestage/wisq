@@ -24,8 +24,14 @@ final class JPEGTests: XCTestCase {
         )
     }
 
-    func testQualityIsClampedIntoTheSpecRange() {
-        guard JPEGDecoder.isAvailable else { return }
+    /// Skipped rather than returned early where there is no decoder.
+    ///
+    /// It used to `return`, which reports the test as **passed** while it
+    /// asserts nothing — and on Linux, where `JPEGDecoder` is unavailable,
+    /// that is every run. A green tick for a body that never executed is worse
+    /// than a red one: it is the shape of coverage without the substance.
+    func testQualityIsClampedIntoTheSpecRange() throws {
+        try XCTSkipUnless(JPEGDecoder.isAvailable, "pas de décodeur JPEG ici")
         XCTAssertTrue(RFB.preferredEncodings(lowBandwidth: false, jpegQuality: 42).contains(-23))
         XCTAssertTrue(RFB.preferredEncodings(lowBandwidth: false, jpegQuality: -3).contains(-32))
     }

@@ -188,3 +188,30 @@ Le test manquant a été écrit : un gabarit réel, un seul octet de drapeau
 changé, et le trajet complet par `pixels(of:)` — pas un appel direct à la
 fonction de retournement, qui aurait passé le sabotage aussi. Première
 tentative écrite justement comme ça, et rejouée : elle ne mordait pas non plus.
+
+### Un décodeur que personne n'exécutait
+
+Avant de brancher JPEG dans SPICE, une question : où le décodeur JPEG est-il
+testé ? Réponse mesurée, pas lue : nulle part.
+
+`JPEGDecoder` enveloppe ImageIO et se déclare indisponible ailleurs. Les tests
+du paquet ne tournent en CI que sur Linux, où `canImport(ImageIO)` est faux.
+`swift test --filter JPEGTests` sur Linux exécute trois tests ; `testDecodesARealJPEG`
+n'en fait pas partie. Et le job iOS ne lance que `Tests/WisqUITests` — les tests
+du paquet n'y sont pas. Donc le code qui transforme des octets en pixels
+n'était vérifié par aucun job.
+
+Pire : `testQualityIsClampedIntoTheSpecRange` commençait par
+`guard JPEGDecoder.isAvailable else { return }`. Sur Linux il sortait
+immédiatement et était compté **réussi**. Une coche verte pour un corps qui ne
+s'exécute jamais est pire qu'une rouge : c'est la forme de la couverture sans
+la substance. Remplacé par `XCTSkipUnless`, qui le compte sauté.
+
+Conséquence sur ma propre habitude de vérification : je lisais « 0 sauté »
+comme un critère. Il y aura désormais 1 sauté sur Linux et 0 sur Apple. Le
+critère devient : les tests sautés sont ceux qu'on attend, et on sait
+lesquels.
+
+Ajouter le job `Cœur (Apple)` avant de brancher JPEG dans SPICE, plutôt
+qu'après : sinon la nouvelle branche serait posée derrière le même décodeur
+non vérifié, et on ne l'apprendrait qu'en le découvrant.
