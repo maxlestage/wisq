@@ -942,8 +942,69 @@ rapport de LZ4 sur le contenu photographique qui domine un bureau avec un fond
 d'écran. Sur un réseau mobile, c'est la bande passante qui est rare, pas le
 décodage.
 
-Ce qui reste sur le canal display : les types QUIC autres que ceux déjà
-couverts.
+### Les dessins qui n'ont pas de codec
+
+Fait. `DRAW_COPY_BITS`, `DRAW_BLACKNESS`, `DRAW_WHITENESS` et `DRAW_INVERS`
+étaient tous comptés comme ignorés, ce qui à l'écran donne une fenêtre qui
+défile en gardant son ancien contenu. Ce sont les messages les moins chers du
+canal et parmi les plus fréquents : une fenêtre qui défile, c'est
+`DRAW_COPY_BITS`.
+
+Deux choses en font autre chose qu'une boucle.
+
+**La source se découpe aussi.** La boîte et le clip disent où l'on écrit ;
+rien ne dit où l'on lit, et un défilement près d'un bord nomme une ligne source
+qui n'existe pas. La référence intersecte la région de destination avec un
+rectangle décalé de la distance, ce qui laisse intactes les lignes sans source
+au lieu de dupliquer le bord.
+
+**La copie se recouvre elle-même.** Une fenêtre qui descend de dix pixels lit
+des lignes qu'elle vient d'écrire. `spice_pixman_copy_rect` choisit un sens par
+rectangle ; wisq lit toute la source d'abord. Le résultat est identique — l'ordre
+de la référence existe justement pour imiter un instantané sans en allouer un —
+et ce que ça coûte est l'aire de la région, sur une copie qui allait de toute
+façon la parcourir.
+
+Une asymétrie de la référence est reproduite plutôt que corrigée : `blackness`
+passe `0x000000` et `whiteness` `0xffffffff`, donc sur une surface avec alpha
+l'un la vide et l'autre la remplit. Écrire `0xff000000` pour le noir serait
+*changer* le comportement du protocole en quelque chose de plus sensé, et le
+serveur dessine en attendant l'autre.
+
+### Le masque, décodé
+
+Fait. Un `QMask` est un bitmap 1 bit qui *réduit* ce qu'un dessin touche :
+`canvas_mask_pixman` intersecte la région de destination avec la région des bits
+à un. `SpiceMask` le décode et `fill`, `copy` et les trois rasters le consultent
+par pixel.
+
+Il ne rejoint pas les rectangles, et c'est une décision plutôt qu'une limite :
+la région des bits à un d'un bitmap 1 bit est une forme quelconque, dont la
+décomposition en rectangles fait au pire un rectangle par pixel. Les rectangles
+restent donc *où le dessin peut écrire* et le masque répond *s'il écrit*. Ce sont
+toujours les rectangles qui sont signalés au rendu, délibérément : une région de
+mise à jour est une indication de ce qu'il faut re-téléverser, donc un
+sur-ensemble coûte un peu de bande passante et un sous-ensemble perd des pixels.
+
+Trois choses s'y trompent d'une réflexion, et chacune produit une image :
+
+* **quel bit d'un octet est le pixel de gauche** — `1BIT_LE` commence au bit 0,
+  `1BIT_BE` au bit 7. À l'envers, le masque est en miroir par groupes de huit ;
+* **le sens des lignes** — un masque est bas-en-haut par défaut comme tout
+  bitmap de ce canal ;
+* **où le masque se pose** — le pixel de destination *(x, y)* est le pixel de
+  masque *(x − box.left + pos.x, y − box.top + pos.y)*. Oublier `box.left` passe
+  tous les tests dont la boîte part de l'origine.
+
+Et une quatrième qui n'est pas une réflexion : **hors du masque, c'est refusé,
+pas autorisé.** La référence découpe les extents puis *intersecte*, donc un pixel
+de destination sans pixel de masque au-dessus est retiré. Le traiter comme permis
+peint tout ce que le masque n'atteint pas — ce qui, pour un petit masque sur une
+grande boîte, ressemble beaucoup à un masque qui marche.
+
+Ce qui reste sur le canal display : les dessins qui composent (`DRAW_OPAQUE`,
+`DRAW_BLEND`, `DRAW_ALPHA_BLEND`, `DRAW_TRANSPARENT`, `DRAW_ROP3`), les tracés et
+le texte (`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 

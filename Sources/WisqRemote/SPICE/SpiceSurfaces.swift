@@ -151,6 +151,7 @@ struct SpiceSurfaces {
             // `none` brush writes nothing at all.
             throw Failure.notDrawable
         }
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
 
         // The colour is a 32-bit word in the surface's own order, so it lands
         // as four bytes little-endian: blue, green, red, then the pad.
@@ -163,12 +164,13 @@ struct SpiceSurfaces {
         for rect in written {
             for y in Int(rect.top)..<Int(rect.bottom) {
                 var index = (y * surface.width + Int(rect.left)) * 4
-                for _ in Int(rect.left)..<Int(rect.right) {
+                for x in Int(rect.left)..<Int(rect.right) {
+                    defer { index += 4 }
+                    guard mask?.allows(x, y) ?? true else { continue }
                     surface.pixels[index] = blue
                     surface.pixels[index + 1] = green
                     surface.pixels[index + 2] = red
                     surface.pixels[index + 3] = alpha
-                    index += 4
                 }
             }
         }
@@ -197,6 +199,7 @@ struct SpiceSurfaces {
             throw Failure.notDrawable
         }
 
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
         let box = operation.base.box
         let area = operation.sourceArea
         guard area.width > 0, area.height > 0, box.width > 0, box.height > 0 else { return [] }
@@ -214,6 +217,7 @@ struct SpiceSurfaces {
                 guard sourceY >= 0, sourceY < source.height else { continue }
 
                 for x in Int(rect.left)..<Int(rect.right) {
+                    guard mask?.allows(x, y) ?? true else { continue }
                     let sourceX = Int(area.left) + (x - Int(box.left)) * Int(area.width)
                         / Int(box.width)
                     guard sourceX >= 0, sourceX < source.width else { continue }
@@ -226,6 +230,174 @@ struct SpiceSurfaces {
                     surface.pixels[to + 3] = surface.hasAlpha && bytesPerSourcePixel == 4
                         ? source.pixels[from + 3]
                         : 0
+                }
+            }
+        }
+        surfaces[operation.base.surfaceID] = surface
+        return written
+    }
+
+    // MARK: - The mask every draw carries
+
+    /// A draw's mask, resolved against its box.
+    ///
+    /// `nil` for the common case of no mask at all. A mask that exists but
+    /// cannot be used — one naming a cached image, another surface, or a format
+    /// that is not 1-bit — becomes `notDrawable`, which leaves that part of the
+    /// screen alone rather than dropping the connection.
+    ///
+    /// This used to refuse *every* masked draw, and before that `fill` used to
+    /// ignore the mask and paint its whole box. Both were wrong in opposite
+    /// directions: painting everything destroys pixels the server wanted kept,
+    /// painting nothing leaves pixels stale, and the server resends neither.
+    static func mask(
+        _ mask: SpiceDisplayWire.Mask, box: SpiceDisplayWire.Rect
+    ) throws -> SpiceMask.Resolved? {
+        do {
+            return try SpiceMask.resolve(mask, box: box)
+        } catch {
+            throw Failure.notDrawable
+        }
+    }
+
+    // MARK: - The draws that need no codec
+
+    /// `DRAW_COPY_BITS` — the surface copying from itself.
+    ///
+    /// Two things make it more than a loop.
+    ///
+    /// The first is **the source has to be clipped too.** The clip and the box
+    /// bound where pixels are written; nothing in them bounds where they are
+    /// read, and a scroll near an edge names a source row outside the surface.
+    /// The reference does it by intersecting the destination region with a
+    /// rectangle offset by the distance — `pixman_region32_init_rect(&src, dx,
+    /// dy, width, height)` — which is the same as saying the destination must
+    /// stay inside the surface once shifted back. That is the `shifted`
+    /// rectangle below, and it is not the same as clamping each read: clamping
+    /// would duplicate the edge row instead of leaving it alone.
+    ///
+    /// The second is **the copy overlaps itself.** A window scrolling by ten
+    /// pixels reads rows it has just written. `spice_pixman_copy_rect` picks a
+    /// direction per rectangle — rows bottom-to-top going down, top-to-bottom
+    /// going up, `memmove` within a row — and `copy_region` orders the
+    /// rectangles to match. This reads the whole source out first instead. The
+    /// result is identical, because the reference's ordering exists precisely
+    /// to imitate a snapshot without allocating one; what it costs is the
+    /// region's area in bytes, on a copy that was already going to touch it.
+    @discardableResult
+    mutating func copyBits(
+        _ operation: SpiceDisplayWire.CopyBits
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+
+        let dx = Int(operation.base.box.left) - Int(operation.source.x)
+        let dy = Int(operation.base.box.top) - Int(operation.source.y)
+        // No distance, no copy. The reference returns without touching the
+        // surface, and it matters: with dx and dy both zero every pixel would
+        // be copied onto itself, which is work with no effect — but it would
+        // also be *reported* as a region drawn, and a renderer would repaint
+        // for nothing.
+        guard dx != 0 || dy != 0 else { return [] }
+
+        let shifted = SpiceDisplayWire.Rect(
+            top: Int32(clamping: dy), left: Int32(clamping: dx),
+            bottom: Int32(clamping: dy + surface.height),
+            right: Int32(clamping: dx + surface.width)
+        )
+        let written = Self.regions(of: operation.base, in: surface)
+            .compactMap { Self.intersect($0, shifted) }
+        guard !written.isEmpty else { return [] }
+
+        // The snapshot, one rectangle at a time and in the destination's
+        // coordinates, so the write below needs no arithmetic of its own.
+        var snapshots: [[UInt8]] = []
+        snapshots.reserveCapacity(written.count)
+        for rect in written {
+            var pixels = [UInt8]()
+            pixels.reserveCapacity(Int(rect.width) * Int(rect.height) * 4)
+            for y in Int(rect.top)..<Int(rect.bottom) {
+                let row = (y - dy) * surface.width
+                let from = (row + Int(rect.left) - dx) * 4
+                pixels += surface.pixels[from..<(from + Int(rect.width) * 4)]
+            }
+            snapshots.append(pixels)
+        }
+
+        for (rect, pixels) in zip(written, snapshots) {
+            let rowBytes = Int(rect.width) * 4
+            for y in Int(rect.top)..<Int(rect.bottom) {
+                let to = (y * surface.width + Int(rect.left)) * 4
+                let start = (y - Int(rect.top)) * rowBytes
+                surface.pixels.replaceSubrange(
+                    to..<(to + rowBytes), with: pixels[start..<(start + rowBytes)]
+                )
+            }
+        }
+        surfaces[operation.base.surfaceID] = surface
+        return written
+    }
+
+    /// `DRAW_BLACKNESS`, `DRAW_WHITENESS` and `DRAW_INVERS`.
+    ///
+    /// The three raster operations with no operand. The reference reaches them
+    /// through the same path as a fill and then hands `fill_solid_rects` the
+    /// colour — `0x000000`, `0xffffffff` — or `fill_solid_rects_rop` with
+    /// `SPICE_ROP_INVERT`.
+    ///
+    /// **The two constants are not typos of each other**, and the difference is
+    /// the whole of what the fourth byte does. Blackness passes `0x000000` and
+    /// whiteness `0xffffffff`, so on a surface that has alpha, blackness makes
+    /// the region fully transparent and whiteness fully opaque. Invers is a rop
+    /// over the whole 32-bit word, so it complements the alpha along with the
+    /// colour.
+    ///
+    /// That asymmetry looks like a bug in the reference and is not one to
+    /// paper over: writing `0xff000000` for blackness would be *changing* the
+    /// protocol's behaviour on argb32 surfaces to something more sensible, and
+    /// the server draws expecting the other. On a surface without alpha the
+    /// fourth byte is held at zero regardless, which is the rule `fill`
+    /// already follows.
+    @discardableResult
+    mutating func raster(
+        _ operation: SpiceDisplayWire.MaskedRaster
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        let mask = try Self.mask(operation.mask, box: operation.base.box)
+
+        let written = Self.regions(of: operation.base, in: surface)
+        for rect in written {
+            for y in Int(rect.top)..<Int(rect.bottom) {
+                var index = (y * surface.width + Int(rect.left)) * 4
+                for x in Int(rect.left)..<Int(rect.right) {
+                    defer { index += 4 }
+                    guard mask?.allows(x, y) ?? true else { continue }
+                    switch operation.operation {
+                    case .blackness:
+                        surface.pixels[index] = 0
+                        surface.pixels[index + 1] = 0
+                        surface.pixels[index + 2] = 0
+                    case .whiteness:
+                        surface.pixels[index] = 0xFF
+                        surface.pixels[index + 1] = 0xFF
+                        surface.pixels[index + 2] = 0xFF
+                    case .invers:
+                        surface.pixels[index] = ~surface.pixels[index]
+                        surface.pixels[index + 1] = ~surface.pixels[index + 1]
+                        surface.pixels[index + 2] = ~surface.pixels[index + 2]
+                    }
+                    if surface.hasAlpha {
+                        switch operation.operation {
+                        case .blackness: surface.pixels[index + 3] = 0x00
+                        case .whiteness: surface.pixels[index + 3] = 0xFF
+                        case .invers: surface.pixels[index + 3] = ~surface.pixels[index + 3]
+                        }
+                    } else {
+                        surface.pixels[index + 3] = 0
+                    }
                 }
             }
         }
