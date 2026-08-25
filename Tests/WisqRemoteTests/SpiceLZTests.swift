@@ -29,7 +29,11 @@ final class SpiceLZTests: XCTestCase {
     /// The test the whole exercise is for: every reference stream decompresses
     /// back to exactly the image the reference encoder was given.
     func testEveryReferenceStreamDecompressesToTheOriginalImage() throws {
-        for fixture in SpiceLZFixtures.all {
+        // The two-pass forms are excluded here and covered on their own: this
+        // entry point decodes one pass by design, so running `rgba` through it
+        // would be asserting that half an image equals a whole one.
+        for fixture in SpiceLZFixtures.all
+        where fixture.type != .rgba && fixture.type != .xxxa {
             let (header, pixels) = try SpiceLZ.decompress(bytes(fixture.stream))
 
             XCTAssertEqual(header.type, fixture.type, fixture.name)
@@ -135,9 +139,14 @@ final class SpiceLZTests: XCTestCase {
     /// one is work not done, the other is a broken stream.
     func testAValidTypeThisDecoderDoesNotHandleIsNamedApart() {
         var stream = bytes(SpiceLZFixtures.all[0].stream)
-        stream[11] = 5 // PLT8, a real type, not decoded here
+        // `a8` is the last form still not decoded. This test has now named
+        // three different types in turn — PLT8, then `rgba`, now this — each
+        // time failing the moment support arrived. That is exactly how a test
+        // of "not supported yet" should age, and the reason to keep writing it
+        // against a specific type rather than a vague one.
+        stream[11] = 11
         XCTAssertThrowsError(try SpiceLZ.decompress(stream)) { error in
-            XCTAssertEqual(error as? SpiceLZ.Failure, .unsupportedImageType(.palette8))
+            XCTAssertEqual(error as? SpiceLZ.Failure, .unsupportedImageType(.a8))
         }
 
         stream[11] = 99 // not a type at all
@@ -251,6 +260,70 @@ final class SpiceLZTests: XCTestCase {
                 payload: [1, 2, 3, 4]
             )
             XCTAssertNil(try SpiceDisplayWire.pixels(of: image), "\(type)")
+        }
+    }
+    // MARK: - The two-pass forms
+
+    /// `rgba` and `xxxa` are two LZ streams end to end in one payload: the
+    /// colour pass, then an alpha pass over the same pixels touching only their
+    /// fourth byte.
+    ///
+    /// This is why they were refused rather than decoded until now. The
+    /// single-pass loop would have read the colour pass, declared the image
+    /// finished, and left every pixel opaque while half the payload sat unread
+    /// — a picture, and a wrong one.
+    func testTheTwoPassFormsDecodeBothPasses() throws {
+        for fixture in SpiceLZFixtures.all where fixture.type == .rgba || fixture.type == .xxxa {
+            let (header, pixels) = try SpiceLZ.decompressWithAlpha(bytes(fixture.stream))
+            XCTAssertEqual(header.type, fixture.type, fixture.name)
+
+            let expected = bytes(fixture.original)
+            XCTAssertEqual(pixels.count, expected.count, "\(fixture.name) : longueur")
+            if pixels != expected {
+                let at = (0..<min(pixels.count, expected.count)).first { pixels[$0] != expected[$0] }
+                XCTFail("""
+                \(fixture.name) (\(fixture.note)) : \
+                premier octet différent à \(at ?? -1) — \
+                obtenu \(at.map { String(pixels[$0], radix: 16) } ?? "?"), \
+                attendu \(at.map { String(expected[$0], radix: 16) } ?? "?")
+                """)
+            }
+        }
+    }
+
+    /// The alpha actually varies. A decoder that skipped the second pass would
+    /// leave every fourth byte at zero and still match a fixture whose alpha
+    /// happened to be zero — so the fixture has to be one where it is not.
+    func testTheAlphaPassActuallyWritesSomething() throws {
+        let fixture = try XCTUnwrap(SpiceLZFixtures.all.first { $0.type == .rgba })
+        let (_, pixels) = try SpiceLZ.decompressWithAlpha(bytes(fixture.stream))
+        let alphas = Set(stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] })
+        XCTAssertGreaterThan(alphas.count, 1, "l'alpha doit varier, sinon le test ne prouve rien")
+        XCTAssertFalse(alphas == [0], "et ne pas être uniformément zéro")
+    }
+
+    /// `xxxa` never transmits its colour bytes, so they come back as zero
+    /// rather than as whatever the buffer happened to hold. In C that is
+    /// uninitialised memory reaching the screen.
+    func testTheAlphaOnlyFormLeavesItsColourBytesAtZero() throws {
+        let fixture = try XCTUnwrap(SpiceLZFixtures.all.first { $0.type == .xxxa })
+        let (_, pixels) = try SpiceLZ.decompressWithAlpha(bytes(fixture.stream))
+        for pixel in 0..<(fixture.width * fixture.height) {
+            XCTAssertEqual(
+                Array(pixels[(pixel * 4)..<(pixel * 4 + 3)]), [0, 0, 0],
+                "pixel \(pixel) : la couleur n'est jamais transmise"
+            )
+        }
+    }
+
+    /// The single-pass entry point still handles every other form, so the two
+    /// paths cannot drift into disagreeing about the same stream.
+    func testTheAlphaAwareEntryPointAgreesWithThePlainOneOnSinglePassForms() throws {
+        for fixture in SpiceLZFixtures.all where fixture.type != .rgba && fixture.type != .xxxa {
+            let plain = try SpiceLZ.decompress(bytes(fixture.stream))
+            let viaAlpha = try SpiceLZ.decompressWithAlpha(bytes(fixture.stream))
+            XCTAssertEqual(plain.pixels, viaAlpha.pixels, fixture.name)
+            XCTAssertEqual(plain.header, viaAlpha.header, fixture.name)
         }
     }
 }

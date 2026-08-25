@@ -72,7 +72,20 @@ enum SpiceWire {
         static let ackSync: UInt16 = 1
         static let ack: UInt16 = 2
         static let pong: UInt16 = 3
-        static let attachChannels: UInt16 = 101
+        /// 104, and it was 101 here for a long time.
+        ///
+        /// 101 is `CLIENT_INFO`. The main channel's client messages number
+        /// from 101 in declaration order — `client_info`,
+        /// `migrate_connected`, `migrate_connect_error`, then this — and the
+        /// first of them is the one an eye lands on.
+        ///
+        /// Nothing caught it. The test asserted that what went out equalled
+        /// this constant, which is true however wrong the constant is; and the
+        /// scripted server sent its channel list whether or not it had been
+        /// asked. Against a real server the effect is total: the list never
+        /// arrives, `bringUp` runs to its limit and throws, and every channel
+        /// built on top of it is unreachable.
+        static let attachChannels: UInt16 = 104
     }
 
     // MARK: - Reading

@@ -45,9 +45,14 @@ int main(int argc, char **argv) {
     /* RGB32's fourth byte is padding the codec never transmits and always
        writes back as zero. Zeroing it here makes the fixture comparable to
        what a correct decoder produces, rather than to bytes the format
-       does not carry. */
+       does not carry. RGBA and XXXA *do* carry it, so they keep theirs. */
     if (type == LZ_IMAGE_TYPE_RGB32)
         for (size_t i = 3; i < (size_t)stride * h; i += 4) lines[i] = 0;
+    /* XXXA carries only the alpha byte: the colour bytes are never encoded and
+       come back as whatever the buffer held, so they are zeroed to make the
+       comparison meaningful. */
+    if (type == LZ_IMAGE_TYPE_XXXA)
+        for (size_t i = 0; i < (size_t)stride * h; i++) if (i % 4 != 3) lines[i] = 0;
 
     Usr usr = {0};
     usr.base.error = on_error; usr.base.warn = on_msg; usr.base.info = on_msg;
