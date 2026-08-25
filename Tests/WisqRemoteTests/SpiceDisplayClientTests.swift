@@ -38,52 +38,91 @@ final class SpiceDisplayClientTests: XCTestCase {
     /// default sends whatever it likes; asking is what turns finished codecs
     /// into a picture.
     ///
-    /// This asked for plain `lz` until QUIC was decoded. It asks for `autoLZ`
-    /// now, which is what makes the QUIC work visible: photographs and
-    /// gradients stop going through the codec that compresses them worst.
-    func testAServerThatCanBeAskedIsAskedForAutomaticLZ() {
+    /// It asked for plain `lz`, then `autoLZ` when QUIC was decoded, and now
+    /// `autoGLZ`. Both automatic modes send QUIC for a high-graduality bitmap
+    /// and differ only in the fallback, so this is the choice of what a desktop
+    /// gets for its widgets and text: LZ starting fresh at every image, or GLZ
+    /// matching across the whole channel.
+    func testAServerThatCanBeAskedIsAskedForAutomaticGLZ() {
         let caps = SpiceDisplayClient.capabilityWords([.preferredCompression])
         XCTAssertEqual(
-            SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps), .autoLZ
+            SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps), .autoGLZ
         )
-        XCTAssertEqual(SpiceDisplayClient.preferredCompression(.autoLZ), [3])
+        XCTAssertEqual(SpiceDisplayClient.preferredCompression(.autoGLZ), [2])
     }
 
-    /// `autoLZ`, never `autoGLZ`, and the difference is not cosmetic.
+    /// **Asking for `autoGLZ` is only safe because the window is real**, and
+    /// this is the test that ties the two together so neither can be changed
+    /// back on its own.
     ///
-    /// `get_compression_for_bitmap` in the server's `dcc.cpp` sends QUIC for a
-    /// high-graduality bitmap under either mode, and then falls back to LZ
-    /// under one and GLZ under the other. So `autoLZ` produces only QUIC or LZ
-    /// — both decoded here — while `autoGLZ` can still produce GLZ, whose
-    /// matches reach into a dictionary built from earlier images on the
-    /// channel. Asking for it would be asking for a stream this client refuses,
-    /// some of the time, which is the hardest kind of bug to see.
-    func testTheRequestIsNeverTheModeThatCanStillSendGLZ() {
+    /// The reference encoder aborts the server — `usr->error` in
+    /// `glz_dictionary_window_get_new_head`, which is `spice_critical`, which
+    /// is `abort()` — for any image larger than the declared window. So a
+    /// preference that can produce GLZ and a window that cannot hold a frame
+    /// are individually defensible and jointly fatal.
+    func testAskingForGLZRequiresAWindowThatCanHoldAFrame() {
         let caps = SpiceDisplayClient.capabilityWords([.preferredCompression])
         let asked = SpiceDisplayClient.compressionToRequest(givenServerCapabilities: caps)
-        XCTAssertNotEqual(asked, .autoGLZ)
-        XCTAssertNotEqual(asked, .glz)
+        let canProduceGLZ = asked == .autoGLZ || asked == .glz
+        if canProduceGLZ {
+            XCTAssertGreaterThanOrEqual(
+                SpiceDisplayClient.glzWindowPixels, 3840 * 2160,
+                "demander GLZ avec une fenêtre trop petite fait abandonner le serveur"
+            )
+        }
     }
 
     /// The init message the server waits for before it draws anything.
+    ///
+    /// The window here is `0x0A0B_0C0D` rather than a round number because the
+    /// field is a little-endian `int32` and four equal bytes — zero above all —
+    /// agree with every byte order there is. This test used to pass zero.
     func testTheInitMessageIsLaidOutAsTheProtocolStatesIt() {
         let body = SpiceDisplayClient.initialise(
-            pixmapCacheID: 1, pixmapCachePixels: 0x0102_0304, glzDictionaryID: 2, glzWindowPixels: 0
+            pixmapCacheID: 1, pixmapCachePixels: 0x0102_0304,
+            glzDictionaryID: 2, glzWindowPixels: 0x0A0B_0C0D
         )
         // uint8, int64 little-endian, uint8, int32 little-endian.
         XCTAssertEqual(body.count, 1 + 8 + 1 + 4)
         XCTAssertEqual(body[0], 1)
         XCTAssertEqual(Array(body[1...8]), [0x04, 0x03, 0x02, 0x01, 0, 0, 0, 0])
         XCTAssertEqual(body[9], 2)
-        XCTAssertEqual(Array(body[10...13]), [0, 0, 0, 0])
+        XCTAssertEqual(Array(body[10...13]), [0x0D, 0x0C, 0x0B, 0x0A])
     }
 
-    /// The GLZ window is zero on purpose, not by omission: wisq does not decode
-    /// GLZ, so a window would be memory held to assemble images it will never
-    /// assemble. A phone is where that matters.
-    func testTheGLZWindowIsZeroBecauseGLZIsNotDecoded() {
+    /// **The GLZ window has to hold one whole frame, or the server dies.**
+    ///
+    /// This asserted the opposite — that the window is zero — with the reason
+    /// "wisq does not decode GLZ". That reason had already stopped being true,
+    /// and the value it defended was never the harmless one it looked like:
+    /// `glz_dictionary_window_get_new_head` calls `usr->error` for any image
+    /// bigger than the window, `glz_usr_error` calls `spice_critical`, and that
+    /// calls `abort()`. Zero is not a small window. It is a dead server on the
+    /// first GLZ image, and `scripts/spice-glz-window/` shows the boundary: a
+    /// 64×64 image is clean at 4096 pixels and aborts at 4095.
+    ///
+    /// So the floor is the largest frame a guest might send, not a judgement
+    /// about how much history is useful — the resolution is not known when this
+    /// message goes out.
+    func testTheGLZWindowHoldsAWholeFrameBecauseASmallerOneAbortsTheServer() {
+        let declared = SpiceDisplayClient.glzWindowPixels
+        for (width, height, name) in [
+            (1_920, 1_080, "1080p"), (2_560, 1_440, "1440p"), (3_840, 2_160, "2160p"),
+        ] {
+            XCTAssertGreaterThanOrEqual(declared, Int32(width * height), name)
+        }
+        // `LZ_MAX_WINDOW_SIZE` in `lz_common.h`. Above it
+        // `glz_dictionary_window_create` returns FALSE and the dictionary is
+        // never built, which is its own kind of broken.
+        XCTAssertLessThanOrEqual(declared, 1 << 25)
+
         let body = SpiceDisplayClient.initialise()
-        XCTAssertEqual(Array(body.suffix(4)), [0, 0, 0, 0])
+        XCTAssertEqual(
+            Array(body.suffix(4)),
+            (0..<4).map { UInt8(UInt32(bitPattern: declared) >> (8 * $0) & 0xFF) },
+            "la valeur par défaut du message est bien la constante"
+        )
+        XCTAssertNotEqual(Array(body.suffix(4)), [0, 0, 0, 0])
     }
 
     /// The message numbers, which are not sequential from one and are easy to
