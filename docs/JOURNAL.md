@@ -985,3 +985,43 @@ contre la suite entière et pas contre un filtre choisi à la main, et vérifier
 le remplacement a changé le contenu du fichier — pas seulement qu'il n'a pas
 échoué. Passé à la suite entière, la même modification sur `fill` fait tomber
 neuf tests.
+
+## La couleur-clé, et trois bogues dans le harnais de sabotage
+
+`DRAW_TRANSPARENT` est petit : une couleur de l'image veut dire « laisse ce
+qu'il y a dessous », le reste est copié. Ni masque ni rop — le seul dessin
+porteur d'image qui n'en a pas. La comparaison porte sur vingt-quatre bits, et
+`src_color`, présent dans le message, n'est jamais lu par la référence.
+
+Ce qui mérite d'être écrit n'est pas le codec mais la séance de sabotage, parce
+que **le harnais que j'avais écrit la tranche précédente pour ne plus se
+tromper s'est trompé trois fois de suite**, et chaque fois en produisant un
+verdict qui avait l'air d'un verdict.
+
+1. La logique de verdict cherchait « with 0 failures » dans la ligne de résumé.
+   Elle dit « and 0 failures ». Tout était donc déclaré « attrapé », y compris
+   deux sabotages qui survivaient vraiment.
+2. Corrigée, elle prenait le *dernier* résumé imprimé plutôt que le total. Une
+   suite qui se termine sur un groupe de trois tests était lue comme « trois
+   tests, aucun échec ».
+3. Corrigée encore, la regex exigeait « failures » au pluriel. Avec exactement
+   **un** échec, la ligne de total ne correspondait plus, et le sabotage
+   apparaissait comme « la suite n'a pas tourné entière ».
+
+Les trois ont la même forme que ce que je poursuis depuis une semaine : une
+absence de résultat qui ressemble à un résultat. La différence est qu'ici
+l'outil censé m'en protéger était lui-même le fautif — et que je ne l'ai vu
+qu'en ajoutant un **cas témoin** : un sabotage volontairement inoffensif, qui
+doit survivre. Il est resté dans le harnais.
+
+Une fois honnête, la séance a rendu deux vrais trous :
+
+* **la clé était symétrique dans tous mes gabarits.** `0x00FF00FF`,
+  `0x0000FF00`, `0x00AAAAAA` : échanger rouge et bleu en dépaquetant la clé
+  passait chacun d'eux. Gabarit asymétrique ajouté, avec son miroir comme second
+  pixel ;
+* **rien ne vérifiait que le clip ne fait pas glisser l'image.** `copy` a ce test
+  depuis longtemps ; `transparent` ne l'avait pas, et tous les clips de mes
+  tests commençaient à la même colonne que leur boîte.
+
+Neuf sabotages, neuf attrapés une fois les trous comblés.

@@ -357,6 +357,83 @@ struct SpiceSurfaces {
         return written
     }
 
+    /// `DRAW_TRANSPARENT` — every pixel except the ones matching a colour.
+    ///
+    /// The simplest compositing there is: one colour in the image means "leave
+    /// what is underneath", every other pixel is copied. It is how a cursor or
+    /// an icon with a hard-edged silhouette gets drawn without an alpha
+    /// channel, and it was being counted as ignored.
+    ///
+    /// Three details, all from `spice_pixman_blit_colorkey`:
+    ///
+    ///   * **the comparison is on twenty-four bits.** The key arrives as a
+    ///     32-bit word and the reference masks it with `0xffffff` before the
+    ///     loop, then compares `0xffffff & pixel`. Comparing all thirty-two
+    ///     would make the key never match on a source whose fourth byte is not
+    ///     zero — which is most of them;
+    ///   * **there is no mask and no rop.** Unlike every other draw with an
+    ///     image in it, this message carries neither, and `canvas_draw_transparent`
+    ///     calls neither `canvas_mask_pixman` nor `ropd_descriptor_to_rop`;
+    ///   * **`src_color` is never read.** It is in the message and the reference
+    ///     uses `true_color` for the key. Reading the wrong one of the two gives
+    ///     a picture with the wrong holes in it.
+    @discardableResult
+    mutating func transparent(
+        _ operation: SpiceDisplayWire.Transparent,
+        source: (pixels: [UInt8], width: Int, height: Int),
+        bytesPerSourcePixel: Int
+    ) throws -> [SpiceDisplayWire.Rect] {
+        guard var surface = surfaces[operation.base.surfaceID] else {
+            throw Failure.unknownSurface(operation.base.surfaceID)
+        }
+        guard bytesPerSourcePixel == 3 || bytesPerSourcePixel == 4 else {
+            throw Failure.notDrawable
+        }
+        guard source.pixels.count >= source.width * source.height * bytesPerSourcePixel else {
+            throw Failure.notDrawable
+        }
+
+        let box = operation.base.box
+        let area = operation.sourceArea
+        guard area.width > 0, area.height > 0, box.width > 0, box.height > 0 else { return [] }
+
+        // The key is an xRGB word, so it lands as blue, green, red — the same
+        // order a fill's colour does.
+        let keyBlue = UInt8(operation.trueColour & 0xFF)
+        let keyGreen = UInt8(operation.trueColour >> 8 & 0xFF)
+        let keyRed = UInt8(operation.trueColour >> 16 & 0xFF)
+
+        let written = Self.regions(of: operation.base, in: surface)
+        for rect in written {
+            for y in Int(rect.top)..<Int(rect.bottom) {
+                let sourceY = Int(area.top) + (y - Int(box.top)) * Int(area.height)
+                    / Int(box.height)
+                guard sourceY >= 0, sourceY < source.height else { continue }
+
+                for x in Int(rect.left)..<Int(rect.right) {
+                    let sourceX = Int(area.left) + (x - Int(box.left)) * Int(area.width)
+                        / Int(box.width)
+                    guard sourceX >= 0, sourceX < source.width else { continue }
+
+                    let from = (sourceY * source.width + sourceX) * bytesPerSourcePixel
+                    guard source.pixels[from] != keyBlue
+                        || source.pixels[from + 1] != keyGreen
+                        || source.pixels[from + 2] != keyRed else { continue }
+
+                    let to = (y * surface.width + x) * 4
+                    surface.pixels[to] = source.pixels[from]
+                    surface.pixels[to + 1] = source.pixels[from + 1]
+                    surface.pixels[to + 2] = source.pixels[from + 2]
+                    surface.pixels[to + 3] = surface.hasAlpha && bytesPerSourcePixel == 4
+                        ? source.pixels[from + 3]
+                        : 0
+                }
+            }
+        }
+        surfaces[operation.base.surfaceID] = surface
+        return written
+    }
+
     // MARK: - The draws that need no codec
 
     /// `DRAW_COPY_BITS` — the surface copying from itself.
