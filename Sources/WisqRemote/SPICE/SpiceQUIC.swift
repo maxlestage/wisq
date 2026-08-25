@@ -88,6 +88,104 @@ enum SpiceQUIC {
         return Header(type: type, width: width, height: height)
     }
 
+    // MARK: - The bit reader
+
+    /// Bits out of a QUIC stream.
+    ///
+    /// **The two orders run opposite ways, and that is the whole difficulty.**
+    /// The stream is a sequence of 32-bit words stored *little-endian*, but the
+    /// bits inside the window are consumed from the *top*. A reader that gets
+    /// either half right and the other wrong produces plausible small numbers
+    /// for a while and then diverges, which is the worst way for a codec to
+    /// fail.
+    ///
+    /// The shape is the reference's, kept deliberately rather than tidied: a
+    /// window, one word of lookahead, and a count of how many bits of that
+    /// lookahead have not yet been shifted in. Rewriting it as an index into a
+    /// bit array would be clearer and would not be the same function at the
+    /// edges.
+    struct BitReader {
+        /// The window. The bits about to be read are its most significant ones.
+        private(set) var window: UInt32 = 0
+        /// The word after it, already fetched.
+        private(set) var lookahead: UInt32 = 0
+        /// How many bits of `lookahead` have not yet been shifted into the
+        /// window.
+        private(set) var availableBits: Int = 0
+
+        private let words: [UInt32]
+        private var next: Int
+
+        /// Trailing bytes that do not fill a word are dropped, because the
+        /// reference reads the buffer as `uint32 *` and counts `size / 4`. A
+        /// stream is written in whole words, so this only ever discards
+        /// padding — but it is the reference's behaviour rather than a choice.
+        init(_ payload: [UInt8]) throws {
+            guard payload.count >= 4 else { throw Failure.truncated }
+            var words = [UInt32]()
+            words.reserveCapacity(payload.count / 4)
+            for start in stride(from: 0, to: payload.count - 3, by: 4) {
+                var value: UInt32 = 0
+                for byte in (0..<4).reversed() {
+                    value = value << 8 | UInt32(payload[start + byte])
+                }
+                words.append(value)
+            }
+            self.words = words
+
+            // Both registers start on the *first* word, not on the first and
+            // the second. Priming the lookahead with word one instead loses
+            // the whole stream by 32 bits, and the magic still reads correctly
+            // — so the mistake survives the first check.
+            window = words[0]
+            lookahead = words[0]
+            availableBits = 0
+            next = 1
+        }
+
+        private mutating func fetch() throws {
+            guard next < words.count else { throw Failure.truncated }
+            lookahead = words[next]
+            next += 1
+        }
+
+        /// Drops `count` bits from the top of the window and refills from the
+        /// lookahead. `count` must be between 1 and 31: the reference asserts
+        /// it, and a shift of 32 is undefined in C and merely wrong here.
+        mutating func eat(_ count: Int) throws {
+            precondition(count > 0 && count < 32, "QUIC consomme 1 à 31 bits à la fois")
+            window <<= UInt32(count)
+
+            let delta = availableBits - count
+            if delta >= 0 {
+                availableBits = delta
+                window |= lookahead >> UInt32(availableBits)
+                return
+            }
+
+            window |= lookahead << UInt32(-delta)
+            try fetch()
+            availableBits = 32 + delta
+            window |= lookahead >> UInt32(availableBits)
+        }
+
+        /// Thirty-two bits, as two sixteens.
+        ///
+        /// Not one `eat(32)`: shifting a 32-bit word by 32 is undefined in C,
+        /// so the reference was written never to ask, and the precondition
+        /// above keeps that true here.
+        ///
+        /// *Which* split is used does not matter — checked against the
+        /// reference rather than assumed: 16+16, 31+1 and a mixed sequence all
+        /// leave the reader in the same state, because the bookkeeping only
+        /// ever tracks a running total. Sixteen and sixteen because that is
+        /// what `decode_eat32bits` does, not because anything depends on it.
+        mutating func eat32() throws {
+            try eat(16)
+            try eat(16)
+        }
+    }
+
     // MARK: - The family tables
 
     /// `bppmask`: the low `n` bits set.

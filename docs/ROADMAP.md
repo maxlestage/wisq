@@ -597,6 +597,23 @@ ne transmet jamais le quatrième octet (le décodeur y écrit zéro, quoi qu'ait
 contenu l'original), et `gray` ne se décode qu'en `gray` — demander du 32 bits
 pour un flux gris est une erreur.
 
+**Le lecteur de bits est la deuxième tranche.** Sa difficulté tient en une
+phrase : **les mots sont petit-boutistes sur le fil, mais les bits se
+consomment depuis le poids fort.** Les deux ordres vont en sens contraire dans
+la même structure, et se tromper sur une moitié donne des petits nombres
+plausibles pendant un moment avant de diverger — la pire façon dont un codec
+puisse échouer.
+
+Deux détails que la référence impose et qu'on ne devinerait pas : les deux
+registres démarrent sur le **même** premier mot (amorcer l'anticipation avec le
+deuxième décale tout de 32 bits, et la magie se lit quand même correctement,
+donc l'erreur survit au premier contrôle) ; et 32 bits se consomment en deux
+fois, parce qu'un décalage de 32 sur un mot de 32 est indéfini en C.
+
+Le test compare **pas à pas** l'état du lecteur à celui de la référence, tracé
+par `qbits.c`. Ne comparer que la réponse finale laisserait un lecteur se
+tromper au milieu et retomber juste à la fin.
+
 Reste : la boucle de décodage QUIC elle-même, puis GLZ.
 
 ## Lot 6 — finition

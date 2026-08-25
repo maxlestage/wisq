@@ -169,4 +169,86 @@ final class SpiceQUICTests: XCTestCase {
         XCTAssertEqual(SpiceQUIC.bitMask(31), 0x7FFF_FFFF)
         XCTAssertEqual(SpiceQUIC.bitMask(32), 0xFFFF_FFFF)
     }
+    // MARK: - The bit reader
+
+    /// Step for step against the reference's own registers.
+    ///
+    /// Comparing only the final answer would let the reader be wrong in the
+    /// middle and right at the end. Comparing every call says which one
+    /// diverged, which on a codec that decodes hundreds of thousands of
+    /// symbols is the difference between a bug found and a bug hunted.
+    func testTheBitReaderMatchesTheReferenceAtEveryStep() throws {
+        for trace in SpiceQUICBitFixtures.all {
+            var reader = try SpiceQUIC.BitReader(SpiceQUICFixtures.bytes(trace.stream))
+            XCTAssertEqual(
+                SpiceQUICBitFixtures.Step(
+                    window: reader.window, availableBits: reader.availableBits
+                ),
+                trace.steps[0], "\(trace.name) : après init"
+            )
+            for (index, length) in trace.lengths.enumerated() {
+                try reader.eat(length)
+                XCTAssertEqual(
+                    SpiceQUICBitFixtures.Step(
+                        window: reader.window, availableBits: reader.availableBits
+                    ),
+                    trace.steps[index + 1],
+                    "\(trace.name) : après eat(\(length)) numéro \(index + 1)"
+                )
+            }
+        }
+    }
+
+    /// Both registers start on the *first* word. Priming the lookahead with the
+    /// second instead loses the stream by 32 bits — and the magic still reads
+    /// correctly, so the mistake survives the first thing anyone checks.
+    func testBothRegistersStartOnTheSameFirstWord() throws {
+        let reader = try SpiceQUIC.BitReader(SpiceQUICFixtures.bytes(
+            SpiceQUICFixtures.all[0].stream
+        ))
+        XCTAssertEqual(reader.window, SpiceQUIC.magic)
+        XCTAssertEqual(reader.lookahead, SpiceQUIC.magic)
+        XCTAssertEqual(reader.availableBits, 0)
+    }
+
+    /// The reader and the direct header parse have to agree, because the decode
+    /// loop continues from where the reader left off while the header was read
+    /// separately. If they disagree, every pixel after the header is shifted.
+    func testTheReaderAndTheHeaderParserAgreeOnTheSameFiveWords() throws {
+        for fixture in SpiceQUICFixtures.all {
+            let bytes = SpiceQUICFixtures.bytes(fixture.stream)
+            let parsed = try SpiceQUIC.header(bytes)
+            var reader = try SpiceQUIC.BitReader(bytes)
+
+            var words: [UInt32] = []
+            for _ in 0..<5 {
+                words.append(reader.window)
+                try reader.eat32()
+            }
+            XCTAssertEqual(words[0], SpiceQUIC.magic, fixture.name)
+            XCTAssertEqual(words[1], 0, fixture.name)
+            XCTAssertEqual(words[2], parsed.type.rawValue, fixture.name)
+            XCTAssertEqual(Int(words[3]), parsed.width, fixture.name)
+            XCTAssertEqual(Int(words[4]), parsed.height, fixture.name)
+        }
+    }
+
+    /// Running off the end throws rather than reading whatever follows the
+    /// buffer. The reference asks its caller for more words and gives up when
+    /// there are none; there are never any more here.
+    func testReadingPastTheEndOfTheStreamThrows() throws {
+        var reader = try SpiceQUIC.BitReader([1, 2, 3, 4, 5, 6, 7, 8])
+        // Two words in hand, so the third fetch is the one with nothing behind
+        // it. Eating 31 at a time forces a fetch every call.
+        XCTAssertThrowsError(
+            try { for _ in 0..<8 { try reader.eat(31) } }()
+        ) { XCTAssertEqual($0 as? SpiceQUIC.Failure, .truncated) }
+    }
+
+    func testAStreamTooShortForOneWordIsRefused() {
+        XCTAssertThrowsError(try SpiceQUIC.BitReader([1, 2, 3])) { error in
+            XCTAssertEqual(error as? SpiceQUIC.Failure, .truncated)
+        }
+    }
+
 }
