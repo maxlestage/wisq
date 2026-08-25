@@ -24,7 +24,9 @@ int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: gzgen W H COUNT [seed]\n"); return 1; }
     int w = atoi(argv[1]), h = atoi(argv[2]), count = atoi(argv[3]);
     unsigned seed = argc > 4 ? (unsigned)atoi(argv[4]) : 1;
-    int stride = w * 4;
+    int type = getenv("GZTYPE") ? atoi(getenv("GZTYPE")) : LZ_IMAGE_TYPE_RGB32;
+    int bpp = (type == LZ_IMAGE_TYPE_RGB24) ? 3 : (type == LZ_IMAGE_TYPE_RGB16) ? 2 : 4;
+    int stride = w * bpp;
 
     Usr u = {0};
     u.usr.error = u_err; u.usr.warn = u_warn; u.usr.info = u_info;
@@ -59,7 +61,7 @@ int main(int argc, char **argv) {
         if (farback && (n == 0 || n == count - 1)) r = seed * 2654435761u;
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                uint8_t *p = pixels + (size_t)y * stride + (size_t)x * 4;
+                uint8_t *p = pixels + (size_t)y * stride + (size_t)x * bpp;
                 if (deep) {
                     /* Image 0 is noise. The last image reproduces image 0's
                        BOTTOM half in its own top half, so the match lands at a
@@ -74,7 +76,7 @@ int main(int argc, char **argv) {
                     p[0] = (uint8_t)(band * 24 + (n == 1 ? 7 : 0));
                     p[1] = (uint8_t)(band * 11 + (n == 1 ? 3 : 0));
                     p[2] = (uint8_t)(band * 37 + (n == 1 ? 5 : 0));
-                    p[3] = 0;
+                    if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                 } else if (longofs) {
                     /* The bottom half is the top half again, so a match at the
                        midpoint reaches back half an image — past the 4095
@@ -83,33 +85,44 @@ int main(int argc, char **argv) {
                     unsigned q = (seed * 2654435761u) + (unsigned)(sy * 7919 + x * 104729);
                     q = q * 1103515245u + 12345u;
                     p[0] = (uint8_t)(q >> 16); p[1] = (uint8_t)(q >> 8);
-                    p[2] = (uint8_t)(q >> 24); p[3] = 0;
+                    p[2] = (uint8_t)(q >> 24); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                 } else if (repeats) {
                     /* Wide flat blocks, so a match can be found inside the
                        very first image, where no window exists yet. */
                     p[0] = (uint8_t)((x / 8) * 40); p[1] = (uint8_t)((y / 4) * 30);
-                    p[2] = (uint8_t)(((x / 8) ^ (y / 4)) * 20); p[3] = 0;
+                    p[2] = (uint8_t)(((x / 8) ^ (y / 4)) * 20); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                 } else if (farback) {
                     if (n == 0 || n == count - 1) {
                         p[0] = (uint8_t)(x * 11); p[1] = (uint8_t)(y * 13);
-                        p[2] = (uint8_t)((x + y) * 17); p[3] = 0;
+                        p[2] = (uint8_t)((x + y) * 17); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                     } else {
                         r = r * 1103515245u + 12345u;
                         p[0] = (uint8_t)(r >> 16); p[1] = (uint8_t)(r >> 8);
-                        p[2] = (uint8_t)(r >> 24); p[3] = 0;
+                        p[2] = (uint8_t)(r >> 24); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                     }
+                } else if (bpp == 2) {
+                    /* 0555, high byte first — the order the codec reads. */
+                    int band = (y / 3) % 3;
+                    unsigned v;
+                    if (band == 2) { r = r * 1103515245u + 12345u; v = (r >> 13) & 0x7FFF; }
+                    else if (band == 1) v = (unsigned)((x * 37 + y * 11) & 0x7FFF);
+                    else v = (unsigned)(((x / 4) * 1057) & 0x7FFF);
+                    if (n > 0 && y >= (n * 3) % h && y < (n * 3) % h + 3) {
+                        r = r * 1103515245u + 12345u; v = (r >> 13) & 0x7FFF;
+                    }
+                    p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)(v & 0xFF);
                 } else if (n > 0 && y >= (n * 3) % h && y < (n * 3) % h + 3) {
                     r = r * 1103515245u + 12345u;
                     p[0] = (uint8_t)(r >> 16); p[1] = (uint8_t)(r >> 8);
-                    p[2] = (uint8_t)(r >> 24); p[3] = 0;
+                    p[2] = (uint8_t)(r >> 24); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                 } else {
                     p[0] = (uint8_t)(x * 3); p[1] = (uint8_t)(y * 5);
-                    p[2] = (uint8_t)((x ^ y) * 7); p[3] = 0;
+                    p[2] = (uint8_t)((x ^ y) * 7); if (bpp == 4) p[3] = (type == LZ_IMAGE_TYPE_RGBA) ? (uint8_t)((x * 9 + y * 23 + n * 51) & 0xFF) : 0;
                 }
             }
         }
         GlzEncDictImageContext *dctx = NULL;
-        int size = glz_encode(enc, LZ_IMAGE_TYPE_RGB32, w, h, 1 /*top_down*/,
+        int size = glz_encode(enc, (LzImageType)type, w, h, 1 /*top_down*/,
                               pixels, h, stride, out, (unsigned)outcap,
                               (GlzUsrImageContext *)(intptr_t)(n + 1), &dctx);
         if (size <= 0) { fprintf(stderr, "encode %d failed: %d\n", n, size); return 3; }
