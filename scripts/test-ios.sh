@@ -9,9 +9,16 @@
 # inside a booted simulator rather than on the host.
 #
 # `simctl spawn` runs the binary with the simulator's runtime and the host's
-# filesystem, so the kernel image is reached by its host path. A simulator is
-# not a phone — same architecture on Apple Silicon, no thermal or memory
-# pressure — so this proves correctness, not performance.
+# filesystem, so the kernel image is reached by its host path.
+#
+# It also prints the interpreter's throughput, which is the only figure this
+# repository has from the Apple toolchain — `wisq-bench` runs on the Linux job
+# and measures a Linux build. Read it as an upper bound and a regression
+# detector, not as a phone number: a simulator on Apple Silicon is the same
+# architecture with no thermal ceiling and no memory pressure, and a shared
+# runner's figure moves between runs. There is deliberately no threshold; a
+# change that halves it is meant to be visible in the log, and a guest that
+# stops reaching its banner fails the job outright.
 #
 #   scripts/test-ios.sh [kernel-image]
 #
@@ -77,7 +84,8 @@ xcrun simctl bootstatus "$device" -b > /dev/null
 echo "==> Démarrage d'un vrai noyau Linux, dans l'iPhone"
 if xcrun simctl spawn "$device" "$binary" "$image"; then
   status=0
-  echo "==> Le cœur Rust démarre Linux sur iOS."
+  echo "==> Le cœur Rust démarre Linux sur iOS. Le débit ci-dessus vient du"
+  echo "    simulateur : une borne haute, pas la vitesse d'un téléphone."
 else
   status=$?
   echo "==> Échec dans le simulateur (code $status)." >&2

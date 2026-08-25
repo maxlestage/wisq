@@ -203,6 +203,12 @@ jobs:
         # interpreter run on the device the app ships to". This runs the C ABI
         # conformance program inside a booted simulator and fails if the guest
         # never reaches its Linux banner.
+        #
+        # It also prints the throughput, which is the only performance figure
+        # this repository takes from the Apple toolchain: `wisq-bench` on the
+        # Linux job measures a Linux build. No threshold — a shared runner
+        # cannot hold one, and a simulator has no thermal ceiling — but a change
+        # that halves it shows in the log.
         run: |
           if [ -f /tmp/wisq-test-linux-image/Image ]; then
             scripts/test-ios.sh /tmp/wisq-test-linux-image/Image
