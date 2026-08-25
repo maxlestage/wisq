@@ -736,3 +736,83 @@ pas respecter par soi-même** : entre le moment où je l'ai formulée pour QUIC 
 celui où je l'ai enfreinte pour GLZ, rien dans le dépôt ne pouvait me le dire.
 Un test qui recompilerait le harnais et comparerait aurait pu ; il n'existe pas,
 et le noter ici est le minimum.
+
+## LZ4 : trois programmes d'accord, et une règle qui ne sert à rien
+
+Dernier codec du canal display, et le seul qui ne soit pas une invention de
+SPICE. Ce qui l'a rendu intéressant n'est pas le décodage — c'est ce que la
+vérification a trouvé.
+
+**Le harnais d'abord, cette fois.** La leçon de la PR précédente était qu'écrire
+une règle ne la fait pas respecter par soi-même. Donc : `l4gen.c` reproduit la
+boucle `lz4_encode` du serveur, `l4dec.c` reproduit `canvas_get_lz4`, le README
+porte la table des onze gabarits avec la commande de chacun, et j'ai
+*réellement* suivi cette procédure depuis un répertoire vide avant de l'écrire.
+Les onze se reconstruisent octet pour octet.
+
+Une troisième lecture du format, en Python, décode les onze et tombe d'accord
+avec lz4 octet pour octet. Elle sert surtout à compter ce que chaque gabarit
+atteint — extensions de longueur, décalages sous 8, correspondances vers un bloc
+antérieur — parce que « la fixture couvre ce chemin » est une affirmation qu'on
+peut mesurer et que je m'étais déjà trompé en la supposant.
+
+### Le sabotage qui avait tort sur lui-même
+
+Douze sabotages, neuf attrapés. Les trois survivants ont chacun demandé un
+travail différent, et c'est là que la séance devient utile.
+
+Le premier — prendre 14 pour l'échappement au lieu de 15 — était un **gabarit
+manquant** : aucun des onze ne contient un jeton dont le quartet vaut exactement
+14. Bloc écrit à la main, passé par lz4 d'abord, sabotage attrapé.
+
+Le deuxième — retirer la règle « une correspondance ne finit pas dans les cinq
+derniers octets » — a survécu à un test que j'avais écrit *pour lui*. En traçant
+le bloc, il se fait refuser trois séquences plus tôt, par la contrainte côté
+entrée, et n'atteint jamais celle côté sortie. Le test passait, et il ne pinçait
+pas ce que son commentaire annonçait.
+
+L'arithmétique explique pourquoi : une correspondance ne se lit que si la
+séquence précédente a laissé huit octets d'entrée d'avance, et la séquence
+suivante doit être un run de littéraux qui consomme l'entrée exactement et
+amène la sortie à sa fin. Une correspondance finissant à moins de cinq octets de
+la fin a besoin d'au plus quatre littéraux finaux, donc d'au plus sept octets
+d'entrée — moins que les huit déjà exigés. **La règle est inatteignable.** 400 000
+blocs aléatoires et 150 000 mutations de charges réelles, décodées avec la règle
+et sans elle, n'ont produit aucune différence.
+
+Le troisième — relâcher la limite de lecture des octets d'extension — se prouve
+inatteignable de la même manière, et la preuve tient en une ligne : la longueur
+lue doit être cohérente avec la fin du bloc, et cette cohérence implique déjà
+qu'on est à plus de 15 octets de la fin.
+
+Ce n'est ni « ligne fausse » ni « test manquant » : c'est du **code mort dont la
+mort dépend d'ailleurs**. Il reste, parce que retirer une borne au motif qu'une
+autre la couvre, c'est faire dépendre la sûreté d'un raisonnement qui n'est
+écrit nulle part. Il est écrit maintenant — dans le test, pas seulement ici.
+
+### Ce que le fuzz différentiel a trouvé que la lecture n'avait pas
+
+550 000 charges utiles passées dans les deux décodeurs. Deux divergences réelles,
+aucune que j'avais vue en lisant le C :
+
+* **un décodage court.** `canvas_get_lz4` ne vérifie pas que les blocs
+  remplissent la surface. Ce qu'ils n'atteignent pas garde ce que l'allocation
+  de pixman contenait, et c'est dessiné. 1 101 mutations tombent là ; wisq
+  refuse.
+* **une distance nulle.** Le format la déclare corrompue et autorise le refus.
+  lz4 ne la refuse pas : `LZ4_write32(op, 0)` sur le chemin des petits décalages
+  fait qu'elle copie des zéros. Le client de référence dessine une bande noire ;
+  wisq refuse. J'aurais écrit « invalide par le format » dans un commentaire et
+  j'aurais eu raison sur le format et tort sur la référence.
+
+Tout le reste s'accorde : 103 184 charges décodées à l'identique, 45 709
+refusées des deux côtés.
+
+### Et une erreur de harnais qui ressemblait à une découverte
+
+Le premier fuzz a signalé sept désaccords « lz4 accepte, moi je refuse ». Aucun
+n'était réel : mon modèle Python n'avançait pas le pointeur d'entrée dans la
+branche finale, et lisait la longueur du bloc suivant au mauvais endroit. Le
+même piège que d'habitude sous une forme de plus — un résultat qui a l'air d'un
+résultat. La différence avec les fois précédentes est que j'ai vérifié avant de
+l'écrire quelque part.
