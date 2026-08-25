@@ -228,7 +228,7 @@ final class SPICESessionTests: XCTestCase {
         XCTAssertEqual(width, 64)
         XCTAssertEqual(height, 48)
         XCTAssertEqual(name, "écran")
-        XCTAssertEqual(session.framebuffer.width, 64)
+        XCTAssertEqual(session.framebuffer.size.width, 64)
 
         await session.stop()
     }
