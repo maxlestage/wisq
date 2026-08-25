@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-08-25, ~05h30 UTC — autonomie reconduite
+
+**Autorisation, mot pour mot :** « Je vais dormir continue de travailler sans
+moi note le / Je veux que ça soit enregistré. » — Maxime Nathan Lestage,
+25 août 2026.
+
+Deuxième fois, dans les mêmes termes. Consignée séparément plutôt qu'ajoutée à
+l'entrée d'hier : une autorisation reconduite est un fait daté, et la fondre
+dans la précédente laisserait croire qu'une seule phrase couvre deux nuits.
+
+Les règles de l'entrée du 24 s'appliquent telles quelles — la branche, la
+lecture du journal brut avant toute fusion, l'absence de licence, et la liste
+de ce qui reste interdit. Rien n'a été élargi.
+
+État au moment de s'endormir : PR #32 ouverte (surfaces SPICE), CI en cours.
+Une routine horaire porte l'autorisation pour qu'elle survive à une perte de
+contexte.
+
 ## 2026-08-24, nuit — autonomie accordée
 
 **Autorisation, mot pour mot :** « Je vais dormir continue de travailler sans
