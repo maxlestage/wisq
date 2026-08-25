@@ -186,8 +186,28 @@ public actor SPICESession: RemoteSession {
                 // matters exactly where the preference does not reach: a
                 // server without `preferredCompression`, and the images that
                 // go out before ours arrives.
+                // **`sizedStream` is not optional politeness — without it the
+                // server silently drops frames.** `dcc-send.cpp` computes
+                // whether a frame's source area differs from the stream's
+                // geometry and, if it does and the client has not advertised
+                // `SPICE_DISPLAY_CAP_SIZED_STREAM`, `return FALSE`s out of
+                // sending it at all. A region that needs a resize therefore
+                // just stops updating. wisq handles `STREAM_DATA_SIZED`, so it
+                // has to say so.
+                //
+                // **`multiCodec` is deliberately absent, and that absence is
+                // load-bearing.** `dcc_create_video_encoder` skips every
+                // non-MJPEG codec for a client without it — "Old clients only
+                // support MJPEG" is the comment — and MJPEG is the only codec
+                // wisq decodes. Adding it on the theory that more capability is
+                // better would let the server pick VP8 or H.264 and hand this
+                // client a frozen rectangle where the motion is.
+                //
+                // `streamReport` is absent for the same kind of reason: wisq
+                // ignores `STREAM_ACTIVATE_REPORT`, so claiming it would promise
+                // a bitrate conversation this client never holds.
                 channelCaps: SpiceDisplayClient.capabilityWords(
-                    [.preferredCompression, .lz4Compression]
+                    [.sizedStream, .preferredCompression, .lz4Compression]
                 )
             )
 

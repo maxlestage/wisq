@@ -214,10 +214,39 @@ final class SPICESessionTests: XCTestCase {
             "sans cette capacité le serveur n'enverra jamais de LZ4"
         )
         XCTAssertTrue(SpiceDisplayClient.supports(.preferredCompression, in: channelCaps))
-        // And nothing wisq cannot honour: advertising a capability is a promise
-        // about this client, not a wish list.
+
+        // **Sized frames are dropped by the server without this.**
+        // `dcc-send.cpp` works out whether a frame's source area differs from
+        // its stream's geometry and, when it does and the client has not
+        // advertised `SPICE_DISPLAY_CAP_SIZED_STREAM`, `return FALSE`s rather
+        // than sending it — so a region needing a resize simply stops updating.
+        //
+        // This line used to assert the opposite, with a reason that was true
+        // when it was written: wisq did not handle `STREAM_DATA_SIZED` then.
+        // It does now, and an advertised capability is a statement about this
+        // client rather than a wish list — which cuts both ways.
+        XCTAssertTrue(
+            SpiceDisplayClient.supports(.sizedStream, in: channelCaps),
+            "sans cette capacité le serveur laisse tomber les images redimensionnées"
+        )
+
+        // And nothing wisq cannot honour.
         XCTAssertFalse(SpiceDisplayClient.supports(.glScanout, in: channelCaps))
-        XCTAssertFalse(SpiceDisplayClient.supports(.sizedStream, in: channelCaps))
+
+        // **This absence is load-bearing.** `dcc_create_video_encoder` skips
+        // every non-MJPEG codec for a client without `MULTI_CODEC` — "Old
+        // clients only support MJPEG" is the reference's own comment — and
+        // MJPEG is the only codec wisq decodes. Advertising it on the theory
+        // that more capability is better would let the server choose VP8 or
+        // H.264 and hand this client a frozen rectangle where the motion is.
+        XCTAssertFalse(
+            SpiceDisplayClient.supports(.multiCodec, in: channelCaps),
+            "annoncer multiCodec laisserait le serveur choisir un codec non décodé"
+        )
+        // Same shape: wisq ignores `STREAM_ACTIVATE_REPORT`, so claiming the
+        // capability would promise a conversation it never holds.
+        XCTAssertFalse(SpiceDisplayClient.supports(.streamReport, in: channelCaps))
+        XCTAssertFalse(SpiceDisplayClient.supports(.composite, in: channelCaps))
 
         await session.stop()
     }

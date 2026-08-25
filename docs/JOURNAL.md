@@ -1718,3 +1718,42 @@ détectait rien parce qu'un autre cassait avant lui. Ici, il manquait un détect
 parce qu'un script qui disait « tout » ne disait pas tout. Dans les deux cas la
 question utile est la même, et elle n'est pas « est-ce que ça passe » : c'est
 **« qu'est-ce que ceci attraperait, et qu'est-ce qui l'attrape déjà »**.
+
+## Une capacité non annoncée, et du code que le serveur ne pouvait pas atteindre
+
+En relisant ce qui restait après la complétude du canal display, j'ai regardé
+les capacités que wisq annonce à la liaison. Il y en avait deux :
+`preferredCompression` et `lz4Compression`.
+
+Or `STREAM_DATA_SIZED`, implémenté et testé hier soir, est **conditionné côté
+serveur**. `dcc-send.cpp` calcule si l'aire source d'une image diffère de la
+géométrie de son flux et, quand c'est le cas et que le client n'a pas annoncé
+`SPICE_DISPLAY_CAP_SIZED_STREAM`, fait `return FALSE` — il n'envoie pas l'image
+du tout. Pas « il l'envoie en version simple » : il la laisse tomber. Une région
+qui a besoin d'être redimensionnée cesse simplement de se mettre à jour.
+
+Donc le code des images dimensionnées était inatteignable face à un vrai
+serveur, et son absence coûtait des images perdues. Un test l'affirmait même
+explicitement — `XCTAssertFalse(supports(.sizedStream))` — avec une raison qui
+était vraie le jour où elle a été écrite : wisq ne traitait pas encore ces
+images. Une prémisse de plus qui a expiré sans que rien ne le signale, et
+celle-ci était du côté « nous ne savons pas faire » d'une promesse qui n'était
+plus vraie.
+
+### Et une absence qui, elle, porte quelque chose
+
+Dans la même lecture : `dcc_create_video_encoder` saute **tout codec non-MJPEG**
+pour un client qui n'annonce pas `MULTI_CODEC` — « Old clients only support
+MJPEG », dit son commentaire. MJPEG est le seul codec que wisq décode.
+
+Ne pas annoncer `multiCodec` n'est donc pas un oubli : c'est ce qui garantit que
+le serveur ne choisira jamais un codec que ce client ne sait pas lire. Quelqu'un
+qui l'ajouterait en se disant que plus de capacités vaut mieux obtiendrait
+exactement le symptôme que le canal des flux existe pour éviter — un rectangle
+figé là où ça bouge. C'est écrit dans le code et dans le test, parce qu'une
+absence délibérée qui n'est pas expliquée finit par être « corrigée ».
+
+La leçon générale : **une capacité annoncée est une affirmation sur ce client, et
+elle se périme dans les deux sens**. On surveille celles qu'on annonce sans
+savoir faire ; celles qu'on sait faire sans les annoncer sont plus discrètes,
+parce que le symptôme est du côté du serveur.
