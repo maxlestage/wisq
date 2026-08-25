@@ -7,6 +7,64 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **SPICE asked for the channel list with the wrong message number, and could
+  never have connected to a real server.** `ATTACH_CHANNELS` is 104; the client
+  sent 101, which is `CLIENT_INFO`. The main channel's client messages number
+  from 101 in declaration order — `client_info`, `migrate_connected`,
+  `migrate_connect_error`, then this — and the first is the one an eye lands
+  on.
+
+  The effect against a real server is total: the channel list never arrives,
+  `bringUp` runs to its limit and throws, and every channel built on top is
+  unreachable. Everything else in this protocol had been built above a
+  handshake that does not complete.
+
+  **Nothing caught it, and both reasons are worth keeping.** The test asserted
+  that what went out equalled the constant — true however wrong the constant
+  is; a number checked against itself is not checked. And the scripted server
+  sent its channel list whether or not it had been asked, so a wrong request
+  looked exactly like a right one.
+
+  The assertion is a literal now, with the protocol's own numbering written
+  beside it, and a new test pins the whole family of message numbers against
+  the specification rather than against the constants that produce them.
+
+### Added
+- **`rgba` and `xxxa` decode, and LZ is complete.** They are **two LZ streams
+  end to end in one payload**: the colour pass, then an alpha pass over the
+  same pixels touching only their fourth byte, reading on from where the first
+  stopped.
+
+  That is why they were refused rather than decoded. The single-pass loop would
+  have read the colour pass, declared the image finished, and left every pixel
+  opaque while half the payload sat unread — a picture, and a wrong one.
+
+  `xxxa` is the alpha pass alone: its colour bytes are never transmitted, so
+  they come back as zero rather than as whatever the buffer held. In C that is
+  uninitialised memory reaching the screen.
+
+- **LZ's palette forms decode: PLT8, PLT4 and PLT1, both orders each.** Three
+  of the rules here produce an *image* when written backwards rather than an
+  error, which is the kind of wrong that ships: a 4-bit `LE` byte gives the low
+  nibble first and `BE` the high one; a 1-bit `LE` byte starts at bit 0 and
+  `BE` at bit 7; and the palette is little-endian while the LZ stream header
+  immediately above it is big-endian, because the palette belongs to the
+  display channel's message and the stream to the codec.
+
+  Backwards, each gives a picture — mirrored in pairs, mirrored in groups of
+  eight, or in the wrong colours. All three were checked against the reference
+  decoder's own output **before** the decoder was written, which is the only
+  order in which that check means anything. `scripts/spice-lz-fixtures/genplt.c`
+  is the harness.
+
+### Fixed
+- **The decompression loop counted one output unit per pixel.** For a 4-bit
+  image an eight-pixel row is four bytes, not eight, so every palette stream
+  looked truncated. And rows start on byte boundaries: a five-pixel 1-bit row
+  spends one byte and wastes three bits — read straight through, everything
+  after the first row shears.
+
 ### Changed
 - **`verify.sh` runs SwiftLint on Linux now, instead of saying it cannot.** It
   can: the binary needs `libsourcekitdInProc.so`, which ships inside the Swift
