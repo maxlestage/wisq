@@ -146,6 +146,68 @@ final class SpiceGLZDecodeTests: XCTestCase {
         }
     }
 
+    /// `rgb24` through the very same loop, which is what the reference's
+    /// dispatch table says should work — and what encoding the same content
+    /// both ways confirms: the two streams differ only in the type byte and
+    /// the stride word, the payload being identical.
+    ///
+    /// This adds no coverage of the loop itself. It pins the header reading
+    /// and the guard, which is the whole of what admitting rgb24 rests on.
+    func testRGB24DecodesThroughTheSameLoop() throws {
+        var window = SpiceGLZ.Window()
+        for (index, fixture) in SpiceGLZFixtures.rgb24.enumerated() {
+            let stream = SpiceGLZFixtures.bytes(fixture.stream)
+            let header = try SpiceGLZ.header(stream)
+            XCTAssertEqual(header.type, .rgb24, "le gabarit doit bien être du rgb24")
+
+            let decoded = try SpiceGLZ.decodeRGB32(
+                stream, from: SpiceGLZ.headerBytes,
+                pixels: SpiceGLZFixtures.width * SpiceGLZFixtures.height,
+                imageID: header.id, window: window
+            )
+            XCTAssertEqual(
+                decoded.pixels, SpiceGLZFixtures.bytes(fixture.decoded), "image \(index)"
+            )
+            window.add(SpiceGLZ.Window.Image(
+                id: header.id, winHeadDistance: header.winHeadDistance,
+                pixels: decoded.pixels, width: header.width, height: header.height
+            ))
+            window.releaseAfterAdding()
+        }
+    }
+
+    /// `rgb16`, which needs its own literal and its own length bias.
+    func testRGB16DecodesToWhatTheReferenceProduced() throws {
+        var window = SpiceGLZ.Window()
+        for (index, fixture) in SpiceGLZFixtures.rgb16.enumerated() {
+            let stream = SpiceGLZFixtures.bytes(fixture.stream)
+            let header = try SpiceGLZ.header(stream)
+            XCTAssertEqual(header.type, .rgb16, "le gabarit doit bien être du rgb16")
+
+            let decoded = try SpiceGLZ.decodeRGB32(
+                stream, from: SpiceGLZ.headerBytes,
+                pixels: SpiceGLZFixtures.width * SpiceGLZFixtures.height,
+                imageID: header.id, window: window, literal: .fiveFiveFive
+            )
+            XCTAssertEqual(
+                decoded.pixels, SpiceGLZFixtures.bytes(fixture.decoded), "image \(index)"
+            )
+            window.add(SpiceGLZ.Window.Image(
+                id: header.id, winHeadDistance: header.winHeadDistance,
+                pixels: decoded.pixels, width: header.width, height: header.height
+            ))
+            window.releaseAfterAdding()
+        }
+    }
+
+    /// Unlike rgb24, the rgb16 payload really is different bytes — two per
+    /// pixel rather than three — so this fixture covers code the others do not.
+    func testTheRGB16PayloadIsNotAnRGB32Payload() throws {
+        let sixteen = SpiceGLZFixtures.bytes(SpiceGLZFixtures.rgb16[0].stream)
+        let thirtyTwo = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].stream)
+        XCTAssertNotEqual(sixteen.count, thirtyTwo.count)
+    }
+
     /// The whole point, stated as a test: images after the first genuinely
     /// depend on the window. Decoding one with an empty window must fail rather
     /// than produce a picture out of nothing.

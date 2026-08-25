@@ -93,10 +93,25 @@ final class ConnectionImportTests: XCTestCase {
         """)
         XCTAssertEqual(file.width, 2560, "le lecteur rapporte ce que le fichier dit")
 
+        // Asserted on the settings themselves rather than on a substring of
+        // the encoded machine, which is how this test used to read and which
+        // made it flaky about once in a few dozen runs.
+        //
+        // `Machine` encodes a `createdAt` date as a floating-point number and
+        // an `id` as hex, and both change from run to run. Either can contain
+        // "2560" or "1440" by coincidence, and when it does the test fails
+        // having found nothing wrong. A tight loop hides it — the timestamp's
+        // digits barely move — so it only ever showed up on runs minutes
+        // apart, which is the worst way for a test to be wrong.
+        //
+        // The real claim is narrower and exact: `DisplaySettings` has no width
+        // or height at all, so the file's geometry has nowhere to go, and what
+        // the import produces is the default.
         let imported = ConnectionImport.machine(from: file)
-        let json = String(decoding: try JSONEncoder().encode(imported.machine), as: UTF8.self)
-        XCTAssertFalse(json.contains("2560"), "mais l'import n'en fait pas une préférence")
-        XCTAssertFalse(json.contains("1440"))
+        XCTAssertEqual(
+            imported.machine.display, DisplaySettings(),
+            "l'import ne fait pas de la géométrie du fichier une préférence"
+        )
     }
 
     /// The host is the name. Titles in these files are things like `fedora:%d`
