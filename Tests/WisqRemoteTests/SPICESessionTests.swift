@@ -44,9 +44,10 @@ final class SPICESessionTests: XCTestCase {
         return SpiceWire.message(SpiceWire.Message.mainInit, serial: 1, payload: Data(body))
     }
 
-    private func channelsList() -> Data {
-        var body = u32(1)                                    // one channel
-        body += [SpiceWire.Channel.display.rawValue, 0]      // and it is the display
+    private func channelsList(withInputs: Bool = false) -> Data {
+        var body = u32(withInputs ? 2 : 1)
+        body += [SpiceWire.Channel.display.rawValue, 0]
+        if withInputs { body += [SpiceWire.Channel.inputs.rawValue, 0] }
         return SpiceWire.message(
             SpiceWire.Message.mainChannelsList, serial: 2, payload: Data(body)
         )
@@ -253,5 +254,149 @@ final class SPICESessionTests: XCTestCase {
             machine: machine, credentials: EphemeralCredentialStore()
         )
         XCTAssertTrue(session is ReconnectingSession)
+    }
+    // MARK: - Input
+
+    /// Input goes down a third connection of its own, presenting the same
+    /// session identifier. Sending keystrokes on the display socket would be a
+    /// protocol error dressed up as a shortcut.
+    func testInputOpensAThirdConnectionAndPresentsTheSessionIdentifier() async throws {
+        let sessionID: UInt32 = 0x1234
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: sessionID) + channelsList(withInputs: true)
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let inputSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, inputSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        let opened = await sockets.count
+        XCTAssertEqual(opened, 3, "un socket par canal, entrées comprises")
+
+        var reader = SpiceWire.Reader(await inputSocket.written)
+        _ = try reader.bytes(SpiceWire.headerBytes)
+        XCTAssertEqual(try reader.u32(), sessionID)
+        XCTAssertEqual(try reader.u8(), SpiceWire.Channel.inputs.rawValue)
+
+        await session.stop()
+    }
+
+    /// A key press reaches the inputs socket and nothing else.
+    func testAKeyPressGoesDownTheInputsSocketAndNotTheDisplayOne() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList(withInputs: true)
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let inputSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, inputSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        let beforeDisplay = await displaySocket.written.count
+        _ = await inputSocket.drainWritten()          // the link message
+        await session.send(.key(keysym: 0x0061, down: true))   // "a"
+
+        let sent = await inputSocket.written
+        XCTAssertFalse(sent.isEmpty, "la frappe doit partir")
+        let header = try SpiceWire.decodeDataHeader(sent)
+        XCTAssertEqual(header.type, SpiceInputs.ClientMessage.keyDown)
+
+        let afterDisplay = await displaySocket.written.count
+        XCTAssertEqual(afterDisplay, beforeDisplay, "rien n'est parti sur le socket display")
+
+        await session.stop()
+    }
+
+    /// A server offering no inputs channel still gives a usable session: the
+    /// screen is worth having without the keyboard, and refusing to start would
+    /// trade something for nothing.
+    func testAServerWithNoInputsChannelStillShowsTheScreen() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList()
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(32, 24)
+        )
+        let sockets = Sockets([mainSocket, displaySocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+
+        let ready = await waitFor(session) {
+            if case .ready = $0 { return true } else { return false }
+        }
+        guard case let .ready(_, width, _) = ready else {
+            return XCTFail("la session devait être prête sans canal d'entrées")
+        }
+        XCTAssertEqual(width, 32)
+
+        // And sending input is a no-op rather than a crash or a stray write.
+        await session.send(.key(keysym: 0x0061, down: true))
+        let opened = await sockets.count
+        XCTAssertEqual(opened, 2)
+
+        await session.stop()
+    }
+
+    /// The inputs channel keeps its own serial. One shared counter across two
+    /// connections gives each of them a sequence full of holes.
+    func testTheInputsChannelCountsItsOwnSerials() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList(withInputs: true)
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let inputSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, inputSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+        _ = await inputSocket.drainWritten()
+
+        await session.send(.key(keysym: 0x0061, down: true))
+        await session.send(.key(keysym: 0x0061, down: false))
+
+        var reader = SpiceWire.Reader(await inputSocket.written)
+        let first = try SpiceWire.decodeDataHeader(Data(try reader.bytes(18)))
+        _ = try reader.bytes(Int(first.size))
+        let second = try SpiceWire.decodeDataHeader(Data(try reader.bytes(18)))
+
+        XCTAssertEqual(first.serial, 1, "la suite du canal d'entrées part de 1")
+        XCTAssertEqual(second.serial, 2, "et n'a pas de trou")
+        XCTAssertEqual(first.type, SpiceInputs.ClientMessage.keyDown)
+        XCTAssertEqual(second.type, SpiceInputs.ClientMessage.keyUp)
+
+        await session.stop()
     }
 }

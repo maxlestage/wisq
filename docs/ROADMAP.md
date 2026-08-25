@@ -390,8 +390,16 @@ Deux défauts trouvés en branchant, et pas par un test qui existait :
   Vérifié par un petit programme plutôt que raisonné. Retiré, et un test le
   tient désormais.
 
-Reste : QUIC, GLZ, JPEG et les types à palette ; le canal des entrées (encodé
-et testé, il lui faut sa propre connexion) ; le canal curseur.
+**Le canal des entrées est branché** : une troisième connexion, présentant le
+même identifiant de session. C'est en *meilleur effort* — un serveur qui n'offre
+pas ce canal donne quand même une session utilisable, parce que l'écran vaut
+d'être montré sans le clavier et que refuser de démarrer échangerait quelque
+chose contre rien. Chaque canal compte ses propres numéros de série : un
+compteur partagé entre deux connexions donnerait à chacune une suite trouée.
+
+Reste : QUIC, GLZ, JPEG et les types à palette ; le canal curseur ; le
+presse-papiers, qui passe par l'agent du canal principal et non par les
+entrées.
 
 ## Lot 6 — finition
 

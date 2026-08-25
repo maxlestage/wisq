@@ -22,6 +22,19 @@ break APIs.
   shrugging.
 
 ### Added
+- **SPICE takes input.** A third connection, presenting the same session
+  identifier as the display one. `SpiceInputs` was already encoded and tested;
+  what it needed was a socket of its own, because sending keystrokes down the
+  display socket is a protocol error dressed up as a shortcut.
+
+  Best effort on purpose: a server offering no inputs channel still gives a
+  usable session. The screen is worth having without the keyboard, and refusing
+  to start would trade something for nothing.
+
+  Each channel counts its own serials. One shared counter across two
+  connections hands each of them a sequence full of holes, and a server that
+  acknowledges by serial would be right to complain.
+
 - **SPICE connects.** `SessionFactory` returns a SPICE session where it used to
   throw `unsupportedProtocol`. The shape that separates SPICE from RFB next
   door: **one TCP connection per channel** — the main one first, because it is

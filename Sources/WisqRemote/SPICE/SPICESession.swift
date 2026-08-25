@@ -31,7 +31,14 @@ public actor SPICESession: RemoteSession {
 
     private var main: (any ByteStream)?
     private var display: (any ByteStream)?
+    private var inputs: (any ByteStream)?
     private var pump: Task<Void, Never>?
+    /// Serial for the inputs channel, counted apart from the display's.
+    ///
+    /// Each channel is its own connection with its own message sequence, so one
+    /// shared counter would give both of them a sequence full of holes — and a
+    /// server that acknowledges by serial would be right to complain about it.
+    private var inputSerial: UInt64 = 1
 
     public init(
         configuration: SessionConfiguration,
@@ -62,16 +69,40 @@ public actor SPICESession: RemoteSession {
         pump = nil
         await main?.close()
         await display?.close()
+        await inputs?.close()
         main = nil
         display = nil
+        inputs = nil
         continuation.yield(.disconnected(nil))
         continuation.finish()
     }
 
-    /// Not wired yet. The inputs channel is encoded and tested
-    /// (`SpiceInputs`), and it needs a third connection of its own; sending on
-    /// the display channel would be sending keystrokes down the wrong socket.
-    public func send(_ event: InputEvent) async {}
+    /// Sends one input event on the inputs channel.
+    ///
+    /// Silently does nothing before the channel is up, which is deliberate: a
+    /// tap that lands during the handshake has nowhere to go, and queueing it
+    /// would replay it into a desktop that has since drawn something else under
+    /// the finger.
+    ///
+    /// One event is not always one message — a wheel notch is a press and a
+    /// release, because SPICE has no way to say "scrolled" and sending only the
+    /// press leaves the guest believing a button is held.
+    public func send(_ event: InputEvent) async {
+        guard let inputs else { return }
+        for message in SpiceInputs.messages(for: event) {
+            do {
+                try await inputs.write(SpiceWire.message(
+                    message.type, serial: inputSerial, payload: message.payload
+                ))
+                inputSerial += 1
+            } catch {
+                // A failed write means the connection is gone; the pump on the
+                // display channel will notice and end the session. Reporting it
+                // here as well would disconnect twice for one cause.
+                return
+            }
+        }
+    }
 
     /// SPICE resizes through the agent in the guest rather than through the
     /// display channel, so there is nothing honest to do here yet. Saying so
@@ -113,6 +144,25 @@ public actor SPICESession: RemoteSession {
 
         let channel = SpiceDisplayChannel(stream: displayStream)
         let serial = try await channel.announce(serverCapabilities: link.channelCaps)
+
+        // A third connection, for input, and only if the server offered the
+        // channel. Best effort on purpose: a session that shows the screen but
+        // takes no keystrokes is worth having, and one that refuses to start
+        // because the inputs channel would not open is not.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.inputs.rawValue }) {
+            do {
+                let inputStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: inputStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .inputs,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                inputs = inputStream
+            } catch {
+                inputs = nil
+            }
+        }
 
         pump = Task { [weak self] in
             await self?.run(channel, from: serial)
