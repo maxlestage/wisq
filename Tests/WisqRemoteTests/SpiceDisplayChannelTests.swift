@@ -197,8 +197,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         // Which encoding is asked for is decided and tested in
         // `SpiceDisplayClientTests`; what this test is about is that it comes
         // second. Taken from there rather than restated, so the two cannot
-        // drift apart — they already did once, when QUIC became decodable and
-        // the request changed from `lz` to `autoLZ`.
+        // drift apart — they already did twice, when QUIC became decodable and
+        // the request changed from `lz` to `autoLZ`, and again when the GLZ
+        // window stopped being zero and it changed to `autoGLZ`.
         let wanted = try XCTUnwrap(
             SpiceDisplayClient.compressionToRequest(
                 givenServerCapabilities: capabilities(preferredCompression: true)

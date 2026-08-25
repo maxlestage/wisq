@@ -1791,3 +1791,65 @@ préférence doivent bouger ensemble. La règle que j'en tire : **un commentaire
 justifie un choix vieillit plus mal qu'un commentaire qui décrit un mécanisme**,
 parce qu'il reste plausible longtemps après que sa raison a disparu — et qu'il
 décourage précisément la relecture qui le corrigerait.
+
+## Le fichier existait, sous un autre nom
+
+Suite immédiate de l'entrée précédente, et elle commence par une erreur à moi.
+
+J'avais écrit que le tiers manquant du dossier ne pouvait pas être tranché parce
+que « `glz_encoder_dictionary.c` n'est pas dans les sources vendues ». Le fichier
+est là. Il s'appelle `glz-encoder-dict.c` — des tirets, pas des tirets bas, et un
+nom abrégé. J'avais cherché le nom que j'avais supposé, obtenu zéro résultat, et
+transformé ce zéro en fait sur le monde.
+
+C'est la même faute que celle qui consiste à lire une pastille verte au lieu du
+journal : **une recherche qui ne trouve rien ne dit rien sur ce qui existe, elle
+dit quelque chose sur la requête.** Le coût ici a été une décision reportée d'une
+tranche entière, avec un commentaire qui expliquait soigneusement pourquoi elle
+ne pouvait pas être prise.
+
+## Zéro n'était pas une petite fenêtre
+
+Le fichier trouvé, la question s'est retournée. Je cherchais « est-ce que ça
+compresse mal ». La réponse est ailleurs :
+
+    if ((uint32_t)new_image_size > dict->window.size_limit) {
+        dict->cur_usr->error(dict->cur_usr, "image is bigger than window\n");
+    }
+
+`glz_dictionary_pre_encode` appelle ça en tête de chaque encodage GLZ. Ce
+`error` est `glz_usr_error` dans `image-encoders.cpp`, qui appelle
+`spice_critical`, qui — `spice_logv` dans `log.c` — appelle `abort()`. Une
+fenêtre plus petite qu'une image ne dégrade rien : elle **tue le processus
+serveur**.
+
+Et wisq n'était pas protégé par sa préférence. `reds.cpp` initialise la
+compression à `AUTO_GLZ`. Un serveur qui n'annonce pas `preferred_compression`
+ne reçoit jamais notre message — `compressionToRequest` renvoie `nil` à dessein —
+et garde donc GLZ toute la session. Le `nil` était traité dans le code comme le
+cas sans conséquence ; c'était le cas dangereux. Je l'avais même écrit sans le
+voir : le commentaire mentionnait « les images qui partent avant que ce message
+arrive » à propos de LZ4, deux paragraphes plus bas.
+
+Alors j'ai compilé la référence plutôt que de la croire. `scripts/spice-glz-window/`
+donne des fenêtres choisies à l'encodeur réel. Une image 64×64 : propre à 4096,
+abandon à 4095. La borne est stricte, et elle change la nature du nombre — il ne
+faut pas « une fenêtre non nulle », il faut **une fenêtre au moins aussi grande
+que la plus grande image**. C'est pourquoi la constante vaut `1 << 23` et non un
+chiffre choisi pour l'historique qu'il garderait : la résolution de l'invité
+n'est pas connue quand `DISPLAY_INIT` part, donc le seul choix disponible est
+« une image entière, quelle qu'elle soit ». Sans le harnais j'aurais mis une
+valeur non nulle plausible et j'aurais reproduit le bug sur les grands écrans.
+
+Trois sabotages le tiennent : la fenêtre remise à zéro, l'entier écrit en
+gros-boutiste, et la valeur mise à 8 294 399 — un pixel sous 3840×2160. Les
+trois échouent. Le test de disposition passait `0` pour ce champ, ce qui ne
+vérifiait aucun ordre d'octets ; il passe maintenant `0x0A0B_0C0D`. Encore une
+valeur neutre trouvée dans un test écrit pour vérifier quelque chose.
+
+La leçon : **deux nombres de même forme, dans le même message, peuvent avoir des
+régimes d'erreur opposés.** Le cache de pixmaps est un budget qui s'évince et se
+dégrade ; la fenêtre GLZ est un plancher qui abandonne. Rien dans le message, ni
+dans le nom des champs, ni dans leur type, ne distingue les deux. Ce qui les
+distingue est à trois fichiers de là, dans du code que le client n'exécute
+jamais.
