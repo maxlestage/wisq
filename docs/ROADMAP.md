@@ -1002,9 +1002,49 @@ de destination sans pixel de masque au-dessus est retiré. Le traiter comme perm
 peint tout ce que le masque n'atteint pas — ce qui, pour un petit masque sur une
 grande boîte, ressemble beaucoup à un masque qui marche.
 
-Ce qui reste sur le canal display : les dessins qui composent (`DRAW_OPAQUE`,
-`DRAW_BLEND`, `DRAW_ALPHA_BLEND`, `DRAW_TRANSPARENT`, `DRAW_ROP3`), les tracés et
-le texte (`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
+### L'opération raster, qui était lue puis jetée
+
+Fait. Chaque message de dessin porte un `rop_descriptor` — onze bits — et wisq
+le lisait puis l'ignorait : `fill` et `copy` écrivaient toujours la source
+par-dessus la destination. C'est juste pour le descripteur de très loin le plus
+courant et faux pour ceux qui comptent le plus quand ils arrivent : un
+rectangle de sélection, un curseur de texte et un tracé élastique sont dessinés
+en XOR, précisément pour que les dessiner deux fois efface. Ignorés, ils
+s'affichent en plein et ne partent plus.
+
+Deux couches, faciles à confondre. Le **descripteur** est ce que le fil porte ;
+l'**opération** est l'une des seize de X11, une fonction booléenne d'un bit
+source et d'un bit destination. `ropd_descriptor_to_rop` réduit la première à la
+seconde, et ce n'est pas une table : c'est un nid de conditions qui remarque, par
+exemple, qu'inverser les deux opérandes d'un XOR sans inverser le résultat
+revient au XOR lui-même.
+
+**Quel opérande le descripteur appelle « source » dépend du message.** Un
+remplissage combine son *pinceau* avec la destination, donc c'est `INVERS_BRUSH`
+qui inverse sa source. Une copie combine son *image* avec la destination — le seul
+des trois où la lecture littérale est la bonne. Et `DRAW_OPAQUE` combine le
+pinceau avec l'*image* : la destination n'est pas un opérande de son rop, parce
+que l'image a déjà été posée par-dessus.
+
+Deux comportements de la référence sont recopiés plutôt que corrigés :
+
+* **les bits d'opération sont testés dans l'ordre, pas exclusivement.** Un
+  descripteur portant `OP_OR` et `OP_AND` est un `OR` ; un sans aucun bit
+  d'opération est une copie. Aucun des deux n'est un message malformé ;
+* **quatre des issues ignorent tous les drapeaux d'inversion**, `INVERS_RES`
+  compris : `BLACKNESS`, `WHITENESS`, `INVERS`, et le repli quand aucun bit
+  d'opération n'est mis. `OP_BLACKNESS | INVERS_RES` donne `clear`, pas `set`.
+  Ça ressemble à un oubli et c'est reproduit : le serveur dessine en attendant ce
+  que fait son propre client.
+
+`DRAW_BLEND` arrive avec, gratuitement : la référence les câble sur la même
+fonction avec le commentaire « copy and blend are the same », et le protocole
+donne à blend le type C de copy. C'est un message avec deux numéros.
+
+Ce qui reste sur le canal display : `DRAW_ALPHA_BLEND` et `DRAW_TRANSPARENT`
+(qui composent vraiment, avec un alpha ou une couleur-clé), `DRAW_ROP3` (une
+opération ternaire parmi 256, sur trois opérandes), les tracés et le texte
+(`DRAW_STROKE`, `DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 
