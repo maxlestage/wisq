@@ -1252,3 +1252,77 @@ rendait un test inatteignable. Dans les deux cas le vert ne voulait rien dire.
 Quatre sabotages plus un témoin : trois attrapés, le témoin vivant. Celui qui
 retire l'échappement du chevron mord — donc au moins un document contient un
 `<`, et le test n'est pas vide.
+
+## Le niveau de compression, et deux constantes que mes tests ne pouvaient pas voir
+
+Le client annonçait une qualité JPEG mais jamais un niveau de compression — le
+pseudo-encodage jumeau, `pseudoEncodingCompressLevel0 = -256` dans
+`encodings.h`. Il est là maintenant, sur les liens lents seulement.
+
+En lisant la référence pour choisir la valeur, deux choses ont retourné le
+raisonnement.
+
+**Demander moins de compression fait recevoir plus de données.**
+`VNCSConnectionST::getComparerState` lit un niveau inférieur à deux comme « ce
+client préfère son processeur à sa bande passante » et **désactive le
+comparateur de mises à jour** : le serveur cesse de vérifier qu'une région a
+changé avant de l'envoyer. Zéro et un ne sont donc pas « un peu moins
+compressé », ce sont les deux valeurs à ne jamais envoyer.
+
+**Et plus n'est pas mieux non plus.** `EncodeManager` dimensionne la palette à
+`aire / (niveau × 8)` — au niveau 9 un rectangle garde à peine le tiers des
+couleurs qu'il garderait au niveau 2. La référence commente sa propre formule
+par un « it seems a bit backwards though ».
+
+D'où six : au-dessus du défaut de deux, sans aller chercher l'étranglement de
+palette. Lequel de six ou neuf envoie réellement moins d'octets dépend du bureau
+et demande un vrai serveur ; ce que la source tranche, et ce que le code encode,
+c'est que la réponse n'est pas en bas de la plage.
+
+Au passage, un réglage qui promettait quelque chose qu'il ne faisait pas :
+`lowBandwidth` était documenté « profondeur de couleur réduite » et aucune ligne
+ne demandait autre chose que du BGRA 32 bits. Le commentaire dit maintenant ce
+que le réglage fait.
+
+### Les deux survivants disaient la même chose
+
+Dix sabotages plus un témoin : huit attrapés, deux survivants — décaler
+`compressLevel` de −256 à −255, et `qualityLevel` de −32 à −33. La suite
+entière restait verte.
+
+La cause est nette : **tous mes tests étaient écrits relativement à la constante
+qu'ils auraient dû épingler.** « `compressLevel + 6` », « dans la plage de
+qualité » — décaler la base décale les attentes avec elle, et il ne reste rien
+qui touche le monde extérieur.
+
+La base de la qualité avait l'air épinglée par `JPEGTests`, qui vérifie
+`.contains(-23)` en littéral. Mais ce test appelle `XCTSkipUnless` sur la
+présence d'un décodeur JPEG, absent sur tout runner Linux — et
+`preferredEncodings` ne joint la qualité que si ce décodeur existe. Deux gardes
+de disponibilité qui se referment sur la même absence.
+
+C'est la troisième fois cette semaine, sous une troisième forme. Une dépendance
+absente rendait une branche inatteignable ; un filtre de chemin rendait un test
+inatteignable ; ici c'est un test relatif qui ne pouvait pas voir sa propre
+origine. La règle qui en sort : **les nombres qui viennent d'ailleurs s'écrivent
+en toutes lettres**, aux deux bouts de leur plage, avec leur citation — et pas
+dans un test que la plateforme peut sauter.
+
+Trois sabotages relancés, trois attrapés.
+
+### Le keepalive, et la même porte de service
+
+Un bureau distant est silencieux dès que l'écran l'est : le client demande une
+mise à jour incrémentale et le serveur garde la demande ouverte. Des minutes de
+rien sur le fil sont l'état normal. Or le NAT des opérateurs ferme les mappages
+inactifs sans prévenir personne : la session a l'air vivante jusqu'à ce que
+quelqu'un touche l'écran.
+
+`NetworkByteStream` est derrière `#if canImport(Network)`, donc rien de ce qu'il
+contient n'est compilé ni testé ici. Les six réglages sont sortis dans
+`TransportTuning`, une valeur que n'importe quelle machine peut lire ; il ne
+reste derrière la garde que six affectations. Les tests ne fixent pas les
+nombres mais les bornes et la raison de chacune — la sonde doit partir avant
+qu'un opérateur ne ferme le mappage, une seule sonde perdue ne doit pas couper
+une session qui allait revenir, et le délai avant qu'un pair mort soit remarqué
+doit rester dans ce qu'une personne accepte de regarder.

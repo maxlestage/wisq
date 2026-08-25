@@ -33,7 +33,7 @@ public enum RFB {
         case endOfContinuousUpdates = 150
     }
 
-    public enum Encoding: Int32 {
+    public enum Encoding: Int32, CaseIterable {
         case raw = 0
         case copyRect = 1
         case rre = 2
@@ -48,6 +48,42 @@ public enum RFB {
         case extendedDesktopSize = -308
         case continuousUpdates = -313
     }
+
+    /// The base of the JPEG quality range: level *n* is `qualityLevel + n`.
+    public static let qualityLevel: Int32 = -32
+
+    /// The base of the zlib effort range: level *n* is `compressLevel + n`.
+    ///
+    /// `pseudoEncodingCompressLevel0` in the reference's `encodings.h`, with
+    /// `CompressLevel9` at −247, so the ten values are contiguous.
+    public static let compressLevel: Int32 = -256
+
+    /// What a slow link asks the server to spend on compression.
+    ///
+    /// Three things in the reference decide this number, and only the first is
+    /// the obvious one.
+    ///
+    ///   * `ZRLEEncoder::setCompressLevel` hands the value straight to zlib,
+    ///     and `TightEncoder`'s indexes a table of zlib levels for its raw,
+    ///     mono and indexed streams. Higher is smaller, on the server's CPU.
+    ///   * **0 and 1 are worse than not asking at all.**
+    ///     `VNCSConnectionST::getComparerState` reads a level below 2 as "this
+    ///     client wants CPU over bandwidth" and *disables the comparing update
+    ///     tracker* — the server stops checking whether a region actually
+    ///     changed before sending it. A client asking for less compression
+    ///     would receive more data. They are never sent from here.
+    ///   * Higher is not uniformly better either. `EncodeManager` sizes the
+    ///     palette as `area / (level × 8)`, so level 9 lets a rectangle keep
+    ///     barely a third of the colours level 2 would — the reference's own
+    ///     comment calls this backwards and suspects the zlib setting was meant
+    ///     to compensate.
+    ///
+    /// Six sits above the default of two without reaching for the palette
+    /// squeeze at the top of the range. Which of six or nine actually sends
+    /// fewer bytes depends on the desktop and needs a real server to answer;
+    /// what the source settles, and what this encodes, is that the answer is
+    /// not at the bottom.
+    public static let slowLinkCompression = 6
 
     /// Encodings this build can decode, most preferred first.
     ///
@@ -81,7 +117,13 @@ public enum RFB {
         // Advertising a JPEG quality level is what licenses the server to send
         // lossy rectangles — so it is gated on an actual decoder being present.
         if let quality = jpegQuality, JPEGDecoder.isAvailable {
-            encodings.append(-32 + Int32(min(max(quality, 0), 9)))
+            encodings.append(qualityLevel + Int32(min(max(quality, 0), 9)))
+        }
+        // How hard the server should work to make the bytes smaller. Only asked
+        // for on a slow link; otherwise the server keeps its own default, which
+        // is the honest thing to do when there is nothing to gain.
+        if lowBandwidth {
+            encodings.append(compressLevel + Int32(slowLinkCompression))
         }
         encodings += [
             Encoding.desktopSize.rawValue,

@@ -25,7 +25,17 @@ public struct DisplaySettings: Codable, Hashable, Sendable {
     public var scaling: Scaling
     /// Ask the server to resize the desktop to the device viewport when supported.
     public var followDeviceResolution: Bool
-    /// Prefer bandwidth over fidelity (lower colour depth, more aggressive encodings).
+    /// Prefer bandwidth over fidelity.
+    ///
+    /// Two things, and neither is colour depth — this used to say "lower colour
+    /// depth" and nothing in the client ever asked for one. `SetPixelFormat`
+    /// sends 32-bit BGRA on every session, because that is what the framebuffer
+    /// and every decoder here are written against; a 16-bit session would be a
+    /// conversion in each of them rather than a setting.
+    ///
+    /// What it does do: reorder the encodings so the ones that compress hardest
+    /// come first, and ask the server for a compression level above its default
+    /// (`RFB.slowLinkCompression`).
     public var lowBandwidth: Bool
     /// Render the remote cursor locally instead of letting it be drawn into the framebuffer.
     public var localCursor: Bool
