@@ -168,3 +168,23 @@ tort : leur gabarit de bitmap déclarait une image 64×48 de pas 256 sans un seu
 octet de pixel. Le décodeur ne lisait pas ces octets, le gabarit ne les
 fournissait pas, et les deux étaient d'accord entre eux et avec rien d'autre.
 Gabarit complété, pas de décodeur assoupli.
+
+### Un sabotage qui passe parce que le gabarit ne va que dans un sens
+
+En branchant `lzPalette`, trois sabotages : deux mordent, le troisième —
+supprimer la lecture de l'orientation sur ce chemin — laisse tout vert.
+
+La raison n'est pas que la ligne est inutile. C'est que **tous les gabarits
+produits par l'encodeur de référence ont `top_down = 1`**. Le chemin de
+retournement n'est jamais atteint par ce trajet, donc rien ne tombe quand on
+l'enlève.
+
+C'est exactement l'angle mort qui avait laissé `SpiceLZ.Header.topDown` être
+analysé et ignoré pendant plusieurs PR. Un jeu de gabarits complet sur tout ce
+qu'il couvre peut être unanime sur une dimension, et cette unanimité ressemble
+à une couverture.
+
+Le test manquant a été écrit : un gabarit réel, un seul octet de drapeau
+changé, et le trajet complet par `pixels(of:)` — pas un appel direct à la
+fonction de retournement, qui aurait passé le sabotage aussi. Première
+tentative écrite justement comme ça, et rejouée : elle ne mordait pas non plus.

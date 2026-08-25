@@ -170,9 +170,9 @@ extension SpiceDisplayWire {
         // is read here and the bytes are carried out whole.
         //
         // The types left out are the ones whose message shape is not this:
-        // `lzPalette` and `jpegAlpha` carry extra fields before their data,
-        // `zlibGlzRGB` carries an uncompressed size, `fromCache` and `surface`
-        // name something the client already has rather than carrying an image.
+        // `jpegAlpha` carries extra fields before its data, `zlibGlzRGB`
+        // carries an uncompressed size, `fromCache` and `surface` name
+        // something the client already has rather than carrying an image.
         // Each is named rather than read with the wrong shape.
         switch type {
         case .quic, .lzRGB, .glzRGB, .jpeg, .lz4:
@@ -182,8 +182,33 @@ extension SpiceDisplayWire {
                 bitmap: nil,
                 payload: try reader.bytes(Int(size))
             )
+
+        case .lzPalette:
+            // Its own shape: flags, then the size, then the colour table one
+            // way or the other, and only then the stream. Read with the plain
+            // shape above, the size would come out of the flags byte.
+            let flags = try reader.u8()
+            let size = Int(try reader.u32())
+            var palette: SpiceDisplayWire.Palette?
+            if flags & 0x02 != 0 {
+                // Named from a cache this client does not keep. The stream is
+                // still read so the message stays in step, but there are no
+                // colours to draw it with.
+                _ = try reader.u64()
+            } else if let (found, _) = try nested.follow(try reader.u32()) {
+                var paletteReader = found
+                palette = try SpiceDisplayWire.palette(from: &paletteReader)
+            }
+            return Image(
+                descriptor: descriptor,
+                bitmap: nil,
+                payload: try reader.bytes(size),
+                palette: palette
+            )
+
         case .bitmap:
             break
+
         default:
             _ = nested
             return Image(descriptor: descriptor, bitmap: nil, payload: nil)
@@ -254,6 +279,27 @@ extension SpiceDisplayWire {
                 rowsTopDown(
                     pixels, width: header.width, height: header.height,
                     bytesPerPixel: bytesPerPixel, alreadyTopDown: header.topDown
+                ),
+                header.width, header.height
+            )
+
+        case .lzPalette:
+            // The colours are the message's, the indices are the codec's, and
+            // the orientation is the *stream's* — not the flags beside it. A
+            // reader who takes `TOP_DOWN` from the outer flags gets palettised
+            // images upside down and nothing else, which is a bug that hides
+            // behind whichever encoding the server happens to pick.
+            guard let palette = image.palette else { return nil }
+            let (header, indices) = try SpiceLZ.decompress(payload)
+            let pixels = try SpiceLZ.pixels(
+                fromIndices: indices, type: header.type,
+                width: header.width, height: header.height,
+                palette: SpiceLZ.Palette(unique: palette.unique, colours: palette.colours)
+            )
+            return (
+                rowsTopDown(
+                    pixels, width: header.width, height: header.height,
+                    bytesPerPixel: 4, alreadyTopDown: header.topDown
                 ),
                 header.width, header.height
             )
