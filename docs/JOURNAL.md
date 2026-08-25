@@ -258,3 +258,25 @@ décoder en 32 bits. La seconde aurait été un échec incompréhensible plus ta
 sont statiques au fichier. Le but est de lire les tableaux que `family_init` a
 effectivement remplis, pas de les recalculer depuis une deuxième lecture du
 même C — ce qui ne prouverait que la constance de mes propres suppositions.
+
+### Un sabotage qui ne mord pas parce qu'il n'y a rien à mordre
+
+Six sabotages sur le lecteur de bits, cinq mordent. Le sixième — remplacer
+`eat32` par 31+1 au lieu de 16+16 — laisse tout vert.
+
+Cette fois, ce n'est pas un test manquant. Vérifié contre la référence
+elle-même, en lui faisant faire les deux : 16+16, 31+1 et une suite mélangée
+laissent le lecteur dans exactement le même état, sur les trois gabarits. La
+comptabilité ne suit qu'un total courant, donc le découpage n'a aucune portée
+sémantique.
+
+La distinction compte. Les fois précédentes où un sabotage ne mordait pas —
+`nextSerial`, la garde de drain, l'orientation sur le chemin palettisé — la
+ligne ou le test était faux. Ici la ligne est juste et il n'y a rien à épingler
+au-delà de « ne jamais demander 32 d'un coup », que la précondition tient déjà.
+Inventer un test qui fige un découpage arbitraire aurait donné l'apparence
+d'une couverture supplémentaire sans en être.
+
+Le commentaire disait « la référence l'interdit », ce qui était vrai mais
+laissait croire que le découpage comptait. Il dit maintenant lequel des deux
+faits est le vrai, et que l'autre a été mesuré.
