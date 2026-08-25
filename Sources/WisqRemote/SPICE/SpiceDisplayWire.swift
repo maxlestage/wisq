@@ -294,4 +294,32 @@ enum SpiceDisplayWire {
         var scaleMode: UInt8
         var mask: Mask
     }
+
+    /// `DRAW_COPY_BITS` — the surface copying from itself.
+    ///
+    /// The smallest draw message in the protocol and one of the most used: a
+    /// window scrolling, or moving, is this. There is no image, no brush and no
+    /// mask, only where the pixels come from — and because source and
+    /// destination are the same surface, they overlap whenever the distance is
+    /// smaller than the box.
+    struct CopyBits: Equatable, Sendable {
+        var base: Base
+        var source: Point
+    }
+
+    /// `DRAW_BLACKNESS`, `DRAW_WHITENESS` and `DRAW_INVERS`, which have the
+    /// same shape and differ only in what they write.
+    ///
+    /// They are the raster operations that need no operand: black, white, and
+    /// the complement of what is already there. A window being cleared before
+    /// it repaints is usually one of the first two.
+    struct MaskedRaster: Equatable, Sendable {
+        enum Operation: Equatable, Sendable {
+            case blackness, whiteness, invers
+        }
+
+        var base: Base
+        var operation: Operation
+        var mask: Mask
+    }
 }

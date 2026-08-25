@@ -626,6 +626,30 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// `DRAW_COPY_BITS`: the base, and then two words that are a point.
+    ///
+    /// Read as a rectangle by mistake it would consume sixteen bytes instead of
+    /// eight — and there is nothing after it in the message to notice.
+    static func copyBits(_ payload: [UInt8]) throws -> CopyBits {
+        let body = Body(payload)
+        var reader = try body.reader()
+        return CopyBits(base: try base(from: &reader), source: try point(from: &reader))
+    }
+
+    /// The three operand-free rasters. One reader, because the wire shape is
+    /// identical and only the message type tells them apart.
+    static func maskedRaster(
+        _ payload: [UInt8], _ operation: MaskedRaster.Operation
+    ) throws -> MaskedRaster {
+        let body = Body(payload)
+        var reader = try body.reader()
+        return MaskedRaster(
+            base: try base(from: &reader),
+            operation: operation,
+            mask: try mask(from: &reader, in: body)
+        )
+    }
+
     static func copy(_ payload: [UInt8]) throws -> Copy {
         let body = Body(payload)
         var reader = try body.reader()
