@@ -1688,3 +1688,33 @@ Un flux de test qui **attend** au lieu de finir la supprime, parce que c'est ce
 que fait une vraie socket quand le serveur n'a rien à dire. Trois passages verts
 d'affilée, là où le bourrage donnait un vert seul et un rouge en suite. Le
 premier correctif avait la bonne intuition et la mauvaise forme.
+
+## Trois fois la même leçon dans le même fichier
+
+`scripts/verify.sh` s'annonce ainsi : « tout ce que la CI ferait, en une seule
+commande — pour qu'un contributeur obtienne le même verdict localement, avant de
+pousser ». Il porte déjà deux commentaires qui racontent chacun une fois où
+c'était faux : il ne lançait pas le linter, puis il ne savait pas lancer
+SwiftLint sur Linux. Les deux fois, une PR a rougi pour quelque chose qui se
+voyait en une seconde.
+
+Troisième fois cette nuit. J'ai poussé une tranche, puis mis à jour le nombre de
+tests annoncé dans le commit *suivant* — et le commit intermédiaire a fait
+rougir « Build site », une porte que ce script prétendait couvrir. Il ne
+construisait pas le site du tout.
+
+La suite du site n'est d'ailleurs pas seulement à propos du site :
+`claims.test.ts` lit **ce dépôt** et échoue quand un chiffre annoncé cesse
+d'être vrai. C'est la garde que j'ai réparée en début de nuit en retirant un
+filtre `paths:` pour qu'elle tourne sur toutes les poussées — et elle tournait
+bien, mais seulement après la poussée.
+
+Vérifié plutôt qu'espéré : chiffre faussé à 999, la suite du site échoue ; chiffre
+remis, elle passe.
+
+La forme de l'erreur est la même que celle du garde-fou redondant retiré une
+heure plus tôt, retournée comme un gant. Là, j'avais ajouté un détecteur qui ne
+détectait rien parce qu'un autre cassait avant lui. Ici, il manquait un détecteur
+parce qu'un script qui disait « tout » ne disait pas tout. Dans les deux cas la
+question utile est la même, et elle n'est pas « est-ce que ça passe » : c'est
+**« qu'est-ce que ceci attraperait, et qu'est-ce qui l'attrape déjà »**.
