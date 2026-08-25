@@ -513,3 +513,49 @@ Le premier essai a expiré au bout de deux minutes en emportant la commande. Un
 `timeout` par exécution, et le blocage devient un résultat comme un autre —
 « mord (boucle infinie) ». Un sabotage qui pend est un sabotage qui mord, à
 condition de ne pas confondre l'expiration avec un silence.
+
+## GLZ tranche 4 : un test vert qui ne vérifiait rien
+
+Le branchement lui-même est court. Ce qui vaut d'être consigné, c'est un test
+que j'ai écrit, vu passer, et qui ne testait rien.
+
+Il devait montrer que la fenêtre GLZ survit d'un tour de pompe au suivant dans
+`run()` — la propriété sans laquelle GLZ ne décode pas. Il scriptait deux
+images, attendait, puis comparait le premier pixel du framebuffer à celui que
+la référence avait produit pour l'image 1. Vert du premier coup, en quatre
+millisecondes.
+
+Quatre millisecondes pour un test censé attendre un framebuffer, c'était le
+signal. Les deux images décodent à `00000000` sur leur premier pixel, et un
+framebuffer intact vaut zéro : l'assertion était vraie avant même que quoi que
+ce soit soit dessiné. Le test aurait continué à passer si le branchement
+n'existait pas.
+
+Corrigé en cherchant un pixel qui distingue l'image 1 de l'image 0 **et** de
+zéro — le pixel 48, dans la bande de bruit — et en ajoutant deux assertions qui
+vérifient que le gabarit distingue bien à cet endroit. Si un jour le gabarit
+change et que le pixel témoin devient indistinct, ce sont ces deux lignes qui
+tomberont, pas le silence.
+
+La leçon n'est pas « écrire de meilleurs tests ». C'est que **la durée
+d'exécution est une donnée** : un test asynchrone qui rend la main
+instantanément n'a probablement rien attendu. Et qu'un sabotage vaut mieux
+qu'une relecture — c'est en sabotant `run()` que j'aurais vu le problème, et
+c'est ce que j'ai fini par faire.
+
+### Ce que le sabotage a aussi révélé sur la portée
+
+En vérifiant si le trou venait de mon changement ou de `run()` en général,
+j'ai saboté la ligne des *surfaces* de la même façon : elle mord. Donc `run()`
+était couvert, et c'était bien mon ajout qui ne l'était pas. Sans ce contrôle
+j'aurais pu conclure « trou structurel, rien à faire » et passer à autre chose,
+ce qui aurait été faux et confortable.
+
+### Une surcharge que je n'ai pas ajoutée
+
+Dix appels de test passaient `pump(into:serial:limit:)`. La tentation était
+d'ajouter une surcharge sans fenêtre plutôt que de les corriger. Elle aurait
+été un piège : appelée dans une boucle — ce que fait `run()` — chaque image
+repartirait d'une fenêtre neuve, les correspondances entre images échoueraient,
+et rien ne le dirait. Les dix appels ont été corrigés. Une API où l'on ne peut
+pas pomper sans décider où vit la fenêtre est une API qui dit la vérité.

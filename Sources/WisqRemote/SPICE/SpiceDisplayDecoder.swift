@@ -292,6 +292,57 @@ extension SpiceDisplayWire {
     /// bits and `win_head_dist` as 32 more: 33 bytes against 28, laid out
     /// differently. The LZ reader would take GLZ's packed byte for a full word
     /// and every field after it would be wrong.
+    /// The same, for a channel that keeps a GLZ window.
+    ///
+    /// GLZ is the one codec whose entry point cannot be static: a stream means
+    /// nothing without the images that came before it on the same channel. So
+    /// the window is threaded in, and every image decoded through here is added
+    /// to it — including images of other codecs? **No**, and that is worth
+    /// being explicit about: only GLZ images enter the window, because only GLZ
+    /// streams are ever referenced by later ones. The reference does the same;
+    /// `glz_decoder_window_add` is called from the GLZ decoder alone.
+    ///
+    /// Everything else is handed to `pixels(of:)` unchanged.
+    static func pixels(
+        of image: Image, glzWindow window: inout SpiceGLZ.Window
+    ) throws -> (pixels: [UInt8], width: Int, height: Int)? {
+        guard image.descriptor.type == .glzRGB else {
+            return try pixels(of: image)
+        }
+        guard let payload = image.payload else { return nil }
+
+        let header = try SpiceGLZ.header(payload)
+        // Only `rgb32` is decoded so far. Named rather than attempted: the
+        // other types differ in their length biases and their pixel widths, so
+        // running them through the 32-bit loop would produce an image rather
+        // than an error.
+        guard header.type == .rgb32 else { return nil }
+        guard header.width == Int(image.descriptor.width),
+              header.height == Int(image.descriptor.height) else { return nil }
+
+        let decoded = try SpiceGLZ.decodeRGB32(
+            payload, from: SpiceGLZ.headerBytes,
+            pixels: header.width * header.height,
+            imageID: header.id, window: window
+        )
+
+        window.add(SpiceGLZ.Window.Image(
+            id: header.id, winHeadDistance: header.winHeadDistance,
+            pixels: decoded.pixels, width: header.width, height: header.height
+        ))
+        window.releaseAfterAdding()
+
+        // GLZ's own rows are stored the way the stream says, and `top_down` is
+        // in its header rather than in the flags beside it.
+        return (
+            rowsTopDown(
+                decoded.pixels, width: header.width, height: header.height,
+                bytesPerPixel: 4, alreadyTopDown: header.topDown
+            ),
+            header.width, header.height
+        )
+    }
+
     static func pixels(of image: Image) throws -> (pixels: [UInt8], width: Int, height: Int)? {
         guard let payload = image.payload else { return nil }
         switch image.descriptor.type {

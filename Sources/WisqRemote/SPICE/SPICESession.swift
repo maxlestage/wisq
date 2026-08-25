@@ -330,10 +330,14 @@ public actor SPICESession: RemoteSession {
     private func run(_ channel: SpiceDisplayChannel, from serial: UInt64) async {
         var announced = false
         var surfaces = SpiceSurfaces()
+        // The GLZ window, for the same reason and with the same lifetime as
+        // the surfaces: a stream on this connection may refer to images
+        // decoded earlier on it, and to nothing before that.
+        var glz = SpiceGLZ.Window()
         var serial = serial
         do {
             while !Task.isCancelled {
-                let progress = try await channel.pump(into: &surfaces, serial: serial)
+                let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: serial)
                 serial = progress.nextSerial
 
                 // The first surface to appear is the desktop, and its size is
