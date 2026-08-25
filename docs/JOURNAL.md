@@ -235,3 +235,26 @@ noyau de test que ce job ne va pas chercher, et un
 *y a* RSA sur Apple. Aucun n'est un trou que ce job devait combler. Le compte
 est maintenant écrit dans le workflow, pour que personne ne lise « quinze
 sautés » comme un problème.
+
+### Découper QUIC, et le dire
+
+QUIC fait 2 250 lignes de C. J'ai construit le harnais, vérifié qu'un flux
+produit par l'encodeur de référence repasse exactement par son décodeur, puis
+je me suis arrêté avant la boucle de décodage.
+
+C'est délibéré. Une PR qui aurait tout contenu n'aurait pas été relisable, et
+surtout : la partie que j'ai livrée est la seule dont la vérification soit
+*propre*. Les tables de famille sont des fonctions pures de la profondeur de
+bits — on peut les comparer nombre par nombre à celles que `family_init`
+remplit. La boucle de décodage, elle, ne se vérifiera que de bout en bout, sur
+des images entières. Se tromper dans les tables coûterait cher à chaque pixel
+de chaque image, donc c'est là qu'il faut la comparaison exacte, et c'est fait.
+
+Le harnais a appris deux choses avant même le premier octet de Swift : `rgb32`
+ne transmet pas le quatrième octet (comme en LZ), et `gray` refuse de se
+décoder en 32 bits. La seconde aurait été un échec incompréhensible plus tard.
+
+`qfam.c` fait un `#include "quic.c"` au lieu de le lier, parce que les tables
+sont statiques au fichier. Le but est de lire les tableaux que `family_init` a
+effectivement remplis, pas de les recalculer depuis une deuxième lecture du
+même C — ce qui ne prouverait que la constance de mes propres suppositions.
