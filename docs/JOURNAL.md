@@ -382,3 +382,31 @@ détection de séries, la comparaison restreinte au plan, `bestCode = bpc - 1`,
 les deux prédictions, et l'élargissement des cinq bits. Aucun survivant cette
 fois — mais deux d'entre eux ne mordaient que grâce aux gabarits ajoutés dans
 cette tranche, ce qui veut dire qu'ils ne mordaient pas la veille.
+
+### Brancher QUIC, et la raison périmée qu'on laisse traîner
+
+Le client demandait `lz` plutôt qu'`autoLZ`, avec un commentaire qui disait
+pourquoi : « les modes automatiques laissent le serveur libre d'envoyer du
+QUIC, et ce client ne sait pas le décoder ». La raison était juste quand elle a
+été écrite. Elle ne l'était plus une fois QUIC décodé, et un commentaire qui
+justifie un choix par un fait devenu faux est pire qu'un commentaire absent :
+il empêche de reposer la question.
+
+Avant de changer quoi que ce soit, j'ai vérifié ce que les modes automatiques
+produisent réellement, dans le serveur et pas de mémoire. `dcc.cpp`,
+`get_compression_for_bitmap` : les deux modes envoient du QUIC pour un bitmap à
+forte gradualité, puis `AUTO_LZ` retombe sur LZ et `AUTO_GLZ` sur GLZ. Donc
+`autoLZ` est devenu sûr et `autoGLZ` ne l'est pas — GLZ reste refusé. Sans
+cette lecture, « les deux modes automatiques » se seraient ressemblés.
+
+Deux tests ont dû changer avec, et l'un des deux était mal construit : le test
+d'ordre du canal display réaffirmait l'encodage demandé au lieu de le lire là
+où il est décidé. Il testait l'ordre et figeait la valeur, donc il tombait pour
+la mauvaise raison. Il lit maintenant `compressionToRequest`, ce qui le ramène
+à ce dont il parle.
+
+L'autre changement est plus net : `testAnUndecodedEncodingAnswersNoPixelsRatherThanAnError`
+listait `.quic` parmi les encodages non implémentés. Il ne l'est plus, donc une
+charge qui n'est pas du QUIC est un message malformé et lève, comme `lzRGB`
+lève sur une mauvaise magie. Retirer `.quic` de cette liste n'est pas contourner
+un test qui tombe : c'est que sa prémisse a cessé d'être vraie.

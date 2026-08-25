@@ -250,8 +250,14 @@ final class SpiceLZTests: XCTestCase {
     /// An encoding wisq does not decode yet answers "no pixels", not "bad
     /// message". The caller's response to the first is to leave that part of
     /// the screen alone; to the second, to drop the connection.
+    ///
+    /// `quic` used to be in this list and no longer belongs: it is decoded now,
+    /// so a payload that is not a QUIC stream is a malformed message and throws,
+    /// the same way `lzRGB` throws on a bad magic. `SpiceQUICWiringTests` pins
+    /// that. The distinction this test is about is "not implemented", not
+    /// "implemented and handed rubbish".
     func testAnUndecodedEncodingAnswersNoPixelsRatherThanAnError() throws {
-        for type in [SpiceDisplayWire.ImageType.quic, .jpeg, .lz4] {
+        for type in [SpiceDisplayWire.ImageType.jpeg, .lz4] {
             let image = SpiceDisplayWire.Image(
                 descriptor: SpiceDisplayWire.ImageDescriptor(
                     id: 1, type: type, flags: 0, width: 8, height: 8

@@ -341,6 +341,32 @@ extension SpiceDisplayWire {
                 decoded.width, decoded.height
             )
 
+        case .quic:
+            let decoded = try SpiceQUIC.decode(payload)
+            // **No flip.** QUIC is the one compressed form that carries no
+            // orientation at all: its header stops at type, width and height,
+            // and `canvas_get_quic` consults no flag and reverses nothing. LZ
+            // takes it from the inner stream and `jpegAlpha` from its own flag
+            // byte; here there is nothing to take, and reading `TOP_DOWN` from
+            // the bitmap flags beside it would invent one.
+            //
+            // The size must agree with what the message already said. The
+            // reference asserts exactly this before it allocates, and a
+            // disagreement means the two halves describe different pictures.
+            //
+            // One deliberate difference from `canvas_get_quic`: it refuses
+            // `gray` outright, with the "should not be reached" warning that
+            // says the SPICE developers expect no server to send it. That
+            // refusal is a limit of its pixman path, which has no gray format
+            // to draw into, not a rule of the protocol. This decoder produces
+            // BGRA from gray like everything else, checked against the
+            // reference *decoder* byte for byte, so it is drawn rather than
+            // dropped. If the warning is right the case never arises; if it is
+            // wrong, a picture is better than a hole in the screen.
+            guard decoded.width == Int(image.descriptor.width),
+                  decoded.height == Int(image.descriptor.height) else { return nil }
+            return decoded
+
         case .bitmap:
             guard let bitmap = image.bitmap else { return nil }
             // `pixels(_:data:)` puts the rows the right way up itself: it reads

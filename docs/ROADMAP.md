@@ -687,7 +687,39 @@ le harnais tel qu'il est, et le README donne maintenant la commande exacte de
 chacun. Un gabarit qu'on ne peut pas reconstruire est un gabarit que personne
 ne peut vérifier.
 
-Reste : brancher `.quic` sur le chemin des images, puis GLZ.
+**La cinquième tranche branche le codec**, et c'est elle qui rend les quatre
+précédentes visibles. Un codec fini que `pixels(of:)` ne rappelle pas est un
+codec qui n'existe pas — `lzPalette` l'a déjà montré une fois.
+
+`canvas_get_quic` règle trois questions d'un coup :
+
+* **QUIC ne porte aucune orientation.** Son en-tête s'arrête au type, à la
+  largeur et à la hauteur ; la référence ne consulte aucun drapeau et ne
+  retourne rien. LZ prend le sien dans le flux, `jpegAlpha` dans son propre
+  octet ; ici il n'y a rien à prendre, et aller le chercher dans les drapeaux
+  du bitmap posés juste à côté donnerait toutes les images QUIC à l'envers.
+  Un test le fige : mettre `TOP_DOWN` ne doit rien changer.
+* **La taille doit concorder** avec ce que le message a déjà annoncé. La
+  référence l'affirme avant d'allouer.
+* **`gray` est dessiné ici alors que la référence le refuse.** Son refus vient
+  de son chemin pixman, qui n'a pas de format gris où dessiner, pas du
+  protocole. Ce décodeur produit du BGRA depuis le gris comme depuis le reste,
+  vérifié octet par octet. Si l'avertissement de la référence dit vrai le cas
+  n'arrive jamais ; s'il dit faux, une image vaut mieux qu'un trou.
+
+**Et le client demande maintenant `autoLZ` au lieu de `lz`.** Il demandait du
+LZ simple précisément parce que QUIC n'était pas décodé, et cette raison n'existe
+plus. `get_compression_for_bitmap`, dans le `dcc.cpp` du serveur, sépare
+exactement les deux modes automatiques : tous deux envoient du QUIC pour un
+bitmap à forte gradualité, puis l'un retombe sur LZ et l'autre sur GLZ. Donc
+`autoLZ` ne peut produire que du QUIC ou du LZ — les deux décodés — là où
+`autoGLZ` peut encore produire du GLZ, qui reste refusé.
+
+Le gain n'est pas théorique : « forte gradualité » est le mot du serveur pour
+les photos et les dégradés, c'est-à-dire ce que LZ comprime le plus mal, et
+c'est la plus grande partie d'un bureau avec un fond d'écran.
+
+Reste : GLZ.
 
 ## Lot 6 — finition
 
