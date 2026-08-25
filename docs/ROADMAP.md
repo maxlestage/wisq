@@ -1312,9 +1312,35 @@ Le volume et la latence sont retenus tels que le serveur les envoie, sans être
 appliqués : le volume de SPICE est le réglage du mixeur **de l'invité**, et
 l'appliquer ici atténuerait deux fois.
 
-Ce qui reste sur l'audio : le canal `record` — le micro du téléphone vers
-l'invité — et la sortie elle-même, qui demande AVAudioEngine et n'existe donc
-que côté Apple.
+### Le canal record : le micro du téléphone vers l'invité
+
+Fait, décodage et encodage. C'est le miroir de la lecture, et la direction est
+toute la différence : là, le serveur décrit un flux et envoie les échantillons ;
+ici, le serveur décrit le flux qu'il veut et **c'est le client qui envoie**. Le
+fichier est donc surtout un encodeur, vérifié comme `SpiceInputs` — sans
+serveur, parce que ce qui doit être juste, ce sont les octets qui sortent.
+
+**`RECORD_START` n'a pas de champ `time`** là où `PLAYBACK_START` en a un.
+L'asymétrie est réelle : un serveur qui dit à un client quoi enregistrer n'a pas
+d'horloge à lui donner, puisque les échantillons du client portent la leur. Lire
+un quatrième mot mangerait ce qui suit le message.
+
+**Le client choisit le codec ici**, et il n'y a qu'un choix honnête : `raw`, le
+seul que wisq sache produire. Annoncer Opus et envoyer du PCM donnerait du bruit
+à l'invité. Le codec s'annonce avant le premier paquet de chaque flux, suivi
+d'un `START_MARK` qui dit où les échantillons commencent — et **un nouveau flux
+le réannonce**, à l'inverse de la lecture où `STOP` garde délibérément le codec.
+La raison est encore la direction : là c'est le serveur qui décide et ne renvoie
+rien, ici c'est nous.
+
+Et le muet n'envoie rien plutôt que du silence. Des échantillons nuls
+maintiendraient l'enregistreur de l'invité en marche et son fichier en train de
+grossir, ce qui est le contraire de ce que demande quelqu'un qui coupe son micro
+— et sur un téléphone, ça garde la radio occupée pour rien.
+
+Ce qui reste sur l'audio : la capture et la sortie elles-mêmes, qui demandent
+AVAudioEngine et n'existent donc que côté Apple. Tout ce qui se décide sans
+haut-parleur ni micro est ici, et testé.
 
 ## Lot 6 — finition
 

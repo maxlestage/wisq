@@ -1642,3 +1642,49 @@ que tout se passait bien.
 
 La correction est que le faux serveur continue de parler — cent messages ignorés
 — plutôt qu'un `sleep` qui aurait rendu le test lent et lunatique.
+
+## Le micro, et un garde-fou que j'ai écrit puis retiré
+
+Le canal `record` complète l'audio : le serveur décrit le flux qu'il veut, et
+c'est le client qui envoie. Trois asymétries avec la lecture, toutes dues à la
+direction : `RECORD_START` n'a pas de champ `time` — un serveur qui demande un
+enregistrement n'a pas d'horloge à donner, les échantillons du client portent la
+leur ; le client choisit le codec, donc il n'y a qu'un choix honnête, `raw` ; et
+un nouveau flux réannonce ce codec, là où `STOP` le garde côté lecture. La
+lecture garde parce que le serveur ne renvoie rien ; l'enregistrement réannonce
+parce que c'est nous qui décidons.
+
+### Le garde-fou redondant
+
+`Cœur (Apple)` et `App iOS` sont tombés sur `SessionModel.apply`, qui aiguille
+exhaustivement sur `SessionEvent` — et `WisqUI` est exclu de la construction
+Linux, donc le cas `.audio` ajouté la veille n'y compilait pour la première fois
+que dans les jobs Apple. Deuxième fois cette nuit que cette classe de panne
+passe.
+
+J'ai écrit un fichier de test qui aiguille sur les onze cas, pour que Linux voie
+le prochain. Puis je l'ai vérifié — en ajoutant vraiment un cas — et il ne
+servait à rien : `SessionHaptic` casse **déjà** la compilation Linux dans ce cas,
+et casse en premier, donc mon fichier n'était jamais atteint. Un garde-fou
+redondant qui prétend garder ce qu'il ne garde pas est exactement ce que cette
+semaine passe son temps à corriger, alors je l'ai retiré et j'ai mis la consigne
+là où le compilateur s'arrête vraiment.
+
+C'est la même discipline que le sabotage, appliquée à un garde-fou plutôt qu'à un
+test : est-ce qu'il *pourrait* échouer pour la raison que j'annonce ? Ici, non.
+La chose utile n'était pas un second détecteur mais une phrase, dans le fichier
+qui casse en premier, nommant le fichier qu'aucun job Linux ne compile.
+
+### Cent messages de bourrage ne sont pas une correction
+
+Le test de bout en bout du micro passait seul et échouait dans la suite. La cause
+était celle de la veille : le faux serveur d'affichage épuise sa socket, la pompe
+termine la session, le flux d'événements se ferme. J'avais « corrigé » ça la
+veille en bourrant la socket de cent messages ignorés — ce qui rend la course
+improbable sans la supprimer, et une course improbable est une course qui tombe
+sous charge.
+
+Un flux de test qui **attend** au lieu de finir la supprime, parce que c'est ce
+que fait une vraie socket quand le serveur n'a rien à dire. Trois passages verts
+d'affilée, là où le bourrage donnait un vert seul et un rouge en suite. Le
+premier correctif avait la bonne intuition et la mauvaise forme.
