@@ -22,9 +22,27 @@ extension SpiceGLZ {
     ///     32-bit match one pixel too many.
     ///   * **the image distance is variable-length**, and its layout depends on
     ///     the pixel flag that came before it.
+    /// How a literal pixel is read, which is the only part of the loop that
+    /// differs between the types decoding to 32-bit output.
+    ///
+    /// `DECODE_TO_RGB32` sends rgb24, rgb32 and rgba to one function and rgb16
+    /// to another, and the two differ in exactly this and in the length bias.
+    /// Everything else — the match arithmetic, the window, the offsets — works
+    /// on 32-bit output pixels either way.
+    enum Literal {
+        /// Three bytes, blue then green then red, and a fourth never
+        /// transmitted. Covers rgb24 and rgb32 alike.
+        case threeBytes
+        /// Two bytes of 0555, **high byte first**.
+        case fiveFiveFive
+
+        /// GLZ's own table: 1 for rgb16, nothing for rgb24 and rgb32. Not LZ's.
+        var lengthBias: Int { self == .threeBytes ? 0 : 1 }
+    }
+
     static func decodeRGB32(
         _ stream: [UInt8], from start: Int, pixels count: Int,
-        imageID: UInt64, window: Window
+        imageID: UInt64, window: Window, literal: Literal = .threeBytes
     ) throws -> (pixels: [UInt8], bytesRead: Int) {
         var out = [UInt8](repeating: 0, count: count * 4)
         var input = start
@@ -72,7 +90,7 @@ extension SpiceGLZ {
                     }
                 }
 
-                // No length bias for rgb32. See the note above.
+                length += literal.lengthBias
                 if imageDistance == 0 { pixelOffset += 1 }
 
                 guard length > 0, op + length <= count else { throw Failure.truncated }
@@ -108,10 +126,46 @@ extension SpiceGLZ {
                 control += 1                        // copy count is biased by 1
                 guard op + control <= count else { throw Failure.truncated }
                 for _ in 0..<control {
-                    out[op * 4] = try byte()        // b
-                    out[op * 4 + 1] = try byte()    // g
-                    out[op * 4 + 2] = try byte()    // r
-                    out[op * 4 + 3] = 0             // never transmitted
+                    switch literal {
+                    case .threeBytes:
+                        out[op * 4] = try byte()        // b
+                        out[op * 4 + 1] = try byte()    // g
+                        out[op * 4 + 2] = try byte()    // r
+                        out[op * 4 + 3] = 0             // never transmitted
+
+                    case .fiveFiveFive:
+                        // Written in the reference's own order, and the order
+                        // is load-bearing: it reads the two bytes into `r` and
+                        // `b`, computes `g` **from those**, and only then
+                        // expands `r` and `b` in place. Reordering the three
+                        // lines changes the green channel.
+                        //
+                        // Note also that the high byte comes first — big-endian
+                        // inside the pixel, unlike the little-endian 0555
+                        // bitmaps elsewhere in this client.
+                        // Every step lands in a **byte**, and that truncation
+                        // is part of the arithmetic rather than an artefact of
+                        // it. In the reference these are fields of a
+                        // `rgb32_pixel_t`, so `out->g = (out->r << 6) | ...`
+                        // keeps only the low eight bits, and the `>> 5` on the
+                        // next line then works on the truncated value.
+                        //
+                        // Computing it wider and truncating only at the end
+                        // gives a different green — which is exactly what
+                        // happened here, with blue and red correct and green
+                        // wrong by the bits that should have fallen off.
+                        var red = UInt8(try byte())
+                        var blue = UInt8(try byte())
+                        var green = UInt8(truncatingIfNeeded:
+                            ((UInt32(red) << 6) | (UInt32(blue) >> 2)) & ~UInt32(0x07))
+                        green |= green >> 5
+                        red = ((red << 1) & ~UInt8(0x07)) | ((red >> 4) & 0x07)
+                        blue = (blue << 3) | ((blue >> 2) & 0x07)
+                        out[op * 4] = blue
+                        out[op * 4 + 1] = green
+                        out[op * 4 + 2] = red
+                        out[op * 4 + 3] = 0
+                    }
                     op += 1
                 }
             }

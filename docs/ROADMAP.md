@@ -850,7 +850,25 @@ le dézippage n'atteint pas la taille promise : ici c'est refusé. Un flux qui n
 produit pas la taille que son propre message annonce est un message malformé,
 pas une image.
 
-Reste : les types GLZ autres que `rgb32`. Une image seule ne peut
+**`rgb24` ne demandait aucune nouvelle boucle**, et c'est la mesure qui l'a
+établi plutôt que la lecture. `DECODE_TO_RGB32` envoie les types 7, 8 et 9 vers
+le même décodeur, parce qu'un littéral rgb24 fait trois octets sur le fil
+exactement comme un rgb32 ; seule la largeur de sortie différait entre les deux
+gabarits, et spice-gtk décode toujours en 32 bits. Encoder le même contenu des
+deux façons donne des flux qui diffèrent en **exactement deux octets** —
+l'octet type/top_down et le mot de foulée. La charge compressée est identique.
+
+**`rgb16` en demandait une, et la référence y cache un piège de langage.**
+L'expansion 0555 se lit **gros-boutiste dans le pixel**, contrairement aux
+bitmaps 0555 d'ailleurs dans ce client, et le vert se calcule à partir des deux
+octets avant que l'un ou l'autre soit étendu. Mais surtout : dans la référence
+ces valeurs sont des champs d'un `rgb32_pixel_t`, donc **chaque affectation
+tronque à huit bits**, et le `>> 5` de la ligne suivante travaille sur la valeur
+tronquée. Calculer plus large et ne tronquer qu'à l'écriture donne un vert
+différent — bleu et rouge justes, vert faux. C'est exactement ce qui s'est
+passé, et seul le gabarit de référence l'a montré.
+
+Reste : la passe alpha de `rgba`, et les formes palettisées. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le
