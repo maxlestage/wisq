@@ -91,7 +91,14 @@ public enum SessionFactory {
                 VNCSession(configuration: configuration, framebuffer: framebuffer)
             }
         case .spice:
-            throw WisqError.unsupportedProtocol(.spice)
+            // Same wrapper as VNC and for the same reason, with one of its own:
+            // SPICE opens a connection per channel, so a dropped session leaves
+            // two sockets and a set of surfaces to discard rather than one
+            // socket. A fresh attempt starting from a blank screen is the
+            // correct behaviour, not a simplification.
+            return ReconnectingSession { framebuffer in
+                SPICESession(configuration: configuration, framebuffer: framebuffer)
+            }
         case .rdp:
             throw WisqError.unsupportedProtocol(.rdp)
         }

@@ -329,8 +329,90 @@ d'une manière qui tombe juste pour les capacités 1 et 2.
 codage prédictif — devient une optimisation *après*, et non un prérequis
 *avant*.
 
-Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
-un lien qui aboutit sans rien à afficher ne serait pas une session.
+`SpiceSurfaces` est l'endroit où les trois pièces finies se rejoignent : le
+canal dit *où* dessiner, le décodeur LZ dit *quoi*, et ceci le met quelque
+part. Jusque-là chacune était juste et aucune ne montrait rien. Un test
+traverse toute la couture : un flux produit par l'encodeur de SPICE ressort en
+pixels sur une surface, à l'origine de la boîte.
+
+Presque chaque test y porte sur une frontière, et ce n'est pas du remplissage.
+En C, un blit qui déborde d'une ligne écrit la suivante et l'image se décale —
+invisible. Ici le tableau est borné, donc la même erreur *piège* : l'app meurt
+au lieu de mal dessiner. Retirer la découpe et lancer les tests le montre — ils
+ne échouent pas, ils emportent le processus. Aucune des deux issues n'est
+acceptable quand les nombres viennent d'une socket.
+
+Les deux découpes sont distinctes et s'appliquent toutes les deux : la boîte
+dit où le serveur veut dessiner, la découpe dit ce qu'il veut encore voir.
+N'honorer que la boîte, et une fenêtre qui devait rester couverte est
+repeinte. Et une découpe change *quels* pixels sont écrits, jamais *de quel
+pixel source* chacun vient — calculer la source depuis le rectangle découpé
+ferait glisser l'image partout où quelque chose la recouvre.
+
+`SpiceDisplayChannel` fait tourner tout ça : messages en entrée, pixels en
+sortie. Une `struct` sur un `ByteStream` comme le canal principal, donc
+éprouvable contre un serveur scripté sans la moindre socket — et c'est comme ça
+que les règles d'ordre se vérifient au lieu de s'espérer.
+
+L'ordre justement : `INIT` **avant** la préférence de compression. Ce n'est pas
+un goût, c'est le protocole — le serveur ne dessine pas tant qu'`INIT` n'est pas
+arrivé, et une préférence envoyée d'abord peut atteindre un serveur qui n'a pas
+encore décidé que ce client existe.
+
+La distinction qui compte : **« pas encore implémenté » n'est pas « malformé »**.
+Un encodage que wisq ne décode pas laisse cette partie de l'écran tranquille et
+se compte ; un message qui n'a pas de sens arrête la pompe. Confondre les deux
+déconnecte un téléphone parce qu'un serveur a envoyé un JPEG. Les messages non
+traités sont comptés par type — un client qui ignore la moitié d'un protocole
+devrait au moins savoir dire laquelle, et c'est ce chiffre qui dit quoi
+construire ensuite.
+
+**`SPICESession` est branché.** `SessionFactory` rend une session SPICE là où il
+levait `unsupportedProtocol`. La forme qui distingue SPICE de RFB d'à côté :
+**une connexion TCP par canal**. Le canal principal d'abord, parce que c'est le
+seul qui apprend l'identifiant de session, et chaque canal suivant doit le
+présenter comme identifiant de connexion — sans quoi le serveur voit un client
+non apparenté et lui donne un affichage à lui, c'est-à-dire un écran noir qui
+ressemble exactement à un décodeur cassé.
+
+Éprouvé contre un serveur scripté à deux sockets : l'identifiant est relu tel
+quel dans le message de lien du canal display.
+
+Deux défauts trouvés en branchant, et pas par un test qui existait :
+
+- La pompe traitait **256 messages avant de rendre quoi que ce soit**. Une
+  première image de trois messages serait restée non peinte en attendant la
+  253ᵉ — sur un bureau tranquille, jamais. Le défaut est maintenant **un**
+  message par appel, et l'appelant publie les dégâts au fur et à mesure.
+- Le numéro de série ne survivait pas entre les appels, et rien ne le
+  vérifiait. Un `defer` censé le poser était du code mort : un `defer` s'exécute
+  après la copie de la valeur de retour, donc il ne peut pas la changer.
+  Vérifié par un petit programme plutôt que raisonné. Retiré, et un test le
+  tient désormais.
+
+**Le canal des entrées est branché** : une troisième connexion, présentant le
+même identifiant de session. C'est en *meilleur effort* — un serveur qui n'offre
+pas ce canal donne quand même une session utilisable, parce que l'écran vaut
+d'être montré sans le clavier et que refuser de démarrer échangerait quelque
+chose contre rien. Chaque canal compte ses propres numéros de série : un
+compteur partagé entre deux connexions donnerait à chacune une suite trouée.
+
+**Le canal curseur est fait** : décodage et branchement, sur sa propre
+connexion — pour que le pointeur continue de bouger pendant que le canal
+display envoie un écran entier de pixels. Deux largeurs s'y seraient écrites
+faux de mémoire : `cursor_flags` fait seize bits là où `cursor_type` en fait
+huit, donc l'en-tête ne commence pas où on le croit ; et la position est un
+`Point16` — deux entiers signés de seize bits — pas les deux de trente-deux du
+canal display.
+
+Trois absences y sont distinctes, et les confondre donne un pointeur faux
+plutôt qu'une erreur : le drapeau `NONE` (aucune image), un curseur nommé
+depuis un cache que ce client ne tient pas, et une forme non décodée (mono,
+palette). Un curseur vide veut dire « cache le pointeur » ; renvoyer ça pour
+« je ne l'ai pas » fait exactement l'inverse de ce que le serveur demande.
+
+Reste : QUIC, GLZ, JPEG et les types à palette ; le presse-papiers, qui passe
+par l'agent du canal principal et non par les entrées.
 
 ## Lot 6 — finition
 
