@@ -127,6 +127,39 @@ jobs:
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
 
+  core-apple:
+    name: Cœur (Apple)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The Linux job builds the same package, so this is not about compiling
+      # it twice. It is about the code behind `canImport` guards, which on
+      # Linux is not merely untested — it is not there. `JPEGDecoder` wraps
+      # ImageIO and reports itself unavailable elsewhere, so on Linux
+      # `testDecodesARealJPEG` does not run and
+      # `testQualityIsClampedIntoTheSpecRange` returns before asserting
+      # anything and reports success. The decoder that turns bytes into pixels
+      # was verified by no job at all.
+      #
+      # The same argument the app job already makes for `WisqUI`: a platform
+      # the compiler never sees is a platform the tests never covered.
+      - name: Test (mode langage Swift 6)
+        # Expect around fifteen skipped, and they are the expected ones rather
+        # than a hole: the `WisqAgentTests` and `LinuxBootTests` cases need the
+        # agent binary and the Linux test kernel, which this job deliberately
+        # does not fetch — the Linux job runs them with both. The odd one out is
+        # `testTheShippedEncryptorRefusesWhereThereIsNoRSA`, skipped here
+        # precisely *because* there is RSA on Apple; Linux is where it runs.
+        #
+        # What this job adds over Linux is the other direction:
+        # `testDecodesARealJPEG` and its neighbours, which need ImageIO and had
+        # never executed in CI before this job existed.
+        run: swift test
+        env:
+          # No Rust core here: this job is for the protocol and platform layers,
+          # and the two interpreters are already compared on Linux.
+          WISQ_SWIFT_CORE: '1'
+
   lint:
     name: Lint
     runs-on: macos-latest
