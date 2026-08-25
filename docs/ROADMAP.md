@@ -349,6 +349,24 @@ repeinte. Et une découpe change *quels* pixels sont écrits, jamais *de quel
 pixel source* chacun vient — calculer la source depuis le rectangle découpé
 ferait glisser l'image partout où quelque chose la recouvre.
 
+`SpiceDisplayChannel` fait tourner tout ça : messages en entrée, pixels en
+sortie. Une `struct` sur un `ByteStream` comme le canal principal, donc
+éprouvable contre un serveur scripté sans la moindre socket — et c'est comme ça
+que les règles d'ordre se vérifient au lieu de s'espérer.
+
+L'ordre justement : `INIT` **avant** la préférence de compression. Ce n'est pas
+un goût, c'est le protocole — le serveur ne dessine pas tant qu'`INIT` n'est pas
+arrivé, et une préférence envoyée d'abord peut atteindre un serveur qui n'a pas
+encore décidé que ce client existe.
+
+La distinction qui compte : **« pas encore implémenté » n'est pas « malformé »**.
+Un encodage que wisq ne décode pas laisse cette partie de l'écran tranquille et
+se compte ; un message qui n'a pas de sens arrête la pompe. Confondre les deux
+déconnecte un téléphone parce qu'un serveur a envoyé un JPEG. Les messages non
+traités sont comptés par type — un client qui ignore la moitié d'un protocole
+devrait au moins savoir dire laquelle, et c'est ce chiffre qui dit quoi
+construire ensuite.
+
 Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
 un lien qui aboutit sans rien à afficher ne serait pas une session.
 

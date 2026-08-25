@@ -22,6 +22,26 @@ break APIs.
   shrugging.
 
 ### Added
+- **The display channel runs: messages in, pixels out.** A `struct` over a
+  `ByteStream` like the main channel, so it can be driven against a scripted
+  server with no socket — which is how its ordering rules get asserted rather
+  than hoped for.
+
+  `INIT` goes before the compression preference, and that order is the
+  protocol's rather than a taste: the server does not draw until `INIT`
+  arrives, and a preference sent first can reach a server that has not yet
+  decided this client exists.
+
+  **"Not implemented yet" is not "malformed", and the difference is the whole
+  design.** An encoding wisq cannot decode leaves that part of the screen alone
+  and is counted; a message that makes no sense stops the pump. Conflating them
+  disconnects a phone because a server sent one JPEG. Unhandled messages are
+  counted by type — a client that ignores half a protocol should be able to say
+  which half, and that number is what says what to build next.
+
+  A ping is answered rather than counted as ignored: a server that pings and
+  hears nothing concludes the client is gone.
+
 - **Draws reach pixels: SPICE surfaces, with the clipping rules tested.** Where
   the three finished pieces meet — the display channel says where, the LZ
   decoder says what, this puts it somewhere. Each was correct alone and none of
