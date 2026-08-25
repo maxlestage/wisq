@@ -368,11 +368,19 @@ extension SpiceDisplayWire {
         guard let payload = image.payload else { return nil }
 
         let header = try SpiceGLZ.header(payload)
-        // Only `rgb32` is decoded so far. Named rather than attempted: the
-        // other types differ in their length biases and their pixel widths, so
-        // running them through the 32-bit loop would produce an image rather
-        // than an error.
-        guard header.type == .rgb32 else { return nil }
+        // `rgb24` goes through the same loop, and that is the reference's
+        // arrangement rather than a shortcut: `DECODE_TO_RGB32` sends types 7,
+        // 8 and 9 all to `glz_rgb32_decode`. An rgb24 literal is three bytes on
+        // the wire exactly as an rgb32 one is; only the *output* width differed
+        // between the two templates, and spice-gtk always decodes to 32 bits.
+        // Checked with an rgb24 fixture rather than taken on trust.
+        //
+        // The rest are still refused. `rgb16` packs two bytes per pixel and
+        // needs its own expansion; `rgba` needs a second pass over the alpha;
+        // the palette forms need the colour table and rescaled distances.
+        // Running any of them through this loop would produce an image rather
+        // than an error, which is the worse failure.
+        guard header.type == .rgb32 || header.type == .rgb24 else { return nil }
         guard header.width == Int(image.descriptor.width),
               header.height == Int(image.descriptor.height) else { return nil }
 
