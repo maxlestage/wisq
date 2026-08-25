@@ -1757,3 +1757,37 @@ La leçon générale : **une capacité annoncée est une affirmation sur ce clie
 elle se périme dans les deux sens**. On surveille celles qu'on annonce sans
 savoir faire ; celles qu'on sait faire sans les annoncer sont plus discrètes,
 parce que le symptôme est du côté du serveur.
+
+## Un commentaire qui décidait, sur une prémisse morte
+
+Dans la foulée de la capacité manquante, j'ai relu le commentaire qui choisit
+quoi demander comme compression. Il disait, pour justifier `autoLZ` plutôt
+qu'`autoGLZ` : « `autoGLZ` peut encore produire du GLZ, qui est refusé ».
+
+GLZ n'est plus refusé depuis que sa fenêtre circule dans la pompe. `.glzRGB` et
+`.zlibGlzRGB` se décodent, avec leurs propres tests. La phrase qui portait la
+décision était donc fausse — et c'est pire qu'un commentaire périmé ordinaire,
+parce que celui-ci **est** le raisonnement : personne relisant ce fichier
+n'aurait de raison de rouvrir la question.
+
+Deux tiers du dossier pour basculer se vérifient dans la référence :
+`get_compression_for_bitmap` ne garde `GLZ` que pour les formats qui ont une
+gradualité, ce que les formats palettisés n'ont pas — donc les formes GLZ-palette
+que ce client refuse ne peuvent pas arriver sous `autoGLZ`. Sa sortie entière est
+QUIC, GLZ-RGB, LZ ou non compressé, tous décodés. Et le gain est exactement ce
+pourquoi GLZ existe : un dictionnaire partagé entre les images d'un canal.
+
+Le tiers manquant m'a arrêté : `initialise()` déclare une fenêtre GLZ de **zéro
+pixel**, et `dcc_handle_init` passe ce nombre tel quel à
+`glz_enc_dictionary_create`. Ce que fait un dictionnaire de taille nulle, je ne
+peux pas le vérifier ici — `glz_encoder_dictionary.c` n'est pas dans les sources
+vendues. Demander à un serveur de compresser contre une fenêtre qu'on lui a dit
+vide n'est pas une chose à changer au jugé, et c'est une optimisation de bande
+passante, pas une correction.
+
+Alors le comportement ne bouge pas et le commentaire dit maintenant la vérité :
+ce qui est établi, ce qui ne l'est pas, et que la taille de fenêtre et la
+préférence doivent bouger ensemble. La règle que j'en tire : **un commentaire qui
+justifie un choix vieillit plus mal qu'un commentaire qui décrit un mécanisme**,
+parce qu'il reste plausible longtemps après que sa raison a disparu — et qu'il
+décourage précisément la relecture qui le corrigerait.
