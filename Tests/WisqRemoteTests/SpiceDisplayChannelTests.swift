@@ -136,6 +136,31 @@ final class SpiceDisplayChannelTests: XCTestCase {
         return message(SpiceDisplayWire.Message.drawAlphaBlend.rawValue, body + image)
     }
 
+    /// `DRAW_ROP3`: opaque's shape with a one-byte opcode where the two-byte
+    /// rop descriptor was.
+    private func rop3Draw(colour: UInt32, opcode: UInt8) -> Data {
+        let width = 4, height = 2
+        var image = u32(1) + u32(0)
+        image += [0, 0]
+        image += u32(UInt32(width)) + u32(UInt32(height))
+        image += [8, 0x04]
+        image += u32(UInt32(width)) + u32(UInt32(height)) + u32(UInt32(width * 4))
+        image += u32(0)
+        for _ in 0..<(width * height) { image += u32(colour) }
+
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        body += [0]
+        let fixed = 4 + 16 + 1 + 4 + 16 + 5 + 1 + 1 + 13
+        body += u32(UInt32(fixed))
+        body += i32(0) + i32(0) + i32(Int32(height)) + i32(Int32(width))
+        body += [1] + u32(0x0000_00FF)                 // solid brush
+        body += [opcode]
+        body += [0]                                    // scale mode
+        body += [0] + i32(0) + i32(0) + u32(0)         // mask
+        return message(SpiceDisplayWire.Message.drawRop3.rawValue, body + image)
+    }
+
     private func capabilities(preferredCompression: Bool) -> [UInt32] {
         preferredCompression
             ? SpiceDisplayClient.capabilityWords([.preferredCompression])
@@ -355,6 +380,22 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(progress.updates.count, 1)
         // An opaque white source at half alpha over a black surface: half white.
         XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<3]), [0x80, 0x80, 0x80])
+    }
+
+    /// `DRAW_ROP3` reaches a draw rather than being counted as ignored.
+    func testRop3ReachesTheSurface() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(4, 2) + rop3Draw(colour: 0x00FF_0000, opcode: 0xCC)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
+
+        XCTAssertEqual(progress.ignored, [:], "rop3 n'est plus un message ignoré")
+        XCTAssertEqual(progress.updates.count, 1)
+        // SRCCOPY: the image wins outright, whatever the brush says.
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
     }
 
     func testASurfaceIsDestroyedWhenTheServerSaysSo() async throws {

@@ -353,6 +353,22 @@ enum SpiceDisplayWire {
         var readsDestinationAlpha: Bool { flags & Self.destinationHasAlpha != 0 }
     }
 
+    /// `DRAW_ROP3` — a ternary raster operation over pattern, source and
+    /// destination.
+    ///
+    /// The general case the other draws are special cases of. Its shape is
+    /// `DRAW_OPAQUE`'s with a single byte where the rop descriptor was: not a
+    /// set of flags this time but an opcode, one of 256.
+    struct Rop3: Equatable, Sendable {
+        var base: Base
+        var source: Image?
+        var sourceArea: Rect
+        var brush: Brush
+        var rop3: UInt8
+        var scaleMode: UInt8
+        var mask: Mask
+    }
+
     /// `DRAW_COPY_BITS` — the surface copying from itself.
     ///
     /// The smallest draw message in the protocol and one of the most used: a
