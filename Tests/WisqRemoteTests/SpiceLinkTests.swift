@@ -267,6 +267,27 @@ final class SpiceLinkTests: XCTestCase {
         XCTAssertEqual(Array(pong.dropFirst(SpiceWire.dataHeaderBytes)), ping)
     }
 
+    /// The main channel does not end at the channel list, so where its message
+    /// counter got to is part of the result.
+    ///
+    /// Whatever keeps reading the connection afterwards continues the same
+    /// sequence. One that restarted at 1 would hand a server that acknowledges
+    /// by serial a sequence going backwards — and this counter has already
+    /// moved: the channel request, every pong, every acknowledgement.
+    func testTheBringUpReportsWhereItsSerialGotTo() async throws {
+        let ping = SpiceWire.u32(1) + SpiceWire.u64(2)
+        let server = MemoryByteStream(
+            inbound: message(SpiceWire.Message.mainInit, mainInitPayload)
+                + message(SpiceWire.Message.ping, ping)
+                + message(SpiceWire.Message.setAck, SpiceWire.u32(1) + SpiceWire.u32(1))
+                + message(SpiceWire.Message.mainChannelsList, SpiceWire.u32(0))
+        )
+        let session = try await SpiceMainChannel(stream: server).bringUp()
+
+        // One for the channel request, one for the pong, one for the sync.
+        XCTAssertEqual(session.nextSerial, 4)
+    }
+
     /// The acknowledgement generation is echoed: it is how a server tells an
     /// acknowledgement for this window from one for the last.
     func testAnAcknowledgementWindowIsAnsweredWithItsOwnGeneration() async throws {

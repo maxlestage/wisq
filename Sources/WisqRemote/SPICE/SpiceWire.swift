@@ -66,6 +66,20 @@ enum SpiceWire {
         static let notify: UInt16 = 6
         static let mainInit: UInt16 = 103
         static let mainChannelsList: UInt16 = 104
+        static let mainMouseMode: UInt16 = 105
+        static let mainMultiMediaTime: UInt16 = 106
+        static let mainAgentConnected: UInt16 = 107
+        static let mainAgentDisconnected: UInt16 = 108
+        static let mainAgentData: UInt16 = 109
+        static let mainAgentToken: UInt16 = 110
+        static let mainName: UInt16 = 113
+        static let mainUUID: UInt16 = 114
+        /// 115, and distinct from `mainAgentConnected` rather than a variant of
+        /// it: this one carries the token count, and a server that sends it
+        /// sends nothing else to say the agent is there. Treating only 107 as
+        /// "the agent appeared" means the clipboard never starts on any server
+        /// new enough to prefer this.
+        static let mainAgentConnectedTokens: UInt16 = 115
     }
 
     enum ClientMessage {
@@ -86,6 +100,10 @@ enum SpiceWire {
         /// arrives, `bringUp` runs to its limit and throws, and every channel
         /// built on top of it is unreachable.
         static let attachChannels: UInt16 = 104
+        static let mouseModeRequest: UInt16 = 105
+        static let agentStart: UInt16 = 106
+        static let agentData: UInt16 = 107
+        static let agentToken: UInt16 = 108
     }
 
     // MARK: - Reading
