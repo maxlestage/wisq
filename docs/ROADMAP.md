@@ -768,7 +768,36 @@ fenêtre existe. Les deux en-têtes s'accordent sur leurs huit premiers octets �
 magie et version — et divergent juste après : un lecteur qui prend du GLZ pour
 du LZ passe son seul contrôle bon marché puis se trompe sur tout le reste.
 
-La difficulté restante n'est pas la boucle, c'était le harnais. Une image seule ne peut
+**La fenêtre est la deuxième tranche**, et c'est elle qui fait de GLZ une
+fonctionnalité de session : un anneau d'images décodées indexé par
+`id % capacité`, qui survit à tous les décodages et appartient au canal.
+
+Trois règles de la référence, chacune épinglée :
+
+* **Le créneau ne suffit pas, il faut vérifier l'identifiant.** Le créneau est
+  `cible % capacité`, donc un identifiant périmé tombe sur une vraie image
+  d'une autre génération. Sans le contrôle, la correspondance résout vers la
+  mauvaise trame et l'image produite est plausible.
+* **Le comblement d'un trou s'arrête à l'identifiant qu'on vient d'ajouter** —
+  la boucle est bornée par `tail_gap <= img->hdr.id`. Les images arrivées en
+  avance sont présentes et retrouvables, simplement pas encore comptées. Ce
+  n'est pas cosmétique : `releaseAfterAdding` lit `slots[tailGap - 1]`, donc
+  l'image qui décide de ce qui reste nécessaire n'est pas toujours la plus
+  récente.
+* **L'agrandissement réindexe sur la nouvelle capacité.** Réindexer sur
+  l'ancienne fait disparaître silencieusement les images dont l'identifiant
+  dépasse l'ancienne taille.
+
+Et une divergence assumée : **`glz_decoder_window_clear` ne réinitialise pas
+`oldest`**, alors que `spice-session.c` l'appelle sur reconnexion et sur
+bascule de session. `oldest` n'étant jamais qu'incrémenté, les identifiants qui
+repartent de zéro placent toutes les cibles de libération sous lui, plus rien
+n'est jamais libéré, et le tableau double à chaque collision : une reconnexion
+fuit toute la session précédente. Rien dans le protocole ne le demande — c'est
+un oubli dans une fonction. Ici `oldest` est remis à zéro, et la raison est
+écrite à l'endroit où elle se lit.
+
+Reste : la boucle de correspondance, puis le branchement. Une image seule ne peut
 pas produire de correspondance entre images, donc les gabarits doivent être des
 *suites* d'images encodées contre un même dictionnaire, ce qui demande
 l'encodeur GLZ du serveur et non plus seulement spice-common. Sans ça, tout le

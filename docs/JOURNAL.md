@@ -459,3 +459,57 @@ motif contenant un `|`. « Aucune sortie » et « le sabotage survit » se
 ressemblent beaucoup depuis le terminal ; c'est la troisième fois dans ce projet
 qu'un sabotage muet vient de l'outillage et non du code. Rejoué en Python avec
 une assertion sur l'application du motif, il mord.
+
+## GLZ tranche 2 : un test qui avait tort, et un sabotage qui avait raison
+
+### Le test faux, pris par un essai à blanc
+
+J'avais écrit le test de `tailGap` en attendant 3 après avoir ajouté les images
+0, 2 puis 1. Il vaut 2. La boucle de la référence est bornée par
+`tail_gap <= img->hdr.id` : combler un trou ne fait pas courir le compteur
+par-dessus les images arrivées en avance.
+
+Le réflexe dangereux aurait été de « corriger » l'implémentation pour satisfaire
+l'attente, d'autant que 3 semble plus naturel — le trou est comblé, les images
+0, 1 et 2 sont toutes là. Mais `releaseAfterAdding` lit `slots[tailGap - 1]`
+pour décider ce qui reste nécessaire. Avancer le compteur trop loin aurait
+désigné une image plus récente que celle que la référence désigne, donc libéré
+trop tôt des images que des flux ultérieurs pouvaient encore référencer. Des
+images plausibles et fausses, encore.
+
+Ce qui l'a attrapé n'est pas une relecture mais un essai à blanc : j'ai posé le
+brouillon dans l'arbre, lancé les tests, puis retiré les fichiers. Relire mon
+propre code ne m'aurait pas montré que mon attente était fausse — seul
+l'exécuter le pouvait.
+
+### Un sabotage survivant, et la question à poser
+
+Six sabotages sur la fenêtre, cinq mordent. Le sixième — réindexer sur
+l'ancienne capacité au lieu de la nouvelle lors d'un agrandissement — laisse
+tout vert.
+
+La question n'est pas « mes tests les distinguent-ils » mais « existe-t-il une
+entrée qui les distingue ». Ici oui, et il a fallu la construire : les deux
+modulos ne diffèrent que si une image dont l'identifiant dépasse l'ancienne
+capacité se trouve dans le tableau au moment de l'agrandissement. Tous mes
+tests ajoutaient des identifiants croissants depuis zéro, donc toujours
+inférieurs à la capacité courante, et les deux modulos coïncidaient à chaque
+fois.
+
+La séquence `40, 24, 8` sépare : `40 % 32` vaut 8 là où `40 % 64` vaut 40, donc
+le mauvais modulo range l'image 40 là où l'image 8 vient ensuite l'écraser.
+Elle disparaît sans erreur — juste une image que la correspondance suivante ne
+trouvera pas. Test ajouté, sabotage rejoué, il mord.
+
+C'était donc un **test manquant**, pas une équivalence. Troisième fois que la
+distinction compte dans ce projet, et troisième fois qu'elle se tranche en
+cherchant l'entrée plutôt qu'en relisant la suite.
+
+### Un sabotage qui mord en bouclant
+
+Retirer la borne `tailGap <= image.id` ne fait pas échouer les tests : ça les
+fait tourner indéfiniment, l'anneau plein n'ayant plus de condition d'arrêt.
+Le premier essai a expiré au bout de deux minutes en emportant la commande. Un
+`timeout` par exécution, et le blocage devient un résultat comme un autre —
+« mord (boucle infinie) ». Un sabotage qui pend est un sabotage qui mord, à
+condition de ne pas confondre l'expiration avec un silence.
