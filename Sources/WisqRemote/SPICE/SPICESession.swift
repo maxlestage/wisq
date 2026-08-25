@@ -35,6 +35,12 @@ public actor SPICESession: RemoteSession {
     private var cursor: (any ByteStream)?
     private var pump: Task<Void, Never>?
     private var cursorPump: Task<Void, Never>?
+    private var playback: (any ByteStream)?
+    private var playbackPump: Task<Void, Never>?
+    private var record: (any ByteStream)?
+    private var recordPump: Task<Void, Never>?
+    private var recording = SpiceRecord()
+    private var recordSerial: UInt64 = 1
     private var mainPump: Task<Void, Never>?
 
     /// The main channel's agent, which owns its own state.
@@ -78,19 +84,27 @@ public actor SPICESession: RemoteSession {
     public func stop() async {
         pump?.cancel()
         cursorPump?.cancel()
+        playbackPump?.cancel()
+        recordPump?.cancel()
         mainPump?.cancel()
         pump = nil
         cursorPump = nil
+        playbackPump = nil
+        recordPump = nil
         mainPump = nil
         agent = nil
         await main?.close()
         await display?.close()
         await inputs?.close()
         await cursor?.close()
+        await playback?.close()
+        await record?.close()
         main = nil
         display = nil
         inputs = nil
         cursor = nil
+        playback = nil
+        record = nil
         continuation.yield(.disconnected(nil))
         continuation.finish()
     }
@@ -172,8 +186,28 @@ public actor SPICESession: RemoteSession {
                 // matters exactly where the preference does not reach: a
                 // server without `preferredCompression`, and the images that
                 // go out before ours arrives.
+                // **`sizedStream` is not optional politeness — without it the
+                // server silently drops frames.** `dcc-send.cpp` computes
+                // whether a frame's source area differs from the stream's
+                // geometry and, if it does and the client has not advertised
+                // `SPICE_DISPLAY_CAP_SIZED_STREAM`, `return FALSE`s out of
+                // sending it at all. A region that needs a resize therefore
+                // just stops updating. wisq handles `STREAM_DATA_SIZED`, so it
+                // has to say so.
+                //
+                // **`multiCodec` is deliberately absent, and that absence is
+                // load-bearing.** `dcc_create_video_encoder` skips every
+                // non-MJPEG codec for a client without it — "Old clients only
+                // support MJPEG" is the comment — and MJPEG is the only codec
+                // wisq decodes. Adding it on the theory that more capability is
+                // better would let the server pick VP8 or H.264 and hand this
+                // client a frozen rectangle where the motion is.
+                //
+                // `streamReport` is absent for the same kind of reason: wisq
+                // ignores `STREAM_ACTIVATE_REPORT`, so claiming it would promise
+                // a bitrate conversation this client never holds.
                 channelCaps: SpiceDisplayClient.capabilityWords(
-                    [.preferredCompression, .lz4Compression]
+                    [.sizedStream, .preferredCompression, .lz4Compression]
                 )
             )
 
@@ -245,6 +279,203 @@ public actor SPICESession: RemoteSession {
                 cursor = nil
             }
         }
+
+        // Sound, on a connection of its own for the same reason the pointer has
+        // one: audio that waits behind a screenful of pixels arrives late, and
+        // late audio is worse than none. Best effort — a session with no sound
+        // is a session, and a server may not offer the channel at all.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.playback.rawValue }) {
+            do {
+                let playbackStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: playbackStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .playback,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                playback = playbackStream
+                playbackPump = Task { [weak self] in
+                    await self?.followPlayback(on: playbackStream)
+                }
+            } catch {
+                playback = nil
+            }
+        }
+
+        // The microphone, if the guest wants one. Its own connection again:
+        // captured samples are on a deadline, and a queue shared with pixels is
+        // not a deadline anyone can keep.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.record.rawValue }) {
+            do {
+                let recordStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: recordStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .record,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                record = recordStream
+                recordPump = Task { [weak self] in
+                    await self?.followRecord(on: recordStream)
+                }
+            } catch {
+                record = nil
+            }
+        }
+    }
+
+    /// Reads the record channel: what the guest wants captured, and whether it
+    /// currently wants anything at all.
+    private func followRecord(on stream: any ByteStream) async {
+        var serial: UInt64 = 1
+        while !Task.isCancelled {
+            do {
+                let header = try SpiceWire.decodeDataHeader(
+                    try await stream.read(exactly: SpiceWire.dataHeaderBytes)
+                )
+                guard header.size <= 1 << 22 else { return }
+                let payload = header.size == 0
+                    ? Data() : try await stream.read(exactly: Int(header.size))
+
+                switch header.type {
+                case SpiceWire.Message.ping:
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.pong, serial: serial, payload: payload
+                    ))
+                    serial += 1
+                case SpiceRecordWire.ServerMessage.start.rawValue:
+                    recording.start(try SpiceRecordWire.start([UInt8](payload)))
+                case SpiceRecordWire.ServerMessage.stop.rawValue:
+                    recording.stop()
+                case SpiceRecordWire.ServerMessage.mute.rawValue:
+                    recording.setMuted(try SpiceRecordWire.mute([UInt8](payload)))
+                case SpiceRecordWire.ServerMessage.volume.rawValue:
+                    recording.setVolume(try SpiceRecordWire.volume([UInt8](payload)))
+                default:
+                    continue
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Hands captured samples to the guest.
+    ///
+    /// Called by whatever is holding the microphone — on Apple that is
+    /// AVAudioEngine, which is why this takes samples rather than opening a
+    /// device itself. Everything that decides *whether* to send, and what has to
+    /// go in front of the samples, is here where a test can drive it.
+    ///
+    /// **The codec is announced before the first packet of every stream**, and
+    /// `START_MARK` says where the samples begin. A server that never hears the
+    /// mode reads PCM as whatever it assumed last.
+    ///
+    /// Silence is not sent while muted: zeroed samples would keep the guest's
+    /// recorder running and its file growing, which is the opposite of what
+    /// muting a microphone asks for.
+    /// Whether the guest has asked for a microphone and has not muted it.
+    ///
+    /// Not `public`: the app has no use for it, and it exists so a test can wait
+    /// for `RECORD_START` to have been read rather than guess at how long that
+    /// takes. Guessing is what made an earlier test pass alone and fail in a
+    /// suite.
+    var isCapturingMicrophone: Bool { recording.isCapturing }
+
+    public func sendMicrophone(samples: [Int16], time: UInt32) async {
+        guard let record, recording.isCapturing, !samples.isEmpty else { return }
+        do {
+            if !recording.hasAnnouncedMode {
+                try await write(
+                    SpiceRecordWire.ClientMessage.mode.rawValue,
+                    SpiceRecordWire.modeMessage(time: time), to: record
+                )
+                try await write(
+                    SpiceRecordWire.ClientMessage.startMark.rawValue,
+                    SpiceRecordWire.startMarkMessage(time: time), to: record
+                )
+                recording.announcedMode()
+            }
+            try await write(
+                SpiceRecordWire.ClientMessage.data.rawValue,
+                SpiceRecordWire.dataMessage(time: time, samples: samples), to: record
+            )
+        } catch {
+            // A microphone that cannot reach the guest is a microphone that does
+            // not work, not a session that has ended. The display channel is
+            // what decides whether the session is alive.
+            self.record = nil
+        }
+    }
+
+    private func write(_ type: UInt16, _ payload: Data, to stream: any ByteStream) async throws {
+        try await stream.write(
+            SpiceWire.message(type, serial: recordSerial, payload: payload)
+        )
+        recordSerial += 1
+    }
+
+    /// Reads the playback channel and hands frames to whoever is listening.
+    ///
+    /// Failures here end this task and nothing else, like the cursor's: losing
+    /// sound is losing sound, and tearing down a working screen for it would be
+    /// the wrong trade.
+    private func followPlayback(on stream: any ByteStream) async {
+        var state = SpicePlayback()
+        var serial: UInt64 = 1
+        while !Task.isCancelled {
+            do {
+                let header = try SpiceWire.decodeDataHeader(
+                    try await stream.read(exactly: SpiceWire.dataHeaderBytes)
+                )
+                guard header.size <= 1 << 22 else { return }
+                let payload = header.size == 0
+                    ? Data() : try await stream.read(exactly: Int(header.size))
+
+                switch header.type {
+                case SpiceWire.Message.ping:
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.pong, serial: serial, payload: payload
+                    ))
+                    serial += 1
+                case SpicePlaybackWire.Message.start.rawValue:
+                    state.start(try SpicePlaybackWire.start([UInt8](payload)))
+                case SpicePlaybackWire.Message.stop.rawValue:
+                    state.stop()
+                case SpicePlaybackWire.Message.mode.rawValue:
+                    // A mode change carries its own first packet, so the samples
+                    // in it are played rather than dropped.
+                    let change = try SpicePlaybackWire.modeChange([UInt8](payload))
+                    state.setMode(change.mode)
+                    publish(state.frames(from: SpicePlaybackWire.Packet(
+                        time: change.time, data: change.data
+                    )))
+                case SpicePlaybackWire.Message.data.rawValue:
+                    publish(state.frames(from: try SpicePlaybackWire.packet([UInt8](payload))))
+                case SpicePlaybackWire.Message.mute.rawValue:
+                    state.setMuted(try SpicePlaybackWire.mute([UInt8](payload)))
+                case SpicePlaybackWire.Message.volume.rawValue:
+                    state.setVolume(try SpicePlaybackWire.volume([UInt8](payload)).levels)
+                case SpicePlaybackWire.Message.latency.rawValue:
+                    state.setLatency(try SpicePlaybackWire.latency([UInt8](payload)))
+                default:
+                    continue
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Only frames with something in them reach the UI. A packet that decoded to
+    /// nothing — muted, a codec with no decoder, no whole frame — is silence,
+    /// and silence is not an event worth waking a renderer for.
+    private func publish(_ frames: SpicePlayback.Frames?) {
+        guard let frames, !frames.samples.isEmpty else { return }
+        continuation.yield(.audio(AudioFrames(
+            samples: frames.samples, channels: frames.channels,
+            frequency: frames.frequency, time: frames.time
+        )))
     }
 
     /// Reads the main channel for as long as the session lasts.

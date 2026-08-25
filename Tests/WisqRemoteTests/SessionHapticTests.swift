@@ -52,6 +52,11 @@ final class SessionHapticTests: XCTestCase {
             .cursor(RemoteCursor(width: 0, height: 0, hotspotX: 0, hotspotY: 0, bgra: [])),
             .resized(width: 1024, height: 768),
             .clipboard("du texte"),
+            // Audio packets arrive as often as frames do — a stereo stream at
+            // 48 kHz in ten-millisecond packets is a hundred a second. This was
+            // added after a sabotage made `.audio` buzz and the whole suite
+            // stayed green: the list only holds what someone thought to add.
+            .audio(AudioFrames(samples: [0, 0], channels: 2, frequency: 48_000, time: 0)),
             .bell,
             .connecting,
             .authenticating,

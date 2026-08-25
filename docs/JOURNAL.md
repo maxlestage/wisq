@@ -1597,3 +1597,197 @@ deux lectures », et vérifier que la mienne en est une.
 
 C'est aussi arrivé sur les tirets, la veille : j'avais écrit un test de coin pour
 attraper un cycle qui redémarre, avec un segment long d'exactement une période.
+
+## Le son, et un test qui échouait pour une raison qui n'était pas la sienne
+
+Le canal `playback` de SPICE est petit : sept messages, un codec d'état, du PCM
+signé seize bits. Il est écrit comme `TransportTuning` — une valeur qui décide
+tout ce qui se décide sans haut-parleur (quel codec est en vigueur, si un paquet
+est jouable, combien de trames il porte, si c'est muet), et rien de plus. Ce qui
+reste à la plateforme, c'est de donner les trames à AVAudioEngine.
+
+Onze sabotages sur onze attrapés du premier coup, ce qui n'était jamais arrivé.
+Deux raisons, je crois : le domaine est petit, et j'ai écrit les tests en
+cherchant l'entrée qui sépare les deux lectures plutôt qu'en illustrant le code.
+`0x0102` et `0x0201` sont des nombres différents ; `0x0101` ne l'aurait pas été.
+
+Un douzième sabotage a survécu, et il ne portait pas sur l'audio : faire buzzer
+le téléphone à chaque paquet audio. `SessionHapticTests` ne connaissait pas le
+nouveau cas. La liste blanche de `SessionHaptic` avait pourtant fait son travail
+— ajouter `.audio` à `SessionEvent` casse la compilation du `switch` et rend la
+question inévitable — mais elle force à *répondre*, pas à *tester la réponse*.
+Une liste blanche empêche l'oubli ; elle n'empêche pas une mauvaise réponse.
+
+### Le test avait raison de tomber, pour la mauvaise raison
+
+Le test de bout en bout — une trame qui part du fil et sort par le flux
+d'événements — a échoué trois fois de suite, et aucune n'était le canal audio.
+
+D'abord : `AsyncStream` ne supporte qu'une itération. Mon test attendait
+`.ready`, puis attendait `.audio` sur le même flux ; la seconde boucle ne rend
+rien.
+
+Ensuite, et c'est le plus intéressant : le faux serveur d'affichage épuisait sa
+socket, la pompe display terminait la session, et le flux d'événements se
+fermait. La trame audio était produite *après*, dans une continuation close, et
+disparaissait. Le canal marchait depuis le début — les diagnostics montraient
+les deux messages lus et décodés — mais l'échafaudage du test le tuait avant
+qu'il ait fini de parler.
+
+C'est une variante de plus du fil rouge : un test peut être rouge sans que le
+code soit faux, exactement comme il peut être vert sans que le code soit juste.
+Les deux fois, ce qu'on croit mesurer n'est pas ce qu'on mesure. J'ai d'abord
+soupçonné le décodage, et il a fallu imprimer les octets de l'en-tête pour voir
+que tout se passait bien.
+
+La correction est que le faux serveur continue de parler — cent messages ignorés
+— plutôt qu'un `sleep` qui aurait rendu le test lent et lunatique.
+
+## Le micro, et un garde-fou que j'ai écrit puis retiré
+
+Le canal `record` complète l'audio : le serveur décrit le flux qu'il veut, et
+c'est le client qui envoie. Trois asymétries avec la lecture, toutes dues à la
+direction : `RECORD_START` n'a pas de champ `time` — un serveur qui demande un
+enregistrement n'a pas d'horloge à donner, les échantillons du client portent la
+leur ; le client choisit le codec, donc il n'y a qu'un choix honnête, `raw` ; et
+un nouveau flux réannonce ce codec, là où `STOP` le garde côté lecture. La
+lecture garde parce que le serveur ne renvoie rien ; l'enregistrement réannonce
+parce que c'est nous qui décidons.
+
+### Le garde-fou redondant
+
+`Cœur (Apple)` et `App iOS` sont tombés sur `SessionModel.apply`, qui aiguille
+exhaustivement sur `SessionEvent` — et `WisqUI` est exclu de la construction
+Linux, donc le cas `.audio` ajouté la veille n'y compilait pour la première fois
+que dans les jobs Apple. Deuxième fois cette nuit que cette classe de panne
+passe.
+
+J'ai écrit un fichier de test qui aiguille sur les onze cas, pour que Linux voie
+le prochain. Puis je l'ai vérifié — en ajoutant vraiment un cas — et il ne
+servait à rien : `SessionHaptic` casse **déjà** la compilation Linux dans ce cas,
+et casse en premier, donc mon fichier n'était jamais atteint. Un garde-fou
+redondant qui prétend garder ce qu'il ne garde pas est exactement ce que cette
+semaine passe son temps à corriger, alors je l'ai retiré et j'ai mis la consigne
+là où le compilateur s'arrête vraiment.
+
+C'est la même discipline que le sabotage, appliquée à un garde-fou plutôt qu'à un
+test : est-ce qu'il *pourrait* échouer pour la raison que j'annonce ? Ici, non.
+La chose utile n'était pas un second détecteur mais une phrase, dans le fichier
+qui casse en premier, nommant le fichier qu'aucun job Linux ne compile.
+
+### Cent messages de bourrage ne sont pas une correction
+
+Le test de bout en bout du micro passait seul et échouait dans la suite. La cause
+était celle de la veille : le faux serveur d'affichage épuise sa socket, la pompe
+termine la session, le flux d'événements se ferme. J'avais « corrigé » ça la
+veille en bourrant la socket de cent messages ignorés — ce qui rend la course
+improbable sans la supprimer, et une course improbable est une course qui tombe
+sous charge.
+
+Un flux de test qui **attend** au lieu de finir la supprime, parce que c'est ce
+que fait une vraie socket quand le serveur n'a rien à dire. Trois passages verts
+d'affilée, là où le bourrage donnait un vert seul et un rouge en suite. Le
+premier correctif avait la bonne intuition et la mauvaise forme.
+
+## Trois fois la même leçon dans le même fichier
+
+`scripts/verify.sh` s'annonce ainsi : « tout ce que la CI ferait, en une seule
+commande — pour qu'un contributeur obtienne le même verdict localement, avant de
+pousser ». Il porte déjà deux commentaires qui racontent chacun une fois où
+c'était faux : il ne lançait pas le linter, puis il ne savait pas lancer
+SwiftLint sur Linux. Les deux fois, une PR a rougi pour quelque chose qui se
+voyait en une seconde.
+
+Troisième fois cette nuit. J'ai poussé une tranche, puis mis à jour le nombre de
+tests annoncé dans le commit *suivant* — et le commit intermédiaire a fait
+rougir « Build site », une porte que ce script prétendait couvrir. Il ne
+construisait pas le site du tout.
+
+La suite du site n'est d'ailleurs pas seulement à propos du site :
+`claims.test.ts` lit **ce dépôt** et échoue quand un chiffre annoncé cesse
+d'être vrai. C'est la garde que j'ai réparée en début de nuit en retirant un
+filtre `paths:` pour qu'elle tourne sur toutes les poussées — et elle tournait
+bien, mais seulement après la poussée.
+
+Vérifié plutôt qu'espéré : chiffre faussé à 999, la suite du site échoue ; chiffre
+remis, elle passe.
+
+La forme de l'erreur est la même que celle du garde-fou redondant retiré une
+heure plus tôt, retournée comme un gant. Là, j'avais ajouté un détecteur qui ne
+détectait rien parce qu'un autre cassait avant lui. Ici, il manquait un détecteur
+parce qu'un script qui disait « tout » ne disait pas tout. Dans les deux cas la
+question utile est la même, et elle n'est pas « est-ce que ça passe » : c'est
+**« qu'est-ce que ceci attraperait, et qu'est-ce qui l'attrape déjà »**.
+
+## Une capacité non annoncée, et du code que le serveur ne pouvait pas atteindre
+
+En relisant ce qui restait après la complétude du canal display, j'ai regardé
+les capacités que wisq annonce à la liaison. Il y en avait deux :
+`preferredCompression` et `lz4Compression`.
+
+Or `STREAM_DATA_SIZED`, implémenté et testé hier soir, est **conditionné côté
+serveur**. `dcc-send.cpp` calcule si l'aire source d'une image diffère de la
+géométrie de son flux et, quand c'est le cas et que le client n'a pas annoncé
+`SPICE_DISPLAY_CAP_SIZED_STREAM`, fait `return FALSE` — il n'envoie pas l'image
+du tout. Pas « il l'envoie en version simple » : il la laisse tomber. Une région
+qui a besoin d'être redimensionnée cesse simplement de se mettre à jour.
+
+Donc le code des images dimensionnées était inatteignable face à un vrai
+serveur, et son absence coûtait des images perdues. Un test l'affirmait même
+explicitement — `XCTAssertFalse(supports(.sizedStream))` — avec une raison qui
+était vraie le jour où elle a été écrite : wisq ne traitait pas encore ces
+images. Une prémisse de plus qui a expiré sans que rien ne le signale, et
+celle-ci était du côté « nous ne savons pas faire » d'une promesse qui n'était
+plus vraie.
+
+### Et une absence qui, elle, porte quelque chose
+
+Dans la même lecture : `dcc_create_video_encoder` saute **tout codec non-MJPEG**
+pour un client qui n'annonce pas `MULTI_CODEC` — « Old clients only support
+MJPEG », dit son commentaire. MJPEG est le seul codec que wisq décode.
+
+Ne pas annoncer `multiCodec` n'est donc pas un oubli : c'est ce qui garantit que
+le serveur ne choisira jamais un codec que ce client ne sait pas lire. Quelqu'un
+qui l'ajouterait en se disant que plus de capacités vaut mieux obtiendrait
+exactement le symptôme que le canal des flux existe pour éviter — un rectangle
+figé là où ça bouge. C'est écrit dans le code et dans le test, parce qu'une
+absence délibérée qui n'est pas expliquée finit par être « corrigée ».
+
+La leçon générale : **une capacité annoncée est une affirmation sur ce client, et
+elle se périme dans les deux sens**. On surveille celles qu'on annonce sans
+savoir faire ; celles qu'on sait faire sans les annoncer sont plus discrètes,
+parce que le symptôme est du côté du serveur.
+
+## Un commentaire qui décidait, sur une prémisse morte
+
+Dans la foulée de la capacité manquante, j'ai relu le commentaire qui choisit
+quoi demander comme compression. Il disait, pour justifier `autoLZ` plutôt
+qu'`autoGLZ` : « `autoGLZ` peut encore produire du GLZ, qui est refusé ».
+
+GLZ n'est plus refusé depuis que sa fenêtre circule dans la pompe. `.glzRGB` et
+`.zlibGlzRGB` se décodent, avec leurs propres tests. La phrase qui portait la
+décision était donc fausse — et c'est pire qu'un commentaire périmé ordinaire,
+parce que celui-ci **est** le raisonnement : personne relisant ce fichier
+n'aurait de raison de rouvrir la question.
+
+Deux tiers du dossier pour basculer se vérifient dans la référence :
+`get_compression_for_bitmap` ne garde `GLZ` que pour les formats qui ont une
+gradualité, ce que les formats palettisés n'ont pas — donc les formes GLZ-palette
+que ce client refuse ne peuvent pas arriver sous `autoGLZ`. Sa sortie entière est
+QUIC, GLZ-RGB, LZ ou non compressé, tous décodés. Et le gain est exactement ce
+pourquoi GLZ existe : un dictionnaire partagé entre les images d'un canal.
+
+Le tiers manquant m'a arrêté : `initialise()` déclare une fenêtre GLZ de **zéro
+pixel**, et `dcc_handle_init` passe ce nombre tel quel à
+`glz_enc_dictionary_create`. Ce que fait un dictionnaire de taille nulle, je ne
+peux pas le vérifier ici — `glz_encoder_dictionary.c` n'est pas dans les sources
+vendues. Demander à un serveur de compresser contre une fenêtre qu'on lui a dit
+vide n'est pas une chose à changer au jugé, et c'est une optimisation de bande
+passante, pas une correction.
+
+Alors le comportement ne bouge pas et le commentaire dit maintenant la vérité :
+ce qui est établi, ce qui ne l'est pas, et que la taille de fenêtre et la
+préférence doivent bouger ensemble. La règle que j'en tire : **un commentaire qui
+justifie un choix vieillit plus mal qu'un commentaire qui décrit un mécanisme**,
+parce qu'il reste plausible longtemps après que sa raison a disparu — et qu'il
+décourage précisément la relecture qui le corrigerait.

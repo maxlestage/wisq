@@ -116,17 +116,36 @@ enum SpiceDisplayClient {
     /// `preferredCompression` will not act on the message, and sending it
     /// anyway is a message the other end has said it does not understand.
     ///
-    /// `autoLZ` rather than `lz`, now that QUIC is decoded — and rather than
-    /// `autoGLZ`, which still is not safe.
+    /// `autoLZ` rather than `lz`, now that QUIC is decoded.
     ///
     /// This asked for plain `lz` for as long as QUIC was a stream this client
     /// could only drop. The two automatic modes differ in exactly the way that
     /// matters here, and `get_compression_for_bitmap` in the server's `dcc.cpp`
     /// says how: both send QUIC for a high-graduality bitmap, and then one
-    /// falls back to LZ and the other to GLZ. So `autoLZ` can only ever produce
-    /// QUIC or LZ, both of which are decoded here, while `autoGLZ` can still
-    /// produce GLZ, which is refused — its matches reach into a dictionary
-    /// built from earlier images on the channel.
+    /// falls back to LZ and the other to GLZ.
+    ///
+    /// **Why not `autoGLZ`, which would compress better.** This used to say
+    /// "GLZ is refused", and that stopped being true when the GLZ window was
+    /// threaded through the pump — `.glzRGB` and `.zlibGlzRGB` both decode, with
+    /// their own tests. Two thirds of the case for switching is therefore
+    /// established, and checked in the reference rather than assumed:
+    ///
+    ///   * `get_compression_for_bitmap` only keeps `GLZ` when the bitmap's
+    ///     format has graduality, which the palette formats do not — so the
+    ///     palette-GLZ forms this client refuses cannot arrive under `autoGLZ`.
+    ///     Its whole output is QUIC, GLZ-RGB, LZ or uncompressed, all decoded;
+    ///   * the gain is what GLZ is for: one dictionary across the images of a
+    ///     channel, which is most of what a desktop sends.
+    ///
+    /// What is *not* established is the third thing, and it is why this still
+    /// asks for `autoLZ`: `initialise()` above declares a GLZ window of **zero
+    /// pixels**, and `dcc_handle_init` hands that number straight to
+    /// `glz_enc_dictionary_create`. What a zero-size dictionary does there is
+    /// not something this repository can currently check — `glz_encoder_dictionary.c`
+    /// is not in the vendored sources. Asking a server to compress against a
+    /// window we have told it is empty is not a change to make on a guess, and
+    /// this is a bandwidth optimisation rather than a fix. The window size and
+    /// the preference have to move together, with the reference in hand.
     ///
     /// The gain is real: "high graduality" is the server's word for
     /// photographs and gradients, the content LZ compresses worst, and it is

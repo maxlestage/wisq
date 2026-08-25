@@ -144,6 +144,12 @@ public final class SessionModel {
             status = .reconnecting(attempt: attempt)
         case .cursor(let cursor):
             remoteCursor = cursor.isEmpty ? nil : cursor
+        case .audio:
+            // Nothing for the view model to hold. Sound goes to the audio
+            // engine, and audio packets arrive as often as frames do —
+            // bumping any published property here would redraw the screen a
+            // hundred times a second for a sound.
+            break
         case .disconnected(let error):
             status = error.map { .failed($0.localizedDescription) } ?? .closed
             session = nil

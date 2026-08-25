@@ -17,8 +17,38 @@ public enum SessionEvent: Sendable {
     case reconnecting(attempt: Int)
     /// The guest's cursor image changed. An empty cursor means "hide it".
     case cursor(RemoteCursor)
+    /// The guest played some sound.
+    ///
+    /// Frames rather than a decoded buffer, and delivered rather than played,
+    /// because playing needs an audio engine that exists only on Apple. What
+    /// travels here — samples, channel count, rate, and the server's own clock
+    /// — is everything the platform layer needs and nothing it has to guess.
+    case audio(AudioFrames)
     /// Terminal. `error` is nil when the user hung up.
     case disconnected(WisqError?)
+}
+
+/// Sound from the guest, ready to be played.
+///
+/// A protocol-independent shape: SPICE is what fills it today, and RFB has no
+/// audio at all, but nothing in it is SPICE's. The clock is the server's own
+/// millisecond counter, kept so that sound and picture can be lined up rather
+/// than played as they arrive.
+public struct AudioFrames: Equatable, Sendable {
+    /// Interleaved signed sixteen-bit samples, one group a frame.
+    public var samples: [Int16]
+    public var channels: Int
+    public var frequency: Int
+    public var time: UInt32
+
+    public init(samples: [Int16], channels: Int, frequency: Int, time: UInt32) {
+        self.samples = samples
+        self.channels = channels
+        self.frequency = frequency
+        self.time = time
+    }
+
+    public var frameCount: Int { channels > 0 ? samples.count / channels : 0 }
 }
 
 /// A live connection to one remote machine. Backends are actors; the UI drives them

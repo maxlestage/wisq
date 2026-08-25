@@ -73,6 +73,42 @@ WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test
 # above is how the other quietly drifts.
 ./scripts/test-rust-core.sh
 
+# The site is a CI gate too, and its suite is not only about the site:
+# `site/tests/claims.test.ts` reads *this repository* and fails when a figure the
+# site advertises stops being true — the test count among them.
+#
+# This is the third time this file has learned the same lesson. It once did not
+# lint, and said so in a comment; it once could not run SwiftLint on Linux, and
+# said so in a longer one. Both times the cost was a pull request turning red for
+# something a contributor could have seen in a second. This time it was the test
+# count: a slice was pushed, then the count was updated in the commit after it,
+# and the intermediate commit was red on a gate this script claimed to cover.
+#
+# A gate a contributor cannot run locally is a gate that finds things after the
+# pull request is open.
+if command -v bun > /dev/null 2>&1; then
+  echo "==> Le site (build + suite, dont les chiffres annoncés)"
+  (
+    cd site
+    # The suite reads `dist`, so the build has to have run — and has to have run
+    # *after* whatever just changed in the repository.
+    bun install --frozen-lockfile > /dev/null
+    bun run typecheck
+    bun run build > /dev/null
+    bun test
+  )
+else
+  cat <<'EOF'
+==> bun absent — et la CI, elle, construira le site et lancera sa suite.
+
+    https://bun.sh  (curl -fsSL https://bun.sh/install | bash)
+
+    Ce qui est manqué sans lui n'est pas seulement le site : sa suite lit ce
+    dépôt et échoue quand un chiffre annoncé — le nombre de tests, le nombre de
+    portes CI — cesse d'être vrai.
+EOF
+fi
+
 if [[ "${1:-}" == "--app" ]]; then
   if [[ "$(uname)" != "Darwin" ]]; then
     echo "--app requires macOS; the UI layer is UIKit." >&2
