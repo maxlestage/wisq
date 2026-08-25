@@ -183,6 +183,22 @@ extension SpiceDisplayWire {
                 payload: try reader.bytes(Int(size))
             )
 
+        case .jpegAlpha:
+            // Its own shape again, and a different flag word from the bitmap's:
+            // `TOP_DOWN` is bit 0 here where it is bit 2 there.
+            let flags = try reader.u8()
+            let jpegBytes = Int(try reader.u32())
+            let size = Int(try reader.u32())
+            guard jpegBytes <= size else { throw SpiceError.invalidData }
+            return Image(
+                descriptor: descriptor,
+                bitmap: nil,
+                payload: try reader.bytes(size),
+                jpegAlpha: SpiceDisplayWire.Image.JPEGAlpha(
+                    topDown: flags & 0x01 != 0, jpegBytes: jpegBytes
+                )
+            )
+
         case .lzPalette:
             // Its own shape: flags, then the size, then the colour table one
             // way or the other, and only then the stream. Read with the plain
@@ -302,6 +318,27 @@ extension SpiceDisplayWire {
                     bytesPerPixel: 4, alreadyTopDown: header.topDown
                 ),
                 header.width, header.height
+            )
+
+        case .jpeg:
+            // Nil rather than a throw where there is no decoder: a platform
+            // without ImageIO leaves that part of the screen alone, which is
+            // "not drawn this time" and not "this message was malformed".
+            guard JPEGDecoder.isAvailable,
+                  let decoded = try? JPEGDecoder.decode(Data(payload)) else { return nil }
+            return (decoded.bgra, decoded.width, decoded.height)
+
+        case .jpegAlpha:
+            guard let shape = image.jpegAlpha, SpiceJPEGAlphaDecoder.isAvailable else { return nil }
+            guard let decoded = try SpiceJPEGAlphaDecoder.pixels(payload, shape: shape) else {
+                return nil
+            }
+            return (
+                rowsTopDown(
+                    decoded.pixels, width: decoded.width, height: decoded.height,
+                    bytesPerPixel: 4, alreadyTopDown: shape.topDown
+                ),
+                decoded.width, decoded.height
             )
 
         case .bitmap:
