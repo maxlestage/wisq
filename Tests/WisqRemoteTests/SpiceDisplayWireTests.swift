@@ -29,10 +29,21 @@ final class SpiceDisplayWireTests: XCTestCase {
     }
 
     /// An uncompressed bitmap image, as it sits at the far end of a pointer.
-    private func bitmapImage(id: UInt64 = 7) -> [UInt8] {
-        u64(id) + [0 /* BITMAP */, 0 /* flags */] + u32(64) + u32(48)
-            + [8 /* 32BIT */, 0 /* flags: palette inline */] + u32(64) + u32(48) + u32(256)
+    /// A complete uncompressed bitmap, pixels included.
+    ///
+    /// Small on purpose, and *complete* on purpose: the pixels follow the
+    /// header inline, so a fixture that stops at the palette pointer is a
+    /// message no server would send. It used to end there, and the decoder
+    /// used to stop reading there too — the two agreed with each other and
+    /// with nothing else.
+    private func bitmapImage(
+        id: UInt64 = 7, width: UInt32 = 4, height: UInt32 = 2, stride: UInt32 = 16
+    ) -> [UInt8] {
+        u64(id) + [0 /* BITMAP */, 0 /* flags */] + u32(width) + u32(height)
+            + [8 /* 32BIT */, 0 /* flags: palette inline, bottom-up */]
+            + u32(width) + u32(height) + u32(stride)
             + u32(0) // palette pointer, null
+            + [UInt8](repeating: 0x11, count: Int(stride) * Int(height))
     }
 
     // MARK: - Geometry
@@ -153,7 +164,7 @@ final class SpiceDisplayWireTests: XCTestCase {
         let image = try SpiceDisplayWire.image(at: imageOffset, in: body)
         XCTAssertEqual(image?.descriptor.id, 0xDEAD)
         XCTAssertEqual(image?.descriptor.type, .bitmap)
-        XCTAssertEqual(image?.bitmap?.stride, 256)
+        XCTAssertEqual(image?.bitmap?.stride, 16)
     }
 
     /// Zero is null, and null is ordinary: a fill has no mask, a copy names an

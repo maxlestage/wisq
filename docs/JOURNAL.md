@@ -143,3 +143,28 @@ s'entrelacer, la file est FIFO et un message y entre d'un bloc. Ce qui casse,
 c'est le numéro de séquence, lu avant l'`await` et incrémenté après. Le test
 manquant a été écrit ; sans la garde : huit messages, sept numéros. Commentaire
 corrigé pour dire la vraie raison.
+
+### Un champ lu et jamais utilisé
+
+En préparant le décodage des bitmaps non compressés, une recherche sur
+`topDown` dans `SpiceLZ` n'a donné que deux occurrences : la déclaration et
+l'analyse. Rien ne s'en servait. Une image LZ de bas en haut s'affichait donc à
+l'envers depuis que le codec a été fusionné.
+
+C'est la troisième fois que ce motif apparaît — après le `defer` mort sur
+`nextSerial` et la branche BOM UTF-8 inatteignable. Un champ qu'on analyse
+parce qu'il est dans le format, et dont on n'utilise jamais la valeur, ne fait
+pas échouer de test : il n'y a rien à faire échouer. La recherche qui le trouve
+est « combien de fois ce nom apparaît-il », pas une suite de tests.
+
+Le défaut n'était pas visible non plus dans les gabarits : l'encodeur de
+référence produit `top_down = 1` pour toutes les images du harnais, donc tous
+les tests existants passaient par le seul chemin correct. Le test ajouté change
+un octet du gabarit plutôt que d'en fabriquer un nouveau — mêmes pixels, un
+drapeau, lignes inversées.
+
+Deux tests existants sont tombés en même temps, et c'était eux qui avaient
+tort : leur gabarit de bitmap déclarait une image 64×48 de pas 256 sans un seul
+octet de pixel. Le décodeur ne lisait pas ces octets, le gabarit ne les
+fournissait pas, et les deux étaient d'accord entre eux et avec rien d'autre.
+Gabarit complété, pas de décodeur assoupli.

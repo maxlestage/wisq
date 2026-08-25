@@ -493,6 +493,38 @@ le **numéro de séquence** : il est lu pour bâtir un message et incrémenté a
 le retour de l'écriture, donc deux drains simultanés tamponnent le même numéro.
 Le sabotage le montre : huit messages, sept numéros.
 
+**Les bitmaps non compressés se dessinent, et l'orientation est enfin lue.**
+La forme la plus simple que SPICE envoie était la seule que rien ne peignait :
+elle était analysée puis jetée, `payload` à `nil`. Un serveur avec la
+compression d'images désactivée n'affichait donc rien du tout.
+
+Ses pixels suivent **en ligne**, juste après le champ palette — le seul endroit
+du message où les données en vrac ne sont pas derrière un pointeur. Vérifié
+dans le démarshaleur de `spice_codegen.py` : pour un tableau d'octets marqué
+`@chunk`, la donnée est prise à la position courante (`chunks->chunk[0].data =
+in`), alors que la variante pointeur existe juste au-dessus. Leur longueur est
+`stride × hauteur`, et le `stride` du bitmap est réel : les lignes sont
+remplies jusqu'à lui. Le lire comme la largeur d'une ligne décale chaque ligne
+après la première.
+
+Le drapeau qui compte est `TOP_DOWN`, et **son absence est l'état intéressant** :
+les lignes sont alors de bas en haut, comme dans un DIB Windows. L'ignorer ne
+casse rien — ça affiche le bureau à l'envers, et seulement contre les serveurs
+qui rangent les lignes ainsi.
+
+Ce qui a fait trouver un défaut déjà fusionné : `SpiceLZ.Header.topDown` était
+lu et **jamais utilisé**. Une image LZ de bas en haut s'affichait à l'envers.
+`canvas_base.c` confirme la règle dans les deux cas — il décale le tampon d'une
+image entière et inverse le pas. Le test prend un flux produit par l'encodeur de
+référence et change un seul octet de drapeau : mêmes pixels, lignes inversées.
+
+Les formats : 0555 recopie les bits hauts au lieu de simplement décaler, sans
+quoi le blanc sort à 248 et toute image vive est terne ; le quatrième octet d'un
+pixel `xRGB` est du remplissage et non de l'alpha, le recopier rend un bureau
+opaque entièrement transparent ; `RGBA` le garde, donc les mêmes octets veulent
+dire deux choses. Les ordres de quartets et de bits des formats palettisés sont
+ceux du codec LZ, déjà vérifiés contre le décodeur de référence.
+
 Reste : QUIC, GLZ, JPEG.
 
 ## Lot 6 — finition

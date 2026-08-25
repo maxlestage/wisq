@@ -179,6 +179,40 @@ enum SpiceDisplayWire {
         /// Set when the palette lives in the client's cache rather than in this
         /// message.
         var cachedPaletteID: UInt64?
+        /// The colour table, when this message carried one. Absent for the
+        /// formats that need none, and for the ones that named a cached table
+        /// this client does not keep.
+        var palette: Palette?
+
+        /// `SPICE_BITMAP_FLAGS_TOP_DOWN`, bit 2.
+        ///
+        /// **Absent means bottom-up**, the way a Windows DIB is stored: the
+        /// first row in the data is the last row on screen. Ignoring it does
+        /// not fail, it renders the desktop upside down — and only for the
+        /// servers that send it that way.
+        var topDown: Bool { flags & 0x04 != 0 }
+    }
+
+    /// A colour table, as the display channel carries one.
+    ///
+    /// Little-endian throughout, unlike the one inside an LZ stream's
+    /// big-endian header — they are the same structure read by two different
+    /// readers, and this is the channel's.
+    ///
+    /// The count is a number the server chose, so the colours are appended one
+    /// at a time rather than reserved for: a palette claiming sixty-five
+    /// thousand entries should run out of bytes, not out of memory.
+    struct Palette: Equatable, Sendable {
+        var unique: UInt64
+        var colours: [UInt32]
+    }
+
+    static func palette(from reader: inout SpiceWire.Reader) throws -> Palette {
+        let unique = try reader.u64()
+        let count = Int(try reader.u16())
+        var colours: [UInt32] = []
+        for _ in 0..<count { colours.append(try reader.u32()) }
+        return Palette(unique: unique, colours: colours)
     }
 
     /// An image as far as this decoder goes: always its descriptor, its shape

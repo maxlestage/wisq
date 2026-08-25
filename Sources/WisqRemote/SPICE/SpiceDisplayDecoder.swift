@@ -196,20 +196,35 @@ extension SpiceDisplayWire {
         let height = try reader.u32()
         let stride = try reader.u32()
 
-        // `PAL_FROM_CACHE` is bit 1. When it is set the palette is an
-        // identifier; otherwise it is a pointer, which is not followed here
-        // because nothing yet paints palettised bitmaps.
+        // `PAL_FROM_CACHE` is bit 1. Set, the palette is an identifier naming
+        // a table this client does not keep; clear, it is a pointer, and one
+        // that is genuinely null for the formats that need no colour table.
         let paletteFromCache = flags & 0x02 != 0
         let cachedPaletteID = paletteFromCache ? try reader.u64() : nil
-        if !paletteFromCache { _ = try reader.u32() }
+        var palette: SpiceDisplayWire.Palette?
+        if !paletteFromCache, let (found, _) = try body.follow(try reader.u32()) {
+            var paletteReader = found
+            palette = try SpiceDisplayWire.palette(from: &paletteReader)
+        }
+
+        // The pixels follow inline, here, rather than behind a pointer — the
+        // one place in this message where bulk data is not pointed at. Their
+        // length is `stride × height`: the server's stride, because unlike the
+        // LZ header's it is the real distance between rows and rows are padded
+        // to it.
+        //
+        // Multiplied as `Int` after both are widened, so a server sending a
+        // stride and a height that overflow a `UInt32` gets a read past the
+        // end rather than a small number and a buffer that fits.
+        let size = Int(stride) * Int(height)
 
         return Image(
             descriptor: descriptor,
             bitmap: Bitmap(
                 format: format, flags: flags, width: width, height: height,
-                stride: stride, cachedPaletteID: cachedPaletteID
+                stride: stride, cachedPaletteID: cachedPaletteID, palette: palette
             ),
-            payload: nil
+            payload: try reader.bytes(size)
         )
     }
 
@@ -231,10 +246,52 @@ extension SpiceDisplayWire {
         switch image.descriptor.type {
         case .lzRGB:
             let (header, pixels) = try SpiceLZ.decompress(payload)
-            return (pixels, header.width, header.height)
+            let bytesPerPixel = pixels.count / max(header.width * header.height, 1)
+            // The stream says which way up it is, and until now nothing asked.
+            // A bottom-up stream decoded as if it were top-down is not a
+            // failure, it is the desktop upside down.
+            return (
+                rowsTopDown(
+                    pixels, width: header.width, height: header.height,
+                    bytesPerPixel: bytesPerPixel, alreadyTopDown: header.topDown
+                ),
+                header.width, header.height
+            )
+
+        case .bitmap:
+            guard let bitmap = image.bitmap else { return nil }
+            // `pixels(_:data:)` puts the rows the right way up itself: it reads
+            // the stride, and flipping afterwards would need it again.
+            return (
+                try SpiceBitmap.pixels(bitmap, data: payload),
+                Int(bitmap.width), Int(bitmap.height)
+            )
+
         default:
             return nil
         }
+    }
+
+    /// Reverses the row order when an image says it is stored bottom-up.
+    ///
+    /// Whole rows rather than a transform on coordinates, because the caller
+    /// copies rectangles out of this buffer and would otherwise have to carry
+    /// the orientation along with it — which is the sort of thing that is
+    /// remembered in three places out of four.
+    static func rowsTopDown(
+        _ pixels: [UInt8], width: Int, height: Int,
+        bytesPerPixel: Int, alreadyTopDown: Bool
+    ) -> [UInt8] {
+        let rowSize = width * bytesPerPixel
+        guard !alreadyTopDown, height > 1, rowSize > 0,
+              pixels.count >= rowSize * height else { return pixels }
+
+        var out = [UInt8]()
+        out.reserveCapacity(pixels.count)
+        for row in (0..<height).reversed() {
+            out += pixels[(row * rowSize)..<((row + 1) * rowSize)]
+        }
+        return out
     }
 
     static func brush(from reader: inout SpiceWire.Reader, in body: Body) throws -> Brush {
