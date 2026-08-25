@@ -1104,3 +1104,88 @@ n'étaient testés pour ce message. C'est la même leçon que la semaine entièr
 elle est maintenant dans la routine : un nouveau dessin a besoin de son test de
 routage *et* de son test de masque, parce que ces deux-là sont invisibles depuis
 les tests de la fonction elle-même.
+
+## Les flux vidéo, et trois affirmations qu'aucun test d'ici ne pouvait départager
+
+`STREAM_CREATE` est le moment où le serveur abandonne : une région change trop
+souvent pour valoir des dessins, alors il l'encode en vidéo. C'est là que passent
+la plupart des pixels d'un bureau où quelque chose bouge, et un client qui
+l'ignore fige l'écran précisément à l'endroit du mouvement.
+
+Le registre est petit. Ce qui a demandé de l'attention, ce sont les endroits où
+deux choses se ressemblent assez pour être prises l'une pour l'autre : deux
+paires de dimensions (`stream_width` est la taille des images sur le fil,
+`src_width` celle de la région sur l'écran du serveur, et elles diffèrent dès que
+le serveur réduit avant d'encoder) ; deux formes du même message, la seconde
+insérant sa géométrie *avant* la longueur ; et un troisième octet de drapeaux
+avec son propre bit `TOP_DOWN`, au rang 0 cette fois, quand celui d'un bitmap est
+au rang 2.
+
+Seize sabotages plus un cas témoin. Dix attrapés, deux invalides — ils ne
+compilaient pas, ce qui ne compte pour rien — et **quatre survivants**, le plus
+gros lot depuis que je tiens le compte. Ils se répartissent en trois cas
+différents, et c'est la répartition qui est intéressante.
+
+### Un sabotage qui ne pouvait pas exprimer sa faute
+
+« Stocker sur le flux la géométrie d'une image dimensionnée » : impossible.
+`placement` est un `func` non-mutating, il ne peut rien écrire dans le registre.
+Ce que le sabotage a réellement changé, c'est un champ du tuple renvoyé — et rien
+ne le lisait.
+
+Sauf que ce champ n'aurait pas dû exister. `placement` rendait **à la fois** le
+`Stream` entier et `width`/`height`/`destination`. Dans le cas dimensionné, trois
+champs du `Stream` sont périmés, et le nom naturel — `placement.stream.destination`
+— désigne le mauvais. Un appelant qui l'attrape met la vidéo à la place de
+l'image précédente, et rien ne l'arrête.
+
+Le tuple est devenu un `Placement` qui ne porte que ce qu'un appelant a le droit
+de lire. La faute n'est plus attrapée par un test : elle n'est plus **écrivable**.
+C'est la première fois qu'un sabotage raté vaut mieux qu'un sabotage réussi.
+
+### Une équivalence réelle, gardée pour ce qu'elle empêche
+
+`guard codec.isDecoded else { return nil }` ne change aucun résultat : une image
+VP8 n'est pas un JPEG valide, le décodeur rendrait `nil` de toute façon. Le
+sabotage survit partout, et c'est correct.
+
+La ligne reste, avec un commentaire qui dit pourquoi. Ce qu'elle empêche n'est
+pas un mauvais pixel, c'est un appel : sans elle, des octets arbitraires venus du
+réseau, dans un codec que personne ici ne décode, entrent dans le décodeur
+d'images de la plateforme — ImageIO côté Apple. Le moyen le moins cher de ne pas
+avoir cette conversation est de ne pas faire l'appel.
+
+### Trois affirmations qu'aucun test d'ici ne pouvait départager
+
+Les trois derniers survivants sont le même fait : **sur cette machine, le chemin
+qui pose les pixels d'une image est mort**. Il n'y a pas de décodeur JPEG sur un
+runner Linux, donc `frame(_:codec:)` rend `nil` avant tout le reste, et tout ce
+qui suit ne s'exécute jamais. J'ai remplacé l'écrasement par un mélange, supprimé
+le contrôle de taille, ignoré le clip — la suite entière est restée verte.
+
+Ce n'est ni une ligne fausse ni une équivalence : c'est du code que mes tests ne
+peuvent pas atteindre par la porte d'entrée. La question à se poser n'est pas
+« mes tests le distinguent-ils ? » mais « existe-t-il une entrée qui le
+distingue ? », et la réponse était oui dans les deux cas, à condition d'entrer
+autrement.
+
+Pour le report, `report(_:at:into:)` est sorti de `draw` et prend des pixels au
+lieu d'un message. Plus besoin de décodeur pour tester l'écrasement, le sens de
+lecture, le clip et le contrôle de taille.
+
+Pour l'aiguillage de la pompe entre les deux formes du message, il fallait une
+entrée qui distingue les deux lectures **sans dessiner**. Une image dont la
+largeur dépasse le nombre d'octets qui la suivent : lue correctement, cette
+largeur est une géométrie et l'image courte passe ; lue comme la forme simple,
+elle atterrit là où va le compteur d'octets et le lecteur sort du message. La
+pompe lève, et le test tranche sans un pixel.
+
+Six sabotages relancés après coup, six attrapés, le témoin toujours vivant.
+
+**La leçon**, et elle est nouvelle : jusqu'ici mes survivants venaient de
+gabarits mal choisis — des valeurs neutres qui rendaient deux implémentations
+égales par accident. Ceux-là viennent d'ailleurs. Une plateforme sans une
+dépendance rend une branche entière inatteignable, et le code derrière est vert
+sans avoir jamais tourné. La CI Apple l'exécute, mais la CI Apple ne sabote pas.
+Quand une garde de disponibilité protège une branche, il faut une porte de
+service — sinon tout ce qui est derrière est du texte.

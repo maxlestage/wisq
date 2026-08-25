@@ -100,7 +100,7 @@ struct SpiceDisplayChannel {
     /// exactly as it starts with a blank screen.
     func pump(
         into surfaces: inout SpiceSurfaces, glz: inout SpiceGLZ.Window,
-        serial: UInt64, limit: Int = 1
+        streams: inout SpiceStreams, serial: UInt64, limit: Int = 1
     ) async throws -> Progress {
         var progress = Progress()
         var serial = serial
@@ -121,6 +121,28 @@ struct SpiceDisplayChannel {
                     SpiceWire.ClientMessage.pong, serial: serial, payload: payload
                 ))
                 serial += 1
+
+            case SpiceDisplayWire.Message.streamCreate.rawValue:
+                try streams.create(try SpiceDisplayWire.streamCreate([UInt8](payload)))
+
+            case SpiceDisplayWire.Message.streamData.rawValue,
+                 SpiceDisplayWire.Message.streamDataSized.rawValue:
+                let sized = header.type == SpiceDisplayWire.Message.streamDataSized.rawValue
+                let data = try SpiceDisplayWire.streamData([UInt8](payload), sized: sized)
+                progress.record(
+                    try draw(data, into: &surfaces, streams: streams),
+                    on: streams.streams[data.id]?.surfaceID ?? 0
+                )
+
+            case SpiceDisplayWire.Message.streamClip.rawValue:
+                let (id, clip) = try SpiceDisplayWire.streamClip([UInt8](payload))
+                try streams.clip(id, to: clip)
+
+            case SpiceDisplayWire.Message.streamDestroy.rawValue:
+                streams.destroy(try SpiceDisplayWire.streamDestroy([UInt8](payload)))
+
+            case SpiceDisplayWire.Message.streamDestroyAll.rawValue:
+                streams.destroyAll()
 
             case SpiceDisplayWire.Message.surfaceCreate.rawValue:
                 try surfaces.create(try SpiceDisplayWire.surfaceCreate([UInt8](payload)))
@@ -224,6 +246,85 @@ struct SpiceDisplayChannel {
         do {
             return try surfaces.raster(raster)
         } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        }
+    }
+
+    /// A stream frame onto its surface: find the stream, decode, report.
+    private func draw(
+        _ data: SpiceDisplayWire.StreamData, into surfaces: inout SpiceSurfaces,
+        streams: SpiceStreams
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        let placement: SpiceStreams.Placement
+        do {
+            placement = try streams.placement(for: data)
+        } catch {
+            // A frame for a stream this client never opened — because the
+            // create named a codec it refused, or arrived before the pump did.
+            // Not a malformed message.
+            return nil
+        }
+        guard let decoded = try SpiceDisplayWire.frame(data, codec: placement.codec)
+        else { return nil }
+        return try report(decoded, at: placement, into: &surfaces)
+    }
+
+    /// Puts one decoded frame where its placement says.
+    ///
+    /// The reference's `put_image` is a plain overwrite — `PIXMAN_OP_SRC`, not
+    /// a blend — with nearest-neighbour scaling when the frame and its
+    /// destination differ in size, and the *stream's* `TOP_DOWN` flag deciding
+    /// which way up the frame is read. All three are `SpiceSurfaces.copy` with
+    /// a `copy` operation, so this composes rather than repeating the loop.
+    ///
+    /// Split out from `draw` and left internal so that it can be tested, and
+    /// that is not a stylistic preference. Every runner here that lacks a JPEG
+    /// decoder — which is every Linux runner — never reaches this code through
+    /// `draw`, because `frame(_:codec:)` returns `nil` first. Sabotage says so
+    /// plainly: overwriting became blending, and the size check was deleted,
+    /// and the whole suite stayed green both times. Taking pixels rather than
+    /// a message makes the placement testable without a decoder.
+    func report(
+        _ decoded: (pixels: [UInt8], width: Int, height: Int),
+        at placement: SpiceStreams.Placement, into surfaces: inout SpiceSurfaces
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        // The frame must be the size the message said it would be. A JPEG that
+        // decodes to something else is a message disagreeing with itself.
+        guard decoded.width == placement.width, decoded.height == placement.height else {
+            return nil
+        }
+
+        let pixels = SpiceDisplayWire.rowsTopDown(
+            decoded.pixels, width: decoded.width, height: decoded.height,
+            bytesPerPixel: 4, alreadyTopDown: placement.topDown
+        )
+        do {
+            return try surfaces.copy(
+                SpiceDisplayWire.Copy(
+                    base: SpiceDisplayWire.Base(
+                        surfaceID: placement.surfaceID,
+                        box: placement.destination,
+                        clip: placement.clip
+                    ),
+                    source: nil,
+                    sourceArea: SpiceDisplayWire.Rect(
+                        top: 0, left: 0,
+                        bottom: Int32(clamping: decoded.height),
+                        right: Int32(clamping: decoded.width)
+                    ),
+                    rop: 0, scaleMode: 0,
+                    mask: SpiceDisplayWire.Mask(
+                        flags: 0, origin: SpiceDisplayWire.Point(x: 0, y: 0), bitmap: nil
+                    )
+                ),
+                source: (pixels: pixels, width: decoded.width, height: decoded.height),
+                bytesPerSourcePixel: 4, blitROP: .copy
+            )
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        } catch SpiceSurfaces.Failure.unknownSurface {
+            // The stream outlived its surface. The server sends the destroys in
+            // its own order and this client is not entitled to an opinion.
             return nil
         }
     }

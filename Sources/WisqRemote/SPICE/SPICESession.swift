@@ -344,10 +344,11 @@ public actor SPICESession: RemoteSession {
         // the surfaces: a stream on this connection may refer to images
         // decoded earlier on it, and to nothing before that.
         var glz = SpiceGLZ.Window()
+        var streams = SpiceStreams()
         var serial = serial
         do {
             while !Task.isCancelled {
-                let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: serial)
+                let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: serial)
                 serial = progress.nextSerial
 
                 // The first surface to appear is the desktop, and its size is

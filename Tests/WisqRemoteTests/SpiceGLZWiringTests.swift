@@ -145,10 +145,11 @@ final class SpiceGLZWiringTests: XCTestCase {
         let channel = SpiceDisplayChannel(stream: MemoryByteStream(inbound: inbound))
         var surfaces = SpiceSurfaces()
         var glz = SpiceGLZ.Window()
+        var streams = SpiceStreams()
 
-        var first = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 2)
+        var first = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
         XCTAssertEqual(first.undrawable, 0, "l'image 0 se décode sans fenêtre")
-        first = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 1)
+        first = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 1)
         XCTAssertEqual(
             first.undrawable, 0,
             "l'image 1 renvoie à l'image 0 : sans fenêtre conservée, rien n'est dessiné"

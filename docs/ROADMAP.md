@@ -1122,8 +1122,65 @@ une table en miroir — une image, et une fausse. Les deux sont épinglées par 
 tests exhaustifs, et la ternaire aussi par les noms Windows : `SRCCOPY` veut dire
 « la source », ce qui n'est vrai que sous un des deux ordres.
 
+### Les flux vidéo : là où passent la plupart des pixels
+
+Fait, sauf le décodage lui-même. Un serveur SPICE surveille les rectangles qui
+changent sans arrêt et, passé un seuil, cesse de les envoyer en dessins pour les
+envoyer en vidéo. Sur un bureau où quelque chose bouge — une vidéo, une page qui
+défile, une animation — c'est là que passe la majorité des pixels. Un client qui
+ignore les flux affiche un rectangle figé **exactement à l'endroit du
+mouvement**, ce qui ne ressemble pas à une fonctionnalité manquante mais à une
+connexion cassée.
+
+`SpiceStreams` tient le registre : `STREAM_CREATE`, `STREAM_CLIP`,
+`STREAM_DESTROY`, `STREAM_DESTROY_ALL`, et le placement de chaque image.
+
+**Deux paires de dimensions qu'on prend pour une.** `stream_width` et
+`stream_height` sont la taille des images qui arrivent sur le fil ;
+`src_width` et `src_height` celle de la région sur l'écran du serveur. Elles
+diffèrent dès que le serveur réduit avant d'encoder, ce qu'il fait couramment
+pour économiser de la bande passante. Lire la mauvaise paire met la vidéo au bon
+endroit à la mauvaise taille.
+
+**`STREAM_DATA_SIZED` vaut pour une image, pas pour le flux.** Il porte sa
+propre largeur, sa propre hauteur et sa propre destination, et la référence les
+lit dans son `SpiceFrame` sans jamais toucher à celles du flux — donc l'image
+suivante revient à la géométrie d'origine. Les stocker serait l'erreur évidente,
+et se verrait comme une vidéo qui change de taille toute seule. Les deux formes
+ne peuvent pas partager un lecteur non plus : lire une image dimensionnée avec
+la forme simple prend sa largeur pour la longueur des données.
+
+**Une troisième place pour la même idée d'orientation.**
+`SPICE_STREAM_FLAGS_TOP_DOWN` est le bit 0 des drapeaux du flux. Celui d'un
+bitmap est le bit 2 des siens, et celui d'un `jpegAlpha` le bit 0 d'un autre
+octet encore. Trois octets différents pour « dans quel sens se lit cette
+image ».
+
+**Le report d'une image est un `PIXMAN_OP_SRC`**, pas un mélange : `put_image`
+écrase, met à l'échelle au plus proche voisin quand l'image et sa destination
+diffèrent, et respecte le clip du flux. Ce sont exactement les trois choses que
+`SpiceSurfaces.copy` fait déjà, donc c'est composé plutôt que réécrit. Le report
+prend des pixels plutôt qu'un message, pour qu'une machine sans décodeur JPEG
+puisse le tester : sinon toute cette moitié est verte sans jamais tourner.
+
+**Seul MJPEG est décodé**, et c'est celui qui ne coûte rien : chaque image est
+un JPEG complet, donc le décodeur est celui que les images `.jpeg` utilisent
+déjà. VP8, VP9, H.264 et H.265 demandent un vrai décodeur vidéo —
+VideoToolbox côté Apple, rien que wisq embarque côté Linux. Ils sont **nommés**
+plutôt que rassemblés sous « inconnu », parce qu'« le serveur a choisi H.264 »
+est une explication sur laquelle un utilisateur peut agir, alors qu'un
+rectangle figé n'en est pas une.
+
+Et une image dans un codec non décodé n'atteint jamais le décodeur d'images de
+la plateforme. Le garde qui l'arrête ne change aucun résultat — un VP8 n'est pas
+un JPEG valide, le décodeur rendrait `nil` de toute façon — et il reste pour ce
+qu'il empêche : des octets arbitraires venus du réseau qui entrent dans ImageIO
+sans raison.
+
 Ce qui reste sur le canal display : les tracés et le texte (`DRAW_STROKE`,
-`DRAW_TEXT`), et les flux vidéo (`STREAM_*`).
+`DRAW_TEXT`), qui demandent tous deux un rastériseur, et les rapports de flux
+(`STREAM_ACTIVATE_REPORT`), délibérément ignorés — ils permettent au serveur
+d'adapter son débit, pas au client d'afficher quoi que ce soit.
 
 ## Lot 6 — finition
 
