@@ -301,3 +301,112 @@ Ici la réponse est oui, et il a fallu la fabriquer : le harnais règle
 répond alors sans ambiguïté — pile sur le seuil, les compteurs ne sont pas
 divisés ; un cran en dessous, ils le sont. Test ajouté, sabotage rejoué, il
 mord.
+
+## La boucle de décodage QUIC
+
+### Une conclusion fausse que j'avais écrite dans le code
+
+J'avais noté, dans un commentaire et dans mes notes de travail, que
+`correlate_row[-1]` était lu au début de chaque ligne et **jamais écrit** — de
+la mémoire non initialisée dont la valeur ne comptait pas. J'avais même une
+expérience à l'appui : empoisonner cette case dans la référence avec dix
+valeurs différentes ne changeait rien, sur aucun flux, y compris un 4×200 où
+deux cents débuts de ligne la lisent.
+
+C'était faux, et l'expérience ne prouvait pas ce que je lui faisais dire. Elle
+empoisonnait la case *avant* le décodage ; la ligne 1 la réécrivait avant de la
+lire. Je mesurais que l'écriture existait, et j'en concluais qu'elle n'existait
+pas.
+
+Ce qui l'a montré : la première divergence entre ma trace et celle de la
+référence était `CTX idx=0 ctx=0` contre `ctx=128`, au pixel 0 de la ligne 1 —
+et 128 était exactement le premier symbole de la ligne 0. Un `grep correlate_row`
+dans `quic.c` donnait la réponse en trente secondes, sur des lignes que j'avais
+déjà sous les yeux : `correlate_row[-1] = 0` avant la première ligne,
+`correlate_row[-1] = correlate_row[0]` avant toutes les autres.
+
+La leçon n'est pas « lire la référence », que je faisais déjà. C'est qu'une
+expérience qui confirme ce qu'on croit mérite le même soupçon qu'une qui le
+contredit. Celle-ci avait un trou évident dès qu'on cherchait à le voir, et je
+n'ai pas cherché parce qu'elle allait dans mon sens.
+
+### `rgba` n'était pas un cas de plus, c'était une structure différente
+
+Le décodeur annonçait `rgba` dans `shape(of:)` et l'aurait fait planter :
+l'octet du canal 3 se calculait par `2 - channel`, soit **−1**. Un accès hors
+bornes sur des données venues du réseau. Aucun test ne le montrait, parce
+qu'aucun gabarit n'était en `rgba`.
+
+En cherchant à en fabriquer un, la vraie difficulté est apparue, et elle tient
+dans deux lignes de `quic_tmpl.c` :
+
+    ONE_BYTE / FOUR_BYTE :  CommonState *state = &channel_a->state
+    sinon (rgb)          :  CommonState *state = &encoder->rgb_state
+
+Rouge, vert et bleu partagent un état ; le chemin quatre-octets a le sien. Donc
+`rgba` est une passe couleur **puis** une passe alpha entièrement séparée, avec
+son propre codeur de séries, ses propres compteurs d'attente, sa propre
+détection de répétition (qui ne compare que l'alpha). Ma boucle fusionnée ne
+pouvait pas l'exprimer. Le décodeur est maintenant organisé en plans : un plan
+par groupe de canaux partageant un état, et `run()` fait, pour chaque ligne,
+chaque plan à son tour — l'ordre exact de `uncompress_rgba`.
+
+Le gabarit `rgba` a aussi montré un test trop indulgent : il ne comparait que
+trois canaux. L'alpha, la seule chose que ce gabarit apportait, n'était pas
+regardé. Il l'est maintenant, et un sabotage qui écrit l'alpha au mauvais
+endroit tombe.
+
+### Les gabarits ne se reconstruisaient plus
+
+Avant de générer les deux nouveaux, j'ai régénéré un ancien pour vérifier que
+le harnais était intact. Il ne l'était pas : `./qgen 1 16 12 5` ne produisait
+plus le flux `gray 16x12` commité.
+
+Les cinq flux d'origine restaient honnêtes — je les ai tous repassés dans le
+décodeur de référence, ils se vérifient. Mais le `qgen.c` commité avait été mis
+au propre avant le commit sans régénérer ce qu'il produisait, et sa bande de
+bruit avait bougé. La procédure écrite dans le README ne reproduisait donc rien.
+
+J'ai hésité à retrouver l'ancien générateur par rétro-ingénierie du bruit.
+C'était le mauvais réflexe : l'autorité d'un gabarit vient du **décodeur** de
+référence, pas de quelle image pseudo-aléatoire a été compressée. Ce qui
+comptait était que la procédure documentée fonctionne. Les sept ont été
+régénérés, le README donne la commande exacte de chacun, et j'ai vérifié les
+sept bout en bout.
+
+### Onze sabotages, onze qui mordent
+
+Le report de `correlate_row[-1]`, l'état séparé par plan, l'ordre des canaux,
+l'avance du masque d'attente, l'octet de l'alpha, la borne `index > 2` de la
+détection de séries, la comparaison restreinte au plan, `bestCode = bpc - 1`,
+les deux prédictions, et l'élargissement des cinq bits. Aucun survivant cette
+fois — mais deux d'entre eux ne mordaient que grâce aux gabarits ajoutés dans
+cette tranche, ce qui veut dire qu'ils ne mordaient pas la veille.
+
+### Brancher QUIC, et la raison périmée qu'on laisse traîner
+
+Le client demandait `lz` plutôt qu'`autoLZ`, avec un commentaire qui disait
+pourquoi : « les modes automatiques laissent le serveur libre d'envoyer du
+QUIC, et ce client ne sait pas le décoder ». La raison était juste quand elle a
+été écrite. Elle ne l'était plus une fois QUIC décodé, et un commentaire qui
+justifie un choix par un fait devenu faux est pire qu'un commentaire absent :
+il empêche de reposer la question.
+
+Avant de changer quoi que ce soit, j'ai vérifié ce que les modes automatiques
+produisent réellement, dans le serveur et pas de mémoire. `dcc.cpp`,
+`get_compression_for_bitmap` : les deux modes envoient du QUIC pour un bitmap à
+forte gradualité, puis `AUTO_LZ` retombe sur LZ et `AUTO_GLZ` sur GLZ. Donc
+`autoLZ` est devenu sûr et `autoGLZ` ne l'est pas — GLZ reste refusé. Sans
+cette lecture, « les deux modes automatiques » se seraient ressemblés.
+
+Deux tests ont dû changer avec, et l'un des deux était mal construit : le test
+d'ordre du canal display réaffirmait l'encodage demandé au lieu de le lire là
+où il est décidé. Il testait l'ordre et figeait la valeur, donc il tombait pour
+la mauvaise raison. Il lit maintenant `compressionToRequest`, ce qui le ramène
+à ce dont il parle.
+
+L'autre changement est plus net : `testAnUndecodedEncodingAnswersNoPixelsRatherThanAnError`
+listait `.quic` parmi les encodages non implémentés. Il ne l'est plus, donc une
+charge qui n'est pas du QUIC est un message malformé et lève, comme `lzRGB`
+lève sur une mauvaise magie. Retirer `.quic` de cette liste n'est pas contourner
+un test qui tombe : c'est que sa prémisse a cessé d'être vraie.

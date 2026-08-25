@@ -231,11 +231,21 @@ final class SpiceLZTests: XCTestCase {
         XCTAssertEqual(decoded.pixels, bytes(fixture.original))
     }
 
-    /// GLZ has the same stream format as LZ and must not be handed to the LZ
-    /// decoder anyway: its matches reach back into a dictionary built from
-    /// *earlier images on the channel*, so decoding one alone assembles a
-    /// picture out of whatever happened to be around. Sharing the entry point
-    /// would be the kind of mistake that produces a plausible image.
+    /// GLZ must not be handed to the LZ decoder, and the reason this test used
+    /// to give was only half of it.
+    ///
+    /// The half that was right: GLZ matches reach back into a dictionary built
+    /// from *earlier images on the channel*, so decoding one alone assembles a
+    /// picture out of whatever happened to be around — the kind of mistake that
+    /// produces a plausible image.
+    ///
+    /// The half that was wrong: "the same stream format". It is not.
+    /// `lz_encode` writes magic, version, type, width, height, stride and
+    /// top_down as seven 32-bit words — 28 bytes — with a note wondering
+    /// whether type and top_down could share a byte. GLZ's `decode_header`
+    /// does share them, then adds a 64-bit image id and a 32-bit
+    /// `win_head_dist`: 33 bytes, laid out differently. An LZ reader would take
+    /// the packed byte for a whole word and misread every field after it.
     func testAGLZImageIsNotDecodedAsIfItWereLZ() throws {
         let image = SpiceDisplayWire.Image(
             descriptor: SpiceDisplayWire.ImageDescriptor(
@@ -250,8 +260,14 @@ final class SpiceLZTests: XCTestCase {
     /// An encoding wisq does not decode yet answers "no pixels", not "bad
     /// message". The caller's response to the first is to leave that part of
     /// the screen alone; to the second, to drop the connection.
+    ///
+    /// `quic` used to be in this list and no longer belongs: it is decoded now,
+    /// so a payload that is not a QUIC stream is a malformed message and throws,
+    /// the same way `lzRGB` throws on a bad magic. `SpiceQUICWiringTests` pins
+    /// that. The distinction this test is about is "not implemented", not
+    /// "implemented and handed rubbish".
     func testAnUndecodedEncodingAnswersNoPixelsRatherThanAnError() throws {
-        for type in [SpiceDisplayWire.ImageType.quic, .jpeg, .lz4] {
+        for type in [SpiceDisplayWire.ImageType.jpeg, .lz4] {
             let image = SpiceDisplayWire.Image(
                 descriptor: SpiceDisplayWire.ImageDescriptor(
                     id: 1, type: type, flags: 0, width: 8, height: 8

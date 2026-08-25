@@ -111,11 +111,22 @@ enum SpiceDisplayClient {
     /// `preferredCompression` will not act on the message, and sending it
     /// anyway is a message the other end has said it does not understand.
     ///
-    /// `lz` rather than `autoLZ`, deliberately. The automatic modes leave the
-    /// server free to send QUIC for photographic content — that is what
-    /// "automatic" means — and this client cannot decode it, so an image it
-    /// cannot use is worse than a less well compressed one it can.
+    /// `autoLZ` rather than `lz`, now that QUIC is decoded — and rather than
+    /// `autoGLZ`, which still is not safe.
+    ///
+    /// This asked for plain `lz` for as long as QUIC was a stream this client
+    /// could only drop. The two automatic modes differ in exactly the way that
+    /// matters here, and `get_compression_for_bitmap` in the server's `dcc.cpp`
+    /// says how: both send QUIC for a high-graduality bitmap, and then one
+    /// falls back to LZ and the other to GLZ. So `autoLZ` can only ever produce
+    /// QUIC or LZ, both of which are decoded here, while `autoGLZ` can still
+    /// produce GLZ, which is refused — its matches reach into a dictionary
+    /// built from earlier images on the channel.
+    ///
+    /// The gain is real: "high graduality" is the server's word for
+    /// photographs and gradients, the content LZ compresses worst, and it is
+    /// most of a desktop with a wallpaper on it.
     static func compressionToRequest(givenServerCapabilities caps: [UInt32]) -> Compression? {
-        supports(.preferredCompression, in: caps) ? .lz : nil
+        supports(.preferredCompression, in: caps) ? .autoLZ : nil
     }
 }
