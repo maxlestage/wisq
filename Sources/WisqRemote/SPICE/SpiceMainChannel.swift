@@ -18,6 +18,13 @@ struct SpiceMainChannel {
         /// Notices the server sent along the way. Carried out rather than
         /// dropped: they are written for a person.
         var notices: [SpiceWire.Notify] = []
+        /// The serial to use for the next message on this connection.
+        ///
+        /// Reported rather than left implicit because the main channel does not
+        /// end here: whatever keeps reading it afterwards continues the same
+        /// sequence, and one that restarted at 1 would go backwards in front of
+        /// a server that acknowledges by serial.
+        var nextSerial: UInt64 = 0
     }
 
     /// Client messages are serialised from one, and the count is ours to keep.
@@ -65,7 +72,8 @@ struct SpiceMainChannel {
                 return Session(
                     initialisation: initialisation,
                     channels: try SpiceWire.decodeChannelsList(payload),
-                    notices: notices
+                    notices: notices,
+                    nextSerial: serial
                 )
 
             case SpiceWire.Message.ping:

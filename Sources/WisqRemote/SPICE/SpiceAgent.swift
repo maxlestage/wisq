@@ -138,6 +138,52 @@ enum SpiceAgent {
         return out
     }
 
+    // MARK: - Capabilities, announced
+
+    /// `VD_AGENT_ANNOUNCE_CAPABILITIES`: a request flag, then the bitmap.
+    ///
+    /// The flag is not decoration. Set, it means "tell me yours"; a client that
+    /// never sets it and speaks to an agent that already announced before the
+    /// client attached never learns the guest's capabilities — and the
+    /// clipboard layout is computed from them, so every clipboard message it
+    /// then reads is misaligned by four bytes.
+    struct Announcement: Equatable, Sendable {
+        /// Whether the sender wants the capabilities announced back.
+        var request: Bool
+        var capabilities: [UInt32]
+    }
+
+    static func announcementBody(_ announcement: Announcement) -> [UInt8] {
+        announcement.capabilities.reduce(
+            SpiceWire.u32(announcement.request ? 1 : 0), { $0 + SpiceWire.u32($1) }
+        )
+    }
+
+    static func announcement(_ body: [UInt8]) throws -> Announcement {
+        var reader = try SpiceWire.Reader(body, from: 0)
+        let request = try reader.u32() != 0
+        // The count is the message's length, not a number in the message, so
+        // the words are appended one at a time rather than sized from anything
+        // the far end chose.
+        var words: [UInt32] = []
+        while reader.remaining >= 4 { words.append(try reader.u32()) }
+        return Announcement(request: request, capabilities: words)
+    }
+
+    /// What wisq tells the guest it can do.
+    ///
+    /// Short on purpose, and each one is a promise this client keeps:
+    /// `clipboardByDemand` because the clipboard here is fetched when wanted
+    /// rather than pushed, `clipboardSelection` because saying which selection
+    /// costs four bytes and not saying it means the guest picks, and
+    /// `clipboardGrabSerial` because a guest that stamps grabs can tell a stale
+    /// one from a current one. No monitor or display configuration is claimed:
+    /// wisq does not resize the guest yet, and announcing a capability it does
+    /// not honour is worse than announcing nothing.
+    static let clientCapabilities: [Capability] = [
+        .clipboardByDemand, .clipboardSelection, .clipboardGrabSerial
+    ]
+
     // MARK: - Clipboard
 
     struct Clipboard: Equatable, Sendable {
@@ -201,6 +247,22 @@ enum SpiceAgent {
             if let kind = Kind(rawValue: raw) { kinds.append(kind) }
         }
         return Grab(selection: selection, serial: serial, kinds: kinds)
+    }
+
+    /// The same, going out: what this client now has on offer.
+    ///
+    /// The serial is the guest's way of telling a grab that is current from one
+    /// that raced past it, so it is the caller's counter rather than a constant
+    /// — and it is written only when the capability says the far end reads it.
+    /// Written when it is not read, everything after it shifts by four.
+    static func grabBody(
+        _ kinds: [Kind], serial: UInt32,
+        selection: Selection = .clipboard, capabilities caps: [UInt32]
+    ) -> [UInt8] {
+        var out = writeSelection(selection, capabilities: caps)
+        if supports(.clipboardGrabSerial, in: caps) { out += SpiceWire.u32(serial) }
+        for kind in kinds { out += SpiceWire.u32(kind.rawValue) }
+        return out
     }
 
     /// `VD_AGENT_CLIPBOARD_REQUEST`: asking for one of the kinds offered.

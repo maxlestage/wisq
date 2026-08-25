@@ -35,6 +35,15 @@ public actor SPICESession: RemoteSession {
     private var cursor: (any ByteStream)?
     private var pump: Task<Void, Never>?
     private var cursorPump: Task<Void, Never>?
+    private var mainPump: Task<Void, Never>?
+
+    /// The main channel's agent, which owns its own state.
+    ///
+    /// The opposite of the display channel's surfaces, and for a reason: the
+    /// clipboard is written from `send(_:)` as well as read from the pump, so
+    /// it cannot live inside the loop. An actor of its own is what lets both
+    /// reach it without either copying state back over the other's.
+    private var agent: SpiceAgentChannel?
     /// Serial for the inputs channel, counted apart from the display's.
     ///
     /// Each channel is its own connection with its own message sequence, so one
@@ -69,8 +78,11 @@ public actor SPICESession: RemoteSession {
     public func stop() async {
         pump?.cancel()
         cursorPump?.cancel()
+        mainPump?.cancel()
         pump = nil
         cursorPump = nil
+        mainPump = nil
+        agent = nil
         await main?.close()
         await display?.close()
         await inputs?.close()
@@ -94,6 +106,13 @@ public actor SPICESession: RemoteSession {
     /// release, because SPICE has no way to say "scrolled" and sending only the
     /// press leaves the guest believing a button is held.
     public func send(_ event: InputEvent) async {
+        // The clipboard is the guest's, so it goes to the program running
+        // inside the guest rather than to the virtual hardware — a different
+        // channel entirely from every other event here.
+        if case .clipboard(let text) = event {
+            await offerClipboard(text)
+            return
+        }
         guard let inputs else { return }
         for message in SpiceInputs.messages(for: event) {
             do {
@@ -174,6 +193,27 @@ public actor SPICESession: RemoteSession {
             await self?.run(channel, from: serial)
         }
 
+        // The main channel, kept running. Nothing read it after the handshake,
+        // so the server's pings went unanswered into a socket buffer that
+        // filled quietly — and it is where the clipboard arrives.
+        //
+        // The serial continues from where `bringUp` left off: it is one
+        // sequence on one connection, and restarting at 1 would hand a server
+        // that acknowledges by serial a sequence that goes backwards.
+        let agentChannel = SpiceAgentChannel(
+            stream: mainStream,
+            connected: session.initialisation.agentConnected,
+            tokens: session.initialisation.agentTokens,
+            serial: session.nextSerial
+        )
+        agent = agentChannel
+        if session.initialisation.agentConnected {
+            try? await agentChannel.start()
+        }
+        mainPump = Task { [weak self] in
+            await self?.followMain(agentChannel)
+        }
+
         // The pointer gets a connection of its own so it keeps moving while the
         // display channel is sending a screenful of pixels. On a phone that is
         // the difference between a cursor that follows the finger and one that
@@ -195,6 +235,29 @@ public actor SPICESession: RemoteSession {
                 cursor = nil
             }
         }
+    }
+
+    /// Reads the main channel for as long as the session lasts.
+    ///
+    /// Failures here end this task and nothing else, like the cursor's. Losing
+    /// the clipboard is losing the clipboard; the display channel is what
+    /// decides whether the session is still alive, and tearing it down because
+    /// the agent stopped would throw away a working screen.
+    private func followMain(_ agent: SpiceAgentChannel) async {
+        while !Task.isCancelled {
+            do {
+                for text in try await agent.pump().clipboard {
+                    continuation.yield(.clipboard(text))
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// The phone copied something. Held for the guest to ask for.
+    private func offerClipboard(_ text: String) async {
+        try? await agent?.offer(text)
     }
 
     /// Reads the cursor channel and reports what the pointer looks like.
