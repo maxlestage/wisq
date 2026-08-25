@@ -196,9 +196,59 @@ Deux détails qui ont mordu :
   arrière comme un terminal le ferait. Une vraie grille de cellules VT100
   pourra remplacer cela plus tard.
 
+## SPICE : une connexion par canal
+
+C'est la forme qui sépare SPICE du RFB d'à côté, et elle traverse tout le
+reste. RFB, c'est une socket ; SPICE, c'est **une socket par canal**.
+
+Le canal principal s'ouvre en premier parce qu'il est le seul à apprendre
+l'identifiant de session, et chaque canal suivant doit le présenter comme
+identifiant de connexion. Sans ça, le serveur ne voit pas un second canal : il
+voit un second *client*, et lui donne un affichage à lui — un écran noir qui
+ressemble exactement à un décodeur cassé. C'est la panne la plus coûteuse à
+diagnostiquer de tout le protocole, et c'est une ligne de code.
+
+    principal ──▶ identifiant de session
+                     ├──▶ display   (surfaces, dessins, images)
+                     ├──▶ entrées   (clavier, souris)      meilleur effort
+                     └──▶ curseur   (image du pointeur)    meilleur effort
+
+Les deux derniers sont en meilleur effort, et c'est un choix : un serveur qui ne
+les offre pas donne quand même une session utilisable. Un écran sans clavier
+vaut d'être montré ; refuser de démarrer échangerait quelque chose contre rien.
+
+Chaque canal compte ses propres numéros de série. Un compteur partagé entre deux
+connexions donnerait à chacune une suite trouée, et un serveur qui acquitte par
+numéro aurait raison de s'en plaindre.
+
+Le curseur a sa propre connexion pour continuer de bouger pendant que le canal
+display envoie un écran entier de pixels. Sur un téléphone, c'est la différence
+entre un pointeur qui suit le doigt et un pointeur qui traîne derrière un
+rafraîchissement.
+
+### Ce que le client demande
+
+Un serveur SPICE choisit son encodage d'image selon sa propre configuration, et
+le défaut habituel est « automatique » : QUIC pour le photographique, GLZ pour
+le graphique. wisq ne décode ni l'un ni l'autre. Il demande donc explicitement
+`LZ` — et pas `AUTO_LZ`, qui laisserait le serveur libre d'envoyer du QUIC.
+
+Décoder un codec et se faire envoyer ce codec sont deux réussites distinctes, et
+seule la seconde met une image à l'écran.
+
+### « Pas implémenté » n'est pas « malformé »
+
+La distinction autour de laquelle la pompe est bâtie. Un encodage que wisq ne
+décode pas laisse cette partie de l'écran tranquille et se compte ; un message
+qui n'a pas de sens arrête la pompe. Confondre les deux déconnecte un téléphone
+parce qu'un serveur a envoyé un JPEG.
+
 ## Ce qui n'est pas là
 
-`SPICESession` et `RDPSession` existent, se conforment à `RemoteSession` et
-échouent proprement avec `unsupportedProtocol`. Ce n'est pas de l'ornement : cela
-fige la surface que les implémentations devront respecter, et cela permet à
-l'éditeur de machine de déjà modéliser les trois protocoles.
+`RDPSession` existe, se conforme à `RemoteSession` et échoue proprement avec
+`unsupportedProtocol`. Ce n'est pas de l'ornement : cela fige la surface que
+l'implémentation devra respecter, et cela permet à l'éditeur de machine de déjà
+modéliser les trois protocoles.
+
+Côté SPICE, il reste les codecs QUIC, GLZ, JPEG et les formes à palette, et le
+presse-papiers — qui passe par l'agent du canal principal, pas par les entrées.

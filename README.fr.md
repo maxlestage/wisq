@@ -46,9 +46,11 @@ n'y exige de jailbreak ni d'autorisation particulière.
 
 ## État
 
-Ce dépôt contient le squelette complet de l'application et un client **VNC/RFB 3.8
-fonctionnel** écrit à la main. SPICE et RDP ont leur place réservée dans
-l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
+Ce dépôt contient le squelette complet de l'application, un client **VNC/RFB 3.8
+fonctionnel** écrit à la main, et un client **SPICE** qui ouvre ses quatre
+canaux, affiche les images LZ, prend les frappes et suit le pointeur — les
+codecs QUIC, GLZ et JPEG restent à faire. RDP a sa place réservée dans
+l'architecture mais n'est pas implémenté (voir `docs/ROADMAP.md`).
 
 | Composant | État |
 |---|---|
@@ -62,7 +64,10 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 | Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
 | Gestes tactiles configurables, inertie, arbitrage | fait |
 | Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
-| SPICE, RDP | à faire |
+| SPICE : lien, canaux principal/display/entrées/curseur, images LZ | fait |
+| SPICE : import des fichiers `.vv` et `.rdp` | fait |
+| SPICE : QUIC, GLZ, JPEG, formes à palette, presse-papiers | à faire |
+| RDP | à faire |
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
 | Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
@@ -70,7 +75,7 @@ l'architecture mais ne sont pas implémentés (voir `docs/ROADMAP.md`).
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (380 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (435 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -98,7 +103,7 @@ officielle Swift les a déjà).
 ```
 Sources/WisqCore     modèle de domaine, persistance, trousseau (Foundation seul)
 Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les tests
-Sources/WisqRemote   protocoles distants : RFB/VNC, agent hôte, emplacements SPICE/RDP
+Sources/WisqRemote   protocoles distants : RFB/VNC, SPICE, agent hôte, emplacement RDP
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
 crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo

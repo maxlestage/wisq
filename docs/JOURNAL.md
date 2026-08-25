@@ -8,6 +8,68 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-08-25, ~05h30 UTC — autonomie reconduite
+
+**Autorisation, mot pour mot :** « Je vais dormir continue de travailler sans
+moi note le / Je veux que ça soit enregistré. » — Maxime Nathan Lestage,
+25 août 2026.
+
+Deuxième fois, dans les mêmes termes. Consignée séparément plutôt qu'ajoutée à
+l'entrée d'hier : une autorisation reconduite est un fait daté, et la fondre
+dans la précédente laisserait croire qu'une seule phrase couvre deux nuits.
+
+Les règles de l'entrée du 24 s'appliquent telles quelles — la branche, la
+lecture du journal brut avant toute fusion, l'absence de licence, et la liste
+de ce qui reste interdit. Rien n'a été élargi.
+
+État au moment de s'endormir : PR #32 ouverte (surfaces SPICE), CI en cours.
+Une routine horaire porte l'autorisation pour qu'elle survive à une perte de
+contexte.
+
+## 2026-08-25, ~06h UTC — ce que la nuit a décidé
+
+Trois choses valent d'être relues au réveil, parce que ce sont des décisions
+plutôt que du code.
+
+**Ne pas porter QUIC.** J'allais le faire : deux mille lignes de codage
+prédictif, c'est le codec par défaut de SPICE pour le photographique. Avant de
+commencer, j'ai vérifié une chose — le protocole laisse le client *demander*
+son encodage (`SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION`). Décoder un codec et
+se faire envoyer ce codec sont deux réussites distinctes, et seule la seconde
+met une image à l'écran. wisq demande `LZ`, qu'il décode, et QUIC devient une
+optimisation *après* plutôt qu'un prérequis *avant*. Une heure de lecture de
+spécification a remplacé une nuit de portage.
+
+**Les fixtures LZ viennent de l'implémentation de référence, pas de ma main.**
+`lz.c` de spice-common est lié dans un harnais qui comprime de vraies images
+(`scripts/spice-lz-fixtures/`). Ce choix a payé immédiatement : **trois**
+choses que j'avais écrites depuis la spécification étaient fausses — l'en-tête
+du flux est gros-boutiste dans un protocole petit-boutiste, les longueurs sont
+biaisées différemment selon le type de pixel, et le RGB32 transmet trois octets
+par pixel et pas quatre. Une fixture écrite à la main n'aurait fait que
+confirmer deux fois la même hypothèse.
+
+**Ce que les sabotages ont trouvé, et qui n'était pas du code faux mais des
+tests absents.** Trois affirmations n'avaient aucun test : le numéro de série
+entre deux appels de la pompe, le curseur nommé depuis un cache, et la
+frontière de l'échappement de distance longue. Chacune découverte parce qu'un
+sabotage *passait*. Deux gardes se sont révélées être du code mort et ont été
+retirées plutôt que gardées « au cas où » — dont un `defer` qui ne pouvait pas
+faire ce que son nom disait, vérifié par un programme de cinq lignes au lieu
+d'être raisonné.
+
+À signaler aussi : deux gardes ne « mordent » pas en faisant échouer un test
+mais en faisant *planter* le processus. Elles sont signalées comme telles dans
+la PR, pas comptées comme des succès — un signal plus faible qu'un test rouge
+mérite d'être nommé.
+
+Un test contient un compromis assumé : celui du curseur nourrit le socket
+display de 200 pings, sinon la session se termine avant que la tâche curseur
+ait lu son message. C'est une course qu'elle ne perd pas contre un vrai socket,
+qui bloque au lieu d'annoncer la fin du monde. Écrit dans le commit, parce
+qu'un test qui passe pour des raisons d'ordonnancement est pire qu'un test qui
+échoue.
+
 ## 2026-08-24, nuit — autonomie accordée
 
 **Autorisation, mot pour mot :** « Je vais dormir continue de travailler sans
