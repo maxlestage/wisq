@@ -35,16 +35,34 @@ extension SpiceGLZ {
         case threeBytes
         /// Two bytes of 0555, **high byte first**.
         case fiveFiveFive
+        /// One byte, and it lands on the *fourth* byte of a pixel already
+        /// decoded by the colour pass. `rgba` is two passes over one buffer:
+        /// `glz_rgb32_decode` first, then `glz_rgb_alpha_decode` starting where
+        /// the first stopped, with its own control bytes, its own matches and
+        /// its own run of the whole image.
+        case alpha
 
-        /// GLZ's own table: 1 for rgb16, nothing for rgb24 and rgb32. Not LZ's.
-        var lengthBias: Int { self == .threeBytes ? 0 : 1 }
+        /// GLZ's own table: 2 for the alpha pass and the palette forms, 1 for
+        /// rgb16, nothing for rgb24 and rgb32. Not LZ's, which differs.
+        var lengthBias: Int {
+            switch self {
+            case .threeBytes: return 0
+            case .fiveFiveFive: return 1
+            case .alpha: return 2
+            }
+        }
+
+        /// Which bytes of a pixel a match copies. The alpha pass must leave
+        /// the colour the first pass wrote exactly alone.
+        var copiedBytes: Range<Int> { self == .alpha ? 3..<4 : 0..<4 }
     }
 
     static func decodeRGB32(
         _ stream: [UInt8], from start: Int, pixels count: Int,
-        imageID: UInt64, window: Window, literal: Literal = .threeBytes
+        imageID: UInt64, window: Window, literal: Literal = .threeBytes,
+        into: [UInt8]? = nil
     ) throws -> (pixels: [UInt8], bytesRead: Int) {
-        var out = [UInt8](repeating: 0, count: count * 4)
+        var out = into ?? [UInt8](repeating: 0, count: count * 4)
         var input = start
         var op = 0
 
@@ -99,7 +117,7 @@ extension SpiceGLZ {
                     guard pixelOffset <= op else { throw Failure.referenceBeforeStart }
                     var reference = op - pixelOffset
                     for _ in 0..<length {
-                        for byteIndex in 0..<4 {
+                        for byteIndex in literal.copiedBytes {
                             out[op * 4 + byteIndex] = out[reference * 4 + byteIndex]
                         }
                         op += 1
@@ -115,7 +133,7 @@ extension SpiceGLZ {
                         throw Failure.referenceBeforeStart
                     }
                     for index in 0..<length {
-                        for byteIndex in 0..<4 {
+                        for byteIndex in literal.copiedBytes {
                             out[(op + index) * 4 + byteIndex] =
                                 source.pixels[(pixelOffset + index) * 4 + byteIndex]
                         }
@@ -132,6 +150,11 @@ extension SpiceGLZ {
                         out[op * 4 + 1] = try byte()    // g
                         out[op * 4 + 2] = try byte()    // r
                         out[op * 4 + 3] = 0             // never transmitted
+
+                    case .alpha:
+                        // Only the fourth byte. The colour pass already wrote
+                        // the other three and must not be disturbed.
+                        out[op * 4 + 3] = try byte()
 
                     case .fiveFiveFive:
                         // Written in the reference's own order, and the order

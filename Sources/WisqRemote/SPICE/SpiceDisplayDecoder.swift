@@ -375,20 +375,49 @@ extension SpiceDisplayWire {
         // between the two templates, and spice-gtk always decodes to 32 bits.
         // Checked with an rgb24 fixture rather than taken on trust.
         //
-        // The rest are still refused. `rgb16` packs two bytes per pixel and
-        // needs its own expansion; `rgba` needs a second pass over the alpha;
-        // the palette forms need the colour table and rescaled distances.
-        // Running any of them through this loop would produce an image rather
-        // than an error, which is the worse failure.
-        guard header.type == .rgb32 || header.type == .rgb24 else { return nil }
+        // The palette forms are refused, and **not** because they are unfinished
+        // work. Nothing produces them.
+        //
+        // `canvas_get_glz_rgb_common` passes `NULL` where the palette would go,
+        // with the reason written above it: a palettised bitmap is compressed
+        // to RGB32 globally, "because same byte sequence can be transformed to
+        // different RGB pixels by different plts" — which is exactly what a
+        // dictionary shared across images cannot survive. The server agrees
+        // from its own side: `get_compression_for_bitmap` downgrades GLZ to
+        // plain LZ whenever `bitmap_fmt_has_graduality` is false, and that
+        // predicate requires an RGB format, which no palettised one is.
+        //
+        // So the palette variants exist in spice-gtk's template only because it
+        // is instantiated mechanically for every type. They are refused here
+        // for the same reason the reference has no palette to hand them, and a
+        // stream claiming one is a stream no honest server sent.
+        let literal: SpiceGLZ.Literal
+        switch header.type {
+        case .rgb32, .rgb24: literal = .threeBytes
+        case .rgb16: literal = .fiveFiveFive
+        case .rgba: literal = .threeBytes      // the colour pass; alpha follows
+        default: return nil
+        }
         guard header.width == Int(image.descriptor.width),
               header.height == Int(image.descriptor.height) else { return nil }
 
-        let decoded = try SpiceGLZ.decodeRGB32(
-            payload, from: SpiceGLZ.headerBytes,
-            pixels: header.width * header.height,
-            imageID: header.id, window: window
+        let pixelCount = header.width * header.height
+        var decoded = try SpiceGLZ.decodeRGB32(
+            payload, from: SpiceGLZ.headerBytes, pixels: pixelCount,
+            imageID: header.id, window: window, literal: literal
         )
+
+        // `rgba` is two passes over one buffer: the colour, then the alpha
+        // starting exactly where the colour stopped, with its own control
+        // bytes and its own matches. `decode()` in the reference does the same,
+        // advancing `in_now` by what the first pass reported.
+        if header.type == .rgba {
+            decoded = try SpiceGLZ.decodeRGB32(
+                payload, from: SpiceGLZ.headerBytes + decoded.bytesRead,
+                pixels: pixelCount, imageID: header.id, window: window,
+                literal: .alpha, into: decoded.pixels
+            )
+        }
 
         window.add(SpiceGLZ.Window.Image(
             id: header.id, winHeadDistance: header.winHeadDistance,
