@@ -428,9 +428,20 @@ chaque ligne commence sur une frontière d'octet : une ligne de cinq pixels en
 1 bit dépense un octet et en gâche trois bits, sans quoi tout décale à partir de
 la deuxième ligne.
 
-Reste : QUIC, GLZ, JPEG, `rgba`/`xxxa` (encodés en deux passes) ; le
-presse-papiers, qui passe par l'agent du canal principal et non par les
-entrées.
+**`rgba` et `xxxa` sont faits, et LZ est complet.** Ce sont **deux flux LZ bout
+à bout dans une seule charge** : la passe couleur, puis une passe alpha qui
+reparcourt les mêmes pixels et ne touche que leur quatrième octet, en
+continuant la lecture là où la première s'est arrêtée. C'est pour ça qu'ils
+étaient refusés : la boucle à une passe aurait lu la couleur, déclaré l'image
+finie, et laissé tous les pixels opaques pendant que la moitié de la charge
+restait non lue — une image, et une fausse.
+
+`xxxa` est la passe alpha seule : ses octets de couleur ne sont jamais
+transmis, donc ils ressortent à zéro plutôt qu'avec ce que le tampon
+contenait. En C, c'est de la mémoire non initialisée qui arrive à l'écran.
+
+Reste : QUIC, GLZ, JPEG ; le presse-papiers, qui passe par l'agent du canal
+principal et non par les entrées.
 
 ## Lot 6 — finition
 

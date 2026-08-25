@@ -8,6 +8,19 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **`rgba` and `xxxa` decode, and LZ is complete.** They are **two LZ streams
+  end to end in one payload**: the colour pass, then an alpha pass over the
+  same pixels touching only their fourth byte, reading on from where the first
+  stopped.
+
+  That is why they were refused rather than decoded. The single-pass loop would
+  have read the colour pass, declared the image finished, and left every pixel
+  opaque while half the payload sat unread — a picture, and a wrong one.
+
+  `xxxa` is the alpha pass alone: its colour bytes are never transmitted, so
+  they come back as zero rather than as whatever the buffer held. In C that is
+  uninitialised memory reaching the screen.
+
 - **LZ's palette forms decode: PLT8, PLT4 and PLT1, both orders each.** Three
   of the rules here produce an *image* when written backwards rather than an
   error, which is the kind of wrong that ships: a 4-bit `LE` byte gives the low

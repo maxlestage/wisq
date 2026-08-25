@@ -188,13 +188,14 @@ enum SpiceLZ {
             // needs the palette travelling beside them. Their match length is
             // biased by three, the third distinct bias in this codec.
             return (1, 1, 3)
-        case .rgba, .xxxa, .a8:
-            // Still not decoded, each for its own reason. `a8` is a mask, not a
-            // picture; `rgba` and `xxxa` are encoded as two passes, colour then
-            // alpha, so one run of this loop is half an image.
-            //
-            // Named rather than half-decoded into something that would look
-            // like an image.
+        case .rgba, .xxxa:
+            // The colour pass of a two-pass form: three bytes in, four out, the
+            // fourth filled by the alpha pass that follows in the same stream.
+            // `xxxa` skips this pass entirely — see `decompress`.
+            return (3, 4, 1)
+        case .a8:
+            // A mask rather than a picture, and nothing here would know what to
+            // do with one. Named rather than half-decoded.
             throw Failure.unsupportedImageType(type)
         }
     }
@@ -413,5 +414,123 @@ enum SpiceLZ {
         // image built from a disagreement.
         guard out.count == limit else { throw Failure.truncated }
         return (header, out)
+    }
+
+    /// Decompresses an image, running the alpha pass when the form has one.
+    ///
+    /// `rgba` and `xxxa` are **two LZ streams end to end** in one payload: the
+    /// colour pass, then an alpha pass that walks the same pixels again and
+    /// touches only their fourth byte. The second reads on from where the first
+    /// stopped — one reader across both, not two.
+    ///
+    /// This is why those two forms were refused until now rather than decoded
+    /// with the single-pass loop: that loop would have read the colour pass,
+    /// declared the image finished, and left every pixel opaque while the
+    /// alpha half of the payload sat unread.
+    ///
+    /// `xxxa` is the alpha pass alone. Its colour bytes are never transmitted,
+    /// so they come back as zero rather than as whatever a buffer held.
+    static func decompressWithAlpha(_ payload: [UInt8]) throws -> (header: Header, pixels: [UInt8]) {
+        var reader = Reader(payload)
+        let header = try header(from: &reader)
+        guard header.type == .rgba || header.type == .xxxa else {
+            // Every other form is one pass, and going through the plain
+            // entry point keeps its error messages and its bounds.
+            return try decompress(payload)
+        }
+
+        let pixelCount = header.width * header.height
+        var pixels = [UInt8](repeating: 0, count: pixelCount * 4)
+
+        if header.type == .rgba {
+            try run(&reader, into: &pixels, count: pixelCount,
+                    pass: Pass(read: 3, stride: 4, offset: 0, lengthBias: 1))
+        }
+        // The alpha pass: one byte per literal pixel, written to the fourth,
+        // and a match length biased by three rather than one.
+        try run(&reader, into: &pixels, count: pixelCount,
+                pass: Pass(read: 1, stride: 4, offset: 3, lengthBias: 3))
+
+        return (header, pixels)
+    }
+
+    /// Which bytes of each pixel a pass owns, and how its lengths are biased.
+    ///
+    /// Its own type because the two passes differ only in these four numbers,
+    /// and passing them loose was seven arguments — enough for the linter to
+    /// object, and enough for a caller to transpose two of them silently.
+    private struct Pass {
+        /// Bytes taken from the stream for one literal pixel.
+        var read: Int
+        /// Bytes between one pixel and the next in the output.
+        var stride: Int
+        /// Where within a pixel this pass writes.
+        var offset: Int
+        /// What a match length is short by, which differs per pass.
+        var lengthBias: Int
+    }
+
+    /// One LZ pass over a fixed-size output.
+    ///
+    /// Factored out because the alpha pass is the same algorithm reaching a
+    /// different byte, and writing it twice is how the two drift apart.
+    private static func run(
+        _ reader: inout Reader, into pixels: inout [UInt8], count: Int, pass: Pass
+    ) throws {
+        let bytesRead = pass.read
+        let stride = pass.stride
+        let offset = pass.offset
+        let lengthBias = pass.lengthBias
+        var written = 0
+        while written < count {
+            let ctrl = Int(try reader.u8())
+
+            guard ctrl >= maxCopy else {
+                for _ in 0...ctrl {
+                    guard written < count else { throw Failure.truncated }
+                    for byte in 0..<bytesRead {
+                        pixels[written * stride + offset + byte] = try reader.u8()
+                    }
+                    written += 1
+                }
+                continue
+            }
+
+            var length = ctrl >> 5
+            var distance = (ctrl & 31) << 8
+            length -= 1
+            if length == 6 {
+                var code: UInt8
+                repeat {
+                    code = try reader.u8()
+                    length += Int(code)
+                } while code == 255
+            }
+            let code = try reader.u8()
+            distance += Int(code)
+            if code == 255, distance - Int(code) == 31 << 8 {
+                distance = Int(try reader.u8()) << 8
+                distance += Int(try reader.u8())
+                distance += maxDistance
+            }
+            length += lengthBias
+            distance += 1
+
+            guard distance <= written else { throw Failure.referenceBeforeStart }
+            var source = written - distance
+            for _ in 0..<length {
+                guard written < count else { throw Failure.truncated }
+                // One pixel at a time, and only the bytes this pass owns: the
+                // colour pass must not disturb an alpha the previous image
+                // left, and the alpha pass must not disturb the colour just
+                // written beside it.
+                for byte in 0..<bytesRead {
+                    pixels[written * stride + offset + byte] =
+                        pixels[source * stride + offset + byte]
+                }
+                source += 1
+                written += 1
+            }
+        }
     }
 }
