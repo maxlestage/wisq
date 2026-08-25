@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
+import { PAGES } from "../src/pages";
 import { AUTHOR, copy } from "../src/content";
 
 /// The built artefact, not the source. `bun run build` must run before this;
@@ -23,6 +24,13 @@ function styleFile(): string {
   return name;
 }
 
+/// The script's name is hashed too, for the same reason.
+function scriptFile(): string {
+  const name = readdirSync(dist).find((entry) => entry.endsWith(".js") && entry !== "sw.js");
+  if (!name) throw new Error("aucun script dans dist");
+  return name;
+}
+
 function pngSize(relative: string): { width: number; height: number } {
   const bytes = readFileSync(join(dist, relative));
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -39,6 +47,94 @@ describe("built output", () => {
       existsSync(join(dist, "index.html")),
       "dist/index.html manquant : lancez `bun run build`",
     ).toBe(true);
+  });
+
+  /// React ships two builds behind one import, and the development one is what
+  /// you get unless the bundler is told otherwise. It carries every warning,
+  /// every key check and every hook invariant: 479 KB against 268 KB, 147 KB
+  /// against 88 KB over the wire, and slower on every render. The site was
+  /// publishing it, because the deploy job runs `bun run build` with no
+  /// environment set and nothing in the build said which build to make.
+  ///
+  /// These two strings exist only in the development build — the branches that
+  /// print them are compiled out of the production one.
+  test("the published script is React's production build", () => {
+    const script = read(scriptFile());
+    for (const marker of ["Each child in a list should have a unique", "captureOwnerStack"]) {
+      expect(script.includes(marker), `le bundle contient « ${marker} »`).toBe(false);
+    }
+  });
+
+  /// Not a style rule: a phone on a slow link pays for every one of these
+  /// bytes before the page becomes interactive. The ceiling sits a little above
+  /// what the bundle weighs today, so ordinary work does not trip it and a
+  /// doubling does. Gzip is what a visitor actually downloads; the raw figure
+  /// is what their phone has to parse, and both matter.
+  test("the script stays within its budget", () => {
+    const bytes = readFileSync(join(dist, scriptFile()));
+    const gzipped = Bun.gzipSync(bytes).byteLength;
+    expect(bytes.byteLength, "script brut").toBeLessThan(240_000);
+    expect(gzipped, "script gzippé").toBeLessThan(80_000);
+  });
+
+  /// The point of moving the documents into the pages: the shared script is the
+  /// site's behaviour, not its prose.
+  ///
+  /// A reader on the landing page used to download the privacy policy, the FAQ,
+  /// the roadmap and the architecture note, in English *and* French — 61 KB raw,
+  /// 21.6 KB over the wire, measured. This walks the real documents and fails if
+  /// a sentence from any of them is back in the bundle.
+  test("the shared script carries no page's prose", () => {
+    const script = read(scriptFile());
+    for (const lang of LANGS) {
+      for (const route of ROUTES) {
+        if (route.id === "home") continue;
+        const doc = PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
+        const sentence = doc.blocks.find(
+          (block): block is { kind: "p"; text: string } =>
+            block.kind === "p" && block.text.length > 40,
+        )?.text;
+        if (!sentence) continue;
+        expect(
+          script.includes(sentence.slice(0, 40)),
+          `${route.id}/${lang} : la prose est repartie dans le bundle`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  /// Each written page carries its own document, and it survives the round
+  /// trip: hydration reads exactly what the build rendered, or it renders
+  /// something else over markup that was already right.
+  test("every written page carries its own document, and it parses", () => {
+    for (const { route, lang, file } of BUILT) {
+      const html = read(file);
+      const payload = html.match(
+        /<script type="application\/json" id="doc">([\s\S]*?)<\/script>/,
+      )?.[1];
+      if (route.id === "home") {
+        expect(payload, "l'accueil n'est pas un document").toBeUndefined();
+        continue;
+      }
+      expect(payload, `${file} : document absent`).toBeDefined();
+      expect(JSON.parse(payload!)).toEqual(
+        PAGES[lang][route.id as keyof (typeof PAGES)["en"]],
+      );
+    }
+  });
+
+  /// The payload sits inside a script element, so a `<` in the prose could end
+  /// it early and put the rest of the document into the page as markup. Both
+  /// characters an HTML parser acts on are escaped, and `JSON.parse` reads them
+  /// back unchanged — which the round-trip test above already proves.
+  test("nothing in a document can close its own script element", () => {
+    for (const { route, file } of BUILT) {
+      if (route.id === "home") continue;
+      const payload = read(file).match(
+        /<script type="application\/json" id="doc">([\s\S]*?)<\/script>/,
+      )?.[1];
+      expect(payload!.includes("<"), `${file} : un « < » brut dans le document`).toBe(false);
+    }
   });
 
   test("every route produced a document", () => {

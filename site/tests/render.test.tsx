@@ -18,6 +18,17 @@ function text(html: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/// Renders a page the way the build does: the document is passed in, not looked
+/// up inside the component. It stopped being an import of `App`'s so that the
+/// bundle every visitor downloads would not carry every page in both
+/// languages, and a test that renders without it is testing a page with no
+/// words in it.
+function render(routeId: (typeof ROUTES)[number]["id"], lang: Lang): string {
+  const doc =
+    routeId === "home" ? undefined : PAGES[lang][routeId as keyof (typeof PAGES)["en"]];
+  return renderToString(<App route={routeId} lang={lang} doc={doc} />);
+}
+
 /// Server-rendering every page is the cheapest honest check that they work: if
 /// a component throws, a hook is misused or a translation is missing, this
 /// fails rather than shipping a blank page.
@@ -25,7 +36,7 @@ describe("page rendering", () => {
   test("every route renders in both languages", () => {
     for (const route of ROUTES) {
       for (const lang of ["en", "fr"] as Lang[]) {
-        const html = renderToString(<App route={route.id} lang={lang} />);
+        const html = render(route.id, lang);
         expect(html.length, `${route.id}/${lang} : rendu vide`).toBeGreaterThan(500);
         // The header is on every page, so its absence means the shell broke.
         expect(html, `${route.id}/${lang} : en-tête`).toContain("site-header");
@@ -38,7 +49,7 @@ describe("page rendering", () => {
       if (route.id === "home") continue;
       for (const lang of ["en", "fr"] as Lang[]) {
         const doc = PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
-        const html = renderToString(<App route={route.id} lang={lang} />);
+        const html = render(route.id, lang);
         expect(text(html), `${route.id}/${lang}`).toContain(doc.title);
       }
     }
@@ -72,7 +83,7 @@ describe("page rendering", () => {
   test("no page hands out a way to install the project", () => {
     for (const lang of ["en", "fr"] as Lang[]) {
       for (const route of ROUTES) {
-        const html = renderToString(<App route={route.id} lang={lang} />);
+        const html = render(route.id, lang);
         for (const trace of [
           "install-ios.sh",
           "install.sh",
@@ -98,7 +109,7 @@ describe("page rendering", () => {
   /// page that is left.
   test("every page leads home", () => {
     for (const route of ROUTES) {
-      const html = renderToString(<App route={route.id} lang="en" />);
+      const html = render(route.id, "en");
       expect(html, `${route.id} ne mène pas à l'accueil`).toContain('class="brand"');
     }
   });
