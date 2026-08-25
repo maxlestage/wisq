@@ -188,4 +188,94 @@ final class SpiceLZPaletteTests: XCTestCase {
             XCTAssertNotNil(SpiceLZ.pixelsPerByte(type), "\(type)")
         }
     }
+    /// The whole path, end to end: a real `LZ_PLT` message assembled the way
+    /// the display channel carries one — flags, size, a palette behind a
+    /// pointer, then the stream — decoded through the same entry point the
+    /// session uses, and compared against what the reference decoder produced.
+    ///
+    /// Until now the palette codec was finished and unreachable: `pixels(of:)`
+    /// dispatched only `lzRGB`, so every one of these streams arrived and
+    /// nothing drew it.
+    func testAPalettisedStreamArrivesThroughTheDisplayMessage() throws {
+        for fixture in SpiceLZPaletteFixtures.all {
+            let stream = bytes(fixture.stream)
+            let table = bytes(fixture.palette)
+
+            // The palette goes after the stream, and the pointer reaches back
+            // to it — the ordinary arrangement in one of these messages.
+            var message = [UInt8](repeating: 0, count: 4)
+            let offset = UInt32(message.count)
+            message += SpiceWire.u64(9) + [100 /* LZ_PLT */, 0]
+            message += SpiceWire.u32(UInt32(fixture.width))
+            message += SpiceWire.u32(UInt32(fixture.height))
+            message += [0]                                  // flags: palette inline
+            message += SpiceWire.u32(UInt32(stream.count))
+            let palettePointer = UInt32(message.count + 4 + stream.count)
+            message += SpiceWire.u32(palettePointer)
+            message += stream
+            message += table
+
+            let body = SpiceDisplayWire.Body(message)
+            guard let image = try SpiceDisplayWire.image(at: offset, in: body) else {
+                return XCTFail("\(fixture.name) : l'image doit se lire")
+            }
+            XCTAssertEqual(image.payload, stream, "\(fixture.name) : le flux entier")
+
+            guard let decoded = try SpiceDisplayWire.pixels(of: image) else {
+                return XCTFail("\(fixture.name) : l'image doit se dessiner")
+            }
+            XCTAssertEqual(decoded.width, fixture.width, fixture.name)
+            XCTAssertEqual(decoded.height, fixture.height, fixture.name)
+            XCTAssertEqual(
+                decoded.pixels, bytes(fixture.expected),
+                "\(fixture.name) (\(fixture.note)) : les pixels du décodeur de référence"
+            )
+        }
+    }
+
+    /// A palettised stream that says it is bottom-up must come back flipped,
+    /// like an `lzRGB` one — and through the same entry point the session uses,
+    /// not by calling the flip directly.
+    ///
+    /// Worth its own test rather than trusting the RGB one, because every
+    /// fixture the reference encoder produced has `top_down = 1`: the flip is
+    /// simply never reached on this route by any other test, and a sabotage
+    /// that hard-codes it away passes without this. That is the same blind
+    /// spot that let the flag be parsed and ignored for as long as it was.
+    func testAPalettisedStreamThatSaysBottomUpComesBackFlipped() throws {
+        let fixture = SpiceLZPaletteFixtures.all[0]
+        var stream = bytes(fixture.stream)
+        // `top_down` is the seventh word of the LZ header.
+        XCTAssertEqual(Array(stream[24..<28]), [0, 0, 0, 1], "le gabarit est de haut en bas")
+        stream[27] = 0
+
+        var message = [UInt8](repeating: 0, count: 4)
+        let offset = UInt32(message.count)
+        message += SpiceWire.u64(9) + [100 /* LZ_PLT */, 0]
+        message += SpiceWire.u32(UInt32(fixture.width))
+        message += SpiceWire.u32(UInt32(fixture.height))
+        message += [0]
+        message += SpiceWire.u32(UInt32(stream.count))
+        message += SpiceWire.u32(UInt32(message.count + 4 + stream.count))
+        message += stream
+        message += bytes(fixture.palette)
+
+        let body = SpiceDisplayWire.Body(message)
+        guard let image = try SpiceDisplayWire.image(at: offset, in: body),
+              let decoded = try SpiceDisplayWire.pixels(of: image) else {
+            return XCTFail("l'image doit se lire et se dessiner")
+        }
+
+        let upright = bytes(fixture.expected)
+        let rowSize = fixture.width * 4
+        var expected: [UInt8] = []
+        for row in (0..<fixture.height).reversed() {
+            expected += upright[(row * rowSize)..<((row + 1) * rowSize)]
+        }
+        XCTAssertEqual(decoded.pixels, expected)
+        XCTAssertNotEqual(
+            decoded.pixels, upright, "sinon le gabarit a toutes ses lignes identiques"
+        )
+    }
+
 }

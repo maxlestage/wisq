@@ -227,6 +227,14 @@ enum SpiceDisplayWire {
         var descriptor: ImageDescriptor
         var bitmap: Bitmap?
         var payload: [UInt8]?
+        /// The colour table for a compressed palettised stream.
+        ///
+        /// Apart from `bitmap.palette` because the two arrive by different
+        /// routes: an uncompressed bitmap carries its table inside its own
+        /// structure, while `lzPalette` carries one beside the stream. Merging
+        /// them into one field would mean a `Bitmap` invented for an image
+        /// that has none.
+        var palette: Palette?
     }
 
     // MARK: - Brushes and masks
