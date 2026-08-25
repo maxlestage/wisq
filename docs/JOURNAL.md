@@ -1326,3 +1326,44 @@ nombres mais les bornes et la raison de chacune — la sonde doit partir avant
 qu'un opérateur ne ferme le mappage, une seule sonde perdue ne doit pas couper
 une session qui allait revenir, et le délai avant qu'un pair mort soit remarqué
 doit rester dans ce qu'une personne accepte de regarder.
+
+## Un banc côté Apple, et un chronomètre qui ne mesurait rien
+
+Le dépôt avait un chiffre de vitesse — `wisq-bench`, 160 M inst/s — et il venait
+d'un conteneur Linux x86_64. Rien ne mesurait la chaîne d'outils Apple, alors
+que c'est celle qui part sur le téléphone.
+
+Le programme de conformité d'ABI faisait déjà tout le travail : il boote un vrai
+noyau, compte les instructions retirées, et `scripts/test-ios.sh` le lance
+**dans un iPhone simulateur**. Il ne le chronométrait simplement pas. Un
+`clock_gettime(CLOCK_MONOTONIC)` de part et d'autre du run, et le débit part
+dans le journal du job Apple.
+
+Pas de seuil, et c'est dit dans le code : un runner partagé n'en tient pas sans
+clignoter, et un simulateur n'est pas un téléphone — même architecture sur Apple
+Silicon, mais aucun plafond thermique et aucune pression mémoire. C'est une
+borne haute et un détecteur de régression, pas un chiffre à citer.
+
+### Le sabotage a trouvé l'erreur de signe du raisonnement
+
+Quatre sabotages, un témoin. Deux attrapés — supprimer la ligne, rendre zéro
+depuis l'horloge — et un survivant : **démarrer le chronomètre après le run**.
+
+Mon test vérifiait `débit > 0 && est fini`. Or un chronomètre qui ne mesure rien
+ne donne pas un petit nombre, il en donne un énorme : 400 millions
+d'instructions divisées par quelques nanosecondes, soit 4 × 10¹⁶ par seconde. Le
+test passait avec le sourire.
+
+J'avais écrit la borne du mauvais côté. La borne utile est **haute** : dix
+milliards d'instructions invitées par seconde sont impossibles d'un ordre de
+grandeur sur n'importe quelle machine — un cœur retire au mieux 10¹⁰ de ses
+*propres* instructions par seconde, et un interpréteur en dépense plusieurs par
+instruction invitée. Au-dessus, c'est une horloge cassée, pas un ordinateur
+rapide.
+
+Deux sabotages relancés — le chrono qui démarre trop tard, et un `elapsed` figé
+à une nanoseconde — deux attrapés.
+
+Note de méthode, parce qu'elle m'a coûté dix minutes : `while pgrep -f
+mon-script.sh` ne se termine jamais, parce que la ligne de commande du `pgrep`
+contient elle-même le motif. Le harnais attendait un script déjà mort.
