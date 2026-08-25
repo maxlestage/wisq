@@ -14,6 +14,7 @@ import XCTest
 /// own — a black screen that looks exactly like a broken decoder.
 final class SPICESessionTests: XCTestCase {
     private func u32(_ v: UInt32) -> [UInt8] { (0..<4).map { UInt8(v >> (8 * $0) & 0xFF) } }
+    private func u16(_ v: UInt16) -> [UInt8] { (0..<2).map { UInt8(v >> (8 * $0) & 0xFF) } }
     private func i32(_ v: Int32) -> [UInt8] { u32(UInt32(bitPattern: v)) }
 
     /// A ticket encryptor that encrypts nothing: the real one is `Security` and
@@ -45,17 +46,20 @@ final class SPICESessionTests: XCTestCase {
     }
 
     private func channelsList(
-        withInputs: Bool = false, withCursor: Bool = false, withPlayback: Bool = false
+        withInputs: Bool = false, withCursor: Bool = false,
+        withPlayback: Bool = false, withRecord: Bool = false
     ) -> Data {
         var count: UInt32 = 1
         if withInputs { count += 1 }
         if withCursor { count += 1 }
         if withPlayback { count += 1 }
+        if withRecord { count += 1 }
         var body = u32(count)
         body += [SpiceWire.Channel.display.rawValue, 0]
         if withInputs { body += [SpiceWire.Channel.inputs.rawValue, 0] }
         if withCursor { body += [SpiceWire.Channel.cursor.rawValue, 0] }
         if withPlayback { body += [SpiceWire.Channel.playback.rawValue, 0] }
+        if withRecord { body += [SpiceWire.Channel.record.rawValue, 0] }
         return SpiceWire.message(
             SpiceWire.Message.mainChannelsList, serial: 2, payload: Data(body)
         )
@@ -86,13 +90,55 @@ final class SPICESessionTests: XCTestCase {
     /// An actor rather than a lock, because the provider is `async` and Swift 6
     /// refuses `NSLock` there — rightly: a lock held across a suspension is a
     /// deadlock waiting for the right interleaving.
+    /// A stream that says what it was given and then simply waits.
+    ///
+    /// **This exists to remove a race, not to slow a test down.** The display
+    /// pump ends the session when its socket runs out, and that closes the event
+    /// stream — so a channel still working when the display socket empties has
+    /// its events written into a closed continuation and lost. A padded
+    /// `MemoryByteStream` only makes that unlikely; under load it still happened,
+    /// and the test passed alone while failing in the suite, which is the worst
+    /// kind of green.
+    ///
+    /// Waiting rather than erroring is what a real socket does when the server
+    /// has nothing to say. The wait is cancellation-aware, so `stop()` still
+    /// ends it.
+    private actor EndlessByteStream: ByteStream {
+        private var inbound: Data
+        private(set) var written = Data()
+
+        init(inbound: Data) { self.inbound = inbound }
+
+        func read(exactly count: Int) async throws -> Data {
+            guard count > 0 else { return Data() }
+            while inbound.count < count {
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            let chunk = inbound.prefix(count)
+            inbound.removeFirst(count)
+            return Data(chunk)
+        }
+
+        func write(_ data: Data) async throws { written.append(data) }
+        func close() {}
+        func drainWritten() -> Data {
+            let data = written
+            written = Data()
+            return data
+        }
+    }
+
     private actor Sockets {
-        private var queued: [MemoryByteStream]
-        private(set) var handedOut: [MemoryByteStream] = []
+        private var queued: [any ByteStream]
+        private(set) var handedOut: [any ByteStream] = []
 
-        init(_ streams: [MemoryByteStream]) { queued = streams }
+        // `any ByteStream` rather than `MemoryByteStream`, so that a test which
+        // needs a socket that waits instead of ending can use one. Only the
+        // count is read back from here; a test that wants to inspect bytes holds
+        // its own socket.
+        init(_ streams: [any ByteStream]) { queued = streams }
 
-        func next() throws -> MemoryByteStream {
+        func next() throws -> any ByteStream {
             guard !queued.isEmpty else { throw WisqError.connectionClosed }
             let stream = queued.removeFirst()
             handedOut.append(stream)
@@ -104,6 +150,17 @@ final class SPICESessionTests: XCTestCase {
         nonisolated var provider: SPICESession.StreamProvider {
             { [self] _ in try await next() }
         }
+    }
+
+    /// Waits until the session has read `RECORD_START`, rather than assuming it
+    /// has. The record channel is linked *after* `.ready` is yielded, so
+    /// draining the socket at `.ready` drains nothing.
+    private func waitForMicrophone(_ session: SPICESession) async -> Bool {
+        for _ in 0..<2_000 {
+            if await session.isCapturingMicrophone { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return false
     }
 
     private func waitFor(
@@ -397,6 +454,118 @@ final class SPICESessionTests: XCTestCase {
     /// Input goes down a third connection of its own, presenting the same
     /// session identifier. Sending keystrokes on the display socket would be a
     /// protocol error dressed up as a shortcut.
+    /// **The microphone reaches the guest through the real path.**
+    ///
+    /// The encoder is exercised by the session rather than called directly, so
+    /// that "nothing calls it" cannot be true of it. What is missing here is
+    /// only the platform's microphone: everything between the samples and the
+    /// socket is checked.
+    ///
+    /// Three messages go out for the first packet — the codec, the start mark,
+    /// then the samples — and one for every packet after it.
+    func testTheMicrophoneReachesTheGuestThroughTheSession() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 4) + channelsList(withRecord: true)
+        )
+        let displaySocket = EndlessByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        // Le serveur demande du mono 16 kHz.
+        let start = SpiceWire.message(
+            SpiceRecordWire.ServerMessage.start.rawValue, serial: 1,
+            payload: Data(u32(1) + [1, 0] + u32(16_000))
+        )
+        let recordSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + start
+        )
+        let sockets = Sockets([mainSocket, displaySocket, recordSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        let asked = await waitForMicrophone(session)
+        XCTAssertTrue(asked, "le serveur n'a jamais demandé le micro")
+        _ = await recordSocket.drainWritten()          // le message de lien
+
+        await session.sendMicrophone(samples: [0x0102, -1], time: 5)
+        let first = await recordSocket.drainWritten()
+        var reader = SpiceWire.Reader(first)
+
+        var header = try SpiceWire.decodeDataHeader(
+            Data(try reader.bytes(SpiceWire.dataHeaderBytes))
+        )
+        XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.mode.rawValue,
+                       "le codec s'annonce avant les échantillons")
+        XCTAssertEqual(try reader.bytes(Int(header.size)), u32(5) + u16(1),
+                       "le mode annoncé est raw")
+
+        header = try SpiceWire.decodeDataHeader(
+            Data(try reader.bytes(SpiceWire.dataHeaderBytes))
+        )
+        XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.startMark.rawValue)
+        XCTAssertEqual(try reader.bytes(Int(header.size)), u32(5))
+
+        header = try SpiceWire.decodeDataHeader(
+            Data(try reader.bytes(SpiceWire.dataHeaderBytes))
+        )
+        XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.data.rawValue)
+        XCTAssertEqual(try reader.bytes(Int(header.size)),
+                       u32(5) + [0x02, 0x01] + [0xFF, 0xFF],
+                       "petit-boutiste, comme la lecture les lit")
+
+        // Le second paquet ne réannonce rien.
+        await session.sendMicrophone(samples: [7], time: 15)
+        let second = await recordSocket.drainWritten()
+        var again = SpiceWire.Reader(second)
+        header = try SpiceWire.decodeDataHeader(
+            Data(try again.bytes(SpiceWire.dataHeaderBytes))
+        )
+        XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.data.rawValue)
+        XCTAssertEqual(second.count, SpiceWire.dataHeaderBytes + 6,
+                       "un seul message pour un paquet suivant")
+
+        await session.stop()
+    }
+
+    /// **Nothing goes out before the guest asks for it.**
+    ///
+    /// A client that starts sending samples at a server that never requested a
+    /// microphone is a client sending a room's audio somewhere nobody asked it
+    /// to. The channel exists, the stream does not.
+    func testNoSamplesGoOutBeforeTheGuestAsksForThem() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 4) + channelsList(withRecord: true)
+        )
+        let displaySocket = EndlessByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        // Pas de RECORD_START : le serveur ne demande rien.
+        let recordSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, recordSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+        // Le canal est lié même sans flux : ce qui doit rester vide, c'est ce
+        // qui suit le message de lien.
+        _ = await recordSocket.drainWritten()
+
+        await session.sendMicrophone(samples: [1, 2, 3], time: 0)
+        let written = await recordSocket.written
+        XCTAssertTrue(written.isEmpty, "rien ne sort tant que le serveur n'a pas demandé")
+
+        await session.stop()
+    }
+
     /// **Sound reaches the UI from the wire.**
     ///
     /// A decoder nothing calls is a decoder that does not exist — `lzPalette`
@@ -409,20 +578,12 @@ final class SPICESessionTests: XCTestCase {
             inbound: linkReply() + Data(SpiceWire.u32(0))
                 + mainInit(sessionID: 9) + channelsList(withPlayback: true)
         )
-        // **Le faux serveur d'affichage doit continuer à parler.** Quand sa
-        // socket s'épuise, la pompe display termine la session — et le flux
-        // d'événements avec elle. Une trame audio produite après ce moment est
-        // écrite dans une continuation close et disparaît. C'est ce qui faisait
-        // échouer ce test alors que le canal fonctionnait : la course, pas le
-        // code. Cent messages ignorés suffisent à couvrir le temps que la pompe
-        // audio prend à livrer.
-        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
-        for serial in 0..<100 {
-            displayInbound += SpiceWire.message(
-                SpiceDisplayWire.Message.mark.rawValue, serial: UInt64(serial + 2)
-            )
-        }
-        let displaySocket = MemoryByteStream(inbound: displayInbound)
+        // Le faux serveur d'affichage attend au lieu de finir : quand sa socket
+        // s'épuise, la pompe display termine la session et ferme le flux
+        // d'événements, et une trame audio produite après disparaît.
+        let displaySocket = EndlessByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
         // Deux canaux, S16, 48 kHz, puis une trame stéréo : 0x0102 et 0x0304.
         let start = SpiceWire.message(
             SpicePlaybackWire.Message.start.rawValue, serial: 1,

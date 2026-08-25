@@ -46,6 +46,14 @@ extension SessionEvent {
     /// switch and made the question unavoidable. Audio packets arrive tens of
     /// times a second too, so the answer was the same as the framebuffer's —
     /// but a deny-list would not have asked.
+    ///
+    /// **If you are here because this switch stopped compiling, there is a
+    /// second place to change and no compiler on this machine will tell you
+    /// about it.** `SessionModel.apply` in `WisqUI` also switches exhaustively
+    /// over `SessionEvent`, and `WisqUI` is excluded from the Linux build — so
+    /// a missing case there is only found minutes later by the Apple jobs.
+    /// That has now happened twice. This switch is the one that breaks first,
+    /// which makes it the right place to keep the reminder.
     public var haptic: SessionHaptic? {
         switch self {
         case .ready:

@@ -37,6 +37,10 @@ public actor SPICESession: RemoteSession {
     private var cursorPump: Task<Void, Never>?
     private var playback: (any ByteStream)?
     private var playbackPump: Task<Void, Never>?
+    private var record: (any ByteStream)?
+    private var recordPump: Task<Void, Never>?
+    private var recording = SpiceRecord()
+    private var recordSerial: UInt64 = 1
     private var mainPump: Task<Void, Never>?
 
     /// The main channel's agent, which owns its own state.
@@ -81,10 +85,12 @@ public actor SPICESession: RemoteSession {
         pump?.cancel()
         cursorPump?.cancel()
         playbackPump?.cancel()
+        recordPump?.cancel()
         mainPump?.cancel()
         pump = nil
         cursorPump = nil
         playbackPump = nil
+        recordPump = nil
         mainPump = nil
         agent = nil
         await main?.close()
@@ -92,11 +98,13 @@ public actor SPICESession: RemoteSession {
         await inputs?.close()
         await cursor?.close()
         await playback?.close()
+        await record?.close()
         main = nil
         display = nil
         inputs = nil
         cursor = nil
         playback = nil
+        record = nil
         continuation.yield(.disconnected(nil))
         continuation.finish()
     }
@@ -273,6 +281,118 @@ public actor SPICESession: RemoteSession {
                 playback = nil
             }
         }
+
+        // The microphone, if the guest wants one. Its own connection again:
+        // captured samples are on a deadline, and a queue shared with pixels is
+        // not a deadline anyone can keep.
+        if session.channels.contains(where: { $0.type == SpiceWire.Channel.record.rawValue }) {
+            do {
+                let recordStream = try await makeStream(configuration)
+                _ = try await SpiceLink(stream: recordStream, encryptTicket: encryptTicket)
+                    .open(
+                        channel: .record,
+                        connectionID: session.initialisation.sessionID,
+                        password: password
+                    )
+                record = recordStream
+                recordPump = Task { [weak self] in
+                    await self?.followRecord(on: recordStream)
+                }
+            } catch {
+                record = nil
+            }
+        }
+    }
+
+    /// Reads the record channel: what the guest wants captured, and whether it
+    /// currently wants anything at all.
+    private func followRecord(on stream: any ByteStream) async {
+        var serial: UInt64 = 1
+        while !Task.isCancelled {
+            do {
+                let header = try SpiceWire.decodeDataHeader(
+                    try await stream.read(exactly: SpiceWire.dataHeaderBytes)
+                )
+                guard header.size <= 1 << 22 else { return }
+                let payload = header.size == 0
+                    ? Data() : try await stream.read(exactly: Int(header.size))
+
+                switch header.type {
+                case SpiceWire.Message.ping:
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.pong, serial: serial, payload: payload
+                    ))
+                    serial += 1
+                case SpiceRecordWire.ServerMessage.start.rawValue:
+                    recording.start(try SpiceRecordWire.start([UInt8](payload)))
+                case SpiceRecordWire.ServerMessage.stop.rawValue:
+                    recording.stop()
+                case SpiceRecordWire.ServerMessage.mute.rawValue:
+                    recording.setMuted(try SpiceRecordWire.mute([UInt8](payload)))
+                case SpiceRecordWire.ServerMessage.volume.rawValue:
+                    recording.setVolume(try SpiceRecordWire.volume([UInt8](payload)))
+                default:
+                    continue
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Hands captured samples to the guest.
+    ///
+    /// Called by whatever is holding the microphone — on Apple that is
+    /// AVAudioEngine, which is why this takes samples rather than opening a
+    /// device itself. Everything that decides *whether* to send, and what has to
+    /// go in front of the samples, is here where a test can drive it.
+    ///
+    /// **The codec is announced before the first packet of every stream**, and
+    /// `START_MARK` says where the samples begin. A server that never hears the
+    /// mode reads PCM as whatever it assumed last.
+    ///
+    /// Silence is not sent while muted: zeroed samples would keep the guest's
+    /// recorder running and its file growing, which is the opposite of what
+    /// muting a microphone asks for.
+    /// Whether the guest has asked for a microphone and has not muted it.
+    ///
+    /// Not `public`: the app has no use for it, and it exists so a test can wait
+    /// for `RECORD_START` to have been read rather than guess at how long that
+    /// takes. Guessing is what made an earlier test pass alone and fail in a
+    /// suite.
+    var isCapturingMicrophone: Bool { recording.isCapturing }
+
+    public func sendMicrophone(samples: [Int16], time: UInt32) async {
+        guard let record, recording.isCapturing, !samples.isEmpty else { return }
+        do {
+            if !recording.hasAnnouncedMode {
+                try await write(
+                    SpiceRecordWire.ClientMessage.mode.rawValue,
+                    SpiceRecordWire.modeMessage(time: time), to: record
+                )
+                try await write(
+                    SpiceRecordWire.ClientMessage.startMark.rawValue,
+                    SpiceRecordWire.startMarkMessage(time: time), to: record
+                )
+                recording.announcedMode()
+            }
+            try await write(
+                SpiceRecordWire.ClientMessage.data.rawValue,
+                SpiceRecordWire.dataMessage(time: time, samples: samples), to: record
+            )
+        } catch {
+            // A microphone that cannot reach the guest is a microphone that does
+            // not work, not a session that has ended. The display channel is
+            // what decides whether the session is alive.
+            self.record = nil
+        }
+    }
+
+    private func write(_ type: UInt16, _ payload: Data, to stream: any ByteStream) async throws {
+        try await stream.write(
+            SpiceWire.message(type, serial: recordSerial, payload: payload)
+        )
+        recordSerial += 1
     }
 
     /// Reads the playback channel and hands frames to whoever is listening.
