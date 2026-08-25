@@ -22,6 +22,102 @@ break APIs.
   shrugging.
 
 ### Added
+- **The pointer, on a connection of its own.** So it keeps moving while the
+  display channel is sending a screenful of pixels — on a phone that is the
+  difference between a cursor that follows the finger and one that lags a
+  repaint.
+
+  Two widths here would have been written wrong from memory, and both produce a
+  cursor rather than an error: **`cursor_flags` is sixteen bits where
+  `cursor_type` is eight**, so a guess puts the header two bytes off; and the
+  position is a `Point16` — two *signed sixteen-bit* values, not the two 32-bit
+  ones the display channel uses.
+
+  Three absences are kept distinct, because conflating them shows a wrong
+  pointer rather than raising an error: the `NONE` flag, a cursor named from a
+  cache this client does not keep, and a form that is not decoded (mono,
+  palette). An empty cursor means "hide the pointer", so forwarding one for "I
+  do not have it" does the opposite of what the server asked.
+
+  A failure on this channel ends the cursor and nothing else. Losing the
+  pointer is losing the pointer; tearing down a working screen for it would
+  trade a lot for a little.
+
+- **SPICE takes input.** A third connection, presenting the same session
+  identifier as the display one. `SpiceInputs` was already encoded and tested;
+  what it needed was a socket of its own, because sending keystrokes down the
+  display socket is a protocol error dressed up as a shortcut.
+
+  Best effort on purpose: a server offering no inputs channel still gives a
+  usable session. The screen is worth having without the keyboard, and refusing
+  to start would trade something for nothing.
+
+  Each channel counts its own serials. One shared counter across two
+  connections hands each of them a sequence full of holes, and a server that
+  acknowledges by serial would be right to complain.
+
+- **SPICE connects.** `SessionFactory` returns a SPICE session where it used to
+  throw `unsupportedProtocol`. The shape that separates SPICE from RFB next
+  door: **one TCP connection per channel** — the main one first, because it is
+  the only one that learns the session identifier, and every channel after it
+  must present that identifier as its connection ID. Without it the server sees
+  an unrelated client and gives it a display of its own: a black screen that
+  looks exactly like a broken decoder. Driven against a scripted two-socket
+  server, with the identifier read straight back out of the display channel's
+  link message.
+
+  Two defects found in the wiring, neither by an existing test:
+
+  The pump handled **256 messages before reporting anything**. A first frame of
+  three messages would have sat unpainted waiting for the two hundred and
+  fifty-third — on a quiet desktop, never. The default is one message per call
+  now, and the caller publishes damage as it happens.
+
+  The serial did not survive between calls and nothing checked it. A `defer`
+  meant to carry it was dead code: a `defer` runs after the return value has
+  been copied, so it cannot change what comes back. Confirmed with a five-line
+  program rather than reasoned about. Removed, and a test holds it now.
+
+- **The display channel runs: messages in, pixels out.** A `struct` over a
+  `ByteStream` like the main channel, so it can be driven against a scripted
+  server with no socket — which is how its ordering rules get asserted rather
+  than hoped for.
+
+  `INIT` goes before the compression preference, and that order is the
+  protocol's rather than a taste: the server does not draw until `INIT`
+  arrives, and a preference sent first can reach a server that has not yet
+  decided this client exists.
+
+  **"Not implemented yet" is not "malformed", and the difference is the whole
+  design.** An encoding wisq cannot decode leaves that part of the screen alone
+  and is counted; a message that makes no sense stops the pump. Conflating them
+  disconnects a phone because a server sent one JPEG. Unhandled messages are
+  counted by type — a client that ignores half a protocol should be able to say
+  which half, and that number is what says what to build next.
+
+  A ping is answered rather than counted as ignored: a server that pings and
+  hears nothing concludes the client is gone.
+
+- **Draws reach pixels: SPICE surfaces, with the clipping rules tested.** Where
+  the three finished pieces meet — the display channel says where, the LZ
+  decoder says what, this puts it somewhere. Each was correct alone and none of
+  them showed anything. One test crosses every seam: a stream from SPICE's own
+  encoder comes out as pixels on a surface at the box's origin.
+
+  The two cuts are different cuts and both apply. The box says where the server
+  means to draw; the clip says which parts of that it still wants visible.
+  Honour only the box and a window that should have stayed covered gets painted
+  over. And a clip changes **which** pixels are written, never **which source
+  pixel** each comes from — computing the source from the clipped rectangle
+  slides the image sideways wherever something overlaps it.
+
+  Worth being exact about how this fails, because it differs from the C the
+  protocol grew up in: there, an over-running blit writes the next row and the
+  picture shears, invisibly. Here the array is bounds-checked, so the same
+  mistake traps — the app dies rather than misdraws. Removing the cut does not
+  fail the tests, it takes the process down with signal 4. Neither outcome is
+  acceptable when the numbers came off a socket.
+
 - **wisq now asks the server for the codec it can actually decode.** A SPICE
   server picks its image encoding from its own configuration, and the usual
   default is "automatic" — QUIC for photographic content, GLZ for graphic.

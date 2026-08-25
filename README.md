@@ -48,7 +48,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (380 tests across Swift and Rust) and
+Everything below is implemented, tested (435 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -66,7 +66,10 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | `wisq-agent` daemon (libvirt via virsh + demo backend), end-to-end tested | done |
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
-| Agent TLS · SPICE · RDP | roadmap |
+| Agent TLS | done |
+| SPICE: link, main/display/inputs/cursor channels, LZ images, `.vv` import | done |
+| SPICE: QUIC, GLZ, JPEG, palette forms, clipboard | roadmap |
+| RDP | roadmap |
 
 ## Building
 
@@ -112,7 +115,7 @@ xcodegen generate`.
 ```
 Sources/WisqCore     domain model, persistence, Keychain, HID table, pairing codec
 Sources/WisqNet      byte transport: TCP/TLS, persistent zlib streams, test pipes
-Sources/WisqRemote   RFB/VNC client, reconnection, agent client, SPICE/RDP slots
+Sources/WisqRemote   RFB/VNC and SPICE clients, reconnection, agent client, RDP slot
 Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
