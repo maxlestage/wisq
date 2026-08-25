@@ -329,6 +329,26 @@ d'une manière qui tombe juste pour les capacités 1 et 2.
 codage prédictif — devient une optimisation *après*, et non un prérequis
 *avant*.
 
+`SpiceSurfaces` est l'endroit où les trois pièces finies se rejoignent : le
+canal dit *où* dessiner, le décodeur LZ dit *quoi*, et ceci le met quelque
+part. Jusque-là chacune était juste et aucune ne montrait rien. Un test
+traverse toute la couture : un flux produit par l'encodeur de SPICE ressort en
+pixels sur une surface, à l'origine de la boîte.
+
+Presque chaque test y porte sur une frontière, et ce n'est pas du remplissage.
+En C, un blit qui déborde d'une ligne écrit la suivante et l'image se décale —
+invisible. Ici le tableau est borné, donc la même erreur *piège* : l'app meurt
+au lieu de mal dessiner. Retirer la découpe et lancer les tests le montre — ils
+ne échouent pas, ils emportent le processus. Aucune des deux issues n'est
+acceptable quand les nombres viennent d'une socket.
+
+Les deux découpes sont distinctes et s'appliquent toutes les deux : la boîte
+dit où le serveur veut dessiner, la découpe dit ce qu'il veut encore voir.
+N'honorer que la boîte, et une fenêtre qui devait rester couverte est
+repeinte. Et une découpe change *quels* pixels sont écrits, jamais *de quel
+pixel source* chacun vient — calculer la source depuis le rectangle découpé
+ferait glisser l'image partout où quelque chose la recouvre.
+
 Reste : QUIC, GLZ, JPEG et les types à palette, puis brancher `SPICESession` —
 un lien qui aboutit sans rien à afficher ne serait pas une session.
 

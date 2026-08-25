@@ -22,6 +22,26 @@ break APIs.
   shrugging.
 
 ### Added
+- **Draws reach pixels: SPICE surfaces, with the clipping rules tested.** Where
+  the three finished pieces meet — the display channel says where, the LZ
+  decoder says what, this puts it somewhere. Each was correct alone and none of
+  them showed anything. One test crosses every seam: a stream from SPICE's own
+  encoder comes out as pixels on a surface at the box's origin.
+
+  The two cuts are different cuts and both apply. The box says where the server
+  means to draw; the clip says which parts of that it still wants visible.
+  Honour only the box and a window that should have stayed covered gets painted
+  over. And a clip changes **which** pixels are written, never **which source
+  pixel** each comes from — computing the source from the clipped rectangle
+  slides the image sideways wherever something overlaps it.
+
+  Worth being exact about how this fails, because it differs from the C the
+  protocol grew up in: there, an over-running blit writes the next row and the
+  picture shears, invisibly. Here the array is bounds-checked, so the same
+  mistake traps — the app dies rather than misdraws. Removing the cut does not
+  fail the tests, it takes the process down with signal 4. Neither outcome is
+  acceptable when the numbers came off a socket.
+
 - **wisq now asks the server for the codec it can actually decode.** A SPICE
   server picks its image encoding from its own configuration, and the usual
   default is "automatic" — QUIC for photographic content, GLZ for graphic.
