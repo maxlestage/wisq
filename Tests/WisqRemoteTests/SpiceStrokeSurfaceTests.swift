@@ -214,32 +214,41 @@ final class SpiceStrokeSurfaceTests: XCTestCase {
     /// **The dash cycle runs along the whole figure, across its corners.**
     ///
     /// Restarting it at each vertex puts a dash at every corner of a dashed
-    /// rectangle, which is not what a dashed rectangle looks like. A single
-    /// straight segment cannot tell the two apart — there is no second vertex —
-    /// which is why sabotage restarting the cycle survived until this test
-    /// existed. Two segments meeting at a corner can.
+    /// rectangle, which is not what a dashed rectangle looks like.
     ///
-    /// The corner is placed so that the cycle is mid-gap when it arrives: a
-    /// restart would light it, carrying on leaves it dark.
+    /// **The corner has to land mid-cycle, and getting that wrong made the
+    /// first version of this test vacuous.** It used a four-pixel first
+    /// segment against a cycle of 2 on, 2 off — exactly one full period — so
+    /// continuing and restarting arrived at the same phase and the sabotage
+    /// survived a test written to catch it. Three pixels leaves the cycle two
+    /// steps into its gap when it reaches the corner, which is what makes the
+    /// two readings disagree.
+    ///
+    /// Two pixels tell them apart, in opposite directions: the corner is dark
+    /// if the cycle carried on and lit if it restarted, and `(3,2)` is the
+    /// other way round.
     func testTheDashCycleCarriesAcrossACorner() throws {
         var surfaces = try surfaces()
-        // Five pixels along the top, then down. With a cycle of 2 on, 2 off,
-        // the fifth pixel — the corner — falls in the second gap.
         _ = try surfaces.stroke(stroke(
-            [(0, 0), (4, 0), (4, 6)],
+            [(0, 0), (3, 0), (3, 6)],
             style: [2, 2], lineFlags: SpiceDisplayWire.LineAttr.styled
         ))
 
-        XCTAssertEqual(pixel(surfaces, 0, 0), [0xFF, 0xFF, 0xFF, 0], "premier trait")
+        // Le premier segment : deux allumés, un éteint, puis le coin.
+        XCTAssertEqual(pixel(surfaces, 0, 0), [0xFF, 0xFF, 0xFF, 0])
         XCTAssertEqual(pixel(surfaces, 1, 0), [0xFF, 0xFF, 0xFF, 0])
-        XCTAssertEqual(pixel(surfaces, 2, 0), [0, 0, 0, 0], "premier blanc")
-        XCTAssertEqual(pixel(surfaces, 3, 0), [0, 0, 0, 0])
+        XCTAssertEqual(pixel(surfaces, 2, 0), [0, 0, 0, 0])
+
         XCTAssertEqual(
-            pixel(surfaces, 4, 0), [0xFF, 0xFF, 0xFF, 0],
-            "le cycle continue au coin plutôt que de repartir"
+            pixel(surfaces, 3, 0), [0, 0, 0, 0],
+            "le coin doit rester dans le blanc : le cycle a redémarré"
         )
-        XCTAssertEqual(pixel(surfaces, 4, 1), [0xFF, 0xFF, 0xFF, 0])
-        XCTAssertEqual(pixel(surfaces, 4, 2), [0, 0, 0, 0], "et le blanc suit")
+        XCTAssertEqual(pixel(surfaces, 3, 1), [0xFF, 0xFF, 0xFF, 0])
+        XCTAssertEqual(
+            pixel(surfaces, 3, 2), [0xFF, 0xFF, 0xFF, 0],
+            "et le trait suivant continue la phase d'avant le coin"
+        )
+        XCTAssertEqual(pixel(surfaces, 3, 3), [0, 0, 0, 0])
     }
 
     // MARK: - Ce qui n'est pas dessiné
