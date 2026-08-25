@@ -38,6 +38,30 @@ final class SpiceDisplayChannelTests: XCTestCase {
         return message(SpiceDisplayWire.Message.drawFill.rawValue, body)
     }
 
+    /// `DRAW_COPY_BITS`: the base, then two words that are a point.
+    private func copyBits(
+        surface: UInt32 = 0, _ top: Int32, _ left: Int32, _ bottom: Int32, _ right: Int32,
+        fromX: Int32, fromY: Int32
+    ) -> Data {
+        var body = u32(surface)
+        body += i32(top) + i32(left) + i32(bottom) + i32(right)
+        body += [0]                                    // no clip
+        body += i32(fromX) + i32(fromY)
+        return message(SpiceDisplayWire.Message.copyBits.rawValue, body)
+    }
+
+    /// One of the three operand-free rasters: the base, then a null mask.
+    private func raster(
+        _ type: UInt16, surface: UInt32 = 0,
+        _ top: Int32, _ left: Int32, _ bottom: Int32, _ right: Int32
+    ) -> Data {
+        var body = u32(surface)
+        body += i32(top) + i32(left) + i32(bottom) + i32(right)
+        body += [0]                                    // no clip
+        body += [0] + i32(0) + i32(0) + u32(0)         // mask
+        return message(type, body)
+    }
+
     private func capabilities(preferredCompression: Bool) -> [UInt32] {
         preferredCompression
             ? SpiceDisplayClient.capabilityWords([.preferredCompression])
@@ -128,6 +152,41 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(surfaces.surfaces[0]?.width, 8)
         // Blue, green, red, pad — the fill's red, at the top-left.
         XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
+    }
+
+    /// The four messages that need no codec, driven through the pump.
+    ///
+    /// The surface work is tested next door; what this pins is the routing —
+    /// that these types reach a draw at all rather than being counted as
+    /// ignored, which is what they were until now. A message with no `case` is
+    /// silent, so only an assertion on `updates` notices.
+    func testTheDrawsThatNeedNoCodecReachTheSurface() async throws {
+        // Red across the top half, then scroll it down by four rows.
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + fill(0, 0, 4, 8, colour: 0x00FF_0000)
+                + copyBits(4, 0, 8, 8, fromX: 0, fromY: 0)
+                + raster(SpiceDisplayWire.Message.drawWhiteness.rawValue, 0, 0, 2, 8)
+                + raster(SpiceDisplayWire.Message.drawInvers.rawValue, 2, 0, 3, 8)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var glz = SpiceGLZ.Window()
+
+        let progress = try await channel.pump(into: &surfaces, glz: &glz, serial: 1, limit: 5)
+
+        XCTAssertEqual(progress.ignored, [:], "aucun de ces messages ne doit être compté ignoré")
+        XCTAssertEqual(progress.updates.count, 4)
+
+        func pixel(_ x: Int, _ y: Int) -> [UInt8] {
+            let surface = surfaces.surfaces[0]!
+            let at = (y * surface.width + x) * 4
+            return Array(surface.pixels[at..<(at + 4)])
+        }
+        XCTAssertEqual(pixel(0, 5), [0, 0, 0xFF, 0], "le rouge a été descendu de quatre lignes")
+        XCTAssertEqual(pixel(0, 1), [0xFF, 0xFF, 0xFF, 0], "blanc")
+        // Row 2 was red, then inverted: 0x0000FF becomes 0xFFFF00.
+        XCTAssertEqual(pixel(0, 2), [0xFF, 0xFF, 0, 0], "inversé")
     }
 
     func testASurfaceIsDestroyedWhenTheServerSaysSo() async throws {

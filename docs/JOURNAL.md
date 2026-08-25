@@ -816,3 +816,61 @@ branche finale, et lisait la longueur du bloc suivant au mauvais endroit. Le
 même piège que d'habitude sous une forme de plus — un résultat qui a l'air d'un
 résultat. La différence avec les fois précédentes est que j'ai vérifié avant de
 l'écrire quelque part.
+
+## Les dessins sans codec, et un masque dont les deux réponses sont fausses
+
+Après LZ4 il ne restait plus de codec à écrire sur le canal display, et
+l'inventaire — la même méthode que la fois précédente — a montré autre chose :
+la pompe traitait quatre types de messages sur vingt-six. `DRAW_COPY_BITS`,
+`DRAW_BLACKNESS`, `DRAW_WHITENESS` et `DRAW_INVERS` étaient comptés comme
+ignorés. Ce sont les plus simples du protocole et, pour le premier, l'un des
+plus fréquents : une fenêtre qui défile, c'est exactement ça. Le décodeur le
+plus complet du monde ne sert à rien si la fenêtre garde son ancien contenu en
+défilant.
+
+Deux pièges, tous deux dans la référence plutôt que dans le format.
+
+**La source se découpe aussi.** La boîte et le clip bornent l'écriture ; rien ne
+borne la lecture. Un défilement près d'un bord nomme une ligne source qui
+n'existe pas, et la tentation est de borner la lecture — ce qui duplique le
+bord. `canvas_copy_bits` intersecte la destination avec un rectangle décalé de
+la distance, ce qui *retire* de la région les pixels sans source au lieu de leur
+inventer une. Le test qui l'épingle vérifie que les trois premières lignes sont
+inchangées, pas qu'elles ressemblent à quelque chose.
+
+**La copie se recouvre.** `spice_pixman_copy_rect` choisit un sens de parcours
+par rectangle et `copy_region` ordonne les rectangles pour aller avec. wisq lit
+toute la source d'abord. C'est équivalent, et ça vaut d'être dit dans ce sens :
+l'ordre de la référence existe pour imiter un instantané sans en allouer un, pas
+l'inverse. Trois tests — vers le haut, vers le bas, sur le côté — parce qu'un
+décodeur qui code en dur un seul sens passe le premier.
+
+### Le masque
+
+C'est la partie où il n'y a pas de bonne réponse et où l'écrire est la seule
+chose honnête à faire.
+
+Un `QMask` réduit ce qu'un dessin touche. wisq ne le décode pas. Peindre toute
+la boîte écrase des pixels que le serveur voulait garder ; ne rien peindre en
+laisse de périmés. Le serveur ne renverra ni les uns ni les autres.
+
+`DRAW_FILL` faisait le premier depuis le début, en silence. J'ai basculé sur le
+second, pour deux raisons qui ne sont pas « c'est mieux » : c'est ce que ce
+fichier fait partout ailleurs quand il ne peut pas exécuter un dessin, et un
+rectangle noir en travers d'une fenêtre est pire à regarder qu'un rectangle qui
+n'a pas changé. Le test qui l'épingle porte l'argument, pas seulement le
+résultat, pour que le décodage du masque plus tard soit un changement que
+quelque chose remarque.
+
+### Une asymétrie recopiée plutôt que corrigée
+
+`blackness` passe `0x000000` à `fill_solid_rects` et `whiteness` `0xffffffff`.
+Sur une surface avec alpha, le noir la vide et le blanc la remplit. Ça ressemble
+à un bug de la référence. Écrire `0xff000000` aurait été *changer* le
+comportement du protocole en quelque chose de plus sensé pendant que le serveur
+dessine en attendant l'autre — c'est-à-dire décider unilatéralement, à la place
+des deux bouts, ce que le protocole veut dire.
+
+Dix sabotages, dix attrapés, plus deux sur le routage de la pompe. Le routage
+mérite les siens : un `case` manquant est silencieux, donc seule une assertion
+sur ce que la pompe a compté comme ignoré s'en aperçoit.

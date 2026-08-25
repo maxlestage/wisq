@@ -942,8 +942,57 @@ rapport de LZ4 sur le contenu photographique qui domine un bureau avec un fond
 d'écran. Sur un réseau mobile, c'est la bande passante qui est rare, pas le
 décodage.
 
-Ce qui reste sur le canal display : les types QUIC autres que ceux déjà
-couverts.
+### Les dessins qui n'ont pas de codec
+
+Fait. `DRAW_COPY_BITS`, `DRAW_BLACKNESS`, `DRAW_WHITENESS` et `DRAW_INVERS`
+étaient tous comptés comme ignorés, ce qui à l'écran donne une fenêtre qui
+défile en gardant son ancien contenu. Ce sont les messages les moins chers du
+canal et parmi les plus fréquents : une fenêtre qui défile, c'est
+`DRAW_COPY_BITS`.
+
+Deux choses en font autre chose qu'une boucle.
+
+**La source se découpe aussi.** La boîte et le clip disent où l'on écrit ;
+rien ne dit où l'on lit, et un défilement près d'un bord nomme une ligne source
+qui n'existe pas. La référence intersecte la région de destination avec un
+rectangle décalé de la distance, ce qui laisse intactes les lignes sans source
+au lieu de dupliquer le bord.
+
+**La copie se recouvre elle-même.** Une fenêtre qui descend de dix pixels lit
+des lignes qu'elle vient d'écrire. `spice_pixman_copy_rect` choisit un sens par
+rectangle ; wisq lit toute la source d'abord. Le résultat est identique — l'ordre
+de la référence existe justement pour imiter un instantané sans en allouer un —
+et ce que ça coûte est l'aire de la région, sur une copie qui allait de toute
+façon la parcourir.
+
+Une asymétrie de la référence est reproduite plutôt que corrigée : `blackness`
+passe `0x000000` et `whiteness` `0xffffffff`, donc sur une surface avec alpha
+l'un la vide et l'autre la remplit. Écrire `0xff000000` pour le noir serait
+*changer* le comportement du protocole en quelque chose de plus sensé, et le
+serveur dessine en attendant l'autre.
+
+### Le masque, qui n'est toujours pas décodé
+
+Un `QMask` est un bitmap 1 bit qui *réduit* ce qu'un dessin touche.
+`canvas_mask_pixman` intersecte la région de destination avec les bits à un.
+wisq ne le décode pas, et le modèle de régions ici est une liste de rectangles,
+qu'un masque par pixel ne peut pas exprimer sans exploser.
+
+Un dessin masqué est donc refusé — y compris `DRAW_FILL`, qui jusqu'ici peignait
+toute sa boîte. **Les deux réponses sont fausses** : peindre toute la boîte
+écrase des pixels que le serveur voulait garder et qu'il ne renverra pas ;
+ne rien peindre laisse des pixels périmés qu'il ne renverra pas non plus.
+Refuser est ce que ce fichier fait partout ailleurs quand il ne peut pas
+exécuter un dessin, et un rectangle noir en travers d'une fenêtre est pire à
+regarder qu'un rectangle qui n'a pas changé.
+
+La vraie réponse est de décoder le bitmap A1 et de porter un masque à côté des
+rectangles. C'est la tranche suivante sur ce canal.
+
+Ce qui reste sur le canal display : le masque ci-dessus, les dessins qui
+composent (`DRAW_OPAQUE`, `DRAW_BLEND`, `DRAW_ALPHA_BLEND`, `DRAW_TRANSPARENT`,
+`DRAW_ROP3`), les tracés et le texte (`DRAW_STROKE`, `DRAW_TEXT`), et les flux
+vidéo (`STREAM_*`).
 
 ## Lot 6 — finition
 
