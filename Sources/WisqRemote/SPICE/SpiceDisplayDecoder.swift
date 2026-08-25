@@ -626,6 +626,26 @@ extension SpiceDisplayWire {
         )
     }
 
+    /// `DRAW_OPAQUE`: a copy's fields with a brush wedged in before the rop.
+    ///
+    /// Reading it with the copy decoder would take the brush's type byte for
+    /// the low half of the rop and every field after it would be shifted.
+    static func opaque(_ payload: [UInt8]) throws -> Opaque {
+        let body = Body(payload)
+        var reader = try body.reader()
+        let header = try base(from: &reader)
+        let sourcePointer = try reader.u32()
+        return Opaque(
+            base: header,
+            source: try image(at: sourcePointer, in: body),
+            sourceArea: try rect(from: &reader),
+            brush: try brush(from: &reader, in: body),
+            rop: try reader.u16(),
+            scaleMode: try reader.u8(),
+            mask: try mask(from: &reader, in: body)
+        )
+    }
+
     /// `DRAW_COPY_BITS`: the base, and then two words that are a point.
     ///
     /// Read as a rectangle by mistake it would consume sixteen bytes instead of

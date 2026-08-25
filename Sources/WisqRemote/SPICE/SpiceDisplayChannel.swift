@@ -132,9 +132,20 @@ struct SpiceDisplayChannel {
                 let fill = try SpiceDisplayWire.fill([UInt8](payload))
                 progress.record(try draw(fill, into: &surfaces), on: fill.base.surfaceID)
 
-            case SpiceDisplayWire.Message.drawCopy.rawValue:
+            // **Blend is copy.** Not "close enough to reuse the decoder": the
+            // reference wires them to the same function with the comment
+            // `// copy and blend are the same`, and the protocol gives blend
+            // copy's own C type. So this is one message with two numbers.
+            case SpiceDisplayWire.Message.drawCopy.rawValue,
+                 SpiceDisplayWire.Message.drawBlend.rawValue:
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
                 progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
+
+            case SpiceDisplayWire.Message.drawOpaque.rawValue:
+                let opaque = try SpiceDisplayWire.opaque([UInt8](payload))
+                progress.record(
+                    try draw(opaque, into: &surfaces, glz: &glz), on: opaque.base.surfaceID
+                )
 
             case SpiceDisplayWire.Message.copyBits.rawValue:
                 let bits = try SpiceDisplayWire.copyBits([UInt8](payload))
@@ -193,6 +204,24 @@ struct SpiceDisplayChannel {
     ) throws -> [SpiceDisplayWire.Rect]? {
         do {
             return try surfaces.raster(raster)
+        } catch SpiceSurfaces.Failure.notDrawable {
+            return nil
+        }
+    }
+
+    private func draw(
+        _ opaque: SpiceDisplayWire.Opaque, into surfaces: inout SpiceSurfaces,
+        glz: inout SpiceGLZ.Window
+    ) throws -> [SpiceDisplayWire.Rect]? {
+        guard let image = opaque.source,
+              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+        else { return nil }
+        let bytesPerPixel = decoded.pixels.count
+            / max(decoded.width * decoded.height, 1)
+        do {
+            return try surfaces.opaque(
+                opaque, source: decoded, bytesPerSourcePixel: bytesPerPixel
+            )
         } catch SpiceSurfaces.Failure.notDrawable {
             return nil
         }
