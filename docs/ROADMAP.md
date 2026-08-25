@@ -525,6 +525,22 @@ opaque entièrement transparent ; `RGBA` le garde, donc les mêmes octets veulen
 dire deux choses. Les ordres de quartets et de bits des formats palettisés sont
 ceux du codec LZ, déjà vérifiés contre le décodeur de référence.
 
+**Les flux LZ à palette se dessinent enfin.** Le codec était fini depuis #33 et
+vérifié contre le décodeur de référence, mais **rien ne l'appelait** :
+`pixels(of:)` ne dispatchait que `lzRGB`, et `image(at:in:)` sautait
+`lzPalette` parce que sa forme de message n'est pas la forme commune. Tous ces
+flux arrivaient et aucun n'était peint.
+
+Sa forme lui est propre : `flags` (un octet), la taille, puis la table —
+identifiant de cache ou pointeur — et seulement ensuite le flux. Lue avec la
+forme commune, la taille sort de l'octet de drapeaux.
+
+L'orientation vient de l'en-tête du flux **interne**, pas des drapeaux
+extérieurs, bien que ceux-ci portent aussi un `TOP_DOWN`. Vérifié dans
+`canvas_get_lz`, qui prend `top_down` de `lz_decode_begin` pour `LZ_RGB` comme
+pour `LZ_PLT` et ne passe les drapeaux extérieurs qu'au cache de palette. Lire
+le mauvais des deux aurait mis à l'envers les seules images palettisées.
+
 Reste : QUIC, GLZ, JPEG.
 
 ## Lot 6 — finition
