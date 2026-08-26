@@ -102,8 +102,9 @@ Alpine included.
 
 Those four names are also the four `scripts/install.sh` knows how to ask
 for, and `scripts/check-release-matrix.sh` — run by the **Lint** job —
-fails the build if the two lists stop agreeing. Adding an architecture
-means editing both files; the guard exists because the release workflow
+fails the build if the two lists stop agreeing, or if a given `uname` pair
+stops resolving to the asset it should. Adding an architecture means
+editing both files; the guard exists because the release workflow
 only ever runs when a release is cut, so a gap between them used to be
 discoverable only by installing on a machine nobody had thought about.
 

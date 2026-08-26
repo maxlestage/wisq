@@ -25,6 +25,14 @@ break APIs.
   stop matching, in either direction. The release workflow only ever ran when a
   release was cut, so this gap was previously discoverable only by installing on
   a machine nobody had thought about.
+
+  It checks two different things, because comparing the two lists as *sets*
+  leaves one mistake invisible: a mapping that uses a name which does exist, for
+  the wrong machine. Swap `Darwin/arm64` and `Darwin/x86_64` in the installer
+  and both sets stay identical while every Apple silicon Mac downloads an Intel
+  binary. So the table is also exercised — a fake `uname`, the real installer,
+  and the URL it prints — for all five supported pairs plus two that correctly
+  fall through to the source build.
 - **The release workflow can be run without publishing.** A `dry_run` input
   builds every asset, runs both test gates and packages the IPA, then stops
   before creating the release. On a tag push the input does not exist, so the

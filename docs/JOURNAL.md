@@ -2203,3 +2203,57 @@ tout l'intérêt : chacun est une chose que la CI aurait découverte à ma place
 essai à la fois, dans un contexte où je ne serais pas là pour la lire. **Le coût
 d'une vérification locale n'est pas comparé à zéro ; il est comparé au coût de
 la même découverte faite plus tard, par quelqu'un d'autre, avec moins de contexte.**
+
+## Le garde-fou qui signalait la panne et rendait zéro
+
+Écrit d'abord ainsi :
+
+```sh
+mappings=$(
+  expect_asset Darwin arm64 macos-arm64
+  ...
+) || failed=1
+```
+
+Sabordé, il a imprimé exactement le bon message d'erreur — et rendu 0. En CI,
+cela veut dire vert, message d'erreur compris, personne ne le lit.
+
+La cause est une règle de bash qu'on connaît sans y penser : `set -e` est
+suspendu pour toute une liste `&&`/`||`, **sous-shell compris**. Le `$( )` fait
+partie d'une commande dont l'échec est testé, donc l'`expect_asset` du milieu
+n'interrompt plus rien ; la substitution finit par rapporter le statut du
+*dernier* appel, qui réussissait. Le `|| failed=1` ne s'exécutait jamais.
+
+Deux choses à en retenir, et la seconde compte plus que la première.
+
+La première : accumuler les échecs explicitement, un `|| failed=1` par appel,
+dans le shell courant. C'est plus verbeux et c'est trivialement lisible.
+
+La seconde : **j'ai trouvé ce défaut parce que je lisais le code de sortie, pas
+la sortie.** Le message d'erreur était parfait. Tout ce qui s'affichait à l'écran
+disait « le garde-fou fonctionne ». C'est la même erreur que la nuit où un test
+qui plantait le runner rapportait 4 tests au lieu de 803 : dans les deux cas la
+sortie visible était convaincante et le seul chiffre qui comptait était ailleurs.
+Saborder ne suffit pas — il faut saborder *et regarder le bon indicateur*.
+
+## Deux garde-fous qui semblent le même, et n'attrapent pas la même faute
+
+Comparer deux listes comme des *ensembles* laisse une faute entièrement
+invisible : une correspondance qui utilise un nom parfaitement existant, pour la
+mauvaise machine. Écrire
+
+```sh
+Darwin/arm64)  ASSET_SUFFIX="macos-x86_64" ;;
+Darwin/x86_64) ASSET_SUFFIX="macos-arm64" ;;
+```
+
+et les deux ensembles restent rigoureusement identiques, pendant que chaque Mac
+Apple silicon télécharge un binaire Intel. Vérifié : sabordé ainsi, la
+comparaison d'ensembles ne dit rien du tout, et seule la table exercée parle.
+
+C'est le même piège que le tableau des six canaux fermait côté protocole : une
+liste cohérente n'est pas une liste juste. Un ensemble dit *quels* noms existent
+des deux côtés ; il ne dit rien de *qui reçoit quoi*. Il fallait les deux
+vérifications, et je n'avais écrit que la première — jusqu'à ce qu'une sonde
+jetable, lancée pour tout autre chose, imprime la table et rende la question
+évidente.

@@ -1810,6 +1810,14 @@ Deux garde-fous ferment la question plutôt que de la corriger une fois :
   sens. Le sens qui blesse est « l'installateur demande un asset qui n'existe
   pas » — un 404 en pleine installation ; l'autre sens n'est pas anodin non plus,
   un asset que personne ne télécharge ressemble à de la couverture.
+
+  Le même script vérifie une seconde chose, que la comparaison d'ensembles ne
+  peut pas voir : **quelle machine reçoit quel asset**. Intervertir `Darwin/arm64`
+  et `Darwin/x86_64` laisse les deux ensembles rigoureusement identiques pendant
+  que chaque Mac Apple silicon télécharge un binaire Intel. La table est donc
+  exercée — un faux `uname`, le vrai installateur, l'URL qu'il imprime — sur les
+  cinq paires servies et deux qui doivent tomber sur la construction depuis les
+  sources.
 - L'entrée `dry_run` du workflow de release construit et vérifie tout sans rien
   publier. Le fichier ne s'exécutait qu'au moment de couper une release,
   c'est-à-dire au pire moment pour y découvrir une faute.

@@ -58,6 +58,64 @@ if [ -n "$unused" ]; then
   failed=1
 fi
 
+# --- and that each machine is sent the right one -------------------------------
+#
+# Comparing the two lists as *sets* leaves one mistake invisible: a mapping that
+# uses a name which does exist, for the wrong machine. Write
+# `Darwin/arm64) ASSET_SUFFIX="macos-x86_64"` and both lists still match
+# perfectly, while every Apple silicon Mac downloads an Intel binary. The set
+# check cannot see it, because nothing about the set changed.
+#
+# So the table is exercised rather than read: a fake `uname` on PATH, the real
+# installer, and the URL it prints. `--version` is given so it never resolves
+# "latest", and both WISQ_RELEASES and WISQ_REPO point nowhere, so this touches
+# no network — the installer fails immediately after printing the URL, which is
+# the only line being read.
+expect_asset() {
+  os=$1 machine=$2 want=$3
+  fake=$(mktemp -d)
+  mkdir -p "$fake/bin" "$fake/prefix"
+  cat > "$fake/bin/uname" <<UNAME
+#!/bin/sh
+case "\$1" in -s) echo "$os" ;; -m) echo "$machine" ;; *) echo "$os" ;; esac
+UNAME
+  chmod +x "$fake/bin/uname"
+
+  output=$(PATH="$fake/bin:$PATH" \
+    WISQ_RELEASES="https://127.0.0.1:1/releases" \
+    WISQ_REPO="/wisq-check-release-matrix-nonexistent" \
+    sh "$installer" --version v0.0.0 --prefix "$fake/prefix" 2>&1 || true)
+  got=$(printf '%s\n' "$output" \
+    | sed -n 's|.*/wisq-agent-v0\.0\.0-\(.*\)\.tar\.gz.*|\1|p' | head -n 1)
+  rm -rf "$fake"
+
+  [ -n "$got" ] || got="(aucun binaire)"
+  if [ "$got" != "$want" ]; then
+    echo "$installer envoie $os/$machine vers '$got' au lieu de '$want'" >&2
+    return 1
+  fi
+  printf '  %-16s -> %s\n' "$os/$machine" "$got"
+}
+
+# Each call runs in *this* shell rather than inside a `$( )`, and that is not a
+# style choice. Written as `mappings=$( ... ) || failed=1`, bash suspends
+# `set -e` for the whole `||` list — the subshell included — so a failing
+# `expect_asset` in the middle no longer aborts it, and the substitution ends up
+# reporting the status of the *last* call. The first draft of this file did
+# exactly that: it printed the error and exited 0, which is the one outcome a
+# guard must never have.
+echo "chaque machine reçoit le bon asset :"
+expect_asset Darwin arm64 macos-arm64 || failed=1
+expect_asset Darwin x86_64 macos-x86_64 || failed=1
+expect_asset Linux x86_64 linux-x86_64 || failed=1
+expect_asset Linux aarch64 linux-aarch64 || failed=1
+# Most 64-bit ARM distributions say aarch64; a few say arm64. Same binary.
+expect_asset Linux arm64 linux-aarch64 || failed=1
+# 32-bit ARM and everything else are deliberately not published: the source
+# build is the honest answer there, not a missing asset.
+expect_asset Linux armv7l "(aucun binaire)" || failed=1
+expect_asset FreeBSD amd64 "(aucun binaire)" || failed=1
+
 if [ "$failed" -eq 0 ]; then
   echo "matrice des architectures cohérente :"
   echo "$built" | sed 's/^/  /'
