@@ -3003,3 +3003,49 @@ Il attend donc les deux, borné, et poursuit sans eux. Sous le correctif il
 patiente puis libère ; sous le sabordage il part tôt et attrape le doublon. La
 validité du test ne vient pas de sa précondition mais du sabordage qui le fait
 rougir — la précondition ne fait que lui donner sa chance.
+
+## Deux implémentations d'un protocole, deux préconditions, et rien qui le dise
+
+Clôture de l'audit de réentrance. Reste un hasard réel et **latent** :
+`NetworkByteStream.read(exactly:)` remplit son tampon dans une boucle et se
+suspend dedans, donc deux lectures concurrentes recousent un flux depuis deux
+positions. Pas une erreur, pas une lecture courte — du charabia plusieurs
+messages plus loin, sans rien à montrer du doigt.
+
+Latent, et vérifié plutôt que supposé : `SPICESession` lance cinq pompes, chacune
+possède sa connexion, la poignée de main finit avant que sa pompe démarre.
+Aucun chemin actuel ne lit un flux depuis deux tâches.
+
+Ce qui rend le cas intéressant est que `MemoryByteStream`, l'autre implémentation
+du **même protocole**, n'a pas cette précondition : son `read` ne se suspend
+jamais. Deux types qui satisfont une interface commune n'ont donc pas le même
+contrat, et l'interface ne disait rien. C'est écrit sur `ByteStream` maintenant.
+
+### Ce que je n'ai pas fait, et pourquoi
+
+Rendre `NetworkByteStream` sûr pour plusieurs lecteurs. `Network` est sous
+`#if canImport(Network)` : Apple uniquement, donc inexécutable depuis le
+conteneur où tout le reste se prouve. Livrer une sérialisation des lectures
+sans test serait exactement la faute de #82 — un sabordage y avait survécu
+parce qu'un chemin modifié « au passage » n'était vu par personne.
+
+Une section « ce qui attend une machine Apple » dans ROADMAP.md tient
+désormais ces cas, avec ce qu'il faudrait pour les prouver.
+
+### Le sabordage d'un commentaire
+
+Une tranche de documentation ne se saborde pas… sauf qu'une de ses phrases
+était testable : *« MemoryByteStream ne se suspend pas dans son read »*. Un test
+la garde, et le sabordage a d'abord **survécu**.
+
+Ma première tentative ajoutait un `await` mais gardait la prise d'un préfixe
+contigu : les deux lectures repartaient quand même avec des octets disjoints.
+Cas 1, mauvaise ligne. Le hasard ne vient pas d'une suspension quelconque, il
+vient d'un tampon qui **se remplit à travers** elle. Refait sous cette forme —
+celle qu'un jour quelqu'un ajoutera par commodité — le sabordage mord, et seul
+ce test tombe.
+
+La leçon tient en une phrase : **saborder ce que la phrase dit, pas ce qu'elle
+évoque.** « Une suspension dans read » et « un tampon rempli à travers une
+suspension » se ressemblent assez pour être confondus, et un seul des deux est
+le défaut.

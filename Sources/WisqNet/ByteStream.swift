@@ -5,6 +5,26 @@ import WisqCore
 /// which keeps them testable against an in-memory pipe.
 public protocol ByteStream: Actor {
     /// Reads exactly `count` bytes, or throws if the peer closes first.
+    ///
+    /// **One reader at a time.** Being an actor makes each call safe on its
+    /// own; it does not make two overlapping calls safe together, and here the
+    /// difference has teeth. `NetworkByteStream` fills an internal buffer in a
+    /// loop and suspends inside it, so a second reader entering at that
+    /// suspension point takes bytes from the middle of the first one's run: not
+    /// an error, not a short read — **a stream spliced together from two
+    /// readers' positions**, which decodes into nonsense several messages
+    /// later with nothing to point at.
+    ///
+    /// `MemoryByteStream` has no such window (its read never suspends), so the
+    /// two implementations of this protocol do not share a precondition. That
+    /// asymmetry is exactly why it is written here rather than left to whoever
+    /// reads one of them.
+    ///
+    /// wisq holds the rule structurally: `SPICESession` runs five pumps and
+    /// each owns its own connection, and the handshake finishes before its pump
+    /// starts. Nothing today reads one stream from two tasks. The rule is
+    /// written down because nothing *enforces* that, and the cost of breaking
+    /// it is silent.
     func read(exactly count: Int) async throws -> Data
     func write(_ data: Data) async throws
     func close() async
