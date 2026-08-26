@@ -3615,3 +3615,45 @@ précédente n'appartient pas à la suivante.
 | l'entrée ne vide plus l'emplacement de l'alterné | 2 |
 | l'accesseur choisit le mauvais écran | 13 |
 | `?1049` n'écrit plus l'emplacement | 7, dont sa propre fonction |
+
+## Deux encodages que rien ne tenait, et aucun défaut dedans
+
+`RFBDecoderTests` a quatre tests pour douze encodages. Hextile et CopyRect n'en
+avaient aucun. J'ai sondé les deux en attendant d'y trouver quelque chose, et
+**ils sont corrects** : fond et sous-rectangles colorés, report des couleurs
+entre tuiles, tuile brute, sous-rectangle démesuré clippé sans déborder, copie
+simple, copie chevauchante. Chaque sonde écrite pour les prendre en défaut leur
+a donné raison.
+
+Cette tranche n'apporte donc aucun correctif, et le commit le dit. Elle
+transforme une croyance en mesure — la seule chose qui rende sûr le prochain
+changement dans l'un ou l'autre : une suite verte qui n'exécutait jamais ce code
+ne pouvait pas rougir pour lui.
+
+### Le sabordage qui a survécu, et ce qu'il a corrigé chez moi
+
+Mon test de chevauchement était **horizontal, sur une seule ligne**. J'ai
+supprimé le tampon de travail de `Framebuffer.copy` — la défense contre une
+copie qui lit au fur et à mesure — et les **903 tests sont restés verts**.
+
+Cas 2, test manquant. Une copie qui déplace une ligne entière à la fois lit
+cette ligne avant de l'écrire : un chevauchement sur une seule ligne sort juste
+de toute façon. Le cas qui distingue est le chevauchement **vertical** — la
+ligne 0 atterrit sur la ligne 1, qui est la source de la ligne 2 — c'est-à-dire
+un défilement, l'usage principal de CopyRect. Avec ce test, le sabordage rend
+`[1, 1, 1, 1]` au lieu de `[1, 1, 2, 3]` : la première ligne s'étale vers le bas.
+
+La leçon est la même que celle de l'import : **un test bâti sur le cas facile ne
+peut pas voir la différence.** Ici le cas facile et le cas dur se ressemblent au
+point que j'ai écrit le premier en croyant écrire le second.
+
+### Les six sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| nibbles position/taille inversés | 2 |
+| la largeur perd son `+1` | 2 |
+| les couleurs ne sont plus reportées entre tuiles | 1 |
+| le bit `raw` est ignoré | 2 |
+| CopyRect lit la destination comme source | 3 |
+| la copie se passe du tampon de travail | 1, après correction du test |
