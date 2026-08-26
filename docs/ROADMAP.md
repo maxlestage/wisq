@@ -1811,6 +1811,41 @@ de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs 
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
 
+## Le cadrage HTTP de l'agent (fait)
+
+Le démon est un serveur HTTP/1.1 écrit à la main, exposé sur le réseau local
+d'un NAS. Son en-tête de fichier annonce « délibérément strict ». Il ne l'était
+pas sur le cadrage des corps de requête, et quatre requêtes le montraient — les
+quatre vérifiées par sonde avant toute correction, pas déduites d'une lecture :
+
+| requête | avant | après |
+| --- | --- | --- |
+| `Transfer-Encoding: chunked` | corps **vide** en silence, réponse 200 | 501 |
+| `Content-Length` répété | le dernier gagne, corps tronqué | 400 |
+| `Content-Length: +5` | accepté (`usize::from_str` tolère un `+`) | 400 |
+| `Content-Length` **et** `Transfer-Encoding` | longueur retenue, encodage ignoré | 501 |
+
+Le premier n'est pas un problème d'attaquant, c'est un problème de client
+honnête : n'importe quelle bibliothèque HTTP qui décide de diffuser un corps
+envoie du chunked, et le démon répondait 200 pour une requête dont il avait jeté
+le corps.
+
+Les trois autres sont les primitives de *request smuggling*. Le démon ferme
+chaque connexion après un échange, donc il ne peut pas être désynchronisé seul —
+mais c'est exactement le genre de démon qu'on place derrière un proxy inverse
+sur un NAS, et là c'est le désaccord entre les deux analyseurs qui est l'attaque.
+La bonne posture pour un serveur qui n'implémente pas une chose est de la
+refuser, pas de faire comme si elle n'avait pas été demandée.
+
+Ce qui reste accepté, et doit l'être : les espaces autour de la valeur d'un
+`Content-Length`. La RFC 9112 les autorise autour de tout champ, et c'est ce cas
+qui a fait tomber le premier jet du *test* plutôt que le code — l'analyseur
+nettoie avant de valider, ce qui est le bon ordre. Les huit tests tiennent les
+deux sens : réintroduire chaque défaut fait échouer des tests, et sur-corriger
+en refusant ce qui est légal aussi.
+
+Non concerné : le jeton porteur était déjà comparé en temps constant.
+
 ## Les boucles chaudes des décodeurs — mesurées, puis laissées (fait)
 
 Dernier point de la liste d'optimisations : « UnsafePointer, intrinsics ARM ».
