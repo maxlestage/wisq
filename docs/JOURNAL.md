@@ -2477,3 +2477,52 @@ séparé affirme désormais l'inverse — que l'espace est accepté. **Quand un
 sabordage ou un échec vous surprend, la première hypothèse à tester est que la
 mauvaise ligne est celle qu'on vient d'écrire.** J'ai maintenant deux occurrences
 cette nuit où la sur-correction était le vrai risque, pas le défaut.
+
+## Trois fois le même angle mort : le test qui n'inspecte que la fin
+
+Troisième occurrence cette nuit, et cette fois j'ai reconnu le motif avant
+d'écrire le correctif plutôt qu'après.
+
+- La branche `sw.js` de `serve.ts` rendait la même chose que son repli : la
+  supprimer ne cassait rien, parce que le test lisait le résultat, pas le chemin.
+- Le test de réservation LZ que j'ai supprimé ne pouvait pas échouer pour la
+  raison de son nom : le compte final est le même que le tableau ait été
+  dimensionné une fois ou agrandi dix fois.
+- Et ici : `the_key_is_not_world_readable` lit le mode **après** l'écriture. Or
+  `fs::write` puis `set_permissions(0600)` finit à 0600 tout autant qu'un `open`
+  déjà en 0600. Le test passait pendant toute la durée de la course, et il
+  repasserait le jour où quelqu'un la réintroduit.
+
+Le motif commun : **un test qui n'inspecte que l'état final ne peut rien dire de
+ce qui s'est passé au milieu.** Et l'état final est ce qu'on inspecte
+spontanément, parce que c'est ce qui est facile à lire.
+
+Ce qui a rendu celui-ci corrigeable, c'est d'avoir cherché un instrument capable
+de voir le milieu : un fil qui interroge le fichier en boucle pendant l'écriture.
+J'ai d'abord mesuré s'il mordrait, au lieu de l'écrire en espérant. 747
+observations non-0600 sur 100 tours contre zéro — la fenêtre fait environ sept
+`stat` de large. Un test qui ne l'aurait attrapée qu'une fois sur dix aurait été
+pire que rien.
+
+Et la vérification décisive n'est pas que mon nouveau test échoue quand je
+saborde : c'est que **l'ancien, lui, continue de passer**. C'est ça qui prouve
+qu'il était aveugle, et pas seulement que le nouveau est sensible.
+
+## Le build est vert, clippy ne l'est pas
+
+`cargo build` n'a rien signalé de mes deux nouvelles fonctions. `cargo clippy
+-- -D warnings` a refusé les deux : `unneeded return statement`, dans les blocs
+`#[cfg(unix)]` où j'avais écrit `return Ok(());` pour sortir avant la variante
+non-Unix.
+
+La bonne forme existait déjà dans ce fichier, sous mes yeux : `set_owner_only`
+était écrite en **deux fonctions entières annotées `#[cfg]`**, pas en une seule
+avec des blocs à l'intérieur. J'ai inventé une tournure là où la maison en avait
+déjà une.
+
+Deux choses. D'abord : *build vert ≠ portes vertes*, et les portes de ce dépôt
+sont fmt, clippy strict et les tests, pas le compilateur. Ensuite, et c'est le
+plus utile : après la réécriture, **j'ai refait le sabordage**. Le code n'était
+plus le même que celui que j'avais prouvé ; une preuve porte sur un texte précis,
+pas sur une intention. Elle est restée valide, mais je ne le savais pas avant de
+relancer.

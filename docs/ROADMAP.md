@@ -1811,6 +1811,34 @@ de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs 
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
 
+## Les secrets de l'agent, et la fenêtre entre deux appels système (fait)
+
+Le jeton porteur et la clé privée TLS étaient écrits par `fs::write`, puis
+resserrés à `0600` à l'appel système *suivant*. `fs::write` crée le fichier au
+mode par défaut — **0644** sous le `umask 022` habituel — donc chaque secret
+existait, un instant, lisible par n'importe quel compte local. Le répertoire
+d'état à 0755 ne couvrait pas non plus cet instant.
+
+Le mode passe désormais dans le `open`, où le noyau l'applique avant que le
+fichier existe pour qui que ce soit, et le répertoire est en 0700.
+
+**La fenêtre n'est pas étroite.** Un fil qui interroge le fichier pendant que
+l'écriture a lieu a compté **747 observations à un mode autre que 0600 sur 100
+tours** de l'ancienne forme — environ sept `stat` de large — et **zéro** pour la
+nouvelle, à 100, 1 000 et 10 000 tours.
+
+Ce qui vaut d'être retenu n'est pas le correctif mais le garde-fou qui existait
+déjà. `tls.rs` portait un test nommé `the_key_is_not_world_readable`, et **il
+passe avec la course intacte** : il lit le mode une fois l'écriture terminée, et
+les deux formes finissent à 0600. Vérifié plutôt que supposé — course
+réintroduite, ce test passe toujours et seul le nouveau test qui observe échoue.
+
+C'est le troisième garde-fou de cette série à inspirer plus de confiance qu'il
+n'en méritait, après la branche `sw.js` qui recopiait son propre repli et le test
+de réservation LZ qui ne pouvait pas échouer pour la raison de son nom. Le motif
+commun : **un test qui n'inspecte que l'état final ne peut rien dire de ce qui
+s'est passé au milieu.**
+
 ## Le cadrage HTTP de l'agent (fait)
 
 Le démon est un serveur HTTP/1.1 écrit à la main, exposé sur le réseau local

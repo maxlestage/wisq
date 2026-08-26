@@ -186,11 +186,53 @@ fn resolve_stored_token() -> String {
 
     let generated = generate_token();
     let _ = std::fs::create_dir_all(&directory);
-    if std::fs::write(&file, &generated).is_ok() {
-        set_owner_only(&file);
-    }
+    set_owner_only_directory(&directory);
+    // The mode goes in the `open`, not in a `set_permissions` afterwards. The
+    // afterwards version — which this was — creates the file at the default
+    // mode first, 0644 under the usual umask, and narrows it on the next
+    // syscall. Measured: 644, then 600. A bearer token that controls every VM
+    // on the machine spent that window readable by any local account.
+    let _ = write_owner_only(&file, generated.as_bytes());
     generated
 }
+
+/// Creates a file already narrowed to its owner, or replaces one that exists.
+///
+/// `create_new` rather than `create` so an existing file's mode is never
+/// inherited; the explicit `remove_file` first is what makes replacing a
+/// leftover from a half-finished run possible without that inheritance.
+#[cfg(unix)]
+fn write_owner_only(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let _ = std::fs::remove_file(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+/// The directory is narrowed too, as a second line: the token inside is 0600 on
+/// its own, and this stops a future writer who forgets from leaving something
+/// world-readable beside it. `create_dir_all` takes no mode, so this is
+/// necessarily a second syscall — harmless, because nothing sensitive is inside
+/// the directory yet when it runs.
+#[cfg(unix)]
+fn set_owner_only_directory(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_directory(_path: &std::path::Path) {}
 
 /// 32 characters from the OS random source.
 ///
@@ -218,11 +260,76 @@ fn generate_token() -> String {
         .collect()
 }
 
-#[cfg(unix)]
-fn set_owner_only(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(not(unix))]
-fn set_owner_only(_path: &std::path::Path) {}
+    /// The token is a bearer credential that controls every VM on the machine,
+    /// so it gets the same guarantee as the private key: it is never readable by
+    /// anyone else, not even between two syscalls.
+    ///
+    /// The same watching thread as `tls::tests`, for the same reason — an
+    /// assertion on the final mode passes whether the file was created narrow or
+    /// created wide and narrowed afterwards, so it cannot see the window it is
+    /// supposed to be guarding. Against the old shape this counted hundreds of
+    /// wide observations in a hundred rounds.
+    #[test]
+    #[cfg(unix)]
+    fn the_token_is_never_world_readable_even_for_an_instant() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let directory =
+            std::env::temp_dir().join(format!("wisq-token-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("répertoire");
+        let path = directory.join("token");
+
+        let seen_wide = Arc::new(AtomicU32::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (counter, halt, watched) = (Arc::clone(&seen_wide), Arc::clone(&stop), path.clone());
+        let watcher = std::thread::spawn(move || {
+            while !halt.load(Ordering::Relaxed) {
+                if let Ok(metadata) = std::fs::metadata(&watched) {
+                    if metadata.permissions().mode() & 0o777 != 0o600 {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        for _ in 0..100 {
+            let _ = std::fs::remove_file(&path);
+            write_owner_only(&path, b"un-jeton-de-test").expect("écriture");
+        }
+        stop.store(true, Ordering::Relaxed);
+        watcher.join().expect("observateur");
+
+        assert_eq!(
+            seen_wide.load(Ordering::Relaxed),
+            0,
+            "le jeton a existé avec un mode autre que 0600"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// And the content still arrives — the control case, so the test above
+    /// cannot be satisfied by a writer that never writes anything.
+    #[test]
+    fn the_token_file_actually_holds_the_token() {
+        let directory =
+            std::env::temp_dir().join(format!("wisq-token-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("répertoire");
+        let path = directory.join("token");
+
+        write_owner_only(&path, b"abc123").expect("écriture");
+        assert_eq!(std::fs::read_to_string(&path).expect("relecture"), "abc123");
+
+        // And replacing one that exists, which is the half-finished-run case.
+        write_owner_only(&path, b"def456").expect("réécriture");
+        assert_eq!(std::fs::read_to_string(&path).expect("relecture"), "def456");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
