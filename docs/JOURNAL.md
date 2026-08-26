@@ -2956,3 +2956,50 @@ construction* et fait tomber le test à tous les coups ; le défaut d'origine ne
 le sépare que selon l'ordonnancement, et cette fois ne l'a pas fait. Chaque
 propriété garde donc un sabordage qui l'attrape de façon déterministe — pas
 chaque sabordage qui attrape chaque propriété.
+
+## Une sonde trop faible rend une réponse qui ressemble à une donnée
+
+Suite de la tranche précédente. `SpiceAgentChannel` se protégeait, mais son
+drapeau `draining` ne couvrait **qu'un des quatre appelants** de `write` : un
+`pong` répondu par la pompe, croisant un drain de presse-papiers, reprend le
+numéro que le drain utilise déjà. La garde et le commentaire qui la justifie
+étaient posés à un seul endroit d'un hasard qui en avait quatre.
+
+Ce que cette tranche apprend n'est pourtant pas là. **Ma première sonde a dit
+que tout allait bien.**
+
+```
+PROBE serials=[1, 2]
+```
+
+Elle libérait la barrière dès qu'*une* écriture était garée. La seconde tâche
+n'avait pas encore atteint la sienne : j'avais mesuré une exécution
+séquentielle en croyant mesurer un entrelacement. En attendant que **deux**
+écritures soient garées :
+
+```
+PROBE parked=2 serials=[1, 1]
+```
+
+Le défaut était là depuis le début. C'est exactement la faute que je passe la
+journée à trouver dans le code — une garde qui ne peut pas voir ce qu'elle
+prétend surveiller — cette fois dans mon propre instrument. Et elle est plus
+dangereuse là : un code défectueux finit par échouer quelque part, tandis
+qu'une sonde défectueuse **clôt la question**. J'aurais écrit « vérifié, la
+garde est complète » avec une mesure à l'appui.
+
+La règle : *avant de croire une sonde qui dit « rien ici », montrer qu'elle
+sait dire « quelque chose ici ».* Le compteur `parked` sert à ça — ce n'est pas
+une commodité de synchronisation, c'est la preuve que la précondition du test
+a été atteinte.
+
+### Une précondition qui doit survivre au correctif
+
+Difficulté qui vaut d'être notée : une fois corrigé, `parked` ne peut plus
+atteindre 2, puisque le second appelant met en file et repart. Un test qui
+*exigerait* deux garages se bloquerait sur le code correct.
+
+Il attend donc les deux, borné, et poursuit sans eux. Sous le correctif il
+patiente puis libère ; sous le sabordage il part tôt et attrape le doublon. La
+validité du test ne vient pas de sa précondition mais du sabordage qui le fait
+rougir — la précondition ne fait que lui donner sa chance.
