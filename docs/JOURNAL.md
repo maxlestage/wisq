@@ -2571,3 +2571,81 @@ C'est la troisième fois du cycle : les espaces autour d'un `Content-Length`
 `no-store` partout aurait été aussi faux que tout accepter), et maintenant les
 noms de domaine. Le motif : **une règle a deux bords, et le sabordage doit
 pousser des deux côtés.**
+
+## Deux moitiés qui s'accordent chacune avec un littéral
+
+Le jeton d'appairage traverse deux codecs écrits à la main : `percent_encode`
+côté Rust, `URLComponents` côté Swift. Les deux étaient testés. Le Rust
+vérifiait que sa sortie contenait `token=a%20b%26c%3Dd` ; le Swift vérifiait
+qu'analyser une URL écrite à la main rendait `a&b=c d/é+?#`. **Chaque moitié
+s'accordait avec une chaîne que quelqu'un avait tapée. Aucune n'avait jamais
+rencontré l'autre.**
+
+`AgentEndToEndTests` avait l'air de combler ce trou et ne le comblait pas : il
+lance le démon avec `--token secret-token` et s'authentifie avec le même
+littéral, sans jamais lire le lien. Et `secret-token` est de toute façon la
+mauvaise sonde — lettres et tiret, tous « unreserved », donc il traverse
+`percent_encode` inchangé et passerait encore si la fonction rendait son
+argument.
+
+Cinq sabordages. Trois mordent pour de bon, mais **deux d'entre eux étaient déjà
+couverts** : `percent_encode` rendu identité fait tomber le test Rust existant,
+et un parseur Swift qui lit les valeurs encodées fait tomber le test Swift
+existant. Le nouveau test ne les rattrape qu'en second.
+
+Celui qui compte est le troisième : **encoder par caractère au lieu d'octet**.
+`for c in value.chars()` avec `%{c as u32:02X}` produit `%E9` pour `é` au lieu
+de `%C3%A9` — du Latin-1 dans une URL. Les *quatre* tests Rust de `pairing`
+restent verts : leur littéral, `a b&c=d`, est en pur ASCII. Le décodeur Swift,
+lui, rend `nil`, et le jeton disparaît. C'est exactement la divergence qu'aucune
+moitié seule ne peut voir, et il fallait un caractère non-ASCII dans la sonde
+pour la révéler.
+
+Retenir la sonde, pas seulement le test : `a&b=c d/é+?#` porte un caractère par
+classe de décision — `&` et `=` terminent une valeur, l'espace est illégal, `/`
+`+` `?` `#` veulent dire quelque chose à quelqu'un, et `é` fait deux octets.
+Le `é` est le seul qui ait servi.
+
+## Le sabordage qui ne mordait pas parce que je visais la mauvaise ligne
+
+Cinquième sabordage : « le harnais ignore le jeton demandé ». J'ai écrit
+`self.token = "secret-token"` au lieu de `self.token = token` — les deux tests
+restent verts.
+
+Cas 1, mauvaise ligne, et il est instructif : le paramètre `token` a **deux**
+usages indépendants dans `RustAgentProcess`, la propriété et l'argument
+`--token` passé au démon. Mes tests ne lisent que le second. J'avais cassé
+l'usage que personne ici ne regarde. Refait sur `"--token", "secret-token"`, les
+deux tests tombent.
+
+La règle, encore : *une preuve porte sur un texte précis*. « Saborder le jeton »
+n'est pas une action, c'est une intention ; il y avait deux lignes derrière.
+
+## Un `defer` dans un test `async` qui tourne à 100 % d'un cœur
+
+Écrit d'abord `defer { agent.stop() }`, comme `AgentTLSTests` le fait déjà. Le
+test s'est mis à tourner sans jamais finir, sans un message, **après que sa
+dernière assertion soit passée**.
+
+Le chronomètre ne disait rien ; la pile, tout. `gdb -p` sur le processus figé :
+
+```
+#4  Process.waitUntilExit          (dans __CFRunLoopModeIsEmpty)
+#6  RustAgentProcess.stop          RustAgentProcess.swift:134
+#7  ...$deferL_                    AgentPairingRoundTripTests.swift:78
+```
+
+Sur Linux, `Process.waitUntilExit()` fait tourner une boucle d'exécution. Hors
+du thread principal, elle ne se termine pas : elle tourne. Le `defer` d'un test
+**synchrone** s'exécute sur le thread principal — d'où `AgentTLSTests` qui
+passe. Celui d'un test `async` s'exécute sur un worker de la concurrence.
+`AgentEndToEndTests` y échappait sans le savoir, en libérant le démon dans
+`tearDown()`, que XCTest appelle sur le thread principal.
+
+Deux choses valent d'être gardées. La première est écrite dans le code, sur
+`stop()`, parce que le prochain à écrire un test d'agent la rencontrera.
+
+La seconde est de méthode : **un test qui ne finit pas n'est pas un test lent.**
+La tentation était d'augmenter un délai ou de relancer. Trente secondes de
+`gdb` ont donné la ligne exacte, le thread exact et la raison — là où
+« réessayer » aurait donné une deuxième attente de dix minutes et rien d'autre.

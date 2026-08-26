@@ -14,7 +14,7 @@ import XCTest
 /// rather than failing and blaming the protocol.
 final class RustAgentProcess {
     let baseURL: URL
-    let token = "secret-token"
+    let token: String
     private let process: Process
 
     static func binaryPath() -> String? {
@@ -43,11 +43,18 @@ final class RustAgentProcess {
     /// URLSession on Linux cannot override trust for a self-signed certificate.
     /// `tls: true` starts the daemon as it really ships, for the tests that
     /// check the pairing link carries the certificate story.
-    init(demoDelayMilliseconds: Int = 50, tls: Bool = false) throws {
+    ///
+    /// `token` is a parameter rather than a constant because the daemon puts it
+    /// through `percent_encode` on its way into the pairing link, and the app
+    /// puts it back through a decoder on the way out. A token made only of
+    /// letters and hyphens travels through both untouched and so exercises
+    /// neither — see `AgentPairingRoundTripTests`.
+    init(demoDelayMilliseconds: Int = 50, tls: Bool = false, token: String = "secret-token") throws {
         guard let binary = Self.binaryPath() else {
             throw XCTSkip("wisq-agent absent : lancez `cargo build --release` d'abord")
         }
 
+        self.token = token
         process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
         var arguments = [
@@ -122,6 +129,15 @@ final class RustAgentProcess {
         return port.map { ($0, buffer) }
     }
 
+    /// Ends the daemon and reaps it.
+    ///
+    /// Call this from `tearDown()`, or from a `defer` in a **synchronous**
+    /// test. Not from a `defer` inside an `async` one: on Linux,
+    /// `waitUntilExit()` drives a run loop, and off the main thread it spins at
+    /// 100 % of a core instead of finishing — a hang with no message, after the
+    /// last assertion has already passed. `AgentTLSTests` gets away with the
+    /// `defer` because its tests are synchronous, so the `defer` runs on the
+    /// main thread; an `async` test's runs on a concurrency worker.
     func stop() {
         process.terminate()
         process.waitUntilExit()
