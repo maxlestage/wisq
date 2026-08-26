@@ -8,6 +8,27 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **The agent is published for four architectures instead of two.** The release
+  built Linux x86_64 and macOS arm64; `scripts/install.sh` asked for exactly
+  those two. The two halves agreed with each other, which is why the gap was
+  quiet — an ARM NAS, a Raspberry Pi or an Intel Mac fell through to the source
+  build, which needs a Rust toolchain those machines have no reason to carry.
+
+  Linux aarch64 is cross-built against musl and smoke-tested under
+  `qemu-aarch64-static`: 1.4 MB, statically linked, `--help` returns 0. macOS
+  x86_64 is cross-built on the arm64 runner and checked with `file` rather than
+  run, because GitHub's macOS runners carry no Rosetta — an asymmetry written
+  into the workflow so it does not read later as an oversight.
+
+  `scripts/check-release-matrix.sh`, run by the **Lint** job, now fails the
+  build when the list the workflow produces and the list the installer requests
+  stop matching, in either direction. The release workflow only ever ran when a
+  release was cut, so this gap was previously discoverable only by installing on
+  a machine nobody had thought about.
+- **The release workflow can be run without publishing.** A `dry_run` input
+  builds every asset, runs both test gates and packages the IPA, then stops
+  before creating the release. On a tag push the input does not exist, so the
+  publish step runs exactly as before.
 - **The clipboard's protocol is encoded and decoded.** It does not travel on
   the inputs channel — the guess a reader makes — but through the agent running
   *inside* the guest: the clipboard is the guest's, so it goes to the program
@@ -33,6 +54,10 @@ break APIs.
   since otherwise every paste ends with an invisible character.
 
 ### Fixed
+- `scripts/install.sh --help` said `--from-source` builds with the local Swift
+  toolchain. The daemon has been Rust since it left Swift; it needs cargo.
+- `CONTRIBUTING.md` described that same Swift toolchain, and listed two release
+  assets where there are now four.
 - **SPICE asked for the channel list with the wrong message number, and could
   never have connected to a real server.** `ATTACH_CHANNELS` is 104; the client
   sent 101, which is `CLIENT_INFO`. The main channel's client messages number

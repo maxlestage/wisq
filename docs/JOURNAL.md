@@ -2142,3 +2142,64 @@ La règle générale : **un état qu'on n'a pas vu se produire se traite comme u
 état rapporté par quelqu'un d'autre.** On le vérifie contre la source primaire,
 et le fait que ce soit soi-même qui l'ait produit ne change rien à la
 vérification.
+
+## L'audience nommée dans un commentaire, et jamais servie
+
+Le `Cargo.toml` de l'agent dit, mot pour mot, que c'est « un démon que les gens
+installent sur un NAS avec un `curl` d'une ligne ». La release ne produisait que
+deux binaires : Linux x86_64 et macOS arm64. Un NAS ARM, un Raspberry Pi, un Mac
+Intel — trois machines très ordinaires — tombaient sur `install_from_source`,
+qui exige une toolchain Rust que ces machines n'ont aucune raison de porter.
+
+Ce qui rend le défaut difficile à voir, ce n'est pas qu'il soit subtil : c'est
+que **les deux moitiés étaient cohérentes entre elles**. L'installateur demandait
+exactement les deux assets que le workflow construisait. En lisant l'un ou
+l'autre, tout va bien. Le trou n'apparaît qu'en tenant les deux listes à côté de
+la liste des machines réelles, et cette troisième liste n'était écrite nulle part.
+
+La leçon n'est pas « vérifier la matrice ». C'est que **deux fichiers d'accord
+l'un avec l'autre ne prouvent rien sur le monde** — ils prouvent seulement qu'ils
+sont d'accord. Un accord n'est une preuve que lorsqu'une des deux moitiés est
+elle-même contrainte par l'extérieur, et ici aucune ne l'était.
+
+Le garde-fou ajouté (`scripts/check-release-matrix.sh`) ne corrige donc pas le
+bug ; il corrige la *rechute*. C'est une distinction qu'il vaut mieux garder
+nette : le bug se corrige en ajoutant deux architectures, le garde-fou empêche
+seulement que les deux listes se séparent de nouveau en silence. J'ai sabordé le
+script dans les deux sens, plus une troisième fois en réintroduisant exactement
+le bug d'origine, avant de le croire.
+
+## Un chemin qui ne s'exécute qu'au pire moment
+
+Le workflow de release ne tournait que lorsqu'on coupait une release. Tout ce
+qu'il contient — quatre constructions, un empaquetage, deux portes de test —
+n'était donc jamais exercé *avant* le moment où il compte. Une faute dedans se
+découvrait en publiant, c'est-à-dire à l'instant précis où l'on ne veut découvrir
+rien du tout.
+
+L'entrée `dry_run` existe pour ça : tout se construit, tout se vérifie, rien ne
+se publie. Ce n'est pas un raffinement de confort. C'est la différence entre un
+fichier qu'on a lu et un fichier qu'on a vu tourner, et j'ai passé la nuit à
+répéter que ce n'est pas la même chose.
+
+Le détail qui décide de la sûreté de cette entrée est l'expression de garde :
+`if: ${{ !inputs.dry_run }}`. Sur un `push` de tag, `inputs.dry_run` n'existe pas,
+donc l'expression vaut vrai et la publication a lieu — le chemin historique est
+intact. Il fallait vérifier ce sens-là, pas seulement celui du dry run : une
+garde qui protège trop transforme une release en silence, et le silence est le
+mode d'échec qu'on ne voit pas passer.
+
+## Ce que la vérification a coûté, et pourquoi c'était le bon prix
+
+Pour affirmer que l'agent se construit en aarch64, j'aurais pu écrire le job et
+faire confiance au YAML. J'ai plutôt installé un cross-gcc, découvert que
+`gcc-aarch64-linux-gnu` seul va chercher `/usr/include` de l'hôte et meurt sur
+`bits/libc-header-start.h`, ajouté `libc6-dev-arm64-cross`, lié avec `rust-lld`,
+et fait tourner le binaire sous `qemu-aarch64-static`. Il répond `--help`, en
+1,4 Mo, statique.
+
+Ces quatre échecs sont maintenant des commentaires dans le workflow, et c'est là
+tout l'intérêt : chacun est une chose que la CI aurait découverte à ma place, un
+essai à la fois, dans un contexte où je ne serais pas là pour la lire. **Le coût
+d'une vérification locale n'est pas comparé à zéro ; il est comparé au coût de
+la même découverte faite plus tard, par quelqu'un d'autre, avec moins de contexte.**
