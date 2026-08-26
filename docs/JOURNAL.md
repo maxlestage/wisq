@@ -2722,3 +2722,74 @@ Et, deuxième fois de la journée : **un test qui ne finit pas n'est pas un test
 lent.** La première fois, `gdb` a donné un `defer` sur un thread de concurrence.
 Cette fois, une boucle de reconnexion sans fin. Les deux auraient été invisibles
 en augmentant un délai.
+
+## Une garde qui plante en calculant ce qu'elle allait refuser
+
+Quatre gardes de SPICE ont la même forme :
+
+```swift
+guard width > 0, height > 0, width * height <= LIMITE
+```
+
+`width` et `height` sont des `Int(...)` construits depuis des `UInt32` venus du
+fil. `UInt32.max²` vaut 1,8 × 10^19 ; `Int.max` vaut 9,2 × 10^18. Swift piège au
+débordement, en `-O` comme ailleurs. **La garde meurt en calculant le produit
+qu'elle s'apprêtait à comparer.** Douze octets sur le fil —
+`SURFACE_CREATE` avec deux champs à `0xFFFFFFFF` — et l'application disparaît :
+
+```
+*** Swift runtime failure: arithmetic overflow ***
+  1  SpiceSurfaces.create(_:) in WisqRemote/SPICE/SpiceSurfaces.swift:80:44
+```
+
+La colonne 44 est le `*`.
+
+Ce qui rend le cas intéressant n'est pas le débordement, c'est **pourquoi
+personne ne l'avait vu**. Les gardes *sont* testées. `SpiceSurfacesTests` et
+`SpiceStreamsTests` affirment toutes deux un refus, dans des tests nommés « une
+taille qu'aucun téléphone ne peut contenir est refusée avant toute
+allocation ». Elles s'arrêtent à `0xFFFF`. 65535² tient largement dans un
+`Int`, donc la garde répond, donc le test est vert — un ordre de grandeur avant
+la valeur qui tue.
+
+C'est un motif déjà consigné ici, dans une autre formulation : *les nombres
+venus d'ailleurs s'écrivent aux deux bouts de leur plage*. Le bout haut d'un
+`UInt32` n'est pas « un grand nombre », c'est `0xFFFFFFFF`. Un test qui choisit
+sa propre idée de « grand » teste son auteur, pas le type.
+
+### Le correctif se démontre plutôt qu'il ne se plaide
+
+Borner chaque côté avant de multiplier, comme `SpiceQUICDecoder` le fait déjà
+trois fichiers plus loin — reprendre la tournure de la maison plutôt qu'en
+inventer une, leçon du sabordage clippy sur `tls.rs`.
+
+Et l'argument qui rend le correctif sûr sans avoir à discuter : les deux clauses
+ajoutées **acceptent et refusent exactement ce que la troisième acceptait et
+refusait déjà**. Avec les deux côtés ≥ 1, un côté qui dépasse le plafond met le
+produit au-dessus du plafond. Aucune entrée légitime ne change de sort ; seul
+le calcul devient possible. Ce n'est pas une opinion sur le bon plafond, c'est
+une équivalence.
+
+### Le sabordage qui a survécu, et ce qu'il a montré
+
+Cinq sabordages, quatre mordent d'emblée. Le cinquième — remettre la
+multiplication nue **uniquement** sur la trame *sized* de `SpiceStreams`, en
+laissant celle de la création correcte — laisse la suite entière verte.
+
+Cas 2, test manquant, et le pire des deux à manquer : la trame sized est celle
+qu'un serveur hostile peut envoyer **à tout moment** pendant une vidéo, pas
+seulement à la création du flux. Son test existait ; il s'arrêtait à `0xFFFF`
+comme les autres. Étendu, le sabordage mord.
+
+À retenir de la mécanique : **sabordez chaque site séparément.** Mon premier
+patch remplaçait les deux occurrences du même texte d'un coup ; il mordait, et
+ce rouge venait entièrement du premier site. Un sabordage groupé donne une
+réponse groupée, et une garde non couverte se cache derrière la garde couverte
+d'à côté.
+
+### Un rouge peut être un plantage
+
+Ces sabordages ne font pas échouer un test : ils tuent le processus, SIGILL,
+code 132. Prévu et noté d'avance, ce qui a évité de le lire comme une panne du
+harnais. Un harnais de sabordage qui ne regarde que « combien de tests ont
+échoué » compte zéro échec sur une suite qui n'a jamais fini.

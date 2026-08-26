@@ -42,7 +42,11 @@ struct SpiceStreams {
         }
         let width = Int(request.streamWidth)
         let height = Int(request.streamHeight)
-        guard width > 0, height > 0, width * height <= Self.maximumFramePixels else {
+        // Bounded per side before multiplying — see `SpiceSurfaces.create` for
+        // why the order matters. These two came off the wire as `UInt32`.
+        guard width > 0, height > 0,
+              width <= Self.maximumFramePixels, height <= Self.maximumFramePixels,
+              width * height <= Self.maximumFramePixels else {
             throw Failure.unreasonableSize(
                 width: request.streamWidth, height: request.streamHeight
             )
@@ -113,7 +117,12 @@ struct SpiceStreams {
         }
         let width = Int(sized.width)
         let height = Int(sized.height)
-        guard width > 0, height > 0, width * height <= Self.maximumFramePixels else {
+        // Same guard, same reason: `Sized` carries two `UInt32` of its own, and
+        // a sized frame is the one a hostile server can send at any moment
+        // rather than only at stream creation.
+        guard width > 0, height > 0,
+              width <= Self.maximumFramePixels, height <= Self.maximumFramePixels,
+              width * height <= Self.maximumFramePixels else {
             throw Failure.unreasonableSize(width: sized.width, height: sized.height)
         }
         return placed(width, height, sized.destination)
