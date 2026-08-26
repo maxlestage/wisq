@@ -2319,3 +2319,51 @@ tourner, et de ne rien garder.
 **Un seuil est un fait sur le code d'hier.** Quand le code change d'ordre de
 grandeur, laisser le seuil en place n'est pas de la prudence, c'est le désarmer —
 et ça ne se voit pas, parce qu'un test qui passe ressemble à un test qui garde.
+
+## Un garde-fou qui recopie le défaut qu'il protège
+
+Deux sabordages n'ont pas mordu dans `scripts/serve.ts`, et tous deux sont le
+cas 3 — équivalence réelle — pour la même raison de fond.
+
+Le premier : supprimer la ligne `if (path.endsWith("sw.js")) return "no-cache";`
+ne change rien, parce que le repli en fin de fonction rend `"no-cache"` lui
+aussi. Le second : supprimer l'en-tête `content-type` explicite ne change rien
+non plus, parce que Bun déduit exactement les mêmes valeurs depuis l'extension —
+y compris `.webmanifest`, celle dont on douterait.
+
+La conclusion facile serait « ces deux lignes sont mortes, on les enlève ». Elle
+est fausse, et le sabordage suivant le montre : en rendant le repli `immutable`,
+la suite casse **neuf** tests avec la ligne `sw.js` présente et **onze** sans.
+Les deux de différence sont ceux du service worker — c'est-à-dire la panne qui
+est définitive plutôt que lente, un worker figé qu'aucun déploiement ne
+rattrape.
+
+D'où la règle : **un garde-fou qui recopie le défaut qu'il protège ne se teste
+pas en le retirant, seulement en changeant le défaut.** Le retirer laisse tout
+vert, ce qui ressemble à « inutile » et signifie en réalité « les deux chemins
+coïncident aujourd'hui ». La question n'est jamais « mon sabordage a-t-il rendu
+la suite rouge », c'est « quelle entrée distingue les deux versions » — et ici
+l'entrée n'est pas un chemin de requête, c'est une modification du repli.
+
+Les deux lignes restent, avec la mesure écrite à côté d'elles. Une redondance
+constatée et datée est une décision ; une redondance qu'on laisse croire
+porteuse est un piège pour le prochain lecteur, qui la refactorisera en pensant
+ne rien casser.
+
+## L'optimisation qui vise le mauvais consommateur
+
+La liste demandait « images en WebP ». J'avais d'abord répondu « ça ne vaut pas
+le coup, tout pèse 12 Ko ». C'était vrai et c'était le mauvais argument.
+
+En regardant vraiment, le site construit ne contient **aucune balise `<img>`**.
+Les cinq PNG existent, mais aucun n'est demandé pendant l'affichage d'une page :
+trois sont lus par l'installateur du système via le manifeste, un par l'écran
+d'accueil iOS, un par les robots d'aperçu de lien. Convertir ne ferait donc
+économiser zéro octet à un lecteur — et ces consommateurs-là sont précisément
+ceux dont la prise en charge du WebP est la moins sûre.
+
+L'argument par la taille (« 12 Ko, c'est petit ») aurait pu être renversé par un
+site qui grossit. Celui-ci ne peut pas l'être : tant que les images servent à
+l'OS et aux robots plutôt qu'à la page, le format qui les rend rapides à charger
+n'est pas la question. **Un « non » adossé à une mesure de taille est provisoire ;
+un « non » adossé à la nature du consommateur tient.**
