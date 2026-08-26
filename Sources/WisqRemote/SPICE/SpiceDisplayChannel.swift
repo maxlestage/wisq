@@ -149,6 +149,16 @@ struct SpiceDisplayChannel {
                 // clearing is the part that matters and it is unconditional.
                 caches.pixmaps.clear()
 
+            case SpiceDisplayWire.Message.invalPalette.rawValue:
+                // One table, named. `SpiceMsgDisplayInvalOne` is a bare
+                // `uint64` — the same shape the cursor channel's inval_one has,
+                // and no count in front of it.
+                var reader = try SpiceWire.Reader([UInt8](payload), from: 0)
+                caches.palettes.drop(try reader.u64())
+
+            case SpiceDisplayWire.Message.invalAllPalettes.rawValue:
+                caches.palettes.clear()
+
             case SpiceSubMessages.listMessage:
                 // A server using the mini header packs the same invalidations
                 // into SPICE_MSG_LIST instead of hanging them off a header

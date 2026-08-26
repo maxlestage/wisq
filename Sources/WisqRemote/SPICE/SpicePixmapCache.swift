@@ -88,6 +88,80 @@ struct SpicePixmapCache {
     }
 }
 
+/// The colour tables the server may later send by name alone.
+///
+/// The same shape as `SpicePixmapCache` with **one difference that decides
+/// everything: there is no size to declare.** `dcc_palette_cache_palette` is
+/// the whole mechanism —
+///
+/// ```c
+/// if (palette->unique) {
+///     if (red_palette_cache_find(dcc, palette->unique)) {
+///         *flags |= SPICE_BITMAP_FLAGS_PAL_FROM_CACHE;
+///         return;                      // and the colours do not go on the wire
+///     }
+///     if (red_palette_cache_add(dcc, palette->unique, 1)) {
+///         *flags |= SPICE_BITMAP_FLAGS_PAL_CACHE_ME;
+///     }
+/// }
+/// ```
+///
+/// — and the size it enforces is `CLIENT_PALETTE_CACHE_SIZE`, a constant in the
+/// server's own `dcc.h`. Nothing in `SPICE_MSGC_DISPLAY_INIT` negotiates it.
+/// So where the pixmap cache could be declined by declaring zero, this one
+/// cannot be declined at all: a client that keeps no palettes simply loses the
+/// colours of every palettised image whose table the server has already sent,
+/// and draws nothing in its place.
+///
+/// The eviction rule is the pixmap cache's, and the reason is the same — the
+/// server names what it drops. The message differs: palettes are not in the
+/// resource list, they get `SPICE_MSG_DISPLAY_INVAL_PALETTE` (107) each, or
+/// `INVAL_ALL_PALETTES` (108) for the lot, as ordinary top-level messages
+/// rather than something hung off a header.
+///
+/// The bound is in entries rather than pixels because that is what the server
+/// counts: `red_palette_cache_add(dcc, palette->unique, 1)` — every table costs
+/// one, whatever its length.
+struct SpicePaletteCache {
+    /// `CLIENT_PALETTE_CACHE_SIZE` in the server's `dcc.h`. Matched rather than
+    /// chosen: the server assumes this client holds that many and never asks,
+    /// so holding fewer loses colours the server is certain were kept.
+    static let serverAssumedEntries = 128
+
+    let capacity: Int
+    private var entries: [UInt64: SpiceDisplayWire.Palette] = [:]
+
+    init(capacity: Int = SpicePaletteCache.serverAssumedEntries) {
+        self.capacity = max(0, capacity)
+    }
+
+    var count: Int { entries.count }
+
+    func palette(_ unique: UInt64) -> SpiceDisplayWire.Palette? { entries[unique] }
+
+    /// **`unique` zero is not an identifier.** `dcc_palette_cache_palette`
+    /// tests `if (palette->unique)` before doing anything at all, so a table
+    /// with no unique is never cached and never named — storing one under the
+    /// key zero would collide every such table with every other.
+    @discardableResult
+    mutating func store(_ palette: SpiceDisplayWire.Palette) -> Bool {
+        guard palette.unique != 0 else { return false }
+        if entries[palette.unique] != nil {
+            entries[palette.unique] = palette
+            return true
+        }
+        guard entries.count < capacity else { return false }
+        entries[palette.unique] = palette
+        return true
+    }
+
+    /// `SPICE_MSG_DISPLAY_INVAL_PALETTE`.
+    mutating func drop(_ unique: UInt64) { entries.removeValue(forKey: unique) }
+
+    /// `SPICE_MSG_DISPLAY_INVAL_ALL_PALETTES`, and a reconnect.
+    mutating func clear() { entries.removeAll(keepingCapacity: true) }
+}
+
 /// What one display connection remembers about images.
 ///
 /// The GLZ window and the pixmap cache travel together because they are the
@@ -103,4 +177,5 @@ struct SpicePixmapCache {
 struct SpiceDisplayCaches {
     var glz = SpiceGLZ.Window()
     var pixmaps = SpicePixmapCache()
+    var palettes = SpicePaletteCache()
 }
