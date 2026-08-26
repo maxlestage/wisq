@@ -10,10 +10,12 @@ public final class MachineLibraryModel {
 
     private let store: MachineStore
     private let credentials: CredentialStore
+    private let writer: MachineLibraryWriter
 
     public init(store: MachineStore, credentials: CredentialStore) {
         self.store = store
         self.credentials = credentials
+        self.writer = MachineLibraryWriter(store: store, credentials: credentials)
         reload()
     }
 
@@ -55,44 +57,41 @@ public final class MachineLibraryModel {
         }
     }
 
-    /// Saves the machine and, when `password` is non-nil, its secret.
-    /// An empty password removes the stored secret rather than saving a blank one.
-    public func save(_ machine: Machine, password: String?) {
-        var machine = machine
+    /// Saves the machine and the secrets that go with it.
+    ///
+    /// `password` nil means "not edited"; empty means "cleared". `agentToken`
+    /// is the token of the agent the machine is bound to, and it is passed
+    /// here rather than written by the caller on its way in: the order — list
+    /// first, secrets after — is the whole point, and it lives in
+    /// `MachineLibraryWriter` where it can be broken on purpose.
+    ///
+    /// Returns whether it worked, so a caller that has a secret in hand can
+    /// tell a save that happened from one that did not.
+    @discardableResult
+    public func save(_ machine: Machine, password: String?, agentToken: String? = nil) -> Bool {
         do {
             let previous = machines.first { $0.id == machine.id }
-            if let password {
-                let ref = machine.credentialRef ?? machine.defaultCredentialRef
-                try credentials.setSecret(password.isEmpty ? nil : password, for: ref)
-                machine.credentialRef = password.isEmpty ? nil : ref
-            }
-            machines = try store.upsert(machine)
-            // Unbinding a machine from its agent, or moving it to another one,
-            // leaves the old token behind exactly as a deletion would.
-            if let previous {
-                try CredentialReaper.reap(after: previous, remaining: machines, from: credentials)
-            }
+            machines = try writer.save(
+                machine, password: password, agentToken: agentToken, previous: previous
+            ).machines
             reload()
+            return true
         } catch {
             loadError = error.localizedDescription
+            return false
         }
     }
 
     /// Removes the machine, then the secrets nothing points at any more.
-    ///
-    /// In that order, and through `CredentialReaper` rather than by hand. The
-    /// hand-written version dropped `machine.credentialRef` *before* the save
-    /// and never touched `agent.credentialRef` at all — so a failed write left
-    /// a listed machine with no password, and the token of an agent whose last
-    /// VM had just gone stayed in the keychain with nothing able to use it and
-    /// no screen offering to remove it.
-    public func delete(_ machine: Machine) {
+    @discardableResult
+    public func delete(_ machine: Machine) -> Bool {
         do {
-            machines = try store.delete(id: machine.id)
-            try CredentialReaper.reap(after: machine, remaining: machines, from: credentials)
+            machines = try writer.delete(machine)
             reload()
+            return true
         } catch {
             loadError = error.localizedDescription
+            return false
         }
     }
 

@@ -3126,3 +3126,74 @@ Le test d'ordre casse l'écriture en mettant le répertoire en `0500`. Sous root
 cela n'arrête personne, et le test serait passé au vert en n'ayant rien
 mesuré. Il crée donc d'abord un fichier témoin : s'il y arrive, il se déclare
 sauté plutôt que réussi.
+
+## Un secret écrit en route vers une décision qui n'est pas prise
+
+Suite directe de la tranche précédente, et son angle mort. `CredentialReaper`
+enlève les clés qu'une machine **portait**. Il ne peut rien pour une clé
+qu'aucune machine n'a jamais portée — et le dépôt en écrivait deux comme ça.
+
+`AgentImportView.query()` rangeait le jeton dès que `listVMs()` répondait, avec
+le commentaire « The token worked: keep it ». Interroger un agent pour voir ses
+VM et fermer la feuille sans rien importer laissait donc une clé dans le
+trousseau que rien ne référence et qu'aucun écran ne propose d'enlever. Le
+`try?` avalait en plus l'échec d'écriture en silence. `MachineEditorView` avait
+la même forme : jeton écrit, puis `library.save`, qui pouvait échouer sans le
+dire puisqu'il ne rendait rien.
+
+Et le mot de passe faisait pareil, en sens inverse : écrit **avant**
+`store.upsert`. Une écriture qui échoue laissait une machine absente de la
+liste mais un secret rangé à son nom.
+
+La règle tient en une phrase : **rien n'atteint le trousseau avant que la
+machine qui le désignera ne soit dans la liste.**
+
+### Où la mettre pour qu'elle puisse être cassée
+
+Ce que porte cette tranche est un **ordre**, et un ordre ne se démontre qu'en
+faisant échouer une de ses étapes. Écrit dans le modèle de vue, il n'aurait pu
+être sabordé nulle part : `WisqUI` n'est pas compilé sous Linux. D'où
+`MachineLibraryWriter` dans `WisqCore`, qui tient la séquence contre un vrai
+`MachineStore` écrivant de vrais fichiers ; le modèle de vue ne fait plus que
+l'appeler et rendre un booléen, et les deux vues passent le jeton au lieu de
+l'écrire.
+
+C'est le même geste que `CredentialReaper` : la tranche précédente avait
+descendu la **décision** dans le domaine, celle-ci y descend la **séquence**.
+
+### Injecter l'échec sans dépendre de qui on est
+
+Le test d'ordre de la tranche précédente cassait l'écriture avec un répertoire
+en `0500`, protégé par un fichier témoin. Le témoin avait raison de s'y
+trouver : `id -u` dans ce conteneur rend **0**. Sous Linux le test se serait
+déclaré sauté et n'aurait rien mesuré ; il n'a mordu que parce que le
+simulateur iPhone, lui, ne tourne pas en root.
+
+L'injection d'ici ne dépend plus de personne : un chemin dont le parent est un
+**fichier ordinaire**. Personne n'écrit dedans, pas même root.
+
+### Le sabordage qui a survécu, et ce qu'il a montré
+
+t4 déplaçait la moisson avant `store.delete` — donc le mot de passe partait
+alors que la machine restait — et la suite est restée **verte**.
+
+Cas 2, test manquant. Mon aide `vm()` posait `machine.agent` mais laissait
+`credentialRef` à `nil` : le mot de passe que le test rangeait sous
+`defaultCredentialRef` n'était désigné par aucune machine, donc la moisson ne
+pouvait pas y toucher, et le test ne mesurait rien de l'ordre qu'il prétendait
+vérifier. Une ligne dans l'aide, et t4 mord.
+
+La leçon rejoint celle de la sonde : **un montage de test peut être vert parce
+qu'il ne pouvait pas être rouge**, et c'est le sabordage, pas la relecture, qui
+le dit.
+
+### Les six sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| le mot de passe repasse avant `upsert` | 1 |
+| le jeton repasse avant `upsert` | 1 |
+| le jeton retombe sur la clé du mot de passe faute de liaison | 1 |
+| dans `delete`, la moisson repasse avant `store.delete` | 1 (après correction du montage) |
+| la moisson ignore les survivants | 2 |
+| un mot de passe non touché traité comme vidé | 1 |

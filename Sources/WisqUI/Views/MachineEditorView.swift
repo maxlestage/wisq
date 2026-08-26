@@ -220,6 +220,7 @@ public struct MachineEditorView: View {
         let (host, port) = Validation.splitHostPort(draft.address)
         do {
             var machine = draft.machine
+            var agentToken = ""
             machine.host = try Validation.normalizedHost(host)
             machine.port = try Validation.validatedPort(port ?? machine.proto.defaultPort)
             if machine.name.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -235,12 +236,12 @@ public struct MachineEditorView: View {
                 guard !draft.agentVMID.trimmingCharacters(in: .whitespaces).isEmpty else {
                     throw WisqError.agentFailure("l'identifiant de la VM est requis")
                 }
-                // One token per agent host, shared by all its VMs. Only written
-                // when the field was actually filled in.
+                // One token per agent host, shared by all its VMs. It is handed
+                // to `save` rather than written here: a token written before
+                // the machine that references it is a key no machine points
+                // at, which puts it out of reach of the reaping too.
                 let tokenRef = "agent.\(normalizedAgentHost):\(resolvedPort)"
-                if !draft.agentToken.isEmpty {
-                    try library.credentialStore.setSecret(draft.agentToken, for: tokenRef)
-                }
+                agentToken = draft.agentToken
                 machine.agent = AgentBinding(
                     baseURL: baseURL,
                     vmIdentifier: draft.agentVMID,
@@ -255,7 +256,11 @@ public struct MachineEditorView: View {
             // or when it arrived filled in from a connection file, which is an
             // edit the user did not have to make.
             let writeSecret = passwordTouched || draft.passwordCameFilledIn
-            library.save(machine, password: writeSecret ? draft.password : nil)
+            library.save(
+                machine,
+                password: writeSecret ? draft.password : nil,
+                agentToken: agentToken
+            )
             onClose()
         } catch let error as WisqError {
             validationError = error.localizedDescription
