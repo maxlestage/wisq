@@ -47,6 +47,25 @@ public enum RFB {
         case desktopName = -307
         case extendedDesktopSize = -308
         case continuousUpdates = -313
+
+        /// Whether this encoding's rectangle really is a rectangle of pixels.
+        ///
+        /// The pseudo-encodings reuse the same four `UInt16` for something
+        /// else: `desktopSize` puts the new screen size there, `cursor` the
+        /// hotspot and the cursor's own dimensions, `lastRect` nothing at all.
+        /// So the paint-size ceiling cannot be applied before the switch — it
+        /// would refuse a `desktopSize` that the resize path is entitled to
+        /// handle with its own message, and shadow the tighter 256 × 256 the
+        /// cursor already enforces.
+        public var carriesPixels: Bool {
+            switch self {
+            case .raw, .copyRect, .rre, .hextile, .zlib, .tight, .zrle:
+                return true
+            case .cursor, .desktopSize, .lastRect, .desktopName, .extendedDesktopSize,
+                .continuousUpdates:
+                return false
+            }
+        }
     }
 
     /// The base of the JPEG quality range: level *n* is `qualityLevel + n`.

@@ -13,6 +13,16 @@ import WisqCore
 /// `UInt32` is the opposite case and is safe for the opposite reason: it loops,
 /// consuming each subrectangle as it goes, and throws at end of stream.
 ///
+/// **The paragraph above was right about arithmetic and wrong about the
+/// conclusion drawn from it, and this file drew it.** `UInt16` does bound the
+/// product so it cannot leave an `Int` — and the bound it gives is 65535² × 4,
+/// about seventeen gigabytes. "Bounded" was read as "small". The number that
+/// showed the arithmetic was safe is the same number that shows the allocation
+/// is not, and it was written out below, in full, as reassurance.
+///
+/// So a rectangle is bounded now as well: `requirePaintableRect` refuses the
+/// geometry before an encoding acts on it.
+///
 /// Measured before it was guarded: a rectangle claiming a desktop name, a zlib
 /// block or a ZRLE block of `UInt32.max` made the decoder ask for
 /// 4 294 967 295 bytes in one read.
@@ -45,8 +55,41 @@ enum RFBLimits {
     ///
     /// Both sides being `UInt16` on the wire, the product is at most
     /// 65535² × 4 ≈ 1.7e10 and cannot leave an `Int`.
+    ///
+    /// Being derived is what makes it a good ceiling **and** what made it
+    /// useless on its own: measured, this returned 17 180 393 476 for a
+    /// 65535 × 65535 rectangle. A guard computed from the attacker's number
+    /// grants whatever that number asks for. It is a real bound only because
+    /// `requirePaintableRect` now bounds the rectangle first — at 64 Mpx a
+    /// rectangle, this is at most 257 MiB.
     static func maximumCompressedBytes(for rect: Rect) -> Int {
         let pixels = max(0, rect.width) * max(0, rect.height) * 4
         return pixels + (1 << 20)
+    }
+
+    /// Refuses a rectangle this client will not paint.
+    ///
+    /// The screen has had a ceiling since the desktop-size slice; the
+    /// rectangles that paint on it had none, and they are not the same number
+    /// arriving twice. Two encodings allocate from the geometry **alone**,
+    /// before a single pixel byte has to arrive: CopyRect, which carries no
+    /// pixels at all and reaches `Framebuffer.copy` after twelve bytes on the
+    /// wire, and RRE, which allocates its tile after about eight. Measured:
+    /// a 64 × 64 framebuffer, one CopyRect rectangle, `failed to allocate
+    /// 17179344932 bytes of memory`.
+    ///
+    /// The bound is `Framebuffer.maximumPixels` — the same number as the
+    /// screen's — rather than the current framebuffer's own size. RFB says a
+    /// rectangle lies within the framebuffer, but a resize and an update
+    /// crossing on the wire make a legitimate rectangle overhang for one
+    /// message, and `Framebuffer.write` already clips. Refusing the overhang
+    /// would break real servers to prevent nothing: what has to be refused is
+    /// the allocation, and no screen this client holds is larger than the
+    /// ceiling anyway.
+    static func requirePaintableRect(_ rect: Rect) throws {
+        guard Framebuffer.canHold(width: rect.width, height: rect.height) else {
+            throw WisqError.malformedMessage(
+                "rectangle de \(rect.width)×\(rect.height) : au-delà de ce que ce client peut peindre")
+        }
     }
 }

@@ -4386,3 +4386,90 @@ sont eux que le sabordage à 1 Mpx fait rougir, sept fois.
 Aucun test ici n'alloue quoi que ce soit de grand. Ils affirment le refus — un
 test qui construirait vraiment les dix-sept gigaoctets démontrerait le défaut,
 pas la correction.
+
+## Le plafond couvrait l'écran, pas ce qui peint dessus
+
+La tranche précédente a plafonné l'**écran**. Un rectangle est un autre nombre
+qui arrive par une autre porte, et rien ne le bornait.
+
+Sondé, sur un framebuffer de 64 × 64 :
+
+```
+Fatal error: failed to allocate 17179344932 bytes of memory with alignment 8
+```
+
+Douze octets de CopyRect. L'encodage ne porte aucun pixel : l'en-tête du
+rectangle, un point source, et `Framebuffer.copy` dimensionne son tampon de
+travail sur la géométrie seule. RRE fait pareil après un compteur et une
+couleur, soit environ huit octets.
+
+### Le fichier disait pourquoi il se croyait sûr
+
+`RFBLimits` portait ceci en tête :
+
+> « RFB's geometry arrives in `UInt16`, which bounds every pixel product on its
+> own — that is why the decoders need no arithmetic guards. »
+
+C'est vrai, et c'est vrai **de l'arithmétique**. La borne que `UInt16` donne
+vaut 65535² × 4. « Borné » a été lu comme « petit ». Et le fichier écrivait ce
+nombre plus bas, en toutes lettres, comme une rassurance :
+
+> « the product is at most 65535² × 4 ≈ 1.7e10 and cannot leave an `Int`. »
+
+Le nombre qui prouve que le calcul ne déborde pas est exactement le nombre qui
+dit que l'allocation est intenable. Quatrième fois qu'un commentaire du dépôt
+documente sa propre faute — après #59, #61 et #74.
+
+### Un plafond calculé à partir du nombre de l'attaquant
+
+Les autres encodages sont tenus par les octets : le serveur doit vraiment
+envoyer les pixels. Mais leur plafond vient de `maximumCompressedBytes(for:)`,
+qui est calculé **à partir du rectangle**. Mesuré :
+
+| rectangle | plafond « compressé » |
+| --- | --- |
+| 1 × 1 | 1 048 580 |
+| 65535 × 65535 | **17 180 393 476** |
+
+Une garde dérivée du nombre de l'attaquant accorde ce qu'elle devrait refuser.
+Elle ne veut dire quelque chose que maintenant que le rectangle est borné
+d'abord : au plus 257 Mio.
+
+### Où la garde se pose, et où elle ne se pose pas
+
+Les pseudo-encodages réutilisent les mêmes quatre `UInt16` pour autre chose :
+`desktopSize` y met la nouvelle taille d'écran, `cursor` le point chaud et les
+dimensions du curseur, `lastRect` rien du tout. Poser le plafond avant le
+`switch` refuserait un redimensionnement que le chemin de resize a le droit de
+traiter avec son propre message, et masquerait le 256 × 256 déjà plus serré du
+curseur (tranche #79). D'où `carriesPixels`, et un test qui épingle la liste des
+sept — parce qu'un encodage ajouté à l'enum et oublié ici est la façon dont ceci
+revient.
+
+### Les sept sabordages
+
+| sabordage | résultat |
+| --- | --- |
+| garde du décodeur retirée | 1 rouge **et** plantage à 17 Go |
+| filet de `Framebuffer.copy` retiré | plantage : `failed to allocate 17179344932 bytes` |
+| les pseudo-encodages portent des pixels | 9 rouges |
+| aucun encodage ne porte de pixels | 1 rouge et plantage |
+| le refus ne nomme plus le rectangle | 3 rouges |
+| le décalage compté dans le plafond | 1 rouge |
+| plafond resserré à 1 Mpx | 15 rouges |
+
+Le premier est le plus instructif : la garde du décodeur retirée, CopyRect
+tombe dans le filet du framebuffer — arrêt silencieux, mauvaise raison,
+`connectionClosed` — tandis que RRE, qui alloue dans le décodeur où il n'y a pas
+de filet, tue le processus. Les deux moitiés de l'argument pour avoir les deux
+couches, dans un seul sabordage.
+
+### Le décalage n'entre pas dans le plafond
+
+RFB dit qu'un rectangle est à l'intérieur du framebuffer, et le vérifier
+strictement serait plus serré. Mais un redimensionnement et une mise à jour qui
+se croisent sur le fil font légitimement dépasser un rectangle le temps d'un
+message, et `Framebuffer.write` découpe déjà. Refuser le dépassement casserait
+de vrais serveurs pour n'empêcher rien : ce qu'il faut refuser est
+l'allocation. Un test tient ce choix par son bord — un rectangle de 16 × 16 à
+60000, 60000 doit passer — et le sabordage n6 le fait rougir.
