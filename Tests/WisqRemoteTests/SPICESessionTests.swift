@@ -197,6 +197,64 @@ final class SPICESessionTests: XCTestCase {
         return caps
     }
 
+    /// **The main link advertises the agent's token message, and nothing about
+    /// migration.**
+    ///
+    /// `MainChannel::push_agent_connected` picks message 115 (with a token
+    /// count) over 107 (empty) by this capability, and a token count is the only
+    /// thing that makes the agent writable — `reds_reset_vdp` says a client
+    /// learns one "once when the main channel is initialized and once upon
+    /// agent's connection with `SPICE_MSG_MAIN_AGENT_CONNECTED_TOKENS`", and
+    /// there is no third occasion.
+    ///
+    /// The migration bits stay clear, and that matters here rather than being a
+    /// detail: this capability sits among them and reads like one.
+    /// `migrate_connect` uses it only to set `try_seamless`, then still requires
+    /// `SEAMLESS_MIGRATE` — bit 3 — before doing anything seamless. So asking
+    /// for the token message cannot drag migration in with it, which is what had
+    /// to be established before adding the bit.
+    func testTheMainLinkAdvertisesTheAgentTokenMessageAndNoMigration() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + mainInit(sessionID: 7) + channelsList()
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let sockets = Sockets([mainSocket, displaySocket])
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x"),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        let caps = try await advertisedCaps(on: mainSocket)
+        let word = try XCTUnwrap(caps.first, "le lien principal n'annonçait rien")
+
+        func advertises(_ capability: SpiceWire.MainCapability) -> Bool {
+            word >> UInt32(capability.rawValue) & 1 == 1
+        }
+        XCTAssertTrue(
+            advertises(.agentConnectedTokens),
+            "sans elle le serveur envoie 107, qui ne porte aucun compte de jetons"
+        )
+        XCTAssertFalse(advertises(.seamlessMigrate), "wisq ne migre pas")
+        XCTAssertFalse(advertises(.semiSeamlessMigrate))
+        XCTAssertFalse(advertises(.nameAndUUID))
+    }
+
+    /// The main channel's own numbering, written out — it is a fourth set of
+    /// capability numbers in this protocol, and the one whose middle entry does
+    /// not mean what its neighbours suggest.
+    func testTheMainCapabilityNumbersAreTheProtocolsOwn() {
+        XCTAssertEqual(SpiceWire.MainCapability.semiSeamlessMigrate.rawValue, 0)
+        XCTAssertEqual(SpiceWire.MainCapability.nameAndUUID.rawValue, 1)
+        XCTAssertEqual(SpiceWire.MainCapability.agentConnectedTokens.rawValue, 2)
+        XCTAssertEqual(SpiceWire.MainCapability.seamlessMigrate.rawValue, 3)
+        XCTAssertEqual(SpiceWire.mainCapabilityWords, [0b100])
+    }
+
     /// **The audio links advertise volume, and no codec.**
     ///
     /// Asserted on the socket rather than on the constant, because the failure
