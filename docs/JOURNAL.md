@@ -4290,3 +4290,99 @@ l'utilisateur peut encore vouloir voir, démarrer ou arrêter.
 Le témoin inverse est celui qui compte le plus : dix-sept rouges viennent de la
 moitié « ce qu'il ne faut **pas** avaler ». Une tolérance qui accepte tout n'est
 pas de la tolérance, c'est un décodeur qui a cessé de lire.
+
+## Je me suis trompé sur la porte, et c'est le sabordage qui l'a dit
+
+L'allocation la plus grosse du programme est le framebuffer : `largeur × hauteur
+× 4`, et les deux nombres viennent du fil. J'ai ouvert cette tranche en écrivant
+qu'il n'y avait **rien** entre `ServerInit` et dix-sept gigaoctets.
+
+C'était faux.
+
+Le sabordage m1 — retirer mon nouveau refus à la poignée de main — a laissé la
+suite verte. Une sonde a imprimé la vraie réponse :
+
+```
+disconnected(WisqError.malformedMessage("taille de bureau invalide (65535×65535)"))
+```
+
+`performInitialisation` bornait la géométrie depuis toujours. **J'avais lu les
+deux premières lignes de cette fonction et je m'étais arrêté.** Le vert du
+sabordage n'était pas un test manquant : c'était mon affirmation qui était
+fausse.
+
+### Ce qu'il y avait vraiment
+
+| porte | avant |
+| --- | --- |
+| poignée de main (`ServerInit`) | **gardée**, mais à 16384 par côté ≈ 1 Go |
+| redimensionnement (rectangle `desktopSize`) | **aucune garde** — 17 Go, et répétable |
+| `Framebuffer` lui-même | aucun filet |
+
+Le vrai défaut est la seconde porte, et c'est la pire des deux : la poignée de
+main arrive une fois, tandis qu'un serveur envoie un `desktopSize` quand il veut.
+Et le plafond de la première, 16384 par côté, était **quatre fois plus lâche**
+que ce que `SpiceSurfaces` s'autorise pour la même sorte d'allocation depuis la
+tranche sur les tailles déraisonnables. Deux protocoles, le même danger, deux
+nombres différents dont un seul écrit.
+
+Il y a un seul nombre maintenant, `Framebuffer.maximumPixels`, lu par les deux
+protocoles, vérifié aux deux portes, avec le refus d'allouer du framebuffer en
+filet dessous.
+
+### Les huit sabordages
+
+| sabordage | résultat |
+| --- | --- |
+| refus de la poignée de main retiré | 1 rouge |
+| refus du redimensionnement retiré | 1 rouge |
+| filet du `Framebuffer` retiré | plantage : `failed to allocate 17179344932 bytes` |
+| clauses par côté retirées, produit gardé | plantage : `arithmetic overflow` |
+| plafond SPICE désolidarisé du plafond RFB | 1 rouge |
+| le refus ne nomme plus la taille | 3 rouges |
+| le bureau vide devient un refus | 1 rouge |
+| plafond resserré à 1 Mpx | 7 rouges, dont un test SPICE préexistant |
+
+Deux d'entre eux ne rougissent pas, ils **tuent** — comme ceux de `ByteCursor`
+deux tranches plus tôt. La CI serait rouge dans les deux cas, mais ce n'est pas
+un échec d'assertion et l'écrire autrement serait se raconter une histoire.
+
+Le troisième est le plus honnête de la série : il ne simule pas le défaut, il
+**l'exécute**. `failed to allocate 17179344932 bytes` est exactement ce que la
+tranche empêche.
+
+### Une sonde qui ne peut pas *distinguer* ne prouve rien non plus
+
+La règle connue est qu'une sonde qui ne peut pas échouer ne prouve rien. Celle-ci
+en est la version subtile.
+
+Mon test bout-à-bout n'affirmait d'abord que « la session s'est arrêtée ». Il
+passait avec la garde retirée — parce que sans elle la session meurt un instant
+plus tard, faute d'octets. Deux causes très différentes, une seule observation.
+Le test affirme maintenant la **raison** : le message doit contenir `65535×65535`.
+Les sabordages m1 et m2 le montrent bien, tous deux avec `connectionClosed` —
+la mort par manque d'octets, exactement celle qui se faisait passer pour un refus.
+
+### Le produit de build périmé, qui fabrique de faux survivants
+
+Pendant cette tranche, `canHold` a renvoyé `true` pour toute entrée alors que la
+source était juste. La cause n'était pas dans le code : restaurer un fichier avec
+`cp` peut laisser SwiftPM servir **l'ancien binaire**, si l'horodatage ne bouge
+pas assez. Le sabordage semblait survivre alors qu'il n'avait jamais été compilé.
+
+Un résultat de sabordage ne se lit donc pas seul. Il se lit avec la preuve que le
+fichier a bien été recompilé — d'où le `touch` avant chaque `swift test` dans la
+boucle. Un faux survivant coûte plus cher qu'un faux rouge : le faux rouge se
+fait examiner, le faux survivant se fait écrire dans un commentaire.
+
+### Les deux bords
+
+Le bord qui décide si le plafond est utilisable est celui du bas. 64 Mpx laisse
+passer tout ce à quoi quelqu'un se connecte vraiment — la 8K est à trente-trois
+mégapixels, la moitié de la ligne. Six géométries réelles, la frontière exacte
+des deux côtés, et le bureau vide qu'un serveur envoie avant d'en avoir un : ce
+sont eux que le sabordage à 1 Mpx fait rougir, sept fois.
+
+Aucun test ici n'alloue quoi que ce soit de grand. Ils affirment le refus — un
+test qui construirait vraiment les dix-sept gigaoctets démontrerait le défaut,
+pas la correction.

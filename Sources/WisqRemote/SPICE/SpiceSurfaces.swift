@@ -54,10 +54,12 @@ struct SpiceSurfaces {
 
     /// A ceiling on what a server may ask to allocate.
     ///
-    /// 64 megapixels is more than any phone will display and far less than a
-    /// `UInt32` allows. Without it, `width * height * 4` from two numbers a
-    /// server chose is an allocation a server chose.
-    static let maximumPixels = 64 << 20
+    /// The reasoning moved to `Framebuffer.maximumPixels`, which is where the
+    /// number now lives: this guard and the framebuffer's guard the same kind
+    /// of allocation for the same reason, and RFB went years without the
+    /// equivalent precisely because the rule was written down here, privately,
+    /// as if it were about SPICE.
+    static let maximumPixels = Framebuffer.maximumPixels
 
     private(set) var surfaces: [UInt32: Surface] = [:]
 
