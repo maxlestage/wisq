@@ -93,13 +93,14 @@ struct SpiceDisplayChannel {
     ///
     /// `limit` remains for callers that want to bound a burst, and for tests
     /// that script an exact number of messages.
-    /// `glz` is threaded alongside `surfaces` and for the same reason: it is
-    /// state the pump owns for as long as it runs. A GLZ stream refers to
-    /// images decoded earlier **on this connection**, so the window's honest
-    /// lifetime is the connection's — a reconnect starts with an empty one,
-    /// exactly as it starts with a blank screen.
+    /// `caches` is threaded alongside `surfaces` and for the same reason: it
+    /// is state the pump owns for as long as it runs. Both of the things in it
+    /// — the GLZ window and the pixmap cache — are about pictures decoded
+    /// earlier **on this connection**, so their honest lifetime is the
+    /// connection's; a reconnect starts with both empty, exactly as it starts
+    /// with a blank screen.
     func pump(
-        into surfaces: inout SpiceSurfaces, glz: inout SpiceGLZ.Window,
+        into surfaces: inout SpiceSurfaces, caches: inout SpiceDisplayCaches,
         streams: inout SpiceStreams, serial: UInt64, limit: Int = 1
     ) async throws -> Progress {
         var progress = Progress()
@@ -113,6 +114,22 @@ struct SpiceDisplayChannel {
             let payload = header.size == 0
                 ? Data() : try await stream.read(exactly: Int(header.size))
 
+            // **Invalidations ride in the header, not in a message of their
+            // own.** Because wisq reads the eighteen-byte header,
+            // `dcc->is_mini_header()` is false on the server and it takes
+            // `send_free_list_legacy`: the INVAL_LIST goes into a
+            // sub-marshaller and `set_header_sub_list` records where. The
+            // carrying message is whatever was being sent anyway, so this has
+            // to run before the switch and regardless of the type — which is
+            // exactly the reference client's condition,
+            // `if (msg_type == SPICE_MSG_LIST || sub_list_offset)`.
+            if header.subList != 0 {
+                for sub in try SpiceSubMessages.list(at: header.subList, in: [UInt8](payload))
+                where sub.type == SpiceDisplayWire.Message.invalList.rawValue {
+                    try applyInvalidations(sub.payload, to: &caches)
+                }
+            }
+
             switch header.type {
             case SpiceWire.Message.ping:
                 // Answered rather than counted as ignored: a server that pings
@@ -121,6 +138,27 @@ struct SpiceDisplayChannel {
                     SpiceWire.ClientMessage.pong, serial: serial, payload: payload
                 ))
                 serial += 1
+
+            case SpiceDisplayWire.Message.invalList.rawValue:
+                try applyInvalidations([UInt8](payload), to: &caches)
+
+            case SpiceDisplayWire.Message.invalAllPixmaps.rawValue:
+                // The body is a wait list — which other display channels to let
+                // catch up first, for GLZ's sake — and this client has one
+                // display channel, so there is never anything to wait for. The
+                // clearing is the part that matters and it is unconditional.
+                caches.pixmaps.clear()
+
+            case SpiceSubMessages.listMessage:
+                // A server using the mini header packs the same invalidations
+                // into SPICE_MSG_LIST instead of hanging them off a header
+                // field. wisq reads the eighteen-byte header so it should get
+                // the other form, but the two cost one line to share and a
+                // server is not obliged to be predictable.
+                for sub in try SpiceSubMessages.list(at: 0, in: [UInt8](payload))
+                where sub.type == SpiceDisplayWire.Message.invalList.rawValue {
+                    try applyInvalidations(sub.payload, to: &caches)
+                }
 
             case SpiceDisplayWire.Message.streamCreate.rawValue:
                 try streams.create(try SpiceDisplayWire.streamCreate([UInt8](payload)))
@@ -161,7 +199,7 @@ struct SpiceDisplayChannel {
             case SpiceDisplayWire.Message.drawCopy.rawValue,
                  SpiceDisplayWire.Message.drawBlend.rawValue:
                 let copy = try SpiceDisplayWire.copy([UInt8](payload))
-                progress.record(try draw(copy, into: &surfaces, glz: &glz), on: copy.base.surfaceID)
+                progress.record(try draw(copy, into: &surfaces, caches: &caches), on: copy.base.surfaceID)
 
             case SpiceDisplayWire.Message.drawText.rawValue:
                 let text = try SpiceDisplayWire.text([UInt8](payload))
@@ -176,26 +214,26 @@ struct SpiceDisplayChannel {
             case SpiceDisplayWire.Message.drawRop3.rawValue:
                 let rop3 = try SpiceDisplayWire.rop3([UInt8](payload))
                 progress.record(
-                    try draw(rop3, into: &surfaces, glz: &glz), on: rop3.base.surfaceID
+                    try draw(rop3, into: &surfaces, caches: &caches), on: rop3.base.surfaceID
                 )
 
             case SpiceDisplayWire.Message.drawAlphaBlend.rawValue:
                 let blend = try SpiceDisplayWire.alphaBlend([UInt8](payload))
                 progress.record(
-                    try draw(blend, into: &surfaces, glz: &glz), on: blend.base.surfaceID
+                    try draw(blend, into: &surfaces, caches: &caches), on: blend.base.surfaceID
                 )
 
             case SpiceDisplayWire.Message.drawTransparent.rawValue:
                 let transparent = try SpiceDisplayWire.transparent([UInt8](payload))
                 progress.record(
-                    try draw(transparent, into: &surfaces, glz: &glz),
+                    try draw(transparent, into: &surfaces, caches: &caches),
                     on: transparent.base.surfaceID
                 )
 
             case SpiceDisplayWire.Message.drawOpaque.rawValue:
                 let opaque = try SpiceDisplayWire.opaque([UInt8](payload))
                 progress.record(
-                    try draw(opaque, into: &surfaces, glz: &glz), on: opaque.base.surfaceID
+                    try draw(opaque, into: &surfaces, caches: &caches), on: opaque.base.surfaceID
                 )
 
             case SpiceDisplayWire.Message.copyBits.rawValue:
@@ -373,12 +411,31 @@ struct SpiceDisplayChannel {
         }
     }
 
+    /// `SPICE_MSG_DISPLAY_INVAL_LIST` — the identifiers the server has just
+    /// dropped from its own mirror of this client's cache.
+    ///
+    /// This is the whole reason the cache does not evict on its own. The server
+    /// evicts, names what it evicted, and expects the client to follow; keeping
+    /// an entry it has forgotten would mean the next `FROM_CACHE` for that
+    /// identifier draws a picture the guest replaced long ago.
+    ///
+    /// The list is typed, and only pixmaps are dropped here — palettes share
+    /// the message and have their own table, which this client does not keep.
+    private func applyInvalidations(
+        _ payload: [UInt8], to caches: inout SpiceDisplayCaches
+    ) throws {
+        for resource in try SpiceDisplayWire.invalidations(payload)
+        where resource.type == SpiceDisplayWire.ResourceType.pixmap {
+            caches.pixmaps.drop(resource.id)
+        }
+    }
+
     private func draw(
         _ rop3: SpiceDisplayWire.Rop3, into surfaces: inout SpiceSurfaces,
-        glz: inout SpiceGLZ.Window
+        caches: inout SpiceDisplayCaches
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = rop3.source,
-              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+              let decoded = try SpiceDisplayWire.pixels(of: image, caches: &caches)
         else { return nil }
         do {
             return try surfaces.rop3(
@@ -393,10 +450,10 @@ struct SpiceDisplayChannel {
 
     private func draw(
         _ blend: SpiceDisplayWire.AlphaBlend, into surfaces: inout SpiceSurfaces,
-        glz: inout SpiceGLZ.Window
+        caches: inout SpiceDisplayCaches
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = blend.source,
-              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+              let decoded = try SpiceDisplayWire.pixels(of: image, caches: &caches)
         else { return nil }
         do {
             return try surfaces.alphaBlend(
@@ -411,10 +468,10 @@ struct SpiceDisplayChannel {
 
     private func draw(
         _ transparent: SpiceDisplayWire.Transparent, into surfaces: inout SpiceSurfaces,
-        glz: inout SpiceGLZ.Window
+        caches: inout SpiceDisplayCaches
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = transparent.source,
-              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+              let decoded = try SpiceDisplayWire.pixels(of: image, caches: &caches)
         else { return nil }
         do {
             return try surfaces.transparent(
@@ -429,10 +486,10 @@ struct SpiceDisplayChannel {
 
     private func draw(
         _ opaque: SpiceDisplayWire.Opaque, into surfaces: inout SpiceSurfaces,
-        glz: inout SpiceGLZ.Window
+        caches: inout SpiceDisplayCaches
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = opaque.source,
-              let decoded = try SpiceDisplayWire.pixels(of: image, glzWindow: &glz)
+              let decoded = try SpiceDisplayWire.pixels(of: image, caches: &caches)
         else { return nil }
         let bytesPerPixel = decoded.pixels.count
             / max(decoded.width * decoded.height, 1)
@@ -447,11 +504,11 @@ struct SpiceDisplayChannel {
 
     private func draw(
         _ copy: SpiceDisplayWire.Copy, into surfaces: inout SpiceSurfaces,
-        glz: inout SpiceGLZ.Window
+        caches: inout SpiceDisplayCaches
     ) throws -> [SpiceDisplayWire.Rect]? {
         guard let image = copy.source,
               let decoded = try SpiceDisplayWire.pixels(
-                of: image, glzWindow: &glz
+                of: image, caches: &caches
               ) else { return nil }
 
         // Three bytes for a 24-bit stream, four for a 32-bit one. Taken from

@@ -125,31 +125,55 @@ final class SpiceDisplayClientTests: XCTestCase {
         XCTAssertNotEqual(Array(body.suffix(4)), [0, 0, 0, 0])
     }
 
-    /// **The pixmap cache is zero, and for the opposite reason the GLZ window
-    /// is large.**
+    /// **The declared cache and the cache that exists are one promise.**
     ///
-    /// Both numbers ride in the same message and both say "how much this client
-    /// will remember", but the server reads them differently. A non-zero cache
-    /// is a promise: `dcc_pixmap_cache_unlocked_add` records the image, echoes
-    /// `CACHE_ME`, and every later send of that id becomes
-    /// `SPICE_IMAGE_TYPE_FROM_CACHE` — a name with no pixels. wisq keeps no
-    /// such cache, so the draw is skipped and the region keeps stale pixels.
-    /// `testAnImageNamedFromTheCacheHasNoPixelsToDraw` is the other half of
-    /// this: it shows the decode really does come back empty.
+    /// This test asserted zero, and it was right to: a number here tells the
+    /// server it may send `SPICE_IMAGE_TYPE_FROM_CACHE` — an identifier and no
+    /// pixels — and wisq had nothing to resolve one against, so those draws
+    /// were skipped and the region kept stale pixels. It stopped being right
+    /// when `SpicePixmapCache` arrived, and it failed on the commit that raised
+    /// the number, which is the only reason to have written it that way.
     ///
-    /// Zero makes the first add fail — `available` goes negative, the eviction
-    /// loop finds an empty ring — so nothing is recorded and no name is ever
-    /// sent.
-    func testThePixmapCacheIsZeroBecauseThereIsNoCacheToPutImagesIn() {
-        XCTAssertEqual(SpiceDisplayClient.pixmapCachePixels, 0)
+    /// What it holds now is the pairing rather than a particular value: the
+    /// number announced is the budget actually enforced. A server sizing itself
+    /// against one bound while this client enforces another would evict on a
+    /// schedule wisq does not share, and every divergence is a name that
+    /// resolves to nothing.
+    ///
+    /// That the resolution *works* is held next door —
+    /// `testAnImageSentOnceIsDrawnTwice` sends a picture once and draws it
+    /// twice, and `testAnImageNamedFromTheCacheHasNoPixelsToDraw` shows what a
+    /// name alone decodes to.
+    func testTheDeclaredCacheIsTheBudgetActuallyEnforced() {
+        XCTAssertGreaterThan(SpiceDisplayClient.pixmapCachePixels, 0)
+        XCTAssertEqual(
+            SpicePixmapCache().budgetPixels, Int(SpiceDisplayClient.pixmapCachePixels),
+            "le nombre annoncé et le budget tenu sont le même engagement"
+        )
 
-        let body = SpiceDisplayClient.initialise()
-        XCTAssertEqual(Array(body[1...8]), [UInt8](repeating: 0, count: 8))
+        // Et il part bien dans le message, en petit-boutiste sur huit octets.
+        let declared = UInt64(bitPattern: SpiceDisplayClient.pixmapCachePixels)
+        XCTAssertEqual(
+            Array(SpiceDisplayClient.initialise()[1...8]),
+            (0..<8).map { UInt8(declared >> (8 * $0) & 0xFF) }
+        )
+    }
 
-        // The contrast is the point: same message, opposite safe values.
+    /// The two sizes in `DISPLAY_INIT` are still not the same kind of promise,
+    /// and the asymmetry outlived the zero.
+    ///
+    /// The GLZ window is a floor: below one frame the server calls `abort()`,
+    /// so it is as large as any frame can be. The pixmap cache is a ceiling on
+    /// what this client agrees to hold, and it is only safe to raise alongside
+    /// something that holds it. Adjacent fields, same type, opposite failures.
+    func testTheWindowAndTheCacheAreNotTheSameKindOfNumber() {
+        XCTAssertGreaterThanOrEqual(
+            SpiceDisplayClient.glzWindowPixels, 3_840 * 2_160,
+            "la fenêtre est un plancher : une image entière"
+        )
         XCTAssertGreaterThan(
-            SpiceDisplayClient.glzWindowPixels, 0,
-            "la fenêtre GLZ est un plancher, le cache un engagement"
+            SpiceDisplayClient.pixmapCachePixels, 0,
+            "le cache est un plafond, tenu par SpicePixmapCache"
         )
     }
 
