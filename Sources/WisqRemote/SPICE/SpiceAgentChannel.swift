@@ -54,14 +54,19 @@ actor SpiceAgentChannel {
 
     /// Whether a drain is already in progress.
     ///
-    /// One at a time, and the reason is the serial rather than the order. The
-    /// payloads themselves are safe from a second drain: the queue is FIFO and
-    /// a whole message goes on it in one synchronous step, so nobody can splice
-    /// one message through another. What is not safe is the counter — it is
-    /// read to build a message and incremented after the write returns, so a
-    /// second drain entering at that suspension point stamps the number the
-    /// first one is already using, and a server that acknowledges by serial is
-    /// told two different things about the same one.
+    /// One at a time, and what that still buys is the **tokens**.
+    ///
+    /// This comment used to say the reason was the serial, and it described
+    /// that hazard correctly. It was also describing it in the one place that
+    /// was guarded: `write` had three other callers, and a `pong` from the
+    /// pump crossing a drain reproduced the duplicate this flag was meant to
+    /// prevent. The serial is now stamped inside `write`, before any
+    /// suspension, so every caller is covered and this flag no longer carries
+    /// that job.
+    ///
+    /// What is left is real: `tokens.spend()` decides how much may go out, and
+    /// two loops spending from the same budget would each believe they had
+    /// room the other has taken.
     ///
     /// A second drainer returns rather than waiting: the first one re-checks
     /// the queue every time round, so the work it left is picked up anyway.
@@ -76,6 +81,13 @@ actor SpiceAgentChannel {
     /// This client's message counter for the main channel. A server that
     /// acknowledges by serial is entitled to a sequence with no holes.
     private var serial: UInt64
+
+    /// Stamped messages waiting for the socket, and whether a drainer is
+    /// running. Separate from `waiting` above, which holds *agent* messages
+    /// before they are wrapped: this one holds finished channel messages, and
+    /// its job is the serial rather than the tokens.
+    private var outgoing: [Data] = []
+    private var sending = false
 
     /// Bytes held part-way through an incoming message. Zero between messages,
     /// and worth asserting on in a test.
@@ -325,8 +337,40 @@ actor SpiceAgentChannel {
         }
     }
 
+    /// Stamps a message and puts it on the outbox, then drains.
+    ///
+    /// The stamping and the increment happen together, synchronously, before
+    /// any suspension — which is what makes the number unique. `draining`
+    /// below guarded only one of this method's four callers, and that was
+    /// enough to hide the hole: a `pong` answered by the pump while a
+    /// clipboard drain was mid-write took the number the drain was already
+    /// using. Measured, with both writes parked at once: **`[1, 1]`**.
+    ///
+    /// Finding it needed a stronger probe than the first one written. Released
+    /// after a single parked write, the two paths ran one after the other and
+    /// reported a tidy `[1, 2]` — an answer that looks like data and is only
+    /// the instrument's shape. Waiting for *both* writes to be parked is what
+    /// makes the test able to see the defect at all.
     private func write(_ type: UInt16, payload: Data) async throws {
-        try await stream.write(SpiceWire.message(type, serial: serial, payload: payload))
+        outgoing.append(SpiceWire.message(type, serial: serial, payload: payload))
         serial += 1
+        try await drainOutgoing()
+    }
+
+    /// Writes stamped messages in order, one drainer at a time.
+    private func drainOutgoing() async throws {
+        guard !sending else { return }
+        sending = true
+        defer { sending = false }
+
+        while !outgoing.isEmpty {
+            let next = outgoing.removeFirst()
+            do {
+                try await stream.write(next)
+            } catch {
+                outgoing.removeAll()
+                throw error
+            }
+        }
     }
 }
