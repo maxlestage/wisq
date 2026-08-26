@@ -68,7 +68,7 @@ public enum AgentPairing {
         }
         if let fingerprint = payload.certificateFingerprint {
             guard fingerprint.count == fingerprintByteCount else { return nil }
-            items.append(URLQueryItem(name: "fp", value: hex(fingerprint)))
+            items.append(URLQueryItem(name: "fp", value: Hex.encode(fingerprint)))
         }
         components.queryItems = items
         return components.url
@@ -94,7 +94,7 @@ public enum AgentPairing {
         // what an attacker mangling the link would want.
         var fingerprint: Data?
         if let raw = values["fp"] {
-            guard let parsed = data(fromHex: raw), parsed.count == fingerprintByteCount else {
+            guard let parsed = Hex.decode(raw), parsed.count == fingerprintByteCount else {
                 throw WisqError.malformedMessage("empreinte de certificat invalide dans le lien")
             }
             fingerprint = parsed
@@ -107,32 +107,5 @@ public enum AgentPairing {
             name: values["name"],
             certificateFingerprint: fingerprint
         )
-    }
-
-    private static func hex(_ data: Data) -> String {
-        data.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func data(fromHex text: String) -> Data? {
-        let characters = Array(text.lowercased().utf8)
-        guard characters.count % 2 == 0 else { return nil }
-        var bytes = Data(capacity: characters.count / 2)
-        var index = 0
-        while index < characters.count {
-            guard let high = nibble(characters[index]), let low = nibble(characters[index + 1]) else {
-                return nil
-            }
-            bytes.append(high << 4 | low)
-            index += 2
-        }
-        return bytes
-    }
-
-    private static func nibble(_ character: UInt8) -> UInt8? {
-        switch character {
-        case UInt8(ascii: "0")...UInt8(ascii: "9"): return character - UInt8(ascii: "0")
-        case UInt8(ascii: "a")...UInt8(ascii: "f"): return character - UInt8(ascii: "a") + 10
-        default: return nil
-        }
     }
 }
