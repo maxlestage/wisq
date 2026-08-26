@@ -118,9 +118,20 @@ public final class Framebuffer: @unchecked Sendable {
     }
 
     /// Move a rectangle inside the framebuffer (RFB CopyRect).
+    ///
+    /// The scratch buffer below is sized by the **rectangle**, not by this
+    /// framebuffer, and CopyRect carries no pixels — so before the ceiling
+    /// reached here, twelve bytes on the wire bought a seventeen-gigabyte
+    /// allocation on a 64 × 64 screen. Measured, not reasoned: `failed to
+    /// allocate 17179344932 bytes of memory`.
+    ///
+    /// The loud refusal belongs to the decoder, which knows the number came off
+    /// the wire and can name it. This is the quiet half, for the caller that
+    /// forgets to ask — same pair as `resize`.
     public func copy(from src: Point, to rect: Rect) {
         lock.lock(); defer { lock.unlock() }
         guard rect.width > 0, rect.height > 0 else { return }
+        guard Self.canHold(width: rect.width, height: rect.height) else { return }
 
         // Copy through a scratch buffer so overlapping regions stay correct.
         var scratch = [UInt8](repeating: 0, count: rect.width * rect.height * 4)
