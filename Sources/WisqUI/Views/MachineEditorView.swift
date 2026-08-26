@@ -237,6 +237,10 @@ public struct MachineEditorView: View {
                 guard !draft.agentVMID.trimmingCharacters(in: .whitespaces).isEmpty else {
                     throw WisqError.agentFailure("l'identifiant de la VM est requis")
                 }
+                // The daemon refuses anything outside its allowlist with a 404.
+                // Saying so here means the editor is still open to fix it,
+                // rather than discovering it at the first connection attempt.
+                let vmIdentifier = try Validation.validatedVMIdentifier(draft.agentVMID)
                 // One token per agent host, shared by all its VMs. It is handed
                 // to `save` rather than written here: a token written before
                 // the machine that references it is a key no machine points
@@ -245,7 +249,7 @@ public struct MachineEditorView: View {
                 agentToken = draft.agentToken
                 machine.agent = AgentBinding(
                     baseURL: baseURL,
-                    vmIdentifier: draft.agentVMID,
+                    vmIdentifier: vmIdentifier,
                     autoStart: draft.agentAutoStart,
                     credentialRef: tokenRef
                 )
