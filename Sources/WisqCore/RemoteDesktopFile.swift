@@ -49,9 +49,31 @@ public enum RemoteDesktopFile {
     /// the file did not name.
     public static let defaultPort = 3389
 
+    /// The `i` options this parser actually reads.
+    ///
+    /// A value that does not parse matters only for these. For the long tail an
+    /// `.rdp` carries for features wisq does not have — `audiomode`,
+    /// `promptcredentialonce`, `gatewaycredentialssource` and the forty others
+    /// Windows and an RD Gateway write — refusing the file would reject a good
+    /// one for saying something extra, and there is nothing to guess about a
+    /// value that is discarded either way.
+    ///
+    /// `VirtViewerFile` already states this rule for `.vv` and applies it:
+    /// unknown keys ignored, malformed *what we read* refused. This parser
+    /// stated the strict half and applied it to everything. A file from a real
+    /// gateway carrying `gatewaycredentialssource:i:` — an empty value, which
+    /// is legal in those files — was refused whole.
+    private static let readIntegerKeys: Set<String> = [
+        "desktopwidth", "desktopheight", "screen mode id", "redirectclipboard",
+    ]
+
     public static func parse(_ text: String) throws -> Connection {
         var strings: [String: String] = [:]
         var integers: [String: Int] = [:]
+        /// Whether anything shaped like an option was seen at all, which is a
+        /// different question from whether any of it was worth keeping: a file
+        /// whose only lines are options wisq discards is still an `.rdp` file.
+        var sawOption = false
 
         for rawLine in text.split(whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -68,8 +90,12 @@ public enum RemoteDesktopFile {
 
             switch type {
             case "s":
+                sawOption = true
                 strings[key] = value
             case "i":
+                sawOption = true
+                // Only for what is read: see `readIntegerKeys`.
+                guard Self.readIntegerKeys.contains(key) else { continue }
                 // A type that does not match its value is a malformed file, not
                 // an invitation to guess. `i` says the writer meant a number.
                 guard let number = Int(value) else {
@@ -85,7 +111,7 @@ public enum RemoteDesktopFile {
             }
         }
 
-        guard !strings.isEmpty || !integers.isEmpty else {
+        guard sawOption else {
             throw Failure.notARemoteDesktopFile
         }
         guard let address = strings["full address"], !address.isEmpty else {
