@@ -71,6 +71,44 @@ enum SpiceDisplayClient {
 
     // MARK: - Messages
 
+    /// The pixmap cache this client declares, in pixels.
+    ///
+    /// **Zero, because wisq keeps no image cache — and a number here is not a
+    /// hint, it is what the server hands back instead of pixels.**
+    ///
+    /// The mechanism, and it runs entirely on the server. A guest's QXL driver
+    /// marks an image `QXL_IMAGE_CACHE` when it expects to draw it again —
+    /// icons, glyphs, window borders, wallpaper tiles — which
+    /// `red-parse-qxl.cpp` turns into `SPICE_IMAGE_FLAGS_CACHE_ME`. On the
+    /// first send, `marshal_lossy_or_lossless` calls
+    /// `dcc_pixmap_cache_unlocked_add(dcc, id, width * height, …)` — so the
+    /// unit is pixels — and **only if that add succeeds** does it echo
+    /// `CACHE_ME` to the client, meaning "keep this, I will refer to it".
+    /// On every later send of the same id, `fill_bits` finds
+    /// `dcc_pixmap_cache_unlocked_hit` true and writes
+    /// `SPICE_IMAGE_TYPE_FROM_CACHE`: an identifier, and no pixels at all.
+    ///
+    /// wisq cannot resolve one. `SpiceDisplayWire.image` gives a `fromCache`
+    /// descriptor no payload, `pixels(of:)` returns `nil`, and the draw is
+    /// skipped — so the region keeps whatever was under it. Not a crash and not
+    /// a blank: **stale pixels, silently**, on exactly the images a desktop
+    /// repeats most.
+    ///
+    /// Declaring zero closes it at the source rather than papering over it.
+    /// `cache->available` starts at the declared size, the first add drives it
+    /// negative, the eviction loop finds an empty ring (`ring_get_tail`
+    /// returns `NULL`), and the add returns `FALSE`. So nothing is ever
+    /// recorded, `CACHE_ME` is never echoed, no hit is ever possible, and every
+    /// image arrives with its bytes. The cost is bandwidth — those images are
+    /// re-sent — which is the right thing to pay until there is a cache to
+    /// spend it on.
+    ///
+    /// Raising it is not a tuning change. It is only correct once wisq stores
+    /// decoded images by `descriptor.id` **and** honours the invalidation
+    /// messages that go with them; the two have to land together, or a stale
+    /// entry is worse than a re-sent image.
+    static let pixmapCachePixels: Int64 = 0
+
     /// The GLZ window this client declares, in pixels.
     ///
     /// **This is a floor, not a budget, and the difference is a crash.** The
@@ -108,21 +146,20 @@ enum SpiceDisplayClient {
 
     /// `SPICE_MSGC_DISPLAY_INIT`, which the server waits for before it draws.
     ///
-    /// The two sizes are the client saying how much it will remember, and they
-    /// are chosen here rather than taken from the server because they are
-    /// promises about *this* client's memory: a phone is not a workstation, and
-    /// a cache sized for one is a cache the other cannot hold.
+    /// Two sizes, side by side, same shape, both "how much this client will
+    /// remember" — and **the safe value is opposite for each**, which is the
+    /// one thing reading the message will never tell you.
     ///
-    /// **They are not the same kind of promise, which reading the message does
-    /// not reveal.** `pixmap_cache_get` takes the cache size as a budget: when
-    /// an image does not fit, `dcc_add_to_cache` evicts, and when eviction
-    /// cannot free enough it returns `FALSE` and the image is simply sent
-    /// uncached. Too small a cache costs bandwidth. Too small a GLZ window
-    /// aborts the server — see `glzWindowPixels`. One number degrades and the
-    /// other kills, and they sit next to each other.
+    /// The GLZ window is a floor: below one frame the server calls `abort()`,
+    /// so it is as large as any frame can be. The pixmap cache is a promise to
+    /// hold images the server will later send by name alone: any non-zero value
+    /// makes it send names wisq cannot resolve, so it is zero. Large or the
+    /// server dies; zero or the picture goes stale. Neither is a hint, and
+    /// nothing in the field names, the types or the ordering distinguishes
+    /// them — what does is in three different files the client never runs.
     static func initialise(
         pixmapCacheID: UInt8 = 0,
-        pixmapCachePixels: Int64 = 4 << 20,
+        pixmapCachePixels: Int64 = SpiceDisplayClient.pixmapCachePixels,
         glzDictionaryID: UInt8 = 0,
         glzWindowPixels: Int32 = SpiceDisplayClient.glzWindowPixels
     ) -> [UInt8] {

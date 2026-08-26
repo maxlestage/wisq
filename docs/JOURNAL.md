@@ -1853,3 +1853,54 @@ dégrade ; la fenêtre GLZ est un plancher qui abandonne. Rien dans le message, 
 dans le nom des champs, ni dans leur type, ne distingue les deux. Ce qui les
 distingue est à trois fichiers de là, dans du code que le client n'exécute
 jamais.
+
+## Le nombre inoffensif ne l'était pas non plus
+
+Écrit quelques heures après l'entrée précédente, et elle la corrige.
+
+En traitant la fenêtre GLZ j'ai regardé l'autre nombre du même message — le
+cache de pixmaps — pour établir le contraste, et j'ai conclu : celui-là est un
+budget, `dcc_add_to_cache` évince et renvoie `FALSE`, une valeur trop basse ne
+coûte que de la bande passante. Je l'ai écrit dans le code, dans la feuille de
+route et dans le commit.
+
+C'était vrai, et ça ne répondait pas à la question. J'avais examiné ce qui
+arrive quand le nombre est **trop petit**, parce que c'est là que la fenêtre GLZ
+faisait mal. Personne n'avait regardé dans l'autre sens.
+
+wisq annonçait 4 Mi pixels de cache et n'a pas de cache. Le pilote QXL de
+l'invité marque `QXL_IMAGE_CACHE` ce qu'il compte redessiner ; le serveur
+l'enregistre, renvoie `CACHE_ME` **seulement si l'enregistrement a réussi**, et
+tout envoi ultérieur du même identifiant devient `SPICE_IMAGE_TYPE_FROM_CACHE` :
+un nom, zéro pixel. `pixels(of:)` renvoie `nil`, le dessin est sauté, la région
+garde ce qu'il y avait dessous. Des pixels périmés, en silence, sur les icônes
+et les glyphes — c'est-à-dire sur ce qu'un bureau répète le plus.
+
+Annoncer zéro suffit : le premier ajout rend `available` négatif, la boucle
+d'éviction trouve un anneau vide, l'ajout échoue, et plus rien n'est jamais
+nommé.
+
+Deux leçons, et la seconde est la vraie.
+
+**La première**, celle que je croyais tenir : deux nombres de même forme dans le
+même message peuvent avoir des régimes d'erreur opposés. C'est exact, et
+insuffisant, parce que je l'ai formulée en comparant *un* échec de chacun.
+
+**La seconde** : un paramètre a deux bords, et vérifier l'un n'apprend rien sur
+l'autre. La fenêtre GLZ m'avait entraîné à demander « et si c'est trop petit ? ».
+J'ai posé cette question au cache, obtenu une réponse rassurante, et rangé le
+dossier. La question « et si c'est trop grand ? » n'a jamais été posée — pas
+parce qu'elle était difficile, mais parce que la première avait l'air d'avoir
+épuisé le sujet. Une réponse rassurante à la mauvaise question ressemble
+exactement à une réponse rassurante.
+
+C'est la même faute que le fichier introuvable de l'entrée précédente, sous un
+autre angle : là, une recherche vide prise pour un fait sur le monde ; ici, une
+vérification partielle prise pour une vérification. Dans les deux cas le tort
+n'est pas d'avoir eu faux, c'est d'avoir arrêté de chercher au moment où
+quelque chose avait l'air conclu.
+
+Le contraste est maintenant tenu par des tests des deux côtés, et la feuille de
+route dit ce que le paragraphe d'il y a quelques heures affirmait trop vite.
+Reste le vrai gain, qui n'est pas une correction : construire le cache, avec ses
+invalidations, pour qu'une icône parte une fois au lieu de vingt.
