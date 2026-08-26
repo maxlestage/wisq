@@ -2649,3 +2649,76 @@ La seconde est de méthode : **un test qui ne finit pas n'est pas un test lent.*
 La tentation était d'augmenter un délai ou de relancer. Trente secondes de
 `gdb` ont donné la ligne exacte, le thread exact et la raison — là où
 « réessayer » aurait donné une deuxième attente de dix minutes et rien d'autre.
+
+## Une limite que rien ne pouvait atteindre
+
+Parti auditer ce qui survit à une reconnexion SPICE. Rien ne survit, et c'est
+doublement tenu : les surfaces, les caches et la fenêtre GLZ sont des variables
+**locales** de la pompe, et `ReconnectingSession` ne réutilise jamais l'objet
+session — `makeSession(framebuffer)` en fabrique un neuf à chaque tentative.
+Hypothèse morte.
+
+Ce qui l'a remplacée est venu d'un sabordage qui n'a pas fait ce que j'attendais.
+J'avais rendu le contexte zlib partagé entre connexions pour vérifier qu'un test
+neuf le voyait ; au lieu d'échouer, la suite s'est **figée**. Trois minutes de
+`gdb` : le thread principal attendait dans le pont async de XCTest et **aucun
+thread n'exécutait mon test**. Pas une boucle serrée — une boucle de
+reconnexion.
+
+Le défaut, une ligne :
+
+```swift
+case .ready:
+    attempt = 0        // « une connexion réussie recharge le budget »
+```
+
+`.ready` est émis dès la fin de la poignée de main. **Tout** serveur l'émet, y
+compris celui qui la termine et meurt une milliseconde après. Le compteur
+repartait de zéro à chaque cycle, donc `maxAttempts` n'était **jamais**
+atteignable pour toute cette classe de pannes — et ce sont exactement celles
+pour lesquelles la politique existe. Mesuré : `maxAttempts` à 3, treize
+reconnexions et toujours en cours quand la sonde a coupé.
+
+Le second effet est pire que le premier. `attempt` valant 1 après chaque remise
+à zéro, `delay(forAttempt: 1)` rendait `initialDelay` indéfiniment : le repli
+exponentiel n'avait pas lieu non plus. Sur un téléphone, une poignée de main
+complète par seconde, jusqu'à la batterie, sans qu'aucune erreur ne remonte à
+personne.
+
+**Atteindre `.ready` ne peut pas être le critère, parce que le cas pathologique
+l'atteint aussi.** *Durer*, si : une connexion qui est restée debout assez
+longtemps pour servir a prouvé que l'hôte fonctionne, ce que le budget cherche
+à savoir. La remise à zéro sort de la boucle d'événements — la durée d'une
+connexion n'est connue qu'une fois qu'elle est finie.
+
+Trois conditions, trois sabordages, un par test, plus un témoin :
+
+| sabordage | test qui tombe |
+|---|---|
+| remettre `attempt = 0` sur `.ready` | le serveur qui meurt après la poignée de main |
+| ne jamais recharger le budget | la connexion qui a duré |
+| garder la durée, jeter `reachedReady` | la poignée de main lente et ratée |
+| renommer une variable (témoin) | aucun |
+
+Le troisième mérite d'être noté : les deux premiers tests ne le distinguent pas,
+parce qu'une connexion qui meurt dans la poignée de main meurt aussi *vite* —
+les deux conditions s'accordent partout sauf sur une poignée de main qui traîne
+puis échoue. Il a fallu écrire un `ByteStream` qui prend son temps avant
+d'abandonner pour séparer ces deux mondes.
+
+## La sonde qui a servi n'était pas celle que j'avais écrite
+
+Le sabordage « le contexte zlib est partagé » visait un test que je venais
+d'écrire sur l'état du décodeur après reconnexion. Il n'a jamais répondu à cette
+question : il a révélé un défaut sans rapport, dans le composant d'à côté.
+
+À garder : **un sabordage n'est pas seulement une vérification, c'est une
+perturbation**, et une perturbation explore le système au-delà de la propriété
+qu'on visait. Le réflexe utile n'est pas « ce sabordage ne mord pas comme prévu,
+je le corrige » mais « pourquoi le système fait-il *ça* ». Ici la différence
+entre les deux lectures était un défaut de disponibilité en production.
+
+Et, deuxième fois de la journée : **un test qui ne finit pas n'est pas un test
+lent.** La première fois, `gdb` a donné un `defer` sur un thread de concurrence.
+Cette fois, une boucle de reconnexion sans fin. Les deux auraient été invisibles
+en augmentant un délai.
