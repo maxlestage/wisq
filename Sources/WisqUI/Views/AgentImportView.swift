@@ -151,12 +151,11 @@ struct AgentImportView: View {
                 } else {
                     AgentClient(baseURL: baseURL, token: token.isEmpty ? nil : token)
                 }
+                // The token is kept in view state until a VM is imported, not
+                // written here: browsing an agent and closing the sheet without
+                // adding anything would otherwise leave a key in the keychain
+                // that no machine references and no screen offers to remove.
                 vms = try await client.listVMs()
-                // The token worked: keep it, keyed per agent so every VM on this
-                // host shares the one secret.
-                if let tokenRef, !token.isEmpty {
-                    try? library.credentialStore.setSecret(token, for: tokenRef)
-                }
             } catch let error as WisqError {
                 vms = nil
                 errorMessage = error.localizedDescription
@@ -183,7 +182,7 @@ struct AgentImportView: View {
                 certificateFingerprint: fingerprint
             )
         )
-        library.save(machine, password: nil)
+        library.save(machine, password: nil, agentToken: token)
         importedIDs.insert(vm.id)
     }
 }

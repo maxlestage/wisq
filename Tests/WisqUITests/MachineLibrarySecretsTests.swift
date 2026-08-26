@@ -87,6 +87,26 @@ final class MachineLibrarySecretsTests: XCTestCase {
         XCTAssertNil(try credentials.secret(for: agentRef))
     }
 
+    /// A save that could not be written says so, and leaves no token behind.
+    ///
+    /// The failure is injected with a path whose parent is a regular file
+    /// rather than a read-only directory: the same rule is checked on Linux in
+    /// `MachineLibraryWriterTests`, where the tests run as root and a `0500`
+    /// directory stops nothing. One injection, valid for whoever runs it.
+    func testASaveThatCannotBeWrittenReportsItAndStoresNoToken() throws {
+        let credentials = EphemeralCredentialStore()
+        let file = directory.appendingPathComponent("a-file")
+        try Data("x".utf8).write(to: file)
+        let library = MachineLibraryModel(
+            store: MachineStore(fileURL: file.appendingPathComponent("machines.json")),
+            credentials: credentials
+        )
+
+        XCTAssertFalse(library.save(vm("a"), password: "mdp", agentToken: "jeton"))
+        XCTAssertNotNil(library.loadError)
+        XCTAssertNil(try credentials.secret(for: agentRef))
+    }
+
     /// The order the reaping happens in, checked by making the write fail: the
     /// machine list is read-only, so `delete` cannot succeed, and the password
     /// must still be there when the user looks again at a machine that is also
