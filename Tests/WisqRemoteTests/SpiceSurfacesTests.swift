@@ -74,8 +74,25 @@ final class SpiceSurfacesTests: XCTestCase {
 
     /// Two numbers a server chose, multiplied, are an allocation a server
     /// chose. There is a ceiling.
+    ///
+    /// `0xFFFFFFFF` is here for a reason, and it is not thoroughness for its own
+    /// sake. The list used to stop at `0xFFFF`, one order of magnitude short,
+    /// and that gap was the whole defect: 65535² fits an `Int` comfortably, so
+    /// the guard answered and the test was green. At the **top of what a
+    /// `UInt32` can carry** the product reaches 1.8 × 10^19, past `Int.max`,
+    /// and Swift traps — inside the guard, at the multiplication, before it
+    /// could refuse anything. The failure was not a wrong answer but
+    /// `SpiceSurfaces.create(_:) … Swift runtime failure: arithmetic overflow`,
+    /// which on a phone is the app vanishing.
+    ///
+    /// The rule this leaves behind: a number that came off a socket is tested
+    /// at the ends of **its own type's** range, not at a value that merely
+    /// looks large.
     func testASizeNoPhoneCouldHoldIsRefusedBeforeAnythingIsAllocated() {
-        for (width, height) in [(UInt32(0), UInt32(8)), (8, 0), (0xFFFF, 0xFFFF)] {
+        for (width, height) in [
+            (UInt32(0), UInt32(8)), (8, 0), (0xFFFF, 0xFFFF),
+            (0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 1), (1, 0xFFFFFFFF),
+        ] {
             XCTAssertThrowsError(try makeSurface(width, height), "\(width)x\(height)") { error in
                 XCTAssertEqual(
                     error as? SpiceSurfaces.Failure,
@@ -83,6 +100,18 @@ final class SpiceSurfacesTests: XCTestCase {
                 )
             }
         }
+    }
+
+    /// The other edge of the same rule, and the one a careless ceiling breaks.
+    ///
+    /// Bounding each side before multiplying must not narrow what is accepted.
+    /// 3840 × 2160 is 8.3 megapixels — a real guest, well inside the 64 the
+    /// ceiling allows — and a guard tightened into refusing it would have
+    /// traded a crash for a blank screen.
+    func testAFullSizeDesktopIsStillAllowed() throws {
+        let surfaces = try makeSurface(3840, 2160)
+        XCTAssertEqual(surfaces.surfaces[0]?.width, 3840)
+        XCTAssertEqual(surfaces.surfaces[0]?.height, 2160)
     }
 
     func testDrawingOnASurfaceThatDoesNotExistIsRefused() throws {

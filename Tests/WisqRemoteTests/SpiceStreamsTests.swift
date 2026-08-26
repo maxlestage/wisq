@@ -72,9 +72,15 @@ final class SpiceStreamsTests: XCTestCase {
         }
     }
 
+    /// The same ceiling as `SpiceSurfaces`, and the same reason `0xFFFFFFFF`
+    /// belongs in the list: below the top of a `UInt32` the product fits an
+    /// `Int` and the guard answers; at the top it traps inside the guard.
     func testAFrameSizeNoPhoneCouldHoldIsRefusedBeforeAnythingIsAllocated() {
         var streams = SpiceStreams()
-        for size in [(UInt32(0), UInt32(24)), (32, 0), (0xFFFF, 0xFFFF)] {
+        for size in [
+            (UInt32(0), UInt32(24)), (32, 0), (0xFFFF, 0xFFFF),
+            (0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 1), (1, 0xFFFFFFFF),
+        ] {
             XCTAssertThrowsError(
                 try streams.create(create(stream: size)), "\(size)"
             ) { error in
@@ -152,18 +158,43 @@ final class SpiceStreamsTests: XCTestCase {
         XCTAssertEqual(next.destination, rect(0, 0, 24, 32))
     }
 
+    /// The sized frame is the one a hostile server can send at **any** moment,
+    /// rather than only when the stream is created — so its ceiling is the more
+    /// exposed of the two, and it was the one no test could see go. Reverting
+    /// this guard alone, with the creation guard left correct, kept the whole
+    /// suite green: the case stopped at `0xFFFF` and never reached the values
+    /// that overflow.
     func testASizedFrameWithAnAbsurdSizeIsRefused() throws {
         var streams = SpiceStreams()
         try streams.create(create())
-        let sized = SpiceDisplayWire.StreamData.Sized(
-            width: 0xFFFF, height: 0xFFFF, destination: rect(0, 0, 1, 1)
-        )
-        XCTAssertThrowsError(try streams.placement(for: data(sized: sized))) { error in
-            XCTAssertEqual(
-                error as? SpiceStreams.Failure,
-                .unreasonableSize(width: 0xFFFF, height: 0xFFFF)
+        for (width, height) in [
+            (UInt32(0xFFFF), UInt32(0xFFFF)),
+            (0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 1), (1, 0xFFFFFFFF),
+        ] {
+            let sized = SpiceDisplayWire.StreamData.Sized(
+                width: width, height: height, destination: rect(0, 0, 1, 1)
             )
+            XCTAssertThrowsError(
+                try streams.placement(for: data(sized: sized)), "\(width)x\(height)"
+            ) { error in
+                XCTAssertEqual(
+                    error as? SpiceStreams.Failure,
+                    .unreasonableSize(width: width, height: height), "\(width)x\(height)"
+                )
+            }
         }
+    }
+
+    /// And the other edge: a sized frame at a real resolution still places.
+    func testASizedFrameAtARealResolutionStillPlaces() throws {
+        var streams = SpiceStreams()
+        try streams.create(create())
+        let sized = SpiceDisplayWire.StreamData.Sized(
+            width: 1920, height: 1080, destination: rect(0, 0, 1080, 1920)
+        )
+        let placement = try streams.placement(for: data(sized: sized))
+        XCTAssertEqual(placement.width, 1920)
+        XCTAssertEqual(placement.height, 1080)
     }
 
     func testAFrameForAStreamThatDoesNotExistIsRefused() {

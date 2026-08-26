@@ -252,6 +252,44 @@ final class SpiceTextTests: XCTestCase {
         XCTAssertEqual(mask, 0x0F, "SPICE_STRING_FLAGS_MASK")
     }
 
+    /// A glyph run spanning the whole coordinate space is refused, not fatal.
+    ///
+    /// `RasterGlyph.box` clamps into `Int32`, so two glyphs placed at opposite
+    /// extremes give a bounding box from `Int32.min` to `Int32.max` on both
+    /// axes. Each side is then 4.29 × 10^9 and their product is 1.8 × 10^19 —
+    /// past `Int.max`, where Swift traps. The ceiling meant to refuse a mask
+    /// this size was reached only *after* the multiplication that could not be
+    /// performed, so the refusal never happened; the process died instead.
+    ///
+    /// Nothing about this is a text-rendering question. It is the same shape as
+    /// `SpiceSurfaces` and `SpiceStreams`, in a third place, and it is here
+    /// because the wire chooses both numbers.
+    func testAGlyphRunSpanningTheWholeCoordinateSpaceIsRefused() {
+        let mask = SpiceGlyphMask.build(SpiceDisplayWire.TextString(
+            flags: SpiceDisplayWire.TextString.rasterA8,
+            glyphs: [
+                glyph(at: (Int32.min, Int32.min), 1, 1, [0xFF]),
+                glyph(at: (Int32.max - 1, Int32.max - 1), 1, 1, [0xFF]),
+            ]
+        ))
+        XCTAssertNil(mask, "un masque de 1,8 × 10^19 pixels doit être refusé, pas tenté")
+    }
+
+    /// The other edge: an ordinary line of text still produces a mask. A
+    /// ceiling that refuses this has traded a crash for missing text.
+    func testAnOrdinaryGlyphRunStillProducesAMask() {
+        let mask = SpiceGlyphMask.build(SpiceDisplayWire.TextString(
+            flags: SpiceDisplayWire.TextString.rasterA8,
+            glyphs: [
+                glyph(at: (0, 0), 2, 2, [0xFF, 0xFF, 0xFF, 0xFF]),
+                glyph(at: (2, 0), 2, 2, [0xFF, 0xFF, 0xFF, 0xFF]),
+            ]
+        ))
+        XCTAssertNotNil(mask)
+        XCTAssertEqual(mask?.width, 4)
+        XCTAssertEqual(mask?.height, 2)
+    }
+
     func testAStringWithNoGlyphsHasNoMask() {
         XCTAssertNil(SpiceGlyphMask.build(SpiceDisplayWire.TextString(
             flags: SpiceDisplayWire.TextString.rasterA1, glyphs: []

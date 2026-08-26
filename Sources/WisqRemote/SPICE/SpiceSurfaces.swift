@@ -77,7 +77,21 @@ struct SpiceSurfaces {
 
         let width = Int(request.width)
         let height = Int(request.height)
-        guard width > 0, height > 0, width * height <= Self.maximumPixels else {
+        // Each side is bounded before the two are multiplied, and that order is
+        // the whole point. `width` and `height` are `UInt32` off a socket, so
+        // their product reaches 1.8 × 10^19 — past `Int.max`, where Swift traps.
+        // The ceiling below was therefore unreachable by exactly the sizes it
+        // existed to refuse: `SPICE_MSG_DISPLAY_SURFACE_CREATE` with two
+        // `0xFFFFFFFF` fields took the app down inside the guard, at the `*`.
+        //
+        // The two new clauses accept and refuse precisely what the third one
+        // already did — with both sides at least 1, either side exceeding the
+        // ceiling puts the product past it too — so nothing legitimate changes
+        // size. They only make the product safe to compute: bounded by 2^26
+        // each, it cannot leave an `Int`.
+        guard width > 0, height > 0,
+              width <= Self.maximumPixels, height <= Self.maximumPixels,
+              width * height <= Self.maximumPixels else {
             throw Failure.unreasonableSize(width: request.width, height: request.height)
         }
 
