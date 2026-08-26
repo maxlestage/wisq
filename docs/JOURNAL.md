@@ -3333,3 +3333,49 @@ sien. Puis deux sur le bord permissif : le plafond compressé rendu sourd au
 rectangle (3 rouges) et le presse-papiers ramené au plafond des noms (1). Une
 règle a deux bords, et la moitié du travail porte sur ce qu'il ne faut **pas**
 refuser.
+
+## Un fichier refusé pour un champ que personne ne lit
+
+`VirtViewerFile` énonce la règle, en toutes lettres, pour les `.vv` :
+
+> Unknown keys are ignored rather than refused: these files carry a long tail of
+> options for features wisq does not have, and failing on the first one would
+> reject perfectly good files for saying something extra. What is *malformed* —
+> a port that is not a number — is refused.
+
+Deux moitiés : **ignorer l'inconnu**, **refuser le malformé de ce qu'on lit**.
+`RemoteDesktopFile`, dans le même dossier, n'avait retenu que la seconde et
+l'appliquait à **toutes** les lignes `i`, y compris les quarante que Windows et
+une passerelle RD écrivent pour des fonctions que wisq n'a pas.
+
+### Mesuré sur un fichier réaliste
+
+Un `.rdp` de passerelle contenant `gatewaycredentialssource:i:` — valeur vide,
+parfaitement légale dans ces fichiers — était refusé **en entier** :
+`badInteger(key: "gatewaycredentialssource", value: "")`. La clé n'est lue nulle
+part. Le témoin, même fichier sans cette ligne, était accepté : la sonde
+distinguait bien les deux.
+
+Quatre clés seulement sont lues : `desktopwidth`, `desktopheight`,
+`screen mode id`, `redirectclipboard`. Pour tout le reste, il n'y a rien à
+deviner puisque la valeur est jetée de toute façon.
+
+### Le détail qui aurait été perdu au passage
+
+Le test « est-ce seulement un fichier `.rdp` » s'appuyait sur les deux
+dictionnaires non vides. En ignorant les clés non lues, un fichier n'ayant que
+celles-là se serait retrouvé « pas un fichier `.rdp` » au lieu de « fichier
+`.rdp` sans adresse ». Or voir `audiomode:i:0` est une preuve solide que c'en
+est un. D'où un `sawOption` distinct : **avoir vu une option est une question
+différente d'avoir gardé quelque chose.**
+
+Le sabordage d4 déplace la pose de ce drapeau d'une ligne et le test tombe.
+C'est exactement le genre de conséquence « au passage » qui part sans filet.
+
+### Ce que je n'ai pas fait
+
+Rogner les espaces autour d'une valeur `i`. `audiomode:i: 0` était refusé lui
+aussi, et ne l'est plus — mais parce que la clé est ignorée, pas parce que la
+valeur est tolérée ; `desktopwidth:i: 1920` reste refusé. Je n'ai aucune preuve
+qu'un vrai fichier écrive un espace là, et corriger par précaution ce
+qu'aucune mesure ne signale, c'est deviner.
