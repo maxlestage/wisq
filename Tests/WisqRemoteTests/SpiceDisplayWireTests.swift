@@ -46,6 +46,30 @@ final class SpiceDisplayWireTests: XCTestCase {
             + [UInt8](repeating: 0x11, count: Int(stride) * Int(height))
     }
 
+    /// The inline pixel length, when the two numbers that make it cannot be
+    /// multiplied.
+    ///
+    /// The comment that used to sit on this line said widening both to `Int`
+    /// made a wrapping `UInt32` product safe. It does — and it says nothing
+    /// about `Int` overflow, which is what two `0xFFFFFFFF` fields produce.
+    /// The line meant to defend against a hostile length **was** the crash.
+    ///
+    /// Nothing behind the header has to exist for this: the parser multiplies
+    /// before it reads, so a message that is nothing but the header reaches it.
+    func testALengthTooLargeToComputeIsRefusedRatherThanFatal() {
+        let at = UInt32(8)
+        var payload = [UInt8](repeating: 0xAA, count: Int(at))
+        payload += u64(7) + [0 /* BITMAP */, 0] + u32(4) + u32(2)
+            + [8 /* 32BIT */, 0]
+            + u32(1) + u32(0xFFFFFFFF) + u32(0xFFFFFFFF)
+            + u32(0) // palette pointer, null
+        let body = SpiceDisplayWire.Body(payload)
+
+        XCTAssertThrowsError(try SpiceDisplayWire.image(at: at, in: body)) { error in
+            XCTAssertEqual(error as? SpiceError, .invalidData)
+        }
+    }
+
     // MARK: - Geometry
 
     /// The order is the whole test. Read as left/top/right/bottom — the order

@@ -292,10 +292,22 @@ extension SpiceDisplayWire {
         // LZ header's it is the real distance between rows and rows are padded
         // to it.
         //
-        // Multiplied as `Int` after both are widened, so a server sending a
-        // stride and a height that overflow a `UInt32` gets a read past the
-        // end rather than a small number and a buffer that fits.
-        let size = Int(stride) * Int(height)
+        // Widening to `Int` first defeats the `UInt32` wraparound — a server
+        // sending a stride and a height whose product wraps would otherwise get
+        // a small number and a buffer that fits. That much the previous
+        // comment here had right. What it missed is that widening does not
+        // defeat `Int` overflow: both fields reach `0xFFFFFFFF`, so the product
+        // reaches 1.8 × 10^19, past `Int.max`, and Swift traps. **The defence
+        // was the crash site**, and twelve bytes on the wire reached it.
+        //
+        // Reported rather than bounded, and the difference matters. A ceiling
+        // here would be a guess about what a real server sends; this is not a
+        // guess about anything. Every product that fits an `Int` is unchanged,
+        // and one that does not is refused — which is what an oversized `size`
+        // already gets from `reader.bytes` a line later, since no message holds
+        // that many bytes. The behaviour is identical everywhere it was defined.
+        let (size, sizeOverflowed) = Int(stride).multipliedReportingOverflow(by: Int(height))
+        guard !sizeOverflowed else { throw SpiceError.invalidData }
 
         return Image(
             descriptor: descriptor,
