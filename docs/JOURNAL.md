@@ -4473,3 +4473,79 @@ message, et `Framebuffer.write` découpe déjà. Refuser le dépassement cassera
 de vrais serveurs pour n'empêcher rien : ce qu'il faut refuser est
 l'allocation. Un test tient ce choix par son bord — un rectangle de 16 × 16 à
 60000, 60000 doit passer — et le sabordage n6 le fait rougir.
+
+## Trois codecs, trois réponses, et trois sabordages qui survivent
+
+Chacun des trois codecs compressés de SPICE prend une largeur et une hauteur sur
+le réseau et alloue à partir du produit. Mesurés un par un, avant :
+
+| codec | par côté | produit | mesuré |
+| --- | --- | --- | --- |
+| LZ4 | 32768 | **oui** | refuse 32768² |
+| QUIC | 32768 | non | **4,03 Gio résidents** (pic de 36 Mio à 4,03 Gio) |
+| LZ (alpha) | aucun | non | `failed to allocate 17179869216 bytes` |
+| LZ (simple) | aucun | non | **4 Gio réservés** (pic d'espace d'adressage 322 Mio → 4,53 Gio) |
+
+Les deux derniers chiffres ne sont pas la même chose et ne sont pas écrits comme
+si. QUIC fait grandir le résident : les pages sont touchées. Le chemin LZ simple
+appelle `reserveCapacity`, qui cartographie sans toucher — les pages ne sont
+jamais fautées, le résident ne bouge pas, et dire « 4 Gio alloués » de celui-là
+serait dire plus que ce qui a été observé. La première mesure, faite au pic
+résident, n'a **rien vu du tout** ; il a fallu regarder le pic d'espace
+d'adressage pour le voir. Une sonde qui ne mesure pas la bonne chose ne prouve
+rien non plus.
+
+### La phrase qui était vraie et qu'on a lue trop large
+
+`SpiceLZ` portait, juste au-dessus de sa garde :
+
+> « a negative one is not a small image, it is a size that becomes enormous the
+> moment it is multiplied. Refused before anything is allocated from it. »
+
+Exact, à propos des négatifs. Une paire **positive** se multiplie tout aussi
+énormément, et la garde les laissait toutes passer. Et `SpiceLZ4`, le seul
+complet, disait « the cap is the same one the other codecs here use » — ce qui
+était précisément la partie à vérifier.
+
+Le `1 << 28` de LZ4 n'a jamais été un autre nombre que le plafond partagé, juste
+une autre unité : 64 Mpx × 4 octets. Trois nombres qui se trouvaient d'accord,
+écrits séparément, ce qui est exactement ce qui rend une divergence invisible.
+
+### Trois sabordages survivants, trois diagnostics différents
+
+C'est la partie qui a appris quelque chose. Sur huit sabordages, trois n'ont pas
+mordu, et pas pour la même raison :
+
+| sabordage | résultat | diagnostic |
+| --- | --- | --- |
+| QUIC : borne par côté seulement | 1 rouge | — |
+| LZ : borne de magnitude retirée | 1 rouge **et** plantage 17 Go | — |
+| LZ4 : borne sur le produit retirée | **survivant** | **équivalence réelle** |
+| LZ4 : `canHold` retiré | **survivant** | **test manquant** |
+| LZ : garde de signe retirée | **survivant** | **équivalence pour une moitié, test manquant pour l'autre** |
+| LZ4 : `canHold` retiré, après le test ajouté | plantage 4,4 To | — |
+| LZ : garde de signe retirée, après | 3 rouges | — |
+| plafond resserré à 1 Mpx | 21 rouges | — |
+
+**La borne sur le produit de LZ4 ne pouvait pas échouer.** `canHold` plafonne à
+64 Mpx, les formats de ce codec font au plus quatre octets par pixel, et
+64 Mpx × 4 est 1 << 28. La même règle écrite deux fois, la seconde ne pouvant
+que confirmer la première. Supprimée plutôt que gardée : une garde qui ne peut
+pas se déclencher fait croire que le produit est vérifié alors que ce qui
+protège est le compte de pixels.
+
+**Mais l'implication ne va que dans un sens.** `canHold` implique le plafond en
+octets ; le plafond en octets n'implique pas `canHold`. Une image de 100 Mpx en
+seize bits fait 200 Mio : sous l'ancien plafond, au-dessus du partagé. C'est le
+cas qui sépare les deux gardes, et il n'était pas testé — d'où le survivant
+suivant. Avec son témoin, retirer `canHold` tue le processus.
+
+**Et la garde de signe de LZ.** `canHold` demande `width >= 0` en premier, donc
+elle refuse déjà les négatifs : équivalence réelle pour cette moitié. Ce que la
+garde du codec couvre seule, c'est le **zéro** — que `canHold` accepte
+délibérément — et le **stride**, dont `canHold` n'a aucune idée puisque ce n'est
+pas un de ses deux arguments. Trois rouges une fois ces cas écrits.
+
+Un sabordage qui survit n'est pas un échec de la méthode, c'est la méthode qui
+parle. Trois fois de suite ici, et trois réponses différentes : supprimer la
+garde, écrire le test manquant, ou les deux à la fois.

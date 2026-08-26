@@ -1,4 +1,5 @@
 import Foundation
+import WisqCore
 
 /// LZ4 on the SPICE display channel, decoding side.
 ///
@@ -91,14 +92,41 @@ enum SpiceLZ4 {
         }
 
         // Bounded before anything is allocated from it. The two come from the
-        // image descriptor, which is the network's word, and the cap is the
-        // same one the other codecs here use.
-        guard width > 0, height > 0, width <= 1 << 15, height <= 1 << 15 else {
+        // image descriptor, which is the network's word.
+        //
+        // This codec is the one that had both halves: a bound per side *and* a
+        // bound on the product. The comment here used to add "the cap is the
+        // same one the other codecs here use", and that was the part worth
+        // checking — QUIC had only the per-side half, and LZ only the sign.
+        // Measured, before they were brought into line: 4.03 GiB resident from
+        // a QUIC header, 17 GiB and a fatal allocation from an LZ one.
+        //
+        // `1 << 28` bytes was never a different number, only a different unit:
+        // it is exactly `Framebuffer.maximumPixels × 4`. Written as the shared
+        // ceiling now, so the next reader sees one number rather than three
+        // that happen to agree.
+        //
+        // `canHold` admits zero — an empty screen is a thing a server really
+        // sends — so the positivity this codec already required stays spelled
+        // out rather than being quietly widened.
+        guard width > 0, height > 0, Framebuffer.canHold(width: width, height: height) else {
             throw Failure.badGeometry
         }
         let stride = width * bytesPerPixel
         let total = stride * height
-        guard total <= 1 << 28 else { throw Failure.badGeometry }
+        // There used to be a second guard here, `total <= 1 << 28`. Sabotage
+        // said it could not fire, and the arithmetic says why: `canHold` caps
+        // the pixels at 64 Mpx, this codec's formats are at most four bytes a
+        // pixel, and 64 Mpx × 4 **is** 1 << 28. It was the same ceiling written
+        // twice, and the second copy could only ever agree with the first.
+        //
+        // Removed rather than kept, because a guard that cannot fire reads like
+        // the product is being checked when what actually protects this is the
+        // pixel count. The implication runs one way only: `canHold` implies the
+        // byte cap, and the byte cap does **not** imply `canHold` — a 100 Mpx
+        // sixteen-bit image is 200 MiB, under the old cap and over the shared
+        // one. That case has a test now, and it is the one that would have
+        // caught the difference.
 
         var rows = [UInt8](repeating: 0, count: total)
         var written = 0
