@@ -1904,3 +1904,75 @@ Le contraste est maintenant tenu par des tests des deux côtés, et la feuille d
 route dit ce que le paragraphe d'il y a quelques heures affirmait trop vite.
 Reste le vrai gain, qui n'est pas une correction : construire le cache, avec ses
 invalidations, pour qu'une icône parte une fois au lieu de vingt.
+
+## Un champ lu et jeté depuis le début
+
+Le cache d'images est construit, et ce qui l'a rendu intéressant n'est pas le
+cache.
+
+En cherchant comment le serveur dit au client d'oublier une image, je suis tombé
+sur une bifurcation :
+
+    if (dcc->is_mini_header()) {
+        send_free_list(dcc);          // un message INVAL_LIST ordinaire
+    } else {
+        send_free_list_legacy(dcc);   // sous-marshaller + set_header_sub_list
+    }
+
+wisq lit l'en-tête de dix-huit octets. C'est donc toujours la seconde branche :
+l'`INVAL_LIST` ne voyage pas comme un message, il voyage **à l'intérieur** d'un
+autre, à un décalage noté dans un champ de l'en-tête. Et `SpiceWire.DataHeader`
+décode `subList` depuis le premier jour sans que rien ne le lise jamais.
+
+Sans conséquence jusqu'ici, par un accident heureux : avec un cache annoncé nul,
+le serveur n'évince rien et n'envoie donc aucune invalidation. Les deux dettes
+se couvraient l'une l'autre. Corriger la première sans voir la seconde aurait
+donné un client qui garde des images que le serveur a oubliées — c'est-à-dire
+qui redessine une vieille icône à la place de la nouvelle, exactement le
+« pire qu'une image réémise » que la tâche annonçait sans savoir à quel point
+elle avait raison.
+
+La leçon, et c'est la troisième forme de la même cette nuit : **un champ décodé
+n'est pas un champ lu.** Le format était juste, l'analyseur était juste, la
+valeur arrivait intacte jusqu'à une structure — et personne ne s'en servait. Il
+n'y avait rien à corriger dans le code existant, ce qui est précisément
+pourquoi rien ne l'avait signalé. Un grep sur `subList` donnait deux résultats,
+tous deux dans le fichier qui le définit.
+
+## La sonde jetable qui a trouvé ce que le test n'aurait pas trouvé
+
+Un de mes tests a échoué et j'ai failli le corriger. Au lieu de ça j'ai écrit
+une sonde de dix lignes qui imprimait ce que l'analyseur faisait vraiment. Il
+renvoyait une liste **vide** au lieu de lever une erreur.
+
+La cause n'était pas dans le test : j'avais mis dans l'analyseur un
+`guard offset != 0 else { return [] }`, en confondant deux choses. Le zéro
+« il n'y a pas de liste » appartient au champ d'en-tête ; mais l'autre porteur,
+`SPICE_MSG_LIST`, place sa liste au tout début de son corps, où zéro est un
+décalage parfaitement réel. La branche que je venais d'écrire pour lui ne
+pouvait donc rien retourner, silencieusement.
+
+Un test l'aurait attrapé si j'en avais écrit un pour cette branche-là. Ce qui
+l'a attrapé, c'est d'avoir demandé « qu'est-ce qui se passe *vraiment* » plutôt
+que « comment rendre ce test vert ». La différence entre les deux questions vaut
+d'être notée : la seconde a toujours une réponse, et elle est souvent d'affaiblir
+l'assertion.
+
+## Un sabotage qui survit n'est pas toujours une ligne fausse
+
+Retirer le filtre de type sur la liste d'invalidation a survécu à la suite
+entière. Les quatre cas à trancher, et c'est le quatrième : branche
+inatteignable avec un serveur conforme. `dcc_push_release` n'a qu'un appelant et
+il passe toujours `SPICE_RES_TYPE_PIXMAP` ; les palettes sont invalidées par
+leurs propres messages.
+
+J'ai gardé le filtre et ajouté le test qui le distingue, plutôt que de le
+retirer comme « code mort ». La raison est dans le protocole et pas dans le
+serveur d'aujourd'hui : la liste est typée et `SPICE_RESOURCE_TYPE_ENUM_END`
+annonce une énumération faite pour grandir. Les identifiants de palettes et
+d'images viennent d'espaces différents, donc la collision n'est pas improbable,
+elle est une question de temps.
+
+C'est le cas de figure où « le test ne pouvait pas être rouge » ne veut pas dire
+« la ligne ne sert à rien ». Il veut dire : aucun serveur existant ne produit
+l'entrée qui les sépare. Écrire cette entrée à la main est alors tout le travail.
