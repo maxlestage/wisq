@@ -259,6 +259,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// The producer's guarantee, which had no test of its own.
+    ///
+    /// Everything downstream rests on it: `pairing::urls` writes this string
+    /// into the link verbatim, and `AgentPairing.parse` on the phone refuses
+    /// anything that is not exactly 32 bytes of lowercase hex. The two modules
+    /// each say the formats must not drift; this is where the shape is decided.
+    #[test]
+    fn a_certificate_fingerprint_is_thirty_two_bytes_of_lowercase_hex() {
+        for certificate in [b"".as_slice(), b"x".as_slice(), &[0u8; 4096]] {
+            let hex = fingerprint_hex(certificate);
+            assert_eq!(hex.len(), 64, "{hex}");
+            assert!(
+                hex.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{hex}"
+            );
+        }
+    }
+
+    /// Two different certificates do not share a fingerprint — otherwise the
+    /// length test above would pass for a function that returned a constant.
+    #[test]
+    fn different_certificates_have_different_fingerprints() {
+        assert_ne!(fingerprint_hex(b"un"), fingerprint_hex(b"deux"));
+    }
+
     /// The directory is a second line rather than the first — the files inside
     /// are 0600 on their own — but it is what stops a future writer who forgets
     /// from leaving something readable beside them.
