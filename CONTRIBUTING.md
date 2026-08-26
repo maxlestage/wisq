@@ -93,7 +93,21 @@ its input. The second path exists because not every environment can push
 tags; both produce the same release, and the workflow creates the tag when
 it is missing.
 
-The workflow re-runs the test gate, builds `wisq-agent` for Linux x86_64
-(statically linked, so it runs on hosts without a Swift toolchain) and for
-macOS arm64, packages the unsigned IPA, and attaches all three to the
-GitHub release.
+The workflow re-runs the test gate, builds `wisq-agent` for four
+architectures — Linux x86_64 and aarch64, macOS arm64 and x86_64 —
+packages the unsigned IPA, and attaches all five files to the GitHub
+release. The Linux pair is linked against musl rather than glibc, so each
+is a single static file that runs on a host with nothing installed on it,
+Alpine included.
+
+Those four names are also the four `scripts/install.sh` knows how to ask
+for, and `scripts/check-release-matrix.sh` — run by the **Lint** job —
+fails the build if the two lists stop agreeing, or if a given `uname` pair
+stops resolving to the asset it should. Adding an architecture means
+editing both files; the guard exists because the release workflow
+only ever runs when a release is cut, so a gap between them used to be
+discoverable only by installing on a machine nobody had thought about.
+
+To exercise the whole pipeline without publishing anything, run the
+**Release** workflow with `dry_run` ticked: every asset is built, checked
+and attached to the workflow run, and the publish step is skipped.

@@ -6,7 +6,7 @@
 # Options (pass after `sh -s --` when piping):
 #   --version vX.Y.Z   install a specific release (default: latest)
 #   --prefix DIR       install directory (default: /usr/local/bin, else ~/.local/bin)
-#   --from-source      build with the local Swift toolchain instead of downloading
+#   --from-source      build with the local Rust toolchain instead of downloading
 #   --service          also install and start a launchd (macOS) / systemd user
 #                      (Linux) service
 #
@@ -46,9 +46,20 @@ mkdir -p "$PREFIX"
 # --- what platform this is ----------------------------------------------------
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+# The four names here are the four assets the release workflow publishes, and
+# scripts/check-release-matrix.sh fails the build when the two lists stop
+# agreeing. They diverged once already: the workflow built x86_64 Linux and
+# arm64 macOS, this table asked for exactly those, and everyone else — an ARM
+# NAS, a Raspberry Pi, an Intel Mac — fell through to the source build, which
+# needs a Rust toolchain the machine has no reason to carry.
+#
+# `uname -m` on 64-bit ARM Linux says `aarch64` on most distributions and
+# `arm64` on a few; both are the same binary.
 case "$OS/$ARCH" in
   Darwin/arm64) ASSET_SUFFIX="macos-arm64" ;;
+  Darwin/x86_64) ASSET_SUFFIX="macos-x86_64" ;;
   Linux/x86_64) ASSET_SUFFIX="linux-x86_64" ;;
+  Linux/aarch64|Linux/arm64) ASSET_SUFFIX="linux-aarch64" ;;
   *) ASSET_SUFFIX="" ;;   # no prebuilt binary: source build below
 esac
 

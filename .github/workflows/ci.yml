@@ -175,6 +175,12 @@ jobs:
         # formula's field — both of which survived the claim being removed from
         # the site.
         run: scripts/check-licence-claims.sh
+      - name: Check the published architectures match what the installer asks for
+        # The release workflow only ever runs when a release is cut, so a gap
+        # between what it builds and what scripts/install.sh downloads could
+        # not be found by CI at all — only by someone installing on a machine
+        # nobody had thought about.
+        run: scripts/check-release-matrix.sh
 
   app:
     name: App iOS

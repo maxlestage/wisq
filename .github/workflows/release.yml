@@ -16,6 +16,16 @@ on:
         description: "Version to release, e.g. v0.1.0"
         required: true
         type: string
+      dry_run:
+        # Everything except the publish. The four agent binaries get built and
+        # run, the IPA gets packaged, the test gates run — and no release is
+        # created and no tag is pushed. It exists because the rest of this file
+        # only ever executed during a release: a mistake in it was discovered
+        # by cutting one, which is the worst moment to discover anything.
+        description: "Build and check every asset without publishing a release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -57,46 +67,97 @@ jobs:
       - run: cargo test --release
 
   agent-linux:
-    name: wisq-agent (Linux x86_64)
+    name: wisq-agent (${{ matrix.asset }})
     needs: test-rust
     runs-on: ubuntu-latest
+    strategy:
+      # One architecture failing should not hide whether the other builds.
+      fail-fast: false
+      matrix:
+        include:
+          - asset: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            packages: musl-tools
+            # The runner is x86_64, so what it just built runs here.
+            emulator: ""
+          - asset: linux-aarch64
+            target: aarch64-unknown-linux-musl
+            # ring is the agent's one C dependency, so a cross build needs a C
+            # compiler targeting aarch64 *and* headers to go with it.
+            # gcc-aarch64-linux-gnu on its own reaches for the host's
+            # /usr/include and dies on bits/libc-header-start.h — the headers
+            # are the half that is easy to forget.
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static
+            emulator: /usr/bin/qemu-aarch64-static
+    env:
+      # Read only by the aarch64 build; harmless to the x86_64 one, which is
+      # why they sit here rather than in a conditional step. rust-lld does the
+      # linking because no aarch64 musl linker is packaged for Ubuntu, and the
+      # gnu cross-gcc supplies the C compilation ring asks for.
+      CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
     steps:
       - uses: actions/checkout@v7
       - name: Build release binary
         # musl, so the result is one static file that runs on any Linux with
         # nothing installed first — including Alpine. It is also why the daemon
         # left Swift: statically linked against the Swift runtime it was 58 MB
-        # to serve four routes; with TLS on board this is ~1.7 MB. musl-tools
-        # is for ring, the agent's one C dependency.
+        # to serve four routes; with TLS on board this is ~1.7 MB on x86_64 and
+        # ~1.4 MB on aarch64.
         run: |
-          sudo apt-get install -y --no-install-recommends musl-tools
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }}
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} -p wisq-agent
           mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/wisq-agent dist/
-          env -i dist/wisq-agent --help > /dev/null
-          tar -C dist -czf wisq-agent-${{ env.VERSION }}-linux-x86_64.tar.gz wisq-agent
+          cp target/${{ matrix.target }}/release/wisq-agent dist/
+          file dist/wisq-agent
+          env -i ${{ matrix.emulator }} dist/wisq-agent --help > /dev/null
+          tar -C dist -czf wisq-agent-${{ env.VERSION }}-${{ matrix.asset }}.tar.gz wisq-agent
       - uses: actions/upload-artifact@v7
         with:
-          name: agent-linux
+          name: agent-${{ matrix.asset }}
           path: wisq-agent-*.tar.gz
 
   agent-macos:
-    name: wisq-agent (macOS arm64)
+    name: wisq-agent (${{ matrix.asset }})
     needs: test-rust
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: macos-arm64
+            target: aarch64-apple-darwin
+            # The runner is Apple silicon, so this slice can be run before it
+            # is shipped.
+            native: true
+          - asset: macos-x86_64
+            target: x86_64-apple-darwin
+            # It cannot. GitHub's macOS runners are arm64 and carry no Rosetta,
+            # so this slice is checked for *being* x86_64 rather than for
+            # working — `file`, not `--help`. Said plainly here because the
+            # other three assets do get run, and an asymmetry nobody wrote down
+            # reads later as an oversight.
+            native: false
     steps:
       - uses: actions/checkout@v7
       - name: Build release binary
         run: |
-          cargo build --release -p wisq-agent
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} -p wisq-agent
           mkdir -p dist
-          cp target/release/wisq-agent dist/
-          dist/wisq-agent --help > /dev/null
-          tar -C dist -czf wisq-agent-${{ env.VERSION }}-macos-arm64.tar.gz wisq-agent
+          cp target/${{ matrix.target }}/release/wisq-agent dist/
+          file dist/wisq-agent
+          if [ "${{ matrix.native }}" = "true" ]; then
+            dist/wisq-agent --help > /dev/null
+          else
+            file dist/wisq-agent | grep -q x86_64
+          fi
+          tar -C dist -czf wisq-agent-${{ env.VERSION }}-${{ matrix.asset }}.tar.gz wisq-agent
       - uses: actions/upload-artifact@v7
         with:
-          name: agent-macos
+          name: agent-${{ matrix.asset }}
           path: wisq-agent-*.tar.gz
 
   ios-ipa:
@@ -139,6 +200,11 @@ jobs:
     name: Publish release
     needs: [test, agent-linux, agent-macos, ios-ipa]
     runs-on: ubuntu-latest
+    # On a tag push `inputs.dry_run` does not exist, so this reads as true and
+    # the release is published — the tag path is unchanged. Only an explicit
+    # dry run stops here, with every asset already built and attached to the
+    # workflow run rather than to a release.
+    if: ${{ !inputs.dry_run }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
