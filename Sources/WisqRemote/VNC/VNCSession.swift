@@ -107,6 +107,7 @@ public actor VNCSession: RemoteSession {
         try await performVersionHandshake(stream)
         try await performSecurityHandshake(stream)
         let (width, height) = try await performInitialisation(stream)
+        try Self.requireHoldableDesktop(width: width, height: height)
 
         framebuffer.resize(width: width, height: height)
 
@@ -181,6 +182,27 @@ public actor VNCSession: RemoteSession {
         }
     }
 
+    /// Refuses a desktop this client cannot hold, and says which one.
+    ///
+    /// One rule at two doors, and the second door is the reason this exists.
+    /// `performInitialisation` **did** bound the handshake geometry — at 16384
+    /// a side, about a gigabyte of BGRA — but the `desktopSize` rectangle that
+    /// resizes a live session was bounded by nothing at all. A server can send
+    /// that one whenever it likes, and 65535 × 65535 × 4 is about seventeen
+    /// gigabytes; on a phone that is the app disappearing rather than an error.
+    ///
+    /// The number is `Framebuffer.maximumPixels`, which SPICE has used since
+    /// `SpiceSurfaces` grew a ceiling. Sixteen thousand a side was four times
+    /// looser than what the other protocol allowed itself, so this tightens the
+    /// handshake as well as guarding the resize — deliberately, and said here
+    /// rather than left to be discovered.
+    static func requireHoldableDesktop(width: Int, height: Int) throws {
+        guard Framebuffer.canHold(width: width, height: height) else {
+            throw WisqError.malformedMessage(
+                "bureau de \(width)×\(height) : au-delà de ce que ce client peut tenir")
+        }
+    }
+
     private func performInitialisation(_ stream: any ByteStream) async throws -> (Int, Int) {
         // Shared flag: never kick other viewers off the desktop.
         try await stream.write(Data([1]))
@@ -195,7 +217,10 @@ public actor VNCSession: RemoteSession {
         }
         desktopName = try await stream.readLatin1(count: nameLength)
 
-        guard width > 0, height > 0, width <= 16384, height <= 16384 else {
+        // The ceiling used to live here, as `<= 16384` a side — about a
+        // gigabyte of BGRA, and four times what SPICE allows itself. It is
+        // `requireHoldableDesktop` now, at both doors and at one number.
+        guard width > 0, height > 0 else {
             throw WisqError.malformedMessage("taille de bureau invalide (\(width)×\(height))")
         }
         return (width, height)
@@ -256,6 +281,10 @@ public actor VNCSession: RemoteSession {
                 painted.append(rect)
             case .resized(let width, let height):
                 supportsResize = true
+                // The same check as at the handshake, because this is the same
+                // number arriving by a second door — and this one a server can
+                // knock on again and again.
+                try Self.requireHoldableDesktop(width: width, height: height)
                 framebuffer.resize(width: width, height: height)
                 resizedTo = (width, height)
             case .serverSupportsResize:
