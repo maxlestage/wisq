@@ -56,6 +56,20 @@ public actor SPICESession: RemoteSession {
     /// shared counter would give both of them a sequence full of holes — and a
     /// server that acknowledges by serial would be right to complain about it.
     private var inputSerial: UInt64 = 1
+    /// Input messages stamped and waiting, and whether a drainer is running.
+    private var pendingInput: [Data] = []
+    private var drainingInput = false
+
+    /// Whether anything is still on its way to the inputs channel.
+    ///
+    /// Not `public`: the app has no use for it. It exists so a test can wait
+    /// for the queue to empty rather than guess how long that takes — the same
+    /// reason `isCapturingMicrophone` exists, and guessing is what made an
+    /// earlier test pass alone and fail in a suite.
+    var hasQueuedInput: Bool { !pendingInput.isEmpty || drainingInput }
+    /// The same, for the microphone: a separate connection, a separate count.
+    private var pendingRecord: [Data] = []
+    private var drainingRecord = false
 
     public init(
         configuration: SessionConfiguration,
@@ -128,16 +142,50 @@ public actor SPICESession: RemoteSession {
             return
         }
         guard let inputs else { return }
+        // Stamped and queued in one synchronous step, then written by a single
+        // drainer. Both halves matter and neither is tidiness:
+        //
+        //   * An actor is reentrant at its suspension points. Building the
+        //     message with `inputSerial` and incrementing it *after* the write
+        //     returned let a second `send` enter in between and take the same
+        //     number — measured, with two concurrent key events: both went out
+        //     as serial 1 and serial 2 was never used.
+        //   * A wheel notch is two messages, and the doc comment above says
+        //     what a lost release does to the guest. A whole event goes on the
+        //     queue in one step, so nothing can be spliced through it.
+        //
+        // This is `SpiceAgentChannel`'s design, and its `draining` comment
+        // describes the same hazard on the main channel. It was solved there
+        // and left open here.
         for message in SpiceInputs.messages(for: event) {
+            pendingInput.append(SpiceWire.message(
+                message.type, serial: inputSerial, payload: message.payload
+            ))
+            inputSerial += 1
+        }
+        await drainInput(to: inputs)
+    }
+
+    /// Writes queued input messages, one drainer at a time.
+    ///
+    /// A second caller returns rather than waiting: the one already running
+    /// re-checks the queue every time round, so the work it left is picked up.
+    private func drainInput(to inputs: any ByteStream) async {
+        guard !drainingInput else { return }
+        drainingInput = true
+        defer { drainingInput = false }
+
+        while !pendingInput.isEmpty {
+            let next = pendingInput.removeFirst()
             do {
-                try await inputs.write(SpiceWire.message(
-                    message.type, serial: inputSerial, payload: message.payload
-                ))
-                inputSerial += 1
+                try await inputs.write(next)
             } catch {
                 // A failed write means the connection is gone; the pump on the
                 // display channel will notice and end the session. Reporting it
-                // here as well would disconnect twice for one cause.
+                // here as well would disconnect twice for one cause. What is
+                // queued goes with it — replaying taps into a desktop that has
+                // moved on is the thing `send` refuses to do at the other end.
+                pendingInput.removeAll()
                 return
             }
         }
@@ -393,22 +441,27 @@ public actor SPICESession: RemoteSession {
 
     public func sendMicrophone(samples: [Int16], time: UInt32) async {
         guard let record, recording.isCapturing, !samples.isEmpty else { return }
-        do {
-            if !recording.hasAnnouncedMode {
-                try await write(
-                    SpiceRecordWire.ClientMessage.mode.rawValue,
-                    SpiceRecordWire.modeMessage(time: time), to: record
-                )
-                try await write(
-                    SpiceRecordWire.ClientMessage.startMark.rawValue,
-                    SpiceRecordWire.startMarkMessage(time: time), to: record
-                )
-                recording.announcedMode()
-            }
-            try await write(
-                SpiceRecordWire.ClientMessage.data.rawValue,
-                SpiceRecordWire.dataMessage(time: time, samples: samples), to: record
+        // Queued in one synchronous step for the reason `send(_:)` gives, and
+        // with a second one of its own: `announcedMode()` used to be set after
+        // two `await`s, so two buffers arriving together could each find the
+        // mode unannounced and both announce it.
+        if !recording.hasAnnouncedMode {
+            enqueueRecord(
+                SpiceRecordWire.ClientMessage.mode.rawValue,
+                SpiceRecordWire.modeMessage(time: time)
             )
+            enqueueRecord(
+                SpiceRecordWire.ClientMessage.startMark.rawValue,
+                SpiceRecordWire.startMarkMessage(time: time)
+            )
+            recording.announcedMode()
+        }
+        enqueueRecord(
+            SpiceRecordWire.ClientMessage.data.rawValue,
+            SpiceRecordWire.dataMessage(time: time, samples: samples)
+        )
+        do {
+            try await drainRecord(to: record)
         } catch {
             // A microphone that cannot reach the guest is a microphone that does
             // not work, not a session that has ended. The display channel is
@@ -417,11 +470,25 @@ public actor SPICESession: RemoteSession {
         }
     }
 
-    private func write(_ type: UInt16, _ payload: Data, to stream: any ByteStream) async throws {
-        try await stream.write(
-            SpiceWire.message(type, serial: recordSerial, payload: payload)
-        )
+    private func enqueueRecord(_ type: UInt16, _ payload: Data) {
+        pendingRecord.append(SpiceWire.message(type, serial: recordSerial, payload: payload))
         recordSerial += 1
+    }
+
+    private func drainRecord(to stream: any ByteStream) async throws {
+        guard !drainingRecord else { return }
+        drainingRecord = true
+        defer { drainingRecord = false }
+
+        while !pendingRecord.isEmpty {
+            let next = pendingRecord.removeFirst()
+            do {
+                try await stream.write(next)
+            } catch {
+                pendingRecord.removeAll()
+                throw error
+            }
+        }
     }
 
     /// Reads the playback channel and hands frames to whoever is listening.
