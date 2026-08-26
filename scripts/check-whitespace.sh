@@ -35,6 +35,22 @@ while IFS= read -r file; do
     report "$file : espaces en fin de ligne (trailing_whitespace) — $(grep -c '[[:space:]]$' "$file") ligne(s)"
   fi
 
+  # opening_brace: a line whose entire content is `{` is a brace that was put
+  # on its own line, which SwiftLint refuses.
+  #
+  # Here because it has now cost two pull requests, both mine, both for the
+  # same reason: a signature too long to sit on one line, wrapped out of a
+  # habit from codebases that limit line length. This one does not —
+  # `line_length` is disabled in .swiftlint.yml — so the fix is always to put
+  # the signature back on one line, or to name the return type.
+  #
+  # A whole-line `{` is not the only shape SwiftLint catches, so this is a
+  # floor like the rest of the file. It is the shape that actually happens
+  # here: the rest of the repository has none.
+  if grep -n '^[[:space:]]*{[[:space:]]*$' "$file" > /dev/null; then
+    report "$file : accolade ouvrante seule sur sa ligne (opening_brace) — ligne $(grep -n '^[[:space:]]*{[[:space:]]*$' "$file" | head -1 | cut -d: -f1)"
+  fi
+
   # vertical_whitespace: at most one blank line in a row.
   if awk 'BEGIN { blank = 0 }
           /^[[:space:]]*$/ { blank++; if (blank > 1) { print NR; exit } }
