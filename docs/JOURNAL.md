@@ -4140,3 +4140,49 @@ l'autre, et pourquoi elle vit là.
 | garde de `readUInt8()` retirée | **plantage** — puis rouge avec les tests |
 | octets de CPIXEL inversés | 37 rouges (déjà tenu) |
 | octets du jumeau mort inversés | **0** — d'où la suppression |
+
+## Un flux par encodage, et rien ne le tenait
+
+`RFBStreams` s'ouvre sur « One per compressed encoding, plus Tight's four …
+the whole point is that the dictionary carries across frames ». Trois
+sabordages, trois verts sur 978 tests : faire partager un flux à `zlib` et
+`zrle`, faire rendre toujours le flux 0 à `tight(_:)`, remplacer les quatre
+flux Tight par un seul.
+
+Ce que ça coûte n'est pas un plantage mais l'inverse — le **silence**. Le
+dictionnaire d'un flux zlib, c'est tout ce qu'il a détendu jusque-là ; deux
+encodages qui partagent un flux s'empoisonnent mutuellement l'historique. La
+session décode faux à partir de la première image mixte, sans erreur, sans
+message. `InflateStream` le dit déjà : « one dropped or mis-parsed byte
+corrupts every frame after it ».
+
+### Le comportement plutôt que l'identité
+
+Écrire `XCTAssertFalse(streams.zrle === streams.zlib)` aurait épinglé la façon
+dont la séparation est faite, pas la propriété qui compte. La sonde est donc
+comportementale, et elle réutilise la paire de blocs d'`InflateStreamTests` :
+le second n'a pas d'en-tête zlib, donc il ne veut dire quelque chose que pour
+un flux ayant déjà avalé le premier. Le donner à l'autre encodage doit **lever**.
+
+Le témoin vient d'abord dans le fichier, comme d'habitude : un flux qui a bien
+vu le premier bloc continue la phrase. Sans lui, tous les refus qui suivent
+passeraient pour un `RFBStreams` dont chaque flux est cassé.
+
+### Une correction que je me suis faite en route
+
+J'allais écrire que le bornage de `tight(_:)` protège d'un indice venu du fil.
+Vérification faite, `TightDecoder` masque déjà avec `& 0x3` et la boucle de
+réinitialisation parcourt `0..<4` : **l'indice hors bornes n'est pas
+atteignable aujourd'hui**. C'est de la profondeur, pas un trou, et le test le
+dit en ces termes. Ce que le sabordage montre quand même : remplacer le bornage
+par un accès direct ne fait pas échouer un test, il tue le processus.
+
+### Les cinq sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| `zlib` et `zrle` partagent un flux | 2 |
+| `tight()` rend toujours le flux 0 | 13 |
+| les quatre flux Tight n'en font qu'un | 13 |
+| `resetTight` vise toujours le flux 0 | 1 |
+| le bornage remplacé par un accès direct | **plantage**, signal 4 |
