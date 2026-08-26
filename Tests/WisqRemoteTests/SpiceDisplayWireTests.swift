@@ -288,6 +288,38 @@ final class SpiceDisplayWireTests: XCTestCase {
         XCTAssertEqual(image?.payload, codecBytes)
     }
 
+    /// **A `FROM_CACHE` image carries an identifier and no pixels**, and this
+    /// client has nothing to look the identifier up in.
+    ///
+    /// The descriptor ends where a compressed image's length would begin: the
+    /// server has already decided the client holds this picture, so it sends
+    /// the name only. Read with the compressed shape, the four bytes after the
+    /// descriptor would be whatever follows in the message.
+    ///
+    /// This is the test that makes `SpiceDisplayClient.pixmapCachePixels`
+    /// mean something. It is zero *because* this decode yields no pixels — the
+    /// two facts are asserted together here so that raising the declared cache
+    /// without building a cache cannot pass.
+    func testAnImageNamedFromTheCacheHasNoPixelsToDraw() throws {
+        for type in [UInt8(103) /* FROM_CACHE */, 106 /* FROM_CACHE_LOSSLESS */] {
+            let trailing: [UInt8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+            let payload = u64(0xCAFE) + [type, 0] + u32(64) + u32(48) + trailing
+            let body = SpiceDisplayWire.Body([UInt8](repeating: 0, count: 4) + payload)
+
+            let image = try XCTUnwrap(try SpiceDisplayWire.image(at: 4, in: body))
+            XCTAssertEqual(image.descriptor.id, 0xCAFE, "type \(type)")
+            XCTAssertNil(image.payload, "un nom n'est pas une charge utile")
+            XCTAssertNil(image.bitmap)
+
+            // What the drawing paths actually ask for. `nil` here is how the
+            // draw gets skipped, which is why a declared cache would leave the
+            // region showing whatever was under it.
+            var window = SpiceGLZ.Window()
+            XCTAssertNil(try SpiceDisplayWire.pixels(of: image, glzWindow: &window))
+            XCTAssertNil(try SpiceDisplayWire.pixels(of: image))
+        }
+    }
+
     /// A length larger than the message is refused rather than believed. It is
     /// the one number in a compressed image that this layer does read, so it is
     /// the one that has to be checked.

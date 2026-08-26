@@ -1397,11 +1397,68 @@ autres tenaient déjà : GLZ décode, et `get_compression_for_bitmap` rétrograd
 les formats à palette. Un test lie désormais les deux valeurs, pour qu'aucune
 ne puisse revenir en arrière seule.
 
-**Ce que ça dit du reste.** Le cache de pixmaps, lui, est bien un budget :
-`dcc_add_to_cache` évince, et quand il n'y arrive pas il renvoie `FALSE` et
-l'image part sans être mise en cache. Une valeur trop basse coûte de la bande
-passante. Deux nombres voisins, de même forme, dont l'un se dégrade et l'autre
-tue.
+**Ce que ça dit du reste.** Côté allocation, le cache de pixmaps est bien un
+budget : `dcc_add_to_cache` évince, et quand il n'y arrive pas il renvoie
+`FALSE` et l'image part sans être mise en cache — une valeur trop basse ne coûte
+que de la bande passante. J'ai conclu de là que c'était le nombre inoffensif des
+deux. C'était vrai de son allocation et faux de son effet : la section suivante
+montre qu'une valeur trop *haute* fait envoyer au serveur des images réduites à
+leur seul identifiant. Deux nombres voisins, de même forme, et il a fallu les
+regarder l'un après l'autre pour voir que leurs valeurs sûres sont opposées.
+
+### Le cache de pixmaps : la même case, la réponse inverse
+
+Fait, et c'est la suite directe de la fenêtre GLZ — même message, même forme,
+conclusion opposée.
+
+`SPICE_MSGC_DISPLAY_INIT` porte les deux nombres côte à côte. wisq annonçait
+**4 Mi pixels** de cache d'images, et n'a pas de cache d'images. Le commentaire
+du décodeur le disait déjà, à propos des palettes : « nommée depuis un cache que
+ce client ne tient pas ».
+
+Le mécanisme est entièrement côté serveur. Le pilote QXL de l'invité marque
+`QXL_IMAGE_CACHE` une image qu'il compte redessiner — icônes, glyphes, bordures,
+tuiles de fond d'écran — ce que `red-parse-qxl.cpp` traduit en
+`SPICE_IMAGE_FLAGS_CACHE_ME`. Au premier envoi, `marshal_lossy_or_lossless`
+appelle `dcc_pixmap_cache_unlocked_add(dcc, id, width * height, …)` — l'unité est
+donc bien le pixel — et **ce n'est que si cet ajout réussit** qu'il renvoie
+`CACHE_ME` au client. À chaque envoi suivant du même identifiant, `fill_bits`
+trouve `dcc_pixmap_cache_unlocked_hit` vrai et écrit
+`SPICE_IMAGE_TYPE_FROM_CACHE` : un nom, et aucun pixel.
+
+wisq ne sait pas le résoudre. `SpiceDisplayWire.image` rend un descripteur sans
+charge utile, `pixels(of:)` renvoie `nil`, et le dessin est sauté — la région
+garde ce qu'il y avait dessous. Ni plantage ni trou noir : **des pixels
+périmés, en silence**, et précisément sur les images qu'un bureau répète le
+plus.
+
+Annoncer zéro ferme la porte à la source. `cache->available` part de la taille
+annoncée, le premier ajout la rend négative, la boucle d'éviction trouve un
+anneau vide (`ring_get_tail` renvoie `NULL`) et l'ajout renvoie `FALSE`. Rien
+n'est jamais enregistré, `CACHE_ME` n'est jamais renvoyé, aucun succès de cache
+n'est possible, et toutes les images arrivent avec leurs octets. Ça coûte de la
+bande passante — ces images sont réémises — et c'est le bon prix à payer tant
+qu'il n'y a pas de cache où la dépenser.
+
+**Ce que la paire enseigne.** Deux nombres voisins, de même type, dans le même
+message, et les valeurs sûres sont opposées : la fenêtre GLZ doit être *grande*
+(en dessous d'une image, le serveur fait `abort()`), le cache doit être *nul*
+(au-dessus de zéro, le serveur envoie des noms que le client ne peut pas lire).
+Rien dans le nom des champs, leur type ou leur ordre ne le laisse deviner. Ce
+qui les distingue vit dans trois fichiers que le client n'exécute jamais.
+
+Un test lie les deux moitiés : `testAnImageNamedFromTheCacheHasNoPixelsToDraw`
+décode un vrai message `FROM_CACHE` et montre qu'il n'en sort aucun pixel, et
+`testThePixmapCacheIsZeroBecauseThereIsNoCacheToPutImagesIn` épingle le zéro en
+s'y référant. Relever le nombre annoncé sans construire le cache ne peut donc
+plus passer.
+
+**Ce qui reste, et qui n'est pas une correction mais un gain.** Un vrai cache
+côté client — stocker les images décodées par `descriptor.id`, avec une borne et
+une éviction, et honorer les messages d'invalidation qui vont avec — rendrait au
+lien mobile ce que la correction lui coûte : une icône envoyée une fois au lieu
+de vingt. Les deux moitiés doivent atterrir ensemble ; une entrée périmée est
+pire qu'une image réémise.
 
 ## Lot 6 — finition
 
