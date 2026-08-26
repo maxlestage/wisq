@@ -1605,6 +1605,52 @@ une mauvaise liste : c'est une liste correcte qui n'arrive jamais jusqu'à
 `open` — ce qu'avaient les deux canaux audio. Le sabotage qui remet
 `channelCaps: []` est celui qui compte.
 
+### Les jetons de l'agent : le chemin que la référence n'emprunte jamais
+
+Fait. Quatrième tour de l'audit des promesses, sur les capacités du canal
+principal — vides elles aussi.
+
+`MainChannel::push_agent_connected` choisit le message selon une capacité :
+
+    if (rcc->test_remote_cap(SPICE_MAIN_CAP_AGENT_CONNECTED_TOKENS))
+        pipe_add_type(RED_PIPE_ITEM_TYPE_MAIN_AGENT_CONNECTED_TOKENS);   // 115, avec un compte
+    else
+        pipe_add_empty_msg(SPICE_MSG_MAIN_AGENT_CONNECTED);              // 107, vide
+
+spice-gtk l'annonce, wisq ne l'annonçait pas : **le chemin que wisq empruntait
+toujours est celui que le client de référence n'emprunte jamais.** C'est une
+raison de le regarder de près, pas de le croire éprouvé.
+
+**Ce que ça coûtait.** Un compte de jetons est la seule chose qui rend l'agent
+inscriptible, et `reds_reset_vdp` dit où un client en apprend un : « une fois à
+l'initialisation du canal principal, et une fois à la connexion de l'agent avec
+`SPICE_MSG_MAIN_AGENT_CONNECTED_TOKENS` ». Il n'y a pas de troisième occasion —
+`MAIN_AGENT_TOKEN` ne fait que rendre des jetons à mesure que le serveur
+consomme ce que le client a envoyé.
+
+Or au redémarrage de l'agent, `RedCharDevice::reset` rend au client tout son
+quota **du côté serveur** (`num_client_tokens += num_client_tokens_free`) et ne
+peut le dire que dans le message 115. Un client qui lit 107 garde ce qui lui
+restait. Être bas ne fait que gaspiller ; être à **zéro** ne se rattrape jamais.
+
+Et la panne est sournoise : `AGENT_START` part quand même — c'est un message du
+canal principal, il ne coûte pas de jeton — donc la poignée de main a l'air
+normale. Mais toute donnée d'agent qui suit, à commencer par l'annonce de
+capacités du client lui-même, reste en file : `spend()` échoue, rien ne part, le
+serveur ne consomme rien, aucun jeton ne revient. Inerte plutôt que visiblement
+cassé.
+
+**Ce qu'il fallait établir avant d'ajouter le bit.** Il siège au milieu des
+drapeaux de migration et se lit comme l'un d'eux. `migrate_connect` ne s'en sert
+que pour poser `try_seamless`, puis exige encore `SEAMLESS_MIGRATE` — le bit 3,
+que wisq n'annonce pas — avant de faire quoi que ce soit de sans couture, et
+retombe sur le semi-sans-couture sinon. Demander le message à jetons ne peut
+donc pas entraîner la migration avec lui.
+
+Le test lit les mots de capacité sur la prise, comme pour l'audio : le défaut
+visé n'est pas une mauvaise liste, c'est une liste correcte qui n'arrive jamais
+jusqu'à `open`.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).

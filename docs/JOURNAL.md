@@ -2065,3 +2065,44 @@ première fois que ça sert vraiment.
 Corollaire pour les tests eux-mêmes : **une assertion douce suivie d'un accès
 indexé est un plantage en puissance.** Dans une suite, un test qui plante n'est
 pas un test qui échoue — il emporte le verdict de tous les autres.
+
+## Le chemin que personne d'autre n'emprunte
+
+Quatrième tour de l'audit des promesses. Ce qui a attiré l'œil n'est pas un
+symptôme : c'est une asymétrie.
+
+`push_agent_connected` choisit entre deux messages selon une capacité. spice-gtk
+l'annonce toujours ; wisq ne l'annonçait pas. Donc **le chemin que wisq
+empruntait à chaque fois était celui que le client de référence n'exerce
+jamais** — jamais testé par personne, jamais vu en production ailleurs. C'est
+une raison suffisante de l'examiner, indépendamment de tout bug soupçonné. Je la
+garde comme heuristique : *quand la référence et nous prenons des branches
+différentes, c'est la nôtre qui est la moins éprouvée, et ce n'est pas
+symétrique.*
+
+Il y avait bien un défaut au bout : après un redémarrage de l'agent, le serveur
+rend au client tout son quota de jetons de son côté et ne peut le dire que dans
+le message que wisq ne recevait pas. À zéro jeton, le presse-papiers ne repart
+jamais.
+
+## Mon test a corrigé mon affirmation
+
+J'avais écrit, dans le test et dans le commentaire du code, qu'à zéro jeton
+« rien ne part ». Le test a échoué : `AGENT_START` part quand même, parce que
+c'est un message du canal principal et qu'il ne coûte pas de jeton.
+
+La formulation juste est plus intéressante que celle que j'avais : la poignée de
+main **réussit**, et seule la donnée d'agent reste bloquée — à commencer par
+l'annonce de capacités du client. L'invité voit donc un client s'attacher puis
+ne jamais dire ce qu'il sait faire. Inerte plutôt que cassé, ce qui est la pire
+des deux.
+
+J'ai corrigé le test et le commentaire ensemble. C'est la deuxième fois cette
+nuit qu'un test refuse une affirmation trop large que j'allais publier — la
+première étant `missingPalette`. Les deux fois, la version exacte était plus
+utile que l'approximation : elle disait *où* ça casse, pas seulement *que* ça
+casse.
+
+Corollaire de méthode : quand un test contredit une phrase que j'ai écrite, la
+première hypothèse doit être que la phrase est fausse, pas le test. Les deux
+fois, c'était la phrase.
