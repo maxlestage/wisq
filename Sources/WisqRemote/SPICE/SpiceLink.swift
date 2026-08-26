@@ -15,10 +15,13 @@ import Security
 /// that CI does not have, and the sequence, the capability negotiation, the
 /// framing and every error path would go unchecked.
 ///
-/// `WisqNet.SHA256` already made that mistake in the other direction: it
-/// returns empty `Data` without CryptoKit, so a digest built on it passes its
-/// tests by agreeing with itself about nothing. A seam is what stops the same
-/// story here.
+/// `WisqNet.SHA256` made that mistake in the other direction and carried it a
+/// long time: it *returned* empty `Data` without CryptoKit, so a digest built on
+/// it passed its tests by agreeing with itself about nothing. That one has since
+/// been given a real fallback, because SHA-256 is arithmetic anyone can write
+/// down. RSA-OAEP is not, so a seam is the way out here rather than a second
+/// implementation — and the seam buys the same thing the fallback bought there:
+/// a Linux runner that can go red.
 public typealias SpiceTicketEncryptor =
     @Sendable (_ password: String, _ publicKey: [UInt8]) throws -> Data
 

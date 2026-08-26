@@ -285,6 +285,24 @@ mod tests {
         assert_ne!(fingerprint_hex(b"un"), fingerprint_hex(b"deux"));
     }
 
+    /// The two tests above hold for any well-behaved 32-byte hash. This one
+    /// holds only for SHA-256, and it is the same input and the same expected
+    /// string as `SHA256Tests.testTheFingerprintStringIsTheFormTheLinkCarries`
+    /// on the phone side.
+    ///
+    /// That is the whole point of writing it twice: the agent puts this string
+    /// in the pairing link and the phone compares it to what it computed from
+    /// the certificate the server presented. Nothing in either language notices
+    /// if the two stop describing the same bytes the same way — so both are
+    /// nailed to one published vector instead.
+    #[test]
+    fn the_fingerprint_is_sha256_rendered_the_way_the_phone_renders_it() {
+        assert_eq!(
+            fingerprint_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
     /// The directory is a second line rather than the first — the files inside
     /// are 0600 on their own — but it is what stops a future writer who forgets
     /// from leaving something readable beside them.
