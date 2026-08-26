@@ -35,6 +35,23 @@ public enum AgentPairing {
 
     public static let scheme = "wisq"
 
+    /// A certificate fingerprint is a SHA-256 digest: exactly this many bytes.
+    ///
+    /// Named because **both halves read from it**. `parse` refused any other
+    /// length from the start — a malformed fingerprint is an error, never a
+    /// shrug — while `url(for:)` would happily write one, so this type could
+    /// produce a link it then refused. The doc above says the two sides live
+    /// here so they cannot drift apart; a constant they share is what makes
+    /// that true rather than merely intended.
+    public static let fingerprintByteCount = 32
+
+    /// The link for a payload, or nil when the payload cannot make a valid one.
+    ///
+    /// A fingerprint of the wrong length yields **no link at all**, rather than
+    /// a link without `fp`. The absent-`fp` form is meaningful — it means plain
+    /// HTTP — so emitting it here would turn a broken fingerprint into a silent
+    /// downgrade, which is precisely what `parse` refuses to do at the other
+    /// end.
     public static func url(for payload: Payload) -> URL? {
         var components = URLComponents()
         components.scheme = scheme
@@ -50,6 +67,7 @@ public enum AgentPairing {
             items.append(URLQueryItem(name: "name", value: name))
         }
         if let fingerprint = payload.certificateFingerprint {
+            guard fingerprint.count == fingerprintByteCount else { return nil }
             items.append(URLQueryItem(name: "fp", value: hex(fingerprint)))
         }
         components.queryItems = items
@@ -76,7 +94,7 @@ public enum AgentPairing {
         // what an attacker mangling the link would want.
         var fingerprint: Data?
         if let raw = values["fp"] {
-            guard let parsed = data(fromHex: raw), parsed.count == 32 else {
+            guard let parsed = data(fromHex: raw), parsed.count == fingerprintByteCount else {
                 throw WisqError.malformedMessage("empreinte de certificat invalide dans le lien")
             }
             fingerprint = parsed
