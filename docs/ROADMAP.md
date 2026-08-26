@@ -1651,6 +1651,55 @@ Le test lit les mots de capacité sur la prise, comme pour l'audio : le défaut
 visé n'est pas une mauvaise liste, c'est une liste correcte qui n'arrive jamais
 jusqu'à `open`.
 
+### L'audit des capacités, terminé : les six canaux
+
+Cinq tranches (#64, #66, #67, #68, #69) sont sorties d'une seule question posée
+à chaque canal : **qu'est-ce que ce client promet, et tient-il chaque
+promesse ?** Le tableau ci-dessous clôt la série. Il est là surtout pour dire que
+le filon est *épuisé* et non *abandonné* — la différence qu'on ne peut plus
+reconstituer six mois après.
+
+| canal | capacités du protocole | ce que wisq annonce |
+| --- | --- | --- |
+| principal | 4 | `AGENT_CONNECTED_TOKENS` |
+| display | 9 | `sizedStream`, `preferredCompression`, `lz4Compression` |
+| lecture audio | 4 | `VOLUME` |
+| enregistrement | 3 | `VOLUME` |
+| curseur | **0** | — |
+| entrées | 1, côté serveur | — |
+
+Ce que chaque ligne a coûté ou évité :
+
+* **principal** — sans `AGENT_CONNECTED_TOKENS`, le serveur envoie le message 107
+  sans compte de jetons ; à zéro jeton le presse-papiers ne repart jamais de la
+  session. Les trois autres bits restent absents : wisq ne migre pas et n'a pas
+  d'usage du nom de l'invité ;
+* **display** — `sizedStream` manquait et le serveur *jetait* les images
+  redimensionnées ; `multiCodec` est absente **exprès**, puisqu'avec elle le
+  serveur choisirait un codec vidéo que wisq ne décode pas ;
+* **audio** — `VOLUME` manquait et quatre décodeurs testés n'étaient jamais
+  atteints ; aucun codec n'est annoncé **exprès**, `snd_desired_audio_mode`
+  rendant du PCM brut à qui n'en réclame pas. Et les deux canaux ne numérotent
+  pas pareil : `OPUS` au bit 3 en lecture, au bit 2 en enregistrement ;
+* **curseur** — le protocole ne définit aucune capacité pour ce canal. Rien à
+  annoncer, et ce n'est pas un oubli ;
+* **entrées** — une seule existe, `KEY_SCANCODE`, et c'est le *serveur* qui
+  l'annonce pour dire qu'il accepte des scancodes bruts. wisq envoie
+  `KEY_DOWN`/`KEY_UP`, que `inputs-channel.cpp` traite sans condition (lignes
+  265-284, vérifié). Rien à annoncer, rien à vérifier.
+
+**La leçon, une fois pour toutes.** Une capacité annoncée est une affirmation sur
+ce client, et elle se périme dans les deux sens. Celles qu'on annonce sans savoir
+faire se remarquent — le symptôme est chez nous. Celles qu'on sait faire sans les
+annoncer sont bien plus discrètes, parce que le symptôme est chez le serveur : une
+image jetée, un message jamais envoyé, un compte jamais transmis. Quatre des cinq
+trouvailles étaient de ce second type.
+
+**Et l'heuristique qui a trouvé la dernière** : quand la référence et nous
+prenons des branches différentes, c'est la nôtre qui est la moins éprouvée. Ce
+n'est pas symétrique, et ça ne demande pas de soupçonner un bug — juste de
+remarquer la divergence.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
