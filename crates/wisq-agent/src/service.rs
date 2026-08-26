@@ -114,10 +114,18 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// letters, digits, dot, dash and underscore, and anything else can be refused
 /// without losing a name anyone would really use. libvirt itself is stricter
 /// still, but matching it exactly would mean tracking its rules forever.
+///
+/// `.` and `..` are refused although every character in them is allowed. They
+/// are path segments, not names: a client that puts `..` in
+/// `/v1/vms/{id}/start` is not asking about a domain, and no libvirt domain is
+/// called that. Found by making the phone run this same list of cases — both
+/// sides accepted them, and neither should.
 fn is_plausible_domain_name(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 255
         && !id.starts_with('-')
+        && id != "."
+        && id != ".."
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
@@ -143,6 +151,60 @@ mod tests {
             authorization: token.map(|t| format!("Bearer {t}")),
             body: body.to_string(),
         }
+    }
+
+    /// The same list of cases as `VMIdentifierTests` on the phone side.
+    ///
+    /// Written twice on purpose. This rule lived here alone: the protocol
+    /// document did not state it and the client did not know it, so the app
+    /// would happily save a machine this daemon refuses. Now both sides keep
+    /// it, and two implementations keeping one rule separately is exactly how
+    /// a rule drifts — unless the fixtures are the same on both sides.
+    #[test]
+    fn the_two_sides_agree_on_what_an_identifier_may_be() {
+        let refused = [
+            "",
+            "-domaine",
+            "--version",
+            "mon domaine",
+            "mon/domaine",
+            "../../admin",
+            "..",
+            ".",
+            "domaine;rm",
+            "domaine\0",
+            "café",
+            "domaine?x=1",
+            "domaine#f",
+            "domaine@hôte",
+        ];
+        for id in refused {
+            assert!(
+                !is_plausible_domain_name(id),
+                "{id:?} aurait dû être refusé"
+            );
+        }
+
+        let accepted = [
+            "debian",
+            "debian-12",
+            "debian_12",
+            "debian.12",
+            "DEBIAN",
+            "vm0",
+            "0",
+            "a.b-c_d.9",
+        ];
+        for id in accepted {
+            assert!(
+                is_plausible_domain_name(id),
+                "{id:?} aurait dû être accepté"
+            );
+        }
+
+        // Les deux bords de la limite, comptés en octets.
+        assert!(is_plausible_domain_name(&"a".repeat(255)));
+        assert!(!is_plausible_domain_name(&"a".repeat(256)));
     }
 
     /// An identifier that begins with a dash is not a domain name to an option
