@@ -145,6 +145,18 @@ enum SpiceDisplayWire {
         static let pixmap: UInt8 = 1
     }
 
+    /// A **bitmap's** flags, which are not the descriptor's despite the
+    /// neighbouring names. `SPICE_BITMAP_FLAGS_MASK` is `0x7` too, and the bits
+    /// mean different things: `PAL_CACHE_ME` is bit 0 here where `CACHE_ME` is
+    /// bit 0 there, and bit 2 is `TOP_DOWN` here against `CACHE_REPLACE_ME`
+    /// there. Two flag words, one image, and nothing but the field they came
+    /// from to tell them apart.
+    enum BitmapFlag {
+        static let paletteCacheMe: UInt8 = 1 << 0
+        static let paletteFromCache: UInt8 = 1 << 1
+        static let topDown: UInt8 = 1 << 2
+    }
+
     /// The image descriptor's flags. `SPICE_IMAGE_FLAGS_MASK` is `0x7`.
     ///
     /// `cacheMe` is the server's instruction to keep the picture, and it is set
@@ -286,6 +298,17 @@ enum SpiceDisplayWire {
         /// them into one field would mean a `Bitmap` invented for an image
         /// that has none.
         var palette: Palette?
+
+        /// The identifier of a colour table held in the client's palette cache,
+        /// for `lzPalette`. `Bitmap` has its own; this is the same statement for
+        /// the stream that carries no `Bitmap` at all.
+        var cachedPaletteID: UInt64?
+
+        /// `PAL_CACHE_ME` from `lzPalette`'s own flags byte — the server asking
+        /// for the table beside this stream to be kept. `Bitmap` keeps its whole
+        /// flags word and reads the bit from there; a stream with no `Bitmap`
+        /// has nowhere to put it, so the one bit that matters is carried here.
+        var paletteCacheMe = false
     }
 
     // MARK: - Brushes and masks

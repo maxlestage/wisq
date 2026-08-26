@@ -1522,6 +1522,47 @@ identifiants viennent d'espaces différents, donc le jour où un second type
 apparaît, un client sans filtre jette une image parfaitement valide dès que deux
 identifiants se croisent. Un test le distingue maintenant.
 
+### Le cache de palettes : celui qu'on ne peut pas refuser
+
+Fait, et c'est la même forme que le cache d'images avec une différence qui
+change tout : **il n'y a pas de taille à annoncer**.
+
+`dcc_palette_cache_palette` est tout le mécanisme : si `palette->unique` est déjà
+connu du serveur, il pose `PAL_FROM_CACHE` et **rentre sans mettre les couleurs
+sur le fil** ; sinon il ajoute et pose `PAL_CACHE_ME`. La taille qu'il applique
+est `CLIENT_PALETTE_CACHE_SIZE`, une constante du `dcc.h` du serveur. Rien dans
+`DISPLAY_INIT` ne la négocie. Là où le cache d'images pouvait être décliné en
+annonçant zéro, celui-ci ne peut pas l'être du tout.
+
+**Et ce n'était pas un dessin perdu, c'était la session.** `SpiceBitmap.pixels`
+lève `missingPalette` pour un format palettisé sans couleurs, et une erreur levée
+arrête la pompe. Donc avant cette tranche, toute image nommant une table déjà
+envoyée coupait la connexion. Un nom irrésolu part désormais là où part un codec
+non décodé : compté, cette partie de l'écran laissée tranquille, la connexion
+gardée. Une image qui ne porte aucune table et n'en nomme aucune lève toujours,
+parce que c'est un message qui se contredit lui-même et non un client à qui il
+manque quelque chose.
+
+Le reste suit le cache d'images : le serveur évince et nomme, le client obéit.
+Les messages diffèrent — les palettes ne sont pas dans la liste de ressources,
+elles partent en `INVAL_PALETTE` (107) une par une ou `INVAL_ALL_PALETTES` (108)
+pour le lot, des messages ordinaires de premier niveau. La borne est en *entrées*
+et non en couleurs, parce que c'est ce que le serveur compte :
+`red_palette_cache_add(dcc, palette->unique, 1)` facture une unité quelle que
+soit la longueur de la table.
+
+Deux détails que les tests épinglent :
+
+* **`unique` à zéro n'est pas un identifiant.** `dcc_palette_cache_palette` teste
+  `if (palette->unique)` avant quoi que ce soit, donc une telle table n'est
+  jamais mise en cache ni jamais nommée. La ranger sous la clé zéro ferait de
+  toutes les tables sans unique la même table ;
+* **les drapeaux du bitmap ne sont pas ceux du descripteur.** `PAL_CACHE_ME` est
+  le bit 0 du bitmap là où `CACHE_ME` est le bit 0 du descripteur, et le bit 2
+  vaut `TOP_DOWN` d'un côté contre `CACHE_REPLACE_ME` de l'autre. Deux mots de
+  drapeaux, une seule image, et rien d'autre que le champ d'où ils viennent pour
+  les distinguer.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
