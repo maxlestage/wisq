@@ -2162,25 +2162,17 @@ C'est précisément pourquoi déporter l'exécution est le bon compromis.
 mises à jour incrémentales — se juge en octets par image et en millisecondes de
 latence, pas en cycles CPU.
 
-## Une machine illisible emporte encore toute la bibliothèque
+## Une machine illisible n'emporte plus la bibliothèque
 
-`MachineStore.loadOnQueue` fait `decoder.decode([Machine].self, from: data)` :
-un seul élément que le décodeur refuse fait échouer le tableau entier, et
-l'utilisateur perd l'accès à **toutes** ses machines depuis l'application, sans
-moyen de réparer de l'intérieur.
+*Fermé.* `MachineStore` décode maintenant entrée par entrée, rend le compte de
+ce qu'il n'a pas su lire, et **réécrit ces entrées telles quelles** pour qu'un
+`upsert` fait par une version plus ancienne ne les efface pas. La bannière de
+`MachineLibraryModel`, qui existait déjà pour `loadError`, le dit.
 
-La tranche sur la tolérance de `Settings` a fermé la cause la plus probable —
-un nom de réglage venu d'une version plus récente — mais pas la forme du
-problème. Restent au moins deux façons d'y arriver : un `Machine` écrit par une
-version qui a ajouté un champ non optionnel, et une valeur de `proto` ou de
-`security` que cette version ne connaît pas, dont on a décidé exprès qu'elle
-doit refuser plutôt que se rabattre.
+L'objection que ce paragraphe portait — « écarter une machine en silence est
+aussi une perte, et une perte qu'on ne voit pas » — tombe précisément parce que
+ce n'est pas silencieux. Ce qui reste vrai et n'a pas changé : un fichier qui
+n'est **pas** un tableau, ou tronqué, lève toujours. Tolérer cela transformerait
+un fichier abîmé en « vous n'avez aucune machine », et la sauvegarde suivante le
+rendrait vrai.
 
-**Envisagé et écarté pour l'instant : décoder élément par élément et garder ce
-qui passe.** Ce n'est pas gratuit — une machine qu'on laisse tomber en silence
-est aussi une perte de données, et une perte qui ne se voit pas, alors qu'un
-refus franc se voit. La bonne forme est probablement de garder ce qui se décode
-*et de le dire* : rendre les éléments valides plus la liste de ce qui a été
-écarté, et laisser l'interface la montrer. C'est une décision de produit autant
-que de code, elle touche `MachineStore`, `MachineLibraryModel` et une vue, donc
-elle mérite sa propre tranche plutôt qu'un coin de celle-ci.
