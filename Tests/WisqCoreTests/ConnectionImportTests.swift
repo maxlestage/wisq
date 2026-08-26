@@ -27,7 +27,7 @@ final class ConnectionImportTests: XCTestCase {
     /// would be persisted in the clear next to the host it opens — which is the
     /// whole reason this returns a pair instead of one value.
     func testThePasswordTravelsBesideTheMachineAndNeverInsideIt() throws {
-        let imported = ConnectionImport.machine(from: try spiceFile(password: "un-ticket"))
+        let imported = try ConnectionImport.machine(from: try spiceFile(password: "un-ticket"))
         XCTAssertEqual(imported.password, "un-ticket")
 
         let encoded = try JSONEncoder().encode(imported.machine)
@@ -42,7 +42,7 @@ final class ConnectionImportTests: XCTestCase {
     /// stored the secret. A machine pointing at a credential that was never
     /// written fails at connect time instead of asking for a password.
     func testTheCredentialReferenceIsNotMintedBeforeTheSecretIsStored() throws {
-        let imported = ConnectionImport.machine(from: try spiceFile(password: "x"))
+        let imported = try ConnectionImport.machine(from: try spiceFile(password: "x"))
         XCTAssertNil(imported.machine.credentialRef)
     }
 
@@ -55,7 +55,7 @@ final class ConnectionImportTests: XCTestCase {
         username:s:mlestage
         password 51:b:01000000D08C9DDF
         """)
-        let imported = ConnectionImport.machine(from: file)
+        let imported = try ConnectionImport.machine(from: file)
         XCTAssertNil(imported.password)
         XCTAssertEqual(imported.machine.username, "mlestage")
     }
@@ -63,7 +63,7 @@ final class ConnectionImportTests: XCTestCase {
     // MARK: - What the file says, and what wisq does with it
 
     func testASpiceFileBecomesASpiceMachineOnItsOwnPortAndTransport() throws {
-        let imported = ConnectionImport.machine(from: try spiceFile())
+        let imported = try ConnectionImport.machine(from: try spiceFile())
         XCTAssertEqual(imported.machine.proto, .spice)
         XCTAssertEqual(imported.machine.host, "console.example.net")
         XCTAssertEqual(imported.machine.port, 5901, "le port TLS, pas un défaut")
@@ -74,7 +74,7 @@ final class ConnectionImportTests: XCTestCase {
     /// the connection. Claiming a `TransportSecurity` here would be inventing a
     /// fact the file does not state.
     func testAnRDPImportClaimsNoTransportTheFileNeverStated() throws {
-        let imported = ConnectionImport.machine(
+        let imported = try ConnectionImport.machine(
             from: try RemoteDesktopFile.parse("full address:s:vm.example.net")
         )
         XCTAssertEqual(imported.machine.proto, .rdp)
@@ -107,7 +107,7 @@ final class ConnectionImportTests: XCTestCase {
         // The real claim is narrower and exact: `DisplaySettings` has no width
         // or height at all, so the file's geometry has nowhere to go, and what
         // the import produces is the default.
-        let imported = ConnectionImport.machine(from: file)
+        let imported = try ConnectionImport.machine(from: file)
         XCTAssertEqual(
             imported.machine.display, DisplaySettings(),
             "l'import ne fait pas de la géométrie du fichier une préférence"
@@ -118,7 +118,7 @@ final class ConnectionImportTests: XCTestCase {
     /// — a printf template for a window title, not something to show a person.
     func testTheMachineIsNamedAfterItsHost() throws {
         XCTAssertEqual(
-            ConnectionImport.machine(from: try spiceFile()).machine.name,
+            try ConnectionImport.machine(from: try spiceFile()).machine.name,
             "console.example.net"
         )
         XCTAssertEqual(ConnectionImport.name(forHost: ""), "Machine importée")
@@ -127,9 +127,9 @@ final class ConnectionImportTests: XCTestCase {
     /// Imported machines are tagged, so a list of thirty can be told apart from
     /// the ones typed by hand.
     func testAnImportedMachineSaysThatItWasImported() throws {
-        XCTAssertEqual(ConnectionImport.machine(from: try spiceFile()).machine.tags, ["importé"])
+        XCTAssertEqual(try ConnectionImport.machine(from: try spiceFile()).machine.tags, ["importé"])
         XCTAssertEqual(
-            ConnectionImport.machine(
+            try ConnectionImport.machine(
                 from: try RemoteDesktopFile.parse("full address:s:h")
             ).machine.tags,
             ["importé"]
@@ -139,8 +139,8 @@ final class ConnectionImportTests: XCTestCase {
     /// Two imports of the same file are two machines, not one overwriting the
     /// other: the identity is minted here, not read from a file that has none.
     func testEachImportIsItsOwnMachine() throws {
-        let first = ConnectionImport.machine(from: try spiceFile())
-        let second = ConnectionImport.machine(from: try spiceFile())
+        let first = try ConnectionImport.machine(from: try spiceFile())
+        let second = try ConnectionImport.machine(from: try spiceFile())
         XCTAssertNotEqual(first.machine.id, second.machine.id)
         XCTAssertEqual(first.machine.host, second.machine.host)
     }

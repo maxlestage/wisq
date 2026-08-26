@@ -35,11 +35,33 @@ public enum ConnectionImport {
         host.isEmpty ? "Machine importée" : host
     }
 
-    public static func machine(from connection: VirtViewerFile.Connection) -> Imported {
-        Imported(
+    /// The host check every other way of making a machine already applies.
+    ///
+    /// The editor runs `Validation.normalizedHost` on what the user typed,
+    /// `AgentPairing` on what a QR carried, `AgentImportView` on a typed
+    /// address. This path did not — the one whose input is the least
+    /// trustworthy of the four, since these files arrive from Mail, from
+    /// AirDrop, from a share sheet, chosen by whoever sent them.
+    ///
+    /// The effect was not a hole so much as a check in the wrong place: an
+    /// `.rdp` naming `exemple.net/../autre` imported cleanly, was saved, and
+    /// failed at connect time inside `NetworkByteStream`, far from the screen
+    /// where the person could still have done something about it. A file is
+    /// refused where it is opened.
+    ///
+    /// It belongs here and not in the two readers next door: they stop at what
+    /// the file says, and this is the layer that decides what wisq does with a
+    /// value it did not choose.
+    static func validatedHost(_ raw: String) throws -> String {
+        try Validation.normalizedHost(raw)
+    }
+
+    public static func machine(from connection: VirtViewerFile.Connection) throws -> Imported {
+        let host = try validatedHost(connection.host)
+        return Imported(
             machine: Machine(
-                name: name(forHost: connection.host),
-                host: connection.host,
+                name: name(forHost: host),
+                host: host,
                 port: connection.port,
                 proto: connection.proto,
                 security: connection.security,
@@ -64,11 +86,12 @@ public enum ConnectionImport {
     /// would be growing the model to satisfy a file rather than a user.
     /// `RemoteDesktopFile` still reports the values: reading what the file says
     /// and deciding what to do with it are different jobs.
-    public static func machine(from connection: RemoteDesktopFile.Connection) -> Imported {
-        Imported(
+    public static func machine(from connection: RemoteDesktopFile.Connection) throws -> Imported {
+        let host = try validatedHost(connection.host)
+        return Imported(
             machine: Machine(
-                name: name(forHost: connection.host),
-                host: connection.host,
+                name: name(forHost: host),
+                host: host,
                 port: connection.port,
                 proto: .rdp,
                 // `.rdp` files do not describe their transport: RDP negotiates
@@ -137,9 +160,9 @@ public enum ConnectionImport {
     public static func machine(fromContentsOf text: String) throws -> Imported {
         switch kind(of: text) {
         case .virtViewer:
-            return machine(from: try VirtViewerFile.parse(text))
+            return try machine(from: try VirtViewerFile.parse(text))
         case .remoteDesktop:
-            return machine(from: try RemoteDesktopFile.parse(text))
+            return try machine(from: try RemoteDesktopFile.parse(text))
         case nil:
             throw Failure.unrecognisedFile
         }
