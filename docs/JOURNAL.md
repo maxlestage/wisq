@@ -4008,3 +4008,76 @@ SwiftPM : XcodeGen le bâtit et `scripts/test-app.sh` le joue dans un iPhone
 simulé. Il ne tourne donc jamais ici, et `App iOS` est son seul arbitre. J'ai
 vérifié à la main que chaque symbole qu'il emploie est public et déjà utilisé
 ainsi par `MachineLibrarySecretsTests` à côté.
+
+## Les trois encodages qui ne portent aucun pixel
+
+`extendedDesktopSize`, `desktopName` et `lastRect` n'apparaissaient dans la
+suite que comme entrées de la liste `SetEncodings` — c'est-à-dire ce que wisq
+**annonce**, pas ce qu'il sait en faire. Leur décodage n'était tenu par rien.
+
+C'est précisément là que se tromper ne pardonne pas. La doc de `RFBDecoder` le
+dit d'elle-même à propos d'un encodage inconnu : un rectangle mal lu laisse le
+flux *« stranded with no way to resynchronise »*. Or deux de ces trois
+consomment un nombre d'octets **variable** : 1 + 3 + 16×n pour le premier,
+4 + longueur pour le second.
+
+### La sonde, et pourquoi elle n'est pas le retour de la fonction
+
+Vérifier que `decodeRectangle` rend `.renamed("bureau")` ne prouve rien sur le
+cadrage : un décodeur qui avalerait ensuite tout le reste de la session rendrait
+la même chose. La sonde est donc un **témoin** — un rectangle brut de 1×1 dans
+une couleur que rien d'autre n'emploie, placé juste derrière — et il n'arrive
+intact que si le rectangle d'avant a consommé exactement ce qu'il fallait.
+
+Et parce qu'une sonde qui ne peut pas échouer ne prouve rien,
+`testTheWitnessCanFail` décale le flux d'un seul octet et vérifie que le témoin
+n'arrive pas. C'est le premier test du fichier pour cette raison.
+
+### Aucun défaut, encore
+
+Les dix sondes sont d'accord avec le décodeur. Comme pour hextile et CopyRect,
+ce que la tranche ajoute n'est pas une correction mais la possibilité d'un
+rouge : une suite verte qui n'exécutait jamais ce code ne pouvait pas rougir
+pour lui.
+
+Deux choses valaient d'être épinglées au passage, parce qu'elles sont des
+décisions et non des évidences. `x` porte la raison et `y` le code de résultat :
+un `y` non nul est un refus, et appliquer alors les dimensions du rectangle
+déplacerait la vue vers une taille que le serveur n'a jamais adoptée. Et le nom
+de bureau se lit en **latin-1**, pas en UTF-8 : les mêmes octets donnent un
+autre mot dans chaque, donc se tromper renomme le bureau en quelque chose que
+personne n'a choisi.
+
+### Les six sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| seize octets par écran deviennent douze | 1 |
+| le bourrage de trois octets devient deux | 3 |
+| tout redimensionnement est réputé accepté | 1 |
+| `lastRect` consomme quatre octets de trop | 2 |
+| `desktopSize` simple lit une charge utile | 2 |
+| le nom est lu en UTF-8 au lieu du latin-1 | 1 |
+
+Le premier ne rougit qu'une fois, et c'est normal : seul le cas à plusieurs
+écrans distingue `× 16` de `× 12`. Le cas à un seul écran, lui, ne verrait pas
+la différence entre `× 16` et `× 16` — d'où la boucle sur 0, 1 puis 3 écrans
+plutôt qu'un seul exemple confortable. Encore la leçon du cas facile.
+
+### Et la même faute de lint, pour la deuxième fois
+
+`Lint` a rougi sur cette tranche pour une accolade ouvrante seule sur sa ligne,
+au bout d'une signature trop longue — exactement ce qui était déjà arrivé à la
+tranche des encodages hextile/CopyRect. Un réflexe de dépôts qui limitent la
+longueur des lignes, alors que `line_length` est désactivé ici.
+
+Le noter une fois de plus n'aurait servi à rien. La règle est donc passée dans
+`scripts/check-whitespace.sh`, qui existe précisément pour les règles de
+SwiftLint qui sont du pur texte, et dont l'en-tête dit déjà pourquoi : « une
+porte qu'un contributeur ne peut pas passer localement est une porte qui trouve
+les choses après l'ouverture de la pull request ».
+
+Vérifié comme le reste : la garde rougit sur un fichier témoin qui contient la
+faute, et revient au vert une fois le témoin retiré. Le dépôt entier en compte
+zéro par ailleurs, donc la règle est cohérente avec le style existant plutôt
+qu'imposée par-dessus.
