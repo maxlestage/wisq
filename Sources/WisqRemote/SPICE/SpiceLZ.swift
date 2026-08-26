@@ -7,8 +7,10 @@ import Foundation
 /// this repository rather than about the codec: it is integer work on bytes
 /// with no platform behind it, so a Linux runner that costs nothing can check
 /// every branch of it. JPEG would mean `ImageIO` on Apple and nothing on Linux
-/// — the shape of `WisqNet.SHA256`, which returns empty `Data` where CryptoKit
-/// is absent and therefore agrees with itself about nothing.
+/// — the shape `WisqNet.SHA256` used to have, returning empty `Data` where
+/// CryptoKit was absent and therefore agreeing with itself about nothing. It
+/// was given the fallback this paragraph is arguing for; JPEG has not been, and
+/// that is still the cost of the choice.
 ///
 /// Written from `spice-common`'s `lz.c` and `lz_decompress_tmpl.c`, not from
 /// recall, and two things in it would have been written wrong from recall:

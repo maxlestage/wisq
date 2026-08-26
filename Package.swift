@@ -179,7 +179,7 @@ let package = Package(
         .target(name: "WisqVM"),
 
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
-        .testTarget(name: "WisqNetTests", dependencies: ["WisqNet"]),
+        .testTarget(name: "WisqNetTests", dependencies: ["WisqNet", "WisqCore"]),
         .testTarget(name: "WisqVMTests", dependencies: ["WisqVM"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
     ] + uiTargets + agentTargets + rustCoreTargets
