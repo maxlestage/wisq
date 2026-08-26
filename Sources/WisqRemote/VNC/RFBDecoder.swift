@@ -33,7 +33,15 @@ struct RFBDecoder {
         let encoding = try await stream.readInt32()
         let rect = Rect(x: x, y: y, width: width, height: height)
 
-        switch RFB.Encoding(rawValue: encoding) {
+        // One ceiling for every encoding that paints, checked before any of
+        // them acts on the geometry. Two of them allocate from it alone —
+        // CopyRect after twelve bytes on the wire, RRE after about eight — and
+        // the rest have ceilings computed *from* this rectangle, which bound
+        // nothing until the rectangle itself is bounded.
+        let known = RFB.Encoding(rawValue: encoding)
+        if known?.carriesPixels == true { try RFBLimits.requirePaintableRect(rect) }
+
+        switch known {
         case .raw:
             try await decodeRaw(rect)
             return .painted(rect)
