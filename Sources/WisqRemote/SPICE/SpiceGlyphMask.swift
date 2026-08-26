@@ -43,7 +43,13 @@ enum SpiceGlyphMask {
         }
         let width = Int(bounds.right) - Int(bounds.left)
         let height = Int(bounds.bottom) - Int(bounds.top)
-        guard width > 0, height > 0, width * height <= maximumPixels else { return nil }
+        // Per side before the product, as in `SpiceSurfaces.create`. These are
+        // differences of `Int32` rather than raw values, which changes nothing:
+        // a glyph box spanning `Int32.min` to `Int32.max` gives a side of
+        // 4.29 × 10^9, and two of those multiplied leave an `Int`.
+        guard width > 0, height > 0,
+              width <= maximumPixels, height <= maximumPixels,
+              width * height <= maximumPixels else { return nil }
 
         var coverage = [UInt8](repeating: 0, count: width * height)
         for glyph in string.glyphs {
