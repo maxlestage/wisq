@@ -239,11 +239,14 @@ extension SpiceDisplayWire {
             let flags = try reader.u8()
             let size = Int(try reader.u32())
             var palette: SpiceDisplayWire.Palette?
-            if flags & 0x02 != 0 {
-                // Named from a cache this client does not keep. The stream is
-                // still read so the message stays in step, but there are no
-                // colours to draw it with.
-                _ = try reader.u64()
+            var cachedPaletteID: UInt64?
+            if flags & SpiceDisplayWire.BitmapFlag.paletteFromCache != 0 {
+                // Named from the palette cache rather than carried. The
+                // identifier is kept, not discarded: `pixels(of:caches:)`
+                // resolves it. Reading and dropping it is what this did while
+                // there was no cache, and it cost the colours of every such
+                // image.
+                cachedPaletteID = try reader.u64()
             } else if let (found, _) = try nested.follow(try reader.u32()) {
                 var paletteReader = found
                 palette = try SpiceDisplayWire.palette(from: &paletteReader)
@@ -252,7 +255,9 @@ extension SpiceDisplayWire {
                 descriptor: descriptor,
                 bitmap: nil,
                 payload: try reader.bytes(size),
-                palette: palette
+                palette: palette,
+                cachedPaletteID: cachedPaletteID,
+                paletteCacheMe: flags & SpiceDisplayWire.BitmapFlag.paletteCacheMe != 0
             )
 
         case .bitmap:
@@ -271,9 +276,9 @@ extension SpiceDisplayWire {
         let stride = try reader.u32()
 
         // `PAL_FROM_CACHE` is bit 1. Set, the palette is an identifier naming
-        // a table this client does not keep; clear, it is a pointer, and one
-        // that is genuinely null for the formats that need no colour table.
-        let paletteFromCache = flags & 0x02 != 0
+        // a table in the client's palette cache; clear, it is a pointer, and
+        // one that is genuinely null for the formats that need no colour table.
+        let paletteFromCache = flags & SpiceDisplayWire.BitmapFlag.paletteFromCache != 0
         let cachedPaletteID = paletteFromCache ? try reader.u64() : nil
         var palette: SpiceDisplayWire.Palette?
         if !paletteFromCache, let (found, _) = try body.follow(try reader.u32()) {
@@ -396,7 +401,11 @@ extension SpiceDisplayWire {
             break
         }
 
-        guard let decoded = try pixels(of: image, glzWindow: &caches.glz) else { return nil }
+        // The colour table may be a name too, and by a different mechanism:
+        // the server keeps its own palette cache of a size it never asks about
+        // (`CLIENT_PALETTE_CACHE_SIZE`), so there is no declining this one.
+        guard let resolved = resolvingPalette(image, in: &caches.palettes) else { return nil }
+        guard let decoded = try pixels(of: resolved, glzWindow: &caches.glz) else { return nil }
 
         if image.descriptor.flags & ImageFlag.cacheMe != 0 {
             // The dimensions stored are the ones actually decoded rather than
@@ -408,6 +417,53 @@ extension SpiceDisplayWire {
             ))
         }
         return decoded
+    }
+
+    /// Puts a named colour table back on an image, and keeps one the server
+    /// asked to be kept.
+    ///
+    /// Both halves are needed in one place because the two palettised routes
+    /// carry the flag differently: an uncompressed bitmap has its own `flags`
+    /// word and its table inside `Bitmap`, while `lzPalette` has a flags byte
+    /// of its own and its table beside the stream. The bits are the same —
+    /// `PAL_CACHE_ME` is bit 0, `PAL_FROM_CACHE` is bit 1 — and they are *not*
+    /// the descriptor's, where bit 0 means `CACHE_ME` and bit 2 means
+    /// `CACHE_REPLACE_ME` rather than `TOP_DOWN`.
+    ///
+    /// **`nil` means a name this client cannot resolve**, and that is
+    /// deliberately not the same as a malformed message.
+    ///
+    /// `SpiceBitmap.pixels` throws `missingPalette` for a palettised format
+    /// with no colours, and a thrown error stops the pump — so before there was
+    /// a palette cache, an image naming a cached table did not lose one draw,
+    /// it **dropped the session**. Returning `nil` here routes it to the same
+    /// place an undecodable codec goes: counted, that part of the screen left
+    /// alone, the connection kept.
+    ///
+    /// A bitmap that carries no table and names none still throws, because that
+    /// is a message disagreeing with itself rather than a client missing
+    /// something.
+    private static func resolvingPalette(
+        _ image: Image, in cache: inout SpicePaletteCache
+    ) -> Image? {
+        var image = image
+
+        if var bitmap = image.bitmap {
+            if let named = bitmap.cachedPaletteID {
+                guard let found = cache.palette(named) else { return nil }
+                bitmap.palette = found
+            } else if let carried = bitmap.palette,
+                      bitmap.flags & BitmapFlag.paletteCacheMe != 0 {
+                cache.store(carried)
+            }
+            image.bitmap = bitmap
+        } else if let named = image.cachedPaletteID {
+            guard let found = cache.palette(named) else { return nil }
+            image.palette = found
+        } else if let carried = image.palette, image.paletteCacheMe {
+            cache.store(carried)
+        }
+        return image
     }
 
     /// The same, for a channel that keeps a GLZ window.
