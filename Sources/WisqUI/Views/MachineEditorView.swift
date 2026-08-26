@@ -230,7 +230,8 @@ public struct MachineEditorView: View {
                 let (agentHost, agentPort) = Validation.splitHostPort(draft.agentAddress)
                 let normalizedAgentHost = try Validation.normalizedHost(agentHost)
                 let resolvedPort = try Validation.validatedPort(agentPort ?? 7442)
-                guard let baseURL = URL(string: "http://\(normalizedAgentHost):\(resolvedPort)") else {
+                guard let baseURL = Validation.agentURL(
+                    scheme: "http", host: normalizedAgentHost, port: resolvedPort) else {
                     throw WisqError.invalidHost(draft.agentAddress)
                 }
                 guard !draft.agentVMID.trimmingCharacters(in: .whitespaces).isEmpty else {

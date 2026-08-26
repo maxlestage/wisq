@@ -3817,3 +3817,73 @@ correction évidente — garder ce qui se décode — laisse tomber une machine 
 silence, et une perte qu'on ne voit pas est pire qu'un refus franc. La bonne
 forme rend aussi la liste de ce qui a été écarté, ce qui touche une vue : sa
 propre tranche.
+
+## Un hôte validé, puis recollé là où « hôte » ne veut plus dire la même chose
+
+`Validation.normalizedHost` rend un hôte **nu**. Ses deux appelants écrivaient
+ensuite `"\(scheme)://\(hôte):\(port)"`. Trois défauts distincts sortent de ce
+seul écart, et la sonde en a trouvé deux que je n'avais pas prévus.
+
+| ce qu'on donne | ce que la connexion vise |
+| --- | --- |
+| `real.local@evil.com` | **`evil.com`** — le `@` termine le userinfo |
+| `real.local?x=1` | `real.local`, **port 80** — le `:7442` tombe dans la requête |
+| `[2001:db8::1]` | rien : l'URL est `nil` |
+
+Le premier est celui qui a des dents : la liste des machines affiche la chaîne
+entière, et la connexion s'ouvre ailleurs. `tokenRef`, qui vaut
+`agent.\(url.host)`, range en plus le jeton sous le nom de l'attaquant.
+
+Le troisième est le plus embarrassant à écrire : `normalizedHost` **documente**
+qu'il accepte l'IPv6 « avec ou sans crochets », et c'est vrai de lui. Ce n'était
+pas vrai de son appelant — `URL(string: "http://2001:db8::1:7442")` est `nil` —
+donc un lien d'appairage IPv6 était accepté, rangé, affiché, puis refusé d'un
+« Adresse invalide » au moment de connecter.
+
+### Ce que la sonde m'a corrigé
+
+J'attendais le `@`. Je n'avais pas prévu que `?` et `#` fassent **disparaître le
+port** en silence, ni que le retrait des crochets rende l'IPv6 injoignable. Deux
+trouvailles sur trois viennent de la sonde, pas du raisonnement — c'est
+exactement pour ça qu'on sonde avant d'écrire une affirmation.
+
+### La forme de la correction
+
+Deux moitiés, parce que le défaut a deux moitiés.
+
+`normalizedHost` refuse désormais les caractères qui changent le **sens** d'un
+hôte — pas ceux qui ont l'air louches. C'est la liste des délimiteurs d'URL
+(`@ ? # / \ [ ]`) plus les blancs et les caractères de contrôle. Chercher une
+espace, ce que faisait l'ancienne version, ne voit ni une tabulation, ni un
+saut de ligne, ni une espace insécable.
+
+`Validation.agentURL(scheme:host:port:)` construit l'URL, avec les crochets pour
+un littéral IPv6. Elle est dans `WisqCore` et non dans la vue, pour la raison
+habituelle : le runner Linux peut la casser. Les deux vues qui bricolaient la
+chaîne l'appellent maintenant — la seconde a été trouvée par un `grep` après
+avoir corrigé la première, ce qui est la leçon de #62 appliquée avant d'avoir
+été rappelée.
+
+### Les neuf sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| la garde des délimiteurs revient à l'ancienne | 10 |
+| `@` redevient acceptable | 1 |
+| `?` et `#` redeviennent acceptables | 2 |
+| `/` et `\` redeviennent acceptables | 4 |
+| les crochets redeviennent acceptables | 1 |
+| blancs et caractères de contrôle ne sont plus vus | 8 |
+| `agentURL` n'encadre plus l'IPv6 | 2 |
+| `agentURL` encadre **tout** (témoin inverse) | 2 |
+| le retrait des crochets disparaît | 3 |
+
+L'avant-dernier est le témoin qui donne son sens aux autres : une garde trop
+large est aussi un défaut, et `testANameIsLeftAlone` la voit.
+
+### Ce que la porte locale ne prouve pas
+
+Les deux vues sont dans `WisqUI`, qui ne compile pas sous Linux. `swiftc -parse`
+dit que leur syntaxe est bonne et `import WisqCore` y est déjà, mais la
+résolution des noms n'est établie que par `Cœur (Apple)` et `App iOS`. Je le
+note plutôt que de laisser croire que le vert local couvre ces deux lignes.
