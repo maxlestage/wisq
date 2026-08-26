@@ -3657,3 +3657,88 @@ point que j'ai écrit le premier en croyant écrire le second.
 | le bit `raw` est ignoré | 2 |
 | CopyRect lit la destination comme source | 3 |
 | la copie se passe du tampon de travail | 1, après correction du test |
+
+## La faute que le dépôt cite deux fois en exemple était toujours là
+
+`Sources/WisqRemote/SPICE/SpiceLink.swift` et `Sources/WisqRemote/SPICE/SpiceLZ.swift`
+désignent tous les deux le même fichier comme la forme à ne pas reproduire.
+SpiceLink : « `WisqNet.SHA256` a déjà fait cette erreur dans l'autre sens : il
+renvoie `Data()` vide sans CryptoKit, donc un condensat bâti dessus passe ses
+tests en étant d'accord avec lui-même sur rien. » SpiceLZ, pour justifier
+d'écrire son codec sans plateforme derrière : « la forme de `WisqNet.SHA256` ».
+
+La leçon avait été écrite deux fois. Le code n'avait pas bougé, et rien ne le
+testait.
+
+### Ce que ça valait vraiment
+
+Le seul appelant de `digest` vit sous `#if canImport(Network)`, c'est-à-dire
+là où CryptoKit existe aussi ; et la comparaison `présenté == épinglé` échouait
+de toute façon si le condensat était vide. Donc **rien n'était cassé
+aujourd'hui**. Ce qui était cassé, c'est ce qu'un appelant pouvait croire :
+`digest` ne renvoyait pas une erreur, ni `nil`, mais une valeur ayant
+exactement la forme d'une réponse.
+
+Le trou n'a été bouché ni par un `nil` ni par un `fatalError`, mais de la
+manière que les deux commentaires prescrivent : une implémentation de repli en
+arithmétique `UInt32` pure, que le runner Linux qui ne coûte rien vérifie contre
+les vecteurs publiés, et que le runner Apple compare à CryptoKit sur les mêmes
+octets. J'ai ensuite corrigé les deux commentaires : ils décrivaient la faute au
+présent, et la laisser au présent aurait été une nouvelle affirmation fausse.
+
+### Ce que j'ai trouvé à côté, et qui était pire
+
+`fingerprintString` rendait `AA:BB:CC…`. **Aucun appelant.** C'est exactement
+pour ça que c'était encore faux : l'agent Rust écrit `&fp=` avec
+`format!("{byte:02x}")`, `AgentPairing` lit ce format et rien d'autre, et le
+premier appelant de `fingerprintString` aurait produit une chaîne que
+l'analyseur du projet lui-même refuse.
+
+Trois orthographes des mêmes trente-deux octets, dont deux dans le même dépôt,
+tenues d'accord par personne. Il y a maintenant un seul rendu — `WisqCore.Hex`,
+que `AgentPairing` et `SHA256` appellent tous les deux — et un vecteur unique,
+`sha256("abc")`, écrit **des deux côtés de la frontière de langage** : dans
+`SHA256Tests` et dans `crates/wisq-agent/src/tls.rs`.
+
+### Le sabordage qui justifie le test Rust
+
+`tls.rs` avait déjà deux tests sur `fingerprint_hex` : trente-deux octets, et
+deux certificats différents ne partagent pas d'empreinte. J'ai remplacé
+`ring::digest::SHA256` par `SHA512_256` — même longueur, mêmes minuscules,
+toujours distinct. **Les deux anciens tests passent.** Seul le nouveau rougit.
+
+C'est la démonstration que le vecteur gagne sa place : une propriété de forme
+est vraie de n'importe quelle fonction de hachage bien élevée ; c'est le
+littéral publié qui dit *laquelle*.
+
+### Les dix sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| la longueur du message lue après le remplissage | 19 |
+| une seule des soixante-quatre constantes changée | 19 |
+| `rotate` devient un décalage | 19 |
+| `schedule[index - 7]` devient `[index - 6]` | 19 |
+| `digest` renvoie `Data()` vide (le trou d'origine) | 6 |
+| `fingerprintString` revient à `AA:BB:CC` | 4 |
+| `Hex.encode` en `%x` : le zéro de tête tombe | 23 |
+| `Hex.decode` tronque une longueur impaire | 1 |
+| l'agent Rust écrit `{byte:02X}` | 2 |
+| l'agent Rust hache en SHA-512/256 | 1 |
+
+Deux remarques honnêtes sur ce tableau. D'abord, les quatre premiers laissent
+passer `testDifferentMessagesGiveDifferentDigests` : un hachage faux mais
+injectif reste injectif — ce test est un témoin, pas une mesure, et c'est son
+rôle. Ensuite, `testTheFallbackAgreesWithCryptoKit` **n'a pas pu être sabordé
+ici** : il ne se compile que là où CryptoKit existe. Ce que je peux affirmer,
+c'est que la fonction qu'il compare est la même que celle que les vecteurs
+mettent en rouge quatre fois ci-dessus ; sa capacité à rougir est établie, son
+exécution ne l'est que par le vert du job `Cœur (Apple)`.
+
+### Examiné et laissé
+
+`AgentClient.swift` appelle `CryptoKit.SHA256.hash` directement plutôt que de
+passer par l'enveloppe — ce qui est précisément ce que la doc de l'enveloppe dit
+éviter. Laissé : son `#if` couvre `Security` autant que `CryptoKit` et ne
+disparaîtrait pas, et les deux chemins calculent le même SHA-256, donc aucune
+divergence n'est possible. Le noter coûte moins cher que d'élargir la tranche.
