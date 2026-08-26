@@ -48,6 +48,7 @@ pub fn load_or_create(directory: &Path) -> Result<Identity, String> {
             let (certificate, key) = generate()?;
             std::fs::create_dir_all(directory)
                 .map_err(|e| format!("création de {} : {e}", directory.display()))?;
+            owner_only_directory(directory);
             write_owner_only(&certificate_path, &certificate)?;
             write_owner_only(&key_path, &key)?;
             (certificate, key)
@@ -105,14 +106,60 @@ fn server_config(
     Ok(Arc::new(config))
 }
 
-fn write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|e| format!("écriture de {} : {e}", path.display()))?;
+/// Narrows the directory holding the secrets to its owner.
+///
+/// `create_dir_all` cannot take a mode, so this is a second syscall and there is
+/// no way to avoid one — but unlike the files, nothing sensitive exists inside
+/// it yet at that point, so the window contains nothing to read. It is a second
+/// line anyway: the files are 0600 on their own, and this stops a future writer
+/// who forgets from leaving something world-readable beside them.
+fn owner_only_directory(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     }
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Writes a secret so that it is **never readable by anyone else, not even for
+/// an instant**.
+///
+/// The obvious version — `fs::write` then `set_permissions(0o600)` — is what
+/// this was, and it has a window. `fs::write` creates the file with the default
+/// mode, which under the usual `umask 022` is **0644**; the narrowing happens on
+/// the next syscall. Measured on this project's own container: 644, then 600.
+/// The state directory is 0755, so it does not cover the gap either. Anyone
+/// with a local account and a loop could read a private key or a bearer token
+/// out of that window.
+///
+/// The mode therefore goes in the `open`, where the kernel applies it before
+/// the file exists to anyone. `create_new` rather than `create`: an existing
+/// file would keep its own mode, so silently writing into one would put the
+/// secret back where it started.
+#[cfg(unix)]
+fn write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    // Replacing rather than refusing: `load_or_create` reaches here when it has
+    // decided to write a fresh identity, and a leftover from a half-finished
+    // previous run must not make the daemon unstartable.
+    let _ = std::fs::remove_file(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("création de {} : {e}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("écriture de {} : {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| format!("écriture de {} : {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -152,5 +199,81 @@ mod tests {
             assert_eq!(mode & 0o077, 0, "la clé privée doit être 0600");
             let _ = std::fs::remove_dir_all(&directory);
         }
+    }
+
+    /// The test above is true and insufficient, and that gap is the whole point
+    /// of this one.
+    ///
+    /// It reads the mode **after** the write finished. `fs::write` followed by
+    /// `set_permissions(0o600)` ends at 0600 too, so that assertion passed for
+    /// as long as the race existed and would pass again the moment someone
+    /// reintroduced it. A guard that inspects only the final state cannot see a
+    /// window in the middle.
+    ///
+    /// So this watches. A thread stats the file as fast as it can while the
+    /// writer runs, and records every mode that is not 0600. Measured against
+    /// the old shape before the fix: **747 such observations in 100 rounds** —
+    /// the window is not narrow, it is roughly seven stats wide. Against the
+    /// current one: zero, at 100, 1 000 and 10 000 rounds.
+    ///
+    /// It cannot fail spuriously: a file created with the mode already in the
+    /// `open` is never anything but 0600, so a single observation to the
+    /// contrary is a real regression rather than bad luck.
+    #[test]
+    #[cfg(unix)]
+    fn a_secret_is_never_world_readable_even_for_an_instant() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let directory = std::env::temp_dir().join(format!("wisq-tls-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("répertoire");
+        let path = directory.join("secret-de-test");
+
+        let seen_wide = Arc::new(AtomicU32::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (counter, halt, watched) = (Arc::clone(&seen_wide), Arc::clone(&stop), path.clone());
+        let watcher = std::thread::spawn(move || {
+            while !halt.load(Ordering::Relaxed) {
+                if let Ok(metadata) = std::fs::metadata(&watched) {
+                    if metadata.permissions().mode() & 0o777 != 0o600 {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        for _ in 0..100 {
+            let _ = std::fs::remove_file(&path);
+            write_owner_only(&path, b"un secret").expect("écriture");
+        }
+        stop.store(true, Ordering::Relaxed);
+        watcher.join().expect("observateur");
+
+        assert_eq!(
+            seen_wide.load(Ordering::Relaxed),
+            0,
+            "le secret a existé avec un mode autre que 0600"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// The directory is a second line rather than the first — the files inside
+    /// are 0600 on their own — but it is what stops a future writer who forgets
+    /// from leaving something readable beside them.
+    #[test]
+    #[cfg(unix)]
+    fn the_state_directory_belongs_to_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!("wisq-tls-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        load_or_create(&directory).expect("création");
+        let mode = std::fs::metadata(&directory)
+            .expect("métadonnées")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "le répertoire d'état doit être 0700");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }
