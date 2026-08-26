@@ -44,6 +44,30 @@ qui gare une lecture pour forcer l'entrelacement — le pendant en lecture du
 `GatedByteStream` déjà écrit pour les tests d'écriture. `Network` étant sous
 `#if canImport(Network)`, rien de tout cela ne s'exécute ici.
 
+### Le vrai épinglage du chemin machine
+
+`ResolvedTransportSecurity` referme le trou — un pin sans empreinte fait
+désormais une validation système complète au lieu d'accepter n'importe quel
+certificat — mais il ne rend pas l'épinglage possible pour autant. Ce qu'il
+faudrait, dans l'ordre :
+
+1. Un champ `certificateFingerprint` sur `Machine`, absent des fichiers
+   enregistrés avant, donc `nil` au décodage. Vérifiable sous Linux.
+2. `SessionConfiguration` qui le porte jusqu'au transport. Vérifiable aussi.
+3. **L'enregistrement lui-même**, qui ne l'est pas : il faut voir le certificat
+   que le serveur présente, donc `Network.framework`, donc une machine Apple.
+   Et il faut le montrer à la personne qui l'accepte — un épinglage qu'on
+   enregistre en silence à la première connexion protège de tout sauf de
+   l'attaquant qui était là à ce moment-là.
+
+Le chemin agent fait déjà les trois : `AgentBinding` garde l'empreinte relevée
+à l'appairage, et `AgentClient` la prend en paramètre **non optionnel**. C'est
+le modèle à recopier, pas à réinventer.
+
+Jusque-là, `.tlsPinned` sur une machine vaut `.tls`. L'étiquette du sélecteur
+dit encore « TLS épinglé », ce qui reste à corriger : c'est une migration de
+valeur enregistrée autant qu'un libellé, et cela mérite sa propre tranche.
+
 ## Lot 3 — RDP
 
 FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière

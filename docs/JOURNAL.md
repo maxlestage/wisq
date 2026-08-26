@@ -3197,3 +3197,74 @@ le dit.
 | dans `delete`, la moisson repasse avant `store.delete` | 1 (après correction du montage) |
 | la moisson ignore les survivants | 2 |
 | un mot de passe non touché traité comme vidé | 1 |
+
+## Le mode le plus sûr du sélecteur était le moins sûr
+
+Zone jamais auditée : l'import de fichiers de connexion. La lecture a dérivé
+ailleurs et a trouvé plus gros.
+
+`.vv` avec un `tls-port` et un `host-subject` donne `security = .tlsPinned`.
+Le `host-subject` est ensuite **perdu** : `Machine` n'a pas de champ pour lui.
+En tirant ce fil :
+
+| maillon | ce qu'il porte |
+| --- | --- |
+| `Machine` | pas d'empreinte de certificat |
+| `SessionConfiguration` | pas d'empreinte non plus |
+| `VNCSession` / `SPICESession` | appellent `NetworkByteStream(host:port:security:)` **sans** empreinte |
+| `pinnedParameters(fingerprint: nil)` | `complete(true)` — inconditionnel |
+
+Un bloc de vérification **remplace** les contrôles du système. Choisir « TLS
+épinglé » — le libellé le plus rassurant des trois — désactivait donc la
+validation du certificat, et rendait ce mode **strictement plus faible que le
+« TLS » listé juste au-dessus**. Aucun chemin machine ne pouvait fournir
+d'empreinte : c'était le cas de toutes les connexions épinglées, pas d'un cas
+limite.
+
+### Trois prose qui décrivaient un mécanisme inexistant
+
+- l'enum : « pinned to a certificate fingerprint recorded on first connect
+  (TOFU) » ;
+- la fonction : « accept whatever certificate the host presents on first use
+  and pin it afterwards » ;
+- la ligne : « Trust on first use: the caller records `presented` and pins it ».
+
+`presented` était calculé puis jeté. Aucun appelant n'enregistrait rien, et il
+n'y avait nulle part où l'enregistrer. C'est la quatrième fois dans ce dépôt
+qu'un commentaire juste sur le danger accompagne un code qui ne le tient pas —
+mais les trois précédentes décrivaient une défense affaiblie, celle-ci décrivait
+une défense qui n'existait pas du tout.
+
+### Le bon motif était déjà dans le dépôt
+
+`AgentClient` prend `pinnedFingerprint: Data` — **non optionnel** — et épingle
+pour de vrai via `URLSession`. Ce qui rend le chemin machine lisible comme un
+trou et non comme un arbitrage.
+
+### Rendre l'état dangereux non représentable
+
+Plutôt qu'ajouter une garde, `ResolvedTransportSecurity` supprime la
+possibilité : `.pinned` **porte** son empreinte, donc aucun chemin ne peut
+demander un épinglage en n'ayant rien à épingler, et `pinnedParameters` prend
+un `Data` non optionnel. La résolution vit dans `WisqCore`, sabordable sous
+Linux ; le fichier qui contenait le trou est sous `#if canImport(Network)` et
+son « build complete » ici ne prouve rien, puisque la condition le vide.
+
+### Le repli choisi, et celui écarté
+
+Refuser tout net était le candidat au son le plus sûr. Écarté : cela casserait
+des machines que l'utilisateur croit fonctionner sans rien lui donner de plus,
+puisque aucune ne peut porter d'empreinte aujourd'hui. Le repli est la
+**validation système complète** — un vrai contrôle là où il n'y en avait aucun.
+
+Ce n'est pas du TOFU, et le commit ne le prétend pas. Un certificat auto-signé
+de labo, qui « marchait », sera désormais refusé. C'est le sens sûr, et le prix
+est dit plutôt que caché. Ce qu'il faudrait pour le vrai épinglage est écrit
+dans ROADMAP.md.
+
+### Ce que je n'ai pas fait
+
+Le sélecteur affiche toujours « TLS épinglé » pour un mode qui vaut `.tls`.
+Corriger l'étiquette suppose de migrer la valeur enregistrée des machines qui
+la portent — une question de migration, avec ses propres tests. Tranche
+suivante, pas celle-ci.
