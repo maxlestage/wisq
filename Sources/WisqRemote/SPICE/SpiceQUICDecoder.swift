@@ -1,4 +1,5 @@
 import Foundation
+import WisqCore
 
 /// The QUIC decode loop: symbols in, pixels out.
 ///
@@ -90,8 +91,15 @@ extension SpiceQUIC {
             throw Failure.unknownImageType(header.type.rawValue)
         }
         // A size the stream itself declares, so it is bounded before anything
-        // is allocated from it.
-        guard header.width <= 1 << 15, header.height <= 1 << 15 else {
+        // is allocated from it — but each side on its own is not a bound on
+        // what gets allocated. Measured with the old per-side-only guard: a
+        // 32768 × 32768 header, twenty bytes on the wire, took this process's
+        // peak resident set from 36 MiB to 4.03 GiB. Both sides were legal and
+        // the product was four gigabytes.
+        //
+        // `Framebuffer.canHold` is the number the rest of the client uses, and
+        // it checks the product as well as the sides.
+        guard Framebuffer.canHold(width: header.width, height: header.height) else {
             throw Failure.badGeometry(width: header.width, height: header.height)
         }
 
