@@ -95,6 +95,78 @@ final class SpicePlaybackTests: XCTestCase {
         XCTAssertEqual(try SpicePlaybackWire.latency(u32(120)), 120)
     }
 
+    // MARK: - Ce qu'on annonce
+
+    /// **The two audio channels do not share their numbering**, and `VOLUME`
+    /// agreeing at bit 1 is exactly what makes the disagreement dangerous: a
+    /// transposition passes the one capability wisq actually sends.
+    ///
+    /// The record enum has no `LATENCY`, so `OPUS` is bit 2 there against bit 3
+    /// here. Written out at both ends rather than derived, because a number
+    /// that comes from somewhere else and is checked against itself is not
+    /// checked.
+    func testTheAudioChannelsNumberTheirCapabilitiesDifferently() {
+        XCTAssertEqual(SpicePlaybackWire.Capability.celt.rawValue, 0)
+        XCTAssertEqual(SpicePlaybackWire.Capability.volume.rawValue, 1)
+        XCTAssertEqual(SpicePlaybackWire.Capability.latency.rawValue, 2)
+        XCTAssertEqual(SpicePlaybackWire.Capability.opus.rawValue, 3)
+
+        XCTAssertEqual(SpiceRecordWire.Capability.celt.rawValue, 0)
+        XCTAssertEqual(SpiceRecordWire.Capability.volume.rawValue, 1)
+        XCTAssertEqual(SpiceRecordWire.Capability.opus.rawValue, 2)
+
+        XCTAssertNotEqual(
+            SpicePlaybackWire.Capability.opus.rawValue,
+            SpiceRecordWire.Capability.opus.rawValue,
+            "le même codec, deux positions — c'est le canal qui tranche"
+        )
+    }
+
+    /// **Announcing a codec would silence the sound**, which is the opposite of
+    /// what adding a capability usually does.
+    ///
+    /// `snd_desired_audio_mode` returns `OPUS` only when
+    /// `test_remote_cap(SPICE_PLAYBACK_CAP_OPUS)` is set, and `RAW` otherwise —
+    /// CELT is not in the modern path at all. wisq decodes raw PCM and nothing
+    /// else, so saying nothing about codecs is what gets it something it can
+    /// play. The same shape as the display channel's absent `multiCodec`.
+    func testNoCodecIsAnnouncedOnEitherAudioChannel() {
+        for capability in SpicePlaybackWire.advertised {
+            XCTAssertNotEqual(capability, .opus, "annoncer Opus rendrait l'audio muet")
+            XCTAssertNotEqual(capability, .celt)
+        }
+        for capability in SpiceRecordWire.advertised {
+            XCTAssertNotEqual(capability, .opus, "wisq n'encode que du PCM")
+            XCTAssertNotEqual(capability, .celt)
+        }
+    }
+
+    /// **Volume is announced because otherwise it is never sent.**
+    ///
+    /// `snd_send_volume` and `snd_send_mute` both begin with
+    /// `if (!rcc->test_remote_cap(cap)) return false`, gated on
+    /// `SPICE_PLAYBACK_CAP_VOLUME` and `SPICE_RECORD_CAP_VOLUME`. Without it
+    /// the four readers wisq has for those messages are decoders the wire never
+    /// reaches — the `sizedStream` shape again, at a lower cost.
+    func testVolumeIsAnnouncedOnBothAudioChannels() {
+        XCTAssertTrue(SpicePlaybackWire.advertised.contains(.volume))
+        XCTAssertTrue(SpiceRecordWire.advertised.contains(.volume))
+
+        // Et ce qui part sur le fil est bien le bit 1, dans les deux cas.
+        XCTAssertEqual(SpicePlaybackWire.capabilityWords(SpicePlaybackWire.advertised), [0b10])
+        XCTAssertEqual(SpiceRecordWire.capabilityWords(SpiceRecordWire.advertised), [0b10])
+    }
+
+    /// A capability's number is a bit index rather than a value, and the shared
+    /// helper has to place a high one in the right word. 33 is bit 1 of word 1.
+    func testACapabilityNumberIsABitPositionAcrossWords() {
+        XCTAssertEqual(SpiceWire.capabilityWords([]), [])
+        XCTAssertEqual(SpiceWire.capabilityWords([0]), [0b1])
+        XCTAssertEqual(SpiceWire.capabilityWords([1, 3]), [0b1010])
+        XCTAssertEqual(SpiceWire.capabilityWords([33]), [0, 0b10])
+        XCTAssertEqual(SpiceWire.capabilityWords([0, 33]), [0b1, 0b10])
+    }
+
     // MARK: - L'état
 
     private func started(channels: Int = 2) -> SpicePlayback {

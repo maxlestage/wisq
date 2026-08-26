@@ -291,7 +291,10 @@ public actor SPICESession: RemoteSession {
                     .open(
                         channel: .playback,
                         connectionID: session.initialisation.sessionID,
-                        password: password
+                        password: password,
+                        channelCaps: SpicePlaybackWire.capabilityWords(
+                            SpicePlaybackWire.advertised
+                        )
                     )
                 playback = playbackStream
                 playbackPump = Task { [weak self] in
@@ -312,7 +315,10 @@ public actor SPICESession: RemoteSession {
                     .open(
                         channel: .record,
                         connectionID: session.initialisation.sessionID,
-                        password: password
+                        password: password,
+                        channelCaps: SpiceRecordWire.capabilityWords(
+                            SpiceRecordWire.advertised
+                        )
                     )
                 record = recordStream
                 recordPump = Task { [weak self] in

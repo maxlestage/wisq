@@ -1563,6 +1563,48 @@ Deux détails que les tests épinglent :
   drapeaux, une seule image, et rien d'autre que le champ d'où ils viennent pour
   les distinguer.
 
+### Les capacités audio : une absence qui tient, une qui coûtait
+
+Fait. Suite de l'audit « qu'est-ce que ce client promet », cette fois avec un
+résultat en partie rassurant — ce qui mérite d'être écrit aussi.
+
+Seul le canal display annonçait quelque chose. Playback, record, curseur,
+entrées et principal envoyaient tous un jeu vide.
+
+**Le codec absent est correct, et c'est maintenant dans le code.**
+`snd_desired_audio_mode` est toute la décision : `RAW` si la compression est
+coupée, `OPUS` si `test_remote_cap(SPICE_PLAYBACK_CAP_OPUS)` et que la fréquence
+s'y prête, `RAW` sinon. CELT n'est même plus dans le chemin. Un client qui ne dit
+rien sur les codecs reçoit donc du PCM brut — exactement ce que wisq décode.
+C'est la même forme que le `multiCodec` absent du display : une absence qui a
+l'air d'un oubli et qui porte tout. L'annoncer rendrait l'audio muet
+instantanément.
+
+**Le volume manquant, lui, coûtait.** `snd_send_volume` et `snd_send_mute`
+commencent tous deux par `if (!rcc->test_remote_cap(cap)) return false`, avec
+`SPICE_PLAYBACK_CAP_VOLUME` d'un côté et `SPICE_RECORD_CAP_VOLUME` de l'autre.
+Sans l'annoncer, le serveur n'envoyait jamais ces quatre messages — que wisq
+décode, avec des tests. Rien ne cassait, le volume SPICE étant le réglage du
+mixeur de l'invité que wisq mémorise sans l'appliquer ; mais c'était la forme du
+défaut `sizedStream`, à coût plus faible : une capacité qu'on sait honorer et
+qu'on n'annonce pas.
+
+**Les deux canaux ne numérotent pas pareil**, et c'est le piège à retenir :
+`VOLUME` vaut 1 des deux côtés, mais `OPUS` est le bit 3 en lecture et le bit 2
+en enregistrement, l'énumération record n'ayant pas de `LATENCY`. Que `VOLUME`
+coïncide est ce qui rend la transposition dangereuse — elle passe la seule
+capacité que wisq envoie vraiment. D'où deux énumérations plutôt qu'une partagée.
+
+`LATENCY` n'est pas annoncée, et celle-là est un « on ne sait pas » plutôt qu'une
+décision : aucun envoi de `MSG_PLAYBACK_LATENCY` n'apparaît dans les sources
+serveur vendues ici, donc ce que l'annoncer apporterait n'est pas établi.
+spice-gtk l'annonce. À vérifier ailleurs avant de bouger.
+
+**Et le test est sur la prise, pas sur la constante.** Le défaut visé n'est pas
+une mauvaise liste : c'est une liste correcte qui n'arrive jamais jusqu'à
+`open` — ce qu'avaient les deux canaux audio. Le sabotage qui remet
+`channelCaps: []` est celui qui compte.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
