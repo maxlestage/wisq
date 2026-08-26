@@ -3430,3 +3430,61 @@ chemin ne produirait jamais. Les deux tests ajoutés, i4 mord.
 
 La leçon rejoint celle de la moisson : **vérifier n'est pas normaliser**, et un
 test bâti sur des entrées déjà propres ne peut pas voir la différence.
+
+## Une machine qui annonçait une protection qu'elle n'avait pas
+
+#87 avait refermé le trou — un épinglage sans empreinte fait désormais une
+validation système au lieu de tout accepter — et avait explicitement laissé
+deux choses ouvertes. Les voici, parce que c'est la même phrase.
+
+Mesuré, témoin compris :
+
+| étape | valeur |
+| --- | --- |
+| `VirtViewerFile` lit `tls-port` + `host-subject` | `.tlsPinned`, sujet présent |
+| `ConnectionImport` enregistre | `.tlsPinned`, **sujet jeté** |
+| `ResolvedTransportSecurity` résout | `systemValidated` |
+| la liste affiche | « TLS épinglé » |
+
+Le sujet **est** l'épinglage, et `Machine` n'a pas de champ pour lui. Enregistrer
+`.tlsPinned` revenait donc à ranger une promesse que rien ne tient, et à
+étiqueter « TLS épinglé » une connexion qui ne l'est pas.
+
+### La règle était déjà écrite trois lignes plus bas
+
+Dans le même appel, à propos de la référence de secret :
+
+> A machine pointing at a credential that was never written is worse than one
+> with no credential at all — it fails at connect time instead of asking.
+
+Exactement la même forme, appliquée au champ d'à côté. `claimableSecurity`
+n'est que cette phrase-là étendue d'un cran : **une machine annonce moins
+plutôt que de mentir.** C'est le même geste que #89, qui avait appliqué au
+`.rdp` la politique que le `.vv` énonçait déjà.
+
+Le témoin compte double ici : aplatir tout vers `.tls` chiffrerait en silence
+une connexion que le fichier disait en clair. Deux tests gardent ce bord, et le
+sabordage c2 les fait tomber.
+
+### L'étiquette
+
+`.tlsPinned` reste dans le sélecteur, puisque des machines enregistrées le
+portent. Mais son libellé nommait une protection absente. Il dit maintenant ce
+que la connexion fait — TLS validé par le système — et que l'épinglage reste à
+venir. Un test garde aussi que les trois modes restent distinguables : un
+sélecteur avec deux lignes identiques serait un autre genre de mensonge.
+
+### Ce qui reste ouvert, et où
+
+Le vrai épinglage, décrit dans ROADMAP.md : un champ d'empreinte sur `Machine`,
+son passage par `SessionConfiguration`, et l'enregistrement, qui demande une
+machine Apple et de montrer l'empreinte à qui l'accepte. `claimableSecurity` est
+l'endroit exact où le `host-subject` cessera d'être jeté.
+
+### Une mesure tenue plutôt qu'oubliée
+
+Le test `testAFailedDeletionKeepsBothTheMachineAndItsPassword` avait pris
+0,019 s sur #85 puis 25,6 s sur #86. Troisième point sur #90 : **0,033 s**.
+C'était du bruit du runner, pas une régression, et l'injection par répertoire
+en `0500` reste en place. Deux points ne font pas une tendance ; le troisième
+tranche.
