@@ -571,15 +571,18 @@ public actor SPICESession: RemoteSession {
     private func run(_ channel: SpiceDisplayChannel, from serial: UInt64) async {
         var announced = false
         var surfaces = SpiceSurfaces()
-        // The GLZ window, for the same reason and with the same lifetime as
-        // the surfaces: a stream on this connection may refer to images
-        // decoded earlier on it, and to nothing before that.
-        var glz = SpiceGLZ.Window()
+        // What this connection remembers about images: the GLZ window and the
+        // pixmap cache, for the same reason and with the same lifetime as the
+        // surfaces. A GLZ stream may refer to images decoded earlier on this
+        // socket, and a cached image is one the server believes *this*
+        // connection kept — neither survives a reconnect, and the server
+        // agrees: it clears its own mirror when the client reconnects.
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
         var serial = serial
         do {
             while !Task.isCancelled {
-                let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: serial)
+                let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: serial)
                 serial = progress.nextSerial
 
                 // The first surface to appear is the desktop, and its size is

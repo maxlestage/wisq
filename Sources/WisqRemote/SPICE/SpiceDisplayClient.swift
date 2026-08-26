@@ -73,41 +73,31 @@ enum SpiceDisplayClient {
 
     /// The pixmap cache this client declares, in pixels.
     ///
-    /// **Zero, because wisq keeps no image cache — and a number here is not a
-    /// hint, it is what the server hands back instead of pixels.**
+    /// **A number here is a promise the server keeps on this client's behalf**,
+    /// and it was zero until there was a cache to make it true.
     ///
-    /// The mechanism, and it runs entirely on the server. A guest's QXL driver
-    /// marks an image `QXL_IMAGE_CACHE` when it expects to draw it again —
-    /// icons, glyphs, window borders, wallpaper tiles — which
-    /// `red-parse-qxl.cpp` turns into `SPICE_IMAGE_FLAGS_CACHE_ME`. On the
-    /// first send, `marshal_lossy_or_lossless` calls
-    /// `dcc_pixmap_cache_unlocked_add(dcc, id, width * height, …)` — so the
-    /// unit is pixels — and **only if that add succeeds** does it echo
-    /// `CACHE_ME` to the client, meaning "keep this, I will refer to it".
-    /// On every later send of the same id, `fill_bits` finds
-    /// `dcc_pixmap_cache_unlocked_hit` true and writes
-    /// `SPICE_IMAGE_TYPE_FROM_CACHE`: an identifier, and no pixels at all.
+    /// The mechanism runs on the server. A guest's QXL driver marks an image
+    /// `QXL_IMAGE_CACHE` when it expects to draw it again — icons, glyphs,
+    /// window borders, wallpaper tiles — which `red-parse-qxl.cpp` turns into
+    /// `SPICE_IMAGE_FLAGS_CACHE_ME`. On the first send,
+    /// `marshal_lossy_or_lossless` calls `dcc_pixmap_cache_unlocked_add(dcc,
+    /// id, width * height, …)` — so the unit is pixels — and echoes `CACHE_ME`
+    /// to the client only if that add succeeded. On every later send of the
+    /// same id, `fill_bits` writes `SPICE_IMAGE_TYPE_FROM_CACHE`: an
+    /// identifier, and no pixels at all.
     ///
-    /// wisq cannot resolve one. `SpiceDisplayWire.image` gives a `fromCache`
-    /// descriptor no payload, `pixels(of:)` returns `nil`, and the draw is
-    /// skipped — so the region keeps whatever was under it. Not a crash and not
-    /// a blank: **stale pixels, silently**, on exactly the images a desktop
-    /// repeats most.
+    /// Declaring a size with nothing behind it meant those draws were skipped
+    /// and the region kept stale pixels. `SpicePixmapCache` is what is behind
+    /// it now, and the number is what the server holds *itself* to: it evicts
+    /// to stay inside, and names each eviction in `SPICE_MSG_DISPLAY_INVAL_LIST`
+    /// so the two sides drop the same entries.
     ///
-    /// Declaring zero closes it at the source rather than papering over it.
-    /// `cache->available` starts at the declared size, the first add drives it
-    /// negative, the eviction loop finds an empty ring (`ring_get_tail`
-    /// returns `NULL`), and the add returns `FALSE`. So nothing is ever
-    /// recorded, `CACHE_ME` is never echoed, no hit is ever possible, and every
-    /// image arrives with its bytes. The cost is bandwidth — those images are
-    /// re-sent — which is the right thing to pay until there is a cache to
-    /// spend it on.
-    ///
-    /// Raising it is not a tuning change. It is only correct once wisq stores
-    /// decoded images by `descriptor.id` **and** honours the invalidation
-    /// messages that go with them; the two have to land together, or a stale
-    /// entry is worse than a re-sent image.
-    static let pixmapCachePixels: Int64 = 0
+    /// 4 Mi pixels is 16 MiB of decoded BGRA at the ceiling, and the ceiling is
+    /// reached only by a guest that really does repeat that many distinct
+    /// pictures. It buys the thing a mobile link cares about: a desktop's
+    /// furniture crosses the network once per connection instead of once per
+    /// redraw.
+    static let pixmapCachePixels: Int64 = 4 << 20
 
     /// The GLZ window this client declares, in pixels.
     ///

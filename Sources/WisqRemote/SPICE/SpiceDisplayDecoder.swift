@@ -147,6 +147,25 @@ extension SpiceDisplayWire {
         return try reader.u32()
     }
 
+    // MARK: - Invalidations
+
+    /// `SPICE_MSG_DISPLAY_INVAL_LIST` — what the server has dropped.
+    ///
+    /// A `uint16` count, then that many `ResourceID`: a `uint8` type and a
+    /// `uint64` identifier, **nine bytes with no padding between them**. Read
+    /// as a naturally aligned struct the second entry would start one byte
+    /// early and every identifier after the first would be nonsense.
+    static func invalidations(_ payload: [UInt8]) throws -> [Resource] {
+        var reader = try SpiceWire.Reader(payload, from: 0)
+        let count = Int(try reader.u16())
+        var resources = [Resource]()
+        resources.reserveCapacity(count)
+        for _ in 0..<count {
+            resources.append(Resource(type: try reader.u8(), id: try reader.u64()))
+        }
+        return resources
+    }
+
     // MARK: - Images
 
     static func image(at pointer: UInt32, in body: Body) throws -> Image? {
@@ -342,6 +361,53 @@ extension SpiceDisplayWire {
         unwrapped.payload = [UInt8](inflated)
         unwrapped.inflatedSize = nil
         return try pixels(of: unwrapped, glzWindow: &window)
+    }
+
+    /// The entry point the drawing paths use: decodes, and remembers.
+    ///
+    /// Two things happen here that `pixels(of:glzWindow:)` deliberately does
+    /// not do, because both are about what this *connection* holds rather than
+    /// about any codec.
+    ///
+    /// **A name is resolved rather than decoded.** `fromCache` and
+    /// `fromCacheLossless` carry an identifier and no pixels at all — the
+    /// server has decided this client kept the picture. `nil` here means it did
+    /// not, and the draw is skipped; that is the failure the declared cache
+    /// size exists to make impossible, not something to paper over.
+    ///
+    /// **An image the server asked us to keep is kept.** `CACHE_ME` is bit 0 of
+    /// the descriptor's flags, and it is set on the wire only when the server's
+    /// own add succeeded — `marshal_lossy_or_lossless` sets it *after*
+    /// `dcc_pixmap_cache_unlocked_add` returns true. So it is a precise
+    /// instruction, not a hint, and caching anything else would fill a phone
+    /// with pictures nothing will ask for again.
+    ///
+    /// The two cache types differ only in what the server promises about
+    /// fidelity: `FROM_CACHE_LOSSLESS` says the entry has been replaced with a
+    /// lossless version. Both name the same table, so both read it the same way.
+    static func pixels(
+        of image: Image, caches: inout SpiceDisplayCaches
+    ) throws -> (pixels: [UInt8], width: Int, height: Int)? {
+        switch image.descriptor.type {
+        case .fromCache, .fromCacheLossless:
+            guard let held = caches.pixmaps.image(image.descriptor.id) else { return nil }
+            return (held.pixels, held.width, held.height)
+        default:
+            break
+        }
+
+        guard let decoded = try pixels(of: image, glzWindow: &caches.glz) else { return nil }
+
+        if image.descriptor.flags & ImageFlag.cacheMe != 0 {
+            // The dimensions stored are the ones actually decoded rather than
+            // the descriptor's. They agree for every image a server sends; if
+            // they ever did not, holding the count that matches the pixels is
+            // the one that keeps this cache's own budget honest.
+            caches.pixmaps.store(image.descriptor.id, SpicePixmapCache.Entry(
+                pixels: decoded.pixels, width: decoded.width, height: decoded.height
+            ))
+        }
+        return decoded
     }
 
     /// The same, for a channel that keeps a GLZ window.

@@ -19,6 +19,7 @@ final class SpiceDisplayChannelTests: XCTestCase {
     private func u32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(value >> (8 * $0) & 0xFF) } }
     private func i32(_ value: Int32) -> [UInt8] { u32(UInt32(bitPattern: value)) }
     private func u16(_ value: UInt16) -> [UInt8] { (0..<2).map { UInt8(value >> (8 * $0) & 0xFF) } }
+    private func u64(_ value: UInt64) -> [UInt8] { (0..<8).map { UInt8(value >> (8 * $0) & 0xFF) } }
 
     /// A server message, framed the way the protocol frames one.
     private func message(_ type: UInt16, _ payload: [UInt8], serial: UInt64 = 1) -> Data {
@@ -247,10 +248,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.updates, [
             SpiceDisplayChannel.Update(
@@ -280,10 +281,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 5)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 5)
 
         XCTAssertEqual(progress.ignored, [:], "aucun de ces messages ne doit être compté ignoré")
         XCTAssertEqual(progress.updates.count, 4)
@@ -313,10 +314,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
             )
             let channel = SpiceDisplayChannel(stream: server)
             var surfaces = SpiceSurfaces()
-            var glz = SpiceGLZ.Window()
+            var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
             let progress = try await channel.pump(
-                into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2
+                into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2
             )
             return (progress, surfaces.surfaces[0]!.pixels)
         }
@@ -345,9 +346,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.ignored, [:])
         XCTAssertEqual(progress.updates.count, 1)
@@ -367,9 +368,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.ignored, [:], "transparent n'est plus un message ignoré")
         XCTAssertEqual(progress.updates.count, 1)
@@ -387,9 +388,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.ignored, [:], "alpha blend n'est plus un message ignoré")
         XCTAssertEqual(progress.updates.count, 1)
@@ -404,9 +405,9 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
 
         XCTAssertEqual(progress.ignored, [:], "rop3 n'est plus un message ignoré")
         XCTAssertEqual(progress.updates.count, 1)
@@ -440,11 +441,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         let progress = try await channel.pump(
-            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2
         )
         XCTAssertEqual(progress.ignored, [:], "le texte n'est plus un message ignoré")
         XCTAssertEqual(progress.updates.count, 1)
@@ -481,11 +482,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         let progress = try await channel.pump(
-            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2
         )
         XCTAssertEqual(progress.ignored, [:], "le tracé n'est plus un message ignoré")
         XCTAssertEqual(progress.updates.count, 1)
@@ -525,11 +526,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         let progress = try await channel.pump(
-            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 7
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 7
         )
         XCTAssertEqual(progress.ignored, [:], "aucun message de flux n'est ignoré")
         XCTAssertTrue(streams.streams.isEmpty, "DESTROY_ALL a tout enlevé")
@@ -553,11 +554,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         let progress = try await channel.pump(
-            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 3
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
         )
         XCTAssertEqual(streams.streams[1]?.codec, .h264, "le flux reste enregistré")
         XCTAssertEqual(progress.updates, [], "rien n'a été dessiné")
@@ -594,11 +595,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         let progress = try await channel.pump(
-            into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 3
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
         )
         XCTAssertEqual(progress.ignored, [:], "STREAM_DATA_SIZED n'est pas ignoré")
         XCTAssertEqual(
@@ -744,10 +745,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        _ = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        _ = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
         XCTAssertTrue(surfaces.surfaces.isEmpty)
     }
 
@@ -760,10 +761,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
         XCTAssertTrue(progress.updates.isEmpty)
         XCTAssertEqual(progress.undrawable, 0, "ce n'est pas un refus, c'est un rien")
     }
@@ -778,10 +779,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 7, limit: 1)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 7, limit: 1)
         XCTAssertTrue(progress.ignored.isEmpty)
 
         var reader = SpiceWire.Reader(await server.written)
@@ -822,10 +823,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 3)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3)
         XCTAssertEqual(progress.ignored[unhandled], 2)
         XCTAssertEqual(progress.ignored[alsoIgnored], 1)
     }
@@ -854,13 +855,211 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 2)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2)
         XCTAssertEqual(progress.undrawable, 1)
         XCTAssertTrue(progress.updates.isEmpty)
         XCTAssertTrue(surfaces.surfaces[0]!.pixels.allSatisfy { $0 == 0 }, "rien n'a été peint")
+    }
+
+    // MARK: - Le cache d'images
+
+    /// A `DRAW_COPY` carrying a 2×2 uncompressed bitmap, with the descriptor's
+    /// flags and type under the caller's control.
+    private func copyOfImage(
+        id: UInt64, type: UInt8, flags: UInt8, pixel: [UInt8], carriesBitmap: Bool = true
+    ) -> Data {
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(2) + i32(2)       // box
+        body += [0]                                      // no clip
+        let imageOffset = UInt32(body.count + 4 + 16 + 2 + 1 + 13)
+        body += u32(imageOffset)                         // src_bitmap
+        body += i32(0) + i32(0) + i32(2) + i32(2)        // src_area
+        body += [0, 0] + [0]                             // rop, scale mode
+        body += [0] + i32(0) + i32(0) + u32(0)           // mask
+        body += u64(id) + [type, flags]                  // descriptor
+        body += u32(2) + u32(2)                          // width, height
+        if carriesBitmap {
+            body += [8 /* RGB32 */, 0]                   // bitmap format, flags
+            body += u32(2) + u32(2) + u32(8)             // width, height, stride
+            body += u32(0)                               // no palette
+            body += pixel + pixel + pixel + pixel        // 2x2 of one colour
+        }
+        return message(SpiceDisplayWire.Message.drawCopy.rawValue, body)
+    }
+
+    /// **The whole point of the cache, driven through the pump.**
+    ///
+    /// The server sends a picture once with `CACHE_ME`, then names it. The
+    /// second draw paints the same pixels having received none of them — which
+    /// is the bandwidth this exists to save, and the thing that silently did
+    /// not happen while the client declared a cache it did not keep.
+    func testAnImageSentOnceIsDrawnTwice() async throws {
+        let red: [UInt8] = [0, 0, 0xFF, 0]
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfImage(id: 42, type: 0 /* bitmap */,
+                              flags: SpiceDisplayWire.ImageFlag.cacheMe, pixel: red)
+                + copyOfImage(id: 42, type: 103 /* FROM_CACHE */, flags: 0,
+                              pixel: [], carriesBitmap: false)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
+        )
+        XCTAssertEqual(progress.undrawable, 0, "le nom se résout")
+        XCTAssertEqual(progress.updates.count, 2, "deux dessins, une seule image sur le fil")
+        XCTAssertEqual(caches.pixmaps.count, 1)
+        XCTAssertEqual(caches.pixmaps.storedPixels, 4)
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), red)
+    }
+
+    /// **Without `CACHE_ME` nothing is kept**, so the name that follows resolves
+    /// to nothing and the draw is skipped. The server sets that flag only when
+    /// its own add succeeded, so honouring it exactly is what keeps the two
+    /// sides describing the same table — and a client that cached everything
+    /// would fill a phone with pictures nobody asks for twice.
+    func testAnImageWithoutTheFlagIsNotKeptAndTheNameResolvesToNothing() async throws {
+        let red: [UInt8] = [0, 0, 0xFF, 0]
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfImage(id: 42, type: 0, flags: 0, pixel: red)
+                + copyOfImage(id: 42, type: 103, flags: 0, pixel: [], carriesBitmap: false)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
+        )
+        XCTAssertEqual(caches.pixmaps.count, 0, "rien n'a demandé à être gardé")
+        XCTAssertEqual(progress.undrawable, 1, "le second dessin ne trouve rien")
+        XCTAssertEqual(progress.updates.count, 1)
+    }
+
+    /// **Invalidations arrive in the header, not in a message of their own.**
+    ///
+    /// wisq reads the eighteen-byte header, so `dcc->is_mini_header()` is false
+    /// on the server and it takes `send_free_list_legacy`: the `INVAL_LIST` is
+    /// written into a sub-marshaller and `set_header_sub_list` records where it
+    /// sits inside whatever message was being sent anyway. A client that reads
+    /// only the message type never sees one — which is exactly what wisq did,
+    /// decoding the `subList` field and never looking at it.
+    ///
+    /// The invalidation rides on a *later* message than the one that cached the
+    /// image, which is how it actually happens: the server evicts to make room
+    /// for something else and names what it dropped. Sub-messages are handled
+    /// before the message carrying them, as `spice_channel_recv_msg` does.
+    func testAnInvalidationRidingInTheHeaderIsObeyed() async throws {
+        let red: [UInt8] = [0, 0, 0xFF, 0]
+
+        // Un second dessin, tout simple, auquel on accroche la liste.
+        let plain = fill(0, 0, 2, 2, colour: 0x0000_FF00)
+        var body = [UInt8](plain[SpiceWire.dataHeaderBytes...])
+        let listAt = body.count
+        body += u16(1)
+        let offsetsAt = body.count
+        body += u32(0)
+        let subAt = body.count
+        let invalidation = u16(1) + [SpiceDisplayWire.ResourceType.pixmap] + u64(42)
+        body += u16(SpiceDisplayWire.Message.invalList.rawValue)
+            + u32(UInt32(invalidation.count)) + invalidation
+        body.replaceSubrange(offsetsAt..<(offsetsAt + 4), with: u32(UInt32(subAt)))
+
+        let carrier = SpiceWire.encode(SpiceWire.DataHeader(
+            serial: 1, type: SpiceDisplayWire.Message.drawFill.rawValue,
+            size: UInt32(body.count), subList: UInt32(listAt)
+        )) + Data(body)
+
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfImage(id: 42, type: 0,
+                              flags: SpiceDisplayWire.ImageFlag.cacheMe, pixel: red)
+                + carrier
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        // Après deux messages l'image est gardée ; le troisième la relâche.
+        _ = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 2
+        )
+        XCTAssertEqual(caches.pixmaps.count, 1, "gardée sur ordre du serveur")
+
+        _ = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 1
+        )
+        XCTAssertEqual(caches.pixmaps.count, 0, "relâchée sur ordre du serveur")
+        XCTAssertEqual(caches.pixmaps.storedPixels, 0)
+    }
+
+    /// A message carrying an `INVAL_LIST` in its header, for a given resource.
+    private func fillCarryingInvalidation(of id: UInt64, type: UInt8) -> Data {
+        let plain = fill(0, 0, 2, 2, colour: 0x0000_FF00)
+        var body = [UInt8](plain[SpiceWire.dataHeaderBytes...])
+        let listAt = body.count
+        body += u16(1)
+        let offsetsAt = body.count
+        body += u32(0)
+        let subAt = body.count
+        let invalidation = u16(1) + [type] + u64(id)
+        body += u16(SpiceDisplayWire.Message.invalList.rawValue)
+            + u32(UInt32(invalidation.count)) + invalidation
+        body.replaceSubrange(offsetsAt..<(offsetsAt + 4), with: u32(UInt32(subAt)))
+        return SpiceWire.encode(SpiceWire.DataHeader(
+            serial: 1, type: SpiceDisplayWire.Message.drawFill.rawValue,
+            size: UInt32(body.count), subList: UInt32(listAt)
+        )) + Data(body)
+    }
+
+    /// **The list is typed, and only pixmaps are images.**
+    ///
+    /// A `ResourceID` carries a type beside its identifier, and today's server
+    /// only ever fills it with `SPICE_RES_TYPE_PIXMAP` — `dcc_push_release` has
+    /// a single caller and it passes that constant. Palettes are invalidated by
+    /// their own messages, 107 and 108, not through this list.
+    ///
+    /// So with a conforming server the filter changes nothing, and dropping it
+    /// survived the whole suite until this test existed. It stays because the
+    /// protocol types the list and `SPICE_RESOURCE_TYPE_ENUM_END` says the enum
+    /// is meant to grow: the identifiers come from different spaces, so the day
+    /// a second type appears, an unfiltered client evicts a perfectly good
+    /// picture whenever two of them happen to collide.
+    func testAResourceThatIsNotAPixmapDoesNotEvictAnImage() async throws {
+        let red: [UInt8] = [0, 0, 0xFF, 0]
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfImage(id: 42, type: 0,
+                              flags: SpiceDisplayWire.ImageFlag.cacheMe, pixel: red)
+                // Le même identifiant, mais pas une image.
+                + fillCarryingInvalidation(of: 42, type: 0 /* RES_TYPE_INVALID */)
+                // Puis le bon type, pour montrer que le test peut voir la chute.
+                + fillCarryingInvalidation(of: 42, type: SpiceDisplayWire.ResourceType.pixmap)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        _ = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
+        )
+        XCTAssertEqual(caches.pixmaps.count, 1, "un identifiant d'un autre type n'est pas l'image")
+
+        _ = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 1
+        )
+        XCTAssertEqual(caches.pixmaps.count, 0, "le bon type la relâche bien")
     }
 
     /// A malformed message *is* fatal, and that is the distinction the previous
@@ -875,11 +1074,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         do {
-            _ = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 1)
+            _ = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 1)
             XCTFail("un message malformé doit arrêter la pompe")
         } catch {
             XCTAssertEqual(error as? SpiceError, .invalidData)
@@ -894,11 +1093,11 @@ final class SpiceDisplayChannelTests: XCTestCase {
         let server = MemoryByteStream(inbound: header)
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
         do {
-            _ = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 1, limit: 1)
+            _ = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 1)
             XCTFail("une taille absurde doit être refusée")
         } catch {
             XCTAssertEqual(error as? SpiceError, .invalidData)
@@ -924,13 +1123,13 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let first = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 10, limit: 1)
+        let first = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 10, limit: 1)
         XCTAssertEqual(first.nextSerial, 11, "un pong envoyé, donc un cran")
 
-        let second = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: first.nextSerial, limit: 1)
+        let second = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: first.nextSerial, limit: 1)
         XCTAssertEqual(second.nextSerial, 12)
 
         // And the wire agrees: two pongs, with consecutive serials.
@@ -950,10 +1149,10 @@ final class SpiceDisplayChannelTests: XCTestCase {
         )
         let channel = SpiceDisplayChannel(stream: server)
         var surfaces = SpiceSurfaces()
-        var glz = SpiceGLZ.Window()
+        var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
 
-        let progress = try await channel.pump(into: &surfaces, glz: &glz, streams: &streams, serial: 5, limit: 1)
+        let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 5, limit: 1)
         XCTAssertEqual(progress.nextSerial, 5)
     }
 }

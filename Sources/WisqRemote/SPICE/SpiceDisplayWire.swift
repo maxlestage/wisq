@@ -131,6 +131,33 @@ enum SpiceDisplayWire {
 
     // MARK: - Images
 
+    /// One entry of `SPICE_MSG_DISPLAY_INVAL_LIST`.
+    struct Resource: Equatable, Sendable {
+        var type: UInt8
+        var id: UInt64
+    }
+
+    /// `SPICE_RES_TYPE_*`. `INVALID` is zero, so pixmaps are one — and a list
+    /// can name palettes too, which is why the type is kept rather than every
+    /// entry being treated as an image.
+    enum ResourceType {
+        static let invalid: UInt8 = 0
+        static let pixmap: UInt8 = 1
+    }
+
+    /// The image descriptor's flags. `SPICE_IMAGE_FLAGS_MASK` is `0x7`.
+    ///
+    /// `cacheMe` is the server's instruction to keep the picture, and it is set
+    /// only when the server's own cache accepted it. `cacheReplaceMe` says the
+    /// entry already held under this identifier is being replaced — the server
+    /// re-sending losslessly what it had cached lossily — which the cache
+    /// handles by storing over the old entry rather than needing its own case.
+    enum ImageFlag {
+        static let cacheMe: UInt8 = 1 << 0
+        static let highBitsSet: UInt8 = 1 << 1
+        static let cacheReplaceMe: UInt8 = 1 << 2
+    }
+
     enum ImageType: UInt8, Equatable, Sendable {
         case bitmap = 0
         case quic = 1

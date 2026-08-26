@@ -1460,6 +1460,68 @@ lien mobile ce que la correction lui coûte : une icône envoyée une fois au li
 de vingt. Les deux moitiés doivent atterrir ensemble ; une entrée périmée est
 pire qu'une image réémise.
 
+### Le cache d'images, et le champ que personne ne lisait
+
+Fait, et la correction précédente est rendue : `pixmapCachePixels` remonte à
+4 Mi pixels parce qu'il y a désormais quelque chose derrière.
+
+**La règle est que le serveur évince et que le client obéit.** C'est
+contre-intuitif — tout dit qu'un cache borné doit évincer tout seul — et c'est
+la référence qui tranche : `dcc_pixmap_cache_unlocked_add` évince sa queue LRU
+puis appelle `dcc_push_release(dcc, SPICE_RES_TYPE_PIXMAP, tail->id, …)`, qui
+part au client en `SPICE_MSG_DISPLAY_INVAL_LIST`. Deux chaînes LRU — l'une
+ordonnée par les envois du serveur, l'autre par les dessins du client —
+divergeraient, et chaque divergence est un `FROM_CACHE` qui nomme une image déjà
+jetée, donc un dessin sauté. `SpicePixmapCache` refuse donc plutôt que d'évincer
+quand le budget est plein : ça coûte une image réémise, là où tenir en douce
+plus que ce qu'on a promis coûte l'application.
+
+N'entrent dans le cache que les images dont le descripteur porte `CACHE_ME`
+(bit 0), et c'est une instruction précise et non une indication :
+`marshal_lossy_or_lossless` ne pose ce drapeau **qu'après** que son propre ajout
+a réussi.
+
+**Le champ que personne ne lisait.** Les invalidations n'arrivent pas dans un
+message à elles. wisq lit l'en-tête de dix-huit octets, donc côté serveur
+`dcc->is_mini_header()` est faux et c'est `send_free_list_legacy` qui tourne :
+l'`INVAL_LIST` part dans un sous-marshaller et `set_header_sub_list` note où il
+se trouve **à l'intérieur du message qui partait de toute façon**.
+`SpiceWire.DataHeader` décodait `subList` depuis toujours et rien ne le lisait.
+C'était sans conséquence tant que rien n'était en cache — avec une taille nulle
+le serveur n'évince jamais, donc n'envoie jamais d'invalidation — et ça cessait
+de l'être à la seconde où un cache existe.
+
+`SpiceSubMessages` lit donc la liste, et la condition est celle du client de
+référence : `if (msg_type == SPICE_MSG_LIST || sub_list_offset)`. Les
+sous-messages sont traités **avant** le message qui les porte, comme dans
+`spice_channel_recv_msg`, ce qui est l'ordre qu'il faut : le serveur a évincé
+pour faire de la place à ce qu'il envoie maintenant.
+
+Deux pièges de format, tous deux du genre qui donne une image plausible :
+
+* `SpiceSubMessageList.size` **est un compte, pas une taille**. C'est
+  `spice_marshaller_add_uint16(sub_list_m, sub_list_len)` qui part sur le fil, et
+  spice-gtk boucle dessus comme sur un compte. Lu comme un nombre d'octets, une
+  liste de deux entrées en réclamerait une centaine ;
+* `ResourceID` fait **neuf octets sans remplissage** — un `uint8` puis un
+  `uint64`. Lu comme une structure alignée naturellement, la deuxième entrée
+  commence un octet trop tôt et tous les identifiants suivants sont du bruit.
+
+Et le décalage zéro est un vrai décalage : le sentinelle « pas de liste »
+appartient au champ d'en-tête, pas à l'analyseur — `SPICE_MSG_LIST` place la
+sienne au tout début de son corps. L'avoir replié dans l'analyseur rendait cette
+branche muette, et c'est une sonde jetable qui l'a montré, pas un test.
+
+**Ce qu'un sabotage a appris.** Retirer le filtre de type sur la liste
+d'invalidation a survécu à la suite entière. Diagnostic : branche inatteignable
+avec un serveur conforme — `dcc_push_release` n'a qu'un appelant et il passe
+toujours `SPICE_RES_TYPE_PIXMAP`, les palettes ayant leurs propres messages 107
+et 108. Le filtre reste, parce que le protocole type la liste et que
+`SPICE_RESOURCE_TYPE_ENUM_END` annonce une énumération faite pour grandir : les
+identifiants viennent d'espaces différents, donc le jour où un second type
+apparaît, un client sans filtre jette une image parfaitement valide dès que deux
+identifiants se croisent. Un test le distingue maintenant.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
