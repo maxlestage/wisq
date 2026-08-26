@@ -3,6 +3,19 @@
 React 19 on Bun, no framework and no CSS library: a project site should not
 need a build pipeline bigger than the thing it documents.
 
+**React never reaches a visitor.** It is the authoring language and the
+pre-renderer — `renderToString` at build time — and the browser gets HTML plus
+about a kilobyte of plain DOM code. It used to hydrate the pre-rendered pages
+for four behaviours (a redirect, a remembered language, the theme switch, the
+install banner), and that cost 65 794 bytes gzipped on every page. Those four
+live in `src/main.ts` now; `tests/build.test.ts` fails if React reappears in
+the bundle, and `tests/behaviour.test.ts` drives each of them in a DOM so that
+"small" cannot quietly become "does nothing".
+
+The trade: anything genuinely interactive added later belongs in `main.ts` as
+DOM code, or behind a dynamic import only the pages needing it pay for. It can
+no longer be added by writing JSX.
+
 ```sh
 bun install
 bun run dev      # writing the site, with hot reload
@@ -38,9 +51,11 @@ under `@media (prefers-color-scheme: dark)` guarded by
 `:root:not([data-theme="light"])`, once under `:root[data-theme="dark"]` — so a
 choice beats the system in *both* directions; without the guard, choosing light
 on a dark device silently does nothing. And the choice is applied by a small
-inline script in the document head rather than by a React effect, because an
-effect runs after the page has painted: a reader who chose light on a dark
-system would otherwise see a flash of dark on every navigation.
+inline script in the document head rather than by the main script, because
+anything deferred runs after the page has painted: a reader who chose light on
+a dark system would otherwise see a flash of dark on every navigation. What
+`main.ts` does afterwards is the part nobody sees flash — the pressed state of
+the three buttons, and the buttons themselves.
 
 Verified by driving a browser with the system set each way in turn, checking
 the computed background, the `theme-color` metas, that the attribute is already
