@@ -1811,6 +1811,46 @@ de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs 
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
 
+## L'identifiant de VM, entre l'URL et virsh (fait)
+
+`service.rs` prenait le segment de chemin tel quel et le passait à
+`backend.get/start/stop`, qui le donne à `virsh` en argument. Rien ne le
+validait.
+
+Deux résultats négatifs d'abord, sondés plutôt que supposés, parce que ce sont
+ceux qu'on suppose faux :
+
+- **Pas d'injection de commande.** `Command::new(virsh).args([...])` construit un
+  argv, jamais une ligne de shell. Un identifiant valant `; rm -rf /` arrive
+  comme un seul argument que virsh ne trouve pas.
+- **Pas d'injection JSON.** `vm::escape` traite le guillemet, l'antislash, les
+  trois contrôles nommés et tout ce qui est sous 0x20.
+
+Ce qui est réel est **l'injection d'argument** : un identifiant qui commence par
+un tiret n'est pas une donnée pour un analyseur d'options, c'est une option.
+Sondé de bout en bout, statut 200 à chaque fois — `/v1/vms/-c/start` fait
+parvenir `-c` au backend.
+
+Portée dite honnêtement : cela demande le jeton porteur, donc c'est une escalade
+*dans* une session authentifiée, pas une entrée. Le chemin n'est pas décodé en
+pourcent, donc un `/` ne peut pas figurer dans un segment et une URI
+`--connect=qemu+ssh://…` complète n'est pas atteignable ainsi. Quels drapeaux le
+sont dépend du jeu d'options de virsh, qui n'est pas installé ici : aucun exploit
+précis n'est revendiqué, et la classe est fermée quand même.
+
+L'identifiant est désormais vérifié une fois, à la frontière du routage, contre
+une **liste blanche** : non vide, 255 octets au plus, pas de tiret initial,
+lettres, chiffres, point, tiret ou souligné. Liste blanche et pas liste noire :
+« les caractères que virsh n'aime pas » est une supposition sur l'analyseur d'un
+autre programme, et elle vieillit mal.
+
+Six sabordages, dont trois de sur-correction — refuser le point, le tiret interne
+ou les majuscules casse des noms que les gens utilisent vraiment, et les tests le
+disent. Le sixième a d'abord survécu : `DemoBackend` répond 404 « VM introuvable »
+pour tout nom inconnu, donc un test qui n'affirmait que le *statut* ne
+distinguait pas un refus de validation d'une absence. C'est le message qui les
+sépare, et c'est lui que le test lit maintenant.
+
 ## Les secrets de l'agent, et la fenêtre entre deux appels système (fait)
 
 Le jeton porteur et la clé privée TLS étaient écrits par `fs::write`, puis
