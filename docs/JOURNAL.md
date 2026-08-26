@@ -2526,3 +2526,48 @@ plus utile : après la réécriture, **j'ai refait le sabordage**. Le code n'ét
 plus le même que celui que j'avais prouvé ; une preuve porte sur un texte précis,
 pas sur une intention. Elle est restée valide, mais je ne le savais pas avant de
 relancer.
+
+## Deux 404 qui ne veulent pas dire la même chose
+
+Sabordage : j'enlève la liste blanche de caractères qui valide l'identifiant de
+VM. La suite reste **verte**. Six sabordages, cinq mordent, celui-là passe.
+
+Diagnostic, cas 2 — test manquant. Mon test affirmait `status == 404` pour des
+identifiants hostiles. Or `DemoBackend` répond lui aussi 404, « VM introuvable »,
+pour n'importe quel nom qu'il ne connaît pas. Les deux réponses portent le même
+statut, donc l'assertion passait quel que soit le chemin emprunté : refus de
+validation ou simple absence. Le test avait l'air de vérifier un refus ; il
+vérifiait « pas trouvé ».
+
+Ce qui les sépare est le *message*. Le test le lit maintenant, et le sabordage
+mord.
+
+La leçon dépasse le cas : **un code de statut est un canal trop pauvre pour
+distinguer deux raisons de refuser.** Et ce n'est pas un défaut du protocole —
+répondre 404 pour un nom invalide est le bon choix, il ne faut pas révéler si la
+VM existe. C'est un défaut du *test*, qui doit regarder plus finement que le
+client n'a le droit de le faire.
+
+À rapprocher de la liste de la nuit : la valeur neutre qui rend deux
+implémentations égales par accident, la garde de disponibilité qui rend tout
+vert sans rien exécuter. Même famille — **une observation trop grossière pour
+séparer deux mondes**.
+
+## Sur-corriger est un défaut à part entière, et il se saborde aussi
+
+Sur six sabordages de cette tranche, **trois** consistaient à rendre la
+validation trop stricte : refuser le point, le tiret interne, les majuscules.
+Les trois font tomber des tests, parce qu'une troisième famille de tests affirme
+que `debian-12.local`, `VM1` et `win11-dev.example.com` continuent de passer.
+
+C'est devenu un réflexe cette nuit et il vaut d'être nommé : **quand on ajoute
+un refus, la moitié du travail de test porte sur ce qu'il ne faut pas refuser.**
+Un validateur qui bloque l'attaque et casse `debian-12.local` a remplacé un
+problème de sécurité par un problème de disponibilité, et le second se remarque
+plus vite mais ne se pardonne pas mieux.
+
+C'est la troisième fois du cycle : les espaces autour d'un `Content-Length`
+(légaux, mon premier test les refusait à tort), les en-têtes de cache (refuser
+`no-store` partout aurait été aussi faux que tout accepter), et maintenant les
+noms de domaine. Le motif : **une règle a deux bords, et le sabordage doit
+pousser des deux côtés.**

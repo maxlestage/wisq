@@ -8,6 +8,39 @@ break APIs.
 ## [Unreleased]
 
 ### Fixed
+- **A VM identifier reached `virsh` with no validation at all.** `service.rs`
+  took the path segment straight from the URL and handed it to
+  `backend.get/start/stop`, which passes it to `virsh` as an argument.
+
+  Two clean negatives first, both probed rather than assumed: there is **no
+  command injection** — `Command::new(virsh).args([...])` is argv, never a
+  shell, so an id of `; rm -rf /` is one harmless argument virsh cannot find —
+  and **no JSON injection**, because `vm::escape` covers quote, backslash,
+  `\n\r\t` and everything below 0x20.
+
+  What is real is **argument injection**: an identifier beginning with a dash is
+  not a name to an option parser, it is an option. Probed end to end, all
+  answering 200:
+
+  ```
+  /v1/vms/-c/start        -> backend received "-c"
+  /v1/vms/--version/start -> backend received "--version"
+  ```
+
+  It needs the bearer token, so it is escalation inside an authenticated session
+  — from "drive this host's VMs" to "run virsh with flags of your choosing" —
+  rather than a way in. The path is not percent-decoded, so a `/` cannot appear
+  in a segment and a full `--connect=qemu+ssh://…` URI is not reachable this
+  way; exactly which flags are depends on virsh's option set, which is not
+  installed here, so no specific exploit is claimed. The class is closed
+  regardless.
+
+  Identifiers are now checked once, at the routing boundary, against an
+  allowlist: non-empty, at most 255 bytes, no leading dash, and letters, digits,
+  dot, dash or underscore only. An allowlist rather than a denylist because
+  "characters virsh dislikes" is a guess about another program's parser.
+
+### Added
 - **The token and the TLS private key existed world-readable, briefly.** Both
   were written with `fs::write` and narrowed to `0600` on the *next* syscall.
   `fs::write` creates a file at the default mode — **0644** under the usual
