@@ -176,12 +176,41 @@ mod tests {
         assert!(urls[0].contains("host=my%20host"));
     }
 
+    /// A SHA-256 digest in hex, the length `AgentPairing.parse` demands on the
+    /// Swift side. This test used to pass `aa11bb22` — four bytes — and assert
+    /// the link ended with it, which quietly documented a link the phone
+    /// refuses. A fixture the other end would reject is a fixture that
+    /// describes a contract nobody has.
+    const A_REAL_FINGERPRINT: &str =
+        "07070707070707070707070707070707070707070707070707070707070707aa";
+
     #[test]
     fn the_fingerprint_rides_the_link_only_when_tls_is_on() {
-        let with = urls(7442, "t", Some("nas"), Some("aa11bb22"));
-        assert!(with[0].ends_with("&fp=aa11bb22"), "{}", with[0]);
+        let with = urls(7442, "t", Some("nas"), Some(A_REAL_FINGERPRINT));
+        assert!(
+            with[0].ends_with(&format!("&fp={A_REAL_FINGERPRINT}")),
+            "{}",
+            with[0]
+        );
         let without = urls(7442, "t", Some("nas"), None);
         assert!(!without[0].contains("fp="), "{}", without[0]);
+    }
+
+    /// The length the Swift side demands, asserted here rather than assumed.
+    /// `AgentPairing.fingerprintByteCount` is 32, so 64 hex characters.
+    #[test]
+    fn the_fingerprint_in_a_link_is_the_length_the_phone_accepts() {
+        let link = &urls(7442, "t", Some("nas"), Some(A_REAL_FINGERPRINT))[0];
+        let hex = link
+            .rsplit("&fp=")
+            .next()
+            .expect("le lien porte une empreinte");
+        assert_eq!(hex.len(), 64, "{link}");
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{link}"
+        );
     }
 
     #[test]

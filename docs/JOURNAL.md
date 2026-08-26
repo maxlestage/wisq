@@ -3488,3 +3488,73 @@ Le test `testAFailedDeletionKeepsBothTheMachineAndItsPassword` avait pris
 C'était du bruit du runner, pas une régression, et l'injection par répertoire
 en `0500` reste en place. Deux points ne font pas une tendance ; le troisième
 tranche.
+
+## Deux fichiers affirment qu'ils ne peuvent pas diverger, et divergent
+
+`AgentPairing` (Swift) porte cette phrase :
+
+> Both sides of the wire live here so generation and parsing cannot drift apart.
+
+et `crates/wisq-agent/src/pairing.rs` (Rust) celle-ci :
+
+> The format is shared with `AgentPairing` in WisqCore — the Swift side parses
+> exactly this, so the two must not drift.
+
+Deux modules, deux langues, la même propriété énoncée. Aucun des deux ne la
+tenait.
+
+### Mesuré, témoin compris
+
+`parse` a toujours exigé une empreinte de 32 octets — « a malformed
+fingerprint is an error, never a shrug ». `url(for:)` écrivait n'importe quelle
+longueur :
+
+| empreinte | ce que `url(for:)` produisait | ce que `parse` en faisait |
+| --- | --- | --- |
+| 32 octets (témoin) | un lien | accepté |
+| vide | `…&fp=` | **refusé** |
+| 4 octets | `…&fp=aa11bb22` | **refusé** |
+| 33 octets | un lien | **refusé** |
+
+Le type dont la raison d'être est que ses deux moitiés ne divergent pas
+fabriquait un lien qu'il refusait lui-même.
+
+Et `aa11bb22` n'est pas une valeur que j'ai inventée : c'est exactement ce que
+le test Rust affirmait. Il **gravait** une chaîne que le téléphone rejette,
+donc il décrivait un contrat que personne n'a.
+
+### Refuser, et non laisser tomber
+
+Une empreinte de mauvaise longueur ne produit plus **aucun lien**, plutôt qu'un
+lien sans `fp`. La forme sans `fp` a un sens — elle veut dire HTTP en clair —
+donc l'émettre ici transformerait une empreinte cassée en **dégradation
+silencieuse**, exactement ce que `parse` refuse à l'autre bout. Le sabordage p2
+fait précisément cela, et un test distingue les deux échecs.
+
+### Où la garantie appartient vraiment
+
+Côté Rust, `pairing::urls` écrit l'empreinte verbatim, et c'est correct : elle
+vient de `tls::fingerprint_hex`, un SHA-256. Mais **cette fonction n'avait
+aucun test**. C'est chez le producteur que la forme se décide, alors elle en a
+deux maintenant : la longueur et la casse, et un témoin — deux certificats
+différents n'ont pas la même empreinte — sans lequel le test de longueur
+passerait pour une fonction qui rendrait une constante.
+
+### Les cinq sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| `url(for:)` réaccepte n'importe quelle longueur | 6 |
+| `url(for:)` laisse tomber le `fp` au lieu de refuser | 6, dont celui de la dégradation |
+| `fingerprint_hex` tronque | 2 |
+| `fingerprint_hex` rend une constante | 2 |
+| `pairing::urls` tronque l'empreinte | 2 |
+
+### Ce qui n'est pas atteignable, et le dire
+
+Rien de tout cela n'était un défaut en production : l'empreinte vient toujours
+de `fingerprint_hex`, donc toujours de 64 caractères. C'est un **contrat non
+tenu**, pas un trou, et le commit le dit comme tel plutôt que de le gonfler. Ce
+que la tranche apporte est une propriété qui tient désormais par construction,
+et un test qui attrapera la dérive du jour où quelqu'un changera un des deux
+bouts.
