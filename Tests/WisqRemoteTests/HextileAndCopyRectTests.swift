@@ -17,9 +17,7 @@ import XCTest
 final class HextileAndCopyRectTests: XCTestCase {
     // MARK: - Wire helpers
 
-    private func header(x: UInt16 = 0, y: UInt16 = 0, width: UInt16, height: UInt16, encoding: UInt8)
-        -> Data
-    {
+    private func header(x: UInt16 = 0, y: UInt16 = 0, width: UInt16, height: UInt16, encoding: UInt8) -> Data {
         var data = Data()
         for value in [x, y, width, height] {
             data.append(contentsOf: [UInt8(value >> 8), UInt8(value & 0xFF)])
@@ -28,9 +26,7 @@ final class HextileAndCopyRectTests: XCTestCase {
         return data
     }
 
-    private func decode(_ data: Data, into framebuffer: Framebuffer) async throws
-        -> RFBDecoder.Outcome
-    {
+    private func decode(_ data: Data, into framebuffer: Framebuffer) async throws -> RFBDecoder.Outcome {
         let decoder = RFBDecoder(
             stream: MemoryByteStream(inbound: data),
             framebuffer: framebuffer,
