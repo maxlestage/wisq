@@ -254,6 +254,67 @@ enum SpiceWire {
         )
     }
 
+    /// What this client tells the main channel it can do.
+    ///
+    /// **`agentConnectedTokens` is the one that matters, and it is not about
+    /// migration despite the company it keeps.**
+    ///
+    /// `MainChannel::push_agent_connected` picks the message by it:
+    ///
+    /// ```c
+    /// if (rcc->test_remote_cap(SPICE_MAIN_CAP_AGENT_CONNECTED_TOKENS)) {
+    ///     rcc->pipe_add_type(RED_PIPE_ITEM_TYPE_MAIN_AGENT_CONNECTED_TOKENS);  // 115, with a count
+    /// } else {
+    ///     rcc->pipe_add_empty_msg(SPICE_MSG_MAIN_AGENT_CONNECTED);             // 107, empty
+    /// }
+    /// ```
+    ///
+    /// And a token count is the only thing that makes the agent writable.
+    /// `reds_reset_vdp` says where a client ever learns one: "The client's
+    /// tokens are set once when the main channel is initialized and once upon
+    /// agent's connection with `SPICE_MSG_MAIN_AGENT_CONNECTED_TOKENS`." There
+    /// is no third occasion — `MAIN_AGENT_TOKEN` only ever grants tokens back
+    /// as the server consumes what the client sent.
+    ///
+    /// So when the agent restarts, `RedCharDevice::reset` hands the client its
+    /// whole allowance back on the server's side —
+    /// `num_client_tokens += num_client_tokens_free` — and then can only say so
+    /// in message 115. A client reading 107 keeps whatever it had left. Being
+    /// low is merely wasteful; being at **zero** is a clipboard that never works
+    /// again for the rest of the session. `AGENT_START` still goes out — it is a
+    /// main-channel message and costs no token — so the handshake looks fine,
+    /// but every piece of agent *data* after it, starting with this client's own
+    /// capability announcement, stays queued: `spend()` fails, so nothing is
+    /// sent, so the server consumes nothing, so `MAIN_AGENT_TOKEN` never grants
+    /// any back. Inert rather than obviously broken, which is the worse kind.
+    ///
+    /// **Advertising it cannot drag migration in with it**, which was the thing
+    /// to check before adding a bit that sits among migration flags.
+    /// `MainChannel::migrate_connect` uses it only to set `try_seamless`, and
+    /// then still requires `SPICE_MAIN_CAP_SEAMLESS_MIGRATE` — bit 3, which wisq
+    /// does not advertise — before doing anything seamless, falling back to
+    /// semi-seamless otherwise.
+    ///
+    /// The rest stay absent: wisq migrates nothing, and has no use for the
+    /// guest's name and UUID.
+    enum MainCapability: Int, Equatable, Sendable {
+        case semiSeamlessMigrate = 0
+        case nameAndUUID = 1
+        case agentConnectedTokens = 2
+        case seamlessMigrate = 3
+    }
+
+    static let advertisedMainCapabilities: [MainCapability] = [.agentConnectedTokens]
+
+    /// The words for `advertisedMainCapabilities`.
+    ///
+    /// A named property rather than another `capabilityWords` overload: the
+    /// generic one takes `[Int]`, and a second overload made
+    /// `capabilityWords([])` ambiguous at every call site that had one.
+    static var mainCapabilityWords: [UInt32] {
+        capabilityWords(advertisedMainCapabilities.map(\.rawValue))
+    }
+
     /// The capability bitmap a client sends at link time, from a set of bit
     /// positions.
     ///

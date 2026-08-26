@@ -159,7 +159,10 @@ public actor SPICESession: RemoteSession {
         main = mainStream
         continuation.yield(.authenticating)
         _ = try await SpiceLink(stream: mainStream, encryptTicket: encryptTicket)
-            .open(channel: .main, password: password)
+            .open(
+                channel: .main, password: password,
+                channelCaps: SpiceWire.mainCapabilityWords
+            )
 
         let session = try await SpiceMainChannel(stream: mainStream).bringUp()
         guard session.channels.contains(where: { $0.type == SpiceWire.Channel.display.rawValue })

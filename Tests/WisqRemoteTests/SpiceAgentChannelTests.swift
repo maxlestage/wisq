@@ -158,6 +158,59 @@ final class SpiceAgentChannelTests: XCTestCase {
         XCTAssertEqual(available, 2, "trois moins l'annonce")
     }
 
+    /// **Why the token-carrying message is worth asking for.**
+    ///
+    /// The bare `AGENT_CONNECTED` keeps the budget, which is the right call for
+    /// that path — zeroing would mute the client outright. But *keeping* a
+    /// budget of zero is its own trap, and it is not recoverable: `spend()`
+    /// fails, so nothing is sent, so the server consumes nothing, so it never
+    /// grants tokens back with `MAIN_AGENT_TOKEN`. The clipboard is dead for
+    /// the rest of the session.
+    ///
+    /// That is not hypothetical after an agent restart. `RedCharDevice::reset`
+    /// hands the client its whole allowance back *on the server's side* —
+    /// `num_client_tokens += num_client_tokens_free` — and `reds_reset_vdp`
+    /// says a client only ever learns a count "once when the main channel is
+    /// initialized and once upon agent's connection with
+    /// `SPICE_MSG_MAIN_AGENT_CONNECTED_TOKENS`". Message 107 carries no count,
+    /// so the two sides silently disagree.
+    ///
+    /// wisq now advertises the capability, so it gets 115 and the real number.
+    /// This test keeps the reason visible.
+    func testAZeroBudgetOnTheBareMessageNeverRecovers() async throws {
+        let server = MemoryByteStream(inbound:
+            serverMessage(SpiceWire.Message.mainAgentConnected)
+        )
+        let stalled = channel(server, tokens: 0, connected: false)
+
+        _ = try await stalled.pump()
+
+        let available = await stalled.tokens.available
+        XCTAssertEqual(available, 0)
+        // `AGENT_START` is a main-channel message and costs no token, so the
+        // handshake half-completes; the capability announcement is agent *data*
+        // and stays queued. That distinction is the whole failure: the guest
+        // sees a client attach and then never hears what it can do, so the
+        // clipboard is inert rather than obviously broken.
+        let sentWithoutTokens = try await sent(server).map(\.0)
+        XCTAssertEqual(sentWithoutTokens, [SpiceWire.ClientMessage.agentStart])
+        XCTAssertFalse(
+            sentWithoutTokens.contains(SpiceWire.ClientMessage.agentData),
+            "sans jeton, aucune donnée d'agent ne part"
+        )
+
+        // Le même flux avec le message qui porte un compte : tout repart.
+        let withTokens = MemoryByteStream(inbound:
+            serverMessage(SpiceWire.Message.mainAgentConnectedTokens, u32(4))
+        )
+        let recovered = channel(withTokens, tokens: 0, connected: false)
+        _ = try await recovered.pump()
+        let sentWithTokens = try await sent(withTokens).map(\.0)
+        XCTAssertEqual(sentWithTokens, [
+            SpiceWire.ClientMessage.agentStart, SpiceWire.ClientMessage.agentData
+        ], "le compte reçu laisse enfin partir l'annonce")
+    }
+
     // MARK: - Keeping the channel alive
 
     /// Nothing read this channel after the handshake, so the server's pings
