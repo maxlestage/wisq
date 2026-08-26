@@ -1776,6 +1776,57 @@ de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs 
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
 
+## Distribution — les architectures publiées (fait)
+
+Quatre assets, pas deux. La release construisait Linux x86_64 et macOS arm64,
+et `scripts/install.sh` demandait exactement ces deux-là ; les deux moitiés
+étaient donc parfaitement d'accord, ce qui est précisément ce qui rendait le
+trou invisible. Un NAS ARM, un Raspberry Pi, un Mac Intel — le `Cargo.toml` de
+l'agent nomme le premier comme son public — tombaient sur la construction depuis
+les sources, qui exige une toolchain Rust.
+
+| asset | cible | lien | vérification avant publication |
+| --- | --- | --- | --- |
+| `linux-x86_64` | `x86_64-unknown-linux-musl` | statique (musl) | `--help` sur le runner |
+| `linux-aarch64` | `aarch64-unknown-linux-musl` | statique (musl) | `--help` sous `qemu-aarch64-static` |
+| `macos-arm64` | `aarch64-apple-darwin` | dynamique (libSystem) | `--help` sur le runner |
+| `macos-x86_64` | `x86_64-apple-darwin` | dynamique (libSystem) | `file`, pas `--help` |
+
+La dernière ligne est la seule asymétrie et elle est délibérée : les runners
+macOS de GitHub sont arm64 et ne portent pas Rosetta, donc cette tranche est
+vérifiée pour *être* du x86_64, pas pour fonctionner. C'est écrit dans le
+workflow plutôt que sous-entendu, parce qu'une asymétrie que personne n'a notée
+se relit plus tard comme un oubli.
+
+Le lien musl est ce qui rend les deux binaires Linux installables sur une
+machine sans rien dessus, Alpine comprise. `strip`, `lto = "fat"`,
+`codegen-units = 1` et `panic = "abort"` étaient déjà dans le profil release du
+workspace : 1,7 Mo en x86_64, 1,4 Mo en aarch64, TLS compris.
+
+Deux garde-fous ferment la question plutôt que de la corriger une fois :
+
+- `scripts/check-release-matrix.sh` (job **Lint**) compare la liste que le
+  workflow produit à celle que l'installateur demande, et échoue dans les deux
+  sens. Le sens qui blesse est « l'installateur demande un asset qui n'existe
+  pas » — un 404 en pleine installation ; l'autre sens n'est pas anodin non plus,
+  un asset que personne ne télécharge ressemble à de la couverture.
+
+  Le même script vérifie une seconde chose, que la comparaison d'ensembles ne
+  peut pas voir : **quelle machine reçoit quel asset**. Intervertir `Darwin/arm64`
+  et `Darwin/x86_64` laisse les deux ensembles rigoureusement identiques pendant
+  que chaque Mac Apple silicon télécharge un binaire Intel. La table est donc
+  exercée — un faux `uname`, le vrai installateur, l'URL qu'il imprime — sur les
+  cinq paires servies et deux qui doivent tomber sur la construction depuis les
+  sources.
+- L'entrée `dry_run` du workflow de release construit et vérifie tout sans rien
+  publier. Le fichier ne s'exécutait qu'au moment de couper une release,
+  c'est-à-dire au pire moment pour y découvrir une faute.
+
+Ce qui reste, et qui n'est pas décidé ici : un fichier de sommes de contrôle
+signé à côté des assets. `install_binary` lance le binaire avant de l'installer,
+ce qui attrape la mauvaise architecture et la mauvaise libc, mais pas un octet
+changé en route ; HTTPS vers GitHub couvre le transport et rien d'autre.
+
 ## Contraintes à garder en tête
 
 **La règle 4.7 de l'App Store ne nous concerne pas.** C'est l'angle mort des
