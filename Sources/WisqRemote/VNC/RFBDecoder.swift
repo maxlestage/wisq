@@ -71,6 +71,10 @@ struct RFBDecoder {
             return accepted ? .resized(width: width, height: height) : .serverSupportsResize
         case .desktopName:
             let length = Int(try await stream.readUInt32())
+            guard length <= RFBLimits.maximumTextBytes else {
+                throw WisqError.malformedMessage(
+                    "nom de bureau de \(length) octets, plafond \(RFBLimits.maximumTextBytes)")
+            }
             return .renamed(try await stream.readLatin1(count: length))
         case .lastRect:
             return .endOfRectangles
@@ -94,6 +98,11 @@ struct RFBDecoder {
     /// nor Tight.
     private func decodeZlib(_ rect: Rect) async throws {
         let length = Int(try await stream.readUInt32())
+        let ceiling = RFBLimits.maximumCompressedBytes(for: rect)
+        guard length <= ceiling else {
+            throw WisqError.malformedMessage(
+                "bloc zlib de \(length) octets pour un rectangle qui en admet \(ceiling)")
+        }
         let compressed = try await stream.read(exactly: length)
         var pixels = [UInt8](try streams.zlib.inflate(compressed))
         guard pixels.count == rect.width * rect.height * 4 else {
@@ -107,6 +116,11 @@ struct RFBDecoder {
 
     private func decodeZRLE(_ rect: Rect) async throws {
         let length = Int(try await stream.readUInt32())
+        let ceiling = RFBLimits.maximumCompressedBytes(for: rect)
+        guard length <= ceiling else {
+            throw WisqError.malformedMessage(
+                "bloc ZRLE de \(length) octets pour un rectangle qui en admet \(ceiling)")
+        }
         let compressed = try await stream.read(exactly: length)
         let tiles = try streams.zrle.inflate(compressed)
         try ZRLEDecoder.decode(rect: rect, data: tiles, into: framebuffer)
