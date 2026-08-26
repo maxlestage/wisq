@@ -22,13 +22,17 @@ public actor NetworkByteStream: ByteStream {
         }
 
         let parameters: NWParameters
-        switch security {
-        case .none:
+        // What was asked for is resolved against what there is to pin *before*
+        // any parameters are built, in `WisqCore` where the rule can be broken
+        // on purpose by a test. Asking for a pin while holding nothing to pin
+        // to is not representable past this line.
+        switch ResolvedTransportSecurity.resolve(security, fingerprint: pinnedFingerprint) {
+        case .plain:
             parameters = .tcp
-        case .tls:
+        case .systemValidated:
             parameters = .tls
-        case .tlsPinned:
-            parameters = NetworkByteStream.pinnedParameters(fingerprint: pinnedFingerprint)
+        case .pinned(let fingerprint):
+            parameters = NetworkByteStream.pinnedParameters(fingerprint: fingerprint)
         }
         // The numbers live in `TransportTuning`, where a Linux runner can read
         // them; what is left here is the handful of assignments that need
@@ -145,10 +149,21 @@ public actor NetworkByteStream: ByteStream {
         connection.cancel()
     }
 
-    /// TLS parameters that accept whatever certificate the host presents on first
-    /// use and pin it afterwards. Home labs run self-signed certs; refusing them
-    /// outright would push people back to plaintext, which is worse.
-    private static func pinnedParameters(fingerprint: Data?) -> NWParameters {
+    /// TLS parameters that accept the leaf certificate only if it hashes to
+    /// `fingerprint`.
+    ///
+    /// The parameter is not optional, and that is the point. It used to be, and
+    /// the nil branch did not do what the comment above it claimed: it said
+    /// "trust on first use, the caller records `presented` and pins it", while
+    /// no caller recorded anything and there was nowhere on a `Machine` to
+    /// record it. What it actually did was replace the system's validation with
+    /// a block that returned true for every certificate — so the mode named
+    /// "TLS épinglé" turned checking off. Neither session ever passed a
+    /// fingerprint, so that was every pinned machine connection there was.
+    ///
+    /// Installing a verification block at all means the system's own checks no
+    /// longer run, so this must never be reached without something to check.
+    private static func pinnedParameters(fingerprint: Data) -> NWParameters {
         let options = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(
             options.securityProtocolOptions,
@@ -160,11 +175,6 @@ public actor NetworkByteStream: ByteStream {
                     return
                 }
                 let presented = SHA256.digest(Data(SecCertificateCopyData(leaf) as Data))
-                guard let fingerprint else {
-                    // Trust on first use: the caller records `presented` and pins it.
-                    complete(true)
-                    return
-                }
                 complete(presented == fingerprint)
             },
             .global(qos: .userInitiated)

@@ -44,7 +44,19 @@ public enum TransportSecurity: String, Codable, CaseIterable, Sendable {
     case none
     /// TLS with standard certificate validation.
     case tls
-    /// TLS pinned to a certificate fingerprint recorded on first connect (TOFU).
+    /// TLS pinned to a certificate fingerprint.
+    ///
+    /// The fingerprint has to come from somewhere, and on the machine path
+    /// nothing carries one: neither `Machine` nor `SessionConfiguration` has a
+    /// field for it. `ResolvedTransportSecurity.resolve` therefore turns this
+    /// into full system validation rather than into a connection that trusts
+    /// whatever answers — which is what it used to become. The agent path
+    /// pins for real, but by a different road: `AgentBinding` records a
+    /// fingerprint at pairing and `AgentClient` takes it as a non-optional.
+    ///
+    /// This case is not removed because saved machines carry it and because
+    /// the machine path is meant to grow the same recording the agent path
+    /// already has; see `docs/ROADMAP.md`.
     case tlsPinned
 
     public var displayName: String {
