@@ -64,7 +64,35 @@ public struct TerminalGrid: Sendable {
 
     private var cursorRow = 0
     private var cursorColumn = 0
-    private var savedCursor: (row: Int, column: Int, attributes: Attributes)?
+    /// One saved cursor **per screen**, which is what real terminals keep.
+    ///
+    /// There used to be a single slot, and two independent features wrote to
+    /// it: `ESC 7`/`ESC 8` (DECSC/DECRC), and the cursor that `?1049` saves on
+    /// its way into the alternate screen. A shell that saved its cursor, ran
+    /// something full-screen, and restored afterwards got back the position the
+    /// editor was at when it started — so the prompt repainted in the wrong
+    /// place after quitting vim. The mirror leaked the other way too: a save
+    /// made inside the alternate screen survived onto the main one.
+    ///
+    /// The accessor below reads and writes the slot of whichever screen is
+    /// current, which is exactly the rule, and it lets every existing call site
+    /// keep saying `savedCursor`. `setAlternateScreen` relies on its own
+    /// ordering for `?1049`: it saves before switching in and restores after
+    /// switching back, so both touch the main screen's slot — where a shell
+    /// left it.
+    private var savedCursorMain: (row: Int, column: Int, attributes: Attributes)?
+    private var savedCursorAlternate: (row: Int, column: Int, attributes: Attributes)?
+
+    private var savedCursor: (row: Int, column: Int, attributes: Attributes)? {
+        get { isAlternateScreen ? savedCursorAlternate : savedCursorMain }
+        set {
+            if isAlternateScreen {
+                savedCursorAlternate = newValue
+            } else {
+                savedCursorMain = newValue
+            }
+        }
+    }
     private var attributes = Attributes()
     private var wrapPending = false
     private var scrollTop = 0
@@ -160,7 +188,8 @@ public struct TerminalGrid: Sendable {
         scrollback.removeAll()
         cursorRow = 0
         cursorColumn = 0
-        savedCursor = nil
+        savedCursorMain = nil
+        savedCursorAlternate = nil
         attributes = Attributes()
         wrapPending = false
         scrollTop = 0
@@ -508,6 +537,9 @@ public struct TerminalGrid: Sendable {
             savedMainScreen = screen
             screen = Array(repeating: Array(repeating: Cell.blank, count: columns), count: rows)
             isAlternateScreen = true
+            // A fresh alternate screen starts with nothing saved on it; a slot
+            // left from a previous visit is not this program's.
+            savedCursorAlternate = nil
             moveCursor(row: 0, column: 0)
         } else {
             screen = savedMainScreen ?? screen

@@ -3558,3 +3558,60 @@ tenu**, pas un trou, et le commit le dit comme tel plutôt que de le gonfler. Ce
 que la tranche apporte est une propriété qui tient désormais par construction,
 et un test qui attrapera la dérive du jour où quelqu'un changera un des deux
 bouts.
+
+## L'écran alterné laissait une trace, et c'était le curseur
+
+`TerminalGrid` est bien couvert — trente-deux tests, un par promesse de sa
+doc. J'ai donc cherché ce qui reste **hors** de ce filet plutôt que de rouvrir
+à vide, et un voisin donnait la piste : `testTheAlternateScreenComesAndGoesWithoutTrace`
+vérifie que le **contenu de l'écran** revient intact. Il ne regarde pas le
+curseur sauvegardé.
+
+Or il n'y avait qu'un seul emplacement pour lui, partagé par deux fonctions que
+la doc énumère séparément : `ESC 7`/`ESC 8` et la sauvegarde de `?1049`.
+Mesuré, témoin compris :
+
+| séquence | curseur obtenu | attendu |
+| --- | --- | --- |
+| témoin : `ESC 7` … `ESC 8` | (5, 10) | (5, 10) |
+| sauvegarde **dans** l'alterné, puis sortie | (1, 1) | (5, 10) |
+
+Quitter un programme plein écran rendait au shell la position que le programme
+avait sauvegardée. La classe de défaut que la doc du fichier annonce elle-même :
+« invisible jusqu'à ce qu'un vrai programme tourne ».
+
+### Mon attente était fausse sur l'autre moitié
+
+La sonde testait aussi ceci : `ESC 7`, puis un programme entre et sort avec
+`?1049`, puis `ESC 8`. J'attendais la position d'origine ; j'ai obtenu celle du
+programme, et **après correction je l'obtiens toujours**.
+
+Ce n'est pas un défaut. `?1049h` est défini comme *save cursor as in DECSC,
+then switch* : il écrit le même emplacement que `ESC 7`, sur l'écran où il se
+tient encore, donc il remplace légitimement une sauvegarde antérieure. Ce qui
+distingue les deux cas n'est pas *combien de fonctions écrivent l'emplacement*
+mais *à quel écran il appartient*.
+
+Un test épingle ce comportement délibéré avec sa raison, pour que personne ne
+le « corrige » plus tard. Sans lui, la prochaine lecture referait exactement ma
+sonde et referait ma conclusion.
+
+### La correction
+
+Un emplacement **par écran**, ce que gardent les vrais terminaux, derrière un
+accesseur qui choisit celui de l'écran courant — donc tous les appels existants
+continuent de dire `savedCursor`. L'ordre de `setAlternateScreen` fait le reste
+pour `?1049` : il sauvegarde avant de basculer et restaure après être revenu,
+les deux sur l'emplacement de l'écran principal, là où un shell a laissé le sien.
+
+Et l'entrée vide l'emplacement de l'alterné : une sauvegarde d'une visite
+précédente n'appartient pas à la suivante.
+
+### Les quatre sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| un seul emplacement partagé (l'ancien comportement) | 7 |
+| l'entrée ne vide plus l'emplacement de l'alterné | 2 |
+| l'accesseur choisit le mauvais écran | 13 |
+| `?1049` n'écrit plus l'emplacement | 7, dont sa propre fonction |
