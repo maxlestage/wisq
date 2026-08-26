@@ -57,6 +57,7 @@ impl Response {
             413 => "Payload Too Large",
             426 => "Upgrade Required",
             500 => "Internal Server Error",
+            501 => "Not Implemented",
             _ => "OK",
         }
     }
@@ -217,7 +218,12 @@ fn read_request<S: Read>(stream: &mut S) -> Result<Request, ReadFailure> {
     let (method, path) = (method.to_string(), path.to_string());
 
     let mut authorization = None;
-    let mut content_length = 0usize;
+    // `None` until a `Content-Length` is seen, so a second one is detectable.
+    // Two of them with different values is the request-smuggling primitive, and
+    // "the last one wins" is how a parser becomes the half of a pair that
+    // disagrees.
+    let mut content_length: Option<usize> = None;
+    let mut chunked = false;
     let mut header_bytes = request_line.len();
 
     loop {
@@ -242,20 +248,55 @@ fn read_request<S: Read>(stream: &mut S) -> Result<Request, ReadFailure> {
         match name.to_ascii_lowercase().as_str() {
             "authorization" => authorization = Some(value.to_string()),
             "content-length" => {
-                content_length = value.parse().map_err(|_| {
+                // RFC 9112 §6.3: a Content-Length is 1*DIGIT and nothing else.
+                // `usize::from_str` is more generous — it accepts a leading `+`,
+                // so `Content-Length: +5` parsed happily before this check.
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ReadFailure::Protocol(Response::error(
+                        400,
+                        "Content-Length invalide",
+                    )));
+                }
+                let declared: usize = value.parse().map_err(|_| {
                     ReadFailure::Protocol(Response::error(400, "Content-Length invalide"))
                 })?;
-                if content_length > MAX_BODY_BYTES {
+                // Two of them are only tolerable when they agree; RFC 9112 §6.3
+                // says to reject otherwise, and this daemon rejects either way
+                // because a repeated header is already a client doing something
+                // it cannot explain.
+                if content_length.is_some() {
+                    return Err(ReadFailure::Protocol(Response::error(
+                        400,
+                        "Content-Length répété",
+                    )));
+                }
+                if declared > MAX_BODY_BYTES {
                     return Err(ReadFailure::Protocol(Response::error(
                         413,
                         "corps trop volumineux",
                     )));
                 }
+                content_length = Some(declared);
             }
+            // This daemon frames bodies by length and nothing else. Chunked
+            // requests used to arrive, have their body silently dropped, and be
+            // acted on as though the client had sent none — the worst available
+            // answer, because the client is told 200 for something it did not
+            // ask. RFC 9112 §6.1 gives the right one: 501 for a transfer coding
+            // that is not implemented.
+            "transfer-encoding" => chunked = true,
             _ => {}
         }
     }
 
+    if chunked {
+        return Err(ReadFailure::Protocol(Response::error(
+            501,
+            "Transfer-Encoding non pris en charge",
+        )));
+    }
+
+    let content_length = content_length.unwrap_or(0);
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
         reader
@@ -425,5 +466,146 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "la réponse doit être immédiate, pas au bout du délai de socket"
         );
+    }
+
+    /// A plain server that reports back exactly what the parser handed it, so
+    /// these tests can tell "the body was rejected" from "the body arrived
+    /// empty" — a distinction the daemon used to lose.
+    fn echoing_server() -> u16 {
+        let server = Server::bind(0).expect("bind");
+        let port = server.port();
+        thread::spawn(move || {
+            server.serve(Transport::Plain, |request| {
+                Response::json(200, format!("{{\"len\":{}}}", request.body.len()))
+            });
+        });
+        port
+    }
+
+    fn raw(port: u16, wire: &str) -> String {
+        let mut socket = TcpStream::connect(("127.0.0.1", port)).expect("connexion");
+        socket.write_all(wire.as_bytes()).expect("écriture");
+        let mut reply = Vec::new();
+        let _ = socket.read_to_end(&mut reply);
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    /// The one that bit an honest client rather than an attacker: any HTTP
+    /// library that decides to stream a body sends `Transfer-Encoding: chunked`,
+    /// and this daemon answered 200 for a request whose body it had thrown away.
+    #[test]
+    fn a_chunked_request_is_refused_rather_than_silently_emptied() {
+        let port = echoing_server();
+        let reply = raw(
+            port,
+            "POST /v1/x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        );
+        assert!(reply.starts_with("HTTP/1.1 501"), "{reply}");
+        assert!(
+            !reply.contains("\"len\":0"),
+            "le corps a été avalé : {reply}"
+        );
+    }
+
+    /// Two lengths that disagree is the request-smuggling primitive. This
+    /// daemon closes every connection after one exchange, so it cannot be
+    /// desynchronised on its own — but it is exactly the sort of daemon someone
+    /// puts behind a reverse proxy on a NAS, and then the pair disagreeing is
+    /// the whole attack.
+    #[test]
+    fn conflicting_content_lengths_are_refused() {
+        let port = echoing_server();
+        let reply = raw(
+            port,
+            "POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nContent-Length: 3\r\n\r\nhello",
+        );
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+    }
+
+    /// Even when they agree: a repeated framing header is a client doing
+    /// something it cannot explain, and guessing on its behalf is how the two
+    /// halves of a proxy pair end up guessing differently.
+    #[test]
+    fn a_repeated_content_length_is_refused_even_when_it_agrees() {
+        let port = echoing_server();
+        let reply = raw(
+            port,
+            "POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+    }
+
+    /// Both framings at once: the CL.TE desync. Length wins in one parser,
+    /// chunked in the other, and the bytes after the first body become a second
+    /// request that only one of them can see.
+    #[test]
+    fn a_request_framed_twice_is_refused() {
+        let port = echoing_server();
+        let reply = raw(
+            port,
+            "POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello",
+        );
+        assert!(reply.starts_with("HTTP/1.1 501"), "{reply}");
+    }
+
+    /// `usize::from_str` accepts a leading `+`; RFC 9112 says the value is
+    /// 1*DIGIT. The two disagreeing is how a length means one thing here and
+    /// another next door.
+    #[test]
+    fn a_content_length_that_is_not_digits_is_refused() {
+        let port = echoing_server();
+        for value in ["+5", "0x5", "", "five", "-1", "5.0", "5,5"] {
+            let reply = raw(
+                port,
+                &format!("POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: {value}\r\n\r\nhello"),
+            );
+            assert!(
+                reply.starts_with("HTTP/1.1 400"),
+                "Content-Length: {value:?} accepté : {reply}"
+            );
+        }
+    }
+
+    /// The other side of that line, and it caught the first draft of the test
+    /// above rather than the code: **surrounding whitespace is legal.** RFC 9112
+    /// puts optional whitespace around every field value, so ` 5` and `5 ` are
+    /// an ordinary five and refusing them would break conforming clients. The
+    /// parser trims before it validates, which is the right order.
+    #[test]
+    fn whitespace_around_a_content_length_is_not_an_error() {
+        let port = echoing_server();
+        for value in [" 5", "5 ", "  5  "] {
+            let reply = raw(
+                port,
+                &format!("POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length:{value}\r\n\r\nhello"),
+            );
+            assert!(
+                reply.starts_with("HTTP/1.1 200"),
+                "Content-Length:{value:?} refusé : {reply}"
+            );
+            assert!(reply.contains("\"len\":5"), "{reply}");
+        }
+    }
+
+    /// The control case, and the reason the five above are not simply "refuse
+    /// everything": an ordinary request still works, with its body intact.
+    #[test]
+    fn an_ordinary_request_still_carries_its_body() {
+        let port = echoing_server();
+        let reply = raw(
+            port,
+            "POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.contains("\"len\":5"), "{reply}");
+    }
+
+    /// And a request with no body at all, which is every GET the app makes.
+    #[test]
+    fn a_request_with_no_body_is_unaffected() {
+        let port = echoing_server();
+        let reply = raw(port, "GET /v1/vms HTTP/1.1\r\nHost: h\r\n\r\n");
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.contains("\"len\":0"), "{reply}");
     }
 }

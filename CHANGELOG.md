@@ -7,6 +7,40 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **The agent answered 200 for requests whose body it had thrown away.** Its
+  hand-written HTTP parser framed bodies by `Content-Length` and ignored
+  everything else, so a `Transfer-Encoding: chunked` request — what any HTTP
+  client sends the moment it decides to stream — arrived with an **empty body**
+  and was acted on as though the caller had sent none. That is the worst
+  available answer: the client is told its request succeeded.
+
+  Three more, all demonstrated with a probe before anything was changed rather
+  than inferred from reading:
+
+  | request | before | now |
+  | --- | --- | --- |
+  | `Transfer-Encoding: chunked` | body silently empty, 200 | 501 |
+  | repeated `Content-Length` | last wins, body truncated | 400 |
+  | `Content-Length: +5` | accepted — `usize::from_str` allows a leading `+` | 400 |
+  | `Content-Length` **and** `Transfer-Encoding` | length used, encoding ignored | 501 |
+
+  The last three are the request-smuggling primitives. This daemon closes every
+  connection after one exchange, so it cannot be desynchronised on its own — but
+  it is exactly the sort of daemon someone puts behind a reverse proxy on a NAS,
+  and then a pair of parsers disagreeing is the whole attack. The file's own
+  docstring already said what it wanted to be: "deliberately strict — a daemon
+  that accepts sloppy requests is a daemon whose behaviour nobody can predict".
+
+  Whitespace around a `Content-Length` is still accepted, because RFC 9112 puts
+  optional whitespace around every field value. That case caught the first draft
+  of the *test* rather than the code, and both directions are now pinned: eight
+  tests drive real sockets, each defect reintroduced one at a time fails tests,
+  and so does over-correcting into refusing what is legal.
+
+  The app cannot be broken by this: `AgentClient` sets `URLRequest.httpBody`,
+  which URLSession frames with `Content-Length`.
+
 ### Added
 - **The decode path's copies are counted, and held by a test.** The last item on
   the optimisation list was the decoders' hot loops. The structural work turned
