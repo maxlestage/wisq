@@ -37,18 +37,62 @@ public final class Framebuffer: @unchecked Sendable {
     /// separately.
     public static func bytesPerRow(width: Int) -> Int { width * 4 }
 
+    /// A ceiling on what a server may ask this client to allocate.
+    ///
+    /// 64 megapixels is more than any phone will display and far less than the
+    /// wire allows. Without it, `width * height * 4` from two numbers a server
+    /// chose is **an allocation a server chose**: RFB's `ServerInit` carries the
+    /// desktop as two `UInt16`, and 65535 × 65535 × 4 is about seventeen
+    /// gigabytes. On a phone that is not an error, it is the app disappearing.
+    ///
+    /// The sentence above is not new. It was written for `SpiceSurfaces`, whose
+    /// own guard has capped surface allocation since the slice on unreasonable
+    /// sizes — and RFB never got the same treatment, although its geometry
+    /// comes from the same kind of place. The constant lives here now because
+    /// this is the type that does the allocating, and both protocols read it.
+    ///
+    /// 8K (7680 × 4320) is thirty-three megapixels, so nothing anyone would
+    /// really connect to comes near the line.
+    public static let maximumPixels = 64 << 20
+
+    /// Whether a geometry is one this client will hold.
+    ///
+    /// Each side is bounded as well as the product: with both at least 1,
+    /// either side past the ceiling puts the product past it too, so nothing
+    /// legitimate changes meaning — the separate clauses only make the product
+    /// safe to compute before it is compared.
+    public static func canHold(width: Int, height: Int) -> Bool {
+        width >= 0 && height >= 0
+            && width <= maximumPixels && height <= maximumPixels
+            && width * height <= maximumPixels
+    }
+
     public init(width: Int, height: Int) {
-        self.width = max(0, width)
-        self.height = max(0, height)
-        self.pixels = [UInt8](repeating: 0, count: max(0, width) * max(0, height) * 4)
+        let (w, h) = Self.held(width, height)
+        self.width = w
+        self.height = h
+        self.pixels = [UInt8](repeating: 0, count: w * h * 4)
     }
 
     /// Resize, dropping the old contents. Called on desktop-resize events.
+    ///
+    /// A geometry past `maximumPixels` leaves the framebuffer **empty** rather
+    /// than allocating it. That is the quiet backstop; the loud refusal belongs
+    /// to the session, which knows the number came off the wire and can say so.
+    /// Both exist because either alone is wrong: a session that refuses without
+    /// this could still be bypassed by a future caller, and this without a
+    /// session that refuses would show a blank screen and no reason for it.
     public func resize(width: Int, height: Int) {
         lock.lock(); defer { lock.unlock() }
-        self.width = max(0, width)
-        self.height = max(0, height)
-        self.pixels = [UInt8](repeating: 0, count: self.width * self.height * 4)
+        let (w, h) = Self.held(width, height)
+        self.width = w
+        self.height = h
+        self.pixels = [UInt8](repeating: 0, count: w * h * 4)
+    }
+
+    private static func held(_ width: Int, _ height: Int) -> (Int, Int) {
+        guard canHold(width: width, height: height) else { return (0, 0) }
+        return (max(0, width), max(0, height))
     }
 
     /// Blit a rectangle of BGRA pixels. Out-of-bounds rows and columns are clipped
