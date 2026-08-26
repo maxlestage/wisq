@@ -3379,3 +3379,54 @@ aussi, et ne l'est plus — mais parce que la clé est ignorée, pas parce que l
 valeur est tolérée ; `desktopwidth:i: 1920` reste refusé. Je n'ai aucune preuve
 qu'un vrai fichier écrive un espace là, et corriger par précaution ce
 qu'aucune mesure ne signale, c'est deviner.
+
+## Le chemin le moins fiable était le seul non validé
+
+Quatre façons de créer une machine, et trois seulement vérifiaient l'hôte :
+
+| chemin | entrée | `Validation.normalizedHost` |
+| --- | --- | --- |
+| `MachineEditorView` | ce que l'utilisateur tape | oui |
+| `AgentPairing` | ce qu'un QR porte | oui |
+| `AgentImportView` | une adresse tapée | oui |
+| `ConnectionImport` | **un fichier reçu** | non |
+
+Le manquant est celui dont l'entrée est la moins fiable. Le commentaire de
+`ConnectionImport.kind(of:)` le dit lui-même : ces fichiers arrivent « from
+Mail, from AirDrop, from a share sheet — anywhere a name is chosen by whoever
+sent the file rather than by the person opening it ».
+
+Mesuré, témoin compris : un `.rdp` portant `full address:s:exemple.net/../autre`
+était accepté et la machine enregistrée avec ce host — alors que
+`normalizedHost` refuse explicitement barres et espaces. Même chose pour un
+espace, en `.rdp` comme en `.vv`. Le témoin, un hôte ordinaire, passait
+inchangé.
+
+Ce n'était pas un trou mais **une vérification au mauvais endroit** : l'échec
+arrivait plus tard, dans `NetworkByteStream`, loin de l'écran où la personne
+pouvait encore choisir un autre fichier. Un fichier se refuse là où il
+s'ouvre — et le message montré nomme l'adresse, ce qu'un test épingle.
+
+La vérification va dans `ConnectionImport` et non dans les deux lecteurs
+voisins, parce que leur travail s'arrête à ce que le fichier dit. La doc du
+type l'avait déjà écrit : *« everything here is a decision about what wisq does
+with a value it did not choose »*.
+
+### Le sabordage qui a survécu, et ce qu'il a révélé
+
+i4 gardait la vérification et **jetait sa valeur de retour** —
+`_ = try normalizedHost(raw); return raw`. Toute la suite est restée verte.
+
+Cas 2, test manquant. `normalizedHost` ne fait pas que refuser : il **rogne les
+espaces et retire les crochets**, et mes tests ne portaient que sur des hôtes
+déjà propres, parce que les deux parseurs les rendent tels dans les cas que
+j'avais écrits. Deux entrées distinguent :
+
+- un `.vv` écrit ce qui suit `host=`, crochets compris ;
+- un `.rdp` garde les espaces entre son second deux-points et la valeur.
+
+Sans elles, une machine pouvait être enregistrée avec un hôte qu'aucun autre
+chemin ne produirait jamais. Les deux tests ajoutés, i4 mord.
+
+La leçon rejoint celle de la moisson : **vérifier n'est pas normaliser**, et un
+test bâti sur des entrées déjà propres ne peut pas voir la différence.
