@@ -4081,3 +4081,62 @@ Vérifié comme le reste : la garde rougit sur un fichier témoin qui contient l
 faute, et revient au vert une fois le témoin retiré. Le dépôt entier en compte
 zéro par ailleurs, donc la règle est cohérente avec le style existant plutôt
 qu'imposée par-dessus.
+
+## Deux gardes que rien ne tenait, et le sabordage qui ne rougit pas mais tue
+
+`ByteCursor.read(_:)` et `ByteCursor.readUInt8()` refusent tous deux de lire
+au-delà de la fin du bloc. **Retirer l'une ou l'autre laissait les 964 tests
+verts.** Elles étaient justes, et à une modification distraite de ne plus être
+là du tout.
+
+Les octets qu'elles gardent ne sont pas les nôtres. Un rectangle ZRLE se
+détend en un flux de tuiles dont les tailles de palette, les longueurs de série
+et le nombre de pixels sont tous décidés par le serveur ; un bloc court est ce
+qu'envoie un serveur cassé — ou hostile.
+
+### Ce que le sabordage a réellement donné
+
+Pas un test rouge. **Pas de ligne de total du tout.**
+
+```
+Swift/Array.swift:430: Fatal error: Array index is out of range
+*** Signal 4: Backtracing … ***
+*** Program crashed: Illegal instruction ***
+```
+
+C'est le cas prévu par la règle « un rouge peut être un plantage » : sans la
+garde, lire au-delà d'un tableau Swift n'est pas une erreur, c'est la fin du
+processus. Mesuré plutôt que supposé, et c'est ce qui donne sa taille au défaut :
+il ne s'agissait pas d'un test manquant sur un chemin d'erreur, mais de rien du
+tout entre un bloc tronqué et la mort du client.
+
+Quatorze tests le tiennent maintenant : sur le curseur directement — les deux
+bords exacts de la limite, un pixel coupé en deux, une longueur de série qui dit
+« continue » et s'arrête — et de bout en bout à travers `ZRLEDecoder`, pour
+chacune de ses formes de tuile. Avec deux témoins qui décodent pour de vrai,
+sans quoi tout cela passerait pour un décodeur qui refuse tout.
+
+### Le jumeau mort
+
+`ByteCursor.readTightPixel` n'avait **aucun appelant** : `TightDecoder` a la
+sienne, ligne 118, qui lit depuis la socket plutôt que depuis un bloc détendu.
+Le sabordage l'a établi sans ambiguïté — inverser l'ordre des octets du jumeau
+laissait tout vert, inverser celui de la vraie faisait rougir vingt-neuf tests.
+
+Le jumeau portait pourtant le commentaire qui énonce la règle, comme s'il en
+était l'autorité. C'est la forme de #71 : deux orthographes d'une même règle,
+dont celle que personne n'appelle est libre de dériver.
+
+**Supprimé plutôt que testé.** Le tester aurait figé une seconde vérité à
+maintenir ; une règle tenue à un seul endroit ne peut pas se contredire
+elle-même. Le commentaire de `readCompressedPixel` dit maintenant où vit
+l'autre, et pourquoi elle vit là.
+
+### Les quatre sabordages
+
+| sabordage | résultat |
+| --- | --- |
+| garde de `read(_:)` retirée | **plantage**, signal 4 — puis 14 rouges avec les tests |
+| garde de `readUInt8()` retirée | **plantage** — puis rouge avec les tests |
+| octets de CPIXEL inversés | 37 rouges (déjà tenu) |
+| octets du jumeau mort inversés | **0** — d'où la suppression |
