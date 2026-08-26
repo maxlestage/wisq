@@ -229,6 +229,44 @@ final class SpiceAgentChannelTests: XCTestCase {
         XCTAssertEqual(messages[0].1, ping, "renvoyé tel quel, le serveur chronomètre")
     }
 
+    /// A pong answered by the pump while a clipboard drain is mid-write.
+    ///
+    /// `draining` guarded one of `write`'s four callers, and the comment on it
+    /// described the hazard correctly — in the one place that was covered. The
+    /// pump answers pings on its own task; a clipboard offer drains on
+    /// another; both went through `write`, which read `serial` and incremented
+    /// it after the socket returned. Measured before the fix, with both writes
+    /// parked at once: **`[1, 1]`**.
+    ///
+    /// The waiting below is the part worth reading. Released after a *single*
+    /// parked write, the two paths ran one after the other and this test
+    /// reported a tidy `[1, 2]` — green, and blind. It waits for **both**
+    /// writes to be parked before letting either through, falling back to
+    /// proceeding so it can never hang: with the fix in place only one write
+    /// is ever parked, because the second caller queues and returns.
+    func testAPongCrossingAClipboardDrainDoesNotShareASerial() async throws {
+        var ping = u32(9)
+        ping += SpiceWire.u64(1234)
+        let server = GatedByteStream(
+            inbound: serverMessage(SpiceWire.Message.ping, ping)
+        )
+        let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 100)
+
+        await server.gate()
+        async let pumped: Void = { _ = try? await channel.pump() }()
+        async let offered: Void = { try? await channel.offer("bonjour") }()
+
+        for _ in 0..<2000 where await server.parked < 2 {
+            await Task.yield()
+        }
+        await server.open()
+        _ = await (pumped, offered)
+
+        let serials = await server.serials()
+        XCTAssertEqual(serials.count, 2, "un pong et un message d'agent")
+        XCTAssertEqual(serials, [1, 2], "numéro dupliqué : \(serials)")
+    }
+
     /// The generation has to be echoed: it is how the server tells an
     /// acknowledgement for this window from one for the last.
     func testASetAckIsAnsweredWithItsGeneration() async throws {
