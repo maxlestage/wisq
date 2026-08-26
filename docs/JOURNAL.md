@@ -1976,3 +1976,49 @@ elle est une question de temps.
 C'est le cas de figure où « le test ne pouvait pas être rouge » ne veut pas dire
 « la ligne ne sert à rien ». Il veut dire : aucun serveur existant ne produit
 l'entrée qui les sépare. Écrire cette entrée à la main est alors tout le travail.
+
+## Le cache qu'on ne peut pas refuser, et une sévérité mal estimée
+
+Le cache de palettes est le jumeau de celui des images, à une différence près :
+il n'y a pas de taille à annoncer. `CLIENT_PALETTE_CACHE_SIZE` est une constante
+du serveur et `DISPLAY_INIT` n'a pas de champ pour elle. La solution de la
+tranche précédente — annoncer zéro et laisser le serveur se retenir — n'existe
+tout simplement pas ici.
+
+J'avais classé la conséquence comme « des pixels périmés », par analogie avec le
+cache d'images. C'était faux, et c'est un test qui me l'a dit : il a échoué avec
+`threw error "missingPalette"` là où j'attendais un dessin sauté. `SpiceBitmap`
+lève pour un format palettisé sans couleurs, et une erreur levée **arrête la
+pompe**. Donc toute image nommant une table déjà envoyée ne coûtait pas un
+dessin : elle coupait la session.
+
+L'analogie m'avait fait recopier la sévérité en même temps que la forme. Les
+deux caches ont la même structure et des conséquences d'un ordre différent — et
+je n'aurais pas vérifié si le test ne s'était pas plaint, parce que j'avais déjà
+« compris » le problème.
+
+Reste que la distinction que le dépôt tenait ailleurs était la bonne réponse :
+un nom qu'on ne sait pas résoudre part là où part un codec non décodé — compté,
+écran laissé tranquille, connexion gardée — tandis qu'une image qui ne porte
+aucune table et n'en nomme aucune lève toujours, parce qu'elle se contredit
+elle-même. La règle existait ; il fallait juste ranger ce cas du bon côté.
+
+## Deux bêtises de manipulation, notées pour ne pas les refaire
+
+**Un `EOF` dans un message de commit.** J'ai rédigé le corps du commit de fusion
+de #66 comme si je l'écrivais dans un heredoc de shell, alors qu'il partait dans
+un appel d'API. Le marqueur de fin s'est retrouvé dans le message, sur master.
+Je ne le corrige pas : réécrire l'historique de master est une de mes
+interdictions, et le coût du dégât est cosmétique.
+
+**Un `git checkout` pour défaire un sabotage.** Le sabotage portait sur une
+ligne ; `git checkout <fichier>` a rendu le fichier entier à son état de master
+et emporté tout le travail non commis qu'il contenait. Le build l'a dit tout de
+suite, et il a fallu réécrire les deux ajouts.
+
+La règle que j'aurais dû suivre est déjà dans ma routine — *garder une
+sauvegarde et vérifier la restauration* — et je l'appliquais correctement pour
+les autres fichiers de la même série. Ce qui l'a fait sauter, c'est d'avoir
+changé d'outil en cours de route pour un fichier : `cp` depuis la sauvegarde
+partout, sauf là. **Une procédure qu'on applique « en général » n'est pas une
+procédure.**

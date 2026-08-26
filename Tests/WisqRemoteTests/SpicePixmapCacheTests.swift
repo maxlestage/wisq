@@ -123,6 +123,87 @@ final class SpicePixmapCacheTests: XCTestCase {
         XCTAssertGreaterThan(SpiceDisplayClient.pixmapCachePixels, 0)
     }
 
+    // MARK: - Le cache de palettes
+
+    private func palette(_ unique: UInt64, _ colours: [UInt32] = [0xFF00_00FF]) -> SpiceDisplayWire.Palette {
+        SpiceDisplayWire.Palette(unique: unique, colours: colours)
+    }
+
+    /// **There is no size to declare for this one**, which is the difference
+    /// that matters. `CLIENT_PALETTE_CACHE_SIZE` is a constant in the server's
+    /// own `dcc.h` and nothing in `DISPLAY_INIT` negotiates it, so where the
+    /// pixmap cache could be declined by announcing zero, a client that keeps
+    /// no palettes simply loses the colours of every table the server has
+    /// already sent once.
+    func testTheCapacityMatchesWhatTheServerAssumes() {
+        XCTAssertEqual(SpicePaletteCache.serverAssumedEntries, 128)
+        XCTAssertEqual(SpicePaletteCache().capacity, 128)
+    }
+
+    func testAStoredPaletteComesBackByItsUnique() {
+        var cache = SpicePaletteCache()
+        XCTAssertTrue(cache.store(palette(9, [1, 2, 3])))
+        XCTAssertEqual(cache.palette(9)?.colours, [1, 2, 3])
+        XCTAssertNil(cache.palette(10))
+    }
+
+    /// **`unique` zero is not an identifier.** `dcc_palette_cache_palette`
+    /// tests `if (palette->unique)` before it does anything at all, so such a
+    /// table is never cached and never named. Storing one under the key zero
+    /// would make every uniqueless table the same table.
+    func testAPaletteWithNoUniqueIsNotStored() {
+        var cache = SpicePaletteCache()
+        XCTAssertFalse(cache.store(palette(0, [1, 2, 3])))
+        XCTAssertEqual(cache.count, 0)
+        XCTAssertNil(cache.palette(0))
+    }
+
+    /// The bound is entries, not colours: `red_palette_cache_add(dcc, unique, 1)`
+    /// charges one for a table of any length.
+    func testTheBoundIsEntriesRatherThanColours() {
+        var cache = SpicePaletteCache(capacity: 2)
+        XCTAssertTrue(cache.store(palette(1, [UInt32](repeating: 0, count: 256))))
+        XCTAssertTrue(cache.store(palette(2, [0])))
+        XCTAssertFalse(cache.store(palette(3, [0])), "deux entrées, quelle que soit leur taille")
+
+        // Réécrire une entrée existante ne consomme pas de place neuve.
+        XCTAssertTrue(cache.store(palette(1, [7])))
+        XCTAssertEqual(cache.palette(1)?.colours, [7])
+        XCTAssertEqual(cache.count, 2)
+    }
+
+    func testDroppingAndClearingPalettes() {
+        var cache = SpicePaletteCache()
+        cache.store(palette(1))
+        cache.store(palette(2))
+        cache.drop(1)
+        XCTAssertNil(cache.palette(1))
+        XCTAssertNotNil(cache.palette(2))
+        cache.drop(99)                       // jamais tenue : pas une erreur
+        cache.clear()
+        XCTAssertEqual(cache.count, 0)
+    }
+
+    /// **The bitmap's flags are not the descriptor's**, and the names are close
+    /// enough to swap without noticing. Written out at both ends so a
+    /// transposition fails rather than merely being possible.
+    func testTheBitmapFlagsAreNotTheDescriptorFlags() {
+        XCTAssertEqual(SpiceDisplayWire.BitmapFlag.paletteCacheMe, 1 << 0)
+        XCTAssertEqual(SpiceDisplayWire.BitmapFlag.paletteFromCache, 1 << 1)
+        XCTAssertEqual(SpiceDisplayWire.BitmapFlag.topDown, 1 << 2)
+
+        XCTAssertEqual(SpiceDisplayWire.ImageFlag.cacheMe, 1 << 0)
+        XCTAssertEqual(SpiceDisplayWire.ImageFlag.highBitsSet, 1 << 1)
+        XCTAssertEqual(SpiceDisplayWire.ImageFlag.cacheReplaceMe, 1 << 2)
+
+        // Le bit 2 est la seule collision utile à énoncer : « haut vers le bas »
+        // d'un côté, « remplace l'entrée en cache » de l'autre.
+        XCTAssertEqual(
+            SpiceDisplayWire.BitmapFlag.topDown, SpiceDisplayWire.ImageFlag.cacheReplaceMe,
+            "même bit, deux sens — c'est le champ dont il vient qui tranche"
+        )
+    }
+
     // MARK: - La liste de sous-messages
 
     /// **`SpiceSubMessageList`'s first field is a count, not a size**, whatever

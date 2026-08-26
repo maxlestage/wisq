@@ -1062,6 +1062,124 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(caches.pixmaps.count, 0, "le bon type la relâche bien")
     }
 
+    /// A `DRAW_COPY` carrying a 2×2 eight-bit palettised bitmap. The colour
+    /// table is either carried (with `PAL_CACHE_ME`) or named (`PAL_FROM_CACHE`).
+    private func copyOfPalettised(
+        id: UInt64, unique: UInt64, carriesTable: Bool, colour: UInt32 = 0x00FF_0000
+    ) -> Data {
+        var body = u32(0)
+        body += i32(0) + i32(0) + i32(2) + i32(2)       // box
+        body += [0]                                      // no clip
+        let imageOffset = UInt32(body.count + 4 + 16 + 2 + 1 + 13)
+        body += u32(imageOffset)                         // src_bitmap
+        body += i32(0) + i32(0) + i32(2) + i32(2)        // src_area
+        body += [0, 0] + [0]                             // rop, scale mode
+        body += [0] + i32(0) + i32(0) + u32(0)           // mask
+        body += u64(id) + [0 /* bitmap */, 0]            // descriptor
+        body += u32(2) + u32(2)                          // width, height
+
+        let flags: UInt8 = carriesTable
+            ? SpiceDisplayWire.BitmapFlag.paletteCacheMe
+            : SpiceDisplayWire.BitmapFlag.paletteFromCache
+        body += [5 /* 8BIT */, flags]
+        body += u32(2) + u32(2) + u32(2)                 // width, height, stride
+        if carriesTable {
+            // Le pointeur vise la fin des pixels ; la table y est écrite.
+            let paletteAt = UInt32(body.count + 4 + 4)
+            body += u32(paletteAt)
+            body += [0, 0, 0, 0]                         // 2x2 index 0, stride 2
+            body += u64(unique) + u16(1) + u32(colour)
+        } else {
+            body += u64(unique)                          // le nom de la table
+            body += [0, 0, 0, 0]
+        }
+        return message(SpiceDisplayWire.Message.drawCopy.rawValue, body)
+    }
+
+    /// **The colour table travels once too**, and by a mechanism the client
+    /// cannot decline: `CLIENT_PALETTE_CACHE_SIZE` is a server-side constant
+    /// and nothing in `DISPLAY_INIT` negotiates it. Without a palette cache the
+    /// second draw has no colours and paints nothing.
+    func testAPaletteSentOnceColoursALaterImage() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfPalettised(id: 1, unique: 0x5151, carriesTable: true)
+                + copyOfPalettised(id: 2, unique: 0x5151, carriesTable: false)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
+        )
+        XCTAssertEqual(caches.palettes.count, 1, "la table est retenue")
+        XCTAssertEqual(progress.undrawable, 0, "le nom de table se résout")
+        XCTAssertEqual(progress.updates.count, 2)
+        // Rouge, depuis la table nommée par la seconde image.
+        XCTAssertEqual(Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0, 0xFF, 0])
+    }
+
+    /// And when the table has been invalidated, the name resolves to nothing
+    /// and the draw is skipped rather than painted in whatever colours were
+    /// last in memory.
+    func testAnInvalidatedPaletteLeavesTheImageUndrawable() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                + copyOfPalettised(id: 1, unique: 0x5151, carriesTable: true)
+                + message(SpiceDisplayWire.Message.invalPalette.rawValue, u64(0x5151))
+                + copyOfPalettised(id: 2, unique: 0x5151, carriesTable: false)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 4
+        )
+        XCTAssertEqual(caches.palettes.count, 0, "la table a été relâchée")
+        XCTAssertEqual(progress.undrawable, 1, "le second dessin n'a plus de couleurs")
+        XCTAssertEqual(progress.updates.count, 1)
+    }
+
+    /// **A name this client cannot resolve costs one draw, not the session.**
+    ///
+    /// This is the severity the palette cache changes, and it is worth stating
+    /// on its own. `SpiceBitmap.pixels` throws `missingPalette` for a palettised
+    /// format with no colours, and a thrown error stops the pump — so before
+    /// there was a cache, *every* image naming a cached table dropped the
+    /// connection. The server sends those without asking:
+    /// `CLIENT_PALETTE_CACHE_SIZE` is its own constant and `DISPLAY_INIT` has no
+    /// field for it.
+    ///
+    /// So an unresolvable name now goes where an undecodable codec goes —
+    /// counted, screen left alone, connection kept — and the pump keeps running
+    /// afterwards, which is what the third message here proves.
+    func testAnUnresolvablePaletteCostsOneDrawRatherThanTheSession() async throws {
+        let server = MemoryByteStream(
+            inbound: surfaceCreate(8, 8)
+                // Jamais vue : aucune table sous ce nom.
+                + copyOfPalettised(id: 1, unique: 0x7777, carriesTable: false)
+                + fill(0, 0, 2, 2, colour: 0x0000_FF00)
+        )
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        let progress = try await channel.pump(
+            into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3
+        )
+        XCTAssertEqual(progress.undrawable, 1)
+        XCTAssertEqual(progress.updates.count, 1, "la pompe a survécu et a dessiné la suite")
+        XCTAssertEqual(
+            Array(surfaces.surfaces[0]!.pixels[0..<4]), [0, 0xFF, 0, 0],
+            "le message d'après a bien été traité"
+        )
+    }
+
     /// A malformed message *is* fatal, and that is the distinction the previous
     /// test rests on. A surface format that cannot be laid out is not "wisq
     /// does not do this yet", it is a message that makes no sense.
