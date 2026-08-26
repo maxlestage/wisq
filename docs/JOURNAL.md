@@ -4227,3 +4227,66 @@ lignes qui débordent par le bas laissent celles qui tiennent. Ce dernier point
 n'est pas un détail : un serveur qui redimensionne son bureau envoie des
 rectangles à cheval sur l'ancien bord, et refuser l'écriture entière donnerait
 une bande noire au lieu d'une bande sûre.
+
+## La même faute pour la troisième fois : une VM incomprise perd la liste
+
+`AgentVM` n'avait **aucun test**. Sondé :
+
+| ce que l'agent envoie | avant |
+| --- | --- |
+| un `state` inconnu | lève |
+| un `state` **absent** | lève aussi |
+| un `consoleProtocol` inconnu | lève |
+| un `guestOS` inconnu | lève |
+| une VM sur deux incomprise | **toute la liste est perdue** |
+
+L'enum `State` portait pourtant un cas `.unknown` que le décodeur n'atteignait
+jamais.
+
+L'absence de `state` n'était pas dans mon hypothèse : la sonde l'a trouvée. Je
+cherchais les valeurs inconnues et j'ai eu les deux, ce qui est la troisième
+fois aujourd'hui qu'une sonde rapporte plus que la question posée.
+
+### Pourquoi ce n'est pas théorique
+
+C'est le modèle de distribution du projet. Le démon s'installe par Homebrew ou
+un script `curl` et se met à jour **indépendamment** de l'application
+sideloadée. Un `brew upgrade` sur l'hôte, pas de mise à jour sur le téléphone,
+et « mes VM » devient vide.
+
+### Troisième apparition : une habitude, pas un accident
+
+Après `Settings` (#96) et `MachineStore` (#99), c'est le même défaut au même
+endroit conceptuel : un `Codable` synthétisé sur un enum de chaînes, décodé en
+bloc, dans un programme dont les deux moitiés ne sont pas versionnées ensemble.
+Ce qui mérite d'être retenu n'est pas la correction — elle est mécanique — mais
+que la forme se répète, et donc qu'il faut la chercher partout où un enum
+traverse une frontière de version.
+
+### Les deux bords, encore, et l'asymétrie
+
+`state` et `guestOS` retombent sur `.unknown`. C'est sûr : `waitUntilRunning`
+n'agit que sur `.running`, donc un état illisible **attend** au lieu de
+supposer.
+
+`consoleProtocol` **refuse** : un nom inconnu devient `nil`, jamais `.vnc`.
+Retomber sur un défaut ouvrirait une session VNC contre un port que l'agent a
+publié pour autre chose. Même asymétrie que `Machine.security` en #96 : la
+présentation peut se rabattre, ce qui décide de la connexion non.
+
+Et la VM reste listée malgré une console inouvrable — c'est une machine que
+l'utilisateur peut encore vouloir voir, démarrer ou arrêter.
+
+### Les cinq sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| retour au décodage strict de l'état | 3 |
+| retour au décodage strict de `guestOS` | 1 |
+| le protocole inconnu retombe sur `.vnc` | 1 |
+| **tout** retombe sur le défaut (témoin inverse) | 17 |
+| l'identité (`id`) devient facultative | 1 |
+
+Le témoin inverse est celui qui compte le plus : dix-sept rouges viennent de la
+moitié « ce qu'il ne faut **pas** avaler ». Une tolérance qui accepte tout n'est
+pas de la tolérance, c'est un décodeur qui a cessé de lire.
