@@ -3742,3 +3742,78 @@ passer par l'enveloppe — ce qui est précisément ce que la doc de l'enveloppe
 éviter. Laissé : son `#if` couvre `Security` autant que `CryptoKit` et ne
 disparaîtrait pas, et les deux chemins calculent le même SHA-256, donc aucune
 divergence n'est possible. Le noter coûte moins cher que d'élargir la tranche.
+
+## La tolérance annoncée ne couvrait que les clés
+
+`Settings.swift` ouvre sur une promesse : « Decoding is tolerant: every key is
+optional and falls back to its default, so adding a setting does not invalidate
+machines already on disk. »
+
+Vrai des **clés**. Faux des **valeurs**. `decodeIfPresent(Scaling.self, …)` ne
+rend `nil` que pour une clé absente ou nulle ; un nom que cette version ne
+connaît pas fait lever le décodeur. Ajouter un *réglage* était sans danger ;
+ajouter un *cas* ne l'était pas.
+
+### Ce que ça coûtait vraiment
+
+`MachineStore.loadOnQueue` décode `[Machine].self` d'un seul bloc. Donc une
+seule machine portant un `longPressAction` inconnu ne faisait pas perdre le
+geste, ni le réglage, ni même la machine : elle faisait perdre **toute la
+bibliothèque**, sans moyen de réparer depuis l'application.
+
+Le scénario n'est pas théorique pour une application qu'on installe à la main :
+un fichier écrit par une version plus récente, puis relu par une plus ancienne.
+
+### L'autre bord, qui est la moitié intéressante
+
+La tolérance est juste pour un geste et fausse pour la sécurité. Un
+`security` que cette version ne reconnaît pas ne doit **pas** se rabattre :
+`.none` est une valeur qui veut dire quelque chose — du TCP en clair — donc un
+repli y serait un déclassement silencieux, exactement ce que
+`ResolvedTransportSecurity` existe pour empêcher. Même chose pour `proto` :
+retomber sur VNC ouvrirait une session VNC sur un port noté pour autre chose.
+
+Perdre la bibliothèque est le moindre mal ; se connecter sans protection à
+quelque chose que l'utilisateur avait marqué autrement est le plus grand. Les
+deux refus sont maintenant épinglés par un test, pour que personne ne
+« généralise » la tolérance jusque-là.
+
+Un troisième bord, plus fin : une valeur de mauvaise *forme* (un nombre là où un
+nom est attendu) continue de lever. Ce n'est pas une version plus récente qui
+parle, c'est un fichier abîmé, et l'avaler cacherait le dégât au lieu d'y
+survivre.
+
+### Les onze sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| le repli disparaît, retour au lever | 4 |
+| le repli avale aussi une valeur de mauvaise forme | 1 |
+| le repli avale aussi les noms connus | 13 |
+| `scaling` seul revient au décodage strict | 2 |
+| `pointerMode` seul | 1 |
+| `longPressAction` seul | 2 |
+| `twoFingerTapAction` seul | 1 |
+| `twoFingerPanAction` seul | 1 |
+| `threeFingerPanAction` seul | 1 |
+| `TransportSecurity` se voit donner un repli | 1 |
+| `RemoteProtocol` se voit donner un repli | 1 |
+
+Les sept sabordages du milieu sont là pour la raison apprise en #62 : chaque
+site séparément. Un patch groupé aurait donné « ça rougit » et n'aurait rien dit
+de celui des sept qu'on aurait oublié de brancher.
+
+### Écarté, et pourquoi
+
+Rendre `Machine.guestOS` tolérant aussi. Ce serait juste sur le fond — l'OS
+invité ne sert qu'à une icône et à des défauts de clavier — mais `Machine` a un
+`Codable` synthétisé, et le rendre tolérant sur un champ oblige à écrire à la
+main le décodeur de ses seize champs. C'est un endroit de plus où oublier un
+champ ajouté, c'est-à-dire précisément la dérive de #71, pour couvrir un cas
+moins probable que celui qu'on vient de fermer.
+
+Et `MachineStore`, qui perd tout sur un élément : voir `docs/ROADMAP.md`. La
+correction évidente — garder ce qui se décode — laisse tomber une machine en
+silence, et une perte qu'on ne voit pas est pire qu'un refus franc. La bonne
+forme rend aussi la liste de ce qui a été écarté, ce qui touche une vue : sa
+propre tranche.

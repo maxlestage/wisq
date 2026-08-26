@@ -1,9 +1,42 @@
 import Foundation
 
+/// Decoding for a setting whose values are a closed set of names.
+///
+/// The distinction it draws is the whole point: a **name this build does not
+/// know** is a newer wisq talking to an older one, and the answer is the default
+/// — nothing is lost that this build could have shown anyway. A **value of the
+/// wrong shape** is a damaged file, and that still throws, because pretending to
+/// read a settings blob that is not one would hide the damage rather than
+/// survive it.
+///
+/// Not used for `Machine.proto` or `Machine.security`. Those decide what wisq
+/// connects to and how; falling back there would turn an unreadable name into a
+/// plain-TCP connection the user never asked for. `SettingsToleranceTests` pins
+/// that asymmetry so it is not "generalised" later.
+enum SettingCase {
+    static func decode<K: CodingKey, T: RawRepresentable>(
+        from container: KeyedDecodingContainer<K>, forKey key: K, or fallback: T
+    ) throws -> T where T.RawValue == String {
+        guard let raw = try container.decodeIfPresent(String.self, forKey: key) else {
+            return fallback
+        }
+        return T(rawValue: raw) ?? fallback
+    }
+}
+
 /// How the remote framebuffer is presented on a phone screen.
 ///
-/// Decoding is tolerant: every key is optional and falls back to its default, so
-/// adding a setting does not invalidate machines already on disk.
+/// Decoding is tolerant in both directions, and it used to be tolerant in only
+/// one. Every key is optional and falls back to its default, so **adding a
+/// setting** does not invalidate machines already on disk — that part was true.
+/// What was not: a *value* this build does not recognise made the decoder throw,
+/// so **adding a case** did. A file written by a newer wisq and read by an older
+/// one lost, through `MachineStore.decode([Machine].self)`, not the setting and
+/// not the machine but the entire library.
+///
+/// Both halves are now what the sentence says. See `SettingsToleranceTests` for
+/// the other edge: what is deliberately *not* tolerated, and why security is
+/// never among the things a fallback may quietly decide.
 public struct DisplaySettings: Codable, Hashable, Sendable {
     public enum Scaling: String, Codable, CaseIterable, Sendable {
         /// Fit the whole desktop on screen, letterboxed.
@@ -64,7 +97,7 @@ public struct DisplaySettings: Codable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = DisplaySettings()
-        self.scaling = try container.decodeIfPresent(Scaling.self, forKey: .scaling) ?? defaults.scaling
+        self.scaling = try SettingCase.decode(from: container, forKey: .scaling, or: defaults.scaling)
         self.followDeviceResolution = try container.decodeIfPresent(Bool.self, forKey: .followDeviceResolution)
             ?? defaults.followDeviceResolution
         self.lowBandwidth = try container.decodeIfPresent(Bool.self, forKey: .lowBandwidth) ?? defaults.lowBandwidth
@@ -172,16 +205,25 @@ public struct InputSettings: Codable, Hashable, Sendable {
         func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) throws -> T {
             try container.decodeIfPresent(T.self, forKey: key) ?? fallback
         }
-        self.pointerMode = try value(.pointerMode, defaults.pointerMode)
+        /// The five fields below name a case rather than carry a number, so an
+        /// unrecognised name falls back instead of throwing. A gesture this
+        /// build has never heard of is a gesture it cannot perform; the default
+        /// is the only honest thing left, and it is cheaper than losing the
+        /// machine that carried it.
+        func action(_ key: CodingKeys, _ fallback: GestureAction) throws -> GestureAction {
+            try SettingCase.decode(from: container, forKey: key, or: fallback)
+        }
+        self.pointerMode = try SettingCase.decode(
+            from: container, forKey: .pointerMode, or: defaults.pointerMode)
         self.pointerSpeed = try value(.pointerSpeed, defaults.pointerSpeed)
         self.naturalScrolling = try value(.naturalScrolling, defaults.naturalScrolling)
         self.hapticFeedback = try value(.hapticFeedback, defaults.hapticFeedback)
         self.mapCommandToSuper = try value(.mapCommandToSuper, defaults.mapCommandToSuper)
         self.inertia = try value(.inertia, defaults.inertia)
-        self.longPressAction = try value(.longPressAction, defaults.longPressAction)
-        self.twoFingerTapAction = try value(.twoFingerTapAction, defaults.twoFingerTapAction)
-        self.twoFingerPanAction = try value(.twoFingerPanAction, defaults.twoFingerPanAction)
-        self.threeFingerPanAction = try value(.threeFingerPanAction, defaults.threeFingerPanAction)
+        self.longPressAction = try action(.longPressAction, defaults.longPressAction)
+        self.twoFingerTapAction = try action(.twoFingerTapAction, defaults.twoFingerTapAction)
+        self.twoFingerPanAction = try action(.twoFingerPanAction, defaults.twoFingerPanAction)
+        self.threeFingerPanAction = try action(.threeFingerPanAction, defaults.threeFingerPanAction)
         self.threeFingerSwipeShowsKeyboard = try value(
             .threeFingerSwipeShowsKeyboard, defaults.threeFingerSwipeShowsKeyboard
         )
