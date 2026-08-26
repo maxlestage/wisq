@@ -1820,6 +1820,59 @@ faut le dire — 5 472 octets gzip sur les vingt pages, environ 300 par page :
 les deux copies tenaient dans la fenêtre de gzip, comme le commentaire d'origine
 l'annonçait.
 
+## Le site — le reste de la liste, et ce qu'on n'en fait pas (fait)
+
+Trois points restaient de la liste d'optimisations. Deux se ferment par une
+mesure plutôt que par du code, et c'est le genre de réponse qui vieillit bien :
+un lecteur qui trouve « rien à faire, voici le chiffre » n'a pas d'enquête à
+refaire.
+
+**Images en WebP — non, et pas pour une question de taille.** Le site construit
+ne contient **aucune balise `<img>`**. Pas une image n'est chargée en affichant
+une page. Les cinq PNG produits pèsent 12 023 octets réunis, et aucun n'est lu
+par la page :
+
+| fichier | octets | qui le lit |
+| --- | --- | --- |
+| `social-card.png` | 5 811 | `og:image` — les robots d'aperçu de lien |
+| `icon-512.png` | 2 622 | le manifeste — l'installateur du système |
+| `icon-maskable-512.png` | 2 413 | le manifeste — l'installateur du système |
+| `icon-192.png` | 615 | le manifeste — l'installateur du système |
+| `apple-touch-icon.png` | 562 | l'écran d'accueil iOS |
+
+Ce sont exactement les consommateurs dont la prise en charge du WebP est la plus
+incertaine — un robot d'aperçu Slack ou LinkedIn, un installateur d'OS — et
+aucun octet ne serait épargné à un lecteur, puisque aucun de ces fichiers n'est
+demandé pendant l'affichage d'une page. L'optimisation ne vise pas seulement
+petit : elle vise le mauvais consommateur.
+
+**Découpe du bundle — sans objet.** Il reste 1 062 octets gzip après le retrait
+de l'hydratation. Le poste le plus lourd que le site expédie encore est
+maintenant la feuille de style, à 3 551 octets gzip, soit plus du triple du
+script.
+
+**En-têtes de cache — la moitié n'est pas à nous.** Le site est servi par GitHub
+Pages, qui envoie les siens et n'offre aucun moyen de les fixer. La couche de
+cache qui décide réellement de ce qu'un lecteur qui revient télécharge est le
+service worker, et il fait déjà ce qu'il faut : réseau d'abord pour les
+documents, cache d'abord pour les actifs hachés, une version dérivée du contenu
+et un repli hors-ligne dans la langue de l'adresse.
+
+Ce qui était à nous et qui était faux : `scripts/serve.ts` annonce servir le
+site « comme le ferait un vrai hôte » et envoyait `no-store` sur tout. C'est
+fiablement frais et cela ne ressemble à aucun hôte réel — personne ne sert un
+actif nommé d'après son contenu avec `no-store`. Trois classes désormais, et
+`tests/serve.test.ts` les tient :
+
+| | en-tête | pourquoi |
+| --- | --- | --- |
+| `chunk-<hash>.{js,css}` | `public, max-age=31536000, immutable` | le nom change avec le contenu : il n'existe pas de version périmée |
+| `sw.js` | `no-cache` | un worker servi depuis un cache fige le site sur ce qu'il a installé en dernier |
+| tout le reste | `no-cache` | noms non hachés ; on revalide (un 304), on ne s'abstient pas de stocker |
+
+`no-cache` n'est pas `no-store` : le navigateur garde la copie et la revalide
+avant de s'en servir.
+
 ## Distribution — les architectures publiées (fait)
 
 Quatre assets, pas deux. La release construisait Linux x86_64 et macOS arm64,
