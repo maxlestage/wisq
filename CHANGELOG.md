@@ -8,6 +8,23 @@ break APIs.
 ## [Unreleased]
 
 ### Changed
+- **The preview server sends the cache headers a real host should.** It claimed
+  to serve the site "the way a real host would" and sent `no-store` on
+  everything — reliably fresh, and unlike any host that has ever existed: nobody
+  serves a content-hashed asset with `no-store`. Three classes now, with
+  `tests/serve.test.ts` holding each: hashed `chunk-<hash>.{js,css}` are
+  `immutable` for a year, `sw.js` is `no-cache` because a cached service worker
+  freezes the site at whatever it last installed, and everything else is
+  `no-cache` — which keeps the copy and revalidates it, unlike `no-store`.
+
+  None of this reaches the deployed site, which GitHub Pages serves with its own
+  headers and no way to set them. That is written down rather than implied: the
+  caching that decides what a returning reader downloads is the service worker,
+  which this project does control and which already does the right thing.
+
+  `scripts/serve.ts` now exports its handler and only listens when it is the
+  entry point, so the tests put a `Request` through it without opening a port.
+
 - **The site stopped shipping React.** Its pages were already pre-rendered, so
   React's only remaining job in a browser was hydrating four behaviours: a
   redirect on the English home page, the memory of a language choice, the theme
