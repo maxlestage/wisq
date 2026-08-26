@@ -3049,3 +3049,80 @@ La leçon tient en une phrase : **saborder ce que la phrase dit, pas ce qu'elle
 évoque.** « Une suspension dans read » et « un tampon rempli à travers une
 suspension » se ressemblent assez pour être confondus, et un seul des deux est
 le défaut.
+
+## Le secret qui survit à tout ce qui pouvait s'en servir
+
+Trois familles closes coup sur coup, et la consigne que je m'étais laissée
+était de ne pas forcer une quatrième passe dans la même veine. J'ai donc changé
+de question : plutôt que « où le décodage peut-il déborder », **« qui range les
+secrets, et est-ce que quelqu'un les enlève un jour ».**
+
+`MachineLibraryModel` n'avait aucun test. Ce n'est pas un oubli : `WisqUI`
+n'est pas compilé sous Linux, et pendant longtemps la couche application a été
+la partie que rien ne vérifiait. Elle a un banc désormais — `Tests/WisqUITests`,
+joué par `scripts/test-app.sh` dans un iPhone simulé — mais ce fichier-là
+n'avait rien.
+
+### Ce que la lecture donne
+
+Trois endroits écrivent un secret, **un seul** en efface un :
+
+| écriture | clé | effacement |
+| --- | --- | --- |
+| `MachineLibraryModel.save` | `machine.<uuid>` | `delete`, ligne 78 |
+| `MachineEditorView.save` | `agent.<hôte>:<port>` | aucun |
+| `AgentImportView.query` | `agent.<hôte>:<port>` | aucun |
+
+Le jeton d'un agent n'est retiré par **aucun chemin**. On supprime sa dernière
+VM, on la débranche de son agent, on l'envoie vers un autre agent : le jeton
+reste dans le trousseau, plus rien ne peut s'en servir, et aucun écran ne
+propose de l'enlever.
+
+### Le piège de la correction évidente
+
+Effacer `agent.credentialRef` dans `delete`, à côté de la ligne 78, est faux.
+La clé du mot de passe est dérivée de l'identifiant **de la machine** ; celle du
+jeton l'est de l'**hôte et du port**, et le commentaire de `MachineEditorView`
+le dit : *« One token per agent host, shared by all its VMs »*. Supprimer une VM
+sur cinq d'un NAS aurait déconnecté les quatre autres.
+
+Ce qui reste n'est donc ni la liste des clés qui partent, ni rien : c'est une
+**soustraction** — les clés que la machine partante utilisait, moins celles que
+la liste survivante désigne encore. C'est tout `CredentialReaper`.
+
+### Où le mettre pour pouvoir le prouver
+
+La décision est du domaine, pas de l'interface : `Machine` et `CredentialStore`
+vivent tous deux dans `WisqCore`, qui compile sous Linux. La règle y est donc
+écrite et sabordable ici ; le modèle de vue ne fait plus que l'appeler, et cet
+appel-là est joué par le simulateur en CI. Les deux moitiés ont un banc, chacune
+là où elle peut vraiment tomber.
+
+### L'ordre, qui était un second défaut
+
+`delete` effaçait le mot de passe **avant** d'enregistrer la liste. Si
+l'écriture échoue — un conteneur plein suffit — la machine est toujours là et
+son mot de passe n'y est plus. La suppression passe maintenant en premier, et
+la moisson des clés après, sur ce que le magasin a réellement rendu.
+
+### Les sabordages
+
+Quatre, un par site, jamais groupés :
+
+- `credentialRefs` oublie le jeton d'agent → 4 rouges ;
+- `credentialRefs` oublie le mot de passe → 5 rouges ;
+- `orphanedRefs` ne soustrait plus les survivants → 5 rouges, dont
+  « supprimer une VM d'un agent déconnecterait ses voisines » ;
+- `reap` s'arrête au premier refus → 1 rouge, exactement celui écrit pour ça.
+
+Le dernier ne mordait que parce que `reap` trie les clés : `agent.` avant
+`machine.`, donc celle qui refuse passe en premier. Un ordre d'ensemble aurait
+rendu ce test dépendant du hachage — le tri n'est pas cosmétique, il est ce qui
+rend le rouge reproductible.
+
+### Une sonde qui ne peut pas échouer ne prouve rien
+
+Le test d'ordre casse l'écriture en mettant le répertoire en `0500`. Sous root,
+cela n'arrête personne, et le test serait passé au vert en n'ayant rien
+mesuré. Il crée donc d'abord un fichier témoin : s'il y arrive, il se déclare
+sauté plutôt que réussi.
