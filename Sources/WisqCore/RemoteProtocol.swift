@@ -63,7 +63,12 @@ public enum TransportSecurity: String, Codable, CaseIterable, Sendable {
         switch self {
         case .none: return "Aucune"
         case .tls: return "TLS"
-        case .tlsPinned: return "TLS épinglé"
+        // Not "TLS épinglé": nothing on the machine path can pin, so the label
+        // named a protection the connection does not have. It says what the
+        // connection actually does — system-validated TLS — and that pinning is
+        // still to come. The case stays in the picker because saved machines
+        // carry it; see `ResolvedTransportSecurity` and `docs/ROADMAP.md`.
+        case .tlsPinned: return "TLS (épinglage à venir)"
         }
     }
 }
