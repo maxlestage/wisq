@@ -2432,3 +2432,48 @@ même : `$?` après un pipe est le statut de `tail`, pas celui de `swift test` ;
 une suite qui plante n'imprime pas la ligne « Executed N tests », donc un
 harnais qui cherche cette ligne conclut au mauvais échec. Le fil rouge, une fois
 de plus : **l'indicateur qu'on lit décide de ce qu'on croit.**
+
+## Le défaut qui blesse le client honnête avant l'attaquant
+
+L'analyseur HTTP de l'agent acceptait `Transfer-Encoding: chunked`, jetait le
+corps, et répondait **200**. J'ai d'abord classé ça avec les trois autres trouvailles
+— en-têtes de cadrage contradictoires, primitives de *request smuggling* — puis
+j'ai vu que ce n'était pas la même chose du tout.
+
+Les trois autres demandent un attaquant *et* un proxy inverse devant le démon.
+Celui-là ne demande rien : n'importe quelle bibliothèque HTTP qui décide de
+diffuser un corps envoie du chunked, et l'appelant reçoit alors « 200, c'est
+fait » pour une action que le démon a exécutée sans les données. Un démarrage de
+VM avec un corps vide, annoncé comme réussi.
+
+La leçon de tri : **une faille et un bug de conformité ne se rangent pas par
+gravité théorique mais par ce qu'il faut réunir pour qu'ils mordent.** Le
+smuggling a besoin d'un attaquant, d'un proxy et d'une réutilisation de
+connexion ; le chunked avalé a besoin d'un client qui fait son travail
+normalement. Le second arrive en premier, et arrivera même si personne n'attaque
+jamais ce démon.
+
+Corollaire pour la posture : un serveur qui n'implémente pas quelque chose doit
+le **refuser**, pas faire comme si ça n'avait pas été demandé. 501 est une
+réponse ; 200 sur un corps disparu est un mensonge.
+
+## Le test s'est trompé avant le code
+
+Écrit d'un trait, mon test exigeait qu'un `Content-Length: 5 ` — avec un espace —
+soit refusé. Il a échoué. Mon premier réflexe a été de regarder le correctif.
+
+Le correctif avait raison. La RFC 9112 place un espace optionnel autour de la
+valeur de *tout* champ, donc ` 5` et `5 ` sont un cinq ordinaire, et l'analyseur
+nettoie avant de valider — le bon ordre. C'est mon attente qui était fausse, et
+la refuser aurait cassé des clients conformes.
+
+Ce qui m'a évité de « corriger » du code correct, c'est que le test échouait sur
+une valeur précise que le message nommait. Un test qui aurait juste dit
+« Content-Length invalide accepté » m'aurait laissé chercher dans le code
+pendant que l'erreur était dans le test.
+
+D'où deux choses gardées : le message d'échec cite la valeur exacte, et un test
+séparé affirme désormais l'inverse — que l'espace est accepté. **Quand un
+sabordage ou un échec vous surprend, la première hypothèse à tester est que la
+mauvaise ligne est celle qu'on vient d'écrire.** J'ai maintenant deux occurrences
+cette nuit où la sur-correction était le vrai risque, pas le défaut.
