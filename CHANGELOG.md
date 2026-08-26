@@ -8,6 +8,28 @@ break APIs.
 ## [Unreleased]
 
 ### Fixed
+- **The token and the TLS private key existed world-readable, briefly.** Both
+  were written with `fs::write` and narrowed to `0600` on the *next* syscall.
+  `fs::write` creates a file at the default mode — **0644** under the usual
+  `umask 022` — so each secret spent a window readable by any local account, and
+  the state directory at 0755 did not cover it. Measured on this project's own
+  container: 644, then 600.
+
+  The mode now goes in the `open`, where the kernel applies it before the file
+  exists to anyone, and the state directory is 0700 as a second line.
+
+  **The window is not narrow.** A thread stating the file while the writer runs
+  counted **747 observations at a mode other than 0600 in 100 rounds** of the old
+  shape — roughly seven stats wide — and **zero** for the new one, at 100, 1 000
+  and 10 000 rounds.
+
+  The part worth keeping: `tls.rs` already had a test named
+  `the_key_is_not_world_readable`, and it **passes with the race intact.** It
+  reads the mode after the write finishes, and both shapes end at 0600, so it
+  could never see a window in the middle — a guard giving more confidence than it
+  earned. Confirmed rather than assumed: with the race reinstated, that test
+  still passes and only the new watching test fails.
+
 - **The agent answered 200 for requests whose body it had thrown away.** Its
   hand-written HTTP parser framed bodies by `Content-Length` and ignored
   everything else, so a `Transfer-Encoding: chunked` request — what any HTTP
