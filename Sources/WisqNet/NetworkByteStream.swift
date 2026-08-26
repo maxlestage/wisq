@@ -86,6 +86,18 @@ public actor NetworkByteStream: ByteStream {
     /// ready. Framebuffer decoders ask for a few bytes at a time, so pulling up to
     /// 64 KiB per syscall matters more here than it would for a request/response
     /// protocol.
+    ///
+    /// **This is the implementation the protocol's one-reader rule is about.**
+    /// The `await` sits inside the loop, with `buffer` read before it and
+    /// mutated after, so two overlapping calls each take bytes from the other's
+    /// run. `MemoryByteStream` never suspends inside its read and has no such
+    /// window — same protocol, different precondition.
+    ///
+    /// Making this safe for several readers is a real change and not made here:
+    /// `Network` is Apple-only, so it cannot be exercised from the Linux CI
+    /// where the rest of this is proven, and an untested serialisation of reads
+    /// would be a fix nothing could see break. `docs/ROADMAP.md` records what
+    /// verifying it needs.
     public func read(exactly count: Int) async throws -> Data {
         guard count > 0 else { return Data() }
         while buffer.count < count {

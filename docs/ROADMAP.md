@@ -17,6 +17,33 @@ flux persistants, mises à jour continues, curseur distant, reconnexion
 automatique avec repli exponentiel — le tout testé, reconnexion comprise,
 contre des serveurs scriptés. Voir `docs/ARCHITECTURE.md`.
 
+## Ce qui attend une machine Apple
+
+Une liste courte, tenue à jour, de ce qui est **trouvé et compris** mais ne peut
+pas être prouvé depuis le conteneur Linux où le reste l'est. Elle existe pour
+que ces points ne se perdent pas et pour qu'aucun d'eux ne parte en correctif
+non vérifié — la discipline du dépôt est qu'une modification qu'aucun test ne
+peut voir casser n'est pas une modification livrable.
+
+### `NetworkByteStream.read(exactly:)` n'accepte qu'un lecteur
+
+Le `await` est dans la boucle de remplissage, `buffer` lu avant et muté après.
+Deux lectures concurrentes s'entrelacent et chacune emporte des octets de la
+course de l'autre — pas une erreur, pas une lecture courte, mais **un flux
+recousu depuis deux positions**, qui se décode en charabia plusieurs messages
+plus loin sans rien à montrer du doigt.
+
+Latent aujourd'hui, et vérifié plutôt que supposé : `SPICESession` lance cinq
+pompes et chacune possède sa connexion, la poignée de main finissant avant que
+sa pompe démarre. Aucun chemin ne lit un flux depuis deux tâches. La règle est
+écrite sur le protocole `ByteStream` parce que rien ne l'impose et que le prix
+d'un oubli est silencieux.
+
+**Ce qu'il faudrait pour le rendre sûr :** sérialiser les lectures, et une sonde
+qui gare une lecture pour forcer l'entrelacement — le pendant en lecture du
+`GatedByteStream` déjà écrit pour les tests d'écriture. `Network` étant sous
+`#if canImport(Network)`, rien de tout cela ne s'exécute ici.
+
 ## Lot 3 — RDP
 
 FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière
