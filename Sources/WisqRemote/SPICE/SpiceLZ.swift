@@ -1,4 +1,5 @@
 import Foundation
+import WisqCore
 
 /// SPICE's own LZ codec, decoding side.
 ///
@@ -154,7 +155,23 @@ enum SpiceLZ {
         // The header's dimensions are signed on the wire and a negative one is
         // not a small image, it is a size that becomes enormous the moment it
         // is multiplied. Refused before anything is allocated from it.
+        //
+        // That sentence was right about negatives and read as though it covered
+        // the whole danger. It did not: a **positive** pair multiplies just as
+        // enormously, and this guard let every one of them through. Measured,
+        // from a twenty-eight-byte header:
+        //
+        //   65536 × 65536, alpha path → `failed to allocate 17179869216 bytes`
+        //   32768 × 32768, plain path → peak address space 322 MiB → 4.53 GiB,
+        //                               reserved before the stream was found
+        //                               to be truncated
+        //
+        // So the magnitude is bounded too, at the ceiling the whole client
+        // shares. `SpiceLZ4` has had both halves all along.
         guard width > 0, height > 0, stride >= 0 else { throw Failure.badGeometry }
+        guard Framebuffer.canHold(width: width, height: height) else {
+            throw Failure.badGeometry
+        }
 
         return Header(
             type: type, width: width, height: height, stride: stride,
