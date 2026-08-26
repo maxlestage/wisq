@@ -7,19 +7,47 @@ public struct ReconnectPolicy: Sendable {
     public var initialDelay: Duration
     public var maxDelay: Duration
     public var multiplier: Double
+    /// How long a connection has to last before it refills the retry budget.
+    ///
+    /// The budget used to be refilled by `.ready`, and that was unreachable as
+    /// a limit: **every** server emits `.ready`, including one that finishes
+    /// the handshake and drops a millisecond later. Such a server reset the
+    /// counter on every cycle, so `maxAttempts` was never reached and the
+    /// backoff never grew past `initialDelay` — a full handshake every second,
+    /// for as long as the phone stayed awake, with no error ever shown.
+    ///
+    /// Reaching `.ready` cannot be the test, because the pathological case
+    /// reaches it too. Lasting can: a connection that stayed up long enough to
+    /// be used has proved the host works, which is what the budget is asking.
+    public var minimumUptimeToResetBudget: Duration
 
-    public init(maxAttempts: Int, initialDelay: Duration, maxDelay: Duration, multiplier: Double = 2) {
+    public init(
+        maxAttempts: Int,
+        initialDelay: Duration,
+        maxDelay: Duration,
+        multiplier: Double = 2,
+        minimumUptimeToResetBudget: Duration = .seconds(10)
+    ) {
         self.maxAttempts = maxAttempts
         self.initialDelay = initialDelay
         self.maxDelay = maxDelay
         self.multiplier = multiplier
+        self.minimumUptimeToResetBudget = minimumUptimeToResetBudget
     }
 
     /// Five tries over roughly a minute: enough to ride out a cell handoff or a
     /// Wi-Fi blip, short enough that a genuinely dead host fails while the user
     /// still remembers tapping Connect.
+    ///
+    /// The ten seconds is spelled out here rather than left to the default,
+    /// because it is what makes the sentence above true: without a floor, the
+    /// five tries were unreachable against any host that answers the handshake
+    /// and then falls over, and "a genuinely dead host fails" was not what
+    /// happened. Ten seconds is comfortably longer than a handshake and
+    /// comfortably shorter than a session someone actually used.
     public static let standard = ReconnectPolicy(
-        maxAttempts: 5, initialDelay: .seconds(1), maxDelay: .seconds(30)
+        maxAttempts: 5, initialDelay: .seconds(1), maxDelay: .seconds(30),
+        minimumUptimeToResetBudget: .seconds(10)
     )
 
     public static let none = ReconnectPolicy(
@@ -122,12 +150,12 @@ public actor ReconnectingSession: RemoteSession {
             await session.start()
 
             var failure: WisqError?
+            var reachedReady = false
+            let startedAt = ContinuousClock.now
             for await event in session.events {
                 switch event {
                 case .ready:
-                    // A successful connection resets the budget: the next drop
-                    // gets the full retry schedule again.
-                    attempt = 0
+                    reachedReady = true
                     continuation.yield(event)
                 case .disconnected(let error):
                     // Held back: either it becomes a .reconnecting, or it is
@@ -138,6 +166,16 @@ public actor ReconnectingSession: RemoteSession {
                 }
             }
             current = nil
+
+            // Refilling the budget is decided here rather than on `.ready`,
+            // and the reason is the order of events: how long a connection
+            // lasted is only known once it is over. A connection that came up
+            // and stayed up gets the next drop the full retry schedule again;
+            // one that came up and fell over does not, or the limit below is
+            // not a limit at all.
+            if reachedReady, ContinuousClock.now - startedAt >= policy.minimumUptimeToResetBudget {
+                attempt = 0
+            }
 
             if stopped { finish(with: nil); return }
             guard let error = failure else {
