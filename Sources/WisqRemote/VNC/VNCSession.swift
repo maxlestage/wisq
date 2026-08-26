@@ -141,6 +141,11 @@ public actor VNCSession: RemoteSession {
         let count = Int(try await stream.readUInt8())
         guard count > 0 else {
             let length = Int(try await stream.readUInt32())
+            // Reachable before any authentication: the first thing a hostile
+            // listener can say is "refused, and the reason is four gigabytes".
+            guard length <= RFBLimits.maximumTextBytes else {
+                throw WisqError.handshakeFailed("l'hôte a refusé la connexion")
+            }
             let reason = try await stream.readLatin1(count: length)
             throw WisqError.handshakeFailed(reason.isEmpty ? "l'hôte a refusé la connexion" : reason)
         }
@@ -168,6 +173,9 @@ public actor VNCSession: RemoteSession {
         let result = try await stream.readUInt32()
         guard result == 0 else {
             let length = Int(try await stream.readUInt32())
+            guard length <= RFBLimits.maximumTextBytes else {
+                throw WisqError.authenticationFailed("mot de passe refusé")
+            }
             let reason = try await stream.readLatin1(count: length)
             throw WisqError.authenticationFailed(reason.isEmpty ? "mot de passe refusé" : reason)
         }
@@ -181,6 +189,10 @@ public actor VNCSession: RemoteSession {
         let height = Int(try await stream.readUInt16())
         _ = try PixelFormat.decode(try await stream.read(exactly: 16))
         let nameLength = Int(try await stream.readUInt32())
+        guard nameLength <= RFBLimits.maximumTextBytes else {
+            throw WisqError.malformedMessage(
+                "nom de bureau de \(nameLength) octets, plafond \(RFBLimits.maximumTextBytes)")
+        }
         desktopName = try await stream.readLatin1(count: nameLength)
 
         guard width > 0, height > 0, width <= 16384, height <= 16384 else {
@@ -200,6 +212,10 @@ public actor VNCSession: RemoteSession {
             case .serverCutText:
                 _ = try await stream.read(exactly: 3)
                 let length = Int(try await stream.readUInt32())
+                guard length <= RFBLimits.maximumClipboardBytes else {
+                    throw WisqError.malformedMessage(
+                        "presse-papiers de \(length) octets, plafond \(RFBLimits.maximumClipboardBytes)")
+                }
                 let text = try await stream.readLatin1(count: length)
                 continuation.yield(.clipboard(text))
             case .endOfContinuousUpdates:

@@ -3268,3 +3268,68 @@ Le sélecteur affiche toujours « TLS épinglé » pour un mode qui vaut `.tls`.
 Corriger l'étiquette suppose de migrer la valeur enregistrée des machines qui
 la portent — une question de migration, avec ses propres tests. Tranche
 suivante, pas celle-ci.
+
+## Les longueurs de RFB n'avaient aucun plafond
+
+Zone jamais auditée sous l'angle de la correction. L'audit des débordements
+(tâche #60) avait conclu « tout le décodeur RFB est structurellement immunisé :
+la géométrie arrive en `readUInt16()` ». C'est vrai, et ce n'est pas la
+question posée ici.
+
+`readUInt16` borne les **produits** — 65535² × 4, très loin d'`Int.max`. Mais
+les **longueurs** de RFB arrivent en `UInt32`, et chacune alimente
+`read(exactly:)`, qui **accumule**. #60 avait d'ailleurs regardé le seul
+`UInt32` qui lui passait sous les yeux, le `subrectangleCount` de RRE, et
+conclu correctement : il *boucle*, consommant chaque sous-rectangle et levant à
+l'EOF. La différence entre boucler et accumuler est exactement ce qui sépare
+ces deux cas.
+
+### La sonde, et son témoin
+
+`MemoryByteStream` ne peut pas répondre à la question : sa lecture lève dès que
+la demande dépasse ce qu'il contient, donc un décodeur borné et un décodeur non
+borné finissent tous deux par une exception et se ressemblent. J'ai écrit un
+`RecordingByteStream` qui **enregistre la taille demandée** — la demande
+elle-même est la preuve.
+
+Réponse : **4 294 967 295 octets** en une seule lecture, sur les trois sites du
+décodeur. Et le témoin, avec une longueur de 7, rend 7 : la sonde lit bien la
+demande réelle et non mon entrée. Après les gardes, la même sonde rend 4 — les
+quatre octets du champ de longueur, et rien de plus.
+
+### Sept sites, deux sortes de plafond
+
+| site | ce qu'il lit | plafond |
+| --- | --- | --- |
+| `VNCSession` refus de connexion | raison | texte, **avant toute authentification** |
+| `VNCSession` échec d'auth | raison | texte |
+| `VNCSession` ServerInit | nom du bureau | texte |
+| `VNCSession` ServerCutText | presse-papiers | presse-papiers |
+| `RFBDecoder` desktopName | nom du bureau | texte |
+| `RFBDecoder` zlib | bloc compressé | **dérivé du rectangle** |
+| `RFBDecoder` ZRLE | bloc compressé | **dérivé du rectangle** |
+
+Le premier est celui qu'un attaquant atteint en premier : la première chose
+qu'un écouteur hostile peut dire est « refusé, et la raison fait quatre
+gigaoctets ».
+
+Les deux derniers ne sont pas des constantes choisies mais une valeur
+**dérivée** : le résultat inflaté doit être les pixels du rectangle —
+`decodeZlib` le vérifiait déjà, mais *après* avoir alloué — donc la forme
+compressée ne peut pas raisonnablement dépasser ces pixels plus ce qu'un
+compresseur ajoute quand il renonce. Un plafond qui ignore la géométrie serait
+soit inutile sur les petits rectangles, soit faux sur les grands ; le sabordage
+s8 le montre en refusant un bloc parfaitement légitime.
+
+Les autres sont choisis, faute de borne structurelle, et le presse-papiers a la
+sienne : un collage a le droit d'être un document, et refuser ce que
+l'utilisateur a demandé serait une panne pire que celle qu'on prévient.
+
+### Les neuf sabordages
+
+Sept sites retirés **un par un**, jamais groupés — c'est là qu'une garde non
+couverte se cache derrière celle d'à côté. Chacun a rendu **un seul** rouge, le
+sien. Puis deux sur le bord permissif : le plafond compressé rendu sourd au
+rectangle (3 rouges) et le presse-papiers ramené au plafond des noms (1). Une
+règle a deux bords, et la moitié du travail porte sur ce qu'il ne faut **pas**
+refuser.
