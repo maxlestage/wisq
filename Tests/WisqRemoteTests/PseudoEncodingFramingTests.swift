@@ -52,9 +52,9 @@ final class PseudoEncodingFramingTests: XCTestCase {
 
     /// Decodes the rectangle under test, then the witness behind it, and
     /// returns both outcomes.
-    private func decodeThenWitness(_ data: Data) async throws
-        -> (RFBDecoder.Outcome, RFBDecoder.Outcome, Framebuffer)
-    {
+    private typealias Pair = (first: RFBDecoder.Outcome, second: RFBDecoder.Outcome, on: Framebuffer)
+
+    private func decodeThenWitness(_ data: Data) async throws -> Pair {
         let framebuffer = Framebuffer(width: 4, height: 1)
         let decoder = try decoder(data + witness(), framebuffer)
         let first = try await decoder.decodeRectangle()

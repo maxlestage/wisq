@@ -4063,3 +4063,21 @@ Le premier ne rougit qu'une fois, et c'est normal : seul le cas à plusieurs
 écrans distingue `× 16` de `× 12`. Le cas à un seul écran, lui, ne verrait pas
 la différence entre `× 16` et `× 16` — d'où la boucle sur 0, 1 puis 3 écrans
 plutôt qu'un seul exemple confortable. Encore la leçon du cas facile.
+
+### Et la même faute de lint, pour la deuxième fois
+
+`Lint` a rougi sur cette tranche pour une accolade ouvrante seule sur sa ligne,
+au bout d'une signature trop longue — exactement ce qui était déjà arrivé à la
+tranche des encodages hextile/CopyRect. Un réflexe de dépôts qui limitent la
+longueur des lignes, alors que `line_length` est désactivé ici.
+
+Le noter une fois de plus n'aurait servi à rien. La règle est donc passée dans
+`scripts/check-whitespace.sh`, qui existe précisément pour les règles de
+SwiftLint qui sont du pur texte, et dont l'en-tête dit déjà pourquoi : « une
+porte qu'un contributeur ne peut pas passer localement est une porte qui trouve
+les choses après l'ouverture de la pull request ».
+
+Vérifié comme le reste : la garde rougit sur un fichier témoin qui contient la
+faute, et revient au vert une fois le témoin retiré. Le dépôt entier en compte
+zéro par ailleurs, donc la règle est cohérente avec le style existant plutôt
+qu'imposée par-dessus.
