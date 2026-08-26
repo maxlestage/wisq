@@ -8,6 +8,32 @@ import Foundation
 /// mostly an encoder, checked the way `SpiceInputs` is — no server needed,
 /// because what has to be right is the bytes that go out.
 enum SpiceRecordWire {
+    /// What this client tells a record server it can do.
+    ///
+    /// **Three entries where playback has four, and that is the whole trap.**
+    /// The record enum has no `LATENCY`, so `OPUS` sits at bit 2 here against
+    /// bit 3 on playback. `VOLUME` happens to agree at bit 1. Borrowing the
+    /// playback constant for this channel would advertise a bit the record
+    /// server has no name for; borrowing this one for playback would advertise
+    /// `LATENCY`. Two enums rather than one shared, for exactly that reason.
+    enum Capability: Int, Equatable, Sendable {
+        case celt = 0
+        case volume = 1
+        case opus = 2
+    }
+
+    static func capabilityWords(_ capabilities: [Capability]) -> [UInt32] {
+        SpiceWire.capabilityWords(capabilities.map(\.rawValue))
+    }
+
+    /// `VOLUME` for the reason playback advertises it — `snd_send_volume` and
+    /// `snd_send_mute` are gated on `SPICE_RECORD_CAP_VOLUME` and send nothing
+    /// without it — and no codec, for the reason playback names no codec: this
+    /// client produces raw PCM and says so in `RECORD_MODE`. Advertising `OPUS`
+    /// here would be a claim about what wisq can *encode*, which is the
+    /// direction that matters on this channel, and it would be false.
+    static let advertised: [Capability] = [.volume]
+
     /// What the server sends.
     ///
     /// The numbering restarts at 101 for each direction, so a server `START`
