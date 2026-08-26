@@ -165,23 +165,12 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
 
   const markup = renderToString(<App route={route.id} lang={lang} doc={doc ?? undefined} />);
 
-  // The document travels with the page rather than in the shared bundle.
-  //
-  // `</script>` inside a string would end this element early, and `<!--` would
-  // open a comment, so both leading characters are escaped. `JSON.parse` reads
-  // `\u003c` as `<`, so the payload is unchanged — only the byte a parser
-  // could act on is.
-  //
-  // The text appears twice in the document, as markup and as JSON, and that
-  // costs almost nothing over the wire: the two copies sit well inside gzip's
-  // window, so the second one is mostly back-references. Weighed against 21.6
-  // KB of other pages' prose in every visitor's bundle, it is a clear trade.
-  const docPayload = doc
-    ? `\n    <script type="application/json" id="doc">${JSON.stringify(doc).replace(
-        /</g,
-        "\\u003c",
-      )}</script>`
-    : "";
+  // The document used to travel twice: once as markup, and once as JSON beside
+  // it, because hydration had to read exactly what the build rendered. Nothing
+  // hydrates any more, so the second copy has no reader and is gone. It was
+  // cheap over the wire — the two copies sat inside gzip's window, so the
+  // duplicate was mostly back-references — but a payload nobody parses is
+  // still bytes, and still something a reader of this file has to account for.
 
   // Every page says where its other language lives, and which one a reader
   // with no preference should get. Without this a search engine treats the two
@@ -241,7 +230,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     ${THEME_SCRIPT}
   </head>
   <body>
-    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>${docPayload}
+    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>
     <script type="module" src="${base}${scriptName}"></script>
   </body>
 </html>

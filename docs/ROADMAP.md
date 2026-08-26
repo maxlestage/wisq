@@ -1776,6 +1776,50 @@ de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs 
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
 
+## Le site — l'hydratation retirée (fait)
+
+Les pages étaient déjà pré-rendues. Le seul travail qui restait à React dans un
+navigateur était d'hydrater quatre comportements : la redirection FR de la page
+d'accueil, la mémoire du choix de langue, le sélecteur de thème, l'invite
+d'installation. Mesuré : **65 794 octets gzip** par page pour ces quatre-là.
+Écrits contre le DOM, ils en coûtent **1 062**.
+
+| | avant | après |
+| --- | --- | --- |
+| script brut | 206 973 | 2 350 |
+| script gzip | 65 794 | 1 062 |
+| plafond du test | 240 000 / 80 000 | 8 000 / 3 000 |
+
+C'est la contrainte « le réseau est le budget » appliquée au site lui-même, et
+c'était le plus gros poste restant : les images du site pèsent 12 Ko en tout,
+donc le WebP de la liste d'optimisations n'aurait rien rapporté — la question
+n'était pas les images, c'était le framework.
+
+Ce qu'on perd, et qui est écrit dans le README du site plutôt que laissé à
+découvrir : on n'ajoute plus un composant interactif en écrivant du JSX. React
+reste le langage d'écriture et le pré-rendu ; seule la livraison change. Ce qui
+arrive d'interactif plus tard va dans `src/main.ts` en code DOM, ou derrière un
+import dynamique que seules les pages concernées paient.
+
+Deux garde-fous, et le second est le plus important :
+
+- Le budget d'octets descend à 8 000 bruts / 3 000 gzip, et un test échoue si
+  React reparaît dans le script livré. Un plafond taillé pour un bundle qui
+  hydrate aurait laissé passer la seule régression qui compte — réimporter un
+  composant dans `main.ts` — donc le chiffre devait bouger avec le code.
+- `tests/behaviour.test.ts` charge la vraie page construite, exécute le vrai
+  module livré et appuie sur les boutons. Tous les autres tests vérifient la
+  *taille* du script : un script qui ne pèse rien et ne fait rien les passerait
+  tous. Les quatre comportements ont ensuite été cassés exprès, de neuf façons,
+  et les tests ont attrapé les neuf.
+
+Effet de bord mesuré : chaque page écrite embarquait son document une seconde
+fois en JSON, parce que l'hydratation devait lire exactement ce que la
+construction avait rendu. Plus personne ne le lit. Le gain est modeste et il
+faut le dire — 5 472 octets gzip sur les vingt pages, environ 300 par page :
+les deux copies tenaient dans la fenêtre de gzip, comme le commentaire d'origine
+l'annonçait.
+
 ## Distribution — les architectures publiées (fait)
 
 Quatre assets, pas deux. La release construisait Linux x86_64 et macOS arm64,
