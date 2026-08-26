@@ -125,6 +125,34 @@ final class SpiceDisplayClientTests: XCTestCase {
         XCTAssertNotEqual(Array(body.suffix(4)), [0, 0, 0, 0])
     }
 
+    /// **The pixmap cache is zero, and for the opposite reason the GLZ window
+    /// is large.**
+    ///
+    /// Both numbers ride in the same message and both say "how much this client
+    /// will remember", but the server reads them differently. A non-zero cache
+    /// is a promise: `dcc_pixmap_cache_unlocked_add` records the image, echoes
+    /// `CACHE_ME`, and every later send of that id becomes
+    /// `SPICE_IMAGE_TYPE_FROM_CACHE` — a name with no pixels. wisq keeps no
+    /// such cache, so the draw is skipped and the region keeps stale pixels.
+    /// `testAnImageNamedFromTheCacheHasNoPixelsToDraw` is the other half of
+    /// this: it shows the decode really does come back empty.
+    ///
+    /// Zero makes the first add fail — `available` goes negative, the eviction
+    /// loop finds an empty ring — so nothing is recorded and no name is ever
+    /// sent.
+    func testThePixmapCacheIsZeroBecauseThereIsNoCacheToPutImagesIn() {
+        XCTAssertEqual(SpiceDisplayClient.pixmapCachePixels, 0)
+
+        let body = SpiceDisplayClient.initialise()
+        XCTAssertEqual(Array(body[1...8]), [UInt8](repeating: 0, count: 8))
+
+        // The contrast is the point: same message, opposite safe values.
+        XCTAssertGreaterThan(
+            SpiceDisplayClient.glzWindowPixels, 0,
+            "la fenêtre GLZ est un plancher, le cache un engagement"
+        )
+    }
+
     /// The message numbers, which are not sequential from one and are easy to
     /// transpose.
     func testTheMessageNumbersAreTheProtocolsOwn() {
