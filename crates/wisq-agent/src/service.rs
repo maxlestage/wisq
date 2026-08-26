@@ -26,6 +26,13 @@ impl Service {
             return Response::error(404, &format!("route inconnue : {}", request.path));
         }
 
+        // Every route below the collection carries an identifier, and it comes
+        // from the address bar of whoever is talking to us. Checked once, here,
+        // before any of them can hand it to a subprocess.
+        if parts.len() >= 3 && !is_plausible_domain_name(parts[2]) {
+            return Response::error(404, "identifiant de VM invalide");
+        }
+
         match (request.method.as_str(), parts.len()) {
             ("GET", 2) => match self.backend.list() {
                 Ok(vms) => Response::json(200, list_to_json(&vms)),
@@ -85,6 +92,37 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     difference == 0
 }
 
+/// What a libvirt domain name is allowed to look like, as far as this daemon is
+/// concerned.
+///
+/// **The leading dash is the whole point.** `VirshBackend` runs
+/// `Command::new(virsh).args(["start", id])` — argv, never a shell, so an
+/// identifier containing `; rm -rf /` is one harmless argument that virsh will
+/// fail to find. Verified with a probe rather than assumed. But an argument
+/// *beginning with a dash* is not data to an option parser, it is an option:
+/// `virsh start --version` is not a request to start a domain called
+/// `--version`.
+///
+/// So this is argument injection rather than command injection, and it needs the
+/// bearer token, which makes it an escalation inside an authenticated session —
+/// from "drive this host's VMs" to "run virsh with flags of your choosing" —
+/// rather than a way in. Narrow, and cheap enough to close that arguing about
+/// the severity would cost more than the fix.
+///
+/// Deliberately an allowlist. A denylist of "characters virsh dislikes" is a
+/// guess about another program's parser that ages badly; a domain name is
+/// letters, digits, dot, dash and underscore, and anything else can be refused
+/// without losing a name anyone would really use. libvirt itself is stricter
+/// still, but matching it exactly would mean tracking its rules forever.
+fn is_plausible_domain_name(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 255
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +142,100 @@ mod tests {
             path: path.to_string(),
             authorization: token.map(|t| format!("Bearer {t}")),
             body: body.to_string(),
+        }
+    }
+
+    /// An identifier that begins with a dash is not a domain name to an option
+    /// parser, it is an option. `VirshBackend` builds argv rather than a shell
+    /// line, so nothing here is command injection — probed and confirmed: an id
+    /// of `; rm -rf /` arrives as one argument virsh cannot find. What it *is*
+    /// is argument injection, and it stops at the routing boundary now.
+    #[test]
+    fn an_identifier_that_looks_like_an_option_is_refused() {
+        for id in ["-c", "--version", "--connect=x", "-", "--"] {
+            for path in [
+                format!("/v1/vms/{id}"),
+                format!("/v1/vms/{id}/start"),
+                format!("/v1/vms/{id}/stop"),
+            ] {
+                let response = service().handle(request(
+                    if path.ends_with("start") || path.ends_with("stop") {
+                        "POST"
+                    } else {
+                        "GET"
+                    },
+                    &path,
+                    Some("secret-token"),
+                    "",
+                ));
+                assert_eq!(response.status, 404, "{path} a été accepté");
+                assert!(
+                    response.body.contains("invalide"),
+                    "{path} : {}",
+                    response.body
+                );
+            }
+        }
+    }
+
+    /// Everything else a hostile caller might try, refused by the same rule.
+    ///
+    /// **The message is the assertion, not the status.** Both answers here are
+    /// 404: one from the validation, one from a backend that looked for the name
+    /// and did not find it. A test asserting only the status passes whichever
+    /// happened, which is exactly what it did — dropping the character allowlist
+    /// left the whole suite green until this checked the wording instead.
+    #[test]
+    fn an_identifier_outside_the_allowed_shape_is_refused() {
+        for id in [
+            "a b", // a space would split nothing, but it is not a name
+            "a$b", "a;b", "a\nb", "é",       // outside ASCII
+            "a\u{0}b", // a NUL, which no argv can carry anyway
+        ] {
+            let response = service().handle(request(
+                "GET",
+                &format!("/v1/vms/{id}"),
+                Some("secret-token"),
+                "",
+            ));
+            assert_eq!(response.status, 404, "{id:?} a été accepté");
+            assert!(
+                response.body.contains("invalide"),
+                "{id:?} a atteint le backend au lieu d'être refusé : {}",
+                response.body
+            );
+        }
+    }
+
+    /// The other direction, and the one that matters for not breaking anybody:
+    /// the names people really give their domains still work. A validator that
+    /// refuses `debian-12.local` is worse than the hole it closes.
+    #[test]
+    fn ordinary_domain_names_still_reach_the_backend() {
+        for id in [
+            "debian12",
+            "debian-12",
+            "debian_12",
+            "debian-12.local",
+            "VM1",
+            "a",
+            "0",
+            "win11-dev.example.com",
+        ] {
+            let response = service().handle(request(
+                "GET",
+                &format!("/v1/vms/{id}"),
+                Some("secret-token"),
+                "",
+            ));
+            // 404 "VM introuvable" is the honest answer from the demo backend;
+            // what must not happen is the *validation* refusing the name, so the
+            // message is what distinguishes the two.
+            assert!(
+                !response.body.contains("invalide"),
+                "{id} a été refusé par la validation : {}",
+                response.body
+            );
         }
     }
 
