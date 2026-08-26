@@ -2106,3 +2106,39 @@ casse.
 Corollaire de méthode : quand un test contredit une phrase que j'ai écrite, la
 première hypothèse doit être que la phrase est fausse, pas le test. Les deux
 fois, c'était la phrase.
+
+## Clore un filon plutôt que de s'en éloigner
+
+Cinq tranches sont sorties d'une seule question posée à chaque canal SPICE :
+qu'est-ce que ce client promet, et tient-il chaque promesse ? Après la dernière
+(les jetons de l'agent), j'ai fait le tour des deux canaux restants — curseur et
+entrées — et ils ne demandent rien : le premier n'a aucune capacité dans le
+protocole, le second en a une que le serveur annonce et que wisq n'utilise pas.
+
+Le réflexe aurait été de passer à autre chose sans le dire. J'ai écrit le tableau
+des six canaux dans la feuille de route à la place, parce que **« épuisé » et
+« abandonné » se ressemblent beaucoup vus de loin**, et que la différence est
+exactement ce qu'on ne peut plus reconstituer plus tard. Un lecteur qui trouve
+quatre canaux corrigés et deux jamais mentionnés doit refaire l'enquête ; un
+lecteur qui trouve six lignes dont deux disent « rien à faire, voici pourquoi »
+n'a rien à refaire.
+
+C'est le pendant d'une leçon de cette nuit : un commentaire qui *justifie* vieillit
+mal. Un inventaire qui *constate* vieillit bien, parce qu'il est vérifiable ligne
+par ligne contre la référence.
+
+## Vérifier son propre travail quand on ne se souvient pas de l'avoir fait
+
+Au réveil sur un événement CI, j'ai trouvé une PR ouverte, un commit poussé et
+une branche à un état que je n'avais pas en tête — la dernière chose que j'avais
+vue de ce code était une erreur de compilation.
+
+La bonne réaction n'était ni de faire confiance à la PR ni de la refaire : c'était
+de reconstruire et relancer la suite localement à ce commit précis, puis de
+comparer au journal brut de la CI. 806 tests des deux côtés, le même saut attendu.
+Alors seulement, fusionner.
+
+La règle générale : **un état qu'on n'a pas vu se produire se traite comme un
+état rapporté par quelqu'un d'autre.** On le vérifie contre la source primaire,
+et le fait que ce soit soi-même qui l'ait produit ne change rien à la
+vérification.
