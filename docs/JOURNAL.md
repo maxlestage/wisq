@@ -3887,3 +3887,64 @@ Les deux vues sont dans `WisqUI`, qui ne compile pas sous Linux. `swiftc -parse`
 dit que leur syntaxe est bonne et `import WisqCore` y est déjà, mais la
 résolution des noms n'est établie que par `Cœur (Apple)` et `App iOS`. Je le
 note plutôt que de laisser croire que le vert local couvre ces deux lignes.
+
+## Une règle que le démon gardait seul
+
+`crates/wisq-agent/src/service.rs` refuse tout identifiant de VM hors liste
+blanche depuis la tranche qui a fermé l'injection d'argument, et répond
+`404 identifiant de VM invalide`. Personne d'autre ne le savait :
+
+* `docs/AGENT-PROTOCOL.md`, qui **est** le contrat entre les deux
+  implémentations, décrivait `/v1/vms/{id}` sans un mot sur `{id}` ;
+* `MachineEditorView` ne vérifiait que la non-vacuité, donc on pouvait
+  enregistrer une machine que l'agent refuserait toute sa vie, et ne
+  l'apprendre qu'à la première tentative de connexion ;
+* `AgentClient` collait l'identifiant dans `vms/\(id)/start`.
+
+### La sévérité, sans la gonfler
+
+**Ce n'était pas un trou.** La sonde sur `appendingPathComponent` montre que
+`?` et `#` sont échappés mais que `/` et `..` passent bruts, et qu'`URLSession`
+normalise `../..` avant l'envoi — une requête pouvait donc viser hors de
+`/v1/vms/`. Sauf que le démon répond 404 à tout ça : il échoue fermé, liste
+blanche lue ligne à ligne. Ce qui restait, c'est une règle appliquée d'un côté
+et écrite nulle part.
+
+### Ce que la liste partagée a trouvé en une seule exécution
+
+Les cas sont écrits **deux fois**, dans `VMIdentifierTests` et dans
+`service.rs`. Au premier lancement, les deux ont rougi, et pour deux raisons
+différentes.
+
+**`..` : les deux implémentations l'acceptaient.** Tous ses caractères sont
+dans la liste blanche. C'est moi qui avais tort en écrivant le test — et le
+test avait raison sur le fond : un segment de chemin qui veut dire « le parent »
+n'est pas un nom de domaine. Corrigé des deux côtés, avec `.` au passage.
+
+**`domaine\n` : les deux divergeaient pour de bon.** Swift rogne les blancs
+d'abord et acceptait donc `domaine` ; Rust lit un segment de chemin et refusait
+la chaîne brute. Ce n'est pas une dérive à corriger mais une différence à
+énoncer : le démon lit le fil et doit refuser, le téléphone lit un champ de
+saisie et rend la valeur **rognée**, qui est ensuite ce qui part sur le fil. La
+liste partagée est donc une liste de cas déjà rognés, et `domaine\n` est parti
+dans le test de rognage, où la réponse est écrite au lieu d'être supposée.
+
+Deux corrections en une exécution, dont une contre ma propre attente. C'est
+exactement le rendement qu'on attend d'un jeu de cas écrit des deux côtés d'une
+frontière de langage.
+
+### Les sept sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| la liste blanche disparaît | 12 |
+| le tiret initial redevient permis | 2 |
+| `.` et `..` redeviennent permis | 2 |
+| la limite de 255 octets saute | 1 |
+| le rognage disparaît | 2 |
+| la règle refuse **tout** (témoin inverse) | 15 |
+| côté Rust, la garde `.`/`..` retirée | 1 |
+
+Le témoin inverse compte autant que les autres : quatorze des quinze rouges
+viennent de la moitié « ce qu'il ne faut pas refuser ». Une règle trop stricte
+empêcherait d'atteindre des VM qui existent, et c'est un défaut de plein droit.
