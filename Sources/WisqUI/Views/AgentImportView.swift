@@ -125,7 +125,7 @@ struct AgentImportView: View {
         let (host, port) = Validation.splitHostPort(address)
         guard let normalized = try? Validation.normalizedHost(host) else { return nil }
         let scheme = fingerprint == nil ? "http" : "https"
-        return URL(string: "\(scheme)://\(normalized):\(port ?? 7442)")
+        return Validation.agentURL(scheme: scheme, host: normalized, port: port ?? 7442)
     }
 
     private var tokenRef: String? {

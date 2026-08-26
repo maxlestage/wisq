@@ -75,7 +75,7 @@ l'architecture mais n'est pas implémenté (voir `docs/ROADMAP.md`).
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (1016 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (1030 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
