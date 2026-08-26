@@ -67,7 +67,12 @@ final class ConnectionImportTests: XCTestCase {
         XCTAssertEqual(imported.machine.proto, .spice)
         XCTAssertEqual(imported.machine.host, "console.example.net")
         XCTAssertEqual(imported.machine.port, 5901, "le port TLS, pas un défaut")
-        XCTAssertEqual(imported.machine.security, .tlsPinned)
+        // Le fichier porte un host-subject et demande donc un épinglage, que
+        // `VirtViewerFile` rapporte fidèlement — mais `Machine` n'a pas de champ
+        // pour ce sujet, et il est perdu à l'import. Cette assertion disait
+        // `.tlsPinned` : elle épinglait une promesse que rien ne tenait. Voir
+        // `ClaimableSecurityTests`, qui garde la règle et ses deux bords.
+        XCTAssertEqual(imported.machine.security, .tls)
     }
 
     /// `.rdp` files do not describe their transport: RDP negotiates TLS inside

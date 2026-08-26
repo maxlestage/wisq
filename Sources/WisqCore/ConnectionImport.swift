@@ -56,6 +56,27 @@ public enum ConnectionImport {
         try Validation.normalizedHost(raw)
     }
 
+    /// What a machine may claim about its transport, given what survives the
+    /// import.
+    ///
+    /// A `.vv` naming a `tls-port` **and** a `host-subject` is asking for a
+    /// pinned connection, and `VirtViewerFile` faithfully reports `.tlsPinned`.
+    /// But the subject is the whole of the pin, and `Machine` has nowhere to
+    /// put it — the field does not exist. Recording `.tlsPinned` would store a
+    /// promise nothing can keep: the connection is system-validated TLS either
+    /// way (see `ResolvedTransportSecurity`), and the machine list would label
+    /// it "TLS épinglé" for a connection that is not pinned.
+    ///
+    /// This is the rule the `credentialRef` line below already states, applied
+    /// to the field next to it: a machine pointing at something that was never
+    /// written is worse than one that claims less. So it claims less.
+    ///
+    /// When `Machine` grows a fingerprint — see `docs/ROADMAP.md` — this is
+    /// where the subject would be carried instead of dropped.
+    static func claimableSecurity(_ asked: TransportSecurity) -> TransportSecurity {
+        asked == .tlsPinned ? .tls : asked
+    }
+
     public static func machine(from connection: VirtViewerFile.Connection) throws -> Imported {
         let host = try validatedHost(connection.host)
         return Imported(
@@ -64,7 +85,7 @@ public enum ConnectionImport {
                 host: host,
                 port: connection.port,
                 proto: connection.proto,
-                security: connection.security,
+                security: claimableSecurity(connection.security),
                 // The reference is left nil: it is the caller's to mint once it
                 // has actually stored the secret. A machine pointing at a
                 // credential that was never written is worse than one with no
