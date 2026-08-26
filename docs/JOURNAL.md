@@ -2793,3 +2793,71 @@ Ces sabordages ne font pas échouer un test : ils tuent le processus, SIGILL,
 code 132. Prévu et noté d'avance, ce qui a évité de le lire comme une panne du
 harnais. Un harnais de sabordage qui ne regarde que « combien de tests ont
 échoué » compte zéro échec sur une suite qui n'a jamais fini.
+
+## Le commentaire avait raison sur le danger et tort sur la conclusion
+
+Dans le parseur de bitmaps, sur la ligne qui calcule la longueur des pixels
+inline :
+
+```swift
+// Multiplied as `Int` after both are widened, so a server sending a
+// stride and a height that overflow a `UInt32` gets a read past the
+// end rather than a small number and a buffer that fits.
+let size = Int(stride) * Int(height)
+```
+
+Tout ce que le commentaire affirme est exact. Élargir vers `Int` bat bien le
+repliement d'un `UInt32` — sans lui, un produit qui reboucle donnerait un petit
+nombre et un tampon qui « rentre », ce qui est la vraie mauvaise issue. Ce qu'il
+ne dit pas, c'est qu'élargir ne protège pas du débordement de la cible : les
+deux champs montent à `0xFFFFFFFF`, le produit atteint 1,8 × 10^19, et Swift
+piège. **La ligne écrite pour se défendre d'une longueur hostile était le point
+de plantage.**
+
+C'est la deuxième fois de la journée qu'une défense se retourne, après les
+quatre gardes de #80. La forme commune vaut d'être nommée : *le raisonnement
+s'arrête à la menace qu'on avait en tête*. L'auteur pensait « repliement », a
+écrit la parade au repliement, et l'a écrite correctement. Personne ne relit un
+commentaire juste en se demandant de quoi il ne parle pas.
+
+### Rapporter plutôt que borner
+
+Correctif différent de #80, et la différence est le point :
+
+```swift
+let (size, sizeOverflowed) = Int(stride).multipliedReportingOverflow(by: Int(height))
+guard !sizeOverflowed else { throw SpiceError.invalidData }
+```
+
+Pas de plafond. La maison en a un — `SpiceLZ4` et `SpiceQUICDecoder` bornent
+tous deux `width` et `height` à `1 << 15` avant de multiplier — et **je ne l'ai
+pas repris ici**, alors que reprendre la tournure de la maison est d'habitude la
+bonne règle. La raison : ces plafonds-là *restreignent*. Sur les sites de #80,
+ajouter une borne par côté ne changeait le sort d'aucune entrée, ce qui rendait
+le correctif indiscutable. Ici, un plafond serait une supposition sur ce qu'un
+vrai serveur envoie, et je n'ai aucun moyen de la vérifier depuis ce conteneur.
+
+`multipliedReportingOverflow` n'en suppose rien. Tout produit calculable est
+inchangé ; un produit incalculable est refusé — exactement ce qu'une longueur
+trop grande obtient déjà une ligne plus loin, puisqu'aucun message ne fait
+10^19 octets. Le comportement est identique partout où il était défini.
+
+**La leçon n'est pas « toujours reprendre la maison ».** C'est : reprendre la
+maison quand la maison répond à la même question. Ces deux formes répondent à
+des questions différentes — « quelle taille est raisonnable » et « ce produit
+est-il calculable » — et seule la seconde se pose ici.
+
+### Ce que je n'ai pas corrigé, et comment je l'ai su
+
+`SpiceLZ.pixels(fromIndices:)` a la même forme (`bytesPerRow * height`, puis
+`width * height * 4`) et **ne déborde pas**. Son en-tête lit les dimensions en
+`Int32` *signé* — `Int(Int32(bitPattern:))`, positif obligatoire — donc chaque
+côté plafonne à 2,1 × 10^9 et le premier produit à 4,6 × 10^18, sous `Int.max`.
+Le second produit est plus grand, mais il n'est atteint qu'après une garde qui
+exige `indices.count >= bytesPerRow * height` : pour le faire déborder il
+faudrait un tableau de 2,9 × 10^17 octets.
+
+Cas 3 pour la garde, cas 4 pour l'allocation. Le détail qui décide est un
+`bitPattern` : le même code lu sur des `UInt32` déborderait. **Deux sites de
+forme identique, un sûr et un pas, et ce qui les sépare est le type de la
+lecture, pas la forme de l'expression.** Chercher la forme n'aurait pas suffi.

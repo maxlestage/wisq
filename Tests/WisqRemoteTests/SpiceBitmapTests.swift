@@ -140,6 +140,43 @@ final class SpiceBitmapTests: XCTestCase {
         ) { XCTAssertEqual($0 as? SpiceBitmap.Failure, .truncated) }
     }
 
+    /// A stride and a height whose product no `Int` can hold.
+    ///
+    /// Both are `UInt32` off the wire, so the product reaches 1.8 × 10^19 and
+    /// Swift traps — inside the guard, at the `*`, before it could refuse
+    /// anything. `testAStrideTooSmallForARowIsRefused` above does not reach it
+    /// and could not: a *large* width makes `minimumRow` exceed anything a
+    /// `UInt32` stride can hold, so the clause before this one short-circuits
+    /// and the multiplication never runs. The shape that gets there is the
+    /// opposite one — width 1, stride and height at the top of their range —
+    /// which is why the case is written this way round rather than "make every
+    /// number big".
+    func testAStrideAndHeightWhoseProductNoIntCanHoldAreRefused() {
+        for (width, height, stride) in [
+            (UInt32(1), UInt32(0xFFFFFFFF), UInt32(0xFFFFFFFF)),
+            (1, 0x8000_0000, 0x8000_0000),
+        ] {
+            XCTAssertThrowsError(
+                try SpiceBitmap.pixels(
+                    bitmap(.thirtyTwoBit, width: width, height: height, stride: stride,
+                           topDown: true),
+                    data: [UInt8](repeating: 0, count: 64)
+                ), "\(width)x\(height)@\(stride)"
+            ) { XCTAssertEqual($0 as? SpiceBitmap.Failure, .truncated) }
+        }
+    }
+
+    /// The other edge. A product that fits and describes data that is really
+    /// there must still decode — a refusal here would trade a crash for a
+    /// blank screen.
+    func testAnOrdinaryBitmapStillDecodesAfterTheOverflowCheck() throws {
+        let out = try SpiceBitmap.pixels(
+            bitmap(.thirtyTwoBit, width: 2, height: 2, stride: 8, topDown: true),
+            data: [UInt8](repeating: 0x40, count: 16)
+        )
+        XCTAssertEqual(out.count, 2 * 2 * 4)
+    }
+
     func testDataShorterThanTheBitmapClaimsIsRefused() {
         XCTAssertThrowsError(
             try SpiceBitmap.pixels(
