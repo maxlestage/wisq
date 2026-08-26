@@ -2257,3 +2257,65 @@ des deux côtés ; il ne dit rien de *qui reçoit quoi*. Il fallait les deux
 vérifications, et je n'avais écrit que la première — jusqu'à ce qu'une sonde
 jetable, lancée pour tout autre chose, imprime la table et rende la question
 évidente.
+
+## Chercher au mauvais endroit parce que la liste le disait
+
+La liste d'optimisations demandait « WebP » pour le site. J'ai commencé par
+mesurer avant d'obéir : toutes les images du site pèsent **12 Ko réunies** — cinq
+icônes et une carte sociale. Les convertir en WebP aurait économisé peut-être
+3 Ko. Le vrai poids était ailleurs, dans un seul fichier : 207 Ko de JavaScript,
+66 Ko une fois gzippé, soit cinq fois toutes les pages HTML du site réunies.
+
+La leçon n'est pas « la liste avait tort ». Une liste d'optimisations écrite de
+l'extérieur nomme des *techniques* — WebP, découpe de bundle, Lighthouse — parce
+que c'est tout ce qu'on peut nommer sans avoir mesuré. Elle ne peut pas nommer le
+poste dominant, puisque le poste dominant est justement ce que la mesure
+découvre. **Prendre la liste comme un plan, c'est optimiser ce que quelqu'un
+pouvait deviner de loin.** La prendre comme une direction — « le site est trop
+lourd » — et mesurer, c'est trouver que le framework est le poste.
+
+## Ce que ça coûte, dit avant qu'on me le demande
+
+Retirer l'hydratation fait tomber le script de 65 794 à 1 062 octets gzip. Le
+chiffre est spectaculaire et c'est exactement pour ça qu'il faut écrire à côté ce
+qu'il coûte : **on n'ajoute plus un composant interactif en écrivant du JSX.**
+
+Cette phrase est dans le README du site et dans le changelog, pas seulement dans
+ma tête. Un gain de 98 % qui arrive sans sa contrepartie se relit dans six mois
+comme un cadeau, et la première personne qui voudra un onglet interactif
+découvrira la contrainte en la heurtant. Une contrainte qu'on documente est une
+décision ; une contrainte qu'on laisse découvrir est un piège.
+
+## Un garde-fou qui mesure la taille ne mesure pas le travail
+
+Après le changement, j'avais un test qui vérifiait que le script pèse moins de
+3 Ko gzip, et un autre que React n'y est plus. Les deux passaient.
+
+**Un script vide les aurait passés tous les deux.** C'est la forme exacte du
+piège : j'avais remplacé le mécanisme qui *faisait* les quatre comportements, et
+tous mes tests portaient sur le poids du remplaçant, aucun sur son travail.
+
+D'où `tests/behaviour.test.ts` : la vraie page construite, le vrai module livré,
+et on appuie sur les boutons. Puis les neuf sabotages — le clic de thème
+n'applique plus rien, la redirection ignore le choix du lecteur, l'invite iOS
+s'affiche pour tout le monde — dont chacun est attrapé. Sans ça j'aurais annoncé
+un gain de 98 % sur un sélecteur de thème qui ne sélectionne plus.
+
+La règle, plus générale que ce cas : **quand on remplace un mécanisme, les tests
+du remplaçant doivent porter sur ce que faisait le mécanisme, pas sur ce qui a
+motivé le remplacement.** J'avais mesuré la motivation.
+
+## Deux plafonds pour la même ligne
+
+Le test de budget existait déjà : 240 000 octets bruts, 80 000 gzip. Il était
+vert avant le changement et il serait resté vert après, puisque 1 062 est très
+en dessous de 80 000.
+
+Un plafond taillé pour un bundle qui hydrate laisse passer, en silence, la seule
+régression qui compte désormais : réimporter un composant dans `main.ts`, ce qui
+remet soixante-quatre kilooctets. Le garde-fou aurait continué d'exister, de
+tourner, et de ne rien garder.
+
+**Un seuil est un fait sur le code d'hier.** Quand le code change d'ordre de
+grandeur, laisser le seuil en place n'est pas de la prudence, c'est le désarmer —
+et ça ne se voit pas, parce qu'un test qui passe ressemble à un test qui garde.

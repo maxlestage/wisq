@@ -6,70 +6,25 @@
 /// they touch it.
 ///
 /// The choice is applied before the first paint by a small script in the
-/// document head (see `build.tsx`) — not here. A React effect runs after the
-/// page has already painted, so a reader who asked for light on a dark system
-/// would see a flash of the wrong theme on every single navigation. This
-/// component only reflects the stored choice and changes it.
+/// document head (see `build.tsx`), and the pressed state is set by the
+/// enhancement script once the page is up (see `main.ts`). Neither happens
+/// here: **this component never runs in a browser.** It is rendered once, at
+/// build time, into the markup those two scripts then drive.
+///
+/// That is why the buttons carry `data-theme-choice` rather than an `onClick`.
+/// An `onClick` is a promise that React will be there to honour it, and the
+/// whole point of the pre-rendered site is that it is not: the behaviour costs
+/// about a kilobyte of plain JavaScript, where hydrating this one switch cost
+/// sixty-four.
 
-import { useEffect, useState } from "react";
 import type { copy as allCopy } from "../content";
-
-export const THEME_KEY = "wisq.theme";
-export type Theme = "light" | "dark" | "auto";
-
-/// Kept beside the palette in `styles.css`: these are the two `--bg` values,
-/// and they are what the browser paints around the page — the status bar on
-/// iOS, the tab strip elsewhere.
-const BAR: Record<"light" | "dark", string> = { light: "#ffffff", dark: "#0b0d10" };
-
-function storedTheme(): Theme {
-  try {
-    const value = localStorage.getItem(THEME_KEY);
-    return value === "light" || value === "dark" ? value : "auto";
-  } catch {
-    return "auto";
-  }
-}
-
-/// Applies a choice to the live document, so the page changes under the
-/// reader's finger rather than on the next navigation.
-export function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  if (theme === "auto") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
-
-  // The two theme-color metas carry a `media` attribute, so on `auto` they
-  // already follow the system. An explicit choice has to override both, or the
-  // browser paints its chrome for a theme the page is not using.
-  const metas = document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]');
-  metas.forEach((meta) => {
-    const media = meta.getAttribute("media") ?? "";
-    const own = media.includes("dark") ? BAR.dark : BAR.light;
-    meta.content = theme === "auto" ? own : BAR[theme];
-  });
-}
+import type { Theme } from "../theme";
 
 export function ThemeSwitch({ copy }: { copy: (typeof allCopy)["en"] }) {
-  // "auto" is what the server rendered, so the first client render must agree
-  // or hydration mismatches. The effect below corrects the pressed state one
-  // frame later — the colours themselves were already right before paint.
-  const [theme, setTheme] = useState<Theme>("auto");
-
-  useEffect(() => {
-    setTheme(storedTheme());
-  }, []);
-
-  const choose = (next: Theme) => {
-    setTheme(next);
-    applyTheme(next);
-    try {
-      if (next === "auto") localStorage.removeItem(THEME_KEY);
-      else localStorage.setItem(THEME_KEY, next);
-    } catch {
-      /* the choice holds for this page and simply does not outlive it */
-    }
-  };
-
+  // `auto` is what the markup ships with, because it is the only answer that is
+  // right for a reader whose choice has not been read yet — and for one who has
+  // JavaScript off entirely, where the page simply follows the system and this
+  // switch does nothing. The script corrects the pressed state on load.
   const options: { id: Theme; label: string; icon: React.ReactNode }[] = [
     { id: "light", label: copy.theme.light, icon: <SunIcon /> },
     { id: "dark", label: copy.theme.dark, icon: <MoonIcon /> },
@@ -82,10 +37,10 @@ export function ThemeSwitch({ copy }: { copy: (typeof allCopy)["en"] }) {
         <button
           key={option.id}
           type="button"
-          aria-pressed={theme === option.id}
+          data-theme-choice={option.id}
+          aria-pressed={option.id === "auto"}
           aria-label={option.label}
           title={option.label}
-          onClick={() => choose(option.id)}
         >
           {option.icon}
         </button>

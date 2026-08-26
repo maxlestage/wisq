@@ -753,3 +753,9 @@ pre code { white-space: pre; }
   .doc-code { background: #fff; border: 1px solid #999; }
   .doc-code pre { color: #000; }
 }
+
+/* `hidden` has to win. The install banner's parts are revealed by removing the
+   attribute, and `.btn` and `.install-banner-inner` both set a `display` that
+   outranks the user-agent rule for `[hidden]`. Without this the banner is
+   visible on a page whose script never decided to show it. */
+[hidden] { display: none !important; }
