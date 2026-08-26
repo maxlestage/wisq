@@ -179,9 +179,21 @@ final class SPICESessionTests: XCTestCase {
 
         let types = await inputSocket.types()
         XCTAssertEqual(types.count, 4, "trois pour le cran, un pour la touche")
-        XCTAssertEqual(
-            Array(types.prefix(3)), notch.map(\.type),
-            "les trois messages du cran doivent rester adjacents : \(types)"
+
+        // Contigus, et non pas premiers. Deux événements concurrents n'ont pas
+        // d'ordre entre eux — c'est ce que « concurrents » veut dire — et la
+        // première version de ce test affirmait que le cran sortirait d'abord.
+        // Elle passait sous Linux, où son `send` gagnait la course, et tombait
+        // sous Apple avec `[101, 112, 113, 114]` : les trois messages du cran
+        // étaient parfaitement adjacents, simplement précédés de la touche. Le
+        // test avait tort, pas le code.
+        let wanted = notch.map(\.type)
+        let contiguous = (0...(types.count - wanted.count)).contains {
+            Array(types[$0..<($0 + wanted.count)]) == wanted
+        }
+        XCTAssertTrue(
+            contiguous,
+            "les trois messages du cran doivent se suivre sans rien entre eux : \(types)"
         )
         await session.stop()
     }

@@ -2925,3 +2925,34 @@ livrer une modification, saborder la ligne modifiée**, pas seulement celle
 qu'on croit être le sujet de la tranche. Le sujet était le canal des entrées ;
 le canal record a été corrigé au passage, et « au passage » est exactement là
 où une modification part sans filet.
+
+### L'ordre entre deux concurrents n'est pas une propriété
+
+La CI Apple a fait tomber le test d'adjacence là où Linux le passait :
+
+```
+attendu [112, 113, 114]   obtenu [101, 112, 113, 114]
+```
+
+Les trois messages du cran étaient **parfaitement adjacents**. Ils étaient
+simplement précédés de la touche. J'avais écrit `types.prefix(3) == cran`,
+c'est-à-dire « le cran sort en premier » — sous Linux son `send` gagnait la
+course, sous Apple c'est l'autre. Le test avait tort, pas le code.
+
+C'est la deuxième fois dans ce dépôt qu'un test affirme plus que le contrat
+(les espaces autour d'un `Content-Length` étaient l'autre), et la forme se
+répète : **j'ai transformé ce que j'avais observé en ce que j'exigeais.** Le
+premier passage vert donne une séquence, et l'écrire telle quelle fige un
+détail d'ordonnancement au lieu de la propriété.
+
+Ce qui est promis ici est l'adjacence. Entre deux événements concurrents il n'y
+a pas d'ordre — c'est ce que « concurrents » veut dire. L'assertion cherche
+maintenant les trois types en suite contiguë n'importe où.
+
+Et la vérification qui compte, parce qu'un test affaibli qui repasse au vert ne
+prouve rien : **les deux sabordages mordent toujours**. Nuance notée, elle est
+honnête : le sabordage « drainer par message » sépare l'événement *par
+construction* et fait tomber le test à tous les coups ; le défaut d'origine ne
+le sépare que selon l'ordonnancement, et cette fois ne l'a pas fait. Chaque
+propriété garde donc un sabordage qui l'attrape de façon déterministe — pas
+chaque sabordage qui attrape chaque propriété.
