@@ -3948,3 +3948,63 @@ frontière de langage.
 Le témoin inverse compte autant que les autres : quatorze des quinze rouges
 viennent de la moitié « ce qu'il ne faut pas refuser ». Une règle trop stricte
 empêcherait d'atteindre des VM qui existent, et c'est un défaut de plein droit.
+
+## Une entrée illisible emportait toute la bibliothèque
+
+`MachineStore.loadOnQueue` faisait `decode([Machine].self)` en un seul appel.
+Une machine écrite par une version plus récente ne coûtait donc ni le réglage,
+ni la machine : elle coûtait **toute la liste**. `MachineLibraryModel.reload()`
+mettait `machines = []` et affichait une erreur, et une application qui ne peut
+pas atteindre son propre conteneur ne laissait aucun moyen de réparer.
+
+### La moitié qui aurait rendu la correction pire que le défaut
+
+Décoder entrée par entrée est facile. Le piège est deux lignes plus loin :
+`upsert` et `delete` chargent la liste et la réécrivent. Une version ancienne
+lisant un fichier récent aurait donc *effacé définitivement* ce qu'elle n'avait
+pas su lire, à la première machine ajoutée.
+
+Donc ce qui n'est pas décodable est conservé tel quel — d'où `JSONValue` — et
+réécrit avec le reste. Écarter une entrée de la **liste** est une perte que la
+bannière annonce ; l'écarter du **fichier** serait une perte que personne ne
+peut annuler.
+
+### L'objection que je m'étais faite, et pourquoi elle tombe
+
+En rangeant ce sujet dans `ROADMAP` à la tranche précédente, j'avais écrit que
+garder ce qui se décode « laisse tomber une machine en silence, et une perte
+qu'on ne voit pas est pire qu'un refus franc ». C'était juste — et la réponse
+existait déjà dans le code : `MachineLibraryModel` a un `loadError` et la liste
+a sa bannière. Il n'y avait rien à construire, seulement quelque chose à dire.
+La correction n'ajoute donc aucune vue.
+
+### Le sabordage qui a survécu
+
+`if let cache { return LoadOutcome(machines: cache, unreadable: 0) }` — le
+chemin **mis en cache** annonçant zéro illisible. Les 952 tests sont restés
+verts.
+
+Cas 2, test manquant : chacun de mes tests créait un magasin neuf et chargeait
+une seule fois. Or `reload()` est rappelé à chaque retour sur la liste, donc la
+bannière serait apparue une fois puis aurait disparu toute seule pendant que les
+entrées restaient illisibles — exactement la perte qui s'efface que cette
+tranche existe pour empêcher. Deux tests ajoutés : un second chargement, et un
+chargement après écriture. Le sabordage rougit maintenant.
+
+### Les cinq sabordages
+
+| sabordage | rouges |
+| --- | --- |
+| retour au `decode([Machine].self)` d'un bloc | 5 |
+| les entrées conservées ne sont pas réécrites | 3 |
+| le compte d'illisibles est toujours 0 | 2 |
+| tout devient illisible (témoin inverse) | 13 |
+| le chemin mis en cache annonce 0 | 0, puis 2 |
+
+### Ce que la porte locale ne prouve pas
+
+`Tests/WisqUITests/PartialLibraryBannerTests.swift` n'appartient à aucune cible
+SwiftPM : XcodeGen le bâtit et `scripts/test-app.sh` le joue dans un iPhone
+simulé. Il ne tourne donc jamais ici, et `App iOS` est son seul arbitre. J'ai
+vérifié à la main que chaque symbole qu'il emploie est public et déjà utilisé
+ainsi par `MachineLibrarySecretsTests` à côté.
