@@ -28,6 +28,21 @@ FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière
   problème de licence qui contraint les concurrents fondés sur QEMU.
 - NLA/CredSSP d'abord — sans lui, aucun Windows moderne n'accepte la connexion.
 
+**Pourquoi ce lot n'avance pas ici.** Rien de tout cela n'est vérifiable dans un
+conteneur Linux : FreeRDP doit être croisé pour iOS/arm64, la passerelle C se lie
+à un `xcframework`, et la seule preuve qu'une session RDP fonctionne est une
+session RDP. Écrire ce code sans pouvoir l'exécuter produirait des centaines de
+lignes dont personne ne saurait dire si elles marchent — exactement ce que la
+discipline du reste de ce dépôt refuse. Les trois points ci-dessus sont donc
+tranchés à l'avance, et le code attend une machine Apple.
+
+Un quatrième point à trancher, apparu en écrivant le reste : **le décodage RDP
+ne doit pas repasser par les surfaces de SPICE.** Les deux protocoles partagent
+la forme (des rectangles, des codecs, un curseur) et rien de leur sémantique ;
+`SpiceSurfaces` porte déjà les ROP3, les masques et le cache d'images de SPICE,
+et y greffer RDP ferait un type qui a deux protocoles dans la tête. La couche
+commune, si elle existe un jour, est la cible de dessin, pas le décodeur.
+
 ## Lot 4 — agent hôte (fait en v1)
 
 Démon écrit et testé bout-à-bout contre le client de l'application : serveur
@@ -1704,6 +1719,26 @@ remarquer la divergence.
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
 - Raccourcis Siri et widgets « se connecter à … ».
+
+  Ces deux points demandent l'appareil, et pas seulement pour être testés : ce
+  sont des décisions d'interface qu'on ne prend pas au jugé. Ce qui peut être
+  tranché d'ici, et qui l'est :
+
+  - **Le pointeur indirect ne remplace pas le modèle tactile, il s'ajoute à
+    lui.** `UIPointerInteraction` donne un curseur système qui doit se
+    *superposer* au curseur distant, pas s'y substituer : deux curseurs qui
+    divergent valent mieux qu'un seul qui ment sur l'endroit où le clic
+    atterrira. UTM a fait le choix inverse et c'est là que ses signalements de
+    bugs se concentrent.
+  - **Multi-fenêtres : une session par scène, jamais partagée.** Deux fenêtres
+    sur la même machine distante voudraient dire deux clients sur une connexion
+    dont le protocole suppose un seul — les canaux SPICE portent un état par
+    connexion (caches d'images, fenêtre GLZ, jetons d'agent) qu'on ne peut pas
+    dédoubler sans mentir au serveur.
+  - **Les raccourcis Siri ne transportent pas de secret.** Un raccourci nomme
+    une machine enregistrée ; le jeton et l'empreinte restent dans le trousseau
+    et ne traversent jamais l'intention. Un raccourci exporté est un fichier que
+    l'on partage sans y penser.
 - Import depuis les fichiers `.vv` et `.rdp` : fait. `VirtViewerFile` lit le fichier que virt-manager, oVirt et Proxmox remettent quand on clique
   « console » — hôte, port, transport, et le ticket à usage unique que personne
   ne peut retaper. Du pur décodage, donc entièrement testé.
@@ -1775,6 +1810,39 @@ là : l'inertie confiée à `UIDynamicItem` plutôt qu'à une boucle maison, le 
 de 50 ms entre appui et relâchement, la matrice d'arbitrage des reconnaisseurs de
 gestes, et le principe même de rendre l'affectation des gestes configurable
 plutôt que de figer un jeu.
+
+## Les boucles chaudes des décodeurs — mesurées, puis laissées (fait)
+
+Dernier point de la liste d'optimisations : « UnsafePointer, intrinsics ARM ».
+La réponse honnête est que le travail structurel est déjà fait, et qu'il reste
+uniquement des gains dont la seule preuve serait un chronomètre.
+
+Ce qui a été vérifié, et comment :
+
+| affirmation | instrument | résultat |
+| --- | --- | --- |
+| la recopie arrière de LZ ne réalloue jamais | lecture : `reserveCapacity` à la taille finale exacte avant la boucle | aucune croissance possible |
+| aucune allocation par pixel | `Array(repeating:)` absent des cinq décodeurs chauds | zéro |
+| la trame décodée n'est pas recopiée | **identité de tampon** | même adresse à l'entrée et à la sortie |
+| le retournement bas-en-haut coûte une allocation | identité de tampon | une seule, de taille exacte |
+
+L'instrument compte autant que le résultat. Deux adresses sont égales ou elles
+ne le sont pas, et la réponse ne change pas parce qu'un autre processus s'est
+réveillé ; un chronomètre pris dans ce conteneur partagé ne dit rien. C'est
+pourquoi **aucune accélération n'est annoncée nulle part** dans ce travail :
+il n'y a pas de machine ici pour en mesurer une.
+
+`Tests/WisqRemoteTests/SpiceDecodeCopyTests.swift` tient ces faits. Ce sont des
+garde-fous, pas des observations : `rowsTopDown` réécrit en boucle
+inconditionnelle reste *correct*, passe tous les tests d'orientation, et alloue
+puis recopie une trame entière à chaque image qu'un serveur top-down envoie —
+c'est-à-dire presque toutes. Sabordé ainsi, deux tests tombent.
+
+Ce qui reste — pointeurs non sûrs, intrinsics NEON — demande un iPhone et
+`scripts/bench-apple.sh` pour être jugé. À écrire le jour où quelqu'un a
+l'appareil et le profil, pas avant : du code plus difficile à lire, adopté sur
+la foi d'un chiffre invérifiable, est une dette qu'on ne peut plus rembourser
+faute de savoir ce qu'elle a acheté.
 
 ## Le site — l'hydratation retirée (fait)
 
