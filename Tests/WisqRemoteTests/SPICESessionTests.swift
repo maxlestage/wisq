@@ -177,6 +177,88 @@ final class SPICESessionTests: XCTestCase {
     /// This is permission rather than a request: `dcc_compress_image` checks
     /// `SPICE_DISPLAY_CAP_LZ4_COMPRESSION` and falls through to plain LZ
     /// without it, whatever the server was configured to prefer. Which is why
+    /// The channel capabilities a link request actually carried.
+    ///
+    /// Reading them off the socket rather than off the array they were built
+    /// from: a capability is a *bit position*, so a list that reads correctly
+    /// can still set the wrong bit, and a set of words computed correctly can
+    /// still never be passed to `open`.
+    private func advertisedCaps(on socket: MemoryByteStream) async throws -> [UInt32] {
+        var reader = SpiceWire.Reader(await socket.written)
+        _ = try reader.bytes(SpiceWire.headerBytes)
+        _ = try reader.u32()                        // connection ID
+        _ = try reader.bytes(2)                     // channel, channel ID
+        let commonCount = Int(try reader.u32())
+        let channelCount = Int(try reader.u32())
+        _ = try reader.u32()                        // where the words start
+        for _ in 0..<commonCount { _ = try reader.u32() }
+        var caps: [UInt32] = []
+        for _ in 0..<channelCount { caps.append(try reader.u32()) }
+        return caps
+    }
+
+    /// **The audio links advertise volume, and no codec.**
+    ///
+    /// Asserted on the socket rather than on the constant, because the failure
+    /// this guards against is not a wrong list — it is a correct list that
+    /// never reaches `open`, which is what both audio channels had.
+    ///
+    /// Volume, because `snd_send_volume` and `snd_send_mute` open with
+    /// `if (!rcc->test_remote_cap(cap)) return false` and send nothing without
+    /// it. No codec, because `snd_desired_audio_mode` hands raw PCM to a client
+    /// that claims none and Opus to one that claims Opus — and wisq decodes
+    /// only the former, so the capability nobody advertises is the one keeping
+    /// the sound audible.
+    func testTheAudioLinksAdvertiseVolumeAndNoCodec() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + mainInit(sessionID: 7)
+                + channelsList(withPlayback: true, withRecord: true)
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let playbackSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let recordSocket = MemoryByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, playbackSocket, recordSocket])
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x"),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+
+        // `XCTUnwrap` rather than an assertion and then a subscript: a client
+        // that advertises nothing gives an empty array, and indexing it would
+        // crash the whole runner instead of failing one test — which hides
+        // every other result in the suite. Found by sabotage, doing exactly
+        // that.
+        let playback = try await advertisedCaps(on: playbackSocket)
+        let playbackWord = try XCTUnwrap(
+            playback.first, "le lien lecture n'annonçait rien du tout"
+        )
+        XCTAssertEqual(
+            playbackWord >> UInt32(SpicePlaybackWire.Capability.volume.rawValue) & 1, 1,
+            "sans VOLUME le serveur n'envoie ni volume ni sourdine"
+        )
+        XCTAssertEqual(
+            playbackWord >> UInt32(SpicePlaybackWire.Capability.opus.rawValue) & 1, 0,
+            "annoncer Opus rendrait l'audio muet"
+        )
+
+        let record = try await advertisedCaps(on: recordSocket)
+        let recordWord = try XCTUnwrap(
+            record.first, "le lien enregistrement n'annonçait rien du tout"
+        )
+        XCTAssertEqual(
+            recordWord >> UInt32(SpiceRecordWire.Capability.volume.rawValue) & 1, 1
+        )
+        XCTAssertEqual(
+            recordWord >> UInt32(SpiceRecordWire.Capability.opus.rawValue) & 1, 0,
+            "wisq n'encode que du PCM"
+        )
+    }
+
     /// it is worth asserting on the wire rather than trusting the array
     /// literal — the capability is a *bit position*, so a list that reads
     /// correctly can still set the wrong bit.

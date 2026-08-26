@@ -2022,3 +2022,46 @@ les autres fichiers de la même série. Ce qui l'a fait sauter, c'est d'avoir
 changé d'outil en cours de route pour un fichier : `cp` depuis la sauvegarde
 partout, sauf là. **Une procédure qu'on applique « en général » n'est pas une
 procédure.**
+
+## Une absence qui tient, une absence qui coûtait
+
+Troisième tour de l'audit « qu'est-ce que ce client promet, et tient-il chaque
+promesse ». Cette fois la réponse est mitigée, et les deux moitiés valent d'être
+notées ensemble parce qu'elles se ressemblent de l'extérieur.
+
+Seul le canal display annonçait des capacités. Sur les canaux audio, le jeu vide
+avait deux conséquences opposées :
+
+* **ne pas annoncer de codec est correct.** `snd_desired_audio_mode` rend `RAW` à
+  qui ne réclame pas Opus, et CELT n'est plus dans le chemin. L'annoncer
+  rendrait l'audio muet — wisq n'ayant pas de décodeur Opus. Même forme que le
+  `multiCodec` absent du display ;
+* **ne pas annoncer le volume coûtait.** `snd_send_volume` et `snd_send_mute`
+  refusent d'envoyer sans la capacité, donc quatre décodeurs testés n'étaient
+  jamais atteints par le fil.
+
+Deux absences, même apparence, verdicts inverses. Ce qui les sépare n'est pas
+dans le code du client : c'est ce que le serveur fait du silence. Pour le codec
+il retombe sur ce qu'on sait lire ; pour le volume il se tait.
+
+## Un test qui échoue mal cache tous les autres
+
+Le sabotage « calcule les capacités mais ne les passe jamais » — l'état exact
+d'avant cette tranche — a bien fait échouer mon test. Puis le processus a
+plaqué : `Fatal error: Index out of range`, et la suite s'est arrêtée là. Le
+compte affiché était de 4 tests au lieu de 803.
+
+La cause est dans mon test : `XCTAssertFalse(caps.isEmpty)` n'interrompt pas
+l'exécution, donc la ligne suivante indexait un tableau vide. Corrigé en
+`XCTUnwrap`, le même sabotage donne « 803 tests, 1 échec ».
+
+Ce qui m'a sauvé, c'est d'avoir regardé le nombre de tests exécutés et pas
+seulement le nombre d'échecs. « 3 échecs » et « 3 échecs sur une suite
+interrompue au quart » s'affichent presque pareil, et le second ne prouve rien
+sur les trois quarts restants. C'était déjà dans ma routine — *vérifier que le
+seuil « suite interrompue » suit la taille réelle de la suite* — et c'est la
+première fois que ça sert vraiment.
+
+Corollaire pour les tests eux-mêmes : **une assertion douce suivie d'un accès
+indexé est un plantage en puissance.** Dans une suite, un test qui plante n'est
+pas un test qui échoue — il emporte le verdict de tous les autres.

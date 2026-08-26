@@ -61,12 +61,7 @@ enum SpiceDisplayClient {
 
     /// The capability words a client sends for a set of capabilities.
     static func capabilityWords(_ capabilities: [Capability]) -> [UInt32] {
-        guard let highest = capabilities.map(\.rawValue).max() else { return [] }
-        var words = [UInt32](repeating: 0, count: highest / 32 + 1)
-        for capability in capabilities {
-            words[capability.rawValue / 32] |= 1 << UInt32(capability.rawValue % 32)
-        }
-        return words
+        SpiceWire.capabilityWords(capabilities.map(\.rawValue))
     }
 
     // MARK: - Messages

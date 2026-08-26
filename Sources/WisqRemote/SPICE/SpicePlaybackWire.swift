@@ -18,6 +18,57 @@ enum SpicePlaybackWire {
         case latency = 107
     }
 
+    /// What this client tells a playback server it can do.
+    ///
+    /// **The numbering is not shared with the record channel**, which is the
+    /// trap worth writing down: `VOLUME` is bit 1 in both, but `OPUS` is bit 3
+    /// here and bit 2 there, because the record enum has no `LATENCY`. Using
+    /// one channel's constant on the other advertises a different capability,
+    /// silently and in whichever direction the transposition went.
+    enum Capability: Int, Equatable, Sendable {
+        case celt = 0
+        case volume = 1
+        case latency = 2
+        case opus = 3
+    }
+
+    /// The bitmap a client sends for a set of capabilities.
+    static func capabilityWords(_ capabilities: [Capability]) -> [UInt32] {
+        SpiceWire.capabilityWords(capabilities.map(\.rawValue))
+    }
+
+    /// **What wisq advertises, and why the codec is not in it.**
+    ///
+    /// `VOLUME` because the decoders exist and are tested, and because without
+    /// it the server sends nothing: `snd_send_volume` and `snd_send_mute` both
+    /// open with `if (!rcc->test_remote_cap(cap)) return false`. Not
+    /// advertising it did not degrade anything — SPICE's volume is the guest's
+    /// own mixer setting and wisq deliberately does not apply it — it simply
+    /// meant four tested readers that the wire would never reach.
+    ///
+    /// **`OPUS` is absent on purpose, and adding it would silence the sound.**
+    /// `snd_desired_audio_mode` is the whole decision:
+    ///
+    /// ```c
+    /// if (!playback_compression) return SPICE_AUDIO_DATA_MODE_RAW;
+    /// if (client_can_opus && snd_codec_is_capable(OPUS, frequency))
+    ///     return SPICE_AUDIO_DATA_MODE_OPUS;
+    /// return SPICE_AUDIO_DATA_MODE_RAW;
+    /// ```
+    ///
+    /// `client_can_opus` is `test_remote_cap(SPICE_PLAYBACK_CAP_OPUS)`, and
+    /// CELT is not even in the modern path. So a client that says nothing about
+    /// codecs is handed raw PCM — exactly what wisq decodes. Announcing OPUS
+    /// would make the server encode Opus and wisq play nothing at all. This is
+    /// the same shape as the display channel's absent `multiCodec`: an absence
+    /// that looks like an oversight and is load-bearing.
+    ///
+    /// `LATENCY` is not advertised either, and that one is a *don't know*
+    /// rather than a decision: no send of `SPICE_MSG_PLAYBACK_LATENCY` appears
+    /// in the server sources vendored for this work, so what advertising it
+    /// would buy is unestablished. spice-gtk does advertise it.
+    static let advertised: [Capability] = [.volume]
+
     /// How the samples in a `DATA` message are encoded.
     ///
     /// **Only `raw` is decoded**, and the others are named rather than lumped

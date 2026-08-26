@@ -254,6 +254,21 @@ enum SpiceWire {
         )
     }
 
+    /// The capability bitmap a client sends at link time, from a set of bit
+    /// positions.
+    ///
+    /// **A capability's number is a bit index, not a value**: capability 6 is
+    /// bit 6 of word 0, and capability 33 would be bit 1 of word 1. Every
+    /// channel has its own numbering — the audio channels do not even agree
+    /// with each other — so this takes raw indices and leaves each channel to
+    /// own its enum.
+    static func capabilityWords(_ bits: [Int]) -> [UInt32] {
+        guard let highest = bits.max() else { return [] }
+        var words = [UInt32](repeating: 0, count: highest / 32 + 1)
+        for bit in bits { words[bit / 32] |= 1 << UInt32(bit % 32) }
+        return words
+    }
+
     // MARK: - Messages
 
     /// The 18-byte header in front of every message once the link is up.
