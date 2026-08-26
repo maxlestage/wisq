@@ -40,9 +40,19 @@ public final class MachineLibraryModel {
         }
     }
 
+    /// Reloads the list, and says so when the file held entries this build
+    /// could not read.
+    ///
+    /// The banner already existed for `loadError`; what it never had was
+    /// anything to say about this case, because there was no such case — one
+    /// unreadable entry used to make the whole load throw and the list go
+    /// empty. Now the readable machines are shown and the count of the others
+    /// is stated, which is the difference between a loss and a silent loss.
+    /// The entries themselves are kept in the file; see `MachineStore`.
     public func reload() {
         do {
-            machines = try store.load().sorted { lhs, rhs in
+            let outcome = try store.loadReportingUnreadable()
+            machines = outcome.machines.sorted { lhs, rhs in
                 switch (lhs.lastConnectedAt, rhs.lastConnectedAt) {
                 case let (l?, r?): return l > r
                 case (_?, nil): return true
@@ -50,10 +60,22 @@ public final class MachineLibraryModel {
                 case (nil, nil): return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
                 }
             }
-            loadError = nil
+            loadError = Self.unreadableMessage(outcome.unreadable)
         } catch {
             machines = []
             loadError = error.localizedDescription
+        }
+    }
+
+    /// Nil when there is nothing to say — so a clean load still clears the
+    /// banner, which is what it used to do unconditionally.
+    static func unreadableMessage(_ count: Int) -> String? {
+        switch count {
+        case 0: return nil
+        case 1: return "Une machine n'a pas pu être lue et n'apparaît pas ici. Elle reste enregistrée."
+        default:
+            return "\(count) machines n'ont pas pu être lues et n'apparaissent pas ici. "
+                + "Elles restent enregistrées."
         }
     }
 
