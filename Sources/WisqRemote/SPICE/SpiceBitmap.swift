@@ -64,13 +64,29 @@ enum SpiceBitmap {
         // rows would overlap, which is not a picture — it is a message that
         // disagrees with itself.
         let stride = Int(bitmap.stride)
-        guard stride >= minimumRow, data.count >= stride * height else {
+        // `stride` and `height` are both `UInt32` off the wire, so their
+        // product reaches 1.8 × 10^19 and Swift traps on it. Reaching that
+        // needs a *small* width — a large one makes `minimumRow` exceed
+        // anything a `UInt32` stride can hold, and the clause before this one
+        // short-circuits — so width 1 with stride and height at `0xFFFFFFFF`
+        // is the shape that got here.
+        //
+        // A product that does not fit is `truncated`, which is what a product
+        // that fits but exceeds the data already is: no array is 10^19 bytes
+        // long. Same answer, reached without dying on the way.
+        let (needed, tooBig) = stride.multipliedReportingOverflow(by: height)
+        guard stride >= minimumRow, !tooBig, data.count >= needed else {
             throw Failure.truncated
         }
         if needsPalette(bitmap.format), bitmap.palette == nil {
             throw Failure.missingPalette
         }
 
+        // Safe without a check of its own, and worth saying why rather than
+        // adding a redundant one: the guard above passed, so
+        // `stride × height ≤ data.count`, and `stride ≥ minimumRow ≥ width`
+        // for every format here. So `width × height ≤ data.count`, and the
+        // output is four times a number bounded by an array that exists.
         var out = [UInt8](repeating: 0, count: width * height * 4)
         for row in 0..<height {
             // Bottom-up is the default, so the row read here is written to the
