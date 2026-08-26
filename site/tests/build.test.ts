@@ -65,6 +65,21 @@ describe("built output", () => {
     }
   });
 
+  /// The stronger claim, and the one that keeps the budget below honest: React
+  /// is not in the shipped script at all.
+  ///
+  /// The pages are pre-rendered, so React's only remaining job was hydrating
+  /// four behaviours — a redirect, a remembered language, the theme switch, the
+  /// install banner — for 65 794 bytes gzipped. They are plain DOM code now.
+  /// This fails the moment something imports a component into `main.ts`, which
+  /// is the one mistake that would silently put all of it back.
+  test("the shipped script contains no React", () => {
+    const script = read(scriptFile());
+    for (const marker of ["createElement", "useState", "react", "React"]) {
+      expect(script.includes(marker), `le bundle contient « ${marker} »`).toBe(false);
+    }
+  });
+
   /// Not a style rule: a phone on a slow link pays for every one of these
   /// bytes before the page becomes interactive. The ceiling sits a little above
   /// what the bundle weighs today, so ordinary work does not trip it and a
@@ -73,8 +88,14 @@ describe("built output", () => {
   test("the script stays within its budget", () => {
     const bytes = readFileSync(join(dist, scriptFile()));
     const gzipped = Bun.gzipSync(bytes).byteLength;
-    expect(bytes.byteLength, "script brut").toBeLessThan(240_000);
-    expect(gzipped, "script gzippé").toBeLessThan(80_000);
+    // The ceiling was 240 000 raw and 80 000 gzipped, which is what a hydrating
+    // React bundle needs. With hydration gone the script is 2 350 raw and 1 062
+    // gzipped, so a ceiling anywhere near the old one would wave through the
+    // regression it exists to catch: re-importing a component into `main.ts`
+    // costs sixty-four kilobytes and would have passed. These sit a little above
+    // today's figures — room for ordinary work, none for React.
+    expect(bytes.byteLength, "script brut").toBeLessThan(8_000);
+    expect(gzipped, "script gzippé").toBeLessThan(3_000);
   });
 
   /// The point of moving the documents into the pages: the shared script is the
@@ -103,37 +124,47 @@ describe("built output", () => {
     }
   });
 
-  /// Each written page carries its own document, and it survives the round
-  /// trip: hydration reads exactly what the build rendered, or it renders
-  /// something else over markup that was already right.
-  test("every written page carries its own document, and it parses", () => {
+  /// The two tests that stood here guarded the JSON copy of each document,
+  /// embedded beside the markup because hydration had to read exactly what the
+  /// build rendered — one that it round-tripped, one that no `<` in the prose
+  /// could end its script element early. Nothing hydrates, so the payload has
+  /// no reader and is gone, and with it both hazards.
+  ///
+  /// What replaces them is the claim the payload existed to support, checked
+  /// against the markup that now carries it alone: the words are in the page.
+  /// Deleting the two tests without this one would have left the prose
+  /// unguarded on the very change that moved it.
+  test("every written page carries its prose in its markup", () => {
     for (const { route, lang, file } of BUILT) {
+      if (route.id === "home") continue;
       const html = read(file);
-      const payload = html.match(
-        /<script type="application\/json" id="doc">([\s\S]*?)<\/script>/,
-      )?.[1];
-      if (route.id === "home") {
-        expect(payload, "l'accueil n'est pas un document").toBeUndefined();
-        continue;
-      }
-      expect(payload, `${file} : document absent`).toBeDefined();
-      expect(JSON.parse(payload!)).toEqual(
-        PAGES[lang][route.id as keyof (typeof PAGES)["en"]],
-      );
+      const doc = PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
+      const sentence = doc.blocks.find(
+        (block): block is { kind: "p"; text: string } =>
+          block.kind === "p" && block.text.length > 40,
+      )?.text;
+      if (!sentence) continue;
+      // The prose goes through React's escaper, which turns `'` into `&#x27;`
+      // among others — and French prose is full of apostrophes, so the raw
+      // sentence is not in the file verbatim. The longest run that contains
+      // nothing an escaper touches is, and it is still long enough that no
+      // other page could contain it by accident.
+      const plain = sentence
+        .split(/[<>&"']/)
+        .reduce((longest, part) => (part.length > longest.length ? part : longest), "");
+      if (plain.length < 20) continue;
+      expect(html.includes(plain), `${file} : la prose n'est pas dans le balisage`).toBe(true);
     }
   });
 
-  /// The payload sits inside a script element, so a `<` in the prose could end
-  /// it early and put the rest of the document into the page as markup. Both
-  /// characters an HTML parser acts on are escaped, and `JSON.parse` reads them
-  /// back unchanged — which the round-trip test above already proves.
-  test("nothing in a document can close its own script element", () => {
-    for (const { route, file } of BUILT) {
-      if (route.id === "home") continue;
-      const payload = read(file).match(
-        /<script type="application\/json" id="doc">([\s\S]*?)<\/script>/,
-      )?.[1];
-      expect(payload!.includes("<"), `${file} : un « < » brut dans le document`).toBe(false);
+  /// And the payload is really gone, on every page, rather than gone from the
+  /// one page someone happened to open.
+  test("no page ships a document payload any more", () => {
+    for (const { file } of BUILT) {
+      expect(
+        read(file).includes('<script type="application/json" id="doc">'),
+        `${file} : le document JSON est revenu`,
+      ).toBe(false);
     }
   });
 

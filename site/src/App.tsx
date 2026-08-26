@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import {
   AUTHOR,
   AUTHOR_URL,
@@ -13,40 +12,18 @@ import { Logo } from "./components/Logo";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { LANGS, ROUTES, routeById, routeHref, type Page, type RouteId } from "./routes";
 
-const LANG_KEY = "wisq.lang";
-
 /// The language is the address, not a setting.
 ///
 /// Every page exists twice — `docs/` and `fr/docs/` — each pre-rendered in its
 /// own language, so the first paint is already right, a shared link opens in
-/// the language it was written in, and a search engine can index both. The one
-/// thing local storage still holds is whether the reader has ever chosen, and
-/// it is used for exactly one decision: see `useHomeLanguage` below.
-function rememberChoice(lang: Lang) {
-  try {
-    localStorage.setItem(LANG_KEY, lang);
-  } catch {
-    /* the redirect below simply keeps offering; nothing else depends on it */
-  }
-}
-
-/// Sends a French-speaking reader from the English home page to the French one.
+/// the language it was written in, and a search engine can index both.
 ///
-/// Only from the home page, and only when they have never chosen: a redirect
-/// on every page would break a deep link someone deliberately shared in
-/// English, which is worse than a reader clicking FR once.
-function useHomeLanguage(page: Page) {
-  useEffect(() => {
-    if (page.route.id !== "home" || page.lang !== "en") return;
-    try {
-      if (localStorage.getItem(LANG_KEY)) return;
-    } catch {
-      /* no storage: fall through and read the browser instead */
-    }
-    if (!navigator.language?.toLowerCase().startsWith("fr")) return;
-    location.replace(new URL("./fr/", location.href).href);
-  }, [page.route.id, page.lang]);
-}
+/// Two behaviours used to live here, as an effect and an `onClick`: remember
+/// that a reader has chosen a language, and send a French-speaking reader from
+/// the English home page to the French one when they never have. Both now live
+/// in `main.ts`, attached to this markup rather than compiled into it — see
+/// `LANG_KEY` there. The links themselves never needed React: each one is a
+/// real address, and following it has always worked with no JavaScript at all.
 
 /// The document a written page shows, passed in rather than looked up.
 ///
@@ -68,8 +45,6 @@ export function App({
   const page: Page = { route: routeById(routeId), lang };
   const route = page.route;
   const copy = allCopy[lang];
-
-  useHomeLanguage(page);
 
   return (
     <>
@@ -93,7 +68,6 @@ export function App({
                 href={routeHref(page, route, code)}
                 hrefLang={code}
                 aria-current={code === lang ? "true" : undefined}
-                onClick={() => rememberChoice(code)}
               >
                 {code.toUpperCase()}
               </a>

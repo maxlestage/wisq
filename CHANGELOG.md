@@ -7,6 +7,39 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **The site stopped shipping React.** Its pages were already pre-rendered, so
+  React's only remaining job in a browser was hydrating four behaviours: a
+  redirect on the English home page, the memory of a language choice, the theme
+  switch, and the install banner. Measured, that cost **65 794 bytes gzipped**
+  on every page. Written against the DOM instead, the same four cost **1 062** —
+  a 98% cut in JavaScript, on a project whose own roadmap says the network is
+  the budget.
+
+  React stays as the authoring language and the pre-renderer; only the delivery
+  changed. What is lost is the ability to add an interactive component by
+  writing JSX: anything genuinely interactive now belongs in `src/main.ts` as
+  DOM code, or behind a dynamic import only the pages needing it pay for. That
+  is written into the site's README rather than left to be discovered.
+
+  Two guards keep it: the budget in `tests/build.test.ts` drops from 240 000 raw
+  and 80 000 gzipped to 8 000 and 3 000, and a new test fails if React appears in
+  the shipped script at all. A ceiling sized for a hydrating bundle would have
+  waved through the one regression that matters — importing a component back
+  into `main.ts` — so the number had to move with the code.
+
+  `tests/behaviour.test.ts` is the other half, and the more important one: it
+  loads the real built page, runs the real shipped module against it and presses
+  the buttons. Every test above checks the bundle's *size*; a script that weighs
+  nothing and does nothing would pass all of them. Each of the four behaviours
+  was then broken on purpose, nine ways, and the tests caught all nine.
+
+- **A written page no longer carries its text twice.** Each one embedded its
+  document as JSON beside the markup because hydration had to read exactly what
+  the build rendered. Nothing hydrates, so the payload has no reader. It was
+  cheap — the two copies sat inside gzip's window — and measuring says so:
+  5 472 bytes gzipped across all twenty pages, about 300 per page.
+
 ### Added
 - **The agent is published for four architectures instead of two.** The release
   built Linux x86_64 and macOS arm64; `scripts/install.sh` asked for exactly

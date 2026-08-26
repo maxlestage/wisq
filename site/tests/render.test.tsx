@@ -114,13 +114,30 @@ describe("page rendering", () => {
     }
   });
 
-  /// The install banner decides what to show from the browser, so rendering it
-  /// on the server would hand hydration markup that cannot match.
-  test("the install prompt renders nothing on the server", () => {
+  /// The install banner used to render nothing at all: hydration would have had
+  /// to produce markup matching whatever the server wrote, and what to write
+  /// depends on the browser. Nothing hydrates now, so both wordings ship in the
+  /// page and a script reveals one — which keeps every word of the site in the
+  /// content files instead of inside the script.
+  ///
+  /// What has to hold instead is that **a reader who runs no JavaScript never
+  /// sees it**: the banner, both wordings and the install button all start
+  /// hidden, and only the dismiss button is left visible inside a hidden
+  /// parent. Rendering the wrong one unhidden would put "Tap the Share button"
+  /// under an Android reader, so this walks all three.
+  test("nothing in the install banner is visible until a script says so", () => {
     for (const lang of ["en", "fr"] as Lang[]) {
       const html = renderToString(<App lang={lang} />);
-      expect(html).not.toContain("install-banner");
-      expect(html).not.toContain(copy[lang].pwa.iosTitle);
+      // The banner is there — otherwise the script has nothing to reveal.
+      expect(html, `${lang} : la bannière est absente`).toContain("install-banner");
+      for (const marker of [
+        '<aside class="install-banner" role="complementary" hidden=""',
+        '<div data-install-variant="prompt" hidden=""',
+        '<div data-install-variant="ios" hidden=""',
+        'data-install-accept="true" hidden=""',
+      ]) {
+        expect(html.includes(marker), `${lang} : « ${marker} » n'est pas masqué`).toBe(true);
+      }
     }
   });
 });
