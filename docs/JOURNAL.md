@@ -4186,3 +4186,44 @@ par un accès direct ne fait pas échouer un test, il tue le processus.
 | les quatre flux Tight n'en font qu'un | 13 |
 | `resetTight` vise toujours le flux 0 | 1 |
 | le bornage remplacé par un accès direct | **plantage**, signal 4 |
+
+## La dernière ligne avant la mémoire, et quatre gardes sur six sans témoin
+
+`Framebuffer.write` le dit en toutes lettres : « Out-of-bounds rows and columns
+are clipped rather than trapping: **a misbehaving server must not crash the
+app.** » Six gardes portent cette phrase, dans `write` et dans `copy`. Sondées
+une par une :
+
+| garde | avant |
+| --- | --- |
+| `write`, taille de la charge utile | **rien ne rougit** |
+| `write`, bornes de ligne | plantage du runner |
+| `write`, rognage de colonne | plantage du runner |
+| `write`, `rect.x >= 0` | **rien ne rougit** |
+| `copy`, bornes de la source | **rien ne rougit** |
+| `copy`, bornes de la destination | **rien ne rougit** |
+
+Quatre sur six ne tenaient à rien du tout. Les deux autres ne tenaient qu'au
+fait que leur absence tue le processus de test — une couverture par accident :
+aucun test n'énonçait le rognage, donc un remaniement qui en *changerait* la
+sémantique au lieu de la supprimer serait passé sans bruit.
+
+`Framebuffer` est la destination de **tous** les décodeurs, et chacun tient ses
+dimensions du fil.
+
+### Ce que « rouge » veut dire ici, exactement
+
+Après la tranche, les six sabordages tuent le processus. Ce n'est pas la même
+chose qu'un test qui échoue proprement, et il faut le dire : une garde qui
+empêche un piège ne peut pas échouer autrement qu'en piégeant. Ce que les tests
+apportent, c'est de **l'atteindre** — la CI passe de « aucun signal » à « le job
+échoue », ce qui est toute la différence pour quatre d'entre elles.
+
+### Les deux bords, encore
+
+La moitié du fichier dit ce qui **est** écrit. Un rectangle entièrement dedans
+s'écrit entièrement ; une charge utile exactement de la bonne taille passe ; des
+lignes qui débordent par le bas laissent celles qui tiennent. Ce dernier point
+n'est pas un détail : un serveur qui redimensionne son bureau envoie des
+rectangles à cheval sur l'ancien bord, et refuser l'écriture entière donnerait
+une bande noire au lieu d'une bande sûre.
