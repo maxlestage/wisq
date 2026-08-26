@@ -69,6 +69,42 @@ public enum Validation {
         return port
     }
 
+    /// The identifier of a VM on a host agent, or a refusal.
+    ///
+    /// The rule is not invented here. `crates/wisq-agent/src/service.rs` has
+    /// refused anything else since the slice that closed the argument-injection
+    /// hole — letters, digits, dot, dash and underscore, never a leading dash,
+    /// never longer than 255 — and answers `404 identifiant de VM invalide`.
+    ///
+    /// It was enforced there and written **nowhere**: not in
+    /// `docs/AGENT-PROTOCOL.md`, which is the contract between the two
+    /// implementations, and not on the phone, which let you save a machine the
+    /// agent would refuse for as long as it existed and only said so when you
+    /// tried to connect. The daemon fails closed, so this was never a hole; it
+    /// was a rule one side kept alone.
+    ///
+    /// `VMIdentifierTests` and `service.rs` run the same list of cases, so the
+    /// two sides cannot drift into accepting different things.
+    public static func validatedVMIdentifier(_ raw: String) throws -> String {
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // `.` and `..` are refused although every character in them is allowed:
+        // they are path segments, not names. Neither side refused them until
+        // the two ran the same list of cases, and both should have.
+        guard !id.isEmpty, id.utf8.count <= 255, !id.hasPrefix("-"), id != ".", id != ".." else {
+            throw WisqError.agentFailure("identifiant de VM invalide : \(raw)")
+        }
+        let allowed = id.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)  // 0-9
+                || (byte >= 0x41 && byte <= 0x5A)  // A-Z
+                || (byte >= 0x61 && byte <= 0x7A)  // a-z
+                || byte == 0x2E || byte == 0x2D || byte == 0x5F  // . - _
+        }
+        guard allowed else {
+            throw WisqError.agentFailure("identifiant de VM invalide : \(raw)")
+        }
+        return id
+    }
+
     /// Parses `host`, `host:port` and `[::1]:port` into their parts.
     public static func splitHostPort(_ raw: String) -> (host: String, port: Int?) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

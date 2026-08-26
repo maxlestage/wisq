@@ -54,16 +54,29 @@ public struct AgentClient: Sendable {
         try await send(path: "vms", method: "GET", body: nil)
     }
 
+    /// The identifier goes into a URL path, so it is checked here too and not
+    /// only where the user typed it.
+    ///
+    /// `appendingPathComponent` escapes `?` and `#` but passes `/` and `..`
+    /// straight through, and `URLSession` resolves `..` before sending — so an
+    /// identifier could aim a request outside `/v1/vms/` entirely. The daemon
+    /// answers 404 to all of it, which is why this was never a hole; what the
+    /// check buys is that the client cannot send a request the other side is
+    /// certain to refuse, including one built from a list a hostile agent
+    /// handed it.
     public func start(vm id: String) async throws -> AgentVM {
-        try await send(path: "vms/\(id)/start", method: "POST", body: nil)
+        let identifier = try Validation.validatedVMIdentifier(id)
+        return try await send(path: "vms/\(identifier)/start", method: "POST", body: nil)
     }
 
     public func stop(vm id: String, force: Bool = false) async throws -> AgentVM {
-        try await send(path: "vms/\(id)/stop", method: "POST", body: ["force": force])
+        let identifier = try Validation.validatedVMIdentifier(id)
+        return try await send(path: "vms/\(identifier)/stop", method: "POST", body: ["force": force])
     }
 
     public func status(vm id: String) async throws -> AgentVM {
-        try await send(path: "vms/\(id)", method: "GET", body: nil)
+        let identifier = try Validation.validatedVMIdentifier(id)
+        return try await send(path: "vms/\(identifier)", method: "GET", body: nil)
     }
 
     /// Waits for a VM to report `.running` and expose a console port.

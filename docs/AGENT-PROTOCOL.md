@@ -77,6 +77,29 @@ silencieux vers le clair. Le jeton reste obligatoire dans tous les cas.
 
 `consolePort` est absent tant que la VM n'est pas démarrée.
 
+### Ce que `{id}` peut contenir
+
+Le démon **refuse** tout identifiant qui n'est pas fait de lettres ASCII, de
+chiffres, de points, de tirets ou de soulignés, qui commence par un tiret, qui
+est vide, ou qui dépasse 255 octets. La réponse est alors
+`404 identifiant de VM invalide`, sur les trois routes ci-dessous.
+
+Ce n'est pas une coquetterie et ce n'est pas une liste de caractères qui ont
+l'air louches. `VirshBackend` passe l'identifiant en argv — jamais par un shell
+— donc un `; rm -rf /` n'est qu'un argument que `virsh` ne trouvera pas. Mais un
+argument **qui commence par un tiret** n'est pas une donnée pour un analyseur
+d'options : `virsh start --version` n'est pas une demande de démarrer un domaine
+nommé `--version`. La liste blanche est là pour ça, et elle est blanche plutôt
+que noire parce que deviner ce que l'analyseur d'un autre programme n'aime pas
+est un pari qui vieillit mal.
+
+La règle est écrite ici parce que ce paragraphe est le contrat entre les deux
+implémentations. Elle a longtemps été appliquée par le seul démon : le
+téléphone laissait enregistrer une machine que l'agent refuserait toujours, et
+ne le disait qu'à la première tentative de connexion.
+`Validation.validatedVMIdentifier` la tient côté Swift, et les deux suites
+jouent la même liste de cas.
+
 ### `GET /v1/vms/{id}`
 
 Le même objet, pour une seule VM. C'est la route que le client interroge en
