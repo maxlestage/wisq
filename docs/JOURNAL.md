@@ -2861,3 +2861,67 @@ Cas 3 pour la garde, cas 4 pour l'allocation. Le détail qui décide est un
 `bitPattern` : le même code lu sur des `UInt32` déborderait. **Deux sites de
 forme identique, un sûr et un pas, et ce qui les sépare est le type de la
 lecture, pas la forme de l'expression.** Chercher la forme n'aurait pas suffi.
+
+## Un danger décrit dans un fichier, laissé nu dans celui d'à côté
+
+`SpiceAgentChannel` porte, sur le commentaire de son drapeau `draining`, une
+description exacte d'un défaut :
+
+> il est lu pour construire un message et incrémenté après le retour de
+> l'écriture, donc un second drain entrant à ce point de suspension estampille
+> le numéro que le premier utilise déjà, et un serveur qui acquitte par numéro
+> s'entend dire deux choses différentes sur le même.
+
+Le fichier s'en protège. Le **même code, sans garde**, était dans
+`SPICESession.send(_:)` — appelé par l'interface à chaque touche et à chaque
+geste — et dans `sendMicrophone`, appelé à chaque tampon audio.
+
+Mesuré, deux touches concurrentes : **`[1, 1]`**. Deux messages estampillés 1,
+et le 2 jamais utilisé.
+
+Ce n'est pas la première fois cette nuit qu'un danger compris à un endroit
+reste ouvert deux fichiers plus loin. Le motif mérite son nom : **écrire le
+commentaire ne propage pas la garde.** Une prose juste sur un hasard réel donne
+l'impression que la question est traitée, y compris à celui qui l'a écrite.
+
+### Forcer l'entrelacement plutôt que l'espérer
+
+L'instrument est un `ByteStream` dont l'écriture se gare jusqu'à ce que le test
+la libère. Rien n'attend une durée : le second `send` est *garanti* de tourner
+pendant que le premier est suspendu, parce que le premier ne peut pas avancer.
+Un test qui lancerait deux tâches en espérant qu'elles se croisent serait vert
+la plupart du temps, ce qui est la pire des couvertures.
+
+Le compteur `parked` du double sert de précondition observable : le test attend
+qu'une écriture soit garée avant de libérer, donc il sait qu'il a mesuré le
+cas visé et non un enchaînement séquentiel.
+
+### Le correctif n'est pas « réserver le numéro avant l'await »
+
+C'était ma première idée et elle est insuffisante. Elle supprime le doublon et
+laisse deux autres défauts : les messages d'un même événement peuvent être
+séparés — un cran de molette est **trois** messages, et le commentaire de
+`send` dit lui-même ce qu'un release perdu fait croire à l'invité — et les
+numéros peuvent arriver dans le désordre, ce qui pour un serveur qui acquitte
+par numéro n'est pas mieux qu'un trou.
+
+Ce qui tient les trois est la forme du fichier d'à côté : estampiller et mettre
+en file en **un seul pas synchrone**, puis un unique drainer. Les sabordages le
+montrent séparément — rendre le code à sa forme d'origine fait tomber deux
+tests, drainer par message au lieu de par événement n'en fait tomber qu'un,
+celui de l'adjacence.
+
+### Le sabordage qui a survécu, encore, et au même endroit du raisonnement
+
+`recordSerial` remplacé par la constante 1 : **suite entière verte**. J'avais
+modifié ce chemin sans qu'aucun test ne puisse voir la modification casser.
+
+Cas 2. Le test du micro existait, lisait l'en-tête de chaque message, vérifiait
+le type et la charge utile — et jamais le numéro de séquence. Quatre
+assertions d'une ligne ont suffi ; le sabordage mord maintenant.
+
+La règle que j'en tire, et c'est la deuxième fois de la journée : **avant de
+livrer une modification, saborder la ligne modifiée**, pas seulement celle
+qu'on croit être le sujet de la tranche. Le sujet était le canal des entrées ;
+le canal record a été corrigé au passage, et « au passage » est exactement là
+où une modification part sans filet.

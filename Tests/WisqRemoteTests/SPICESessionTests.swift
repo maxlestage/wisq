@@ -128,6 +128,190 @@ final class SPICESessionTests: XCTestCase {
         }
     }
 
+    /// Two input events that overlap must not take the same serial.
+    ///
+    /// The counter used to be read to build the message and incremented after
+    /// the write returned. An actor is reentrant at its suspension points, so a
+    /// second `send` entering in between took the number the first was already
+    /// using. Measured before the fix, with exactly this test: **`[1, 1]`** —
+    /// two messages stamped 1, and 2 never used. `SpiceAgentChannel` describes
+    /// this hazard in the comment on its `draining` flag and guards against it;
+    /// the input channel did not.
+    ///
+    /// The overlap is forced rather than raced for: the socket parks its writes
+    /// until this test releases them, so the second `send` is guaranteed to run
+    /// while the first is suspended. Nothing here waits on a duration.
+    func testTwoOverlappingEventsDoNotShareASerial() async throws {
+        let (session, inputSocket) = try await sessionWithGatedInput()
+        await inputSocket.gate()
+
+        async let first: Void = session.send(.key(keysym: 0x41, down: true))
+        async let second: Void = session.send(.key(keysym: 0x42, down: true))
+        await inputSocket.waitForAPark()
+        await inputSocket.open()
+        _ = await (first, second)
+        await settle(session)
+
+        let serials = await inputSocket.serials()
+        XCTAssertEqual(serials, [1, 2], "numéro dupliqué ou trou")
+        await session.stop()
+    }
+
+    /// A wheel notch is a press and a release, and the doc comment on `send`
+    /// says what a lost release does to the guest: it believes a button is
+    /// held. Queueing a whole event in one synchronous step is what keeps the
+    /// pair together when another event arrives mid-flight.
+    func testAWheelNotchIsNotSplitByAConcurrentEvent() async throws {
+        let (session, inputSocket) = try await sessionWithGatedInput()
+        let scroll = InputEvent.pointer(x: 4, y: 4, buttons: .scrollUp)
+        let notch = SpiceInputs.messages(for: scroll)
+        // Position, press, release: the press and its release are what must not
+        // be parted, and the position rides with them.
+        XCTAssertEqual(notch.count, 3, "un cran de molette est trois messages")
+
+        await inputSocket.gate()
+        async let wheel: Void = session.send(scroll)
+        async let key: Void = session.send(.key(keysym: 0x41, down: true))
+        await inputSocket.waitForAPark()
+        await inputSocket.open()
+        _ = await (wheel, key)
+        await settle(session)
+
+        let types = await inputSocket.types()
+        XCTAssertEqual(types.count, 4, "trois pour le cran, un pour la touche")
+        XCTAssertEqual(
+            Array(types.prefix(3)), notch.map(\.type),
+            "les trois messages du cran doivent rester adjacents : \(types)"
+        )
+        await session.stop()
+    }
+
+    /// The other edge. Ordinary sequential sends must still number 1, 2, 3 —
+    /// a queue that dropped or reordered them would trade one defect for
+    /// another, and the counter exists so a server can acknowledge by it.
+    func testSequentialEventsStillNumberWithoutHoles() async throws {
+        let (session, inputSocket) = try await sessionWithGatedInput()
+        for keysym in UInt32(0x41)...UInt32(0x43) {
+            await session.send(.key(keysym: keysym, down: true))
+        }
+        await settle(session)
+
+        let serials = await inputSocket.serials()
+        XCTAssertEqual(serials, [1, 2, 3])
+        await session.stop()
+    }
+
+    /// A session brought up to `.ready` with an inputs channel whose socket
+    /// this test controls.
+    private func sessionWithGatedInput() async throws -> (SPICESession, GatedByteStream) {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 1) + channelsList(withInputs: true)
+        )
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
+        )
+        let inputSocket = GatedByteStream(inbound: linkReply() + Data(SpiceWire.u32(0)))
+        let sockets = Sockets([mainSocket, displaySocket, inputSocket])
+
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x"),
+            streamProvider: sockets.provider,
+            encryptTicket: ticket
+        )
+        await session.start()
+        _ = await waitFor(session) { if case .ready = $0 { return true } else { return false } }
+        return (session, inputSocket)
+    }
+
+    /// Lets the drainer finish what it has queued. A `send` returns as soon as
+    /// its message is on the queue, so the last write can still be in flight.
+    private func settle(_ session: SPICESession) async {
+        for _ in 0..<200 where await session.hasQueuedInput {
+            await Task.yield()
+        }
+    }
+
+    /// A stream that can be told to park its writes until the test releases
+    /// them. Timing is not left to chance: nothing here waits on a duration.
+    private actor GatedByteStream: ByteStream {
+        private var inbound: Data
+        private(set) var written = Data()
+        private(set) var chunks: [Data] = []
+        private var gated = false
+        private(set) var parked = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        init(inbound: Data = Data()) { self.inbound = inbound }
+
+        func gate() { gated = true }
+
+        /// Returns once at least one write is parked, so a caller can be sure
+        /// the other task ran while this one was suspended.
+        func waitForAPark() async {
+            while parked == 0 { await Task.yield() }
+        }
+
+        func open() {
+            gated = false
+            let resuming = waiters
+            waiters = []
+            for waiter in resuming { waiter.resume() }
+        }
+
+        func read(exactly count: Int) async throws -> Data {
+            guard count > 0 else { return Data() }
+            guard inbound.count >= count else { throw WisqError.connectionClosed }
+            let chunk = inbound.prefix(count)
+            inbound.removeFirst(count)
+            return Data(chunk)
+        }
+
+        func write(_ data: Data) async throws {
+            if gated {
+                parked += 1
+                await withCheckedContinuation { waiters.append($0) }
+                parked -= 1
+            }
+            written.append(data)
+            chunks.append(data)
+        }
+
+        func close() {}
+
+        /// The serial of every message written, in the order they landed.
+        ///
+        /// Read from the recorded writes one at a time rather than by parsing
+        /// the concatenated stream: `send(_:)` makes exactly one `write` call
+        /// per message, so each chunk is a whole message and there is no
+        /// framing to get wrong. The link handshake is the one chunk that is
+        /// not a data message, and it is skipped by trying to decode.
+        func serials() -> [UInt64] {
+            chunks.compactMap { chunk in
+                guard chunk.count >= SpiceWire.dataHeaderBytes,
+                      let header = try? SpiceWire.decodeDataHeader(
+                          chunk.prefix(SpiceWire.dataHeaderBytes)
+                      ),
+                      Int(header.size) + SpiceWire.dataHeaderBytes == chunk.count
+                else { return nil }
+                return header.serial
+            }
+        }
+
+        /// The message type of every message written, in order.
+        func types() -> [UInt16] {
+            chunks.compactMap { chunk in
+                guard chunk.count >= SpiceWire.dataHeaderBytes,
+                      let header = try? SpiceWire.decodeDataHeader(
+                          chunk.prefix(SpiceWire.dataHeaderBytes)
+                      ),
+                      Int(header.size) + SpiceWire.dataHeaderBytes == chunk.count
+                else { return nil }
+                return header.type
+            }
+        }
+    }
+
     private actor Sockets {
         private var queued: [any ByteStream]
         private(set) var handedOut: [any ByteStream] = []
@@ -669,6 +853,12 @@ final class SPICESessionTests: XCTestCase {
         )
         XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.mode.rawValue,
                        "le codec s'annonce avant les échantillons")
+        // Les numéros de séquence sont lus ici parce que rien d'autre ne les
+        // lit : un sabordage remplaçant `recordSerial` par la constante 1
+        // laissait toute la suite verte. Le canal record est une connexion à
+        // lui, et un serveur qui acquitte par numéro a droit à une suite sans
+        // trou ni doublon — la même exigence que le canal des entrées.
+        XCTAssertEqual(header.serial, 1)
         XCTAssertEqual(try reader.bytes(Int(header.size)), u32(5) + u16(1),
                        "le mode annoncé est raw")
 
@@ -676,12 +866,14 @@ final class SPICESessionTests: XCTestCase {
             Data(try reader.bytes(SpiceWire.dataHeaderBytes))
         )
         XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.startMark.rawValue)
+        XCTAssertEqual(header.serial, 2)
         XCTAssertEqual(try reader.bytes(Int(header.size)), u32(5))
 
         header = try SpiceWire.decodeDataHeader(
             Data(try reader.bytes(SpiceWire.dataHeaderBytes))
         )
         XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.data.rawValue)
+        XCTAssertEqual(header.serial, 3)
         XCTAssertEqual(try reader.bytes(Int(header.size)),
                        u32(5) + [0x02, 0x01] + [0xFF, 0xFF],
                        "petit-boutiste, comme la lecture les lit")
@@ -694,6 +886,7 @@ final class SPICESessionTests: XCTestCase {
             Data(try again.bytes(SpiceWire.dataHeaderBytes))
         )
         XCTAssertEqual(header.type, SpiceRecordWire.ClientMessage.data.rawValue)
+        XCTAssertEqual(header.serial, 4, "la suite continue d'un paquet à l'autre")
         XCTAssertEqual(second.count, SpiceWire.dataHeaderBytes + 6,
                        "un seul message pour un paquet suivant")
 
