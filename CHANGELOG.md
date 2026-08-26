@@ -7,6 +7,41 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **The decode path's copies are counted, and held by a test.** The last item on
+  the optimisation list was the decoders' hot loops. The structural work turned
+  out to be already done, and the instrument matters as much as the finding:
+  buffer identity, not a stopwatch. Two addresses are equal or they are not, and
+  the answer does not change because another process woke up — a timing taken in
+  a shared container says nothing, which is why **no speed-up is claimed
+  anywhere in this work**.
+
+  Measured: a decoded frame crosses `rowsTopDown` at the same address when the
+  stream is already top-down (zero copies on the common path), changes address
+  exactly once when it must be flipped, and survives the
+  `(pixels:width:height:)` hand-off unchanged. `SpiceLZ.decompress` reserves the
+  exact final size before its loop, so the back-reference copy never grows the
+  array.
+
+  `SpiceDecodeCopyTests` holds this. It is a guard, not an observation:
+  `rowsTopDown` rewritten as an unconditional row loop stays *correct*, passes
+  every orientation test, and silently allocates and copies a full frame for
+  every image a top-down server sends — which is most of them. Sabotaged that
+  way, two tests fail; sabotaged into never flipping, seven; with the
+  truncated-frame guard removed, the run traps outright.
+
+  What remains — unsafe pointers, NEON intrinsics — needs an iPhone to judge,
+  and `docs/ROADMAP.md` says so rather than pretending otherwise.
+
+- **Decisions written down for the two lots that need an Apple machine.** Lot 3
+  (RDP) gains a fourth point settled in advance: RDP decoding must not reuse
+  SPICE's surfaces, which already carry SPICE's ROP3s, masks and image cache —
+  the shared layer, if it ever exists, is the draw target, not the decoder. Lot
+  6 gains three: the indirect pointer overlays the remote cursor rather than
+  replacing it, multi-window means one session per scene because SPICE channels
+  carry per-connection state that cannot be doubled without lying to the server,
+  and a Siri shortcut names a machine without carrying its token.
+
 ### Changed
 - **The preview server sends the cache headers a real host should.** It claimed
   to serve the site "the way a real host would" and sent `no-store` on

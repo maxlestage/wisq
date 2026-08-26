@@ -2367,3 +2367,68 @@ site qui grossit. Celui-ci ne peut pas l'être : tant que les images servent à
 l'OS et aux robots plutôt qu'à la page, le format qui les rend rapides à charger
 n'est pas la question. **Un « non » adossé à une mesure de taille est provisoire ;
 un « non » adossé à la nature du consommateur tient.**
+
+## Choisir l'instrument avant de choisir la réponse
+
+Le dernier point de la liste d'optimisations demandait « UnsafePointer,
+intrinsics ARM » pour les décodeurs. La tentation était d'écrire le code et
+d'annoncer un gain. Ce conteneur est partagé : n'importe quel chiffre que j'en
+sortirais serait du bruit habillé en résultat.
+
+Ce qui a débloqué la tranche n'est pas une réponse mais un **instrument** :
+l'identité de tampon. `array.withUnsafeBufferPointer { $0.baseAddress }` répond
+à « y a-t-il eu une copie ? » par oui ou non, de façon déterministe, et la
+réponse ne bouge pas parce qu'un autre processus s'est réveillé. Avec ça, la
+question « les décodeurs sont-ils serrés ? » devient vérifiable :
+
+- la trame décodée traverse `rowsTopDown` avec **la même adresse** quand le flux
+  est déjà top-down — zéro copie sur le cas courant ;
+- elle en change une fois, et une seule, quand il faut la retourner ;
+- elle survit au passage en tuple `(pixels:width:height:)` sans changer
+  d'adresse — le COW tient.
+
+La leçon générale : **quand la mesure évidente est indisponible, la bonne
+réaction n'est pas de renoncer à la question ni de mesurer quand même, c'est de
+chercher une propriété observable qui décide de la même chose.** « Combien de
+temps » était hors de portée ; « combien de copies » ne l'était pas, et pour la
+question posée — les décodeurs gaspillent-ils du travail — c'était la meilleure
+des deux.
+
+Ce qui reste vraiment hors de portée est dit comme tel dans la feuille de route :
+les pointeurs non sûrs et les intrinsics NEON demandent un iPhone. Du code plus
+difficile à lire, adopté sur la foi d'un chiffre invérifiable, est une dette
+qu'on ne peut plus rembourser faute de savoir ce qu'elle a acheté.
+
+## Un test qu'on écrit puis qu'on supprime
+
+J'avais écrit un test affirmant « la sortie LZ est réservée une fois, jamais
+agrandie ». Il compilait, il passait. Je l'ai enlevé.
+
+Il ne pouvait pas échouer pour la raison que son nom donnait. Le compte décodé
+est le même que le tableau ait été dimensionné une fois ou agrandi dix fois, et
+`capacity` n'est pas une promesse — Swift peut l'arrondir. Ce que le test
+vérifiait réellement, c'était que la taille finale est correcte, ce que
+`SpiceLZTests` prouve déjà en comparant chaque flux de référence à la sortie de
+l'encodeur.
+
+**Un test redondant n'est pas neutre : il est pire que rien.** Il se lit comme
+une couverture d'une affirmation que rien ne tient réellement, et le prochain
+lecteur qui voudra vérifier cette affirmation le trouvera, le croira, et
+s'arrêtera là. La réservation exacte reste vraie et reste écrite — dans la
+feuille de route, comme un fait lisible dans le code, pas déguisée en test.
+
+## Lire le bon indicateur, encore
+
+Troisième sabordage de la tranche : retirer la garde qui refuse une trame
+tronquée. Ma boucle de sabordage a imprimé « BUILD FAILED », ce qui était faux —
+le code compilait très bien.
+
+En relançant seul et en capturant correctement, le vrai résultat : `Fatal error:
+Array index is out of range`, code de sortie **1**, et seulement deux tests
+rapportés avant que le processus meure. La garde est donc bien porteuse.
+
+Deux pièges dans la même minute, tous deux déjà consignés ici et refaits quand
+même : `$?` après un pipe est le statut de `tail`, pas celui de `swift test` ; et
+une suite qui plante n'imprime pas la ligne « Executed N tests », donc un
+harnais qui cherche cette ligne conclut au mauvais échec. Le fil rouge, une fois
+de plus : **l'indicateur qu'on lit décide de ce qu'on croit.**
