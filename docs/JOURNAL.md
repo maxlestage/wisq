@@ -4742,3 +4742,52 @@ la chose que si la projection la laisse passer.
 
 Les neuf sabordages qui survivaient donnent maintenant 1 à 3 rouges chacun. Un
 témoin qu'on n'a pas vu rougir n'est pas un témoin.
+
+## Les séquences que personne ne tape par accident
+
+Suite directe de la tranche sur la table CSI, avec la même méthode appliquée au
+reste de la grille : les contrôles C0, les séquences ESC, les modes privés.
+Chaque cas transformé en no-op, un à la fois, contre la cible `WisqVMTests`
+entière.
+
+| tenue par un test | rouges | tenue par rien |
+| --- | --- | --- |
+| écran alterné `47`/`1047`/`1049` | 14 | `ESC D` index |
+| `LF`/`VT`/`FF` retour colonne | 12 | `ESC E` ligne suivante |
+| `CR` retour chariot | 5 | `ESC c` réinitialisation |
+| `BS` retour arrière | 2 | |
+| `TAB` tabulation | 2 | |
+| `ESC M` index inverse | 1 | |
+| mode `25` curseur visible | 1 | |
+
+### Le partage n'est pas arbitraire
+
+C'est la même cause que la fois précédente, jouée à l'envers. Les contrôles en
+haut du tableau marquent douze et quatorze parce que **tout test qui écrit du
+texte dans la grille tape un saut de ligne ou un retour chariot en chemin**,
+pour aller vérifier autre chose. Ils sont tenus *par accident*.
+
+Les séquences ESC marquent zéro parce que personne ne tape `ESC D` par mégarde.
+Il faut le vouloir. La tranche précédente avait trouvé `H`,`f` à dix-neuf rouges
+pour exactement cette raison — presque chaque test positionne le curseur avant
+de vérifier son sujet. Ce qui décide qu'une séquence a un témoin n'est pas son
+importance, c'est la fréquence à laquelle un test l'emprunte pour aller
+ailleurs.
+
+Ce qui suggère où regarder la prochaine fois : **ce qu'aucun test n'a de raison
+de traverser en chemin**.
+
+### Aucun défaut
+
+Les trois implémentations se lisent correctement, et les écrire n'a rien trouvé
+de faux. Ce sont les témoins qui manquaient. Contre-vérifiés de la seule façon
+qui vaille : chaque séquence redevenue no-op, une à une, donne 6, 7 et 6 rouges
+là où elle en donnait zéro.
+
+### Le bord qui compte, pour `ESC c`
+
+Une réinitialisation efface l'écran, le curseur et les attributs — mais **garde
+l'historique**. L'écran appartient au terminal, l'historique appartient à
+l'utilisateur, et une réinitialisation lancée par un programme auquel il n'a pas
+pensé ne doit pas jeter ce qu'il avait remonté pour lire. C'est le bord qu'une
+lecture « réinitialiser, c'est tout effacer » raterait, et il a son test.
