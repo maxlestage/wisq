@@ -4628,3 +4628,57 @@ fichiers que les trois tranches ont laissés.
 Il n'y a plus, à ma connaissance, d'allocation dimensionnée par un nombre du fil
 qui ne soit ni plafonnée ni tenue par les octets. Ne pas rouvrir à vide : le
 tableau ci-dessus dit où ne plus chercher, et pourquoi chaque ligne est saine.
+
+## Un invariant tenu par un argument par défaut dans un autre fichier
+
+`publish` recopie chaque région dessinée depuis la surface primaire vers le
+framebuffer. Il indexait `surface.pixels` directement avec les nombres de la
+région. C'est correct exactement tant que la région a été découpée contre
+**cette** surface et que la surface n'a pas changé depuis — et rien ne le disait.
+
+### L'hypothèse que j'avais, et pourquoi elle était fausse
+
+Je suis parti de l'idée qu'un serveur pouvait, dans un même lot, créer une
+surface large, dessiner, la détruire, puis en créer une petite : la région
+survivrait à sa surface et l'indexation sortirait du tampon.
+
+C'est faux, et la vérification tient en une ligne : `channel.pump(...)` est
+appelé **sans `limit`**, et la signature est `limit: Int = 1`. Un message par
+passe, `publish` entre chaque. Un dessin et un `surface_destroy` ultérieur ne
+peuvent pas partager un lot.
+
+Troisième fois que la lecture du site seul m'aurait fait écrire une faute : la
+réponse était chez l'appelant, pas dans la fonction.
+
+### Ce qui reste, et pourquoi ce n'est pas rien
+
+La preuve de sûreté est réelle, et elle est **entièrement contenue dans un
+argument par défaut d'un autre fichier**. Passer `limit: 8` pour le débit — la
+première optimisation que quiconque tenterait sur cette boucle — rend le
+scénario joignable, et le rend joignable *silencieusement* : rien dans `publish`
+ne dit qu'il en dépend.
+
+Un plantage qu'un serveur peut demander ne doit pas être retenu par une valeur
+par défaut ailleurs. Le découpage vit maintenant dans `SPICESession.patch(of:in:)`,
+qui borne le rectangle contre la surface dont il le découpe, et le rectangle
+**coupé** est celui rendu au renderer — annoncer la région demandée reviendrait à
+prétendre avoir peint hors de la surface.
+
+### Les cinq sabordages
+
+| sabordage | résultat |
+| --- | --- |
+| le clip contre la surface retiré | plantage : `Array index is out of range` |
+| la borne d'origine (`max(0, …)`) retirée | plantage : `Negative Array index is out of range` |
+| la garde de cohérence du tampon retirée | plantage : `Array index is out of range` |
+| le rectangle rendu redevient celui demandé | 9 rouges |
+| `patch` ne rend jamais rien (témoin inverse) | 8 rouges |
+
+Les trois premiers ne rougissent pas, ils tuent — et c'est exactement le défaut
+que la tranche empêche, exécuté plutôt qu'affirmé.
+
+Le témoin inverse est celui qui vaut le plus. Il fait rougir **deux tests
+`SPICESessionTests` préexistants** en plus des nouveaux, ce qui est la preuve que
+la fonction extraite est bien sur le chemin réel. C'est la leçon du jumeau mort
+de `ByteCursor` : une fonction que rien n'appelle passe tous les sabordages du
+monde.
