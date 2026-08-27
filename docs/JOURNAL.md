@@ -4682,3 +4682,63 @@ Le témoin inverse est celui qui vaut le plus. Il fait rougir **deux tests
 la fonction extraite est bien sur le chemin réel. C'est la leçon du jumeau mort
 de `ByteCursor` : une fonction que rien n'appelle passe tous les sabordages du
 monde.
+
+## Neuf séquences VT100 sur vingt n'étaient tenues par rien
+
+`TerminalGrid` implémente une vingtaine de séquences CSI et porte trente-deux
+tests. La question n'est pas combien de tests il y a, mais **lesquelles des
+séquences un test tiendrait si elle cessait de fonctionner**. Mesuré : chaque
+cas de la table CSI transformé en no-op, un à la fois, contre la cible
+`WisqVMTests` entière.
+
+| tenue | rouges | tenue par rien |
+| --- | --- | --- |
+| `H`,`f` position | 19 | `A` curseur haut |
+| `J` effacer écran | 2 | `D` curseur gauche |
+| `L` insérer lignes | 2 | `E` ligne suivante |
+| `@` insérer caractères | 2 | `F` ligne précédente |
+| `m` graphiques | 2 | `G`,`` ` `` colonne absolue |
+| `B`,`e` curseur bas | 1 | `d` ligne absolue |
+| `C`,`a` curseur droite | 1 | `X` effacer caractères |
+| `K` effacer ligne | 1 | `S` défiler haut |
+| `M` supprimer lignes | 1 | `T` défiler bas |
+| `P` supprimer caractères | 1 | |
+| `r` région de défilement | 1 | |
+
+### Ce que la forme du tableau dit
+
+`H`,`f` marque dix-neuf parce que presque tous les tests positionnent le curseur
+avant de vérifier autre chose. Elle est tenue **incidemment**, par des tests qui
+parlent d'autre chose.
+
+Et les paires sont coupées en deux : `B` (bas) et `C` (droite) sont tenues, `A`
+(haut) et `D` (gauche) ne le sont pas. Rien n'a décidé cela. La direction dont
+un test avait besoin est la direction qui a fini par avoir un témoin. La
+couverture était un sous-produit, pas un choix — et un sous-produit ne se
+remarque pas tant qu'on compte les tests au lieu de compter ce qu'ils tiennent.
+
+**Aucun défaut trouvé.** Les neuf implémentations sont correctes ; écrire leurs
+témoins n'a rien cassé. Ce sont des témoins manquants, pas des bogues, et la
+tranche ne prétend pas autre chose.
+
+### Deux fois où ma sonde mesurait la mauvaise chose
+
+`S` refusait de se laisser tester. `text` restait `"un\ndeux\ntrois\nquatre"`
+après `\u{1B}[2S`, et j'ai d'abord cru le code fautif. Il ne l'est pas :
+`scrollUp` **archive** la ligne sortante dans le scrollback, et `text` rend le
+scrollback suivi de l'écran. La séquence marche ; c'est la projection qui la
+rend invisible. Le témoin est donc écrit sur une grille sans scrollback, et un
+second témoin tient l'autre moitié — avec scrollback, `S` conserve ce qu'il
+dépasse.
+
+Puis la même leçon en plus petit : `"b\nc\n"` au lieu de `"b\nc"`, parce que la
+projection garde la ligne où se trouve le curseur. Mesuré, pas deviné.
+
+Deux fois de suite, la bonne question n'était pas « le code est-il faux » mais
+« qu'est-ce que j'observe au juste ». Une assertion sur une projection ne mesure
+la chose que si la projection la laisse passer.
+
+### La vérification
+
+Les neuf sabordages qui survivaient donnent maintenant 1 à 3 rouges chacun. Un
+témoin qu'on n'a pas vu rougir n'est pas un témoin.
