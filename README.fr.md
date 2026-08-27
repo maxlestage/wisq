@@ -64,9 +64,10 @@ l'architecture mais n'est pas implémenté (voir `docs/ROADMAP.md`).
 | Interface SwiftUI : liste, éditeur, session, barre de touches | fait |
 | Gestes tactiles configurables, inertie, arbitrage | fait |
 | Clavier matériel (HID → keysym X11) et clavier logiciel | fait |
-| SPICE : lien, canaux principal/display/entrées/curseur, images LZ | fait |
+| SPICE : lien, canaux principal/display/entrées/curseur | fait |
 | SPICE : import des fichiers `.vv` et `.rdp` | fait |
-| SPICE : QUIC, GLZ, JPEG, formes à palette, presse-papiers | à faire |
+| Codecs SPICE : LZ, GLZ (et sa fenêtre), QUIC, LZ4, JPEG, formes à palette | fait |
+| SPICE : presse-papiers, son dans les deux sens, opérations de dessin, flux vidéo, trois caches | fait |
 | RDP | à faire |
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |

@@ -67,8 +67,9 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
 | Agent TLS | done |
-| SPICE: link, main/display/inputs/cursor channels, LZ images, `.vv` import | done |
-| SPICE: QUIC, GLZ, JPEG, palette forms, clipboard | roadmap |
+| SPICE: link, main/display/inputs/cursor channels, `.vv` import | done |
+| SPICE codecs: LZ, GLZ (with its window), QUIC, LZ4, JPEG, palette forms | done |
+| SPICE: clipboard, sound both ways, draw operations, video streams, three caches | done |
 | RDP | roadmap |
 
 ## Building
