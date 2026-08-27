@@ -14,7 +14,7 @@ export const docsEn: Doc = {
     {
       kind: "p",
       text:
-        "wisq speaks RFB 3.8, the VNC protocol. Anything that exposes a VNC console works: QEMU, libvirt, VirtualBox, Proxmox, a Raspberry Pi running x11vnc, a Mac sharing its screen.",
+        "wisq speaks two console protocols. RFB 3.8 — VNC — reaches anything that exposes a VNC console: QEMU, libvirt, VirtualBox, Proxmox, a Raspberry Pi running x11vnc, a Mac sharing its screen. SPICE reaches what libvirt hosts usually publish instead, and carries more: sound both ways, the clipboard, and its own image codecs.",
     },
     {
       kind: "code",
@@ -35,7 +35,7 @@ export const docsEn: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "Plain VNC is unencrypted, and so is the agent in this version. Use it on a network you trust, or through a tunnel you already run — WireGuard or Tailscale. TLS with certificate pinning is on the roadmap and the client already carries the setting.",
+        "The agent speaks TLS by default: a self-signed certificate whose fingerprint travels in the pairing link, pinned by the app, so there is no certificate authority in the picture. Run it with --no-tls only for a tunnel that already encrypts. The console itself is a different matter — plain VNC and plain SPICE are unencrypted by design, so use a network you trust or a tunnel you already run, WireGuard or Tailscale.",
     },
 
     { kind: "h2", text: "The agent: turning a VM on before connecting" },
@@ -135,7 +135,7 @@ export const docsFr: Doc = {
     {
       kind: "p",
       text:
-        "wisq parle RFB 3.8, le protocole VNC. Tout ce qui expose une console VNC convient : QEMU, libvirt, VirtualBox, Proxmox, un Raspberry Pi sous x11vnc, un Mac qui partage son écran.",
+        "wisq parle deux protocoles de console. RFB 3.8 — VNC — atteint tout ce qui expose une console VNC : QEMU, libvirt, VirtualBox, Proxmox, un Raspberry Pi sous x11vnc, un Mac qui partage son écran. SPICE atteint ce que les hôtes libvirt publient plutôt d'habitude, et transporte davantage : le son dans les deux sens, le presse-papiers, et ses propres codecs d'image.",
     },
     {
       kind: "code",
@@ -156,7 +156,7 @@ export const docsFr: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "Le VNC nu n'est pas chiffré, et l'agent de cette version non plus. À réserver à un réseau de confiance ou à un tunnel que vous exploitez déjà — WireGuard, Tailscale. Le TLS avec épinglage de certificat est à la feuille de route et le client en porte déjà le réglage.",
+        "L'agent parle TLS par défaut : un certificat auto-signé dont l'empreinte voyage dans le lien d'appairage, épinglé par l'application, donc aucune autorité de certification dans le tableau. Ne le lancez avec --no-tls que derrière un tunnel qui chiffre déjà. La console, elle, est une autre affaire : le VNC nu et le SPICE nu ne sont pas chiffrés par construction — réseau de confiance, ou tunnel que vous exploitez déjà, WireGuard ou Tailscale.",
     },
 
     { kind: "h2", text: "L'agent : allumer une VM avant de s'y connecter" },

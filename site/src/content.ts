@@ -104,11 +104,11 @@ const en: Copy = {
       name: "Remote",
       head: "The VM runs where the silicon is",
       body:
-        "A hand-written VNC client built for a phone: compressed encodings so it stays usable on cellular, and a touch model that actually hits small buttons.",
+        "Two hand-written clients built for a phone — VNC and SPICE, no library between them and the wire: compressed encodings so it stays usable on cellular, and a touch model that actually hits small buttons.",
       points: [
-        "ZRLE, Tight with JPEG, zlib — over session-lived streams",
+        "VNC: ZRLE, Tight with JPEG, zlib — over session-lived streams",
+        "SPICE: display, cursor and input channels, sound both ways, clipboard",
         "Reconnects through cell handoffs, never retries a bad password",
-        "Trackpad-style pointer with inertia, hardware keyboard support",
         "A host agent boots a powered-off VM when you tap it",
       ],
     },
@@ -225,11 +225,11 @@ const fr: Copy = {
       name: "Distant",
       head: "La VM tourne là où il y a du silicium",
       body:
-        "Un client VNC écrit à la main pour un téléphone : des encodages compressés pour rester utilisable en 4G, et un modèle tactile qui atteint vraiment les petits boutons.",
+        "Deux clients écrits à la main pour un téléphone — VNC et SPICE, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, et un modèle tactile qui atteint vraiment les petits boutons.",
       points: [
-        "ZRLE, Tight avec JPEG, zlib — sur des flux persistants",
+        "VNC : ZRLE, Tight avec JPEG, zlib — sur des flux persistants",
+        "SPICE : canaux affichage, curseur et entrées, son dans les deux sens, presse-papiers",
         "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé",
-        "Pointeur type trackpad avec inertie, clavier matériel géré",
         "Un agent hôte démarre une VM éteinte quand vous la tapez",
       ],
     },

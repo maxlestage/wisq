@@ -43,7 +43,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "The agent side, yes: the daemon speaks TLS by default behind its mandatory token, with a self-signed certificate whose fingerprint travels in the pairing link — the app pins exactly that certificate, so there is no authority to run. Plain VNC remains unencrypted by design: for the console itself, use a network you trust or a tunnel you already run.",
+        "The agent side, yes: the daemon speaks TLS by default behind its mandatory token, with a self-signed certificate whose fingerprint travels in the pairing link — the app pins exactly that certificate, so there is no authority to run. The consoles themselves stay unencrypted by design, VNC and SPICE alike: for those, use a network you trust or a tunnel you already run.",
     },
 
     { kind: "h2", text: "Where are my passwords kept?" },
@@ -64,7 +64,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "For connecting: anything with a VNC console. For booting on demand: the agent drives libvirt through the virsh command line, so anything libvirt manages — QEMU/KVM, Xen, LXC. Other backends are a small amount of code behind one interface.",
+        "For connecting: anything with a VNC or SPICE console — which between them covers what nearly every hypervisor publishes. For booting on demand: the agent drives libvirt through the virsh command line, so anything libvirt manages — QEMU/KVM, Xen, LXC. Other backends are a small amount of code behind one interface.",
     },
 
     { kind: "h2", text: "Is there an Android version?" },
@@ -133,7 +133,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Côté agent, oui : le démon parle TLS par défaut derrière son jeton obligatoire, avec un certificat auto-signé dont l'empreinte voyage dans le lien d'appairage — l'app épingle exactement ce certificat, donc aucune autorité à exploiter. Le VNC nu reste non chiffré par construction : pour la console elle-même, réseau de confiance ou tunnel existant.",
+        "Côté agent, oui : le démon parle TLS par défaut derrière son jeton obligatoire, avec un certificat auto-signé dont l'empreinte voyage dans le lien d'appairage — l'app épingle exactement ce certificat, donc aucune autorité à exploiter. Les consoles elles-mêmes restent non chiffrées par construction, VNC comme SPICE : pour elles, réseau de confiance ou tunnel existant.",
     },
 
     { kind: "h2", text: "Où sont conservés mes mots de passe ?" },
@@ -154,7 +154,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Pour se connecter : tout ce qui expose une console VNC. Pour démarrer à la demande : l'agent pilote libvirt via la ligne de commande virsh, donc tout ce que libvirt gère — QEMU/KVM, Xen, LXC. D'autres backends représentent peu de code derrière une seule interface.",
+        "Pour se connecter : tout ce qui expose une console VNC ou SPICE — ce qui couvre à elles deux ce que publie presque tout hyperviseur. Pour démarrer à la demande : l'agent pilote libvirt via la ligne de commande virsh, donc tout ce que libvirt gère — QEMU/KVM, Xen, LXC. D'autres backends représentent peu de code derrière une seule interface.",
     },
 
     { kind: "h2", text: "Y a-t-il une version Android ?" },
