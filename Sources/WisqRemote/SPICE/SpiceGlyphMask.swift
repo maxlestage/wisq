@@ -24,6 +24,15 @@ enum SpiceGlyphMask {
     /// The largest mask this will build, before anything is allocated from
     /// numbers that came off a socket. A glyph run is a line of text; anything
     /// this size is a message that has stopped making sense.
+    ///
+    /// **Deliberately tighter than `Framebuffer.maximumPixels`, and that is the
+    /// point.** Everywhere else in the client, a separate ceiling that happened
+    /// to agree with the shared one is what let QUIC and LZ drift apart without
+    /// anyone noticing. This one is different on purpose — a line of text has
+    /// no business being a quarter of a screen — so what has to be held is not
+    /// that the two numbers are equal but that this one stays the smaller. A
+    /// test pins that direction; raising it above the shared ceiling would be
+    /// the mistake, and it now cannot happen quietly.
     static let maximumPixels = 1 << 24
 
     /// Flattens a string's glyphs into one mask.
