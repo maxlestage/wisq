@@ -250,7 +250,13 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Lot 5 — SPICE (format, lien, entrées, affichage, curseur et presse-papiers faits)
+## Lot 5 — SPICE (fait)
+
+*Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
+curseur et presse-papiers faits », alors que son propre corps décrivait déjà
+LZ4, les opérations de dessin, les flux vidéo, le son dans les deux sens, la
+fenêtre GLZ, les trois caches et les capacités. Le lot est clos : ce qui suit
+est le compte rendu complet, gardé pour ce qu'il explique.*
 
 Le protocole multi-canaux, dans l'ordre où les canaux doivent monter : main,
 inputs, display, cursor. Intéressant surtout parce que c'est la console par
@@ -2176,3 +2182,47 @@ n'est **pas** un tableau, ou tronqué, lève toujours. Tolérer cela transformer
 un fichier abîmé en « vous n'avez aucune machine », et la sauvegarde suivante le
 rendrait vrai.
 
+
+## L'audit des allocations, clos
+
+*Fermé.* Quatre tranches, prises l'une après l'autre parce que chacune a montré
+que la précédente n'était pas allée assez loin.
+
+D'abord le **bureau** : `ServerInit` était borné depuis toujours, à 16384 par
+côté, mais le rectangle `desktopSize` qui redimensionne une session vivante ne
+l'était par rien — et c'est la porte qu'un serveur peut frapper à répétition.
+Puis les **rectangles qui peignent dessus** : douze octets de CopyRect
+demandaient dix-sept gigaoctets sur un framebuffer de 64 × 64. Puis les **trois
+codecs SPICE**, qui donnaient trois réponses différentes à la même question.
+Puis la **clôture**, qui a trouvé un quatrième plafond, celui du masque de
+glyphes, plus serré délibérément.
+
+Il y a un seul nombre désormais, `Framebuffer.maximumPixels`, lu par RFB, les
+surfaces SPICE, QUIC, LZ et LZ4. `SpiceGlyphMask` garde le sien, plus petit, et
+un test épingle la **direction** plutôt que l'égalité.
+
+`Tests/WisqRemoteTests/AllocationCeilingAuditTests.swift` est le tableau
+exécutable : un codec ajouté plus tard y figure, ou son absence se voit. Il tient
+aussi la distinction sur laquelle tout repose — les chemins sans plafond propre
+sont tenus par les octets, et refusent `truncated` plutôt que `badGeometry`.
+
+Vérifiés sains, ne pas y revenir : le zlib de RFB est couvert côté pixels (dans
+une classe logée sous un autre nom de fichier), `Framebuffer.write` découpe
+correctement, le match inter-images de GLZ est borné contre le tampon réel de la
+source, et `ByteStream.pad` est un écrivain dont le compte est le nôtre.
+
+## Ce qui reste, au 27 août
+
+- **RDP (lot 3)** — le seul protocole de console que wisq ne parle pas. Le client
+  porte une ébauche délibérée qui rend `.unsupportedProtocol` au lieu de faire
+  semblant. Demande une machine Apple pour être jugé, pas seulement testé.
+- **Lot 6 : iPad et Siri** — décisions d'interface qu'on ne prend pas au jugé ;
+  les arbitrages déjà tranchés sont écrits plus haut.
+- **D'autres backends d'agent** — Proxmox et QEMU nu, peu de code derrière
+  l'interface existante.
+
+Et une chose qui n'est plus sur la liste : **le disque virtuel pour la machine
+locale**. C'était le plan ; c'était le mauvais. Les noyaux rv32 nommu de cette
+famille ont virtio-mmio mais aucun pilote bloc, et l'utilisateur apporte son
+propre noyau. Sauver la machine — RAM, registres, timer, octets en attente sur
+l'UART — contourne l'invité entièrement et marche avec n'importe quel noyau.
