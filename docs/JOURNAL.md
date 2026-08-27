@@ -4791,3 +4791,87 @@ l'historique**. L'écran appartient au terminal, l'historique appartient à
 l'utilisateur, et une réinitialisation lancée par un programme auquel il n'a pas
 pensé ne doit pas jeter ce qu'il avait remonté pour lire. C'est le bord qu'une
 lecture « réinitialiser, c'est tout effacer » raterait, et il a son test.
+
+## Le plus grand filet du dépôt s'arrêtait à la bannière
+
+Troisième application de la même méthode, cette fois au décodeur d'instructions
+du cœur rv32ima : cent six bras — chaque `case` du décodeur, chaque garde, chaque
+arête de la table RV32M et RV32A — rendus inopérants un à un, contre toute la
+cible `WisqVMTests`.
+
+| tenu par | bras |
+| --- | --- |
+| un test unitaire | 17 |
+| le démarrage du noyau, jusqu'à la bannière | 23 |
+| le démarrage du noyau, jusqu'à l'invite de connexion | 23 |
+| **rien** | **43** |
+
+### Ce que le tableau dit
+
+La troisième ligne n'existait pas avant cette tranche. Elle est le produit d'une
+seule assertion ajoutée.
+
+`testBootsARealKernelToItsBanner` exécute soixante millions d'instructions et
+vérifie que la sortie contient « Linux version ». Cette ligne part à la deuxième
+milliseconde du démarrage. Tout ce que le noyau fait ensuite — installer son
+vecteur de piège, redescendre en mode utilisateur par `MRET`, lire et écrire ses
+CSR, prendre ses verrous atomiques, lancer `/init` — se déroulait à l'intérieur
+d'un test qui avait cessé de regarder.
+
+La preuve est chiffrée : casser l'écriture de `mtvec` fait dérailler la machine
+au point que la passe met **cinquante et une secondes au lieu de six** — et
+passe, parce que la bannière était déjà sortie.
+
+### La correction ne coûte rien
+
+L'invite `buildroot login:` arrive vers quarante-six millions d'instructions,
+**dans le budget de soixante que le test dépensait déjà**. La portée était là ;
+il manquait l'assertion. `testBootsAllTheWayToItsLoginPrompt` la pose, et
+vingt-trois bras basculent de « tenu par rien » à « tenu » sans qu'une ligne de
+l'émulateur change : les CSR que le noyau écrit après la bannière, les trois
+moitiés de `MRET`, l'`ECALL` depuis le mode utilisateur, quatre atomiques.
+
+Ce n'est pas non plus une assertion arbitraire : le guide promet au lecteur
+*« jusqu'à l'invite de connexion »*. Le dépôt annonçait l'invite et testait la
+bannière.
+
+### Un nom qui promettait un cas qu'il ne vérifiait pas
+
+`testLrScPairSucceedsAndStaleScFails` ne teste pas le SC périmé. Faire répondre
+« réussi » à la vérification de réservation, sans condition, le laisse vert : il
+n'écrit qu'une paire LR/SC appariée. Renommé en `testLrScPairSucceeds`, et le
+cas que son ancien nom annonçait est maintenant écrit, avec ses deux moitiés —
+un résultat non nul *et* une mémoire intacte.
+
+### Douze témoins, et quatre que la contre-vérification a démolis
+
+Le reste de la tranche écrit les arêtes que la spécification RISC-V fixe et
+qu'un noyau qui démarre n'atteint jamais : la division par zéro, l'unique
+quotient signé qui déborde, les trois signitudes du multiplieur haut, les quatre
+min/max atomiques.
+
+Les douze sont passés du premier coup. La contre-vérification en a démoli
+quatre, tous pour la même raison — **une sonde qui ne distingue pas ne prouve
+rien** :
+
+- `MULH` sur (−1) × 2³¹ donne un mot haut nul, et un bras qui ne calcule rien
+  écrit zéro aussi. Opérandes changées pour que les trois réponses soient non
+  nulles et distinctes.
+- `REMU` par zéro testé avec un dividende de 7, exactement la constante que mon
+  sabordage écrivait. Dividende porté à `0x1234_5678`.
+- `AMOMAX` et `AMOMINU` interrogés sur un couple où la bonne réponse est le
+  registre — c'est-à-dire précisément ce qu'un bras inerte laisse en place et
+  range. Chacun des quatre est maintenant interrogé deux fois, dont une où la
+  cellule doit l'emporter.
+
+Vingt-cinq bras rougissent désormais contre ce fichier. Aucun défaut trouvé : les
+implémentations se lisent juste, et les deux cœurs — Swift et Rust — se lisent
+comme des jumeaux fidèles, bras pour bras.
+
+### Ce qui reste
+
+Vingt-quatre bras encore tenus par rien : la plomberie CSR que le noyau n'écrit
+pas (`mip`, `mcause`, `mtval`, `misa`, `mvendorid`, `cycle`, les six micro-ops
+lus séparément), les quatre pièges d'adresse hors RAM, le PC désaligné, `EBREAK`,
+`WFI` qui endort, le bit d'alignement de `JALR`, `FENCE`. C'est la tranche
+suivante.
