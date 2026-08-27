@@ -13,7 +13,24 @@ export const roadmapEn: Doc = {
     {
       kind: "note",
       tone: "info",
-      text: "Shipped since this page was written: TLS for the agent (the daemon signs its own certificate and the pairing link pins it), and a real VT100 cell grid for the local console. What follows is what remains.",
+      text: "Shipped since this page was written: TLS for the agent (the daemon signs its own certificate and the pairing link pins it), a real VT100 cell grid for the local console, SPICE in full, and persistence for the local machine. What follows is what remains.",
+    },
+
+    { kind: "h2", text: "Done since" },
+    {
+      kind: "dl",
+      items: [
+        {
+          term: "SPICE",
+          detail:
+            "Complete, and hand-written like the VNC client beside it: display, cursor and input channels on their own connections, sound in both directions, the clipboard through the main channel's agent, and the codecs SPICE invented for itself — LZ, GLZ, QUIC and LZ4 — plus the drawing operations a real desktop leans on.",
+        },
+        {
+          term: "Persistence for the local machine",
+          detail:
+            "Solved by saving the machine rather than giving it a disk. The whole state below the kernel — RAM, registers, the timer, the bytes queued for the UART — is written out and restored exactly, so the guest comes back mid-syscall if that is where it was.",
+        },
+      ],
     },
 
     { kind: "h2", text: "Next" },
@@ -21,36 +38,14 @@ export const roadmapEn: Doc = {
       kind: "dl",
       items: [
         {
-          term: "Persistent storage for the local machine",
-          detail:
-            "The local Linux boots to a shell and forgets everything on exit. A block device — 9P or virtio-blk — is what turns it from a demonstration into somewhere you can leave a file.",
-        },
-      ],
-    },
-
-    { kind: "h2", text: "After that" },
-    {
-      kind: "dl",
-      items: [
-        {
-          term: "SPICE",
-          detail:
-            "The natural second protocol: it is what libvirt hosts expose alongside VNC, and it carries audio and clipboard properly. The client already has the slot.",
-        },
-        {
           term: "RDP",
           detail:
-            "The one that matters for Windows guests. Larger than SPICE by a good margin, and worth doing only properly.",
+            "The one that matters for Windows guests, and now the only console protocol wisq does not speak. Larger than SPICE by a good margin, and worth doing only properly — the client carries a deliberate stub that refuses rather than pretending.",
         },
         {
           term: "More agent backends",
           detail:
-            "Proxmox and plain QEMU without libvirt are both a small amount of code behind the existing interface.",
-        },
-        {
-          term: "Persistent local machines",
-          detail:
-            "The local Linux machine starts fresh every time. A writable disk image would make it somewhere you can keep things.",
+            "The agent drives libvirt through virsh. Proxmox and plain QEMU without libvirt are both a small amount of code behind the existing interface.",
         },
       ],
     },
@@ -73,6 +68,11 @@ export const roadmapEn: Doc = {
           term: "A hosted service",
           detail:
             "wisq talks to machines you already have. There is no account, no server of ours in the path, and nothing to subscribe to.",
+        },
+        {
+          term: "A virtual disk for the local machine",
+          detail:
+            "This was the plan, and it was the wrong one. The rv32 nommu kernels this emulator runs have the virtio-mmio transport but no block driver at all — devtmpfs, proc, ramfs, sysfs, and nothing else. A perfect virtio-blk would have had nobody to talk to, and since you bring your own kernel, whether a disk worked would depend on a build we do not control. Saving the machine sidesteps the guest entirely.",
         },
       ],
     },
@@ -99,7 +99,24 @@ export const roadmapFr: Doc = {
     {
       kind: "note",
       tone: "info",
-      text: "Livré depuis l'écriture de cette page : le TLS de l'agent (le démon signe son propre certificat et le lien d'appairage l'épingle), et une vraie grille VT100 pour la console locale. Ce qui suit est ce qui reste.",
+      text: "Livré depuis l'écriture de cette page : le TLS de l'agent (le démon signe son propre certificat et le lien d'appairage l'épingle), une vraie grille VT100 pour la console locale, SPICE en entier, et la persistance de la machine locale. Ce qui suit est ce qui reste.",
+    },
+
+    { kind: "h2", text: "Fait depuis" },
+    {
+      kind: "dl",
+      items: [
+        {
+          term: "SPICE",
+          detail:
+            "Complet, et écrit à la main comme le client VNC d'à côté : canaux affichage, curseur et entrées sur leurs propres connexions, le son dans les deux sens, le presse-papiers par l'agent du canal principal, et les codecs que SPICE s'est inventés — LZ, GLZ, QUIC et LZ4 — plus les opérations de dessin sur lesquelles un vrai bureau s'appuie.",
+        },
+        {
+          term: "La persistance de la machine locale",
+          detail:
+            "Résolue en sauvant la machine plutôt qu'en lui donnant un disque. Tout l'état sous le noyau — la RAM, les registres, le timer, les octets en attente sur l'UART — est écrit puis restauré à l'identique, si bien que l'invité revient au milieu d'un appel système si c'est là qu'il était.",
+        },
+      ],
     },
 
     { kind: "h2", text: "Ensuite" },
@@ -107,36 +124,14 @@ export const roadmapFr: Doc = {
       kind: "dl",
       items: [
         {
-          term: "Un stockage persistant pour la machine locale",
-          detail:
-            "Le Linux local démarre jusqu'à un shell et oublie tout en sortant. Un périphérique bloc — 9P ou virtio-blk — est ce qui le fait passer de démonstration à endroit où l'on peut laisser un fichier.",
-        },
-      ],
-    },
-
-    { kind: "h2", text: "Plus tard" },
-    {
-      kind: "dl",
-      items: [
-        {
-          term: "SPICE",
-          detail:
-            "Le deuxième protocole naturel : c'est ce que les hôtes libvirt exposent à côté de VNC, et il transporte correctement le son et le presse-papiers. Le client en a déjà l'emplacement.",
-        },
-        {
           term: "RDP",
           detail:
-            "Celui qui compte pour les invités Windows. Nettement plus gros que SPICE, et à ne faire que bien.",
+            "Celui qui compte pour les invités Windows, et désormais le seul protocole de console que wisq ne parle pas. Nettement plus gros que SPICE, et à ne faire que bien — le client porte une ébauche délibérée qui refuse au lieu de faire semblant.",
         },
         {
           term: "D'autres backends d'agent",
           detail:
-            "Proxmox et QEMU nu sans libvirt représentent tous deux peu de code derrière l'interface existante.",
-        },
-        {
-          term: "Des machines locales persistantes",
-          detail:
-            "La machine Linux locale repart de zéro à chaque fois. Une image disque inscriptible en ferait un endroit où l'on peut garder des choses.",
+            "L'agent pilote libvirt via virsh. Proxmox et QEMU nu sans libvirt représentent tous deux peu de code derrière l'interface existante.",
         },
       ],
     },
@@ -159,6 +154,11 @@ export const roadmapFr: Doc = {
           term: "Un service hébergé",
           detail:
             "wisq parle à des machines que vous avez déjà. Pas de compte, aucun serveur à nous sur le chemin, et rien à quoi s'abonner.",
+        },
+        {
+          term: "Un disque virtuel pour la machine locale",
+          detail:
+            "C'était le plan, et c'était le mauvais. Les noyaux rv32 nommu que cet émulateur fait tourner ont le transport virtio-mmio mais aucun pilote bloc — devtmpfs, proc, ramfs, sysfs, et rien d'autre. Un virtio-blk parfait n'aurait eu personne à qui parler, et comme vous apportez votre propre noyau, le fait qu'un disque marche dépendrait d'un build que nous ne contrôlons pas. Sauver la machine contourne l'invité entièrement.",
         },
       ],
     },
