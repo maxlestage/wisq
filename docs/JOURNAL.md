@@ -4549,3 +4549,82 @@ pas un de ses deux arguments. Trois rouges une fois ces cas écrits.
 Un sabordage qui survit n'est pas un échec de la méthode, c'est la méthode qui
 parle. Trois fois de suite ici, et trois réponses différentes : supprimer la
 garde, écrire le test manquant, ou les deux à la fois.
+
+## L'audit des allocations est clos — et ce qui le tient n'est pas une phrase
+
+Trois tranches ont construit celui-ci : le bureau, les rectangles qui peignent
+dessus, et les trois codecs compressés. Chacune a trouvé la même forme, et cette
+forme n'est pas « une garde manquante ». C'est **un plafond écrit séparément qui
+se trouvait d'accord**. La borne par côté de QUIC, le plafond en octets de LZ4 et
+le plafond en pixels du framebuffer étaient « 32768 », « 1 << 28 » et « 64 << 20 »
+dans trois fichiers ; parce qu'ils tombaient juste à quatre octets par pixel,
+personne n'avait à remarquer que l'un d'eux ne portait que la moitié de la règle.
+
+### Le tableau, à la clôture
+
+| site | ce qui le tient |
+| --- | --- |
+| bureau RFB (`ServerInit`, `desktopSize`) | plafond partagé |
+| rectangle RFB, sept encodages qui peignent | plafond partagé |
+| `Framebuffer` (init, resize, copy) | plafond partagé, en filet |
+| surface SPICE | plafond partagé |
+| QUIC, LZ, LZ4 | plafond partagé |
+| masque de glyphes SPICE | **plus serré, délibérément** |
+| zlib, ZRLE, Tight, raw | les octets doivent arriver |
+| chemin palette de LZ | l'en-tête, borné en amont |
+| `SpiceDisplayDecoder` (segments, points) | bornés contre `body.bytes.count` |
+| `ByteStream.pad` | **écrivain** : le nombre est le nôtre |
+
+Deux vérifications valent d'être notées parce qu'elles auraient pu devenir des
+tranches et n'en méritaient pas. Le chemin palette de LZ prend sa géométrie en
+**arguments** et non de l'en-tête — mais son unique appelant de production passe
+`header.width`/`header.height`, donc la borne de la tranche précédente le couvre.
+Et `ByteStream.pad` dimensionne bien un tampon depuis un compte, mais c'est un
+écrivain : le nombre sort de wisq, il n'y entre pas. L'ajouter au tableau aurait
+laissé croire le contraire.
+
+### Un quatrième plafond, trouvé en clôturant
+
+`SpiceGlyphMask` porte le sien, `1 << 24`, seize mégapixels. Il n'était pas dans
+mon compte, et il n'est pas non plus un trou : il est **plus serré** que le
+partagé, avec une raison écrite — une ligne de texte n'a rien à faire à un quart
+d'écran.
+
+Ce qui manquait était le lien. Rien n'empêchait de le relever au-dessus du
+plafond partagé. Ce qu'il faut tenir sur celui-là n'est donc pas l'égalité mais
+la **direction** : il reste le plus petit. Un test l'épingle dans ce sens.
+
+### Ce que le tableau exécutable tient, et que la prose ne tient pas
+
+Deux choses.
+
+D'abord : tout plafond censé être le nombre partagé l'est, et le seul qui diffère
+est pinné dans sa direction. Un codec ajouté plus tard est soit dans le tableau,
+soit ostensiblement absent.
+
+Ensuite, et c'est la distinction sur laquelle tout l'audit repose : les chemins
+qui n'ont **pas** de plafond propre sont tenus par les octets, et le test affirme
+qu'ils refusent **pour cette raison-là**. Une géométrie légale avec un flux qui
+s'arrête tôt doit revenir `truncated`, pas `badGeometry`. Un chemin sûr parce que
+les octets n'arrivent jamais est sûr autrement qu'un chemin sûr parce que la
+géométrie est absurde, et un test qui demanderait seulement « est-ce que ça a
+levé » appellerait les deux la même chose.
+
+### Les quatre sabordages
+
+| sabordage | résultat |
+| --- | --- |
+| plafond des glyphes porté au-dessus du partagé | 1 rouge |
+| plafond des surfaces redevenu un littéral | 3 rouges, dans trois fichiers |
+| QUIC retiré du tableau | plantage : `failed to allocate 17179344932 bytes` |
+| plafond partagé resserré à 1 Mpx | 30 rouges |
+
+Le troisième n'affirme pas le défaut, il l'**exécute** : retirer un codec du
+tableau ne fait pas échouer une assertion, ça tue le processus sur les dix-sept
+gigaoctets que la tranche empêchait. Le quatrième est le bord d'en face — trente
+rouges venus de « ce qu'il ne faut **pas** refuser », répartis sur les trois
+fichiers que les trois tranches ont laissés.
+
+Il n'y a plus, à ma connaissance, d'allocation dimensionnée par un nombre du fil
+qui ne soit ni plafonnée ni tenue par les octets. Ne pas rouvrir à vide : le
+tableau ci-dessus dit où ne plus chercher, et pourquoi chaque ligne est saine.
