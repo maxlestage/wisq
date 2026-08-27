@@ -697,17 +697,59 @@ public actor SPICESession: RemoteSession {
 
                 // The surface holds whole rows; the framebuffer wants just this
                 // rectangle, packed.
-                var patch = [UInt8]()
-                patch.reserveCapacity(rect.width * rect.height * 4)
-                for row in 0..<rect.height {
-                    let start = ((rect.y + row) * primary.width + rect.x) * 4
-                    patch.append(contentsOf: primary.pixels[start..<(start + rect.width * 4)])
-                }
-                framebuffer.write(rect: rect, bgra: patch)
-                changed.append(rect)
+                guard let (clipped, patch) = Self.patch(of: rect, in: primary) else { continue }
+                framebuffer.write(rect: clipped, bgra: patch)
+                changed.append(clipped)
             }
         }
         if !changed.isEmpty { continuation.yield(.framebufferChanged(changed)) }
+    }
+
+    /// Cuts one rectangle out of a surface's rows, packed, and **clipped to the
+    /// surface it is being cut from**.
+    ///
+    /// The clip is the point. This used to index `surface.pixels` straight from
+    /// the region's own numbers, which is correct exactly as long as the region
+    /// was clipped against *this* surface and this surface has not changed
+    /// since — and nothing said so. `SpiceSurfaces.regions(of:in:)` does
+    /// intersect with the surface bounds, so the regions are sound when they
+    /// are made; what was never stated is that they are still sound when they
+    /// are used.
+    ///
+    /// Today they are, and the reason is narrower than it looks: `publish` runs
+    /// after every `pump`, and `pump` takes `limit: Int = 1` — **one message a
+    /// call**, by default argument. So a draw and a later `surface_destroy` /
+    /// `surface_create` land in different cycles and a region never outlives
+    /// its surface. Raise that limit for throughput, which is the obvious
+    /// optimisation, and one batch can carry create-large, draw, destroy,
+    /// create-small; the region would then be cut from a surface a quarter its
+    /// size and the slice would run off the end of the buffer.
+    ///
+    /// A crash a server can ask for should not be held off by a default
+    /// argument in another file. It is held by this function now, and the
+    /// clipped rectangle is what gets reported as changed — telling the
+    /// renderer a rectangle was painted that was not is its own small lie.
+    static func patch(
+        of rect: Rect, in surface: SpiceSurfaces.Surface
+    ) -> (rect: Rect, pixels: [UInt8])? {
+        let left = max(0, rect.x)
+        let top = max(0, rect.y)
+        let right = min(rect.x + rect.width, surface.width)
+        let bottom = min(rect.y + rect.height, surface.height)
+        guard right > left, bottom > top else { return nil }
+
+        let clipped = Rect(x: left, y: top, width: right - left, height: bottom - top)
+        // Belt as well as braces: a surface whose row count disagrees with its
+        // own declared size would still index past the end above.
+        guard surface.pixels.count >= surface.width * surface.height * 4 else { return nil }
+
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(clipped.width * clipped.height * 4)
+        for row in 0..<clipped.height {
+            let start = ((clipped.y + row) * surface.width + clipped.x) * 4
+            pixels.append(contentsOf: surface.pixels[start..<(start + clipped.width * 4)])
+        }
+        return (clipped, pixels)
     }
 
     private func finish(with error: Error) {
