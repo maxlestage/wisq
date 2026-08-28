@@ -30,14 +30,37 @@ public final class InflateStream: @unchecked Sendable {
         if isOpen { inflateEnd(&stream) }
     }
 
-    /// Feeds compressed bytes in and returns everything that comes out.
+    /// Feeds compressed bytes in and returns everything that comes out, up to
+    /// `limit` bytes.
     ///
     /// A call may legitimately produce nothing: zlib buffers until it has a
     /// complete block. The caller must not treat empty output as an error.
-    public func inflate(_ input: Data) throws -> Data {
+    ///
+    /// **`limit` is not decoration, and it has no default on purpose.** Every
+    /// caller already knew the answer — each one inflates and then refuses what
+    /// is not the size its own message promised — and every one of them asked
+    /// *after* the bytes existed. Compression ratios do not care about the
+    /// order: measured on this machine, 101 929 compressed bytes produce
+    /// 104 857 600, a ratio of 1 028 to 1. `decodeZlib` admits a compressed
+    /// block of `pixels × 4 + 1 MiB`, so a **one-pixel** rectangle carries a
+    /// licence for a gigabyte, allocated here, before its `pixels.count == 4`
+    /// ever runs.
+    ///
+    /// The allocation audit looked at this path and recorded it as covered "on
+    /// the pixel side". That was true of the check and false of the allocation,
+    /// which is the whole distinction: a guard downstream of the thing it
+    /// guards is a report, not a defence.
+    ///
+    /// Having no default value is the second half. A caller that forgets the
+    /// bound does not compile, rather than inheriting a number someone else
+    /// guessed.
+    public func inflate(_ input: Data, limit: Int) throws -> Data {
         lock.lock()
         defer { lock.unlock() }
         guard isOpen else { throw WisqError.malformedMessage("flux zlib fermé") }
+        guard limit >= 0 else {
+            throw WisqError.malformedMessage("plafond zlib négatif : \(limit)")
+        }
         guard !input.isEmpty else { return Data() }
 
         var output = Data()
@@ -61,6 +84,15 @@ public final class InflateStream: @unchecked Sendable {
                     }
                 }
                 if produced > 0 {
+                    // Refused as it arrives rather than once it is all here:
+                    // the point is the bytes that never get allocated, so the
+                    // count is checked against the ceiling before the append
+                    // that would cross it.
+                    guard output.count + produced <= limit else {
+                        throw WisqError.malformedMessage(
+                            "flux zlib au-delà de son plafond : \(output.count + produced) octets "
+                                + "produits pour \(limit) admis")
+                    }
                     output.append(contentsOf: scratch[0..<produced])
                 }
                 // Stop once zlib has consumed the input and stopped filling the

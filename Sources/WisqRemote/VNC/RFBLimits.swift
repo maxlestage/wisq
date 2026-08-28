@@ -67,6 +67,28 @@ enum RFBLimits {
         return pixels + (1 << 20)
     }
 
+    /// What a ZRLE rectangle may legitimately inflate to.
+    ///
+    /// The compressed side has a ceiling and it does not bound this one:
+    /// zlib expands by up to about a thousand to one — 1 028 measured — so the
+    /// licence a small rectangle grants on the wire is a gigabyte in memory.
+    /// The output needs its own number, and this is it.
+    ///
+    /// Generous by construction, because the other edge of the rule is not
+    /// refusing a server that behaves. ZRLE splits a rectangle into 64×64
+    /// tiles, each choosing raw pixels, a solid colour, a packed palette or
+    /// runs. **Raw is the largest of the four**, at four bytes a pixel, so the
+    /// pixels term is the real bound; the per-tile term covers the subencoding
+    /// byte and a full 127-entry palette, which a raw tile does not even carry.
+    /// A server sending anything a client can paint stays far below.
+    static func maximumInflatedZRLEBytes(for rect: Rect) -> Int {
+        let width = max(0, rect.width)
+        let height = max(0, rect.height)
+        let tiles = ((width + 63) / 64) * ((height + 63) / 64)
+        // 1 subencoding byte + 127 palette entries of 4 bytes, per tile.
+        return width * height * 4 + tiles * (1 + 127 * 4) + 1024
+    }
+
     /// Refuses a rectangle this client will not paint.
     ///
     /// The screen has had a ceiling since the desktop-size slice; the

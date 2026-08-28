@@ -46,8 +46,8 @@ final class SessionStreamSeparationTests: XCTestCase {
     /// for a `RFBStreams` whose every stream is broken.
     func testAStreamThatSawTheFirstChunkContinuesIt() throws {
         let streams = try RFBStreams()
-        XCTAssertEqual(String(data: try streams.zrle.inflate(Self.firstChunk), encoding: .utf8), opening)
-        XCTAssertEqual(String(data: try streams.zrle.inflate(Self.secondChunk), encoding: .utf8), whole)
+        XCTAssertEqual(String(data: try streams.zrle.inflate(Self.firstChunk, limit: 1 << 16), encoding: .utf8), opening)
+        XCTAssertEqual(String(data: try streams.zrle.inflate(Self.secondChunk, limit: 1 << 16), encoding: .utf8), whole)
     }
 
     // MARK: - ZRLE and Zlib are not the same stream
@@ -58,16 +58,16 @@ final class SessionStreamSeparationTests: XCTestCase {
     /// is being decoded against the wrong history.
     func testZlibDoesNotInheritWhatZRLEInflated() throws {
         let streams = try RFBStreams()
-        _ = try streams.zrle.inflate(Self.firstChunk)
-        XCTAssertThrowsError(try streams.zlib.inflate(Self.secondChunk))
+        _ = try streams.zrle.inflate(Self.firstChunk, limit: 1 << 16)
+        XCTAssertThrowsError(try streams.zlib.inflate(Self.secondChunk, limit: 1 << 16))
     }
 
     /// And the other way round, because sharing is symmetric and a test of one
     /// direction would pass for a `zrle` aliased onto `zlib`.
     func testZRLEDoesNotInheritWhatZlibInflated() throws {
         let streams = try RFBStreams()
-        _ = try streams.zlib.inflate(Self.firstChunk)
-        XCTAssertThrowsError(try streams.zrle.inflate(Self.secondChunk))
+        _ = try streams.zlib.inflate(Self.firstChunk, limit: 1 << 16)
+        XCTAssertThrowsError(try streams.zrle.inflate(Self.secondChunk, limit: 1 << 16))
     }
 
     // MARK: - Tight's four
@@ -79,9 +79,9 @@ final class SessionStreamSeparationTests: XCTestCase {
         for source in 0..<4 {
             for other in 0..<4 where other != source {
                 let streams = try RFBStreams()
-                _ = try streams.tight(source).inflate(Self.firstChunk)
+                _ = try streams.tight(source).inflate(Self.firstChunk, limit: 1 << 16)
                 XCTAssertThrowsError(
-                    try streams.tight(other).inflate(Self.secondChunk),
+                    try streams.tight(other).inflate(Self.secondChunk, limit: 1 << 16),
                     "le flux \(other) a hérité du dictionnaire de \(source)")
             }
         }
@@ -91,9 +91,9 @@ final class SessionStreamSeparationTests: XCTestCase {
     /// four useful rather than merely distinct.
     func testTheSameIndexIsTheSameStream() throws {
         let streams = try RFBStreams()
-        _ = try streams.tight(2).inflate(Self.firstChunk)
+        _ = try streams.tight(2).inflate(Self.firstChunk, limit: 1 << 16)
         XCTAssertEqual(
-            String(data: try streams.tight(2).inflate(Self.secondChunk), encoding: .utf8), whole)
+            String(data: try streams.tight(2).inflate(Self.secondChunk, limit: 1 << 16), encoding: .utf8), whole)
     }
 
     /// An index outside 0…3 is clamped rather than crashing.
@@ -107,15 +107,15 @@ final class SessionStreamSeparationTests: XCTestCase {
     /// discovers it as a red test rather than as a dead client.
     func testAnOutOfRangeIndexIsClampedRatherThanFatal() throws {
         let streams = try RFBStreams()
-        _ = try streams.tight(3).inflate(Self.firstChunk)
+        _ = try streams.tight(3).inflate(Self.firstChunk, limit: 1 << 16)
         XCTAssertEqual(
-            String(data: try streams.tight(9).inflate(Self.secondChunk), encoding: .utf8), whole,
+            String(data: try streams.tight(9).inflate(Self.secondChunk, limit: 1 << 16), encoding: .utf8), whole,
             "un indice trop grand doit retomber sur le dernier flux")
 
         let others = try RFBStreams()
-        _ = try others.tight(0).inflate(Self.firstChunk)
+        _ = try others.tight(0).inflate(Self.firstChunk, limit: 1 << 16)
         XCTAssertEqual(
-            String(data: try others.tight(-4).inflate(Self.secondChunk), encoding: .utf8), whole,
+            String(data: try others.tight(-4).inflate(Self.secondChunk, limit: 1 << 16), encoding: .utf8), whole,
             "un indice négatif doit retomber sur le premier flux")
     }
 
@@ -126,15 +126,15 @@ final class SessionStreamSeparationTests: XCTestCase {
     /// still counting on, and leaves the one it asked for polluted.
     func testResettingOneStreamLeavesTheOthersAlone() throws {
         let streams = try RFBStreams()
-        _ = try streams.tight(1).inflate(Self.firstChunk)
-        _ = try streams.tight(2).inflate(Self.firstChunk)
+        _ = try streams.tight(1).inflate(Self.firstChunk, limit: 1 << 16)
+        _ = try streams.tight(2).inflate(Self.firstChunk, limit: 1 << 16)
 
         try streams.resetTight(1)
 
         XCTAssertThrowsError(
-            try streams.tight(1).inflate(Self.secondChunk), "le flux 1 n'a pas été réinitialisé")
+            try streams.tight(1).inflate(Self.secondChunk, limit: 1 << 16), "le flux 1 n'a pas été réinitialisé")
         XCTAssertEqual(
-            String(data: try streams.tight(2).inflate(Self.secondChunk), encoding: .utf8), whole,
+            String(data: try streams.tight(2).inflate(Self.secondChunk, limit: 1 << 16), encoding: .utf8), whole,
             "le flux 2 a été réinitialisé alors que seul le 1 était visé")
     }
 }
