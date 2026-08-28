@@ -5775,3 +5775,97 @@ fabriqués à la main, un par format d'en-tête.
 Où ne plus chercher : la question « qu'est-ce que ceci alloue, et quand est-ce
 vérifié ? » a été posée aux huit. Ce qui reste ouvert, c'est de la transformer
 en huit témoins plutôt qu'en deux.
+
+## Les six témoins qui manquaient, et ce qu'un tampon pré-dimensionné ne protège pas
+
+La clôture précédente finissait sur une dette énoncée : six des huit chemins de
+décompression étaient vérifiés **par lecture**, et il fallait les transformer en
+témoins. Cette tranche paie la dette, et la mesure qui l'a ouverte mérite d'être
+écrite en premier.
+
+**Les six gardes ont été retirées une par une, la suite entière lancée contre
+chacune. Les six ont survécu.**
+
+```
+glz-match        SURVÉCU
+glz-literal      SURVÉCU
+zrle-rle         SURVÉCU
+zrle-palette     SURVÉCU
+lz-run-literal   SURVÉCU
+lz-run-copy      SURVÉCU
+```
+
+Les quatre diagnostics, appliqués : ce n'est pas la mauvaise ligne — chaque
+garde est bien sur le chemin de l'écriture ; ce n'est pas une équivalence réelle
+— les longueurs viennent du fil et un serveur les choisit ; ce n'est pas une
+branche inatteignable, pour la même raison. **Témoin manquant, six fois.** Les
+fixtures de toutes ces suites sont des flux valides, et un flux valide n'atteint
+jamais une borne.
+
+### Pourquoi « sain par lecture » ne suffisait pas ici
+
+La règle de la tranche précédente reste vraie : un tampon pré-dimensionné avec
+une garde par élément est sain. Mais elle décrit la **forme** du code, pas ce
+qui la maintient. La forme est saine tant que la garde est là, et rien ne
+disait qu'elle y était.
+
+Il faut aussi nommer précisément ce que ces six-là empêchent, parce que ce n'est
+pas la même chose que les deux défauts corrigés avant elles. Là, c'était un tas
+épuisé. Ici le tampon est déjà alloué à la bonne taille : le dépassement est une
+**écriture hors bornes**, donc un piège Swift. Sur un téléphone, un piège et une
+mémoire épuisée sont le même événement — l'application disparaît — et c'est la
+différence entre ça et un message refusé.
+
+### Les flux hostiles
+
+Neuf tests, six hostiles et trois de contrôle. Chaque flux est fabriqué à la
+main à partir de l'encodage lui-même, et chacun porte **assez d'octets pour que
+la boucle n'ait pas à s'arrêter faute d'entrée** : sans cette précaution le
+lecteur lèverait `truncated` de lui-même, le test passerait, et il ne
+prouverait rien.
+
+Deux pièges rencontrés en les écrivant, tous deux du même genre — un test
+attrapé par la mauvaise garde :
+
+* la correspondance GLZ doit être précédée d'**un littéral**, sinon
+  `pixelOffset <= op` la refuse d'abord et le témoin est vert sans sa garde ;
+* la même chose côté LZ, où `distance <= written` occupe la même place.
+
+Les trois contrôles sont l'autre moitié du travail : une série ZRLE qui tient
+dans sa tuile doit peindre, un littéral et une correspondance GLZ qui remplissent
+exactement l'image doivent décoder, et la passe alpha de LZ doit rendre le
+littéral répété — pas seulement ne pas dépasser. Une garde qui refuserait tout
+passerait les six premiers tests et casserait tous les serveurs réels.
+
+### La contre-mesure
+
+Les six sabordages ont été refaits **un par un**, et les neuf tests lancés
+séparément contre chacun, pour que la table dise non seulement « quelque chose a
+rougi » mais « lequel ». Chaque garde est attrapée par son témoin, et par lui
+seul :
+
+| garde retirée | rougit |
+| --- | --- |
+| `ZRLEDecoder`, série simple | `testAZRLERunPastTheTileIsRefused` |
+| `ZRLEDecoder`, série de palette | `testAZRLEPaletteRunPastTheTileIsRefused` |
+| `SpiceGLZDecode`, correspondance | `testAGLZMatchPastTheImageIsRefused` |
+| `SpiceGLZDecode`, littéraux | `testAGLZLiteralRunPastTheImageIsRefused` |
+| `SpiceLZ.run`, littéraux | `testAnLZAlphaLiteralRunPastTheImageIsRefused` |
+| `SpiceLZ.run`, copie | `testAnLZAlphaMatchPastTheImageIsRefused` |
+
+Une garde retirée ne fait pas échouer son témoin par une assertion : elle le
+fait **planter**. Vérifié plutôt que supposé, sur la garde des littéraux GLZ —
+`exited with unexpected signal code 4`, la trappe de Swift, avec sa pile
+d'appels. C'est précisément la démonstration de ce qui arriverait sur le
+téléphone : pas un message refusé, l'application qui disparaît.
+
+Un piège du sabordage lui-même, noté pour la prochaine fois : les deux gardes de
+`SpiceLZ.run` s'écrivent avec la même ligne à deux indentations près, et
+chercher la moins indentée en trouve deux — la chaîne est incluse dans l'autre.
+Retirée par numéro de ligne.
+
+### Ce que la clôture de l'audit vaut maintenant
+
+Les huit chemins ont un témoin : deux qui mesurent la mémoire pour les deux
+défauts corrigés, six flux hostiles pour les gardes qui tenaient déjà. La dette
+énoncée à la fin de la tranche précédente est payée.
