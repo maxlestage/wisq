@@ -5536,3 +5536,64 @@ chaque test suivant passerait pour la mauvaise raison.
 `list` et `get` partagent maintenant `names()`, un seul appel `virsh` sans
 `domstate` par domaine. `get` ne paie donc pas la liste complète pour savoir si
 un nom existe.
+
+## Le protocole promettait un état que libvirt ne dit jamais
+
+`AGENT-PROTOCOL.md` décrivait `POST /v1/vms/{id}/start` comme répondant
+« immédiatement avec l'état `starting` ». C'était vrai d'une implémentation sur
+deux : le backend de démonstration le produit, `VirshBackend` ne le peut pas.
+Libvirt n'a pas cet état — un domaine est `running` dès qu'il existe, pendant
+que son invité monte encore son affichage — et aucune sortie de `virsh domstate`
+ne signifie « en train de démarrer ».
+
+Trois artefacts s'accordaient entre eux et pas avec le code : le document, le
+test bout-à-bout qui affirme `.starting`, et le backend de démo qu'il pilote.
+La forme est celle de #71 — des fichiers qui se citent l'un l'autre et
+divergent de ce qui tourne vraiment.
+
+### Ce que j'ai cru à tort, puis vérifié
+
+Ma première idée était que le client se ferait berner : si virsh dit `running`
+tout de suite, `waitUntilRunning` rendrait la main avant que la console soit
+joignable. **Faux.** La boucle exige `running` **et** un port de console, et
+`describe` ne pose le port que lorsque `virsh vncdisplay` en donne un. Le client
+attend donc correctement.
+
+Ce qui restait vrai après vérification est plus étroit et vaut quand même : le
+contrat écrit est faux pour un agent tiers, et la règle qui sauve le client —
+les deux moitiés — n'était écrite nulle part et vivait dans une boucle où aucun
+test ne pouvait l'atteindre.
+
+### La règle sort de la boucle
+
+`AgentVM.isReadyForConsole` la porte maintenant : `running` **et** un port.
+Trois tests, un par bord, et les deux moitiés sabotées séparément — retirer la
+condition du port fait rougir le test du port, retirer celle de l'état fait
+rougir celui de l'état. Le test bout-à-bout ne pouvait pas les voir : le backend
+de démo passe de `starting` à `running` avec le port attaché au même instant, si
+bien que l'état intermédiaire qu'un vrai libvirt produit à chaque démarrage n'y
+existe pas.
+
+Côté Rust, un test affirme qu'**aucune** sortie de `domstate` ne vaut
+`Starting` — sur la gamme de la fonction, pas sur son `match`, donc un bras
+ajouté plus tard qui inventerait cet état échouerait ici. Vérifié en l'inventant :
+il rougit, et l'ancien test d'énumération ne bronche pas, parce que `idle` n'y
+figurait pas.
+
+### Le faux virsh était en course avec lui-même
+
+La vérification complète est passée au rouge sur `Text file busy`, et c'était
+mon harnais, pas le produit. Rust joue les tests sur plusieurs fils et
+`Command::spawn` forke : un enfant forké pendant que le script était encore
+ouvert en écriture hérite du descripteur et le garde jusqu'à son propre `exec`,
+et Linux refuse d'exécuter un fichier qu'un processus tient ouvert en écriture.
+
+La fenêtre fait quelques microsecondes et appartient à un autre test — d'où un
+passage vert ici, un passage vert en CI, et un rouge au suivant. Le harnais
+attend maintenant que le script soit exécutable, et **uniquement pour cette
+erreur-là** : toute autre remonte telle quelle, pour que le test qui parle d'un
+binaire absent échoue au lieu de tourner en rond. Huit passages consécutifs
+verts après correction.
+
+Un rouge intermittent n'est pas une chose qu'on relance : c'est une chose qu'on
+lit.

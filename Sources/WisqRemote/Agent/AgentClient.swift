@@ -90,7 +90,7 @@ public struct AgentClient: Sendable {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             let vm = try await status(vm: id)
-            if vm.state == .running, vm.consolePort != nil { return vm }
+            if vm.isReadyForConsole { return vm }
             if vm.state == .stopped { throw WisqError.agentFailure("la VM s'est arrêtée pendant le démarrage") }
             try await Task.sleep(for: pollInterval)
         }
