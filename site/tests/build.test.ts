@@ -577,6 +577,13 @@ describe("progressive web app", () => {
     expect(pngSize("social-card.png")).toEqual({ width: 1200, height: 630 });
   });
 
+  /// **These read `sw.js` as text.** That is deliberate and it is not enough:
+  /// they check that the built worker names the right files and contains the
+  /// right guards, which catches a build that stopped emitting something. What
+  /// they cannot see is behaviour — measured, by breaking nine of the worker's
+  /// behaviours in ways that left every string below intact, and watching all
+  /// nine pass the whole suite. `tests/service-worker.test.ts` runs the worker
+  /// instead, and is where a change to what it *does* gets caught.
   test("the service worker precaches only files that exist", () => {
     const sw = read("sw.js");
     const list = JSON.parse(sw.match(/const PRECACHE = (\[[\s\S]*?\]);/)![1]!) as string[];
