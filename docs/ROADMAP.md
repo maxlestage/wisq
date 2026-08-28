@@ -2248,6 +2248,28 @@ comportement ; la forme « garde armée par ses appelants » a été cherchée d
 les autres types de persistance — `CredentialStore` n'a pas de cache à désarmer
 et `SuspendedMachine` est sans état — et n'existait qu'à cet endroit.
 
+## L'audit des allocations, rouvert puis reclos
+
+Il avait été fermé sur les *entrées* : un plafond par format, un seul nombre,
+un tableau exécutable. Deux tranches du 28 août au soir ont montré qu'il
+manquait la moitié symétrique — ce que la **sortie** d'un décompresseur peut
+atteindre — et que deux chemins notés « vérifiés sains » ne l'étaient pas.
+
+`InflateStream` accumulait sans borne : 101 929 octets compressés en produisent
+104 857 600, et un rectangle d'un pixel autorisait un gigaoctet. `SpiceLZ`
+laissait une seule correspondance dépasser son image : 400 Kio de charge utile,
+645 Mio de pic, pour une image déclarant 64 octets.
+
+Les huit chemins de décompression sont maintenant passés en revue, et la règle
+qui les sépare est écrite dans le journal : un tampon pré-dimensionné avec une
+garde par élément est sain ; un ajout dans une collection qui grandit, borne
+vérifiée hors de la boucle, ne l'est pas. Les deux défauts sont tenus par des
+témoins qui mesurent la mémoire ; les six autres chemins sont vérifiés par
+lecture, ce qui est plus faible et se dit.
+
+**Ce qui reste ici** : six flux hostiles à fabriquer, un par format d'en-tête,
+pour tenir les six sains par des témoins plutôt que par ma lecture.
+
 ## Une décision qui appartient à Maxime
 
 Les entrées qu'une version ne sait pas lire sont **immortelles**. C'est

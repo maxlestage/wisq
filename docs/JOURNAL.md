@@ -5728,3 +5728,50 @@ La sonde mémoire lit `/proc/self/status`, que macOS n'a pas. Écrite d'abord
 avec un repli à zéro, elle comparait zéro à zéro et passait partout — pire que
 de ne pas tourner. Elle se déclare sautée maintenant, et le job Linux est son
 arbitre.
+
+## Les huit chemins de décompression, et la règle qui sépare les deux formes
+
+Deux défauts de la même forme en deux tranches, tous deux sur des chemins que
+l'audit des allocations avait déclarés clos. Une troisième découverte au hasard
+n'aurait rien valu : la question se pose à tout ce qui dilate son entrée, et
+elle se pose huit fois.
+
+| chemin | forme | verdict |
+| --- | --- | --- |
+| `InflateStream` (zlib RFB et SPICE) | ajoute à un `Data` qui grandit | **défaut**, corrigé |
+| `SpiceLZ.decompress`, simple passe | ajoute à un tableau qui grandit | **défaut**, corrigé |
+| `SpiceLZ.run`, deux passes | tampon pré-dimensionné, garde par élément | sain |
+| `SpiceGLZDecode` | pré-dimensionné, `op + length <= count` avant écriture | sain |
+| `ZRLEDecoder` | pré-dimensionné, `index + run <= count` avant écriture | sain |
+| `SpiceLZ4` | pré-dimensionné | sain |
+| `SpiceQUIC` | mots bornés par l'entrée, un pour quatre octets ; pixels pré-dimensionnés | sain |
+| `TightDecoder` | pré-dimensionnés ; palette bornée par un champ d'un octet | sain |
+
+### La règle
+
+**Un tampon pré-dimensionné avec une garde par élément est sain. Un ajout dans
+une collection qui grandit, avec la borne vérifiée hors de la boucle, ne l'est
+pas.**
+
+C'est exactement ce qui sépare les deux colonnes, et ce n'est pas une question
+de vigilance : la première forme rend le dépassement impossible à écrire — la
+garde est sur le chemin de chaque élément — pendant que la seconde le rend
+invisible, puisque la condition du `while` a l'air de border la boucle et ne
+borde que ses itérations.
+
+Le codec LZ portait les deux formes dans le même fichier, ce qui est la
+meilleure démonstration qu'on puisse demander : la boucle écrite en second, pour
+les formes `rgba` et `xxxa`, a pris la bonne, et personne n'est revenu corriger
+la première.
+
+### Ce que cette clôture vaut, et ce qu'elle ne vaut pas
+
+Les deux défauts sont tenus par des témoins qui mesurent la mémoire. Les six
+autres chemins sont vérifiés **par lecture** : j'ai lu chaque garde et chaque
+allocation, pas construit un flux hostile pour chacun. C'est plus faible, et il
+faut le dire — ce qui manquerait pour les tenir vraiment, ce sont six flux
+fabriqués à la main, un par format d'en-tête.
+
+Où ne plus chercher : la question « qu'est-ce que ceci alloue, et quand est-ce
+vérifié ? » a été posée aux huit. Ce qui reste ouvert, c'est de la transformer
+en huit témoins plutôt qu'en deux.
