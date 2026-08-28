@@ -253,6 +253,7 @@ mod virsh_tests {
             writeln!(file, "#!/bin/sh\n{script}").unwrap();
             drop(file);
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            wait_until_executable(&path);
             FakeVirsh { path, _dir: dir }
         }
 
@@ -265,6 +266,33 @@ mod virsh_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self._dir);
         }
+    }
+
+    /// Waits for a freshly written script to be executable, and only for that.
+    ///
+    /// Found by a red build rather than by reading: `Text file busy`. Rust runs
+    /// tests on several threads, and `Command::spawn` forks — a child forked
+    /// while this file was still open for writing inherits that descriptor and
+    /// holds it until its own `exec`, and Linux refuses to execute a file any
+    /// process has open for writing. The window is a few microseconds wide and
+    /// belongs to whichever other test happened to be starting a process, which
+    /// is why it passed here, passed in CI, and failed on the next run.
+    ///
+    /// So this waits — and waits for **that** and nothing else. Any other error
+    /// is returned as it is, so a genuinely missing binary still fails the test
+    /// that is about a genuinely missing binary rather than spinning here.
+    fn wait_until_executable(path: &std::path::Path) {
+        const ETXTBSY: i32 = 26;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match Command::new(path).arg("--probe-de-disponibilite").output() {
+                Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => return,
+            }
+        }
+        panic!("le faux virsh est resté « Text file busy » cinq secondes");
     }
 
     /// The probe has to be able to say "something here" before "nothing here"
@@ -375,6 +403,41 @@ mod tests {
         assert_eq!(parse_domstate("in shutdown"), State::Stopped);
         assert_eq!(parse_domstate("crashed"), State::Stopped);
         assert_eq!(parse_domstate("something new"), State::Unknown);
+    }
+
+    /// libvirt has no `starting`, and the protocol document used to promise one.
+    ///
+    /// `POST /v1/vms/{id}/start` was described as answering with the state
+    /// `starting`. The demo backend does; this one cannot, because there is no
+    /// `virsh domstate` output that means it — a domain is `running` from the
+    /// moment it exists, while its guest is still bringing up a display. The
+    /// document now says what holds for both backends, and this pins the half
+    /// that made the old wording false.
+    ///
+    /// It is not a test of the `match` above by another name: it asserts about
+    /// the function's whole range, so an arm added later that invented a
+    /// `starting` out of some libvirt string would fail here rather than
+    /// quietly make the client wait for a state that never arrives.
+    #[test]
+    fn no_libvirt_state_means_starting() {
+        for output in [
+            "running",
+            "idle",
+            "paused",
+            "in shutdown",
+            "shut off",
+            "crashed",
+            "pmsuspended",
+            "no state",
+            "",
+            "starting",
+        ] {
+            assert_ne!(
+                parse_domstate(output),
+                State::Starting,
+                "{output:?} a été lu comme « starting », que libvirt ne dit jamais"
+            );
+        }
     }
 
     #[test]
