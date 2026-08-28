@@ -5637,3 +5637,48 @@ branchée, et elle est écrite dans la feuille de route avec sa raison : un arr�
 poli peut n'aboutir jamais, donc l'interface qui l'offrira devra le dire au
 lieu de tourner en rond. Le contrat est maintenant écrit et tenu pour le jour où
 ce bouton existera.
+
+## Le plafond était sur l'entrée, l'allocation est en sortie
+
+`InflateStream.inflate` accumulait sans limite. Les quatre appelants ont tous la
+même forme — inflater, puis refuser ce qui n'est pas la taille promise : « zlib
+a produit N octets au lieu de M ». Les taux de compression ne se soucient pas de
+l'ordre.
+
+Mesuré avant d'écrire quoi que ce soit : **101 929 octets compressés en
+produisent 104 857 600**, soit 1 028 pour 1. Et `decodeZlib` admet un bloc
+compressé de `pixels × 4 + 1 Mio` : un rectangle **d'un seul pixel** porte donc
+une licence pour environ un gigaoctet, alloué dans `inflate`, avant que son
+`pixels.count == 4` ne s'exécute. Sur un téléphone, ce n'est pas lent, c'est
+mort.
+
+### Ce que l'audit des allocations avait conclu
+
+Il avait regardé ce chemin et l'avait noté « couvert côté pixels », dans la
+liste des choses vérifiées saines où ne plus revenir. C'était vrai de la
+**vérification** et faux de l'**allocation**, et c'est toute la distinction :
+une garde en aval de ce qu'elle garde est un constat, pas une défense.
+
+Le site SPICE portait même le commentaire « Bounded before anything is allocated
+from it » — il bornait la taille *déclarée* dans le message, pendant que
+l'inflate pouvait en produire cent fois plus avant la comparaison.
+
+### La forme de la correction
+
+`inflate(_:limit:)`, sans valeur par défaut. Chaque appelant connaissait déjà
+le nombre ; il le passe en entrée au lieu de le vérifier après. Trois des quatre
+plafonds sont exacts — la taille que le message promet — et seul ZRLE a besoin
+d'un calcul, parce que rien ne compare sa sortie ensuite.
+
+L'absence de valeur par défaut est la seconde moitié : un appelant qui oublie ne
+compile pas, plutôt que d'hériter d'un nombre deviné par quelqu'un d'autre. Le
+compilateur a nommé les quatre sites.
+
+### Les deux bords, et ce que le second a révélé
+
+Retirer le refus fait rougir les deux témoins du défaut. Le décaler d'un —
+refuser le plafond exact au lieu de l'admettre — fait rougir **huit tests de
+décodeurs réels** : Tight, ZRLE, SPICE GLZ, zlib. C'est la meilleure preuve que
+l'égalité exacte est le cas courant et non un coin : la moitié « ne pas refuser
+ce qu'il ne faut pas refuser » est tenue par des fixtures qui viennent de vrais
+serveurs, pas par mes propres exemples.

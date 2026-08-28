@@ -15,7 +15,7 @@ final class InflateStreamTests: XCTestCase {
 
     func testInflatesASingleChunk() throws {
         let inflater = try InflateStream()
-        let output = try inflater.inflate(Self.firstChunk)
+        let output = try inflater.inflate(Self.firstChunk, limit: 1 << 16)
         XCTAssertEqual(String(data: output, encoding: .utf8), "les chiens aboient, ")
     }
 
@@ -23,8 +23,8 @@ final class InflateStreamTests: XCTestCase {
     /// compression ratio comes from, and restarting per rectangle would lose it.
     func testDictionaryPersistsAcrossChunks() throws {
         let inflater = try InflateStream()
-        _ = try inflater.inflate(Self.firstChunk)
-        let output = try inflater.inflate(Self.secondChunk)
+        _ = try inflater.inflate(Self.firstChunk, limit: 1 << 16)
+        let output = try inflater.inflate(Self.secondChunk, limit: 1 << 16)
 
         XCTAssertEqual(String(data: output, encoding: .utf8), "les chiens aboient, la caravane passe")
         // 36 bytes of text in 25 bytes of stream: the second chunk is only that
@@ -34,19 +34,19 @@ final class InflateStreamTests: XCTestCase {
 
     func testResetDropsTheDictionary() throws {
         let inflater = try InflateStream()
-        _ = try inflater.inflate(Self.firstChunk)
+        _ = try inflater.inflate(Self.firstChunk, limit: 1 << 16)
         try inflater.reset()
         // Without the first chunk's header and dictionary, the second is garbage.
-        XCTAssertThrowsError(try inflater.inflate(Self.secondChunk))
+        XCTAssertThrowsError(try inflater.inflate(Self.secondChunk, limit: 1 << 16))
     }
 
     func testEmptyInputIsNotAnError() throws {
         let inflater = try InflateStream()
-        XCTAssertEqual(try inflater.inflate(Data()), Data())
+        XCTAssertEqual(try inflater.inflate(Data(), limit: 1 << 16), Data())
     }
 
     func testCorruptDataThrows() throws {
         let inflater = try InflateStream()
-        XCTAssertThrowsError(try inflater.inflate(Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11])))
+        XCTAssertThrowsError(try inflater.inflate(Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11]), limit: 1 << 16))
     }
 }
