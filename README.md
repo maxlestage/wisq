@@ -146,8 +146,12 @@ it paints before its JavaScript arrives, and mobile-first in the literal sense
 cd site && bun install && bun run dev
 ```
 
-It publishes to GitHub Pages from `master` via `.github/workflows/site.yml`;
-enable Pages once under Settings → Pages → Source: GitHub Actions.
+Heroku serves it, and builds it itself from `master` through its GitHub
+integration: `Procfile`, `package.json` and `scripts/heroku-build.sh` at the
+repository root, plus one config var — `SITE_URL`, the site's public address,
+which the build refuses to run without. `.github/workflows/site.yml` no longer
+publishes; it typechecks, builds and tests the site, and exercises the Heroku
+build path on the same commit.
 
 ## Contributing & security
 

@@ -24,6 +24,39 @@ bun run preview  # serves dist/ the way a real host would — see below
 bun test         # rendering, content integrity, and the built artefact
 ```
 
+## Where it is served, and how it gets there
+
+Heroku, from `master`, through Heroku's own GitHub integration — no deploy
+workflow, no API key in the repository, and nothing to run from a laptop. Three
+files at the repository root make it work:
+
+- `package.json` — minimal, and its only job is to make Heroku recognise the
+  repository and pick the Node.js buildpack it maintains itself. A community Bun
+  buildpack was the obvious alternative and did not survive checking: of four
+  candidates, one URL was a 404, one detects a Bun app by a `bun.lockb` at the
+  root (this repository's lockfile is `site/bun.lock` — a different name in a
+  different directory, so it would not detect), and one is at v0.0.2.
+- `scripts/heroku-build.sh` — installs Bun into `.heroku-bun`, then builds the
+  site. It **refuses to build without `SITE_URL`**: a wrong public address is
+  invisible in the browser and wrong in every canonical link and sitemap entry,
+  so it stops rather than publish a site that points somewhere else.
+- `Procfile` — runs `site/scripts/serve.ts`, the same server `bun run preview`
+  uses and `tests/serve.test.ts` holds. What Heroku serves is what the tests
+  describe.
+
+Setting it up, once, entirely from the Heroku dashboard:
+
+1. Create the app.
+2. **Settings → Config Vars**: `SITE_URL` = the app's public address, with the
+   trailing slash — `https://<app>.herokuapp.com/`.
+3. **Deploy → GitHub**: connect the repository, then enable automatic deploys
+   from `master`. "Wait for CI to pass before deploy" is worth ticking: this
+   repository's checks are the thing that would catch a bad build.
+
+`.github/workflows/site.yml` publishes nothing. It typechecks, builds and tests
+the site, and runs the Heroku build path on the same commit — so a break in the
+deployment is a red check rather than a surprise on the next push.
+
 ## Multi-page, and every page is a real file
 
 `src/routes.ts` is the only place that knows what pages exist. The build
@@ -94,8 +127,9 @@ match its English counterpart fails as untranslated.
 
 ## Every path is relative
 
-The site is served from `/wisq/` on GitHub Pages today and from the root of a
-domain the day it moves; an absolute `/asset.js` works in exactly one of those.
+The site was served from `/wisq/` on GitHub Pages and is served from the root
+on Heroku; an absolute `/asset.js` works in exactly one of those, which is why
+the move needed no rewriting here.
 The build computes each page's depth and writes `./` or `../` accordingly, and
 a test resolves every reference in every built page against its own directory
 and fails if the file is not there. That test is what catches a subdirectory

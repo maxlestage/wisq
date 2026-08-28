@@ -58,7 +58,7 @@ export const privacyEn: Doc = {
     {
       kind: "p",
       text:
-        "The site is static files served by GitHub Pages. GitHub receives the requests, and therefore sees what any web server sees: an IP address, a user agent, and which files were asked for. That is theirs, governed by GitHub's privacy statement, and outside what this project controls. It is stated here rather than omitted because omitting it would make the paragraph above misleading.",
+        "The site is static files served by Heroku. Heroku receives the requests, and therefore sees what any web server sees: an IP address, a user agent, and which files were asked for. That is theirs, governed by Heroku's privacy statement, and outside what this project controls. It is stated here rather than omitted because omitting it would make the paragraph above misleading.",
     },
 
     { kind: "h2", text: "The app is a separate matter" },
@@ -141,7 +141,7 @@ export const privacyFr: Doc = {
     {
       kind: "p",
       text:
-        "Le site est un ensemble de fichiers statiques servis par GitHub Pages. GitHub reçoit les requêtes et voit donc ce que voit n'importe quel serveur web : une adresse IP, un agent utilisateur, et les fichiers demandés. Cela leur appartient, relève de la politique de confidentialité de GitHub, et échappe à ce que ce projet contrôle. C'est dit ici plutôt qu'omis, car l'omettre rendrait le paragraphe précédent trompeur.",
+        "Le site est un ensemble de fichiers statiques servis par Heroku. Heroku reçoit les requêtes et voit donc ce que voit n'importe quel serveur web : une adresse IP, un agent utilisateur, et les fichiers demandés. Cela leur appartient, relève de la politique de confidentialité d'Heroku, et échappe à ce que ce projet contrôle. C'est dit ici plutôt qu'omis, car l'omettre rendrait le paragraphe précédent trompeur.",
     },
 
     { kind: "h2", text: "L'application est un sujet distinct" },
