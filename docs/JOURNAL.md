@@ -5491,3 +5491,48 @@ vide.
 a emporté du travail non commité sur le même fichier. Les tests passaient
 encore — ils avaient tourné avant. C'est la répétition de bout en bout, jusqu'à
 un `curl` sur le vrai serveur, qui l'a montrée.
+
+## « VM introuvable » quand c'est libvirt qui ne répond pas
+
+`VirshBackend::get` faisait `Ok(self.describe(id).ok())` : **toute** erreur
+devenait « cette VM n'existe pas ». Un hôte dont libvirtd est arrêté, ou sur
+lequel `virsh` n'est pas installé, répondait au téléphone *VM introuvable :
+debian-13* à propos d'une machine qui existe et va bien.
+
+Deux conséquences, et la seconde est la plus parlante : le service a un bras
+`Err(message) => Response::error(500, &message)` pour ce cas, prêt à remonter la
+vraie cause — et il était **inatteignable**. Le seul endroit préparé à dire ce
+qui n'allait pas était du code mort.
+
+### Pourquoi ce n'est pas qu'un `?` oublié
+
+Absent et injoignable doivent rester deux réponses, et on ne peut pas les
+séparer en interrogeant le domaine sur lui-même : `virsh domstate` sort non nul
+pour un domaine inconnu **et** pour un hyperviseur qu'il n'atteint pas. Les
+distinguer voudrait dire lire sa prose — « failed to get domain » contre « failed
+to connect to the hypervisor » — c'est-à-dire épingler les messages d'un outil
+qu'on ne contrôle pas.
+
+La question est donc posée à la **liste**, qui n'échoue que quand libvirt
+échoue. Un nom absent d'une liste que libvirt a produite avec succès est
+vraiment absent. C'est l'autre bord de la règle, et il compte autant : une
+correction qui remonterait tout comme une erreur aurait passé les deux tests du
+défaut et cassé le 404 dont l'application dépend. Un test le tient, et le
+sabotage qui « répare » trop le fait rougir — vérifié.
+
+### Le faux `virsh`
+
+Un script shell écrit par le test, rendu exécutable, et passé comme chemin du
+binaire. Une abstraction autour de `Command` aurait laissé les tests s'entendre
+avec une maquette sur quelque chose que le vrai binaire fait autrement ; là,
+c'est le vrai lancement, le vrai code de sortie et la vraie sortie standard.
+
+Avec un cas témoin en tête de fichier : le faux `virsh` doit d'abord savoir dire
+« quelque chose ici » — une VM trouvée, en marche, sur le port 5901 — sans quoi
+chaque test suivant passerait pour la mauvaise raison.
+
+### Au passage
+
+`list` et `get` partagent maintenant `names()`, un seul appel `virsh` sans
+`domstate` par domaine. `get` ne paie donc pas la liste complète pour savoir si
+un nom existe.
