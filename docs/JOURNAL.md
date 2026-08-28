@@ -5458,3 +5458,36 @@ laissé intact.
 
 Les deux tests ont été contre-vérifiés en retirant la lecture : ils rougissent,
 et rien d'autre dans les 1 144 tests ne bouge.
+
+## Où en est la carte, au soir du 28 août
+
+Cinq tranches dans la journée, toutes de la même méthode, et il vaut la peine
+d'écrire ce que la journée a appris plutôt que seulement ce qu'elle a livré.
+
+**Ce qui a le mieux marché** : prendre une phrase que le dépôt écrit sur
+lui-même — « l'instantané rend la machine telle quelle », « les deux
+interpréteurs sont d'accord », « le site fonctionne hors ligne » — et compter
+son dénominateur avant de croire quoi que ce soit. Trois fois sur quatre, le
+code était juste et c'est la preuve qui manquait. La quatrième a donné un vrai
+défaut, et il n'est pas venu d'un balayage : il est venu de lire trois méthodes
+côte à côte et de remarquer que deux lisaient avant d'écrire et pas la
+troisième.
+
+**Ce qui a coûté du temps sans rien apprendre** : chercher une tranche par
+élimination une fois les veines évidentes fermées. Le `.rdp` est déjà bien
+tenu, la surface HTTP du démon est petite et couverte, la forme « garde armée
+par ses appelants » n'existait qu'à l'endroit déjà corrigé. Le dire est plus
+utile que d'ouvrir une tranche faible pour avoir quelque chose à livrer.
+
+**Deux erreurs de méthode, toutes deux de lecture** — et c'est la même erreur
+deux fois : `head -3` a coupé une liste juste avant le fichier qui prouvait le
+contraire de ce que j'allais écrire, et un `grep -c FAILED` a compté zéro échec
+sur une caisse qui ne compilait pas. Le harnais de balayage exige « Compiling »
+dans le journal ; la vérification à la main ne l'exigeait pas. **Un vert peut
+être une absence d'exécution**, et une sortie tronquée n'est pas une sortie
+vide.
+
+**Une troisième, de manipulation** : `git checkout --` pour annuler un sabotage
+a emporté du travail non commité sur le même fichier. Les tests passaient
+encore — ils avaient tourné avant. C'est la répétition de bout en bout, jusqu'à
+un `curl` sur le vrai serveur, qui l'a montrée.
