@@ -112,7 +112,11 @@ struct RFBDecoder {
                 "bloc zlib de \(length) octets pour un rectangle qui en admet \(ceiling)")
         }
         let compressed = try await stream.read(exactly: length)
-        var pixels = [UInt8](try streams.zlib.inflate(compressed))
+        // The size this rectangle must produce, handed in rather than checked
+        // afterwards: the assertion below is the same number, and it used to
+        // be the only one — after the bytes existed.
+        let expected = rect.width * rect.height * 4
+        var pixels = [UInt8](try streams.zlib.inflate(compressed, limit: expected))
         guard pixels.count == rect.width * rect.height * 4 else {
             throw WisqError.malformedMessage(
                 "zlib a produit \(pixels.count) octets au lieu de \(rect.width * rect.height * 4)"
@@ -130,7 +134,8 @@ struct RFBDecoder {
                 "bloc ZRLE de \(length) octets pour un rectangle qui en admet \(ceiling)")
         }
         let compressed = try await stream.read(exactly: length)
-        let tiles = try streams.zrle.inflate(compressed)
+        let tiles = try streams.zrle.inflate(
+            compressed, limit: RFBLimits.maximumInflatedZRLEBytes(for: rect))
         try ZRLEDecoder.decode(rect: rect, data: tiles, into: framebuffer)
     }
 
