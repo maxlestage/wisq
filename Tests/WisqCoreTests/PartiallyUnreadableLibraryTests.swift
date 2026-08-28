@@ -125,6 +125,55 @@ final class PartiallyUnreadableLibraryTests: XCTestCase {
         XCTAssertEqual(raw.count, 1, "l'entrée illisible a été effacée avec la machine supprimée")
     }
 
+    /// And it survives the third one — the only one that used to write without
+    /// reading first.
+    ///
+    /// `upsert` and `delete` both load before they save, so `preserved` is
+    /// filled by the time the file is rewritten. `save` is public and does
+    /// neither: on a store that had not loaded, it appended an empty list of
+    /// preserved entries and deleted the newer ones from the file. Measured
+    /// before it was fixed — one unreadable entry in, zero out.
+    ///
+    /// Nothing in the app called it that way. That is a coincidence of the
+    /// callers, not a defence, and it is the fourth time this repository has
+    /// found a guard armed only by what its callers happen to do.
+    func testSavingWithoutHavingLoadedDoesNotDeleteWhatItNeverRead() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        _ = try store("[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas")),\(alien)]")
+
+        // A second store over the same file, which never reads it.
+        let blind = MachineStore(fileURL: url)
+        try blind.save([Machine(name: "ajoutée", host: "ajoutee.local")])
+
+        let raw = try JSONDecoder().decode([JSONValue].self, from: Data(contentsOf: url))
+        let protocols = raw.compactMap { value -> String? in
+            guard case .object(let fields) = value, case .string(let name)? = fields["proto"] else {
+                return nil
+            }
+            return name
+        }
+        XCTAssertEqual(
+            protocols.sorted(), ["holodeck", "vnc"],
+            "un save qui n'a rien lu a effacé l'entrée illisible"
+        )
+    }
+
+    /// The cost of the fix, stated rather than discovered: a `save` over a file
+    /// that will not parse now refuses, where it used to replace it. That is
+    /// what `upsert` and `delete` have always done, and a library that will not
+    /// parse may still be a library.
+    func testSavingOverAFileThatIsNotALibraryRefusesRatherThanReplacingIt() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        try Data("pas une bibliothèque".utf8).write(to: url)
+
+        let store = MachineStore(fileURL: url)
+        XCTAssertThrowsError(try store.save([Machine(name: "ajoutée", host: "ajoutee.local")]))
+        XCTAssertEqual(
+            try String(contentsOf: url, encoding: .utf8), "pas une bibliothèque",
+            "le fichier refusé doit être laissé tel quel"
+        )
+    }
+
     /// The whole point of preserving it: the build that understands the entry
     /// still finds it intact afterwards, field for field.
     func testThePreservedEntryComesBackUnchanged() throws {

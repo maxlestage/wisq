@@ -140,7 +140,26 @@ public final class MachineStore: @unchecked Sendable {
     /// ones it could. They go last, which is a choice about nothing — the list
     /// is sorted for display anyway — and the point is only that they are still
     /// there for the build that understands them.
+    ///
+    /// **It reads before it writes, and that is the whole guard.** `preserved`
+    /// is filled by a load and by nothing else, so a `save` on a store that had
+    /// not loaded appended an empty list and deleted, from the file, exactly
+    /// what the load path exists to keep: an older build opening a newer
+    /// library, saving once, and taking the newer entries with it.
+    ///
+    /// Nothing in the app reached it — `upsert` and `delete` both read first,
+    /// and they are what the app calls. That is not a defence, it is a
+    /// coincidence of the callers: `save` is public, and the safety of a public
+    /// method cannot rest on which of its siblings the caller happened to pick.
+    ///
+    /// The load is free when one has already happened, because the cache
+    /// answers it. What it costs is that `save` now **throws on a file it
+    /// cannot parse at all**, where it used to overwrite it — the same answer
+    /// `upsert` and `delete` have always given, and the right one: a library
+    /// that will not parse may still be a library, and replacing it is the one
+    /// loss nobody can undo.
     private func saveOnQueue(_ machines: [Machine]) throws {
+        _ = try loadOnQueue()
         do {
             var entries = try Self.decoder.decode(
                 [JSONValue].self, from: try Self.encoder.encode(machines))
