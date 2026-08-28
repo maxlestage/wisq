@@ -261,34 +261,110 @@ final class SnapshotAgreementTests: XCTestCase {
         )
     }
 
+    /// Advances `machine` in slices until it writes something, and reports the
+    /// instructions that cost. Nil if it stayed silent, or parked, first.
+    ///
+    /// A budget picked by hand is a property of one kernel image rather than
+    /// of the code: this one is silent for stretches of tens of millions of
+    /// instructions, and a window that lands in one compares two empty
+    /// strings. Finding the point instead keeps the comparison's teeth when
+    /// the image changes. The Rust suite learned this and said so; this file
+    /// had not.
+    private func runUntilItSpeaks(
+        _ machine: LinuxMachine, console: Console, past was: Int, cap: UInt64
+    ) -> UInt64? {
+        let slice: UInt64 = 2_000_000
+        let start = machine.retiredInstructions
+        while machine.retiredInstructions - start < cap {
+            let before = machine.retiredInstructions
+            machine.run(instructionBudget: slice)
+            // A parked hart retires nothing and never will: spinning here
+            // would turn a silent guest into a hanging test.
+            if machine.retiredInstructions == before { return nil }
+            if console.snapshot.count > was { return machine.retiredInstructions - start }
+        }
+        return nil
+    }
+
+    /// A restored machine has to *continue* the one that was saved, and the
+    /// only proof of that is what it says next.
+    ///
+    /// This test used to assert the retired count alone, over a fixed budget of
+    /// six million instructions taken after the snapshot. Both halves of that
+    /// were blind:
+    ///
+    ///   - **The count is the same number** for a machine that works and one
+    ///     that does not. A guest whose return address was lost derails, and a
+    ///     derailed guest is a busy one — it retires every instruction the
+    ///     budget allows. Measured, not supposed: with `restore` dropping `x1`,
+    ///     the count matched and this test passed.
+    ///   - **The window was silent.** Measured too, by asserting otherwise and
+    ///     watching it fail: in those six million instructions this kernel
+    ///     writes nothing at all. Even an assertion on the console would have
+    ///     compared one empty string to another.
+    ///
+    /// So the console is the assertion now, the count is kept beside it, and
+    /// the window is found rather than guessed: the reference is carried on
+    /// until it actually writes, and each restored core is given exactly the
+    /// instructions that took.
+    ///
+    /// **What that bought, exactly, and what it did not.** It is worth being
+    /// precise, because the obvious reading is too generous. Dropping the
+    /// restore of RAM is now caught here by the console alone — the retired
+    /// count matches — so the count really was the weaker half. But the
+    /// thirty-five fields this test could not see before, it still cannot see:
+    /// re-measured field by field after the change, all thirty-five survive.
+    /// A boot cannot hold an individual register, because whether that
+    /// register is live at the instant the snapshot is taken is an accident of
+    /// where the boot had got to. `SnapshotFieldWitnessTests` holds them, and
+    /// holds them by construction rather than by luck.
     func testEachCoreResumesFromTheOthersSnapshot() throws {
         guard let url = imageURL() else {
             throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
         }
         let image = try Data(contentsOf: url)
         let budget: UInt64 = 30_000_000
-        let after: UInt64 = 6_000_000
 
         // One machine runs, saves, and keeps going: that continuation is the
         // reference both restored machines have to reproduce.
-        let reference = LinuxMachine { _ in }
+        let referenceConsole = Console()
+        let reference = LinuxMachine { referenceConsole.append($0) }
         try reference.load(kernelImage: image, commandLine: "console=ttyS0")
         reference.run(instructionBudget: budget)
         let saved = reference.snapshot()
-        reference.run(instructionBudget: after)
-        let expected = reference.retiredInstructions
+        let atSnapshot = referenceConsole.snapshot.count
+        XCTAssertGreaterThan(
+            atSnapshot, 0, "l'instantané doit être pris sur une machine qui a réellement démarré"
+        )
 
-        let intoSwift = LinuxMachine { _ in }
+        let after = try XCTUnwrap(
+            runUntilItSpeaks(reference, console: referenceConsole, past: atSnapshot, cap: 90_000_000),
+            "l'invité doit réécrire après l'instantané, sans quoi la comparaison ne compare rien"
+        )
+        let expected = reference.retiredInstructions
+        let continuation = Data(referenceConsole.snapshot.dropFirst(atSnapshot))
+
+        let swiftConsole = Console()
+        let intoSwift = LinuxMachine { swiftConsole.append($0) }
         try intoSwift.restore(saved)
         intoSwift.run(instructionBudget: after)
+        XCTAssertEqual(
+            swiftConsole.snapshot, continuation,
+            "le cœur Swift doit écrire la suite de la machine sauvée, octet pour octet"
+        )
         XCTAssertEqual(
             intoSwift.retiredInstructions, expected,
             "le cœur Swift doit reprendre l'instantané à l'identique"
         )
 
-        let intoRust = RustLinuxMachine { _ in }
+        let rustConsole = Console()
+        let intoRust = RustLinuxMachine { rustConsole.append($0) }
         try intoRust.restore(saved)
         intoRust.run(instructionBudget: after)
+        XCTAssertEqual(
+            rustConsole.snapshot, continuation,
+            "le cœur Rust doit écrire la suite d'un instantané écrit par le cœur Swift"
+        )
         XCTAssertEqual(
             intoRust.retiredInstructions, expected,
             "le cœur Rust doit reprendre un instantané écrit par le cœur Swift"
