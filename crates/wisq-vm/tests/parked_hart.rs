@@ -56,7 +56,10 @@ fn a_hart_parked_with_no_timer_armed_stops_instead_of_spinning() {
     let result = run_bounded(&PARKS_IMMEDIATELY, 10_000);
     let (outcome, retired) = result.expect("run doit rendre la main, pas tourner en rond");
     assert_eq!(outcome, Outcome::Stopped);
-    assert_eq!(retired, 1, "une seule instruction retirée : le WFI lui-même");
+    assert_eq!(
+        retired, 1,
+        "une seule instruction retirée : le WFI lui-même"
+    );
 }
 
 /// The same guest with no budget to exhaust, which is how the app runs it.
