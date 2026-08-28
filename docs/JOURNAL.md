@@ -5089,3 +5089,69 @@ aurait masqué l'échec.
 Ce qui reste à faire à la main, et que je ne peux pas faire d'ici : dépublier le
 site dans Settings → Pages. Couper le workflow arrête de publier ; l'ancienne
 adresse reste servie tant que personne ne la retire.
+
+## Comparer les deux cœurs sur des instructions choisies
+
+Suite directe de la tranche précédente, qui avait mesuré la portée réelle du
+test différentiel : sur cent six bras du décodeur, la comparaison en remarque
+soixante-six, le compilateur six, **et personne trente-deux**. Un cœur Swift qui
+se tromperait sur `AMOMINU`, sur la division par zéro ou sur le contenu de
+`mtval` serait déclaré d'accord avec le cœur Rust.
+
+Ce fichier ne démarre rien. Chaque cas est une poignée de mots codés à la main,
+chargés dans les deux cœurs, exécutés au même budget, comparés de trois façons.
+
+### Le piège d'un test différentiel, et comment il est fermé
+
+Comparer deux implémentations répond à « sont-elles d'accord », jamais à
+« ont-elles raison ». Deux erreurs identiques sont d'accord — et un programme
+qui piège sur sa première instruction aussi. Un différentiel mal encodé passe
+donc tout seul.
+
+D'où la troisième assertion : chaque invité **émet un octet sur l'UART**, choisi
+distinctif, et le test l'exige en plus de l'accord. Un programme mal encodé
+n'imprime rien, ou autre chose, au lieu de passer en silence. C'est ce qui a
+permis d'écrire quinze programmes en hexadécimal à la main sans se mentir.
+
+### Ce que la correction précédente a débloqué
+
+Ce fichier n'aurait pas pu exister la semaine dernière : un invité qui se gare
+faisait tourner `run` pour toujours, donc on ne pouvait pas confier des
+programmes arbitraires à un harnais. Les deux cœurs rendent maintenant la main
+quand un hart garé ne peut plus être réveillé. La correction d'un défaut a
+ouvert le test qui manquait.
+
+### Deux fois la même erreur, à quatre jours d'intervalle
+
+`AMOMAX` et `AMOMINU` ont survécu à la contre-vérification. Le couple choisi —
+cellule à −1, registre à 1 — donne pour bonne réponse **le registre**, c'est-à-dire
+exactement ce qu'un bras inerte laisse en place et range. Une sonde qui ne
+distingue pas ne prouve rien.
+
+C'est mot pour mot l'erreur corrigée dans `RV32ArithmeticWitnessTests`, et la
+leçon n'a pas traversé d'un fichier à l'autre. Elle est maintenant écrite dans
+le test qui la corrige, à côté du couple inverse.
+
+Et `JALR` a survécu pour une raison plus bête encore : le commentaire disait
+« offset 21 », le code écrivait `20`. Cible paire, masque jamais exercé. La
+contre-vérification l'a trouvé ; la lecture ne l'avait pas trouvé.
+
+### Le compte
+
+| | bras |
+| --- | --- |
+| attrapés par le nouveau fichier | 30 |
+| hors de portée d'un différentiel, tenus ailleurs | 2 |
+
+Les deux, dits plutôt que tus. **Le PC désaligné** est inatteignable depuis du
+code invité : `JAL` a un bit de poids faible nul par construction et `JALR` le
+masque, et la seule autre route — un vecteur de piège impair — piège à l'entrée
+de son propre gestionnaire, sans rien laisser imprimer. C'est le quatrième des
+quatre diagnostics, et seul un test unitaire qui pose le curseur directement
+peut le tenir. **`WFI` qui rouvre les interruptions** demanderait d'armer le
+CLINT, se garer, se réveiller et relire `mstatus` : un programme assez long pour
+que ce soit surtout le programme qu'il teste. Le témoin unitaire d'à côté lit le
+drapeau en trois lignes.
+
+Aucun désaccord trouvé entre les deux cœurs. Ce qui manquait, c'était la
+question.
