@@ -5155,3 +5155,104 @@ drapeau en trois lignes.
 
 Aucun désaccord trouvé entre les deux cœurs. Ce qui manquait, c'était la
 question.
+
+## « L'instantané rend la machine telle quelle » — trente-cinq champs sur cinquante et un
+
+Même méthode que les tranches précédentes, sur une autre affirmation :
+`Snapshot.swift` dit que RAM, registres et octets en attente reviennent
+« exactement là où l'invité était ». Cinquante et une choses sont sauvées —
+trente-deux registres entiers, seize registres de contrôle, la RAM, les touches
+pas encore lues et les octets pas encore rendus à la console.
+
+La mesure : retirer, une à une, chacune des cinquante et une affectations de
+`restore`, et faire tourner la suite entière contre chaque sabotage. La lecture
+reste faite, donc le lecteur s'équilibre toujours et l'instantané est toujours
+accepté ; le champ garde simplement ce que la machine avait déjà.
+
+| | champs |
+| --- | --- |
+| remarqués par la suite | 16 |
+| passés inaperçus | 35 |
+
+Sur les trente-cinq, **un** est une vraie équivalence : `x0` est câblé à zéro,
+un instantané valide n'y porte rien d'autre, et perdre sa restauration ne change
+rien. Les trente-quatre autres étaient des trous, `mepc` et vingt-six registres
+entiers parmi eux.
+
+### Deux sondes qui avaient l'air de tout tenir
+
+`SuspendedMachineTests.testARealMachineSurvivesTheFile` compare les deux
+instantanés octet pour octet — la bonne assertion. Mais sa machine exécute
+quatre octets de `nop` puis piège en boucle : la plupart de ses registres et la
+moitié de ses CSR valent zéro. Retirer la restauration d'un champ déjà nul ne
+change rien. Une sonde qui ne distingue pas ne prouve rien, pour la cinquième
+fois.
+
+`SnapshotAgreementTests.testEachCoreResumesFromTheOthersSnapshot` restaure un
+vrai Linux démarré et le poursuit six millions d'instructions, puis compare le
+compte retiré. Deux aveuglements, l'un dans l'autre :
+
+- **Le compte est le même nombre** pour une machine qui marche et une qui ne
+  marche pas. Un invité qui a perdu son adresse de retour déraille — et un
+  invité qui déraille est occupé : il retire les six millions d'instructions
+  que le budget lui donne. Mesuré : avec `restore` laissant tomber `x1`, le
+  compte correspondait et le test passait.
+- **La fenêtre était muette.** Mesuré aussi, en affirmant le contraire et en
+  regardant échouer : dans ces six millions d'instructions, ce noyau n'écrit
+  rien du tout. Même une assertion sur la console aurait comparé deux chaînes
+  vides.
+
+Le test cherche maintenant le moment où l'invité reparle au lieu de le deviner
+— c'est la solution que la suite Rust avait déjà trouvée et écrite, et que ce
+fichier-ci n'avait pas reprise — et compare les octets écrits après
+l'instantané, le compte gardé à côté.
+
+### Ce que la correction a rapporté, et ce qu'elle n'a pas rapporté
+
+Il faut être précis, parce que la lecture flatteuse est à portée de main. La
+perte de la RAM est désormais attrapée par la console seule : le compte, lui,
+correspond. Le compte était bien la moitié faible.
+
+Mais les trente-cinq champs que ce test ne voyait pas, il ne les voit toujours
+pas — re-mesuré champ par champ après la correction, les trente-cinq survivent.
+Un démarrage ne peut pas tenir un registre donné : qu'il soit vivant à l'instant
+précis où l'instantané est pris est un accident de l'endroit où le démarrage en
+était.
+
+### Le témoin
+
+`SnapshotFieldWitnessTests` n'exécute rien. Il construit un instantané où
+**chaque champ sauvé porte une valeur différente et non nulle**, le restaure, et
+le réécrit. Ce que la restauration laisse tomber revient à zéro, et le mot qui
+le nomme est celui qui échoue.
+
+Construit à partir d'un vrai instantané plutôt qu'assemblé de zéro : la section
+RAM est codée par plages, et un encodeur écrit à la main dans un test serait une
+seconde implémentation de la chose testée. Seuls les mots à largeur fixe sont
+réécrits sur place, et le dernier blob remplacé.
+
+Les valeurs attendues sont fixées dans le test, pas relues par un second appel —
+si bien que les mêmes assertions tiennent aussi le côté écriture : mettre un
+champ à zéro dans `snapshot()` fait rougir le fichier. Vérifié, sur `mtval` et
+sur un registre.
+
+Contre-vérification : les trente-cinq survivants sabotés contre ce seul fichier.
+**Trente-quatre attrapés sur trente-quatre trous** ; `x0` ne l'est pas, et ne
+peut pas l'être.
+
+### Le garde que le Rust tient de son compilateur et que le Swift n'avait pas
+
+`snapshot.rs` affirme `size_of::<Core>() == CORE_WORDS * 4` à la compilation :
+ajouter un registre au cœur Rust empêche la caisse de compiler. Côté Swift il
+n'y avait rien — `RV32Core` est une classe, sa taille est celle d'un pointeur,
+et `Snapshot.coreWords` est une constante que rien ne relie au type.
+
+C'est la panne à laquelle ce format est le plus exposé, parce qu'elle démarre :
+la machine revient, tourne, et n'est discrètement pas celle qui a été sauvée. Le
+test qui la couvre maintenant lit les propriétés stockées de `RV32Core` par
+réflexion et les confronte à la liste nommée. Instrument plus faible qu'une
+assertion de compilation — il échoue à l'exécution — mais c'est la même alarme,
+et elle donne le nom du champ oublié.
+
+Aucun défaut trouvé dans le format lui-même. Ce qui manquait, encore une fois,
+c'était le témoin.
