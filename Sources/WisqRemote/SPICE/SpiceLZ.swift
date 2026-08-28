@@ -363,6 +363,21 @@ enum SpiceLZ {
                 // A run of literals, biased by one: a control of 0 means one
                 // pixel, not none.
                 for _ in 0...ctrl {
+                    // Per pixel, like `run` does next door — and **not**
+                    // load-bearing, which is worth saying rather than leaving
+                    // to look like the fix.
+                    //
+                    // A literal run is bounded by the control byte that
+                    // introduced it: `ctrl < maxCopy`, so at most thirty-two
+                    // pixels, and the `while` above only entered while under
+                    // the limit. The overshoot without this line is a hundred
+                    // and twenty-eight bytes, caught by the equality at the
+                    // bottom. Removing it fails no test — checked, and it is a
+                    // real equivalence rather than a missing witness.
+                    //
+                    // It stays so that both loops in this file read the same
+                    // way. The match below is the one that matters.
+                    guard out.count < limit else { throw Failure.truncated }
                     if header.type == .rgb16 {
                         // The codec reads a 16-bit pixel as `(first << 8) |
                         // second` and stores it as a machine word, so on the
@@ -421,8 +436,22 @@ enum SpiceLZ {
             // Copied one pixel at a time, and on purpose: the match may overlap
             // its own output — a run is encoded as a distance of one — so the
             // bytes being read have to be the bytes just written.
+            //
+            // **Bounded per byte, and that is the whole defect this closes.**
+            // `length` is built by a continuation that adds 255 for every
+            // `0xFF` the stream cares to spend, so one match can be as long as
+            // the input is, times two hundred and fifty-five. The `while`
+            // condition above cannot see inside an iteration, and the
+            // `out.count == limit` at the bottom runs after the bytes exist.
+            //
+            // Measured, from a four-by-four image declaring sixty-four bytes:
+            // 400 051 bytes of payload, **645 MiB of peak allocation**, and
+            // then a refusal. Refusing here costs a valid stream nothing —
+            // overshooting `limit` was already fatal at the bottom — and the
+            // two-pass `run` below has always checked exactly this way.
             var source = out.count - backwards
             for _ in 0..<(length * bytesPerPixel) {
+                guard out.count < limit else { throw Failure.truncated }
                 out.append(out[source])
                 source += 1
             }

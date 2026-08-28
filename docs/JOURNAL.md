@@ -5682,3 +5682,49 @@ décodeurs réels** : Tight, ZRLE, SPICE GLZ, zlib. C'est la meilleure preuve qu
 l'égalité exacte est le cas courant et non un coin : la moitié « ne pas refuser
 ce qu'il ne faut pas refuser » est tenue par des fixtures qui viennent de vrais
 serveurs, pas par mes propres exemples.
+
+## Le même défaut, un codec plus loin : une correspondance LZ sans borne
+
+La tranche précédente a plafonné la sortie de zlib. La question qui l'avait
+trouvée — « qu'est-ce que ceci alloue, et quand est-ce vérifié ? » — vaut pour
+tout ce qui dilate son entrée. Posée aux codecs SPICE, elle en a trouvé un
+second.
+
+`SpiceLZ.decompress` boucle sur `while out.count < limit`, ce qui ne regarde
+qu'**entre** les itérations. Et une itération n'est pas bornée : la longueur
+d'une correspondance se construit par une rallonge qui ajoute 255 pour chaque
+`0xFF` que le flux veut bien dépenser, puis la copie s'exécutait jusqu'au bout.
+L'égalité finale `out.count == limit` refusait ce qui existait déjà.
+
+Mesuré, sur une image de quatre par quatre qui déclare soixante-quatre octets :
+**400 051 octets de charge utile, 645 Mio de pic**, puis un refus. Sur un
+téléphone, ce n'est pas un refus, c'est une mort — et c'est un seul message
+d'image SPICE.
+
+### Le codec connaissait déjà la réponse
+
+`run`, la boucle deux passes écrite pour les formes `rgba` et `xxxa`, vérifie
+`written < count` avant **chaque** élément, de son cycle de littéraux comme de
+sa copie. Elle écrit dans un tampon pré-dimensionné ; la boucle simple passe
+ajoute à un tableau qui grandit, et ne vérifiait pas. Même fichier, deux
+boucles, une seule gardée.
+
+### Trois sabotages, et un qui ne mord pas
+
+- **La copie non bornée** — l'ancien code — fait rougir le témoin mémoire.
+- **La garde qui refuse tout** fait rougir six tests de fixtures réelles :
+  bitmaps LZ, palettes, GLZ. L'autre bord est tenu par de vrais flux.
+- **Les littéraux non bornés** ne font rougir personne, et c'est une **vraie
+  équivalence** plutôt qu'un témoin manquant : un cycle de littéraux est borné
+  par l'octet de contrôle qui l'introduit — `ctrl < maxCopy`, donc trente-deux
+  pixels au plus — et la boucle n'entre que sous la limite. Le dépassement sans
+  cette ligne est de cent vingt-huit octets, attrapé par l'égalité du bas. La
+  ligne reste pour que les deux boucles du fichier se lisent pareil, et le
+  commentaire le dit au lieu de laisser croire qu'elle est la correction.
+
+### Un test qui ne pouvait pas échouer, corrigé avant d'être poussé
+
+La sonde mémoire lit `/proc/self/status`, que macOS n'a pas. Écrite d'abord
+avec un repli à zéro, elle comparait zéro à zéro et passait partout — pire que
+de ne pas tourner. Elle se déclare sautée maintenant, et le job Linux est son
+arbitre.
