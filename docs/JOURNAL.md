@@ -4875,3 +4875,62 @@ pas (`mip`, `mcause`, `mtval`, `misa`, `mvendorid`, `cycle`, les six micro-ops
 lus séparément), les quatre pièges d'adresse hors RAM, le PC désaligné, `EBREAK`,
 `WFI` qui endort, le bit d'alignement de `JALR`, `FENCE`. C'est la tranche
 suivante.
+
+## Les vingt-quatre derniers bras, et le seul que rien ne pouvait tenir
+
+Suite et fin du balayage du décodeur rv32ima. Les vingt-quatre bras que #113
+laissait tenus par rien ont tous la même forme : **la machine qui parle
+d'elle-même**. La plomberie CSR que le noyau ne traverse pas — `misa`,
+`mvendorid`, `cycle`, `mip`, `mtval`, `mcause` — les cinq pièges d'adresse, le
+PC désaligné, `EBREAK`, `WFI`, le bit d'alignement de `JALR`, `FENCE`.
+
+C'est pour cela que le démarrage les rate. Un noyau atteint son invite en
+faisant de l'arithmétique, en prenant des interruptions de minuteur et en
+redescendant en mode utilisateur : il lit `mstatus` et `mepc` sans arrêt et ne
+lit jamais `misa`, n'écrit jamais `mtval`, ne sort jamais de sa propre RAM. Ces
+instructions-là sont celles qu'un invité emploie quand quelque chose a mal
+tourné, ou quand il veut savoir sur quelle machine il tourne. Un test qui ne
+fait que démarrer un noyau sain ne peut voir ni l'une ni l'autre.
+
+### CSRRW : équivalence réelle, et le compilateur pour seul témoin
+
+Un seul bras a survécu à la contre-vérification, et pour la bonne raison. La
+variable était amorcée `var writeval = rs1` avant le `switch`, et `CSRRW`
+répond précisément `rs1` : son bras disait ce que l'amorce disait déjà. Le
+supprimer ne change rien. **Aucun test ne pouvait le tenir** — sa réponse et
+celle du repli sont la même valeur.
+
+Des quatre diagnostics, c'est l'équivalence réelle, pas le test manquant. La
+correction n'est donc pas un test de plus : c'est `let writeval` avec un
+`default` explicite. Les six micro-opérations deviennent porteuses à la
+compilation, et le repli — inatteignable, la garde n'admettant que 1, 2, 3, 5,
+6 et 7 — est écrit plutôt que sous-entendu. Vérifié aux deux bords : supprimer
+le bras est maintenant une **erreur de compilation**, le corrompre en `CSRRS`
+donne un rouge.
+
+Le cœur Rust a la même coïncidence (`_ => rs1` attrape ce que `1 => rs1`
+laisserait passer) et reste tel quel : la seule façon d'y rendre le bras
+porteur serait un `unreachable!()`, c'est-à-dire troquer un repli silencieux
+contre une panique dans la boucle d'interprétation, sur un téléphone. Le prix
+n'en vaut pas la peine.
+
+### Une assertion qui mesurait le minuteur en croyant mesurer le CSR
+
+`mip` écrit à `0xAAAA_AAAA` se relit à `0xAAAA_AA2A` deux instructions plus
+tard. Ce n'est pas l'écriture qui a échoué : le bit 7 est `MTIP`, que le hart
+republie depuis l'horloge **en tête** de chaque pas. Le code avait raison,
+l'assertion avait tort.
+
+Le comportement exact est maintenant épinglé, avec sa temporalité : l'écriture
+de l'invité passe entière et survit à l'instruction qui l'a faite, puis se fait
+écraser au pas suivant. Les deux moitiés comptent — un gestionnaire qui pose le
+bit et le relit voit sa propre valeur ; un gestionnaire qui compte dessus se
+trompe une instruction plus tard.
+
+### Le balayage est clos
+
+Cent six bras, trois tranches. 17 tenus par un test unitaire, 23 par le
+démarrage jusqu'à la bannière, 23 par l'assertion sur l'invite de connexion,
+43 par les deux fichiers de témoins — dont un que seul le compilateur peut
+tenir. Aucun défaut trouvé dans l'émulateur ; ce qui manquait, ce sont les
+témoins, et une assertion de démarrage qui regardait la deuxième milliseconde.
