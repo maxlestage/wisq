@@ -5597,3 +5597,43 @@ verts après correction.
 
 Un rouge intermittent n'est pas une chose qu'on relance : c'est une chose qu'on
 lit.
+
+## L'autre moitié de la même erreur : ce que rend un arrêt
+
+La tranche précédente a corrigé le contrat de `start` — le document promettait
+un état `starting` que `VirshBackend` ne produit jamais. Elle n'a pas regardé
+le verbe d'à côté, et `stop` avait exactement la même fracture, en pire.
+
+`DemoBackend::stop` prenait `_force` : **le paramètre était ignoré**. La seule
+distinction que porte le corps de la requête — demander poliment ou couper le
+courant — n'existait pas dans le backend que pilote toute la suite bout-à-bout,
+et le test d'à côté affirmait `.stopped` pour les deux.
+
+Or `virsh shutdown` envoie l'ACPI et rend la main : le domaine tourne encore,
+console ouverte, jusqu'à ce que l'invité en décide — et un invité sans
+gestionnaire ACPI ne répond jamais. Trois artefacts s'accordaient entre eux et
+aucun avec libvirt.
+
+### Le rouge qui prouve la correction
+
+`AgentEndToEndTests.testStopTearsDownTheConsole` est passé au rouge dès que le
+backend de démo a lu `force`. C'est le bon rouge : il épinglait l'ancien
+comportement, et son échec montre que le changement traverse HTTP plutôt que de
+rester une affaire interne au Rust.
+
+Il est devenu deux tests, un par bord. Le forcé est aussi le seul endroit où
+`force` est vérifié **là où il voyage** : les tests Rust appellent le backend
+directement et ne peuvent pas montrer que `{"force": true}` survit à la
+sérialisation, à l'envoi, à l'analyse et au routage.
+
+Le poli attend en sondant plutôt qu'en dormant : une machine lente allonge le
+test au lieu de le faire échouer.
+
+### Ce que ça ne corrige pas
+
+Rien dans l'application n'appelle `AgentClient.stop`. Le démon sait arrêter une
+VM, le téléphone ne l'offre pas. Ce n'est pas un défaut mais une capacité non
+branchée, et elle est écrite dans la feuille de route avec sa raison : un arrêt
+poli peut n'aboutir jamais, donc l'interface qui l'offrira devra le dire au
+lieu de tourner en rond. Le contrat est maintenant écrit et tenu pour le jour où
+ce bouton existera.

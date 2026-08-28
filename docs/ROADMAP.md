@@ -2272,6 +2272,13 @@ sabordable ici.
 
 ## Ce qui reste, au 28 août
 
+- **Arrêter une VM distante depuis le téléphone** — le démon sait le faire,
+  `AgentClient.stop` existe, et **rien dans l'application ne l'appelle**. Ce
+  n'est pas un défaut, c'est une capacité non offerte : il manque le bouton et
+  la conduite qui va avec, puisqu'un arrêt poli peut n'aboutir jamais et qu'une
+  interface honnête doit le dire plutôt que de tourner en rond. Le contrat des
+  deux valeurs de `force` est écrit dans `docs/AGENT-PROTOCOL.md` et tenu par le
+  backend de démonstration.
 - **RDP (lot 3)** — le seul protocole de console que wisq ne parle pas. Le client
   porte une ébauche délibérée qui rend `.unsupportedProtocol` au lieu de faire
   semblant. Demande une machine Apple pour être jugé, pas seulement testé.
