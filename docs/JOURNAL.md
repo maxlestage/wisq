@@ -5412,3 +5412,49 @@ sait rien de ce que le site aurait dû produire. Les deux moitiés se complèten
 ce qui manquait, c'était la seconde.
 
 Aucun défaut trouvé dans le worker lui-même.
+
+## La défense de la bibliothèque n'était armée que par un `load`
+
+Quatrième fois que ce dépôt trouve la même forme de défaut : une garde qui tient
+parce que ses appelants se trouvent faire le bon geste, et rien qui l'énonce.
+
+`MachineStore` garde les entrées qu'une version plus ancienne ne sait pas lire :
+`loadOnQueue` les met de côté dans `preserved`, `saveOnQueue` les réécrit. C'est
+la moitié qui empêche la correction de #78 d'être pire que le défaut qu'elle
+fermait — une vieille version ouvrant une bibliothèque récente, sauvant une
+fois, et emportant les entrées récentes avec elle.
+
+Mais `preserved` n'est rempli **que** par un chargement. `save` est public et
+n'en fait aucun : sur un store qui n'a rien lu, il ajoutait une liste vide
+d'entrées préservées et effaçait du fichier exactement ce que le chemin de
+lecture existe pour garder.
+
+Mesuré avant d'être écrit : une entrée illisible dans le fichier, un `save`
+aveugle, **zéro entrée restante**.
+
+### Pourquoi personne ne l'avait vu
+
+Les trois opérations composites ne sont pas symétriques. `upsert` et `delete`
+chargent avant d'écrire — le commentaire d'à côté dit même « l'autre opération
+composite qui lit la liste et la réécrit ». `save` est la troisième, et la
+seule qui écrit sans lire. L'application n'appelle jamais que les deux
+premières, donc rien ne pouvait déclencher la perte.
+
+Ce n'est pas une défense, c'est une coïncidence d'appelants. La sûreté d'une
+méthode publique ne peut pas reposer sur celle de ses sœurs que l'appelant a
+choisie.
+
+### Ce que la correction coûte, dit plutôt que découvert
+
+`saveOnQueue` lit avant d'écrire. Quand un chargement a déjà eu lieu, le cache
+répond et cela ne coûte rien.
+
+Ce que cela change : `save` **refuse maintenant un fichier qu'il ne sait pas
+analyser du tout**, là où il l'écrasait. C'est la réponse que `upsert` et
+`delete` donnent depuis toujours, et c'est la bonne — une bibliothèque qui ne
+s'analyse pas est peut-être encore une bibliothèque, et la remplacer est la
+seule perte que personne ne peut annuler. Un test l'épingle, avec le fichier
+laissé intact.
+
+Les deux tests ont été contre-vérifiés en retirant la lecture : ils rougissent,
+et rien d'autre dans les 1 144 tests ne bouge.
