@@ -2,7 +2,9 @@
 # `bun run preview` uses, and the same one `site/tests/serve.test.ts` puts
 # requests through, so what Heroku serves is what the tests hold.
 #
-# Bun lands in `.heroku-bun` at build time (scripts/heroku-build.sh) and travels
-# in the slug; the path is spelled out rather than relying on PATH, which the
-# build and the dyno do not share.
-web: ./.heroku-bun/bin/bun site/scripts/serve.ts
+# Which Bun it uses is a question with two possible answers and a crash loop for
+# a wrong one, so it is answered in a script rather than on this line:
+# `.heroku-bun` from our own build first, a buildpack's Bun on PATH as a
+# fallback, and a one-line explanation instead of a stack of restarts if there
+# is neither.
+web: ./scripts/heroku-web.sh
