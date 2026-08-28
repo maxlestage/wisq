@@ -223,6 +223,47 @@ fn queued_keystrokes_survive() {
     );
 }
 
+/// Output produced and not yet handed over is machine state too, and it is the
+/// half nobody thinks of: the bytes have left the guest's UART and have not
+/// reached the terminal, so losing them loses a line the guest believes it
+/// printed.
+///
+/// Measured, and it is the one gap the two cores had in common. Each of the
+/// fifty-one assignments in `restore` was removed in turn and this suite run
+/// against it: fifty of the fifty-one were noticed, and this was the one that
+/// was not. The Swift core was swept the same way and came out at thirty-five
+/// unheld out of fifty-one — the same format, the same claim, very different
+/// amounts of proof — and `pending_output` was unheld on both sides.
+///
+/// The snapshot is built by editing a real one rather than assembled from
+/// scratch: the RAM section is run-length encoded, and a hand-written encoder
+/// in a test would be a second implementation of the thing under test. The
+/// pending-output blob is the last section, so replacing it is the whole edit.
+#[test]
+fn console_bytes_not_yet_flushed_survive() {
+    let mut m = Machine::new(1 << 20, Box::new(|_: &[u8]| {}));
+    m.load(&[0x13, 0x00, 0x00, 0x00], None).unwrap();
+    let base = m.snapshot();
+    assert_eq!(
+        &base[base.len() - 8..],
+        &[0u8; 8],
+        "l'instantané d'une machine qui n'a pas tourné doit finir sur un blob vide"
+    );
+
+    let pending = [0xF0u8, 0x0D, 0xBA, 0xBE];
+    let mut edited = base[..base.len() - 8].to_vec();
+    edited.extend_from_slice(&(pending.len() as u64).to_le_bytes());
+    edited.extend_from_slice(&pending);
+
+    let mut back = Machine::new(1 << 20, Box::new(|_: &[u8]| {}));
+    back.restore(&edited).expect("restauration");
+    assert_eq!(
+        back.snapshot(),
+        edited,
+        "les octets en attente pour la console doivent survivre à la restauration"
+    );
+}
+
 /// The same six instructions the app-layer tests use: write one line to the
 /// UART, then spin quietly. Small enough to need no kernel image, so this runs
 /// on every commit rather than only where one has been downloaded.
