@@ -370,7 +370,12 @@ extension SpiceDisplayWire {
         // message's word and the message is the network's.
         guard inflatedSize > 0, inflatedSize <= 1 << 28 else { return nil }
 
-        let inflated = try InflateStream().inflate(Data(payload))
+        // The message's own promise, used as the ceiling rather than only as
+        // the thing compared afterwards. The comment above said this was
+        // "bounded before anything is allocated from it"; that bounded the
+        // *declared* size, and the inflate below could produce a hundred
+        // times it before the comparison ran.
+        let inflated = try InflateStream().inflate(Data(payload), limit: inflatedSize)
         guard inflated.count == inflatedSize else { return nil }
 
         var unwrapped = image

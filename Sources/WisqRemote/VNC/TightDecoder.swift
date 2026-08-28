@@ -130,7 +130,9 @@ struct TightDecoder {
 
         let length = try await readCompactLength()
         let compressed = try await stream.read(exactly: length)
-        let inflated = try streams.tight(streamIndex).inflate(compressed)
+        // `size` is what the caller already demands below, so it is also the
+        // most this may allocate.
+        let inflated = try streams.tight(streamIndex).inflate(compressed, limit: size)
         guard inflated.count == size else {
             throw WisqError.malformedMessage(
                 "Tight a produit \(inflated.count) octets au lieu de \(size)"
