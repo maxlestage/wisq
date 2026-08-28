@@ -1,7 +1,13 @@
-/// Serves the built site the way a real host would.
+/// Serves the built site. On Heroku this is the host; locally it is the
+/// preview, and they are the same code on purpose.
 ///
 /// `bun run dev` is for writing the site; this is for checking the thing that
-/// ships. The difference matters more than it sounds: the service worker, the
+/// ships — and now for shipping it, since the `Procfile` runs this file. What
+/// used to be the argument for keeping the preview honest is now simply true:
+/// there is one server, `tests/serve.test.ts` holds it, and a reader gets what
+/// the tests describe.
+///
+/// The difference from `dev` matters more than it sounds: the service worker, the
 /// manifest and the offline behaviour only exist in the build, and a browser
 /// refuses to install a service worker that arrives without a JavaScript
 /// content type — so a preview server that omits it reports a PWA that does
@@ -61,13 +67,18 @@ const TYPES: Record<string, string> = {
 ///     before using it, which costs a 304 rather than a download and can never
 ///     serve something stale.
 ///
-/// None of this reaches the deployed site: it is served by GitHub Pages, which
-/// sends its own headers and offers no way to set them. That is the honest
-/// state of the "cache headers" item, and it is why the caching that actually
-/// decides what a returning reader downloads lives in the service worker, which
-/// `build.tsx` generates and this project does control. These headers are what
-/// the preview promises, and what to configure the day the site moves to a host
-/// that takes instructions.
+/// **All of this now reaches the deployed site, and that is new.** Under GitHub
+/// Pages none of it did — Pages sends its own headers and offers no way to set
+/// them — so this file was a promise about a host that never listened, and the
+/// caching that actually decided what a returning reader downloaded lived
+/// entirely in the service worker `build.tsx` generates.
+///
+/// The site is served by Heroku now, and the `Procfile` at the repository root
+/// runs *this file*. The comment above used to end "what to configure the day
+/// the site moves to a host that takes instructions"; that day arrived, and
+/// nothing had to be configured, because the day had been written for. What
+/// changed is the weight: these three lines are production, and the service
+/// worker is no longer carrying the caching alone.
 export function cacheControl(path: string): string {
   // This line returns what the fallback below already returns, so deleting it
   // changes nothing today and no test can see it go. It earns its place the

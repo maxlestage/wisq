@@ -19,3 +19,4 @@ site/node_modules/
 # committed: a stale 20 MB archive in the tree would silently outrank the
 # freshly built one.
 /dist/
+.heroku-bun/

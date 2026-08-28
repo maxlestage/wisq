@@ -4,6 +4,7 @@ import { dirname, join, normalize } from "node:path";
 import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
 import { PAGES } from "../src/pages";
 import { AUTHOR, copy } from "../src/content";
+import { siteURL } from "../src/site-url";
 
 /// The built artefact, not the source. `bun run build` must run before this;
 /// CI does exactly that.
@@ -637,7 +638,7 @@ describe("discoverability", () => {
     for (const lang of LANGS) {
       for (const route of listed) {
         expect(sitemap, `${lang}/${route.id} absent du sitemap`).toContain(
-          `/wisq/${pagePath(route, lang)}</loc>`,
+          `${siteURL()}${pagePath(route, lang)}</loc>`,
         );
       }
     }

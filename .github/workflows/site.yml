@@ -1,9 +1,15 @@
 name: Site
 
-# Builds the landing page on every change to it, and publishes it to GitHub
-# Pages from master. Pages must be enabled once in the repository settings
-# (Settings → Pages → Source: GitHub Actions) and the repository has to be
-# public, or on a plan that allows Pages for private repositories.
+# Builds the landing page on every change to it, and checks it. It no longer
+# publishes: the site is served by Heroku, which builds and deploys it itself
+# from `master` through its GitHub integration (`Procfile`, `package.json` and
+# `scripts/heroku-build.sh` at the repository root). Publishing from here would
+# be a second deployer racing the first.
+#
+# What is left is a guard, and it is the reason this job stays even though it
+# ships nothing: it typechecks, builds and tests the site, and `bun test` is
+# where `site/tests/claims.test.ts` runs.
+#
 # No path filter, and that is deliberate. `site/tests/claims.test.ts` guards
 # numbers the site advertises about the *repository* — the test count, the
 # number of blocking CI gates — by reading the repository and failing when a
@@ -43,22 +49,12 @@ jobs:
       - name: Test
         working-directory: site
         run: bun test
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/dist
-
-  deploy:
-    name: Deploy to Pages
-    # Only from master: a pull request builds and tests, it does not publish.
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v5
+      # The build Heroku will run, exercised on the same commit. It is a
+      # different entry point from the one above — the root `package.json`, the
+      # Bun it installs itself, the `SITE_URL` it refuses to build without — and
+      # nothing else here would notice if it broke. A deployment nobody can
+      # debug from a phone is one worth checking before it is attempted.
+      - name: Heroku build path
+        env:
+          SITE_URL: https://wisq.example/
+        run: npm run heroku-postbuild

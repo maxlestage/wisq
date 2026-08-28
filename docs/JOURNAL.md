@@ -5012,3 +5012,80 @@ Les trente-deux bras que la comparaison ne remarque pas. Le mécanisme pour les
 couvrir existe déjà et vient d'être étrenné : charger le même programme codé à
 la main dans les deux cœurs et comparer `snapshot()` octet pour octet, ce qui
 compare la RAM, les registres et les CSR d'un coup. C'est la tranche suivante.
+
+## Le site quitte GitHub Pages, et la page de confidentialité doit suivre
+
+Demande de Maxime, depuis un téléphone et sans ordinateur : mettre le site sur
+Heroku, couper Pages. La contrainte — personne ne pourra ouvrir un portable
+quand une construction cassera — a décidé de presque tous les choix.
+
+### Le buildpack Bun n'a pas survécu à la vérification
+
+Le premier réflexe était un buildpack Bun communautaire : quelques clics dans le
+tableau de bord, rien à écrire. Quatre candidats vérifiés plutôt que cités de
+mémoire — une URL en 404, un qui détecte un projet Bun à un `bun.lockb` **à la
+racine** (notre verrou est `site/bun.lock`, autre nom, autre dossier : il ne
+détecterait pas), un en v0.0.2, un non concluant.
+
+Fonder sur ça un déploiement indébogable depuis un téléphone n'était pas
+raisonnable. D'où le buildpack Node **officiel**, un `package.json` racine dont
+c'est le seul rôle, et `scripts/heroku-build.sh` qui installe Bun lui-même. La
+chaîne de dépendances tient alors dans des fichiers que ce dépôt peut lire.
+
+### La construction refuse de partir sans `SITE_URL`
+
+Une adresse publique fausse ne se voit pas dans le navigateur et se voit dans
+chaque lien canonique et chaque entrée du sitemap. Le script s'arrête donc, avec
+le réglage exact à poser. Une première construction qui échoue avec la marche à
+suivre vaut mieux qu'un site publié qui pointe à côté.
+
+### Un test qui épinglait l'ancien hébergeur
+
+`tests/build.test.ts` affirmait que le sitemap contient `/wisq/…</loc>` — le
+chemin du site **sur GitHub Pages**. C'était un test de l'endroit où le site
+vivait, pas de ce que la construction produit, et il est devenu rouge le jour du
+déménagement. Deux tests plus loin, un autre garde explicitement contre « un
+`/wisq/` codé en dur dans une référence d'actif ». La suite se contredisait.
+
+Résolu par `src/site-url.ts` : une seule résolution, lue par la construction et
+par le test. Contre-vérifié — le sitemap fabriqué avec une autre base fait
+toujours rougir le test, il n'est pas devenu tautologique.
+
+### Ce que le dépôt affirmait et qui cessait d'être vrai
+
+Le plus important n'est pas un commentaire : c'est **la page de confidentialité**,
+qui nomme au lecteur qui reçoit ses requêtes. Elle disait GitHub, dans les deux
+langues. Corrigée.
+
+Puis `scripts/serve.ts`, dont l'en-tête expliquait que ses trois classes
+d'en-têtes de cache n'atteignent jamais le site déployé, « GitHub Pages envoyant
+les siens et n'offrant aucun moyen de les fixer », et se terminait par : *ce
+qu'il faudra configurer le jour où le site déménage vers un hôte qui accepte des
+instructions*. Ce jour est arrivé, et rien n'a eu à être configuré — le
+`Procfile` lance ce fichier. Ces trois lignes sont de la production maintenant,
+et le service worker ne porte plus le cache tout seul.
+
+Idem pour `build.tsx` et `routes.ts`, qui expliquaient que tout chemin émis est
+relatif « pour le jour où le site déménagera ». Le pari a payé : le déménagement
+n'a demandé aucune réécriture d'adresse.
+
+### La CI joue le chemin d'Heroku
+
+Le job « Build site » ne publie plus rien, mais il lance maintenant
+`npm run heroku-postbuild` sur le même commit. C'est un point d'entrée différent
+— la racine, le Bun qu'il installe, le `SITE_URL` qu'il exige — et rien d'autre
+ici ne remarquerait qu'il casse. Une rupture du déploiement devient une pastille
+rouge plutôt qu'une surprise sur le téléphone.
+
+### Vérifié, pas supposé
+
+La chaîne entière jouée localement comme Heroku la joue : refus sans `SITE_URL`
+(code 1), construction, `npm start` qui sert sur `$PORT`, 200 sur `/` et `/fr/`,
+`text/javascript` + `no-cache` sur le service worker, 404 sur l'inconnu, et le
+lien canonique qui pointe sur `SITE_URL`. Bun se télécharge bien dans
+`.heroku-bun` — vérifié, car le `Procfile` y renvoie en dur et un Bun système
+aurait masqué l'échec.
+
+Ce qui reste à faire à la main, et que je ne peux pas faire d'ici : dépublier le
+site dans Settings → Pages. Couper le workflow arrête de publier ; l'ancienne
+adresse reste servie tant que personne ne la retire.

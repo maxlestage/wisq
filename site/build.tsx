@@ -6,9 +6,10 @@
 /// on the first response; React then hydrates it for the language switch, the
 /// install tabs and the Home Screen prompt.
 ///
-/// Every path this emits is relative. The site is served from /wisq/ on GitHub
-/// Pages today and from the root of a domain the day it moves, and an absolute
-/// /asset.js works in exactly one of those.
+/// Every path this emits is relative. That was written when the site was served
+/// from /wisq/ on GitHub Pages, against the day it moved to the root of a
+/// domain — an absolute /asset.js works in exactly one of those. The day came:
+/// it is served from the root on Heroku, and nothing had to be rewritten.
 
 import { renderToString } from "react-dom/server";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -26,12 +27,10 @@ import {
 } from "./src/routes";
 import type { Lang } from "./src/content";
 import { appIcon, socialCard } from "./scripts/icons";
+import { siteURL } from "./src/site-url";
 
 const outdir = "dist";
-const SITE_URL = (process.env.SITE_URL ?? "https://maxlestage.github.io/wisq/").replace(
-  /\/?$/,
-  "/",
-);
+const SITE_URL = siteURL();
 
 await rm(outdir, { recursive: true, force: true });
 
