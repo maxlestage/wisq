@@ -188,7 +188,22 @@ impl Machine {
             }
 
             match result {
-                StepResult::Ran | StepResult::Waiting => continue,
+                StepResult::Ran => continue,
+                StepResult::Waiting => {
+                    // The timer is the only thing that can wake a parked hart:
+                    // it executes nothing, so it cannot poll the UART either.
+                    // With none armed nothing ever will, and the budget cannot
+                    // end the wait — it counts *retired* instructions and a
+                    // parked hart retires none. Without this the loop spins at
+                    // full speed for ever, on a phone, for a guest that has
+                    // stopped asking for anything. The Swift core does the
+                    // same, and a differential test holds them together.
+                    if self.core.timermatchl == 0 && self.core.timermatchh == 0 {
+                        self.flush_output();
+                        return Outcome::Stopped;
+                    }
+                    continue;
+                }
                 StepResult::Halted(code) => {
                     self.flush_output();
                     return if code == 0x7777 {
