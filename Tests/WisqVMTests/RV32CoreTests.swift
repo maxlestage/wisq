@@ -174,7 +174,12 @@ final class RV32CoreTests: XCTestCase {
         XCTAssertEqual(core.pc, RV32Core.ramBase + 0x200)
     }
 
-    func testLrScPairSucceedsAndStaleScFails() {
+    /// The failure this test used to claim in its name — a store-conditional on
+    /// an address nobody reserved — lives in `RV32ArithmeticWitnessTests`. A
+    /// sweep found it held by nothing: make the reservation check answer
+    /// *success* unconditionally and this test stayed green, because it never
+    /// asked for anything but the matching pair below.
+    func testLrScPairSucceeds() {
         // LR.W x2, (x1) ; SC.W x3, x4, (x1)
         let lr: UInt32 = (2 << 27) | (1 << 15) | (2 << 12) | (2 << 7) | 0x2F
         let sc: UInt32 = (3 << 27) | (4 << 20) | (1 << 15) | (2 << 12) | (3 << 7) | 0x2F
