@@ -55,6 +55,14 @@ else
 EOF
 fi
 
+# CI runs these two and this script did not, so a run could come back green on
+# a branch CI would refuse — which is exactly what happened: a `cargo fmt`
+# difference in a new test file, found by CI and not here. The point of this
+# script is that its green means something.
+echo "==> Rust formatting and lints (what CI checks first)"
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+
 echo "==> Building the Rust side (daemon + VM core)"
 cargo build --release
 

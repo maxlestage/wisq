@@ -133,8 +133,23 @@ public final class LinuxMachine: @unchecked Sendable {
             case .ran:
                 continue
             case .waiting:
-                // The hart sleeps until the timer fires; nudge virtual time
-                // forward so it does.
+                // The hart sleeps until the timer fires, and the timer is the
+                // only thing that can wake it: a parked hart executes nothing,
+                // so it cannot poll the UART either.
+                //
+                // With no timer armed, nothing ever will — and the budget
+                // cannot end the wait, because it counts *retired*
+                // instructions and a parked hart retires none. The loop would
+                // spin at full speed for ever, on a phone, for a guest that
+                // has stopped asking for anything. Measured before it was
+                // written: a two-instruction guest that runs `wfi` retires one
+                // instruction and then never returns.
+                if core.timermatchl == 0, core.timermatchh == 0 {
+                    flushOutput()
+                    return .stopped
+                }
+                // Otherwise the wait is finite: the clock is jumped to the
+                // moment already written in mtimecmp.
                 continue
             case .halted(let code):
                 flushOutput()
