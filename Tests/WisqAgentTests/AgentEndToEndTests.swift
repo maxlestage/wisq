@@ -77,14 +77,53 @@ final class AgentEndToEndTests: XCTestCase {
         XCTAssertEqual(running.consoleProtocol, .vnc)
     }
 
-    func testStopTearsDownTheConsole() async throws {
+    /// Cutting the power tears the console down at once.
+    ///
+    /// This is the only place `force` is checked where it actually travels:
+    /// the Rust tests call the backend directly, so they cannot show that the
+    /// `{"force": true}` body survives being serialised, sent, parsed and
+    /// routed. Here it crosses a real socket.
+    func testForcingAStopTearsDownTheConsole() async throws {
         _ = try await client.start(vm: "win11")
         _ = try await client.waitUntilRunning(
             vm: "win11", timeout: .seconds(5), pollInterval: .milliseconds(20)
         )
-        let stopped = try await client.stop(vm: "win11")
+        let stopped = try await client.stop(vm: "win11", force: true)
         XCTAssertEqual(stopped.state, .stopped)
         XCTAssertNil(stopped.consolePort)
+    }
+
+    /// And asking politely does not.
+    ///
+    /// This test used to assert `.stopped` here, because the daemon's demo
+    /// backend ignored `force` and answered `stopped` to both — so three
+    /// artefacts agreed with each other and none of them with libvirt, where
+    /// `virsh shutdown` sends ACPI and returns while the guest is still
+    /// running, console and all.
+    ///
+    /// The two halves are asserted separately: a `force: false` that behaved
+    /// like a power cut fails the first, and one whose request never reached
+    /// the guest fails the second.
+    func testAGracefulStopIsARequestRatherThanAnAct() async throws {
+        _ = try await client.start(vm: "debian-13")
+        let running = try await client.waitUntilRunning(
+            vm: "debian-13", timeout: .seconds(5), pollInterval: .milliseconds(20)
+        )
+        XCTAssertNotNil(running.consolePort)
+
+        let asked = try await client.stop(vm: "debian-13", force: false)
+        XCTAssertEqual(asked.state, .running, "un arrêt ACPI revient avant l'invité")
+        XCTAssertNotNil(asked.consolePort, "et sa console est encore ouverte")
+
+        // The daemon under test runs with a short delay, so the guest gets
+        // there on its own — polled rather than slept through, so a slow
+        // machine lengthens the test instead of failing it.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            if try await client.status(vm: "debian-13").state == .stopped { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("l'invité n'a jamais fini de s'arrêter")
     }
 }
 #endif

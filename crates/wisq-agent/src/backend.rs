@@ -30,6 +30,15 @@ struct Entry {
     /// real guest does, and the client discovers it by polling exactly as it
     /// will against libvirt.
     starting_since: Option<Instant>,
+    /// When a *graceful* stop was requested. A polite shutdown is a request,
+    /// not an act: libvirt sends ACPI and returns, the guest finishes in its
+    /// own time — or never, if it has nobody listening for the button. Until
+    /// then the domain is still `running`, with its console still open.
+    ///
+    /// This backend used to ignore `force` entirely and report `stopped` at
+    /// once, which taught the opposite of what really happens and made the one
+    /// distinction the request body carries invisible.
+    stopping_since: Option<Instant>,
 }
 
 impl DemoBackend {
@@ -43,6 +52,7 @@ impl DemoBackend {
                 vm: debian,
                 running_port: 5901,
                 starting_since: None,
+                stopping_since: None,
             },
         );
         let mut windows = Vm::new("win11", "Windows 11", State::Stopped);
@@ -53,6 +63,7 @@ impl DemoBackend {
                 vm: windows,
                 running_port: 5902,
                 starting_since: None,
+                stopping_since: None,
             },
         );
         DemoBackend {
@@ -64,6 +75,15 @@ impl DemoBackend {
     /// Advances any boot whose delay has elapsed. Called on every read, so the
     /// transition happens without a timer thread that would outlive a stop.
     fn settle(&self, entry: &mut Entry) {
+        if let Some(since) = entry.stopping_since {
+            if since.elapsed() >= self.startup_delay {
+                entry.stopping_since = None;
+                entry.vm.state = State::Stopped;
+                entry.vm.console_protocol = None;
+                entry.vm.console_port = None;
+            }
+            return;
+        }
         let Some(since) = entry.starting_since else {
             return;
         };
@@ -113,15 +133,30 @@ impl Backend for DemoBackend {
         Ok(entry.vm.clone())
     }
 
-    fn stop(&self, id: &str, _force: bool) -> Result<Vm> {
+    /// The two halves of `force`, which this backend used to collapse into one.
+    ///
+    /// `force: true` is the power cord: `virsh destroy` takes the domain away
+    /// and the next read says `shut off`. `force: false` is the button: libvirt
+    /// sends ACPI and returns immediately, and the guest is still running —
+    /// with its console still open — until it decides otherwise.
+    fn stop(&self, id: &str, force: bool) -> Result<Vm> {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries
             .get_mut(id)
             .ok_or(format!("VM introuvable : {id}"))?;
         entry.starting_since = None;
-        entry.vm.state = State::Stopped;
-        entry.vm.console_port = None;
-        entry.vm.console_protocol = None;
+        if force {
+            entry.stopping_since = None;
+            entry.vm.state = State::Stopped;
+            entry.vm.console_port = None;
+            entry.vm.console_protocol = None;
+            return Ok(entry.vm.clone());
+        }
+        // A guest that was not running has nothing to be asked politely.
+        if entry.vm.state == State::Stopped {
+            return Ok(entry.vm.clone());
+        }
+        entry.stopping_since = Some(Instant::now());
         Ok(entry.vm.clone())
     }
 }
@@ -418,6 +453,73 @@ mod tests {
     /// the function's whole range, so an arm added later that invented a
     /// `starting` out of some libvirt string would fail here rather than
     /// quietly make the client wait for a state that never arrives.
+    /// The power cord takes the domain away at once, and the console with it.
+    #[test]
+    fn forcing_a_stop_takes_effect_immediately() {
+        let backend = DemoBackend::new(Duration::from_secs(30));
+        backend.start("win11").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        // Force it out of `starting` as libvirt's `destroy` would.
+        let stopped = backend.stop("win11", true).unwrap();
+        assert_eq!(stopped.state, State::Stopped);
+        assert_eq!(stopped.console_port, None);
+        assert_eq!(backend.get("win11").unwrap().unwrap().state, State::Stopped);
+    }
+
+    /// And the button is a request. A guest that has not finished shutting down
+    /// is still running, with its console still open — which is what libvirt
+    /// reports after `virsh shutdown`, and what this backend used to hide by
+    /// ignoring `force` and answering `stopped` to both.
+    ///
+    /// The delay is long enough that only a backend which reads `force` can
+    /// pass: one that stops immediately fails the first assertion, one that
+    /// never stops fails the last.
+    #[test]
+    fn a_graceful_stop_is_a_request_the_guest_answers_in_its_own_time() {
+        let backend = DemoBackend::new(Duration::from_millis(80));
+        backend.start("debian-13").unwrap();
+        std::thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            backend.get("debian-13").unwrap().unwrap().state,
+            State::Running,
+            "l'invité doit avoir fini de démarrer avant qu'on lui demande de s'arrêter"
+        );
+
+        let asked = backend.stop("debian-13", false).unwrap();
+        assert_eq!(
+            asked.state,
+            State::Running,
+            "un arrêt ACPI est une demande : l'invité tourne encore quand elle revient"
+        );
+        assert!(
+            asked.console_port.is_some(),
+            "et sa console est encore ouverte"
+        );
+
+        std::thread::sleep(Duration::from_millis(120));
+        let settled = backend.get("debian-13").unwrap().unwrap();
+        assert_eq!(
+            settled.state,
+            State::Stopped,
+            "puis l'invité finit par obéir"
+        );
+        assert_eq!(settled.console_port, None);
+    }
+
+    /// Asking politely twice is not an error, and asking a stopped guest is not
+    /// a way to restart the clock: the other edge of the rule.
+    #[test]
+    fn a_graceful_stop_on_a_stopped_guest_changes_nothing() {
+        let backend = DemoBackend::new(Duration::from_millis(10));
+        let stopped = backend.stop("debian-13", false).unwrap();
+        assert_eq!(stopped.state, State::Stopped);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            backend.get("debian-13").unwrap().unwrap().state,
+            State::Stopped
+        );
+    }
+
     #[test]
     fn no_libvirt_state_means_starting() {
         for output in [

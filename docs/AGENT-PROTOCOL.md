@@ -132,7 +132,22 @@ attend ; un agent tiers doit publier son port au même moment, pas avant.
 { "force": false }
 ```
 
-`force: false` envoie un arrêt ACPI, `force: true` coupe l'alimentation.
+`force: false` envoie un arrêt ACPI, `force: true` coupe l'alimentation. Comme
+`start`, la réponse est **immédiate** et porte l'état observable à cet instant —
+et les deux valeurs ne mènent pas au même endroit :
+
+- **`force: true`** est le cordon d'alimentation. `virsh destroy` retire le
+  domaine, et la lecture suivante dit `stopped`.
+- **`force: false`** est le bouton. libvirt envoie l'ACPI et rend la main ; le
+  domaine est **encore `running`**, sa console encore ouverte, jusqu'à ce que
+  l'invité en décide autrement. Il peut y mettre une minute, et il peut ne
+  jamais répondre du tout — un invité sans gestionnaire ACPI ignore la demande,
+  et rien dans le protocole ne peut le forcer.
+
+Un client doit donc sonder jusqu'à `stopped` plutôt que croire la réponse, de la
+même façon qu'il sonde jusqu'à `running` plus un port pour un démarrage. Le
+backend de démonstration modélise les deux : il ignorait `force` et répondait
+`stopped` aux deux, ce qui apprenait le contraire de ce qui se passe.
 
 ## Erreurs
 
