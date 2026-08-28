@@ -2214,15 +2214,77 @@ une classe logée sous un autre nom de fichier), `Framebuffer.write` découpe
 correctement, le match inter-images de GLZ est borné contre le tampon réel de la
 source, et `ByteStream.pad` est un écrivain dont le compte est le nôtre.
 
-## Ce qui reste, au 27 août
+## Ce qui a été clos le 28 août
+
+Cinq tranches, toutes de la même méthode : prendre une affirmation que le dépôt
+fait sur lui-même, compter son dénominateur, saborder chaque élément et voir qui
+s'en aperçoit.
+
+- **L'instantané de la machine locale** — cinquante et un champs sauvés,
+  **trente-cinq** que la suite ne remarquait pas si la restauration les perdait,
+  `mepc` et vingt-six registres entiers parmi eux. Un témoin les tient
+  maintenant par construction : chaque champ porte une valeur distincte et non
+  nulle, l'instantané est restauré puis réécrit. Le même balayage côté Rust en a
+  trouvé **un** sur cinquante et un — le cœur Rust avait depuis toujours le test
+  que le Swift n'avait pas — et c'était `pending_output`, le seul trou que les
+  deux cœurs partageaient.
+- **Le test différentiel de reprise** comparait un compte d'instructions qu'un
+  invité déraillé produit aussi bien, sur une fenêtre où ce noyau n'écrit rien.
+  Il cherche maintenant le moment où l'invité reparle. Mesuré après correction :
+  il ne tient toujours pas un registre donné, et ne le peut pas — la vivacité
+  d'un registre à l'instant de l'instantané est un accident.
+- **« Le site fonctionne hors ligne »** — neuf comportements du service worker,
+  **zéro** tenu. Les six tests le lisaient comme du texte ; un worker qui ne
+  précache rien passait les quatre-vingt-dix-neuf tests du site. Un fichier
+  l'exécute désormais dans un faux `caches` et un faux réseau.
+- **La bibliothèque de machines** — un vrai défaut, celui-là : `save()` écrivait
+  sans lire, donc effaçait du fichier les entrées qu'une version plus ancienne
+  ne sait pas décoder. Quatrième fois que ce dépôt trouve une garde armée
+  seulement par ce que ses appelants font se trouver faire.
+
+Où ne plus chercher : le chemin d'instantané des deux cœurs est tenu champ par
+champ dans les deux sens ; le service worker est tenu comportement par
+comportement ; la forme « garde armée par ses appelants » a été cherchée dans
+les autres types de persistance — `CredentialStore` n'a pas de cache à désarmer
+et `SuspendedMachine` est sans état — et n'existait qu'à cet endroit.
+
+## Une décision qui appartient à Maxime
+
+Les entrées qu'une version ne sait pas lire sont **immortelles**. C'est
+délibéré : les effacer serait la perte que personne ne peut annuler, et une
+version plus ancienne qui ouvre une bibliothèque récente ne doit pas emporter ce
+qu'elle ne comprend pas.
+
+Mais rien ne peut les enlever non plus. Un fichier qui a pris une entrée abîmée
+— une écriture à moitié faite, une édition à la main — affiche « une machine sur
+douze n'a pas pu être lue » à chaque lancement, pour toujours, sans issue depuis
+l'application.
+
+L'application ne peut pas distinguer les deux cas : une entrée venue d'un wisq
+plus récent et une entrée corrompue se ressemblent exactement. Elle ne doit donc
+pas trancher seule. Ce qu'elle pourrait faire, c'est proposer le choix en disant
+la vérité — « cette entrée vient peut-être d'une version plus récente ; mettre à
+jour la ferait revenir. Si vous êtes sûr que non, vous pouvez l'écarter. »
+
+Ce n'est pas écrit, parce que la moitié qui compte est une vue, et qu'une vue ne
+se juge pas depuis Linux. La règle, elle, tiendrait dans le modèle et serait
+sabordable ici.
+
+## Ce qui reste, au 28 août
 
 - **RDP (lot 3)** — le seul protocole de console que wisq ne parle pas. Le client
   porte une ébauche délibérée qui rend `.unsupportedProtocol` au lieu de faire
   semblant. Demande une machine Apple pour être jugé, pas seulement testé.
 - **Lot 6 : iPad et Siri** — décisions d'interface qu'on ne prend pas au jugé ;
   les arbitrages déjà tranchés sont écrits plus haut.
-- **D'autres backends d'agent** — Proxmox et QEMU nu, peu de code derrière
-  l'interface existante.
+- **D'autres backends d'agent** — le trait `Backend` a quatre méthodes et
+  `VirshBackend` montre la forme. **Proxmox** est le candidat net : son API REST
+  est documentée et se teste ici contre un faux serveur, comme le reste du
+  démon. **QEMU nu** ne l'est pas — QEMU n'a pas de démon, donc énumérer les
+  machines demande d'inventer d'où vient la liste (des sockets QMP dans un
+  répertoire, un fichier de définitions), et ce n'est pas une décision à prendre
+  au jugé. Dans les deux cas, écrit ici, ce serait du code jamais confronté à un
+  vrai hôte : testable, pas jugeable.
 
 Et une chose qui n'est plus sur la liste : **le disque virtuel pour la machine
 locale**. C'était le plan ; c'était le mauvais. Les noyaux rv32 nommu de cette
