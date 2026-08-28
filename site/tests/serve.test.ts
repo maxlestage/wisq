@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { cacheControl, handler } from "../scripts/serve";
+import { REQUEST_ORIGIN, siteURL } from "../src/site-url";
 
 const dist = join(import.meta.dir, "..", "dist");
 
@@ -95,5 +96,114 @@ describe("the rule itself", () => {
     ["/styles.css", "no-cache"],
   ])("%s -> %s", (path, expected) => {
     expect(cacheControl(path)).toBe(expected);
+  });
+});
+
+/// The address the site gives for itself, when nobody told it one.
+///
+/// `SITE_URL` used to be required at build time, and `scripts/heroku-build.sh`
+/// refused to build without it. That turned "the operator forgot a config var"
+/// into "the deployment fails", which on a phone means the site does not go up
+/// at all — three builds in a row died there. The address is now resolved where
+/// it is known: here, from the request.
+///
+/// Every assertion below was checked by breaking the rewrite and watching it
+/// fail; the sentinel is deliberately an unreachable `.invalid` host, so a
+/// rewrite that silently stopped happening would leave a visibly broken link
+/// rather than a plausible wrong one.
+describe("the address the site gives for itself", () => {
+  async function bodyFrom(host: string, path: string): Promise<string> {
+    const response = await handler(new Request(`${host}/${path.replace(/^\//, "")}`));
+    expect(response.status).toBe(path === "nulle-part" ? 404 : 200);
+    return response.text();
+  }
+
+  /// What the address in a served file should be, given how `dist` was built.
+  ///
+  /// The tests below used to assume the build had no `SITE_URL`, which is how
+  /// CI and `scripts/verify.sh` build it — and would have gone red for anyone
+  /// who happened to have the variable exported. That is a test of the
+  /// operator's shell rather than of the server. Both configurations are real,
+  /// the deployment uses the first, and CI now runs the Heroku build path both
+  /// ways; the contract holds in each.
+  const pinned = siteURL() === REQUEST_ORIGIN ? null : siteURL();
+  function expected(host: string): string {
+    return pinned ?? `${host}/`;
+  }
+
+  test.each([
+    ["", "the home page"],
+    ["fr/", "the French home page"],
+    ["docs/", "a written page"],
+  ])("%s (%s) is canonical at the host that served it", async (path) => {
+    const body = await bodyFrom("https://exemple.test", path);
+    expect(body).toContain(`<link rel="canonical" href="${expected("https://exemple.test")}`);
+    expect(body).not.toContain(REQUEST_ORIGIN);
+  });
+
+  /// The same build, served from two hosts, gives each of them its own address.
+  /// A test on one host alone would pass against a hardcoded string.
+  test("two hosts get two different answers from the same files", async () => {
+    if (pinned) return; // A pinned address is the same everywhere, by design.
+    const one = await bodyFrom("https://un.test", "");
+    const two = await bodyFrom("https://deux.test", "");
+    expect(one).toContain("https://un.test/");
+    expect(two).toContain("https://deux.test/");
+    expect(one).not.toContain("deux.test");
+    expect(two).not.toContain("un.test");
+  });
+
+  /// The three files that are not pages and carry the address anyway. The
+  /// sitemap is the one that matters: every entry in it is absolute.
+  test.each([
+    ["sitemap.xml", "<loc>"],
+    ["robots.txt", "Sitemap: "],
+  ])("%s points at the host that served it", async (path, prefix) => {
+    const body = await bodyFrom("https://exemple.test", path);
+    expect(body).toContain(`${prefix}${expected("https://exemple.test")}`);
+    expect(body).not.toContain(REQUEST_ORIGIN);
+  });
+
+  /// The 404 page is served through a different branch of the handler, and a
+  /// rewrite added to one branch and not the other is exactly the kind of thing
+  /// that survives review.
+  test("the 404 page is rewritten too", async () => {
+    const body = await bodyFrom("https://exemple.test", "nulle-part");
+    expect(body).not.toContain(REQUEST_ORIGIN);
+  });
+
+  /// Heroku terminates TLS at its router, so the dyno sees plain HTTP for a
+  /// reader who typed `https`. Without this the canonical link on every page
+  /// would name an address that redirects.
+  test("a reader behind a TLS-terminating proxy gets an https address", async () => {
+    const response = await handler(
+      new Request("http://wisq.example/", { headers: { "x-forwarded-proto": "https" } }),
+    );
+    const body = await response.text();
+    expect(body).toContain(`<link rel="canonical" href="${expected("https://wisq.example")}`);
+    if (!pinned) expect(body).not.toContain("http://wisq.example");
+  });
+
+  /// The header is attacker-controlled wherever a router does not set it, and a
+  /// value that is not a scheme must not become one.
+  test.each([["gopher"], [""], ["https evil"], ["javascript:"]])(
+    "a forwarded scheme of %p is refused rather than stamped",
+    async (proto) => {
+      const response = await handler(
+        new Request("http://wisq.example/", { headers: { "x-forwarded-proto": proto } }),
+      );
+      const body = await response.text();
+      expect(body).toContain(`<link rel="canonical" href="${expected("http://wisq.example")}`);
+      if (proto !== "") expect(body).not.toContain(`${proto}://wisq.example`);
+    },
+  );
+
+  /// The whole build, swept: nothing served may still carry the sentinel.
+  test("no served file leaks the sentinel", async () => {
+    for (const name of readdirSync(dist)) {
+      if (!/\.(html|xml|txt|webmanifest)$/.test(name)) continue;
+      const body = await bodyFrom("https://exemple.test", name);
+      expect(body).not.toContain(REQUEST_ORIGIN);
+    }
   });
 });
