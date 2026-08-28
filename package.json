@@ -1,0 +1,12 @@
+{
+  "name": "wisq-site-host",
+  "private": true,
+  "description": "Racine minimale : elle n'existe que pour qu'Heroku reconnaisse le dépôt et lance scripts/heroku-build.sh avec son buildpack Node officiel. Le site lui-même vit dans site/ et est construit par Bun.",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "heroku-postbuild": "bash scripts/heroku-build.sh",
+    "start": "./.heroku-bun/bin/bun site/scripts/serve.ts"
+  }
+}

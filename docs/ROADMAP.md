@@ -2079,8 +2079,11 @@ de l'hydratation. Le poste le plus lourd que le site expédie encore est
 maintenant la feuille de style, à 3 551 octets gzip, soit plus du triple du
 script.
 
-**En-têtes de cache — la moitié n'est pas à nous.** Le site est servi par GitHub
-Pages, qui envoie les siens et n'offre aucun moyen de les fixer. La couche de
+**En-têtes de cache — la moitié n'est pas à nous.** *(Plus vrai depuis le
+passage à Heroku : `scripts/serve.ts` est désormais l'hôte, donc les trois
+classes d'en-têtes qu'il envoie sont celles que reçoit un lecteur. Le constat
+ci-dessous vaut pour l'époque où le site était sur Pages.)* Le site est servi
+par GitHub Pages, qui envoie les siens et n'offre aucun moyen de les fixer. La couche de
 cache qui décide réellement de ce qu'un lecteur qui revient télécharge est le
 service worker, et il fait déjà ce qu'il faut : réseau d'abord pour les
 documents, cache d'abord pour les actifs hachés, une version dérivée du contenu
