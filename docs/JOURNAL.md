@@ -5854,8 +5854,10 @@ seul :
 | `SpiceLZ.run`, copie | `testAnLZAlphaMatchPastTheImageIsRefused` |
 
 Une garde retirée ne fait pas échouer son témoin par une assertion : elle le
-fait **planter**, ce qui est précisément la démonstration de ce qui arriverait
-sur le téléphone.
+fait **planter**. Vérifié plutôt que supposé, sur la garde des littéraux GLZ —
+`exited with unexpected signal code 4`, la trappe de Swift, avec sa pile
+d'appels. C'est précisément la démonstration de ce qui arriverait sur le
+téléphone : pas un message refusé, l'application qui disparaît.
 
 Un piège du sabordage lui-même, noté pour la prochaine fois : les deux gardes de
 `SpiceLZ.run` s'écrivent avec la même ligne à deux indentations près, et
