@@ -50,11 +50,19 @@ jobs:
         working-directory: site
         run: bun test
       # The build Heroku will run, exercised on the same commit. It is a
-      # different entry point from the one above — the root `package.json`, the
-      # Bun it installs itself, the `SITE_URL` it refuses to build without — and
-      # nothing else here would notice if it broke. A deployment nobody can
-      # debug from a phone is one worth checking before it is attempted.
-      - name: Heroku build path
+      # different entry point from the one above — the root `package.json` and
+      # the Bun it installs itself — and nothing else here would notice if it
+      # broke. A deployment nobody can debug from a phone is one worth checking
+      # before it is attempted.
+      #
+      # Run twice, because the two ways it can be configured are different code
+      # paths and the deployment uses the first one. Without `SITE_URL` the
+      # build stamps the sentinel the server rewrites per request; with it, the
+      # address is pinned and no sentinel is left. A single run would have
+      # covered whichever one was not being used in production.
+      - name: Heroku build path (address resolved per request)
+        run: npm run heroku-postbuild
+      - name: Heroku build path (address pinned)
         env:
           SITE_URL: https://wisq.example/
         run: npm run heroku-postbuild

@@ -148,10 +148,13 @@ cd site && bun install && bun run dev
 
 Heroku serves it, and builds it itself from `master` through its GitHub
 integration: `Procfile`, `package.json` and `scripts/heroku-build.sh` at the
-repository root, plus one config var — `SITE_URL`, the site's public address,
-which the build refuses to run without. `.github/workflows/site.yml` no longer
-publishes; it typechecks, builds and tests the site, and exercises the Heroku
-build path on the same commit.
+repository root, and nothing to configure: the server puts the address each
+request arrived on into the canonical links, the sitemap and `robots.txt`, so a
+deployment does not have to be told its own name. `SITE_URL` still pins the
+address when that is wanted — behind a custom domain, say.
+`.github/workflows/site.yml` no longer publishes; it typechecks, builds and
+tests the site, and exercises the Heroku build path on the same commit, with and
+without `SITE_URL`.
 
 ## Contributing & security
 

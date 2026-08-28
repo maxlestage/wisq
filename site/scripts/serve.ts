@@ -22,6 +22,8 @@
 
 import { join, extname } from "node:path";
 
+import { REQUEST_ORIGIN } from "../src/site-url";
+
 const root = join(import.meta.dir, "..", "dist");
 
 /// The content types this server states explicitly.
@@ -92,6 +94,45 @@ export function cacheControl(path: string): string {
   return "no-cache";
 }
 
+/// The file types that carry the site's own address, and are therefore rewritten
+/// per request.
+///
+/// Nothing else needs it: the scripts, the stylesheets and the images name
+/// their neighbours by relative path, and the service worker caches by relative
+/// path too. Rewriting only these four keeps the hashed assets — the bulk of
+/// the bytes — a straight file handoff.
+const ADDRESSED = new Set([".html", ".xml", ".txt", ".webmanifest"]);
+
+/// Puts the address the reader actually used into what they receive.
+///
+/// The build stamps `REQUEST_ORIGIN` when `SITE_URL` is unset, so the canonical
+/// links, the `hreflang` alternates, the sitemap, `robots.txt` and the social
+/// card all point at the host answering the request. A deployment does not have
+/// to be told its own name, and moving it somewhere else needs no rebuild.
+///
+/// `SITE_URL` set at build time short-circuits this: the sentinel is not in the
+/// files, so the replacement finds nothing and the pinned address stands.
+export function requestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  // Heroku terminates TLS at its router and forwards plain HTTP to the dyno, so
+  // the scheme this process sees is `http` for a reader who typed `https`.
+  // Canonical links and sitemap entries that said `http` would advertise the
+  // site at an address that redirects, on every page. The router states what
+  // the reader used; `X-Forwarded-Proto` is that statement.
+  //
+  // Only the two schemes a browser can be on are honoured. The header is
+  // attacker-controlled on a host that does not set it, and the worst a wrong
+  // value could do here is stamp a scheme; refusing anything else keeps it from
+  // stamping something that is not a scheme at all.
+  const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const scheme = forwarded === "https" || forwarded === "http" ? forwarded : url.protocol.replace(":", "");
+  return `${scheme}://${url.host}/`;
+}
+
+export function withRequestOrigin(body: string, request: Request): string {
+  return body.split(REQUEST_ORIGIN).join(requestOrigin(request));
+}
+
 export async function handler(request: Request): Promise<Response> {
   const url = new URL(request.url);
   let path = decodeURIComponent(url.pathname);
@@ -99,19 +140,19 @@ export async function handler(request: Request): Promise<Response> {
 
   const file = Bun.file(join(root, path));
   if (await file.exists()) {
-    return new Response(file, {
-      headers: {
-        "content-type": TYPES[extname(path)] ?? "application/octet-stream",
-        "cache-control": cacheControl(path),
-      },
-    });
+    const type = TYPES[extname(path)] ?? "application/octet-stream";
+    const headers = { "content-type": type, "cache-control": cacheControl(path) };
+    if (ADDRESSED.has(extname(path))) {
+      return new Response(withRequestOrigin(await file.text(), request), { headers });
+    }
+    return new Response(file, { headers });
   }
 
   // What a static host does with an unknown address, so the 404 page is
   // testable rather than assumed.
   const notFound = Bun.file(join(root, "404.html"));
   if (await notFound.exists()) {
-    return new Response(notFound, {
+    return new Response(withRequestOrigin(await notFound.text(), request), {
       status: 404,
       headers: { "content-type": TYPES[".html"]!, "cache-control": "no-cache" },
     });

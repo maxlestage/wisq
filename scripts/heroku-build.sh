@@ -22,26 +22,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Where the site's canonical URLs, sitemap and social card links point. There is
-# no sensible default for it here: getting it wrong is invisible in the browser
-# and wrong in every sitemap entry, so this refuses to build rather than publish
-# a site that points somewhere else.
+# Where the site's canonical URLs, sitemap and social card links point.
+#
+# This used to refuse to build without it, on the reasoning that a wrong
+# canonical link is invisible in a browser and wrong in every sitemap entry.
+# That much was true; stopping the build was the wrong conclusion. Deploying
+# from a phone means nobody can open a laptop to add a config var, and three
+# builds in a row failed here rather than shipping a site.
+#
+# The address is resolved where it is actually known now: `site/scripts/serve.ts`
+# sees the host every request arrives on, and puts it into the pages, the
+# sitemap and robots.txt as it serves them. Setting SITE_URL still pins the
+# address, which is what a custom domain wants.
 if [ -z "${SITE_URL:-}" ]; then
-  cat >&2 <<'EOF'
-SITE_URL n'est pas défini.
-
-C'est l'adresse publique du site : elle part dans les URL canoniques, le
-sitemap et la carte sociale. Une valeur fausse ne se voit pas dans le
-navigateur et se voit partout ailleurs, donc la construction s'arrête ici
-plutôt que de publier un site qui pointe à côté.
-
-Sur Heroku : Settings → Config Vars → ajouter
-
-  SITE_URL = https://<nom-de-l-app>.herokuapp.com/
-
-puis relancer le déploiement.
-EOF
-  exit 1
+  echo "==> SITE_URL n'est pas défini : le serveur utilisera l'adresse de chaque requête."
+  echo "    Pour l'épingler (domaine personnalisé) : Settings → Config Vars →"
+  echo "    SITE_URL = https://<nom-de-l-app>.herokuapp.com/"
 fi
 
 export BUN_INSTALL="$PWD/.heroku-bun"
@@ -62,7 +58,11 @@ cd site
 echo "==> Dépendances du site"
 bun install --frozen-lockfile
 
-echo "==> Construction du site pour $SITE_URL"
+# A bare apostrophe inside `${...:-...}` opens a quote as far as bash is
+# concerned, so the fallback is built before it is printed.
+destination="${SITE_URL:-}"
+[ -n "$destination" ] || destination="l'adresse de chaque requête"
+echo "==> Construction du site pour $destination"
 bun run build
 
 # The build is the deployable artifact; a slug that shipped an empty `dist`
