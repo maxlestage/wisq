@@ -352,7 +352,6 @@ public final class RV32Core {
                     if microop & 3 != 0 {
                         let rs1imm = (ir >> 15) & 0x1F
                         let rs1 = x[Int(rs1imm)]
-                        var writeval = rs1
 
                         switch csrno {
                         case 0x340: rval = mscratch
@@ -369,6 +368,17 @@ public final class RV32Core {
                         default: rval = 0
                         }
 
+                        // Assigned rather than seeded, so every arm is
+                        // load-bearing. Seeded with `rs1`, `CSRRW`'s arm said
+                        // exactly what the seed already said and could be
+                        // deleted with no test noticing — the sweep found it,
+                        // and no test could have: its answer and the fallback's
+                        // are the same value. Written this way the compiler
+                        // holds it instead.
+                        //
+                        // The default cannot happen: the guard above admits
+                        // only 1, 2, 3, 5, 6 and 7.
+                        let writeval: UInt32
                         switch microop {
                         case 1: writeval = rs1                  // CSRRW
                         case 2: writeval = rval | rs1           // CSRRS
@@ -376,7 +386,7 @@ public final class RV32Core {
                         case 5: writeval = rs1imm               // CSRRWI
                         case 6: writeval = rval | rs1imm        // CSRRSI
                         case 7: writeval = rval & ~rs1imm       // CSRRCI
-                        default: break
+                        default: writeval = rs1
                         }
 
                         switch csrno {
