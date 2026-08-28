@@ -5256,3 +5256,47 @@ et elle donne le nom du champ oublié.
 
 Aucun défaut trouvé dans le format lui-même. Ce qui manquait, encore une fois,
 c'était le témoin.
+
+## La même mesure sur le cœur Rust : un trou sur cinquante et un
+
+Le format d'instantané est partagé octet pour octet entre les deux cœurs — c'est
+écrit dans `Snapshot.swift` et tenu par un test qui restaure l'instantané de
+chacun dans l'autre. Le **témoin**, lui, n'était pas partagé. Même balayage,
+mêmes cinquante et une affectations, cette fois dans `set_core_words` et
+`Machine::restore`.
+
+| cœur | remarqués | passés inaperçus |
+| --- | --- | --- |
+| Swift (avant la tranche précédente) | 16 | 35 |
+| Rust | 50 | 1 |
+
+La différence tient à un seul fichier : `snapshot.rs` porte depuis toujours
+`the_cpu_comes_back_word_for_word`, qui met une valeur distincte dans chacun des
+quarante-huit mots et vérifie qu'ils reviennent. C'est, à la lettre, la
+construction que la tranche précédente vient d'écrire côté Swift — écrite ici
+dès le départ, et absente là-bas. Deux implémentations du même format, la même
+affirmation, et des quantités de preuve sans rapport.
+
+### Le trou qu'ils avaient en commun
+
+`pending_output` : les octets qu'un invité croit avoir imprimés, sortis de son
+UART et pas encore arrivés au terminal. Ni l'un ni l'autre cœur ne le tenait.
+C'est la moitié à laquelle personne ne pense — la file d'entrée, elle, a son
+test des deux côtés depuis longtemps.
+
+Vérifié dans les deux sens : perdre la restauration fait rougir le test ; écrire
+un blob vide dans `snapshot()` aussi.
+
+Et un piège au passage, du genre que ces carnets répètent : le premier sabotage
+du chemin d'écriture a paru survivre. Il ne compilait pas. `writer.bytes(&[])`
+ne donne pas son type à l'inférence, la caisse refusait, et mon filtre comptait
+les tests échoués sans regarder si le build avait eu lieu. **Un vert peut être
+une absence de compilation** — le harnais du balayage exigeait « Compiling
+wisq-vm » dans le journal, la vérification à la main ne l'exigeait pas.
+
+### Où ne plus chercher
+
+Le chemin d'instantané des deux cœurs est maintenant tenu champ par champ, dans
+les deux sens, et contre-vérifié par sabotage : cinquante et un sur cinquante et
+un côté Rust, cinquante sur cinquante et un côté Swift (`x0` est câblé à zéro,
+c'est une vraie équivalence, pas un trou). Il n'y a plus rien à mesurer ici.
