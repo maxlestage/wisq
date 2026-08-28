@@ -5358,3 +5358,57 @@ et seraient devenus rouges pour quiconque avait la variable exportée. Les deux
 configurations sont réelles et le déploiement utilise la première ; les tests
 énoncent maintenant le contrat dans les deux, et la CI joue le chemin Heroku
 deux fois plutôt qu'une. Un seul passage aurait couvert celle qui ne sert pas.
+
+## « Le site fonctionne hors ligne » — neuf comportements, zéro tenu
+
+Le site annonce qu'il s'installe et fonctionne sans réseau. Six tests
+couvraient déjà `sw.js`, et ils ont tous le même trait : **ils le lisent comme
+du texte**. `toContain("new Set(")`, `toContain("response.ok")`,
+`toContain("offlineFor")` — des fils tendus sur la source, pas des vérifications
+de ce que le worker fait.
+
+La mesure : neuf comportements cassés un par un dans `build.tsx`, chaque
+sabotage choisi pour **laisser intacte chaque chaîne citée par un test**.
+`addAll(wanted)` devient `addAll([])`, `if (response.ok)` devient
+`if (response.ok || true)`, `offlineFor` garde son nom et répond toujours
+anglais.
+
+| | comportements |
+| --- | --- |
+| remarqués par la suite du site | 0 |
+| passés inaperçus | 9 |
+
+Vérifié plutôt que supposé : le `dist/sw.js` construit portait bien
+`addAll([])` — relu depuis `dist`, pas depuis le patch. Un service worker qui ne
+précache **rien**, donc un site qui ne fonctionne pas du tout hors ligne, passe
+les quatre-vingt-dix-neuf tests du site.
+
+### Le témoin exécute le worker
+
+`site/tests/service-worker.test.ts` charge le vrai `sw.js` dans un faux
+`caches`, un faux `fetch` à qui on peut dire que le réseau est coupé, et un
+`self` minimal ; puis il déclenche `install`, `activate` et `fetch`, et
+n'affirme que sur ce qui atterrit dans le cache et sur ce qui revient à la page.
+
+Le faux `Cache.addAll` **rejette la liste entière quand deux entrées résolvent
+vers la même URL** — c'est le défaut pour lequel la déduplication existe, trouvé
+autrefois en pilotant un navigateur. Un faux qui tolérerait les doublons ne
+pourrait pas le tenir.
+
+Les corps de réponse sont distincts partout où deux chemins pourraient se
+confondre : « du cache » contre « du réseau », « hors ligne en anglais » contre
+« hors ligne en français ». Une sonde qui ne distingue pas ne prouve rien, et
+deux pages hors ligne ont la même forme.
+
+Contre-vérification : les neuf sabotages rejoués contre ce seul fichier.
+**Neuf attrapés sur neuf**, chacun par le test qui nomme son comportement.
+
+### Ce qu'on garde des anciens tests
+
+Ils restent, et un commentaire dit pourquoi : lire le texte attrape une
+construction qui a cessé d'émettre quelque chose — un fichier disparu de la
+liste de précache — ce que l'exécution du worker ne voit pas, puisqu'elle ne
+sait rien de ce que le site aurait dû produire. Les deux moitiés se complètent ;
+ce qui manquait, c'était la seconde.
+
+Aucun défaut trouvé dans le worker lui-même.
