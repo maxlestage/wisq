@@ -37,19 +37,36 @@ files at the repository root make it work:
   root (this repository's lockfile is `site/bun.lock` — a different name in a
   different directory, so it would not detect), and one is at v0.0.2.
 - `scripts/heroku-build.sh` — installs Bun into `.heroku-bun`, then builds the
-  site. It **refuses to build without `SITE_URL`**: a wrong public address is
-  invisible in the browser and wrong in every canonical link and sitemap entry,
-  so it stops rather than publish a site that points somewhere else.
+  site. It used to **refuse to build without `SITE_URL`**, on the reasoning that
+  a wrong public address is invisible in the browser and wrong in every
+  canonical link and sitemap entry. That much was true; stopping the build was
+  the wrong conclusion, and three deployments in a row died there rather than
+  shipping a site. The address is resolved where it is known instead — see
+  below.
 - `Procfile` — runs `site/scripts/serve.ts`, the same server `bun run preview`
   uses and `tests/serve.test.ts` holds. What Heroku serves is what the tests
   describe.
 
+### The address the site gives for itself
+
+The build stamps a sentinel — an unreachable `.invalid` host — wherever the
+site's own address appears, and `site/scripts/serve.ts` replaces it with the
+origin of the request it is answering. So the canonical links, the `hreflang`
+alternates, the sitemap, `robots.txt` and the social card all name the host the
+reader actually used, and moving the site somewhere else needs no rebuild.
+
+Heroku terminates TLS at its router and forwards plain HTTP to the dyno, so
+`X-Forwarded-Proto` is honoured — otherwise every canonical link on an `https`
+site would say `http`. Only `http` and `https` are accepted from that header: it
+is attacker-controlled on a host that does not set it.
+
+`SITE_URL` still works and still pins the address, which is what a custom domain
+wants; setting it leaves no sentinel for the server to replace.
+
 Setting it up, once, entirely from the Heroku dashboard:
 
 1. Create the app.
-2. **Settings → Config Vars**: `SITE_URL` = the app's public address, with the
-   trailing slash — `https://<app>.herokuapp.com/`.
-3. **Deploy → GitHub**: connect the repository, then enable automatic deploys
+2. **Deploy → GitHub**: connect the repository, then enable automatic deploys
    from `master`. "Wait for CI to pass before deploy" is worth ticking: this
    repository's checks are the thing that would catch a bad build.
 
