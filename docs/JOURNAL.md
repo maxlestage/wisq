@@ -5300,3 +5300,61 @@ Le chemin d'instantané des deux cœurs est maintenant tenu champ par champ, dan
 les deux sens, et contre-vérifié par sabotage : cinquante et un sur cinquante et
 un côté Rust, cinquante sur cinquante et un côté Swift (`x0` est câblé à zéro,
 c'est une vraie équivalence, pas un trou). Il n'y a plus rien à mesurer ici.
+
+## Trois déploiements morts sur une garde que j'avais écrite
+
+Le site ne montait pas sur Heroku. Trois constructions échouées dans la journée,
+et la cause était `scripts/heroku-build.sh` : il refusait de construire sans
+`SITE_URL`. Reproduit localement en rejouant la chaîne Heroku exactement — la
+racine `package.json`, `npm run heroku-postbuild` — sans la variable : la
+construction s'arrête là, code 1, à chaque fois.
+
+Le raisonnement de la garde était juste et la conclusion fausse. Une adresse
+canonique fausse ne se voit pas dans le navigateur et se voit dans chaque entrée
+du sitemap — vrai. Mais arrêter la construction transforme « l'opérateur a
+oublié une variable » en « le site n'existe pas », et sur un téléphone personne
+ne peut ouvrir un portable pour la corriger. J'avais posé la garde, puis donné
+trois fois la marche à suivre au lieu de retirer la marche à suivre.
+
+### L'adresse se résout là où elle est connue
+
+Le serveur voit l'hôte de chaque requête. La construction pose désormais une
+sentinelle — un hôte `.invalid`, injoignable exprès — partout où l'adresse du
+site apparaît, et `site/scripts/serve.ts` la remplace par l'origine de la
+requête qu'il répond : liens canoniques, alternates `hreflang`, sitemap,
+`robots.txt`, carte sociale. Le site est correct sur n'importe quel hôte, sans
+rien à configurer, et déplacer le déploiement ne demande aucune reconstruction.
+
+La sentinelle est injoignable par choix. Si la réécriture cessait, ce qui
+resterait serait un lien visiblement cassé, pas une adresse plausible et fausse.
+
+`SITE_URL` marche toujours et épingle l'adresse — ce que veut un domaine
+personnalisé, où l'origine que voit un dyno n'est pas celle qu'utilisent les
+lecteurs.
+
+### Le proxy qui termine le TLS
+
+Heroku termine le TLS à son routeur et transmet du HTTP simple au dyno : le
+schéma que voit le processus est `http` pour un lecteur qui a tapé `https`. Sans
+`X-Forwarded-Proto`, chaque lien canonique d'un site en `https` aurait annoncé
+une adresse qui redirige. Seuls `http` et `https` sont acceptés depuis cet
+en-tête : il est contrôlable par un tiers sur un hôte qui ne le pose pas, et le
+pire qu'une valeur fausse puisse faire ici est d'estampiller un schéma — refuser
+tout le reste l'empêche d'estampiller ce qui n'en est pas un.
+
+### Deux erreurs de méthode, dites plutôt que tues
+
+**J'ai effacé mon propre travail avec `git checkout --`.** Le sabotage de
+vérification portait sur `serve.ts`, qui portait aussi des modifications non
+commitées ; annuler le sabotage a tout emporté. Le harnais de balayage, lui,
+patche et restaure des fichiers propres — c'est fait à la main que la règle
+manquait. Les tests unitaires passaient encore : ils avaient été lancés avant.
+C'est la répétition de la chaîne complète, jusqu'à un `curl` sur le dyno, qui a
+montré la sentinelle non remplacée.
+
+**Mes premiers tests testaient mon shell.** Ils supposaient que `dist` avait été
+construit sans `SITE_URL` — la façon dont la CI et `verify.sh` le construisent —
+et seraient devenus rouges pour quiconque avait la variable exportée. Les deux
+configurations sont réelles et le déploiement utilise la première ; les tests
+énoncent maintenant le contrat dans les deux, et la CI joue le chemin Heroku
+deux fois plutôt qu'une. Un seul passage aurait couvert celle qui ne sert pas.
