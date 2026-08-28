@@ -4934,3 +4934,81 @@ démarrage jusqu'à la bannière, 23 par l'assertion sur l'invite de connexion,
 43 par les deux fichiers de témoins — dont un que seul le compilateur peut
 tenir. Aucun défaut trouvé dans l'émulateur ; ce qui manquait, ce sont les
 témoins, et une assertion de démarrage qui regardait la deuxième milliseconde.
+
+## Deux sabordages qui ne faisaient pas rougir, mais pendre
+
+La mesure visait autre chose : « Les deux interpréteurs sont d'accord » —
+d'accord sur quoi, au juste ? Le test différentiel compare les cœurs Swift et
+Rust exactement, mais seulement sur un démarrage de noyau et une frappe au
+shell. Il ne leur fait jamais exécuter d'instruction choisie.
+
+Les cent six bras du décodeur, sabordés un à un côté Swift, contre la suite
+`WisqVMRustTests` :
+
+| ce qui arrive quand le cœur Swift se trompe | bras |
+| --- | --- |
+| la comparaison le remarque | 66 |
+| le compilateur l'attrape (les six micro-ops CSR de la tranche précédente) | 6 |
+| **personne ne le remarque** | **32** |
+| la suite *pend* au lieu d'échouer | 2 |
+
+Les trente-deux sont les mêmes que le balayage précédent avait isolés : ce qu'un
+noyau qui démarre bien ne traverse pas. Un cœur Swift qui se tromperait sur
+`AMOMINU`, sur la division par zéro ou sur le contenu de `mtval` serait déclaré
+d'accord avec le cœur Rust.
+
+### Mais ce sont les deux derniers qui valaient le détour
+
+Un sabordage qui fait *pendre* la suite n'est pas un bras non couvert : c'est un
+symptôme. En tirant le fil — `l'interruption timer` retirée, le noyau se gare et
+ne se réveille plus — on tombe sur une propriété de `run()` qui n'a rien à voir
+avec le sabordage :
+
+**Un hart garé ne peut jamais épuiser un budget d'instructions.** Le budget
+compte les instructions *retirées*, délibérément, pour qu'un invité oisif ne
+puisse pas dépenser un budget en ne faisant rien. Un hart en `WFI` n'en retire
+aucune. Et sur cette machine le minuteur est le seul réveil possible : un hart
+garé n'exécute rien, donc ne peut pas non plus interroger l'UART.
+
+Donc un invité qui exécute `WFI` **sans minuteur armé** fait tourner la boucle à
+plein régime, pour toujours. Mesuré avant d'être écrit : un invité de deux
+instructions retire une instruction, puis `run(instructionBudget: 10 000)` ne
+rend jamais la main — il a fallu `stop()`. Et l'application appelle `run()` une
+seule fois, sans budget : « pour toujours » signifie jusqu'à ce que
+l'utilisateur quitte l'écran, avec un cœur épinglé et une batterie qui chauffe.
+
+Ce n'est pas un défaut de test. C'est le produit.
+
+### La correction, dans les deux cœurs
+
+Si le hart est garé et qu'aucun minuteur n'est armé, rien ne le réveillera :
+`run` rend `.stopped` au lieu de tourner. L'appelant — vérifié, `LocalVMModel`
+appelle `run()` une fois et rapporte l'issue — affiche « Arrêtée. » au lieu de
+ne rien afficher pendant que le téléphone chauffe.
+
+Le commentaire d'origine raisonnait déjà sur la batterie pour le cas *armé* (il
+saute l'horloge jusqu'au rendez-vous plutôt que d'y ramper) ; il avait manqué le
+cas non armé, qui est le pire des deux.
+
+Corrigé des deux côtés, parce qu'un désaccord entre les cœurs sur ce point
+casserait la reprise d'un instantané.
+
+### Trois cas, dont un qui doit survivre
+
+Le bord qui compte est celui qu'il ne faut **pas** casser : un hart garé avec un
+minuteur armé attend quelque chose qui arrive, et doit continuer d'attendre. Une
+correction qui rendait la main à chaque `WFI` transformerait tout invité Linux
+au repos en invité arrêté. Le programme témoin arme le CLINT par MMIO, comme le
+ferait un vrai invité, et le cas survit au sabordage pendant que les deux autres
+rougissent.
+
+Les témoins sont bornés sur l'horloge murale, pas sur la machine : une
+régression ici ne fait pas échouer lentement, elle ne rend jamais la main. C'est
+l'attente bornée qui transforme « pend » en « rouge ».
+
+### Ce qui reste
+
+Les trente-deux bras que la comparaison ne remarque pas. Le mécanisme pour les
+couvrir existe déjà et vient d'être étrenné : charger le même programme codé à
+la main dans les deux cœurs et comparer `snapshot()` octet pour octet, ce qui
+compare la RAM, les registres et les CSR d'un coup. C'est la tranche suivante.
