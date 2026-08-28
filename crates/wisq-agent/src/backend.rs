@@ -162,18 +162,51 @@ impl VirshBackend {
     }
 }
 
-impl Backend for VirshBackend {
-    fn list(&self) -> Result<Vec<Vm>> {
-        self.run(&["list", "--all", "--name"])?
+impl VirshBackend {
+    /// The domains libvirt knows about, by name.
+    ///
+    /// One `virsh` call, and no `domstate` per domain: this answers "does it
+    /// exist" without asking anything else about it, which is what `get` needs
+    /// and all it needs.
+    fn names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .run(&["list", "--all", "--name"])?
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+}
+
+impl Backend for VirshBackend {
+    fn list(&self) -> Result<Vec<Vm>> {
+        self.names()?
+            .iter()
             .map(|name| self.describe(name))
             .collect()
     }
 
+    /// Absent and unreachable are different answers, and this used to give the
+    /// first for both.
+    ///
+    /// `Ok(self.describe(id).ok())` turned every failure into "no such VM": a
+    /// host with libvirtd stopped, or without `virsh` installed at all, told
+    /// the phone *VM introuvable : debian-13* about a machine that exists and
+    /// is fine. The service's `Err(message) => 500` arm could never run, so the
+    /// one place prepared to report the real cause was unreachable code.
+    ///
+    /// Asking the domain about itself cannot separate the two: `virsh domstate`
+    /// exits non-zero for an unknown domain and for a hypervisor it cannot
+    /// reach, and telling those apart would mean reading its prose. So the
+    /// question is asked of the *list* instead, which fails only when libvirt
+    /// fails. A name that is not in a list libvirt successfully produced is
+    /// genuinely not there — that is the other edge, and it still answers 404.
     fn get(&self, id: &str) -> Result<Option<Vm>> {
-        Ok(self.describe(id).ok())
+        if !self.names()?.iter().any(|name| name == id) {
+            return Ok(None);
+        }
+        self.describe(id).map(Some)
     }
 
     fn start(&self, id: &str) -> Result<Vm> {
@@ -185,6 +218,128 @@ impl Backend for VirshBackend {
         // ACPI shutdown by default; destroy is the power cord.
         self.run(&[if force { "destroy" } else { "shutdown" }, id])?;
         self.describe(id)
+    }
+}
+
+#[cfg(test)]
+mod virsh_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A `virsh` of our own: a shell script that prints what the test wants and
+    /// exits how the test wants.
+    ///
+    /// The alternative — a trait around `Command` — would let the tests agree
+    /// with a mock about something the real binary does differently. This runs
+    /// the actual spawn, the actual exit status and the actual stdout, so what
+    /// is exercised is the code path a host takes.
+    struct FakeVirsh {
+        path: std::path::PathBuf,
+        _dir: std::path::PathBuf,
+    }
+
+    impl FakeVirsh {
+        fn new(script: &str) -> FakeVirsh {
+            let dir = std::env::temp_dir()
+                .join(format!("wisq-virsh-{}", std::process::id()))
+                .join(
+                    format!("{:?}", std::time::SystemTime::now())
+                        .replace([' ', ':', '{', '}'], "_"),
+                );
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("virsh");
+            let mut file = std::fs::File::create(&path).unwrap();
+            writeln!(file, "#!/bin/sh\n{script}").unwrap();
+            drop(file);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            FakeVirsh { path, _dir: dir }
+        }
+
+        fn backend(&self) -> VirshBackend {
+            VirshBackend::new(self.path.to_string_lossy().into_owned())
+        }
+    }
+
+    impl Drop for FakeVirsh {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self._dir);
+        }
+    }
+
+    /// The probe has to be able to say "something here" before "nothing here"
+    /// means anything: a fake that never worked would make every test below
+    /// pass for the wrong reason.
+    #[test]
+    fn the_fake_virsh_answers_at_all() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo debian-13 ;;
+  domstate) echo running ;;
+  vncdisplay) echo :1 ;;
+esac"#,
+        );
+        let vm = virsh
+            .backend()
+            .get("debian-13")
+            .unwrap()
+            .expect("la VM doit être trouvée");
+        assert_eq!(vm.state, State::Running);
+        assert_eq!(vm.console_port, Some(5901));
+    }
+
+    /// The defect. `Ok(self.describe(id).ok())` turned every failure into "no
+    /// such VM", so a host whose libvirtd is stopped told the phone the machine
+    /// did not exist — and the service arm that reports the real cause was
+    /// unreachable code.
+    #[test]
+    fn a_hypervisor_that_cannot_be_reached_is_not_a_missing_vm() {
+        let virsh = FakeVirsh::new(
+            r#"echo "error: failed to connect to the hypervisor" >&2
+exit 1"#,
+        );
+        match virsh.backend().get("debian-13") {
+            Err(message) => assert!(
+                message.contains("hypervisor"),
+                "la cause réelle doit remonter, obtenu : {message}"
+            ),
+            Ok(other) => panic!("un hyperviseur injoignable a été rendu comme {other:?}"),
+        }
+    }
+
+    /// And when `virsh` is not installed at all, which is the same lie by a
+    /// different route.
+    #[test]
+    fn a_missing_virsh_is_not_a_missing_vm() {
+        let backend = VirshBackend::new("/n/existe/pas/virsh".to_string());
+        assert!(
+            backend.get("debian-13").is_err(),
+            "un virsh absent a été rendu comme une VM absente"
+        );
+    }
+
+    /// The other edge, and half the work: a name libvirt successfully did not
+    /// list is genuinely absent, and must still answer "absent" rather than an
+    /// error. A fix that reported everything as unreachable would pass the two
+    /// tests above and break the 404 the app relies on.
+    #[test]
+    fn a_domain_libvirt_does_not_list_is_still_absent() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo debian-13 ;;
+  *) echo "error: failed to get domain" >&2; exit 1 ;;
+esac"#,
+        );
+        assert_eq!(virsh.backend().get("fantome").unwrap(), None);
+    }
+
+    /// `list` reads the same source, so a hypervisor it cannot reach is an
+    /// error there too — it always was, and this pins it while the helper they
+    /// now share is introduced.
+    #[test]
+    fn listing_propagates_what_it_cannot_reach() {
+        let virsh = FakeVirsh::new("exit 1");
+        assert!(virsh.backend().list().is_err());
     }
 }
 
