@@ -7,6 +7,6 @@
   },
   "scripts": {
     "heroku-postbuild": "bash scripts/heroku-build.sh",
-    "start": "./.heroku-bun/bin/bun site/scripts/serve.ts"
+    "start": "bash scripts/heroku-web.sh"
   }
 }
