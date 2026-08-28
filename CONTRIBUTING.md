@@ -61,8 +61,8 @@ Every pull request runs three gates, and all of them block:
    rv32ima emulator. Runs on the `swift:6.3` image.
 2. **App iOS** — XcodeGen + simulator build of the app.
 3. **Lint** — SwiftLint over the Swift sources.
-4. **Site** — builds and tests `site/` when it changes, and publishes to
-   GitHub Pages from `master`.
+4. **Site** — typechecks, builds and tests `site/`, and exercises the build
+   Heroku will run. It publishes nothing: Heroku deploys from `master` itself.
 
 Match them locally before pushing; `scripts/verify.sh` covers the first.
 

@@ -49,8 +49,10 @@ export interface Route {
   path: string;
   /// Whether the page belongs in the header navigation and the sitemap.
   listed: boolean;
-  /// Where the file goes, when it is not `<path>/index.html`. GitHub Pages
-  /// serves 404.html for an unknown address, and only from the site root.
+  /// Where the file goes, when it is not `<path>/index.html`. A 404.html at
+  /// the site root is what a static host reaches for on an unknown address —
+  /// GitHub Pages did, and `scripts/serve.ts` does the same, so the convention
+  /// survived the move to Heroku.
   output?: string;
 }
 
@@ -85,9 +87,10 @@ export function outputPath(route: Route, lang: Lang): string {
 
 /// How deep a page sits, which is how many `../` its assets need.
 ///
-/// Everything the pages reference is relative on purpose: the site is served
-/// from `/wisq/` on GitHub Pages today, and from the root of a domain the day
-/// it moves. A path that starts with `/` would work in exactly one of those.
+/// Everything the pages reference is relative on purpose: the site was served
+/// from `/wisq/` on GitHub Pages and is served from the root on Heroku. A path
+/// that starts with `/` would work in exactly one of those — which is why the
+/// move cost nothing here.
 /// Counted from the file that gets written rather than from the route, because
 /// French adds a directory the route does not know about.
 export function relativeBase(route: Route, lang: Lang): string {
