@@ -50,6 +50,49 @@ final class LinuxBootTests: XCTestCase {
         XCTAssertEqual(outcome, .stopped, "le budget doit expirer, pas la machine planter")
     }
 
+    /// The banner is the second millisecond of the boot. This is the rest of it.
+    ///
+    /// A sweep of the interpreter's decoder — every arm turned into a no-op, one
+    /// at a time — found sixty-six of a hundred and six held by no test at all,
+    /// and the cause was shared: the assertion above stops at the first line the
+    /// kernel prints. Break the write to `mtvec` and the machine derails so
+    /// badly the run takes fifty-one seconds instead of six — and passes,
+    /// because the banner had already gone out. Everything after it — the trap
+    /// vector, `MRET`, the CSRs, the atomics, the drop to user mode — happened
+    /// inside a test that had stopped looking.
+    ///
+    /// Reaching `buildroot login:` is not a longer version of the same claim.
+    /// It is init running as a user-mode process on a console the kernel handed
+    /// over, which cannot happen unless the machinery above works. It is also
+    /// what the guide promises the reader — *jusqu'à l'invite de connexion* —
+    /// and until now nothing checked the half of that sentence that matters.
+    ///
+    /// The budget is the one the banner test already spent: the prompt arrives
+    /// around forty-six million instructions, well inside sixty. The reach was
+    /// there the whole time and only the assertion was missing.
+    func testBootsAllTheWayToItsLoginPrompt() throws {
+        guard let url = Self.imageURL() else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: url)
+
+        let console = ConsoleCapture()
+        let machine = LinuxMachine { console.append($0) }
+        try machine.load(kernelImage: image)
+        let outcome = machine.run(instructionBudget: 60_000_000)
+
+        let output = console.text()
+        XCTAssertTrue(
+            output.contains("Run /init as init process"),
+            "le noyau doit passer la main à l'espace utilisateur; fin de sortie: \(output.suffix(400))"
+        )
+        XCTAssertTrue(
+            output.contains("buildroot login:"),
+            "l'invite de connexion doit apparaître; fin de sortie: \(output.suffix(400))"
+        )
+        XCTAssertEqual(outcome, .stopped, "le budget doit expirer, pas la machine planter")
+    }
+
     func testCommandLinePatchingIsBounded() {
         let machine = LinuxMachine { _ in }
         XCTAssertThrowsError(
