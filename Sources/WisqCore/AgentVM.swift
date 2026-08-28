@@ -57,6 +57,24 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         self.guestOS = guestOS
     }
 
+    /// Whether a console can actually be opened on this VM.
+    ///
+    /// **Both halves, and the second is the one that is easy to drop.** A
+    /// running VM with no console port is a normal state, not a contradiction:
+    /// libvirt reports a domain as `running` the moment it exists, while the
+    /// guest is still bringing up its display, and `virsh vncdisplay` has
+    /// nothing to say until it has. Treating `running` alone as ready opens a
+    /// console on a port that is not listening yet.
+    ///
+    /// The rule used to live inside `AgentClient.waitUntilRunning`'s polling
+    /// loop, where no test could reach it — the end-to-end suite drives the
+    /// demo backend, which never produces the running-without-a-port state that
+    /// a real libvirt produces on every boot. Here it is a property of the
+    /// model, and both of its edges are held.
+    public var isReadyForConsole: Bool {
+        state == .running && consolePort != nil
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
@@ -64,8 +82,9 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         self.consolePort = try container.decodeIfPresent(Int.self, forKey: .consolePort)
 
         // A state this build has never heard of, or none at all, is `.unknown`.
-        // Conservative on purpose: `AgentClient.waitUntilRunning` only ever acts
-        // on `.running`, so an unreadable state waits rather than assumes.
+        // Conservative on purpose: a VM is only ready when `isReadyForConsole`
+        // says so, and that needs `.running`, so an unreadable state waits
+        // rather than assumes.
         self.state = SettingCase.decode(container, .state, or: .unknown)
         self.guestOS = SettingCase.decode(container, .guestOS, or: GuestOS.unknown)
 

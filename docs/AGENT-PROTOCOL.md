@@ -107,9 +107,24 @@ boucle pendant un démarrage (`AgentClient.waitUntilRunning`).
 
 ### `POST /v1/vms/{id}/start`
 
-Démarre la VM. Répond immédiatement avec l'état `starting` — le démarrage d'un
-invité prend des dizaines de secondes et une requête HTTP maintenue ouverte
-aussi longtemps ne survit pas à un changement de cellule réseau.
+Démarre la VM et **répond immédiatement**, sans attendre l'invité : un démarrage
+prend des dizaines de secondes et une requête HTTP maintenue ouverte aussi
+longtemps ne survit pas à un changement de cellule réseau.
+
+L'état renvoyé est celui que le backend peut observer à cet instant, et les deux
+que wisq fournit ne disent pas la même chose. Le backend de démonstration rend
+`starting`. `VirshBackend` ne le peut pas : libvirt n'a pas cet état — un
+domaine est `running` dès qu'il existe, pendant que son invité monte encore son
+affichage — et aucune sortie de `virsh domstate` ne signifie « en train de
+démarrer ». Ce paragraphe promettait `starting` tout court ; c'était vrai d'une
+implémentation sur deux.
+
+**Un client ne doit donc pas lire l'état seul.** Une VM est prête quand elle est
+`running` **et** qu'elle annonce un port de console. Les deux moitiés comptent :
+`running` sans port est l'état normal de tout démarrage réel, et ouvrir une
+console dessus vise un port qui n'écoute pas encore. C'est la règle que
+`AgentVM.isReadyForConsole` applique et que `AgentClient.waitUntilRunning`
+attend ; un agent tiers doit publier son port au même moment, pas avant.
 
 ### `POST /v1/vms/{id}/stop`
 
