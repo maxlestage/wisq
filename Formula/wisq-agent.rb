@@ -6,7 +6,12 @@
 #   brew services start wisq-agent                    # launchd/systemd service
 #
 # The stable URL is a git tag rather than a tarball so no sha256 needs
-# updating per release — bump the tag here when cutting one.
+# updating per release — the tag below is the only thing to bump when cutting
+# one, and `site/tests/version-agreement.test.ts` fails until it is. That test
+# exists because this line had already drifted out of the procedure: the
+# `release: 0.2.0` commit bumped it, a later commit wrote `v0.3.0` before that
+# version existed, and the `release: 0.3.0` commit then touched every other
+# file and not this one. It says the right thing today by coincidence.
 class WisqAgent < Formula
   desc "Host daemon that lets wisq on iPhone power VMs on and connect to them"
   homepage "https://github.com/maxlestage/wisq"

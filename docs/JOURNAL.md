@@ -6073,3 +6073,65 @@ Chacune prend une racine en argument, chacune est mise devant des arbres
 fautifs, et chacune a ses contre-cas. Deux des trois portaient un vrai trou de
 couverture — le champ `license` de npm, et `App/` — et aucun des deux ne se
 voyait, parce qu'un arbre propre ne fait rien dire à une garde.
+
+## Sept endroits énoncent la version ; un seul était tenu
+
+`0.3.0` est écrit dans le CHANGELOG, dans les deux manifestes Cargo, dans le
+`MARKETING_VERSION` du projet Xcode, deux fois dans le site, et dans le tag de
+la formule Homebrew. Un seul de ces liens existait : `build.test.ts` compare le
+pied de page du site à la version datée la plus récente du CHANGELOG.
+
+**Mesuré.** Cinq d'entre eux mis à cinq valeurs **distinctes et fausses** en une
+passe — `SITE_VERSION` laissé intact — et la suite entière lancée contre ça :
+verte. Swift, Rust, et les 154 tests du site.
+
+### Un des cinq était déjà à la dérive en fait, pas seulement en principe
+
+L'histoire du tag de la formule, lue dans le journal git :
+
+| commit | ce qu'il a fait |
+| --- | --- |
+| `release: 0.2.0` | a monté le tag de `v0.1.1` à `v0.2.0` |
+| « Rust where the work is not Apple-shaped » (même jour) | a réécrit la formule avec `tag: "v0.3.0"` — **une version qui n'existait pas encore** |
+| `release: 0.3.0` (lendemain) | CHANGELOG, `Cargo.lock`, les deux manifestes, `project.yml`, cinq fichiers du site — **pas la formule** |
+
+Elle est d'accord aujourd'hui **par coïncidence** : elle a été écrite avec une
+release d'avance et la release l'a rattrapée. Le commit de publication ne la
+touche plus, et rien ne fera que la prochaine s'en souvienne :
+`brew install maxlestage/wisq/wisq-agent` installerait le démon précédent
+pendant que le site annonce le nouveau.
+
+Et la règle qui aurait dû l'empêcher existait — dans un commentaire du fichier :
+« bump the tag here when cutting one ». C'est la forme qu'on connaît, une règle
+qui vit dans une phrase plutôt que dans une garde.
+
+### La sonde qui ne pouvait pas distinguer, évitée exprès
+
+Chaque lecteur **lève** quand son motif ne correspond à rien, et il y a un test
+qui vérifie que les six trouvent quelque chose. Ce n'est pas de la cérémonie, et
+c'est mesuré : en remplaçant les deux levées par un `undefined` et en cassant
+deux motifs, l'assertion « le manifeste du cœur VM est d'accord » **passe** —
+`expect(undefined).toBe(undefined)`. Huit tests restent verts.
+
+C'est exactement le trou de `App/**` de la tranche précédente, sous un autre
+angle : un lecteur qui ne lit rien ne se distingue pas d'un lecteur qui lit la
+bonne chose, tant que les deux côtés de la comparaison sont vides.
+
+### La contre-mesure
+
+Seize tests, sept sabordages séparés — un par endroit, plus le CHANGELOG
+lui-même :
+
+| version faussée | ce qui rougit |
+| --- | --- |
+| `crates/wisq-vm/Cargo.toml` | le manifeste du cœur VM |
+| `crates/wisq-agent/Cargo.toml` | le manifeste du démon |
+| `project.yml` | `MARKETING_VERSION` |
+| `site/src/content.ts` | `SITE_VERSION` |
+| `site/src/pages/releases.ts` | la page des versions **et** sa liste complète |
+| `Formula/wisq-agent.rb` | le tag Homebrew |
+| `CHANGELOG.md` | les sept, puisque c'est la référence |
+
+Le bord inverse est `[Unreleased]` : cette section n'a pas de date et ne doit
+pas être lue comme une version, sinon chaque commit après une publication
+ressemblerait à une nouvelle et réclamerait que les sept fichiers soient montés.
