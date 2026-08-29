@@ -6135,3 +6135,50 @@ lui-même :
 Le bord inverse est `[Unreleased]` : cette section n'a pas de date et ne doit
 pas être lue comme une version, sinon chaque commit après une publication
 ressemblerait à une nouvelle et réclamerait que les sept fichiers soient montés.
+
+## Une tranche annulée : j'ai lu le code et pas les tests
+
+Constat, à quatre heures du matin : la formule Homebrew existe, `install.sh`
+existe, la release attache quatre binaires à chaque étiquette — et `brew`,
+`install`, `curl` n'apparaissent nulle part dans `site/src`. Le guide consacre
+une section entière à l'agent, « lancez-le avec `--service` », sans jamais dire
+comment obtenir le binaire que ces paragraphes supposent acquis.
+
+J'ai conclu à un oubli et rédigé la section d'installation dans les deux
+langues. **C'est un test qui m'a arrêté, pas ma relecture** :
+`render.test.tsx`, « no page hands out a way to install the project », interdit
+exactement ces commandes, sur les pages rendues des deux langues, avec son
+raisonnement écrit à côté — y compris un affinage antérieur sur l'endroit exact
+où passe la ligne.
+
+Le site ne distribue pas wisq. C'est une décision, elle est tenue, et je ne
+l'avais pas vue. Tout est annulé.
+
+### La règle que ça donne
+
+**J'ai cherché ce que le code disait et pas ce que les tests disaient.** C'est
+la même erreur que celle que je traque depuis hier soir, retournée : je vérifie
+partout « qu'est-ce qui tient cette affirmation ? », et je n'ai pas pensé à
+demander « qu'est-ce qui tient cette *absence* ? ». Une absence délibérée
+ressemble exactement à un oubli — la seule chose qui les sépare est le test qui
+l'impose, et il ne se trouve pas en cherchant dans `Sources` ou dans `src`.
+
+Avant de combler un trou : chercher le trou dans les tests, pas seulement dans
+le code.
+
+### Ce qui restait de vrai, et qui est corrigé
+
+Un commentaire de `build.test.ts` disait : « le téléchargement de la release
+survit exprès — c'est ainsi qu'un lecteur installe la chose ». Ce n'était plus
+vrai : le test voisin interdit `releases/latest` et `.ipa`, et aucun lien de
+téléchargement n'est sur le site. Deux fichiers énonçaient des intentions
+incompatibles, et c'est le faux des deux que j'ai lu et suivi. Corrigé, avec la
+mesure écrite dedans.
+
+Et la décision elle-même ne vivait que dans le commentaire d'un test. Elle est
+maintenant dans `docs/ROADMAP.md`, avec ce que le site montre quand même — la
+section d'appairage, parce qu'un lecteur qui décide si wisq est pour lui a
+besoin de savoir qu'un agent imprime un lien et que le téléphone le scanne, et
+que rien de tout ça ne lui remet un binaire.
+
+Aucun code de production n'a changé.
