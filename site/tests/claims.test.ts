@@ -11,7 +11,25 @@ const repoRoot = join(import.meta.dir, "..", "..");
 /// Both languages: the daemon and the VM core are Rust, and a count that only
 /// saw Swift would advertise a smaller number than the repository actually
 /// carries — the exact kind of quiet rot this file exists to prevent.
+///
+/// Counted once and remembered. Three tests below ask for it, and the walk
+/// reads every Swift file under `Tests/` and every Rust file under `crates/` —
+/// 146 files. Warm that is 16 ms and doing it three times costs nothing worth
+/// naming; **cold it is 5 798 ms**, measured on the first read after a
+/// container restart, or about 40 ms a file on storage that is not local. That
+/// single figure sits above bun's 5 000 ms default, which is how this test
+/// timed out once for a reason that had nothing to do with what it checks.
+///
+/// Memoising takes three cold walks down to one. It does not make the first
+/// one fast, and no amount of caching would: the bytes have to arrive. The
+/// deliberate non-fix is the timeout — raising it to thirty seconds would end
+/// the spurious red and would also stop this test from ever noticing a genuine
+/// tenfold slowdown, which is the same blindness as a guard that cannot fail.
+/// A rare red with a known cause, written down here, is the better trade.
+let counted: number | undefined;
+
 function testCount(): number {
+  if (counted !== undefined) return counted;
   let total = 0;
   const walk = (dir: string, extension: string, pattern: RegExp) => {
     for (const entry of readdirSync(dir)) {
@@ -25,6 +43,7 @@ function testCount(): number {
   };
   walk(join(repoRoot, "Tests"), ".swift", /^\s*func test[A-Z_]/gm);
   walk(join(repoRoot, "crates"), ".rs", /^\s*#\[test\]/gm);
+  counted = total;
   return total;
 }
 
