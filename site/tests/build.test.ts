@@ -494,8 +494,20 @@ describe("footer", () => {
   /// whoever next edits the copy: an "open source" badge or a "Source" link
   /// would come back the moment someone added one, and nothing would object.
   ///
-  /// The release download survives on purpose — it is how a reader installs the
-  /// thing, not an invitation to read the code.
+  /// This test is about **claiming to be open source and sending people to
+  /// browse the sources**. It is not the whole policy: `render.test.tsx`'s
+  /// "no page hands out a way to install the project" forbids the install
+  /// commands and download paths, and the two are separate decisions about
+  /// separate things.
+  ///
+  /// That sentence replaces one that said "the release download survives on
+  /// purpose — it is how a reader installs the thing". It had stopped being
+  /// true: the neighbouring test forbids `releases/latest` and `.ipa`, and no
+  /// download link is on the site. A comment describing a state that no longer
+  /// exists is worse than no comment, because it is what the next reader acts
+  /// on — measured, on me: I read it, concluded the site was missing an install
+  /// route it was supposed to have, and wrote one before the other test
+  /// stopped me.
   test("the site neither claims to be open source nor links to its sources", () => {
     const forbidden = [
       "github.com/maxlestage/wisq/blob/",
