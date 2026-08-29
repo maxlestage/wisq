@@ -127,5 +127,5 @@ la suite.
 
 ## Auteur
 
-Créé et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
+Conçu et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
 Copyright 2026 Maxime Nathan Lestage. Tous droits réservés.

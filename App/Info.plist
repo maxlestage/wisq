@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>wisq</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Created and developed by Maxime Nathan Lestage. Copyright 2026 Maxime Nathan Lestage. All rights reserved.</string>
+	<string>Designed and developed by Maxime Nathan Lestage. Copyright 2026 Maxime Nathan Lestage. All rights reserved.</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
