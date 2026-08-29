@@ -20,6 +20,14 @@ echo "==> Mise en forme (les règles de texte)"
 echo "==> Licence (rien ne doit en annoncer une)"
 ./scripts/check-licence-claims.sh
 
+# CI runs this one and this script did not — the third time this file has had
+# exactly that bug, after SwiftLint and after the Rust gates, both recorded
+# above. It takes two seconds and it guards the one failure nobody here can
+# see: an installer asking for an asset the release never built, on a machine
+# nobody who works on this owns.
+echo "==> Matrice des architectures (installateur ↔ release)"
+./scripts/check-release-matrix.sh > /dev/null
+
 if command -v swiftlint > /dev/null 2>&1; then
   echo "==> SwiftLint (strict, comme la CI)"
   # SwiftLint *does* run on Linux, which this script used to claim it did not.
