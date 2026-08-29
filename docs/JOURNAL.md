@@ -5930,3 +5930,73 @@ plupart des générateurs aussi.
 Les deux sont couverts maintenant, par une boucle qui marche comme celle de
 Cargo — donc un `package.json` ajouté plus tard l'est aussi, sans que personne
 ait à s'en souvenir.
+
+## La deuxième garde du dépôt, et une branche que `set -e` rendait inatteignable
+
+Même question posée au deuxième des trois scripts de garde :
+`scripts/check-release-matrix.sh`, qui tient l'installateur et le workflow de
+publication d'accord. Il existe parce que les deux ont divergé une fois — le
+workflow construisait `linux-x86_64` et `macos-arm64`, l'installateur demandait
+exactement ceux-là, et toute autre machine tombait en silence dans la
+construction depuis les sources. Personne ne voit cet échec sauf la personne
+qui installe.
+
+### La mesure, et une nuance sur ce qui compte comme rouge
+
+Trois cassures de la logique du script le laissent **vert sur cet arbre** :
+
+| cassure | sortie |
+| --- | --- |
+| `expect_asset` ne compare plus | 0 |
+| les deux `comm` neutralisés | 0 |
+| `exit "$failed"` devenu `exit 0` | 0 |
+
+Une quatrième, `comm -13` échangé contre `comm -12`, sort bien en 1 — **mais
+pour la mauvaise raison** : elle signale les quatre assets *qui correspondent*
+comme manquants. Un rouge qui veut dire autre chose n'est pas une détection, et
+c'est le genre de faux positif qu'on compte à tort comme preuve que la garde
+marche.
+
+### La branche que personne ne pouvait atteindre
+
+Le script porte deux refus explicites — « ne déclare plus aucun asset », « ne
+demande plus aucun asset » — pour le cas où un fichier est réécrit et où le
+motif ne trouve plus rien. Deux listes vides se comparent égales, donc sans ces
+branches la garde annoncerait une matrice cohérente après n'avoir rien lu.
+
+Elles sont **inatteignables**. `built=$(grep … | awk … | sort -u)` sous
+`set -euo pipefail` : un `grep` sans correspondance est un échec, l'affectation
+échoue, et le script meurt là — silencieusement, avec la sortie 1. Le refus a
+lieu, mais sans un mot ; il faut lancer `bash -x` pour savoir pourquoi.
+
+Trouvé en écrivant le test, pas en lisant le fichier : les deux tests
+échouaient sur une sortie **vide**. Corrigé par un `|| true` sur chaque
+pipeline, et les deux branches sont maintenant atteintes et tenues.
+
+### Le témoin qui prouvait la mauvaise chose
+
+Le premier essai du cas « un nom réel envoyé à la mauvaise machine » changeait
+`Darwin/arm64` de `macos-arm64` vers `macos-x86_64`. Il rougissait — mais par
+la comparaison d'ensembles, puisque `macos-arm64` devenait construit et jamais
+demandé. Avec la vérification de correspondance retirée, il passait quand même.
+
+La version qui tient **échange** les deux mappings. Les deux listes restent
+identiques, la comparaison d'ensembles ne dit rien — et le test l'affirme, avec
+un `not.toContain` sur ses deux messages. C'est le silence de l'autre moitié
+qui fait de ce test le témoin de la sienne.
+
+### Et la troisième fois pour `verify.sh`
+
+Ce script dit en tête qu'il lance « tout ce que la CI lancerait ». Deux
+commentaires à l'intérieur racontent déjà la même correction : une fois pour
+SwiftLint, une fois pour les portes Rust. **La matrice des architectures était
+la troisième** — lancée par la CI, absente d'ici. Elle coûte deux secondes.
+
+### Ce qui reste
+
+`scripts/check-whitespace.sh`, le troisième, n'est pas tenu non plus. Il l'est
+moins gravement et il faut le dire : la CI ne le lance pas — elle lance
+`swiftlint --strict`, qui couvre les mêmes règles — donc une version cassée ne
+laisse pas passer un défaut, elle rend une PR rouge dix minutes plus tard. Or
+c'est exactement l'aller-retour que ce script existe pour éviter. Un tour, pas
+un défaut.
