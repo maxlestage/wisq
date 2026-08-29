@@ -6182,3 +6182,44 @@ besoin de savoir qu'un agent imprime un lien et que le téléphone le scanne, et
 que rien de tout ça ne lui remet un binaire.
 
 Aucun code de production n'a changé.
+
+## Un rouge qui ne voulait rien dire, et le correctif que je n'ai pas fait
+
+Au redémarrage du conteneur, quatre tests du site ont dépassé le délai par
+défaut de bun. Celui qui compte les tests du dépôt a mis **6 330 ms** pour une
+assertion qui en prend seize.
+
+Première hypothèse : l'échauffement du JIT. **Fausse**, et la mesure le dit :
+
+```
+premier passage, cache froid : 5 798 ms   (146 fichiers, ~40 ms chacun)
+passages suivants            :    16 ms
+même script relancé          :    16 ms   ← les pages sont en cache
+```
+
+C'est le cache de pages. La première lecture du dépôt dans un conteneur neuf
+coûte quarante millisecondes par fichier sur un stockage qui n'est pas local.
+La CI ne le voit jamais : le checkout écrit les fichiers, donc ils sont chauds
+quand la suite les lit.
+
+### Ce qui est corrigé
+
+`testCount()` était appelé **trois fois**, trois parcours complets. Il est
+mémorisé : trois parcours froids deviennent un. Vérifié par sabordage — un
+chiffre annoncé faux rougit, **un test Swift ajouté à l'arbre rougit aussi**
+(donc la marche lit toujours l'arbre et le mémo ne fige rien), et l'arbre
+intact reste vert.
+
+### Ce que je n'ai pas fait, et c'est le point
+
+Le correctif évident est de monter le délai à trente secondes. **Non.** Un
+délai de trente secondes sur une assertion de seize millisecondes met fin au
+rouge parasite et met fin, du même coup, à toute chance de remarquer un
+ralentissement d'un facteur dix. C'est exactement l'aveuglement contre lequel
+tout le reste de cette nuit a été écrit : une sonde qui ne peut plus
+distinguer.
+
+Un rouge rare, à cause connue et écrite ici, vaut mieux qu'une garde émoussée.
+La prochaine fois qu'un test du site expire au premier lancement d'un
+conteneur, la réponse est dans ce paragraphe et non dans vingt minutes de
+diagnostic.
