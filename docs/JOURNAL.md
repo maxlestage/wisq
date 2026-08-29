@@ -5869,3 +5869,64 @@ Retirée par numéro de ligne.
 Les huit chemins ont un témoin : deux qui mesurent la mémoire pour les deux
 défauts corrigés, six flux hostiles pour les gardes qui tenaient déjà. La dette
 énoncée à la fin de la tranche précédente est payée.
+
+## La garde des licences n'avait jamais rien refusé
+
+`scripts/check-licence-claims.sh` tient la règle que ce projet énonce le plus
+clairement : aucune licence n'a été choisie, donc rien de ce qui est expédié ne
+doit en annoncer une. La CI la lance à chaque commit, `verify.sh` avant chaque
+poussée — et les deux la lancent contre **ce dépôt-ci**, où il n'y a rien à
+trouver. Elle n'avait jamais refusé quoi que ce soit.
+
+**Mesuré.** Le script entier remplacé par `exit 0`, la suite complète lancée
+contre lui : verte. Swift, Rust, les 114 tests du site. Rien nulle part ne le
+tenait.
+
+C'est la même forme que la sonde qui ne peut pas échouer, avec un tour de plus :
+ici l'instrument s'exécute vraiment, à chaque commit, et affiche même une phrase
+rassurante. Ce qui ne se produit jamais, c'est le refus — le seul comportement
+qui compte.
+
+### Ce qu'il fallait pour le tenir
+
+Le script travaillait en dur sur la racine du dépôt, donc il n'y avait aucun
+moyen de lui montrer un arbre fautif. Il prend maintenant une racine en
+argument : sans argument il vérifie ce dépôt, ce que font la CI et `verify.sh` ;
+avec, il vérifie l'arbre qu'on lui donne, ce que fait
+`site/tests/licence-guard.test.ts`.
+
+Seize tests, et **la moitié sont des contre-cas**. C'est la partie difficile :
+nommer Apache-2.0 dans le README, dans NOTICE et dans la feuille de route est
+**correct** — c'est un fait sur UTM, FreeRDP et QEMU, les projets d'autrui, qui
+le sont vraiment. Une garde qui refuserait ça serait fausse d'une manière
+invisible depuis un build vert. L'arbre sain des tests porte donc toutes les
+chaînes recherchées, en prose, et doit passer.
+
+| bloc saboté | ce qui rougit |
+| --- | --- |
+| liste `declared` vidée | les 4 fichiers déclarants |
+| motif `claims` neutralisé | les 4 fichiers déclarants |
+| boucle `LICENSE` retirée | les 4 noms de fichier de licence |
+| boucle Cargo retirée | les 2 manifestes Rust |
+| boucle npm retirée | les 2 manifestes npm |
+| `exit 1` devenu `exit 0` | les 12 cas de refus |
+| `README.md` ajouté à `declared` | les 4 contre-cas |
+| motif npm relâché en `"license` | la dépendance `license-checker` |
+| motif Cargo relâché sans `^\s*` | le champ mis en commentaire |
+
+Les trois derniers sont le bord inverse, saboté exprès dans l'autre sens : une
+garde trop zélée est un défaut aussi, et sans ces lignes rien ne l'aurait dit.
+
+### Le trou que la mesure a montré au passage
+
+Le script couvrait le champ `license` de **Cargo**, parce que Cargo le publie
+sur crates.io. npm a exactement le même champ, lu par exactement le même genre
+d'outillage, et ce dépôt porte deux `package.json` — celui de la racine, qui
+existe pour qu'Heroku choisisse son buildpack Node, et celui du site. **Ni l'un
+ni l'autre n'était vérifié.** C'est aussi le champ le plus susceptible
+d'apparaître sans que personne ne décide rien : `npm init` en écrit un, et la
+plupart des générateurs aussi.
+
+Les deux sont couverts maintenant, par une boucle qui marche comme celle de
+Cargo — donc un `package.json` ajouté plus tard l'est aussi, sans que personne
+ait à s'en souvenir.

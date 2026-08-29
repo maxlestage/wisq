@@ -14,9 +14,18 @@
 # that declare *this* project's own licence are checked, and the list is short
 # on purpose: a grep over the whole tree would have to allow so much that it
 # would stop meaning anything.
+#
+# **It takes a root, and that is what makes it testable.** Run with no argument
+# it checks this repository, which is what CI and `verify.sh` do. Given a
+# directory it checks that one instead, which is how
+# `site/tests/licence-guard.test.ts` gets to watch it refuse: until that test
+# existed, this script had only ever been run against a tree with nothing wrong
+# in it, and a guard that has never refused anything is a guard nobody has
+# checked. It was measured, too — neutered to a bare `exit 0`, the whole suite
+# stayed green.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${1:-$(dirname "$0")/..}"
 
 # Files whose whole job is to state what this project is licensed under.
 declared=(
@@ -54,6 +63,20 @@ while IFS= read -r manifest; do
     failed=1
   fi
 done < <(find . -name Cargo.toml -not -path "./target/*" -not -path "./.build/*")
+
+# npm's manifest has exactly the same field, read by exactly the same kind of
+# tooling, and this repository has two of them — the root one that makes Heroku
+# pick its Node buildpack, and the site's. Neither was checked. It is also the
+# field most likely to appear without anyone deciding anything: `npm init`
+# writes one, and so does most scaffolding.
+while IFS= read -r manifest; do
+  if matches=$(grep -nE '^\s*"license"\s*:' "$manifest"); then
+    echo "$manifest annonce une licence :"
+    echo "$matches" | sed 's/^/  /'
+    failed=1
+  fi
+done < <(find . -name package.json \
+  -not -path "*/node_modules/*" -not -path "./.build/*" -not -path "./target/*")
 
 if [ "$failed" -ne 0 ]; then
   echo
