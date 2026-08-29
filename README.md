@@ -168,5 +168,5 @@ carries someone else's terms.
 
 ## Author
 
-Created and developed by [Maxime Nathan Lestage](https://github.com/maxlestage).
+Designed and developed by [Maxime Nathan Lestage](https://github.com/maxlestage).
 Copyright 2026 Maxime Nathan Lestage. All rights reserved.
