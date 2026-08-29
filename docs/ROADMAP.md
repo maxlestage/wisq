@@ -2155,6 +2155,36 @@ signé à côté des assets. `install_binary` lance le binaire avant de l'instal
 ce qui attrape la mauvaise architecture et la mauvaise libc, mais pas un octet
 changé en route ; HTTPS vers GitHub couvre le transport et rien d'autre.
 
+## Le site ne distribue pas wisq — et c'est une décision
+
+Écrit ici parce que jusqu'à maintenant elle ne vivait que dans le commentaire
+d'un test, et qu'une décision qu'on ne lit nulle part se refait. Elle vient de
+se refaire : j'ai cherché « brew » et « install » dans `site/src`, trouvé zéro,
+conclu à un oubli, et rédigé une section d'installation dans les deux langues.
+C'est `render.test.tsx` qui m'a arrêté — pas ma relecture.
+
+**Le site explique ce qu'est wisq et comment les morceaux tiennent ensemble ; il
+ne remet à personne de quoi l'installer.** Ni `git clone`, ni `brew tap`, ni
+script à envoyer dans un shell, ni lien de téléchargement, ni `.ipa`. Tenu par
+« no page hands out a way to install the project », sur les pages rendues des
+deux langues.
+
+La ligne n'est pas « rien sur l'exécution » : la section d'appairage reste, et
+le test porte la raison. Quelqu'un qui décide si wisq est pour lui a besoin de
+savoir qu'un agent imprime un lien et que le téléphone le scanne ; rien de tout
+ça ne lui remet un binaire.
+
+Une décision voisine et distincte, tenue par un autre test : le site ne se
+déclare pas open source et ne renvoie pas vers ses sources. Les deux sont
+séparées, et le commentaire qui les mélangeait a été corrigé — il affirmait
+qu'un lien de téléchargement survivait « exprès », ce qui n'était plus vrai
+depuis que le test voisin interdit `releases/latest` et `.ipa`.
+
+Ce qui existe donc sans être annoncé, délibérément : la formule Homebrew,
+`scripts/install.sh`, et les quatre binaires attachés à chaque étiquette. Tous
+tenus par des gardes — la formule par l'accord des versions, l'installateur par
+la matrice des architectures — pour le jour où la décision changera.
+
 ## Contraintes à garder en tête
 
 **La règle 4.7 de l'App Store ne nous concerne pas.** C'est l'angle mort des
