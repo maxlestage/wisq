@@ -6000,3 +6000,76 @@ moins gravement et il faut le dire : la CI ne le lance pas — elle lance
 laisse pas passer un défaut, elle rend une PR rouge dix minutes plus tard. Or
 c'est exactement l'aller-retour que ce script existe pour éviter. Un tour, pas
 un défaut.
+
+## Le troisième script de garde, et le répertoire qu'il ne regardait pas
+
+`scripts/check-whitespace.sh`, le dernier des trois, avait le même trou que les
+deux autres : `verify.sh` le lance avant chaque poussée, toujours contre un
+arbre où rien ne cloche, donc aucune de ses cinq règles n'avait jamais rien
+signalé.
+
+Il est le moins grave des trois et il faut le dire : la CI ne le lance pas —
+elle lance `swiftlint --strict`, qui couvre les mêmes règles — donc une version
+cassée ne laisse pas passer un défaut, elle rend une PR rouge dix minutes plus
+tard. C'est exactement l'aller-retour que ce script existe pour éviter, sur une
+machine Linux où la formule Homebrew de SwiftLint n'existe pas. **Un tour
+perdu, pas un défaut.**
+
+### Ce que la mesure a trouvé, et qui n'est pas anodin
+
+La portée était trois pathspecs — `Sources/**/*.swift`, `Tests/**/*.swift`,
+`App/**/*.swift` — et **le troisième ne matchait rien du tout**. `**/` exige au
+moins un niveau de répertoire, et `App/` contient exactement un fichier Swift,
+à sa racine.
+
+```
+motif du script : 235 fichiers
+tous les .swift : 236 fichiers
+manquant        : App/WisqApp.swift
+```
+
+Le point d'entrée de l'application. `.swiftlint.yml` liste `App`, donc la CI le
+vérifie à chaque commit ; le plancher local ne l'avait jamais ouvert. Invisible
+parce que ce fichier-là est propre.
+
+Corrigé en nommant les répertoires et en filtrant sur l'extension, ce qui n'a
+pas ce bord. Le reste du dépôt a été relu pour d'autres `**/` de la même forme :
+il n'y en a pas.
+
+### La contre-mesure
+
+Quatorze tests, neuf sabordages séparés :
+
+| bloc saboté | ce qui rougit |
+| --- | --- |
+| règle « saut final absent » | son cas, et le compte |
+| règle « sauts finaux multiples » | son cas |
+| règle « espaces en fin » | son cas, App, profondeur, compte |
+| règle « accolade seule » | son cas |
+| règle « lignes vides » | son cas, et le compte |
+| **portée d'avant (`App/**`)** | **le cas App, et le compte** |
+| `exit 1` devenu `exit 0` | les 8 refus |
+| accolade relâchée en « contient `{` » | les 4 contre-cas |
+| portée élargie à tous les fichiers | `Package.swift`, le `.md`, le dépôt réel |
+
+La sixième ligne est la preuve que le trou était réel : remettre l'ancien
+pathspec fait rougir exactement le cas `App/`.
+
+Les deux dernières sont le bord inverse. Les contre-cas qui comptent le plus
+sont ceux-là : `Package.swift` est **hors** de `included`, donc le signaler
+serait une violation que la CI n'a pas — le faux positif qui rend un plancher
+local inutilisable — et une accolade en fin de ligne, c'est-à-dire toutes les
+accolades du dépôt, ne doit rien déclencher.
+
+### Les trois gardes du dépôt, closes
+
+| script | lancé par | tenu par |
+| --- | --- | --- |
+| `check-licence-claims.sh` | CI + `verify.sh` | `site/tests/licence-guard.test.ts` |
+| `check-release-matrix.sh` | CI + `verify.sh` | `site/tests/release-matrix.test.ts` |
+| `check-whitespace.sh` | `verify.sh` | `site/tests/whitespace-guard.test.ts` |
+
+Chacune prend une racine en argument, chacune est mise devant des arbres
+fautifs, et chacune a ses contre-cas. Deux des trois portaient un vrai trou de
+couverture — le champ `license` de npm, et `App/` — et aucun des deux ne se
+voyait, parce qu'un arbre propre ne fait rien dire à une garde.

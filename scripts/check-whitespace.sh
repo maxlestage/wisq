@@ -10,9 +10,16 @@
 #
 # Not a replacement for `swiftlint lint --strict`, which verify.sh still runs
 # wherever it is installed. A floor, not a ceiling.
+#
+# **It takes a root, and that is what makes it testable.** Run with no argument
+# it checks this repository, which is what `verify.sh` does. Given a directory
+# it checks that one, which is how `site/tests/whitespace-guard.test.ts` gets to
+# watch it refuse — until that test existed it had only ever been run against a
+# tree with nothing wrong in it, so none of the five rules below had ever
+# reported anything.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${1:-$(dirname "$0")/..}"
 
 failures=0
 report() {
@@ -57,14 +64,22 @@ while IFS= read -r file; do
           !/^[[:space:]]*$/ { blank = 0 }' "$file" | grep -q .; then
     report "$file : deux lignes vides consécutives (vertical_whitespace)"
   fi
-# The same scope as .swiftlint.yml's `included`. Package.swift is outside it
-# on purpose: the manifest is not application code and SwiftLint never sees it,
-# so flagging it here would report a violation CI does not have.
+# The same scope as .swiftlint.yml's `included`: the three directories, every
+# Swift file under them at any depth. Package.swift is outside it on purpose —
+# the manifest is not application code and SwiftLint never sees it, so flagging
+# it here would report a violation CI does not have.
 #
 # `--others` matters: a file written but not yet committed is precisely the one
 # about to be pushed, and listing only tracked files would wave it through.
-done < <(git ls-files --cached --others --exclude-standard \
-  'Sources/**/*.swift' 'Tests/**/*.swift' 'App/**/*.swift')
+#
+# The pathspecs used to be `'Sources/**/*.swift' 'Tests/**/*.swift'
+# 'App/**/*.swift'`, and the third one matched **nothing**: `**/` requires at
+# least one directory level, and `App/` holds exactly one Swift file, at its
+# top. So `App/WisqApp.swift` — which SwiftLint does check, since
+# `.swiftlint.yml` lists `App` — was the one file this floor never saw. Naming
+# the directories and filtering by extension has no such edge.
+done < <(git ls-files --cached --others --exclude-standard Sources Tests App \
+  | grep '\.swift$' || true)
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fichier(s) à corriger." >&2
