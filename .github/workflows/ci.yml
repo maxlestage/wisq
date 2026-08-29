@@ -171,9 +171,16 @@ jobs:
         run: swiftlint lint --strict
       - name: Check nothing claims a licence
         # No licence has been chosen. This guards the places that state one to
-        # other software — the app bundle's copyright string and the Homebrew
-        # formula's field — both of which survived the claim being removed from
+        # other software — the app bundle's copyright string, the Homebrew
+        # formula's field, and the `license` field of the Cargo and npm
+        # manifests — several of which survived the claim being removed from
         # the site.
+        #
+        # This step can only ever pass here: it runs against a tree with
+        # nothing wrong in it. What holds the guard itself is
+        # `site/tests/licence-guard.test.ts`, in the site job, which gives it
+        # trees that do claim a licence and checks it refuses each one — and
+        # trees that merely name somebody else's, which it must not refuse.
         run: scripts/check-licence-claims.sh
       - name: Check the published architectures match what the installer asks for
         # The release workflow only ever runs when a release is cut, so a gap
