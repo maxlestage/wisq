@@ -15,9 +15,21 @@
 #
 # Both lists are read from the files that actually decide, rather than from a
 # third list that would then need its own guard.
+#
+# **It takes a root, and that is what makes it testable.** Run with no argument
+# it checks this repository, which is what CI and `verify.sh` do. Given a
+# directory it checks that one instead, which is how
+# `site/tests/release-matrix.test.ts` gets to watch it refuse.
+#
+# That test exists because of a measurement. Three separate breakages of this
+# file's own logic — `expect_asset` made never to compare, both `comm` calls
+# neutered, `exit "$failed"` turned into `exit 0` — each leave it **green on
+# this tree**, so CI would have reported a coherent matrix while the guard was
+# doing nothing. A guard only ever run against a tree with nothing wrong in it
+# is a guard nobody has checked.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${1:-$(dirname "$0")/..}"
 
 workflow=.github/workflows/release.yml
 installer=scripts/install.sh
@@ -26,12 +38,18 @@ installer=scripts/install.sh
 # entry, and interpolates it into both the tarball name and the artifact name.
 # Reading the matrix rather than the tarball line is deliberate: the tarball
 # line is `${{ matrix.asset }}` and says nothing on its own.
-built=$(grep -oE '^\s*- asset: [A-Za-z0-9_.-]+' "$workflow" | awk '{print $3}' | sort -u)
+#
+# `|| true` because `set -e` kills the script the moment the pipeline fails,
+# and an empty match *is* a failure for grep. Without it the two "plus aucun
+# asset" branches below are unreachable: the script died at this line, silently,
+# with exit 1 — a refusal a reader would have to run `bash -x` to understand.
+# Measured, on a workflow with every `- asset:` line deleted.
+built=$(grep -oE '^\s*- asset: [A-Za-z0-9_.-]+' "$workflow" | awk '{print $3}' | sort -u || true)
 
 # The installer names each asset it will ask for as an ASSET_SUFFIX. The empty
 # one is the deliberate fall-through to a source build, not an asset.
 requested=$(grep -oE 'ASSET_SUFFIX="[A-Za-z0-9_.-]+"' "$installer" \
-  | sed 's/.*="\(.*\)"/\1/' | sort -u)
+  | sed 's/.*="\(.*\)"/\1/' | sort -u || true)
 
 if [ -z "$built" ]; then
   echo "$workflow ne déclare plus aucun asset (clé 'asset:' du matrix)" >&2
