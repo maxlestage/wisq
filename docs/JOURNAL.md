@@ -8,6 +8,51 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-08-31, ~07h UTC — « everything CI would run », et les quatre choses qu'il ne lançait pas
+
+C'est la première ligne de `scripts/verify.sh`. Ce fichier porte, dans ses
+propres commentaires, **trois** aveux d'avoir eu tort : le lint absent, les deux
+portes Rust absentes, la matrice des architectures absente. Trois fois la même
+faute, chaque fois trouvée par une pull request rouge, chaque fois réparée à la
+main. Rien ne comparait les deux listes.
+
+Mesuré, en comptant les occurrences dans `verify.sh` contre les deux workflows :
+quatre choses que la CI lance et que lui ne lançait pas — `WISQ_SWIFT_CORE=1
+swift build` (l'échappatoire que le manifeste conseille à qui n'a pas cargo),
+`npm run heroku-postbuild` deux fois (la construction qui déploie réellement le
+site), `swift run -c release wisq-bench`, et l'agent statique musl avec son
+`env -i … --help`. Les quatre sont comblées ; les deux dernières sur le modèle
+déjà établi par la branche SwiftLint du fichier — conditionnelles, avec le mode
+d'emploi quand l'outil manque.
+
+**La forme de la garde**, et c'est le point qui mérite d'être relu. Comparer
+deux scripts shell par ressemblance de texte serait fragile dans les deux sens.
+`site/tests/verify-covers-ci.test.ts` tient donc un **inventaire déclaré** :
+chaque étape nommée des deux workflows y figure avec un verdict — soit un motif
+que `verify.sh` doit contenir, soit une raison de ne pas la lancer localement.
+Une étape ajoutée à la CI et classée par personne fait rougir le test. C'est
+exactement ce qui manquait les trois fois.
+
+Trois choses apprises en l'écrivant :
+
+* **La clé est « job › étape », pas l'étape seule.** Trois jobs portent une
+  étape nommée « Test » — `cargo test`, `swift test`, `bun test`. La première
+  version les confondait en une ligne et laissait deux portes sur trois sans
+  verdict, dans un fichier écrit contre exactement ça.
+* **Le corpus a été rétréci, pas élargi.** La première version cherchait aussi
+  dans `check-*.sh` et `test-rust-core.sh`. Mesuré : aucun motif n'en a besoin,
+  car ce que `verify.sh` délègue, il le délègue par un appel qui est dans son
+  propre texte. Élargir n'ajoutait aucune couverture et un seul risque : qu'un
+  motif soit satisfait par un fichier que `verify.sh` n'exécute pas là.
+* **Un cinquième écart n'en était pas un, et je l'avais déjà comblé avant de le
+  mesurer.** La CI pose `WISQ_LINUX_IMAGE` sur son `swift test`, `verify.sh` ne
+  le posait pas ; cela ressemblait aux quatre autres. Les deux runs, avant et
+  après, rendent le même unique saut : `LinuxBootTests` et
+  `DifferentialBootTests` lisent la variable *ou* se rabattent sur le chemin
+  bien connu. **Équivalence réelle** — l'un des quatre verdicts quand un
+  sabotage ne mord pas. La ligne a été retirée plutôt que gardée pour faire
+  nombre, et le tableau du fichier dit quatre, pas cinq.
+
 ## 2026-08-31, ~06h UTC — l'installateur, et une option qu'il acceptait sans la lire
 
 `scripts/install.sh` est le seul fichier du dépôt dont le mode d'emploi est
