@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-08-31, ~10h UTC — le processus du dyno, exécuté — et la mine que #140 avait posée
+
+Maxime a dit « Fais le » : la tranche `heroku-web.sh`, annoncée au réveil
+précédent comme le prochain candidat sérieux.
+
+**La mesure a d'abord menti, et c'est la moitié de l'histoire.** Deux sabotages
+— `heroku-web.sh` remplacé par `exit 1`, la garde `dist/index.html` de
+`heroku-build.sh` neutralisée — ont rendu quatorze puis onze rouges. Aucun
+n'était une détection : la dernière porte de `verify.sh`, ajoutée par #140 le
+matin même, reconstruisait `site/dist` avec l'adresse épinglée `wisq.example`,
+et toute suite lancée ensuite lisait ce dist-là. Onze rouges d'origine de
+requête, sans aucun rapport avec les sabotages. La CI ne pouvait pas le voir
+(ses tests passent avant ses constructions Heroku) ; seul un contributeur qui
+enchaîne `verify.sh` puis `bun test` le voyait — un faux rouge, la chose exacte
+qui rend un plancher local intraçable. Corrigé en inversant l'ordre : la
+construction épinglée d'abord, la sentinelle en dernier, pour que l'arbre
+finisse dans l'état que la suite lit. L'ordre est tenu par un test, parce qu'il
+a déjà mordu.
+
+**Puis la mesure propre, sur baseline vert : tout vert.** Le script que le
+`Procfile` lance — le processus que le dyno démarre, avec ses trois branches
+écrites pour être lues sur un téléphone au milieu d'un déploiement raté —
+n'avait jamais tourné une seule fois. Ni la garde de `heroku-build.sh` contre
+un slug au `dist` vide, qui démarre, répond 404 à tout, et ressemble à un
+problème de routage.
+
+Le témoin est `site/tests/heroku.test.ts`, neuf tests : les trois branches du
+choix de Bun départagées par des Bun enregistreurs dans des arbres jetables
+(priorité au slug, repli sur le PATH avec sa note, refus en une ligne qui nomme
+le script fautif) ; le vrai script à sa vraie place servant le vrai `dist` sur
+un vrai port avec le vrai Bun ; les deux bords du refus de `heroku-build.sh` et
+du conseil `SITE_URL` ; la chaîne Procfile → heroku-web.sh → serve.ts ; et
+l'ordre des constructions dans `verify.sh`. Dix sabotages, chacun rougissant
+son test ; un cas témoin survit.
+
+La leçon qui reste : **la porte qu'on vient d'ajouter est elle-même du code
+qui casse des choses.** #140 a comblé quatre écarts et posé une mine dans le
+même geste, invisible de la CI par construction, et trouvée uniquement parce
+que la tranche suivante a mesuré avant d'écrire.
+
 ## 2026-08-31, ~07h UTC — « everything CI would run », et les quatre choses qu'il ne lançait pas
 
 C'est la première ligne de `scripts/verify.sh`. Ce fichier porte, dans ses
