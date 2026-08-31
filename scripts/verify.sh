@@ -163,10 +163,17 @@ if command -v bun > /dev/null 2>&1; then
   # configurations are different code paths and the deployment uses the first:
   # without SITE_URL the build stamps the sentinel the server rewrites per
   # request; with it, the address is pinned and no sentinel is left.
-  echo "==> La construction que Heroku lancera (adresse résolue par requête)"
-  npm run heroku-postbuild > /dev/null
-  echo "==> La même, adresse épinglée"
+  # The pinned build FIRST and the per-request build LAST, and the order is a
+  # measured landmine, not a style choice: each of these rewrites `site/dist`,
+  # and the suite above reads it. Ending on the pinned build left the tree
+  # stamped with wisq.example, and the next `bun test` on that tree failed its
+  # eleven request-origin cases — a red that had nothing to do with anything
+  # the contributor changed. Ending on the sentinel build leaves `dist` exactly
+  # as the suite tested it.
+  echo "==> La construction que Heroku lancera, adresse épinglée"
   SITE_URL=https://wisq.example/ npm run heroku-postbuild > /dev/null
+  echo "==> La même, adresse résolue par requête — en dernier : elle laisse dist dans l'état testé"
+  npm run heroku-postbuild > /dev/null
 else
   cat <<'EOF'
 ==> bun absent — et la CI, elle, construira le site et lancera sa suite.
