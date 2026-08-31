@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-08-31, ~06h UTC — l'installateur, et une option qu'il acceptait sans la lire
+
+`scripts/install.sh` est le seul fichier du dépôt dont le mode d'emploi est
+« tuyautez-le dans un shell ». C'était aussi celui que le moins de choses
+tenaient : cinq sabotages séparés, chacun contre la suite entière, et trois
+laissaient tout vert — l'autotest du binaire téléchargé supprimé, un argument
+inconnu accepté, le repli sur les sources rendu inatteignable.
+
+Les deux autres — `--version` et `--prefix` supprimés — donnaient un rouge, et
+c'est le piège qu'il faut consigner : **ce n'était pas une détection.**
+`check-release-matrix.sh` passe ces deux options comme échafaudage, pour ne pas
+résoudre « latest » et pour ne rien installer hors de son bac à sable. Les
+supprimer casse son harnais, pas une affirmation sur ce qu'elles font. Compter
+les rouges au lieu de les lire aurait conclu que l'installateur était couvert à
+deux cinquièmes ; il l'était à un seul endroit, la table architecture → asset.
+
+**Ce que la mesure a trouvé.** `--version` était accepté, documenté, et ignoré
+sur le chemin des sources : `install_from_source` clonait la branche par défaut
+quoi qu'on demande. Ce n'est pas un chemin exotique — c'est le chemin de toute
+machine hors des quatre assets publiés (le NAS ARM, le Raspberry Pi, l'ARM
+32 bits, FreeBSD), que le commentaire de ce même fichier nomme une à une, et le
+repli de tout téléchargement qui échoue. Vérifié de bout en bout avant d'être
+écrit : `--from-source --version v0.2.0` contre un dépôt local tagué installait
+le contenu de master.
+
+Deux autres, trouvées en lisant la même vingtaine de lignes : l'aide imprimait
+`set -eu`, parce que la plage `sed -n '2,14p'` avait dérivé d'une ligne ; et le
+répertoire temporaire du téléchargement restait dans `/tmp` pour de bon sur le
+chemin du repli, parce que les deux fonctions posaient chacune un `trap ... EXIT`
+et que le second remplace le premier.
+
+Le témoin est `site/tests/installer.test.ts`, douze tests. Rien n'y est simulé
+de ce qui décide : un vrai dépôt git avec un vrai tag, un vrai serveur HTTP
+local avec un vrai `tar.gz`, le vrai `git`, le vrai `curl`, le vrai `tar`. Seul
+`cargo` est postiche, et honnêtement : il recopie un marqueur pris dans le clone,
+si bien que le binaire installé dit lui-même quel commit a été cloné.
+
+Deux choses apprises en l'écrivant, qui valent d'être relues :
+
+* **`Bun.spawnSync` et `Bun.serve` dans le même processus se bloquent.** Les six
+  tests qui téléchargent expiraient tous à cinq secondes : le serveur ne peut
+  pas répondre tant que l'appel synchrone n'a pas rendu la main. Ce n'était pas
+  le cache de pages froid, et monter le délai aurait émoussé la sonde sans rien
+  réparer. `Bun.spawn` awaité : 732 ms pour les douze.
+* **L'autre bord.** Le défaut se « corrigeait » aussi en exigeant toujours un
+  tag — ce qui aurait cassé le cas courant (`latest`, le défaut) pour réparer le
+  rare. Le test « sans --version, c'est la branche par défaut » existe pour ça,
+  et il rougit bien quand on met `--branch "$VERSION"` sans condition.
+
 ## 2026-08-25, ~05h30 UTC — autonomie reconduite
 
 **Autorisation, mot pour mot :** « Je vais dormir continue de travailler sans

@@ -26,12 +26,21 @@ while [ $# -gt 0 ]; do
     --prefix) PREFIX="$2"; shift 2 ;;
     --from-source) FROM_SOURCE=1; shift ;;
     --service) SERVICE=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "argument inconnu : $1" >&2; exit 2 ;;
   esac
 done
 
 fail() { echo "wisq-install: $*" >&2; exit 1; }
+
+# One trap, set once, for both scratch directories. Each function used to set
+# its own `trap ... EXIT`, and a trap replaces the previous one: on the fallback
+# path — download, fail, build from source — the second trap replaced the first
+# and the downloaded tarball's directory stayed in /tmp for good. Both names are
+# expanded only if set, so this is safe before either exists.
+TMP_BIN=""
+TMP_SRC=""
+trap 'rm -rf ${TMP_BIN:+"$TMP_BIN"} ${TMP_SRC:+"$TMP_SRC"}' EXIT
 
 # --- where to install ---------------------------------------------------------
 if [ -z "$PREFIX" ]; then
@@ -66,13 +75,16 @@ esac
 install_binary() {
   # Resolve "latest" through the GitHub redirect so the asset URL is concrete.
   if [ "$VERSION" = "latest" ]; then
-    VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASES/latest" | sed 's|.*/||')"
-    case "$VERSION" in v*) ;; *) return 1 ;; esac
+    # Into a scratch name, not straight into VERSION: a redirect that lands
+    # somewhere unexpected used to leave VERSION holding that answer, and the
+    # source build below now reads VERSION.
+    resolved="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASES/latest" | sed 's|.*/||')"
+    case "$resolved" in v*) VERSION="$resolved" ;; *) return 1 ;; esac
   fi
   URL="$RELEASES/download/$VERSION/wisq-agent-$VERSION-$ASSET_SUFFIX.tar.gz"
   echo "téléchargement de $URL"
-  TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
+  TMP_BIN="$(mktemp -d)"
+  TMP="$TMP_BIN"
   curl -fsSL "$URL" -o "$TMP/agent.tar.gz" || return 1
   tar -C "$TMP" -xzf "$TMP/agent.tar.gz"
   # Run it before installing it. A downloaded binary can be the wrong libc,
@@ -86,10 +98,24 @@ install_binary() {
 install_from_source() {
   command -v cargo >/dev/null || fail "aucun binaire pour $OS/$ARCH et pas de toolchain Rust : installez Rust (rustup.rs) puis relancez"
   command -v git >/dev/null || fail "git est requis pour construire depuis les sources"
-  TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
+  TMP_SRC="$(mktemp -d)"
+  TMP="$TMP_SRC"
   echo "construction depuis les sources ($REPO)…"
-  git clone --depth 1 "$REPO" "$TMP/wisq" >/dev/null 2>&1 || fail "clonage impossible : $REPO"
+  # `--version` used to be accepted here and silently ignored: this cloned the
+  # default branch whatever was asked for. That is not an exotic path — it is
+  # the path for every machine outside the four published assets (the ARM NAS,
+  # the Raspberry Pi, 32-bit ARM, FreeBSD) and the fallback for every download
+  # that fails. `--version v0.2.0` on any of them installed master.
+  #
+  # "latest" stays a clone of the default branch: it is the default, it names
+  # no tag, and asking git for a branch called `latest` would break the common
+  # case in order to fix the rare one.
+  if [ "$VERSION" = "latest" ]; then
+    git clone --depth 1 "$REPO" "$TMP/wisq" >/dev/null 2>&1 || fail "clonage impossible : $REPO"
+  else
+    git clone --depth 1 --branch "$VERSION" "$REPO" "$TMP/wisq" >/dev/null 2>&1 \
+      || fail "clonage impossible : $REPO à la version $VERSION"
+  fi
   (cd "$TMP/wisq" && cargo build --release -p wisq-agent >/dev/null)
   install -m 755 "$TMP/wisq/target/release/wisq-agent" "$PREFIX/wisq-agent"
 }
