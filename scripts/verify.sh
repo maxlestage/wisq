@@ -74,6 +74,25 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo "==> Building the Rust side (daemon + VM core)"
 cargo build --release
 
+# The agent ships as a static musl binary so it runs on any Linux, Alpine
+# included, with nothing to install first. That is a different link than the
+# host build above, and it is where a new C dependency shows up — TLS already
+# brought one. Conditional on the target being installed, the same shape as
+# SwiftLint below: a gate that demands a toolchain nobody has is a gate people
+# stop running.
+if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
+  echo "==> L'agent, statique (musl), et il démarre sans environnement"
+  cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
+  env -i target/x86_64-unknown-linux-musl/release/wisq-agent --help > /dev/null
+else
+  cat <<'EOF'
+==> Cible musl absente — et la CI, elle, construira l'agent statiquement.
+
+    rustup target add x86_64-unknown-linux-musl
+    puis, pour ring (la dépendance C que TLS a amenée) : musl-tools
+EOF
+fi
+
 echo "==> Running the Rust tests"
 cargo test --release
 
@@ -83,7 +102,31 @@ swift build
 echo "==> Running the core tests"
 # The cross-language protocol tests run the real daemon; without this they skip
 # loudly and the seam between the two languages goes unchecked.
+#
+# CI also sets WISQ_LINUX_IMAGE here and this does not, and that difference was
+# measured rather than assumed: it changes nothing. `LinuxBootTests` and
+# `DifferentialBootTests` read the variable *or* fall back to the well-known
+# path themselves, so both runs came back with the same single skip. Adding it
+# would have looked like closing a hole and closed none.
 WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test
+
+# The manifest tells anyone without cargo to set this, and CI builds it to check
+# the sentence is worth printing. A fallback nothing compiles is a fallback that
+# has already rotted — and this script did not compile it.
+echo "==> Le cœur Swift, l'échappatoire que le manifeste conseille"
+WISQ_SWIFT_CORE=1 swift build
+
+# CI boots a real kernel and prints the throughput. There is no threshold — a
+# shared runner cannot hold one — but the job fails outright when the guest
+# stops reaching its prompt, and that failure belongs here too. Conditional on
+# the image, like CI's own step: absent, it says so rather than failing.
+if [ -f "${WISQ_LINUX_IMAGE:-/tmp/wisq-test-linux-image/Image}" ]; then
+  echo "==> Banc : démarrage jusqu'à l'invite"
+  WISQ_LINUX_IMAGE="${WISQ_LINUX_IMAGE:-/tmp/wisq-test-linux-image/Image}" \
+    swift run -c release wisq-bench
+else
+  echo "==> Image Linux absente : banc ignoré (la CI, elle, la télécharge)"
+fi
 
 # The rv32ima interpreter exists twice. Running only one of them in the suite
 # above is how the other quietly drifts.
@@ -113,6 +156,17 @@ if command -v bun > /dev/null 2>&1; then
     bun run build > /dev/null
     bun test
   )
+
+  # The build Heroku actually runs, from the repository root and through the
+  # root package.json — a different entry point from the one above, and
+  # nothing else here would notice if it broke. Twice, because the two
+  # configurations are different code paths and the deployment uses the first:
+  # without SITE_URL the build stamps the sentinel the server rewrites per
+  # request; with it, the address is pinned and no sentinel is left.
+  echo "==> La construction que Heroku lancera (adresse résolue par requête)"
+  npm run heroku-postbuild > /dev/null
+  echo "==> La même, adresse épinglée"
+  SITE_URL=https://wisq.example/ npm run heroku-postbuild > /dev/null
 else
   cat <<'EOF'
 ==> bun absent — et la CI, elle, construira le site et lancera sa suite.
