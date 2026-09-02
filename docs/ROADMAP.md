@@ -44,29 +44,40 @@ qui gare une lecture pour forcer l'entrelacement — le pendant en lecture du
 `GatedByteStream` déjà écrit pour les tests d'écriture. `Network` étant sous
 `#if canImport(Network)`, rien de tout cela ne s'exécute ici.
 
-### Le vrai épinglage du chemin machine
+### Le vrai épinglage du chemin machine (deux tiers faits)
 
-`ResolvedTransportSecurity` referme le trou — un pin sans empreinte fait
-désormais une validation système complète au lieu d'accepter n'importe quel
-certificat — mais il ne rend pas l'épinglage possible pour autant. Ce qu'il
-faudrait, dans l'ordre :
+`ResolvedTransportSecurity` referme le trou — un pin sans empreinte fait une
+validation système complète au lieu d'accepter n'importe quel certificat — et
+les deux premières des trois étapes sont faites :
 
-1. Un champ `certificateFingerprint` sur `Machine`, absent des fichiers
-   enregistrés avant, donc `nil` au décodage. Vérifiable sous Linux.
-2. `SessionConfiguration` qui le porte jusqu'au transport. Vérifiable aussi.
-3. **L'enregistrement lui-même**, qui ne l'est pas : il faut voir le certificat
-   que le serveur présente, donc `Network.framework`, donc une machine Apple.
-   Et il faut le montrer à la personne qui l'accepte — un épinglage qu'on
-   enregistre en silence à la première connexion protège de tout sauf de
-   l'attaquant qui était là à ce moment-là.
+1. **Fait.** `Machine.certificateFingerprint`, absent des fichiers enregistrés
+   avant, donc `nil` au décodage ; tenu par `MachineFingerprintTests`.
+2. **Fait.** `SessionConfiguration(machine:password:)` le porte jusqu'aux deux
+   fournisseurs de flux, qui le donnent à `NetworkByteStream` comme
+   `pinnedFingerprint` ; tenu par `SessionConfigurationTests`, et l'épinglage
+   lui-même par la vérification de `NetworkByteStream`, qui existait déjà.
+   L'empreinte se **saisit** dans l'éditeur — collée depuis `openssl x509
+   -fingerprint -sha256` ou un navigateur, `CertificateFingerprint.parse`
+   lisant toutes ces graphies et refusant tout ce qui ne fait pas trente-deux
+   octets. Ce n'est pas un pis-aller : c'est la seule forme d'épinglage qui
+   ne fait pas confiance au réseau au moment où on l'enregistre.
+3. **L'enregistrement depuis la connexion**, qui n'est pas fait : il faut voir
+   le certificat que le serveur présente, donc `Network.framework`, donc une
+   machine Apple. Et il faut le montrer à la personne qui l'accepte — un
+   épinglage qu'on enregistre en silence à la première connexion protège de
+   tout sauf de l'attaquant qui était là à ce moment-là.
 
 Le chemin agent fait déjà les trois : `AgentBinding` garde l'empreinte relevée
 à l'appairage, et `AgentClient` la prend en paramètre **non optionnel**. C'est
 le modèle à recopier, pas à réinventer.
 
-Jusque-là, `.tlsPinned` sur une machine vaut `.tls`. L'étiquette du sélecteur
-dit encore « TLS épinglé », ce qui reste à corriger : c'est une migration de
-valeur enregistrée autant qu'un libellé, et cela mérite sa propre tranche.
+Les mots suivent le fait, machine par machine : le sélecteur nomme le mode
+(« TLS épinglé par empreinte »), et `Machine.transportDescription` dit ce que
+*cette* machine obtient — « TLS épinglé sur 5A:5A:5A:5A… » quand elle porte
+une empreinte, « TLS, validation système — aucune empreinte enregistrée »
+sinon. La liste ne montre le bouclier que sur la première. L'ancienne
+étiquette « TLS (épinglage à venir) » avait été la réponse de #70 ; elle ne
+disait plus vrai dès qu'une empreinte pouvait être saisie.
 
 ## Lot 3 — RDP
 

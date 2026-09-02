@@ -46,29 +46,29 @@ public enum TransportSecurity: String, Codable, CaseIterable, Sendable {
     case tls
     /// TLS pinned to a certificate fingerprint.
     ///
-    /// The fingerprint has to come from somewhere, and on the machine path
-    /// nothing carries one: neither `Machine` nor `SessionConfiguration` has a
-    /// field for it. `ResolvedTransportSecurity.resolve` therefore turns this
-    /// into full system validation rather than into a connection that trusts
-    /// whatever answers — which is what it used to become. The agent path
-    /// pins for real, but by a different road: `AgentBinding` records a
-    /// fingerprint at pairing and `AgentClient` takes it as a non-optional.
+    /// The fingerprint has to come from somewhere. Without one,
+    /// `ResolvedTransportSecurity.resolve` turns this into full system
+    /// validation rather than into a connection that trusts whatever answers
+    /// — which is what it used to become. The agent path pins by a different
+    /// road: `AgentBinding` records a fingerprint at pairing and `AgentClient`
+    /// takes it as a non-optional.
     ///
-    /// This case is not removed because saved machines carry it and because
-    /// the machine path is meant to grow the same recording the agent path
-    /// already has; see `docs/ROADMAP.md`.
+    /// `Machine.certificateFingerprint` is where the machine path carries
+    /// one, typed in by the user from what `openssl` or a browser shows;
+    /// recording it from the connection itself is still to come — see
+    /// `docs/ROADMAP.md`.
     case tlsPinned
 
     public var displayName: String {
         switch self {
         case .none: return "Aucune"
         case .tls: return "TLS"
-        // Not "TLS épinglé": nothing on the machine path can pin, so the label
-        // named a protection the connection does not have. It says what the
-        // connection actually does — system-validated TLS — and that pinning is
-        // still to come. The case stays in the picker because saved machines
-        // carry it; see `ResolvedTransportSecurity` and `docs/ROADMAP.md`.
-        case .tlsPinned: return "TLS (épinglage à venir)"
+        // The name of the mode, not of what a given machine gets from it: the
+        // mode pins only when the machine carries a fingerprint, and without
+        // one it is system-validated TLS. That per-machine truth is
+        // `Machine.transportDescription`; the editor says it under the
+        // picker. See `ResolvedTransportSecurity` and `docs/ROADMAP.md`.
+        case .tlsPinned: return "TLS épinglé par empreinte"
         }
     }
 }

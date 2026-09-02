@@ -26,10 +26,10 @@ public enum ResolvedTransportSecurity: Equatable, Sendable {
     /// never to a connection that trusts whatever answers. Refusing outright
     /// was the other candidate and is the safer-sounding one, but it would
     /// break machines the user believed were already working while giving them
-    /// nothing they do not get here: today no saved machine can carry a
-    /// fingerprint at all — neither `Machine` nor `SessionConfiguration` has a
-    /// field for one — so this branch is the whole of the machine path, and
-    /// system validation is a real check where the previous behaviour was none.
+    /// nothing they do not get here: a machine saved before
+    /// `Machine.certificateFingerprint` existed carries none, so this branch
+    /// is every such machine, and system validation is a real check where the
+    /// previous behaviour was none.
     ///
     /// What it deliberately is *not* is trust-on-first-use. Real TOFU needs
     /// somewhere to record the fingerprint and a way to show it to the person
