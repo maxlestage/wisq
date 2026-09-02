@@ -2192,6 +2192,37 @@ signé à côté des assets. `install_binary` lance le binaire avant de l'instal
 ce qui attrape la mauvaise architecture et la mauvaise libc, mais pas un octet
 changé en route ; HTTPS vers GitHub couvre le transport et rien d'autre.
 
+## L'application sur un iPhone : trois voies, et l'icône qui manquait
+
+La release publie une **IPA non signée**, qu'AltStore ou Sideloadly re-signent
+avec l'identifiant Apple de la personne : c'est ce qui permet d'installer wisq
+sans compte payant, et ça expire au bout de sept jours comme toute signature
+de compte personnel. `scripts/install-ios.sh` fait la même chose depuis un Mac
+avec le téléphone au bout d'un câble.
+
+`.github/workflows/testflight.yml` ajoute la troisième voie, celle qui demande
+un compte développeur payant : archive signée, envoyée à TestFlight, installée
+sans câble et valable quatre-vingt-dix jours. La signature passe par une clé
+App Store Connect et `-allowProvisioningUpdates`, ce qui évite de transporter
+un certificat dans un secret de dépôt — le profil est fabriqué par Xcode au
+moment de la construction. Le numéro de build est celui de l'exécution du
+workflow, parce que TestFlight refuse un numéro déjà vu.
+
+Ce que le workflow ne peut pas faire : créer la fiche d'application dans App
+Store Connect. L'envoi échoue en disant que l'application est introuvable, et
+c'est un geste humain, une fois.
+
+**L'application n'avait pas d'icône**, et c'est ce qui aurait bloqué le premier
+envoi : un bundle iOS sans icône est refusé (ITMS-90713), une icône avec canal
+alpha aussi (ITMS-90717), et ni l'un ni l'autre n'apparaît à la compilation.
+L'icône est donc **dessinée** par `scripts/build-app-icon.sh`, depuis le même
+`site/scripts/icons.ts` qui produit celles du site : la même marque, un seul
+endroit à tenir. Le catalogue est ignoré par git — un binaire commité est une
+chose que personne ne peut relire. Les six chemins qui lancent `xcodegen` le
+dessinent d'abord, et un test compte ces chemins : un septième ajouté sans le
+générateur échoue, parce que `xcodegen` fige la liste des fichiers du projet
+et qu'une application sans icône se construit très bien.
+
 ## Le site ne distribue pas wisq — et c'est une décision
 
 Écrit ici parce que jusqu'à maintenant elle ne vivait que dans le commentaire

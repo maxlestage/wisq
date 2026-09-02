@@ -127,7 +127,10 @@ runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,7 
 en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
-la suite.
+la suite. `docs/TESTER-UBUNTU.md` est le parcours pour essayer le tout avec un
+hôte Ubuntu : libvirt, une VM invitée avec SPICE, le démon, l'appairage, et ce
+qu'on essaie depuis le téléphone — avec ce qui a été vérifié et ce qui ne l'a
+pas été.
 
 ## Auteur
 

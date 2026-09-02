@@ -18,7 +18,9 @@ Authorization: Bearer <jeton>
 
 Le jeton est généré au premier lancement, conservé dans `~/.wisq-agent/token`
 (mode 600). Il n'y a pas de compte, pas de mot de passe : un jeton, révocable
-en supprimant le fichier.
+en supprimant le fichier **et en relançant le démon** — il lit le jeton une
+fois au démarrage et en génère un autre s'il n'en trouve pas ; supprimer le
+fichier sous un démon qui tourne ne change rien à ce qu'il accepte.
 
 ## Appairage
 
