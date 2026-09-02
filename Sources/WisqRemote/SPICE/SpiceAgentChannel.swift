@@ -80,10 +80,10 @@ actor SpiceAgentChannel {
     /// runs is refused rather than silently queued behind it.
     private var transfer: FileTransferState?
     /// Never zero — the reference treats a task id of zero as "no task".
-    private var nextTransferID: SpiceFileTransfer.ID = 1
+    private var nextTransferID: SpiceFileTransfer.TransferID = 1
 
     private struct FileTransferState {
-        let id: SpiceFileTransfer.ID
+        let id: SpiceFileTransfer.TransferID
         let bytes: [UInt8]
         /// Byte offset of the next `FILE_XFER_DATA` chunk. For the empty file
         /// this stays at zero and `sentEmptyChunk` records the one message a

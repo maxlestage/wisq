@@ -22,7 +22,7 @@ final class SpiceFileTransferChannelTests: XCTestCase {
         )
     }
 
-    private func status(id: SpiceFileTransfer.ID, _ result: SpiceFileTransfer.Status) -> Data {
+    private func status(id: SpiceFileTransfer.TransferID, _ result: SpiceFileTransfer.Status) -> Data {
         agentData(.fileXferStatus, body: SpiceFileTransfer.statusBody(id: id, result: result))
     }
 

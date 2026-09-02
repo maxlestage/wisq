@@ -22,7 +22,7 @@ import Foundation
 enum SpiceFileTransfer {
     /// One transfer's identifier. Never zero: the reference treats a task id
     /// of zero as "no task" (`g_return_if_fail(task_id != 0)`).
-    typealias ID = UInt32
+    typealias TransferID = UInt32
 
     /// `VDAgentFileXferStatusMessage.result`, both directions.
     enum Status: UInt32, Equatable, Sendable {
@@ -45,7 +45,7 @@ enum SpiceFileTransfer {
     /// refused: statuses are an enumeration built to grow, and a transfer
     /// should fail with "statut 9" rather than kill the pump.
     struct StatusMessage: Equatable, Sendable {
-        var id: ID
+        var id: TransferID
         var result: UInt32
         /// For `notEnoughSpace`, the guest's free bytes.
         var diskFreeSpace: UInt64?
@@ -104,7 +104,7 @@ enum SpiceFileTransfer {
     // MARK: - Bodies this client sends
 
     /// `VD_AGENT_FILE_XFER_START`: the id, then the GKeyFile text, then NUL.
-    static func startBody(id: ID, name: String, size: UInt64) -> [UInt8] {
+    static func startBody(id: TransferID, name: String, size: UInt64) -> [UInt8] {
         var out = SpiceWire.u32(id)
         out += Array("[vdagent-file-xfer]\nname=".utf8)
         out += keyFileValue(name)
@@ -118,7 +118,7 @@ enum SpiceFileTransfer {
     /// The size is 64 bits for 32 hundred bytes at most — the field is the
     /// protocol's, sized for the file lengths a struct-reading agent expects,
     /// not for what one message carries.
-    static func dataBody(id: ID, chunk: ArraySlice<UInt8>) -> [UInt8] {
+    static func dataBody(id: TransferID, chunk: ArraySlice<UInt8>) -> [UInt8] {
         var out = SpiceWire.u32(id)
         out += SpiceWire.u64(UInt64(chunk.count))
         out += chunk
@@ -127,7 +127,7 @@ enum SpiceFileTransfer {
 
     /// `VD_AGENT_FILE_XFER_STATUS`, client → agent: how this side ended a
     /// transfer the agent still thinks is running.
-    static func statusBody(id: ID, result: Status) -> [UInt8] {
+    static func statusBody(id: TransferID, result: Status) -> [UInt8] {
         SpiceWire.u32(id) + SpiceWire.u32(result.rawValue)
     }
 
