@@ -2,18 +2,21 @@
 
 ## Principe
 
-Quatre modules, empilés, chacun ne connaissant que celui du dessous.
+Des modules empilés, chacun ne connaissant que celui du dessous.
 
 ```
 WisqUI        SwiftUI, gestes, rendu           ──┐
 WisqRemote    RFB/VNC, SPICE, RDP, agent hôte  ──┤ dépendances descendantes
-WisqNet       octets : TCP, TLS, flux mémoire  ──┤ uniquement
+WisqVM        l'émulateur local (voir plus bas) ─┤ uniquement
+WisqNet       octets : TCP, TLS, flux mémoire  ──┤
 WisqCore      modèle, persistance, secrets     ──┘
 ```
 
-`WisqCore` n'importe que Foundation. C'est ce qui rend le modèle testable sans
-simulateur, et ce qui permettra plus tard une cible macOS ou visionOS sans
-démêler des dépendances UIKit.
+`WisqCore` n'importe que Foundation — plus Security derrière un
+`#if canImport`, pour le trousseau, avec un magasin en mémoire là où Security
+n'existe pas. C'est ce qui rend le modèle testable sans simulateur, et ce qui
+permettra plus tard une cible macOS ou visionOS sans démêler des dépendances
+UIKit.
 
 ## Le flux d'une session
 
@@ -139,12 +142,13 @@ exactement assez pour qu'on les confonde :
 
 Les inverser produit une image en fausses couleurs, pas une erreur.
 
-Le **JPEG est délibérément absent** de Tight. Un serveur n'a le droit d'envoyer
-du JPEG que si le client a annoncé un niveau de qualité ; wisq n'en annonce
-aucun. Ce n'est pas un contournement : c'est ce qui garde la couche protocolaire
-libre de tout décodeur d'image spécifique à une plateforme, et donc testable sur
-Linux. L'ajouter voudra dire annoncer un niveau de qualité et décoder via
-ImageIO côté Apple.
+Le **JPEG de Tight est verrouillé sur la présence d'un décodeur.** Un serveur
+n'a le droit d'envoyer du JPEG que si le client a annoncé un niveau de
+qualité ; wisq ne l'annonce que là où `JPEGDecoder` existe — ImageIO, donc les
+plateformes Apple. Sur Linux rien n'est annoncé et un serveur conforme n'envoie
+jamais de JPEG : la couche protocolaire y reste testable sans décodeur d'image,
+et un JPEG qui arriverait quand même est une erreur nommée, pas un rectangle
+deviné.
 
 Le choix d'ordre des encodages annoncés dépend du débit : sur lien rapide ZRLE
 passe devant Tight, parce que le coût de décodage compte alors plus que les
@@ -159,10 +163,15 @@ derniers pour-cent de ratio.
   faible par construction — d'où l'avertissement affiché dans l'éditeur quand le
   chiffrement de transport est désactivé, et l'implémentation DES cantonnée à ce
   seul usage.
-- `TransportSecurity.tlsPinned` fait du TOFU : on accepte le certificat au
-  premier contact et on le compare ensuite. Les labos personnels tournent en
-  auto-signé ; refuser sèchement ferait retomber les gens sur du texte clair,
-  ce qui est pire.
+- `TransportSecurity.tlsPinned` ne peut pas encore épingler sur le chemin
+  machine : rien n'y transporte d'empreinte, donc `ResolvedTransportSecurity`
+  en fait une validation système complète — jamais une connexion qui accepte
+  n'importe quel certificat, ce que ce cas est devenu un temps avant d'être
+  corrigé. Le sélecteur le dit (« TLS (épinglage à venir) »). Le chemin agent
+  épingle pour de vrai, par une autre route : `AgentBinding` garde l'empreinte
+  relevée à l'appairage et `AgentClient` la prend en paramètre non optionnel.
+  Le plan pour donner la même chose au chemin machine est dans
+  `docs/ROADMAP.md`.
 
 ## Le Linux local
 
@@ -172,6 +181,13 @@ Lohr, MIT) — la plus petite machine connue qui boote un vrai noyau Linux. Un
 hart RV32 IMA + Zicsr, modes machine et utilisateur, pas de MMU ; 64 Mo de RAM,
 un UART 8250, un CLINT, un syscon. Le device tree est celui de la machine de
 référence, embarqué tel quel.
+
+Il existe en deux exemplaires : le portage Swift et un cœur Rust
+(`crates/wisq-vm`), et **c'est le cœur Rust que l'application embarque par
+défaut** — la CI fait démarrer le même noyau à travers les deux et compare,
+tous les millions d'instructions, le nombre d'instructions retirées et les
+octets de console. Seul le CPU change ; la console, l'instantané machine et
+l'interface sont les mêmes des deux côtés.
 
 L'interprétation est le choix, pas un pis-aller : iOS n'accorde de mémoire
 exécutable qu'aux applications signées pour le développement, donc un JIT
@@ -191,10 +207,12 @@ Deux détails qui ont mordu :
 - Les invites se terminent sans saut de ligne. Le tampon de sortie de l'UART
   était vidé sur `\n` ou 256 octets : une invite restait invisible exactement
   au moment où la machine attendait l'utilisateur. D'où le vidage périodique.
-- La console série émet des séquences ANSI ; la vue terminal v1 est du texte
-  brut, donc `ANSIFilter` retire les séquences et rejoue `\r` et retour
-  arrière comme un terminal le ferait. Une vraie grille de cellules VT100
-  pourra remplacer cela plus tard.
+- La console série émet des séquences ANSI, et la console est une vraie
+  grille de cellules (`TerminalGrid`) : adressage curseur, effacements,
+  région de défilement, écran alterné — de quoi faire vivre un éditeur, un
+  pager, `top`. La v1 filtrait les séquences vers du texte brut ; la grille
+  l'a remplacée, et elle sert les deux cœurs, Swift comme Rust — seul le CPU
+  change.
 
 ## SPICE : une connexion par canal
 
@@ -208,14 +226,17 @@ voit un second *client*, et lui donne un affichage à lui — un écran noir qui
 ressemble exactement à un décodeur cassé. C'est la panne la plus coûteuse à
 diagnostiquer de tout le protocole, et c'est une ligne de code.
 
-    principal ──▶ identifiant de session
-                     ├──▶ display   (surfaces, dessins, images)
+    principal ──▶ identifiant de session, agent (presse-papiers, fichiers)
+                     ├──▶ display   (surfaces, dessins, images, flux vidéo)
                      ├──▶ entrées   (clavier, souris)      meilleur effort
-                     └──▶ curseur   (image du pointeur)    meilleur effort
+                     ├──▶ curseur   (image du pointeur)    meilleur effort
+                     ├──▶ lecture   (le son de l'invité)   meilleur effort
+                     └──▶ record    (le micro du téléphone) meilleur effort
 
-Les deux derniers sont en meilleur effort, et c'est un choix : un serveur qui ne
-les offre pas donne quand même une session utilisable. Un écran sans clavier
-vaut d'être montré ; refuser de démarrer échangerait quelque chose contre rien.
+Tout sauf le display est en meilleur effort, et c'est un choix : un serveur qui
+n'offre pas un canal donne quand même une session utilisable. Un écran sans
+clavier vaut d'être montré ; refuser de démarrer échangerait quelque chose
+contre rien.
 
 Chaque canal compte ses propres numéros de série. Un compteur partagé entre deux
 connexions donnerait à chacune une suite trouée, et un serveur qui acquitte par
@@ -230,11 +251,12 @@ rafraîchissement.
 
 Un serveur SPICE choisit son encodage d'image selon sa propre configuration, et
 le défaut habituel est « automatique » : QUIC pour le photographique, GLZ pour
-le graphique. wisq ne décode ni l'un ni l'autre. Il demande donc explicitement
-`LZ` — et pas `AUTO_LZ`, qui laisserait le serveur libre d'envoyer du QUIC.
-
-Décoder un codec et se faire envoyer ce codec sont deux réussites distinctes, et
-seule la seconde met une image à l'écran.
+le graphique. wisq décode aujourd'hui les quatre codecs du canal — LZ, QUIC,
+GLZ, LZ4 — et demande donc `AUTO_GLZ`, le mode que les serveurs servent le
+mieux. La demande a suivi les décodeurs : `LZ` quand LZ était seul, `AUTO_LZ`
+quand QUIC est arrivé, `AUTO_GLZ` quand la fenêtre GLZ a été branchée — parce
+que décoder un codec et se faire envoyer ce codec sont deux réussites
+distinctes, et seule la seconde met une image à l'écran.
 
 ### « Pas implémenté » n'est pas « malformé »
 
@@ -250,5 +272,13 @@ parce qu'un serveur a envoyé un JPEG.
 l'implémentation devra respecter, et cela permet à l'éditeur de machine de déjà
 modéliser les trois protocoles.
 
-Côté SPICE, il reste les codecs QUIC, GLZ, JPEG et les formes à palette, et le
-presse-papiers — qui passe par l'agent du canal principal, pas par les entrées.
+Côté SPICE, le canal display est complet — LZ, QUIC, GLZ, LZ4, JPEG, les
+formes à palette, tous les messages de dessin — et l'agent du canal principal
+porte le presse-papiers et l'envoi de fichiers vers l'invité. Ce qui manque
+vraiment : les codecs vidéo des flux (VP8/9, H.264/5 — seul MJPEG est décodé,
+et uniquement là où ImageIO existe), les codecs audio compressés (Opus, CELT —
+seul le PCM brut passe), et la sortie comme la capture audio elles-mêmes, qui
+demandent AVAudioEngine et n'existent donc que côté Apple. Chacun est nommé à
+l'utilisateur plutôt que rangé sous « inconnu » : « le serveur a choisi
+H.264 » est une explication sur laquelle on peut agir, un rectangle figé n'en
+est pas une.
