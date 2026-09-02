@@ -577,6 +577,23 @@ public actor SPICESession: RemoteSession {
         try? await agent?.offer(text)
     }
 
+    /// Sends one file to the guest, through the agent that carries the
+    /// clipboard. Returns when the agent has said how the transfer ended —
+    /// success, or a refusal whose message names the cause. SPICE only:
+    /// RFB has nothing to carry a file on.
+    public func sendFile(name: String, contents: Data) async throws {
+        guard let agent else {
+            throw WisqError.fileTransferFailed(SpiceFileTransfer.Failure.noAgent.message)
+        }
+        do {
+            try await agent.sendFile(name: name, contents: contents)
+        } catch let failure as SpiceFileTransfer.Failure {
+            // The channel's error carries the cause; the app gets it as the
+            // one public error type, message intact.
+            throw WisqError.fileTransferFailed(failure.message)
+        }
+    }
+
     /// Reads the cursor channel and reports what the pointer looks like.
     ///
     /// Failures here end this task and nothing else. Losing the cursor is
