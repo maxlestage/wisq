@@ -9,6 +9,11 @@ public struct Machine: Codable, Identifiable, Hashable, Sendable {
     public var port: Int
     public var proto: RemoteProtocol
     public var security: TransportSecurity
+    /// The SHA-256 of the server's leaf certificate, when the user has one to
+    /// pin to. Absent from every file written before it existed, so `nil` on
+    /// decode; and `nil` is what makes `.tlsPinned` mean system validation
+    /// rather than a pin — see `ResolvedTransportSecurity`.
+    public var certificateFingerprint: Data?
     /// Opaque key into the `CredentialStore`. Nil until a secret is saved.
     public var credentialRef: String?
     public var username: String?
@@ -36,7 +41,8 @@ public struct Machine: Codable, Identifiable, Hashable, Sendable {
         tags: [String] = [],
         lastConnectedAt: Date? = nil,
         createdAt: Date = Date(),
-        agent: AgentBinding? = nil
+        agent: AgentBinding? = nil,
+        certificateFingerprint: Data? = nil
     ) {
         self.id = id
         self.name = name
@@ -53,10 +59,42 @@ public struct Machine: Codable, Identifiable, Hashable, Sendable {
         self.lastConnectedAt = lastConnectedAt
         self.createdAt = createdAt
         self.agent = agent
+        self.certificateFingerprint = certificateFingerprint
     }
 
     /// Stable key for the credential store, derived from the machine id.
     public var defaultCredentialRef: String { "machine.\(id.uuidString)" }
+
+    /// What the connection will actually check, resolved the way the
+    /// transport resolves it.
+    public var resolvedSecurity: ResolvedTransportSecurity {
+        ResolvedTransportSecurity.resolve(security, fingerprint: certificateFingerprint)
+    }
+
+    /// Whether the connection pins the certificate — `.tlsPinned` *with* a
+    /// fingerprint. The mode alone is a wish; this is the fact.
+    public var pinsCertificate: Bool {
+        if case .pinned = resolvedSecurity { return true }
+        return false
+    }
+
+    /// The protection in words, per machine rather than per mode: the same
+    /// `.tlsPinned` protects one machine and merely validates another,
+    /// depending on whether there is a fingerprint to pin to, and a label
+    /// that ignored the difference named a protection the connection did not
+    /// have (#70).
+    public var transportDescription: String {
+        switch resolvedSecurity {
+        case .plain:
+            return "Aucun chiffrement"
+        case .systemValidated:
+            return security == .tlsPinned
+                ? "TLS, validation système — aucune empreinte enregistrée"
+                : "TLS"
+        case .pinned(let fingerprint):
+            return "TLS épinglé sur \(CertificateFingerprint.format(fingerprint.prefix(4)))…"
+        }
+    }
 }
 
 /// Guest operating system, used for the icon and for keyboard defaults.

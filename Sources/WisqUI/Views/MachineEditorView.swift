@@ -21,6 +21,19 @@ public final class MachineDraft: Identifiable {
     public var passwordCameFilledIn = false
     /// Free-form `host` or `host:port` field; the port is split out on save.
     public var address: String
+    /// The certificate fingerprint as typed or pasted — colons, spaces and
+    /// an `openssl` label are all fine; it is parsed on save.
+    public var fingerprintText: String
+
+    /// Why the fingerprint cannot be saved as typed, or nil. Only `.tlsPinned`
+    /// reads the field, and an empty field is allowed: it means system
+    /// validation, which the editor says in as many words.
+    public var fingerprintProblem: String? {
+        guard machine.security == .tlsPinned else { return nil }
+        let text = fingerprintText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, CertificateFingerprint.parse(text) == nil else { return nil }
+        return "Empreinte illisible : 64 chiffres hexadécimaux attendus (SHA-256), avec ou sans deux-points."
+    }
 
     // Agent binding, unpacked into editable fields.
     public var agentEnabled: Bool
@@ -35,6 +48,7 @@ public final class MachineDraft: Identifiable {
         self.password = ""
         self.isNew = machine == nil
         self.address = base.host.isEmpty ? "" : "\(base.host):\(base.port)"
+        self.fingerprintText = base.certificateFingerprint.map(CertificateFingerprint.format) ?? ""
         self.agentEnabled = base.agent != nil
         if let agent = base.agent, let host = agent.baseURL.host {
             self.agentAddress = agent.baseURL.port.map { "\(host):\($0)" } ?? host
@@ -96,6 +110,34 @@ public struct MachineEditorView: View {
                 }
                 Picker("Chiffrement", selection: $draft.machine.security) {
                     ForEach(TransportSecurity.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                if draft.machine.security == .tlsPinned {
+                    TextField("Empreinte SHA-256 du certificat", text: $draft.fingerprintText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.footnote.monospaced())
+                    // The mode is a wish; this line is the fact. An empty
+                    // field is not an error, but it is not a pin either, and
+                    // saying so here beats a lock icon that promises one.
+                    if let problem = draft.fingerprintProblem {
+                        Label(problem, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else if draft.fingerprintText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label(
+                            "Sans empreinte, cette connexion vaut « TLS » : le certificat est validé par le système, pas épinglé. L'empreinte SHA-256 du certificat du serveur s'obtient par « openssl x509 -fingerprint -sha256 » ou dans un navigateur.",
+                            systemImage: "info.circle"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "Seul un certificat qui correspond exactement à cette empreinte sera accepté — y compris après son renouvellement, qu'il faudra saisir ici.",
+                            systemImage: "lock.shield"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    }
                 }
                 if draft.machine.proto.requiresUsername {
                     TextField("Utilisateur", text: Binding(
@@ -205,7 +247,10 @@ public struct MachineEditorView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Enregistrer", action: save)
-                    .disabled(draft.address.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(
+                        draft.address.trimmingCharacters(in: .whitespaces).isEmpty
+                            || draft.fingerprintProblem != nil
+                    )
             }
         }
     }
@@ -226,6 +271,12 @@ public struct MachineEditorView: View {
             if machine.name.trimmingCharacters(in: .whitespaces).isEmpty {
                 machine.name = machine.host
             }
+            // Only `.tlsPinned` keeps a fingerprint: one left behind under
+            // another mode would silently become a pin again the day the
+            // mode is switched back, without the user having re-read it.
+            machine.certificateFingerprint = machine.security == .tlsPinned
+                ? CertificateFingerprint.parse(draft.fingerprintText)
+                : nil
             if draft.agentEnabled {
                 let (agentHost, agentPort) = Validation.splitHostPort(draft.agentAddress)
                 let normalizedAgentHost = try Validation.normalizedHost(agentHost)

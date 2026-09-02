@@ -464,7 +464,8 @@ public actor VNCSession: RemoteSession {
         let stream = try NetworkByteStream(
             host: configuration.host,
             port: configuration.port,
-            security: configuration.security
+            security: configuration.security,
+            pinnedFingerprint: configuration.certificateFingerprint
         )
         try await stream.open()
         return stream
