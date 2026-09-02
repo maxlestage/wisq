@@ -8,6 +8,49 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~00h UTC — le bouton qui manquait : éteindre une VM distante
+
+Maxime a écrit « J'aimerais beaucoup finir l'application dans la nuit ». La
+carte a donc été relue en entier avant de choisir, et le morceau le plus
+proche de « finir » qui se prouve d'ici était le premier de la liste des
+restes : le démon sait arrêter une VM, `AgentClient.stop` existe, et rien
+dans l'application ne l'appelait. Une capacité non offerte, depuis des mois.
+
+**La conduite d'abord, parce que c'est elle qui se juge.** `VMPower.shutDown`
+suit le contrat d'AGENT-PROTOCOL.md : la réponse immédiate du démon règle le
+cordon et la machine déjà arrêtée, puis l'arrêt poli est sondé jusqu'à
+`stopped` dans une fenêtre de patience. La décision qui compte est ce qui se
+passe quand la patience s'épuise : **`.stillRunning` est un résultat, pas une
+erreur.** Un invité sans gestionnaire ACPI ignore la demande pour toujours et
+rien dans le protocole ne peut l'y forcer ; attendre plus longtemps ne le
+ferait pas répondre, cela cacherait la question à la personne qui tient le
+téléphone. L'interface présente donc la non-réponse et offre le cordon, en
+nommant son prix — ce qui n'était pas enregistré est perdu.
+
+**Six sabotages, six morsures, aucun no-op.** Le drapeau `force` escamoté, la
+boucle de sondage retirée, la patience rendue infinie, la réponse immédiate
+ignorée, le nom de la machine retiré du refus, le jeton escamoté dans la
+nouvelle fabrique `AgentClient(binding:credentials:)` — chacun a fait rougir
+exactement le test nommé d'avance, contre la suite entière, sur baseline vert
+(1171 tests Swift, 1 saut attendu). Le sabotage de la patience infinie méritait
+sa vérification : mal conçu, ce test-là *pendrait* au lieu d'échouer. Il
+échoue, parce que l'invité de démonstration finit par s'arrêter et que
+l'assertion attend `.stillRunning`.
+
+**Le partage qui n'était pas prévu.** Construire un client depuis une liaison
+enregistrée — jeton depuis le trousseau, épinglage exactement quand
+l'appairage a noté une empreinte — vivait dans `ConsoleResolver` et allait se
+recopier dans `VMPower`. C'est devenu `AgentClient(binding:credentials:)`,
+une décision à un seul endroit ; le sabotage du jeton montre que les deux
+appelants la traversent.
+
+**Ce que la tranche ne prouve pas, dit honnêtement :** le bouton lui-même —
+glissement sur une machine liée à un agent, dialogue de confirmation, bannière
+de progression, alerte « l'invité n'a pas répondu » avec le cordon en second
+geste — est du SwiftUI qu'aucun runner Linux ne compile. La CI macOS le
+compile, la conduite qu'il appelle est éprouvée, la vue reste mince ; c'est la
+même posture que le reste de WisqUI.
+
 ## 2026-08-31, ~10h UTC — le processus du dyno, exécuté — et la mine que #140 avait posée
 
 Maxime a dit « Fais le » : la tranche `heroku-web.sh`, annoncée au réveil
