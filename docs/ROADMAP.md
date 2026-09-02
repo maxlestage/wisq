@@ -1870,8 +1870,16 @@ remarquer la divergence.
   l'invité), et une bannière qui suit l'envoi — visible chrome caché, parce
   qu'un transfert finit longtemps après le geste qui l'a lancé ; l'issue reste
   affichée jusqu'à être congédiée, un envoi en cours ne l'est pas d'un tapot.
-  Le fichier entier passe en mémoire — juste pour des documents, faux pour un
-  film, et la ligne à revisiter est marquée dans la vue. La variante
+  **Et le fichier ne passe pas en mémoire** : il est lu sur le disque un
+  morceau de 64 Kio à la fois, chaque morceau demandé quand les jetons ont
+  vidé le précédent — un film part comme un document, et sa taille est
+  l'affaire de l'invité. La portée de sécurité du sélecteur vit avec la
+  source, pas avec le geste : réclamée dans la vue, elle serait rendue avant
+  la première lecture. Une lecture que le disque refuse, ou un fichier qui a
+  moins d'octets qu'annoncé au moment de les lire, ferme le transfert de ce
+  côté avec `error` pour l'agent — c'est ce que la référence envoie pour tout
+  échec local qui n'est pas une annulation ; envoyer le fichier court
+  laisserait l'agent attendre des octets qui ne viendront jamais. La variante
   « dossier monté côté agent » reste ouverte et
   demanderait d'abord un vrai chantier sur le serveur HTTP du démon — corps
   `String`, 64 Kio, JSON figé : le binaire n'y passe pas aujourd'hui, et le

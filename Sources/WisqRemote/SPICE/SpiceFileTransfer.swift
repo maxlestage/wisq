@@ -70,6 +70,11 @@ enum SpiceFileTransfer {
         /// A result value this client does not know. The transfer fails with
         /// the number; the session stays up.
         case unknownStatus(UInt32)
+        /// This side could not read the file it was sending — the disk
+        /// refused, or the file shrank under the transfer. The agent is told
+        /// `error`, as the reference does for any local failure that is not
+        /// a cancellation.
+        case unreadable(String)
 
         var message: String {
             switch self {
@@ -97,7 +102,113 @@ enum SpiceFileTransfer {
                 return "l'agent a refusé le transfert (statut \(status.rawValue))"
             case .unknownStatus(let raw):
                 return "l'agent a répondu un statut inconnu (\(raw))"
+            case .unreadable(let detail):
+                return "le fichier n'a pas pu être lu : \(detail)"
             }
+        }
+    }
+
+    // MARK: - Where the bytes come from
+
+    /// A file's bytes, a chunk at a time, for the channel to stream.
+    ///
+    /// The channel never holds more than one chunk of the file: it asks for
+    /// the next 64 KiB when the tokens have drained the last, which is what
+    /// lets a phone send a file larger than the memory it can spare. The
+    /// size is fixed at the start — it is what `FILE_XFER_START` announces,
+    /// and the agent waits for exactly that many bytes — so a file that
+    /// changes length underneath is a failure, not a surprise for the guest.
+    struct Source: Sendable {
+        /// The length announced to the agent.
+        let size: UInt64
+        /// Bytes `[offset, offset + count)`. Fewer than `count` only at the
+        /// end of the file; throws when the disk refuses.
+        let read: @Sendable (_ offset: UInt64, _ count: Int) throws -> [UInt8]
+        /// Called once the transfer is over, however it ended. Idempotent.
+        let close: @Sendable () -> Void
+
+        /// A file already in memory. Nothing to close.
+        static func inMemory(_ data: Data) -> Source {
+            Source(size: UInt64(data.count), read: { offset, count in
+                let start = Int(offset)
+                let end = min(start + count, data.count)
+                guard start < end else { return [] }
+                return [UInt8](data[data.startIndex + start..<data.startIndex + end])
+            }, close: {})
+        }
+
+        /// A file on disk, read through a handle that stays open for the
+        /// transfer. The size is the file's at this moment.
+        ///
+        /// On Apple platforms a URL from the document picker points into
+        /// somebody else's container and is readable only inside a
+        /// security scope; the scope is claimed here and released by
+        /// `close`, so it lives exactly as long as the reads it protects —
+        /// a scope claimed by the view and released when the picker
+        /// callback returns would be gone before the first chunk is read.
+        static func file(at url: URL) throws -> Source {
+            let handle = try ScopedHandle(url)
+            return Source(
+                size: handle.size,
+                read: { offset, count in try handle.read(offset: offset, count: count) },
+                close: { handle.close() }
+            )
+        }
+    }
+
+    /// The open file behind `Source.file`, with its security scope.
+    ///
+    /// `@unchecked` because `FileHandle` is not `Sendable`; every use of it
+    /// goes through `lock`, so the claim holds whoever calls, not only the
+    /// one actor that does today.
+    private final class ScopedHandle: @unchecked Sendable {
+        let size: UInt64
+        private let url: URL
+        private let handle: FileHandle
+        private let scoped: Bool
+        private let lock = NSLock()
+        private var closed = false
+
+        init(_ url: URL) throws {
+            #if canImport(Darwin)
+            let scoped = url.startAccessingSecurityScopedResource()
+            #else
+            let scoped = false
+            #endif
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                guard let size = (attributes[.size] as? NSNumber)?.uint64Value else {
+                    throw CocoaError(.fileReadUnknown)
+                }
+                self.handle = try FileHandle(forReadingFrom: url)
+                self.size = size
+            } catch {
+                #if canImport(Darwin)
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                #endif
+                throw error
+            }
+            self.url = url
+            self.scoped = scoped
+        }
+
+        func read(offset: UInt64, count: Int) throws -> [UInt8] {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closed else { throw CocoaError(.fileReadUnknown) }
+            try handle.seek(toOffset: offset)
+            return [UInt8](try handle.read(upToCount: count) ?? Data())
+        }
+
+        func close() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closed else { return }
+            closed = true
+            try? handle.close()
+            #if canImport(Darwin)
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            #endif
         }
     }
 

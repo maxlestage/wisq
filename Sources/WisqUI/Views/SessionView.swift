@@ -167,26 +167,18 @@ public struct SessionView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
-    /// Reads the picked file and hands it to the session. The whole file is
-    /// read into memory — the transfer's own chunking is downstream — which
-    /// is fine for documents and wrong for movies; the day someone sends one,
-    /// this is the line to revisit.
+    /// Hands the picked file to the session, which streams it from disk a
+    /// chunk at a time. The picker's URL points into somebody else's
+    /// container and is readable only inside a security scope; that scope is
+    /// claimed by the transfer itself, for as long as it reads — claimed here
+    /// it would be released when this function returns, before the first
+    /// chunk is read.
     private func sendPickedFile(_ result: Result<URL, Error>) {
         switch result {
         case .failure(let error):
             model.fileSendFailed(error.localizedDescription)
         case .success(let url):
-            // The picker hands back a URL into somebody else's container;
-            // without claiming the scope the read fails as if the file
-            // vanished.
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let contents = try Data(contentsOf: url)
-                model.sendFile(name: url.lastPathComponent, contents: contents)
-            } catch {
-                model.fileSendFailed(error.localizedDescription)
-            }
+            model.sendFile(name: url.lastPathComponent, at: url)
         }
     }
 

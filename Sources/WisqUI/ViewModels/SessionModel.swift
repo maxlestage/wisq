@@ -254,10 +254,12 @@ public final class SessionModel {
 
     public private(set) var fileSend: FileSend?
 
-    /// Sends a file to the guest through the SPICE agent. The transfer's own
+    /// Sends a file to the guest through the SPICE agent, streamed from the
+    /// URL a chunk at a time — the file is never whole in memory, so its
+    /// size is the guest's problem, not the phone's. The transfer's own
     /// refusals — no agent, transfers disabled, disk full with the number —
     /// arrive as the protocol layer words them.
-    public func sendFile(name: String, contents: Data) {
+    public func sendFile(name: String, at url: URL) {
         guard let spice = session as? SPICESession else {
             fileSend = .failed("cette session n'a pas d'agent SPICE pour recevoir un fichier")
             return
@@ -265,7 +267,7 @@ public final class SessionModel {
         fileSend = .sending(name: name)
         Task {
             do {
-                try await spice.sendFile(name: name, contents: contents)
+                try await spice.sendFile(name: name, at: url)
                 fileSend = .sent(name: name)
             } catch {
                 fileSend = .failed(error.localizedDescription)
