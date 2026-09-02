@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~20h UTC — le premier envoi TestFlight, et ce qu'il a appris
+
+Maxime a créé les trois secrets App Store Connect et dit « Vas-y ». Le
+workflow a donc tourné pour de vrai, et il a échoué en seize secondes sur une
+ligne sans ambiguïté :
+
+    error: Signing for "Wisq" requires a development team.
+
+C'est le pari de la tranche précédente qui tombe. Le workflow rendait
+`ASC_TEAM_ID` facultatif en pariant que Xcode déduirait l'équipe de la clé
+API quand elle n'en sert qu'une. **Il ne la déduit pas** — ni avec
+`-allowProvisioningUpdates`, ni avec `-authenticationKey*`. Le pari était
+raisonnable et il était faux ; il aura coûté seize secondes parce qu'il a été
+mesuré au lieu d'être supposé plus longtemps.
+
+La correction ne demande pas un quatrième secret. L'identifiant d'équipe
+existe déjà dans l'API sous un autre nom : le **`seedId`** d'un identifiant
+d'application *est* l'identifiant d'équipe. Une étape le demande donc avant
+de construire, avec les trois secrets déjà là, et au passage :
+
+* crée l'identifiant d'application s'il manque — `xcodebuild` sait le faire
+  aussi, mais il lui faut déjà l'équipe, et l'équipe se lit sur un
+  identifiant : le faire ici casse le cercle ;
+* dit si la **fiche d'application** existe. C'est le seul maillon que rien
+  ne peut automatiser : l'API App Store Connect lit les fiches et n'en crée
+  pas. Le dire avant la construction vaut mieux qu'un envoi refusé après dix
+  minutes.
+
+Ce que le jeton exige, et qui ne se voit qu'en 401 muet : ES256, vingt
+minutes de vie au plus, l'audience littérale `appstoreconnect-v1`, et surtout
+une signature au **format JOSE** — deux entiers de trente-deux octets bout à
+bout — là où OpenSSL rend du DER par défaut. Les deux sont des signatures
+valides du même message ; une seule est acceptée. `dsaEncoding: "ieee-p1363"`
+est ce qui fait la différence.
+
+Cette partie-là est vérifiable sans la clé de personne, et elle l'est : les
+tests fabriquent une paire P-256, signent, **relisent la signature avec la
+partie publique**, et gardent le témoin qui doit échouer — la même signature
+contre un message modifié d'un caractère. Plus la longueur de soixante-quatre
+octets et le premier octet qui n'est pas `0x30`, puisque c'est là qu'est la
+faute qu'on ne verrait pas autrement.
+
+Un défaut attrapé dans mon propre code en le relisant : la première version
+écrivait `GITHUB_OUTPUT` avec `Bun.write`, qui écrase. Ce fichier appartient
+au job entier ; l'écrire efface les sorties des étapes précédentes. Il est
+maintenant allongé, une valeur multi-ligne est refusée plutôt qu'écrite à
+moitié, et un test tient les deux.
+
 ## 2026-09-02, ~19h30 UTC — « je veux la tester avec Ubuntu » : le guide, et ce qu'il ne prétend pas
 
 La seconde réponse à Maxime. Ce conteneur *est* un Ubuntu 24.04, et
