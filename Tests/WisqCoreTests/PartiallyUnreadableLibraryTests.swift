@@ -187,6 +187,74 @@ final class PartiallyUnreadableLibraryTests: XCTestCase {
         XCTAssertTrue(after.contains(before), "l'entrée conservée a été altérée en passant par la sauvegarde")
     }
 
+    // MARK: - Letting them go, on the user's word
+
+    /// The one way an unreadable entry leaves the file: an explicit discard.
+    /// It takes the unreadable entries and nothing else — the readable
+    /// machines come back field for field, and the next load has nothing
+    /// left to report.
+    func testDiscardingRemovesOnlyWhatCannotBeRead() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        let store = try store("[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas")),"
+            + "\(alien),\(entry(id: "22222222-2222-2222-2222-222222222222", name: "bureau"))]")
+
+        XCTAssertEqual(try store.discardUnreadable(), 1, "une entrée écartée, et c'est dit")
+
+        let raw = try JSONDecoder().decode([JSONValue].self, from: Data(contentsOf: url))
+        XCTAssertEqual(raw.count, 2, "l'entrée illisible est partie, les deux autres non")
+        let reloaded = try MachineStore(fileURL: url).loadReportingUnreadable()
+        XCTAssertEqual(reloaded.unreadable, 0)
+        XCTAssertEqual(reloaded.machines.map(\.name), ["nas", "bureau"])
+        XCTAssertEqual(reloaded.machines.map(\.host), ["nas.local", "bureau.local"])
+        XCTAssertEqual(try store.loadReportingUnreadable().unreadable, 0, "le cache doit suivre")
+    }
+
+    /// Nothing to discard means nothing written: a library with nothing
+    /// wrong in it keeps its bytes, not a re-encoded copy of them.
+    func testDiscardingOnACleanLibraryTouchesNothing() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        let store = try store("[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas"))]")
+        let before = try Data(contentsOf: url)
+
+        XCTAssertEqual(try store.discardUnreadable(), 0)
+
+        XCTAssertEqual(try Data(contentsOf: url), before, "rien à écarter, rien à écrire")
+    }
+
+    /// Like every write here, it reads before it writes: a store that has
+    /// never loaded discards what *this* load cannot read and keeps what it
+    /// can — it does not write an empty list over the machines.
+    func testDiscardingFromAStoreThatNeverLoadedKeepsTheReadableMachines() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        _ = try store("[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas")),\(alien)]")
+
+        let blind = MachineStore(fileURL: url)
+        XCTAssertEqual(try blind.discardUnreadable(), 1)
+
+        let reloaded = try MachineStore(fileURL: url).loadReportingUnreadable()
+        XCTAssertEqual(reloaded.machines.map(\.name), ["nas"], "écarter l'illisible a emporté le lisible")
+        XCTAssertEqual(reloaded.unreadable, 0)
+    }
+
+    /// The banner can say *which* machine it cannot show, when the entry
+    /// still has a name: a person recognises « nas », not "one entry". An
+    /// entry with no name, or a name that is not text, is counted but not
+    /// named — a damaged entry may have lost its name with the rest.
+    func testTheNamesOfUnreadableEntriesAreReportedWhenTheyHaveOne() throws {
+        let nameless = """
+            {"id":"88888888-8888-8888-8888-888888888888","host":"x.local","proto":"holodeck"}
+            """
+        let numbered = """
+            {"id":"77777777-7777-7777-7777-777777777777","name":42,"proto":"holodeck"}
+            """
+        let store = try store("[\(alien),\(nameless),\(numbered)]")
+
+        let outcome = try store.loadReportingUnreadable()
+        XCTAssertEqual(outcome.unreadable, 3)
+        XCTAssertEqual(outcome.unreadableNames, ["Du futur"])
+        XCTAssertEqual(try store.loadReportingUnreadable().unreadableNames, ["Du futur"], "le cache doit le dire aussi")
+    }
+
     // MARK: - What must not change
 
     /// A library with nothing wrong in it round-trips exactly as before. A fix

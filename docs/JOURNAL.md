@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~14h UTC — les entrées illisibles : le choix est proposé, jamais pris
+
+La question attendait Maxime depuis le 28 août (ROADMAP, « Une décision qui
+appartient à Maxime ») : les entrées d'une bibliothèque qu'une version ne sait
+pas lire sont immortelles, ce qui protège d'une perte irréversible mais
+condamne un fichier abîmé à afficher « une machine sur douze n'a pas pu être
+lue » à chaque lancement, pour toujours. « Continue de tout faire » couvre la
+décision, et la réponse proposée dans le ROADMAP était déjà la bonne : l'app
+ne peut pas distinguer une entrée d'un wisq plus récent d'une entrée corrompue,
+donc elle ne tranche pas — elle propose le choix en disant la vérité.
+
+Ce qui a été fait, et pourquoi de cette forme :
+
+1. **Une seule route de sortie.** `MachineStore.discardUnreadable` est la
+   seule méthode par laquelle une entrée illisible quitte le fichier ;
+   `save`, `upsert` et `delete` continuent de tout porter. Elle lit avant
+   d'écrire, comme toutes les écritures du magasin depuis #99 : ce qu'elle
+   écarte est ce que *cette* lecture n'a pas su lire. Et elle n'écrit rien
+   quand il n'y a rien à écarter — une bibliothèque saine garde ses octets,
+   pas une copie ré-encodée.
+2. **La bannière nomme la machine.** `LoadOutcome.unreadableNames` rend le
+   champ `name` des entrées qui en ont un qui soit du texte ; « Du futur » se
+   reconnaît, « une entrée » non. Une entrée sans nom, ou au nom qui n'est pas
+   du texte, est comptée sans être nommée : une entrée abîmée a pu perdre son
+   nom avec le reste.
+3. **La confirmation dit la seule chose qui compte.** Cette entrée vient
+   peut-être d'une version plus récente, mettre à jour la ferait revenir ; ce
+   qui est écarté est effacé du fichier et ne revient pas. Le bouton n'existe
+   que si le compte est non nul, et le geste est destructif dans les deux sens
+   du terme, jusqu'à la couleur.
+
+La tranche a été écrite dans un arbre de travail séparé pendant que #148
+attendait sa CI, pour ne pas empiler deux tranches sur une même PR ; elle
+rejoint la branche après la fusion. Sabotages, contre la suite entière de cet
+arbre (1179 tests sous le cœur Swift, sans noyau) : entrées conservées malgré
+l'écart — les deux tests d'écart ; liste vide écrite à la place des machines
+lisibles — les mêmes deux ; compte rendu à zéro — les mêmes deux ; noms jamais
+lus — le test des noms ; écriture même sans rien à écarter — le test du
+fichier intact ; cache qui oublie les noms — le test des noms, sur sa seconde
+assertion.
+
+Un accroc d'outillage, le second de la journée sur le même script : la
+restauration d'un sabotage qui *supprime* une ligne se faisait par une chaîne
+vide, et `count("")` ne vaut jamais un. La ligne a été remise à la main et le
+sabotage suivant rejoué sur un arbre sain. La leçon rejoint celle du matin :
+vérifier à sec, avant de toucher au fichier, que l'aller *et* le retour sont
+uniques — et qu'un retour vide n'est pas un retour.
+
 ## 2026-09-02, ~13h UTC — « Continue de tout faire » : le fichier envoyé ne passe plus par la mémoire
 
 Maxime, vers 12 h 30 UTC : « Continue de tout faire ». La clause de méfiance
