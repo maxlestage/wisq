@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import WisqCore
 import WisqRemote
 
@@ -10,6 +11,7 @@ public struct SessionView: View {
     @State private var showChrome = true
     @State private var keyboardVisible = false
     @State private var showKeyBar = false
+    @State private var choosingFileToSend = false
     @Environment(\.dismiss) private var dismiss
 
     private let library: MachineLibraryModel
@@ -48,11 +50,24 @@ public struct SessionView: View {
 
             VStack {
                 if showChrome { topBar }
+                // Shown even with the chrome hidden: a transfer ends long
+                // after the tap that started it, and its outcome should not
+                // depend on whether the bar happens to be out.
+                if model.fileSend != nil { fileSendBanner }
                 Spacer()
                 if showKeyBar, model.status.isLive {
                     KeyBarView(model: model)
                 }
             }
+        }
+        // Every content type, like the connection-file picker: what the guest
+        // accepts is the guest's business, and a picker that greys files out
+        // refuses sends the agent would take.
+        .fileImporter(
+            isPresented: $choosingFileToSend,
+            allowedContentTypes: [.data]
+        ) { result in
+            sendPickedFile(result)
         }
         .statusBarHidden(!showChrome)
         .persistentSystemOverlays(.hidden)
@@ -88,6 +103,15 @@ public struct SessionView: View {
 
             Spacer()
 
+            if model.machine.proto == .spice {
+                Button {
+                    choosingFileToSend = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(!model.status.isLive)
+            }
+
             Button {
                 if let text = UIPasteboard.general.string { model.sendClipboard(text) }
             } label: {
@@ -112,6 +136,58 @@ public struct SessionView: View {
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
         .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var fileSendBanner: some View {
+        HStack(spacing: 10) {
+            switch model.fileSend {
+            case .sending(let name)?:
+                ProgressView().controlSize(.small)
+                Text("Envoi de « \(name) »…")
+            case .sent(let name)?:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("« \(name) » envoyé à l'invité")
+            case .failed(let message)?:
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(message)
+            case .none:
+                EmptyView()
+            }
+        }
+        .font(.footnote)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .onTapGesture {
+            // A transfer in flight is not dismissed by a tap: it is still
+            // happening, and hiding it would not make it stop.
+            if case .sending? = model.fileSend { return }
+            model.dismissFileSend()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    /// Reads the picked file and hands it to the session. The whole file is
+    /// read into memory — the transfer's own chunking is downstream — which
+    /// is fine for documents and wrong for movies; the day someone sends one,
+    /// this is the line to revisit.
+    private func sendPickedFile(_ result: Result<URL, Error>) {
+        switch result {
+        case .failure(let error):
+            model.fileSendFailed(error.localizedDescription)
+        case .success(let url):
+            // The picker hands back a URL into somebody else's container;
+            // without claiming the scope the read fails as if the file
+            // vanished.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let contents = try Data(contentsOf: url)
+                model.sendFile(name: url.lastPathComponent, contents: contents)
+            } catch {
+                model.fileSendFailed(error.localizedDescription)
+            }
+        }
     }
 
     private func connect() {
