@@ -67,6 +67,10 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
 | Agent TLS | done |
+| Power a remote VM off from the phone: polite ACPI, then the cord if the guest never answers | done |
+| SPICE: send a file from the phone into the guest (agent channel) | done |
+| Local machine suspended and resumed as a snapshot — the shell comes back where it was | done |
+| Rust VM core by default, compared instruction for instruction with the Swift one in CI | done |
 | SPICE: link, main/display/inputs/cursor channels, `.vv` import | done |
 | SPICE codecs: LZ, GLZ (with its window), QUIC, LZ4, JPEG, palette forms | done |
 | SPICE: clipboard, sound both ways, draw operations, video streams, three caches | done |
@@ -130,7 +134,7 @@ the UI and the remote-desktop client — Apple-shaped work on
 Network.framework. Rust holds the parts that are neither: a daemon with no
 interface, and an interpreter that is pure computation over a byte array.
 Neither has a reason to carry a language runtime, and the daemon's download
-went from 58 MB to under 600 KB by not carrying one.
+went from 58 MB to 1.7 MB by not carrying one.
 
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is
