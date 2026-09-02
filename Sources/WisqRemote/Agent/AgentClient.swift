@@ -50,6 +50,20 @@ public struct AgentClient: Sendable {
         #endif
     }
 
+    /// The client a stored binding describes: token fetched from the credential
+    /// store, certificate pinning exactly when the pairing recorded a
+    /// fingerprint. Every feature that talks to an agent on behalf of a saved
+    /// machine builds its client here, so "pinned when paired over TLS" is one
+    /// decision and not one per call site.
+    public init(binding: AgentBinding, credentials: CredentialStore) throws {
+        let token = try binding.credentialRef.flatMap { try credentials.secret(for: $0) }
+        if let fingerprint = binding.certificateFingerprint {
+            self.init(baseURL: binding.baseURL, token: token, pinnedFingerprint: fingerprint)
+        } else {
+            self.init(baseURL: binding.baseURL, token: token)
+        }
+    }
+
     public func listVMs() async throws -> [AgentVM] {
         try await send(path: "vms", method: "GET", body: nil)
     }
