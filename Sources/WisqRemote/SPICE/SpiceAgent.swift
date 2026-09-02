@@ -36,6 +36,9 @@ enum SpiceAgent {
         case clipboardGrab = 7
         case clipboardRequest = 8
         case clipboardRelease = 9
+        case fileXferStart = 10
+        case fileXferStatus = 11
+        case fileXferData = 12
     }
 
     /// Capabilities, by bit position in the announcement's bitmap.
@@ -51,6 +54,8 @@ enum SpiceAgent {
         case guestLineEndLF = 8
         case guestLineEndCRLF = 9
         case maxClipboard = 10
+        case fileXferDisabled = 13
+        case fileXferDetailedErrors = 14
         case clipboardGrabSerial = 17
     }
 
@@ -177,11 +182,15 @@ enum SpiceAgent {
     /// rather than pushed, `clipboardSelection` because saying which selection
     /// costs four bytes and not saying it means the guest picks, and
     /// `clipboardGrabSerial` because a guest that stamps grabs can tell a stale
-    /// one from a current one. No monitor or display configuration is claimed:
-    /// wisq does not resize the guest yet, and announcing a capability it does
-    /// not honour is worse than announcing nothing.
+    /// one from a current one, and `fileXferDetailedErrors` because a refusal
+    /// that says "3,2 Go libres, 5 Go à transférer" is one the user can act on
+    /// where "erreur" is not — the agent only sends the detail to clients that
+    /// asked (spice-gtk asks too). No monitor or display configuration is
+    /// claimed: wisq does not resize the guest yet, and announcing a capability
+    /// it does not honour is worse than announcing nothing.
     static let clientCapabilities: [Capability] = [
-        .clipboardByDemand, .clipboardSelection, .clipboardGrabSerial
+        .clipboardByDemand, .clipboardSelection, .clipboardGrabSerial,
+        .fileXferDetailedErrors
     ]
 
     // MARK: - Clipboard
