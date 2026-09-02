@@ -8,6 +8,39 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~03h UTC — ARCHITECTURE.md décrivait une application qui n'existe plus
+
+La clause de méfiance du filet demande, avant de répéter « tout est clos »,
+de chercher ce que le dépôt PROMET et que rien ne juge. ARCHITECTURE.md était
+la dernière pièce auto-descriptive jamais passée au crible — le site, le
+README et les gardes le sont — et le crible a rendu **six affirmations
+fausses**, chacune vérifiée contre le code avant d'être réécrite :
+
+1. « Le JPEG est délibérément absent de Tight » — décodé depuis la tranche
+   Tight, qualité annoncée seulement là où `JPEGDecoder` existe.
+2. « wisq ne décode ni QUIC ni GLZ. Il demande LZ » — les quatre codecs du
+   canal sont décodés et la demande est `AUTO_GLZ` ; la phrase datait de trois
+   générations de demande.
+3. « tlsPinned fait du TOFU » — jamais vrai sous cette forme, et faux deux
+   fois depuis #66 : validation système complète côté machine, épinglage réel
+   côté agent, libellé honnête dans le sélecteur.
+4. « la vue terminal v1 est du texte brut, ANSIFilter… » — `ANSIFilter`
+   n'existe plus dans l'arbre ; la console est `TerminalGrid`, pour les deux
+   cœurs.
+5. « Ce qui n'est pas là : QUIC, GLZ, JPEG, palettes, presse-papiers » — tout
+   y est ; la liste des vraies absences est désormais celle des codecs vidéo
+   et audio compressés, et de la sortie/capture audio (Apple).
+6. « WisqCore n'importe que Foundation » — il importe aussi Security, sous
+   `#if canImport` ; trouvée en vérifiant la phrase que j'allais laisser.
+
+Au passage : le schéma des canaux SPICE gagne lecture/record et l'agent, le
+schéma des modules gagne WisqVM, et le cœur Rust par défaut est enfin dit là
+où un lecteur d'architecture le cherchera. Rien de tout cela n'a de test —
+c'est un document — mais chaque phrase corrigée a été confrontée à un grep ou
+au fichier qu'elle décrit, parce que la version précédente montre exactement
+comment un document d'architecture pourrit : une phrase vraie à l'écriture,
+jamais relue quand le code la dépasse.
+
 ## 2026-09-02, ~02h30 UTC — le geste au bout du protocole
 
 La tranche courte qui rend #143 visible : un bouton « envoyer un fichier »
