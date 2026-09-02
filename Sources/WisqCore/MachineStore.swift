@@ -40,10 +40,16 @@ public final class MachineStore: @unchecked Sendable {
         public var machines: [Machine]
         /// How many entries the file held that this build could not decode.
         public var unreadable: Int
+        /// The `name` field of those entries, when they have one that is a
+        /// string — so the banner can say *which* machine is missing rather
+        /// than only how many. Fewer than `unreadable` when some have none:
+        /// a damaged entry may have lost its name along with the rest.
+        public var unreadableNames: [String]
 
-        public init(machines: [Machine], unreadable: Int = 0) {
+        public init(machines: [Machine], unreadable: Int = 0, unreadableNames: [String] = []) {
             self.machines = machines
             self.unreadable = unreadable
+            self.unreadableNames = unreadableNames
         }
     }
 
@@ -54,6 +60,27 @@ public final class MachineStore: @unchecked Sendable {
     /// The same load, with the count of entries it had to leave behind.
     public func loadReportingUnreadable() throws -> LoadOutcome {
         try queue.sync { try loadOnQueue() }
+    }
+
+    /// Removes from the file the entries this build cannot read, and returns
+    /// how many it removed. Zero means the file was not touched.
+    ///
+    /// This is the one deletion nobody can undo, and it is the user's to
+    /// order, never the app's: the app cannot tell an entry written by a
+    /// newer wisq from a damaged one — they look exactly alike from here —
+    /// so `save`, `upsert` and `delete` all carry such entries through
+    /// untouched, and only this method, behind a confirmation that says so,
+    /// lets them go. It reads before it writes like every other write here:
+    /// what it discards is what *this* load could not read, not what an
+    /// earlier build happened to keep.
+    public func discardUnreadable() throws -> Int {
+        try queue.sync {
+            let outcome = try loadOnQueue()
+            guard outcome.unreadable > 0 else { return 0 }
+            preserved = []
+            try saveOnQueue(outcome.machines)
+            return outcome.unreadable
+        }
     }
 
     public func save(_ machines: [Machine]) throws {
@@ -107,7 +134,11 @@ public final class MachineStore: @unchecked Sendable {
     /// reading a newer file, dropping the entries it does not understand, and
     /// deleting them the first time anything is saved.
     private func loadOnQueue() throws -> LoadOutcome {
-        if let cache { return LoadOutcome(machines: cache, unreadable: preserved.count) }
+        if let cache {
+            return LoadOutcome(
+                machines: cache, unreadable: preserved.count,
+                unreadableNames: Self.names(of: preserved))
+        }
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             cache = []
             preserved = []
@@ -128,7 +159,8 @@ public final class MachineStore: @unchecked Sendable {
             }
             cache = machines
             preserved = kept
-            return LoadOutcome(machines: machines, unreadable: kept.count)
+            return LoadOutcome(
+                machines: machines, unreadable: kept.count, unreadableNames: Self.names(of: kept))
         } catch {
             throw WisqError.storageFailure(error.localizedDescription)
         }
@@ -169,6 +201,16 @@ public final class MachineStore: @unchecked Sendable {
             cache = machines
         } catch {
             throw WisqError.storageFailure(error.localizedDescription)
+        }
+    }
+
+    /// The `name` of each entry that has one, in file order.
+    private static func names(of entries: [JSONValue]) -> [String] {
+        entries.compactMap { entry in
+            guard case .object(let fields) = entry, case .string(let name)? = fields["name"] else {
+                return nil
+            }
+            return name
         }
     }
 
