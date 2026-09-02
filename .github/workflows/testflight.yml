@@ -17,11 +17,13 @@ name: TestFlight
 #     `PRODUCT_BUNDLE_IDENTIFIER` du projet. L'upload ne la crée pas : sans
 #     elle il échoue en disant que l'application est introuvable.
 #
-# `ASC_TEAM_ID` (dix caractères, sur developer.apple.com → Membership) est
-# facultatif : sans lui, Xcode déduit l'équipe de la clé, ce qui suffit quand
-# la clé n'en sert qu'une. Le renseigner lève l'ambiguïté pour un compte qui
-# appartient à plusieurs équipes, et c'est la première chose à essayer si la
-# signature échoue en parlant d'équipe.
+# `ASC_TEAM_ID` (dix caractères, sur developer.apple.com → Membership) n'est
+# pas nécessaire : l'étape « Ce que la clé sait » le demande à l'API, où il
+# s'appelle `seedId` et se lit sur n'importe quel identifiant d'application.
+# Le secret existe quand même comme échappatoire — s'il est renseigné, il
+# gagne. Le premier envoi a échoué exactement là, sur le pari que Xcode
+# déduirait l'équipe de la clé tout seul : « Signing for "Wisq" requires a
+# development team ». Il ne la déduit pas.
 #
 # Le numéro de build est celui de l'exécution du workflow. TestFlight refuse
 # un numéro déjà vu pour une même version, et un compteur qui recule est la
@@ -65,11 +67,10 @@ jobs:
             echo "voir l'en-tête de .github/workflows/testflight.yml" >&2
             exit 1
           fi
-          # L'équipe est facultative : Xcode la déduit de la clé quand elle
-          # n'en sert qu'une. Le dire ici plutôt que de le laisser découvrir
-          # dans une erreur de signature.
+          # L'équipe n'est pas un secret à fournir : l'étape suivante la
+          # demande à l'API. Le secret ne sert que d'échappatoire.
           if [ -z "$TEAM_ID" ]; then
-            echo "ASC_TEAM_ID absent : l'équipe sera déduite de la clé." >> "$GITHUB_STEP_SUMMARY"
+            echo "ASC_TEAM_ID absent : l'équipe sera lue sur l'API." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: oven-sh/setup-bun@v2
@@ -80,6 +81,19 @@ jobs:
         # L'application embarque l'interpréteur Rust ; sans cette étape le
         # manifeste s'arrête plutôt que de choisir un cœur à notre place.
         run: scripts/build-xcframework.sh
+
+      - name: Ce que la clé sait — l'équipe, l'identifiant, la fiche
+        id: asc
+        # L'équipe que `xcodebuild` réclame ne se déduit pas de la clé : elle
+        # se demande à l'API. Au passage, l'identifiant d'application est créé
+        # s'il manque, et l'absence de fiche est dite ici plutôt que découverte
+        # après dix minutes de construction.
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          WISQ_BUNDLE_ID: app.wisq.ios
+        run: bun site/scripts/asc.ts
 
       - name: La clé App Store Connect, sur le disque
         # xcodebuild lit la clé dans un fichier ; il n'a pas d'entrée standard
@@ -96,7 +110,7 @@ jobs:
         env:
           ISSUER: ${{ secrets.ASC_ISSUER_ID }}
           KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID || steps.asc.outputs.team-id }}
           MARKETING: ${{ inputs.version }}
         run: |
           scripts/build-app-icon.sh
@@ -123,7 +137,7 @@ jobs:
         env:
           ISSUER: ${{ secrets.ASC_ISSUER_ID }}
           KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID || steps.asc.outputs.team-id }}
         run: |
           # `destination: upload` fait l'envoi à la fin de l'export : une étape
           # de moins, et surtout un seul endroit où la clé est présentée.
