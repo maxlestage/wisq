@@ -240,6 +240,49 @@ public final class SessionModel {
         enqueue { session in await session.send(.clipboard(text)) }
     }
 
+    // MARK: - Sending a file to the guest
+
+    /// One file transfer as the interface sees it. `sent` and `failed` stay
+    /// on screen until dismissed: a transfer ends long after the tap that
+    /// started it, and an outcome that vanishes by itself is an outcome the
+    /// user has to guess.
+    public enum FileSend: Equatable {
+        case sending(name: String)
+        case sent(name: String)
+        case failed(String)
+    }
+
+    public private(set) var fileSend: FileSend?
+
+    /// Sends a file to the guest through the SPICE agent. The transfer's own
+    /// refusals — no agent, transfers disabled, disk full with the number —
+    /// arrive as the protocol layer words them.
+    public func sendFile(name: String, contents: Data) {
+        guard let spice = session as? SPICESession else {
+            fileSend = .failed("cette session n'a pas d'agent SPICE pour recevoir un fichier")
+            return
+        }
+        fileSend = .sending(name: name)
+        Task {
+            do {
+                try await spice.sendFile(name: name, contents: contents)
+                fileSend = .sent(name: name)
+            } catch {
+                fileSend = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// The view could not even read the picked file; same surface, so the
+    /// user sees one kind of message wherever the send died.
+    public func fileSendFailed(_ message: String) {
+        fileSend = .failed(message)
+    }
+
+    public func dismissFileSend() {
+        fileSend = nil
+    }
+
     public func viewportChanged(to size: CGSize) {
         guard size.width > 0, size.height > 0, let session else { return }
         Task { await session.setPreferredSize(width: Int(size.width), height: Int(size.height)) }
