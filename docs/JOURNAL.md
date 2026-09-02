@@ -8,6 +8,22 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~03h30 UTC — le même crible sur AGENT-PROTOCOL.md : un nombre faux d'un facteur trois
+
+Suite de la passe sur les documents auto-descriptifs. AGENT-PROTOCOL.md tient
+mieux qu'ARCHITECTURE.md — ses sections routes, arrêt, identifiants et TLS
+sont exactement ce que les suites des deux langues jouent — mais deux prises :
+
+1. **« il en fait aujourd'hui moins de 600 Ko »** contredisait la ROADMAP, qui
+   avait mesuré 1,7 Mo au travail de la matrice des architectures. Tranché par
+   la mesure, pas par l'arbitrage : le binaire statique musl de ce conteneur
+   fait 1 737 424 octets. Le nombre du protocole était vrai avant que le démon
+   n'apprenne le TLS et l'appairage ; personne n'avait re-mesuré. Le document
+   porte maintenant le chiffre mesuré et dit d'où venait l'ancien.
+2. **« Trois pièces »** décrivait un démon sans `tls.rs`, `pairing.rs` ni
+   `vm.rs` — trois fichiers que les sections du même document décrivent plus
+   haut. La liste est complète désormais.
+
 ## 2026-09-02, ~03h UTC — ARCHITECTURE.md décrivait une application qui n'existe plus
 
 La clause de méfiance du filet demande, avant de répéter « tout est clos »,
