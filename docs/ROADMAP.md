@@ -2208,9 +2208,27 @@ un certificat dans un secret de dépôt — le profil est fabriqué par Xcode au
 moment de la construction. Le numéro de build est celui de l'exécution du
 workflow, parce que TestFlight refuse un numéro déjà vu.
 
-Ce que le workflow ne peut pas faire : créer la fiche d'application dans App
-Store Connect. L'envoi échoue en disant que l'application est introuvable, et
-c'est un geste humain, une fois.
+**L'identifiant d'équipe ne se déduit pas de la clé.** Le premier envoi l'a
+établi en seize secondes — « Signing for "Wisq" requires a development team »
+— contre le pari inverse. Il n'a pas fallu un quatrième secret pour autant :
+l'API le porte sous un autre nom, le `seedId` d'un identifiant d'application,
+et `site/scripts/asc.ts` le demande avant de construire. Le même passage crée
+l'identifiant d'application s'il manque, ce qui casse un cercle — `xcodebuild
+-allowProvisioningUpdates` sait le créer, mais il lui faut déjà l'équipe, qui
+se lit sur un identifiant.
+
+Ce que rien ne peut faire : créer la fiche d'application dans App Store
+Connect. L'API la lit et ne la crée pas ; l'envoi échouerait en disant que
+l'application est introuvable, alors l'étape le dit avant de construire.
+C'est le seul geste humain de la chaîne, une fois.
+
+Le jeton de cette API se signe en ES256, vit vingt minutes au plus et porte
+l'audience littérale `appstoreconnect-v1` ; sa signature doit être au format
+JOSE — soixante-quatre octets — là où OpenSSL rend du DER. Les deux sont des
+signatures valides du même message et une seule est acceptée, d'où un 401 qui
+n'explique rien. C'est vérifiable sans la clé de personne, et `asc.test.ts` le
+vérifie : une paire P-256 fabriquée sur place, la signature relue avec la
+partie publique, et le témoin qui doit échouer.
 
 **L'application n'avait pas d'icône**, et c'est ce qui aurait bloqué le premier
 envoi : un bundle iOS sans icône est refusé (ITMS-90713), une icône avec canal
