@@ -46,11 +46,11 @@ n'y exige de jailbreak ni d'autorisation particulière.
 
 ## État
 
-Ce dépôt contient le squelette complet de l'application, un client **VNC/RFB 3.8
-fonctionnel** écrit à la main, et un client **SPICE** qui ouvre ses quatre
-canaux, affiche les images LZ, prend les frappes et suit le pointeur — les
-codecs QUIC, GLZ et JPEG restent à faire. RDP a sa place réservée dans
-l'architecture mais n'est pas implémenté (voir `docs/ROADMAP.md`).
+Ce dépôt contient l'application complète : un client **VNC/RFB 3.8** écrit à
+la main, et un client **SPICE** dont le canal display est complet — LZ, QUIC,
+GLZ, LZ4, JPEG — avec le son dans les deux sens, le presse-papiers et l'envoi
+de fichiers vers l'invité. RDP a sa place réservée dans l'architecture mais
+n'est pas implémenté (voir `docs/ROADMAP.md`).
 
 | Composant | État |
 |---|---|
@@ -72,6 +72,10 @@ l'architecture mais n'est pas implémenté (voir `docs/ROADMAP.md`).
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
 | Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
+| Éteindre une VM distante depuis le téléphone : ACPI poli, puis le cordon si l'invité ne répond pas | fait |
+| SPICE : envoi d'un fichier du téléphone vers l'invité (canal agent) | fait |
+| Machine locale suspendue et reprise par instantané — le shell revient où il était | fait |
+| Cœur Rust par défaut, comparé instruction par instruction au cœur Swift en CI | fait |
 | Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
@@ -119,8 +123,8 @@ tient l'application, l'interface et le client de bureau distant — du travail
 de forme Apple, sur Network.framework. Rust tient ce qui n'est ni l'un ni
 l'autre : un démon sans interface, et un interpréteur qui n'est que du calcul
 sur un tableau d'octets. Ni l'un ni l'autre n'a de raison d'embarquer un
-runtime de langage, et le téléchargement du démon est passé de 58 Mo à moins
-de 600 Ko en cessant d'en porter un.
+runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,7 Mo
+en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
 la suite.
