@@ -75,6 +75,29 @@ actor SpiceAgentChannel {
     /// What the phone has copied and the guest has not yet asked for.
     private(set) var offered: String?
 
+    /// The file on its way to the guest, if any. One at a time: the phone
+    /// sends one file and watches it, and a second `sendFile` while the first
+    /// runs is refused rather than silently queued behind it.
+    private var transfer: FileTransferState?
+    /// Never zero — the reference treats a task id of zero as "no task".
+    private var nextTransferID: SpiceFileTransfer.TransferID = 1
+
+    private struct FileTransferState {
+        let id: SpiceFileTransfer.TransferID
+        let bytes: [UInt8]
+        /// Byte offset of the next `FILE_XFER_DATA` chunk. For the empty file
+        /// this stays at zero and `sentEmptyChunk` records the one message a
+        /// zero-byte file still owes the agent.
+        var nextOffset = 0
+        var sentEmptyChunk = false
+        /// The guest said `canSendData`. Bytes never move before it does.
+        var started = false
+        /// Set by the status that ends the transfer; delivered to
+        /// `continuation` when both exist, whichever arrives first.
+        var outcome: Result<Void, Error>?
+        var continuation: CheckedContinuation<Void, Error>?
+    }
+
     /// Counts grabs so the guest can tell a current one from a stale one.
     private var grabSerial: UInt32 = 0
 
@@ -203,6 +226,10 @@ actor SpiceAgentChannel {
                 // queued ones are addressed to an agent that is gone.
                 reassembler.reset()
                 waiting.removeAll()
+                // So is the file in flight: its remaining bytes have nowhere
+                // to go, and the caller is told now rather than left waiting
+                // for a status that will never come.
+                finishTransfer(.failure(SpiceFileTransfer.Failure.noAgent))
 
             case SpiceWire.Message.mainAgentToken:
                 var reader = SpiceWire.Reader(payload)
@@ -240,6 +267,115 @@ actor SpiceAgentChannel {
             [.utf8Text], serial: grabSerial, capabilities: capabilities
         )))
         try await flush()
+    }
+
+    // MARK: - Sending a file
+
+    /// Sends one file to the guest and returns when the agent has said how it
+    /// ended — which can be long after the last byte left, and can be a
+    /// refusal that arrives before any byte does.
+    ///
+    /// The two refusals before anything goes out are the reference's: no
+    /// agent means nobody to receive the offer, and a guest that announced
+    /// `fileXferDisabled` has said in advance that every transfer will be
+    /// refused — starting one anyway would fail with less explanation.
+    func sendFile(name: String, contents: Data) async throws {
+        guard transfer == nil else { throw SpiceFileTransfer.Failure.busy }
+        guard connected else { throw SpiceFileTransfer.Failure.noAgent }
+        guard !SpiceAgent.supports(.fileXferDisabled, in: capabilities) else {
+            throw SpiceFileTransfer.Failure.disabledByGuest
+        }
+
+        let id = nextTransferID
+        nextTransferID = nextTransferID == .max ? 1 : nextTransferID + 1
+
+        // The state exists before the first await, so a `canSendData` that
+        // races the flush finds a transfer to start rather than nothing.
+        transfer = FileTransferState(id: id, bytes: [UInt8](contents))
+        enqueue(SpiceAgent.message(.fileXferStart, body: SpiceFileTransfer.startBody(
+            id: id, name: name, size: UInt64(contents.count)
+        )))
+        do {
+            try await flush()
+        } catch {
+            transfer = nil
+            throw error
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if let outcome = transfer?.outcome {
+                    // The agent answered before the continuation existed —
+                    // a refusal can arrive that fast against a local server.
+                    transfer = nil
+                    continuation.resume(with: outcome)
+                } else if transfer != nil {
+                    transfer?.continuation = continuation
+                } else {
+                    // The agent vanished during the flush above.
+                    continuation.resume(throwing: SpiceFileTransfer.Failure.noAgent)
+                }
+            }
+        } onCancel: {
+            Task { await self.abortFileTransfer() }
+        }
+    }
+
+    /// Ends the transfer from this side: tells the agent it is cancelled, and
+    /// fails the waiting caller. The agent's side of a half-received file is
+    /// its own to clean up — that is what the status message is for.
+    func abortFileTransfer() async {
+        guard let state = transfer else { return }
+        finishTransfer(.failure(CancellationError()))
+        if connected {
+            enqueue(SpiceAgent.message(.fileXferStatus, body: SpiceFileTransfer.statusBody(
+                id: state.id, result: .cancelled
+            )))
+            try? await flush()
+        }
+    }
+
+    /// Hands the outcome to whoever is waiting, or parks it for the caller
+    /// that has not reached its continuation yet.
+    private func finishTransfer(_ outcome: Result<Void, Error>) {
+        guard var state = transfer else { return }
+        if let continuation = state.continuation {
+            transfer = nil
+            continuation.resume(with: outcome)
+        } else {
+            state.outcome = outcome
+            state.continuation = nil
+            transfer = state
+        }
+    }
+
+    /// Queues the next `FILE_XFER_DATA` if the guest said go and bytes remain.
+    ///
+    /// Called by `flush` when its queue runs dry, so the whole file is never
+    /// resident as queued pieces: one chunk's worth at a time, topped up as
+    /// tokens drain it. Two edges are the reference's, each once a bug
+    /// upstream: a zero-byte file sends exactly one empty data message
+    /// (without it the agent holds an empty file open forever), and a
+    /// non-empty file never sends an empty one at EOF (the agent takes it
+    /// badly — fdo#97227).
+    private func topUpTransfer() -> Bool {
+        guard var state = transfer, state.started else { return false }
+        let chunk: ArraySlice<UInt8>
+        if state.bytes.isEmpty {
+            guard !state.sentEmptyChunk else { return false }
+            state.sentEmptyChunk = true
+            chunk = []
+        } else {
+            guard state.nextOffset < state.bytes.count else { return false }
+            let end = min(state.nextOffset + SpiceFileTransfer.chunkBytes, state.bytes.count)
+            chunk = state.bytes[state.nextOffset..<end]
+            state.nextOffset = end
+        }
+        transfer = state
+        enqueue(SpiceAgent.message(
+            .fileXferData, body: SpiceFileTransfer.dataBody(id: state.id, chunk: chunk)
+        ))
+        return true
     }
 
     // MARK: - One agent message
@@ -296,6 +432,35 @@ actor SpiceAgentChannel {
             // phone already pasted is the phone's now.
             break
 
+        case .fileXferStatus:
+            let status = try SpiceFileTransfer.statusMessage(body)
+            // A status for a transfer this side is not running names either a
+            // transfer already torn down here or somebody else's id; both are
+            // counted rather than acted on, like the reference's early return.
+            guard status.id == transfer?.id else {
+                progress.ignored[
+                    UInt16(truncatingIfNeeded: header.type.rawValue), default: 0
+                ] += 1
+                return
+            }
+            switch status.status {
+            case .canSendData:
+                // Said once by the agent; said twice, the second is a no-op
+                // because the offsets have already moved.
+                transfer?.started = true
+                try await flush()
+            case .success:
+                finishTransfer(.success(()))
+            case .some(let refusal):
+                finishTransfer(.failure(SpiceFileTransfer.Failure.refused(
+                    refusal, diskFreeSpace: status.diskFreeSpace
+                )))
+            case .none:
+                finishTransfer(.failure(
+                    SpiceFileTransfer.Failure.unknownStatus(status.result)
+                ))
+            }
+
         default:
             progress.ignored[UInt16(truncatingIfNeeded: header.type.rawValue), default: 0] += 1
         }
@@ -325,16 +490,23 @@ actor SpiceAgentChannel {
         waiting += SpiceAgentTransport.pieces(of: message)
     }
 
-    /// Sends what tokens allow, keeping the rest.
+    /// Sends what tokens allow, keeping the rest — and tops the queue up from
+    /// the file in flight when it runs dry, so a transfer streams chunk by
+    /// chunk instead of materialising every piece of the file at once.
     private func flush() async throws {
         guard !draining else { return }
         draining = true
         defer { draining = false }
 
-        while !waiting.isEmpty, tokens.spend() {
-            let piece = waiting.removeFirst()
-            try await write(SpiceWire.ClientMessage.agentData, payload: Data(piece))
-        }
+        repeat {
+            while !waiting.isEmpty, tokens.spend() {
+                let piece = waiting.removeFirst()
+                try await write(SpiceWire.ClientMessage.agentData, payload: Data(piece))
+            }
+            // Tokens ran out with pieces still queued: stop here, the next
+            // grant re-enters and finds them.
+            guard waiting.isEmpty else { return }
+        } while topUpTransfer()
     }
 
     /// Stamps a message and puts it on the outbox, then drains.

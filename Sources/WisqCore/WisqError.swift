@@ -16,6 +16,7 @@ public enum WisqError: Error, Equatable, Sendable {
     case storageFailure(String)
     case agentFailure(String)
     case notImplemented(String)
+    case fileTransferFailed(String)
 }
 
 extension WisqError: LocalizedError {
@@ -36,6 +37,7 @@ extension WisqError: LocalizedError {
         case .storageFailure(let m): return "Erreur de stockage : \(m)"
         case .agentFailure(let m): return "L'agent hôte a répondu : \(m)"
         case .notImplemented(let m): return "Pas encore disponible : \(m)"
+        case .fileTransferFailed(let m): return "Transfert de fichier : \(m)"
         }
     }
 }
@@ -52,7 +54,8 @@ public extension WisqError {
             return true
         case .invalidHost, .invalidPort, .handshakeFailed, .authenticationFailed,
              .authenticationRequired, .unsupportedProtocol, .unsupportedEncoding,
-             .certificateRejected, .storageFailure, .agentFailure, .notImplemented:
+             .certificateRejected, .storageFailure, .agentFailure, .notImplemented,
+             .fileTransferFailed:
             return false
         }
     }

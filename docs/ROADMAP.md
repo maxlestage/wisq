@@ -1857,7 +1857,19 @@ remarquer la divergence.
   que Foundation la retire lui-même. Le test est resté, et il tourne aussi dans
   le simulateur : ce qu'il garde repose désormais sur Foundation, et Foundation
   sur Darwin n'est pas la même implémentation que sur Linux.
-- Partage de fichiers via un dossier monté côté agent.
+- Partage de fichiers. **La moitié protocole est faite** : SPICE porte un
+  transfert de fichiers vers l'invité sur le canal agent que wisq parle déjà
+  pour le presse-papiers (`FILE_XFER_START`/`STATUS`/`DATA`), et
+  `SPICESession.sendFile` le fait — charge START épinglée octet pour octet
+  par GLib lui-même (`scripts/spice-file-xfer-fixtures/`), les deux bords du
+  fichier vide tenus (un `DATA` vide obligatoire pour zéro octet, interdit à
+  la fin sinon — chacun un bug amont documenté), tranches de 64 Kio au fil
+  des jetons, huit statuts finaux avec des mots sur lesquels agir. Ce qui
+  reste : le geste d'interface (partager un fichier vers la session ouverte),
+  une vue. La variante « dossier monté côté agent » reste ouverte et
+  demanderait d'abord un vrai chantier sur le serveur HTTP du démon — corps
+  `String`, 64 Kio, JSON figé : le binaire n'y passe pas aujourd'hui, et le
+  dire ici évite de le redécouvrir.
 
 ## Ce qu'on doit à UTM
 
