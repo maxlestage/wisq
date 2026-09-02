@@ -20,3 +20,8 @@ site/node_modules/
 # freshly built one.
 /dist/
 .heroku-bun/
+
+# Le catalogue d'icônes de l'application, dessiné par
+# scripts/build-app-icon.sh depuis site/scripts/icons.ts. Un binaire commité
+# est une chose que personne ne peut relire et que tout le monde doit croire.
+App/Assets.xcassets/

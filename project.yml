@@ -26,6 +26,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.wisq.ios
+        # Le catalogue est écrit par `scripts/build-app-icon.sh` avant
+        # `xcodegen`, jamais commité : l'icône est la marque du site, dessinée
+        # par le même code. Sans elle, l'application se construit et se lance,
+        # et c'est l'envoi à Apple qui la refuse — un rouge qui n'arrive qu'au
+        # dernier moment.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.3.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"

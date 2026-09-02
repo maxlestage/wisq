@@ -128,15 +128,38 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
-export function encodePNG(canvas: Canvas): Uint8Array {
+/// The App Store refuses an icon with an alpha channel — ITMS-90717, and the
+/// upload is rejected rather than the icon flattened. Every other image here
+/// wants the alpha, so this is an option rather than a second encoder.
+export interface PNGOptions {
+  /// False writes colour type 2 (truecolour, no alpha) instead of 6.
+  alpha?: boolean;
+}
+
+export function encodePNG(canvas: Canvas, options: PNGOptions = {}): Uint8Array {
+  const alpha = options.alpha ?? true;
   // One filter byte per scanline; filter 0 means the row is stored as-is.
   // Predictive filters would compress better, and these images are flat colour
   // where they would win almost nothing.
-  const stride = canvas.width * 4;
+  const channels = alpha ? 4 : 3;
+  const stride = canvas.width * channels;
   const raw = new Uint8Array((stride + 1) * canvas.height);
   for (let row = 0; row < canvas.height; row++) {
-    raw[row * (stride + 1)] = 0;
-    raw.set(canvas.pixels.subarray(row * stride, (row + 1) * stride), row * (stride + 1) + 1);
+    const start = row * (stride + 1);
+    raw[start] = 0;
+    if (alpha) {
+      raw.set(canvas.pixels.subarray(row * canvas.width * 4, (row + 1) * canvas.width * 4), start + 1);
+    } else {
+      // Drop every fourth byte. The canvas is opaque everywhere it is drawn,
+      // so this loses nothing but the channel itself.
+      for (let column = 0; column < canvas.width; column++) {
+        const from = (row * canvas.width + column) * 4;
+        const to = start + 1 + column * 3;
+        raw[to] = canvas.pixels[from]!;
+        raw[to + 1] = canvas.pixels[from + 1]!;
+        raw[to + 2] = canvas.pixels[from + 2]!;
+      }
+    }
   }
 
   const header = new Uint8Array(13);
@@ -144,7 +167,7 @@ export function encodePNG(canvas: Canvas): Uint8Array {
   headerView.setUint32(0, canvas.width);
   headerView.setUint32(4, canvas.height);
   header[8] = 8; // bit depth
-  header[9] = 6; // colour type: truecolour with alpha
+  header[9] = alpha ? 6 : 2; // colour type: truecolour, with alpha or without
   header[10] = 0; // deflate
   header[11] = 0; // adaptive filtering
   header[12] = 0; // no interlace
@@ -174,6 +197,19 @@ export function appIcon(size: number, maskable: boolean): Uint8Array {
   // inside the square; a plain one can use the room.
   drawMark(canvas, maskable ? 0.46 : 0.62);
   return encodePNG(canvas);
+}
+
+/// The icon the iOS application carries, at the one size Xcode asks for since
+/// the single-size app icon: 1024×1024, opaque, square, no rounding — the
+/// system rounds it, and an icon that rounds itself shows a dark corner.
+///
+/// The same mark as the site's, from the same code: a second drawing of two
+/// squares would be a second thing to keep in step, and this repository has
+/// already paid for that once.
+export function iOSAppIcon(): Uint8Array {
+  const canvas = new Canvas(1024, 1024, BACKGROUND);
+  drawMark(canvas, 0.62);
+  return encodePNG(canvas, { alpha: false });
 }
 
 /// The image a link to this site unfurls into. 1200×630 is what the scrapers
