@@ -2326,27 +2326,32 @@ lecture, ce qui est plus faible et se dit.
 **Ce qui reste ici** : six flux hostiles à fabriquer, un par format d'en-tête,
 pour tenir les six sains par des témoins plutôt que par ma lecture.
 
-## Une décision qui appartient à Maxime
+## Les entrées illisibles : le choix est proposé, jamais pris (fait)
 
-Les entrées qu'une version ne sait pas lire sont **immortelles**. C'est
-délibéré : les effacer serait la perte que personne ne peut annuler, et une
-version plus ancienne qui ouvre une bibliothèque récente ne doit pas emporter ce
-qu'elle ne comprend pas.
+Les entrées qu'une version ne sait pas lire sont **immortelles** par défaut.
+C'est délibéré : les effacer serait la perte que personne ne peut annuler, et
+une version plus ancienne qui ouvre une bibliothèque récente ne doit pas
+emporter ce qu'elle ne comprend pas. `save`, `upsert` et `delete` les portent
+donc toutes intactes.
 
-Mais rien ne peut les enlever non plus. Un fichier qui a pris une entrée abîmée
-— une écriture à moitié faite, une édition à la main — affiche « une machine sur
-douze n'a pas pu être lue » à chaque lancement, pour toujours, sans issue depuis
-l'application.
+Mais un fichier qui a pris une entrée abîmée — une écriture à moitié faite, une
+édition à la main — affichait « une machine sur douze n'a pas pu être lue » à
+chaque lancement, pour toujours, sans issue depuis l'application. Et
+l'application ne peut pas distinguer les deux cas : une entrée venue d'un wisq
+plus récent et une entrée corrompue se ressemblent exactement. Elle ne tranche
+donc pas ; elle **propose le choix en disant la vérité**. La bannière nomme la
+machine quand l'entrée porte encore un nom (« Du futur » se reconnaît, « une
+entrée » non), un bouton en dessous offre d'écarter, et la confirmation dit ce
+qui compte : cette entrée vient peut-être d'une version plus récente, mettre à
+jour la ferait revenir ; ce qui est écarté est effacé du fichier et ne revient
+pas.
 
-L'application ne peut pas distinguer les deux cas : une entrée venue d'un wisq
-plus récent et une entrée corrompue se ressemblent exactement. Elle ne doit donc
-pas trancher seule. Ce qu'elle pourrait faire, c'est proposer le choix en disant
-la vérité — « cette entrée vient peut-être d'une version plus récente ; mettre à
-jour la ferait revenir. Si vous êtes sûr que non, vous pouvez l'écarter. »
-
-Ce n'est pas écrit, parce que la moitié qui compte est une vue, et qu'une vue ne
-se juge pas depuis Linux. La règle, elle, tiendrait dans le modèle et serait
-sabordable ici.
+La règle vit dans `MachineStore.discardUnreadable`, la seule route par laquelle
+une entrée illisible quitte le fichier : elle lit avant d'écrire comme toutes
+les écritures du magasin (ce qu'elle écarte est ce que *cette* lecture n'a pas
+su lire, pas ce qu'une autre version aurait gardé), elle rend le compte, et
+elle n'écrit rien quand il n'y a rien à écarter. Sabordée ici, contre la suite
+entière ; la vue est mince et jugée par le simulateur.
 
 ## Ce qui reste, au 28 août
 

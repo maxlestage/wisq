@@ -74,6 +74,38 @@ final class PartialLibraryBannerTests: XCTestCase {
         XCTAssertNil(model.loadError)
     }
 
+    /// The banner names the machine when the entry still has a name, so the
+    /// user decides about « Du futur » rather than about "one entry".
+    func testTheBannerNamesTheMachineItCannotShow() throws {
+        let model = try model(
+            "[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas")),\(alien)]")
+        let banner = try XCTUnwrap(model.loadError)
+        XCTAssertTrue(banner.contains("« Du futur »"), banner)
+        XCTAssertEqual(model.unreadable, 1)
+    }
+
+    /// Discarding is the user's decision, and once taken the entry is gone
+    /// from the file and the banner with it. The explanation offered before
+    /// it says the one thing that matters: updating might bring the entry
+    /// back, discarding never will.
+    func testDiscardingOnTheUsersWordRemovesTheEntryAndTheBanner() throws {
+        let url = directory.appendingPathComponent("machines.json")
+        let model = try model(
+            "[\(entry(id: "11111111-1111-1111-1111-111111111111", name: "nas")),\(alien)]")
+        XCTAssertEqual(model.unreadable, 1)
+        let explanation = MachineLibraryModel.discardExplanation(count: model.unreadable)
+        XCTAssertTrue(explanation.contains("version plus récente"), explanation)
+        XCTAssertTrue(explanation.contains("ne revient pas"), explanation)
+
+        model.discardUnreadable()
+
+        XCTAssertNil(model.loadError)
+        XCTAssertEqual(model.unreadable, 0)
+        XCTAssertEqual(model.machines.map(\.name), ["nas"])
+        let raw = try JSONDecoder().decode([JSONValue].self, from: Data(contentsOf: url))
+        XCTAssertEqual(raw.count, 1, "l'entrée écartée doit avoir quitté le fichier")
+    }
+
     /// And the banner does not linger once the reason is gone — `reload()` runs
     /// again every time the list comes back on screen.
     func testTheBannerGoesAwayWhenTheReasonDoes() throws {

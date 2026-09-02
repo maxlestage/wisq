@@ -15,6 +15,7 @@ public struct MachineListView: View {
 
     @State private var search = ""
     @State private var power: PowerFlow?
+    @State private var confirmingDiscard = false
 
     public var body: some View {
         List {
@@ -23,6 +24,15 @@ public struct MachineListView: View {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .font(.footnote)
+                    if library.unreadable > 0 {
+                        // The choice is offered, never made: the app cannot
+                        // tell a newer build's entry from a damaged one, and
+                        // the confirmation says exactly that.
+                        Button("Écarter ce qui ne peut pas être lu…", role: .destructive) {
+                            confirmingDiscard = true
+                        }
+                        .font(.footnote)
+                    }
                 }
             }
 
@@ -68,6 +78,16 @@ public struct MachineListView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog(
+            library.unreadable == 1
+                ? "Écarter l'entrée illisible ?" : "Écarter les \(library.unreadable) entrées illisibles ?",
+            isPresented: $confirmingDiscard, titleVisibility: .visible
+        ) {
+            Button("Écarter définitivement", role: .destructive) { library.discardUnreadable() }
+            Button("Garder", role: .cancel) {}
+        } message: {
+            Text(MachineLibraryModel.discardExplanation(count: library.unreadable))
         }
         .listStyle(.insetGrouped)
         .searchable(text: $search, prompt: "Rechercher une machine")
