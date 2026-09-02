@@ -8,6 +8,20 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~02h30 UTC — le geste au bout du protocole
+
+La tranche courte qui rend #143 visible : un bouton « envoyer un fichier »
+dans la barre de session des machines SPICE, le sélecteur de documents grand
+ouvert comme celui des fichiers de connexion, la lecture à portée de
+sécurité, et `SessionModel.sendFile` en miroir mince de
+`SPICESession.sendFile` — trois états (envoi, envoyé, échec) dans une
+bannière visible même chrome caché, parce qu'un transfert finit longtemps
+après le geste qui l'a lancé. Les refus arrivent avec les mots du protocole
+(espace libre chiffré compris). Du SwiftUI qu'aucun runner Linux ne compile ;
+la CI macOS le compile, la conduite qu'il appelle est celle que #143 a
+éprouvée. Une limite dite dans le code : le fichier entier passe en mémoire —
+juste pour des documents, faux pour un film.
+
 ## 2026-09-02, ~02h UTC — un fichier du téléphone vers l'invité, sur le canal qui existait déjà
 
 Deuxième tranche de la nuit. La piste « partage de fichiers via un dossier

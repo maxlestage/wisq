@@ -1864,9 +1864,15 @@ remarquer la divergence.
   par GLib lui-même (`scripts/spice-file-xfer-fixtures/`), les deux bords du
   fichier vide tenus (un `DATA` vide obligatoire pour zéro octet, interdit à
   la fin sinon — chacun un bug amont documenté), tranches de 64 Kio au fil
-  des jetons, huit statuts finaux avec des mots sur lesquels agir. Ce qui
-  reste : le geste d'interface (partager un fichier vers la session ouverte),
-  une vue. La variante « dossier monté côté agent » reste ouverte et
+  des jetons, huit statuts finaux avec des mots sur lesquels agir. **Le geste
+  aussi** : un bouton dans la barre de session des machines SPICE, le sélecteur
+  de documents grand ouvert (ce que l'invité accepte est l'affaire de
+  l'invité), et une bannière qui suit l'envoi — visible chrome caché, parce
+  qu'un transfert finit longtemps après le geste qui l'a lancé ; l'issue reste
+  affichée jusqu'à être congédiée, un envoi en cours ne l'est pas d'un tapot.
+  Le fichier entier passe en mémoire — juste pour des documents, faux pour un
+  film, et la ligne à revisiter est marquée dans la vue. La variante
+  « dossier monté côté agent » reste ouverte et
   demanderait d'abord un vrai chantier sur le serveur HTTP du démon — corps
   `String`, 64 Kio, JSON figé : le binaire n'y passe pas aujourd'hui, et le
   dire ici évite de le redécouvrir.
