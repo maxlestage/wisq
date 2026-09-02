@@ -1,0 +1,162 @@
+name: TestFlight
+
+# Envoie l'application du jour sur TestFlight, d'où elle s'installe sur un
+# iPhone sans câble, sans Mac, et sans expirer au bout de sept jours comme le
+# fait une signature de compte personnel.
+#
+# C'est la seule voie de ce dépôt qui produit une application **signée** : la
+# release publie une IPA non signée, que l'utilisateur re-signe lui-même avec
+# AltStore ou Sideloadly. Les deux existent pour deux publics — celui qui a un
+# compte développeur payant, et celui qui n'en a pas.
+#
+# Ce que le compte doit avoir, une fois pour toutes :
+#   * une clé App Store Connect (App Store Connect → Utilisateurs et accès →
+#     Intégrations → Clés) dont l'identifiant, l'émetteur et le contenu `.p8`
+#     sont `ASC_KEY_ID`, `ASC_ISSUER_ID` et `ASC_KEY_P8` ;
+#   * une fiche d'application créée dans App Store Connect portant le
+#     `PRODUCT_BUNDLE_IDENTIFIER` du projet. L'upload ne la crée pas : sans
+#     elle il échoue en disant que l'application est introuvable.
+#
+# `ASC_TEAM_ID` (dix caractères, sur developer.apple.com → Membership) est
+# facultatif : sans lui, Xcode déduit l'équipe de la clé, ce qui suffit quand
+# la clé n'en sert qu'une. Le renseigner lève l'ambiguïté pour un compte qui
+# appartient à plusieurs équipes, et c'est la première chose à essayer si la
+# signature échoue en parlant d'équipe.
+#
+# Le numéro de build est celui de l'exécution du workflow. TestFlight refuse
+# un numéro déjà vu pour une même version, et un compteur qui recule est la
+# façon la plus courante de se faire refuser un envoi.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version affichée dans TestFlight (défaut : celle de project.yml)"
+        required: false
+        type: string
+
+concurrency:
+  # Deux envois simultanés se disputeraient le même numéro de build.
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Construire, signer, envoyer
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Refuser tôt plutôt que dans xcodebuild
+        # Un secret absent se voit ici, en une ligne, plutôt que dans une
+        # erreur de signature quinze minutes plus tard.
+        env:
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+        run: |
+          missing=""
+          [ -n "$ISSUER" ] || missing="$missing ASC_ISSUER_ID"
+          [ -n "$KEY_ID" ] || missing="$missing ASC_KEY_ID"
+          [ -n "$KEY_P8" ] || missing="$missing ASC_KEY_P8"
+          if [ -n "$missing" ]; then
+            echo "secrets manquants :$missing" >&2
+            echo "voir l'en-tête de .github/workflows/testflight.yml" >&2
+            exit 1
+          fi
+          # L'équipe est facultative : Xcode la déduit de la clé quand elle
+          # n'en sert qu'une. Le dire ici plutôt que de le laisser découvrir
+          # dans une erreur de signature.
+          if [ -z "$TEAM_ID" ]; then
+            echo "ASC_TEAM_ID absent : l'équipe sera déduite de la clé." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Package the VM core as an XCFramework
+        # L'application embarque l'interpréteur Rust ; sans cette étape le
+        # manifeste s'arrête plutôt que de choisir un cœur à notre place.
+        run: scripts/build-xcframework.sh
+
+      - name: La clé App Store Connect, sur le disque
+        # xcodebuild lit la clé dans un fichier ; il n'a pas d'entrée standard
+        # pour elle. Le fichier vit dans le runner, jeté avec lui.
+        env:
+          KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8"
+
+      - name: Archive signée
+        env:
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+          MARKETING: ${{ inputs.version }}
+        run: |
+          scripts/build-app-icon.sh
+          xcodegen generate
+          # `-allowProvisioningUpdates` avec la clé API enregistre l'identifiant
+          # d'application et fabrique le profil s'ils manquent : c'est ce qui
+          # évite d'avoir à transporter un certificat dans un secret.
+          xcodebuild archive \
+            -project Wisq.xcodeproj \
+            -scheme Wisq \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Wisq.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            ${TEAM_ID:+DEVELOPMENT_TEAM=$TEAM_ID} \
+            ${MARKETING:+MARKETING_VERSION=$MARKETING}
+
+      - name: Export et envoi
+        env:
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+        run: |
+          # `destination: upload` fait l'envoi à la fin de l'export : une étape
+          # de moins, et surtout un seul endroit où la clé est présentée.
+          # `manageAppVersionAndBuildNumber` à false, sinon Xcode réécrit le
+          # numéro de build que l'étape précédente vient de fixer.
+          # Une clé `teamID` vide serait pire que pas de clé du tout : Xcode
+          # chercherait une équipe nommée par la chaîne vide.
+          team_entry=""
+          [ -n "$TEAM_ID" ] && team_entry="  <key>teamID</key><string>$TEAM_ID</string>"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+          $team_entry
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          cat "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Wisq.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER"
+
+      - name: Ce qui a été envoyé
+        run: |
+          echo "build ${{ github.run_number }} depuis ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Le traitement par Apple prend quelques minutes ; l'installation se fait ensuite depuis TestFlight sur l'iPhone." >> "$GITHUB_STEP_SUMMARY"

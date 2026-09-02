@@ -139,6 +139,9 @@ went from 58 MB to 1.7 MB by not carrying one.
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is
 gated on a decoder — and `docs/ROADMAP.md` what comes next.
+`docs/TESTER-UBUNTU.md` is the walkthrough for trying the whole thing with an
+Ubuntu host: libvirt, a guest with SPICE, the agent, pairing, and what to try
+from the phone — with what was verified and what was not.
 
 ## The landing page
 

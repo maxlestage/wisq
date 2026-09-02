@@ -8,6 +8,95 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~19h30 UTC — « je veux la tester avec Ubuntu » : le guide, et ce qu'il ne prétend pas
+
+La seconde réponse à Maxime. Ce conteneur *est* un Ubuntu 24.04, et
+`libvirt-clients` s'y installe : le démon a donc été joué contre le vrai
+`virsh`, sur le pilote de test de libvirt (`LIBVIRT_DEFAULT_URI=test:///default`).
+Il liste le domaine, répond `GET /v1/vms/{id}`, refuse un jeton faux en 401,
+imprime un lien `wisq://agent?…` par interface. Ce qu'il ne peut pas montrer
+ici, ce sont les changements d'état : le pilote de test repart de zéro à
+chaque connexion, et chaque appel `virsh` en est une — `start` répond « Domain
+is already active » et `stop` ne laisse rien. Un vrai libvirt en laisse, et la
+suite Rust le tient contre un faux `virsh`. Le guide le dit tel quel.
+
+**TestFlight, parce que Maxime a créé les clés.** Trois secrets étaient
+apparus dans le dépôt (`ASC_ISSUER_ID`, `ASC_KEY_ID`, `ASC_KEY_P8`) et aucun
+workflow ne les lisait : la release publie une IPA **non signée**, que
+l'utilisateur re-signe avec AltStore. `.github/workflows/testflight.yml`
+comble le trou — archive signée par `-allowProvisioningUpdates` avec la clé
+API (ce qui évite de transporter un certificat dans un secret), export dont
+le plist porte `destination: upload` (un seul endroit où la clé est
+présentée), numéro de build pris sur le numéro d'exécution, parce que
+TestFlight refuse un numéro déjà vu. `ASC_TEAM_ID` est facultatif : Xcode
+déduit l'équipe de la clé quand elle n'en sert qu'une, et l'exiger aurait
+bloqué un envoi qui pouvait aboutir.
+
+Ce fichier est le premier de la tranche que rien ici ne peut juger : un
+workflow ne se vérifie qu'en s'exécutant. Ce qui a été fait à la place —
+le YAML analysé, et le script du plist imprimé tel que le shell le recevra,
+parce qu'un heredoc dont le délimiteur reste indenté ne finit jamais. Et
+un prérequis qu'aucun code ne contourne : la fiche d'application doit exister
+dans App Store Connect sous `app.wisq.ios`, l'upload ne la crée pas.
+
+**Et l'application n'avait pas d'icône.** `App/` contenait un `Info.plist` et
+un fichier Swift, rien d'autre. Ce n'est pas un défaut de goût : un bundle
+iOS sans icône est *refusé à l'envoi* (ITMS-90713, la clé `CFBundleIconName`
+manque), et une icône qui porte un canal alpha l'est aussi (ITMS-90717).
+Deux rouges qui n'existent qu'au dernier moment — l'application se construit,
+se lance et s'installe depuis Xcode sans rien dire.
+
+La marque n'a pas été inventée : `site/scripts/icons.ts` dessine déjà les deux
+quadrants de wisq et encode le PNG à la main. Il gagne `iOSAppIcon()`, qui
+rend la même image en 1024 points **sans canal alpha** — une option de
+l'encodeur, pas un second encodeur, parce que toutes les autres images du
+site veulent leur alpha. `scripts/build-app-icon.sh` écrit le catalogue, que
+`.gitignore` retient : un binaire commité est une chose que personne ne peut
+relire.
+
+Cinq sabotages contre la suite entière du site (233 tests) : icône avec alpha
+— le test de l'en-tête ; `verify.sh` qui oublie l'icône — la garde des chemins
+de construction ; catalogue qui nomme un autre fichier — le test du catalogue ;
+en-tête qui ment sur le nombre de canaux — deux tests ; taille réduite à 512
+— deux tests. Le quatrième n'aurait rien fait rougir sans la ligne ajoutée
+juste avant : décompresser l'IDAT et vérifier que sa longueur vaut
+`hauteur × (1 + largeur × canaux)`. Les CRC, eux, étaient justes : une image
+illisible dont chaque somme de contrôle est bonne.
+
+Et la garde qui compte : les six chemins qui lancent `xcodegen generate`
+dessinent l'icône d'abord, un test les compte, et un septième ajouté sans le
+générateur échoue.
+
+Un rappel au passage de ce que `verify.sh` sert à attraper : les quatre tests
+passaient sous `bun test`, et `verify.sh` a rendu 1. Bun accepte
+`import … from "../scripts/icons.ts"`, `tsc` non (TS5097), et la CI lance le
+second. Le fichier voisin importait déjà sans extension ; un test vert dans
+l'outil qui l'exécute peut être rouge dans celui qui le vérifie. C'est la même forme que #140 — `xcodegen` fige la liste des
+fichiers, donc un chemin qui l'oublie produit une application sans icône que
+personne ne voit avant le refus d'Apple.
+
+`docs/TESTER-UBUNTU.md` : l'app sur l'iPhone (Mac + `install-ios.sh`, ou
+l'IPA d'une release — et la dernière, v0.3.0, est d'avant le canal display
+SPICE complet, l'envoi de fichiers et l'extinction : sans Mac, il faut une
+release plus récente, geste de Maxime) ; l'hôte (libvirt, une VM Ubuntu
+invitée avec SPICE et `spice-vdagent`, la ligne `virt-install` non vérifiée
+d'ici faute de KVM) ; le démon (`install.sh --from-source --service`, parce
+que le binaire de v0.3.0 est en retard sur le démon d'aujourd'hui) ;
+l'appairage ; sept gestes à essayer ; quatre pannes courantes.
+
+Deux affirmations du brouillon ont été confrontées au code et corrigées avant
+d'être écrites :
+
+1. « Supprimer le jeton révoque » — non : `main.rs` lit le jeton une fois au
+   démarrage et `Service` le garde en mémoire ; supprimer le fichier ne change
+   rien à ce qu'un démon qui tourne accepte, il faut le relancer. La phrase
+   d'AGENT-PROTOCOL.md qui disait « révocable en supprimant le fichier » a été
+   complétée dans la même tranche.
+2. « Au retour d'un verrouillage, la session se reconnecte seule » — rien ne
+   l'écrit : seul `LocalVMModel` réagit à `scenePhase`, et la reconnexion des
+   sessions distantes est celle du changement de réseau (#1, #57). Le guide
+   dit « à observer » plutôt que de promettre.
+
 ## 2026-09-02, ~19h UTC — l'épinglage du chemin machine, deux étapes sur trois
 
 Maxime, vers 18 h 30 UTC : « Faut finir et je veux la tester avec Ubuntu ».

@@ -19,6 +19,7 @@ command -v xcodegen >/dev/null 2>&1 || {
 }
 
 echo "==> Génération du projet"
+"$(dirname "$0")/build-app-icon.sh"
 xcodegen generate
 
 # The runner image drops simulator models between releases, so naming one

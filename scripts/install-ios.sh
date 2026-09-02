@@ -17,6 +17,9 @@ command -v xcodegen >/dev/null || { echo "xcodegen manquant : brew install xcode
 TEAM=""
 [ "${1:-}" = "--team" ] && TEAM="$2"
 
+echo "==> Icône"
+"$(dirname "$0")/build-app-icon.sh"
+
 echo "==> Génération du projet"
 xcodegen generate
 
