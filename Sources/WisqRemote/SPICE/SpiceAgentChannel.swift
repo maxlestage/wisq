@@ -376,6 +376,13 @@ actor SpiceAgentChannel {
     /// told `error`, as the reference does for any local failure that is not
     /// a cancellation. Sending the short file would leave the agent waiting
     /// for bytes that never come.
+    ///
+    /// The `outcome == nil` guard covers a local failure parked before the
+    /// caller reached its continuation (the flush inside `sendFile` failing
+    /// on its own first chunk): without it the loop would read, fail and
+    /// queue another `error` until the tokens ran out. No test holds it —
+    /// the branch needs the pump to grant `canSendData` during that flush,
+    /// a race a deterministic test cannot stage.
     private func topUpTransfer() -> Bool {
         guard var state = transfer, state.started, state.outcome == nil else { return false }
         let chunk: [UInt8]

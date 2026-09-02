@@ -143,10 +143,11 @@ final class SpiceFileTransferChannelTests: XCTestCase {
         // 65 536 is written out rather than read from the constant under
         // test: a probe that derives its input from the code it measures
         // cannot see that code change. (A doubled chunk size passed the
-        // first version of this test.)
-        let contents = Data((0..<(65_536 + 1000)).map {
-            UInt8(truncatingIfNeeded: $0)
-        })
+        // first version of this test.) And the bytes have period 251, not
+        // 256: 256 divides 65 536, so a second chunk sliced from the start
+        // of the file instead of from 65 536 carried exactly the right
+        // bytes, and a wrong-offset read passed too.
+        let contents = Data((0..<(65_536 + 1000)).map { UInt8($0 % 251) })
         let task = try await startTransfer(channel, on: server, contents: contents)
 
         await server.feed(status(id: 1, .canSendData))
@@ -356,8 +357,12 @@ final class SpiceFileTransferChannelTests: XCTestCase {
 
     /// A source that records what the channel asks of it: which reads, in
     /// which order, and whether it was closed. The bytes are a pattern of
-    /// the offset, so a chunk read from the wrong place shows up in the
-    /// reassembled file.
+    /// the offset with period 251, so a chunk read from the wrong place
+    /// shows up in the reassembled file. A period of 256 — the obvious
+    /// `UInt8(truncatingIfNeeded:)` — divides 65 536, and a read that
+    /// seeks back to zero for every chunk then delivers *exactly* the bytes
+    /// the right seek would have: the first version of this test held a
+    /// `seek` sabotage to no failure at all.
     private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private(set) var reads: [(offset: UInt64, count: Int)] = []
@@ -371,7 +376,7 @@ final class SpiceFileTransferChannelTests: XCTestCase {
         init(size: UInt64) { self.size = size }
 
         static func pattern(_ offset: UInt64, _ count: Int) -> [UInt8] {
-            (0..<count).map { UInt8(truncatingIfNeeded: offset + UInt64($0)) }
+            (0..<count).map { UInt8((offset + UInt64($0)) % 251) }
         }
 
         var source: SpiceFileTransfer.Source {
