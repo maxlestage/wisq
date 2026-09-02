@@ -8,6 +8,60 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~02h UTC — un fichier du téléphone vers l'invité, sur le canal qui existait déjà
+
+Deuxième tranche de la nuit. La piste « partage de fichiers via un dossier
+monté côté agent » (lot 6) a d'abord été instruite puis écartée pour cette
+nuit : le serveur HTTP du démon porte des corps `String` de 64 Kio au plus,
+Content-Type JSON figé — y faire passer du binaire est un chantier à part.
+Pendant ce temps **SPICE porte déjà un transfert de fichiers vers l'invité**,
+sur le canal agent que wisq parle depuis le presse-papiers : `FILE_XFER_START`
+/ `STATUS` / `DATA`, la référence dans le `channel-main.c` de spice-gtk déjà
+en scratchpad. Entièrement jugeable d'ici. C'est la moitié protocole du
+partage de fichiers ; le geste d'interface (partager vers la session) est la
+tranche suivante.
+
+**Les octets du START sont épinglés par GLib, pas par moi.** La charge est un
+document GKeyFile que l'agent reparse avec GLib ; `scripts/
+spice-file-xfer-fixtures/gen.c` lie GLib et imprime la sortie exacte de
+`g_key_file_to_data` pour seize noms. Ce que GLib fait vraiment est plus
+étroit et plus étrange que ce qu'on écrirait de mémoire : `\` `\n` `\r`
+échappés partout, la course de blancs **de tête** échappée caractère par
+caractère (` `→`\s`, tab→`\t`), une tabulation au milieu et une espace finale
+voyagent crues — et les deux bords de la course ne sont pas symétriques,
+mesurés parce qu'improbables : un antislash la clôt, un `\n` échappé la
+laisse ouverte. Et le NUL terminal fait partie de la charge (`data_len + 1`
+chez la référence).
+
+**Les deux bords du fichier vide, chacun un bug amont.** Un fichier de zéro
+octet doit envoyer exactement un `DATA` vide (sans lui l'invité garde un
+fichier ouvert pour toujours — rhbz#1135099) ; un fichier non vide ne doit
+jamais en envoyer un à la fin (l'agent le prend mal — fdo#97227). Les deux
+sont des tests distincts et des sabotages distincts.
+
+**La conduite** : refus avant départ (pas d'agent ; invité ayant annoncé
+`fileXferDisabled`), rien ne part avant `canSendData`, tranches de 64 Kio
+(la taille de lecture de la référence) alimentées au fil des jetons plutôt
+que matérialisées d'un coup, `.cancelled` envoyé à l'agent quand ce côté
+annule, l'agent disparu fait échouer l'appelant au lieu de le laisser
+attendre. Les huit statuts finaux portent chacun des mots sur lesquels on
+peut agir, l'espace libre chiffré compris — d'où l'annonce de
+`fileXferDetailedErrors`, testée **sur la prise** comme les capacités audio.
+
+**Treize sabotages, et deux leçons de sonde.** Douze ont mordu sur le test
+nommé d'avance. Le treizième a d'abord montré deux défauts de harnais :
+(1) le test de la taille de tranche dérivait la taille du fichier de la
+constante sabotée — une sonde qui fabrique son entrée depuis le code qu'elle
+mesure ne peut pas le voir changer ; le nombre de la référence est maintenant
+écrit en littéral. (2) Le sabotage « l'agent disparaît et rien n'échoue » a
+PENDU la suite au lieu de la rougir : `Task.value` n'est pas interruptible de
+l'extérieur, et mon garde-fou en task group attendait quand même l'enfant.
+Le garde-fou est désormais un chien de garde qui annule le *transfert*
+lui-même — par le chemin d'annulation que l'app emprunterait — et le même
+sabotage échoue en cinq secondes. La règle d'hier soir (« un sabotage de
+patience doit échouer et non pendre ») a été violée puis réparée dans la même
+tranche ; c'est précisément pour ça qu'on la teste.
+
 ## 2026-09-02, ~00h UTC — le bouton qui manquait : éteindre une VM distante
 
 Maxime a écrit « J'aimerais beaucoup finir l'application dans la nuit ». La
