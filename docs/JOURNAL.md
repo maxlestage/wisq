@@ -8,6 +8,64 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~13h UTC — « Continue de tout faire » : le fichier envoyé ne passe plus par la mémoire
+
+Maxime, vers 12 h 30 UTC : « Continue de tout faire ». La clause de méfiance
+de la routine demandait de chercher ce que le dépôt fait tourner ou promet
+sans qu'un test le juge, avant de répéter un « tout est clos ». Le passage
+sur les étiquettes (« TLS (épinglage à venir) », « RDP bientôt », la FAQ) n'a
+rien rendu : chacune dit ce que le code fait et est tenue. Ce qui restait
+d'écrit noir sur blanc, c'était dans la vue de session : « le fichier entier
+passe en mémoire — juste pour des documents, faux pour un film ». Un iPhone
+qui charge un film de deux gigaoctets en `Data` avant de l'envoyer ne
+l'envoie pas, il est tué.
+
+Ce qui a été fait : le canal agent lit une `SpiceFileTransfer.Source` —
+64 Kio à la fois, chaque morceau demandé quand les jetons ont vidé le
+précédent — et `SPICESession.sendFile(at:)` en fabrique une depuis l'URL du
+sélecteur. Trois décisions dedans :
+
+1. **La portée de sécurité vit avec la source.** La vue la réclamait puis
+   la rendait au retour de la fermeture du sélecteur ; avec un envoi qui lit
+   plus tard, elle aurait disparu avant le premier morceau. Elle est réclamée
+   à l'ouverture et rendue par `close`, exactement la durée des lectures.
+2. **Une lecture refusée ferme avec `error`, pas `cancelled`.** C'est ce que
+   `file_transfer_operation_task_finished` envoie pour tout échec local qui
+   n'est pas une annulation ; l'agent, qui attend encore des octets, apprend
+   que le fichier ne viendra pas.
+3. **Un fichier qui a rétréci est refusé, pas envoyé court.** La taille
+   annoncée dans START est ce que l'agent attend ; lui donner moins le
+   laisserait tenir un fichier à moitié écrit jusqu'à la fin de la session.
+
+Dix sabotages contre la suite entière (1197 tests), et deux leçons :
+
+- **Une chaîne de restauration doit être unique après application, pas
+  seulement avant.** Le sabotage « `error` → `cancelled` » se restaurait
+  par la chaîne inverse, qui existait déjà ailleurs (l'annulation légitime) :
+  la restauration a refusé, le fichier est resté saboté, et le sabotage
+  suivant a tourné dessus. Le script vérifie désormais l'unicité des deux
+  côtés à sec avant de toucher au fichier, et le commit a été indexé depuis
+  une reconstruction en mémoire plutôt que depuis l'arbre de travail.
+- **Un motif de période 256 ne voit pas une lecture au mauvais endroit.**
+  256 divise 65 536 : un `seek` ramené à zéro à chaque morceau, ou une
+  tranche mémoire toujours prise au début, rend *exactement* les octets que
+  la bonne lecture aurait rendus. Deux sabotages sont passés sans un rouge —
+  et le test de découpage hérité de #143 fabriquait son fichier avec
+  `UInt8(truncatingIfNeeded:)`, aveugle au même endroit. Les deux motifs ont
+  maintenant la période 251, première, et les deux sabotages mordent.
+
+Les verdicts : premier morceau seulement — quatre tests ; `cancelled` à la
+place d'`error` — les deux tests de refus local ; source jamais fermée —
+quatre tests ; lecture courte envoyée — le test du fichier rétréci ; taille
+lue à zéro — le fichier sur disque ; `seek` ramené à zéro — le fichier sur
+disque, après le changement de motif ; tranche mémoire prise au début — le
+test de découpage hérité, après le sien ; agent cherché avant d'ouvrir le
+fichier — le test de session. Une garde n'est tenue par rien et c'est dit dans le
+code : `outcome == nil` dans `topUpTransfer`, qui empêche de relire après un
+échec local parqué avant que l'appelant n'ait atteint sa continuation — la
+branche n'est atteinte que par une course entre la pompe et l'envoi, qu'un
+test déterministe ne sait pas provoquer.
+
 ## 2026-09-02, ~06h UTC — Maxime demande de finir et de mettre le site à jour ; les READMEs suivent
 
 Maxime, réveillé : « Tu peux tout finir et mettre à jour le site ». Le site

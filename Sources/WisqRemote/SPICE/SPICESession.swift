@@ -582,11 +582,32 @@ public actor SPICESession: RemoteSession {
     /// success, or a refusal whose message names the cause. SPICE only:
     /// RFB has nothing to carry a file on.
     public func sendFile(name: String, contents: Data) async throws {
+        try await sendFile(name: name, source: .inMemory(contents))
+    }
+
+    /// The same for a file on disk, read a chunk at a time as the agent
+    /// takes them — the whole file is never in memory, which is the
+    /// difference between a document and a film. A file that cannot be
+    /// opened fails here, before anything reaches the wire.
+    public func sendFile(name: String, at url: URL) async throws {
+        let source: SpiceFileTransfer.Source
+        do {
+            source = try SpiceFileTransfer.Source.file(at: url)
+        } catch {
+            throw WisqError.fileTransferFailed(
+                SpiceFileTransfer.Failure.unreadable(error.localizedDescription).message
+            )
+        }
+        try await sendFile(name: name, source: source)
+    }
+
+    private func sendFile(name: String, source: SpiceFileTransfer.Source) async throws {
         guard let agent else {
+            source.close()
             throw WisqError.fileTransferFailed(SpiceFileTransfer.Failure.noAgent.message)
         }
         do {
-            try await agent.sendFile(name: name, contents: contents)
+            try await agent.sendFile(name: name, source: source)
         } catch let failure as SpiceFileTransfer.Failure {
             // The channel's error carries the cause; the app gets it as the
             // one public error type, message intact.

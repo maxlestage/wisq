@@ -13,6 +13,45 @@ import XCTest
 /// Get that wrong and the server hands the second connection a display of its
 /// own — a black screen that looks exactly like a broken decoder.
 final class SPICESessionTests: XCTestCase {
+
+    // MARK: - Sending a file from disk
+
+    /// The public URL entry point opens the file before anything else: a
+    /// file that cannot be opened fails with the file's own error, worded as
+    /// a transfer failure, and never reaches the agent — which here does not
+    /// exist, so the order of the two checks is what this test holds. A
+    /// readable file on a session without an agent fails for the agent.
+    func testSendingAFileFromDiskOpensItBeforeLookingForTheAgent() async throws {
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x")
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-session-xfer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            try await session.sendFile(name: "absent", at: directory.appendingPathComponent("absent"))
+            XCTFail("un fichier introuvable ne peut pas partir")
+        } catch let error as WisqError {
+            guard case .fileTransferFailed(let message) = error else {
+                return XCTFail("erreur inattendue : \(error)")
+            }
+            XCTAssertTrue(message.contains("n'a pas pu être lu"), message)
+        }
+
+        let present = directory.appendingPathComponent("present")
+        try Data("x".utf8).write(to: present)
+        do {
+            try await session.sendFile(name: "present", at: present)
+            XCTFail("sans agent, personne ne reçoit le fichier")
+        } catch let error as WisqError {
+            guard case .fileTransferFailed(let message) = error else {
+                return XCTFail("erreur inattendue : \(error)")
+            }
+            XCTAssertTrue(message.contains("aucun agent"), message)
+        }
+    }
     private func u32(_ v: UInt32) -> [UInt8] { (0..<4).map { UInt8(v >> (8 * $0) & 0xFF) } }
     private func u16(_ v: UInt16) -> [UInt8] { (0..<2).map { UInt8(v >> (8 * $0) & 0xFF) } }
     private func i32(_ v: Int32) -> [UInt8] { u32(UInt32(bitPattern: v)) }
