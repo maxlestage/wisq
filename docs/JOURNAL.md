@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~06h UTC — Maxime demande de finir et de mettre le site à jour ; les READMEs suivent
+
+Maxime, réveillé : « Tu peux tout finir et mettre à jour le site ». Le site
+est passé avec #146 — son contenu vendait une application en retard de
+plusieurs fonctionnalités, il dit désormais dans les deux langues le canal
+display complet, le dépôt de fichiers dans l'invité, l'agent qui éteint,
+la machine qui survit à iOS, l'ouverture des `.vv`/`.rdp` — sans toucher aux
+invariants gardés : le site ne distribue toujours pas wisq, n'annonce aucune
+licence, et ses chiffres restent tenus par `claims.test.ts`.
+
+Le même crible sur les READMEs rend trois prises du même genre :
+
+1. README.fr.md disait « les codecs QUIC, GLZ et JPEG restent à faire » deux
+   lignes au-dessus d'un tableau qui les déclare faits — la phrase et le
+   tableau du même fichier se contredisaient.
+2. Les deux READMEs répétaient le « moins de 600 Ko » que #146 venait de
+   corriger dans AGENT-PROTOCOL.md : un nombre faux vit rarement à un seul
+   endroit.
+3. Aucun tableau ne mentionnait l'extinction d'une VM (#142), l'envoi de
+   fichiers (#143/#144), la machine suspendue ni le cœur Rust par défaut.
+
+La passe des textes auto-descriptifs est close avec cette tranche : site,
+READMEs, ARCHITECTURE, AGENT-PROTOCOL. ROADMAP et JOURNAL sont le récit, pas
+une description à tenir.
+
 ## 2026-09-02, ~03h30 UTC — le même crible sur AGENT-PROTOCOL.md : un nombre faux d'un facteur trois
 
 Suite de la passe sur les documents auto-descriptifs. AGENT-PROTOCOL.md tient
