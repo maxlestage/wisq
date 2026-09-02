@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-02, ~19h UTC — l'épinglage du chemin machine, deux étapes sur trois
+
+Maxime, vers 18 h 30 UTC : « Faut finir et je veux la tester avec Ubuntu ».
+Deux réponses, deux PR. Celle-ci ferme la première tranche ouverte depuis
+Linux dans « Ce qui attend une machine Apple » : le vrai épinglage du chemin
+machine. Le transport savait déjà épingler — `NetworkByteStream` prend une
+empreinte depuis #66 — mais rien ne la lui apportait : ni `Machine` ni
+`SessionConfiguration` n'avaient le champ, et `.tlsPinned` valait `.tls` sur
+toutes les machines, avec une étiquette « (épinglage à venir) » pour le dire.
+
+Ce qui a été fait :
+
+1. `Machine.certificateFingerprint`, absent des fichiers d'avant donc `nil`
+   au décodage ; `SessionConfiguration(machine:password:)` — un seul endroit
+   où une machine devient une configuration, pour qu'un champ ajouté à l'une
+   ne puisse plus être oublié par l'autre — et les deux fournisseurs de flux
+   qui passent l'empreinte à `NetworkByteStream`. Ces deux fichiers sont sous
+   `#if canImport(Network)` : « Cœur (Apple) » les juge, pas ce conteneur.
+2. `CertificateFingerprint.parse` lit ce que les gens collent — la ligne
+   d'`openssl`, les deux-points d'un navigateur, la forme nue du lien
+   d'appairage, en toute casse, même repliée par un client mail — et refuse
+   tout ce qui ne fait pas trente-deux octets : un MD5 n'est pas une empreinte
+   dans un autre manteau, c'est une épingle qui ne peut jamais correspondre.
+3. **Les mots suivent le fait, machine par machine.** #70 avait rendu
+   l'étiquette du mode honnête en la rendant vague. Maintenant que le mode
+   peut épingler, l'honnêteté change d'endroit : le sélecteur nomme le mode
+   (« TLS épinglé par empreinte »), et `Machine.transportDescription` dit ce
+   que *cette* machine obtient — l'épingle avec ses premiers octets, ou « TLS,
+   validation système — aucune empreinte enregistrée ». L'éditeur le dit sous
+   le champ, la liste ne montre le bouclier que sur une vraie épingle, et
+   l'import d'un `.vv` continue de ne rien promettre.
+
+La troisième étape reste à la machine Apple : lire l'empreinte sur la
+connexion et la montrer à la personne qui l'accepte. Saisir l'empreinte à la
+main n'est pas un pis-aller en attendant : c'est la seule forme d'épinglage
+qui ne fasse pas confiance au réseau au moment où on l'enregistre.
+
+Huit sabotages contre la suite entière (1212 tests) : empreinte perdue à
+l'initialisation — trois tests ; `pinsCertificate` toujours faux — l'aller-
+retour ; configuration qui oublie l'empreinte — le test de configuration ;
+toute longueur acceptée — le test des mauvaises longueurs ; préfixe
+`openssl` non retiré — la ligne d'openssl ; description qui promet une
+épingle absente — les mots ; format sans deux-points — l'aller-retour et les
+mots ; résolution qui ignore l'empreinte — l'aller-retour et les mots. La
+vérification à sec des deux sens, ajoutée après les deux accrocs du matin, a
+attrapé son premier cas avant qu'il ne coûte : la ligne d'initialisation du
+premier sabotage existait aussi dans `AgentBinding`, dans le même fichier.
+
 ## 2026-09-02, ~14h UTC — les entrées illisibles : le choix est proposé, jamais pris
 
 La question attendait Maxime depuis le 28 août (ROADMAP, « Une décision qui

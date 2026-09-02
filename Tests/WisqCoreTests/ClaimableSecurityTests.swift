@@ -48,13 +48,17 @@ final class ClaimableSecurityTests: XCTestCase {
 
     // MARK: - What is shown
 
-    /// Saved machines still carry `.tlsPinned`, so the case stays in the
-    /// picker — and its label must not name a protection the connection does
-    /// not have.
-    func testTheLabelDoesNotPromiseAPinThatIsNotThere() {
-        XCTAssertFalse(
-            TransportSecurity.tlsPinned.displayName == "TLS épinglé",
-            "l'étiquette annonce un épinglage qu'aucun chemin ne peut fournir")
+    /// The picker names the mode; what a machine *gets* from the mode is
+    /// `Machine.transportDescription`, and that one must not promise a pin
+    /// the machine has nothing to pin to. `MachineFingerprintTests` holds the
+    /// per-machine words; this holds the import's half: a `.vv` that asked
+    /// for a pin lands as a machine that says "TLS" and nothing more.
+    func testTheImportedMachineDoesNotPromiseAPinThatIsNotThere() throws {
+        let parsed = try vv("tls-port=5901\nhost-subject=O=Exemple,CN=console.exemple.net")
+        let machine = try ConnectionImport.machine(from: parsed).machine
+        XCTAssertNil(machine.certificateFingerprint, "un sujet n'est pas une empreinte")
+        XCTAssertFalse(machine.pinsCertificate)
+        XCTAssertEqual(machine.transportDescription, "TLS")
         XCTAssertTrue(TransportSecurity.tlsPinned.displayName.contains("TLS"))
     }
 
