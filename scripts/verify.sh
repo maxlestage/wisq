@@ -194,6 +194,7 @@ if [[ "${1:-}" == "--app" ]]; then
   command -v xcodegen >/dev/null || { echo "xcodegen missing: brew install xcodegen" >&2; exit 1; }
 
   echo "==> Generating the Xcode project"
+  "$(dirname "$0")/build-app-icon.sh"
   xcodegen generate
 
   echo "==> Building the iOS app for the simulator"

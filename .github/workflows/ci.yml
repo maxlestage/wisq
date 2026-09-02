@@ -194,6 +194,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Package the VM core as an XCFramework
@@ -229,7 +230,9 @@ jobs:
             echo "::warning::image de noyau absente, test simulateur ignoré"
           fi
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          scripts/build-app-icon.sh
+          xcodegen generate
       - name: Run the app layer's tests in a simulated iPhone
         # `WisqUI` is `#if os(iOS)`, so the Linux job never compiles it — which
         # is how two defects in the suspend/resume wiring reached a pull

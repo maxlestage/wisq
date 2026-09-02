@@ -166,6 +166,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Package the VM core as an XCFramework
@@ -176,6 +177,7 @@ jobs:
         run: scripts/build-xcframework.sh
       - name: Build unsigned device app
         run: |
+          scripts/build-app-icon.sh
           xcodegen generate
           xcodebuild build \
             -project Wisq.xcodeproj \
