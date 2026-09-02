@@ -84,11 +84,14 @@ actor SpiceAgentChannel {
 
     private struct FileTransferState {
         let id: SpiceFileTransfer.TransferID
-        let bytes: [UInt8]
+        /// Where the bytes come from, one chunk at a time. The file is never
+        /// held whole: `topUpTransfer` reads the next chunk when the last
+        /// has left the queue.
+        let source: SpiceFileTransfer.Source
         /// Byte offset of the next `FILE_XFER_DATA` chunk. For the empty file
         /// this stays at zero and `sentEmptyChunk` records the one message a
         /// zero-byte file still owes the agent.
-        var nextOffset = 0
+        var nextOffset: UInt64 = 0
         var sentEmptyChunk = false
         /// The guest said `canSendData`. Bytes never move before it does.
         var started = false
@@ -280,6 +283,14 @@ actor SpiceAgentChannel {
     /// `fileXferDisabled` has said in advance that every transfer will be
     /// refused — starting one anyway would fail with less explanation.
     func sendFile(name: String, contents: Data) async throws {
+        try await sendFile(name: name, source: .inMemory(contents))
+    }
+
+    /// The same, from wherever the bytes live. The source is closed when the
+    /// transfer is over, whichever way it ended — including the refusals
+    /// above, which end it before it starts.
+    func sendFile(name: String, source: SpiceFileTransfer.Source) async throws {
+        defer { source.close() }
         guard transfer == nil else { throw SpiceFileTransfer.Failure.busy }
         guard connected else { throw SpiceFileTransfer.Failure.noAgent }
         guard !SpiceAgent.supports(.fileXferDisabled, in: capabilities) else {
@@ -291,9 +302,9 @@ actor SpiceAgentChannel {
 
         // The state exists before the first await, so a `canSendData` that
         // races the flush finds a transfer to start rather than nothing.
-        transfer = FileTransferState(id: id, bytes: [UInt8](contents))
+        transfer = FileTransferState(id: id, source: source)
         enqueue(SpiceAgent.message(.fileXferStart, body: SpiceFileTransfer.startBody(
-            id: id, name: name, size: UInt64(contents.count)
+            id: id, name: name, size: source.size
         )))
         do {
             try await flush()
@@ -358,24 +369,55 @@ actor SpiceAgentChannel {
     /// (without it the agent holds an empty file open forever), and a
     /// non-empty file never sends an empty one at EOF (the agent takes it
     /// badly — fdo#97227).
+    ///
+    /// A chunk the source cannot deliver — a read the disk refuses, or a file
+    /// that has fewer bytes than it had when the size was announced — ends
+    /// the transfer from this side: the caller learns why, and the agent is
+    /// told `error`, as the reference does for any local failure that is not
+    /// a cancellation. Sending the short file would leave the agent waiting
+    /// for bytes that never come.
     private func topUpTransfer() -> Bool {
-        guard var state = transfer, state.started else { return false }
-        let chunk: ArraySlice<UInt8>
-        if state.bytes.isEmpty {
+        guard var state = transfer, state.started, state.outcome == nil else { return false }
+        let chunk: [UInt8]
+        if state.source.size == 0 {
             guard !state.sentEmptyChunk else { return false }
             state.sentEmptyChunk = true
             chunk = []
         } else {
-            guard state.nextOffset < state.bytes.count else { return false }
-            let end = min(state.nextOffset + SpiceFileTransfer.chunkBytes, state.bytes.count)
-            chunk = state.bytes[state.nextOffset..<end]
-            state.nextOffset = end
+            guard state.nextOffset < state.source.size else { return false }
+            let wanted = Int(min(UInt64(SpiceFileTransfer.chunkBytes), state.source.size - state.nextOffset))
+            do {
+                let read = try state.source.read(state.nextOffset, wanted)
+                guard read.count == wanted else {
+                    throw SpiceFileTransfer.Failure.unreadable(
+                        "le fichier a rétréci pendant l'envoi (\(state.nextOffset + UInt64(read.count)) octets sur \(state.source.size) annoncés)"
+                    )
+                }
+                chunk = read
+            } catch {
+                failTransferLocally(state, error)
+                return true
+            }
+            state.nextOffset += UInt64(wanted)
         }
         transfer = state
         enqueue(SpiceAgent.message(
-            .fileXferData, body: SpiceFileTransfer.dataBody(id: state.id, chunk: chunk)
+            .fileXferData, body: SpiceFileTransfer.dataBody(id: state.id, chunk: chunk[...])
         ))
         return true
+    }
+
+    /// This side could not go on: fail the caller with the cause and queue
+    /// `error` for the agent, which is still waiting for the rest of the
+    /// file. The status goes on the queue rather than the wire because this
+    /// runs inside `flush`, which is what will send it.
+    private func failTransferLocally(_ state: FileTransferState, _ error: Error) {
+        let failure = (error as? SpiceFileTransfer.Failure)
+            ?? .unreadable(error.localizedDescription)
+        finishTransfer(.failure(failure))
+        enqueue(SpiceAgent.message(.fileXferStatus, body: SpiceFileTransfer.statusBody(
+            id: state.id, result: .error
+        )))
     }
 
     // MARK: - One agent message

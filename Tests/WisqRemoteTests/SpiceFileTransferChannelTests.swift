@@ -351,6 +351,263 @@ final class SpiceFileTransferChannelTests: XCTestCase {
         _ = try await channel.pump()
         try await outcome(of: task)
     }
+
+    // MARK: - Streaming from a source
+
+    /// A source that records what the channel asks of it: which reads, in
+    /// which order, and whether it was closed. The bytes are a pattern of
+    /// the offset, so a chunk read from the wrong place shows up in the
+    /// reassembled file.
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var reads: [(offset: UInt64, count: Int)] = []
+        private(set) var closes = 0
+        let size: UInt64
+        /// When set, a read at this offset throws instead of answering.
+        var failAt: UInt64?
+        /// When set, every read answers at most this many bytes.
+        var shortBy: Int?
+
+        init(size: UInt64) { self.size = size }
+
+        static func pattern(_ offset: UInt64, _ count: Int) -> [UInt8] {
+            (0..<count).map { UInt8(truncatingIfNeeded: offset + UInt64($0)) }
+        }
+
+        var source: SpiceFileTransfer.Source {
+            SpiceFileTransfer.Source(size: size, read: { offset, count in
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.reads.append((offset, count))
+                if let failAt = self.failAt, offset == failAt {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let available = Int(min(UInt64(count), self.size - min(offset, self.size)))
+                let delivered = self.shortBy.map { min($0, available) } ?? available
+                return Self.pattern(offset, delivered)
+            }, close: {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.closes += 1
+            })
+        }
+
+        var readOffsets: [UInt64] { lock.lock(); defer { lock.unlock() }; return reads.map(\.offset) }
+        var closed: Int { lock.lock(); defer { lock.unlock() }; return closes }
+    }
+
+    private func dataBodies(on stream: MemoryByteStream) async throws -> [[UInt8]] {
+        try await sentAgentMessages(stream).filter { $0.0.type == .fileXferData }.map(\.1)
+    }
+
+    private func statusBodies(on stream: MemoryByteStream) async throws -> [[UInt8]] {
+        try await sentAgentMessages(stream).filter { $0.0.type == .fileXferStatus }.map(\.1)
+    }
+
+    /// The file is read one chunk at a time, each chunk asked for only once
+    /// the tokens have drained the previous one — which is what keeps a film
+    /// out of the phone's memory. Three chunks, and the tokens are granted
+    /// so that at every step the source has been asked for exactly one more
+    /// chunk than the wire carries.
+    func testTheFileIsReadAChunkAtATimeAsTokensDrainIt() async throws {
+        let server = MemoryByteStream()
+        // One token: the START goes out and nothing else can.
+        let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 1)
+        let recorder = Recorder(size: 65_536 * 2 + 5)
+        let task = Task { try await channel.sendFile(name: "film.mov", source: recorder.source) }
+        try await waitForSent(.fileXferStart, on: server)
+        XCTAssertEqual(recorder.readOffsets, [], "rien n'est lu avant canSendData")
+
+        await server.feed(status(id: 1, .canSendData))
+        _ = try await channel.pump()
+        XCTAssertEqual(recorder.readOffsets, [0], "un seul morceau est lu quand les jetons manquent")
+        let sentBeforeTokens = try await dataBodies(on: server)
+        XCTAssertEqual(sentBeforeTokens.count, 0)
+
+        // A 64 KiB chunk plus its 12-byte body header is 33 pieces of 2048.
+        await server.feed(serverMessage(SpiceWire.Message.mainAgentToken, SpiceWire.u32(33)))
+        _ = try await channel.pump()
+        XCTAssertEqual(recorder.readOffsets, [0, 65_536], "le morceau suivant est lu quand le précédent est parti")
+        let sentAfterOneChunk = try await dataBodies(on: server)
+        XCTAssertEqual(sentAfterOneChunk.count, 1)
+
+        await server.feed(serverMessage(SpiceWire.Message.mainAgentToken, SpiceWire.u32(100)))
+        _ = try await channel.pump()
+        XCTAssertEqual(recorder.readOffsets, [0, 65_536, 131_072])
+        let bodies = try await dataBodies(on: server)
+        XCTAssertEqual(bodies.map { $0.count - 12 }, [65_536, 65_536, 5])
+        XCTAssertEqual(
+            bodies.flatMap { $0.dropFirst(12) }, Recorder.pattern(0, 65_536 * 2 + 5),
+            "les morceaux, remis bout à bout, sont le fichier"
+        )
+
+        await server.feed(status(id: 1, .success))
+        _ = try await channel.pump()
+        try await outcome(of: task)
+        XCTAssertEqual(recorder.closed, 1, "la source est fermée une fois le verdict rendu")
+    }
+
+    /// A read the disk refuses ends the transfer from this side: the caller
+    /// gets the cause, and the agent — still waiting for the rest of the
+    /// file — is told `error`, which is what the reference sends for every
+    /// local failure that is not a cancellation.
+    func testAReadTheDiskRefusesFailsTheCallerAndTellsTheAgent() async throws {
+        let server = MemoryByteStream()
+        let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 1_000)
+        let recorder = Recorder(size: 65_536 + 1)
+        recorder.failAt = 65_536
+        let task = Task { try await channel.sendFile(name: "x", source: recorder.source) }
+        try await waitForSent(.fileXferStart, on: server)
+
+        await server.feed(status(id: 1, .canSendData))
+        _ = try await channel.pump()
+
+        do {
+            try await outcome(of: task)
+            XCTFail("un fichier illisible ne peut pas être envoyé en entier")
+        } catch let failure as SpiceFileTransfer.Failure {
+            guard case .unreadable(let detail) = failure else {
+                return XCTFail("échec inattendu : \(failure)")
+            }
+            XCTAssertTrue(failure.message.contains("n'a pas pu être lu"), failure.message)
+            XCTAssertFalse(detail.isEmpty)
+        }
+        let data = try await dataBodies(on: server)
+        XCTAssertEqual(data.count, 1, "le premier morceau était parti")
+        let statuses = try await statusBodies(on: server)
+        XCTAssertEqual(
+            statuses,
+            [SpiceFileTransfer.statusBody(id: 1, result: .error)],
+            "l'agent apprend que le fichier ne viendra pas, par `error` et non `cancelled`"
+        )
+        XCTAssertEqual(recorder.closed, 1)
+    }
+
+    /// The size announced in START is what the agent waits for. A file that
+    /// has fewer bytes than that by the time they are read is failed here,
+    /// not sent short — a short file would leave the agent holding a
+    /// half-written file open until the session ends.
+    func testAFileThatShrankUnderTheTransferIsFailedNotSentShort() async throws {
+        let server = MemoryByteStream()
+        let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 1_000)
+        let recorder = Recorder(size: 100)
+        recorder.shortBy = 40
+        let task = Task { try await channel.sendFile(name: "x", source: recorder.source) }
+        try await waitForSent(.fileXferStart, on: server)
+
+        await server.feed(status(id: 1, .canSendData))
+        _ = try await channel.pump()
+
+        do {
+            try await outcome(of: task)
+            XCTFail("un fichier qui a rétréci ne peut pas être envoyé tel qu'annoncé")
+        } catch let failure as SpiceFileTransfer.Failure {
+            XCTAssertEqual(
+                failure,
+                .unreadable("le fichier a rétréci pendant l'envoi (40 octets sur 100 annoncés)")
+            )
+        }
+        let data = try await dataBodies(on: server)
+        XCTAssertEqual(data.count, 0, "aucun octet court ne part")
+        let statuses = try await statusBodies(on: server)
+        XCTAssertEqual(statuses, [SpiceFileTransfer.statusBody(id: 1, result: .error)])
+        XCTAssertEqual(recorder.closed, 1)
+    }
+
+    /// The source is closed exactly once whichever way the transfer ends —
+    /// on the phone it holds an open file and a security scope, and either
+    /// left behind is a leak per file sent.
+    func testTheSourceIsClosedHoweverTheTransferEnds() async throws {
+        // Refused by the agent before any byte.
+        do {
+            let server = MemoryByteStream()
+            let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 100)
+            let recorder = Recorder(size: 1)
+            let task = Task { try await channel.sendFile(name: "x", source: recorder.source) }
+            try await waitForSent(.fileXferStart, on: server)
+            await server.feed(status(id: 1, .notEnoughSpace))
+            _ = try await channel.pump()
+            _ = try? await outcome(of: task)
+            XCTAssertEqual(recorder.closed, 1, "fermée après un refus")
+        }
+        // Aborted from this side.
+        do {
+            let server = MemoryByteStream()
+            let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 100)
+            let recorder = Recorder(size: 1)
+            let task = Task { try await channel.sendFile(name: "x", source: recorder.source) }
+            try await waitForSent(.fileXferStart, on: server)
+            await channel.abortFileTransfer()
+            _ = try? await outcome(of: task)
+            XCTAssertEqual(recorder.closed, 1, "fermée après une annulation")
+        }
+        // Refused before starting: busy, and no agent.
+        do {
+            let server = MemoryByteStream()
+            let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 100)
+            let first = Recorder(size: 1)
+            let task = Task { try await channel.sendFile(name: "x", source: first.source) }
+            try await waitForSent(.fileXferStart, on: server)
+            let second = Recorder(size: 1)
+            _ = try? await channel.sendFile(name: "y", source: second.source)
+            XCTAssertEqual(second.closed, 1, "un envoi refusé pour occupation ferme sa source")
+            XCTAssertEqual(first.closed, 0, "et pas celle de l'envoi en cours")
+            await server.feed(status(id: 1, .success))
+            _ = try await channel.pump()
+            try await outcome(of: task)
+            XCTAssertEqual(first.closed, 1)
+
+            let idle = Recorder(size: 1)
+            _ = try? await SpiceAgentChannel(stream: MemoryByteStream(), connected: false)
+                .sendFile(name: "z", source: idle.source)
+            XCTAssertEqual(idle.closed, 1, "sans agent, la source est quand même fermée")
+        }
+    }
+
+    /// A real file on disk, through `Source.file`: its size is read from the
+    /// file system, its bytes travel exactly, and the handle is closed once
+    /// — closing again is harmless, reading after it is refused.
+    func testAFileOnDiskTravelsByteForByte() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-file-xfer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("photo.bin")
+        let contents = Recorder.pattern(7, 70_000)
+        try Data(contents).write(to: url)
+
+        let source = try SpiceFileTransfer.Source.file(at: url)
+        XCTAssertEqual(source.size, 70_000, "la taille annoncée est celle du fichier")
+
+        let server = MemoryByteStream()
+        let channel = SpiceAgentChannel(stream: server, connected: true, tokens: 1_000_000)
+        let task = Task { try await channel.sendFile(name: "photo.bin", source: source) }
+        try await waitForSent(.fileXferStart, on: server)
+        await server.feed(status(id: 1, .canSendData))
+        _ = try await channel.pump()
+        let bodies = try await dataBodies(on: server)
+        XCTAssertEqual(bodies.map { $0.count - 12 }, [65_536, 70_000 - 65_536])
+        XCTAssertEqual(bodies.flatMap { $0.dropFirst(12) }, contents)
+        await server.feed(status(id: 1, .success))
+        _ = try await channel.pump()
+        try await outcome(of: task)
+
+        // The channel closed it; closing again is harmless, reading is not.
+        source.close()
+        XCTAssertThrowsError(try source.read(0, 1), "une source fermée ne lit plus")
+
+        // The empty file on disk owes the agent its one empty DATA too.
+        let empty = directory.appendingPathComponent("empty")
+        try Data().write(to: empty)
+        let emptySource = try SpiceFileTransfer.Source.file(at: empty)
+        XCTAssertEqual(emptySource.size, 0)
+        emptySource.close()
+
+        XCTAssertThrowsError(
+            try SpiceFileTransfer.Source.file(at: directory.appendingPathComponent("absent")),
+            "un fichier absent échoue à l'ouverture, avant tout octet sur le fil"
+        )
+    }
 }
 
 /// Free-standing so a `@Sendable` poll can call it without capturing the
