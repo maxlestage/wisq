@@ -163,13 +163,15 @@ derniers pour-cent de ratio.
   faible par construction — d'où l'avertissement affiché dans l'éditeur quand le
   chiffrement de transport est désactivé, et l'implémentation DES cantonnée à ce
   seul usage.
-- `TransportSecurity.tlsPinned` ne peut pas encore épingler sur le chemin
-  machine : rien n'y transporte d'empreinte, donc `ResolvedTransportSecurity`
-  en fait une validation système complète — jamais une connexion qui accepte
-  n'importe quel certificat, ce que ce cas est devenu un temps avant d'être
-  corrigé. Le sélecteur le dit (« TLS (épinglage à venir) »). Le chemin agent
-  épingle pour de vrai, par une autre route : `AgentBinding` garde l'empreinte
-  relevée à l'appairage et `AgentClient` la prend en paramètre non optionnel.
+- `TransportSecurity.tlsPinned` épingle sur le chemin machine quand la machine
+  porte une empreinte (`Machine.certificateFingerprint`, saisie dans l'éditeur
+  et portée par `SessionConfiguration` jusqu'à `NetworkByteStream`) ; sans
+  empreinte, `ResolvedTransportSecurity` en fait une validation système
+  complète — jamais une connexion qui accepte n'importe quel certificat, ce
+  que ce cas est devenu un temps avant d'être corrigé. La machine le dit
+  elle-même (`transportDescription`). Le chemin agent épingle par une autre
+  route : `AgentBinding` garde l'empreinte relevée à l'appairage et
+  `AgentClient` la prend en paramètre non optionnel.
   Le plan pour donner la même chose au chemin machine est dans
   `docs/ROADMAP.md`.
 

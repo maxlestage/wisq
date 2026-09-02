@@ -243,7 +243,9 @@ struct MachineRow: View {
                     Text("·")
                     Text(machine.proto.displayName)
                     if machine.security != .none {
-                        Image(systemName: "lock.fill")
+                        // The shield only when the connection really pins:
+                        // `.tlsPinned` without a fingerprint is plain TLS.
+                        Image(systemName: machine.pinsCertificate ? "lock.shield.fill" : "lock.fill")
                     }
                 }
                 .font(.caption)

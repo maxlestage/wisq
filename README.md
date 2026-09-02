@@ -48,7 +48,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (1312 tests across Swift and Rust) and
+Everything below is implemented, tested (1323 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose

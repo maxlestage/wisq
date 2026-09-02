@@ -73,6 +73,8 @@ public struct SessionConfiguration: Sendable {
     public var host: String
     public var port: Int
     public var security: TransportSecurity
+    /// What `.tlsPinned` pins to; nil resolves to system validation.
+    public var certificateFingerprint: Data?
     public var username: String?
     public var password: String?
     public var display: DisplaySettings
@@ -81,6 +83,7 @@ public struct SessionConfiguration: Sendable {
         host: String,
         port: Int,
         security: TransportSecurity = .none,
+        certificateFingerprint: Data? = nil,
         username: String? = nil,
         password: String? = nil,
         display: DisplaySettings = .init()
@@ -88,9 +91,26 @@ public struct SessionConfiguration: Sendable {
         self.host = host
         self.port = port
         self.security = security
+        self.certificateFingerprint = certificateFingerprint
         self.username = username
         self.password = password
         self.display = display
+    }
+
+    /// The configuration a saved machine asks for, with its secret beside it.
+    ///
+    /// One place, so that a field added to `Machine` that the transport must
+    /// see — the fingerprint was the first — cannot be forgotten on the way.
+    public init(machine: Machine, password: String?) {
+        self.init(
+            host: machine.host,
+            port: machine.port,
+            security: machine.security,
+            certificateFingerprint: machine.certificateFingerprint,
+            username: machine.username,
+            password: password,
+            display: machine.display
+        )
     }
 }
 
@@ -102,14 +122,7 @@ public enum SessionFactory {
         credentials: CredentialStore
     ) throws -> any RemoteSession {
         let password = try machine.credentialRef.flatMap { try credentials.secret(for: $0) }
-        let configuration = SessionConfiguration(
-            host: machine.host,
-            port: machine.port,
-            security: machine.security,
-            username: machine.username,
-            password: password,
-            display: machine.display
-        )
+        let configuration = SessionConfiguration(machine: machine, password: password)
 
         switch machine.proto {
         case .vnc:
