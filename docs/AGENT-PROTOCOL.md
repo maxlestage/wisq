@@ -174,23 +174,30 @@ Le démon est en **Rust** (`crates/wisq-agent`), le client en **Swift** — ils
 n'ont pas les mêmes contraintes. Le démon s'installe sur un NAS ou un portable
 et n'a ni interface ni framework de plateforme : rien qui justifie d'embarquer
 un runtime de langage. Statiquement lié au runtime Swift il pesait 58 Mo pour
-servir quatre routes ; il en fait aujourd'hui moins de 600 Ko, en un seul
-fichier statique qui tourne sur n'importe quel Linux, Alpine compris.
+servir quatre routes ; il en fait aujourd'hui **1,7 Mo** en un seul fichier
+statique (musl) qui tourne sur n'importe quel Linux, Alpine compris — mesuré
+sur le binaire que la release publie, TLS et appairage compris. Ce paragraphe
+a longtemps dit « moins de 600 Ko » : c'était vrai avant que le démon
+n'apprenne le TLS, et personne n'avait re-mesuré.
 
 Zéro dépendance, délibérément. Un programme qu'on installe par un `curl | sh`
 est un programme dont on hérite les dépendances, et le protocole ci-dessus est
 assez petit pour qu'un serveur HTTP/1.1 et un écrivain JSON écrits à la main
 représentent moins de code que la glu qu'un framework demanderait.
 
-Trois pièces :
+Les pièces :
 
 - `http.rs`, un serveur HTTP/1.1 sur la bibliothèque standard, un fil par
-  connexion, avec des plafonds sur les en-têtes et le corps ;
+  connexion, avec des plafonds sur les en-têtes et le corps, et le cadrage
+  strict (chunked refusé en 501, Content-Length répété ou signé refusé) ;
 - `service.rs`, le routage du protocole ci-dessus, jeton comparé en temps
-  constant ;
+  constant, identifiant de VM validé à la frontière ;
 - `backend.rs`, deux backends : `VirshBackend` pilote libvirt via la CLI
   `virsh` (pas de liaison C, dégradation propre si libvirt est absent), et
-  `DemoBackend` sert deux VM factices avec de vraies transitions d'état.
+  `DemoBackend` sert deux VM factices avec de vraies transitions d'état ;
+- `tls.rs`, le certificat auto-signé persistant et sa clé (mode 600 dès le
+  premier octet), et `pairing.rs`, les liens `wisq://` imprimés au lancement ;
+- `vm.rs`, l'écrivain et le lecteur JSON écrits à la main.
 
 **Le format de fil est gardé par un test qui traverse les deux langages** : la
 suite Swift lance le vrai binaire Rust sur un port éphémère et l'interroge avec

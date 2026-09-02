@@ -104,19 +104,19 @@ const en: Copy = {
       name: "Remote",
       head: "The VM runs where the silicon is",
       body:
-        "Two hand-written clients built for a phone — VNC and SPICE, no library between them and the wire: compressed encodings so it stays usable on cellular, and a touch model that actually hits small buttons.",
+        "Two hand-written clients built for a phone — VNC and SPICE, no library between them and the wire: compressed encodings so it stays usable on cellular, a touch model that actually hits small buttons, and it opens the .vv and .rdp files your hypervisors hand out.",
       points: [
         "VNC: ZRLE, Tight with JPEG, zlib — over session-lived streams",
-        "SPICE: display, cursor and input channels, sound both ways, clipboard",
+        "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor, input, sound both ways, clipboard, file drop into the guest",
         "Reconnects through cell handoffs, never retries a bad password",
-        "A host agent boots a powered-off VM when you tap it",
+        "A host agent boots a powered-off VM when you tap it — and shuts it down, politely or hard, when you ask",
       ],
     },
     local: {
       name: "Local",
       head: "A real Linux kernel, on the phone",
       body:
-        "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak.",
+        "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak. And the machine survives iOS: set aside when the screen locks, it resumes your shell right where it was.",
       points: [
         "rv32ima core, 64 MB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
@@ -225,19 +225,19 @@ const fr: Copy = {
       name: "Distant",
       head: "La VM tourne là où il y a du silicium",
       body:
-        "Deux clients écrits à la main pour un téléphone — VNC et SPICE, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, et un modèle tactile qui atteint vraiment les petits boutons.",
+        "Deux clients écrits à la main pour un téléphone — VNC et SPICE, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, un modèle tactile qui atteint vraiment les petits boutons, et l'ouverture des fichiers .vv et .rdp que vos hyperviseurs remettent.",
       points: [
         "VNC : ZRLE, Tight avec JPEG, zlib — sur des flux persistants",
-        "SPICE : canaux affichage, curseur et entrées, son dans les deux sens, presse-papiers",
+        "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur, entrées, son dans les deux sens, presse-papiers, dépôt de fichiers dans l'invité",
         "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé",
-        "Un agent hôte démarre une VM éteinte quand vous la tapez",
+        "Un agent hôte démarre une VM éteinte quand vous la tapez — et l'éteint, poliment ou de force, quand vous le demandez",
       ],
     },
     local: {
       name: "Local",
       head: "Un vrai noyau Linux, sur le téléphone",
       body:
-        "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak.",
+        "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak. Et la machine survit à iOS : mise de côté quand l'écran se verrouille, elle reprend votre shell là où il était.",
       points: [
         "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
