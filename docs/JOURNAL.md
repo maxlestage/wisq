@@ -8,6 +8,52 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~18h UTC — arrêter d'inventer un plafond, et demander à iOS
+
+Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone pour
+la partager ».
+
+La réponse évidente était d'augmenter ma fraction — le huitième de la mémoire
+physique devient un quart, un tiers. **La bonne réponse était d'arrêter
+d'inventer.** iOS publie exactement ce nombre : `os_proc_available_memory()`
+rend combien d'octets l'application peut encore allouer avant que le système ne
+la tue. C'est la question à laquelle mon huitième essayait de répondre au
+jugé.
+
+Le plafond est maintenant : ce que le système dit qu'il reste, moins ce que
+l'application garde pour elle, borné par ce que le processeur 32 bits de
+l'invité peut adresser, et jamais sous la machine de référence.
+
+### Trois choses que la fraction ne pouvait pas faire
+
+Elle donnait **la même réponse** sur un téléphone au repos et sur un téléphone
+qui porte trois autres applications. Elle ignorait ce que wisq lui-même avait
+déjà ouvert — une session distante avec ses tampons de décodage compte. Et elle
+était figée à la conception, alors que la vraie question se pose à l'instant du
+démarrage.
+
+Le plafond est donc relu à chaque fois qu'on le demande, pas mémorisé.
+
+### La réserve, qui est un jugement et le dit
+
+256 Mio pour l'application elle-même : la console et sa grille, les tampons
+d'une session distante, l'image du noyau en cours de lecture. Un nombre nommé
+plutôt qu'une fraction, parce qu'il ne grandit pas avec l'invité — une machine
+plus grande ne fait pas une console plus grande.
+
+### Et le refus qui remplace un plantage
+
+Le réglage est mémorisé ; la place libre du téléphone ne l'est pas. Un appareil
+qui pouvait donner un gibioctet ce matin peut ne plus le pouvoir cet
+après-midi. Démarrer quand même, c'est se faire tuer par iOS au milieu du
+démarrage — le plantage sans cause apparente que cette application a déjà
+infligé une fois, sur l'image d'Omarchy.
+
+Donc une phrase, avec **les deux chiffres et quoi en faire**. « Pas assez de
+mémoire » sans nombre est une impasse : le lecteur ne peut pas savoir s'il doit
+fermer une application ou baisser le curseur. Un test l'exige explicitement.
+
+
 ## 2026-09-03, ~17h45 UTC — un curseur en gigaoctets, et le défaut que la question a fait sortir
 
 Maxime : « Tu peux pas faire un curseur pour allouer des giga plutôt que des mo

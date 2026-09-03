@@ -2500,11 +2500,16 @@ Et le réglage lui-même, `KernelMemory` :
 - **Deux seuils, pas un.** À l'import, un fichier est jugé sur la plus grande
   machine que l'appareil autorise, parce qu'aucune taille n'est encore choisie ;
   au démarrage, sur la machine de ce noyau-là.
-- **Le plafond vient de l'appareil** : un huitième de la mémoire physique,
-  borné à un gibioctet, jamais sous la référence. Un huitième et pas un tiers —
-  jetsam est autour du tiers sur les téléphones d'iOS 17, la RAM de l'invité
-  devient entièrement résidente, et l'application a besoin de place à côté.
-  C'est une politique, pas une mesure, et le code le dit.
+- **Le plafond vient du système, plus d'une fraction inventée.**
+  `os_proc_available_memory()` rend ce que l'application peut encore allouer
+  avant qu'iOS ne la tue ; le plafond est ce nombre moins 256 Mio pour
+  l'application elle-même, borné par l'architecture, jamais sous la référence.
+  La fraction (un huitième du physique) ne sert plus que de repli là où le
+  système ne publie rien — macOS, Linux. Relu à chaque demande : la réponse sur
+  un téléphone chargé n'est pas celle d'un téléphone qui vient de démarrer.
+- **Et un refus au démarrage quand la place a baissé depuis le réglage**, avec
+  les deux chiffres et quoi en faire. Démarrer quand même serait se faire tuer
+  par iOS en plein démarrage.
 - **Changer la taille oublie les machines sauvegardées de ce noyau**, et
   l'application dit ce que ça a coûté — ou ne dit rien quand ça n'a rien coûté.
   Un instantané pris à une autre taille ne peut de toute façon pas être

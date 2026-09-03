@@ -97,34 +97,40 @@ final class KernelMemoryTests: XCTestCase {
         XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
     }
 
-    /// Le plafond : un huitième de la mémoire physique, borné par ce que
-    /// l'architecture permet, et jamais sous la machine de référence.
+    /// Le plafond **de repli** : un huitième de la mémoire physique, borné par
+    /// ce que l'architecture permet, et jamais sous la machine de référence.
+    ///
+    /// C'est la règle des plateformes qui ne publient pas de budget par
+    /// application — macOS, Linux. Sur iOS, `os_proc_available_memory()`
+    /// répond et cette fraction ne sert pas ; elle reste parce qu'une valeur
+    /// inventée vaut mieux que rien là où le système ne dit rien, et parce que
+    /// c'est elle que les tests d'ici peuvent atteindre.
     ///
     /// Les trois bords, avec les téléphones réels derrière. Le plancher compte
     /// autant que le plafond : sans lui, la machine par défaut deviendrait
     /// impossible sur un appareil où elle a toujours marché.
     func testTheCeilingIsAnEighthCappedAndFloored() {
         // 2 Go — le plus petit appareil sous iOS 17 : 256 Mo.
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 2048 << 20), 256 << 20)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 2048 << 20), 256 << 20)
         // 6 Go — un téléphone récent : 768 Mo, sous le plafond.
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 6144 << 20), 768 << 20)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 6144 << 20), 768 << 20)
         // 16 Go — un iPad : le huitième fait 2 Gio, exactement ce que le
         // processeur 32 bits de l'invité peut adresser. Le plafond était écrit
         // « un gibioctet » et coïncidait donc avec cette limite par accident,
         // ce qui faisait passer une contrainte d'architecture pour un choix.
         XCTAssertEqual(
-            KernelMemory.ceiling(physicalMemory: 16384 << 20), LinuxMachine.maximumRAMSize)
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16384 << 20), LinuxMachine.maximumRAMSize)
         // 64 Go — un Mac : le huitième ferait 8 Gio, la limite tient.
         XCTAssertEqual(
-            KernelMemory.ceiling(physicalMemory: 65536 << 20), LinuxMachine.maximumRAMSize)
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 65536 << 20), LinuxMachine.maximumRAMSize)
         // Le plancher : un huitième de 256 Mo vaut 32 Mo, la référence gagne.
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 256 << 20), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 256 << 20), LinuxMachine.defaultRAMSize)
         // Et jamais nul, même sur une valeur absurde.
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 0), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 0), LinuxMachine.defaultRAMSize)
         // Monotone.
         var previous: UInt32 = 0
         for gigabytes in [1, 2, 3, 4, 6, 8, 12, 16, 32] {
-            let limit = KernelMemory.ceiling(physicalMemory: UInt64(gigabytes) << 30)
+            let limit = KernelMemory.ceiling(availableBytes: nil, physicalMemory: UInt64(gigabytes) << 30)
             XCTAssertGreaterThanOrEqual(limit, previous, "\(gigabytes) Go")
             previous = limit
         }
@@ -134,7 +140,7 @@ final class KernelMemoryTests: XCTestCase {
     /// toujours — un sélecteur sans le réglage par défaut serait un piège.
     func testWhatIsOfferedFitsUnderTheCeilingAndAlwaysHoldsTheDefault() {
         for physical: UInt64 in [1024 << 20, 2048 << 20, 4096 << 20, 8192 << 20] {
-            let limit = KernelMemory.ceiling(physicalMemory: physical)
+            let limit = KernelMemory.ceiling(availableBytes: nil, physicalMemory: physical)
             let offered = KernelMemory.offered(ceiling: limit)
             XCTAssertFalse(offered.isEmpty, "\(physical >> 20) Mo physiques")
             XCTAssertTrue(
@@ -306,7 +312,7 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
             "le dernier palier doit être la limite, sinon elle est inatteignable")
         for physical: UInt64 in [8 << 30, 16 << 30, 64 << 30, .max / 2] {
             XCTAssertLessThanOrEqual(
-                KernelMemory.ceiling(physicalMemory: physical),
+                KernelMemory.ceiling(availableBytes: nil, physicalMemory: physical),
                 LinuxMachine.maximumRAMSize,
                 "\(physical >> 30) Gio physiques")
         }
@@ -315,11 +321,11 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
     /// Et un appareil assez grand atteint vraiment les gigaoctets : c'est
     /// l'appareil qui borne, pas l'unité.
     func testALargeDeviceReachesGibibytes() {
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 8 << 30), 1024 << 20)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 8 << 30), 1024 << 20)
         XCTAssertEqual(
-            KernelMemory.ceiling(physicalMemory: 16 << 30), LinuxMachine.maximumRAMSize)
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16 << 30), LinuxMachine.maximumRAMSize)
         XCTAssertTrue(
-            KernelMemory.offered(ceiling: KernelMemory.ceiling(physicalMemory: 8 << 30))
+            KernelMemory.offered(ceiling: KernelMemory.ceiling(availableBytes: nil, physicalMemory: 8 << 30))
                 .contains(1024 << 20))
     }
 
@@ -339,5 +345,84 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
                 KernelMemory.describe(size).hasPrefix("1024"),
                 "aucun palier ne doit s'annoncer en milliers de mégaoctets")
         }
+    }
+}
+
+/// Le plafond quand le système, lui, sait répondre.
+///
+/// Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone
+/// pour la partager ». La bonne réponse n'était pas d'augmenter la fraction
+/// inventée, c'était d'arrêter d'inventer : iOS publie exactement ce nombre —
+/// `os_proc_available_memory()` rend ce que l'application peut encore allouer
+/// avant que le système ne la tue.
+final class SystemBudgetCeilingTests: XCTestCase {
+    private func ceiling(available: UInt64?, physical: UInt64 = 8 << 30) -> UInt32 {
+        KernelMemory.ceiling(availableBytes: available, physicalMemory: physical)
+    }
+
+    /// Ce que le système laisse, moins ce que l'application garde pour elle.
+    func testTheCeilingIsWhatTheSystemLeavesMinusWhatTheAppNeeds() {
+        // 1,5 Gio disponibles − 256 Mio pour l'application = 1,25 Gio.
+        XCTAssertEqual(ceiling(available: 1536 << 20), (1536 - 256) << 20)
+        // Et l'écart est exactement la réserve nommée, pas un nombre voisin.
+        XCTAssertEqual(
+            UInt64(ceiling(available: 1024 << 20)),
+            (1024 << 20) - KernelMemory.roomForTheAppItself)
+    }
+
+    /// Un téléphone qui a beaucoup de place donne beaucoup — c'est le point de
+    /// la demande — mais jamais plus que ce que le processeur peut adresser.
+    func testAGenerousDeviceGivesGibibytesButNeverPastTheArchitecture() {
+        XCTAssertEqual(ceiling(available: 3 << 30), LinuxMachine.maximumRAMSize)
+        XCTAssertEqual(ceiling(available: 64 << 30), LinuxMachine.maximumRAMSize)
+        XCTAssertGreaterThanOrEqual(ceiling(available: 2 << 30), 1024 << 20)
+    }
+
+    /// Un téléphone à l'étroit ne descend pas sous la machine de référence :
+    /// elle a toujours marché, et un plancher qui la rendrait impossible
+    /// transformerait une contrainte passagère en panne permanente.
+    func testATightDeviceStillOffersTheReferenceMachine() {
+        XCTAssertEqual(ceiling(available: 300 << 20), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(ceiling(available: 0), LinuxMachine.defaultRAMSize)
+        // Et la soustraction ne déborde pas quand la réserve est plus grande
+        // que ce qui reste.
+        XCTAssertEqual(ceiling(available: 1), LinuxMachine.defaultRAMSize)
+    }
+
+    /// Là où le système ne dit rien, la fraction reprend la main — et donne un
+    /// résultat différent, sinon ce paramètre ne servirait à rien.
+    func testWhereTheSystemSaysNothingTheFractionTakesOver() {
+        XCTAssertEqual(ceiling(available: nil, physical: 8 << 30), 1024 << 20)
+        XCTAssertNotEqual(
+            ceiling(available: 1024 << 20, physical: 8 << 30),
+            ceiling(available: nil, physical: 8 << 30),
+            "les deux règles doivent vraiment être deux règles")
+    }
+
+    /// La règle est **monotone** : plus le téléphone laisse de place, plus la
+    /// machine peut être grande. C'est ce qu'un curseur promet en glissant.
+    func testMoreRoomIsNeverLessMachine() {
+        var previous: UInt32 = 0
+        for megabytes in [0, 128, 256, 512, 1024, 2048, 4096, 8192] {
+            let limit = ceiling(available: UInt64(megabytes) << 20)
+            XCTAssertGreaterThanOrEqual(limit, previous, "\(megabytes) Mo disponibles")
+            previous = limit
+        }
+    }
+
+    /// Et le refus qui remplace un plantage : les deux chiffres, et quoi faire.
+    ///
+    /// « Pas assez de mémoire » sans nombre est une impasse — on ne peut pas
+    /// savoir s'il faut fermer une application ou baisser le réglage.
+    func testTheRefusalNamesBothFiguresAndWhatToDo() {
+        let message = KernelMemory.notEnoughRoomExplanation(
+            requested: 1024 << 20, ceiling: 512 << 20, name: "Image")
+        XCTAssertTrue(message.contains("Image"), message)
+        XCTAssertTrue(message.contains("1 Gio"), message)
+        XCTAssertTrue(message.contains("512 Mo"), message)
+        XCTAssertTrue(message.contains("curseur"), "il faut dire quoi faire : \(message)")
+        XCTAssertFalse(
+            message.contains("octets"),
+            "le message parle à quelqu'un, pas à un journal : \(message)")
     }
 }

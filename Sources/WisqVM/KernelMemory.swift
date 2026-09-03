@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(iOS)
+import os
+#endif
+
 /// How much memory a given kernel's machine gets, remembered between launches.
 ///
 /// This lives in `WisqVM` rather than in the app layer for the reason
@@ -39,42 +43,74 @@ public enum KernelMemory {
         1024 << 20, LinuxMachine.maximumRAMSize,
     ]
 
+    /// What the app must keep for itself, next to the guest's RAM.
+    ///
+    /// The guest's memory is one mapping the interpreter touches at will, so
+    /// it all becomes resident. Everything else the app is doing lives beside
+    /// it: the console's text and its grid, the framebuffers of a remote
+    /// session, the kernel image being read from disk, and the decoding
+    /// buffers of whatever protocol is open.
+    ///
+    /// A named number rather than a fraction, because it does not scale with
+    /// the guest — a bigger machine does not make the console bigger. It is a
+    /// judgement, and it is generous on purpose: the failure it prevents is
+    /// the app disappearing without a word, which is the exact thing that
+    /// happened here once already.
+    public static let roomForTheAppItself: UInt64 = 256 << 20
+
     /// The largest machine this device may be asked for.
     ///
-    /// A **policy**, not a measurement, and it is worth being plain about that:
-    /// iOS does not publish the limit at which it kills an app. The number that
-    /// matters — jetsam — is well under physical memory, varies with what else
-    /// is running, and is roughly a third of the device's memory on the phones
-    /// this app runs on (iOS 17, so 2 GB and up).
+    /// **Measured, not guessed.** iOS publishes exactly this number:
+    /// `os_proc_available_memory()` returns how many bytes the app may still
+    /// allocate before the system kills it. Asking it is strictly better than
+    /// the fraction of physical memory this used to use — that fraction was an
+    /// invention, it ignored what the rest of the device was doing, and it
+    /// gave the same answer on a phone at rest and a phone under pressure.
     ///
-    /// So the rule is **an eighth** of physical memory, never below the
-    /// reference machine and never above what the architecture allows. An
-    /// eighth and not a third: the guest's RAM is one mapping the interpreter
-    /// touches at will, so it all becomes resident, and the app needs room
-    /// next to it for the console, the framebuffers of a remote session, and
-    /// the image it read to boot. A quarter — the first draft — puts a 2 GB
-    /// phone at 512 MB of guest RAM, which is close enough to jetsam that the
-    /// setting would ship a crash.
+    /// So: what the system says is left, minus what the app needs beside the
+    /// guest, never below the reference machine and never above what the
+    /// architecture allows.
     ///
-    /// **The unit is not what limits this.** An eighth of a modern phone is
-    /// already a gibibyte; the cap used to be written as one gibibyte too, so
-    /// the two coincided and made the ceiling look like a choice about
-    /// megabytes. It is not: the cap is now the architecture's own limit, and
-    /// on a device with enough memory the setting reaches two gibibytes.
-    ///
-    /// Conservative on purpose. Memory pressure is exactly what made the app
-    /// vanish on a distribution image, and a setting that let someone ask for
-    /// two gigabytes on a phone that has three would be a crash dressed as a
-    /// choice.
-    public static func ceiling(physicalMemory: UInt64) -> UInt32 {
-        let share = physicalMemory / 8
-        let capped = min(share, UInt64(LinuxMachine.maximumRAMSize))
+    /// `availableBytes` is a parameter rather than a call so this rule can be
+    /// tested on a runner that has no iOS to ask. `physicalMemory` is the
+    /// fallback for the platforms that do not publish the first number —
+    /// macOS and Linux — where an eighth of physical memory remains the best
+    /// available guess.
+    public static func ceiling(availableBytes: UInt64?, physicalMemory: UInt64) -> UInt32 {
+        let budget = availableBytes.map { $0 > roomForTheAppItself ? $0 - roomForTheAppItself : 0 }
+            ?? (physicalMemory / 8)
+        let capped = min(budget, UInt64(LinuxMachine.maximumRAMSize))
         return UInt32(max(capped, UInt64(defaultSize)))
     }
 
-    /// The same, from what this device says about itself.
+    /// The same, from what this device says about itself right now.
+    ///
+    /// Read each time it is asked, not once: the answer on a phone with three
+    /// other apps in memory is not the answer on a phone that just launched,
+    /// and a setting that offered yesterday's number would be offering a
+    /// crash.
     public static var ceiling: UInt32 {
-        ceiling(physicalMemory: ProcessInfo.processInfo.physicalMemory)
+        ceiling(
+            availableBytes: systemAvailableMemory,
+            physicalMemory: ProcessInfo.processInfo.physicalMemory)
+    }
+
+    /// How many bytes the system says this app may still allocate, or nil
+    /// where nothing says.
+    ///
+    /// iOS 13 and up answer with `os_proc_available_memory()`. macOS does not
+    /// implement it — it has no per-app allocation limit to report — and
+    /// neither does Linux, so both fall back to the fraction.
+    public static var systemAvailableMemory: UInt64? {
+        #if os(iOS)
+        let available = os_proc_available_memory()
+        // Zero is documented as "not available", not as "no memory left".
+        // Treating it as the latter would offer a 64 MB machine on a phone
+        // that is perfectly healthy.
+        return available > 0 ? UInt64(available) : nil
+        #else
+        return nil
+        #endif
     }
 
     /// The sizes worth offering on this device: the choices up to the ceiling.
@@ -134,6 +170,29 @@ public enum KernelMemory {
         var all = recorded(in: directory)
         guard all.removeValue(forKey: kernel) != nil else { return }
         write(all, in: directory)
+    }
+
+    /// Why a machine cannot start right now, in the terms of the phone.
+    ///
+    /// The setting is remembered; how much memory the device has free is not a
+    /// property of the setting. A phone that could give a gibibyte this
+    /// morning may not this afternoon, and the honest answer is a sentence
+    /// rather than a machine that starts and takes the app down with it.
+    ///
+    /// It says both numbers and what to do about them, because "pas assez de
+    /// mémoire" without a figure is a dead end — the reader cannot tell
+    /// whether to close one app or change the setting.
+    public static func notEnoughRoomExplanation(
+        requested: UInt32, ceiling limit: UInt32, name: String
+    ) -> String {
+        """
+        \(name) est réglé sur \(describe(requested)) de mémoire, et ce \
+        téléphone n'en a que \(describe(limit)) de libre en ce moment.
+
+        Fermez une application, ou baissez le curseur de mémoire de ce noyau. \
+        Démarrer quand même reviendrait à faire tuer wisq par iOS au milieu du \
+        démarrage, ce qui ressemble à un plantage sans en expliquer la cause.
+        """
     }
 
     /// A size as someone reads it: mebibytes until a gibibyte, then gibibytes.

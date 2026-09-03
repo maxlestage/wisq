@@ -80,6 +80,24 @@ public final class LocalVMModel {
         // qu'après.
         let ramSize = KernelMemory.size(
             forKernel: kernelURL.lastPathComponent, in: storage)
+
+        // Ce que le téléphone a de libre **maintenant**, pas quand le réglage
+        // a été posé. `KernelMemory.size` a déjà rogné sur ce plafond, donc
+        // cette garde ne se déclenche que si la mémoire disponible a baissé
+        // depuis — un autre programme qui a grandi, une session distante
+        // ouverte à côté. Démarrer quand même ferait tuer l'application par
+        // iOS au milieu du démarrage : le plantage sans cause apparente que
+        // cette application a déjà infligé une fois.
+        let roomNow = KernelMemory.ceiling
+        if ramSize > roomNow {
+            _ = life.guestFinished()
+            finish(with: KernelMemory.notEnoughRoomExplanation(
+                requested: ramSize, ceiling: roomNow,
+                name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
         let machine = LocalMachine(ramSize: ramSize) { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
