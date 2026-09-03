@@ -2618,10 +2618,100 @@ habitude.
      ne fige rien : chaque instruction porte le masque des drapeaux que
      l'architecture lui garantit, sans quoi le fichier serait le portrait
      d'**une** machine et un cœur qui s'y conformerait serait faux ailleurs.
-   - **3b. Le reste**, qui est ce qui démarre : la mémoire, les branchements et
-     la pile, le chargement d'un `bzImage` selon le protocole de la tranche 1,
-     et un port série. **C'est là que tombe le premier vrai chiffre de
-     vitesse.**
+   - **3b. La mémoire, les branchements, la pile et le port série** — *fait*,
+     et avec **le premier vrai chiffre de vitesse**. `X86Memory` porte la
+     mémoire de l'invité, `X86Core.run` enchaîne les instructions jusqu'à un
+     `HLT`, et l'oracle matériel exécute désormais des **programmes entiers** à
+     des adresses fixes, en comparant aussi une fenêtre de mémoire : boucles,
+     sauts courts et longs, appel et retour, cadres de pile, accès aux quatre
+     largeurs, adressage à échelle, saut indirect. **9 036 accords sur 9 036.**
+
+     **Le chiffre : 16,5 MIPS**, mesuré par `swift run -c release wisq-bench`
+     sur une boucle qui additionne, compare, saute, lit et écrit la mémoire —
+     pas un compteur à vide. À ce débit, deux milliards d'instructions prennent
+     **deux minutes**, cinquante milliards en prennent **cinquante**. Ces deux
+     derniers nombres sont des **divisions, pas des mesures** ; ce qui est
+     mesuré, c'est le débit.
+
+     La première mesure donnait **8,4 MIPS**. Deux choses la plombaient, et
+     toutes deux étaient sur le chemin le plus chaud du programme : le décodeur
+     **allouait deux tableaux par instruction** (les préfixes, le préfixe
+     vectoriel), et la boucle **recopiait quinze octets** dans un tampon avant
+     chaque décodage, uniquement pour avoir un `Array`. Un masque de bits et un
+     tuple pour le premier, un pointeur pour le second : ×1,96 sans toucher à
+     une seule règle du jeu d'instructions, et les 9 036 accords de l'oracle
+     tiennent toujours.
+
+     Ce que ça corrige : la feuille de route disait « des heures », et c'était
+     une extrapolation. Un noyau seul se compte en **minutes**. Ce que ça ne
+     dit pas : ce cœur-ci est en Swift, alors que les 122,5 MIPS du rv32 sont
+     ceux du cœur Rust — l'écart mélange deux langages et deux architectures.
+     Et à 16,5 MIPS il reste environ 180 cycles par instruction sur cette
+     machine, là où un bon interprète en demande cinquante : il y a encore de
+     la marge. Une piste a déjà été essayée et **jetée** — mettre les seize
+     registres en ligne dans la structure plutôt que dans un tableau donne
+     15,4 MIPS, donc moins ; c'est écrit à côté de la déclaration pour que
+     personne ne la retente.
+   - **3c. Démarrer un vrai `bzImage`.** Le **chargeur est fait** :
+     `X86BootLoader` place le noyau en mode protégé à son adresse préférée,
+     réserve `init_size` octets — bien plus que ce que le fichier pèse, parce
+     que le noyau se décompresse chez lui —, écrit la page zéro avec l'en-tête
+     de setup **à ses propres décalages**, y pose ce que seul un chargeur sait
+     (`type_of_loader` à 0xFF, `LOADED_HIGH`, l'absence d'initrd, le pointeur
+     de ligne de commande), coupe la ligne de commande à ce que le noyau
+     accepte, et rend le point d'entrée 64 bits — à 0x200 du début, pas au
+     début. Vérifié sur le vrai noyau d'Alpine, et cinq sabotages.
+
+     **Et la machine sait maintenant y répondre.** `CPUID`, les registres de
+     contrôle (`0F 20`/`0F 22`), les MSR (`RDMSR`/`RDTSC`/`WRMSR`) et la
+     **MMU** sont faits : parcours à quatre niveaux, grandes pages de 2 Mio et
+     de 1 Gio, faute de page nommée, et un cache de traduction vidé par
+     l'écriture de `CR3`. Le mode long s'active comme sur un vrai processeur —
+     `EFER.LMA` est posé par la machine quand la pagination s'allume alors que
+     `LME` est demandé, pas par celui qui écrit `EFER`.
+
+     Ce que `CPUID` annonce est une **décision**, pas une mesure : l'oracle
+     matériel dirait ce que la machine hôte répond, or c'est exactement ce
+     qu'il ne faut pas — un invité qui se croirait sur le processeur de l'hôte
+     utiliserait des instructions que ce cœur n'exécute pas. Chaque bit annoncé
+     est donc une promesse tenue ailleurs, et les tests la relisent dans ce
+     sens. Le x87 n'est pas annoncé, parce que rien ne l'exécute.
+
+     Coût mesuré de la MMU : **16,4 → 15,4 MIPS**, soit 6 %, pagination
+     éteinte comprise. La première version en coûtait 13 %, parce qu'elle
+     relisait `CR0` dans le tableau des registres de contrôle à chaque accès
+     mémoire ; un booléen gardé à jour à l'écriture de `CR0` a rendu ce
+     chemin-là gratuit.
+
+   - **La tentative, et où elle s'arrête.** `X86BootAttemptTests` charge le
+     vrai noyau d'Alpine, pose une pagination d'identité sur quatre gibioctets
+     en pages de un gibioctet, entre en mode long et saute. **535 845
+     instructions s'exécutent**, puis le cœur s'arrête sur une faute de page à
+     l'adresse de chargement.
+
+     Le chemin parcouru est réel : le décompresseur tourne. La séquence qui
+     avait arrêté le cœur juste avant — `fninit ; fnstsw ; fnstcw` — a été
+     désassemblée plutôt que devinée : c'est exactement celle par laquelle
+     Linux détecte un coprocesseur. Chaque arrêt a nommé la brique suivante, et
+     c'est comme ça que `CLD`/`CLI`, les segments, le retour lointain,
+     `PUSHF`/`POPF`, les opérations sur chaînes et trois instructions x87 sont
+     arrivés — dans cet ordre, dicté par le noyau et non par une liste.
+
+     **Ce qui n'est pas établi** : si cette faute vient du noyau ou d'une
+     divergence de ce cœur. Le dire demande un émulateur de référence contre
+     lequel avancer pas à pas — `qemu-system-x86_64` est disponible, et c'est
+     la tranche suivante. Écrire « le noyau démarre » serait faux aujourd'hui ;
+     écrire « ça ne marche pas » cacherait un demi-million d'instructions
+     justes.
+
+     **La carte mémoire E820** de la page zéro a compté : sans elle, le noyau
+     croit n'avoir aucune RAM. L'ajouter a déplacé l'arrêt **et changé sa
+     nature** — d'un accès hors de la mémoire de l'invité à une vraie faute de
+     traduction, ce qui veut dire que le noyau tourne désormais dans ses
+     propres tables. Les deux fautes portent maintenant des noms différents,
+     parce que les confondre fait chercher au mauvais endroit.
+
+     Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans

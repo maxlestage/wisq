@@ -21,21 +21,68 @@ import Foundation
 /// immédiat s'exécutent ici ; `LEA` est la seule à calculer une adresse, et
 /// justement elle ne la lit pas. Une forme mémoire est **refusée**, pas
 /// approximée.
-public struct X86Core: Equatable, Sendable {
+public struct X86Core: @unchecked Sendable {
     /// Les seize registres, dans l'ordre de l'encodage : RAX, RCX, RDX, RBX,
     /// RSP, RBP, RSI, RDI, puis R8 à R15.
+    ///
+    /// **Un tableau, et c'est mesuré.** Il paraît évident qu'un tableau Swift
+    /// coûte cher sur le chemin chaud d'un interprète : il vit sur le tas, il
+    /// vérifie ses bornes, il vérifie son unicité avant d'écrire. J'ai donc
+    /// essayé de le remplacer par les seize valeurs en ligne dans la
+    /// structure, sous forme de tuple. Résultat : **16,5 → 15,4 MIPS**, puis
+    /// 15,5 avec une seconde variante. Les deux façons d'atteindre un tuple
+    /// depuis Swift passent par un pointeur temporaire, et ça coûte plus que
+    /// la vérification de bornes qu'on croyait éviter. Revenu au tableau ; la
+    /// prochaine tentative devra commencer par une mesure, pas par une
+    /// intuition.
     public var registers: [UInt64]
     /// RFLAGS, dont seuls les six de l'arithmétique nous occupent ici.
     public var flags: UInt64
     /// Où le cœur en est.
     public var rip: UInt64
+    /// La mémoire de l'invité. Absente, toute forme mémoire est refusée plutôt
+    /// qu'approximée.
+    public var memory: X86Memory?
+    /// Les octets sortis par le port série, dans l'ordre.
+    public var serialOutput: [UInt8] = []
+    /// Combien d'instructions ont été exécutées. C'est ce compteur qui donne
+    /// le chiffre de vitesse.
+    public var retired: UInt64 = 0
+    /// Vrai quand l'invité a exécuté `HLT`.
+    public var halted = false
+    /// Les registres de contrôle, les MSR, et de quoi traduire une adresse.
+    public var system = X86SystemState()
+    /// Les six sélecteurs de segment : ES, CS, SS, DS, FS, GS. En mode long
+    /// leurs bases valent zéro sauf pour FS et GS, qui les prennent dans des
+    /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
+    /// charge quand même dès son entrée, et refuser l'instruction l'arrêterait
+    /// là.
+    public var segments = [UInt16](repeating: 0, count: 6)
+    /// La pagination est-elle allumée ? Gardé à part, et pas relu dans `system`
+    /// à chaque accès mémoire : la question se pose plusieurs fois par
+    /// instruction et la réponse ne change qu'à l'écriture de CR0. La lire
+    /// depuis le tableau des registres de contrôle coûtait **13 %** du débit,
+    /// pagination éteinte comprise.
+    var pagingActive = false
+    /// Où le noyau a dit que ses tables de descripteurs se trouvent : GDT puis
+    /// IDT. Notées et rendues telles quelles ; rien ne les lit encore.
+    public var descriptorTables = [UInt64](repeating: 0, count: 2)
+    /// Les deux seuls mots d'état x87 qui existent ici : ceux que la séquence
+    /// de détection de Linux range et relit. Voir `minimalX87`.
+    public var x87Status: UInt16 = 0
+    public var x87Control: UInt16 = 0x037F
+    /// Le cache de traduction : étiquettes et cadres, côte à côte.
+    var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
+    var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
 
     public init(registers: [UInt64] = [UInt64](repeating: 0, count: 16),
-                flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0) {
+                flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,
+                memory: X86Memory? = nil) {
         precondition(registers.count == 16, "un x86-64 a seize registres généraux")
         self.registers = registers
         self.flags = flags
         self.rip = rip
+        self.memory = memory
     }
 
     /// Les bits de RFLAGS que ce cœur pose ou lit.
@@ -51,6 +98,14 @@ public struct X86Core: Equatable, Sendable {
         public static let auxiliary: UInt64 = 1 << 4
         public static let zero: UInt64 = 1 << 6
         public static let sign: UInt64 = 1 << 7
+        /// Le masque d'interruption. Ce cœur n'interrompt rien encore, mais un
+        /// noyau pose et lit ce bit dès sa première ligne.
+        public static let interrupt: UInt64 = 1 << 9
+        /// La direction des opérations sur chaînes : vers le haut ou vers le
+        /// bas. `CLD` est très souvent la toute première instruction d'un
+        /// noyau, parce qu'il ne peut pas faire confiance à ce que le chargeur
+        /// a laissé.
+        public static let direction: UInt64 = 1 << 10
         public static let overflow: UInt64 = 1 << 11
         /// Les six que l'arithmétique touche, réunis.
         public static let arithmetic: UInt64 = carry | parity | auxiliary | zero | sign | overflow
@@ -61,6 +116,12 @@ public struct X86Core: Equatable, Sendable {
         case unsupported(String)
         /// Une division par zéro, ou dont le quotient ne tient pas.
         case divideError
+        /// Une adresse virtuelle qu'aucune table de pages ne traduit.
+        case pageFault(UInt64)
+        /// Une adresse **physique** en dehors de la mémoire de l'invité. Ce
+        /// n'est pas la même chose qu'une faute de page, et les confondre fait
+        /// chercher au mauvais endroit.
+        case outsideMemory(UInt64)
     }
 
     // MARK: - Les registres, et les quatre largeurs
@@ -134,6 +195,27 @@ public struct X86Core: Equatable, Sendable {
 
     // MARK: - Exécuter
 
+    /// Lire l'instruction à RIP, l'exécuter, et recommencer — jusqu'à `budget`
+    /// instructions, ou jusqu'à un `HLT`, ou jusqu'à une faute.
+    ///
+    /// C'est cette boucle qui sera mesurée : elle ne fait rien d'autre que
+    /// décoder et exécuter, donc le chiffre qui en sort est celui de
+    /// l'interprète.
+    @discardableResult
+    public mutating func run(budget: UInt64) throws -> UInt64 {
+        guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
+        var executed: UInt64 = 0
+        while executed < budget && !halted {
+            let physical = try translate(rip)
+            guard let start = memory.offset(physical, 1) else { throw Fault.pageFault(rip) }
+            let available = min(X86Instruction.maximumLength, memory.size - start)
+            let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
+            try execute(instruction)
+            executed += 1
+        }
+        return executed
+    }
+
     /// Exécute l'instruction et avance RIP de ce qui a été lu.
     ///
     /// **Un refus n'avance pas.** La première version avançait dans un
@@ -144,15 +226,28 @@ public struct X86Core: Equatable, Sendable {
     /// gestionnaire doit pouvoir regarder.
     public mutating func execute(_ instruction: X86Instruction) throws {
         try perform(instruction)
-        rip &+= UInt64(instruction.length)
+        // Un branchement a déjà posé RIP où il fallait ; il le signale en
+        // laissant `jumped` à vrai plutôt qu'en renvoyant une valeur, pour que
+        // le chemin normal — l'écrasante majorité — ne coûte rien.
+        if jumped {
+            jumped = false
+        } else {
+            rip &+= UInt64(instruction.length)
+        }
+        retired &+= 1
     }
+
+    /// Vrai le temps d'une instruction qui a posé RIP elle-même.
+    var jumped = false
+    /// L'adresse que le dernier ModRM a désignée, calculée une seule fois.
+    var lastAddress: UInt64 = 0
 
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
     static func operandSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
         if byteForm { return 1 }
         if let rex = instruction.rex, rex & 0x08 != 0 { return 8 }
-        return instruction.legacyPrefixes.contains(0x66) ? 2 : 4
+        return instruction.hasPrefix(0x66) ? 2 : 4
     }
 
     struct Fields {
@@ -162,6 +257,16 @@ public struct X86Core: Equatable, Sendable {
         /// Vrai quand un index de 4 à 7 désigne l'octet **haut** d'un registre.
         let regIsHighByte: Bool
         let rmIsHighByte: Bool
+    }
+
+    /// Les champs du ModRM, **et** l'adresse qu'ils désignent quand ce n'est
+    /// pas un registre. Les deux ensemble parce que l'adresse dépend de l'état
+    /// d'avant l'instruction : la calculer plus tard, après une écriture,
+    /// donnerait autre chose.
+    mutating func decodeFields(_ instruction: X86Instruction, size: Int) throws -> Fields {
+        let fields = try X86Core.fields(instruction, size: size)
+        if fields.mod != 0b11 { lastAddress = try effectiveAddress(instruction, fields) }
+        return fields
     }
 
     static func fields(_ instruction: X86Instruction, size: Int) throws -> Fields {
@@ -179,14 +284,18 @@ public struct X86Core: Equatable, Sendable {
     }
 
     mutating func perform(_ instruction: X86Instruction) throws {
-        guard instruction.vex.isEmpty else {
+        guard instruction.vexCount == 0 else {
             throw Fault.unsupported("une instruction vectorielle")
         }
         let opcode = instruction.opcode
 
         switch instruction.map {
         case .oneByte: try oneByte(instruction, opcode)
-        case .twoByte: try twoByte(instruction, opcode)
+        case .twoByte:
+            // Les instructions système d'abord : elles occupent des octets que
+            // la table ordinaire ne connaît pas.
+            if try systemInstruction(instruction, opcode) { return }
+            try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
     }
