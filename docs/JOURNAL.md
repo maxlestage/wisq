@@ -8,6 +8,96 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~07h UTC — ce qu'une VM éteinte sait déjà d'elle-même
+
+Le vrai libvirt monté à la tranche précédente sert encore. Deux questions
+posées au démon réel, deux réponses qui n'allaient pas de soi.
+
+**Une VM arrêtée ne disait rien de sa console.** `domdisplay` refuse un
+domaine arrêté (*error: Domain is not running*), donc le démon ne renvoyait ni
+port ni protocole — alors que `dumpxml --inactive` porte le
+`<graphics type='spice'>` noir sur blanc. Côté téléphone, `AgentImportView`
+comble le vide par `.vnc` : importer une VM SPICE éteinte l'enregistrait comme
+une machine VNC, et s'y connecter plus tard sans passer par l'agent parlait
+RFB à un serveur SPICE. Le démon lit maintenant la définition quand — et
+seulement quand — le domaine ne tourne pas : un appel `virsh` de plus par VM
+éteinte, aucun par VM allumée. Le port, lui, reste absent : il n'existe pas
+encore, et l'inventer serait pire.
+
+**Et le guide se trompait sur l'attente.** Il annonçait que `running` sans
+port « dure des dizaines de secondes ». Mesuré : la réponse au `POST /start`
+porte **déjà** `consolePort: 5902`. libvirt ouvre le port à la création du
+domaine ; ce qui prend des dizaines de secondes, c'est l'invité qui démarre
+derrière. L'écran existe avant d'avoir quoi que ce soit à montrer, et c'est
+une phrase différente à écrire pour quelqu'un qui attend devant.
+
+### Le test qui ne tenait rien
+
+Le cinquième sabordage a refusé de mordre, et il avait raison. J'avais écrit
+« une VM qui tourne ne doit pas payer d'appel `dumpxml` » avec un faux `virsh`
+qui échouait sur `dumpxml` — un appel supplémentaire dont le résultat est
+jeté ne change aucune assertion. Le test ne tenait rien.
+
+Réécrit sur une affirmation qui existe : **une VM qui tourne est décrite par
+son affichage vivant, pas par sa définition.** Les deux peuvent diverger — un
+domaine modifié pendant qu'il tourne sert encore ce avec quoi il a démarré —
+alors le faux `virsh` se contredit exprès, définition en VNC et affichage en
+SPICE, et la réponse doit être la vivante. Ce test-là mord, et il mord aussi
+sur trois autres sabordages, ce qui est le signe qu'il touche le chemin
+principal plutôt qu'un recoin.
+
+Vérifié contre le vrai libvirt, quatre domaines : une VM SPICE allumée (port
+5900), une seconde (5901), une VM éteinte à double affichage (`spice`, sans
+port), une VM éteinte sans affichage du tout (ni l'un ni l'autre).
+
+## 2026-09-03, ~06h30 UTC — un vrai libvirt, deux vraies VM, et un port faux
+
+Les deux tranches précédentes ont été jugées contre un faux `virsh`. Ce
+conteneur peut faire mieux : `libvirt-daemon-system` et `qemu-system-x86`
+s'installent, `libvirtd` démarre avec `virtlogd`, et QEMU tourne en émulation
+pure — sans KVM, mais le serveur SPICE existe et écoute, ce qui est tout ce
+qu'il faut pour juger le chemin de l'agent.
+
+Le défaut de la première tranche reproduit sur le vrai logiciel :
+
+```
+virsh domdisplay --all ubuntu-test   →  spice://localhost:5900
+virsh vncdisplay      ubuntu-test    →  error: Failed to get VNC port.
+                                         Is this domain using VNC?
+```
+
+Et le vrai binaire `wisq-agent`, lancé contre ce vrai libvirt, publie
+maintenant ce que le téléphone attendait :
+
+```json
+[{"consolePort":5900,"consoleProtocol":"spice","id":"ubuntu-test", …},
+ {"consolePort":5901,"consoleProtocol":"spice","id":"second-vm", …}]
+```
+
+### Le troisième défaut, que seule la mesure pouvait montrer
+
+`RemoteProtocol.spice.defaultPort` valait **5930**. C'est le nombre des
+exemples `-spice port=` de la documentation de QEMU, et ce n'est pas ce
+qu'écoute un hôte construit comme notre propre guide le décrit : libvirt
+attribue **5900**, puis 5901, vérifié à `ss -ltn` sur les deux VM.
+
+Il ne joue pas sur le chemin de l'agent, où le port vient de `domdisplay` ; il
+joue sur le seul cas où wisq doit deviner, quelqu'un qui tape un hôte à la
+main, et il devinait contre l'hôte que nous recommandons.
+
+**Et j'allais écrire ici qu'aucun test ne le tenait.** C'était faux :
+`MachineStoreTests.testDefaultPortFollowsTheProtocol` épinglait 5930, et ma
+recherche l'avait manqué parce qu'elle cherchait `defaultPort` et le littéral
+dans les mêmes fichiers plutôt que le littéral partout. C'est la suite qui
+l'a dit, en rougissant au premier sabordage — la base n'était pas verte, donc
+la vérification s'est arrêtée avant de commencer. Un test épinglait bien le
+mauvais nombre ; le nombre était mauvais quand même.
+
+Les trois ports par défaut sont maintenant énoncés dans `DefaultPortTests`,
+qui dit d'où vient chacun, parce qu'aucun des trois ne se dérive : ils se
+mesurent. Le test du magasin garde ses littéraux — deux énoncés indépendants
+du même nombre, c'est la garde, pas une redite.
+
 ## 2026-09-03, ~06h UTC — et l'éditeur disait « SPICE (bientôt) »
 
 La tranche précédente a rendu les VM SPICE joignables par l'agent. En regardant

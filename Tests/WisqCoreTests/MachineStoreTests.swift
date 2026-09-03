@@ -91,9 +91,15 @@ final class MachineStoreTests: XCTestCase {
         XCTAssertEqual(try MachineStore(fileURL: fileURL).load().count, 0)
     }
 
+    /// A machine created without a port inherits its protocol's default.
+    ///
+    /// The numbers are repeated here rather than read from `defaultPort`,
+    /// which would make the assertion tautological; `DefaultPortTests` says
+    /// where each one comes from. SPICE said 5930 until a real libvirt was
+    /// measured — it allocates from 5900.
     func testDefaultPortFollowsTheProtocol() {
         XCTAssertEqual(Machine(name: "a", host: "h", proto: .rdp).port, 3389)
-        XCTAssertEqual(Machine(name: "a", host: "h", proto: .spice).port, 5930)
+        XCTAssertEqual(Machine(name: "a", host: "h", proto: .spice).port, 5900)
         XCTAssertEqual(Machine(name: "a", host: "h", port: 5905, proto: .vnc).port, 5905)
     }
 }
