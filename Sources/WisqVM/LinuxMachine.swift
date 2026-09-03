@@ -35,17 +35,23 @@ public final class LinuxMachine: @unchecked Sendable {
 
     /// Why a file is refused, in the terms of the machine that refuses it.
     ///
-    /// It lives here, with the two numbers it names, rather than in the view
-    /// that shows it: the sentence is about this machine's memory, and a copy
-    /// written next to a button would drift from `maximumKernelImageBytes` the
-    /// first time that changes. It also makes the wording testable on every
-    /// platform, where the app layer only runs in a simulator.
+    /// It lives here, with the number it names, rather than in the view that
+    /// shows it: the sentence is about this machine's memory, and a copy
+    /// written next to a button would drift from `ramSize` the first time that
+    /// changes. It also makes the wording testable on every platform, where
+    /// the app layer only runs in a simulator.
     ///
-    /// It names both sizes because only the pair explains anything — a file is
-    /// not "too big" in the abstract, it is bigger than the RAM of the machine
-    /// meant to hold it — and it says where a real distribution belongs,
-    /// because someone who arrives with one has learned the useful thing only
-    /// when they know that.
+    /// It sets the file's size against the machine's, because a file is not
+    /// "too big" in the abstract — it is bigger than the RAM meant to hold it —
+    /// and it says where a real distribution belongs, because someone who
+    /// arrives with one has learned the useful thing only when they know that.
+    ///
+    /// **One number for the machine, not two.** The first draft also quoted the
+    /// share left for the kernel, and a sabotage refused to bite: that share is
+    /// 1728 bytes short of the whole, so at one decimal both render `64.0 Mo`.
+    /// The sentence read "n'a que 64.0 Mo de mémoire au total, dont 64.0 Mo
+    /// pour le noyau" — a typo to a reader, and two facts no test could tell
+    /// apart, since it found either number by looking for the other.
     public static func tooLargeExplanation(size: Int, name: String) -> String {
         let mega = { (bytes: Int) in String(format: "%.1f", Double(bytes) / 1_048_576) }
         // Un seul chiffre pour la machine, pas deux. La part réservée au

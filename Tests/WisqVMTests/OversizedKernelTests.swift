@@ -50,6 +50,25 @@ final class OversizedKernelTests: XCTestCase {
             "la mémoire de la machine doit être dite, et dite comme le total")
         XCTAssertTrue(message.contains("rv32ima"), "et ce que cette machine est")
         XCTAssertTrue(message.contains("hôte"), "et où faire tourner une distribution")
+        // La part réservée au noyau ne doit plus être citée : le test suivant
+        // dit pourquoi, et sans cette ligne un retour en arrière passerait.
+        XCTAssertFalse(
+            message.contains("pour le noyau"),
+            "un second nombre que rien ne distingue du premier ne se lit pas")
+    }
+
+    /// La raison, mesurée, pour que personne ne réintroduise le second nombre
+    /// en croyant qu'il apporte quelque chose.
+    ///
+    /// C'est ce test qui manquait quand un sabordage a refusé de mordre :
+    /// remplacer le total par une autre expression laissait la phrase contenir
+    /// « 64.0 Mo » de toute façon, par l'autre nombre. Le défaut n'était pas
+    /// dans la garde, il était dans la phrase.
+    func testTheKernelShareIsIndistinguishableFromTheTotalAtOneDecimal() {
+        let mega = { (bytes: Int) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+        XCTAssertEqual(
+            mega(Int(LinuxMachine.ramSize)), mega(LinuxMachine.maximumKernelImageBytes),
+            "les deux tailles s'affichent pareil : en citer deux tromperait")
     }
 
     /// Le vide aussi est refusé : il n'y a pas de noyau de zéro octet.
