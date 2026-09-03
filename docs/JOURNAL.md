@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~09h25 UTC — le build est parti
+
+Exécution n° 12 de `testflight.yml`, sur `45b78eb` : **succès**. L'archive
+signée est chez Apple. Quatre minutes en tout, de la clé à l'envoi.
+
+Le compte des refus, dans l'ordre où ils sont tombés, parce que chacun a
+appris quelque chose :
+
+| refus | ce qu'il a appris |
+|---|---|
+| `Signing for "Wisq" requires a development team` | l'équipe ne se déduit pas de la clé ; le `seedId` d'un identifiant d'application **est** l'identifiant d'équipe (#152) |
+| `fiche d'application […] ABSENTE` | l'API App Store Connect refuse `CREATE` sur `/v1/apps` : la seule étape qu'aucune automatisation ne prend |
+| `90475` écran de lancement | `xcodegen` **écrit** le fichier nommé par `info.path` (#159) |
+| `90474` orientations absentes | le même défaut, la même cause |
+| `90474` orientations incomplètes | trois sur quatre ne suffisent pas au multitâche iPad (#160) |
+
+Ce que le dernier refus rend visible : les deux premiers échecs de validation
+ne disaient pas la même chose. « Absentes » venait de l'Info.plist effacé ;
+« incomplètes » venait d'une décision de produit écrite au mauvais endroit.
+Le premier était un défaut d'outillage, le second un défaut de raisonnement,
+et seul le vrai envoi pouvait les distinguer.
+
+**La leçon coûteuse de la matinée** reste #159 : une application peut se
+construire, passer sa suite de tests dans un simulateur, s'installer, et
+n'avoir aucun des services que son manifeste croit déclarer. Le simulateur
+n'a besoin ni d'un schéma d'URL, ni de Bonjour, ni d'une permission de réseau
+local. Ce qui n'est exercé que par un vrai envoi ne se vérifie que par un
+vrai envoi — et le premier a eu lieu six semaines après le début du projet.
+
 ## 2026-09-03, ~08h30 UTC — l'application n'avait jamais eu son Info.plist
 
 Maxime a créé la fiche App Store Connect. L'envoi est parti pour de vrai :
