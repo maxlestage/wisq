@@ -2709,57 +2709,88 @@ habitude.
      matériel ne peut pas produire de faute sans tuer son harnais, donc c'est
      ici le seul endroit du cœur qui ne soit pas prouvé contre la machine.
 
-   - **La tentative, et où elle en est.** `X86BootAttemptTests` charge le vrai
-     noyau d'Alpine, pose une pagination d'identité sur quatre gibioctets en
-     pages de un gibioctet, entre en mode long et saute.
+   - **3e. Les briques que le vrai noyau a demandées** — *fait*. Aucune n'a
+     été choisie sur une liste : chacune est l'instruction sur laquelle la
+     tentative de démarrage s'est arrêtée. Dans l'ordre où le noyau les a
+     réclamées :
 
-     **Avant la livraison d'exception** : 538 976 instructions, puis une faute
-     de page à 0x0D000000 sous les tables du noyau. La question ouverte était
-     de savoir si elle venait du noyau ou d'une divergence de ce cœur, et la
-     réponse n'a **pas** demandé de différentiel contre QEMU : il a suffi de
-     lire l'IDT que le noyau avait chargée. Limite 0x1FF, base 0x3282050, et
-     un seul vecteur présent — le quatorze, ciblant du code qui commence par
-     la séquence d'empilement de `boot_idt_handler`. Le noyau **disait** qu'il
-     savait traiter cette faute ; personne ne la lui rendait.
+     **L'octet haut lu par une instruction plus large que lui.** Sans REX,
+     l'index 101 d'un opérande d'un octet désigne CH, pas BPL. Le cœur le
+     savait — mais il décidait avec la largeur du **destinataire**, prise du
+     champ avec lequel les champs de ModRM avaient été décodés. Or `MOVZX` et
+     `MOVSX` ont deux largeurs : `0F B6 FD`, c'est-à-dire `movzbl %ch,%edi`,
+     lisait donc BPL. Le décompresseur de Linux s'en sert pour construire le
+     motif de seize bits avec lequel il remplit les suites d'octets
+     identiques : **un octet sur deux du noyau décompressé était faux**, et le
+     premier à s'en apercevoir a été `parse_elf`, qui a lu `0x0007000700070040`
+     là où le fichier dit `0x40`.
 
-     **Après** : la boucle demande-livre-cartographie-reprend tourne, et le
-     décompresseur écrit le noyau à 0x0D000000. Mesuré : **494 661 172
-     instructions** — 38,8 s en release, soit 12,7 MIPS —, puis un arrêt sur
-     un accès **hors de la mémoire de l'invité**, à l'adresse physique
-     0x700070D070040, dans un `rep movsq`. Neuf cent dix-huit fois plus loin
-     qu'avant. L'adresse est absurde, donc quelque chose l'a calculée de
-     travers ; c'est la prochaine chose à chercher, et elle est nommée plutôt
-     que devinée. Le chemin parcouru est réel — la séquence qui avait arrêté le cœur
-     encore avant (`fninit ; fnstsw ; fnstcw`) a été désassemblée plutôt que
-     devinée : c'est celle par laquelle Linux détecte un coprocesseur. Chaque
-     arrêt a nommé la brique suivante, et c'est comme ça que `CLD`/`CLI`, les
-     segments, le retour lointain, `PUSHF`/`POPF`, les opérations sur chaînes,
-     trois instructions x87, la carte E820 puis la livraison d'exception sont
-     arrivés — dans cet ordre, dicté par le noyau et non par une liste.
+     L'oracle matériel ne l'attrapait pas, parce que toutes ses formes à octet
+     haut avaient leurs deux opérandes de la même largeur. Il porte maintenant
+     les vingt-quatre formes de `MOVZX`/`MOVSX` à octet haut, et **222 cas**
+     tombent quand on remet le défaut. Pas de destination de soixante-quatre
+     bits : elle demanderait REX.W, et REX est justement ce qui change AH en
+     SPL — l'assembleur refuse, ce qui est la meilleure preuve que les deux
+     noms ne peuvent pas coexister.
 
-     **Ce qui n'est toujours pas établi** : où ça finit. Écrire « le noyau
-     démarre » serait faux tant que rien n'est sorti du port série. Deux
-     choses restent nommées devant : l'adresse absurde ci-dessus, et — après
-     la décompression — le vrai noyau, qui voudra un contrôleur
-     d'interruptions, une horloge et une console.
+     **`ENDBR64`**, la balise de CET, que le noyau pose à l'entrée de chaque
+     fonction. Un NOP sur un processeur qui n'annonce pas la technologie ; la
+     refuser arrêtait le noyau à sa **toute première** instruction.
 
-     **Un défaut attrapé au passage, et il vaut d'être écrit.** La livraison
-     posait le drapeau qu'un branchement utilise pour dire « RIP est déjà où
-     il faut ». Mais elle a lieu *après* que l'exécution a levé, donc personne
-     ne le lisait — sauf la première instruction du gestionnaire, qui le
-     trouvait encore posé et **s'exécutait deux fois**. Chez Linux c'est un
-     `push` : huit octets de trop, et l'`IRETQ` repartait sur le code d'erreur
-     au lieu de l'adresse de reprise. Le noyau sautait à 0x2. Le test de bout
-     en bout ne l'attrapait pas non plus au début, parce que son gestionnaire
-     commençait par une instruction idempotente ; il compte maintenant ses
-     propres entrées.
+     **Les bases de FS et GS.** En mode long, seuls ces deux segments en ont
+     encore une, et elle vient d'un MSR plutôt que d'un descripteur. C'est le
+     mécanisme des variables par processeur : un cœur qui ignore le préfixe
+     `%gs:` lit l'adresse **sans** la base, c'est-à-dire au début de la
+     mémoire, sans rien signaler. Avec `SWAPGS`, qui l'échange avec celle que
+     le noyau garde de côté.
 
-     **La carte mémoire E820** de la page zéro a compté avant ça : sans elle,
-     le noyau croit n'avoir aucune RAM. L'ajouter a déplacé l'arrêt **et
-     changé sa nature** — d'un accès hors de la mémoire de l'invité à une
-     vraie faute de traduction, ce qui voulait dire que le noyau tournait
-     désormais dans ses propres tables. Les deux fautes portent des noms
-     différents, parce que les confondre fait chercher au mauvais endroit.
+     **`CMPXCHG` et `XADD`**, dont toutes les serrures d'un noyau sont faites.
+     `LOCK` n'ajoute rien ici : un seul cœur, rien à exclure. Les deux sont
+     tenues par l'oracle matériel, aux quatre largeurs.
+
+     **Les registres de débogage, `INVLPG`, `PREFETCH` et les NOP réservés du
+     groupe 16.** Notés, vidés, ignorés — dans cet ordre. `INVLPG` vide tout le
+     cache de traduction plutôt qu'une page : plus lent, jamais faux.
+
+     Douze tests écrits à la main dans `X86KernelBricksTests`, plus ce que
+     l'oracle a gagné. **9 036 → 9 804 cas** contre le vrai processeur.
+
+   - **La tentative : Linux démarre.** `X86BootAttemptTests` charge le vrai
+     noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une pagination
+     d'identité, entre en mode long et saute. Le noyau se décompresse, entre
+     dans son propre espace d'adressage, et **écrit sur le port série de
+     wisq** :
+
+     ```
+     [    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
+     [    0.000000] CPU: vendor_id 'wisq  x86-64' unknown, using generic init.
+     [    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000000fffffff] usable
+     [    0.000000] Memory: 218360K/261752K available (14336K kernel code, …)
+     [    0.000000] printk: console [ttyS0] enabled
+     [    0.000000] Failed to register legacy timer interrupt
+     ```
+
+     **Presque cinq mille octets de journal**, et un arrêt que le noyau nomme
+     lui-même : il n'y a ni PIT ni APIC, donc aucune horloge ne bat et il
+     tourne en rond dans une boucle d'attente. La tranche suivante est écrite
+     dans ce message d'erreur.
+
+     Deux milliards d'instructions en **142,9 s**, soit **14,0 MIPS** sur du
+     vrai code de noyau — un chiffre plus honnête que celui du banc, qui
+     tourne sur une boucle choisie.
+
+     **Ce qui a rendu tout ça visible** : `earlyprintk=serial` dans la ligne de
+     commande. `console=ttyS0` seul n'ouvre la console qu'une fois le pilote
+     série chargé, c'est-à-dire après tout ce qui aurait pu mal tourner avant.
+     Sans `earlyprintk`, un démarrage qui échoue à mi-chemin ne dit rien du
+     tout. C'est la différence entre « ça s'arrête quelque part » et une
+     bannière suivie d'un message d'erreur nommé.
+
+     **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
+     jamais l'inverse. `CLD`/`CLI`, les segments, le retour lointain,
+     `PUSHF`/`POPF`, les opérations sur chaînes, trois instructions x87, la
+     carte E820, la livraison d'exception, puis les six briques ci-dessus.
+     Aucune n'a été écrite « au cas où ».
 
      Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le

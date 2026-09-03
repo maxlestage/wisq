@@ -285,7 +285,20 @@ public struct X86Core: @unchecked Sendable {
         let reg: Int
         let rm: Int
         let mod: UInt8
-        /// Vrai quand un index de 4 à 7 désigne l'octet **haut** d'un registre.
+        /// Vrai quand un index de 4 à 7 désignerait l'octet **haut** d'un
+        /// registre — c'est-à-dire quand il n'y a pas de REX. Ce sont AH, CH,
+        /// DH, BH sans REX, et SPL, BPL, SIL, DIL avec.
+        ///
+        /// **Ce drapeau ne dit rien de la largeur**, et c'est le corrigé d'un
+        /// défaut : il la portait, prise du champ `size` avec lequel les
+        /// champs avaient été décodés. Or une instruction peut avoir deux
+        /// largeurs — `MOVZX`/`MOVSX` lisent un octet et écrivent quatre — et
+        /// c'est la largeur du **destinataire** qui servait. `0F B6 FD`,
+        /// c'est-à-dire `movzbl %ch,%edi`, lisait donc BPL. Le décompresseur
+        /// de Linux s'en sert pour construire son motif de seize bits, et
+        /// l'octet faux se retrouvait une fois sur deux dans le noyau
+        /// décompressé. Ce sont `read` et `write` qui décident maintenant,
+        /// chacun avec la largeur de **son** opérande.
         let regIsHighByte: Bool
         let rmIsHighByte: Bool
     }
@@ -294,13 +307,13 @@ public struct X86Core: @unchecked Sendable {
     /// pas un registre. Les deux ensemble parce que l'adresse dépend de l'état
     /// d'avant l'instruction : la calculer plus tard, après une écriture,
     /// donnerait autre chose.
-    mutating func decodeFields(_ instruction: X86Instruction, size: Int) throws -> Fields {
-        let fields = try X86Core.fields(instruction, size: size)
+    mutating func decodeFields(_ instruction: X86Instruction) throws -> Fields {
+        let fields = try X86Core.fields(instruction)
         if fields.mod != 0b11 { lastAddress = try effectiveAddress(instruction, fields) }
         return fields
     }
 
-    static func fields(_ instruction: X86Instruction, size: Int) throws -> Fields {
+    static func fields(_ instruction: X86Instruction) throws -> Fields {
         guard let modrm = instruction.modrm else {
             throw Fault.unsupported("une instruction sans ModRM là où il en faut un")
         }
@@ -310,8 +323,8 @@ public struct X86Core: @unchecked Sendable {
         let noRex = instruction.rex == nil
         return Fields(
             reg: reg, rm: rm, mod: modrm >> 6,
-            regIsHighByte: size == 1 && noRex && (4...7).contains(Int((modrm >> 3) & 0x07)),
-            rmIsHighByte: size == 1 && noRex && (4...7).contains(Int(modrm & 0x07)))
+            regIsHighByte: noRex && (4...7).contains(Int((modrm >> 3) & 0x07)),
+            rmIsHighByte: noRex && (4...7).contains(Int(modrm & 0x07)))
     }
 
     mutating func perform(_ instruction: X86Instruction) throws {

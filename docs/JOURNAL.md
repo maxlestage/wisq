@@ -8,6 +8,97 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~23h00 UTC — Linux démarre
+
+Maxime : « Vas plus vite que jamais ! ». #172 fusionné (sept vérifications
+vertes), et la suite écrite dans la foulée. Voici la sortie du **vrai noyau
+d'Alpine 3.20**, Linux 6.6.134-0-lts, sur le port série de wisq :
+
+```
+[    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
+[    0.000000] CPU: vendor_id 'wisq  x86-64' unknown, using generic init.
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000000fffffff] usable
+[    0.000000] Memory: 218360K/261752K available (14336K kernel code, …)
+[    0.000000] printk: console [ttyS0] enabled
+[    0.000000] Failed to register legacy timer interrupt
+```
+
+Presque cinq mille octets de journal. L'arrêt est nommé par le noyau lui-même :
+il n'y a ni PIT ni APIC, donc aucune horloge ne bat et il tourne en rond dans
+une boucle d'attente. La tranche suivante est écrite dans ce message d'erreur.
+
+Deux milliards d'instructions en 142,9 s, soit **14,0 MIPS** sur du vrai code
+de noyau — plus honnête que le chiffre du banc, qui tourne sur une boucle
+choisie.
+
+### Le défaut qui a coûté un noyau
+
+Le cœur s'arrêtait sur un `rep movsq` vers 0x700070D070040, une adresse
+absurde. En remontant : elle venait de `e_phoff`, le champ de l'en-tête ELF du
+noyau décompressé, qui valait `0x0007000700070040` là où le fichier dit `0x40`.
+Donc ce n'était pas une instruction fausse, c'était **le noyau décompressé qui
+était faux**.
+
+J'ai décompressé le même noyau ici, en Python, et comparé octet par octet. Le
+premier écart est à l'offset 8, et le motif est net : un octet sur deux vaut
+0x07 là où le fichier a 0x00.
+
+En attrapant l'écriture : `66 43 89 0c 43`, c'est-à-dire un rangement de seize
+bits de CX. Et CX venait de `0F B6 C5` — `movzbl %ch,%eax`. **Sans REX, l'index
+101 de l'opérande r/m désigne CH, pas BPL.** Le cœur le savait, mais il
+décidait avec la largeur du **destinataire**, prise du champ avec lequel les
+champs de ModRM avaient été décodés. Or `MOVZX` a deux largeurs. Il lisait donc
+BPL.
+
+Le décompresseur de Linux s'en sert pour construire le motif de seize bits avec
+lequel il remplit les suites d'octets identiques. Un octet sur deux du noyau
+décompressé était faux — silencieusement, sur dix mégaoctets, jusqu'à ce que
+`parse_elf` lise un champ absurde.
+
+**Ce que l'oracle matériel ne voyait pas.** Il portait déjà six formes à octet
+haut, mais toutes avec leurs deux opérandes de la même largeur. Il porte
+maintenant les vingt-quatre formes de `MOVZX`/`MOVSX` à octet haut : remettre
+le défaut fait tomber **222 cas**. Pas de destination de soixante-quatre bits —
+elle demanderait REX.W, et REX est justement ce qui change AH en SPL ;
+l'assembleur refuse, ce qui est la meilleure preuve que les deux noms ne
+peuvent pas coexister dans une instruction.
+
+### Les cinq briques suivantes, toutes nommées par le noyau
+
+`ENDBR64` (la balise de CET, que le noyau pose à l'entrée de chaque fonction —
+la refuser l'arrêtait à sa toute première instruction) ; **les bases de FS et
+GS**, qui en mode long viennent d'un MSR et portent les variables par
+processeur, avec `SWAPGS` ; `CMPXCHG` et `XADD`, dont toutes les serrures d'un
+noyau sont faites, et que l'oracle matériel tient aux quatre largeurs ; les
+registres de débogage ; `INVLPG`, `PREFETCH` et les NOP réservés du groupe 16.
+
+Aucune n'a été écrite « au cas où ». Chacune est l'instruction sur laquelle la
+tentative s'arrêtait.
+
+### Ce qui a rendu tout ça visible
+
+`earlyprintk=serial` dans la ligne de commande, désormais le défaut du
+chargeur. `console=ttyS0` seul n'ouvre la console qu'une fois le pilote série
+chargé — après quelques centaines de millions d'instructions, et après tout ce
+qui aurait pu mal tourner avant. Sans `earlyprintk`, un démarrage qui échoue à
+mi-chemin ne dit rien du tout.
+
+Le noyau ne parlait pas parce qu'on ne lui avait pas demandé de parler tôt.
+Trois mots dans la ligne de commande valaient plus que le harnais de
+comparaison contre QEMU que j'avais prévu de construire.
+
+### Ce qui est tenu, et par quoi
+
+**1 431 tests Swift**, 101 en Rust. Douze nouveaux dans `X86KernelBricksTests`,
+un dans `X86BootLoaderTests` pour la ligne de commande, et l'oracle passé de
+**9 036 à 9 804 cas** contre le vrai processeur. Dix sabotages, dix attrapés
+par le test nommé.
+
+Et la tentative de démarrage n'est plus un simple rapport : elle **exige** la
+bannière et l'ouverture de la console. C'est un contrat, pas un renseignement.
+
+---
+
 ## 2026-09-03, ~22h15 UTC — le noyau disait savoir traiter sa faute ; personne ne la lui rendait
 
 Maxime : « Vas plus vite que jamais ! ». #171 fusionné (sept vérifications

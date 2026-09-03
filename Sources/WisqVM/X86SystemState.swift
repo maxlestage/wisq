@@ -12,6 +12,11 @@ public struct X86SystemState: Equatable, Sendable {
     /// CR0, CR2, CR3, CR4 et CR8, indexés par leur numéro. CR1, CR5 à CR7 et
     /// CR9 à CR15 n'existent pas.
     public var control = [UInt64](repeating: 0, count: 16)
+    /// Les huit registres de débogage. Notés et rendus, jamais consultés : ce
+    /// cœur ne pose pas de point d'arrêt matériel. Un noyau les remet à zéro
+    /// dès son démarrage — refuser l'instruction l'arrêterait là, pour un
+    /// registre dont il n'attend rien d'autre que d'être écrit.
+    public var debug = [UInt64](repeating: 0, count: 8)
     /// Les registres de modèle. Peu nombreux en pratique, donc un dictionnaire :
     /// il n'est lu que par `RDMSR` et `WRMSR`, jamais sur le chemin chaud.
     public var modelSpecific: [UInt32: UInt64] = [:]
@@ -25,6 +30,14 @@ public struct X86SystemState: Equatable, Sendable {
     /// EFER, et les deux bits qui y comptent : LME (mode long demandé) et LMA
     /// (mode long actif).
     public static let efer: UInt32 = 0xC000_0080
+    /// Les bases de FS et GS. En mode long ce sont les deux seuls segments qui
+    /// en aient encore une, et elle vit dans un MSR plutôt que dans un
+    /// descripteur.
+    public static let fsBase: UInt32 = 0xC000_0100
+    public static let gsBase: UInt32 = 0xC000_0101
+    /// Celle que `SWAPGS` met de côté : le noyau y garde la sienne pendant que
+    /// l'espace utilisateur tourne, et les échange à chaque passage.
+    public static let kernelGSBase: UInt32 = 0xC000_0102
     public static let longModeEnable: UInt64 = 1 << 8
     public static let longModeActive: UInt64 = 1 << 10
 
