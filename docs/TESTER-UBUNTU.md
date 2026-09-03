@@ -129,6 +129,7 @@ attendait sans fin.
 | Envoyer un fichier | bouton ⬆ dans la barre de session | le fichier arrive là où `spice-vdagent` range ce qu'il reçoit (le dossier Téléchargements de la session), lu sur le téléphone par tranches de 64 Kio — un fichier de plusieurs Go passe |
 | Éteindre | glissement sur la machine → Éteindre | arrêt ACPI ; l'invité met jusqu'à une minute ; s'il ne répond pas, wisq propose de couper |
 | Changer de réseau en pleine session (Wi-Fi → 4G avec un tunnel, ou l'inverse) | réglages | wisq retente la connexion sur un budget borné, écran vierge puis l'invité revient ; ce que fait un verrouillage prolongé n'est pas écrit dans le code — à observer |
+| Redémarrer la VM depuis l'hôte pendant une session | `virsh destroy` puis `virsh start` | **limite connue** : libvirt peut lui donner un autre port, et la reconnexion recompose l'ancien. Se reconnecter depuis la liste repasse par l'agent et retrouve le bon port. Voir `docs/ROADMAP.md` |
 | Révoquer le jeton côté hôte | `rm ~/.wisq-agent/token`, puis relancer le démon | le démon lit le jeton au démarrage et en génère un autre s'il manque : l'ancien lien vaut 401, il faut réappairer. Supprimer le fichier sans relancer ne révoque rien |
 | Un `.vv` de virt-manager | envoyer le fichier au téléphone (AirDrop, mail) | wisq l'ouvre dans l'éditeur, hôte et port remplis, avant d'enregistrer |
 
@@ -146,3 +147,10 @@ attendait sans fin.
   d'où le `listen=0.0.0.0` de la section 2.
 - **401 à chaque appel** — le jeton du lien n'est plus celui du fichier
   `~/.wisq-agent/token` (démon relancé après suppression) : réappairer.
+
+*Vérifié d'ici contre un vrai libvirt* : un arrêt poli demandé à un invité qui
+n'a pas de gestionnaire ACPI laisse la VM `running` avec sa console ouverte,
+indéfiniment — c'est une demande, pas un acte, et wisq propose alors le
+cordon. Le cordon, lui, rend `stopped` aussitôt. Un jeton faux répond 401, un
+identifiant commençant par un tiret et une VM inexistante répondent 404 avec
+deux messages différents.

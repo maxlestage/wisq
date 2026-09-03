@@ -79,6 +79,29 @@ sinon. La liste ne montre le bouclier que sur la première. L'ancienne
 étiquette « TLS (épinglage à venir) » avait été la réponse de #70 ; elle ne
 disait plus vrai dès qu'une empreinte pouvait être saisie.
 
+### Le port qu'une reconnexion ne redemande jamais
+
+`ConsoleResolver.resolve` tourne une fois, avant `SessionFactory.makeSession`,
+et le port qu'il obtient est cuit dans la `Machine` que la fabrique reçoit.
+`ReconnectingSession` rejoue la même fermeture à chaque tentative : elle
+recompose donc toujours le port du premier appel.
+
+Un domaine libvirt redémarré ne retrouve pas forcément le sien. Mesuré contre
+un vrai libvirt : `ubuntu-test` sur 5900, arrêté, deux autres VM prenant 5900
+et 5901 entre-temps, puis rallumé — il revient sur **5902**.
+
+La fenêtre est étroite et il faut la nommer pour ne pas la surestimer : un
+`reboot` dans l'invité garde le même processus QEMU et le même port ; une
+extinction puis un rallumage depuis wisq repassent par le résolveur. Le cas
+qui casse est un redémarrage du domaine **par quelqu'un d'autre** pendant
+qu'une session se reconnecte. Les cinq tentatives échouent alors sur une
+machine qui va bien.
+
+Le correctif est de re-résoudre à chaque tentative, ce qui rend
+`ReconnectingSession.Factory` asynchrone et touche la boucle de reconnexion —
+la promesse phare du projet. À faire avec le temps de le juger, pas en marge
+d'autre chose.
+
 ## Lot 3 — RDP
 
 FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière
