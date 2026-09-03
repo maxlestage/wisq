@@ -8,6 +8,94 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~15h UTC — la mémoire réglable, et l'invité qui l'apprend
+
+Maxime : « Je veux pouvoir ajuster de la ram et de l'espace de stockage
+partout ». Cette tranche fait la mémoire ; le stockage suit, et il faudra en
+dire quelque chose d'honnête (la machine locale n'a **aucun disque** — noyau
+nommu, pas de pilote bloc — donc « espace de stockage » ne peut pas vouloir
+dire disque virtuel).
+
+### Ce qui existait déjà, et ce qui manquait
+
+Le cœur Rust prenait déjà `ram_size`, et l'FFI le passait. Ce qui manquait
+était plus petit et plus grave : la **cellule mémoire du device tree**. Le blob
+vient verbatim de mini-rv32ima et annonce `0x03ff_c000` — 64 Mio moins seize
+kibioctets. Une machine allouée avec 128 Mio faisait donc tourner un noyau à
+qui personne n'avait dit qu'il en avait plus : la mémoire existait, elle ne
+servait à rien.
+
+L'offset a été trouvé en marchant l'arbre, pas en comptant : la propriété `reg`
+de `/memory@80000000` est à 304 et porte quatre cellules — base haute, base
+basse, taille haute, taille basse — donc le nombre que le noyau lit est à
+**316**. La réserve de seize kibioctets en haut est celle de la référence, pas
+la nôtre : elle est bien plus grande que ce que le DTB et l'état réservé
+occupent, et la garder à toutes les tailles est ce qui fait qu'une machine
+redimensionnée se comporte comme celle-là.
+
+### La preuve, par un vrai noyau
+
+Un DTB peut annoncer ce qu'on veut ; seul le noyau dit s'il l'a cru. Il
+l'imprime :
+
+```
+64 Mio  : Memory:  61372K/65520K available
+128 Mio : Memory: 126348K/131056K available     ← 131 056 Kio = 128 Mio − 16 Kio
+```
+
+Et les deux cœurs doivent le faire **de la même façon** : `DifferentialResizedTests`
+démarre le même noyau dans deux machines de 128 Mio, une par cœur, et exige le
+même nombre d'instructions retirées, les mêmes octets de console, et la même
+ligne « Memory: ». Deux implémentations de la même règle est exactement la
+situation où l'une dérive sans que personne le voie.
+
+### Trois pièges, dont deux qui font passer un test pour rien
+
+**Un.** `output.split(separator: "\n")` ne coupait rien. La console du noyau
+termine ses lignes par CRLF, et en Swift la paire `\r\n` est **un seul**
+`Character` : compté sur ce noyau, 47 sauts de ligne et **zéro** « \n » au sens
+des Characters. Le `split` rendait donc une seule tranche contenant tout le
+journal, et le premier `contains("Memory:")` tombait dessus — le test passait
+en lisant la bannière de version. Le séparateur est maintenant `\.isNewline`,
+et le commentaire dit la mesure.
+
+**Deux.** Un sabordage a remis `dtb::BYTES` verbatim dans le `load` du cœur
+Rust — le redimensionnement entièrement défait — et les **onze** tests du crate
+sont passés. Les tests du module `dtb` prouvaient que `bytes_for` calcule le
+bon blob ; aucun ne demandait ce que `load` avait remis à l'invité. Trois tests
+posent maintenant la question là où le noyau la lit : dans la RAM, à l'adresse
+que `load` a mise dans a1. Même trou côté Swift, même correctif
+(`deviceTreeHandedToTheGuest`), et seul le test qui démarre un vrai noyau
+tombait avant — or il saute quand l'image est absente, donc la garde ne tenait
+rien sans elle.
+
+**Trois.** Le sabordage Rust a d'abord semblé inoffensif *vu du test
+différentiel* : `swift test` **ne réédite pas les liens** quand seul le `.a`
+Rust a changé. Le binaire de test datait de 15h29, la bibliothèque de 15h30, et
+la comparaison portait sur un cœur périmé. `rm .build/debug/WisqPackageTests.xctest`
+avant de relancer, et il mord sur les trois affirmations. La CI ne le voit pas
+— elle construit à neuf — mais en local c'est exactement ce qui fait croire
+qu'un sabordage n'a rien cassé.
+
+### Ce que le format d'instantané savait déjà
+
+Vérifié plutôt que supposé : l'instantané **enregistre** la longueur de la RAM,
+et les deux cœurs refusent déjà un écart (`RamSizeMismatch` /
+`ramSizeMismatch`, et `WISQ_VM_SNAPSHOT_RAM_MISMATCH` dans l'FFI). Changer la
+taille ne peut donc pas restaurer une machine de travers. En revanche cela
+rend la sauvegarde **irrestaurable**, et c'est la tranche suivante qui doit le
+dire à qui déplace le réglage.
+
+### Un seul endroit côté application
+
+`maximumKernelImageBytes` était un membre de **type** : il ne pouvait l'être
+que tant que toutes les machines avaient la même mémoire. Trois appels le
+lisaient ainsi, tous dans du code que seul le job « App iOS » compile — donc
+la bascule vers une propriété d'instance aurait cassé la construction sans
+qu'aucun job Linux le dise. `LocalMachineMemory` porte maintenant la taille et
+le seuil, en un point ; c'est la ligne que le réglage déplacera.
+
+
 ## 2026-09-03, ~13h UTC — l'application a disparu, et la garde existait
 
 Maxime a installé le build et a voulu démarrer **Omarchy** — une distribution

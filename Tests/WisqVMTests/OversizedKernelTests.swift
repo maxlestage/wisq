@@ -11,11 +11,11 @@ final class OversizedKernelTests: XCTestCase {
     /// recalcule autrement que la propriété, pour que les deux ne puissent pas
     /// se tromper ensemble.
     func testTheLimitIsWhatFitsUnderTheDeviceTree() {
-        let limit = LinuxMachine.maximumKernelImageBytes
+        let limit = LinuxMachine.maximumKernelImageBytes(forRAMSize: LinuxMachine.defaultRAMSize)
         XCTAssertGreaterThan(limit, 0)
-        XCTAssertLessThan(limit, Int(LinuxMachine.ramSize))
+        XCTAssertLessThan(limit, Int(LinuxMachine.defaultRAMSize))
         XCTAssertEqual(
-            limit, Int(LinuxMachine.ramSize) - DefaultDTB.bytes.count - 192,
+            limit, Int(LinuxMachine.defaultRAMSize) - DefaultDTB.bytes.count - 192,
             "le plafond doit rester ce que la disposition mémoire laisse")
     }
 
@@ -23,7 +23,7 @@ final class OversizedKernelTests: XCTestCase {
     /// Les deux bords, sinon un plafond faux passerait l'un des deux.
     func testAnImageOneByteTooBigIsRefusedAndTheLimitItselfIsAccepted() throws {
         let machine = LinuxMachine { _ in }
-        let limit = LinuxMachine.maximumKernelImageBytes
+        let limit = LinuxMachine.maximumKernelImageBytes(forRAMSize: LinuxMachine.defaultRAMSize)
 
         XCTAssertThrowsError(
             try machine.load(kernelImage: Data(repeating: 0, count: limit + 1))
@@ -66,8 +66,11 @@ final class OversizedKernelTests: XCTestCase {
     /// dans la garde, il était dans la phrase.
     func testTheKernelShareIsIndistinguishableFromTheTotalAtOneDecimal() {
         let mega = { (bytes: Int) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+        let total = Int(LinuxMachine.defaultRAMSize)
+        let forKernel = LinuxMachine.maximumKernelImageBytes(
+            forRAMSize: LinuxMachine.defaultRAMSize)
         XCTAssertEqual(
-            mega(Int(LinuxMachine.ramSize)), mega(LinuxMachine.maximumKernelImageBytes),
+            mega(total), mega(forKernel),
             "les deux tailles s'affichent pareil : en citer deux tromperait")
     }
 
