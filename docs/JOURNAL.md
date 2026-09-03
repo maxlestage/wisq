@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~06h UTC — et l'éditeur disait « SPICE (bientôt) »
+
+La tranche précédente a rendu les VM SPICE joignables par l'agent. En regardant
+l'autre bout du même chemin — quelqu'un qui ajoute une machine à la main —
+l'éditeur affichait toujours **« SPICE (bientôt) »** dans son sélecteur de
+protocole.
+
+`RemoteProtocol.isImplemented` valait `self == .vnc`, écrit au lot où c'était
+vrai, jamais relu depuis. À côté, `SessionFactory.makeSession` construit une
+`SPICESession` depuis le lot 5, et un test l'épingle déjà. Deux listes tenues à
+la main sur la même question, et personne pour les confronter : le sélecteur
+grisait la console qui porte le presse-papiers, le dépôt de fichier et le
+redimensionnement.
+
+L'étiquette est corrigée, mais ce n'est pas le correctif. Le correctif est
+`ImplementedProtocolsTests`, qui fait marcher **`allCases`** à travers la
+fabrique et exige que les deux réponses coïncident, protocole par protocole.
+Le prochain protocole qui se met à marcher ne pourra plus rester grisé, et
+aucun ne pourra être annoncé en avance.
+
+Quatre sabordages contre la suite entière (1192 tests ici) : l'étiquette
+revenue à `self == .vnc`, tout annoncé disponible, plus rien annoncé
+disponible, et — celui qui compte — **la fabrique modifiée pour refuser
+SPICE**, qui rougit la marche. C'est ce dernier qui prouve que le test lit la
+fabrique et non une deuxième copie de la même liste.
+
 ## 2026-09-03, ~05h30 UTC — la console que le démon ne savait pas voir
 
 Maxime veut tester aujourd'hui, avec un hôte Ubuntu. En relisant le chemin
