@@ -8,6 +8,93 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~20h35 UTC — le cœur x86-64 calcule, et c'est le processeur qui juge
+
+#169 fusionné (CI verte, log brut : 1324 tests, 3 ignorés, 0 échec ; j'avais
+annoncé 2 ignorés — ma prévision était fausse d'un, pas le résultat). Puis la
+**tranche 3a du lot 7** : ce qu'une instruction x86-64 fait aux registres et
+aux drapeaux.
+
+### La référence
+
+Pour un décodeur, la référence est un désassembleur. Pour un cœur qui calcule,
+il n'y en a qu'une : **la machine**. Ce conteneur est un x86-64. J'ai donc
+écrit un harnais en assembleur qui charge les seize registres et RFLAGS depuis
+la mémoire, saute dans une page exécutable, et relit tout au retour — les
+chargements et rangements sont tous relatifs à RIP, parce que `mov` ne touche
+pas aux drapeaux et que rien de ce que l'instruction a laissé ne doit être
+écrasé ; et le retour se fait par un saut indirect ajouté après les octets à
+l'essai, parce qu'un `ret` se servirait d'une pile qui appartient à l'invité.
+
+**8 748 accords sur 8 748**, sur 336 instructions et 24 états d'entrée étalés,
+plus 876 cas de division.
+
+### La faute que j'ai failli commettre
+
+La première version figeait **tous** les drapeaux, y compris ceux que le manuel
+dit indéfinis — l'état après un `MUL`, le débordement après un décalage de
+plusieurs bits, tout sauf le zéro après un `BSF`. Le processeur y pose bien
+quelque chose, et j'allais m'y conformer.
+
+C'était faux, et pas d'un peu : le fichier aurait été le portrait d'**une**
+machine, celle qui l'a produit, et un cœur qui s'y conformerait serait faux sur
+un autre processeur tout aussi conforme. Chaque instruction porte donc
+maintenant le masque des drapeaux que l'architecture lui garantit, et seuls
+ceux-là sont comparés. « Non affecté » reste dedans, parce que c'est
+prévisible : c'est ainsi qu'on vérifie que `ROL` ne touche pas au zéro, ou
+qu'`INC` ne touche pas à la retenue.
+
+### Trois défauts trouvés en chemin
+
+**Le générateur ne masquait rien.** `"mulb".rstrip("bwlq")` ne rend pas `mul`
+mais `mu` — `rstrip` enlève *tous* les caractères de l'ensemble. Aucune règle
+de masquage ne s'appliquait, en silence, et le fichier gardait tous les
+drapeaux. Le symptôme était un désaccord ; la cause était deux niveaux plus
+loin.
+
+**Les états d'entrée n'éprouvaient qu'une moitié.** Je prenais les premiers
+états d'un produit cartésien, et les vingt-quatre premiers avaient tous RAX à
+zéro. Chaque valeur passe maintenant une fois par RAX.
+
+**RIP avançait sur un refus.** J'avais écrit l'avance dans un `defer`, donc
+elle avait lieu même quand l'instruction levait. Un test écrit à la main l'a
+attrapé. C'est faux architecturalement : une faute de division dépose l'adresse
+de l'instruction **fautive**, parce que c'est celle-là qu'un gestionnaire doit
+pouvoir regarder.
+
+### Ce que l'oracle ne pouvait pas dire, et comment je l'ai quand même obtenu
+
+Une division par zéro ne rend pas une réponse : elle tue le harnais. J'ai
+d'abord écarté la division — ce qui laissait le seul endroit du cœur qui
+*refuse* sans aucune preuve. Le générateur calcule maintenant d'avance, pour
+chaque cas, si le processeur lèverait, et n'envoie que ceux qui aboutissent :
+876 divisions prouvées contre la machine. Les deux refus, eux, sont tenus par
+neuf tests écrits à la main.
+
+### Vérification
+
+Huit sabotages, chacun sur une règle, chacun faisant tomber l'oracle, avec
+retour au vert après chacun :
+
+| sabotage | désaccords |
+| --- | --- |
+| une écriture 32 bits ne met plus le haut à zéro | 465 |
+| la retenue auxiliaire n'est plus calculée | 351 |
+| `ADC` ignore la retenue entrante | 120 |
+| l'immédiat n'est plus étendu au signe | 183 |
+| le compte de décalage n'est plus masqué | 142 |
+| l'octet haut est pris pour l'octet bas | 87 |
+| `INC` touche à la retenue | 115 |
+| `CMP` écrit son résultat | 234 |
+
+1324 → **1334** tests Swift ; 1479 avec le Rust.
+
+### Ce qui reste de la tranche 3
+
+La mémoire, les branchements et la pile, le chargement d'un `bzImage`, un port
+série. C'est **3b**, et c'est là que tombera le premier vrai chiffre de
+vitesse.
+
 ## 2026-09-03, ~19h45 UTC — le décodeur x86-64, prouvé contre objdump
 
 #168 fusionné (CI verte, log brut : 1305 tests, 2 ignorés, 0 échec), branche

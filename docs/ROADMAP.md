@@ -2605,9 +2605,23 @@ habitude.
    15,8 % de table `0F`, 1,6 % de VEX ou d'EVEX — c'est pourquoi les préfixes
    vectoriels sont décodés eux aussi, en réutilisant les mêmes tables plutôt
    qu'en les doublant.
-3. **Le cœur entier, en mode long, sans MMU.** Démarrer avec la pagination
-   d'identité que le noyau installe lui-même, jusqu'aux premiers messages sur
-   le port série. **C'est ici que tombe le premier vrai chiffre de vitesse.**
+3. **Le cœur, en mode long, sans MMU.** Coupé en deux, parce que la moitié qui
+   calcule se prouve autrement que la moitié qui démarre.
+   - **3a. Ce qu'une instruction fait aux registres et aux drapeaux** —
+     *fait*. `X86Core` exécute l'arithmétique, la logique, les décalages et
+     rotations, les multiplications et divisions, les seize conditions, les
+     bits, les mouvements et extensions — aux quatre largeurs, octets hauts
+     compris. La référence est le **vrai processeur** : ce conteneur est un
+     x86-64, donc `scripts/build-x86-oracle.py` fait exécuter chaque
+     instruction par la machine avec des états choisis et fige sa réponse.
+     **8 748 accords sur 8 748.** Là où le manuel dit « indéfini », le fichier
+     ne fige rien : chaque instruction porte le masque des drapeaux que
+     l'architecture lui garantit, sans quoi le fichier serait le portrait
+     d'**une** machine et un cœur qui s'y conformerait serait faux ailleurs.
+   - **3b. Le reste**, qui est ce qui démarre : la mémoire, les branchements et
+     la pile, le chargement d'un `bzImage` selon le protocole de la tranche 1,
+     et un port série. **C'est là que tombe le premier vrai chiffre de
+     vitesse.**
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans

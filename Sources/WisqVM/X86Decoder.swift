@@ -26,7 +26,12 @@ public struct X86Instruction: Equatable, Sendable {
     public let modrm: UInt8?
     public let sib: UInt8?
     public let displacementBytes: Int
+    /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
+    public let displacement: Int64
     public let immediateBytes: Int
+    /// L'immédiat, brut. Ce qu'il faut en faire — l'étendre au signe ou non —
+    /// dépend de l'instruction, donc ce n'est pas décidé ici.
+    public let immediate: UInt64
     /// Le nombre d'octets que l'instruction occupe en tout.
     public let length: Int
 
@@ -189,6 +194,7 @@ public enum X86Decoder {
         var modrm: UInt8?
         var sib: UInt8?
         var displacementBytes = 0
+        var displacement: Int64 = 0
         if shape.hasModRM {
             let byte = try next()
             modrm = byte
@@ -214,7 +220,15 @@ public enum X86Decoder {
                 default: break
                 }
             }
-            for _ in 0..<displacementBytes { _ = try next() }
+            for byte in 0..<displacementBytes {
+                displacement |= Int64(try next()) << (8 * Int64(byte))
+            }
+            // Étendu au signe : un déplacement est toujours signé.
+            if displacementBytes == 1 {
+                displacement = Int64(Int8(truncatingIfNeeded: displacement))
+            } else if displacementBytes == 4 {
+                displacement = Int64(Int32(truncatingIfNeeded: displacement))
+            }
         }
 
         // 6. L'immédiat.
@@ -232,14 +246,18 @@ public enum X86Decoder {
         case .wordThenByte: immediateBytes = 3
         case .absoluteAddress: immediateBytes = hasAddressSizePrefix ? 4 : 8
         }
-        for _ in 0..<immediateBytes { _ = try next() }
+        var immediate: UInt64 = 0
+        for byte in 0..<immediateBytes {
+            immediate |= UInt64(try next()) << (8 * UInt64(byte))
+        }
 
         let length = index - offset
         guard length <= X86Instruction.maximumLength else { throw X86DecodeError.tooLong }
         return X86Instruction(
             legacyPrefixes: prefixes, rex: rex, vex: vexBytes, map: map, opcode: opcode,
             modrm: modrm, sib: sib, displacementBytes: displacementBytes,
-            immediateBytes: immediateBytes, length: length)
+            displacement: displacement, immediateBytes: immediateBytes,
+            immediate: immediate, length: length)
     }
 
     /// La longueur seule, quand c'est tout ce qu'on veut savoir.
