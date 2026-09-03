@@ -58,6 +58,21 @@ public enum KernelMemory {
     /// happened here once already.
     public static let roomForTheAppItself: UInt64 = 256 << 20
 
+    /// What the machine leaves to the device, whatever the moment allows.
+    ///
+    /// Maxime's rule, in his words: « je veux pouvoir la gérer en étant deux
+    /// giga plus petit que l'iPhone 17 Pro n'a de ram ». Two gibibytes below
+    /// the device's own memory — a bound that scales with the phone and does
+    /// not move, unlike what the system reports.
+    ///
+    /// It sits **next to** the system's answer rather than replacing it,
+    /// because the two say different things. This one says how much of a
+    /// device wisq is willing to be; `os_proc_available_memory()` says how
+    /// much is free right now. A phone with twelve gibibytes allows ten by
+    /// this rule and rather less by the other, and the smaller of the two is
+    /// the only one that is safe to offer.
+    public static let leftToTheDevice: UInt64 = 2 << 30
+
     /// The largest machine this device may be asked for.
     ///
     /// **Measured, not guessed.** iOS publishes exactly this number:
@@ -77,9 +92,16 @@ public enum KernelMemory {
     /// macOS and Linux — where an eighth of physical memory remains the best
     /// available guess.
     public static func ceiling(availableBytes: UInt64?, physicalMemory: UInt64) -> UInt32 {
-        let budget = availableBytes.map { $0 > roomForTheAppItself ? $0 - roomForTheAppItself : 0 }
+        // What the moment allows: the system's own answer, less the room the
+        // app needs beside the guest. Where nothing answers, the fraction.
+        let now = availableBytes.map { $0 > roomForTheAppItself ? $0 - roomForTheAppItself : 0 }
             ?? (physicalMemory / 8)
-        let capped = min(budget, UInt64(LinuxMachine.maximumRAMSize))
+        // What the device allows, whatever the moment: two gibibytes below its
+        // own memory. Subtracted with a floor, because a device smaller than
+        // the margin would otherwise wrap.
+        let device = physicalMemory > leftToTheDevice ? physicalMemory - leftToTheDevice : 0
+        // And what the architecture allows, which is not negotiable.
+        let capped = min(min(now, device), UInt64(LinuxMachine.maximumRAMSize))
         return UInt32(max(capped, UInt64(defaultSize)))
     }
 
