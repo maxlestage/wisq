@@ -39,11 +39,18 @@ targets:
         # launch screen » (erreur 90475). Le dictionnaire vide demande
         # l'écran système, ce que wisq veut : rien à montrer avant la liste.
         UILaunchScreen: {}
-        # Et sans orientations, erreur 90474. wisq refuse le portrait inversé :
-        # un téléphone retourné pendant qu'on tient une session distante fait
-        # sauter l'écran sans que personne l'ait demandé.
+        # Sans orientations, erreur 90474. Avec trois sur quatre : la MÊME
+        # erreur, autre message — « you need to include all of the […] four
+        # orientations to support iPad multitasking ». Une application qui
+        # déclare l'iPad (TARGETED_DEVICE_FAMILY 1,2) et ne demande pas le
+        # plein écran a opté pour le multitâche, et le multitâche exige les
+        # quatre. Le portrait inversé avait été retiré exprès, en pensant au
+        # téléphone ; c'est une décision qui ne s'écrit pas ici. Ce que fait
+        # un iPhone d'une orientation déclarée dépend de l'appareil, et la
+        # restreindre pour de bon serait un choix de vue, pas de manifeste.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIRequiresFullScreen: false
