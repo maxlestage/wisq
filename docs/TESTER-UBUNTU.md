@@ -110,11 +110,15 @@ attendait sans fin.
    démon affiche (`qrencode` installé) ou coller le lien `wisq://`. Le jeton
    et l'empreinte TLS du démon voyagent dedans ; le téléphone épingle ce
    certificat, pas d'autorité.
-2. La liste des VM de l'hôte apparaît ; en choisir une. Le protocole
-   (SPICE ou VNC) et le port viennent du démon quand la VM tourne.
-3. Se connecter. Si la VM est éteinte, wisq la démarre par l'agent et attend
-   qu'elle annonce son port — `running` sans port n'est pas prête, c'est
-   normal, ça dure des dizaines de secondes.
+2. La liste des VM de l'hôte apparaît ; en choisir une. Le port vient du
+   démon quand la VM tourne. Le protocole vient de lui dans tous les cas : une
+   VM arrêtée n'a pas de port, mais sa définition dit déjà si elle servira du
+   SPICE ou du VNC, et le démon le lit.
+3. Se connecter. Si la VM est éteinte, wisq la démarre par l'agent. *Mesuré
+   ici* : libvirt ouvre le port SPICE **au démarrage du domaine**, pas plus
+   tard — la réponse au `start` porte déjà `consolePort`. Ce qui prend des
+   dizaines de secondes, c'est l'invité qui démarre derrière ce port : l'écran
+   existe avant d'avoir quoi que ce soit à montrer.
 
 ## 5. Ce qu'on essaie, dans l'ordre
 
