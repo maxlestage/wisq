@@ -22,6 +22,10 @@ import Foundation
 public enum KernelImageKind: Equatable, Sendable {
     /// A Linux boot image for RISC-V: exactly what this machine runs.
     case riscvLinuxImage
+    /// A Linux kernel for PC — a `bzImage` — carrying its boot protocol
+    /// header. This is *the right kind of file*, only for an architecture the
+    /// local machine does not run yet; see `LinuxBootProtocol`.
+    case pcLinuxKernel(LinuxBootProtocol)
     /// A bootable disc image — an installer, a live CD. Named by its format.
     case discImage(String)
     /// An executable for some other architecture, named.
@@ -33,7 +37,7 @@ public enum KernelImageKind: Equatable, Sendable {
     public var couldBootHere: Bool {
         switch self {
         case .riscvLinuxImage, .unknown: return true
-        case .discImage, .executable: return false
+        case .pcLinuxKernel, .discImage, .executable: return false
         }
     }
 
@@ -48,12 +52,18 @@ public enum KernelImageKind: Equatable, Sendable {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .unknown }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: bytesNeeded) else { return .unknown }
-        return identify(prefix: prefix)
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path))
+            .flatMap { $0[.size] as? NSNumber }
+            .map(\.intValue)
+        return identify(prefix: prefix, totalBytes: size)
     }
 
     /// The same decision, on bytes already in hand — which is what the tests
     /// can reach, and what keeps the rule out of the file system.
-    public static func identify(prefix: Data) -> KernelImageKind {
+    /// `totalBytes` is the real size of the file when the caller knows it —
+    /// only the bzImage check uses it, and only to reject a file that carries
+    /// the magic without being shaped like one.
+    public static func identify(prefix: Data, totalBytes: Int? = nil) -> KernelImageKind {
         let bytes = [UInt8](prefix)
 
         // ISO 9660: a volume descriptor at sector 16, and its identifier is
@@ -63,6 +73,13 @@ public enum KernelImageKind: Equatable, Sendable {
             if Array(bytes[(sector + 1)...(sector + 5)]) == Array("CD001".utf8) {
                 return .discImage("ISO 9660")
             }
+        }
+
+        // A Linux kernel for PC. Checked after the disc image on purpose: a
+        // hybrid ISO carries an MBR boot sector, whose last two bytes are the
+        // same 0xAA55, and a disc image is what such a file *is*.
+        if let header = LinuxBootProtocol.read(from: bytes, totalBytes: totalBytes) {
+            return .pcLinuxKernel(header)
         }
 
         // The RISC-V Linux boot image header: « RISCV » at 0x30 and the second
@@ -106,6 +123,22 @@ public enum KernelImageKind: Equatable, Sendable {
         let what: String
         switch kind {
         case .riscvLinuxImage, .unknown: return nil
+        case .pcLinuxKernel(let header):
+            return """
+                \(name) est un noyau Linux pour PC (\(header.architecture), \
+                protocole de démarrage \(header.versionDescription)).
+
+                C'est le bon genre de fichier — un noyau, pas une image de \
+                disque — mais pas encore pour cette machine : la machine \
+                locale de wisq est aujourd'hui un RISC-V 32 bits. Le cœur \
+                x86-64 est en cours d'écriture (lot 7 dans docs/ROADMAP.md), \
+                et c'est exactement ce fichier-là qu'il démarrera. Ce n'est \
+                pas une question de mémoire.
+
+                En attendant, pour faire tourner cette distribution : \
+                installez-la sur un hôte (un PC, un Mac, un serveur), et \
+                connectez-vous dessus depuis wisq.
+                """
         case .discImage(let format):
             what = "une image de disque amorçable pour PC (\(format))"
         case .executable(let architecture):

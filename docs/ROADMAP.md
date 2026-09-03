@@ -2578,10 +2578,19 @@ habitude.
 
 ### Les tranches, dans l'ordre, et ce que chacune prouve
 
-1. **Reconnaître un noyau x86-64.** `KernelImageKind` sait déjà refuser un ISO
-   et nommer une architecture ; il doit savoir dire « bzImage » (magie `HdrS`
-   à 0x202) et lire l'en-tête de démarrage Linux. Petit, testable, et c'est ce
-   qui dira à quelqu'un que son fichier est enfin le bon.
+1. **Reconnaître un noyau x86-64** — *fait*. `LinuxBootProtocol` lit l'en-tête
+   de démarrage Linux et `KernelImageKind` répond `pcLinuxKernel`. Les valeurs
+   sont **mesurées** sur `vmlinuz-lts` d'Alpine 3.20 pour x86_64
+   (10 961 920 octets) : protocole 2.15, 39 secteurs de setup (20 480 octets),
+   `syssize` 683 840 paragraphes (10 941 440 octets) — les deux moitiés
+   tombent pile sur le fichier —, `xloadflags` 0x3F donc entrée 64 bits,
+   `pref_address` 0x0100_0000, `init_size` 36 425 728, ligne de commande
+   2047 caractères. Ce que la tranche a appris au passage : un bzImage
+   commence par « MZ » (talon EFI) et non par ELF, donc rien ne le nommait ;
+   un ISO hybride porte le **même** 0xAA55 à 0x1FE qu'un noyau, donc l'ordre
+   des deux reconnaissances est ce qui les sépare ; et les champs sont apparus
+   au fil des versions du protocole, donc chacun est gardé par la version qui
+   l'a introduit plutôt que lu au hasard.
 2. **Le décodeur, sans exécution.** Longueur d'instruction, préfixes, ModRM,
    SIB, déplacements, immédiats. Prouvé par différentiel contre un
    désassembleur de référence sur un corpus réel — un vrai noyau fait un
