@@ -8,6 +8,62 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~19h30 UTC — « Ça fonctionne pas je te l'avais dit ! »
+
+Maxime a envoyé une capture. L'application refuse `omarchy-4.0.2.iso 2` avec :
+
+```
+[omarchy-4.0.2.iso 2 fait 5939.2 Mo. La machine émulée n'a que 64.0 Mo
+de mémoire en tout.
+```
+
+**Chaque mot est vrai, et le message entier est trompeur.** Il désigne un
+*nombre*, donc il envoie vers le réglage de mémoire — celui que je venais
+justement de passer deux heures à rendre réglable jusqu'à deux gibioctets. Il
+avait toutes les raisons de croire que ça allait marcher, et j'y ai contribué :
+mes trois derniers messages parlaient de gigaoctets.
+
+Aucune mémoire ne fera jamais démarrer ce fichier ici. Omarchy est une
+distribution Arch **x86-64** distribuée en **image de disque amorçable**. La
+machine locale de wisq est un RISC-V 32 bits nommu **sans disque**. Ce n'est ni
+la même architecture, ni le même genre de fichier.
+
+### Ce que le refus dit maintenant
+
+Ce que le fichier **est**, avant ce qu'il pèse. Mesuré sur les octets plutôt
+que lu dans un document :
+
+```
+le vrai noyau : « RISCV » à 0x30, « RSC\x05 » à 0x38   (en-tête d'image RISC-V)
+un ISO 9660   : « CD001 » à 0x8001                     (descripteur, secteur 16)
+un ELF        : \x7fELF, et l'architecture à 0x12
+```
+
+Quarante kibioctets suffisent à décider — lire six gigaoctets pour savoir ce
+qu'est un fichier serait exactement la faute qui a fait disparaître
+l'application la première fois.
+
+Le message nomme le fichier, ce qu'il est, ce qu'est la machine, **coupe court
+au réglage de mémoire**, et dit où faire tourner la chose voulue : sur un hôte,
+avec wisq par-dessus. Un test exige cette dernière phrase, et un autre exige
+que le message ne ressemble pas à un refus de taille.
+
+### L'asymétrie, qui est le vrai choix de conception
+
+Reconnaître une image RISC-V est un fait positif. **Ne pas** en reconnaître une
+n'en est pas un. Quelqu'un peut arriver avec une image brute sans en-tête, et
+la refuser parce que ce code ne la connaît pas serait pire que de la laisser
+essayer. Donc `unknown` est une **permission**, pas un doute : seul ce qui est
+positivement identifiable comme autre chose est refusé. Le sabordage qui
+transforme `unknown` en refus tombe sur le test qui le dit.
+
+### Ce que je retiens
+
+Un refus juste peut égarer autant qu'un refus faux, s'il désigne la mauvaise
+cause. « Trop gros » et « pas la bonne machine » mènent à deux gestes
+différents, et le premier était un cul-de-sac déguisé en piste.
+
+
 ## 2026-09-03, ~18h UTC — arrêter d'inventer un plafond, et demander à iOS
 
 Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone pour
