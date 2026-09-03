@@ -14,7 +14,18 @@ public final class LinuxMachine: @unchecked Sendable {
         case stopped
     }
 
-    public static let ramSize: UInt32 = 64 * 1024 * 1024
+    /// The reference machine's memory, and the default when nothing is asked.
+    ///
+    /// mini-rv32ima's `sixtyfourmb.dtb` describes exactly this, which is why
+    /// it is the size every saved machine made before the setting existed was
+    /// filed under.
+    public static let defaultRAMSize: UInt32 = 64 * 1024 * 1024
+
+    /// This machine's memory. Fixed for its lifetime: the buffer is mapped in
+    /// `init` and the guest's whole address space is laid out from it, so a
+    /// change means a new machine, which is what the app does when the setting
+    /// moves.
+    public let ramSize: UInt32
     /// Reserved space at the top of RAM, matching the reference layout: the DTB
     /// sits below it, and the kernel must not allocate over either.
     private static let stateReserve: UInt32 = 192
@@ -29,8 +40,14 @@ public final class LinuxMachine: @unchecked Sendable {
     /// one. `LocalVMModel` asks the filesystem for a size and compares it here;
     /// `load` compares again on the bytes it actually got, since a file can
     /// change between the two.
-    public static var maximumKernelImageBytes: Int {
-        Int(ramSize - UInt32(DefaultDTB.bytes.count) - stateReserve)
+    public var maximumKernelImageBytes: Int {
+        Self.maximumKernelImageBytes(forRAMSize: ramSize)
+    }
+
+    /// The same bound for a machine that does not exist yet — what the import
+    /// screen needs, since it judges a file before any machine is built.
+    public static func maximumKernelImageBytes(forRAMSize ramSize: UInt32) -> Int {
+        Int(ramSize) - DefaultDTB.bytes.count - Int(stateReserve)
     }
 
     /// Why a file is refused, in the terms of the machine that refuses it.
@@ -52,7 +69,9 @@ public final class LinuxMachine: @unchecked Sendable {
     /// The sentence read "n'a que 64.0 Mo de mémoire au total, dont 64.0 Mo
     /// pour le noyau" — a typo to a reader, and two facts no test could tell
     /// apart, since it found either number by looking for the other.
-    public static func tooLargeExplanation(size: Int, name: String) -> String {
+    public static func tooLargeExplanation(
+        size: Int, name: String, ramSize: UInt32 = defaultRAMSize
+    ) -> String {
         let mega = { (bytes: Int) in String(format: "%.1f", Double(bytes) / 1_048_576) }
         // Un seul chiffre pour la machine, pas deux. La part réservée au
         // noyau ne diffère du total que de mille octets — le DTB et l'état —
@@ -83,14 +102,15 @@ public final class LinuxMachine: @unchecked Sendable {
     private let onOutput: @Sendable (Data) -> Void
     private var pendingOutput = Data()
 
-    public init(onOutput: @escaping @Sendable (Data) -> Void) {
+    public init(ramSize: UInt32 = LinuxMachine.defaultRAMSize, onOutput: @escaping @Sendable (Data) -> Void) {
         self.onOutput = onOutput
-        self.ram = Self.allocateGuestRAM(Int(Self.ramSize))
-        self.core = RV32Core(ram: ram, ramSize: Self.ramSize, bus: self)
+        self.ramSize = ramSize
+        self.ram = Self.allocateGuestRAM(Int(ramSize))
+        self.core = RV32Core(ram: ram, ramSize: ramSize, bus: self)
     }
 
     deinit {
-        munmap(ram, Int(Self.ramSize))
+        munmap(ram, Int(ramSize))
     }
 
     /// 64 MB of guest RAM, mapped rather than allocated-and-cleared.
@@ -116,7 +136,10 @@ public final class LinuxMachine: @unchecked Sendable {
     /// firmware would: image at the base of RAM, DTB near the top, a0 = hart id,
     /// a1 = DTB address, machine mode, PC at the image's first instruction.
     public func load(kernelImage: Data, commandLine: String? = nil) throws {
-        var dtb = DefaultDTB.bytes
+        // The tree states this machine's memory, not the reference's. Without
+        // it, a machine allocated with more RAM would run a kernel that never
+        // learns about it.
+        var dtb = DefaultDTB.bytes(forRAMSize: Int(ramSize))
         if let commandLine {
             let bytes = Array(commandLine.utf8)
             guard bytes.count < DefaultDTB.commandLineCapacity else {
@@ -128,7 +151,7 @@ public final class LinuxMachine: @unchecked Sendable {
             dtb[DefaultDTB.commandLineOffset + bytes.count] = 0
         }
 
-        let dtbPointer = Self.ramSize - UInt32(dtb.count) - Self.stateReserve
+        let dtbPointer = ramSize - UInt32(dtb.count) - Self.stateReserve
         // Compared in `Int`, deliberately. `UInt32(kernelImage.count)` traps on
         // anything from four gibibytes up — the guard against an image too
         // large was itself a crash for the largest images of all. Nothing
@@ -150,6 +173,24 @@ public final class LinuxMachine: @unchecked Sendable {
         core.regs[10] = 0                                   // a0: hart id
         core.regs[11] = dtbPointer &+ RV32Core.ramBase      // a1: DTB
         core.extraflags |= 3                                // machine mode
+    }
+
+    /// The device tree as the guest will actually read it: the bytes at the
+    /// address `load` put in a1, from the guest's own memory.
+    ///
+    /// Internal, and only tests use it. A sabotage put `DefaultDTB.bytes` back
+    /// verbatim in `load` — the whole resize undone — and every test that did
+    /// not boot a real kernel still passed, because they all questioned
+    /// `bytes(forRAMSize:)` and none questioned what `load` handed over.
+    /// Answering that needs to look where the kernel looks.
+    ///
+    /// Empty when a1 points outside RAM, so a wild pointer fails a test
+    /// instead of reading past the mapping.
+    var deviceTreeHandedToTheGuest: [UInt8] {
+        let offset = Int(core.regs[11] &- RV32Core.ramBase)
+        let count = DefaultDTB.bytes.count
+        guard offset >= 0, offset + count <= Int(ramSize) else { return [] }
+        return Array(UnsafeRawBufferPointer(start: ram + offset, count: count))
     }
 
     // MARK: - Running
@@ -270,7 +311,7 @@ public final class LinuxMachine: @unchecked Sendable {
         writer.u32(core.mtval)
         writer.u32(core.mcause)
         writer.u32(core.extraflags)
-        writer.ram(UnsafeRawBufferPointer(start: ram, count: Int(Self.ramSize)))
+        writer.ram(UnsafeRawBufferPointer(start: ram, count: Int(ramSize)))
         lock.lock()
         let queued = inputQueue
         let pending = Array(pendingOutput)
@@ -291,7 +332,7 @@ public final class LinuxMachine: @unchecked Sendable {
         var words = [UInt32](repeating: 0, count: Snapshot.coreWords)
         for index in 0..<Snapshot.coreWords { words[index] = try reader.u32() }
 
-        var scratch = [UInt8](repeating: 0, count: Int(Self.ramSize))
+        var scratch = [UInt8](repeating: 0, count: Int(ramSize))
         try scratch.withUnsafeMutableBytes { try reader.ram($0) }
         let queued = try reader.blob()
         let pending = try reader.blob()

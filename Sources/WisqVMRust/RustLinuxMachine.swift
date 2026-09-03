@@ -1,8 +1,9 @@
 import CWisqVM
 import Foundation
 
-/// The same machine as `WisqVM.LinuxMachine` — 64 MB of RAM, one rv32ima hart,
-/// an 8250 UART, a CLINT timer and a syscon — with the interpreter in Rust.
+/// The same machine as `WisqVM.LinuxMachine` — 64 MB of RAM by default, one
+/// rv32ima hart, an 8250 UART, a CLINT timer and a syscon — with the
+/// interpreter in Rust.
 ///
 /// The public surface is deliberately identical to the Swift core's, method for
 /// method and case for case, so the app can be pointed at either one by changing
@@ -20,7 +21,14 @@ public final class RustLinuxMachine: @unchecked Sendable {
         case stopped
     }
 
-    public static let ramSize: UInt32 = 64 * 1024 * 1024
+    /// The reference machine's memory — mini-rv32ima's 64 MB, the size every
+    /// saved machine made before the setting existed was filed under.
+    public static let defaultRAMSize: UInt32 = 64 * 1024 * 1024
+
+    /// This machine's memory. Fixed for its lifetime: the crate allocates the
+    /// buffer in `wisq_vm_new` and lays the guest's address space out from it,
+    /// so a change means a new machine.
+    public let ramSize: UInt32
 
     /// Keeps the output closure alive for the machine's lifetime and gives the C
     /// side a stable address to hand back. A closure cannot cross a
@@ -33,11 +41,15 @@ public final class RustLinuxMachine: @unchecked Sendable {
     private let vm: OpaquePointer
     private let sink: Unmanaged<Sink>
 
-    public init(onOutput: @escaping @Sendable (Data) -> Void) {
+    public init(
+        ramSize: UInt32 = RustLinuxMachine.defaultRAMSize,
+        onOutput: @escaping @Sendable (Data) -> Void
+    ) {
         let sink = Unmanaged.passRetained(Sink(onOutput))
         self.sink = sink
+        self.ramSize = ramSize
         guard let vm = wisq_vm_new(
-            Int(Self.ramSize),
+            Int(ramSize),
             { context, bytes, length in
                 guard let context, let bytes, length > 0 else { return }
                 let sink = Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue()
@@ -45,9 +57,9 @@ public final class RustLinuxMachine: @unchecked Sendable {
             },
             sink.toOpaque()
         ) else {
-            // The only way this returns null is a failed 64 MB allocation, which
-            // is the same condition the Swift core traps on when mmap fails.
-            fatalError("RAM invitée : impossible d'allouer \(Self.ramSize) octets")
+            // The only way this returns null is a failed allocation, which is
+            // the same condition the Swift core traps on when mmap fails.
+            fatalError("RAM invitée : impossible d'allouer \(ramSize) octets")
         }
         self.vm = vm
     }

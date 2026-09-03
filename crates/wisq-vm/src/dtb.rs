@@ -4,10 +4,50 @@
 //! at 0x8000_0000, an 8250 UART at 0x1000_0000, a CLINT, and a syscon.
 //!
 //! The kernel command line lives at offset 0xC0 and is patched in place when a
-//! custom one is requested.
+//! custom one is requested; the memory node's size is patched the same way when
+//! the machine is given something other than 64 MB — see `bytes_for`.
 
 pub const COMMAND_LINE_OFFSET: usize = 0xC0;
 pub const COMMAND_LINE_CAPACITY: usize = 54;
+
+/// Offset of the low cell of `/memory@80000000` `reg`'s size, big-endian.
+///
+/// Found by walking the flattened tree rather than by counting: the `reg`
+/// property sits at offset 304 and holds four 32-bit cells — two for the base
+/// (`0x0`, `0x8000_0000`) and two for the size (`0x0`, `0x03ff_c000`) — so the
+/// number the kernel reads is the last four bytes.
+pub const MEMORY_SIZE_OFFSET: usize = 316;
+
+/// What the reference tree keeps out of the kernel's reach at the top of RAM.
+///
+/// The blob declares `0x03ff_c000` for a 64 MiB machine: sixteen kibibytes
+/// short. That gap is where the DTB and the reserved state live — `load` puts
+/// them above the declared end on purpose — and it is far larger than they
+/// need, which is the reference layout's choice, not ours. Keeping the same
+/// gap at every size is what makes a resized machine behave like this one.
+pub const MEMORY_TOP_RESERVE: usize = 16 * 1024;
+
+/// The tree, with its memory node stating `ram_size` minus the reserve.
+///
+/// A machine given more RAM without this is a machine whose kernel never
+/// learns about it: `BYTES` is verbatim, so it would go on reading 63.98 MiB
+/// however much was allocated — and a kernel told less memory than exists
+/// simply never uses the rest.
+pub fn bytes_for(ram_size: usize) -> [u8; 1536] {
+    let mut tree = BYTES;
+    let declared = ram_size.saturating_sub(MEMORY_TOP_RESERVE) as u32;
+    tree[MEMORY_SIZE_OFFSET..MEMORY_SIZE_OFFSET + 4].copy_from_slice(&declared.to_be_bytes());
+    tree
+}
+
+/// What the tree says the guest's memory is, in bytes.
+pub fn declared_memory(tree: &[u8; 1536]) -> u32 {
+    u32::from_be_bytes(
+        tree[MEMORY_SIZE_OFFSET..MEMORY_SIZE_OFFSET + 4]
+            .try_into()
+            .expect("quatre octets"),
+    )
+}
 
 pub static BYTES: [u8; 1536] = [
     0xD0, 0x0D, 0xFE, 0xED, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x05, 0x00,
@@ -107,3 +147,53 @@ pub static BYTES: [u8; 1536] = [
     0x65, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The blob's own numbers, read back rather than restated: the default
+    /// machine is 64 MiB and the tree declares sixteen kibibytes less.
+    #[test]
+    fn the_untouched_tree_declares_the_reference_size() {
+        assert_eq!(declared_memory(&BYTES), 0x03ff_c000);
+        assert_eq!(
+            declared_memory(&BYTES) as usize,
+            crate::machine::DEFAULT_RAM_SIZE - MEMORY_TOP_RESERVE
+        );
+    }
+
+    /// Patching states the new size and touches nothing else. The second half
+    /// is the one that matters: a byte written at the wrong offset would land
+    /// in another property and the kernel would refuse the tree outright.
+    #[test]
+    fn patching_states_the_new_size_and_changes_nothing_else() {
+        for ram in [
+            16 * 1024 * 1024,
+            DEFAULT_RAM_SIZE_FOR_TEST,
+            256 * 1024 * 1024,
+            512 * 1024 * 1024,
+        ] {
+            let tree = bytes_for(ram);
+            assert_eq!(declared_memory(&tree) as usize, ram - MEMORY_TOP_RESERVE);
+            for (index, (patched, original)) in tree.iter().zip(BYTES.iter()).enumerate() {
+                if (MEMORY_SIZE_OFFSET..MEMORY_SIZE_OFFSET + 4).contains(&index) {
+                    continue;
+                }
+                assert_eq!(
+                    patched, original,
+                    "octet {index} modifié hors de la cellule"
+                );
+            }
+        }
+    }
+
+    const DEFAULT_RAM_SIZE_FOR_TEST: usize = 64 * 1024 * 1024;
+
+    /// The command line still patches, at every size: the two edits share one
+    /// buffer and an offset mistake in either would show here.
+    #[test]
+    fn the_command_line_and_the_memory_size_do_not_collide() {
+        const { assert!(COMMAND_LINE_OFFSET + COMMAND_LINE_CAPACITY < MEMORY_SIZE_OFFSET) };
+    }
+}

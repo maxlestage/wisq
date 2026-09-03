@@ -73,7 +73,7 @@ public final class LocalVMModel {
         // and can produce console faster than the main actor can render it; a
         // hop per chunk would queue work without bound and the interface would
         // fall behind the machine it is meant to be showing.
-        let machine = LocalMachine { [sink] chunk in
+        let machine = LocalMachine(ramSize: LocalMachineMemory.size) { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
                 self?.consoleText = sink.takeText()
@@ -108,10 +108,11 @@ public final class LocalVMModel {
         // in microseconds.
         if let size = try? FileManager.default.attributesOfItem(
             atPath: kernelURL.path)[.size] as? Int,
-            size > LinuxMachine.maximumKernelImageBytes {
+            size > LocalMachineMemory.maximumKernelImageBytes {
             _ = life.guestFinished()
             finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent))
+                size: size, name: kernelURL.lastPathComponent,
+                ramSize: LocalMachineMemory.size))
             self.machine = nil
             runFinished = nil
             return
@@ -345,9 +346,11 @@ public enum KernelLibrary {
         defer { source.stopAccessingSecurityScopedResource() }
         if let size = try? FileManager.default.attributesOfItem(
             atPath: source.path)[.size] as? Int,
-            size > LinuxMachine.maximumKernelImageBytes {
+            size > LocalMachineMemory.maximumKernelImageBytes {
             throw KernelImportError.tooLarge(
-                LinuxMachine.tooLargeExplanation(size: size, name: source.lastPathComponent))
+                LinuxMachine.tooLargeExplanation(
+                    size: size, name: source.lastPathComponent,
+                    ramSize: LocalMachineMemory.size))
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
