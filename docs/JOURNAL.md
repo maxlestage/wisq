@@ -45,6 +45,47 @@ qu'il sert.
 Il reste environ 180 cycles par instruction sur cette machine, là où un bon
 interprète en demande cinquante.
 
+### « Vas plus vite que jamais » — CPUID, les registres de contrôle, les MSR, la MMU
+
+Tout d'un bloc, sans attendre la CI.
+
+**La MMU** : parcours à quatre niveaux, grandes pages de 2 Mio et de 1 Gio,
+faute de page nommée avec son adresse, et un cache de traduction direct de
+1024 entrées vidé par l'écriture de `CR3`. Coût mesuré : **16,4 → 15,4 MIPS**,
+6 % — la première version en coûtait 13 %, parce qu'elle relisait `CR0` dans le
+tableau des registres de contrôle à chaque accès mémoire.
+
+**Le mode long s'active comme sur un vrai processeur** : `EFER.LMA` est posé
+par la machine quand la pagination s'allume alors que `LME` est demandé, pas
+par celui qui écrit `EFER`. Un noyau lit `LMA` pour savoir où il en est.
+
+**`CPUID` est une décision, pas une mesure.** L'oracle matériel dirait ce que
+*cette* machine répond, et c'est précisément ce qu'il ne faut pas : un invité
+qui se croirait sur le processeur de l'hôte utiliserait des instructions que ce
+cœur n'exécute pas. Chaque bit annoncé est une promesse tenue ailleurs, et les
+tests sont écrits dans ce sens — ils partent de l'annonce et remontent à
+l'instruction. Le x87 n'est pas annoncé, parce que rien ne l'exécute.
+
+### Trois fois mes tests avaient tort et le cœur raison
+
+**Le MSR qui ne revenait pas identique.** J'avais choisi `EFER` pour l'aller-
+retour de `WRMSR`/`RDMSR`. Il revenait à un bit près — celui de `LMA`, que la
+machine efface parce que la pagination est éteinte. Le cœur faisait
+exactement ce qu'il fallait ; le test a changé de registre.
+
+**Les deux tables de pages qui se marchaient dessus.** Deux correspondances
+construites à la main partageaient leur dernière table, donc la seconde
+écrasait la première. Symptôme : une écriture qui atterrissait à zéro.
+
+**Le `CR3` basculé sans que le code soit mappé de l'autre côté.** La faute de
+page qui suivait était juste : un vrai noyau ne bascule jamais sans que les
+nouvelles tables couvrent déjà l'instruction suivante. C'est maintenant écrit
+dans le test.
+
+Quatre sabotages sur la pagination : le bit de grande page ignoré, le bit de
+présence ignoré, l'étiquette du cache privée de son `+1` (sans quoi la page
+zéro passe pour une entrée vide), et l'écriture de `CR3` qui ne vide plus rien.
+
 ### Puis le chargeur de noyau
 
 Pendant que la CI tournait, la première brique de la tranche 3c :

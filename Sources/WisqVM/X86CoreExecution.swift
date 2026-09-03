@@ -97,7 +97,7 @@ extension X86Core {
             return read(fields.rm, size, highByte: fields.rmIsHighByte)
         }
         guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
-        return try memory.read(lastAddress, size)
+        return try memory.read(try translate(lastAddress), size)
     }
 
     mutating func writeRM(_ fields: Fields, _ size: Int, _ value: UInt64) throws {
@@ -106,7 +106,7 @@ extension X86Core {
             return
         }
         guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
-        try memory.write(lastAddress, size, value)
+        try memory.write(try translate(lastAddress), size, value)
     }
 
     // MARK: - La pile
@@ -114,12 +114,12 @@ extension X86Core {
     mutating func push(_ value: UInt64, _ size: Int) throws {
         guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
         registers[4] = registers[4] &- UInt64(size)
-        try memory.write(registers[4], size, value)
+        try memory.write(try translate(registers[4]), size, value)
     }
 
     mutating func pop(_ size: Int) throws -> UInt64 {
         guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
-        let value = try memory.read(registers[4], size)
+        let value = try memory.read(try translate(registers[4]), size)
         registers[4] = registers[4] &+ UInt64(size)
         return value
     }

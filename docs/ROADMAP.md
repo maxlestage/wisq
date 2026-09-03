@@ -2662,10 +2662,29 @@ habitude.
      accepte, et rend le point d'entrée 64 bits — à 0x200 du début, pas au
      début. Vérifié sur le vrai noyau d'Alpine, et cinq sabotages.
 
-     **Ce qui manque pour sauter dedans** : le point d'entrée 64 bits suppose
-     le mode long déjà actif, donc la pagination. Il faut donc la MMU (ce qui
-     était la tranche 4), plus `CPUID`, les registres de contrôle et les MSR
-     que le décompresseur lit avant tout le reste.
+     **Et la machine sait maintenant y répondre.** `CPUID`, les registres de
+     contrôle (`0F 20`/`0F 22`), les MSR (`RDMSR`/`RDTSC`/`WRMSR`) et la
+     **MMU** sont faits : parcours à quatre niveaux, grandes pages de 2 Mio et
+     de 1 Gio, faute de page nommée, et un cache de traduction vidé par
+     l'écriture de `CR3`. Le mode long s'active comme sur un vrai processeur —
+     `EFER.LMA` est posé par la machine quand la pagination s'allume alors que
+     `LME` est demandé, pas par celui qui écrit `EFER`.
+
+     Ce que `CPUID` annonce est une **décision**, pas une mesure : l'oracle
+     matériel dirait ce que la machine hôte répond, or c'est exactement ce
+     qu'il ne faut pas — un invité qui se croirait sur le processeur de l'hôte
+     utiliserait des instructions que ce cœur n'exécute pas. Chaque bit annoncé
+     est donc une promesse tenue ailleurs, et les tests la relisent dans ce
+     sens. Le x87 n'est pas annoncé, parce que rien ne l'exécute.
+
+     Coût mesuré de la MMU : **16,4 → 15,4 MIPS**, soit 6 %, pagination
+     éteinte comprise. La première version en coûtait 13 %, parce qu'elle
+     relisait `CR0` dans le tableau des registres de contrôle à chaque accès
+     mémoire ; un booléen gardé à jour à l'écriture de `CR0` a rendu ce
+     chemin-là gratuit.
+
+     **Ce qui manque encore pour sauter dedans** : le décompresseur touche
+     aussi la GDT, les segments et les interruptions. C'est la suite.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans

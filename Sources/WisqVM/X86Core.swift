@@ -50,6 +50,17 @@ public struct X86Core: @unchecked Sendable {
     public var retired: UInt64 = 0
     /// Vrai quand l'invité a exécuté `HLT`.
     public var halted = false
+    /// Les registres de contrôle, les MSR, et de quoi traduire une adresse.
+    public var system = X86SystemState()
+    /// La pagination est-elle allumée ? Gardé à part, et pas relu dans `system`
+    /// à chaque accès mémoire : la question se pose plusieurs fois par
+    /// instruction et la réponse ne change qu'à l'écriture de CR0. La lire
+    /// depuis le tableau des registres de contrôle coûtait **13 %** du débit,
+    /// pagination éteinte comprise.
+    var pagingActive = false
+    /// Le cache de traduction : étiquettes et cadres, côte à côte.
+    var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
+    var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
 
     public init(registers: [UInt64] = [UInt64](repeating: 0, count: 16),
                 flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,
@@ -170,7 +181,8 @@ public struct X86Core: @unchecked Sendable {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
         while executed < budget && !halted {
-            guard let start = memory.offset(rip, 1) else { throw Fault.pageFault(rip) }
+            let physical = try translate(rip)
+            guard let start = memory.offset(physical, 1) else { throw Fault.pageFault(rip) }
             let available = min(X86Instruction.maximumLength, memory.size - start)
             let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
             try execute(instruction)
@@ -254,7 +266,11 @@ public struct X86Core: @unchecked Sendable {
 
         switch instruction.map {
         case .oneByte: try oneByte(instruction, opcode)
-        case .twoByte: try twoByte(instruction, opcode)
+        case .twoByte:
+            // Les instructions système d'abord : elles occupent des octets que
+            // la table ordinaire ne connaît pas.
+            if try systemInstruction(instruction, opcode) { return }
+            try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
     }
