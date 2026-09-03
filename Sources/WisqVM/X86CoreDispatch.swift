@@ -324,11 +324,12 @@ extension X86Core {
 
         case 0xAE:  // les barrières mémoire, et les sauvegardes d'état FPU
             let extension_ = (instruction.modrm ?? 0) >> 3 & 0x07
+            // MFENCE, LFENCE, SFENCE : un seul cœur, rien à ordonner. Les
+            // formes en mémoire du même opcode sauvegardent l'état FPU, et
+            // celles-là ne sont pas écrites : elles sont refusées, pas ignorées.
             guard (instruction.modrm ?? 0) >> 6 == 0b11 && extension_ >= 5 else {
                 throw Fault.unsupported("0F AE /\(extension_) en mémoire")
             }
-            // MFENCE, LFENCE, SFENCE : un seul cœur, rien à ordonner.
-            break
 
         case 0x80...0x8F:  // Jcc long
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 4)) }
