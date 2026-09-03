@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~07h30 UTC — quatre promesses tenues, et une limite mesurée
+
+Le vrai libvirt sert une dernière fois, cette fois pour chercher des défauts
+qui n'y sont pas. C'est une entrée de journal à résultat négatif, et elle vaut
+d'être écrite : elle dit où ne plus chercher.
+
+| ce qu'on demande au vrai démon | ce qu'il répond |
+|---|---|
+| arrêt poli d'un invité sans gestionnaire ACPI (SeaBIOS seul) | `running`, console ouverte, **toujours** `running` neuf secondes plus tard |
+| le cordon (`force: true`) | `stopped` aussitôt, port retiré |
+| jeton faux | `401` |
+| identifiant `--version` | `404 {"error":"identifiant de VM invalide"}` |
+| VM inexistante | `404 {"error":"VM introuvable : fantome"}` |
+
+Les cinq tiennent. Le premier est le plus intéressant : c'est exactement ce
+que `DemoBackend` modélise et ce que `VMPower.shutDown` attend — une demande
+polie n'est pas un acte, et un invité qui n'écoute pas le bouton ne s'arrête
+jamais. Le modèle disait vrai avant d'avoir vu la chose.
+
+### La limite, elle, est réelle
+
+`ConsoleResolver.resolve` tourne **une fois**, avant `SessionFactory`, et le
+port qu'il trouve est cuit dans la `Machine` que la fabrique reçoit.
+`ReconnectingSession` rejoue ensuite la même fermeture à chaque tentative.
+
+Or un domaine redémarré ne retrouve pas forcément son port. Mesuré :
+
+```
+ubuntu-test  spice://localhost:5900     (avant)
+   → arrêté ; second-vm prend 5900, third-vm prend 5901
+ubuntu-test  spice://localhost:5902     (après redémarrage)
+```
+
+Donc : si le domaine est redémarré **de l'extérieur** pendant qu'un téléphone
+tient une session et se reconnecte, les cinq tentatives composent l'ancien
+port et échouent sur une machine qui va très bien.
+
+**Ce qui n'est pas fait, et pourquoi.** La fenêtre est étroite : un
+redémarrage d'invité (`reboot` dans la VM) garde le même processus QEMU et le
+même port ; une extinction puis un rallumage depuis wisq repassent par le
+résolveur. Il faut un redémarrage du domaine par quelqu'un d'autre, pendant
+une session. Le correctif propre — re-résoudre à chaque tentative — rend
+`ReconnectingSession.Factory` asynchrone et touche la boucle de reconnexion,
+qui est la promesse phare de ce projet et le chemin le plus visible de
+l'application. Le faire le matin où Maxime installe la première version sur
+son téléphone, c'est risquer le cas courant pour réparer le cas rare. La
+limite est donc écrite dans `docs/ROADMAP.md` avec sa mesure, à faire ensuite.
+
 ## 2026-09-03, ~07h UTC — ce qu'une VM éteinte sait déjà d'elle-même
 
 Le vrai libvirt monté à la tranche précédente sert encore. Deux questions
