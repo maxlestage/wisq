@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~06h30 UTC — un vrai libvirt, deux vraies VM, et un port faux
+
+Les deux tranches précédentes ont été jugées contre un faux `virsh`. Ce
+conteneur peut faire mieux : `libvirt-daemon-system` et `qemu-system-x86`
+s'installent, `libvirtd` démarre avec `virtlogd`, et QEMU tourne en émulation
+pure — sans KVM, mais le serveur SPICE existe et écoute, ce qui est tout ce
+qu'il faut pour juger le chemin de l'agent.
+
+Le défaut de la première tranche reproduit sur le vrai logiciel :
+
+```
+virsh domdisplay --all ubuntu-test   →  spice://localhost:5900
+virsh vncdisplay      ubuntu-test    →  error: Failed to get VNC port.
+                                         Is this domain using VNC?
+```
+
+Et le vrai binaire `wisq-agent`, lancé contre ce vrai libvirt, publie
+maintenant ce que le téléphone attendait :
+
+```json
+[{"consolePort":5900,"consoleProtocol":"spice","id":"ubuntu-test", …},
+ {"consolePort":5901,"consoleProtocol":"spice","id":"second-vm", …}]
+```
+
+### Le troisième défaut, que seule la mesure pouvait montrer
+
+`RemoteProtocol.spice.defaultPort` valait **5930**. C'est le nombre des
+exemples `-spice port=` de la documentation de QEMU, et ce n'est pas ce
+qu'écoute un hôte construit comme notre propre guide le décrit : libvirt
+attribue **5900**, puis 5901, vérifié à `ss -ltn` sur les deux VM.
+
+Il ne joue pas sur le chemin de l'agent, où le port vient de `domdisplay` ; il
+joue sur le seul cas où wisq doit deviner, quelqu'un qui tape un hôte à la
+main, et il devinait contre l'hôte que nous recommandons.
+
+**Et j'allais écrire ici qu'aucun test ne le tenait.** C'était faux :
+`MachineStoreTests.testDefaultPortFollowsTheProtocol` épinglait 5930, et ma
+recherche l'avait manqué parce qu'elle cherchait `defaultPort` et le littéral
+dans les mêmes fichiers plutôt que le littéral partout. C'est la suite qui
+l'a dit, en rougissant au premier sabordage — la base n'était pas verte, donc
+la vérification s'est arrêtée avant de commencer. Un test épinglait bien le
+mauvais nombre ; le nombre était mauvais quand même.
+
+Les trois ports par défaut sont maintenant énoncés dans `DefaultPortTests`,
+qui dit d'où vient chacun, parce qu'aucun des trois ne se dérive : ils se
+mesurent. Le test du magasin garde ses littéraux — deux énoncés indépendants
+du même nombre, c'est la garde, pas une redite.
+
 ## 2026-09-03, ~06h UTC — et l'éditeur disait « SPICE (bientôt) »
 
 La tranche précédente a rendu les VM SPICE joignables par l'agent. En regardant

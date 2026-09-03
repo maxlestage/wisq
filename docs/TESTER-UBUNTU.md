@@ -57,9 +57,16 @@ fichier »), le presse-papiers reste simplement muet — et le reste marche.
 sans lui, SPICE n'écoute que sur l'hôte. Pour VNC à la place :
 `--graphics vnc,listen=0.0.0.0`.
 
-*Non vérifié d'ici* : ce conteneur n'a pas de KVM. La ligne ci-dessus est
-celle de la documentation de virt-install ; le port SPICE attribué se lit
-ensuite avec `virsh domdisplay ubuntu-test`.
+*Vérifié d'ici, contre un vrai libvirt pilotant un vrai QEMU* (sans KVM, en
+émulation pure — ce qui suffit pour que le serveur SPICE existe et écoute) :
+un domaine avec `<graphics type='spice' autoport='yes' listen='0.0.0.0'/>`
+prend le **port 5900**, un second prend 5901, et `ss -ltn` les montre bien sur
+`0.0.0.0`. `virsh domdisplay ubuntu-test` répond `spice://localhost:5900`.
+
+*Non vérifié d'ici* : l'installation de l'invité elle-même (la ligne
+`virt-install` ci-dessus vient de sa documentation), et tout ce qui demande
+que l'invité ait démarré — `spice-vdagent`, le presse-papiers, le dépôt de
+fichier.
 
 ## 3. Le démon wisq-agent sur l'hôte
 
@@ -80,13 +87,22 @@ et le lien d'appairage se lisent dans `journalctl --user -u wisq-agent`.
 Pour un premier contact sans aucune VM : `wisq-agent --demo` sert deux
 machines factices avec de vraies transitions d'état.
 
-*Vérifié d'ici, sur Ubuntu 24.04 avec `libvirt-clients` et le pilote de test
-de libvirt* : le démon liste les domaines de `virsh`, répond `GET /v1/vms/{id}`,
-refuse un jeton faux en 401, imprime un lien `wisq://agent?…` par interface.
-Ce que le pilote de test ne peut pas montrer, ce sont les changements d'état
-— il repart de zéro à chaque connexion, donc `start` et `stop` ne laissent pas
-de trace ; sur un vrai libvirt ils en laissent, et la suite Rust les tient
-contre un faux `virsh`.
+*Vérifié d'ici, contre un vrai libvirt et deux vraies VM SPICE* : le démon
+liste les domaines, répond `GET /v1/vms/{id}`, refuse un jeton faux en 401, et
+imprime un lien `wisq://agent?…` par interface. Ce que le téléphone reçoit,
+mot pour mot :
+
+```json
+[{"consolePort":5900,"consoleProtocol":"spice","id":"ubuntu-test",
+  "name":"ubuntu-test","state":"running"},
+ {"consolePort":5901,"consoleProtocol":"spice","id":"second-vm",
+  "name":"second-vm","state":"running"}]
+```
+
+C'est exactement ce que le démon ne savait pas produire jusqu'au 3 septembre :
+il ne posait la question qu'à `virsh vncdisplay`, qui sur un domaine SPICE
+répond *Failed to get VNC port*. Les deux champs manquaient et le téléphone
+attendait sans fin.
 
 ## 4. L'appairage et la première connexion
 

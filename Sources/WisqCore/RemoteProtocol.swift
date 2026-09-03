@@ -6,10 +6,27 @@ public enum RemoteProtocol: String, Codable, CaseIterable, Sendable {
     case spice
     case rdp
 
+    /// The port to try when someone types a host without one.
+    ///
+    /// SPICE said 5930 — the number QEMU's own documentation uses in its
+    /// `-spice port=` examples — and that is not what a host built the way
+    /// `docs/TESTER-UBUNTU.md` describes actually listens on. Measured here
+    /// against a real libvirt driving a real QEMU with a real SPICE server:
+    /// libvirt's `autoport` allocates from **5900** upward, one VM per port.
+    ///
+    /// ```text
+    /// ubuntu-test  spice://localhost:5900     ss: LISTEN 0.0.0.0:5900
+    /// second-vm    spice://localhost:5901     ss: LISTEN 0.0.0.0:5901
+    /// ```
+    ///
+    /// It never applies on the agent path, where the port comes from
+    /// `domdisplay`; it applies to the one case where wisq has to guess, and
+    /// guessing 5930 was guessing against the host we tell people to build.
+    /// Someone running `qemu -spice port=5930` by hand types the port anyway.
     public var defaultPort: Int {
         switch self {
         case .vnc: return 5900
-        case .spice: return 5930
+        case .spice: return 5900
         case .rdp: return 3389
         }
     }
