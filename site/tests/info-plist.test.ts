@@ -51,6 +51,24 @@ test("tout ce que l'application déclare à iOS est dans project.yml", () => {
   }
 });
 
+test("les quatre orientations sont déclarées, pas trois", () => {
+  // Apple refuse le paquet deux fois pour la même clé, avec deux messages :
+  // absente (90474), et présente mais incomplète — « you need to include all
+  // of the four orientations to support iPad multitasking ». Une application
+  // qui déclare l'iPad et ne demande pas le plein écran a opté pour le
+  // multitâche, donc les quatre sont exigées. Trois avaient été écrites, et
+  // le deuxième envoi a été refusé là-dessus.
+  const properties = appProperties();
+  for (const orientation of [
+    "UIInterfaceOrientationPortrait",
+    "UIInterfaceOrientationPortraitUpsideDown",
+    "UIInterfaceOrientationLandscapeLeft",
+    "UIInterfaceOrientationLandscapeRight",
+  ]) {
+    expect(properties).toContain(orientation);
+  }
+});
+
 test("le schéma d'URL déclaré est bien celui des liens d'appairage", () => {
   // `AgentPairingLink` et le QR du démon écrivent wisq:// ; un schéma qui
   // change ici sans changer là casse l'appairage sans rien faire rougir.

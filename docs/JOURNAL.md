@@ -58,6 +58,26 @@ laisser le téléphone trouver l'hôte — ne pouvaient donc pas marcher dans
 l'application construite. Aucun test ne le voyait : la suite iOS tourne dans
 un simulateur, où rien n'exige un schéma d'URL ni une permission réseau.
 
+### Et le refus suivant, sur la même clé
+
+Avec le plist complet, l'envoi est reparti : plus de 90475, l'écran de
+lancement est accepté. **Le 90474 est revenu, avec un autre message** :
+
+    The "…Portrait,…LandscapeLeft,…LandscapeRight" orientations were provided
+    […] but you need to include all of the four orientations to support iPad
+    multitasking.
+
+Trois orientations sur quatre avaient été écrites, en pensant au téléphone :
+retirer le portrait inversé pour qu'un iPhone retourné pendant une session ne
+fasse pas basculer l'écran. C'est une décision raisonnable, et ce n'est pas
+là qu'elle s'écrit. Une application qui déclare l'iPad
+(`TARGETED_DEVICE_FAMILY 1,2`) et ne demande pas le plein écran a opté pour le
+multitâche, et le multitâche exige les quatre — la clé est un contrat avec le
+système, pas un réglage de confort. Restreindre pour de bon ce que fait un
+iPhone est un choix de vue, à faire ailleurs si on le veut.
+
+Une garde de plus, sabordée : le portrait inversé retiré rougit le test.
+
 ### Le correctif, et sa garde
 
 Tout passe dans `project.yml` sous `info.properties`, où l'outil le conserve ;
