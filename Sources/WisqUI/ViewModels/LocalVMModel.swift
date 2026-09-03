@@ -367,6 +367,28 @@ public enum KernelLibrary {
         return destination
     }
 
+    /// What the local Linux feature occupies, kernel by kernel.
+    ///
+    /// The two directories are this type's business, not the view's: a screen
+    /// that had to know where saved machines live would be a second place to
+    /// get that wrong.
+    public static func storageReport() -> LocalStorage.Report {
+        guard let kernels = try? directory(),
+              let machines = try? SuspendedMachine.directory()
+        else { return .empty }
+        return LocalStorage.report(kernels: kernels, machines: machines)
+    }
+
+    /// Takes back the space held by machines saved from kernels that are no
+    /// longer here, and answers with how much that was.
+    @discardableResult
+    public static func freeOrphanedMachines() -> Int {
+        guard let kernels = try? directory(),
+              let machines = try? SuspendedMachine.directory()
+        else { return 0 }
+        return LocalStorage.freeOrphanedMachines(kernels: kernels, machines: machines)
+    }
+
     /// Removes a kernel, and everything the app remembered about it.
     ///
     /// Three things, not one: the file, the memory it was set to run with, and

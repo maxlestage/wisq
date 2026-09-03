@@ -148,18 +148,47 @@ public enum SuspendedMachine {
     /// everything after the name to be the hexadecimal digest separates them.
     @discardableResult
     public static func clearAll(named name: String, in directory: URL? = nil) -> Int {
-        guard let folder = try? (directory ?? Self.directory()),
-              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
-        else { return 0 }
-        let prefix = "machine-\(safeName(name))-"
-        let hexadecimal = Set("0123456789abcdef")
+        guard let folder = try? (directory ?? Self.directory()) else { return 0 }
         var removed = 0
-        for entry in entries where entry.hasPrefix(prefix) && entry.hasSuffix(".wisqvm") {
-            let middle = entry.dropFirst(prefix.count).dropLast(".wisqvm".count)
-            guard !middle.isEmpty, middle.allSatisfy(hexadecimal.contains) else { continue }
-            try? FileManager.default.removeItem(at: folder.appendingPathComponent(entry))
+        for file in savedMachineFiles(named: name, in: directory) {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(file))
             removed += 1
         }
         return removed
+    }
+
+    /// The files holding machines saved from a kernel with this file name.
+    ///
+    /// One matcher, used by everything that has to recognise them — forgetting
+    /// them, and measuring what they occupy. Two copies of this rule would be
+    /// the same mistake `safeName` was extracted to avoid.
+    ///
+    /// The match is anchored on both sides rather than being a prefix test.
+    /// `machine-Image-2-ff.wisqvm` starts with `machine-Image-`, so a prefix
+    /// test asked for `Image` would also return `Image-2`'s machines;
+    /// requiring everything after the name to be the hexadecimal digest
+    /// separates them.
+    public static func savedMachineFiles(
+        named name: String, in directory: URL? = nil
+    ) -> [String] {
+        guard let folder = try? (directory ?? Self.directory()),
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return [] }
+        let prefix = "machine-\(safeName(name))-"
+        let hexadecimal = Set("0123456789abcdef")
+        return entries.filter { entry in
+            guard entry.hasPrefix(prefix), entry.hasSuffix(".wisqvm") else { return false }
+            let middle = entry.dropFirst(prefix.count).dropLast(".wisqvm".count)
+            return !middle.isEmpty && middle.allSatisfy(hexadecimal.contains)
+        }.sorted()
+    }
+
+    /// Every file in the directory that holds a saved machine, whatever kernel
+    /// it came from. Used to find the ones no kernel claims any more.
+    public static func allSavedMachineFiles(in directory: URL? = nil) -> [String] {
+        guard let folder = try? (directory ?? Self.directory()),
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return [] }
+        return entries.filter { $0.hasPrefix("machine-") && $0.hasSuffix(".wisqvm") }.sorted()
     }
 }

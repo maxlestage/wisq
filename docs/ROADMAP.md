@@ -2514,16 +2514,25 @@ Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
 
-## « L'espace de stockage » : ce que ça peut vouloir dire ici
+## « L'espace de stockage » : ce qui est montré, et ce qui ne sera pas fait (fait)
 
 Il n'y a **aucun disque** dans la machine locale, et c'est une décision écrite
 juste au-dessus : pas de pilote bloc dans les noyaux nommu de cette famille, et
 l'instantané fait le travail que le disque aurait fait. Un réglage « taille du
 disque » serait donc un curseur qui ne commande rien.
 
-Ce qui est réel et ajustable, c'est la place que **noyaux et instantanés**
-occupent dans le stockage de l'application : montrée par entrée et au total,
-plafonnée, et avec le geste pour reprendre de la place. C'est aussi ce qui
-manque aujourd'hui — un instantané de 64 Mio par noyau suspendu s'accumule
-sans que rien ne le dise. Interprétation à confirmer avec Maxime si elle ne
-correspond pas à ce qu'il avait en tête.
+Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
+occupent dans le stockage de l'application. `LocalStorage` la compte, la vue la
+montre — sous chaque noyau quand il a une machine sauvegardée à côté, et en
+total — et un geste reprend les machines dont le noyau n'existe plus.
+
+**Ce qui ne sera pas fait sans que Maxime le demande : un plafond qui
+supprime.** La forme évidente d'un plafond est une politique d'éviction, et
+supprimer les données de quelqu'un en silence pour rester sous un nombre qu'il
+n'a pas choisi n'est pas un service. Le chiffre et le geste explicite tiennent
+la même promesse sans prendre la décision à sa place.
+
+Interprétation à confirmer avec Maxime si elle ne correspond pas à ce qu'il
+avait en tête : si « espace de stockage » voulait dire un disque pour l'invité,
+la réponse est plus haut et elle est non — mais elle mérite d'être rediscutée
+plutôt que classée.

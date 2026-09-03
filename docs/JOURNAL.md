@@ -8,6 +8,71 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~16h30 UTC — « l'espace de stockage », et ce que ça peut vouloir dire
+
+Deuxième moitié de la demande de Maxime. Elle demande d'abord d'être honnête
+sur ce qu'elle ne peut pas être.
+
+**Il n'y a aucun disque dans la machine locale**, et ce n'est pas un manque :
+c'est une décision, écrite dans la feuille de route depuis longtemps. Les
+noyaux rv32 « nommu » de cette famille ont virtio-mmio mais aucun pilote de
+bloc, et l'utilisateur apporte son propre noyau ; sauver la machine entière —
+RAM, registres, timer, octets en attente sur l'UART — contourne l'invité et
+marche avec n'importe quel noyau. Un curseur « taille du disque » serait donc
+un réglage qui ne commande rien.
+
+Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
+occupent dans le stockage de l'application. Et c'est devenu nettement plus
+intéressant il y a une heure : une machine sauvegardée ne peut pas dépasser la
+RAM dont elle a été prise, donc un noyau réglé à un gibioctet peut laisser
+derrière lui un fichier cent fois plus gros que le noyau lui-même. Les zéros
+sont repliés, donc un invité au repos coûte bien moins que ça — mais rien ne
+disait combien, et un nombre que personne ne voit est un nombre sur lequel
+personne ne peut agir.
+
+### Ce qui est montré
+
+Sous chaque noyau, ce qu'il pèse **et ce que ses machines sauvegardées pèsent à
+côté** — mais seulement quand il y en a. La taille du noyau seul ne mérite pas
+une ligne : c'est le fichier que la personne vient d'importer, il ne la
+surprendra pas. Ce qui mérite d'être dit est ce qui est apparu tout seul.
+
+Puis un total, et le sous-total des machines sauvegardées.
+
+### Ce que je n'ai pas fait, et c'est le point
+
+Pas de **plafond qui supprime**. J'ai écrit dans la feuille de route qu'il
+faudrait « plafonner » ; en le construisant, la forme évidente était une
+politique d'éviction — au-delà de N mégaoctets, la plus ancienne machine
+sauvegardée disparaît. Non. Supprimer les données de quelqu'un sans qu'il l'ait
+demandé, en silence, pour rester sous un nombre qu'il n'a pas choisi, n'est pas
+un service. Ce qui est là est le chiffre, et un geste explicite.
+
+Le seul nettoyage automatique n'en est pas un : il est proposé, pas fait. Les
+machines sauvegardées dont **le noyau n'existe plus** sont du poids mort par
+construction — un instantané ne se restaure pas sans le noyau dont il vient —
+et elles existaient parce que supprimer un noyau ne retirait que le fichier.
+Ça ne l'est plus depuis la tranche précédente, donc ce compteur ne peut plus
+que décroître ; il montre ce que les versions d'avant ont laissé, et il faut
+appuyer pour le reprendre.
+
+### Le même piège, une troisième fois
+
+`machine-Image-2-ff.wisqvm` commence par `machine-Image-`. La tranche
+précédente avait ancré le motif des deux côtés pour l'oubli ; ici, la même
+question se pose pour compter — et un préfixe aurait attribué à « Image » les
+octets de « Image-2 », donc faussé un total sans rien casser de visible. Le
+motif est maintenant dans **une seule** fonction que les deux appellent, avec
+son test.
+
+### Puissances de deux, et l'unité qui le dit
+
+Les tailles s'affichent en Kio/Mio/Gio. Tout le reste du dépôt compte la
+mémoire en puissances de deux ; un chiffre de stockage en puissances de dix à
+côté d'un chiffre de mémoire qui ne l'est pas rendrait les deux incomparables,
+et c'est précisément côte à côte qu'ils apparaissent maintenant.
+
+
 ## 2026-09-03, ~16h UTC — le réglage de mémoire, et ce qu'il coûte
 
 La tranche précédente a rendu la mémoire réglable dans les deux cœurs. Celle-ci

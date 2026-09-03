@@ -26,3 +26,40 @@ final class KernelMemoryNoteTests: XCTestCase {
         XCTAssertTrue(note.contains("ont été oubliées"), note)
     }
 }
+
+/// La ligne de stockage sous le nom d'un noyau.
+final class StorageLineTests: XCTestCase {
+    /// Un noyau sans machine sauvegardée n'a pas de ligne : sa taille est
+    /// celle du fichier que la personne vient d'importer, elle ne la
+    /// surprendra pas. Ce qui mérite d'être dit est ce qui est apparu tout
+    /// seul à côté.
+    func testAKernelWithNoSavedMachineSaysNothing() {
+        XCTAssertNil(LocalVMListView.storageLine(nil))
+        XCTAssertNil(
+            LocalVMListView.storageLine(
+                LocalStorage.Entry(
+                    kernel: "Image", kernelBytes: 3_500_000,
+                    savedMachineBytes: 0, savedMachineCount: 0)))
+    }
+
+    func testOneSavedMachineIsSaidInTheSingularWithBothSizes() throws {
+        let line = try XCTUnwrap(
+            LocalVMListView.storageLine(
+                LocalStorage.Entry(
+                    kernel: "Image", kernelBytes: 3_500_000,
+                    savedMachineBytes: 12 << 20, savedMachineCount: 1)))
+        XCTAssertTrue(line.contains("3,3 Mio"), line)
+        XCTAssertTrue(line.contains("12,0 Mio"), line)
+        XCTAssertTrue(line.contains("machine sauvegardée"), line)
+        XCTAssertFalse(line.contains("machines"), line)
+    }
+
+    func testSeveralSavedMachinesAreCounted() throws {
+        let line = try XCTUnwrap(
+            LocalVMListView.storageLine(
+                LocalStorage.Entry(
+                    kernel: "Image", kernelBytes: 1024,
+                    savedMachineBytes: 2048, savedMachineCount: 2)))
+        XCTAssertTrue(line.contains("2 machines sauvegardées"), line)
+    }
+}

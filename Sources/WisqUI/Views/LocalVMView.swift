@@ -13,6 +13,8 @@ struct LocalVMListView: View {
     @State private var booting: BootTarget?
     /// Ce que le dernier changement de mémoire a coûté, à dire une fois.
     @State private var memoryNote: String?
+    /// Ce que Linux local occupe. Relu après chaque geste qui peut le changer.
+    @State private var storage = LocalStorage.Report.empty
 
     var body: some View {
         List {
@@ -22,12 +24,21 @@ struct LocalVMListView: View {
                         Button {
                             booting = BootTarget(url: kernel)
                         } label: {
-                            Label(kernel.lastPathComponent, systemImage: "terminal")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(kernel.lastPathComponent, systemImage: "terminal")
+                                if let line = Self.storageLine(
+                                    storage.entry(forKernel: kernel.lastPathComponent)) {
+                                    Text(line)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                         Spacer(minLength: 12)
                         KernelMemoryMenu(kernel: kernel) { forgotten in
                             memoryNote = Self.note(forgotten: forgotten)
+                            storage = KernelLibrary.storageReport()
                         }
                     }
                     .swipeActions {
@@ -35,6 +46,7 @@ struct LocalVMListView: View {
                             KernelLibrary.delete(kernel)
                             kernels = KernelLibrary.list()
                             memoryNote = nil
+                            storage = KernelLibrary.storageReport()
                         } label: {
                             Label("Supprimer", systemImage: "trash")
                         }
@@ -51,6 +63,34 @@ struct LocalVMListView: View {
                 Section {
                     Label(memoryNote, systemImage: "memorychip")
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            if storage.total > 0 {
+                Section {
+                    LabeledContent(
+                        "Noyaux et machines sauvegardées",
+                        value: LocalStorage.describe(bytes: storage.total))
+                    if storage.savedMachineBytes > 0 {
+                        LabeledContent(
+                            "dont machines sauvegardées",
+                            value: LocalStorage.describe(bytes: storage.savedMachineBytes))
+                    }
+                    if storage.orphanedCount > 0 {
+                        Button {
+                            let freed = KernelLibrary.freeOrphanedMachines()
+                            storage = KernelLibrary.storageReport()
+                            memoryNote = "\(LocalStorage.describe(bytes: freed)) repris."
+                        } label: {
+                            Label(
+                                "Reprendre \(LocalStorage.describe(bytes: storage.orphanedBytes)) laissés par des noyaux supprimés",
+                                systemImage: "arrow.counterclockwise")
+                        }
+                    }
+                } header: {
+                    Text("Stockage")
+                } footer: {
+                    Text("Une machine sauvegardée ne peut pas dépasser la mémoire dont elle a été prise, et les octets à zéro sont repliés — c'est pourquoi elle pèse en général bien moins que la machine. Il n'y a pas de disque à régler ici : ce noyau Linux « nommu » n'a pas de pilote de bloc, et c'est l'instantané de la machine entière qui fait le travail qu'un disque aurait fait.")
                 }
             }
 
@@ -96,6 +136,7 @@ struct LocalVMListView: View {
                 if let source = try result.get().first {
                     _ = try KernelLibrary.importKernel(from: source)
                     kernels = KernelLibrary.list()
+                    storage = KernelLibrary.storageReport()
                     importError = nil
                 }
             } catch {
@@ -107,6 +148,11 @@ struct LocalVMListView: View {
                 LocalVMTerminalView(kernelURL: target.url)
             }
         }
+        // Relu à l'ouverture, et au retour d'une session : c'est en quittant
+        // une machine qu'elle est sauvegardée, donc c'est là que le chiffre
+        // change le plus.
+        .onAppear { storage = KernelLibrary.storageReport() }
+        .onChange(of: booting == nil) { storage = KernelLibrary.storageReport() }
     }
 }
 
@@ -161,6 +207,23 @@ extension LocalVMListView {
     /// Rien à dire quand rien n'a été perdu : une machine qui n'existait pas
     /// n'a pas été oubliée, et annoncer une perte qui n'a pas eu lieu apprend
     /// à ignorer le message.
+    /// Ce qu'un noyau occupe, sous son nom, ou rien quand il n'y a rien à dire.
+    ///
+    /// Le noyau seul ne mérite pas une ligne : sa taille est celle du fichier
+    /// que la personne vient d'importer, elle ne la surprendra pas. Ce qui
+    /// mérite d'être dit est la machine sauvegardée à côté, qui apparaît sans
+    /// qu'on l'ait demandée et peut peser bien plus que le noyau.
+    static func storageLine(_ entry: LocalStorage.Entry?) -> String? {
+        guard let entry, entry.savedMachineBytes > 0 else { return nil }
+        let machines = entry.savedMachineCount == 1
+            ? "machine sauvegardée"
+            : "\(entry.savedMachineCount) machines sauvegardées"
+        return """
+            \(LocalStorage.describe(bytes: entry.kernelBytes)) \
+            + \(LocalStorage.describe(bytes: entry.savedMachineBytes)) de \(machines)
+            """
+    }
+
     static func note(forgotten: Int) -> String? {
         switch forgotten {
         case 0: return nil
