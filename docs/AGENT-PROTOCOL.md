@@ -155,8 +155,10 @@ L'état renvoyé est celui que le backend peut observer à cet instant, et les d
 que wisq fournit ne disent pas la même chose. Le backend de démonstration rend
 `starting`. `VirshBackend` ne le peut pas : libvirt n'a pas cet état — un
 domaine est `running` dès qu'il existe, pendant que son invité monte encore son
-affichage — et aucune sortie de `virsh domstate` ne signifie « en train de
-démarrer ». Ce paragraphe promettait `starting` tout court ; c'était vrai d'une
+affichage — et aucun état que `virsh` sait rendre ne signifie « en train de
+démarrer ». (Le démon lit cet état dans `virsh dominfo`, qui porte au passage
+les deux chiffres de mémoire ; le vocabulaire est celui de `virsh domstate`,
+qu'il remplace.) Ce paragraphe promettait `starting` tout court ; c'était vrai d'une
 implémentation sur deux.
 
 **Un client ne doit donc pas lire l'état seul.** Une VM est prête quand elle est

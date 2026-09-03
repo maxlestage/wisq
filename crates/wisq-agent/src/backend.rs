@@ -48,8 +48,13 @@ impl DemoBackend {
         debian.guest_os = Some(GuestOs::Linux);
         // Two plausible machines, and deliberately not the same size: a demo
         // where every VM has identical memory would show a column that looks
-        // decorative. These are the numbers `virt-install` hands out by
-        // default on the two guests.
+        // decorative, and the Windows one differs from its own maximum so the
+        // two-figure case is visible without a libvirt to hand.
+        //
+        // Plausible is all they claim to be. A first draft called them "what
+        // `virt-install` hands out by default", which is not a thing —
+        // `virt-install` requires `--memory` — and inventing a provenance for
+        // a demo constant is the same failure as inventing a measurement.
         debian.memory_kib = Some(2 * 1024 * 1024);
         debian.maximum_memory_kib = Some(2 * 1024 * 1024);
         entries.insert(
