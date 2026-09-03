@@ -99,7 +99,8 @@ regarder où ça s'arrête. Chaque arrêt a nommé la brique suivante :
 | opcode `CB` | 26 | le retour lointain, qui recharge CS |
 | opcode `9D` | 61 | `PUSHF`/`POPF`, et les opérations sur chaînes |
 | opcode `DB` | 497 333 | trois instructions x87 |
-| faute de page | **535 845** | — |
+| faute de page | 535 845 | la carte mémoire E820 |
+| faute de page | **538 976** | — |
 
 L'ordre n'est pas une liste que j'aurais dressée : c'est le noyau qui l'a
 dicté, une instruction à la fois. C'est de très loin la façon la plus courte de
@@ -110,6 +111,14 @@ choisir quoi écrire.
 `db e3 / dd 7c 24 0e / d9 7c 24 08` est `fninit ; fnstsw ; fnstcw` — la
 séquence exacte par laquelle Linux détecte un coprocesseur. C'était du vrai
 code noyau, et l'émulation était sur les rails.
+
+**La carte mémoire comptait.** Sans les entrées E820 dans la page zéro, le
+noyau croit n'avoir aucune RAM — c'est le seul champ qu'un chargeur ne peut pas
+laisser à zéro. En l'ajoutant, l'arrêt a bougé **et changé de nature** : d'un
+accès hors de la mémoire de l'invité à une vraie faute de traduction. Le noyau
+tourne donc maintenant dans ses propres tables de pages. Les deux fautes
+portent désormais des noms distincts, parce que les confondre m'avait fait
+chercher au mauvais endroit pendant un moment.
 
 **Ce que je n'écris pas.** Je ne sais pas si la faute de page finale vient du
 noyau ou d'une divergence de ce cœur. Le dire demanderait un émulateur de

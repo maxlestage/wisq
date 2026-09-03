@@ -12,19 +12,24 @@ import XCTest
 /// Il n'échoue donc que si la préparation elle-même casse, jamais parce que le
 /// noyau ne va pas assez loin.
 ///
-/// **Où on en est, mesuré le 3 septembre 2026** : **535 845 instructions** du
+/// **Où on en est, mesuré le 3 septembre 2026** : **538 976 instructions** du
 /// vrai noyau d'Alpine 3.20 s'exécutent, puis le cœur s'arrête sur une faute de
-/// page à 0x1000000 — l'adresse où le noyau a été chargé. Le chemin parcouru
-/// est réel : le décompresseur tourne, et la séquence qui a arrêté le cœur
-/// juste avant (`fninit ; fnstsw ; fnstcw`) est exactement celle par laquelle
-/// Linux détecte un coprocesseur, désassemblée pour en être sûr plutôt que
-/// devinée.
+/// page à 0x0D000000. Le chemin parcouru est réel : le décompresseur tourne, et
+/// la séquence qui avait arrêté le cœur juste avant
+/// (`fninit ; fnstsw ; fnstcw`) est exactement celle par laquelle Linux détecte
+/// un coprocesseur — désassemblée pour en être sûr plutôt que devinée.
+///
+/// **Ce que la carte mémoire a changé.** Sans les entrées E820 dans la page
+/// zéro, le noyau croit n'avoir aucune RAM. Les ajouter a déplacé l'arrêt de
+/// 535 845 à 538 976 instructions **et** changé sa nature : ce n'est plus un
+/// accès hors de la mémoire de l'invité mais une vraie faute de traduction,
+/// donc le noyau a posé ses propres tables et tourne dedans.
 ///
 /// **Ce qui n'est pas établi** : si cette faute vient du noyau ou d'une
-/// divergence de ce cœur. Le dire demanderait un émulateur de référence contre
-/// lequel avancer pas à pas — `qemu-system-x86_64` est là pour ça, et c'est la
-/// tranche suivante. Écrire « le noyau démarre » aujourd'hui serait faux, et
-/// écrire « ça ne marche pas » cacherait un demi-million d'instructions justes.
+/// divergence de ce cœur. Le dire demande un émulateur de référence contre
+/// lequel avancer pas à pas — `qemu-system-x86_64` est disponible, et c'est la
+/// tranche suivante. Écrire « le noyau démarre » serait faux ; écrire « ça ne
+/// marche pas » cacherait un demi-million d'instructions justes.
 final class X86BootAttemptTests: XCTestCase {
     /// Une pagination d'identité sur les quatre premiers gibioctets, en pages
     /// de un gibioctet : quatre entrées suffisent, là où des pages de quatre

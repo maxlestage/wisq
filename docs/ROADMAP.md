@@ -2704,6 +2704,13 @@ habitude.
      écrire « ça ne marche pas » cacherait un demi-million d'instructions
      justes.
 
+     **La carte mémoire E820** de la page zéro a compté : sans elle, le noyau
+     croit n'avoir aucune RAM. L'ajouter a déplacé l'arrêt **et changé sa
+     nature** — d'un accès hors de la mémoire de l'invité à une vraie faute de
+     traduction, ce qui veut dire que le noyau tourne désormais dans ses
+     propres tables. Les deux fautes portent maintenant des noms différents,
+     parce que les confondre fait chercher au mauvais endroit.
+
      Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.

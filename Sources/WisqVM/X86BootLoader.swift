@@ -45,6 +45,17 @@ public struct X86BootLoader {
     /// La page zéro fait exactement quatre kibioctets, et le noyau la lit
     /// jusqu'au bout.
     public static let bootParametersSize = 4096
+    /// Où la carte mémoire vit dans la page zéro : le nombre d'entrées à
+    /// 0x1E8, puis la table à 0x2D0, vingt octets par entrée.
+    public static let e820CountOffset = 0x1E8
+    public static let e820TableOffset = 0x2D0
+    /// Le type « mémoire utilisable ». Les autres — réservée, ACPI, défunte —
+    /// ne nous servent pas encore.
+    public static let e820Usable: UInt32 = 1
+    /// Le trou sous le mégaoctet : la mémoire vidéo et le BIOS y vivaient, et
+    /// un noyau s'attend à ce qu'il soit là. Le déclarer utilisable ferait
+    /// écrire le noyau dans un endroit qu'aucune vraie machine ne lui donne.
+    public static let firstHoleStart: UInt64 = 0x0009_FC00
     /// Où on la met : sous le mégaoctet, là où un chargeur classique la met, et
     /// hors du chemin du noyau.
     public static let bootParametersAddress: UInt64 = 0x1_0000
@@ -106,6 +117,23 @@ public struct X86BootLoader {
         write32(&page, 0x21C, 0)  // ramdisk_size
         write32(&page, 0x228, UInt32(truncatingIfNeeded: commandLineAddress))
 
+        // La carte mémoire. **Sans elle, le noyau croit qu'il n'a aucune RAM**
+        // et s'arrête : c'est le seul champ de la page zéro qu'un chargeur ne
+        // peut pas laisser à zéro. Deux entrées suffisent — ce qui est sous le
+        // trou du premier mégaoctet, et tout le reste.
+        var entries: [(UInt64, UInt64, UInt32)] = [(0, firstHoleStart, e820Usable)]
+        let memoryTop = memory.base &+ UInt64(memory.size)
+        if memoryTop > 0x10_0000 {
+            entries.append((0x10_0000, memoryTop &- 0x10_0000, e820Usable))
+        }
+        page[e820CountOffset] = UInt8(entries.count)
+        for (index, entry) in entries.enumerated() {
+            let start = e820TableOffset + index * 20
+            write64(&page, start, entry.0)
+            write64(&page, start + 8, entry.1)
+            write32(&page, start + 16, entry.2)
+        }
+
         try memory.load(page, at: bootParametersAddress)
 
         // La ligne de commande, terminée par un zéro, et pas plus longue que ce
@@ -121,6 +149,10 @@ public struct X86BootLoader {
             commandLineAddress: commandLineAddress,
             // L'entrée 64 bits est à 0x200 du début du noyau en mode protégé.
             entryPoint: kernelAddress &+ 0x200)
+    }
+
+    static func write64(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt64) {
+        for byte in 0..<8 { bytes[offset + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }
     }
 
     static func write32(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt32) {

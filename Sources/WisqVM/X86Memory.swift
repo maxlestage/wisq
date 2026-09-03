@@ -37,7 +37,7 @@ public final class X86Memory: @unchecked Sendable {
 
     public func read(_ address: UInt64, _ width: Int) throws -> UInt64 {
         guard let start = offset(address, width) else {
-            throw X86Core.Fault.pageFault(address)
+            throw X86Core.Fault.outsideMemory(address)
         }
         var value: UInt64 = 0
         for byte in 0..<width { value |= UInt64(bytes[start + byte]) << (8 * UInt64(byte)) }
@@ -46,7 +46,7 @@ public final class X86Memory: @unchecked Sendable {
 
     public func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
         guard let start = offset(address, width) else {
-            throw X86Core.Fault.pageFault(address)
+            throw X86Core.Fault.outsideMemory(address)
         }
         for byte in 0..<width { bytes[start + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }
     }
@@ -54,7 +54,7 @@ public final class X86Memory: @unchecked Sendable {
     /// Charger un bloc à une adresse — ce que fait un chargeur de noyau.
     public func load(_ block: [UInt8], at address: UInt64) throws {
         guard let start = offset(address, max(block.count, 1)) else {
-            throw X86Core.Fault.pageFault(address)
+            throw X86Core.Fault.outsideMemory(address)
         }
         block.withUnsafeBufferPointer { source in
             guard let origin = source.baseAddress else { return }

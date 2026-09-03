@@ -226,7 +226,8 @@ final class X86MachineTests: XCTestCase {
         // 0x1000.
         var core = try machine([0x48, 0x8B, 0x08])
         XCTAssertThrowsError(try core.run(budget: 10)) { error in
-            XCTAssertEqual(error as? X86Core.Fault, .pageFault(0))
+            XCTAssertEqual(error as? X86Core.Fault, .outsideMemory(0),
+                           "hors de la mémoire, pas une faute de page : rien ne traduit ici")
         }
     }
 

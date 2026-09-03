@@ -116,8 +116,12 @@ public struct X86Core: @unchecked Sendable {
         case unsupported(String)
         /// Une division par zéro, ou dont le quotient ne tient pas.
         case divideError
-        /// Une adresse en dehors de la mémoire de l'invité.
+        /// Une adresse virtuelle qu'aucune table de pages ne traduit.
         case pageFault(UInt64)
+        /// Une adresse **physique** en dehors de la mémoire de l'invité. Ce
+        /// n'est pas la même chose qu'une faute de page, et les confondre fait
+        /// chercher au mauvais endroit.
+        case outsideMemory(UInt64)
     }
 
     // MARK: - Les registres, et les quatre largeurs
