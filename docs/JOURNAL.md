@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~00h30 UTC — la sonde passe devant la construction
+
+Le deuxième envoi s'est arrêté, comme prévu, sur « fiche d'application pour
+app.wisq.ios : ABSENTE ». C'est la seule étape qu'une clé API ne peut pas
+faire à la place de Maxime, et j'attends qu'il la fasse.
+
+En relisant le workflow, l'étape qui pose cette question venait **après**
+l'installation de XcodeGen et l'empaquetage du cœur Rust — soit plusieurs
+minutes de construction pour apprendre quelque chose que l'API dit en une
+seconde. Elle passe devant. Rien d'autre ne change : `build-app-icon.sh`
+précède toujours `xcodegen generate` dans l'étape d'archive, et la garde du
+site qui l'exige reste verte.
+
+La conséquence pratique est que relancer le workflow pour *sonder* la fiche
+ne coûte plus rien, ni en temps ni en numéro de build — l'exécution refuse
+avant d'avoir produit quoi que ce soit. La routine de garde le fera donc à
+chaque passage : quand la fiche apparaît, l'envoi part sans que personne ait
+à écrire « fait ».
+
 ## 2026-09-02, ~20h UTC — le premier envoi TestFlight, et ce qu'il a appris
 
 Maxime a créé les trois secrets App Store Connect et dit « Vas-y ». Le
