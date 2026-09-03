@@ -2591,10 +2591,20 @@ habitude.
    des deux reconnaissances est ce qui les sépare ; et les champs sont apparus
    au fil des versions du protocole, donc chacun est gardé par la version qui
    l'a introduit plutôt que lu au hasard.
-2. **Le décodeur, sans exécution.** Longueur d'instruction, préfixes, ModRM,
-   SIB, déplacements, immédiats. Prouvé par différentiel contre un
-   désassembleur de référence sur un corpus réel — un vrai noyau fait un
-   excellent corpus.
+2. **Le décodeur, sans exécution** — *fait*. `X86Decoder` lit la forme
+   complète : préfixes hérités, REX ou VEX ou EVEX, table d'opcode, ModRM,
+   SIB, déplacement, immédiat, et surtout **où finit l'instruction**. Prouvé
+   par différentiel contre `objdump` 2.42 sur **647 965 instructions** tirées
+   de `/bin/ls`, `/bin/bash` et la libc du système, plus cinquante-trois
+   formes assemblées exprès parce qu'aucun compilateur ne les émet (`moffs`,
+   `ENTER`, `RET imm16`, les six opérations sans immédiat de `F6`/`F7`) :
+   **647 965 accords, zéro désaccord**. Le dépôt porte un extrait distillé de
+   9 222 formes (`Tests/Fixtures/x86-corpus.tsv`, refabriqué par
+   `scripts/build-x86-corpus.py`) qui attrape les huit mêmes sabotages en
+   0,09 s. Le corpus mesuré se répartit en 82,5 % d'opcodes d'un octet,
+   15,8 % de table `0F`, 1,6 % de VEX ou d'EVEX — c'est pourquoi les préfixes
+   vectoriels sont décodés eux aussi, en réutilisant les mêmes tables plutôt
+   qu'en les doublant.
 3. **Le cœur entier, en mode long, sans MMU.** Démarrer avec la pagination
    d'identité que le noyau installe lui-même, jusqu'aux premiers messages sur
    le port série. **C'est ici que tombe le premier vrai chiffre de vitesse.**
