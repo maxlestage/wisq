@@ -84,6 +84,7 @@ pub unsafe extern "C" fn wisq_vm_load(
         Err(crate::machine::LoadError::ImageEmpty) => -3,
         Err(crate::machine::LoadError::ImageTooLarge) => -4,
         Err(crate::machine::LoadError::CommandLineTooLong) => -5,
+        Err(crate::machine::LoadError::RamSizeUnsupported) => -6,
     }
 }
 

@@ -80,6 +80,24 @@ public final class LocalVMModel {
         // qu'après.
         let ramSize = KernelMemory.size(
             forKernel: kernelURL.lastPathComponent, in: storage)
+
+        // Ce que le téléphone a de libre **maintenant**, pas quand le réglage
+        // a été posé. `KernelMemory.size` a déjà rogné sur ce plafond, donc
+        // cette garde ne se déclenche que si la mémoire disponible a baissé
+        // depuis — un autre programme qui a grandi, une session distante
+        // ouverte à côté. Démarrer quand même ferait tuer l'application par
+        // iOS au milieu du démarrage : le plantage sans cause apparente que
+        // cette application a déjà infligé une fois.
+        let roomNow = KernelMemory.ceiling
+        if ramSize > roomNow {
+            _ = life.guestFinished()
+            finish(with: KernelMemory.notEnoughRoomExplanation(
+                requested: ramSize, ceiling: roomNow,
+                name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
         let machine = LocalMachine(ramSize: ramSize) { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
@@ -104,6 +122,24 @@ public final class LocalVMModel {
         // of which the view can trigger the instant this returns. A few
         // megabytes off local storage is a few milliseconds, and this method
         // already read a larger snapshot synchronously.
+        // Ce que le fichier **est**, avant ce qu'il pèse.
+        //
+        // L'ordre compte, et c'est un défaut vécu : sur une image
+        // d'installation d'Arch, le refus disait « fait 5939.2 Mo, la machine
+        // n'a que 64.0 Mo » — vrai mot pour mot, et trompeur en entier, parce
+        // qu'il désigne un nombre et pousse donc vers le réglage de mémoire.
+        // Aucune mémoire ne fera jamais démarrer un ISO x86 sur un RISC-V
+        // 32 bits sans disque. Quarante kibioctets suffisent à le savoir.
+        if let refusal = KernelImageKind.cannotRunHereExplanation(
+            KernelImageKind.identify(fileAt: kernelURL),
+            name: kernelURL.lastPathComponent) {
+            _ = life.guestFinished()
+            finish(with: refusal)
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+
         // Asked of the filesystem, before a single byte is read.
         //
         // This is where the app died. `Data(contentsOf:)` reads the whole file
@@ -350,6 +386,14 @@ public enum KernelLibrary {
         let destination = try directory().appendingPathComponent(source.lastPathComponent)
         _ = source.startAccessingSecurityScopedResource()
         defer { source.stopAccessingSecurityScopedResource() }
+        // Ce que le fichier est passe avant ce qu'il pèse, ici aussi : un ISO
+        // de six gigaoctets est refusé pour la bonne raison, pas pour sa
+        // taille — sinon quelqu'un croit qu'un plus petit passerait.
+        if let refusal = KernelImageKind.cannotRunHereExplanation(
+            KernelImageKind.identify(fileAt: source),
+            name: source.lastPathComponent) {
+            throw KernelImportError.tooLarge(refusal)
+        }
         if let size = try? FileManager.default.attributesOfItem(
             atPath: source.path)[.size] as? Int,
             size > KernelMemory.maximumImportableImageBytes() {

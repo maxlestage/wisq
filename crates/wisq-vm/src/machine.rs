@@ -15,6 +15,21 @@ use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_RAM_SIZE: usize = 64 * 1024 * 1024;
 
+/// The largest machine this architecture can have, and it is not a policy.
+///
+/// Guest RAM starts at `RAM_BASE` (`0x8000_0000`) and the hart addresses memory
+/// with thirty-two bits, so the last byte a machine can own is `0xFFFF_FFFF`.
+/// Two gibibytes lands exactly there — `0x8000_0000 + 2 GiB == 2^32` — and one
+/// byte more has nowhere to live.
+///
+/// Measured on the Swift core, whose failure was silent: a machine built with
+/// three gibibytes loaded without complaint, announced 3 221 209 088 bytes in
+/// its device tree, and then produced nothing at all — no banner, no console,
+/// no error. Both cores refuse it now, because two implementations of one
+/// machine that disagree about its limits is the divergence the differential
+/// test exists to prevent.
+pub const MAXIMUM_RAM_SIZE: usize = 2 * 1024 * 1024 * 1024;
+
 /// Reserved space at the top of RAM, matching the reference layout: the DTB
 /// sits below it, and the kernel must not allocate over either.
 const STATE_RESERVE: usize = 192;
@@ -35,6 +50,9 @@ pub enum LoadError {
     ImageEmpty,
     ImageTooLarge,
     CommandLineTooLong,
+    /// More memory than a thirty-two-bit hart can address. See
+    /// `MAXIMUM_RAM_SIZE`.
+    RamSizeUnsupported,
 }
 
 /// Shared between the thread running the machine and whoever talks to it.
@@ -126,6 +144,9 @@ impl Machine {
             tree[dtb::COMMAND_LINE_OFFSET + bytes.len()] = 0;
         }
 
+        if self.ram.len() > MAXIMUM_RAM_SIZE {
+            return Err(LoadError::RamSizeUnsupported);
+        }
         if image.is_empty() {
             return Err(LoadError::ImageEmpty);
         }
@@ -410,6 +431,37 @@ mod tests {
             ),
             (128 * 1024 * 1024 - dtb::MEMORY_TOP_RESERVE) as u32
         );
+    }
+
+    /// Plus de mémoire que le processeur ne peut adresser est refusé, pas
+    /// construit en silence.
+    ///
+    /// La mesure qui a motivé cette garde vient du cœur Swift, et l'échec y
+    /// était muet : trois gibioctets se chargeaient sans se plaindre puis ne
+    /// produisaient rien du tout. Les deux cœurs refusent maintenant la même
+    /// taille, parce que deux implémentations d'une même machine qui ne sont
+    /// pas d'accord sur ses limites est exactement la divergence que le test
+    /// différentiel existe pour empêcher.
+    #[test]
+    fn more_memory_than_the_hart_can_address_is_refused() {
+        let image = [0x13, 0x00, 0x00, 0x00];
+
+        let mut too_large = Machine::new(3 * 1024 * 1024 * 1024, Box::new(|_| {}));
+        assert_eq!(
+            too_large.load(&image, None),
+            Err(LoadError::RamSizeUnsupported)
+        );
+
+        // Et le bord exact est accepté : refuser 2 Gio serait aussi faux.
+        let mut at_the_limit = Machine::new(MAXIMUM_RAM_SIZE, Box::new(|_| {}));
+        assert_eq!(at_the_limit.load(&image, None), Ok(()));
+    }
+
+    /// La limite est le dernier octet adressable, calculée plutôt que
+    /// réaffirmée : RAM_BASE + MAXIMUM_RAM_SIZE vaut exactement 2^32.
+    #[test]
+    fn the_limit_is_where_the_address_space_ends() {
+        assert_eq!(RAM_BASE as u64 + MAXIMUM_RAM_SIZE as u64, 1u64 << 32);
     }
 
     /// A command line and a resize are patched into the same blob, and neither

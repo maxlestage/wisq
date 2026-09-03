@@ -25,6 +25,11 @@ public final class RustLinuxMachine: @unchecked Sendable {
     /// saved machine made before the setting existed was filed under.
     public static let defaultRAMSize: UInt32 = 64 * 1024 * 1024
 
+    /// The same architectural limit the Swift core states, for the same
+    /// reason: guest RAM starts at `0x8000_0000` and the hart addresses memory
+    /// with thirty-two bits, so two gibibytes is the last byte it can own.
+    public static let maximumRAMSize: UInt32 = 2 * 1024 * 1024 * 1024
+
     /// This machine's memory. Fixed for its lifetime: the crate allocates the
     /// buffer in `wisq_vm_new` and lays the guest's address space out from it,
     /// so a change means a new machine.
@@ -90,6 +95,8 @@ public final class RustLinuxMachine: @unchecked Sendable {
             throw RustLinuxMachineError.imageTooLarge
         case WISQ_VM_LOAD_COMMAND_LINE_LONG, WISQ_VM_LOAD_COMMAND_LINE_UTF8:
             throw RustLinuxMachineError.commandLineTooLong
+        case WISQ_VM_LOAD_RAM_UNSUPPORTED:
+            throw RustLinuxMachineError.ramSizeUnsupported
         default:
             throw RustLinuxMachineError.loadFailed(code)
         }
@@ -162,6 +169,9 @@ public enum RustLinuxMachineError: Error, Sendable, Equatable {
     case notASnapshot
     case snapshotCorrupt
     case snapshotRamMismatch
+    /// More memory than a thirty-two-bit hart can address. Same limit and same
+    /// reason as `LinuxMachine.maximumRAMSize`, held by both cores.
+    case ramSizeUnsupported
     /// A code the header defines but this wrapper does not name yet — reported
     /// rather than swallowed, so a new failure mode in the crate surfaces here
     /// as a readable error instead of a silent success.

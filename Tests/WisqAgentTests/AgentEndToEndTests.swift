@@ -30,6 +30,38 @@ final class AgentEndToEndTests: XCTestCase {
         XCTAssertEqual(vms[1].guestOS, .windows)
     }
 
+    /// La mémoire traverse vraiment la frontière entre les deux langages.
+    ///
+    /// C'est la seule preuve qui vaut pour un champ de protocole : les tests du
+    /// crate montrent que le démon l'écrit, ceux de `WisqCore` que le client
+    /// sait le lire, et **aucun des deux** ne dirait qu'ils sont d'accord sur
+    /// le nom de la clé. Une faute de frappe dans « maximumMemoryKiB » d'un
+    /// côté passerait les deux suites et ne se verrait que sur un téléphone.
+    ///
+    /// Les deux VM du mode démo ont exprès des tailles différentes, et celle de
+    /// Windows diffère de son propre maximum : le cas à deux chiffres est donc
+    /// exercé ici, sans libvirt.
+    func testTheMemoryFiguresCrossTheLanguageBoundary() async throws {
+        let vms = try await client.listVMs()
+        XCTAssertEqual(vms[0].memoryKiB, 2 * 1024 * 1024)
+        XCTAssertEqual(vms[0].maximumMemoryKiB, 2 * 1024 * 1024)
+        XCTAssertEqual(vms[1].memoryKiB, 4 * 1024 * 1024)
+        XCTAssertEqual(vms[1].maximumMemoryKiB, 8 * 1024 * 1024)
+
+        // Et la phrase que l'application montre, construite sur ce que le
+        // démon a réellement envoyé plutôt que sur une valeur fabriquée ici.
+        XCTAssertEqual(vms[0].memoryDescription, "2 Gio")
+        XCTAssertEqual(vms[1].memoryDescription, "4 Gio sur un maximum de 8 Gio")
+    }
+
+    /// Et le démarrage n'efface pas ce que la machine avait annoncé : la
+    /// mémoire est une propriété de la VM, pas de sa session.
+    func testStartingAVMKeepsItsMemory() async throws {
+        let started = try await client.start(vm: "debian-13")
+        XCTAssertEqual(started.memoryKiB, 2 * 1024 * 1024)
+        XCTAssertEqual(started.maximumMemoryKiB, 2 * 1024 * 1024)
+    }
+
     func testRejectsAMissingOrWrongToken() async throws {
         for client in [
             AgentClient(baseURL: agent.baseURL),
