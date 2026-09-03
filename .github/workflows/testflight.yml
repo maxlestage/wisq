@@ -81,8 +81,9 @@ jobs:
         # se demande à l'API. Au passage, l'identifiant d'application est créé
         # s'il manque, et l'absence de fiche est dite ici plutôt que découverte
         # après dix minutes de construction. L'étape vient avant XcodeGen et
-        # le cœur Rust exprès : quand elle refuse, l'exécution a coûté trente
-        # secondes, et on peut la relancer pour sonder la fiche sans regret.
+        # le cœur Rust exprès : quand elle refuse, l'exécution a coûté treize
+        # secondes (mesuré sur l'exécution n° 3), et on peut la relancer pour
+        # sonder la fiche sans regret.
         env:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
