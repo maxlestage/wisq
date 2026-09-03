@@ -74,6 +74,22 @@ jobs:
           fi
 
       - uses: oven-sh/setup-bun@v2
+
+      - name: Ce que la clé sait — l'équipe, l'identifiant, la fiche
+        id: asc
+        # L'équipe que `xcodebuild` réclame ne se déduit pas de la clé : elle
+        # se demande à l'API. Au passage, l'identifiant d'application est créé
+        # s'il manque, et l'absence de fiche est dite ici plutôt que découverte
+        # après dix minutes de construction. L'étape vient avant XcodeGen et
+        # le cœur Rust exprès : quand elle refuse, l'exécution a coûté trente
+        # secondes, et on peut la relancer pour sonder la fiche sans regret.
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          WISQ_BUNDLE_ID: app.wisq.ios
+        run: bun site/scripts/asc.ts
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -81,19 +97,6 @@ jobs:
         # L'application embarque l'interpréteur Rust ; sans cette étape le
         # manifeste s'arrête plutôt que de choisir un cœur à notre place.
         run: scripts/build-xcframework.sh
-
-      - name: Ce que la clé sait — l'équipe, l'identifiant, la fiche
-        id: asc
-        # L'équipe que `xcodebuild` réclame ne se déduit pas de la clé : elle
-        # se demande à l'API. Au passage, l'identifiant d'application est créé
-        # s'il manque, et l'absence de fiche est dite ici plutôt que découverte
-        # après dix minutes de construction.
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          WISQ_BUNDLE_ID: app.wisq.ios
-        run: bun site/scripts/asc.ts
 
       - name: La clé App Store Connect, sur le disque
         # xcodebuild lit la clé dans un fichier ; il n'a pas d'entrée standard
