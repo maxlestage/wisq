@@ -8,6 +8,169 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~16h30 UTC — « l'espace de stockage », et ce que ça peut vouloir dire
+
+Deuxième moitié de la demande de Maxime. Elle demande d'abord d'être honnête
+sur ce qu'elle ne peut pas être.
+
+**Il n'y a aucun disque dans la machine locale**, et ce n'est pas un manque :
+c'est une décision, écrite dans la feuille de route depuis longtemps. Les
+noyaux rv32 « nommu » de cette famille ont virtio-mmio mais aucun pilote de
+bloc, et l'utilisateur apporte son propre noyau ; sauver la machine entière —
+RAM, registres, timer, octets en attente sur l'UART — contourne l'invité et
+marche avec n'importe quel noyau. Un curseur « taille du disque » serait donc
+un réglage qui ne commande rien.
+
+Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
+occupent dans le stockage de l'application.
+
+### Une phrase que j'ai écrite, et que la mesure a démentie
+
+J'avais écrit — dans le code, dans l'interface et ici — qu'« une machine
+sauvegardée ne peut pas dépasser la RAM dont elle a été prise, donc un noyau
+réglé à un gibioctet peut laisser derrière lui un fichier cent fois plus gros
+que le noyau lui-même ». C'est faux, et il a suffi de mesurer sur le vrai
+noyau pour le voir :
+
+```
+machine    après 5 M instructions    après 65 M (invite de connexion)
+ 64 Mio          8,9 Mio                      16,4 Mio
+128 Mio          9,5 Mio                      17,0 Mio
+256 Mio         10,5 Mio                      18,4 Mio
+```
+
+**Le coût suit ce que l'invité a touché, pas ce qu'on lui a donné.** Quadrupler
+la machine ajoute deux mégaoctets, parce que Linux ne touche pas la mémoire
+dont il n'a pas l'usage et que les suites de zéros sont repliées. Dépenser dix
+fois plus d'instructions double presque le fichier, parce que là c'est de la
+mémoire réellement écrite.
+
+La phrase était plausible et elle sonnait prudente — c'est exactement la forme
+qu'une affirmation fausse prend quand elle traverse une relecture. Elle était
+partie dans une chaîne que l'application montre à qui l'utilise.
+
+Corrigée aux trois endroits, et surtout transformée en garde :
+`ResizedSnapshotCostTests` démarre le vrai noyau dans une machine de 64 et une
+de 256 Mio et exige que quadrupler la mémoire ne double pas l'instantané. Le
+sabordage — la course littérale avale aussi les zéros, donc plus rien n'est
+replié — le fait tomber sur ses trois assertions.
+
+Ce qui reste vrai, et qui justifie la tranche : **dix-sept mégaoctets par noyau
+suspendu**. Cinq noyaux laissés suspendus font quatre-vingt-cinq mégaoctets,
+apparus sans que personne les ait demandés, et un nombre que personne ne voit
+est un nombre sur lequel personne ne peut agir.
+
+### Ce qui est montré
+
+Sous chaque noyau, ce qu'il pèse **et ce que ses machines sauvegardées pèsent à
+côté** — mais seulement quand il y en a. La taille du noyau seul ne mérite pas
+une ligne : c'est le fichier que la personne vient d'importer, il ne la
+surprendra pas. Ce qui mérite d'être dit est ce qui est apparu tout seul.
+
+Puis un total, et le sous-total des machines sauvegardées.
+
+### Ce que je n'ai pas fait, et c'est le point
+
+Pas de **plafond qui supprime**. J'ai écrit dans la feuille de route qu'il
+faudrait « plafonner » ; en le construisant, la forme évidente était une
+politique d'éviction — au-delà de N mégaoctets, la plus ancienne machine
+sauvegardée disparaît. Non. Supprimer les données de quelqu'un sans qu'il l'ait
+demandé, en silence, pour rester sous un nombre qu'il n'a pas choisi, n'est pas
+un service. Ce qui est là est le chiffre, et un geste explicite.
+
+Le seul nettoyage automatique n'en est pas un : il est proposé, pas fait. Les
+machines sauvegardées dont **le noyau n'existe plus** sont du poids mort par
+construction — un instantané ne se restaure pas sans le noyau dont il vient —
+et elles existaient parce que supprimer un noyau ne retirait que le fichier.
+Ça ne l'est plus depuis la tranche précédente, donc ce compteur ne peut plus
+que décroître ; il montre ce que les versions d'avant ont laissé, et il faut
+appuyer pour le reprendre.
+
+### Le même piège, une troisième fois
+
+`machine-Image-2-ff.wisqvm` commence par `machine-Image-`. La tranche
+précédente avait ancré le motif des deux côtés pour l'oubli ; ici, la même
+question se pose pour compter — et un préfixe aurait attribué à « Image » les
+octets de « Image-2 », donc faussé un total sans rien casser de visible. Le
+motif est maintenant dans **une seule** fonction que les deux appellent, avec
+son test.
+
+### Puissances de deux, et l'unité qui le dit
+
+Les tailles s'affichent en Kio/Mio/Gio. Tout le reste du dépôt compte la
+mémoire en puissances de deux ; un chiffre de stockage en puissances de dix à
+côté d'un chiffre de mémoire qui ne l'est pas rendrait les deux incomparables,
+et c'est précisément côte à côte qu'ils apparaissent maintenant.
+
+
+## 2026-09-03, ~16h UTC — le réglage de mémoire, et ce qu'il coûte
+
+La tranche précédente a rendu la mémoire réglable dans les deux cœurs. Celle-ci
+la met dans la main de qui utilise l'application : chaque noyau de la liste
+porte sa taille, à droite de son nom.
+
+### Trois décisions, et pourquoi
+
+**Par noyau, pas globalement.** Deux noyaux dans la même liste n'ont aucune
+raison de tourner à la même taille, et quelqu'un qui monte à 256 Mo le fait
+pour une image précise.
+
+**Classé par nom de fichier, pas par empreinte** — l'inverse de
+`SuspendedMachine`, qui prend l'empreinte parce que deux noyaux importés à une
+semaine d'écart s'appellent tous les deux `Image` et donner au second
+l'*instantané* du premier restaurerait une machine qui n'a jamais existé. Une
+taille n'est pas un état : au pire un fichier remplacé hérite d'une préférence
+qu'on change d'un geste. Et surtout, la lire ne demande aucun octet — ce qui
+est nécessaire, parce que le chemin de démarrage doit connaître la taille de la
+machine **avant** de lire l'image, et l'empreinte n'existe qu'après.
+
+**Le plafond vient de l'appareil, pas d'un nombre écrit à la main** : un
+huitième de la mémoire physique, borné à un gibioctet, jamais sous la machine
+de référence. Un huitième et pas un tiers — jetsam, la limite à laquelle iOS
+tue, est autour du tiers sur les téléphones qu'iOS 17 fait tourner, la RAM de
+l'invité devient entièrement résidente, et l'application a besoin de place à
+côté. Le premier brouillon disait « un quart » : sur un téléphone de 2 Go cela
+donne 512 Mo d'invité, assez près de jetsam pour que le réglage livre un
+plantage. C'est une **politique**, pas une mesure, et le code le dit.
+
+### Deux seuils, et pourquoi ce ne sont pas les mêmes
+
+À l'import, un fichier est jugé sur la **plus grande machine que l'appareil
+autorise** : au moment où il arrive, aucune taille n'a été choisie, et le
+refuser sur le défaut refuserait un fichier importé exprès pour tourner plus
+grand. Au démarrage, il est jugé sur la machine **de ce noyau-là**. Les deux
+sont justes à leur moment.
+
+### Ce que change coûte, dit plutôt que subi
+
+Un instantané pris à une autre taille ne peut pas être restauré — les deux
+cœurs refusent l'écart depuis toujours, c'est vérifié. Le laisser sur le disque
+serait donc laisser un fichier que rien ne relira jamais. Changer la taille
+l'oublie, et l'application dit combien de machines cela a coûté — ou ne dit
+rien du tout quand ça n'a rien coûté, parce qu'annoncer une perte qui n'a pas
+eu lieu apprend à ignorer le message suivant.
+
+Oublier par nom demandait une garde à laquelle je ne pensais pas :
+`machine-Image-2-ff.wisqvm` **commence par** `machine-Image-`, donc un simple
+test de préfixe, demandé d'oublier `Image`, aurait aussi oublié `Image-2`. Le
+motif est ancré des deux côtés — tout ce qui suit le nom doit être
+l'empreinte hexadécimale. Le sabordage qui remet le test de préfixe tombe sur
+ce test précis.
+
+Et supprimer un noyau oublie maintenant trois choses au lieu d'une : le
+fichier, son réglage, et les machines sauvegardées. Sinon un noyau réimporté
+sous le même nom hériterait en silence d'un réglage que son propriétaire avait
+supprimé.
+
+### Sabordage
+
+Six, chacun tombant sur son test et sur lui seul : la taille enregistrée qui
+n'est plus rognée par le plafond de l'appareil, le plafond qui redevient un
+quart, `clearAll` qui redevient un test de préfixe, le réglage qui cesse d'être
+classé par noyau, le retour au défaut qui écrit le nombre au lieu d'effacer
+l'entrée, et la garde qui refusait une valeur hors de la liste offerte.
+
+
 ## 2026-09-03, ~15h UTC — la mémoire réglable, et l'invité qui l'apprend
 
 Maxime : « Je veux pouvoir ajuster de la ram et de l'espace de stockage

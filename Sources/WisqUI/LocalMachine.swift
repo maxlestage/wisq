@@ -28,26 +28,4 @@ typealias LocalMachine = RustLinuxMachine
 typealias LocalMachine = LinuxMachine
 #endif
 
-/// How much memory the local machine gets, and therefore what size a kernel
-/// image is judged against.
-///
-/// One place, because three call sites ask the same question: the boot path,
-/// the import path, and the sentence that refuses a file. The core takes a
-/// size per machine now — both cores do — so this is the one line a memory
-/// setting has to move, rather than three that could disagree.
-///
-/// It used to be read off the type (`LinuxMachine.maximumKernelImageBytes`),
-/// which only worked while every machine had the same memory. It no longer
-/// does, and a bound that comes from a type instead of a machine is exactly
-/// the drift this file exists to prevent.
-public enum LocalMachineMemory {
-    public static let size = LinuxMachine.defaultRAMSize
-
-    /// The largest kernel image that machine can hold. Not a policy: the image
-    /// is copied into guest RAM below the device tree, and anything larger has
-    /// nowhere to go.
-    public static var maximumKernelImageBytes: Int {
-        LinuxMachine.maximumKernelImageBytes(forRAMSize: size)
-    }
-}
 #endif
