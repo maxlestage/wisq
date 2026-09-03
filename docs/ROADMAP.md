@@ -2500,6 +2500,14 @@ Et le réglage lui-même, `KernelMemory` :
 - **Deux seuils, pas un.** À l'import, un fichier est jugé sur la plus grande
   machine que l'appareil autorise, parce qu'aucune taille n'est encore choisie ;
   au démarrage, sur la machine de ce noyau-là.
+- **Deux bornes, pas une** (règle de Maxime, 3 septembre) : la machine laisse
+  **deux gibioctets à l'appareil** — « je veux pouvoir la gérer en étant deux
+  giga plus petit que ce que le téléphone a » — *et* reste sous ce que le
+  système dit libre à cet instant. Les deux disent des choses différentes : de
+  combien d'un appareil wisq accepte d'être, et ce qui est libre maintenant. La
+  plus petite décide. Bord net assumé : sur un appareil de deux gibioctets ou
+  moins la règle vaut zéro, et c'est le plancher — la machine de référence —
+  qui répond.
 - **Le plafond vient du système, plus d'une fraction inventée.**
   `os_proc_available_memory()` rend ce que l'application peut encore allouer
   avant qu'iOS ne la tue ; le plafond est ce nombre moins 256 Mio pour
@@ -2531,6 +2539,73 @@ Et le réglage lui-même, `KernelMemory` :
 Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
+
+## Lot 7 — la plate-forme locale devient x86-64 (décidé par Maxime)
+
+Maxime, le 3 septembre : « faut changer la plate-forme car risc-v c'est pas la
+bonne solution pour des distributions complètes ». Choix posé après avoir vu
+les trois options et leur coût : **x86-64 + MMU + disque**.
+
+### Ce que la décision corrige d'abord : le diagnostic
+
+RISC-V n'était pas le blocage, et il faut l'écrire pour que personne ne
+re-décide sur la mauvaise raison. Debian, Ubuntu et Fedora ont des ports
+**riscv64 officiels**. Ce qui empêche une distribution complète de tourner
+aujourd'hui, ce sont trois choses précises :
+
+1. la machine est en **32 bits** ;
+2. elle est **nommu** — sans MMU, donc sans l'espace d'adressage virtuel dont
+   toute distribution dépend ;
+3. elle n'a **aucun disque**.
+
+x86-64 apporte les trois d'un coup **et** fait tourner ce que Maxime veut
+précisément faire tourner, qui est distribué en x86-64. C'est le raisonnement
+retenu.
+
+### Ce qu'aucune décision ne lève
+
+**iOS interdit le JIT** aux applications de l'App Store. Tout sera interprété.
+Mesuré sur le cœur qui tourne aujourd'hui : **122,5 M d'instructions par
+seconde** (200 M en 1,63 s, Rust en release, sur un vCPU de datacentre) pour du
+rv32, dont le décodage est simple. x86-64 coûte nettement plus par instruction
+— longueur variable, préfixes, ModRM/SIB, sémantique des drapeaux. Un démarrage
+de bureau complet se compte en dizaines de milliards d'instructions.
+
+Cette phrase est une **extrapolation**, pas une mesure, et elle le restera
+jusqu'à ce que la tranche 3 donne un vrai chiffre. Elle est écrite ici pour que
+la première mesure réelle puisse la contredire au lieu de la confirmer par
+habitude.
+
+### Les tranches, dans l'ordre, et ce que chacune prouve
+
+1. **Reconnaître un noyau x86-64.** `KernelImageKind` sait déjà refuser un ISO
+   et nommer une architecture ; il doit savoir dire « bzImage » (magie `HdrS`
+   à 0x202) et lire l'en-tête de démarrage Linux. Petit, testable, et c'est ce
+   qui dira à quelqu'un que son fichier est enfin le bon.
+2. **Le décodeur, sans exécution.** Longueur d'instruction, préfixes, ModRM,
+   SIB, déplacements, immédiats. Prouvé par différentiel contre un
+   désassembleur de référence sur un corpus réel — un vrai noyau fait un
+   excellent corpus.
+3. **Le cœur entier, en mode long, sans MMU.** Démarrer avec la pagination
+   d'identité que le noyau installe lui-même, jusqu'aux premiers messages sur
+   le port série. **C'est ici que tombe le premier vrai chiffre de vitesse.**
+4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
+   morceau qui décide si l'espace utilisateur existe.
+5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans
+   le stockage de l'application — ce qui rouvre pour de bon la question de
+   « l'espace de stockage », cette fois avec un vrai disque à régler.
+6. **Le reste d'un PC** : PIC/APIC, PIT, RTC, PCI, et un framebuffer.
+
+Les tranches 1 à 3 se vérifient sans rien changer à ce qui existe. La machine
+rv32 actuelle **reste** : elle démarre en une seconde, elle est utile pour
+bricoler, et elle sert de témoin — le test différentiel entre deux cœurs a déjà
+attrapé assez de choses pour qu'on ne s'en prive pas.
+
+### Ce qui reste vrai pendant tout ce temps
+
+Une distribution complète tourne **aujourd'hui** sur un hôte, avec wisq comme
+écran, et c'est ce que le reste de l'application fait déjà bien. Le lot 7 ne
+remplace pas ce chemin ; il en ajoute un, plus lent, qui n'a besoin de personne.
 
 ## La mémoire des VM **distantes** — lue (fait), pas encore réglable
 
