@@ -158,12 +158,10 @@ public struct X86Core: @unchecked Sendable {
     public mutating func run(budget: UInt64) throws -> UInt64 {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
-        var window = [UInt8](repeating: 0, count: X86Instruction.maximumLength)
         while executed < budget && !halted {
             guard let start = memory.offset(rip, 1) else { throw Fault.pageFault(rip) }
             let available = min(X86Instruction.maximumLength, memory.size - start)
-            for byte in 0..<available { window[byte] = memory.bytes[start + byte] }
-            let instruction = try X86Decoder.decode(window)
+            let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
             try execute(instruction)
             executed += 1
         }
@@ -201,7 +199,7 @@ public struct X86Core: @unchecked Sendable {
     static func operandSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
         if byteForm { return 1 }
         if let rex = instruction.rex, rex & 0x08 != 0 { return 8 }
-        return instruction.legacyPrefixes.contains(0x66) ? 2 : 4
+        return instruction.hasPrefix(0x66) ? 2 : 4
     }
 
     struct Fields {
@@ -238,7 +236,7 @@ public struct X86Core: @unchecked Sendable {
     }
 
     mutating func perform(_ instruction: X86Instruction) throws {
-        guard instruction.vex.isEmpty else {
+        guard instruction.vexCount == 0 else {
             throw Fault.unsupported("une instruction vectorielle")
         }
         let opcode = instruction.opcode

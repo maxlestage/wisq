@@ -8,7 +8,7 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-09-03, ~21h00 UTC — le premier vrai chiffre : 8,4 MIPS
+## 2026-09-03, ~21h00 UTC — le premier vrai chiffre : 8,4 puis 16,5 MIPS
 
 Maxime : « Va plus vite ». J'ai donc écrit la tranche 3b **pendant** que la CI
 de #170 tournait, au lieu d'attendre. #170 fusionné (sept vérifications
@@ -16,13 +16,34 @@ vertes).
 
 ### Le chiffre
 
-**8,4 MIPS**, mesuré par `swift run -c release wisq-bench` sur 280 millions
-d'instructions en 33,3 s. Le programme mesuré additionne, compare, saute, lit
-et écrit la mémoire — pas un compteur qui tourne à vide.
+D'abord **8,4 MIPS**, puis **16,5 MIPS** — mesuré par
+`swift run -c release wisq-bench` sur 280 millions d'instructions en 17,0 s. Le
+programme mesuré additionne, compare, saute, lit et écrit la mémoire — pas un
+compteur qui tourne à vide.
 
-À ce débit : deux milliards d'instructions, **quatre minutes** ; cinquante
-milliards, **cent minutes**. Ces deux nombres-là sont des **divisions**, pas
-des mesures. Ce qui est mesuré, c'est le débit.
+À ce débit : deux milliards d'instructions, **deux minutes** ; cinquante
+milliards, **cinquante minutes**. Ces deux nombres-là sont des **divisions**,
+pas des mesures. Ce qui est mesuré, c'est le débit.
+
+### Le doublement, et où il était
+
+Maxime a dit « va plus vite ». J'ai d'abord pris ça pour moi, puis j'ai regardé
+le programme. Deux gaspillages, tous deux sur le chemin le plus chaud :
+
+1. le décodeur **allouait deux tableaux par instruction** — un pour les
+   préfixes hérités, un pour le préfixe vectoriel — alors que les seules
+   questions posées sont « y a-t-il un 0x66 ? » et « combien d'octets ? ». Un
+   masque de bits et un tuple. (+23 %)
+2. la boucle **recopiait quinze octets** dans un tampon avant chaque décodage,
+   uniquement pour avoir un `Array` à donner au décodeur. Un pointeur suffit.
+   (+60 % de plus)
+
+Ensemble : **×1,96**, sans toucher à une seule règle du jeu d'instructions, et
+les 9 036 accords de l'oracle matériel tiennent toujours — c'est justement à ça
+qu'il sert.
+
+Il reste environ 180 cycles par instruction sur cette machine, là où un bon
+interprète en demande cinquante. La marge suivante est mesurable, elle aussi.
 
 **Ce que ça corrige.** La feuille de route disait qu'un démarrage complet
 « se compte en dizaines de milliards d'instructions » et laissait entendre des

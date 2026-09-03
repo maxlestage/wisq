@@ -2626,19 +2626,29 @@ habitude.
      sauts courts et longs, appel et retour, cadres de pile, accès aux quatre
      largeurs, adressage à échelle, saut indirect. **9 036 accords sur 9 036.**
 
-     **Le chiffre : 8,4 MIPS**, mesuré par `swift run -c release wisq-bench` sur
-     une boucle qui additionne, compare, saute, lit et écrit la mémoire — pas un
-     compteur à vide. À ce débit, deux milliards d'instructions prennent
-     **quatre minutes**, cinquante milliards en prennent **cent**. Ces deux
+     **Le chiffre : 16,5 MIPS**, mesuré par `swift run -c release wisq-bench`
+     sur une boucle qui additionne, compare, saute, lit et écrit la mémoire —
+     pas un compteur à vide. À ce débit, deux milliards d'instructions prennent
+     **deux minutes**, cinquante milliards en prennent **cinquante**. Ces deux
      derniers nombres sont des **divisions, pas des mesures** ; ce qui est
      mesuré, c'est le débit.
 
+     La première mesure donnait **8,4 MIPS**. Deux choses la plombaient, et
+     toutes deux étaient sur le chemin le plus chaud du programme : le décodeur
+     **allouait deux tableaux par instruction** (les préfixes, le préfixe
+     vectoriel), et la boucle **recopiait quinze octets** dans un tampon avant
+     chaque décodage, uniquement pour avoir un `Array`. Un masque de bits et un
+     tuple pour le premier, un pointeur pour le second : ×1,96 sans toucher à
+     une seule règle du jeu d'instructions, et les 9 036 accords de l'oracle
+     tiennent toujours.
+
      Ce que ça corrige : la feuille de route disait « des heures », et c'était
-     une extrapolation. Un noyau seul se compte en minutes. Ce que ça ne dit
-     pas : ce cœur-ci est en Swift, alors que les 122,5 MIPS du rv32 sont ceux
-     du cœur Rust — l'écart mélange deux langages et deux architectures. Et le
-     décodeur alloue un tableau par instruction ; c'est la première chose à
-     regarder avant de conclure quoi que ce soit sur le coût du x86-64.
+     une extrapolation. Un noyau seul se compte en **minutes**. Ce que ça ne
+     dit pas : ce cœur-ci est en Swift, alors que les 122,5 MIPS du rv32 sont
+     ceux du cœur Rust — l'écart mélange deux langages et deux architectures.
+     Et à 16,5 MIPS il reste environ 180 cycles par instruction sur cette
+     machine, là où un bon interprète en demande cinquante : il y a encore de
+     la marge, et elle est mesurable.
    - **3c. Démarrer un vrai `bzImage`** : le protocole de démarrage que la
      tranche 1 sait lire, la structure `boot_params`, et les premiers messages
      du noyau sur le port série.

@@ -318,7 +318,7 @@ extension X86Core {
             writeReg(fields, size, Self.signExtend(try readRM(fields, source), source)
                 & Self.mask(size))
 
-        case 0xB8 where instruction.legacyPrefixes.contains(0xF3):  // POPCNT
+        case 0xB8 where instruction.hasPrefix(0xF3):  // POPCNT
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction, size: size)
             let source = try readRM(fields, size)
