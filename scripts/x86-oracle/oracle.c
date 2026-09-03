@@ -18,16 +18,26 @@ void wisq_x86_run(uint64_t *state, void *code);
 extern char wisq_return[];
 
 #define SLOTS 17
-#define MAX_CODE 64
+#define MAX_CODE 512
+
+// Des adresses **fixes**, pour que le verdict se reproduise d'une exécution à
+// l'autre : une adresse rendue par mmap changerait à chaque fois et ne pourrait
+// être ni comparée ni versionnée.
+#define ARENA   0x30000000UL
+#define CODE    (ARENA + 0x0000)
+#define DATA    (ARENA + 0x1000)
+#define STACK   (ARENA + 0x3000)
+#define WINDOW  64
 
 int main(void) {
     // Une page inscriptible puis exécutable. La pile de l'invité vit dans la
     // page suivante : un cas qui touche à RSP ne doit pas écraser le harnais.
     size_t page = 4096;
-    unsigned char *arena = mmap(NULL, page * 3, PROT_READ | PROT_WRITE | PROT_EXEC,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    unsigned char *arena = mmap((void *)ARENA, page * 4, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     if (arena == MAP_FAILED) { perror("mmap"); return 1; }
-    unsigned char *code = arena;
+    unsigned char *code = (unsigned char *)CODE;
+    unsigned char *data = (unsigned char *)DATA;
 
     char line[4096];
     while (fgets(line, sizeof line, stdin)) {
@@ -67,10 +77,14 @@ int main(void) {
         void *back = wisq_return;
         memcpy(code + length + 6, &back, 8);
 
+        // Une fenêtre de données au motif reconnaissable : si l'instruction
+        // écrit là où il ne faut pas, ça se voit.
+        for (int i = 0; i < WINDOW; i++) data[i] = (unsigned char)(0x10 + i);
+
         uint64_t state[SLOTS];
         memcpy(state, in, sizeof state);
-        // La pile de l'invité, loin du harnais.
-        state[4] = (uint64_t)(arena + page * 2);
+        // La pile de l'invité, loin du harnais, et à une adresse fixe.
+        state[4] = STACK;
         in[4] = state[4];
 
         wisq_x86_run(state, code);
@@ -78,6 +92,8 @@ int main(void) {
         printf("%s", hex);
         for (int i = 0; i < SLOTS; i++) printf("\t%llx", (unsigned long long)in[i]);
         for (int i = 0; i < SLOTS; i++) printf("\t%llx", (unsigned long long)state[i]);
+        printf("\t");
+        for (int i = 0; i < WINDOW; i++) printf("%02x", data[i]);
         printf("\n");
     }
     return 0;

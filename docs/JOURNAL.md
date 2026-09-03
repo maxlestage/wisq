@@ -8,6 +8,213 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~21h00 UTC — le premier vrai chiffre : 8,4 puis 16,5 MIPS
+
+Maxime : « Va plus vite ». J'ai donc écrit la tranche 3b **pendant** que la CI
+de #170 tournait, au lieu d'attendre. #170 fusionné (sept vérifications
+vertes).
+
+### Le chiffre
+
+D'abord **8,4 MIPS**, puis **16,5 MIPS** — mesuré par
+`swift run -c release wisq-bench` sur 280 millions d'instructions en 17,0 s. Le
+programme mesuré additionne, compare, saute, lit et écrit la mémoire — pas un
+compteur qui tourne à vide.
+
+À ce débit : deux milliards d'instructions, **deux minutes** ; cinquante
+milliards, **cinquante minutes**. Ces deux nombres-là sont des **divisions**,
+pas des mesures. Ce qui est mesuré, c'est le débit.
+
+### Le doublement, et où il était
+
+Maxime a dit « va plus vite ». J'ai d'abord pris ça pour moi, puis j'ai regardé
+le programme. Deux gaspillages, tous deux sur le chemin le plus chaud :
+
+1. le décodeur **allouait deux tableaux par instruction** — un pour les
+   préfixes hérités, un pour le préfixe vectoriel — alors que les seules
+   questions posées sont « y a-t-il un 0x66 ? » et « combien d'octets ? ». Un
+   masque de bits et un tuple. (+23 %)
+2. la boucle **recopiait quinze octets** dans un tampon avant chaque décodage,
+   uniquement pour avoir un `Array` à donner au décodeur. Un pointeur suffit.
+   (+60 % de plus)
+
+Ensemble : **×1,96**, sans toucher à une seule règle du jeu d'instructions, et
+les 9 036 accords de l'oracle matériel tiennent toujours — c'est justement à ça
+qu'il sert.
+
+Il reste environ 180 cycles par instruction sur cette machine, là où un bon
+interprète en demande cinquante.
+
+### « Vas plus vite que jamais » — CPUID, les registres de contrôle, les MSR, la MMU
+
+Tout d'un bloc, sans attendre la CI.
+
+**La MMU** : parcours à quatre niveaux, grandes pages de 2 Mio et de 1 Gio,
+faute de page nommée avec son adresse, et un cache de traduction direct de
+1024 entrées vidé par l'écriture de `CR3`. Coût mesuré : **16,4 → 15,4 MIPS**,
+6 % — la première version en coûtait 13 %, parce qu'elle relisait `CR0` dans le
+tableau des registres de contrôle à chaque accès mémoire.
+
+**Le mode long s'active comme sur un vrai processeur** : `EFER.LMA` est posé
+par la machine quand la pagination s'allume alors que `LME` est demandé, pas
+par celui qui écrit `EFER`. Un noyau lit `LMA` pour savoir où il en est.
+
+**`CPUID` est une décision, pas une mesure.** L'oracle matériel dirait ce que
+*cette* machine répond, et c'est précisément ce qu'il ne faut pas : un invité
+qui se croirait sur le processeur de l'hôte utiliserait des instructions que ce
+cœur n'exécute pas. Chaque bit annoncé est une promesse tenue ailleurs, et les
+tests sont écrits dans ce sens — ils partent de l'annonce et remontent à
+l'instruction. Le x87 n'est pas annoncé, parce que rien ne l'exécute.
+
+### Trois fois mes tests avaient tort et le cœur raison
+
+**Le MSR qui ne revenait pas identique.** J'avais choisi `EFER` pour l'aller-
+retour de `WRMSR`/`RDMSR`. Il revenait à un bit près — celui de `LMA`, que la
+machine efface parce que la pagination est éteinte. Le cœur faisait
+exactement ce qu'il fallait ; le test a changé de registre.
+
+**Les deux tables de pages qui se marchaient dessus.** Deux correspondances
+construites à la main partageaient leur dernière table, donc la seconde
+écrasait la première. Symptôme : une écriture qui atterrissait à zéro.
+
+**Le `CR3` basculé sans que le code soit mappé de l'autre côté.** La faute de
+page qui suivait était juste : un vrai noyau ne bascule jamais sans que les
+nouvelles tables couvrent déjà l'instruction suivante. C'est maintenant écrit
+dans le test.
+
+Quatre sabotages sur la pagination : le bit de grande page ignoré, le bit de
+présence ignoré, l'étiquette du cache privée de son `+1` (sans quoi la page
+zéro passe pour une entrée vide), et l'écriture de `CR3` qui ne vide plus rien.
+
+### La tentative de démarrage, et ce qu'elle a dicté
+
+Plutôt que de deviner ce qui manquait, j'ai **essayé** : charger le vrai noyau
+d'Alpine, poser une pagination d'identité, entrer en mode long, sauter, et
+regarder où ça s'arrête. Chaque arrêt a nommé la brique suivante :
+
+| arrêt | instructions | ce qu'il fallait écrire |
+| --- | --- | --- |
+| opcode `FC` | 0 | `CLD`, et avec lui `CLI`/`STI`/`STD` |
+| opcode `8E` | 3 | les six sélecteurs de segment |
+| opcode `CB` | 26 | le retour lointain, qui recharge CS |
+| opcode `9D` | 61 | `PUSHF`/`POPF`, et les opérations sur chaînes |
+| opcode `DB` | 497 333 | trois instructions x87 |
+| faute de page | 535 845 | la carte mémoire E820 |
+| faute de page | **538 976** | — |
+
+L'ordre n'est pas une liste que j'aurais dressée : c'est le noyau qui l'a
+dicté, une instruction à la fois. C'est de très loin la façon la plus courte de
+choisir quoi écrire.
+
+**Le `DB` méritait qu'on regarde.** Une instruction x87 au milieu d'un noyau,
+ça sent les données prises pour du code. J'ai désassemblé les octets :
+`db e3 / dd 7c 24 0e / d9 7c 24 08` est `fninit ; fnstsw ; fnstcw` — la
+séquence exacte par laquelle Linux détecte un coprocesseur. C'était du vrai
+code noyau, et l'émulation était sur les rails.
+
+**La carte mémoire comptait.** Sans les entrées E820 dans la page zéro, le
+noyau croit n'avoir aucune RAM — c'est le seul champ qu'un chargeur ne peut pas
+laisser à zéro. En l'ajoutant, l'arrêt a bougé **et changé de nature** : d'un
+accès hors de la mémoire de l'invité à une vraie faute de traduction. Le noyau
+tourne donc maintenant dans ses propres tables de pages. Les deux fautes
+portent désormais des noms distincts, parce que les confondre m'avait fait
+chercher au mauvais endroit pendant un moment.
+
+**Ce que je n'écris pas.** Je ne sais pas si la faute de page finale vient du
+noyau ou d'une divergence de ce cœur. Le dire demanderait un émulateur de
+référence contre lequel avancer pas à pas — `qemu-system-x86_64` est là, c'est
+la tranche suivante. « Le noyau démarre » serait faux ; « ça ne marche pas »
+cacherait un demi-million d'instructions justes.
+
+Coût de tout cet ajout : **15,4 → 13,5 MIPS**.
+
+### Puis le chargeur de noyau
+
+Pendant que la CI tournait, la première brique de la tranche 3c :
+`X86BootLoader`. Il place le noyau en mode protégé à son adresse préférée,
+réserve `init_size` octets — bien plus que le fichier ne pèse, parce que le
+noyau se décompresse chez lui —, écrit la page zéro avec l'en-tête de setup à
+ses propres décalages, et y pose ce que **seul un chargeur** sait :
+`type_of_loader` à 0xFF (le laisser à zéro ferait croire au noyau qu'il a été
+lancé par LILO), `LOADED_HIGH`, l'absence d'initrd écrite explicitement, et le
+pointeur de ligne de commande. La ligne est coupée ici à ce que le noyau
+accepte, plutôt que tronquée en silence par lui.
+
+Le point d'entrée est à **0x200** du début du noyau, pas au début : y sauter
+directement tomberait dans son en-tête interne.
+
+Huit tests, dont un sur le **vrai** noyau d'Alpine, et cinq sabotages : charger
+le fichier entier setup compris, l'entrée au début, le chargeur qui ne se nomme
+pas, la ligne de commande non coupée, la page zéro sans son en-tête.
+
+**Ce qui manque pour sauter dedans** : l'entrée 64 bits suppose le mode long
+déjà actif, donc la pagination. Il faut la MMU, plus `CPUID`, les registres de
+contrôle et les MSR que le décompresseur lit avant tout le reste.
+
+### La troisième tentative, mesurée et **jetée**
+
+L'évidence suivante : `registers` est un `[UInt64]`, donc un tableau sur le tas,
+avec vérification de bornes à la lecture et d'unicité à l'écriture, deux à
+quatre fois par instruction. Je l'ai remplacé par les seize valeurs en ligne
+dans la structure, sous forme de tuple.
+
+**16,5 → 15,4 MIPS.** Une régression. Deuxième variante, avec un pointeur au
+lieu d'une copie d'octets : 15,5. Les deux façons d'atteindre un tuple depuis
+Swift passent par un pointeur temporaire, et ça coûte plus cher que la
+vérification de bornes qu'on croyait éviter.
+
+Revenu au tableau, et la raison est écrite à côté de la déclaration pour que
+personne ne retente. Ce qui distingue les deux premières optimisations de
+celle-ci n'est pas leur difficulté : c'est que je les avais mesurées. Une
+optimisation non mesurée est une supposition, et une sur trois était fausse.
+
+**Ce que ça corrige.** La feuille de route disait qu'un démarrage complet
+« se compte en dizaines de milliards d'instructions » et laissait entendre des
+heures. Elle disait aussi, en toutes lettres, que c'était une extrapolation à
+confirmer ou à contredire. Un noyau seul se compte en **minutes**.
+
+**Ce que ça ne dit pas.** Ce cœur-ci est en Swift ; les 122,5 MIPS du rv32
+sont ceux du cœur Rust. L'écart mélange deux langages et deux architectures, et
+le prendre pour le coût du x86-64 seul serait faux. Et le décodeur alloue un
+tableau par instruction : c'est la première chose à regarder avant de conclure.
+
+### Ce qui a été construit
+
+`X86Memory` — un bloc plat derrière un pointeur, parce qu'un cœur qui copierait
+sa mémoire à chaque instruction ne mesurerait plus rien. `X86Core.run` enchaîne
+jusqu'à un `HLT` ou un budget. Les branchements, la pile, les appels, le
+groupe 5, et un port série 16550 assez complet pour qu'un noyau ne se bloque
+pas en attendant de pouvoir écrire.
+
+### L'oracle exécute maintenant des programmes
+
+Un branchement ne se prouve pas sur une instruction seule. Le harnais matériel
+a donc été déplacé à des **adresses fixes** — une adresse rendue par `mmap`
+changerait à chaque exécution et le fichier ne se reproduirait pas — et il
+compare aussi une fenêtre de 64 octets de mémoire. Douze programmes entiers
+passent par là : boucle `loop`, sauts courts et longs, appel et retour, empiler
+et dépiler dans l'autre ordre, cadre de pile complet avec `leave`, écriture aux
+quatre largeurs, adressage à échelle, lecture-modification-écriture au même
+endroit, saut indirect par registre, parcours de mémoire.
+
+**9 036 accords sur 9 036.**
+
+### Deux fois la même faute, deux fois attrapée
+
+J'ai calculé un déplacement de saut **de tête** dans le banc : 2 au lieu de 3.
+Le cœur a fait exactement ce qu'un vrai processeur aurait fait — il a exécuté
+le dernier octet d'`incq` comme un `RET` — et s'est arrêté au bout de six
+instructions. Puis j'ai recommencé dans un test : -5 au lieu de -4. Les deux
+fois, c'est le code qui avait raison et moi qui comptais mal ; les deux fois,
+la correction est venue de `as` et d'`objdump`, pas de ma tête. C'est écrit
+dans les deux fichiers.
+
+Le compteur d'instructions du test d'oracle avait le même genre de défaut : je
+lui avais donné un budget en **octets** au lieu d'instructions, et la boucle
+s'arrêtait au cinquième tour sur dix.
+
+1334 → **1341** tests Swift ; 1486 avec le Rust.
+
 ## 2026-09-03, ~20h35 UTC — le cœur x86-64 calcule, et c'est le processeur qui juge
 
 #169 fusionné (CI verte, log brut : 1324 tests, 3 ignorés, 0 échec ; j'avais

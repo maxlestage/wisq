@@ -13,12 +13,34 @@ import Foundation
 /// instruction *fait* viendra après ; où elle finit se prouve maintenant,
 /// contre un désassembleur de référence sur un vrai corpus.
 public struct X86Instruction: Equatable, Sendable {
-    /// Les préfixes hérités, dans l'ordre où ils ont été lus.
-    public let legacyPrefixes: [UInt8]
+    /// Écrit à la main : un tuple n'est pas `Equatable` tout seul, et il vaut
+    /// mieux ça qu'un tableau alloué à chaque instruction décodée.
+    public static func == (left: X86Instruction, right: X86Instruction) -> Bool {
+        left.prefixMask == right.prefixMask && left.rex == right.rex
+            && left.vexCount == right.vexCount && left.vexBytes == right.vexBytes
+            && left.map == right.map && left.opcode == right.opcode
+            && left.modrm == right.modrm && left.sib == right.sib
+            && left.displacementBytes == right.displacementBytes
+            && left.displacement == right.displacement
+            && left.immediateBytes == right.immediateBytes
+            && left.immediate == right.immediate && left.length == right.length
+    }
+
+    /// Quels préfixes hérités étaient là, un bit par préfixe.
+    ///
+    /// Un masque plutôt qu'un tableau, et ce n'est pas une coquetterie : le
+    /// tableau était une **allocation par instruction décodée**, sur le chemin
+    /// le plus chaud du programme. Un préfixe répété — c'est légal — se
+    /// confond avec lui-même ici, ce qui ne change rien : la longueur se
+    /// compte sur les octets lus, pas sur ce masque.
+    public let prefixMask: UInt16
     /// L'octet REX, quand il y en a un.
     public let rex: UInt8?
-    /// Les octets VEX ou EVEX au complet (2, 3 ou 4), vides sans eux.
-    public let vex: [UInt8]
+    /// Les trois octets qu'un VEX ou un EVEX peut porter après son
+    /// échappement, et combien comptent. Un tuple plutôt qu'un tableau, pour
+    /// la même raison.
+    public let vexBytes: (UInt8, UInt8, UInt8)
+    public let vexCount: Int
     /// Dans quelle table l'opcode se lit.
     public let map: OpcodeMap
     /// L'octet d'opcode lui-même, sans les échappements qui l'ont désigné.
@@ -45,6 +67,32 @@ public struct X86Instruction: Equatable, Sendable {
         case threeByte3A
         /// Une table que ce décodeur ne connaît pas — un `mmmmm` réservé.
         case unknown(UInt8)
+    }
+
+    /// Les préfixes hérités, reconstruits. Pour lire un désaccord ou écrire un
+    /// test — jamais sur le chemin chaud.
+    public var legacyPrefixes: [UInt8] {
+        X86Decoder.prefixOrder.enumerated()
+            .filter { prefixMask & (1 << UInt16($0.offset)) != 0 }
+            .map { $0.element }
+    }
+
+    /// Les octets du préfixe vectoriel, reconstruits de même. L'octet
+    /// d'échappement n'est pas rangé : il se déduit du nombre, puisque c'est
+    /// lui qui l'a fixé.
+    public var vex: [UInt8] {
+        switch vexCount {
+        case 2: return [0xC5, vexBytes.0]
+        case 3: return [0xC4, vexBytes.0, vexBytes.1]
+        case 4: return [0x62, vexBytes.0, vexBytes.1, vexBytes.2]
+        default: return []
+        }
+    }
+
+    /// Vrai quand une instruction porte ce préfixe hérité.
+    public func hasPrefix(_ byte: UInt8) -> Bool {
+        guard let index = X86Decoder.prefixOrder.firstIndex(of: byte) else { return false }
+        return prefixMask & (1 << UInt16(index)) != 0
     }
 
     /// Une instruction x86 ne peut pas dépasser quinze octets ; le processeur
@@ -74,6 +122,19 @@ public enum X86Decoder {
         0x66,  // taille d'opérande
         0x67,  // taille d'adresse
     ]
+
+    /// Les mêmes, dans l'ordre des bits du masque.
+    static let prefixOrder: [UInt8] = [
+        0xF0, 0xF2, 0xF3, 0x2E, 0x36, 0x3E, 0x26, 0x64, 0x65, 0x66, 0x67,
+    ]
+
+    /// Le bit de chaque préfixe, cherché une fois pour toutes : une table de
+    /// 256 entrées plutôt qu'une recherche linéaire par octet lu.
+    static let prefixBit: [UInt16] = {
+        var table = [UInt16](repeating: 0, count: 256)
+        for (index, byte) in prefixOrder.enumerated() { table[Int(byte)] = 1 << UInt16(index) }
+        return table
+    }()
 
     /// Ce qu'un immédiat pèse. La distinction qui compte est entre une taille
     /// fixe et une taille qui suit l'opérande — c'est là que `0x66` et `REX.W`
@@ -113,48 +174,70 @@ public enum X86Decoder {
     /// L'instruction qui commence à `offset`, ou l'erreur qui dit pourquoi
     /// non.
     public static func decode(_ bytes: [UInt8], at offset: Int = 0) throws -> X86Instruction {
-        var index = offset
+        try bytes.withUnsafeBufferPointer { buffer in
+            guard let start = buffer.baseAddress else { throw X86DecodeError.truncated }
+            return try decode(start + offset, available: buffer.count - offset)
+        }
+    }
+
+    /// La même chose, mais sans passer par un tableau.
+    ///
+    /// C'est la version que la boucle d'exécution appelle : recopier quinze
+    /// octets dans un tampon avant chaque instruction, uniquement pour avoir un
+    /// `Array`, coûtait plus cher que le décodage lui-même sur les instructions
+    /// courtes — et la plupart le sont.
+    public static func decode(
+        _ bytes: UnsafePointer<UInt8>, available: Int
+    ) throws -> X86Instruction {
+        var index = 0
         func next() throws -> UInt8 {
-            guard index < bytes.count else { throw X86DecodeError.truncated }
-            guard index - offset < X86Instruction.maximumLength else {
+            guard index < available else { throw X86DecodeError.truncated }
+            guard index < X86Instruction.maximumLength else {
                 throw X86DecodeError.tooLong
             }
             defer { index += 1 }
             return bytes[index]
         }
-        func peek() -> UInt8? { index < bytes.count ? bytes[index] : nil }
+        func peek() -> UInt8? { index < available ? bytes[index] : nil }
+        let offset = 0
 
         // 1. Les préfixes hérités.
-        var prefixes: [UInt8] = []
-        while let byte = peek(), legacyPrefixes.contains(byte) {
-            prefixes.append(try next())
+        var prefixMask: UInt16 = 0
+        while let byte = peek(), prefixBit[Int(byte)] != 0 {
+            prefixMask |= prefixBit[Int(byte)]
+            _ = try next()
         }
 
         // 2. Un préfixe vectoriel, ou REX, ou rien. Les trois s'excluent : REX
         // doit être le dernier octet avant l'opcode, et VEX/EVEX portent
         // eux-mêmes ce que REX dirait.
         var rex: UInt8?
-        var vexBytes: [UInt8] = []
+        var vexBytes: (UInt8, UInt8, UInt8) = (0, 0, 0)
+        var vexCount = 0
         var map = X86Instruction.OpcodeMap.oneByte
         var wideOperand = false
 
         switch peek() {
         case 0xC5:  // VEX à deux octets : la table est toujours 0F.
-            vexBytes = [try next(), try next()]
+            _ = try next()
+            vexBytes.0 = try next()
+            vexCount = 2
             map = .twoByte
         case 0xC4:  // VEX à trois octets : `mmmmm` désigne la table.
-            let escape = try next()
+            _ = try next()
             let second = try next()
             let third = try next()
-            vexBytes = [escape, second, third]
+            vexBytes = (second, third, 0)
+            vexCount = 3
             map = mapFor(mmmmm: second & 0x1F)
             wideOperand = third & 0x80 != 0  // VEX.W
         case 0x62:  // EVEX : quatre octets, `mmm` sur les mêmes tables.
-            let escape = try next()
+            _ = try next()
             let p0 = try next()
             let p1 = try next()
             let p2 = try next()
-            vexBytes = [escape, p0, p1, p2]
+            vexBytes = (p0, p1, p2)
+            vexCount = 4
             map = mapFor(mmmmm: p0 & 0x07)
             wideOperand = p1 & 0x80 != 0  // EVEX.W
         case .some(let byte) where 0x40...0x4F ~= byte:
@@ -167,7 +250,7 @@ public enum X86Decoder {
 
         // 3. L'opcode. Sans préfixe vectoriel, les échappements se lisent ici.
         let opcode: UInt8
-        if vexBytes.isEmpty {
+        if vexCount == 0 {
             var byte = try next()
             if byte == 0x0F {
                 byte = try next()
@@ -188,7 +271,7 @@ public enum X86Decoder {
         }
 
         // 4. La forme de cet opcode dans cette table.
-        let shape = try self.shape(map: map, opcode: opcode, vector: !vexBytes.isEmpty)
+        let shape = try self.shape(map: map, opcode: opcode, vector: vexCount != 0)
 
         // 5. ModRM, et ce qu'il entraîne.
         var modrm: UInt8?
@@ -232,8 +315,8 @@ public enum X86Decoder {
         }
 
         // 6. L'immédiat.
-        let hasOperandSizePrefix = prefixes.contains(0x66)
-        let hasAddressSizePrefix = prefixes.contains(0x67)
+        let hasOperandSizePrefix = prefixMask & prefixBit[0x66] != 0
+        let hasAddressSizePrefix = prefixMask & prefixBit[0x67] != 0
         var immediateBytes = 0
         switch immediate(for: shape, opcode: opcode, map: map, modrm: modrm) {
         case .none: immediateBytes = 0
@@ -254,7 +337,8 @@ public enum X86Decoder {
         let length = index - offset
         guard length <= X86Instruction.maximumLength else { throw X86DecodeError.tooLong }
         return X86Instruction(
-            legacyPrefixes: prefixes, rex: rex, vex: vexBytes, map: map, opcode: opcode,
+            prefixMask: prefixMask, rex: rex, vexBytes: vexBytes, vexCount: vexCount,
+            map: map, opcode: opcode,
             modrm: modrm, sib: sib, displacementBytes: displacementBytes,
             displacement: displacement, immediateBytes: immediateBytes,
             immediate: immediate, length: length)
