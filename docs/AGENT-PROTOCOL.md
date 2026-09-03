@@ -70,12 +70,29 @@ silencieux vers le clair. Le jeton reste obligatoire dans tous les cas.
     "state": "running",
     "consoleProtocol": "vnc",
     "consolePort": 5901,
-    "guestOS": "linux"
+    "guestOS": "linux",
+    "memoryKiB": 2097152,
+    "maximumMemoryKiB": 2097152
   }
 ]
 ```
 
 `state` ∈ `running` | `paused` | `stopped` | `starting` | `unknown`.
+
+`memoryKiB` et `maximumMemoryKiB` sont **deux nombres, pas un**, parce que
+libvirt en garde deux et qu'ils répondent à des questions différentes : le
+maximum est ce avec quoi la machine a été construite et ne peut pas changer
+pendant qu'elle tourne, la part courante est ce qu'elle a le droit d'utiliser
+maintenant. Sur un domaine éteint, les deux viennent de sa définition — mesuré
+sur libvirt 10.0.0, un domaine arrêté réglé par `virsh setmem --config 131072`
+rend `{"maximumMemoryKiB":262144,"memoryKiB":131072}`.
+
+Le backend libvirt les lit dans `virsh dominfo`, qui porte aussi l'état : c'est
+**un seul appel** là où le démon en faisait un pour l'état seul.
+
+Les deux sont **absents** quand le backend ne sait pas — un zéro se lirait
+« aucune mémoire », l'absence se lit « je ne sais pas ». Un agent antérieur à
+cette version n'en dit rien, et l'application affiche alors la ligne d'avant.
 
 `consolePort` est absent tant que la VM n'est pas démarrée.
 
