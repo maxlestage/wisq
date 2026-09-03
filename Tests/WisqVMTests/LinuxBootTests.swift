@@ -125,7 +125,7 @@ final class LinuxBootTests: XCTestCase {
         wait(for: [expectation], timeout: 10)
     }
 
-    private final class ConsoleCapture: @unchecked Sendable {
+    final class ConsoleCapture: @unchecked Sendable {
         private var data = Data()
         private let lock = NSLock()
 
@@ -137,5 +137,83 @@ final class LinuxBootTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return String(decoding: data, as: UTF8.self)
         }
+    }
+}
+
+/// Le même vrai noyau, dans une machine qui n'a pas la taille de la référence.
+///
+/// C'est la seule preuve qui compte pour un réglage de mémoire : le DTB peut
+/// annoncer ce qu'on veut, seul le noyau dit s'il l'a cru. Il imprime la
+/// quantité qu'il a trouvée dans son propre journal — « Memory: … » — donc on
+/// n'a pas à le deviner.
+final class ResizedBootTests: XCTestCase {
+    private static func imageURL() -> URL? {
+        let candidates = [
+            ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"],
+            "/tmp/wisq-test-linux-image/Image",
+        ]
+        for case let path? in candidates where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
+    /// Une machine de 128 Mo démarre, et le noyau annonce plus de mémoire que
+    /// dans une machine de 64 Mo. Les deux moitiés comptent : sans la première
+    /// le réglage casse le démarrage, sans la seconde il ne fait rien.
+    func testALargerMachineBootsAndTheKernelSeesTheExtraMemory() throws {
+        guard let url = Self.imageURL() else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: url)
+
+        func totalMemoryLine(ramSize: UInt32) throws -> String {
+            let console = LinuxBootTests.ConsoleCapture()
+            let machine = LinuxMachine(ramSize: ramSize) { console.append($0) }
+            try machine.load(kernelImage: image)
+            _ = machine.run(instructionBudget: 60_000_000)
+            let output = console.text()
+            XCTAssertTrue(
+                output.contains("Linux version"),
+                "\(ramSize >> 20) Mo : le noyau doit démarrer; sortie: \(output.prefix(400))")
+            // « Memory: 126348K/131056K available » — on garde la ligne
+            // entière, c'est elle qui porte le nombre que le noyau a cru.
+            //
+            // Le séparateur est mesuré, pas supposé : la console du noyau
+            // termine ses lignes par CRLF, et en Swift la paire « \r\n » est
+            // *un seul* Character. Un `split(separator: "\n")` rendait donc
+            // une seule tranche contenant tout le journal, et le premier
+            // `contains("Memory:")` tombait dessus — le test passait en lisant
+            // la bannière de version au lieu de la ligne cherchée. Compté sur
+            // ce noyau : 47 sauts de ligne, 0 « \n » au sens des Characters.
+            guard let line = output.split(whereSeparator: \.isNewline).first(where: {
+                $0.contains("Memory:") && $0.contains("available")
+            }) else {
+                XCTFail("\(ramSize >> 20) Mo : ligne « Memory: » absente; sortie: \(output.prefix(800))")
+                return ""
+            }
+            return String(line)
+        }
+
+        let small = try totalMemoryLine(ramSize: LinuxMachine.defaultRAMSize)
+        let large = try totalMemoryLine(ramSize: 128 << 20)
+        XCTAssertNotEqual(
+            small, large,
+            "le noyau doit voir deux quantités différentes : sinon le DTB n'a rien annoncé")
+
+        // Et dans le bon sens. Le premier nombre de la ligne est le total en
+        // kibioctets, suivi de « K/ ».
+        func totalKilobytes(_ line: String) -> Int? {
+            guard let range = line.range(of: #"(\d+)K/"#, options: .regularExpression) else {
+                return nil
+            }
+            return Int(line[range].dropLast(2))
+        }
+        guard let smallTotal = totalKilobytes(small), let largeTotal = totalKilobytes(large) else {
+            return XCTFail("total illisible dans « \(small) » ou « \(large) »")
+        }
+        XCTAssertGreaterThan(
+            largeTotal, smallTotal,
+            "128 Mo doit donner plus de mémoire disponible que 64 Mo")
     }
 }

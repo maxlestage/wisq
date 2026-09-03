@@ -6,10 +6,51 @@ import Foundation
 /// RAM at 0x8000_0000, an 8250 UART at 0x1000_0000, a CLINT, and a syscon.
 ///
 /// The kernel command line lives at offset 0xC0 and can be patched in place;
-/// `LinuxMachine` does so when a custom command line is requested.
+/// `LinuxMachine` does so when a custom command line is requested. The memory
+/// node's size is patched the same way when the machine is given something
+/// other than 64 MB — see `bytes(forRAMSize:)`.
 enum DefaultDTB {
     static let commandLineOffset = 0xC0
     static let commandLineCapacity = 54
+
+    /// Offset of the low cell of `/memory@80000000` `reg`'s size, big-endian.
+    ///
+    /// Found by walking the flattened tree rather than by counting: the `reg`
+    /// property sits at offset 304 and holds four 32-bit cells — two for the
+    /// base (`0x0`, `0x8000_0000`) and two for the size (`0x0`,
+    /// `0x03ff_c000`) — so the number the kernel reads is the last four bytes.
+    static let memorySizeOffset = 316
+
+    /// What the reference tree keeps out of the kernel's reach at the top.
+    ///
+    /// The blob declares `0x03ff_c000` for a 64 MB machine: sixteen kibibytes
+    /// short. That gap is where the DTB and the reserved state live, and it is
+    /// far larger than they need — the reference layout's choice, not ours.
+    /// Keeping the same gap at every size is what makes a resized machine
+    /// behave like this one.
+    static let memoryTopReserve = 16 * 1024
+
+    /// The tree, with its memory node stating `ramSize` minus the reserve.
+    ///
+    /// A machine given more RAM without this is a machine whose kernel never
+    /// learns about it: `bytes` is verbatim, so it would go on reading 63.98 MB
+    /// however much was allocated.
+    static func bytes(forRAMSize ramSize: Int) -> [UInt8] {
+        var tree = bytes
+        let declared = UInt32(max(0, ramSize - memoryTopReserve))
+        withUnsafeBytes(of: declared.bigEndian) { source in
+            for (index, byte) in source.enumerated() {
+                tree[memorySizeOffset + index] = byte
+            }
+        }
+        return tree
+    }
+
+    /// What a tree says the guest's memory is, in bytes.
+    static func declaredMemory(in tree: [UInt8]) -> UInt32 {
+        tree[memorySizeOffset..<(memorySizeOffset + 4)]
+            .reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    }
 
     static let bytes: [UInt8] = [
         0xD0, 0x0D, 0xFE, 0xED, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x38,
