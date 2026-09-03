@@ -197,6 +197,16 @@ def snippets():
     yield "movswq %cx, %rax"
     yield "movslq %ecx, %rax"
     yield "movsbl %cl, %eax"
+    # Les deux primitives dont toutes les serrures d'un noyau sont faites.
+    # L'ordre AT&T est « source, destination » : la destination est l'opérande
+    # r/m, et l'accumulateur est le troisième opérande implicite de CMPXCHG.
+    for suffix, source, destination in [
+        ("q", "%rcx", "%rdx"), ("l", "%ecx", "%edx"),
+        ("w", "%cx", "%dx"), ("b", "%cl", "%dl"),
+    ]:
+        yield f"cmpxchg{suffix} {source}, {destination}"
+        yield f"xadd{suffix} {source}, {destination}"
+
     yield "xchgq %rcx, %rax"
     yield "xchgl %ecx, %eax"
     yield "leaq 8(%rcx), %rax"
@@ -235,6 +245,23 @@ def snippets():
     yield "incb %ah"
     yield "xorb %ah, %al"
     yield "cmpb %ah, %ch"
+
+    # Et les mêmes octets hauts **lus par une instruction plus large qu'eux**.
+    # C'est le trou par lequel un vrai noyau est passé : une instruction peut
+    # avoir deux largeurs — MOVZX et MOVSX lisent un octet et écrivent quatre
+    # ou huit — et un cœur qui décide « octet haut » avec la largeur du
+    # destinataire lit le mauvais registre. `movzbl %ch,%edi` rendait BPL.
+    # Aucune des lignes ci-dessus ne l'attrapait, parce que toutes ont leurs
+    # deux opérandes de la même largeur.
+    #
+    # Pas de destination de soixante-quatre bits ici : elle demanderait REX.W,
+    # et REX est justement ce qui change AH en SPL. `movzbq %ah, %rax` n'est
+    # pas encodable, et l'assembleur le refuse — ce qui est la meilleure preuve
+    # que les deux noms ne peuvent pas coexister dans une instruction.
+    for source in ["ah", "ch", "dh", "bh"]:
+        for destination in ["eax", "ecx", "edx"]:
+            yield f"movzbl %{source}, %{destination}"
+            yield f"movsbl %{source}, %{destination}"
 
     # Les drapeaux eux-mêmes.
     yield "clc"

@@ -169,4 +169,29 @@ final class X86BootLoaderTests: XCTestCase {
             ram.dump(placement.kernelAddress, 64),
             Array(kernel[header.setupBytes..<(header.setupBytes + 64)]))
     }
+
+    /// La ligne de commande par défaut porte `earlyprintk`, et ce n'est pas un
+    /// détail de confort.
+    ///
+    /// `console=ttyS0` seul n'ouvre la console qu'une fois le pilote série
+    /// chargé — soit après quelques centaines de millions d'instructions, et
+    /// après tout ce qui aurait pu mal tourner avant. `earlyprintk=serial`
+    /// fait écrire le noyau **directement** sur le port 0x3F8 dès sa première
+    /// ligne. Sans elle, un démarrage qui échoue à mi-chemin ne dit rien du
+    /// tout ; avec elle, il dit où il en était. C'est ce qui a fait passer la
+    /// tentative de démarrage de « ça s'arrête quelque part » à une bannière
+    /// Linux suivie d'un message d'erreur nommé.
+    func testTheDefaultCommandLineAsksForEarlyOutput() throws {
+        let ram = X86Memory(size: 64 << 20, base: 0)
+        let placement = try X86BootLoader.load(kernel: Self.syntheticKernel(), into: ram)
+        let bytes = ram.dump(placement.commandLineAddress, 128)
+        let line = String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
+        XCTAssertEqual(line, X86BootLoader.defaultCommandLine)
+        XCTAssertTrue(line.contains("earlyprintk=serial"),
+                      "sans ça, un démarrage qui échoue tôt ne dit rien")
+        XCTAssertTrue(line.contains("console=ttyS0"))
+        // Et la page zéro doit pointer dessus, sinon le noyau ne la lit pas.
+        XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x228, 4),
+                       placement.commandLineAddress)
+    }
 }

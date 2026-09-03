@@ -60,6 +60,18 @@ public struct X86BootLoader {
     /// hors du chemin du noyau.
     public static let bootParametersAddress: UInt64 = 0x1_0000
     public static let commandLineAddress: UInt64 = 0x2_0000
+    /// Ce qu'on dit au noyau, par défaut.
+    ///
+    /// **Les deux moitiés ne servent pas au même moment.** `console=ttyS0`
+    /// n'ouvre la console qu'une fois le pilote série chargé — c'est-à-dire
+    /// après quelques centaines de millions d'instructions, et après tout ce
+    /// qui aurait pu mal tourner avant. `earlyprintk=serial` fait écrire le
+    /// noyau **directement** sur le port 0x3F8 dès sa première ligne, sans
+    /// pilote. Sans elle, un démarrage qui échoue à mi-chemin ne dit rien du
+    /// tout ; avec elle, il dit où il en était. C'est la différence entre
+    /// « ça ne marche pas » et une bannière suivie d'un message d'erreur.
+    public static let defaultCommandLine =
+        "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
     /// Le protocole 2.06 est le premier où `cmdline_size` existe ; en dessous,
     /// ce chargeur ne saurait pas quelle longueur de ligne de commande est
     /// permise.
@@ -67,7 +79,8 @@ public struct X86BootLoader {
 
     /// Charge le noyau dans la mémoire de l'invité et rend où tout a atterri.
     public static func load(
-        kernel: [UInt8], into memory: X86Memory, commandLine: String = "console=ttyS0"
+        kernel: [UInt8], into memory: X86Memory,
+        commandLine: String = X86BootLoader.defaultCommandLine
     ) throws -> Placement {
         guard let header = LinuxBootProtocol.read(from: kernel, totalBytes: kernel.count) else {
             throw LoadError.notAKernel
