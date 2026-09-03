@@ -23,9 +23,23 @@ public enum RemoteProtocol: String, Codable, CaseIterable, Sendable {
     }
 
     /// Whether a session of this protocol can be opened by the current build.
-    /// SPICE and RDP land in later milestones; the UI greys them out until then.
+    ///
+    /// This is a **label**, and `SessionFactory.makeSession` is the fact. They
+    /// were two hand-kept lists and they had drifted apart: this one still
+    /// said `self == .vnc`, from the milestone where it was true, so the
+    /// editor offered « SPICE (bientôt) » about a protocol the factory has
+    /// been building sessions for since lot 5 — the console that carries the
+    /// clipboard, the file drop and the resize, greyed out in the one place a
+    /// person chooses it.
+    ///
+    /// `ImplementedProtocolsTests` now walks `allCases` through the factory
+    /// and requires the two to agree, so the next protocol to land cannot be
+    /// announced late — or early.
     public var isImplemented: Bool {
-        self == .vnc
+        switch self {
+        case .vnc, .spice: return true
+        case .rdp: return false
+        }
     }
 
     /// Credentials the protocol expects. Drives which fields the editor shows.
