@@ -8,6 +8,73 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~17h45 UTC — un curseur en gigaoctets, et le défaut que la question a fait sortir
+
+Maxime : « Tu peux pas faire un curseur pour allouer des giga plutôt que des mo
+car maintenant les ram sont plutôt en giga ».
+
+Sa question portait sur l'unité. En allant mesurer jusqu'où la machine monte,
+j'ai trouvé autre chose.
+
+### La machine ne s'arrêtait pas là où je croyais
+
+Mesuré sur le vrai noyau :
+
+```
+ 512 Mio : Memory:  516204K/524272K   bannière oui, invite oui
+   1 Gio : Memory: 1036012K/1048560K  bannière oui, invite non
+   2 Gio : Memory: 2075628K/2097136K  bannière oui, invite non
+```
+
+L'invite qui disparaît au-delà de 512 Mio ressemblait à une limite. **Ce n'en
+était pas une** : avec un budget de 120 millions d'instructions au lieu de 60,
+elle arrive à 1 Gio comme à 2. Linux passe la différence à initialiser ses
+pages. Un test qui aurait gardé le budget d'origine aurait conclu « 2 Gio ne
+démarre pas » et j'aurais répondu à Maxime que les gigaoctets étaient hors de
+portée. Le test qui garde cette taille explique le budget pour cette raison.
+
+### Le défaut, et il était muet
+
+Au-delà, l'espace d'adressage déborde : la RAM de l'invité commence à
+`0x8000_0000` et le hart adresse en trente-deux bits, donc **deux gibioctets
+tombent exactement sur le dernier octet possible** (`0x8000_0000 + 2 Gio ==
+2^32`). Une machine de trois gibioctets :
+
+```
+load accepté, DTB annonce 3221209088 octets
+bannière = false   invite = false   — rien, pas même une erreur
+```
+
+Elle se construisait, annonçait à l'invité une mémoire qui n'existe pas dans
+son espace d'adressage, et mourait sans un mot. Les deux cœurs la refusent
+maintenant (`ramSizeUnsupported` / `LoadError::RamSizeUnsupported`, code −6 à
+travers l'FFI), parce que deux implémentations d'une même machine qui ne sont
+pas d'accord sur ses limites est la divergence que le test différentiel existe
+pour empêcher.
+
+Le refus vit dans `load` et non dans `init` : un initialiseur faillible pour
+une condition dont aucun appelant ne peut se remettre autrement coûterait plus
+qu'il ne rapporte, et `load` est l'endroit où l'invité est renseigné.
+
+### Et l'unité, qui était la question
+
+Le plus grand palier s'affichait « 1024 Mo ». C'est exactement ainsi qu'un
+réglage qui atteint le gibioctet passe pour un réglage qui s'arrête aux
+mégaoctets — Maxime l'a lu comme ça, et il avait raison de le lire comme ça.
+
+`KernelMemory.describe` bascule en Gio dès qu'il y en a. Et le plafond, qui
+était écrit « un gibioctet », est maintenant la limite de l'architecture : les
+deux coïncidaient, ce qui faisait passer une contrainte pour un choix. Un
+appareil de 16 Go atteint donc vraiment deux gibioctets ; la règle du huitième
+continue de protéger les petits.
+
+### Le menu devient un curseur
+
+Il glisse sur les **indices** des paliers, pas sur des octets : il saute donc
+de puissance de deux en puissance de deux au lieu de proposer des tailles
+qu'aucune machine n'a jamais eues.
+
+
 ## 2026-09-03, ~17h20 UTC — la garde que ni l'une ni l'autre des deux suites ne pouvait tenir
 
 Petite tranche, et sa justification tient en une mesure.

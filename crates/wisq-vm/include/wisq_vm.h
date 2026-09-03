@@ -46,6 +46,9 @@ typedef void (*wisq_vm_output_callback)(void *context, const uint8_t *bytes, siz
 #define WISQ_VM_LOAD_IMAGE_EMPTY        -3
 #define WISQ_VM_LOAD_IMAGE_TOO_LARGE    -4
 #define WISQ_VM_LOAD_COMMAND_LINE_LONG  -5
+/* More RAM than a 32-bit hart can address: guest memory starts at 0x80000000,
+   so two gibibytes is the last byte it can own. See MAXIMUM_RAM_SIZE. */
+#define WISQ_VM_LOAD_RAM_UNSUPPORTED    -6
 
 /* wisq_vm_restore. */
 #define WISQ_VM_SNAPSHOT_OK              0

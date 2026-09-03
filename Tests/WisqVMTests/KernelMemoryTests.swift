@@ -97,8 +97,8 @@ final class KernelMemoryTests: XCTestCase {
         XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
     }
 
-    /// Le plafond : un huitième de la mémoire physique, borné à un gibioctet,
-    /// et jamais sous la machine de référence.
+    /// Le plafond : un huitième de la mémoire physique, borné par ce que
+    /// l'architecture permet, et jamais sous la machine de référence.
     ///
     /// Les trois bords, avec les téléphones réels derrière. Le plancher compte
     /// autant que le plafond : sans lui, la machine par défaut deviendrait
@@ -108,8 +108,15 @@ final class KernelMemoryTests: XCTestCase {
         XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 2048 << 20), 256 << 20)
         // 6 Go — un téléphone récent : 768 Mo, sous le plafond.
         XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 6144 << 20), 768 << 20)
-        // 16 Go — un iPad : le huitième ferait 2 Gio, le plafond tient.
-        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 16384 << 20), 1024 << 20)
+        // 16 Go — un iPad : le huitième fait 2 Gio, exactement ce que le
+        // processeur 32 bits de l'invité peut adresser. Le plafond était écrit
+        // « un gibioctet » et coïncidait donc avec cette limite par accident,
+        // ce qui faisait passer une contrainte d'architecture pour un choix.
+        XCTAssertEqual(
+            KernelMemory.ceiling(physicalMemory: 16384 << 20), LinuxMachine.maximumRAMSize)
+        // 64 Go — un Mac : le huitième ferait 8 Gio, la limite tient.
+        XCTAssertEqual(
+            KernelMemory.ceiling(physicalMemory: 65536 << 20), LinuxMachine.maximumRAMSize)
         // Le plancher : un huitième de 256 Mo vaut 32 Mo, la référence gagne.
         XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 256 << 20), LinuxMachine.defaultRAMSize)
         // Et jamais nul, même sur une valeur absurde.
@@ -251,5 +258,86 @@ final class ForgettingSavedMachinesTests: XCTestCase {
         XCTAssertEqual(
             KernelMemory.size(forKernel: "Image", in: folder), 128 << 20,
             "oublier une machine ne doit pas oublier le réglage")
+    }
+}
+
+/// La limite que l'architecture impose, et qui n'est pas une politique.
+///
+/// La mémoire de l'invité commence à `0x8000_0000` et son processeur adresse
+/// en trente-deux bits : deux gibioctets tombent exactement sur le dernier
+/// octet possible (`0x8000_0000 + 2 Gio == 2^32`), un de plus n'a nulle part
+/// où vivre.
+///
+/// Ce test existe parce que l'échec était **silencieux**. Mesuré avant d'être
+/// corrigé : une machine de trois gibioctets se chargeait sans se plaindre,
+/// annonçait 3 221 209 088 octets dans son device tree, puis ne produisait
+/// rien du tout — ni bannière, ni console, ni erreur.
+final class ArchitecturalMemoryLimitTests: XCTestCase {
+    /// La limite est bien le dernier octet adressable, calculée plutôt que
+    /// réaffirmée.
+    func testTheLimitIsWhereTheAddressSpaceEnds() {
+        let end = UInt64(RV32Core.ramBase) + UInt64(LinuxMachine.maximumRAMSize)
+        XCTAssertEqual(end, 0x1_0000_0000, "le dernier octet doit être 0xFFFF_FFFF")
+        XCTAssertGreaterThan(
+            UInt64(RV32Core.ramBase) + UInt64(LinuxMachine.maximumRAMSize) + 1,
+            0x1_0000_0000, "un octet de plus doit déborder")
+    }
+
+    /// Une machine plus grande est refusée, pas construite en silence.
+    func testAMachineLargerThanTheAddressSpaceIsRefused() throws {
+        let image = Data([0x13, 0x00, 0x00, 0x00])
+        let tooLarge = LinuxMachine(ramSize: 3 * 1024 * 1024 * 1024) { _ in }
+        XCTAssertThrowsError(try tooLarge.load(kernelImage: image)) { error in
+            XCTAssertEqual(error as? LinuxMachineError, .ramSizeUnsupported)
+        }
+        // Et le bord exact est accepté : refuser 2 Gio serait aussi faux.
+        let atTheLimit = LinuxMachine(ramSize: LinuxMachine.maximumRAMSize) { _ in }
+        XCTAssertNoThrow(try atTheLimit.load(kernelImage: image))
+    }
+
+    /// Rien de ce que l'application propose ne peut dépasser cette limite —
+    /// ni la liste des choix, ni le plafond de l'appareil le plus généreux.
+    func testNothingOfferedCanExceedIt() {
+        for size in KernelMemory.choices {
+            XCTAssertLessThanOrEqual(size, LinuxMachine.maximumRAMSize)
+        }
+        XCTAssertEqual(
+            KernelMemory.choices.last, LinuxMachine.maximumRAMSize,
+            "le dernier palier doit être la limite, sinon elle est inatteignable")
+        for physical: UInt64 in [8 << 30, 16 << 30, 64 << 30, .max / 2] {
+            XCTAssertLessThanOrEqual(
+                KernelMemory.ceiling(physicalMemory: physical),
+                LinuxMachine.maximumRAMSize,
+                "\(physical >> 30) Gio physiques")
+        }
+    }
+
+    /// Et un appareil assez grand atteint vraiment les gigaoctets : c'est
+    /// l'appareil qui borne, pas l'unité.
+    func testALargeDeviceReachesGibibytes() {
+        XCTAssertEqual(KernelMemory.ceiling(physicalMemory: 8 << 30), 1024 << 20)
+        XCTAssertEqual(
+            KernelMemory.ceiling(physicalMemory: 16 << 30), LinuxMachine.maximumRAMSize)
+        XCTAssertTrue(
+            KernelMemory.offered(ceiling: KernelMemory.ceiling(physicalMemory: 8 << 30))
+                .contains(1024 << 20))
+    }
+
+    /// Les tailles se lisent en gigaoctets dès qu'elles en sont.
+    ///
+    /// « 1024 Mo » est ce que le plus grand choix affichait, et c'est
+    /// exactement ainsi qu'un réglage qui atteint le gibioctet passe pour un
+    /// réglage qui s'arrête aux mégaoctets.
+    func testSizesReadInGibibytesOnceTheyAreGibibytes() {
+        XCTAssertEqual(KernelMemory.describe(64 << 20), "64 Mo")
+        XCTAssertEqual(KernelMemory.describe(512 << 20), "512 Mo")
+        XCTAssertEqual(KernelMemory.describe(1024 << 20), "1 Gio")
+        XCTAssertEqual(KernelMemory.describe(1536 << 20), "1,5 Gio")
+        XCTAssertEqual(KernelMemory.describe(LinuxMachine.maximumRAMSize), "2 Gio")
+        for size in KernelMemory.choices {
+            XCTAssertFalse(
+                KernelMemory.describe(size).hasPrefix("1024"),
+                "aucun palier ne doit s'annoncer en milliers de mégaoctets")
+        }
     }
 }

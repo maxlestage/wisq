@@ -22,13 +22,21 @@ public enum KernelMemory {
 
     /// The sizes offered, smallest first.
     ///
-    /// Powers of two from a quarter of the reference machine to a gibibyte.
-    /// 16 MB is below the reference and deliberately kept: the kernels this
-    /// emulator was built for are a few megabytes, and someone measuring how
-    /// little a guest needs is doing something legitimate. The list is filtered
-    /// by `ceiling(physicalMemory:)` before it is shown.
+    /// Powers of two from a quarter of the reference machine to the largest
+    /// machine the architecture allows. 16 MB is below the reference and
+    /// deliberately kept: the kernels this emulator was built for are a few
+    /// megabytes, and someone measuring how little a guest needs is doing
+    /// something legitimate. The list is filtered by `ceiling(physicalMemory:)`
+    /// before it is shown.
+    ///
+    /// The top of the list is `LinuxMachine.maximumRAMSize`, which is not a
+    /// taste: guest RAM starts at `0x8000_0000` and the hart addresses memory
+    /// with thirty-two bits, so two gibibytes is the last byte it can own.
+    /// Verified against the real kernel — 2 GiB boots to its login prompt, in
+    /// about 120 million instructions instead of 46.
     public static let choices: [UInt32] = [
-        16 << 20, 32 << 20, 64 << 20, 128 << 20, 256 << 20, 512 << 20, 1024 << 20,
+        16 << 20, 32 << 20, 64 << 20, 128 << 20, 256 << 20, 512 << 20,
+        1024 << 20, LinuxMachine.maximumRAMSize,
     ]
 
     /// The largest machine this device may be asked for.
@@ -39,13 +47,20 @@ public enum KernelMemory {
     /// is running, and is roughly a third of the device's memory on the phones
     /// this app runs on (iOS 17, so 2 GB and up).
     ///
-    /// So the rule is **an eighth** of physical memory, capped at one gibibyte
-    /// and never below the reference machine. An eighth and not a third: the
-    /// guest's RAM is one mapping the interpreter touches at will, so it all
-    /// becomes resident, and the app needs room next to it for the console,
-    /// the framebuffers of a remote session, and the image it read to boot.
-    /// A quarter — the first draft — puts a 2 GB phone at 512 MB of guest RAM,
-    /// which is close enough to jetsam that the setting would ship a crash.
+    /// So the rule is **an eighth** of physical memory, never below the
+    /// reference machine and never above what the architecture allows. An
+    /// eighth and not a third: the guest's RAM is one mapping the interpreter
+    /// touches at will, so it all becomes resident, and the app needs room
+    /// next to it for the console, the framebuffers of a remote session, and
+    /// the image it read to boot. A quarter — the first draft — puts a 2 GB
+    /// phone at 512 MB of guest RAM, which is close enough to jetsam that the
+    /// setting would ship a crash.
+    ///
+    /// **The unit is not what limits this.** An eighth of a modern phone is
+    /// already a gibibyte; the cap used to be written as one gibibyte too, so
+    /// the two coincided and made the ceiling look like a choice about
+    /// megabytes. It is not: the cap is now the architecture's own limit, and
+    /// on a device with enough memory the setting reaches two gibibytes.
     ///
     /// Conservative on purpose. Memory pressure is exactly what made the app
     /// vanish on a distribution image, and a setting that let someone ask for
@@ -53,7 +68,7 @@ public enum KernelMemory {
     /// choice.
     public static func ceiling(physicalMemory: UInt64) -> UInt32 {
         let share = physicalMemory / 8
-        let capped = min(share, 1024 << 20)
+        let capped = min(share, UInt64(LinuxMachine.maximumRAMSize))
         return UInt32(max(capped, UInt64(defaultSize)))
     }
 
@@ -119,6 +134,19 @@ public enum KernelMemory {
         var all = recorded(in: directory)
         guard all.removeValue(forKey: kernel) != nil else { return }
         write(all, in: directory)
+    }
+
+    /// A size as someone reads it: mebibytes until a gibibyte, then gibibytes.
+    ///
+    /// « 1024 Mo » was what the largest choice used to read, which is exactly
+    /// how a setting that reaches a gibibyte gets mistaken for one that stops
+    /// at megabytes. Powers of two, and the abbreviation says so, because the
+    /// rest of wisq counts memory that way.
+    public static func describe(_ bytes: UInt32) -> String {
+        guard bytes >= 1024 << 20 else { return "\(bytes >> 20) Mo" }
+        let gibibytes = Double(bytes) / Double(1024 << 20)
+        let format = gibibytes == gibibytes.rounded() ? "%.0f Gio" : "%.1f Gio"
+        return String(format: format, gibibytes).replacingOccurrences(of: ".", with: ",")
     }
 
     // MARK: - Where the choices live

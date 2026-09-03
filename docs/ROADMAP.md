@@ -2510,6 +2510,19 @@ Et le réglage lui-même, `KernelMemory` :
   Un instantané pris à une autre taille ne peut de toute façon pas être
   restauré : les deux cœurs refusent l'écart.
 
+- **Un curseur, en gigaoctets** (demandé par Maxime). Il glisse sur les indices
+  des paliers offerts, donc de puissance de deux en puissance de deux. Les
+  tailles s'affichent en Gio dès qu'elles en sont : « 1024 Mo » est exactement
+  ce qui faisait passer un réglage atteignant le gibioctet pour un réglage
+  arrêté aux mégaoctets.
+- **La limite est celle de l'architecture, pas une politique.** La RAM de
+  l'invité commence à `0x8000_0000` et le hart adresse en 32 bits : deux
+  gibioctets tombent sur le dernier octet possible. Au-delà, la machine se
+  construisait, annonçait dans son DTB une mémoire hors de son espace
+  d'adressage et **ne démarrait pas, en silence** — les deux cœurs le refusent
+  maintenant. 2 Gio démarre jusqu'à l'invite, en 120 millions d'instructions
+  au lieu de 46.
+
 Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
