@@ -23,9 +23,12 @@ site qui l'exige reste verte.
 
 La conséquence pratique est que relancer le workflow pour *sonder* la fiche
 ne coûte plus rien, ni en temps ni en numéro de build — l'exécution refuse
-avant d'avoir produit quoi que ce soit. La routine de garde le fera donc à
-chaque passage : quand la fiche apparaît, l'envoi part sans que personne ait
-à écrire « fait ».
+avant d'avoir produit quoi que ce soit. Mesuré aussitôt après la fusion :
+l'exécution n° 3 a refusé en **treize secondes** (00:50:14 → 00:50:27), sur
+la ligne attendue « fiche d'application pour app.wisq.ios : ABSENTE ». J'avais
+écrit « trente secondes » avant de mesurer ; le chiffre est corrigé aux deux
+endroits. La routine de garde sonde donc à chaque passage : quand la fiche
+apparaît, l'envoi part sans que personne ait à écrire « fait ».
 
 ## 2026-09-02, ~20h UTC — le premier envoi TestFlight, et ce qu'il a appris
 
