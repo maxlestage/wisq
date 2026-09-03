@@ -65,8 +65,16 @@ public struct X86Core: @unchecked Sendable {
     /// pagination éteinte comprise.
     var pagingActive = false
     /// Où le noyau a dit que ses tables de descripteurs se trouvent : GDT puis
-    /// IDT. Notées et rendues telles quelles ; rien ne les lit encore.
-    public var descriptorTables = [UInt64](repeating: 0, count: 2)
+    /// IDT. Le **contenu** du pseudo-descripteur, pas son adresse — c'est ce
+    /// que fait un vrai processeur, qui recopie base et limite dans un
+    /// registre au moment du `LGDT`/`LIDT` et ne relit jamais la mémoire
+    /// d'où ils viennent. La première version notait l'adresse de l'opérande,
+    /// ce qui suffisait tant que personne ne s'en servait ; la livraison
+    /// d'exception, elle, s'en sert.
+    public var descriptorBases = [UInt64](repeating: 0, count: 2)
+    /// Les limites qui vont avec, en octets moins un. Une IDT dont la limite
+    /// ne couvre pas un vecteur ne le livre pas.
+    public var descriptorLimits = [UInt64](repeating: 0, count: 2)
     /// Les deux seuls mots d'état x87 qui existent ici : ceux que la séquence
     /// de détection de Linux range et relit. Voir `minimalX87`.
     public var x87Status: UInt16 = 0
@@ -98,9 +106,18 @@ public struct X86Core: @unchecked Sendable {
         public static let auxiliary: UInt64 = 1 << 4
         public static let zero: UInt64 = 1 << 6
         public static let sign: UInt64 = 1 << 7
+        /// Le pas-à-pas. Aucune instruction ne le pose ici ; l'entrée dans un
+        /// gestionnaire l'éteint, comme sur la machine.
+        public static let trap: UInt64 = 1 << 8
         /// Le masque d'interruption. Ce cœur n'interrompt rien encore, mais un
         /// noyau pose et lit ce bit dès sa première ligne.
         public static let interrupt: UInt64 = 1 << 9
+        /// La tâche imbriquée, héritage du 286, éteinte à l'entrée d'une
+        /// exception.
+        public static let nested: UInt64 = 1 << 14
+        /// La reprise, qui inhibe les points d'arrêt d'instruction. Éteinte
+        /// pour la même raison.
+        public static let resume: UInt64 = 1 << 16
         /// La direction des opérations sur chaînes : vers le haut ou vers le
         /// bas. `CLD` est très souvent la toute première instruction d'un
         /// noyau, parce qu'il ne peut pas faire confiance à ce que le chargeur
@@ -206,11 +223,20 @@ public struct X86Core: @unchecked Sendable {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
         while executed < budget && !halted {
-            let physical = try translate(rip)
-            guard let start = memory.offset(physical, 1) else { throw Fault.pageFault(rip) }
-            let available = min(X86Instruction.maximumLength, memory.size - start)
-            let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
-            try execute(instruction)
+            do {
+                let physical = try translate(rip, .fetch)
+                guard let start = memory.offset(physical, 1) else {
+                    throw Fault.outsideMemory(physical)
+                }
+                let available = min(X86Instruction.maximumLength, memory.size - start)
+                let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
+                try execute(instruction)
+            } catch let fault as Fault {
+                // Une faute que le noyau a dit savoir traiter lui revient ;
+                // les autres sortent d'ici, parce qu'un cœur qui avale une
+                // faute qu'il ne sait pas livrer ment sur ce qu'il fait.
+                guard try deliver(fault) else { throw fault }
+            }
             executed += 1
         }
         return executed
@@ -239,6 +265,11 @@ public struct X86Core: @unchecked Sendable {
 
     /// Vrai le temps d'une instruction qui a posé RIP elle-même.
     var jumped = false
+    /// Le code d'erreur de la dernière faute de page : ce que le gestionnaire
+    /// du noyau trouve empilé sous l'adresse de retour. Posé par la
+    /// traduction, qui est la seule à savoir si l'accès était une lecture,
+    /// une écriture ou une lecture d'instruction.
+    var pageFaultErrorCode: UInt64 = 0
     /// L'adresse que le dernier ModRM a désignée, calculée une seule fois.
     var lastAddress: UInt64 = 0
 
