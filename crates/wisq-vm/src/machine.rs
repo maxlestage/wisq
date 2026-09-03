@@ -112,7 +112,10 @@ impl Machine {
     /// firmware would: image at the base of RAM, DTB near the top, a0 = hart id,
     /// a1 = DTB address, machine mode, PC at the image's first instruction.
     pub fn load(&mut self, image: &[u8], command_line: Option<&str>) -> Result<(), LoadError> {
-        let mut tree = dtb::BYTES;
+        // The tree states this machine's memory, not the reference's. Without
+        // it, a machine allocated with more RAM would run a kernel that never
+        // learns about it.
+        let mut tree = dtb::bytes_for(self.ram.len());
         if let Some(line) = command_line {
             let bytes = line.as_bytes();
             if bytes.len() >= dtb::COMMAND_LINE_CAPACITY {
@@ -344,5 +347,86 @@ impl Bus for MachineBus<'_> {
             0x1110_0000 => Some(value),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where `load` put the tree, from the machine's own numbers rather than a
+    /// restated constant: the last `STATE_RESERVE` bytes of RAM are reserved,
+    /// and the tree sits just under them.
+    fn tree_in_ram(machine: &Machine) -> [u8; 1536] {
+        let at = machine.ram.len() - 1536 - STATE_RESERVE;
+        machine.ram[at..at + 1536].try_into().expect("l'arbre")
+    }
+
+    /// A machine given more RAM must hand the guest a tree that says so.
+    ///
+    /// This is the assertion a sabotage found missing: putting `dtb::BYTES`
+    /// back verbatim in `load` — the whole point of the resize undone — passed
+    /// every test in this crate. The DTB module's own tests only proved
+    /// `bytes_for` computes the right blob; nothing proved `load` used it.
+    #[test]
+    fn a_resized_machine_tells_its_guest_the_new_size() {
+        // A single NOP: enough to satisfy `load`, small enough for any size.
+        let image = [0x13, 0x00, 0x00, 0x00];
+
+        let mut reference = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_| {}));
+        reference.load(&image, None).expect("chargement 64 Mio");
+        assert_eq!(
+            dtb::declared_memory(&tree_in_ram(&reference)),
+            (DEFAULT_RAM_SIZE - dtb::MEMORY_TOP_RESERVE) as u32
+        );
+
+        let large = 128 * 1024 * 1024;
+        let mut resized = Machine::new(large, Box::new(|_| {}));
+        resized.load(&image, None).expect("chargement 128 Mio");
+        assert_eq!(
+            dtb::declared_memory(&tree_in_ram(&resized)),
+            (large - dtb::MEMORY_TOP_RESERVE) as u32,
+            "l'invité doit apprendre la taille de sa machine, pas celle de la référence"
+        );
+    }
+
+    /// And the guest must be pointed at that tree: a1 carries its address.
+    ///
+    /// Patching the blob and then handing the kernel a pointer somewhere else
+    /// would leave the resize invisible just as thoroughly.
+    #[test]
+    fn the_guest_is_pointed_at_the_tree_that_was_written() {
+        let mut machine = Machine::new(128 * 1024 * 1024, Box::new(|_| {}));
+        machine
+            .load(&[0x13, 0x00, 0x00, 0x00], None)
+            .expect("chargement");
+        let pointer = machine.core.x[11];
+        let at = (pointer - RAM_BASE) as usize;
+        assert_eq!(
+            dtb::declared_memory(
+                &machine.ram[at..at + 1536]
+                    .try_into()
+                    .expect("l'arbre à l'adresse annoncée")
+            ),
+            (128 * 1024 * 1024 - dtb::MEMORY_TOP_RESERVE) as u32
+        );
+    }
+
+    /// A command line and a resize are patched into the same blob, and neither
+    /// erases the other — the two offsets are 0xC0 and 316, sixteen bytes
+    /// apart at their closest, so this is a real thing to get wrong.
+    #[test]
+    fn a_command_line_and_a_resize_survive_each_other() {
+        let mut machine = Machine::new(128 * 1024 * 1024, Box::new(|_| {}));
+        machine
+            .load(&[0x13, 0x00, 0x00, 0x00], Some("console=ttyS0 quiet"))
+            .expect("chargement");
+        let tree = tree_in_ram(&machine);
+        assert_eq!(
+            dtb::declared_memory(&tree),
+            (128 * 1024 * 1024 - dtb::MEMORY_TOP_RESERVE) as u32
+        );
+        let line = &tree[dtb::COMMAND_LINE_OFFSET..dtb::COMMAND_LINE_OFFSET + 19];
+        assert_eq!(line, b"console=ttyS0 quiet");
     }
 }

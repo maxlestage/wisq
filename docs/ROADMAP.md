@@ -2476,3 +2476,45 @@ locale**. C'était le plan ; c'était le mauvais. Les noyaux rv32 nommu de cette
 famille ont virtio-mmio mais aucun pilote bloc, et l'utilisateur apporte son
 propre noyau. Sauver la machine — RAM, registres, timer, octets en attente sur
 l'UART — contourne l'invité entièrement et marche avec n'importe quel noyau.
+
+## La mémoire de la machine locale, réglable (fait pour le cœur)
+
+Demandé par Maxime : « ajuster de la ram et de l'espace de stockage partout ».
+
+Ce qui est fait : les deux cœurs prennent une taille par machine, et le noyau
+l'**apprend** — la cellule mémoire du device tree est corrigée à l'offset 316,
+en gardant la réserve de seize kibioctets du haut que le blob de référence
+garde. Prouvé par un vrai noyau qui annonce `Memory: 126348K/131056K available`
+à 128 Mio contre `61372K/65520K` à 64, et par un test différentiel qui exige
+que les deux cœurs redimensionnent à l'octet près. Le plafond d'image noyau
+suit la machine plutôt que le type, en un seul endroit côté application
+(`LocalMachineMemory`).
+
+Ce qui reste, et ce qu'il faut décider avec ça :
+
+- **Le réglage visible et persistant.** Par noyau, pas global : un noyau de
+  trois mégaoctets et demi dans 64 Mio est le cas éprouvé, et quelqu'un qui
+  monte à 256 Mio le fait pour un noyau précis.
+- **Ce qu'on fait de la machine suspendue.** L'instantané enregistre la
+  longueur de la RAM et les deux cœurs refusent déjà un écart — donc changer le
+  réglage ne restaure rien de travers, mais rend la sauvegarde
+  **irrestaurable**. Le geste doit le dire avant, pas après.
+- **Le plafond, et d'où il vient.** iOS tue une application sur la pression
+  mémoire ; c'est exactement ce qui a fait disparaître wisq sur l'image
+  d'Omarchy. Un réglage qui laisse demander deux gigaoctets sur un téléphone
+  qui n'en a pas est un plantage déguisé en liberté. Le plafond doit venir de
+  ce que le système dit, pas d'un nombre écrit à la main.
+
+## « L'espace de stockage » : ce que ça peut vouloir dire ici
+
+Il n'y a **aucun disque** dans la machine locale, et c'est une décision écrite
+juste au-dessus : pas de pilote bloc dans les noyaux nommu de cette famille, et
+l'instantané fait le travail que le disque aurait fait. Un réglage « taille du
+disque » serait donc un curseur qui ne commande rien.
+
+Ce qui est réel et ajustable, c'est la place que **noyaux et instantanés**
+occupent dans le stockage de l'application : montrée par entrée et au total,
+plafonnée, et avec le geste pour reprendre de la place. C'est aussi ce qui
+manque aujourd'hui — un instantané de 64 Mio par noyau suspendu s'accumule
+sans que rien ne le dise. Interprétation à confirmer avec Maxime si elle ne
+correspond pas à ce qu'il avait en tête.

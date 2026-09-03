@@ -26,7 +26,7 @@ final class OversizedKernelRefusalTests: XCTestCase {
         let source = directory.appendingPathComponent("omarchy.iso")
         FileManager.default.createFile(atPath: source.path, contents: nil)
         let handle = try FileHandle(forWritingTo: source)
-        try handle.truncate(atOffset: UInt64(LinuxMachine.maximumKernelImageBytes) + 1)
+        try handle.truncate(atOffset: UInt64(LocalMachineMemory.maximumKernelImageBytes) + 1)
         try handle.close()
 
         XCTAssertThrowsError(try KernelLibrary.importKernel(from: source)) { error in
