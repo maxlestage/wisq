@@ -8,6 +8,77 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~19h10 UTC — le premier morceau de x86-64 : lire l'en-tête
+
+#167 fusionné (CI verte, lue dans le log brut : 1291 tests, 1 ignoré, 0 échec,
+sept vérifications au vert), branche remise sur master, puis **tranche 1 du
+lot 7**.
+
+### Ce que ça fait
+
+Quelqu'un qui importe un noyau Linux pour PC — le fichier qu'il faudra
+vraiment — n'entend plus « ce n'est pas ça ». Il entend ce que son fichier
+**est** : « vmlinuz-lts est un noyau Linux pour PC (x86-64, protocole de
+démarrage 2.15). C'est le bon genre de fichier — un noyau, pas une image de
+disque — mais pas encore pour cette machine. » Et le message dit où en est le
+travail plutôt que de dire non.
+
+C'est la suite directe de la correction d'hier soir : d'abord ce qu'un fichier
+est, ensuite seulement ce qu'il pèse.
+
+### Mesuré, pas recopié
+
+`vmlinuz-lts` d'Alpine Linux 3.20 pour x86_64 a été téléchargé et lu :
+10 961 920 octets, sha256 `e214570926…`. Protocole 2.15. 39 secteurs de setup,
+donc 20 480 octets, puis `syssize` = 683 840 paragraphes = 10 941 440 octets.
+**Les deux moitiés tombent pile sur la taille du fichier** — c'est devenu une
+garde : un fichier qui annonce plus qu'il ne pèse n'est pas un bzImage. En
+inégalité et non en égalité, parce qu'un noyau signé (Ubuntu, Fedora) porte sa
+signature après.
+
+`xloadflags` = 0x3F, donc le bit 0 : il y a une entrée 64 bits. C'est le **seul**
+énoncé qu'un bzImage fait sur son propre mode — il n'a pas d'en-tête ELF qui
+nommerait sa machine.
+
+Le noyau lui-même n'est pas dans le dépôt : dix mégaoctets de binaire GPL pour
+épingler neuf entiers, c'est un mauvais échange. Les tests reconstruisent un
+en-tête portant exactement les valeurs mesurées, et repassent sur le vrai
+fichier quand `WISQ_PC_KERNEL` le désigne.
+
+### Trois choses que la tranche a apprises
+
+**Un bzImage ne commence pas par ELF, mais par « MZ »** — le talon EFI. Rien
+dans le code ne le nommait, donc il tombait dans `unknown`, c'est-à-dire dans
+« essaie quand même ».
+
+**Un ISO hybride porte le même 0xAA55 à 0x1FE qu'un noyau** : c'est le secteur
+d'amorçage MBR. Les deux reconnaissances se marchent dessus, et seul l'ordre
+les sépare — l'image de disque d'abord, parce que c'est ce qu'un tel fichier
+**est**. Le sabotage qui inverse les deux fait tomber le test qui le dit.
+
+**Les champs sont apparus au fil des versions du protocole.** `xloadflags` à
+partir de 2.12, `pref_address` et `init_size` à partir de 2.10, `cmdline_size`
+à partir de 2.06. Lire un champ qu'un vieux noyau n'a jamais écrit, ce serait
+lire le hasard des octets qui traînent là. Chacun est donc gardé par la version
+qui l'a introduit.
+
+### Vérification
+
+Six sabotages, chacun sur une garde, chacun tombant sur le test qui la nomme,
+contre la suite entière et sur un vert établi : la magie « HdrS » mise en
+minuscules, `xloadflags` lu sans garde de version, la borne de taille retirée,
+`setup_sects` à zéro ne valant plus quatre, le décalage d'`init_size` glissé de
+quatre octets, et l'ordre ISO/noyau inversé. Retour au vert après chacun.
+
+1291 → **1305** tests Swift ; 1450 avec le Rust.
+
+### Ce que ça ne fait pas
+
+Rien de x86-64 ne s'exécute. C'est un lecteur d'en-tête, pas un cœur. La
+tranche 2 est le décodeur, prouvé par différentiel contre un désassembleur de
+référence ; la tranche 3 donnera **le premier vrai chiffre de vitesse**, celui
+qui confirmera ou contredira l'extrapolation écrite dans la feuille de route.
+
 ## 2026-09-03, ~18h45 UTC — la plate-forme change, et le diagnostic d'abord
 
 Maxime : « Je veux pouvoir gérer ma ram et je veux pouvoir la gérer en étant
