@@ -256,6 +256,50 @@ DIVIDENDS = [0, 1, 7, 0x7F, 0x80, 0xFF, 0x1234, 0x7FFF_FFFF,
              0x8000_0000, 0x0123_4567_89AB_CDEF, 0xFFFF_FFFF_FFFF_FFFF]
 DIVISORS = [1, 2, 3, 7, 0x10, 0x7F, 0x80, 0xFF, 0xFFFF, 0xFFFF_FFFF]
 
+# Les adresses fixes du harnais. Fixes exprès : une adresse rendue par mmap
+# changerait à chaque exécution, et le fichier ne se reproduirait pas.
+DATA = 0x30001000
+STACK = 0x30003000
+WINDOW = 64
+# Le motif dont la fenêtre part : 0x10, 0x11, 0x12… Reconnaissable exprès.
+PRISTINE = "".join("%02x" % (0x10 + i) for i in range(WINDOW))
+
+# Des **programmes**, pas des instructions isolées. Un branchement, une pile,
+# un appel ne se prouvent pas sur une instruction seule : il faut plusieurs
+# instructions et regarder où on atterrit. Le harnais exécute tout ce qu'on lui
+# donne jusqu'au saut de retour qu'il ajoute derrière.
+PROGRAMS = [
+    ("une boucle qui additionne", [
+        "xorl %eax, %eax", "movl $10, %ecx",
+        "1: addq %rcx, %rax", "loop 1b"]),
+    ("un saut conditionnel court, pris", [
+        "movq $1, %rdx", "cmpq %rcx, %rax", "jne 1f", "movq $2, %rdx", "1: incq %rdx"]),
+    ("un saut conditionnel long", [
+        "cmpq %rcx, %rax", "jne 1f", "movq $7, %rdx", ".fill 200, 1, 0x90", "1: incq %rdx"]),
+    ("un appel et son retour", [
+        "call 1f", "jmp 2f", "1: movq $0x42, %rdx", "ret", "2: incq %rdx"]),
+    ("empiler puis dépiler dans l'autre ordre", [
+        "pushq %rax", "pushq %rcx", "popq %rdx", "popq %rcx"]),
+    ("écrire puis relire la mémoire", [
+        "movq %rax, (%rsi)", "movq %rcx, 8(%rsi)", "movq (%rsi), %rdx",
+        "addq 8(%rsi), %rdx"]),
+    ("les largeurs en mémoire", [
+        "movb %al, (%rsi)", "movw %cx, 2(%rsi)", "movl %eax, 4(%rsi)",
+        "movzbq (%rsi), %rdx", "movswq 2(%rsi), %rcx"]),
+    ("un cadre de pile complet", [
+        "pushq %rbp", "movq %rsp, %rbp", "subq $16, %rsp",
+        "movq %rax, -8(%rbp)", "movq -8(%rbp), %rdx", "leave"]),
+    ("une adresse à échelle", [
+        "andq $3, %rcx", "movq %rax, (%rsi,%rcx,8)", "leaq (%rsi,%rcx,4), %rdx"]),
+    ("lire, modifier, réécrire au même endroit", [
+        "addq %rax, (%rsi)", "xorq %rcx, 8(%rsi)", "incq 16(%rsi)"]),
+    ("un saut indirect par registre", [
+        "leaq 1f(%rip), %rdx", "jmp *%rdx", "movq $0, %rax", "1: incq %rdx"]),
+    ("une boucle qui parcourt la mémoire", [
+        "movl $4, %ecx", "xorq %rdx, %rdx",
+        "1: addq (%rsi), %rdx", "addq $8, %rsi", "decl %ecx", "jnz 1b"]),
+]
+
 
 def division_state(dividend, divisor, size, signed):
     """L'état d'entrée d'une division, ou None si le processeur lèverait.
@@ -324,6 +368,21 @@ def assemble(texts):
     return encoded
 
 
+def assemble_program(lines):
+    """Les octets d'un programme entier, d'un bloc — les étiquettes locales
+    d'un saut n'ont de sens que si tout est assemblé ensemble."""
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "p.s"
+        obj = Path(directory) / "p.o"
+        binary = Path(directory) / "p.bin"
+        with open(source, "w") as out:
+            out.write(".text\n" + "".join(f"    {line}\n" for line in lines))
+        subprocess.run(["as", "--64", "-o", str(obj), str(source)], check=True)
+        subprocess.run(["objcopy", "-O", "binary", "-j", ".text",
+                        str(obj), str(binary)], check=True)
+        return open(binary, "rb").read().hex()
+
+
 def states():
     """Les états d'entrée : un **étalement**, pas un début de produit cartésien.
 
@@ -343,6 +402,7 @@ def states():
         state[0] = VALUES[first]   # rax
         state[1] = VALUES[second]  # rcx
         state[2] = VALUES[second]  # rdx, pour cqto et les décalages doubles
+        state[6] = DATA            # rsi pointe la fenêtre de données
         yield state + [IN_FLAGS[index % len(IN_FLAGS)]]
 
 
@@ -381,6 +441,15 @@ def main():
     texts = texts + divisionTexts
     encoded = encoded + divisionEncoded
 
+    # Les programmes : mêmes états que le reste, mais plusieurs instructions.
+    for name, lines in PROGRAMS:
+        hexadecimal = assemble_program(lines)
+        instruction = len(texts)
+        texts.append(name)
+        encoded.append(hexadecimal)
+        for index, state in enumerate(chosen[:24]):
+            cases.append((instruction, hexadecimal, index, state))
+
     request = "".join(
         hexadecimal + "\t" + "\t".join(f"{value:x}" for value in state) + "\n"
         for _, hexadecimal, _, state in cases)
@@ -394,7 +463,9 @@ def main():
         out.write("# état\t<indice>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>   — un état d'entrée\n")
         out.write("# instr\t<indice>\t<octets>\t<masque>\t<mnémonique>  — une instruction,\n")
         out.write("#   et le masque des drapeaux que l'architecture définit pour elle\n")
-        out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>  — ce qui en sort\n")
+        out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>\n")
+        out.write("#   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;\n")
+        out.write("#   la pile de l'invité descend depuis 0x30003000\n")
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))
@@ -406,14 +477,21 @@ def main():
             after = [int(value, 16) for value in fields[18:]]
             # Ce qui n'était pas censé bouger n'a pas bougé : la vérification
             # qui autorise à ne garder que trois registres dans le fichier.
-            for register in [3] + list(range(5, 16)):
+            # RBP et RSP sont exclus : les programmes qui posent un cadre de
+            # pile s'en servent, et c'est justement ce qu'ils prouvent.
+            for register in [3] + list(range(8, 16)):
                 if after[register] != state[register]:
                     raise SystemExit(
                         f"{texts[instruction]} a écrit dans {REGISTERS[register]} : "
                         f"{state[register]:x} devenu {after[register]:x}")
-            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\n"
+            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%s\n"
                       % (instruction, index,
-                         after[0], after[1], after[2], after[16] & ARITHMETIC_FLAGS))
+                         after[0], after[1], after[2], after[16] & ARITHMETIC_FLAGS,
+                         # « - » quand la fenêtre est restée telle qu'on l'avait
+                         # posée : la plupart des instructions ne touchent pas à
+                         # la mémoire, et écrire cent vingt-huit caractères pour
+                         # dire « rien » quadruplerait le fichier.
+                         "-" if fields[35] == PRISTINE else fields[35]))
 
     print(f"{len(texts)} instructions, {len(cases)} cas", file=sys.stderr)
     return 0

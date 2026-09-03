@@ -102,6 +102,18 @@ final class X86CoreTests: XCTestCase {
         }
     }
 
+    /// Un `CALL` sans mémoire est refusé plutôt que d'écrire dans le vide :
+    /// une pile est de la mémoire, et ce cœur n'en invente pas.
+    func testCallWithoutMemoryIsRefused() {
+        var machine = core()
+        XCTAssertThrowsError(try run([0xE8, 0x00, 0x00, 0x00, 0x00], on: &machine)) { error in
+            guard case .unsupported(let what) = error as? X86Core.Fault else {
+                return XCTFail("attendu un refus nommé, obtenu \(error)")
+            }
+            XCTAssertTrue(what.contains("pile"), what)
+        }
+    }
+
     /// Une instruction vectorielle est refusée de même. Le décodeur sait où
     /// elle finit depuis la tranche 2 ; ce cœur ne sait pas ce qu'elle fait, et
     /// il le dit.
@@ -120,12 +132,13 @@ final class X86CoreTests: XCTestCase {
     /// supporté » sans dire lequel obligerait à relire les octets à la main.
     func testAnOpcodeTheCoreDoesNotRunYetIsNamed() {
         var machine = core()
-        // e8 00 00 00 00 : call — le décodeur le lit, le cœur ne saute pas encore.
-        XCTAssertThrowsError(try run([0xE8, 0x00, 0x00, 0x00, 0x00], on: &machine)) { error in
+        // 0f 05 : syscall — le décodeur le lit depuis la tranche 2, le cœur
+        // n'a pas encore d'appel système à lui donner.
+        XCTAssertThrowsError(try run([0x0F, 0x05], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
-            XCTAssertTrue(what.contains("E8"), "il faut nommer l'opcode : \(what)")
+            XCTAssertTrue(what.contains("05"), "il faut nommer l'opcode : \(what)")
         }
     }
 
@@ -148,5 +161,88 @@ final class X86CoreTests: XCTestCase {
         machine.rip = 0x2000
         XCTAssertThrowsError(try run([0x48, 0xF7, 0xF1], on: &machine))
         XCTAssertEqual(machine.rip, 0x2000, "un refus ne fait pas avancer la machine")
+    }
+}
+
+/// La machine autour du cœur : la mémoire, la boucle, le port série.
+///
+/// L'oracle matériel prouve déjà les branchements, la pile et les accès
+/// mémoire — il exécute des programmes entiers et compare la fenêtre de
+/// données. Ce qu'il ne peut pas prouver, c'est ce qui n'existe pas sur la
+/// machine hôte : un port série émulé, et un `HLT` qui arrête la boucle au lieu
+/// d'arrêter le processeur.
+final class X86MachineTests: XCTestCase {
+    func machine(_ program: [UInt8], memory size: Int = 0x4000) throws -> X86Core {
+        let memory = X86Memory(size: size, base: 0x1000)
+        try memory.load(program, at: 0x1000)
+        var registers = [UInt64](repeating: 0, count: 16)
+        registers[4] = 0x1000 + UInt64(size) - 0x100  // la pile, en haut
+        return X86Core(registers: registers, rip: 0x1000, memory: memory)
+    }
+
+    /// `HLT` arrête la boucle et le **dit**. Sans ça, un budget épuisé et une
+    /// machine arrêtée se ressembleraient.
+    func testHaltStopsTheLoopAndSaysSo() throws {
+        var core = try machine([0x48, 0xFF, 0xC0, 0xF4])  // incq %rax ; hlt
+        let executed = try core.run(budget: 1000)
+        XCTAssertEqual(executed, 2)
+        XCTAssertTrue(core.halted)
+        XCTAssertEqual(core.registers[0], 1)
+    }
+
+    /// Le budget est une borne, pas un vœu : une boucle infinie s'arrête.
+    func testTheBudgetStopsAnEndlessLoop() throws {
+        var core = try machine([0xEB, 0xFE])  // jmp .  — le saut sur soi-même
+        let executed = try core.run(budget: 5000)
+        XCTAssertEqual(executed, 5000)
+        XCTAssertFalse(core.halted, "elle n'est pas arrêtée : elle a épuisé son budget")
+        XCTAssertEqual(core.rip, 0x1000, "et elle est toujours au même endroit")
+    }
+
+    /// Le port série : ce par quoi un noyau Linux dit ses premiers mots avant
+    /// d'avoir quoi que ce soit d'autre. `out %al, $0x3f8` — sauf que le port
+    /// 0x3F8 ne tient pas dans l'immédiat d'un octet, donc il passe par DX.
+    func testWhatGoesOutOfTheSerialPortIsKept() throws {
+        // movw $0x3f8,%dx ; movb $0x77,%al ; outb %al,(%dx) ; hlt
+        var core = try machine([0x66, 0xBA, 0xF8, 0x03, 0xB0, 0x77, 0xEE, 0xF4])
+        try core.run(budget: 100)
+        XCTAssertEqual(core.serialOutput, [0x77], "« w » est sorti par le port série")
+    }
+
+    /// Le registre d'état de la ligne dit « le transmetteur est vide ». Un
+    /// noyau qui ne le lirait jamais vrai attendrait indéfiniment de pouvoir
+    /// écrire — c'est un blocage silencieux, pas une erreur.
+    func testTheLineStatusSaysTheTransmitterIsReady() throws {
+        // movw $0x3fd,%dx ; inb (%dx),%al ; hlt
+        var core = try machine([0x66, 0xBA, 0xFD, 0x03, 0xEC, 0xF4])
+        try core.run(budget: 100)
+        XCTAssertNotEqual(core.registers[0] & 0x20, 0, "le bit « prêt à émettre »")
+    }
+
+    /// Une adresse hors de la mémoire est une faute **nommée**, avec l'adresse
+    /// qui l'a causée. Sans elle, on relit le programme à la main.
+    func testAnAddressOutsideMemoryIsAFaultThatNamesIt() throws {
+        // movq (%rax),%rcx avec rax à zéro, alors que la mémoire commence à
+        // 0x1000.
+        var core = try machine([0x48, 0x8B, 0x08])
+        XCTAssertThrowsError(try core.run(budget: 10)) { error in
+            XCTAssertEqual(error as? X86Core.Fault, .outsideMemory(0),
+                           "hors de la mémoire, pas une faute de page : rien ne traduit ici")
+        }
+    }
+
+    /// Le compteur d'instructions est ce qui donnera le chiffre de vitesse :
+    /// il compte les instructions **retirées**, pas les tours de boucle.
+    func testRetiredCountsInstructionsAndNotIterations() throws {
+        // movl $3,%ecx ; 1: decl %ecx ; jnz 1b ; hlt
+        //
+        // Le déplacement vaut -4 et non -5 : il se compte depuis la **fin** du
+        // saut. Je l'ai écrit -5 la première fois, et ce test l'a attrapé —
+        // c'est exactement l'erreur d'un octet que le cœur, lui, ne fait pas.
+        var core = try machine([0xB9, 0x03, 0x00, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC, 0xF4])
+        try core.run(budget: 1000)
+        // un mov, puis trois fois (dec + jnz), puis le hlt
+        XCTAssertEqual(core.retired, 1 + 3 * 2 + 1)
+        XCTAssertEqual(core.registers[1], 0)
     }
 }
