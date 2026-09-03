@@ -2514,7 +2514,7 @@ Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
 
-## La mémoire des VM **distantes** — mesuré contre le vrai libvirt, pas encore fait
+## La mémoire des VM **distantes** — lue (fait), pas encore réglable
 
 « Ajuster la ram partout » a un second sens : les machines que l'agent gère sur
 un hôte, pas seulement celle qui tourne dans le téléphone. Le protocole n'en
@@ -2554,8 +2554,19 @@ Donc la forme, quand ce sera fait :
   et nomme le prix : baisser la part courante d'un invité qui n'a pas de pilote
   balloon ne fera rien, et changer le maximum demande un redémarrage.
 
-Pas commencé. Écrit ici avec ses mesures pour que la tranche parte de ce que le
-vrai logiciel fait, et pas de ce qu'on suppose.
+**Fait, la moitié qui lit.** `Vm` porte `memoryKiB` et `maximumMemoryKiB`, lus
+dans `virsh dominfo` — qui porte aussi l'état, donc le démon fait un appel de
+*moins* qu'avant, pas un de plus. Le téléphone les décode avec la tolérance de
+l'état (montré, jamais agi) et les affiche sous le nom de la VM, les deux
+seulement quand ils diffèrent. Vérifié à travers le vrai agent devant un vrai
+libvirt.
+
+**Pas fait, la moitié qui écrit**, et c'est délibéré : construire le curseur
+avant de savoir quoi dire quand il ne commande rien serait l'erreur que les
+mesures ci-dessus signalent. Ce qu'il reste à trancher, quand ce sera le
+moment : sonder après coup pour distinguer « demandé » de « rendu », et
+nommer le prix (un invité sans pilote balloon ne rendra rien ; changer le
+maximum demande un redémarrage).
 
 ## « L'espace de stockage » : ce qui est montré, et ce qui ne sera pas fait (fait)
 
