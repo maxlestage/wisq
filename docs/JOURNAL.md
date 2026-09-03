@@ -8,6 +8,58 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~13h UTC — l'application a disparu, et la garde existait
+
+Maxime a installé le build et a voulu démarrer **Omarchy** — une distribution
+complète — dans la machine locale de son iPhone. L'application a disparu sans
+un mot.
+
+`LinuxMachine.load` refusait déjà une image trop grande : la garde est là
+depuis le début, et `LinuxMachineError.imageTooLarge` existe. Le défaut
+n'était pas le refus, c'était **l'ordre** :
+
+```
+fileImporter (.data, tout fichier)
+  → importKernel : copie le fichier dans le stockage de l'application
+  → boot : Data(contentsOf:)  ← lit TOUT le fichier en mémoire, sur ce fil
+  → load : refuse si > 64 Mo  ← jamais atteint
+```
+
+Sur une image de deux gigaoctets, le système tue l'application pendant la
+lecture. La garde qui aurait refusé le fichier en quelques microsecondes se
+trouvait derrière l'allocation qui a tué le processus. Une défense placée
+après le point de mort n'est pas une défense — c'est la troisième fois que ce
+dépôt rencontre cette forme, et la première où elle coûte à quelqu'un.
+
+Et un second piège, plus net, dans la garde elle-même :
+`UInt32(kernelImage.count)` **plante** à partir de quatre gibioctets. La
+protection contre les images trop grandes était un plantage pour les plus
+grandes de toutes.
+
+### Ce qui est corrigé
+
+La taille est demandée au système de fichiers, avant toute lecture et avant
+toute copie — à l'import comme au démarrage. Le plafond n'est pas un nombre
+choisi : `LinuxMachine.maximumKernelImageBytes` est ce qui reste de la RAM
+invitée sous le DTB et l'état réservé, donc ce qui peut physiquement entrer.
+La comparaison se fait en `Int`.
+
+Le refus dit les deux tailles et où est la vraie voie, parce qu'un chiffre
+seul n'apprend rien à quelqu'un qui arrive avec une ISO.
+
+### Ce que le sabordage a corrigé dans le test
+
+La phrase nommait d'abord deux nombres — la mémoire totale et la part du
+noyau. Elles ne diffèrent que d'un kilo-octet, donc s'affichaient toutes deux
+« 64.0 Mo » : illisible comme contrainte, et le test passait en trouvant l'une
+pour l'autre. Le sabordage « la phrase ne nomme plus la mémoire de la
+machine » est resté vert, ce qui a montré la faiblesse. Un seul chiffre
+désormais, et le test cherche la phrase entière.
+
+Cinq sabordages mordent ; un sixième est laissé sans test et dit pourquoi
+dans son commentaire — fabriquer quatre gibioctets en mémoire pour éprouver
+la conversion `UInt32` coûterait plus que la garde ne vaut.
+
 ## 2026-09-03, ~09h25 UTC — le build est parti
 
 Exécution n° 12 de `testflight.yml`, sur `45b78eb` : **succès**. L'archive
