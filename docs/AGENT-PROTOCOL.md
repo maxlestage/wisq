@@ -94,6 +94,12 @@ comptent pas pareil**, mesuré sur libvirt 10.0.0 plutôt que supposé :
 Une VM `running` sans `consolePort` n'est donc pas forcément en train de
 démarrer : elle peut n'avoir aucune console joignable depuis le réseau.
 
+**`consoleProtocol` peut être présent sans `consolePort`.** Une VM arrêtée n'a
+pas de port — libvirt en attribue un au démarrage du domaine — mais sa
+définition dit déjà quelle console elle servira, et le backend libvirt la lit
+avec `virsh dumpxml --inactive`. Sans cela le téléphone n'avait aucun
+protocole à afficher pour une machine éteinte et en supposait un.
+
 ### Ce que `{id}` peut contenir
 
 Le démon **refuse** tout identifiant qui n'est pas fait de lettres ASCII, de

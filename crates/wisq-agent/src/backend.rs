@@ -192,8 +192,24 @@ impl VirshBackend {
                 vm.console_protocol = Some(protocol);
                 vm.console_port = Some(port);
             }
+        } else {
+            // A stopped domain has no port — but its definition still says
+            // which console it will serve, and the phone was told nothing.
+            // `AgentImportView` then stored the machine as VNC, and someone
+            // who later connected without going through the agent spoke the
+            // wrong protocol at a SPICE guest.
+            vm.console_protocol = self.declared_console(id);
         }
         Ok(vm)
+    }
+
+    /// The console a domain is *defined* to serve, port or no port.
+    ///
+    /// Only asked of a domain that is not running, so a host pays one extra
+    /// `virsh` call per stopped VM and none per running one. `--inactive`
+    /// reads the persistent definition rather than a live instance.
+    fn declared_console(&self, id: &str) -> Option<&'static str> {
+        parse_declared_graphics(self.run(&["dumpxml", "--inactive", id]).ok().as_deref())
     }
 
     /// Where the guest's screen is, and which protocol answers there.
@@ -457,6 +473,49 @@ esac"#,
         assert_eq!(vm.console_port, None);
     }
 
+    /// A stopped SPICE VM used to reach the phone with no protocol at all, and
+    /// the import screen stored it as VNC — so connecting to it later without
+    /// the agent spoke RFB at a SPICE guest. There is still no port (libvirt
+    /// allocates one at start), and there must not be an invented one.
+    #[test]
+    fn a_stopped_domain_still_names_its_console() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo eteinte ;;
+  domstate) echo "shut off" ;;
+  dumpxml) echo "<graphics type='spice' autoport='yes' listen='0.0.0.0'>" ;;
+  domdisplay) echo "error: Domain is not running" >&2; exit 1 ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("eteinte").unwrap().unwrap();
+        assert_eq!(vm.state, State::Stopped);
+        assert_eq!(vm.console_protocol, Some("spice"));
+        assert_eq!(vm.console_port, None, "une VM arrêtée n'a pas de port");
+    }
+
+    /// A running domain is answered by `domdisplay`, never by its definition.
+    ///
+    /// The two can disagree, and the live one wins: a domain edited while it
+    /// runs keeps serving what it was started with until it is restarted. So
+    /// this fake contradicts itself on purpose — the definition says VNC, the
+    /// live display says SPICE on 5901 — and the answer must be the live one.
+    /// A `describe` that read the definition for running domains too would
+    /// hand the phone VNC and no port at all.
+    #[test]
+    fn a_running_domain_is_answered_by_its_display_not_its_definition() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo allumee ;;
+  domstate) echo running ;;
+  domdisplay) echo spice://localhost:5901 ;;
+  dumpxml) echo "<graphics type='vnc' autoport='yes'/>" ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("allumee").unwrap().unwrap();
+        assert_eq!(vm.console_protocol, Some("spice"));
+        assert_eq!(vm.console_port, Some(5901));
+    }
+
     /// The defect. `Ok(self.describe(id).ok())` turned every failure into "no
     /// such VM", so a host whose libvirtd is stopped told the phone the machine
     /// did not exist — and the service arm that reports the real cause was
@@ -521,6 +580,39 @@ pub fn parse_domstate(output: &str) -> State {
         "shut off" | "in shutdown" | "crashed" => State::Stopped,
         _ => State::Unknown,
     }
+}
+
+/// The console type a domain's definition declares, preferring SPICE.
+///
+/// `virsh dumpxml --inactive` answers for a domain that is not running, which
+/// `domdisplay` refuses (*error: Domain is not running*). There is no port to
+/// find — libvirt allocates one at start — only the protocol the guest will
+/// serve, which is enough for the phone to stop calling a SPICE machine VNC.
+///
+/// Read off libvirt 10.0.0, single quotes and all:
+///
+/// ```text
+///     <graphics type='spice' autoport='yes' listen='0.0.0.0'>
+///     <graphics type='vnc' autoport='yes' listen='0.0.0.0'/>
+/// ```
+///
+/// A domain with no `<graphics>` at all answers `None`, and one with both
+/// answers SPICE, on the same reasoning as `parse_domdisplay`.
+pub fn parse_declared_graphics(xml: Option<&str>) -> Option<&'static str> {
+    let mut vnc = false;
+    for rest in xml?.split("<graphics type=") {
+        // `split` yields the text before the first match as well; a fragment
+        // that does not start with a quoted type is that, or something new.
+        let Some(rest) = rest.strip_prefix('\'').or_else(|| rest.strip_prefix('"')) else {
+            continue;
+        };
+        match rest.split(['\'', '"']).next() {
+            Some("spice") => return Some("spice"),
+            Some("vnc") => vnc = true,
+            _ => {}
+        }
+    }
+    vnc.then_some("vnc")
 }
 
 /// The console `virsh domdisplay --all` describes, preferring SPICE.
@@ -718,6 +810,41 @@ mod tests {
         assert_eq!(case("spice+unix:///tmp/s.sock"), None);
         assert_eq!(case(""), None);
         assert_eq!(parse_domdisplay(None), None);
+    }
+
+    /// What a stopped domain's definition declares, which `domdisplay` cannot
+    /// be asked (*error: Domain is not running*). Shapes read off libvirt
+    /// 10.0.0 rather than imagined.
+    #[test]
+    fn reads_the_console_a_stopped_domain_declares() {
+        let case = |xml: &str| parse_declared_graphics(Some(xml));
+        assert_eq!(
+            case("<graphics type='spice' autoport='yes' listen='0.0.0.0'>"),
+            Some("spice")
+        );
+        assert_eq!(case("<graphics type='vnc' autoport='yes'/>"), Some("vnc"));
+        // Double quotes cost one branch and buy independence from libvirt's
+        // choice of quoting, which nothing promises to keep.
+        assert_eq!(case("<graphics type=\"spice\"/>"), Some("spice"));
+        // A domain with no display declares no console.
+        assert_eq!(
+            case("<domain><devices><emulator>/x</emulator></devices></domain>"),
+            None
+        );
+        assert_eq!(parse_declared_graphics(None), None);
+        // Neither does one whose display is something wisq does not speak.
+        assert_eq!(case("<graphics type='egl-headless'/>"), None);
+    }
+
+    /// Both declared: SPICE, for the same reason as a running domain.
+    #[test]
+    fn a_stopped_domain_with_both_declares_the_richer_one() {
+        assert_eq!(
+            parse_declared_graphics(Some(
+                "<graphics type='vnc' autoport='yes'/>\n<graphics type='spice' autoport='yes'/>"
+            )),
+            Some("spice")
+        );
     }
 
     /// A domain with both graphics prints both lines, and wisq takes SPICE —
