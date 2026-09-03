@@ -79,6 +79,21 @@ silencieux vers le clair. Le jeton reste obligatoire dans tous les cas.
 
 `consolePort` est absent tant que la VM n'est pas démarrée.
 
+`consoleProtocol` ∈ `vnc` | `spice`. Le backend libvirt le lit dans
+`virsh domdisplay --all`, qui rend une URI par affichage. **Les deux schémas ne
+comptent pas pareil**, mesuré sur libvirt 10.0.0 plutôt que supposé :
+
+| déclaration dans le domaine | `domdisplay` | ce que le démon publie |
+|---|---|---|
+| `graphics spice port='5901'` | `spice://localhost:5901` | `spice`, 5901 |
+| `graphics vnc port='5903'` | `vnc://localhost:3` | `vnc`, 5903 (5900 + écran) |
+| les deux | les deux lignes | `spice`, celui qui porte presse-papiers et fichiers |
+| `spice` en TLS seul | `spice://localhost:-1?tls-port=5907` | rien : aucun port en clair |
+| `spice` sur socket unix | `spice+unix:///tmp/s.sock` | rien : le téléphone ne peut pas le joindre |
+
+Une VM `running` sans `consolePort` n'est donc pas forcément en train de
+démarrer : elle peut n'avoir aucune console joignable depuis le réseau.
+
 ### Ce que `{id}` peut contenir
 
 Le démon **refuse** tout identifiant qui n'est pas fait de lettres ASCII, de
