@@ -8,6 +8,84 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~19h45 UTC — le décodeur x86-64, prouvé contre objdump
+
+#168 fusionné (CI verte, log brut : 1305 tests, 2 ignorés, 0 échec), branche
+remise sur master, puis **tranche 2 du lot 7**.
+
+### Ce que ça fait
+
+`X86Decoder` lit la forme d'une instruction x86-64 : préfixes hérités, REX ou
+VEX ou EVEX, table d'opcode, ModRM, SIB, déplacement, immédiat — et surtout
+**où l'instruction finit**. Rien ne s'exécute. C'est délibérément le premier
+morceau : sur une architecture à longueur variable, un cœur qui se trompe d'un
+octet ne décode pas mal l'instruction suivante, il décode du bruit, et il le
+fait sans rien dire.
+
+### La preuve, et pourquoi c'est la seule qui vaille
+
+Écrire une table d'opcodes à la main puis la relire, c'est vérifier son propre
+travail contre lui-même. Alors le décodeur est confronté à `objdump` 2.42 sur
+un vrai corpus : **647 912 instructions** désassemblées de `/bin/ls`,
+`/bin/bash` et la libc du système, plus **53 formes assemblées exprès** parce
+qu'aucun compilateur moderne ne les émet — `moffs`, `ENTER`, `RET imm16`, et
+les six opérations de `F6`/`F7` qui ne portent pas d'immédiat. Verdict :
+**647 965 accords, zéro désaccord, zéro refus**.
+
+Le corpus mesuré, qui a décidé du travail : 82,5 % d'opcodes d'un octet,
+15,8 % de table `0F`, 0,92 % de VEX à deux octets, 0,46 % d'EVEX, 0,22 % de
+VEX à trois octets, 0,08 % de `0F 3A`, 0,005 % de `0F 38`. C'est ce 1,6 % de
+préfixes vectoriels qui a décidé de les décoder tout de suite : ils ne
+doublent pas le travail, parce que leur champ `mmmmm` désigne les **mêmes**
+tables que les échappements hérités.
+
+### Ce que j'ai refusé de croire
+
+Le différentiel est passé **du premier coup** sur 647 912 instructions. C'est
+exactement le genre de résultat qu'il ne faut pas croire : j'ai fait imprimer
+au test ce qu'il lisait et ce qu'il comparait (647 912 lues, 647 912 d'accord),
+puis j'ai trouvé le vrai trou — le test du corpus entier n'avait **aucune
+borne sur le nombre de cas**, donc un fichier vide l'aurait fait passer pour
+zéro accord sur zéro. La borne y est.
+
+Ensuite j'ai mesuré ce que le corpus **n'atteint pas** plutôt que de supposer
+qu'il atteignait tout : `moffs`, `ENTER`, `RET imm16` et `F6`/`F7 /1` n'y
+étaient pas. Plutôt que d'écrire ces quatre cas de mémoire, je les ai fabriqués
+avec l'assembleur GNU et repassés par objdump — la référence reste la
+référence, pas ma conviction.
+
+### Vérification
+
+Huit sabotages, chacun sur une règle, chacun faisant tomber le différentiel,
+avec retour au vert après chacun. Sur le corpus entier puis sur l'extrait de
+9 222 formes qui va dans le dépôt — les huit y mordent aussi, en 0,09 s :
+
+| sabotage | corpus entier |
+| --- | --- |
+| `0x83` avec un immédiat de la taille de l'opérande | 37 793 refus |
+| `F6`/`F7` portant toujours leur immédiat | 1 708 refus |
+| le relatif à RIP sans ses quatre octets | 33 112 désaccords |
+| la base 101 du SIB sans déplacement | 4 153 désaccords |
+| l'immédiat « taille d'opérande » ignorant `0x66` | 185 refus |
+| `movabs` ignorant `REX.W` | 690 désaccords |
+| la table `0F 3A` sans son octet immédiat | 733 désaccords |
+| le VEX à trois octets n'en lisant que deux | 916 désaccords, 379 refus |
+
+Plus dix-sept tests de **forme** à côté du différentiel : un décodeur peut
+tomber sur la bonne longueur pour deux mauvaises raisons qui s'annulent, et
+c'est ce que le différentiel seul laisserait passer. Chaque suite d'octets de
+ces tests a été repassée par objdump avant d'être écrite — dont une dont mon
+commentaire était faux (`8b 04 25 00 00 00 00` est « mov 0x0,%eax », pas
+« mov 0x0(,%riz,1),%eax »), corrigé avant d'être poussé.
+
+1305 → **1324** tests Swift ; 1469 avec le Rust.
+
+### Ce que ça ne fait toujours pas
+
+Aucune instruction ne s'exécute. La tranche 3 est le cœur en mode long, et
+c'est **elle** qui donnera le premier vrai chiffre de vitesse — celui qui
+confirmera ou contredira l'extrapolation de la feuille de route.
+
 ## 2026-09-03, ~19h10 UTC — le premier morceau de x86-64 : lire l'en-tête
 
 #167 fusionné (CI verte, lue dans le log brut : 1291 tests, 1 ignoré, 0 échec,
