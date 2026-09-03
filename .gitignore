@@ -28,3 +28,8 @@ App/Assets.xcassets/
 # Écrit par `xcodegen generate` depuis `project.yml` : le garder sous suivi
 # donnait un fichier qui paraissait faire autorité et que l'outil effaçait.
 App/Info.plist
+
+# L'oracle matériel se compile sur place ; seul son verdict est versionné.
+scripts/x86-oracle/oracle
+__pycache__/
+*.pyc
