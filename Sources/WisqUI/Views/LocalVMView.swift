@@ -11,28 +11,47 @@ struct LocalVMListView: View {
     @State private var showImporter = false
     @State private var importError: String?
     @State private var booting: BootTarget?
+    /// Ce que le dernier changement de mémoire a coûté, à dire une fois.
+    @State private var memoryNote: String?
 
     var body: some View {
         List {
             Section {
                 ForEach(kernels, id: \.self) { kernel in
-                    Button {
-                        booting = BootTarget(url: kernel)
-                    } label: {
-                        Label(kernel.lastPathComponent, systemImage: "terminal")
+                    HStack {
+                        Button {
+                            booting = BootTarget(url: kernel)
+                        } label: {
+                            Label(kernel.lastPathComponent, systemImage: "terminal")
+                        }
+                        .buttonStyle(.plain)
+                        Spacer(minLength: 12)
+                        KernelMemoryMenu(kernel: kernel) { forgotten in
+                            memoryNote = Self.note(forgotten: forgotten)
+                        }
                     }
-                    .buttonStyle(.plain)
                     .swipeActions {
                         Button(role: .destructive) {
                             KernelLibrary.delete(kernel)
                             kernels = KernelLibrary.list()
+                            memoryNote = nil
                         } label: {
                             Label("Supprimer", systemImage: "trash")
                         }
                     }
                 }
             } footer: {
-                Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
+                    Text("Le chiffre à droite de chaque noyau est la mémoire de sa machine. La machine de référence en a \(LinuxMachine.defaultRAMSize >> 20) Mo ; ce téléphone en autorise jusqu'à \(KernelMemory.ceiling >> 20) Mo. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
+                }
+            }
+
+            if let memoryNote {
+                Section {
+                    Label(memoryNote, systemImage: "memorychip")
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if let importError {
@@ -87,6 +106,74 @@ struct LocalVMListView: View {
             NavigationStack {
                 LocalVMTerminalView(kernelURL: target.url)
             }
+        }
+    }
+}
+
+/// Combien de mémoire ce noyau reçoit.
+///
+/// Le geste est à côté du nom, pas dans un écran de réglages, parce que c'est
+/// un réglage **de cette machine-là** : deux noyaux dans la même liste n'ont
+/// aucune raison de tourner à la même taille.
+///
+/// La vue ne décide rien. Ce qui est offert vient de `KernelMemory.offered`,
+/// borné par ce que l'appareil dit de lui-même, et l'oubli des machines
+/// sauvegardées vient de `SuspendedMachine.clearAll` — les deux sont tenus par
+/// des tests qui tournent sur Linux, ce que ce fichier ne peut pas être.
+private struct KernelMemoryMenu: View {
+    let kernel: URL
+    /// Combien de machines sauvegardées le changement a coûté, pour le dire.
+    let onChange: (Int) -> Void
+
+    @State private var size: UInt32
+
+    init(kernel: URL, onChange: @escaping (Int) -> Void) {
+        self.kernel = kernel
+        self.onChange = onChange
+        _size = State(initialValue: KernelMemory.size(forKernel: kernel.lastPathComponent))
+    }
+
+    var body: some View {
+        Menu {
+            Picker("Mémoire", selection: $size) {
+                ForEach(KernelMemory.offered(ceiling: KernelMemory.ceiling), id: \.self) { choice in
+                    Text(Self.label(choice)).tag(choice)
+                }
+            }
+        } label: {
+            Text(Self.label(size))
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .onChange(of: size) { previous, chosen in
+            guard previous != chosen else { return }
+            KernelMemory.setSize(chosen, forKernel: kernel.lastPathComponent)
+            onChange(SuspendedMachine.clearAll(named: kernel.lastPathComponent))
+        }
+    }
+
+    static func label(_ bytes: UInt32) -> String { "\(bytes >> 20) Mo" }
+}
+
+extension LocalVMListView {
+    /// Ce qu'un changement de mémoire a coûté, dit une fois et au passé.
+    ///
+    /// Rien à dire quand rien n'a été perdu : une machine qui n'existait pas
+    /// n'a pas été oubliée, et annoncer une perte qui n'a pas eu lieu apprend
+    /// à ignorer le message.
+    static func note(forgotten: Int) -> String? {
+        switch forgotten {
+        case 0: return nil
+        case 1:
+            return """
+                Mémoire changée : la machine sauvegardée pour ce noyau a été \
+                oubliée. Le prochain démarrage repart du noyau.
+                """
+        default:
+            return """
+                Mémoire changée : \(forgotten) machines sauvegardées pour ce \
+                noyau ont été oubliées. Le prochain démarrage repart du noyau.
+                """
         }
     }
 }

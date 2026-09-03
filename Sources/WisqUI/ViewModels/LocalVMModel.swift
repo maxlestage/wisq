@@ -73,7 +73,14 @@ public final class LocalVMModel {
         // and can produce console faster than the main actor can render it; a
         // hop per chunk would queue work without bound and the interface would
         // fall behind the machine it is meant to be showing.
-        let machine = LocalMachine(ramSize: LocalMachineMemory.size) { [sink] chunk in
+        // La mémoire de cette machine est celle réglée pour ce noyau. Lue sur
+        // le nom du fichier et non sur ses octets : cette ligne est avant la
+        // lecture de l'image, exprès — c'est ce qui permet de refuser un
+        // fichier trop grand sans le charger — et l'empreinte n'existe
+        // qu'après.
+        let ramSize = KernelMemory.size(
+            forKernel: kernelURL.lastPathComponent, in: storage)
+        let machine = LocalMachine(ramSize: ramSize) { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
                 self?.consoleText = sink.takeText()
@@ -108,11 +115,10 @@ public final class LocalVMModel {
         // in microseconds.
         if let size = try? FileManager.default.attributesOfItem(
             atPath: kernelURL.path)[.size] as? Int,
-            size > LocalMachineMemory.maximumKernelImageBytes {
+            size > LinuxMachine.maximumKernelImageBytes(forRAMSize: ramSize) {
             _ = life.guestFinished()
             finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent,
-                ramSize: LocalMachineMemory.size))
+                size: size, name: kernelURL.lastPathComponent, ramSize: ramSize))
             self.machine = nil
             runFinished = nil
             return
@@ -346,11 +352,13 @@ public enum KernelLibrary {
         defer { source.stopAccessingSecurityScopedResource() }
         if let size = try? FileManager.default.attributesOfItem(
             atPath: source.path)[.size] as? Int,
-            size > LocalMachineMemory.maximumKernelImageBytes {
+            size > KernelMemory.maximumImportableImageBytes() {
+            // Jugé sur la plus grande machine que cet appareil autorise, pas
+            // sur le réglage : au moment de l'import il n'y en a pas encore.
             throw KernelImportError.tooLarge(
                 LinuxMachine.tooLargeExplanation(
                     size: size, name: source.lastPathComponent,
-                    ramSize: LocalMachineMemory.size))
+                    ramSize: KernelMemory.ceiling))
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
@@ -359,8 +367,17 @@ public enum KernelLibrary {
         return destination
     }
 
+    /// Removes a kernel, and everything the app remembered about it.
+    ///
+    /// Three things, not one: the file, the memory it was set to run with, and
+    /// any machine saved from it. Leaving the last two behind would mean a
+    /// kernel re-imported under the same name silently inherits a setting its
+    /// owner deleted, and a snapshot file nothing will ever read again.
     public static func delete(_ url: URL) {
+        let name = url.lastPathComponent
         try? FileManager.default.removeItem(at: url)
+        KernelMemory.forget(kernel: name)
+        SuspendedMachine.clearAll(named: name)
     }
 }
 #endif

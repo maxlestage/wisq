@@ -2477,7 +2477,7 @@ famille ont virtio-mmio mais aucun pilote bloc, et l'utilisateur apporte son
 propre noyau. Sauver la machine — RAM, registres, timer, octets en attente sur
 l'UART — contourne l'invité entièrement et marche avec n'importe quel noyau.
 
-## La mémoire de la machine locale, réglable (fait pour le cœur)
+## La mémoire de la machine locale, réglable (fait)
 
 Demandé par Maxime : « ajuster de la ram et de l'espace de stockage partout ».
 
@@ -2490,20 +2490,29 @@ que les deux cœurs redimensionnent à l'octet près. Le plafond d'image noyau
 suit la machine plutôt que le type, en un seul endroit côté application
 (`LocalMachineMemory`).
 
-Ce qui reste, et ce qu'il faut décider avec ça :
+Et le réglage lui-même, `KernelMemory` :
 
-- **Le réglage visible et persistant.** Par noyau, pas global : un noyau de
-  trois mégaoctets et demi dans 64 Mio est le cas éprouvé, et quelqu'un qui
-  monte à 256 Mio le fait pour un noyau précis.
-- **Ce qu'on fait de la machine suspendue.** L'instantané enregistre la
-  longueur de la RAM et les deux cœurs refusent déjà un écart — donc changer le
-  réglage ne restaure rien de travers, mais rend la sauvegarde
-  **irrestaurable**. Le geste doit le dire avant, pas après.
-- **Le plafond, et d'où il vient.** iOS tue une application sur la pression
-  mémoire ; c'est exactement ce qui a fait disparaître wisq sur l'image
-  d'Omarchy. Un réglage qui laisse demander deux gigaoctets sur un téléphone
-  qui n'en a pas est un plantage déguisé en liberté. Le plafond doit venir de
-  ce que le système dit, pas d'un nombre écrit à la main.
+- **Par noyau**, classé par nom de fichier — l'inverse de `SuspendedMachine`,
+  qui prend l'empreinte. Une taille n'est pas un état : au pire un fichier
+  remplacé hérite d'une préférence qu'on change d'un geste, et la lire ne
+  demande aucun octet, ce dont le chemin de démarrage a besoin puisqu'il doit
+  connaître la taille **avant** de lire l'image.
+- **Deux seuils, pas un.** À l'import, un fichier est jugé sur la plus grande
+  machine que l'appareil autorise, parce qu'aucune taille n'est encore choisie ;
+  au démarrage, sur la machine de ce noyau-là.
+- **Le plafond vient de l'appareil** : un huitième de la mémoire physique,
+  borné à un gibioctet, jamais sous la référence. Un huitième et pas un tiers —
+  jetsam est autour du tiers sur les téléphones d'iOS 17, la RAM de l'invité
+  devient entièrement résidente, et l'application a besoin de place à côté.
+  C'est une politique, pas une mesure, et le code le dit.
+- **Changer la taille oublie les machines sauvegardées de ce noyau**, et
+  l'application dit ce que ça a coûté — ou ne dit rien quand ça n'a rien coûté.
+  Un instantané pris à une autre taille ne peut de toute façon pas être
+  restauré : les deux cœurs refusent l'écart.
+
+Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
+budget d'instructions par tranche) serait le voisin naturel, mais personne ne
+l'a demandé et il n'a pas d'utilisateur connu.
 
 ## « L'espace de stockage » : ce que ça peut vouloir dire ici
 

@@ -24,10 +24,19 @@ public enum SuspendedMachine {
     /// it is so that a person looking in the directory can tell which file is
     /// which, which a wall of hex cannot.
     public static func identity(of image: Data, named name: String) -> String {
-        let safe = String(name.map { character -> Character in
+        "\(safeName(name))-\(String(digest(image), radix: 16))"
+    }
+
+    /// The form a kernel's own name takes inside an identity.
+    ///
+    /// Extracted because two things need it now: building an identity, and
+    /// recognising every identity that came from one name — see `clearAll`.
+    /// Two copies of a sanitising rule is the shortest road to a file that one
+    /// half of the code can write and the other half cannot find.
+    static func safeName(_ name: String) -> String {
+        String(name.map { character -> Character in
             character.isLetter || character.isNumber || character == "-" ? character : "_"
         }.prefix(40))
-        return "\(safe)-\(String(digest(image), radix: 16))"
     }
 
     /// FNV-1a, 64 bits, over every byte.
@@ -117,5 +126,40 @@ public enum SuspendedMachine {
         return FileManager.default.fileExists(
             atPath: folder.appendingPathComponent(fileName(kernel: kernel)).path
         )
+    }
+
+    /// Forgets every saved machine taken from a kernel with this file name,
+    /// whatever bytes that file held.
+    ///
+    /// Returns how many were removed, so a caller can say something true about
+    /// what the gesture cost.
+    ///
+    /// The digest a machine is filed under is only knowable by reading the
+    /// image, and the caller here — someone changing a kernel's memory in a
+    /// list of names — has no reason to read a few megabytes to find out. The
+    /// name is enough, and being generous is the safe direction: a snapshot
+    /// taken at a different memory size **cannot** be restored anyway (both
+    /// cores refuse the mismatch), so the alternative to removing it is
+    /// leaving a file nothing will ever read again.
+    ///
+    /// The match is anchored on both sides rather than being a prefix test.
+    /// `machine-Image-2-ff.wisqvm` starts with `machine-Image-`, so a prefix
+    /// test asked to forget `Image` would also forget `Image-2`; requiring
+    /// everything after the name to be the hexadecimal digest separates them.
+    @discardableResult
+    public static func clearAll(named name: String, in directory: URL? = nil) -> Int {
+        guard let folder = try? (directory ?? Self.directory()),
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return 0 }
+        let prefix = "machine-\(safeName(name))-"
+        let hexadecimal = Set("0123456789abcdef")
+        var removed = 0
+        for entry in entries where entry.hasPrefix(prefix) && entry.hasSuffix(".wisqvm") {
+            let middle = entry.dropFirst(prefix.count).dropLast(".wisqvm".count)
+            guard !middle.isEmpty, middle.allSatisfy(hexadecimal.contains) else { continue }
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(entry))
+            removed += 1
+        }
+        return removed
     }
 }

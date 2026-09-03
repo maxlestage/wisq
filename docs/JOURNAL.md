@@ -8,6 +8,74 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~16h UTC — le réglage de mémoire, et ce qu'il coûte
+
+La tranche précédente a rendu la mémoire réglable dans les deux cœurs. Celle-ci
+la met dans la main de qui utilise l'application : chaque noyau de la liste
+porte sa taille, à droite de son nom.
+
+### Trois décisions, et pourquoi
+
+**Par noyau, pas globalement.** Deux noyaux dans la même liste n'ont aucune
+raison de tourner à la même taille, et quelqu'un qui monte à 256 Mo le fait
+pour une image précise.
+
+**Classé par nom de fichier, pas par empreinte** — l'inverse de
+`SuspendedMachine`, qui prend l'empreinte parce que deux noyaux importés à une
+semaine d'écart s'appellent tous les deux `Image` et donner au second
+l'*instantané* du premier restaurerait une machine qui n'a jamais existé. Une
+taille n'est pas un état : au pire un fichier remplacé hérite d'une préférence
+qu'on change d'un geste. Et surtout, la lire ne demande aucun octet — ce qui
+est nécessaire, parce que le chemin de démarrage doit connaître la taille de la
+machine **avant** de lire l'image, et l'empreinte n'existe qu'après.
+
+**Le plafond vient de l'appareil, pas d'un nombre écrit à la main** : un
+huitième de la mémoire physique, borné à un gibioctet, jamais sous la machine
+de référence. Un huitième et pas un tiers — jetsam, la limite à laquelle iOS
+tue, est autour du tiers sur les téléphones qu'iOS 17 fait tourner, la RAM de
+l'invité devient entièrement résidente, et l'application a besoin de place à
+côté. Le premier brouillon disait « un quart » : sur un téléphone de 2 Go cela
+donne 512 Mo d'invité, assez près de jetsam pour que le réglage livre un
+plantage. C'est une **politique**, pas une mesure, et le code le dit.
+
+### Deux seuils, et pourquoi ce ne sont pas les mêmes
+
+À l'import, un fichier est jugé sur la **plus grande machine que l'appareil
+autorise** : au moment où il arrive, aucune taille n'a été choisie, et le
+refuser sur le défaut refuserait un fichier importé exprès pour tourner plus
+grand. Au démarrage, il est jugé sur la machine **de ce noyau-là**. Les deux
+sont justes à leur moment.
+
+### Ce que change coûte, dit plutôt que subi
+
+Un instantané pris à une autre taille ne peut pas être restauré — les deux
+cœurs refusent l'écart depuis toujours, c'est vérifié. Le laisser sur le disque
+serait donc laisser un fichier que rien ne relira jamais. Changer la taille
+l'oublie, et l'application dit combien de machines cela a coûté — ou ne dit
+rien du tout quand ça n'a rien coûté, parce qu'annoncer une perte qui n'a pas
+eu lieu apprend à ignorer le message suivant.
+
+Oublier par nom demandait une garde à laquelle je ne pensais pas :
+`machine-Image-2-ff.wisqvm` **commence par** `machine-Image-`, donc un simple
+test de préfixe, demandé d'oublier `Image`, aurait aussi oublié `Image-2`. Le
+motif est ancré des deux côtés — tout ce qui suit le nom doit être
+l'empreinte hexadécimale. Le sabordage qui remet le test de préfixe tombe sur
+ce test précis.
+
+Et supprimer un noyau oublie maintenant trois choses au lieu d'une : le
+fichier, son réglage, et les machines sauvegardées. Sinon un noyau réimporté
+sous le même nom hériterait en silence d'un réglage que son propriétaire avait
+supprimé.
+
+### Sabordage
+
+Six, chacun tombant sur son test et sur lui seul : la taille enregistrée qui
+n'est plus rognée par le plafond de l'appareil, le plafond qui redevient un
+quart, `clearAll` qui redevient un test de préfixe, le réglage qui cesse d'être
+classé par noyau, le retour au défaut qui écrit le nombre au lieu d'effacer
+l'entrée, et la garde qui refusait une valeur hors de la liste offerte.
+
+
 ## 2026-09-03, ~15h UTC — la mémoire réglable, et l'invité qui l'apprend
 
 Maxime : « Je veux pouvoir ajuster de la ram et de l'espace de stockage
