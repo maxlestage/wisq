@@ -117,3 +117,121 @@ final class AgentVMToleranceTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(AgentVM.self, from: encoded), original)
     }
 }
+
+/// La mémoire que l'agent annonce, et ce qu'elle ne doit jamais coûter.
+///
+/// Deux nombres, parce que libvirt en garde deux et qu'ils répondent à des
+/// questions différentes : le maximum ne peut pas changer pendant que le
+/// domaine tourne, la part courante est ce qu'il a le droit d'utiliser
+/// maintenant. Sur un domaine éteint, les deux viennent de sa définition.
+///
+/// Mesuré contre un vrai agent devant un vrai libvirt (10.0.0) : un domaine
+/// éteint réglé à 128 Mio avec un maximum de 256 rend exactement
+/// `{"id":"blind-vm","maximumMemoryKiB":262144,"memoryKiB":131072,…}`.
+final class AgentVMMemoryTests: XCTestCase {
+    private func vm(_ json: String) throws -> AgentVM {
+        try JSONDecoder().decode(AgentVM.self, from: Data(json.utf8))
+    }
+
+    private func list(_ json: String) throws -> [AgentVM] {
+        try JSONDecoder().decode([AgentVM].self, from: Data(json.utf8))
+    }
+
+    /// La réponse réelle de l'agent, relue telle quelle.
+    func testTheTwoFiguresArriveFromARealAgentResponse() throws {
+        let machine = try vm(
+            #"{"id":"blind-vm","maximumMemoryKiB":262144,"memoryKiB":131072,"#
+                + #""name":"blind-vm","state":"stopped"}"#)
+        XCTAssertEqual(machine.memoryKiB, 131_072)
+        XCTAssertEqual(machine.maximumMemoryKiB, 262_144)
+    }
+
+    /// Un agent plus ancien n'en dit rien, et ce n'est pas une panne : le
+    /// démon s'installe par Homebrew et se met à jour sans le téléphone.
+    func testAnOlderAgentThatSaysNothingIsNotAFailure() throws {
+        let machine = try vm(#"{"id":"x","name":"x","state":"running"}"#)
+        XCTAssertNil(machine.memoryKiB)
+        XCTAssertNil(machine.maximumMemoryKiB)
+    }
+
+    /// Et la moitié tolérante de la même règle que l'état : la mémoire est
+    /// **montrée**, jamais agie. Un agent qui l'enverrait dans une forme que
+    /// cette version ne comprend pas doit coûter une ligne de texte à cette
+    /// VM-là, pas la liste entière dans laquelle elle est arrivée.
+    func testAMemoryInAShapeThisBuildCannotReadCostsOnlyItsOwnLine() throws {
+        let machines = try list(
+            #"[{"id":"a","name":"a","state":"running","memoryKiB":"beaucoup"},"#
+                + #"{"id":"b","name":"b","state":"running","memoryKiB":2097152}]"#)
+        XCTAssertEqual(machines.count, 2, "la liste entière ne doit pas disparaître")
+        XCTAssertNil(machines[0].memoryKiB, "illisible se lit « je ne sais pas »")
+        XCTAssertEqual(machines[1].memoryKiB, 2_097_152, "et la voisine est intacte")
+    }
+
+    /// Les deux nombres survivent à un aller-retour d'encodage.
+    ///
+    /// La comparaison porte sur eux et non sur la valeur entière, pour une
+    /// raison qui vaut d'être écrite : **`AgentVM` n'est jamais encodé en
+    /// production**, il n'est que décodé depuis l'agent, et son aller-retour
+    /// n'est délibérément pas l'identité — un `guestOS` absent se relit
+    /// `.unknown`, comme le dit la tolérance du type. Exiger l'égalité
+    /// complète tiendrait donc une propriété que ce type n'a pas et n'a pas
+    /// besoin d'avoir, et casserait au prochain champ ajouté.
+    func testTheFiguresSurviveARoundTrip() throws {
+        let original = AgentVM(
+            id: "debian-13", name: "Debian 13", state: .running,
+            memoryKiB: 2_097_152, maximumMemoryKiB: 4_194_304)
+        let back = try JSONDecoder().decode(
+            AgentVM.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(back.memoryKiB, original.memoryKiB)
+        XCTAssertEqual(back.maximumMemoryKiB, original.maximumMemoryKiB)
+        XCTAssertEqual(back.id, original.id)
+        XCTAssertEqual(back.state, original.state)
+    }
+}
+
+/// La mémoire d'une VM distante, telle qu'on la lit.
+final class AgentVMMemoryDescriptionTests: XCTestCase {
+    private func vm(_ memory: Int?, _ maximum: Int?) -> AgentVM {
+        AgentVM(
+            id: "x", name: "x", state: .running,
+            memoryKiB: memory, maximumMemoryKiB: maximum)
+    }
+
+    /// Rien de dit, rien de montré. Un zéro se lirait « aucune mémoire ».
+    func testAnAgentThatSaysNothingShowsNothing() {
+        XCTAssertNil(vm(nil, nil).memoryDescription)
+    }
+
+    /// Le cas de presque toutes les machines : les deux nombres sont égaux, et
+    /// la ligne n'en montre qu'un. Répéter « 256 Mio sur un maximum de 256 Mio »
+    /// partout apprendrait à sauter la ligne sur la seule machine où elle dit
+    /// quelque chose.
+    func testEqualFiguresAreShownOnce() {
+        XCTAssertEqual(vm(262_144, 262_144).memoryDescription, "256 Mio")
+        XCTAssertEqual(vm(2_097_152, 2_097_152).memoryDescription, "2 Gio")
+    }
+
+    /// Et quand ils diffèrent — un domaine dont la part courante a été réglée
+    /// plus bas que son maximum — les deux sont dits. Mesuré sur un vrai
+    /// libvirt : c'est exactement ce que `virsh setmem --config` produit.
+    func testDifferingFiguresAreBothSaid() {
+        XCTAssertEqual(
+            vm(131_072, 262_144).memoryDescription,
+            "128 Mio sur un maximum de 256 Mio")
+    }
+
+    /// Un agent qui ne donne qu'un des deux ne fait pas disparaître la ligne.
+    func testOneFigureAloneIsStillWorthShowing() {
+        XCTAssertEqual(vm(nil, 262_144).memoryDescription, "256 Mio")
+        XCTAssertEqual(vm(262_144, nil).memoryDescription, "256 Mio")
+    }
+
+    /// Les unités, en puissances de deux, et sans décimale quand elle serait
+    /// toujours nulle — libvirt distribue des nombres ronds.
+    func testSizesReadInPowersOfTwo() {
+        XCTAssertEqual(AgentVM.describe(kibibytes: 512), "512 Kio")
+        XCTAssertEqual(AgentVM.describe(kibibytes: 1024), "1 Mio")
+        XCTAssertEqual(AgentVM.describe(kibibytes: 1_572_864), "1,5 Gio")
+        XCTAssertEqual(AgentVM.describe(kibibytes: 0), "0 Kio")
+    }
+}

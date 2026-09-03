@@ -80,7 +80,13 @@ struct AgentImportView: View {
                                     .frame(width: 30)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(vm.name)
-                                    Text(vm.state.displayName)
+                                    // L'état, et la mémoire quand l'agent la
+                                    // dit. Un agent plus ancien n'en dit rien,
+                                    // et la ligne se lit alors comme avant.
+                                    Text(
+                                        [vm.state.displayName, vm.memoryDescription]
+                                            .compactMap { $0 }
+                                            .joined(separator: " · "))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
