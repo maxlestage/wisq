@@ -8,6 +8,67 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~08h30 UTC — l'application n'avait jamais eu son Info.plist
+
+Maxime a créé la fiche App Store Connect. L'envoi est parti pour de vrai :
+la clé a trouvé l'équipe, l'archive a été **signée**, elle est montée chez
+Apple — qui l'a refusée à la validation, sur deux codes :
+
+```
+90475  Apps that support Multitasking on iPad must provide the app's launch screen
+90474  No orientations were specified in the app.wisq.ios bundle
+```
+
+Or `App/Info.plist` contient ces deux clés, et les contient depuis toujours.
+Donc quelque chose les efface.
+
+### Ce que XcodeGen fait de `info.path`
+
+Lu dans sa source (`FileWriter.writePlists` → `InfoPlistGenerator`), puis
+**exécuté** : XcodeGen a été construit ici depuis ses sources avec Swift 6.3,
+lancé sur `project.yml`, et le résultat est sans appel.
+
+`info.path` n'est pas « le fichier à utiliser ». C'est « le fichier à
+**écrire** » : l'outil prend ses huit clés par défaut, y fusionne
+`info.properties` — absent de notre manifeste, donc vide — supprime le fichier
+existant et écrit le résultat. Avant / après, mesuré :
+
+```
+avant : 12 clés écrites à la main
+après : CFBundleDevelopmentRegion $(DEVELOPMENT_LANGUAGE), CFBundleExecutable,
+        CFBundleIdentifier, CFBundleInfoDictionaryVersion, CFBundleName,
+        CFBundlePackageType, CFBundleShortVersionString 1.0, CFBundleVersion 1
+```
+
+### Ce que l'application perdait à chaque construction
+
+Les deux clés du refus d'Apple, et surtout tout le reste :
+
+| clé effacée | conséquence |
+|---|---|
+| `CFBundleURLTypes` / schéma `wisq` | **les liens d'appairage n'ouvrent pas l'application** — ni le lien du démon, ni le QR |
+| `NSBonjourServices` | **la découverte des agents sur le réseau local est muette** |
+| `NSLocalNetworkUsageDescription` | iOS 14+ refuse le réseau local sans elle : **aucune machine joignable**, ce qui est tout ce que fait wisq |
+| `CFBundleShortVersionString` / `CFBundleVersion` | remises à 1.0 / 1 — le `CURRENT_PROJECT_VERSION=$run_number` du workflow était donc ignoré, et le deuxième envoi aurait été refusé pour numéro déjà vu |
+| `ITSAppUsesNonExemptEncryption` | la conformité à l'exportation redemandée à chaque envoi |
+| `CFBundleDisplayName`, région `fr` | l'application s'appelait « Wisq » et se déclarait en anglais |
+
+Trois des gestes du guide Ubuntu — coller un lien `wisq://`, scanner le QR,
+laisser le téléphone trouver l'hôte — ne pouvaient donc pas marcher dans
+l'application construite. Aucun test ne le voyait : la suite iOS tourne dans
+un simulateur, où rien n'exige un schéma d'URL ni une permission réseau.
+
+### Le correctif, et sa garde
+
+Tout passe dans `project.yml` sous `info.properties`, où l'outil le conserve ;
+`App/Info.plist` devient un produit et quitte le suivi de git — le garder
+suivi, c'était laisser un fichier qui a l'air de faire autorité et que
+l'outil efface.
+
+Huit sabordages, tous rouges : chacune des sept clés retirée une à une, plus
+`App/Info.plist` remis sous suivi. Ce dernier est le seul qui garde la leçon
+plutôt que la clé.
+
 ## 2026-09-03, ~07h30 UTC — quatre promesses tenues, et une limite mesurée
 
 Le vrai libvirt sert une dernière fois, cette fois pour chercher des défauts
