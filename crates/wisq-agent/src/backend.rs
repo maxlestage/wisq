@@ -46,6 +46,17 @@ impl DemoBackend {
         let mut entries = BTreeMap::new();
         let mut debian = Vm::new("debian-13", "Debian 13", State::Stopped);
         debian.guest_os = Some(GuestOs::Linux);
+        // Two plausible machines, and deliberately not the same size: a demo
+        // where every VM has identical memory would show a column that looks
+        // decorative, and the Windows one differs from its own maximum so the
+        // two-figure case is visible without a libvirt to hand.
+        //
+        // Plausible is all they claim to be. A first draft called them "what
+        // `virt-install` hands out by default", which is not a thing —
+        // `virt-install` requires `--memory` — and inventing a provenance for
+        // a demo constant is the same failure as inventing a measurement.
+        debian.memory_kib = Some(2 * 1024 * 1024);
+        debian.maximum_memory_kib = Some(2 * 1024 * 1024);
         entries.insert(
             "debian-13".to_string(),
             Entry {
@@ -57,6 +68,8 @@ impl DemoBackend {
         );
         let mut windows = Vm::new("win11", "Windows 11", State::Stopped);
         windows.guest_os = Some(GuestOs::Windows);
+        windows.memory_kib = Some(4 * 1024 * 1024);
+        windows.maximum_memory_kib = Some(8 * 1024 * 1024);
         entries.insert(
             "win11".to_string(),
             Entry {
@@ -185,8 +198,16 @@ impl VirshBackend {
     }
 
     fn describe(&self, id: &str) -> Result<Vm> {
-        let state = parse_domstate(&self.run(&["domstate", id])?);
+        // `dominfo` rather than `domstate`: the same one call, the same state
+        // vocabulary and the same exit code on an unknown domain, plus the two
+        // memory figures. Measured on libvirt 10.0.0 — `domstate` prints
+        // `running` and `dominfo` prints `State:          running`, and both
+        // exit 1 for a domain that does not exist.
+        let info = self.run(&["dominfo", id])?;
+        let (state, memory, maximum) = parse_dominfo(&info);
         let mut vm = Vm::new(id, id, state);
+        vm.memory_kib = memory;
+        vm.maximum_memory_kib = maximum;
         if state == State::Running {
             if let Some((protocol, port)) = self.console(id) {
                 vm.console_protocol = Some(protocol);
@@ -375,6 +396,46 @@ mod virsh_tests {
     }
 
     /// The probe has to be able to say "something here" before "nothing here"
+    /// La mémoire que `dominfo` annonce arrive jusqu'à la VM décrite.
+    ///
+    /// Les deux nombres, et dans le bon sens : ils diffèrent ici exprès, parce
+    /// qu'un faux qui les mettrait égaux laisserait passer un code qui lit deux
+    /// fois la même ligne. Mesuré sur libvirt 10.0.0 : un domaine éteint réglé
+    /// à 128 Mio avec un maximum de 256 annonce exactement ça.
+    #[test]
+    fn a_domain_reports_both_of_its_memory_figures() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo mesure ;;
+  dominfo) printf 'Id:             -\nName:           mesure\nState:          shut off\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    131072 KiB\n' ;;
+  dumpxml) echo "<graphics type='spice' autoport='yes'/>" ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("mesure").unwrap().unwrap();
+        assert_eq!(vm.state, State::Stopped);
+        assert_eq!(vm.maximum_memory_kib, Some(262_144));
+        assert_eq!(vm.memory_kib, Some(131_072));
+    }
+
+    /// Un hôte dont le `dominfo` ne dit rien de la mémoire n'invente pas.
+    ///
+    /// Zéro se lirait « aucune mémoire », ce qui est faux et affichable ;
+    /// l'absence se lit « je ne sais pas », et le téléphone n'affiche rien.
+    #[test]
+    fn a_dominfo_without_memory_lines_invents_nothing() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo muet ;;
+  dominfo) printf 'Id:             1\nName:           muet\nState:          running\n' ;;
+  domdisplay) echo spice://localhost:5901 ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("muet").unwrap().unwrap();
+        assert_eq!(vm.state, State::Running, "l'état doit survivre à l'absence");
+        assert_eq!(vm.memory_kib, None);
+        assert_eq!(vm.maximum_memory_kib, None);
+    }
+
     /// means anything: a fake that never worked would make every test below
     /// pass for the wrong reason.
     #[test]
@@ -382,7 +443,7 @@ mod virsh_tests {
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo debian-13 ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   vncdisplay) echo :1 ;;
 esac"#,
         );
@@ -407,7 +468,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo ubuntu-test ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   domdisplay) echo spice://localhost:5901 ;;
   vncdisplay) echo "error: Failed to get VNC port. Is this domain using VNC?" >&2; exit 1 ;;
 esac"#,
@@ -428,7 +489,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo poste-vnc ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   domdisplay) echo vnc://localhost:3 ;;
   vncdisplay) echo "ne doit pas être appelé" ;;
 esac"#,
@@ -445,7 +506,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo ancien ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   domdisplay) echo "error: unknown command: 'domdisplay'" >&2; exit 1 ;;
   vncdisplay) echo :2 ;;
 esac"#,
@@ -463,7 +524,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo prive ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   domdisplay) echo spice+unix:///tmp/s.sock ;;
   vncdisplay) exit 1 ;;
 esac"#,
@@ -482,7 +543,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo eteinte ;;
-  domstate) echo "shut off" ;;
+  dominfo) printf 'Id:             -\nName:           %s\nState:          shut off\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   dumpxml) echo "<graphics type='spice' autoport='yes' listen='0.0.0.0'>" ;;
   domdisplay) echo "error: Domain is not running" >&2; exit 1 ;;
 esac"#,
@@ -506,7 +567,7 @@ esac"#,
         let virsh = FakeVirsh::new(
             r#"case "$1" in
   list) echo allumee ;;
-  domstate) echo running ;;
+  dominfo) printf 'Id:             1\nName:           %s\nState:          running\nCPU(s):         1\nMax memory:     262144 KiB\nUsed memory:    262144 KiB\n' "$2" ;;
   domdisplay) echo spice://localhost:5901 ;;
   dumpxml) echo "<graphics type='vnc' autoport='yes'/>" ;;
 esac"#,
@@ -572,6 +633,59 @@ esac"#,
 }
 
 // Parsing, pure and testable without libvirt on the machine.
+
+/// State and memory, from one `virsh dominfo`.
+///
+/// Read off libvirt 10.0.0 rather than from the manual — the labels are padded
+/// with spaces and the unit is spelled out:
+///
+/// ```text
+///     State:          running
+///     Max memory:     262144 KiB
+///     Used memory:    262144 KiB
+/// ```
+///
+/// « Used memory » is libvirt's name for the domain's *current* allocation, not
+/// for what the guest has actually touched: on a stopped domain it is the
+/// `currentMemory` of the definition, which `virsh setmem --config` writes.
+/// Measured both ways — a stopped domain set to 128 MiB with a 256 MiB maximum
+/// reports `Max memory: 262144` and `Used memory: 131072`.
+///
+/// A line that is missing or unreadable yields `None` rather than zero: a
+/// backend that cannot say must not invent, and zero would read as "no memory".
+/// The state falls back the same way `parse_domstate` does.
+pub fn parse_dominfo(output: &str) -> (State, Option<u64>, Option<u64>) {
+    let mut state = State::Unknown;
+    let mut memory = None;
+    let mut maximum = None;
+    for line in output.lines() {
+        let Some((label, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match label.trim() {
+            // One vocabulary for the state, not two: `parse_domstate` owns it.
+            "State" => state = parse_domstate(value),
+            "Used memory" => memory = parse_kibibytes(value),
+            "Max memory" => maximum = parse_kibibytes(value),
+            _ => {}
+        }
+    }
+    (state, memory, maximum)
+}
+
+/// `262144 KiB` → 262144. Anything else → `None`.
+///
+/// The unit is checked rather than trimmed away: libvirt prints KiB here, and a
+/// future version that printed MiB would otherwise be read as a machine a
+/// thousand times smaller without anything noticing.
+fn parse_kibibytes(value: &str) -> Option<u64> {
+    let (number, unit) = value.split_once(char::is_whitespace)?;
+    if unit.trim() != "KiB" {
+        return None;
+    }
+    number.parse().ok()
+}
 
 pub fn parse_domstate(output: &str) -> State {
     match output.trim() {
@@ -913,5 +1027,88 @@ mod tests {
         let backend = DemoBackend::new(Duration::from_millis(1));
         assert!(backend.start("nope").is_err());
         assert!(backend.get("nope").unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod dominfo_tests {
+    use super::*;
+
+    /// La sortie réelle de `virsh dominfo`, copiée d'un domaine qui tourne.
+    const RUNNING: &str = "Id:             1
+Name:           ubuntu-test
+UUID:           94dcfa81-8956-4c3c-9ea6-c80582f41bc4
+OS Type:        hvm
+State:          running
+CPU(s):         1
+CPU time:       0.8s
+Max memory:     262144 KiB
+Used memory:    262144 KiB
+Persistent:     yes
+Autostart:      disable
+Managed save:   no
+Security model: none
+Security DOI:   0
+";
+
+    /// Et celle d'un domaine éteint dont la part courante a été réglée plus
+    /// bas que son maximum — les deux nombres diffèrent, ce qui est le seul
+    /// cas où un code qui lirait deux fois la même ligne se voit.
+    const STOPPED_RESIZED: &str = "Id:             -
+Name:           blind-vm
+State:          shut off
+CPU(s):         1
+Max memory:     262144 KiB
+Used memory:    131072 KiB
+Persistent:     yes
+";
+
+    #[test]
+    fn reads_the_state_and_both_figures_from_a_real_dominfo() {
+        assert_eq!(
+            parse_dominfo(RUNNING),
+            (State::Running, Some(262_144), Some(262_144))
+        );
+        assert_eq!(
+            parse_dominfo(STOPPED_RESIZED),
+            (State::Stopped, Some(131_072), Some(262_144))
+        );
+    }
+
+    /// Le vocabulaire d'état est celui de `domstate`, pas un second : mesuré,
+    /// `dominfo` écrit « paused » exactement comme `domstate ` le fait.
+    #[test]
+    fn the_state_vocabulary_is_the_one_domstate_already_owns() {
+        for word in ["running", "paused", "shut off", "in shutdown", "crashed"] {
+            assert_eq!(
+                parse_dominfo(&format!("State:          {word}\n")).0,
+                parse_domstate(word),
+                "« {word} » doit se lire pareil des deux côtés"
+            );
+        }
+    }
+
+    /// L'unité est vérifiée, pas coupée. Une version de libvirt qui écrirait
+    /// des mébioctets serait lue mille fois trop petite sans que rien ne le
+    /// remarque ; ici elle rend « je ne sais pas ».
+    #[test]
+    fn a_unit_that_is_not_kibibytes_is_refused_rather_than_believed() {
+        assert_eq!(parse_dominfo("Max memory:     256 MiB\n").2, None);
+        assert_eq!(
+            parse_dominfo("Max memory:     262144 KiB\n").2,
+            Some(262_144)
+        );
+        assert_eq!(parse_dominfo("Max memory:     262144\n").2, None);
+        assert_eq!(parse_dominfo("Max memory:     beaucoup KiB\n").2, None);
+    }
+
+    /// Une sortie vide, ou qui ne parle pas de mémoire, n'invente rien.
+    #[test]
+    fn nothing_said_is_nothing_reported() {
+        assert_eq!(parse_dominfo(""), (State::Unknown, None, None));
+        assert_eq!(
+            parse_dominfo("Id:             1\nName:           x\n"),
+            (State::Unknown, None, None)
+        );
     }
 }

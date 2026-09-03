@@ -57,6 +57,18 @@ pub struct Vm {
     pub console_protocol: Option<&'static str>,
     pub console_port: Option<u16>,
     pub guest_os: Option<GuestOs>,
+    /// What the domain is currently set to use, in kibibytes.
+    ///
+    /// Two numbers and not one, because libvirt keeps two and they answer
+    /// different questions: the maximum is what the machine was built with and
+    /// cannot change while it runs, the current is what it is allowed to use
+    /// right now. On a stopped domain both are read from its definition.
+    ///
+    /// Optional because a backend that cannot say must not invent: a client
+    /// that sees nothing shows nothing, which is honest, while a zero would
+    /// read as "no memory".
+    pub memory_kib: Option<u64>,
+    pub maximum_memory_kib: Option<u64>,
 }
 
 impl Vm {
@@ -68,6 +80,8 @@ impl Vm {
             console_protocol: None,
             console_port: None,
             guest_os: None,
+            memory_kib: None,
+            maximum_memory_kib: None,
         }
     }
 
@@ -86,6 +100,12 @@ impl Vm {
             let _ = write!(out, "\"guestOS\":\"{}\",", os.as_str());
         }
         let _ = write!(out, "\"id\":\"{}\",", escape(&self.id));
+        if let Some(maximum) = self.maximum_memory_kib {
+            let _ = write!(out, "\"maximumMemoryKiB\":{maximum},");
+        }
+        if let Some(memory) = self.memory_kib {
+            let _ = write!(out, "\"memoryKiB\":{memory},");
+        }
         let _ = write!(out, "\"name\":\"{}\",", escape(&self.name));
         let _ = write!(out, "\"state\":\"{}\"", self.state.as_str());
         out.push('}');
@@ -167,6 +187,35 @@ mod tests {
         assert_eq!(
             vm.to_json(),
             r#"{"consolePort":5901,"consoleProtocol":"vnc","guestOS":"linux","id":"debian-13","name":"Debian 13","state":"running"}"#
+        );
+    }
+
+    /// Les deux nombres de mémoire, à leur place dans l'ordre alphabétique.
+    ///
+    /// L'ordre n'est pas cosmétique : les clés sont alphabétiques pour qu'une
+    /// réponse enregistrée d'un côté ou de l'autre se lise pareil, et
+    /// « maximumMemoryKiB » passe avant « memoryKiB » parce que « ma » précède
+    /// « me ». Un test qui ne regarderait que la présence des clés laisserait
+    /// cette règle se défaire.
+    #[test]
+    fn carries_both_memory_figures_in_alphabetical_order() {
+        let mut vm = Vm::new("debian-13", "Debian 13", State::Running);
+        vm.memory_kib = Some(2_097_152);
+        vm.maximum_memory_kib = Some(4_194_304);
+        assert_eq!(
+            vm.to_json(),
+            r#"{"id":"debian-13","maximumMemoryKiB":4194304,"memoryKiB":2097152,"name":"Debian 13","state":"running"}"#
+        );
+    }
+
+    /// Et un backend qui ne sait pas n'écrit rien plutôt qu'un zéro : zéro se
+    /// lirait « aucune mémoire », l'absence se lit « je ne sais pas ».
+    #[test]
+    fn omits_memory_it_cannot_report() {
+        let vm = Vm::new("muet", "muet", State::Running);
+        assert_eq!(
+            vm.to_json(),
+            r#"{"id":"muet","name":"muet","state":"running"}"#
         );
     }
 

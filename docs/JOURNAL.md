@@ -8,6 +8,78 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~17h UTC — la mémoire des VM distantes, lue avant d'être écrite
+
+Le second sens de « partout » : les machines que l'agent gère sur un hôte. Le
+protocole n'en portait rien — `Vm` avait un identifiant, un nom, un état, une
+console et un système invité, pas un octet de mémoire.
+
+Cette tranche **lit**, elle n'écrit pas. C'est délibéré et c'est ce que les
+mesures de l'heure précédente imposent : réduire la mémoire d'un invité vivant
+n'est pas un acte, c'est une demande à son pilote balloon que libvirt accepte
+en silence et qu'un invité sans ce pilote ignore pour toujours. Écrire d'abord
+et découvrir ensuite quoi en dire serait construire le curseur avant de savoir
+s'il commande quelque chose.
+
+### Une commande de moins, deux nombres de plus
+
+`describe` demandait l'état avec `virsh domstate`. `virsh dominfo` porte le même
+état, dans le même vocabulaire, avec le même code de retour sur un domaine
+inconnu — mesuré, pas supposé — **et** les deux chiffres de mémoire. Le
+remplacement ne coûte donc aucun appel de plus : il en économise plutôt un, dans
+un chemin appelé une fois par VM à chaque rafraîchissement de la liste.
+
+Vérifié contre un vrai libvirt, à travers le vrai agent :
+
+```
+{"id":"blind-vm","maximumMemoryKiB":262144,"memoryKiB":131072,
+ "name":"blind-vm","state":"stopped"}
+```
+
+### Deux nombres, parce que libvirt en garde deux
+
+Le maximum est ce avec quoi la machine a été construite et ne peut pas changer
+pendant qu'elle tourne ; la part courante est ce qu'elle a le droit d'utiliser
+maintenant. Sur un domaine éteint, les deux viennent de sa définition. Les
+confondre serait perdre exactement la distinction qui rendra la tranche
+d'écriture honnête.
+
+L'interface ne montre les deux **que lorsqu'ils diffèrent**. Sur presque toutes
+les machines ils sont égaux, et écrire « 256 Mio sur un maximum de 256 Mio »
+partout apprendrait à sauter la ligne sur la seule machine où elle dit quelque
+chose.
+
+### Trois refus d'inventer
+
+L'unité est **vérifiée**, pas coupée : `262144 KiB` se lit, `256 MiB` rend
+« je ne sais pas ». Une version de libvirt qui changerait d'unité serait sinon
+lue mille fois trop petite sans que rien ne le remarque.
+
+Une ligne absente rend `None`, jamais zéro. Zéro se lirait « aucune mémoire »,
+ce qui est faux et affichable.
+
+Et côté téléphone, la mémoire est décodée avec `try?` — la moitié tolérante de
+la règle qui gouverne déjà l'état. Elle est **montrée**, jamais agie : un agent
+qui l'enverrait dans une forme que cette version ne comprend pas doit coûter une
+ligne de texte à cette VM-là, pas la liste entière dans laquelle elle est
+arrivée. C'est la quatrième fois que cette forme revient dans ce dépôt, et la
+première où elle a été écrite juste du premier coup.
+
+### Un sabordage raté, et ce qu'il a appris
+
+« Les deux nombres viennent de la même ligne » n'a rien cassé : la boucle lit
+`Max memory` avant `Used memory`, donc la seconde ligne écrasait mon écrasement.
+Le sabordage était mauvais, pas la garde absente — refait dans l'autre sens
+(`Used memory` écrase aussi le maximum), il tombe sur les deux tests qui
+distinguent les nombres. Un sabordage qui ne mord pas mérite d'abord qu'on
+regarde s'il a seulement été exécuté.
+
+Huit au total, tous mordants : l'unité qui n'est plus vérifiée, les deux nombres
+confondus, les deux étiquettes échangées, l'état que `dominfo` ne rend plus, le
+JSON qui écrit un zéro plutôt que rien, la liste que perd une mémoire illisible,
+les deux nombres toujours dits, et les tailles comptées en puissances de dix.
+
+
 ## 2026-09-03, ~16h30 UTC — « l'espace de stockage », et ce que ça peut vouloir dire
 
 Deuxième moitié de la demande de Maxime. Elle demande d'abord d'être honnête

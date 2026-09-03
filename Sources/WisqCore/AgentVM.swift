@@ -40,6 +40,17 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
     public var consoleProtocol: RemoteProtocol?
     public var consolePort: Int?
     public var guestOS: GuestOS?
+    /// What the VM is set to use, and what it was built with, in kibibytes.
+    ///
+    /// Two numbers because libvirt keeps two and they answer different
+    /// questions: the maximum cannot change while the domain runs, the current
+    /// is what it is allowed to use right now. On a stopped domain both come
+    /// from its definition.
+    ///
+    /// Both optional: an agent that cannot say sends nothing, and nothing is
+    /// what the app then shows. A zero would read as "no memory".
+    public var memoryKiB: Int?
+    public var maximumMemoryKiB: Int?
 
     public init(
         id: String,
@@ -47,7 +58,9 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         state: State,
         consoleProtocol: RemoteProtocol? = nil,
         consolePort: Int? = nil,
-        guestOS: GuestOS? = nil
+        guestOS: GuestOS? = nil,
+        memoryKiB: Int? = nil,
+        maximumMemoryKiB: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -55,6 +68,8 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         self.consoleProtocol = consoleProtocol
         self.consolePort = consolePort
         self.guestOS = guestOS
+        self.memoryKiB = memoryKiB
+        self.maximumMemoryKiB = maximumMemoryKiB
     }
 
     /// Whether a console can actually be opened on this VM.
@@ -75,6 +90,41 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         state == .running && consolePort != nil
     }
 
+    /// The VM's memory as someone reads it, or nil when the agent said nothing.
+    ///
+    /// **One line, and two numbers only when they differ.** libvirt keeps a
+    /// maximum and a current allocation, and on almost every domain they are
+    /// the same — printing "256 Mio sur un maximum de 256 Mio" everywhere would
+    /// train the reader to skip the line on the one machine where it matters.
+    ///
+    /// Mebibytes, and the abbreviation says so, because the rest of wisq counts
+    /// memory in powers of two and two figures that counted differently could
+    /// not be compared.
+    public var memoryDescription: String? {
+        guard let maximum = maximumMemoryKiB ?? memoryKiB else { return nil }
+        let current = memoryKiB ?? maximum
+        guard current != maximum else { return Self.describe(kibibytes: maximum) }
+        return "\(Self.describe(kibibytes: current)) sur un maximum de "
+            + Self.describe(kibibytes: maximum)
+    }
+
+    /// Kibibytes as a size, in the unit that keeps the number under a thousand.
+    public static func describe(kibibytes: Int) -> String {
+        let units = ["Kio", "Mio", "Gio", "Tio"]
+        var value = Double(max(0, kibibytes))
+        var unit = 0
+        while value >= 1024, unit < units.count - 1 {
+            value /= 1024
+            unit += 1
+        }
+        // A whole number of kibibytes or mebibytes reads better without a
+        // decimal that is always zero; libvirt hands out round numbers.
+        let rounded = (value * 10).rounded() / 10
+        let format = rounded == rounded.rounded() ? "%.0f %@" : "%.1f %@"
+        return String(format: format, rounded, units[unit])
+            .replacingOccurrences(of: ".", with: ",")
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
@@ -91,6 +141,14 @@ public struct AgentVM: Codable, Identifiable, Hashable, Sendable {
         // And this one refuses instead of falling back. See the type's doc.
         self.consoleProtocol = try container.decodeIfPresent(String.self, forKey: .consoleProtocol)
             .flatMap(RemoteProtocol.init(rawValue:))
+
+        // `try?` on purpose, and it is the tolerant half of the same rule as
+        // the state: memory is shown, never acted on. An agent that sent it as
+        // a string — or in a shape a later version invents — must cost this VM
+        // a line of text, not the whole list it arrived in.
+        self.memoryKiB = try? container.decodeIfPresent(Int.self, forKey: .memoryKiB)
+        self.maximumMemoryKiB = try? container.decodeIfPresent(
+            Int.self, forKey: .maximumMemoryKiB)
     }
 }
 
