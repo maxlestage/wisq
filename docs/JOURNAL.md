@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~17h20 UTC — la garde que ni l'une ni l'autre des deux suites ne pouvait tenir
+
+Petite tranche, et sa justification tient en une mesure.
+
+La tranche précédente a ajouté deux champs au protocole. Les tests du crate
+montrent que le démon les **écrit**. Ceux de `WisqCore` montrent que le client
+sait les **lire**. Aucun des deux ne dit qu'ils sont d'accord sur le **nom de
+la clé** — et depuis que les deux moitiés de wisq ne sont plus écrites dans le
+même langage, c'est la seule chose qui compte vraiment.
+
+`AgentEndToEndTests` fait tourner le vrai démon Rust sur un port éphémère et
+lui parle avec le `AgentClient` que l'application embarque. Deux tests de plus
+y demandent la mémoire.
+
+### La mesure qui justifie ces deux tests
+
+Renommer la clé d'un seul côté, **proprement** — dans l'écriture *et* dans le
+test Rust qui l'épingle, comme le ferait quelqu'un qui refactorise :
+
+```
+la suite Rust seule       : 73 passed; 0 failed
+la suite bout-à-bout      : 4 échecs
+```
+
+Soixante-treize tests verts, et seule la traversée attrape la divergence. Sans
+elle, une faute de frappe dans « maximumMemoryKiB » ne se serait vue que sur un
+téléphone, en production, sur une ligne restée vide sans que rien n'échoue.
+
+Un premier sabordage — la faute de frappe dans l'écriture seule — tombait des
+deux côtés, ce qui était rassurant mais ne prouvait rien : le test Rust épingle
+la chaîne JSON exacte, donc il l'aurait vu. Il fallait saboter comme un humain
+se trompe, c'est-à-dire de façon cohérente.
+
+Au passage, le second test dit une chose qui n'allait pas de soi : **démarrer
+une VM n'efface pas sa mémoire**. C'est une propriété de la machine, pas de sa
+session, et `settle` aurait pu la remettre à zéro sans que rien ne le remarque.
+
+
 ## 2026-09-03, ~17h UTC — la mémoire des VM distantes, lue avant d'être écrite
 
 Le second sens de « partout » : les machines que l'agent gère sur un hôte. Le
