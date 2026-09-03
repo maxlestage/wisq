@@ -25,3 +25,6 @@ site/node_modules/
 # scripts/build-app-icon.sh depuis site/scripts/icons.ts. Un binaire commité
 # est une chose que personne ne peut relire et que tout le monde doit croire.
 App/Assets.xcassets/
+# Écrit par `xcodegen generate` depuis `project.yml` : le garder sous suivi
+# donnait un fichier qui paraissait faire autorité et que l'outil effaçait.
+App/Info.plist

@@ -18,8 +18,53 @@ targets:
     platform: iOS
     sources:
       - path: App
+    # `xcodegen generate` ÉCRIT ce fichier : il prend ses clés par défaut,
+    # y fusionne `properties`, supprime ce qui existait et écrit le résultat.
+    # Un `App/Info.plist` écrit à la main était donc effacé à chaque
+    # génération, et l'application construite n'avait que huit clés — mesuré
+    # en exécutant XcodeGen (FileWriter.writePlists → InfoPlistGenerator).
+    # Tout ce qui compte vit donc ici, où l'outil le conserve.
     info:
       path: App/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: fr
+        CFBundleDisplayName: wisq
+        NSHumanReadableCopyright: >-
+          Designed and developed by Maxime Nathan Lestage.
+          Copyright 2026 Maxime Nathan Lestage. All rights reserved.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Sans écran de lancement, App Store Connect refuse le paquet :
+        # « Apps that support Multitasking on iPad must provide the app's
+        # launch screen » (erreur 90475). Le dictionnaire vide demande
+        # l'écran système, ce que wisq veut : rien à montrer avant la liste.
+        UILaunchScreen: {}
+        # Et sans orientations, erreur 90474. wisq refuse le portrait inversé :
+        # un téléphone retourné pendant qu'on tient une session distante fait
+        # sauter l'écran sans que personne l'ait demandé.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: false
+        # Déclaré une fois ici plutôt qu'à chaque envoi dans le formulaire de
+        # conformité à l'exportation.
+        ITSAppUsesNonExemptEncryption: false
+        # iOS 14 et suivants refusent le réseau local sans cette phrase — donc
+        # sans elle, aucune machine du réseau n'est joignable, ce qui est tout
+        # ce que fait wisq.
+        NSLocalNetworkUsageDescription: >-
+          wisq se connecte aux machines de votre réseau local pour afficher
+          leur écran.
+        # Le lien d'appairage que le démon imprime et que le QR encode.
+        CFBundleURLTypes:
+          - CFBundleURLName: app.wisq.pairing
+            CFBundleURLSchemes:
+              - wisq
+        # La découverte des agents et des serveurs VNC sur le réseau local.
+        NSBonjourServices:
+          - _rfb._tcp
+          - _wisq-agent._tcp
     dependencies:
       - package: Wisq
         product: WisqUI
