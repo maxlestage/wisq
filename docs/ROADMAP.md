@@ -2432,6 +2432,11 @@ entière ; la vue est mince et jugée par le simulateur.
 - **RDP (lot 3)** — le seul protocole de console que wisq ne parle pas. Le client
   porte une ébauche délibérée qui rend `.unsupportedProtocol` au lieu de faire
   semblant. Demande une machine Apple pour être jugé, pas seulement testé.
+  C'est aussi le seul que `RemoteProtocol.isImplemented` marque « bientôt » :
+  cette étiquette disait encore `self == .vnc` longtemps après que la fabrique
+  eut cessé de refuser SPICE, et `ImplementedProtocolsTests` fait maintenant
+  marcher `allCases` à travers `SessionFactory` pour que les deux ne puissent
+  plus diverger.
 - **Lot 6 : iPad et Siri** — décisions d'interface qu'on ne prend pas au jugé ;
   les arbitrages déjà tranchés sont écrits plus haut.
 - **D'autres backends d'agent** — le trait `Backend` a quatre méthodes et
