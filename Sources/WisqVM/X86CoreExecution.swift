@@ -106,7 +106,7 @@ extension X86Core {
             return
         }
         guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
-        try memory.write(try translate(lastAddress), size, value)
+        try memory.write(try translate(lastAddress, .write), size, value)
     }
 
     // MARK: - La pile
@@ -114,7 +114,7 @@ extension X86Core {
     mutating func push(_ value: UInt64, _ size: Int) throws {
         guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
         registers[4] = registers[4] &- UInt64(size)
-        try memory.write(try translate(registers[4]), size, value)
+        try memory.write(try translate(registers[4], .write), size, value)
     }
 
     mutating func pop(_ size: Int) throws -> UInt64 {

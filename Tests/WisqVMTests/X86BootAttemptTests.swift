@@ -12,24 +12,32 @@ import XCTest
 /// Il n'échoue donc que si la préparation elle-même casse, jamais parce que le
 /// noyau ne va pas assez loin.
 ///
-/// **Où on en est, mesuré le 3 septembre 2026** : **538 976 instructions** du
-/// vrai noyau d'Alpine 3.20 s'exécutent, puis le cœur s'arrête sur une faute de
-/// page à 0x0D000000. Le chemin parcouru est réel : le décompresseur tourne, et
-/// la séquence qui avait arrêté le cœur juste avant
-/// (`fninit ; fnstsw ; fnstcw`) est exactement celle par laquelle Linux détecte
-/// un coprocesseur — désassemblée pour en être sûr plutôt que devinée.
+/// **Où on en est, mesuré le 3 septembre 2026** : **494 661 172 instructions**
+/// du vrai noyau d'Alpine 3.20 s'exécutent — 38,8 s en release, soit
+/// 12,7 MIPS — puis le cœur s'arrête sur un accès **hors de la mémoire de
+/// l'invité**, à l'adresse physique 0x700070D070040, dans un `rep movsq`.
+/// L'adresse est absurde, donc quelque chose l'a calculée de travers : c'est
+/// la prochaine chose à chercher, et elle est nommée plutôt que devinée.
 ///
-/// **Ce que la carte mémoire a changé.** Sans les entrées E820 dans la page
-/// zéro, le noyau croit n'avoir aucune RAM. Les ajouter a déplacé l'arrêt de
-/// 535 845 à 538 976 instructions **et** changé sa nature : ce n'est plus un
-/// accès hors de la mémoire de l'invité mais une vraie faute de traduction,
-/// donc le noyau a posé ses propres tables et tourne dedans.
+/// Le budget par défaut de ce test est de cinquante millions d'instructions,
+/// pour qu'il reste supportable en debug ; `WISQ_PC_BUDGET` le change. Le
+/// chiffre ci-dessus vient d'une exécution en release.
 ///
-/// **Ce qui n'est pas établi** : si cette faute vient du noyau ou d'une
-/// divergence de ce cœur. Le dire demande un émulateur de référence contre
-/// lequel avancer pas à pas — `qemu-system-x86_64` est disponible, et c'est la
-/// tranche suivante. Écrire « le noyau démarre » serait faux ; écrire « ça ne
-/// marche pas » cacherait un demi-million d'instructions justes.
+/// **Ce qui a débloqué ça.** Avant, le cœur s'arrêtait à 538 976 instructions
+/// sur une faute de page à 0x0D000000, et on ne savait pas si elle venait du
+/// noyau ou d'une divergence. La réponse n'a pas demandé d'émulateur de
+/// référence : il a suffi de lire l'IDT que le noyau avait chargée. Limite
+/// 0x1FF, un **seul** vecteur présent — le quatorze, la faute de page —
+/// ciblant du code qui commence par la séquence d'empilement de
+/// `boot_idt_handler`. C'est ainsi que le décompresseur 64 bits de Linux
+/// cartographie : à la demande, depuis son propre gestionnaire. Le noyau
+/// disait savoir traiter cette faute ; personne ne la lui rendait. Voir
+/// `X86InterruptTests`.
+///
+/// **Ce qui n'est pas établi** : où ça finit. Rien n'est encore sorti du port
+/// série, donc écrire « le noyau démarre » serait faux. La suite est nommée
+/// par le noyau lui-même : après la décompression vient le vrai noyau, et il
+/// voudra un contrôleur d'interruptions, une horloge et une console.
 final class X86BootAttemptTests: XCTestCase {
     /// Une pagination d'identité sur les quatre premiers gibioctets, en pages
     /// de un gibioctet : quatre entrées suffisent, là où des pages de quatre
@@ -75,7 +83,8 @@ final class X86BootAttemptTests: XCTestCase {
 
         var stopped: Error?
         do {
-            try core.run(budget: 50_000_000)
+            let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 50_000_000)
         } catch {
             stopped = error
         }

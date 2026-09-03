@@ -2683,33 +2683,83 @@ habitude.
      mémoire ; un booléen gardé à jour à l'écriture de `CR0` a rendu ce
      chemin-là gratuit.
 
-   - **La tentative, et où elle s'arrête.** `X86BootAttemptTests` charge le
-     vrai noyau d'Alpine, pose une pagination d'identité sur quatre gibioctets
-     en pages de un gibioctet, entre en mode long et saute. **535 845
-     instructions s'exécutent**, puis le cœur s'arrête sur une faute de page à
-     l'adresse de chargement.
+   - **3d. La livraison d'exception** — *fait*, et c'est elle qui a débloqué
+     le démarrage. Le décompresseur 64 bits de Linux ne cartographie **pas**
+     la mémoire d'avance : il pose une IDT dont **un seul** vecteur est rempli
+     — le quatorze, la faute de page — et étend l'identité à la demande depuis
+     ce gestionnaire, page par page, à mesure qu'il écrit le noyau
+     décompressé. Un cœur sans livraison d'exception s'arrête donc sur la
+     première page manquante, et l'arrêt ressemble à une divergence alors que
+     c'est le fonctionnement prévu.
 
-     Le chemin parcouru est réel : le décompresseur tourne. La séquence qui
-     avait arrêté le cœur juste avant — `fninit ; fnstsw ; fnstcw` — a été
-     désassemblée plutôt que devinée : c'est exactement celle par laquelle
-     Linux détecte un coprocesseur. Chaque arrêt a nommé la brique suivante, et
-     c'est comme ça que `CLD`/`CLI`, les segments, le retour lointain,
-     `PUSHF`/`POPF`, les opérations sur chaînes et trois instructions x87 sont
+     Ce qui est écrit : la recherche de porte dans l'IDT (limite comprise, bit
+     de présence compris), le cadre du mode long — SS, RSP, RFLAGS, CS,
+     l'adresse de reprise, et le code d'erreur pour les dix vecteurs qui en
+     portent un —, l'alignement de la pile sur seize octets, `CR2` avec
+     l'adresse **entière**, le masquage des interruptions selon le genre de
+     porte, et `IRETQ` qui défait le tout. `LIDT` **recopie** désormais le
+     pseudo-descripteur au lieu de retenir l'adresse de son opérande, parce
+     que c'est ce qu'un processeur fait et que la livraison s'en sert.
+
+     Une forme que ce cœur ne sait pas exécuter n'a **pas** de vecteur : la
+     livrer comme #UD ferait afficher au noyau « invalid opcode » à l'endroit
+     d'un trou de l'émulateur, ce qui coûte plus cher que l'arrêt.
+
+     Treize tests écrits à la main, chacun vérifié par sabotage — l'oracle
+     matériel ne peut pas produire de faute sans tuer son harnais, donc c'est
+     ici le seul endroit du cœur qui ne soit pas prouvé contre la machine.
+
+   - **La tentative, et où elle en est.** `X86BootAttemptTests` charge le vrai
+     noyau d'Alpine, pose une pagination d'identité sur quatre gibioctets en
+     pages de un gibioctet, entre en mode long et saute.
+
+     **Avant la livraison d'exception** : 538 976 instructions, puis une faute
+     de page à 0x0D000000 sous les tables du noyau. La question ouverte était
+     de savoir si elle venait du noyau ou d'une divergence de ce cœur, et la
+     réponse n'a **pas** demandé de différentiel contre QEMU : il a suffi de
+     lire l'IDT que le noyau avait chargée. Limite 0x1FF, base 0x3282050, et
+     un seul vecteur présent — le quatorze, ciblant du code qui commence par
+     la séquence d'empilement de `boot_idt_handler`. Le noyau **disait** qu'il
+     savait traiter cette faute ; personne ne la lui rendait.
+
+     **Après** : la boucle demande-livre-cartographie-reprend tourne, et le
+     décompresseur écrit le noyau à 0x0D000000. Mesuré : **494 661 172
+     instructions** — 38,8 s en release, soit 12,7 MIPS —, puis un arrêt sur
+     un accès **hors de la mémoire de l'invité**, à l'adresse physique
+     0x700070D070040, dans un `rep movsq`. Neuf cent dix-huit fois plus loin
+     qu'avant. L'adresse est absurde, donc quelque chose l'a calculée de
+     travers ; c'est la prochaine chose à chercher, et elle est nommée plutôt
+     que devinée. Le chemin parcouru est réel — la séquence qui avait arrêté le cœur
+     encore avant (`fninit ; fnstsw ; fnstcw`) a été désassemblée plutôt que
+     devinée : c'est celle par laquelle Linux détecte un coprocesseur. Chaque
+     arrêt a nommé la brique suivante, et c'est comme ça que `CLD`/`CLI`, les
+     segments, le retour lointain, `PUSHF`/`POPF`, les opérations sur chaînes,
+     trois instructions x87, la carte E820 puis la livraison d'exception sont
      arrivés — dans cet ordre, dicté par le noyau et non par une liste.
 
-     **Ce qui n'est pas établi** : si cette faute vient du noyau ou d'une
-     divergence de ce cœur. Le dire demande un émulateur de référence contre
-     lequel avancer pas à pas — `qemu-system-x86_64` est disponible, et c'est
-     la tranche suivante. Écrire « le noyau démarre » serait faux aujourd'hui ;
-     écrire « ça ne marche pas » cacherait un demi-million d'instructions
-     justes.
+     **Ce qui n'est toujours pas établi** : où ça finit. Écrire « le noyau
+     démarre » serait faux tant que rien n'est sorti du port série. Deux
+     choses restent nommées devant : l'adresse absurde ci-dessus, et — après
+     la décompression — le vrai noyau, qui voudra un contrôleur
+     d'interruptions, une horloge et une console.
 
-     **La carte mémoire E820** de la page zéro a compté : sans elle, le noyau
-     croit n'avoir aucune RAM. L'ajouter a déplacé l'arrêt **et changé sa
-     nature** — d'un accès hors de la mémoire de l'invité à une vraie faute de
-     traduction, ce qui veut dire que le noyau tourne désormais dans ses
-     propres tables. Les deux fautes portent maintenant des noms différents,
-     parce que les confondre fait chercher au mauvais endroit.
+     **Un défaut attrapé au passage, et il vaut d'être écrit.** La livraison
+     posait le drapeau qu'un branchement utilise pour dire « RIP est déjà où
+     il faut ». Mais elle a lieu *après* que l'exécution a levé, donc personne
+     ne le lisait — sauf la première instruction du gestionnaire, qui le
+     trouvait encore posé et **s'exécutait deux fois**. Chez Linux c'est un
+     `push` : huit octets de trop, et l'`IRETQ` repartait sur le code d'erreur
+     au lieu de l'adresse de reprise. Le noyau sautait à 0x2. Le test de bout
+     en bout ne l'attrapait pas non plus au début, parce que son gestionnaire
+     commençait par une instruction idempotente ; il compte maintenant ses
+     propres entrées.
+
+     **La carte mémoire E820** de la page zéro a compté avant ça : sans elle,
+     le noyau croit n'avoir aucune RAM. L'ajouter a déplacé l'arrêt **et
+     changé sa nature** — d'un accès hors de la mémoire de l'invité à une
+     vraie faute de traduction, ce qui voulait dire que le noyau tournait
+     désormais dans ses propres tables. Les deux fautes portent des noms
+     différents, parce que les confondre fait chercher au mauvais endroit.
 
      Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
