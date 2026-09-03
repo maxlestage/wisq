@@ -2514,6 +2514,49 @@ Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
 
+## La mémoire des VM **distantes** — mesuré contre le vrai libvirt, pas encore fait
+
+« Ajuster la ram partout » a un second sens : les machines que l'agent gère sur
+un hôte, pas seulement celle qui tourne dans le téléphone. Le protocole n'en
+porte rien aujourd'hui — `Vm` a un identifiant, un nom, un état, une console et
+un système invité, et pas un octet de mémoire.
+
+Avant d'écrire quoi que ce soit, mesuré sur un vrai domaine libvirt (256 Mio,
+`virtio` balloon, QEMU/TCG) :
+
+| ce qu'on demande | ce que le vrai libvirt fait |
+|---|---|
+| `setmem --live` sous le maximum | **accepté en silence, et sans effet** : `dominfo` annonce toujours 262 144 Kio |
+| `setmem --live` au-dessus du maximum | `invalid argument: cannot set memory higher than max memory` |
+| `setmaxmem --live` | `cannot resize the maximum memory on an active domain` |
+| `setmaxmem --config` sur un domaine allumé | accepté ; l'XML inactif passe à 524 288, le vivant reste à 262 144 |
+| `setmem` sur un domaine éteint, sans `--config` | `Requested operation is not valid: domain is not running` |
+| `setmem --config` sur un domaine éteint | accepté ; `currentMemory` change dans l'XML inactif |
+
+**La première ligne est celle qui compte, et c'est la même leçon que l'arrêt
+poli.** Réduire la mémoire d'un invité vivant n'est pas un acte : c'est une
+demande au pilote balloon de l'invité, qu'un invité sans ce pilote ignore pour
+toujours. libvirt dit « oui » et rien ne se passe. Une interface qui montrerait
+un curseur revenant à sa place, sans explication, serait la même faute que
+« l'arrêt a été demandé » présenté comme « la machine est arrêtée ».
+
+Donc la forme, quand ce sera fait :
+
+- `Vm` gagne `memoryKiB` et `maximumMemoryKiB`, lus sur `dominfo` — ce qui rend
+  déjà quelque chose d'utile sans rien écrire.
+- Une route qui écrit distingue **les deux questions**, parce que libvirt les
+  distingue : le maximum (qui demande la machine éteinte, ou ne prend qu'au
+  prochain démarrage) et la part courante (qui est une demande au balloon).
+- La réponse doit dire ce qui s'est passé, pas ce qui a été demandé : sonder
+  après coup, comme `VMPower.shutDown` sonde jusqu'à `stopped`, et rendre
+  « demandé, pas encore rendu » plutôt que de prétendre.
+- L'interface montre la mémoire d'une VM distante avant de laisser la changer,
+  et nomme le prix : baisser la part courante d'un invité qui n'a pas de pilote
+  balloon ne fera rien, et changer le maximum demande un redémarrage.
+
+Pas commencé. Écrit ici avec ses mesures pour que la tranche parte de ce que le
+vrai logiciel fait, et pas de ce qu'on suppose.
+
 ## « L'espace de stockage » : ce qui est montré, et ce qui ne sera pas fait (fait)
 
 Il n'y a **aucun disque** dans la machine locale, et c'est une décision écrite
