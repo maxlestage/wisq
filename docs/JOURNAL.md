@@ -45,6 +45,29 @@ qu'il sert.
 Il reste environ 180 cycles par instruction sur cette machine, là où un bon
 interprète en demande cinquante.
 
+### Puis le chargeur de noyau
+
+Pendant que la CI tournait, la première brique de la tranche 3c :
+`X86BootLoader`. Il place le noyau en mode protégé à son adresse préférée,
+réserve `init_size` octets — bien plus que le fichier ne pèse, parce que le
+noyau se décompresse chez lui —, écrit la page zéro avec l'en-tête de setup à
+ses propres décalages, et y pose ce que **seul un chargeur** sait :
+`type_of_loader` à 0xFF (le laisser à zéro ferait croire au noyau qu'il a été
+lancé par LILO), `LOADED_HIGH`, l'absence d'initrd écrite explicitement, et le
+pointeur de ligne de commande. La ligne est coupée ici à ce que le noyau
+accepte, plutôt que tronquée en silence par lui.
+
+Le point d'entrée est à **0x200** du début du noyau, pas au début : y sauter
+directement tomberait dans son en-tête interne.
+
+Huit tests, dont un sur le **vrai** noyau d'Alpine, et cinq sabotages : charger
+le fichier entier setup compris, l'entrée au début, le chargeur qui ne se nomme
+pas, la ligne de commande non coupée, la page zéro sans son en-tête.
+
+**Ce qui manque pour sauter dedans** : l'entrée 64 bits suppose le mode long
+déjà actif, donc la pagination. Il faut la MMU, plus `CPUID`, les registres de
+contrôle et les MSR que le décompresseur lit avant tout le reste.
+
 ### La troisième tentative, mesurée et **jetée**
 
 L'évidence suivante : `registers` est un `[UInt64]`, donc un tableau sur le tas,

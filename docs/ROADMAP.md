@@ -2652,9 +2652,20 @@ habitude.
      registres en ligne dans la structure plutôt que dans un tableau donne
      15,4 MIPS, donc moins ; c'est écrit à côté de la déclaration pour que
      personne ne la retente.
-   - **3c. Démarrer un vrai `bzImage`** : le protocole de démarrage que la
-     tranche 1 sait lire, la structure `boot_params`, et les premiers messages
-     du noyau sur le port série.
+   - **3c. Démarrer un vrai `bzImage`.** Le **chargeur est fait** :
+     `X86BootLoader` place le noyau en mode protégé à son adresse préférée,
+     réserve `init_size` octets — bien plus que ce que le fichier pèse, parce
+     que le noyau se décompresse chez lui —, écrit la page zéro avec l'en-tête
+     de setup **à ses propres décalages**, y pose ce que seul un chargeur sait
+     (`type_of_loader` à 0xFF, `LOADED_HIGH`, l'absence d'initrd, le pointeur
+     de ligne de commande), coupe la ligne de commande à ce que le noyau
+     accepte, et rend le point d'entrée 64 bits — à 0x200 du début, pas au
+     début. Vérifié sur le vrai noyau d'Alpine, et cinq sabotages.
+
+     **Ce qui manque pour sauter dedans** : le point d'entrée 64 bits suppose
+     le mode long déjà actif, donc la pagination. Il faut donc la MMU (ce qui
+     était la tranche 4), plus `CPUID`, les registres de contrôle et les MSR
+     que le décompresseur lit avant tout le reste.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans
