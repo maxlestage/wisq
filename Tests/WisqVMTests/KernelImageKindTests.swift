@@ -114,6 +114,69 @@ final class KernelImageKindTests: XCTestCase {
             "il ne doit pas ressembler à un refus de taille : \(message)")
     }
 
+    /// Un noyau Linux pour PC : reconnu comme noyau, nommé par son
+    /// architecture, et refusé — pour l'instant.
+    ///
+    /// C'est la différence qui compte. Un ISO est la mauvaise **forme** de
+    /// fichier ; un bzImage est la bonne forme pour la mauvaise machine, et le
+    /// dire change ce que la personne fait ensuite.
+    func testAPCKernelIsRecognisedAsAKernelAndNamed() throws {
+        let bytes = Data(LinuxBootProtocolTests.header())
+        let kind = KernelImageKind.identify(
+            prefix: bytes, totalBytes: LinuxBootProtocolTests.measuredTotalBytes)
+        guard case .pcLinuxKernel(let header) = kind else {
+            return XCTFail("attendu un noyau PC, obtenu \(kind)")
+        }
+        XCTAssertEqual(header.architecture, "x86-64")
+        XCTAssertEqual(header.versionDescription, "2.15")
+        XCTAssertFalse(kind.couldBootHere)
+    }
+
+    /// Le refus d'un noyau PC dit que le fichier est bon et que la machine ne
+    /// l'est pas encore — et ne parle toujours pas de mémoire.
+    func testThePCKernelRefusalSaysTheFileIsRightAndTheMachineIsNotYet() throws {
+        let kind = KernelImageKind.identify(
+            prefix: Data(LinuxBootProtocolTests.header()),
+            totalBytes: LinuxBootProtocolTests.measuredTotalBytes)
+        let message = try XCTUnwrap(
+            KernelImageKind.cannotRunHereExplanation(kind, name: "vmlinuz-lts"))
+        XCTAssertTrue(message.contains("vmlinuz-lts"), message)
+        XCTAssertTrue(message.contains("x86-64"), message)
+        XCTAssertTrue(message.contains("2.15"), message)
+        XCTAssertTrue(
+            message.contains("C'est le bon genre de fichier"),
+            "un noyau n'est pas un ISO : le message doit le distinguer — \(message)")
+        XCTAssertTrue(
+            message.contains("lot 7"),
+            "il faut dire où en est le travail plutôt que « non » — \(message)")
+        XCTAssertTrue(
+            message.contains("Ce n'est pas une question de mémoire"), message)
+        XCTAssertFalse(message.contains("Mo de mémoire"), message)
+    }
+
+    /// Un ISO hybride porte un secteur d'amorçage MBR, donc les mêmes 0xAA55 à
+    /// 0x1FE qu'un bzImage. Ce qu'il **est** reste une image de disque, et
+    /// c'est l'ordre des deux vérifications qui le tient.
+    func testAHybridDiscImageIsStillADiscImage() {
+        var bytes = LinuxBootProtocolTests.header()
+        bytes += [UInt8](repeating: 0, count: 40 * 1024 - bytes.count)
+        bytes.replaceSubrange(0x8000..<0x8006, with: [0x01] + Array("CD001".utf8))
+        XCTAssertEqual(
+            KernelImageKind.identify(
+                prefix: Data(bytes), totalBytes: LinuxBootProtocolTests.measuredTotalBytes),
+            .discImage("ISO 9660"))
+    }
+
+    /// Le vrai noyau RISC-V n'est pas pris pour un noyau PC, et réciproquement
+    /// : les deux reconnaissances ne se marchent pas dessus.
+    func testTheRiscVImageIsNotMistakenForAPCKernel() throws {
+        var bytes = [UInt8](repeating: 0, count: 0x0300)
+        bytes.replaceSubrange(0x30..<0x35, with: Array("RISCV".utf8))
+        bytes.replaceSubrange(0x38..<0x3C, with: Array("RSC".utf8) + [0x05])
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(bytes)), .riscvLinuxImage)
+        XCTAssertNil(LinuxBootProtocol.read(from: bytes))
+    }
+
     /// Quarante kibioctets suffisent à décider. Lire six gigaoctets pour
     /// savoir ce qu'est un fichier serait la faute qui a fait disparaître
     /// l'application la première fois.
