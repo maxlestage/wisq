@@ -52,12 +52,25 @@ public struct X86Core: @unchecked Sendable {
     public var halted = false
     /// Les registres de contrôle, les MSR, et de quoi traduire une adresse.
     public var system = X86SystemState()
+    /// Les six sélecteurs de segment : ES, CS, SS, DS, FS, GS. En mode long
+    /// leurs bases valent zéro sauf pour FS et GS, qui les prennent dans des
+    /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
+    /// charge quand même dès son entrée, et refuser l'instruction l'arrêterait
+    /// là.
+    public var segments = [UInt16](repeating: 0, count: 6)
     /// La pagination est-elle allumée ? Gardé à part, et pas relu dans `system`
     /// à chaque accès mémoire : la question se pose plusieurs fois par
     /// instruction et la réponse ne change qu'à l'écriture de CR0. La lire
     /// depuis le tableau des registres de contrôle coûtait **13 %** du débit,
     /// pagination éteinte comprise.
     var pagingActive = false
+    /// Où le noyau a dit que ses tables de descripteurs se trouvent : GDT puis
+    /// IDT. Notées et rendues telles quelles ; rien ne les lit encore.
+    public var descriptorTables = [UInt64](repeating: 0, count: 2)
+    /// Les deux seuls mots d'état x87 qui existent ici : ceux que la séquence
+    /// de détection de Linux range et relit. Voir `minimalX87`.
+    public var x87Status: UInt16 = 0
+    public var x87Control: UInt16 = 0x037F
     /// Le cache de traduction : étiquettes et cadres, côte à côte.
     var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
     var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
@@ -85,6 +98,14 @@ public struct X86Core: @unchecked Sendable {
         public static let auxiliary: UInt64 = 1 << 4
         public static let zero: UInt64 = 1 << 6
         public static let sign: UInt64 = 1 << 7
+        /// Le masque d'interruption. Ce cœur n'interrompt rien encore, mais un
+        /// noyau pose et lit ce bit dès sa première ligne.
+        public static let interrupt: UInt64 = 1 << 9
+        /// La direction des opérations sur chaînes : vers le haut ou vers le
+        /// bas. `CLD` est très souvent la toute première instruction d'un
+        /// noyau, parce qu'il ne peut pas faire confiance à ce que le chargeur
+        /// a laissé.
+        public static let direction: UInt64 = 1 << 10
         public static let overflow: UInt64 = 1 << 11
         /// Les six que l'arithmétique touche, réunis.
         public static let arithmetic: UInt64 = carry | parity | auxiliary | zero | sign | overflow

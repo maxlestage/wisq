@@ -2683,8 +2683,28 @@ habitude.
      mémoire ; un booléen gardé à jour à l'écriture de `CR0` a rendu ce
      chemin-là gratuit.
 
-     **Ce qui manque encore pour sauter dedans** : le décompresseur touche
-     aussi la GDT, les segments et les interruptions. C'est la suite.
+   - **La tentative, et où elle s'arrête.** `X86BootAttemptTests` charge le
+     vrai noyau d'Alpine, pose une pagination d'identité sur quatre gibioctets
+     en pages de un gibioctet, entre en mode long et saute. **535 845
+     instructions s'exécutent**, puis le cœur s'arrête sur une faute de page à
+     l'adresse de chargement.
+
+     Le chemin parcouru est réel : le décompresseur tourne. La séquence qui
+     avait arrêté le cœur juste avant — `fninit ; fnstsw ; fnstcw` — a été
+     désassemblée plutôt que devinée : c'est exactement celle par laquelle
+     Linux détecte un coprocesseur. Chaque arrêt a nommé la brique suivante, et
+     c'est comme ça que `CLD`/`CLI`, les segments, le retour lointain,
+     `PUSHF`/`POPF`, les opérations sur chaînes et trois instructions x87 sont
+     arrivés — dans cet ordre, dicté par le noyau et non par une liste.
+
+     **Ce qui n'est pas établi** : si cette faute vient du noyau ou d'une
+     divergence de ce cœur. Le dire demande un émulateur de référence contre
+     lequel avancer pas à pas — `qemu-system-x86_64` est disponible, et c'est
+     la tranche suivante. Écrire « le noyau démarre » serait faux aujourd'hui ;
+     écrire « ça ne marche pas » cacherait un demi-million d'instructions
+     justes.
+
+     Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans

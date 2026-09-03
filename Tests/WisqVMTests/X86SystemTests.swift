@@ -28,8 +28,10 @@ final class X86SystemTests: XCTestCase {
         XCTAssertNotEqual(features & (1 << 5), 0, "MSR annoncé : RDMSR et WRMSR répondent")
         XCTAssertNotEqual(features & (1 << 6), 0, "PAE annoncé : la traduction est à quatre niveaux")
         XCTAssertNotEqual(features & (1 << 15), 0, "CMOV annoncé : les seize CMOVcc sont là")
-        // Et celui qu'on n'annonce **pas**, parce qu'il serait faux.
-        XCTAssertEqual(features & 1, 0, "le x87 n'est pas annoncé : rien ne l'exécute ici")
+        // Le FPU est annoncé, mais au sens strict : les trois instructions par
+        // lesquelles Linux le détecte répondent juste, et rien de plus.
+        // L'arithmétique x87, elle, est refusée par son nom.
+        XCTAssertNotEqual(features & 1, 0, "sans FPU annoncé, un noyau 64 bits s'arrête")
     }
 
     /// Sans le bit « mode long » dans la feuille étendue, un noyau 64 bits

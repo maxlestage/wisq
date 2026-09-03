@@ -67,13 +67,17 @@ public enum X86CPUID {
 
     /// Ce que le noyau doit voir dans EDX pour la feuille 1. Chacun de ces
     /// bits est tenu par le reste du cœur :
-    /// - FPU (0), on ne l'annonce **pas** : rien n'exécute de x87 ici.
+    /// - FPU (0) : les trois instructions par lesquelles Linux détecte le
+    ///   coprocesseur répondent juste (voir `minimalX87`), et le mode 64 bits
+    ///   exige un FPU — un noyau qui n'en trouve pas s'arrête. Aucune
+    ///   arithmétique x87 n'existe pour autant, et elle est refusée par son nom
+    ///   si elle arrive.
     /// - TSC (4) : `RDTSC` répond.
     /// - MSR (5) : `RDMSR`/`WRMSR` répondent.
     /// - PAE (6) : la traduction d'adresses est à quatre niveaux.
     /// - CMOV (15) : les seize `CMOVcc` sont là depuis la tranche 3a.
     /// - PGE (13) et PSE (3) : les pages larges sont traduites.
-    public static let features: UInt32 = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 3)
+    public static let features: UInt32 = 1 | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 3)
         | (1 << 13) | (1 << 15)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.

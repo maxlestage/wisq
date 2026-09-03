@@ -86,6 +86,39 @@ Quatre sabotages sur la pagination : le bit de grande page ignoré, le bit de
 présence ignoré, l'étiquette du cache privée de son `+1` (sans quoi la page
 zéro passe pour une entrée vide), et l'écriture de `CR3` qui ne vide plus rien.
 
+### La tentative de démarrage, et ce qu'elle a dicté
+
+Plutôt que de deviner ce qui manquait, j'ai **essayé** : charger le vrai noyau
+d'Alpine, poser une pagination d'identité, entrer en mode long, sauter, et
+regarder où ça s'arrête. Chaque arrêt a nommé la brique suivante :
+
+| arrêt | instructions | ce qu'il fallait écrire |
+| --- | --- | --- |
+| opcode `FC` | 0 | `CLD`, et avec lui `CLI`/`STI`/`STD` |
+| opcode `8E` | 3 | les six sélecteurs de segment |
+| opcode `CB` | 26 | le retour lointain, qui recharge CS |
+| opcode `9D` | 61 | `PUSHF`/`POPF`, et les opérations sur chaînes |
+| opcode `DB` | 497 333 | trois instructions x87 |
+| faute de page | **535 845** | — |
+
+L'ordre n'est pas une liste que j'aurais dressée : c'est le noyau qui l'a
+dicté, une instruction à la fois. C'est de très loin la façon la plus courte de
+choisir quoi écrire.
+
+**Le `DB` méritait qu'on regarde.** Une instruction x87 au milieu d'un noyau,
+ça sent les données prises pour du code. J'ai désassemblé les octets :
+`db e3 / dd 7c 24 0e / d9 7c 24 08` est `fninit ; fnstsw ; fnstcw` — la
+séquence exacte par laquelle Linux détecte un coprocesseur. C'était du vrai
+code noyau, et l'émulation était sur les rails.
+
+**Ce que je n'écris pas.** Je ne sais pas si la faute de page finale vient du
+noyau ou d'une divergence de ce cœur. Le dire demanderait un émulateur de
+référence contre lequel avancer pas à pas — `qemu-system-x86_64` est là, c'est
+la tranche suivante. « Le noyau démarre » serait faux ; « ça ne marche pas »
+cacherait un demi-million d'instructions justes.
+
+Coût de tout cet ajout : **15,4 → 13,5 MIPS**.
+
 ### Puis le chargeur de noyau
 
 Pendant que la CI tournait, la première brique de la tranche 3c :
