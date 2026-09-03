@@ -166,3 +166,75 @@ final class LocalStorageTests: XCTestCase {
         XCTAssertEqual(LocalStorage.describe(bytes: -5), "0 o")
     }
 }
+
+/// Ce qu'une machine sauvegardée coûte vraiment, mesuré sur un vrai noyau.
+///
+/// C'est la garde d'une phrase que l'application montre. Le premier brouillon
+/// disait le contraire de la vérité — « un noyau réglé à un gibioctet peut
+/// laisser un fichier cent fois plus gros que le noyau » — et seule la mesure
+/// l'a dit :
+///
+///     machine   après 5 M instr.   après 65 M (invite de connexion)
+///      64 Mio        8,9 Mio                16,4 Mio
+///     128 Mio        9,5 Mio                17,0 Mio
+///     256 Mio       10,5 Mio                18,4 Mio
+///
+/// Le coût suit **ce que l'invité a touché**, pas ce qu'on lui a donné : les
+/// suites de zéros sont repliées, et Linux ne touche pas la mémoire dont il
+/// n'a pas l'usage.
+///
+/// Ce test existe parce que ce repliement est ce qui sépare « dix-sept
+/// mégaoctets par noyau suspendu » de « la taille de la machine par noyau
+/// suspendu ». S'il cassait, le stockage du téléphone se remplirait sans que
+/// rien ne change de comportement visible.
+final class ResizedSnapshotCostTests: XCTestCase {
+    private static func imageURL() -> URL? {
+        let candidates = [
+            ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"],
+            "/tmp/wisq-test-linux-image/Image",
+        ]
+        for case let path? in candidates where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
+    private func snapshotBytes(ramSize: UInt32, budget: UInt64, image: Data) throws -> Int {
+        let machine = LinuxMachine(ramSize: ramSize) { _ in }
+        try machine.load(kernelImage: image)
+        _ = machine.run(instructionBudget: budget)
+        return machine.snapshot().count
+    }
+
+    func testTheCostFollowsWhatTheGuestTouchedNotWhatItWasGiven() throws {
+        guard let url = Self.imageURL() else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: url)
+        let budget: UInt64 = 65_000_000
+
+        let small = try snapshotBytes(ramSize: 64 << 20, budget: budget, image: image)
+        let large = try snapshotBytes(ramSize: 256 << 20, budget: budget, image: image)
+
+        // Quadrupler la machine ne doit pas doubler l'instantané. La marge est
+        // large exprès : ce test tient une forme, pas un octet — mesuré, l'écart
+        // est de deux mégaoctets sur seize.
+        XCTAssertLessThan(
+            large, small * 2,
+            "quadrupler la mémoire a fait plus que doubler l'instantané : le repliement des zéros ne fait plus son travail")
+
+        // Et les deux doivent rester une fraction de la petite machine. Sans
+        // repliement, chacun ferait la taille de sa machine.
+        for (size, bytes) in [(64 << 20, small), (256 << 20, large)] {
+            XCTAssertLessThan(
+                bytes, (64 << 20) / 2,
+                "\(size >> 20) Mo : \(LocalStorage.describe(bytes: bytes)) est trop pour un noyau qui vient de démarrer")
+        }
+
+        // Une machine qui a plus tourné coûte plus : c'est l'usage qui paie.
+        let brief = try snapshotBytes(ramSize: 64 << 20, budget: 5_000_000, image: image)
+        XCTAssertLessThan(
+            brief, small,
+            "un invité qui a moins tourné doit avoir moins écrit")
+    }
+}

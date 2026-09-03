@@ -90,7 +90,7 @@ struct LocalVMListView: View {
                 } header: {
                     Text("Stockage")
                 } footer: {
-                    Text("Une machine sauvegardée ne peut pas dépasser la mémoire dont elle a été prise, et les octets à zéro sont repliés — c'est pourquoi elle pèse en général bien moins que la machine. Il n'y a pas de disque à régler ici : ce noyau Linux « nommu » n'a pas de pilote de bloc, et c'est l'instantané de la machine entière qui fait le travail qu'un disque aurait fait.")
+                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Il n'y a pas de disque à régler ici : ce noyau Linux « nommu » n'a pas de pilote de bloc, et c'est l'instantané de la machine entière qui fait le travail qu'un disque aurait fait.")
                 }
             }
 

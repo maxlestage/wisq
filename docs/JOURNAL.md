@@ -22,13 +22,43 @@ marche avec n'importe quel noyau. Un curseur « taille du disque » serait donc
 un réglage qui ne commande rien.
 
 Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
-occupent dans le stockage de l'application. Et c'est devenu nettement plus
-intéressant il y a une heure : une machine sauvegardée ne peut pas dépasser la
-RAM dont elle a été prise, donc un noyau réglé à un gibioctet peut laisser
-derrière lui un fichier cent fois plus gros que le noyau lui-même. Les zéros
-sont repliés, donc un invité au repos coûte bien moins que ça — mais rien ne
-disait combien, et un nombre que personne ne voit est un nombre sur lequel
-personne ne peut agir.
+occupent dans le stockage de l'application.
+
+### Une phrase que j'ai écrite, et que la mesure a démentie
+
+J'avais écrit — dans le code, dans l'interface et ici — qu'« une machine
+sauvegardée ne peut pas dépasser la RAM dont elle a été prise, donc un noyau
+réglé à un gibioctet peut laisser derrière lui un fichier cent fois plus gros
+que le noyau lui-même ». C'est faux, et il a suffi de mesurer sur le vrai
+noyau pour le voir :
+
+```
+machine    après 5 M instructions    après 65 M (invite de connexion)
+ 64 Mio          8,9 Mio                      16,4 Mio
+128 Mio          9,5 Mio                      17,0 Mio
+256 Mio         10,5 Mio                      18,4 Mio
+```
+
+**Le coût suit ce que l'invité a touché, pas ce qu'on lui a donné.** Quadrupler
+la machine ajoute deux mégaoctets, parce que Linux ne touche pas la mémoire
+dont il n'a pas l'usage et que les suites de zéros sont repliées. Dépenser dix
+fois plus d'instructions double presque le fichier, parce que là c'est de la
+mémoire réellement écrite.
+
+La phrase était plausible et elle sonnait prudente — c'est exactement la forme
+qu'une affirmation fausse prend quand elle traverse une relecture. Elle était
+partie dans une chaîne que l'application montre à qui l'utilise.
+
+Corrigée aux trois endroits, et surtout transformée en garde :
+`ResizedSnapshotCostTests` démarre le vrai noyau dans une machine de 64 et une
+de 256 Mio et exige que quadrupler la mémoire ne double pas l'instantané. Le
+sabordage — la course littérale avale aussi les zéros, donc plus rien n'est
+replié — le fait tomber sur ses trois assertions.
+
+Ce qui reste vrai, et qui justifie la tranche : **dix-sept mégaoctets par noyau
+suspendu**. Cinq noyaux laissés suspendus font quatre-vingt-cinq mégaoctets,
+apparus sans que personne les ait demandés, et un nombre que personne ne voit
+est un nombre sur lequel personne ne peut agir.
 
 ### Ce qui est montré
 

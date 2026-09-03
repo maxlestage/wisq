@@ -9,12 +9,28 @@ import Foundation
 /// take in the app's own storage, which is real, grows on its own, and until
 /// now was invisible.
 ///
-/// It grew a great deal more interesting the moment memory became adjustable:
-/// a saved machine is at most as large as the RAM it was taken from, so a
-/// kernel set to a gibibyte can leave behind a file a hundred times the size
-/// of the kernel itself. Zeros are folded, so an idle guest costs far less
-/// than that — but nothing said how much, and a number nobody can see is a
-/// number nobody can act on.
+/// **What a saved machine costs follows what the guest touched, not what it
+/// was given.** Measured on the real kernel, at the login prompt:
+///
+///     machine   après 5 M instr.   après 65 M (invite de connexion)
+///      64 Mio        8,9 Mio                16,4 Mio
+///     128 Mio        9,5 Mio                17,0 Mio
+///     256 Mio       10,5 Mio                18,4 Mio
+///
+/// Quadrupling the machine adds two mebibytes, because Linux does not touch
+/// memory it has no use for and the runs of zeros are folded. Spending ten
+/// times the instructions nearly doubles it, because that is memory the guest
+/// actually wrote.
+///
+/// That is the opposite of what this file first claimed — that a kernel set to
+/// a gibibyte could leave behind a file a hundred times its own size. It
+/// cannot; `ResizedSnapshotCostTests` now holds the real shape, so a change
+/// that broke the zero-folding would be caught rather than quietly filling
+/// someone's phone.
+///
+/// Seventeen mebibytes per suspended kernel is still worth showing: five
+/// kernels left suspended is eighty-five, appearing without anyone asking for
+/// it, and a number nobody can see is a number nobody can act on.
 ///
 /// In `WisqVM` rather than the app layer, for the reason `SuspendedMachine`
 /// gives: the app only builds on Apple platforms, and "walk two directories

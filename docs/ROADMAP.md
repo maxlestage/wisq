@@ -2522,7 +2522,10 @@ l'instantané fait le travail que le disque aurait fait. Un réglage « taille d
 disque » serait donc un curseur qui ne commande rien.
 
 Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
-occupent dans le stockage de l'application. `LocalStorage` la compte, la vue la
+occupent dans le stockage de l'application : mesuré sur le vrai noyau arrivé à
+l'invite de connexion, **environ 17 Mio par noyau suspendu**, et quadrupler la
+mémoire de la machine n'y ajoute que deux mégaoctets — le coût suit ce que
+l'invité a touché, pas ce qu'on lui a donné. `LocalStorage` la compte, la vue la
 montre — sous chaque noyau quand il a une machine sauvegardée à côté, et en
 total — et un geste reprend les machines dont le noyau n'existe plus.
 
