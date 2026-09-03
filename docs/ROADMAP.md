@@ -2648,7 +2648,10 @@ habitude.
      ceux du cœur Rust — l'écart mélange deux langages et deux architectures.
      Et à 16,5 MIPS il reste environ 180 cycles par instruction sur cette
      machine, là où un bon interprète en demande cinquante : il y a encore de
-     la marge, et elle est mesurable.
+     la marge. Une piste a déjà été essayée et **jetée** — mettre les seize
+     registres en ligne dans la structure plutôt que dans un tableau donne
+     15,4 MIPS, donc moins ; c'est écrit à côté de la déclaration pour que
+     personne ne la retente.
    - **3c. Démarrer un vrai `bzImage`** : le protocole de démarrage que la
      tranche 1 sait lire, la structure `boot_params`, et les premiers messages
      du noyau sur le port série.

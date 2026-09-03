@@ -43,7 +43,24 @@ les 9 036 accords de l'oracle matériel tiennent toujours — c'est justement à
 qu'il sert.
 
 Il reste environ 180 cycles par instruction sur cette machine, là où un bon
-interprète en demande cinquante. La marge suivante est mesurable, elle aussi.
+interprète en demande cinquante.
+
+### La troisième tentative, mesurée et **jetée**
+
+L'évidence suivante : `registers` est un `[UInt64]`, donc un tableau sur le tas,
+avec vérification de bornes à la lecture et d'unicité à l'écriture, deux à
+quatre fois par instruction. Je l'ai remplacé par les seize valeurs en ligne
+dans la structure, sous forme de tuple.
+
+**16,5 → 15,4 MIPS.** Une régression. Deuxième variante, avec un pointeur au
+lieu d'une copie d'octets : 15,5. Les deux façons d'atteindre un tuple depuis
+Swift passent par un pointeur temporaire, et ça coûte plus cher que la
+vérification de bornes qu'on croyait éviter.
+
+Revenu au tableau, et la raison est écrite à côté de la déclaration pour que
+personne ne retente. Ce qui distingue les deux premières optimisations de
+celle-ci n'est pas leur difficulté : c'est que je les avais mesurées. Une
+optimisation non mesurée est une supposition, et une sur trois était fausse.
 
 **Ce que ça corrige.** La feuille de route disait qu'un démarrage complet
 « se compte en dizaines de milliards d'instructions » et laissait entendre des

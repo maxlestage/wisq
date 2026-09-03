@@ -24,6 +24,17 @@ import Foundation
 public struct X86Core: @unchecked Sendable {
     /// Les seize registres, dans l'ordre de l'encodage : RAX, RCX, RDX, RBX,
     /// RSP, RBP, RSI, RDI, puis R8 à R15.
+    ///
+    /// **Un tableau, et c'est mesuré.** Il paraît évident qu'un tableau Swift
+    /// coûte cher sur le chemin chaud d'un interprète : il vit sur le tas, il
+    /// vérifie ses bornes, il vérifie son unicité avant d'écrire. J'ai donc
+    /// essayé de le remplacer par les seize valeurs en ligne dans la
+    /// structure, sous forme de tuple. Résultat : **16,5 → 15,4 MIPS**, puis
+    /// 15,5 avec une seconde variante. Les deux façons d'atteindre un tuple
+    /// depuis Swift passent par un pointeur temporaire, et ça coûte plus que
+    /// la vérification de bornes qu'on croyait éviter. Revenu au tableau ; la
+    /// prochaine tentative devra commencer par une mesure, pas par une
+    /// intuition.
     public var registers: [UInt64]
     /// RFLAGS, dont seuls les six de l'arithmétique nous occupent ici.
     public var flags: UInt64
