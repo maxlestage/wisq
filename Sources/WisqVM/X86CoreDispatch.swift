@@ -59,6 +59,12 @@ extension X86Core {
         case 0xC3:
             rip = try pop(8)
             jumped = true
+        case 0xCF:  // IRETQ : le retour d'un gestionnaire d'exception
+            guard let rex = instruction.rex, rex & 0x08 != 0 else {
+                throw Fault.unsupported("IRET hors du mode 64 bits")
+            }
+            try returnFromInterrupt()
+
         case 0xCA, 0xCB:  // RETF : dépiler le décalage **puis** le sélecteur
             // La largeur par défaut d'un retour lointain en mode 64 bits est de
             // quatre octets, pas huit : c'est REX.W qui la porte à huit. Un
@@ -296,17 +302,25 @@ extension X86Core {
     mutating func twoByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         switch opcode {
         case 0x01:  // le groupe 7 : les tables de descripteurs, et le reste
-            let fields = try decodeFields(instruction, size: 8)
+            _ = try decodeFields(instruction, size: 8)
+            guard let memory else { throw Fault.unsupported("le groupe 7 sans mémoire") }
+            let operand = lastAddress
             switch (instruction.modrm! >> 3) & 0x07 {
-            case 2, 3:
-                // LGDT et LIDT : six ou dix octets lus en mémoire. Ce cœur n'a
-                // ni descripteurs ni interruptions, donc il **note** l'adresse
-                // sans s'en servir plutôt que de refuser : un noyau les pose
-                // très tôt, et il n'y a rien à faire de faux ici.
-                descriptorTables[Int((instruction.modrm! >> 3) & 0x07) - 2] = lastAddress
-            case 0, 1:
-                // SGDT et SIDT : rendre ce qu'on a noté.
-                try writeRM(fields, 8, descriptorTables[Int((instruction.modrm! >> 3) & 0x07)])
+            case let which where which == 2 || which == 3:
+                // LGDT et LIDT. Le pseudo-descripteur fait dix octets en mode
+                // long : une limite de seize bits, puis une base de soixante-
+                // quatre. Le processeur en **recopie** le contenu et ne relit
+                // jamais la mémoire d'où il vient ; noter l'adresse à la place
+                // marchait tant que rien ne s'en servait, et la livraison
+                // d'exception s'en sert.
+                descriptorLimits[Int(which) - 2] = try memory.read(try translate(operand), 2)
+                descriptorBases[Int(which) - 2] = try memory.read(try translate(operand &+ 2), 8)
+            case let which where which == 0 || which == 1:
+                // SGDT et SIDT : rendre le pseudo-descripteur, dans la même
+                // forme.
+                try memory.write(try translate(operand, .write), 2, descriptorLimits[Int(which)])
+                try memory.write(
+                    try translate(operand &+ 2, .write), 8, descriptorBases[Int(which)])
             default:
                 throw Fault.unsupported("le groupe 7 /\((instruction.modrm! >> 3) & 0x07)")
             }
@@ -480,7 +494,7 @@ extension X86Core {
             switch opcode {
             case 0xA4, 0xA5:  // MOVS : de RSI vers RDI
                 let value = try memory.read(try translate(registers[6]), size)
-                try memory.write(try translate(registers[7]), size, value)
+                try memory.write(try translate(registers[7], .write), size, value)
                 registers[6] = registers[6] &+ step
                 registers[7] = registers[7] &+ step
             case 0xA6, 0xA7:  // CMPS
@@ -490,7 +504,7 @@ extension X86Core {
                 registers[6] = registers[6] &+ step
                 registers[7] = registers[7] &+ step
             case 0xAA, 0xAB:  // STOS : l'accumulateur vers RDI
-                try memory.write(try translate(registers[7]), size,
+                try memory.write(try translate(registers[7], .write), size,
                                  read(0, size, highByte: false))
                 registers[7] = registers[7] &+ step
             case 0xAC, 0xAD:  // LODS : de RSI vers l'accumulateur

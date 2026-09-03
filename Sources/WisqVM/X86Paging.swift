@@ -22,15 +22,51 @@ extension X86Core {
     /// mémoire par instruction si on le refait à chaque fois. D'où le cache
     /// juste en dessous.
     @inline(__always)
-    mutating func translate(_ virtual: UInt64) throws -> UInt64 {
+    mutating func translate(_ virtual: UInt64, _ access: Access = .read) throws -> UInt64 {
         guard pagingActive else { return virtual }
         let page = virtual & ~UInt64(0xFFF)
         let slot = Int((page >> 12) & UInt64(Self.translationSlots - 1))
         if translationTags[slot] == page &+ 1 { return translationFrames[slot] | (virtual & 0xFFF) }
-        let frame = try walk(page)
+        return try fill(virtual, page, slot, access)
+    }
+
+    /// Ce que l'accès venait faire. Un gestionnaire de faute de page le lit
+    /// dans le code d'erreur, et le décompresseur de Linux refuse ceux qu'il
+    /// ne reconnaît pas — donc le poser au hasard l'arrêterait net.
+    public enum Access {
+        case read
+        case write
+        /// La lecture de l'instruction elle-même.
+        case fetch
+
+        /// Le code d'erreur d'une faute de page pour cet accès. Le bit de
+        /// présence reste à zéro : ce cœur ne faute que sur une entrée
+        /// absente, jamais sur une protection.
+        var errorCode: UInt64 {
+            switch self {
+            case .read: return 0
+            case .write: return 1 << 1
+            case .fetch: return 1 << 4
+            }
+        }
+    }
+
+    /// Le chemin lent : parcourir les tables, ranger le résultat dans le
+    /// cache. Séparé de `translate` pour que le cas courant — une étiquette
+    /// qui correspond — tienne dans quelques instructions.
+    mutating func fill(_ at: UInt64, _ page: UInt64, _ slot: Int, _ how: Access) throws -> UInt64 {
+        let frame: UInt64
+        do {
+            frame = try walk(page)
+        } catch Fault.pageFault {
+            // CR2 porte l'adresse **entière**, pas la page : c'est ce qu'un
+            // gestionnaire y lit, et l'arrondir lui cacherait l'octet visé.
+            pageFaultErrorCode = how.errorCode
+            throw Fault.pageFault(at)
+        }
         translationTags[slot] = page &+ 1
         translationFrames[slot] = frame
-        return frame | (virtual & 0xFFF)
+        return frame | (at & 0xFFF)
     }
 
     /// Le parcours lui-même. Quatre index de neuf bits, pris du haut vers le
