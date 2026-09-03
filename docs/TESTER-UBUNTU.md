@@ -68,6 +68,35 @@ prend le **port 5900**, un second prend 5901, et `ss -ltn` les montre bien sur
 que l'invité ait démarré — `spice-vdagent`, le presse-papiers, le dépôt de
 fichier.
 
+### Une autre distribution que Ubuntu
+
+La recette n'a rien d'Ubuntu : c'est le même `virt-install` avec **l'ISO qu'on
+veut** et le `--os-variant` correspondant. Pour Arch — donc pour Omarchy :
+
+```sh
+virt-install --name omarchy --memory 4096 --vcpus 4 \
+  --disk size=40 --os-variant archlinux \
+  --cdrom ~/omarchy-4.0.2.iso \
+  --graphics spice,listen=0.0.0.0 --video qxl \
+  --channel spicevmc,target.type=virtio,target.name=com.redhat.spice.0
+```
+
+Ce qui change par rapport à l'exemple Ubuntu : `--os-variant`, et des chiffres
+plus larges. Les 2048 Mio et 16 Go de disque de l'exemple suffisent à un
+serveur ; un bureau moderne — Omarchy tourne sous Hyprland — est plus à l'aise
+avec davantage. `osinfo-query os | grep arch` liste les variantes que libvirt
+connaît sur votre machine, si `archlinux` n'y est pas.
+
+**C'est ici que doivent aller les distributions complètes**, et c'est pour ça
+que le reste de wisq existe. La machine locale de l'application est un RISC-V
+32 bits sans disque : elle démarre un noyau compilé pour elle, en une seconde,
+et rien d'autre. L'application le dit maintenant en toutes lettres quand on lui
+donne un ISO, plutôt que de parler de mégaoctets — voir le journal du 3
+septembre.
+
+*Non vérifié d'ici* : cette variante-là non plus. Elle ne diffère de la
+précédente que par des valeurs, et la précédente n'a pas été installée ici.
+
 ## 3. Le démon wisq-agent sur l'hôte
 
 C'est lui qui permet au téléphone de démarrer la VM avant de s'y connecter, et
