@@ -55,7 +55,7 @@ struct LocalVMListView: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
-                    Text("Le chiffre à droite de chaque noyau est la mémoire de sa machine. La machine de référence en a \(LinuxMachine.defaultRAMSize >> 20) Mo ; ce téléphone en autorise jusqu'à \(KernelMemory.ceiling >> 20) Mo. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
+                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(LinuxMachine.defaultRAMSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et l'émulateur ne peut pas dépasser \(KernelMemory.describe(LinuxMachine.maximumRAMSize)) — la mémoire de l'invité commence à 0x80000000 et son processeur adresse en 32 bits. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
                 }
             }
 
@@ -162,10 +162,16 @@ struct LocalVMListView: View {
 /// un réglage **de cette machine-là** : deux noyaux dans la même liste n'ont
 /// aucune raison de tourner à la même taille.
 ///
+/// Un curseur, pas un menu : la question « combien de mémoire » se répond en
+/// glissant sur une échelle, pas en dépliant une liste. Il glisse sur les
+/// *indices* des paliers offerts, donc il saute de puissance de deux en
+/// puissance de deux au lieu de proposer des tailles qu'aucune machine n'a.
+///
 /// La vue ne décide rien. Ce qui est offert vient de `KernelMemory.offered`,
-/// borné par ce que l'appareil dit de lui-même, et l'oubli des machines
-/// sauvegardées vient de `SuspendedMachine.clearAll` — les deux sont tenus par
-/// des tests qui tournent sur Linux, ce que ce fichier ne peut pas être.
+/// borné par ce que l'appareil dit de lui-même, le nom des tailles vient de
+/// `KernelMemory.describe`, et l'oubli des machines sauvegardées vient de
+/// `SuspendedMachine.clearAll` — tous tenus par des tests qui tournent sur
+/// Linux, ce que ce fichier ne peut pas être.
 private struct KernelMemoryMenu: View {
     let kernel: URL
     /// Combien de machines sauvegardées le changement a coûté, pour le dire.
@@ -179,17 +185,33 @@ private struct KernelMemoryMenu: View {
         _size = State(initialValue: KernelMemory.size(forKernel: kernel.lastPathComponent))
     }
 
+    /// Les paliers que cet appareil autorise. Calculés une fois : le curseur
+    /// glisse sur leurs *indices*, pas sur des octets, ce qui lui fait sauter
+    /// de puissance de deux en puissance de deux plutôt que de proposer des
+    /// tailles intermédiaires qu'aucune machine n'a jamais.
+    private var steps: [UInt32] { KernelMemory.offered(ceiling: KernelMemory.ceiling) }
+
     var body: some View {
-        Menu {
-            Picker("Mémoire", selection: $size) {
-                ForEach(KernelMemory.offered(ceiling: KernelMemory.ceiling), id: \.self) { choice in
-                    Text(Self.label(choice)).tag(choice)
-                }
-            }
-        } label: {
-            Text(Self.label(size))
+        let steps = self.steps
+        let index = Binding<Double>(
+            get: { Double(steps.firstIndex(of: size) ?? steps.count - 1) },
+            set: { newValue in
+                let clamped = min(max(Int(newValue.rounded()), 0), steps.count - 1)
+                size = steps[clamped]
+            })
+
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(KernelMemory.describe(size))
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(.secondary)
+            if steps.count > 1 {
+                Slider(value: index, in: 0...Double(steps.count - 1), step: 1)
+                    .frame(width: 130)
+                    // Le curseur nomme ses deux bouts : sans ça, un glissement
+                    // à mi-course ne dit pas sur quelle échelle il porte.
+                    .accessibilityLabel("Mémoire de \(kernel.lastPathComponent)")
+                    .accessibilityValue(KernelMemory.describe(size))
+            }
         }
         .onChange(of: size) { previous, chosen in
             guard previous != chosen else { return }
@@ -197,8 +219,6 @@ private struct KernelMemoryMenu: View {
             onChange(SuspendedMachine.clearAll(named: kernel.lastPathComponent))
         }
     }
-
-    static func label(_ bytes: UInt32) -> String { "\(bytes >> 20) Mo" }
 }
 
 extension LocalVMListView {

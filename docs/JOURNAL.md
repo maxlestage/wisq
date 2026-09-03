@@ -8,6 +8,213 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~19h30 UTC — « Ça fonctionne pas je te l'avais dit ! »
+
+Maxime a envoyé une capture. L'application refuse `omarchy-4.0.2.iso 2` avec :
+
+```
+[omarchy-4.0.2.iso 2 fait 5939.2 Mo. La machine émulée n'a que 64.0 Mo
+de mémoire en tout.
+```
+
+**Chaque mot est vrai, et le message entier est trompeur.** Il désigne un
+*nombre*, donc il envoie vers le réglage de mémoire — celui que je venais
+justement de passer deux heures à rendre réglable jusqu'à deux gibioctets. Il
+avait toutes les raisons de croire que ça allait marcher, et j'y ai contribué :
+mes trois derniers messages parlaient de gigaoctets.
+
+Aucune mémoire ne fera jamais démarrer ce fichier ici. Omarchy est une
+distribution Arch **x86-64** distribuée en **image de disque amorçable**. La
+machine locale de wisq est un RISC-V 32 bits nommu **sans disque**. Ce n'est ni
+la même architecture, ni le même genre de fichier.
+
+### Ce que le refus dit maintenant
+
+Ce que le fichier **est**, avant ce qu'il pèse. Mesuré sur les octets plutôt
+que lu dans un document :
+
+```
+le vrai noyau : « RISCV » à 0x30, « RSC\x05 » à 0x38   (en-tête d'image RISC-V)
+un ISO 9660   : « CD001 » à 0x8001                     (descripteur, secteur 16)
+un ELF        : \x7fELF, et l'architecture à 0x12
+```
+
+Quarante kibioctets suffisent à décider — lire six gigaoctets pour savoir ce
+qu'est un fichier serait exactement la faute qui a fait disparaître
+l'application la première fois.
+
+Le message nomme le fichier, ce qu'il est, ce qu'est la machine, **coupe court
+au réglage de mémoire**, et dit où faire tourner la chose voulue : sur un hôte,
+avec wisq par-dessus. Un test exige cette dernière phrase, et un autre exige
+que le message ne ressemble pas à un refus de taille.
+
+### L'asymétrie, qui est le vrai choix de conception
+
+Reconnaître une image RISC-V est un fait positif. **Ne pas** en reconnaître une
+n'en est pas un. Quelqu'un peut arriver avec une image brute sans en-tête, et
+la refuser parce que ce code ne la connaît pas serait pire que de la laisser
+essayer. Donc `unknown` est une **permission**, pas un doute : seul ce qui est
+positivement identifiable comme autre chose est refusé. Le sabordage qui
+transforme `unknown` en refus tombe sur le test qui le dit.
+
+### Ce que je retiens
+
+Un refus juste peut égarer autant qu'un refus faux, s'il désigne la mauvaise
+cause. « Trop gros » et « pas la bonne machine » mènent à deux gestes
+différents, et le premier était un cul-de-sac déguisé en piste.
+
+
+## 2026-09-03, ~18h UTC — arrêter d'inventer un plafond, et demander à iOS
+
+Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone pour
+la partager ».
+
+La réponse évidente était d'augmenter ma fraction — le huitième de la mémoire
+physique devient un quart, un tiers. **La bonne réponse était d'arrêter
+d'inventer.** iOS publie exactement ce nombre : `os_proc_available_memory()`
+rend combien d'octets l'application peut encore allouer avant que le système ne
+la tue. C'est la question à laquelle mon huitième essayait de répondre au
+jugé.
+
+Le plafond est maintenant : ce que le système dit qu'il reste, moins ce que
+l'application garde pour elle, borné par ce que le processeur 32 bits de
+l'invité peut adresser, et jamais sous la machine de référence.
+
+### Trois choses que la fraction ne pouvait pas faire
+
+Elle donnait **la même réponse** sur un téléphone au repos et sur un téléphone
+qui porte trois autres applications. Elle ignorait ce que wisq lui-même avait
+déjà ouvert — une session distante avec ses tampons de décodage compte. Et elle
+était figée à la conception, alors que la vraie question se pose à l'instant du
+démarrage.
+
+Le plafond est donc relu à chaque fois qu'on le demande, pas mémorisé.
+
+### La réserve, qui est un jugement et le dit
+
+256 Mio pour l'application elle-même : la console et sa grille, les tampons
+d'une session distante, l'image du noyau en cours de lecture. Un nombre nommé
+plutôt qu'une fraction, parce qu'il ne grandit pas avec l'invité — une machine
+plus grande ne fait pas une console plus grande.
+
+### Et le refus qui remplace un plantage
+
+Le réglage est mémorisé ; la place libre du téléphone ne l'est pas. Un appareil
+qui pouvait donner un gibioctet ce matin peut ne plus le pouvoir cet
+après-midi. Démarrer quand même, c'est se faire tuer par iOS au milieu du
+démarrage — le plantage sans cause apparente que cette application a déjà
+infligé une fois, sur l'image d'Omarchy.
+
+Donc une phrase, avec **les deux chiffres et quoi en faire**. « Pas assez de
+mémoire » sans nombre est une impasse : le lecteur ne peut pas savoir s'il doit
+fermer une application ou baisser le curseur. Un test l'exige explicitement.
+
+
+## 2026-09-03, ~17h45 UTC — un curseur en gigaoctets, et le défaut que la question a fait sortir
+
+Maxime : « Tu peux pas faire un curseur pour allouer des giga plutôt que des mo
+car maintenant les ram sont plutôt en giga ».
+
+Sa question portait sur l'unité. En allant mesurer jusqu'où la machine monte,
+j'ai trouvé autre chose.
+
+### La machine ne s'arrêtait pas là où je croyais
+
+Mesuré sur le vrai noyau :
+
+```
+ 512 Mio : Memory:  516204K/524272K   bannière oui, invite oui
+   1 Gio : Memory: 1036012K/1048560K  bannière oui, invite non
+   2 Gio : Memory: 2075628K/2097136K  bannière oui, invite non
+```
+
+L'invite qui disparaît au-delà de 512 Mio ressemblait à une limite. **Ce n'en
+était pas une** : avec un budget de 120 millions d'instructions au lieu de 60,
+elle arrive à 1 Gio comme à 2. Linux passe la différence à initialiser ses
+pages. Un test qui aurait gardé le budget d'origine aurait conclu « 2 Gio ne
+démarre pas » et j'aurais répondu à Maxime que les gigaoctets étaient hors de
+portée. Le test qui garde cette taille explique le budget pour cette raison.
+
+### Le défaut, et il était muet
+
+Au-delà, l'espace d'adressage déborde : la RAM de l'invité commence à
+`0x8000_0000` et le hart adresse en trente-deux bits, donc **deux gibioctets
+tombent exactement sur le dernier octet possible** (`0x8000_0000 + 2 Gio ==
+2^32`). Une machine de trois gibioctets :
+
+```
+load accepté, DTB annonce 3221209088 octets
+bannière = false   invite = false   — rien, pas même une erreur
+```
+
+Elle se construisait, annonçait à l'invité une mémoire qui n'existe pas dans
+son espace d'adressage, et mourait sans un mot. Les deux cœurs la refusent
+maintenant (`ramSizeUnsupported` / `LoadError::RamSizeUnsupported`, code −6 à
+travers l'FFI), parce que deux implémentations d'une même machine qui ne sont
+pas d'accord sur ses limites est la divergence que le test différentiel existe
+pour empêcher.
+
+Le refus vit dans `load` et non dans `init` : un initialiseur faillible pour
+une condition dont aucun appelant ne peut se remettre autrement coûterait plus
+qu'il ne rapporte, et `load` est l'endroit où l'invité est renseigné.
+
+### Et l'unité, qui était la question
+
+Le plus grand palier s'affichait « 1024 Mo ». C'est exactement ainsi qu'un
+réglage qui atteint le gibioctet passe pour un réglage qui s'arrête aux
+mégaoctets — Maxime l'a lu comme ça, et il avait raison de le lire comme ça.
+
+`KernelMemory.describe` bascule en Gio dès qu'il y en a. Et le plafond, qui
+était écrit « un gibioctet », est maintenant la limite de l'architecture : les
+deux coïncidaient, ce qui faisait passer une contrainte pour un choix. Un
+appareil de 16 Go atteint donc vraiment deux gibioctets ; la règle du huitième
+continue de protéger les petits.
+
+### Le menu devient un curseur
+
+Il glisse sur les **indices** des paliers, pas sur des octets : il saute donc
+de puissance de deux en puissance de deux au lieu de proposer des tailles
+qu'aucune machine n'a jamais eues.
+
+
+## 2026-09-03, ~17h20 UTC — la garde que ni l'une ni l'autre des deux suites ne pouvait tenir
+
+Petite tranche, et sa justification tient en une mesure.
+
+La tranche précédente a ajouté deux champs au protocole. Les tests du crate
+montrent que le démon les **écrit**. Ceux de `WisqCore` montrent que le client
+sait les **lire**. Aucun des deux ne dit qu'ils sont d'accord sur le **nom de
+la clé** — et depuis que les deux moitiés de wisq ne sont plus écrites dans le
+même langage, c'est la seule chose qui compte vraiment.
+
+`AgentEndToEndTests` fait tourner le vrai démon Rust sur un port éphémère et
+lui parle avec le `AgentClient` que l'application embarque. Deux tests de plus
+y demandent la mémoire.
+
+### La mesure qui justifie ces deux tests
+
+Renommer la clé d'un seul côté, **proprement** — dans l'écriture *et* dans le
+test Rust qui l'épingle, comme le ferait quelqu'un qui refactorise :
+
+```
+la suite Rust seule       : 73 passed; 0 failed
+la suite bout-à-bout      : 4 échecs
+```
+
+Soixante-treize tests verts, et seule la traversée attrape la divergence. Sans
+elle, une faute de frappe dans « maximumMemoryKiB » ne se serait vue que sur un
+téléphone, en production, sur une ligne restée vide sans que rien n'échoue.
+
+Un premier sabordage — la faute de frappe dans l'écriture seule — tombait des
+deux côtés, ce qui était rassurant mais ne prouvait rien : le test Rust épingle
+la chaîne JSON exacte, donc il l'aurait vu. Il fallait saboter comme un humain
+se trompe, c'est-à-dire de façon cohérente.
+
+Au passage, le second test dit une chose qui n'allait pas de soi : **démarrer
+une VM n'efface pas sa mémoire**. C'est une propriété de la machine, pas de sa
+session, et `settle` aurait pu la remettre à zéro sans que rien ne le remarque.
+
+
 ## 2026-09-03, ~17h UTC — la mémoire des VM distantes, lue avant d'être écrite
 
 Le second sens de « partout » : les machines que l'agent gère sur un hôte. Le

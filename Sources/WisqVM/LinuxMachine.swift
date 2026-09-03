@@ -21,6 +21,24 @@ public final class LinuxMachine: @unchecked Sendable {
     /// filed under.
     public static let defaultRAMSize: UInt32 = 64 * 1024 * 1024
 
+    /// The largest machine this architecture can have, and it is not a policy.
+    ///
+    /// Guest RAM starts at `0x8000_0000` and the hart addresses memory with
+    /// thirty-two bits, so the last byte a machine can own is `0xFFFF_FFFF`.
+    /// Two gibibytes lands exactly there — `0x8000_0000 + 2 GiB == 2^32` — and
+    /// one byte more has nowhere to live.
+    ///
+    /// Measured rather than reasoned, because the failure is silent: a machine
+    /// built with three gibibytes **loaded without complaint**, handed the
+    /// guest a device tree announcing 3 221 209 088 bytes, and then produced
+    /// nothing at all — no banner, no console, no error. A kernel told about
+    /// memory outside its own address space dies before it can say so.
+    ///
+    /// Two gibibytes itself boots all the way to its login prompt; it just
+    /// takes about 120 million instructions instead of 46, because Linux
+    /// spends the difference initialising the pages.
+    public static let maximumRAMSize: UInt32 = 2 * 1024 * 1024 * 1024
+
     /// This machine's memory. Fixed for its lifetime: the buffer is mapped in
     /// `init` and the guest's whole address space is laid out from it, so a
     /// change means a new machine, which is what the app does when the setting
@@ -158,6 +176,14 @@ public final class LinuxMachine: @unchecked Sendable {
         // reaches this line with such a file any more, because the app refuses
         // it from its size on disk, but a guard that traps instead of refusing
         // is not a guard.
+        // A machine larger than the address space cannot boot, and used to try
+        // in silence. Refused here rather than in `init` because that would
+        // mean a failable initialiser for a condition no caller can recover
+        // from differently — and because this is where the guest is told what
+        // it has.
+        guard ramSize <= Self.maximumRAMSize else {
+            throw LinuxMachineError.ramSizeUnsupported
+        }
         guard !kernelImage.isEmpty, kernelImage.count <= Int(dtbPointer) else {
             throw LinuxMachineError.imageTooLarge
         }
@@ -383,6 +409,9 @@ public final class LinuxMachine: @unchecked Sendable {
 public enum LinuxMachineError: Error, Sendable {
     case imageTooLarge
     case commandLineTooLong
+    /// More memory than a thirty-two-bit hart can address. See
+    /// `LinuxMachine.maximumRAMSize`.
+    case ramSizeUnsupported
 }
 
 extension LinuxMachine: RV32Bus {

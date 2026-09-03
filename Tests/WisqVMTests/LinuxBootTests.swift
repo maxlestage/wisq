@@ -217,3 +217,44 @@ final class ResizedBootTests: XCTestCase {
             "128 Mo doit donner plus de mémoire disponible que 64 Mo")
     }
 }
+
+/// La plus grande machine que l'architecture permet, démarrée pour de vrai.
+///
+/// Deux gibioctets est le dernier octet qu'un processeur 32 bits peut adresser
+/// quand la RAM commence à 0x8000_0000. Ce n'est pas une taille théorique : le
+/// noyau y arrive jusqu'à son invite de connexion.
+///
+/// Le budget est la mesure qui compte ici. À 64 Mo l'invite arrive vers
+/// 46 millions d'instructions ; à 2 Gio il en faut environ 120, parce que
+/// Linux passe la différence à initialiser ses pages. Un test qui aurait gardé
+/// le budget de 60 millions aurait conclu « 2 Gio ne démarre pas », ce qui est
+/// faux — et c'est exactement ce que la première mesure a d'abord semblé dire.
+final class LargestMachineBootTests: XCTestCase {
+    func testTheLargestMachineTheArchitectureAllowsReachesItsLoginPrompt() throws {
+        let candidates = [
+            ProcessInfo.processInfo.environment["WISQ_LINUX_IMAGE"],
+            "/tmp/wisq-test-linux-image/Image",
+        ]
+        guard let path = candidates.compactMap({ $0 })
+            .first(where: { FileManager.default.fileExists(atPath: $0) })
+        else {
+            throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
+        }
+        let image = try Data(contentsOf: URL(fileURLWithPath: path))
+
+        let console = LinuxBootTests.ConsoleCapture()
+        let machine = LinuxMachine(ramSize: LinuxMachine.maximumRAMSize) { console.append($0) }
+        try machine.load(kernelImage: image)
+
+        var reached = false
+        for _ in 1...4 where !reached {
+            _ = machine.run(instructionBudget: 60_000_000)
+            reached = console.text().contains("buildroot login:")
+        }
+        let output = console.text()
+        XCTAssertTrue(reached, "2 Gio doit arriver à l'invite; fin: \(output.suffix(300))")
+        XCTAssertTrue(
+            output.contains("2075628K/2097136K"),
+            "le noyau doit annoncer 2 Gio moins la réserve; sortie: \(output.prefix(600))")
+    }
+}
