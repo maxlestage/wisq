@@ -188,12 +188,40 @@ impl VirshBackend {
         let state = parse_domstate(&self.run(&["domstate", id])?);
         let mut vm = Vm::new(id, id, state);
         if state == State::Running {
-            if let Some(port) = parse_vnc_display(self.run(&["vncdisplay", id]).ok().as_deref()) {
-                vm.console_protocol = Some("vnc");
+            if let Some((protocol, port)) = self.console(id) {
+                vm.console_protocol = Some(protocol);
                 vm.console_port = Some(port);
             }
         }
         Ok(vm)
+    }
+
+    /// Where the guest's screen is, and which protocol answers there.
+    ///
+    /// `vncdisplay` was the only question asked, and it is the wrong one for
+    /// the console this repository spent a whole milestone learning to speak:
+    /// on a SPICE domain it fails outright (*Failed to get VNC port. Is this
+    /// domain using VNC?*), so the VM published no port at all and the phone
+    /// polled a `running` machine forever. Every guide here tells the host to
+    /// create its VM with `--graphics spice`.
+    ///
+    /// `domdisplay --all` answers for both, one URI per line — and the two
+    /// schemes do **not** count the same, which is measured rather than
+    /// assumed (libvirt 10.0.0, test driver):
+    ///
+    /// ```text
+    /// graphics vnc   port='5903'  ->  vnc://localhost:3          (display, +5900)
+    /// graphics spice port='5901'  ->  spice://localhost:5901     (the port itself)
+    /// ```
+    ///
+    /// `vncdisplay` stays as a fallback for a libvirt too old for
+    /// `domdisplay`; it costs one extra process only when the first answered
+    /// nothing usable.
+    fn console(&self, id: &str) -> Option<(&'static str, u16)> {
+        parse_domdisplay(self.run(&["domdisplay", "--all", id]).ok().as_deref()).or_else(|| {
+            parse_vnc_display(self.run(&["vncdisplay", id]).ok().as_deref())
+                .map(|port| ("vnc", port))
+        })
     }
 }
 
@@ -351,6 +379,84 @@ esac"#,
         assert_eq!(vm.console_port, Some(5901));
     }
 
+    /// The defect this slice is about: a SPICE domain published no console.
+    ///
+    /// `vncdisplay` is what the backend used to ask, and on a SPICE domain
+    /// libvirt answers *Failed to get VNC port. Is this domain using VNC?* and
+    /// exits non-zero — so `console_port` stayed `None` and the phone polled a
+    /// `running` machine forever, on exactly the VM `docs/TESTER-UBUNTU.md`
+    /// tells the host to create.
+    #[test]
+    fn a_spice_domain_publishes_its_console() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo ubuntu-test ;;
+  domstate) echo running ;;
+  domdisplay) echo spice://localhost:5901 ;;
+  vncdisplay) echo "error: Failed to get VNC port. Is this domain using VNC?" >&2; exit 1 ;;
+esac"#,
+        );
+        let vm = virsh
+            .backend()
+            .get("ubuntu-test")
+            .unwrap()
+            .expect("la VM doit être trouvée");
+        assert_eq!(vm.console_protocol, Some("spice"));
+        assert_eq!(vm.console_port, Some(5901));
+    }
+
+    /// And VNC still works, through the new question rather than the old one —
+    /// with the display-versus-port conversion that only the scheme decides.
+    #[test]
+    fn a_vnc_domain_still_publishes_its_console_through_domdisplay() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo poste-vnc ;;
+  domstate) echo running ;;
+  domdisplay) echo vnc://localhost:3 ;;
+  vncdisplay) echo "ne doit pas être appelé" ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("poste-vnc").unwrap().unwrap();
+        assert_eq!(vm.console_protocol, Some("vnc"));
+        assert_eq!(vm.console_port, Some(5903));
+    }
+
+    /// A libvirt too old for `domdisplay` falls back to the question that has
+    /// always existed. Without the fallback this domain would publish nothing.
+    #[test]
+    fn a_libvirt_without_domdisplay_falls_back_to_vncdisplay() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo ancien ;;
+  domstate) echo running ;;
+  domdisplay) echo "error: unknown command: 'domdisplay'" >&2; exit 1 ;;
+  vncdisplay) echo :2 ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("ancien").unwrap().unwrap();
+        assert_eq!(vm.console_protocol, Some("vnc"));
+        assert_eq!(vm.console_port, Some(5902));
+    }
+
+    /// A console nobody can dial is not a console: a SPICE domain listening on
+    /// a unix socket must publish no port rather than an invented one. The
+    /// phone then keeps waiting, which is the truth about that host.
+    #[test]
+    fn a_console_on_a_unix_socket_publishes_no_port() {
+        let virsh = FakeVirsh::new(
+            r#"case "$1" in
+  list) echo prive ;;
+  domstate) echo running ;;
+  domdisplay) echo spice+unix:///tmp/s.sock ;;
+  vncdisplay) exit 1 ;;
+esac"#,
+        );
+        let vm = virsh.backend().get("prive").unwrap().unwrap();
+        assert_eq!(vm.console_protocol, None);
+        assert_eq!(vm.console_port, None);
+    }
+
     /// The defect. `Ok(self.describe(id).ok())` turned every failure into "no
     /// such VM", so a host whose libvirtd is stopped told the phone the machine
     /// did not exist — and the service arm that reports the real cause was
@@ -414,6 +520,60 @@ pub fn parse_domstate(output: &str) -> State {
         "paused" | "pmsuspended" => State::Paused,
         "shut off" | "in shutdown" | "crashed" => State::Stopped,
         _ => State::Unknown,
+    }
+}
+
+/// The console `virsh domdisplay --all` describes, preferring SPICE.
+///
+/// One URI per line. A domain carrying both graphics prints both, and this
+/// picks SPICE — it is the console that carries the clipboard, the file drop
+/// and the resize, so a host that configured both gets the richer one rather
+/// than whichever libvirt happens to list first.
+///
+/// Everything below was read off libvirt 10.0.0 rather than guessed:
+///
+/// ```text
+/// spice://localhost:5901              -> ("spice", 5901)
+/// vnc://localhost:3                   -> ("vnc",   5903)   display + 5900
+/// spice://localhost:-1?tls-port=5907  -> None    (TLS only; no plain port)
+/// spice+unix:///tmp/s.sock            -> None    (a socket the phone cannot reach)
+/// ```
+pub fn parse_domdisplay(output: Option<&str>) -> Option<(&'static str, u16)> {
+    let mut vnc = None;
+    for line in output?.lines() {
+        match parse_display_uri(line.trim()) {
+            // SPICE wins as soon as it appears; nothing later can beat it.
+            Some(("spice", port)) => return Some(("spice", port)),
+            Some(("vnc", port)) => vnc = vnc.or(Some(port)),
+            _ => {}
+        }
+    }
+    vnc.map(|port| ("vnc", port))
+}
+
+/// One line of `domdisplay`, or nothing if it names no reachable TCP port.
+fn parse_display_uri(line: &str) -> Option<(&'static str, u16)> {
+    let (scheme, rest) = line.split_once("://")?;
+    // `spice+unix` and friends carry a path, not a host and port.
+    let protocol = match scheme {
+        "spice" => "spice",
+        "vnc" => "vnc",
+        _ => return None,
+    };
+    // Stop at the query (`?tls-port=…`) and at any path, so only the authority
+    // is searched for the port — and an IPv6 literal keeps its own colons
+    // inside the brackets, the last one still being the separator.
+    let authority = rest
+        .split(['/', '?'])
+        .next()
+        .filter(|authority| !authority.is_empty())?;
+    let (_, port) = authority.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    match protocol {
+        // A `-1` port means "not listening in plain TCP"; it fails to parse as
+        // u16 and lands here as None, which is the honest answer.
+        "spice" => Some(("spice", port)),
+        _ => 5900u16.checked_add(port).map(|port| ("vnc", port)),
     }
 }
 
@@ -540,6 +700,53 @@ mod tests {
                 "{output:?} a été lu comme « starting », que libvirt ne dit jamais"
             );
         }
+    }
+
+    /// The six shapes `virsh domdisplay` actually prints, read off libvirt
+    /// 10.0.0 with the test driver rather than from memory — including the one
+    /// that would have been guessed wrong: **VNC prints a display number and
+    /// SPICE prints a port.** A parser that treated both the same would put a
+    /// VNC guest 5900 ports away from its screen.
+    #[test]
+    fn reads_every_display_uri_virsh_prints() {
+        let case = |text: &str| parse_domdisplay(Some(text));
+        assert_eq!(case("spice://localhost:5901"), Some(("spice", 5901)));
+        assert_eq!(case("vnc://localhost:3"), Some(("vnc", 5903)));
+        // TLS-only SPICE names no plain port; `-1` is not a port.
+        assert_eq!(case("spice://localhost:-1?tls-port=5907"), None);
+        // A socket on the host is not something the phone can dial.
+        assert_eq!(case("spice+unix:///tmp/s.sock"), None);
+        assert_eq!(case(""), None);
+        assert_eq!(parse_domdisplay(None), None);
+    }
+
+    /// A domain with both graphics prints both lines, and wisq takes SPICE —
+    /// the console that carries the clipboard, the file drop and the resize.
+    /// The order is libvirt's, VNC first, so a parser that stopped at the first
+    /// line would hand back the poorer console.
+    #[test]
+    fn a_domain_with_both_consoles_offers_the_richer_one() {
+        assert_eq!(
+            parse_domdisplay(Some("vnc://localhost:5\nspice://localhost:5906")),
+            Some(("spice", 5906)),
+        );
+        // And the same the other way round, so the answer is about SPICE
+        // winning rather than about reading the file backwards.
+        assert_eq!(
+            parse_domdisplay(Some("spice://localhost:5906\nvnc://localhost:5")),
+            Some(("spice", 5906)),
+        );
+    }
+
+    /// An IPv6 literal keeps its colons inside the brackets; the separator is
+    /// still the last one.
+    #[test]
+    fn an_ipv6_host_does_not_swallow_the_port() {
+        assert_eq!(
+            parse_domdisplay(Some("spice://[::1]:5901")),
+            Some(("spice", 5901))
+        );
+        assert_eq!(parse_domdisplay(Some("vnc://[::1]:1")), Some(("vnc", 5901)));
     }
 
     #[test]

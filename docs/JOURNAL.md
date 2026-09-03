@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~05h30 UTC — la console que le démon ne savait pas voir
+
+Maxime veut tester aujourd'hui, avec un hôte Ubuntu. En relisant le chemin
+qu'il va emprunter, le démon s'est révélé incapable de le suivre.
+
+`VirshBackend::describe` posait le port de console à partir d'une seule
+question : `virsh vncdisplay`. Sur un domaine **SPICE** — celui que
+`docs/TESTER-UBUNTU.md` lui dit de créer, avec `--graphics spice` — libvirt
+répond *Failed to get VNC port. Is this domain using VNC?* et sort en erreur.
+Résultat : `consolePort` absent, `consoleProtocol` absent, et le téléphone qui
+interroge une machine `running` **pour toujours**. Tout le lot 5 — le canal
+display, le presse-papiers, l'envoi de fichier — était injoignable par le
+chemin agent. Le mot « spice » n'apparaissait nulle part dans le démon.
+
+### Ce que libvirt dit vraiment
+
+Mesuré ici, sur libvirt 10.0.0 avec le pilote de test et des domaines définis
+pour l'occasion, plutôt que rappelé de mémoire :
+
+```
+graphics spice port='5901'   → spice://localhost:5901
+graphics vnc   port='5903'   → vnc://localhost:3
+les deux                     → vnc://localhost:5   (et spice://… avec --all)
+spice TLS seul               → spice://localhost:-1?tls-port=5907
+spice sur socket unix        → spice+unix:///tmp/s.sock
+domaine arrêté               → error: Domain is not running
+```
+
+**La ligne qui aurait été fausse si je l'avais devinée est la deuxième.**
+SPICE imprime un *port*, VNC imprime un *numéro d'écran*. Un analyseur qui
+traite les deux schémas pareil envoie le téléphone 5900 ports à côté de
+l'écran d'un invité VNC. C'est la deuxième fois cette nuit qu'un pari sur le
+comportement d'un outil se paie en le mesurant d'abord ; le premier avait
+coûté seize secondes de CI, celui-ci aurait coûté une soirée de test.
+
+### Ce qui est corrigé
+
+`domdisplay --all` remplace `vncdisplay`, qui reste en repli pour un libvirt
+trop ancien. SPICE gagne quand un domaine annonce les deux : c'est la console
+qui porte le presse-papiers, le dépôt de fichier et le redimensionnement.
+Un port `-1` et un socket unix ne publient rien — inventer un port serait pire
+que l'attente.
+
+Cinq gardes, les cinq sabordées contre la suite entière : la question réduite
+à `vncdisplay` (le défaut d'origine), VNC compté comme un port, SPICE ne
+gagnant plus, un port par défaut inventé quand rien ne répond, le repli
+retiré. Chacune rougit la sienne, l'arbre intact reste vert.
+
 ## 2026-09-03, ~00h30 UTC — la sonde passe devant la construction
 
 Le deuxième envoi s'est arrêté, comme prévu, sur « fiche d'application pour

@@ -118,7 +118,11 @@ contre un faux `virsh`.
   lancé dans la VM (ou le canal `spicevmc` manque dans sa définition).
 - **Le téléphone ne voit pas l'hôte** — même réseau ? Le pare-feu d'Ubuntu
   (`ufw`) doit laisser passer 7442 (agent) et le port SPICE/VNC (5900+).
-- **`running` sans jamais de port** — la VM n'a pas d'affichage SPICE/VNC, ou
-  il écoute sur `127.0.0.1` : vérifier `virsh domdisplay`.
+- **`running` sans jamais de port** — `virsh domdisplay <vm>` dit ce que le
+  démon voit. Trois réponses ne donnent aucun port joignable : une VM sans
+  affichage du tout, un SPICE en TLS seul (`spice://…:-1?tls-port=…`), et un
+  affichage sur socket unix (`spice+unix:///…`). Un affichage qui écoute sur
+  `127.0.0.1` publie bien un port, mais le téléphone ne l'atteindra pas —
+  d'où le `listen=0.0.0.0` de la section 2.
 - **401 à chaque appel** — le jeton du lien n'est plus celui du fichier
   `~/.wisq-agent/token` (démon relancé après suppression) : réappairer.
