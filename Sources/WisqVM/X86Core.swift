@@ -21,7 +21,7 @@ import Foundation
 /// immédiat s'exécutent ici ; `LEA` est la seule à calculer une adresse, et
 /// justement elle ne la lit pas. Une forme mémoire est **refusée**, pas
 /// approximée.
-public struct X86Core: Equatable, Sendable {
+public struct X86Core: @unchecked Sendable {
     /// Les seize registres, dans l'ordre de l'encodage : RAX, RCX, RDX, RBX,
     /// RSP, RBP, RSI, RDI, puis R8 à R15.
     public var registers: [UInt64]
@@ -29,13 +29,25 @@ public struct X86Core: Equatable, Sendable {
     public var flags: UInt64
     /// Où le cœur en est.
     public var rip: UInt64
+    /// La mémoire de l'invité. Absente, toute forme mémoire est refusée plutôt
+    /// qu'approximée.
+    public var memory: X86Memory?
+    /// Les octets sortis par le port série, dans l'ordre.
+    public var serialOutput: [UInt8] = []
+    /// Combien d'instructions ont été exécutées. C'est ce compteur qui donne
+    /// le chiffre de vitesse.
+    public var retired: UInt64 = 0
+    /// Vrai quand l'invité a exécuté `HLT`.
+    public var halted = false
 
     public init(registers: [UInt64] = [UInt64](repeating: 0, count: 16),
-                flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0) {
+                flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,
+                memory: X86Memory? = nil) {
         precondition(registers.count == 16, "un x86-64 a seize registres généraux")
         self.registers = registers
         self.flags = flags
         self.rip = rip
+        self.memory = memory
     }
 
     /// Les bits de RFLAGS que ce cœur pose ou lit.
@@ -61,6 +73,8 @@ public struct X86Core: Equatable, Sendable {
         case unsupported(String)
         /// Une division par zéro, ou dont le quotient ne tient pas.
         case divideError
+        /// Une adresse en dehors de la mémoire de l'invité.
+        case pageFault(UInt64)
     }
 
     // MARK: - Les registres, et les quatre largeurs
@@ -134,6 +148,28 @@ public struct X86Core: Equatable, Sendable {
 
     // MARK: - Exécuter
 
+    /// Lire l'instruction à RIP, l'exécuter, et recommencer — jusqu'à `budget`
+    /// instructions, ou jusqu'à un `HLT`, ou jusqu'à une faute.
+    ///
+    /// C'est cette boucle qui sera mesurée : elle ne fait rien d'autre que
+    /// décoder et exécuter, donc le chiffre qui en sort est celui de
+    /// l'interprète.
+    @discardableResult
+    public mutating func run(budget: UInt64) throws -> UInt64 {
+        guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
+        var executed: UInt64 = 0
+        var window = [UInt8](repeating: 0, count: X86Instruction.maximumLength)
+        while executed < budget && !halted {
+            guard let start = memory.offset(rip, 1) else { throw Fault.pageFault(rip) }
+            let available = min(X86Instruction.maximumLength, memory.size - start)
+            for byte in 0..<available { window[byte] = memory.bytes[start + byte] }
+            let instruction = try X86Decoder.decode(window)
+            try execute(instruction)
+            executed += 1
+        }
+        return executed
+    }
+
     /// Exécute l'instruction et avance RIP de ce qui a été lu.
     ///
     /// **Un refus n'avance pas.** La première version avançait dans un
@@ -144,8 +180,21 @@ public struct X86Core: Equatable, Sendable {
     /// gestionnaire doit pouvoir regarder.
     public mutating func execute(_ instruction: X86Instruction) throws {
         try perform(instruction)
-        rip &+= UInt64(instruction.length)
+        // Un branchement a déjà posé RIP où il fallait ; il le signale en
+        // laissant `jumped` à vrai plutôt qu'en renvoyant une valeur, pour que
+        // le chemin normal — l'écrasante majorité — ne coûte rien.
+        if jumped {
+            jumped = false
+        } else {
+            rip &+= UInt64(instruction.length)
+        }
+        retired &+= 1
     }
+
+    /// Vrai le temps d'une instruction qui a posé RIP elle-même.
+    var jumped = false
+    /// L'adresse que le dernier ModRM a désignée, calculée une seule fois.
+    var lastAddress: UInt64 = 0
 
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
@@ -162,6 +211,16 @@ public struct X86Core: Equatable, Sendable {
         /// Vrai quand un index de 4 à 7 désigne l'octet **haut** d'un registre.
         let regIsHighByte: Bool
         let rmIsHighByte: Bool
+    }
+
+    /// Les champs du ModRM, **et** l'adresse qu'ils désignent quand ce n'est
+    /// pas un registre. Les deux ensemble parce que l'adresse dépend de l'état
+    /// d'avant l'instruction : la calculer plus tard, après une écriture,
+    /// donnerait autre chose.
+    mutating func decodeFields(_ instruction: X86Instruction, size: Int) throws -> Fields {
+        let fields = try X86Core.fields(instruction, size: size)
+        if fields.mod != 0b11 { lastAddress = try effectiveAddress(instruction, fields) }
+        return fields
     }
 
     static func fields(_ instruction: X86Instruction, size: Int) throws -> Fields {

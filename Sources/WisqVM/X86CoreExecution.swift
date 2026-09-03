@@ -86,16 +86,42 @@ extension X86Core {
 
     // MARK: - Les opérandes
 
-    /// La valeur de `r/m` quand `mod` vaut 11 — un registre. Toute autre forme
-    /// désigne la mémoire, que ce cœur ne sait pas encore lire.
-    func readRM(_ fields: Fields, _ size: Int) throws -> UInt64 {
-        guard fields.mod == 0b11 else { throw Fault.unsupported("un opérande en mémoire") }
-        return read(fields.rm, size, highByte: fields.rmIsHighByte)
+    /// La valeur de `r/m` : un registre quand `mod` vaut 11, la mémoire sinon.
+    ///
+    /// L'adresse est calculée une fois et gardée dans `lastAddress`, parce
+    /// qu'une instruction qui lit puis réécrit — `add (%rax), %rcx` — ne doit
+    /// pas la recalculer : les deux calculs pourraient diverger si un registre
+    /// de base venait d'être écrit.
+    mutating func readRM(_ fields: Fields, _ size: Int) throws -> UInt64 {
+        guard fields.mod != 0b11 else {
+            return read(fields.rm, size, highByte: fields.rmIsHighByte)
+        }
+        guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
+        return try memory.read(lastAddress, size)
     }
 
     mutating func writeRM(_ fields: Fields, _ size: Int, _ value: UInt64) throws {
-        guard fields.mod == 0b11 else { throw Fault.unsupported("un opérande en mémoire") }
-        write(fields.rm, size, highByte: fields.rmIsHighByte, value)
+        guard fields.mod != 0b11 else {
+            write(fields.rm, size, highByte: fields.rmIsHighByte, value)
+            return
+        }
+        guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
+        try memory.write(lastAddress, size, value)
+    }
+
+    // MARK: - La pile
+
+    mutating func push(_ value: UInt64, _ size: Int) throws {
+        guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
+        registers[4] = registers[4] &- UInt64(size)
+        try memory.write(registers[4], size, value)
+    }
+
+    mutating func pop(_ size: Int) throws -> UInt64 {
+        guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
+        let value = try memory.read(registers[4], size)
+        registers[4] = registers[4] &+ UInt64(size)
+        return value
     }
 
     func readReg(_ fields: Fields, _ size: Int) -> UInt64 {

@@ -2618,10 +2618,30 @@ habitude.
      ne fige rien : chaque instruction porte le masque des drapeaux que
      l'architecture lui garantit, sans quoi le fichier serait le portrait
      d'**une** machine et un cœur qui s'y conformerait serait faux ailleurs.
-   - **3b. Le reste**, qui est ce qui démarre : la mémoire, les branchements et
-     la pile, le chargement d'un `bzImage` selon le protocole de la tranche 1,
-     et un port série. **C'est là que tombe le premier vrai chiffre de
-     vitesse.**
+   - **3b. La mémoire, les branchements, la pile et le port série** — *fait*,
+     et avec **le premier vrai chiffre de vitesse**. `X86Memory` porte la
+     mémoire de l'invité, `X86Core.run` enchaîne les instructions jusqu'à un
+     `HLT`, et l'oracle matériel exécute désormais des **programmes entiers** à
+     des adresses fixes, en comparant aussi une fenêtre de mémoire : boucles,
+     sauts courts et longs, appel et retour, cadres de pile, accès aux quatre
+     largeurs, adressage à échelle, saut indirect. **9 036 accords sur 9 036.**
+
+     **Le chiffre : 8,4 MIPS**, mesuré par `swift run -c release wisq-bench` sur
+     une boucle qui additionne, compare, saute, lit et écrit la mémoire — pas un
+     compteur à vide. À ce débit, deux milliards d'instructions prennent
+     **quatre minutes**, cinquante milliards en prennent **cent**. Ces deux
+     derniers nombres sont des **divisions, pas des mesures** ; ce qui est
+     mesuré, c'est le débit.
+
+     Ce que ça corrige : la feuille de route disait « des heures », et c'était
+     une extrapolation. Un noyau seul se compte en minutes. Ce que ça ne dit
+     pas : ce cœur-ci est en Swift, alors que les 122,5 MIPS du rv32 sont ceux
+     du cœur Rust — l'écart mélange deux langages et deux architectures. Et le
+     décodeur alloue un tableau par instruction ; c'est la première chose à
+     regarder avant de conclure quoi que ce soit sur le coût du x86-64.
+   - **3c. Démarrer un vrai `bzImage`** : le protocole de démarrage que la
+     tranche 1 sait lire, la structure `boot_params`, et les premiers messages
+     du noyau sur le port série.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
    morceau qui décide si l'espace utilisateur existe.
 5. **Le disque.** virtio-blk sur virtio-mmio ou PCI, et une image disque dans

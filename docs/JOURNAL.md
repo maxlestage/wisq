@@ -8,6 +8,69 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~21h00 UTC — le premier vrai chiffre : 8,4 MIPS
+
+Maxime : « Va plus vite ». J'ai donc écrit la tranche 3b **pendant** que la CI
+de #170 tournait, au lieu d'attendre. #170 fusionné (sept vérifications
+vertes).
+
+### Le chiffre
+
+**8,4 MIPS**, mesuré par `swift run -c release wisq-bench` sur 280 millions
+d'instructions en 33,3 s. Le programme mesuré additionne, compare, saute, lit
+et écrit la mémoire — pas un compteur qui tourne à vide.
+
+À ce débit : deux milliards d'instructions, **quatre minutes** ; cinquante
+milliards, **cent minutes**. Ces deux nombres-là sont des **divisions**, pas
+des mesures. Ce qui est mesuré, c'est le débit.
+
+**Ce que ça corrige.** La feuille de route disait qu'un démarrage complet
+« se compte en dizaines de milliards d'instructions » et laissait entendre des
+heures. Elle disait aussi, en toutes lettres, que c'était une extrapolation à
+confirmer ou à contredire. Un noyau seul se compte en **minutes**.
+
+**Ce que ça ne dit pas.** Ce cœur-ci est en Swift ; les 122,5 MIPS du rv32
+sont ceux du cœur Rust. L'écart mélange deux langages et deux architectures, et
+le prendre pour le coût du x86-64 seul serait faux. Et le décodeur alloue un
+tableau par instruction : c'est la première chose à regarder avant de conclure.
+
+### Ce qui a été construit
+
+`X86Memory` — un bloc plat derrière un pointeur, parce qu'un cœur qui copierait
+sa mémoire à chaque instruction ne mesurerait plus rien. `X86Core.run` enchaîne
+jusqu'à un `HLT` ou un budget. Les branchements, la pile, les appels, le
+groupe 5, et un port série 16550 assez complet pour qu'un noyau ne se bloque
+pas en attendant de pouvoir écrire.
+
+### L'oracle exécute maintenant des programmes
+
+Un branchement ne se prouve pas sur une instruction seule. Le harnais matériel
+a donc été déplacé à des **adresses fixes** — une adresse rendue par `mmap`
+changerait à chaque exécution et le fichier ne se reproduirait pas — et il
+compare aussi une fenêtre de 64 octets de mémoire. Douze programmes entiers
+passent par là : boucle `loop`, sauts courts et longs, appel et retour, empiler
+et dépiler dans l'autre ordre, cadre de pile complet avec `leave`, écriture aux
+quatre largeurs, adressage à échelle, lecture-modification-écriture au même
+endroit, saut indirect par registre, parcours de mémoire.
+
+**9 036 accords sur 9 036.**
+
+### Deux fois la même faute, deux fois attrapée
+
+J'ai calculé un déplacement de saut **de tête** dans le banc : 2 au lieu de 3.
+Le cœur a fait exactement ce qu'un vrai processeur aurait fait — il a exécuté
+le dernier octet d'`incq` comme un `RET` — et s'est arrêté au bout de six
+instructions. Puis j'ai recommencé dans un test : -5 au lieu de -4. Les deux
+fois, c'est le code qui avait raison et moi qui comptais mal ; les deux fois,
+la correction est venue de `as` et d'`objdump`, pas de ma tête. C'est écrit
+dans les deux fichiers.
+
+Le compteur d'instructions du test d'oracle avait le même genre de défaut : je
+lui avais donné un budget en **octets** au lieu d'instructions, et la boucle
+s'arrêtait au cinquième tour sur dix.
+
+1334 → **1341** tests Swift ; 1486 avec le Rust.
+
 ## 2026-09-03, ~20h35 UTC — le cœur x86-64 calcule, et c'est le processeur qui juge
 
 #169 fusionné (CI verte, log brut : 1324 tests, 3 ignorés, 0 échec ; j'avais

@@ -38,7 +38,16 @@ final class X86OracleTests: XCTestCase {
         let instruction: Int
         let state: Int
         let after: State
+        /// La fenêtre de mémoire après coup, ou nil quand elle n'a pas bougé.
+        let memory: [UInt8]?
     }
+
+    /// Les adresses du harnais, fixes pour que le fichier se reproduise.
+    static let dataAddress: UInt64 = 0x3000_1000
+    static let stackTop: UInt64 = 0x3000_3000
+    static let windowSize = 64
+    /// Le motif dont la fenêtre part.
+    static var pristine: [UInt8] { (0..<windowSize).map { UInt8(0x10 + $0) } }
 
     struct Fixture {
         var states: [Int: State] = [:]
@@ -76,11 +85,24 @@ final class X86OracleTests: XCTestCase {
                 }
                 fixture.instructions[Int(field[1]) ?? -1] = (
                     bytes, number(3), String(field[4]))
-            case "cas" where field.count >= 7:
+            case "cas" where field.count >= 8:
+                var window: [UInt8]?
+                if field[7] != "-" {
+                    let hex = field[7]
+                    var bytes: [UInt8] = []
+                    var index = hex.startIndex
+                    while index < hex.endIndex {
+                        let next = hex.index(index, offsetBy: 2)
+                        bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
+                        index = next
+                    }
+                    window = bytes
+                }
                 fixture.cases.append(Case(
                     instruction: Int(field[1]) ?? -1, state: Int(field[2]) ?? -1,
                     after: State(rax: number(3), rcx: number(4),
-                                 rdx: number(5), flags: number(6))))
+                                 rdx: number(5), flags: number(6)),
+                    memory: window))
             default:
                 continue
             }
@@ -114,11 +136,30 @@ final class X86OracleTests: XCTestCase {
             registers[0] = before.rax
             registers[1] = before.rcx
             registers[2] = before.rdx
+            registers[4] = Self.stackTop
+            registers[6] = Self.dataAddress
+            // La même mémoire que le harnais : le code là où il l'a mis, la
+            // fenêtre au même motif, et la pile qui descend depuis le haut.
+            let memory = X86Memory(size: 0x4000, base: 0x3000_0000)
+            try? memory.load(program.bytes, at: 0x3000_0000)
+            try? memory.load(Self.pristine, at: Self.dataAddress)
             var core = X86Core(
-                registers: registers, flags: before.flags | X86Core.Flag.reserved)
+                registers: registers, flags: before.flags | X86Core.Flag.reserved,
+                rip: 0x3000_0000, memory: memory)
             do {
-                let instruction = try X86Decoder.decode(program.bytes)
-                try core.execute(instruction)
+                // Le harnais exécute tout ce qu'on lui a donné : un programme
+                // entier, pas seulement sa première instruction. Le budget est
+                // large, la boucle s'arrête d'elle-même en sortant du code.
+                // Le budget compte les **instructions**, pas les octets : une
+                // boucle en exécute bien plus qu'elle n'en pèse, et la première
+                // version s'arrêtait au milieu.
+                var remaining = 10_000
+                while core.rip < 0x3000_0000 &+ UInt64(program.bytes.count) && remaining > 0 {
+                    let instruction = try X86Decoder.decode(
+                        memory.dump(core.rip, min(15, 0x4000 - Int(core.rip - 0x3000_0000))))
+                    try core.execute(instruction)
+                    remaining -= 1
+                }
             } catch {
                 byInstruction[program.text, default: 0] += 1
                 if disagreements.count < 15 {
@@ -129,8 +170,10 @@ final class X86OracleTests: XCTestCase {
             let after = State(
                 rax: core.registers[0], rcx: core.registers[1], rdx: core.registers[2],
                 flags: core.flags & X86Core.Flag.arithmetic)
-            let untouched = (3...15).allSatisfy {
-                $0 == 4 || core.registers[$0] == Self.witness()[$0]
+            // RBP et RSP sont exclus : les programmes qui posent un cadre de
+            // pile s'en servent, et c'est justement ce qu'ils prouvent.
+            let untouched = ([3] + Array(8...15)).allSatisfy {
+                core.registers[$0] == Self.witness()[$0]
             }
             // Seuls les drapeaux que l'architecture définit pour cette
             // instruction sont comparés ; le reste, le manuel le dit indéfini,
@@ -139,7 +182,9 @@ final class X86OracleTests: XCTestCase {
             let sameFlags = after.flags & mask == item.after.flags & mask
             let sameRegisters = after.rax == item.after.rax && after.rcx == item.after.rcx
                 && after.rdx == item.after.rdx
-            if sameFlags && sameRegisters && untouched {
+            let window = memory.dump(Self.dataAddress, Self.windowSize)
+            let sameMemory = window == (item.memory ?? Self.pristine)
+            if sameFlags && sameRegisters && sameMemory && untouched {
                 agreed += 1
             } else {
                 byInstruction[program.text, default: 0] += 1
@@ -153,7 +198,8 @@ final class X86OracleTests: XCTestCase {
                         + "drapeaux \(hex(item.after.flags))\n"
                         + "      wisq       : rax \(hex(after.rax)) rcx \(hex(after.rcx)) "
                         + "rdx \(hex(after.rdx)) drapeaux \(hex(after.flags))"
-                        + (untouched ? "" : "\n      et il a écrit dans un registre témoin"))
+                        + (untouched ? "" : "\n      et il a écrit dans un registre témoin")
+                        + (sameMemory ? "" : "\n      et la mémoire diffère"))
             }
         }
         let summary = byInstruction.sorted { $0.value > $1.value }
