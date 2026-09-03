@@ -110,10 +110,18 @@ final class KernelMemoryTests: XCTestCase {
     /// autant que le plafond : sans lui, la machine par défaut deviendrait
     /// impossible sur un appareil où elle a toujours marché.
     func testTheCeilingIsAnEighthCappedAndFloored() {
-        // 2 Go — le plus petit appareil sous iOS 17 : 256 Mo.
-        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 2048 << 20), 256 << 20)
-        // 6 Go — un téléphone récent : 768 Mo, sous le plafond.
-        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 6144 << 20), 768 << 20)
+        // 2 Go — le plus petit appareil sous iOS 17. Le huitième ferait
+        // 256 Mo, mais la règle de l'appareil (« deux gibioctets de moins que
+        // ce qu'il a ») vaut **zéro** ici : c'est le bord net de cette règle,
+        // et c'est le plancher qui rattrape, à la machine de référence.
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 2048 << 20),
+            LinuxMachine.defaultRAMSize)
+        // 6 Go — un téléphone récent : le huitième fait 768 Mo, et la règle de
+        // l'appareil en laisserait 4 Gio, donc c'est bien le huitième qui
+        // décide. Les deux bornes existent vraiment, chacune son tour.
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 6144 << 20), 768 << 20)
         // 16 Go — un iPad : le huitième fait 2 Gio, exactement ce que le
         // processeur 32 bits de l'invité peut adresser. Le plafond était écrit
         // « un gibioctet » et coïncidait donc avec cette limite par accident,
@@ -424,5 +432,59 @@ final class SystemBudgetCeilingTests: XCTestCase {
         XCTAssertFalse(
             message.contains("octets"),
             "le message parle à quelqu'un, pas à un journal : \(message)")
+    }
+}
+
+/// La règle de Maxime : « deux giga plus petit que ce que le téléphone a ».
+///
+/// Elle vit **à côté** de la réponse du système, pas à sa place, parce que les
+/// deux disent des choses différentes : celle-ci dit de combien d'un appareil
+/// wisq accepte d'être, `os_proc_available_memory()` dit ce qui est libre à cet
+/// instant. La plus petite des deux est la seule qu'on puisse proposer sans
+/// proposer un plantage.
+final class DeviceMarginCeilingTests: XCTestCase {
+    /// Sur un iPhone 17 Pro (12 Go), la règle laisse 10 Gio — et c'est donc la
+    /// réponse du système qui décide, comme prévu.
+    func testOnALargePhoneTheSystemAnswerIsTheBindingOne() {
+        let physical: UInt64 = 12 << 30
+        // Le système dit 3 Gio libres : c'est lui qui borne, pas la règle.
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: 3 << 30, physicalMemory: physical),
+            LinuxMachine.maximumRAMSize,
+            "3 Gio moins la réserve dépasse encore la limite d'architecture")
+        // Le système dit 600 Mo libres : lui encore, et bien plus bas.
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: 600 << 20, physicalMemory: physical),
+            (600 - 256) << 20)
+    }
+
+    /// Et la règle mord vraiment quand le système est généreux : un appareil de
+    /// 3 Gio n'en laisse qu'un, quoi que le système raconte.
+    func testTheDeviceRuleBitesWhenTheSystemIsGenerous() {
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: 8 << 30, physicalMemory: 3 << 30),
+            1 << 30,
+            "trois gibioctets moins deux, et le système ne peut pas passer outre")
+    }
+
+    /// Le bord net, et il faut le regarder en face : sur un appareil de deux
+    /// gibioctets ou moins, « deux gibioctets de moins » vaut zéro. Le plancher
+    /// rend alors la machine de référence, celle qui a toujours marché.
+    func testOnASmallDeviceTheRuleReachesZeroAndTheFloorAnswers() {
+        for physical: UInt64 in [2 << 30, 1 << 30, 0] {
+            XCTAssertEqual(
+                KernelMemory.ceiling(availableBytes: 8 << 30, physicalMemory: physical),
+                LinuxMachine.defaultRAMSize,
+                "\(physical >> 30) Gio physiques")
+        }
+    }
+
+    /// La marge est bien deux gibioctets, lue plutôt que réaffirmée.
+    func testTheMarginIsTwoGibibytes() {
+        XCTAssertEqual(KernelMemory.leftToTheDevice, 2 << 30)
+        // Un appareil de 4 Gio en laisse exactement 2 à la machine.
+        XCTAssertEqual(
+            KernelMemory.ceiling(availableBytes: 64 << 30, physicalMemory: 4 << 30),
+            LinuxMachine.maximumRAMSize)
     }
 }

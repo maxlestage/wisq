@@ -8,6 +8,60 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~18h45 UTC — la plate-forme change, et le diagnostic d'abord
+
+Maxime : « Je veux pouvoir gérer ma ram et je veux pouvoir la gérer en étant
+deux giga plus petit que l'iPhone 17 Pro n'a de ram et faut changer la
+plate-forme car risc-v c'est pas la bonne solution pour des distribution
+complète ».
+
+### Ce que j'ai corrigé avant de répondre
+
+**RISC-V n'était pas le blocage.** Debian, Ubuntu et Fedora ont des ports
+riscv64 officiels. Ce qui empêche une distribution complète de tourner ici,
+ce sont trois choses précises : la machine est en **32 bits**, elle est
+**nommu** (pas de MMU, donc pas l'espace d'adressage virtuel dont dépend toute
+distribution), et elle n'a **aucun disque**.
+
+Le dire changeait la question posée. Je la lui ai reposée avec les trois
+options et leur coût, mesure à l'appui, et il a choisi **x86-64 + MMU +
+disque** — l'option la plus lourde, et celle qui fait tourner précisément ce
+qu'il veut faire tourner. Sa décision, prise en connaissance du prix.
+
+### La mesure qui rend la conversation honnête
+
+**122,5 millions d'instructions par seconde** : 200 M en 1,63 s, cœur Rust en
+release, sur un vCPU de datacentre. C'est du rv32, dont le décodage est simple ;
+x86-64 coûte nettement plus par instruction. Un démarrage de bureau se compte
+en dizaines de milliards d'instructions, et **iOS interdit le JIT** aux
+applications de l'App Store — donc tout sera interprété.
+
+J'ai écrit dans la feuille de route que l'extrapolation *est* une
+extrapolation, et que la tranche 3 devra la contredire ou la confirmer avec un
+vrai chiffre. Une estimation qui se transforme en fait par répétition est
+exactement ce que ce journal existe pour empêcher.
+
+### Sa règle de mémoire, et son bord net
+
+« Deux giga plus petit que ce que le téléphone a » vit maintenant **à côté** de
+`os_proc_available_memory()`, pas à sa place : l'une dit de combien d'un
+appareil wisq accepte d'être, l'autre ce qui est libre à cet instant. La plus
+petite décide.
+
+Le bord vaut d'être regardé en face : sur un appareil de deux gibioctets ou
+moins, « deux gibioctets de moins » vaut **zéro**. C'est le plancher — la
+machine de référence — qui répond, et un test le dit explicitement plutôt que
+de laisser la découverte à quelqu'un avec un vieux téléphone.
+
+### Ce qui ne change pas
+
+La machine rv32 reste. Elle démarre en une seconde, elle est utile, et elle
+sert de témoin : le test différentiel entre deux cœurs a déjà attrapé assez de
+choses pour qu'on ne s'en prive pas en cours de route. Et une distribution
+complète tourne **aujourd'hui** sur un hôte, avec wisq comme écran — le lot 7
+ajoute un chemin, il n'en remplace aucun.
+
+
 ## 2026-09-03, ~19h30 UTC — « Ça fonctionne pas je te l'avais dit ! »
 
 Maxime a envoyé une capture. L'application refuse `omarchy-4.0.2.iso 2` avec :
