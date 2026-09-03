@@ -29,6 +29,12 @@ cd "${1:-$(dirname "$0")/..}"
 
 # Files whose whole job is to state what this project is licensed under.
 declared=(
+  # `App/Info.plist` est écrit par XcodeGen depuis `project.yml` et n'existe
+  # pas dans un dépôt fraîchement cloné : la ligne `[ -f ] || continue`
+  # ci-dessous l'aurait donc sautée en silence. C'est le manifeste qui porte
+  # désormais ce que le paquet déclare, et c'est lui qu'il faut regarder ;
+  # le plist reste dans la liste pour un arbre déjà généré.
+  project.yml
   App/Info.plist
   Formula/wisq-agent.rb
   Package.swift
