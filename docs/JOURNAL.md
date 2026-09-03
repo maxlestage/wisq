@@ -8,6 +8,105 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-03, ~22h15 UTC — le noyau disait savoir traiter sa faute ; personne ne la lui rendait
+
+Maxime : « Vas plus vite que jamais ! ». #171 fusionné (sept vérifications
+vertes), branche remise sur `master`, et la tranche suivante écrite dans la
+foulée.
+
+### La question ouverte de la session précédente, et sa réponse
+
+Hier soir, la tentative de démarrage s'arrêtait à **538 976 instructions** du
+vrai noyau d'Alpine sur une faute de page à 0x0D000000, et je ne savais pas si
+elle venait du noyau ou d'une divergence de ce cœur. Le plan écrit était un
+**différentiel contre QEMU** : avancer pas à pas contre un émulateur de
+référence jusqu'à trouver la première divergence.
+
+Ce plan était bon et il n'a pas servi. Avant de le monter, j'ai regardé ce que
+le noyau avait posé comme état, et la réponse était là : **une IDT**, limite
+0x1FF, un **seul** vecteur présent — le quatorze, la faute de page — ciblant
+du code qui commence par `push %rdi ; push %rsi ; push %rdx ; …`, c'est-à-dire
+la séquence d'empilement de `boot_idt_handler`.
+
+C'est ainsi que le décompresseur 64 bits de Linux cartographie la mémoire :
+**à la demande, depuis son propre gestionnaire de faute de page**. Il ne
+prépare pas les tables d'avance ; il faute, et il complète. Le noyau disait
+donc explicitement qu'il savait traiter cette faute. Personne ne la lui
+rendait.
+
+**Ce que ça vaut la peine de retenir** : une demi-heure de lecture de l'état de
+l'invité a répondu à une question pour laquelle j'avais prévu de construire un
+harnais. L'invité porte souvent la réponse ; il suffit de la lui demander.
+
+### Ce qui a été écrit
+
+`X86Interrupts.swift` : la recherche de porte dans l'IDT (limite comprise, bit
+de présence compris), le cadre du mode long — SS, RSP, RFLAGS, CS, l'adresse de
+reprise, et le code d'erreur pour les dix vecteurs qui en portent un —,
+l'alignement de la pile sur seize octets, `CR2` avec l'adresse **entière**, le
+masquage des interruptions selon le genre de porte, et `IRETQ`.
+
+`LIDT` **recopie** désormais le pseudo-descripteur au lieu de retenir l'adresse
+de son opérande. Noter l'adresse suffisait tant que rien ne s'en servait ; la
+livraison s'en sert, et un noyau qui réutilise ces dix octets ensuite ferait
+livrer n'importe quoi.
+
+Une forme que ce cœur ne sait pas exécuter n'a **pas** de vecteur : la livrer
+comme #UD ferait afficher au noyau « invalid opcode » à l'endroit d'un trou de
+l'émulateur, ce qui coûte plus cher que l'arrêt.
+
+### Le résultat, mesuré
+
+**538 976 → 494 661 172 instructions**, soit **918 fois plus loin**. Mesuré en
+release : 38,8 s, donc 12,7 MIPS sur du vrai code de noyau — un chiffre plus
+honnête que celui du banc, qui tourne sur une boucle choisie. Le décompresseur
+écrit le noyau à 0x0D000000 et la boucle
+demande-livre-cartographie-reprend tourne toute seule.
+
+L'arrêt suivant est **nommé** : un accès hors de la mémoire de l'invité à
+l'adresse physique 0x700070D070040, dans un `rep movsq`. Une adresse absurde,
+donc quelque chose l'a calculée de travers. C'est la prochaine chose à
+chercher — et c'est exactement la forme d'information qu'on voulait : pas « ça
+ne marche pas », mais « voici l'octet qui cloche ».
+
+Ce qui n'est **pas** établi : où ça finit. Rien n'est encore sorti du port
+série, donc « le noyau démarre » serait faux.
+
+### Le défaut que j'ai écrit, et pourquoi le test ne le voyait pas
+
+La livraison posait `jumped`, le drapeau qu'un branchement utilise pour dire à
+`execute` « RIP est déjà où il faut ». Mais la livraison a lieu **après** que
+`execute` a levé, donc personne ne le lisait — sauf la première instruction du
+gestionnaire, qui le trouvait encore posé et **ne faisait pas avancer RIP**.
+Elle s'exécutait deux fois. Chez Linux c'est un `push` : huit octets de trop,
+et l'`IRETQ` du gestionnaire repartait sur le **code d'erreur** au lieu de
+l'adresse de reprise. Le noyau sautait à 0x2 et exécutait la page zéro.
+
+Le trouver a été rapide parce que la valeur d'arrivée le disait : RIP valait 2,
+et 2 est exactement le code d'erreur d'une faute en écriture sur une page
+absente. Une valeur d'arrivée absurde est souvent une valeur juste lue au
+mauvais endroit.
+
+**Et le test de bout en bout ne l'attrapait pas.** Écrit d'abord avec un
+gestionnaire dont la première instruction était idempotente — écrire une entrée
+de table de pages —, il passait avec le défaut remis. C'est le sabotage qui l'a
+dit : douze sabotages, onze attrapés par le test nommé, un par personne. Le
+gestionnaire du test compte maintenant ses propres entrées, et exige **une**.
+
+### Ce que les sabotages ont établi
+
+Douze sabotages sur les treize tests de `X86InterruptTests`, chacun contre les
+suites x86 entières. Onze font tomber le test nommé (trois en font tomber
+d'autres en plus, ce qui est du recouvrement, pas un défaut). Le douzième — le
+`jumped` ci-dessus — n'a été attrapé qu'après avoir renforcé le test.
+
+C'est aussi le seul endroit du cœur qui ne soit **pas** prouvé contre le vrai
+processeur : l'oracle matériel ne peut pas produire une faute sans tuer son
+harnais. Ces treize tests sont écrits à la main, contre le manuel, et chacun
+nomme ce qu'il tient.
+
+---
+
 ## 2026-09-03, ~21h00 UTC — le premier vrai chiffre : 8,4 puis 16,5 MIPS
 
 Maxime : « Va plus vite ». J'ai donc écrit la tranche 3b **pendant** que la CI
