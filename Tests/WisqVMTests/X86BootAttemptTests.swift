@@ -12,32 +12,35 @@ import XCTest
 /// Il n'échoue donc que si la préparation elle-même casse, jamais parce que le
 /// noyau ne va pas assez loin.
 ///
-/// **Où on en est, mesuré le 3 septembre 2026** : **494 661 172 instructions**
-/// du vrai noyau d'Alpine 3.20 s'exécutent — 38,8 s en release, soit
-/// 12,7 MIPS — puis le cœur s'arrête sur un accès **hors de la mémoire de
-/// l'invité**, à l'adresse physique 0x700070D070040, dans un `rep movsq`.
-/// L'adresse est absurde, donc quelque chose l'a calculée de travers : c'est
-/// la prochaine chose à chercher, et elle est nommée plutôt que devinée.
+/// **Où on en est, mesuré le 3 septembre 2026 : Linux démarre.** Le vrai
+/// noyau d'Alpine 3.20 — Linux 6.6.134-0-lts — se décompresse, entre dans son
+/// propre espace d'adressage, et **écrit sur le port série de wisq**. Sa
+/// bannière, la carte E820 qu'on lui a donnée, ses zones mémoire, son RCU, sa
+/// console :
 ///
-/// Le budget par défaut de ce test est de cinquante millions d'instructions,
-/// pour qu'il reste supportable en debug ; `WISQ_PC_BUDGET` le change. Le
-/// chiffre ci-dessus vient d'une exécution en release.
+/// ```
+/// [    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
+/// [    0.000000] CPU: vendor_id 'wisq  x86-64' unknown, using generic init.
+/// [    0.000000] Memory: 218360K/261752K available (14336K kernel code, …)
+/// [    0.000000] printk: console [ttyS0] enabled
+/// [    0.000000] Failed to register legacy timer interrupt
+/// ```
 ///
-/// **Ce qui a débloqué ça.** Avant, le cœur s'arrêtait à 538 976 instructions
-/// sur une faute de page à 0x0D000000, et on ne savait pas si elle venait du
-/// noyau ou d'une divergence. La réponse n'a pas demandé d'émulateur de
-/// référence : il a suffi de lire l'IDT que le noyau avait chargée. Limite
-/// 0x1FF, un **seul** vecteur présent — le quatorze, la faute de page —
-/// ciblant du code qui commence par la séquence d'empilement de
-/// `boot_idt_handler`. C'est ainsi que le décompresseur 64 bits de Linux
-/// cartographie : à la demande, depuis son propre gestionnaire. Le noyau
-/// disait savoir traiter cette faute ; personne ne la lui rendait. Voir
-/// `X86InterruptTests`.
+/// **Où ça s'arrête, et c'est nommé par le noyau lui-même** : il n'y a ni PIT
+/// ni APIC, donc aucune horloge ne bat, et il tourne en rond dans une boucle
+/// d'attente. Presque cinq mille octets de journal en sortent avant. La
+/// tranche suivante est écrite dans ce message d'erreur.
 ///
-/// **Ce qui n'est pas établi** : où ça finit. Rien n'est encore sorti du port
-/// série, donc écrire « le noyau démarre » serait faux. La suite est nommée
-/// par le noyau lui-même : après la décompression vient le vrai noyau, et il
-/// voudra un contrôleur d'interruptions, une horloge et une console.
+/// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante. La
+/// livraison d'exception (`X86InterruptTests`), puis l'octet haut lu par une
+/// instruction plus large que lui, puis `ENDBR64`, les bases de FS et GS,
+/// `CMPXCHG`, les registres de débogage, `PREFETCH` — voir
+/// `X86KernelBricksTests`, où chacune est tenue par un test.
+///
+/// **Le budget par défaut est de neuf cents millions d'instructions**, ce qui
+/// prend environ 75 s en release et bien plus en debug ; `WISQ_PC_BUDGET` le
+/// change, et l'assertion sur la bannière ne tient que si on ne l'a pas
+/// baissé.
 final class X86BootAttemptTests: XCTestCase {
     /// Une pagination d'identité sur les quatre premiers gibioctets, en pages
     /// de un gibioctet : quatre entrées suffisent, là où des pages de quatre
@@ -84,7 +87,7 @@ final class X86BootAttemptTests: XCTestCase {
         var stopped: Error?
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 50_000_000)
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 900_000_000)
         } catch {
             stopped = error
         }
@@ -105,8 +108,15 @@ final class X86BootAttemptTests: XCTestCase {
 
             """)
 
-        // La seule chose exigée ici : la préparation tient debout. Ce que le
-        // noyau fait ensuite est un renseignement, pas un contrat.
         XCTAssertGreaterThan(core.retired, 0, "au moins une instruction doit s'exécuter")
+        // Avec le budget entier, la bannière est un **contrat** : c'est la
+        // preuve que le noyau s'est décompressé, qu'il est entré dans son
+        // espace d'adressage et qu'il parle. Avec un budget réduit à la main,
+        // ce n'en est plus un, et l'exiger serait un test qui ment.
+        guard ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"] == nil else { return }
+        XCTAssertTrue(serial.contains("Linux version"),
+                      "le noyau doit écrire sa bannière sur le port série")
+        XCTAssertTrue(serial.contains("console [ttyS0] enabled"),
+                      "et aller jusqu'à ouvrir sa console")
     }
 }

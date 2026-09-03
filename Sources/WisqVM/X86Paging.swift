@@ -109,11 +109,11 @@ extension X86Core {
     mutating func systemInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
         switch opcode {
         case 0x20:  // MOV r64, CRn
-            let fields = try Self.fields(instruction, size: 8)
+            let fields = try Self.fields(instruction)
             registers[fields.rm] = system.control[fields.reg]
             return true
         case 0x22:  // MOV CRn, r64
-            let fields = try Self.fields(instruction, size: 8)
+            let fields = try Self.fields(instruction)
             let value = registers[fields.rm]
             let previous = system.control[fields.reg]
             system.control[fields.reg] = value
@@ -126,6 +126,14 @@ extension X86Core {
                 system.refreshLongMode()
                 pagingActive = system.pagingOn
             }
+            return true
+        case 0x21:  // MOV r64, DRn
+            let fields = try Self.fields(instruction)
+            registers[fields.rm] = system.debug[fields.reg]
+            return true
+        case 0x23:  // MOV DRn, r64
+            let fields = try Self.fields(instruction)
+            system.debug[fields.reg] = registers[fields.rm]
             return true
         case 0x30:  // WRMSR : EDX:EAX vers le registre nommé par ECX
             let value = (registers[2] & 0xFFFF_FFFF) << 32 | (registers[0] & 0xFFFF_FFFF)

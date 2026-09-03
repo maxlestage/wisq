@@ -14,11 +14,11 @@ extension X86Core {
             let size = Self.operandSize(instruction, byteForm: byteForm)
             switch form {
             case 0, 1:  // r/m ← r/m op reg
-                let fields = try decodeFields(instruction, size: size)
+                let fields = try decodeFields(instruction)
                 let result = arithmetic(index, try readRM(fields, size), readReg(fields, size), size)
                 if let result { try writeRM(fields, size, result) }
             case 2, 3:  // reg ← reg op r/m
-                let fields = try decodeFields(instruction, size: size)
+                let fields = try decodeFields(instruction)
                 let result = arithmetic(index, readReg(fields, size), try readRM(fields, size), size)
                 if let result { writeReg(fields, size, result) }
             default:  // l'accumulateur et un immédiat
@@ -42,7 +42,7 @@ extension X86Core {
             try push(Self.signExtend(instruction.immediate,
                                      instruction.immediateBytes), 8)
         case 0x8F:  // POP r/m
-            let fields = try decodeFields(instruction, size: 8)
+            let fields = try decodeFields(instruction)
             let value = try pop(8)
             try writeRM(fields, 8, value)
 
@@ -114,19 +114,19 @@ extension X86Core {
 
         case 0x63:
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, Self.signExtend(try readRM(fields, 4), 4) & Self.mask(size))
 
         case 0x69, 0x6B:  // IMUL à trois opérandes
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, multiplyTruncating(
                 try readRM(fields, size), Self.immediate(instruction, size), size))
 
         // Le groupe 1 : la même arithmétique, avec un immédiat.
         case 0x80, 0x81, 0x83:
             let size = Self.operandSize(instruction, byteForm: opcode == 0x80)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let result = arithmetic(
                 Int((instruction.modrm! >> 3) & 0x07), try readRM(fields, size),
                 Self.immediate(instruction, size), size)
@@ -134,12 +134,12 @@ extension X86Core {
 
         case 0x84, 0x85:  // TEST : un ET dont personne ne garde le résultat.
             let size = Self.operandSize(instruction, byteForm: opcode == 0x84)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             _ = logic(try readRM(fields, size) & readReg(fields, size), size)
 
         case 0x86, 0x87:  // XCHG
             let size = Self.operandSize(instruction, byteForm: opcode == 0x86)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let first = try readRM(fields, size)
             let second = readReg(fields, size)
             try writeRM(fields, size, second)
@@ -147,24 +147,24 @@ extension X86Core {
 
         case 0x88, 0x89:  // MOV r/m ← r
             let size = Self.operandSize(instruction, byteForm: opcode == 0x88)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             try writeRM(fields, size, readReg(fields, size))
 
         case 0x8A, 0x8B:  // MOV r ← r/m
             let size = Self.operandSize(instruction, byteForm: opcode == 0x8A)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, try readRM(fields, size))
 
         case 0x8C:  // MOV r/m16, Sreg
-            let fields = try decodeFields(instruction, size: 2)
+            let fields = try decodeFields(instruction)
             try writeRM(fields, 2, UInt64(segments[fields.reg & 0x07]))
         case 0x8E:  // MOV Sreg, r/m16
-            let fields = try decodeFields(instruction, size: 2)
+            let fields = try decodeFields(instruction)
             segments[fields.reg & 0x07] = UInt16(truncatingIfNeeded: try readRM(fields, 2))
 
         case 0x8D:  // LEA : calcule une adresse et ne la lit pas.
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, try effectiveAddress(instruction, fields) & Self.mask(size))
 
         case 0x90...0x97:  // XCHG rAX, r — dont 0x90, qui est NOP.
@@ -216,7 +216,7 @@ extension X86Core {
         case 0xC0, 0xC1, 0xD0, 0xD1, 0xD2, 0xD3:  // décalages et rotations
             let byteForm = opcode == 0xC0 || opcode == 0xD0 || opcode == 0xD2
             let size = Self.operandSize(instruction, byteForm: byteForm)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let count: UInt64
             switch opcode {
             case 0xC0, 0xC1: count = instruction.immediate & 0xFF
@@ -232,7 +232,7 @@ extension X86Core {
 
         case 0xC6, 0xC7:  // MOV r/m, imm
             let size = Self.operandSize(instruction, byteForm: opcode == 0xC6)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             try writeRM(fields, size, Self.immediate(instruction, size))
 
         case 0xF5: flags ^= Flag.carry            // CMC
@@ -248,7 +248,7 @@ extension X86Core {
 
         case 0xF6, 0xF7:  // le groupe 3 : TEST, NOT, NEG, et les quatre longues
             let size = Self.operandSize(instruction, byteForm: opcode == 0xF6)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let value = try readRM(fields, size)
             switch (instruction.modrm! >> 3) & 0x07 {
             case 0, 1: _ = logic(value & Self.immediate(instruction, size), size)
@@ -263,7 +263,7 @@ extension X86Core {
         case 0xFF where (instruction.modrm ?? 0) >> 3 & 0x07 >= 2:
             // Le groupe 5 : appeler, sauter, empiler — tous par une valeur
             // qu'on va chercher plutôt que par un déplacement.
-            let fields = try decodeFields(instruction, size: 8)
+            let fields = try decodeFields(instruction)
             let target = try readRM(fields, 8)
             switch (instruction.modrm! >> 3) & 0x07 {
             case 2:
@@ -284,7 +284,7 @@ extension X86Core {
 
         case 0xFE, 0xFF:  // INC et DEC, qui ne touchent pas à la retenue
             let size = Self.operandSize(instruction, byteForm: opcode == 0xFE)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let value = try readRM(fields, size)
             let kept = flags & Flag.carry
             let result = (instruction.modrm! >> 3) & 0x07 == 0
@@ -302,7 +302,28 @@ extension X86Core {
     mutating func twoByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         switch opcode {
         case 0x01:  // le groupe 7 : les tables de descripteurs, et le reste
-            _ = try decodeFields(instruction, size: 8)
+            let group = try decodeFields(instruction)
+            // SWAPGS et INVLPG ne touchent pas à la mémoire de l'invité ; les
+            // ranger avant la garde évite d'exiger ce dont ils n'ont pas
+            // besoin.
+            if (instruction.modrm! >> 3) & 0x07 == 7 {
+                if group.mod == 0b11 {
+                    // SWAPGS : échanger la base de GS avec celle que le noyau
+                    // garde de côté. C'est ainsi qu'un noyau bascule entre sa
+                    // zone par processeur et celle de l'espace utilisateur, à
+                    // chaque entrée et chaque sortie.
+                    let aside = system.modelSpecific[X86SystemState.kernelGSBase] ?? 0
+                    system.modelSpecific[X86SystemState.kernelGSBase] =
+                        system.modelSpecific[X86SystemState.gsBase] ?? 0
+                    system.modelSpecific[X86SystemState.gsBase] = aside
+                } else {
+                    // INVLPG : ce cache-ci n'est pas assez fin pour n'oublier
+                    // qu'une page, donc il oublie tout. C'est plus lent et
+                    // jamais faux ; l'inverse serait le contraire.
+                    flushTranslations()
+                }
+                return
+            }
             guard let memory else { throw Fault.unsupported("le groupe 7 sans mémoire") }
             let operand = lastAddress
             switch (instruction.modrm! >> 3) & 0x07 {
@@ -326,15 +347,32 @@ extension X86Core {
             }
 
         case 0x00:  // LLDT, LTR et leurs voisines : notées, pas exécutées
-            _ = try decodeFields(instruction, size: 2)
+            _ = try decodeFields(instruction)
 
         case 0x0B: throw Fault.unsupported("UD2 : l'invité s'est arrêté lui-même")
 
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici
             break
 
+        case 0x1E where instruction.hasPrefix(0xF3):
+            // ENDBR64 et ENDBR32 : les balises de CET, que le noyau sème à
+            // l'entrée de chaque fonction dès qu'il est compilé avec. Sur un
+            // processeur qui n'annonce pas la technologie — et `X86CPUID`
+            // ne l'annonce pas — ce sont des NOP. Les refuser arrêterait le
+            // noyau à sa toute première instruction.
+            guard instruction.modrm == 0xFA || instruction.modrm == 0xFB else {
+                throw Fault.unsupported("F3 0F 1E hors ENDBR")
+            }
+
+        case 0x0D, 0x18...0x1D, 0x1E:
+            // PREFETCH et les NOP réservés du groupe 16 : des indices pour un
+            // cache, et ce cœur n'en a pas. Le noyau en sème sur ses chemins
+            // chauds ; les refuser l'arrêterait pour une instruction dont le
+            // manuel dit lui-même qu'elle n'a aucun effet architectural.
+            break
+
         case 0x1F:  // le NOP long, celui que les compilateurs sèment partout
-            _ = try decodeFields(instruction, size: 8)
+            _ = try decodeFields(instruction)
 
         case 0xAE:  // les barrières mémoire, et les sauvegardes d'état FPU
             let extension_ = (instruction.modrm ?? 0) >> 3 & 0x07
@@ -350,7 +388,7 @@ extension X86Core {
 
         case 0x40...0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             // Le mouvement conditionnel écrit **toujours** en 32 bits, même
             // quand la condition est fausse : le haut du registre est mis à
             // zéro dans les deux cas. C'est une conséquence de la règle
@@ -359,24 +397,24 @@ extension X86Core {
             writeReg(fields, size, value)
 
         case 0x90...0x9F:  // SETcc
-            let fields = try decodeFields(instruction, size: 1)
+            let fields = try decodeFields(instruction)
             try writeRM(fields, 1, condition(opcode) ? 1 : 0)
 
         case 0xA3, 0xAB, 0xB3, 0xBB:  // BT, BTS, BTR, BTC — le bit est nommé par un registre
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let offset = readReg(fields, size) & UInt64(8 * size - 1)
             try bit(Int((opcode >> 3) & 0x03), fields, size, offset)
 
         case 0xBA:  // le groupe 8 : les mêmes, avec un immédiat
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let offset = (instruction.immediate & 0xFF) & UInt64(8 * size - 1)
             try bit(Int((instruction.modrm! >> 3) & 0x07) - 4, fields, size, offset)
 
         case 0xA4, 0xA5, 0xAC, 0xAD:  // SHLD et SHRD
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let count = (opcode == 0xA4 || opcode == 0xAC)
                 ? (instruction.immediate & 0xFF)
                 : (registers[1] & 0xFF)
@@ -391,25 +429,52 @@ extension X86Core {
 
         case 0xAF:  // IMUL r, r/m — la forme qui ne garde que la moitié basse
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, multiplyTruncating(readReg(fields, size),
                                                       try readRM(fields, size), size))
 
+        case 0xB0, 0xB1:  // CMPXCHG
+            // La primitive dont toutes les serrures du noyau sont faites.
+            // `LOCK` n'ajoute rien ici : un seul cœur, rien à exclure.
+            let size = Self.operandSize(instruction, byteForm: opcode == 0xB0)
+            let fields = try decodeFields(instruction)
+            let destination = try readRM(fields, size)
+            let accumulator = read(0, size, highByte: false)
+            // Les drapeaux sont ceux d'une comparaison, dans **cet** ordre :
+            // l'accumulateur moins la destination.
+            let difference = subtract(accumulator, destination, size)
+            setResultFlags(difference, size)
+            if flags & Flag.zero != 0 {
+                try writeRM(fields, size, readReg(fields, size))
+            } else {
+                // L'accumulateur reçoit ce qu'il n'attendait pas — c'est ce qui
+                // permet au noyau de réessayer sans relire.
+                write(0, size, highByte: false, destination)
+            }
+
+        case 0xC0, 0xC1:  // XADD : échanger, puis additionner
+            let size = Self.operandSize(instruction, byteForm: opcode == 0xC0)
+            let fields = try decodeFields(instruction)
+            let destination = try readRM(fields, size)
+            let source = readReg(fields, size)
+            writeReg(fields, size, destination)
+            try writeRM(fields, size, add(destination, source, size))
+
         case 0xB6, 0xB7:  // MOVZX
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             writeReg(fields, size, try readRM(fields, opcode == 0xB6 ? 1 : 2))
 
         case 0xBE, 0xBF:  // MOVSX
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let source = opcode == 0xBE ? 1 : 2
             writeReg(fields, size, Self.signExtend(try readRM(fields, source), source)
                 & Self.mask(size))
 
         case 0xB8 where instruction.hasPrefix(0xF3):  // POPCNT
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let source = try readRM(fields, size)
             writeReg(fields, size, UInt64(source.nonzeroBitCount))
             flags &= ~Flag.arithmetic
@@ -417,7 +482,7 @@ extension X86Core {
 
         case 0xBC, 0xBD:  // BSF et BSR : le premier bit à un, par un bout ou l'autre
             let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction, size: size)
+            let fields = try decodeFields(instruction)
             let source = try readRM(fields, size)
             set(Flag.zero, source == 0)
             // Quand la source est nulle, la destination est *indéfinie* et le
@@ -457,7 +522,7 @@ extension X86Core {
             x87Control = 0x037F
             return
         }
-        let fields = try decodeFields(instruction, size: 2)
+        let fields = try decodeFields(instruction)
         // FNSTSW en mémoire : dd /7. FNSTCW : d9 /7.
         if opcode == 0xDD && extension_ == 7 {
             try writeRM(fields, 2, UInt64(x87Status))
@@ -559,6 +624,7 @@ extension X86Core {
         }
         let rex = instruction.rex ?? 0
         let displacement = UInt64(bitPattern: instruction.displacement)
+        let segment = segmentBase(instruction)
         if modrm & 0x07 == 0b100, let sib = instruction.sib {
             let index = Int((rex & 0x02) << 2 | ((sib >> 3) & 0x07))
             let base = Int((rex & 0x01) << 3 | (sib & 0x07))
@@ -566,14 +632,35 @@ extension X86Core {
             // qu'on écrit une adresse sans registre d'échelle.
             let scaled = index == 4 ? 0 : registers[index] << UInt64((sib >> 6) & 0x03)
             let baseValue = (fields.mod == 0 && (sib & 0x07) == 0b101) ? 0 : registers[base]
-            return baseValue &+ scaled &+ displacement
+            return segment &+ baseValue &+ scaled &+ displacement
         }
         if fields.mod == 0 && modrm & 0x07 == 0b101 {
             // Relatif à RIP : l'adresse suit l'instruction entière.
-            return rip &+ UInt64(instruction.length) &+ displacement
+            return segment &+ rip &+ UInt64(instruction.length) &+ displacement
         }
-        return registers[fields.rm] &+ displacement
+        return segment &+ registers[fields.rm] &+ displacement
     }
+
+    /// La base du segment que l'instruction a nommé, ou zéro.
+    ///
+    /// **En mode long il n'en reste que deux.** ES, CS, SS et DS ont une base
+    /// forcée à zéro, et le processeur ignore leurs préfixes ; FS et GS, non,
+    /// et leur base ne vient plus d'un descripteur mais d'un MSR. C'est ce que
+    /// tout noyau x86-64 utilise pour ses variables par processeur : `%gs:` en
+    /// tête d'un accès, et la base fait le reste. Un cœur qui ignore le
+    /// préfixe lit donc l'adresse **sans** la base — c'est-à-dire au début de
+    /// la mémoire, là où il n'y a rien de ce qu'on cherchait.
+    @inline(__always)
+    func segmentBase(_ instruction: X86Instruction) -> UInt64 {
+        guard instruction.prefixMask & Self.segmentPrefixes != 0 else { return 0 }
+        let which = instruction.hasPrefix(0x65) ? X86SystemState.gsBase : X86SystemState.fsBase
+        return system.modelSpecific[which] ?? 0
+    }
+
+    /// Les bits de `%fs:` et `%gs:` dans le masque de préfixes, cherchés une
+    /// fois : le chemin chaud ne fait plus qu'un ET.
+    static let segmentPrefixes: UInt16 =
+        X86Decoder.prefixBit[0x64] | X86Decoder.prefixBit[0x65]
 
     /// BT, BTS, BTR, BTC : lire le bit, puis éventuellement le changer.
     mutating func bit(_ kind: Int, _ fields: Fields, _ size: Int, _ offset: UInt64) throws {
