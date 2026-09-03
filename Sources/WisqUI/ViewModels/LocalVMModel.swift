@@ -97,6 +97,26 @@ public final class LocalVMModel {
         // of which the view can trigger the instant this returns. A few
         // megabytes off local storage is a few milliseconds, and this method
         // already read a larger snapshot synchronously.
+        // Asked of the filesystem, before a single byte is read.
+        //
+        // This is where the app died. `Data(contentsOf:)` reads the whole file
+        // into memory on this thread, and the size check lived after it, inside
+        // `LinuxMachine.load`. Someone who picked a distribution image — an ISO
+        // of two gigabytes, thirty-two times this machine's entire RAM — got
+        // the phone's memory pressure killer instead of a refusal: the app
+        // vanished with no message, on a file the next line would have rejected
+        // in microseconds.
+        if let size = try? FileManager.default.attributesOfItem(
+            atPath: kernelURL.path)[.size] as? Int,
+            size > LinuxMachine.maximumKernelImageBytes {
+            _ = life.guestFinished()
+            finish(with: LinuxMachine.tooLargeExplanation(
+                size: size, name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+
         let image: Data
         do {
             image = try Data(contentsOf: kernelURL)
@@ -282,6 +302,17 @@ private final class ConsoleSink: @unchecked Sendable {
     }
 }
 
+/// Why an imported file was refused.
+public enum KernelImportError: Error, LocalizedError {
+    case tooLarge(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .tooLarge(let explanation): return explanation
+        }
+    }
+}
+
 /// Where imported kernel images live, and what is in there.
 public enum KernelLibrary {
     public static func directory() throws -> URL {
@@ -302,10 +333,22 @@ public enum KernelLibrary {
     }
 
     /// Copies a picked file into the library, keeping its name.
+    ///
+    /// Refuses before copying. The picker accepts any file — deliberately, a
+    /// kernel arrives with whatever name its author gave it — so the only
+    /// thing that can decide is the file itself. Copying a two-gigabyte image
+    /// into the app's storage in order to discover on boot that it cannot fit
+    /// in a sixty-four megabyte machine costs the disk and teaches nothing.
     public static func importKernel(from source: URL) throws -> URL {
         let destination = try directory().appendingPathComponent(source.lastPathComponent)
         _ = source.startAccessingSecurityScopedResource()
         defer { source.stopAccessingSecurityScopedResource() }
+        if let size = try? FileManager.default.attributesOfItem(
+            atPath: source.path)[.size] as? Int,
+            size > LinuxMachine.maximumKernelImageBytes {
+            throw KernelImportError.tooLarge(
+                LinuxMachine.tooLargeExplanation(size: size, name: source.lastPathComponent))
+        }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }

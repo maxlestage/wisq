@@ -19,6 +19,59 @@ public final class LinuxMachine: @unchecked Sendable {
     /// sits below it, and the kernel must not allocate over either.
     private static let stateReserve: UInt32 = 192
 
+    /// The largest kernel image this machine can hold, in bytes.
+    ///
+    /// It is not a policy: the image is copied into guest RAM, below the DTB,
+    /// which sits below the reserved state. Anything larger has nowhere to go.
+    ///
+    /// It is public because the app has to refuse an oversized file **before**
+    /// reading it, and a second number written by hand would drift from this
+    /// one. `LocalVMModel` asks the filesystem for a size and compares it here;
+    /// `load` compares again on the bytes it actually got, since a file can
+    /// change between the two.
+    public static var maximumKernelImageBytes: Int {
+        Int(ramSize - UInt32(DefaultDTB.bytes.count) - stateReserve)
+    }
+
+    /// Why a file is refused, in the terms of the machine that refuses it.
+    ///
+    /// It lives here, with the number it names, rather than in the view that
+    /// shows it: the sentence is about this machine's memory, and a copy
+    /// written next to a button would drift from `ramSize` the first time that
+    /// changes. It also makes the wording testable on every platform, where
+    /// the app layer only runs in a simulator.
+    ///
+    /// It sets the file's size against the machine's, because a file is not
+    /// "too big" in the abstract — it is bigger than the RAM meant to hold it —
+    /// and it says where a real distribution belongs, because someone who
+    /// arrives with one has learned the useful thing only when they know that.
+    ///
+    /// **One number for the machine, not two.** The first draft also quoted the
+    /// share left for the kernel, and a sabotage refused to bite: that share is
+    /// 1728 bytes short of the whole, so at one decimal both render `64.0 Mo`.
+    /// The sentence read "n'a que 64.0 Mo de mémoire au total, dont 64.0 Mo
+    /// pour le noyau" — a typo to a reader, and two facts no test could tell
+    /// apart, since it found either number by looking for the other.
+    public static func tooLargeExplanation(size: Int, name: String) -> String {
+        let mega = { (bytes: Int) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+        // Un seul chiffre pour la machine, pas deux. La part réservée au
+        // noyau ne diffère du total que de mille octets — le DTB et l'état —
+        // donc les deux s'affichaient « 64.0 Mo » côte à côte, ce qui ne se
+        // lit pas comme une contrainte mais comme une coquille. Le sabordage
+        // l'a montré autrement : le test passait en trouvant l'un pour
+        // l'autre.
+        return """
+            \(name) fait \(mega(size)) Mo. La machine émulée n'a que \
+            \(mega(Int(ramSize))) Mo de mémoire en tout.
+
+            wisq fait tourner ici un noyau Linux rv32ima « nommu » — quelques \
+            mégaoctets. Une image de distribution ne peut pas y entrer, quelle \
+            que soit la patience : ce n'est ni la même architecture, ni la même \
+            échelle, et il n'y a pas de disque. Pour une vraie distribution, \
+            faites-la tourner sur un hôte et connectez-vous dessus avec wisq.
+            """
+    }
+
     private let ram: UnsafeMutableRawPointer
     private var core: RV32Core!
 
@@ -76,8 +129,13 @@ public final class LinuxMachine: @unchecked Sendable {
         }
 
         let dtbPointer = Self.ramSize - UInt32(dtb.count) - Self.stateReserve
-        guard !kernelImage.isEmpty,
-              UInt32(kernelImage.count) <= dtbPointer else {
+        // Compared in `Int`, deliberately. `UInt32(kernelImage.count)` traps on
+        // anything from four gibibytes up — the guard against an image too
+        // large was itself a crash for the largest images of all. Nothing
+        // reaches this line with such a file any more, because the app refuses
+        // it from its size on disk, but a guard that traps instead of refusing
+        // is not a guard.
+        guard !kernelImage.isEmpty, kernelImage.count <= Int(dtbPointer) else {
             throw LinuxMachineError.imageTooLarge
         }
 
