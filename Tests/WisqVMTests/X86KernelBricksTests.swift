@@ -223,15 +223,28 @@ final class X86KernelBricksTests: XCTestCase {
 
     // MARK: - L'état de la virgule flottante, que le noyau range sans demander
 
-    /// `FXSAVE` écrit une zone de 512 octets. **Ce cœur n'a ni registres x87
-    /// ni XMM** : il y met les mots de contrôle qu'il tient vraiment et met le
-    /// reste à zéro. Un invité qui *calculerait* en virgule flottante ne serait
-    /// pas servi par ça — mais rien ici ne calcule en virgule flottante, et un
-    /// noyau x86-64 range cette zone dès son démarrage sans jamais demander à
-    /// `CPUID` si elle existe : sur cette architecture, elle est garantie.
-    func testFXSAVEWritesTheControlWordsItActuallyHas() throws {
+    /// `FXSAVE` écrit une zone de 512 octets — **dont les seize registres
+    /// XMM**, et c'est le sens de cette réécriture.
+    ///
+    /// Ces deux tests disaient, dans leur propre documentation, que ce cœur
+    /// n'avait « ni registres x87 ni XMM » et que « rien ici ne calcule en
+    /// virgule flottante ». C'était vrai le jour où ils ont été écrits. Le
+    /// SSE2 entier, le flottant scalaire et la pile x87 sont entrés dans ce
+    /// cœur depuis, et **personne n'est revenu relire la prémisse** — les
+    /// tests, eux, continuaient à exiger que la zone soit remplie de zéros,
+    /// c'est-à-dire à **tenir le défaut en place**.
+    ///
+    /// Le prix a été mesuré : `/init` mourait. Le noyau sauve l'état de la
+    /// virgule flottante avant de s'en servir et le rend après ; ne rien
+    /// sauver et ne rien rendre laisse au programme les registres du noyau.
+    ///
+    /// Le format vient maintenant du vrai processeur — voir
+    /// `X86FloatingPointStateOracleTests`. Ici on tient les trois faits qu'un
+    /// test lisible doit porter : les mots de contrôle, les XMM, et le fait
+    /// que l'instruction s'arrête à 416 octets.
+    func testFXSAVEWritesTheVectorRegistersAndStopsAt416() throws {
         let ram = X86Memory(size: 1 << 20, base: 0)
-        // De la garniture, pour vérifier que la zone est bien remise à zéro.
+        // De la garniture, pour voir où l'instruction s'arrête vraiment.
         try ram.load([UInt8](repeating: 0xEE, count: 512), at: 0x2000)
         // `0f ae 06` : fxsave (%rsi)
         var core = try Self.core(ram, [0x0F, 0xAE, 0x06])
@@ -239,18 +252,28 @@ final class X86KernelBricksTests: XCTestCase {
         core.x87Control = 0x027F
         core.x87Status = 0x1234
         core.mxcsr = 0x1F80
+        core.vectors[2] = 0x7FFC_E0EF_1C90   // xmm1, le registre qui mourait
+        core.vectors[3] = 0xFEED_FACE
         try core.run(budget: 1)
         XCTAssertEqual(try ram.read(0x2000, 2), 0x027F, "le mot de contrôle x87")
         XCTAssertEqual(try ram.read(0x2002, 2), 0x1234, "le mot d'état x87")
         XCTAssertEqual(try ram.read(0x2018, 4), 0x1F80, "MXCSR")
         XCTAssertEqual(try ram.read(0x201C, 4), 0xFFFF,
                        "le masque des bits acceptés — zéro voudrait dire aucun")
-        XCTAssertEqual(try ram.read(0x2020, 8), 0, "et le reste de la zone est nettoyé")
-        XCTAssertEqual(try ram.read(0x21F8, 8), 0, "jusqu'au dernier des 512 octets")
+        XCTAssertEqual(try ram.read(0x2000 + 160 + 16, 8), 0x7FFC_E0EF_1C90,
+                       "xmm1, à 160 + 16 — sans lui, `/init` meurt")
+        XCTAssertEqual(try ram.read(0x2000 + 160 + 24, 8), 0xFEED_FACE,
+                       "et sa moitié haute")
+        XCTAssertEqual(try ram.read(0x21A0, 8), 0xEEEE_EEEE_EEEE_EEEE,
+                       "l'instruction s'arrête à 416 octets, et c'est mesuré")
     }
 
-    /// Et `FXRSTOR` les relit. L'aller-retour est ce que le noyau fait à chaque
-    /// changement de contexte.
+    /// Et `FXRSTOR` les relit — **les XMM compris**. L'aller-retour est ce que
+    /// le noyau fait à chaque fois qu'il emprunte ces registres.
+    ///
+    /// Le mot de contrôle revient avec son bit 6 levé : le manuel le dit
+    /// « réservé » et n'en promet rien, le processeur le force, et le corpus
+    /// l'a montré sur 208 cas d'un coup.
     func testFXRSTORReadsThemBack() throws {
         let ram = X86Memory(size: 1 << 20, base: 0)
         // `0f ae 06` fxsave, puis `0f ae 0e` fxrstor, au même endroit.
@@ -258,12 +281,15 @@ final class X86KernelBricksTests: XCTestCase {
         core.registers[6] = 0x2000
         core.x87Control = 0x0300
         core.mxcsr = 0x1DC0
+        core.vectors[2] = 0x7FFC_E0EF_1C90
         try core.run(budget: 1)
         core.x87Control = 0
         core.mxcsr = 0
+        core.vectors[2] = 0   // le noyau s'est servi du registre
         try core.run(budget: 1)
-        XCTAssertEqual(core.x87Control, 0x0300)
+        XCTAssertEqual(core.x87Control, 0x0340, "0x0300, et le bit 6 que le processeur force")
         XCTAssertEqual(core.mxcsr, 0x1DC0)
+        XCTAssertEqual(core.vectors[2], 0x7FFC_E0EF_1C90, "et xmm1 est rendu")
     }
 
     /// `STMXCSR` et `LDMXCSR` seuls, sans la zone entière.
