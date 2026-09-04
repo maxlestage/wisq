@@ -20,11 +20,16 @@ final class X86InterruptTests: XCTestCase {
     /// dernier niveau suffit — et c'est elle que le gestionnaire du test de
     /// bout en bout ira compléter.
     static func map(_ ram: X86Memory, _ pages: [UInt64]) throws {
-        try ram.write(0x2000, 8, 0x3000 | X86Core.present | 2)
-        try ram.write(0x3000, 8, 0x4000 | X86Core.present | 2)
-        try ram.write(0x4000, 8, 0x5000 | X86Core.present | 2)
+        // Les trois permissions ensemble : présente, inscriptible, et ouverte
+        // aux programmes. Poser la présence seule ferait fauter tout accès
+        // d'anneau trois — ce qui est désormais le comportement juste, et ce
+        // que ces tests ne cherchent pas à mesurer.
+        let open = X86Core.present | X86Core.writable | X86Core.userAccessible
+        try ram.write(0x2000, 8, 0x3000 | open)
+        try ram.write(0x3000, 8, 0x4000 | open)
+        try ram.write(0x4000, 8, 0x5000 | open)
         for page in pages {
-            try ram.write(0x5000 &+ ((page >> 12) & 0x1FF) * 8, 8, page | X86Core.present | 2)
+            try ram.write(0x5000 &+ ((page >> 12) & 0x1FF) * 8, 8, page | open)
         }
     }
 
