@@ -522,6 +522,9 @@ public struct X86Core: @unchecked Sendable {
             // `MOVDQA` avec un préfixe et rien du tout sans, et la table
             // ordinaire ne saurait pas les départager.
             if try vectorInstruction(instruction, opcode) { return }
+            // Puis l'arithmétique vectorielle, qui occupe encore d'autres
+            // octets de la même table. Voir `X86VectorArithmetic.swift`.
+            if try vectorArithmetic(instruction, opcode) { return }
             try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
