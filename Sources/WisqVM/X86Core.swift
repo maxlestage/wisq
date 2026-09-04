@@ -61,6 +61,27 @@ public struct X86Core: @unchecked Sendable {
     public var system = X86SystemState()
     /// Le contrôleur d'interruptions et l'horloge d'un PC.
     public var devices = X86LegacyDevices()
+    /// Le témoin des adresses non canoniques : armé ou non, et ce qu'il a vu.
+    ///
+    /// **Seul l'anneau trois est regardé** quand il est armé, et ce n'est pas
+    /// une économie gratuite : le noyau manipule légitimement, dans les mêmes
+    /// registres, des valeurs qui ne sont pas des adresses — masques,
+    /// compteurs, entrées de table de pages. Les signaler rendrait le témoin
+    /// inutilisable à force de bruit.
+    ///
+    /// **Ce ne sont pas des champs de l'invité**, et l'instantané ne les porte
+    /// pas : une machine reprise ailleurs ne doit pas hériter d'un instrument
+    /// de mesure qu'on avait allumé ici. Voir `X86CanonicalWatch.swift`.
+    public var canonicalWatchArmed = false
+    public var nonCanonicalSeen: [NonCanonical] = []
+    /// Pour chaque registre, l'adresse de la dernière instruction d'anneau
+    /// trois qui l'a écrit. C'est ce tableau qui permet de remonter de
+    /// l'emploi d'une adresse à sa fabrication.
+    public var registerBornAt = [UInt64](repeating: 0, count: 16)
+    /// La dernière instruction d'anneau trois qui a abouti. Quand l'adresse
+    /// fautive est RIP lui-même, c'est elle qui a sauté dans le décor.
+    public var previousRip: UInt64 = 0
+
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
     /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
@@ -131,6 +152,9 @@ public struct X86Core: @unchecked Sendable {
     /// Le cache de traduction : étiquettes et cadres, côte à côte.
     var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
     var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
+    /// Les permissions de chaque page mise en cache. Sans elles, une lecture
+    /// autorisée ouvrirait la porte à une écriture qui ne l'est pas.
+    var translationFlags = [UInt8](repeating: 0, count: X86Core.translationSlots)
 
     public init(registers: [UInt64] = [UInt64](repeating: 0, count: 16),
                 flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,
@@ -292,7 +316,18 @@ public struct X86Core: @unchecked Sendable {
                 }
                 let available = min(X86Instruction.maximumLength, memory.size - start)
                 let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
+                // Le témoin, quand il est armé et qu'on est dans un programme.
+                // La condition est d'abord sur le drapeau : éteint — le cas de
+                // toute exécution normale — il n'y a pas même de lecture du
+                // privilège, et le chemin chaud reste ce qu'il était.
+                let watching = canonicalWatchArmed && privilege == 3
+                let entry = rip
+                let before = watching ? registers : []
                 try execute(instruction)
+                if watching {
+                    rememberBirths(before: before, rip: entry)
+                    previousRip = entry
+                }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
                 // les autres sortent d'ici, parce qu'un cœur qui avale une
@@ -346,6 +381,16 @@ public struct X86Core: @unchecked Sendable {
         if byteForm { return 1 }
         if let rex = instruction.rex, rex & 0x08 != 0 { return 8 }
         return instruction.hasPrefix(0x66) ? 2 : 4
+    }
+
+    /// La largeur d'un aller-retour sur la pile : huit octets, deux sous le
+    /// préfixe de taille.
+    ///
+    /// **REX.W n'entre pas ici**, et c'est ce qui distingue cette fonction de
+    /// `operandSize` : en mode 64 bits, `push` et `pop` sont déjà larges sans
+    /// qu'on le demande, et le seul préfixe qui les raccourcit est `66`.
+    static func stackSize(_ instruction: X86Instruction) -> Int {
+        instruction.hasPrefix(0x66) ? 2 : 8
     }
 
     struct Fields {
