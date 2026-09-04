@@ -61,7 +61,15 @@ extension X86Core {
         } catch Fault.pageFault {
             // CR2 porte l'adresse **entière**, pas la page : c'est ce qu'un
             // gestionnaire y lit, et l'arrondir lui cacherait l'octet visé.
-            pageFaultErrorCode = how.errorCode
+            // **Le bit qui dit d'où vient l'accès.** Linux s'en sert pour
+            // trancher entre « une page manque à un programme, je la lui
+            // pose » et « le noyau est parti dans le décor, j'affiche un
+            // oops ». Sans lui, la toute première page manquante de `/init` a
+            // été prise pour un défaut du noyau lui-même : `Oops: 0010`, un
+            // vidage de registres, et « Attempted to kill init ». Le
+            // programme n'avait rien fait de mal ; on avait juste oublié de
+            // dire qu'il était le programme.
+            pageFaultErrorCode = how.errorCode | (privilege == 3 ? 1 << 2 : 0)
             throw Fault.pageFault(at)
         }
         translationTags[slot] = page &+ 1

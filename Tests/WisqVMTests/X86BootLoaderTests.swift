@@ -194,4 +194,56 @@ final class X86BootLoaderTests: XCTestCase {
         XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x228, 4),
                        placement.commandLineAddress)
     }
+
+    /// Le disque en mémoire, et ce qu'il change.
+    ///
+    /// **C'est ce qui donne un espace utilisateur.** Le noyau d'Alpine n'a
+    /// aucun pilote de disque compilé dedans — ni virtio, ni rien : ce sont des
+    /// modules, et ils vivent justement dans cette archive. Sans elle, il n'a
+    /// rien à monter et panique sur `VFS: Unable to mount root fs`. Avec, il la
+    /// déballe dans un tmpfs et exécute son `/init`.
+    func testAnInitialRamdiskIsPlacedAndAnnounced() throws {
+        let ram = X86Memory(size: 64 << 20, base: 0)
+        let disk = [UInt8](repeating: 0x5A, count: 4096)
+        let placement = try X86BootLoader.load(
+            kernel: Self.syntheticKernel(), into: ram, initialRamdisk: disk)
+        XCTAssertGreaterThan(placement.ramdiskAddress, 0)
+        XCTAssertEqual(placement.ramdiskBytes, disk.count)
+        XCTAssertEqual(placement.ramdiskAddress % 0x1000, 0, "aligné sur une page")
+        XCTAssertEqual(ram.dump(placement.ramdiskAddress, 4), [0x5A, 0x5A, 0x5A, 0x5A])
+        // Et la page zéro doit le dire, sinon le noyau ne le cherche pas — et
+        // pire, le décompresseur écrira dessus en croyant la place libre.
+        XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x218, 4),
+                       placement.ramdiskAddress)
+        XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x21C, 4),
+                       UInt64(disk.count))
+    }
+
+    /// Sans disque, les deux champs restent à zéro — et pas à une adresse
+    /// plausible mais vide, qui ferait déballer n'importe quoi.
+    func testWithoutARamdiskTheFieldsStayAtZero() throws {
+        let ram = X86Memory(size: 64 << 20, base: 0)
+        let placement = try X86BootLoader.load(kernel: Self.syntheticKernel(), into: ram)
+        XCTAssertEqual(placement.ramdiskAddress, 0)
+        XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x218, 4), 0)
+        XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x21C, 4), 0)
+    }
+
+    /// Et un disque qui ne tient pas est **refusé**, pas tronqué. Le tronquer
+    /// donnerait une archive invalide, et le noyau dirait « je n'ai pas de
+    /// racine » là où la vraie raison est « on ne t'a pas tout donné ».
+    func testARamdiskThatDoesNotFitIsRefused() throws {
+        // Une mémoire où le **noyau** tient — la même que le test au-dessus —
+        // mais où le disque ne rentre plus. La première version prenait une
+        // mémoire trop petite pour le noyau lui-même : elle passait, mais pour
+        // la mauvaise raison, et le sabotage l'a dit.
+        let ram = X86Memory(size: 64 << 20, base: 0)
+        let disk = [UInt8](repeating: 0, count: 60 << 20)
+        XCTAssertThrowsError(try X86BootLoader.load(
+            kernel: Self.syntheticKernel(), into: ram, initialRamdisk: disk)) {
+            guard case .notEnoughMemory = $0 as? X86BootLoader.LoadError else {
+                return XCTFail("attendu un refus de place, obtenu \($0)")
+            }
+        }
+    }
 }

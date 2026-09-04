@@ -375,4 +375,26 @@ final class X86InterruptTests: XCTestCase {
         XCTAssertEqual(try ram.read(0xA020, 2), 0x1FF, "SIDT rend la limite")
         XCTAssertEqual(try ram.read(0xA022, 8), Self.idt, "et la base, dans la même forme")
     }
+
+    /// **Le bit qui dit que la faute vient d'un programme.** Linux s'en sert
+    /// pour trancher entre « une page manque à un programme, je la lui pose »
+    /// et « le noyau est parti dans le décor, j'affiche un oops ».
+    ///
+    /// Sans lui, la toute première page manquante de `/init` a été prise pour
+    /// un défaut du noyau lui-même : `Oops: 0010`, un vidage de registres, et
+    /// `Attempted to kill init!`. Le programme n'avait rien fait de mal ; on
+    /// avait juste oublié de dire qu'il était le programme. Le niveau vient
+    /// des deux bits du bas de CS, et de rien d'autre.
+    func testTheErrorCodeSaysWhenTheFaultCameFromAProgram() throws {
+        for (selector, user) in [(UInt16(0x10), false), (UInt16(0x33), true)] {
+            let (ram, base) = try Self.prepared(code: [0x8A, 0x03])  // une lecture
+            var core = base
+            core.registers[3] = Self.missing
+            core.segments[1] = selector
+            try core.run(budget: 1)
+            let code = try ram.read(core.registers[4], 8)
+            XCTAssertEqual(code & (1 << 2) != 0, user,
+                           "sélecteur 0x\(String(selector, radix: 16))")
+        }
+    }
 }

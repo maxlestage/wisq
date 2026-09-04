@@ -2797,6 +2797,36 @@ habitude.
      reste à zéro : il n'a ni registres x87 ni XMM, et rien ici ne calcule en
      virgule flottante.
 
+   - **3g. Le disque en mémoire, et l'espace utilisateur** — *fait, et c'est
+     là que ça devient une machine*. Le noyau d'Alpine n'a **aucun** pilote de
+     disque compilé dedans : ni virtio, ni rien — ce sont des modules, et ils
+     vivent dans l'initramfs. C'est pour ça que la panique `VFS: Unable to
+     mount root fs` n'appelait pas virtio-blk mais un **initrd**.
+
+     `X86BootLoader` le pose en haut de la mémoire, aligné sur une page, et
+     l'annonce dans la page zéro (`ramdisk_image`, `ramdisk_size`). Sans cette
+     annonce, le décompresseur écrirait dessus en croyant la place libre.
+
+     Avec l'`initramfs-lts` d'Alpine (26 Mio), le noyau le déballe dans un
+     tmpfs et **exécute `/init` en anneau trois**. Premier programme
+     utilisateur jamais lancé par wisq.
+
+     **Et le bit qui manquait pour qu'il vive.** La première page manquante de
+     `/init` a été prise pour un défaut du noyau lui-même : `Oops: 0010`, un
+     vidage de registres, `Attempted to kill init!`. Le code d'erreur d'une
+     faute de page porte un bit qui dit **d'où vient l'accès**, et il n'était
+     pas posé. Linux s'en sert pour trancher entre « une page manque à un
+     programme, je la lui pose » et « le noyau est parti dans le décor ». Le
+     programme n'avait rien fait de mal ; on avait juste oublié de dire qu'il
+     était le programme. Le niveau vient des deux bits du bas de CS.
+
+     Avec le bit : **2,7 milliards d'instructions**, plus un seul oops, le
+     journal passe à 12 685 octets — et l'arrêt suivant est nommé. Une faute
+     de page sur la **pile utilisateur**, depuis le code d'entrée du noyau :
+     un changement d'anneau doit charger RSP depuis le TSS, et ce cœur pousse
+     encore le cadre sur la pile qu'il trouve. C'est la tranche suivante, avec
+     `SYSCALL`/`SYSRET`.
+
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
      pagination d'identité, entre en mode long et saute. Le noyau va jusqu'à
