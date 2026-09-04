@@ -117,7 +117,10 @@ extension X86Core {
         // bas que la pile d'à présent.
         let frame = registers[4] &- 8
         while let top = shadowStack.last, top.stack < frame { shadowStack.removeLast() }
-        guard let pending = shadowStack.last, pending.stack == frame else { return }
+        guard let pending = shadowStack.last, pending.stack == frame else {
+            noteUnmatchedReturn(taken: taken, at: at, frame: frame)
+            return
+        }
         shadowStack.removeLast()
         guard pending.promised != taken else { return }
         guard brokenReturns.count < Self.brokenReturnLimit else { return }
@@ -125,6 +128,48 @@ extension X86Core {
             at: at, taken: taken, promised: pending.promised,
             calledAt: pending.calledAt, stackAtCall: pending.stack,
             stackAtReturn: registers[4], retired: retired))
+    }
+
+    /// Un retour dont aucune promesse ne porte le cadre.
+    ///
+    /// **Ces silences sont l'endroit où chercher.** La version d'avant les
+    /// taisait, et c'était le bon choix tant qu'on ne savait pas quoi en
+    /// faire : la pile d'ombre commence vide au milieu d'un programme déjà
+    /// lancé, et les premiers retours dépilent forcément des appels qu'on n'a
+    /// pas vus. Mais le `ret` qui envoie `/init` dans des données est passé par
+    /// là — il n'a été ni accusé, ni compté. Un instrument qui écarte un cas
+    /// doit dire combien de fois il l'a fait.
+    public struct UnmatchedReturn: Sendable, Equatable {
+        public let at: UInt64
+        public let taken: UInt64
+        /// Le cadre d'où ce `ret` vient de dépiler.
+        public let frame: UInt64
+        /// La promesse en attente la plus récente, s'il y en a une, et son
+        /// cadre. Zéro quand la pile d'ombre est vide.
+        public let pendingPromise: UInt64
+        public let pendingFrame: UInt64
+        public let retired: UInt64
+
+        public var description: String {
+            let waiting = pendingFrame == 0
+                ? "aucune promesse en attente"
+                : String(format: "la plus récente promettait %llx au cadre %llx",
+                         pendingPromise, pendingFrame)
+            return String(format: "ret à %llx est parti à %llx depuis le cadre %llx",
+                          at, taken, frame)
+                + " — " + waiting + String(format: ", après %llu instructions", retired)
+        }
+    }
+
+    public static let unmatchedReturnLimit = 16
+
+    mutating func noteUnmatchedReturn(taken: UInt64, at: UInt64, frame: UInt64) {
+        guard unmatchedReturns.count < Self.unmatchedReturnLimit else { return }
+        let top = shadowStack.last
+        unmatchedReturns.append(UnmatchedReturn(
+            at: at, taken: taken, frame: frame,
+            pendingPromise: top?.promised ?? 0, pendingFrame: top?.stack ?? 0,
+            retired: retired))
     }
 
     /// Un changement d'anneau ou d'espace d'adressage rend la pile d'ombre
