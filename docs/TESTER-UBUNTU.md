@@ -88,11 +88,12 @@ avec davantage. `osinfo-query os | grep arch` liste les variantes que libvirt
 connaît sur votre machine, si `archlinux` n'y est pas.
 
 **C'est ici que doivent aller les distributions complètes**, et c'est pour ça
-que le reste de wisq existe. La machine locale de l'application est un RISC-V
-32 bits sans disque : elle démarre un noyau compilé pour elle, en une seconde,
-et rien d'autre. L'application le dit maintenant en toutes lettres quand on lui
-donne un ISO, plutôt que de parler de mégaoctets — voir le journal du 3
-septembre.
+que le reste de wisq existe. La machine locale de l'application démarre un
+**noyau**, pas un disque : un `Image` RISC-V ou un `bzImage` de PC — elle
+choisit le cœur d'après le fichier — et il lui faut un initramfs embarqué,
+parce qu'aucun des deux chargeurs ne monte de racine. Un ISO d'installation
+n'entre pas là-dedans, et l'application le dit en toutes lettres plutôt que de
+parler de mégaoctets — voir le journal du 3 septembre.
 
 *Non vérifié d'ici* : cette variante-là non plus. Elle ne diffère de la
 précédente que par des valeurs, et la précédente n'a pas été installée ici.

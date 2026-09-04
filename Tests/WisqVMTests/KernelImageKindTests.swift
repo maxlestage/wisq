@@ -65,23 +65,36 @@ final class KernelImageKindTests: XCTestCase {
             bytes[0x13] = UInt8(machine >> 8)
             return Data(bytes)
         }
-        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x3E)).architecture,
-                       GuestArchitecture(.x86, bits: 64, bigEndian: false))
         XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0xB7)).architecture?.name,
                        "ARM64")
+        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x08)).architecture?.name,
+                       "MIPS 32 bits")
         // Un numéro qu'aucune architecture ne porte n'est pas nommé au hasard :
         // il retombe sur `unknown`, qui est une permission.
         XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x1234)), .unknown)
     }
 
-    /// **Un ELF RISC-V n'est pas refusé.** Ce n'est pas l'image brute que
-    /// cette machine attend, mais le dire serait deviner ce que quelqu'un a
-    /// voulu ; `unknown` le laisse essayer.
-    func testARiscVExecutableIsLetThrough() {
-        var bytes = [UInt8](repeating: 0, count: 0x40)
-        bytes[0...3] = [0x7F, 0x45, 0x4C, 0x46][0...3]
-        bytes[0x12] = 0xF3
-        XCTAssertEqual(KernelImageKind.identify(prefix: Data(bytes)), .unknown)
+    /// **Un ELF pour une architecture qu'on fait tourner n'est pas refusé.**
+    ///
+    /// Ce n'est pas l'image brute que le chargeur attend, mais le dire serait
+    /// deviner ce que quelqu'un a voulu — un `vmlinux` arrive sous cette forme
+    /// — et `unknown` le laisse essayer. La liste vient de la table : le jour
+    /// où un cœur s'ajoute, ce test couvre le nouveau sans qu'on y touche.
+    func testAnExecutableForAnArchitectureWeRunIsLetThrough() {
+        let numbers: [String: UInt16] = ["RISC-V 32 bits": 0xF3, "x86-64": 0x3E]
+        for architecture in GuestArchitecture.runnable {
+            guard let machine = numbers[architecture.name] else {
+                XCTFail("pas de numéro ELF connu pour \(architecture.name)")
+                continue
+            }
+            var bytes = [UInt8](repeating: 0, count: 0x40)
+            bytes[0...3] = [0x7F, 0x45, 0x4C, 0x46][0...3]
+            bytes[0x12] = UInt8(machine & 0xFF)
+            bytes[0x13] = UInt8(machine >> 8)
+            bytes[4] = architecture.bits == 64 ? 2 : 1
+            XCTAssertEqual(
+                KernelImageKind.identify(prefix: Data(bytes)), .unknown, architecture.name)
+        }
     }
 
     /// Ce qu'on ne reconnaît pas est une **permission**, pas un doute.
@@ -134,33 +147,41 @@ final class KernelImageKindTests: XCTestCase {
         XCTAssertEqual(image.architecture, GuestArchitecture(.x86, bits: 64))
         XCTAssertEqual(image.format, "bzImage")
         XCTAssertEqual(header.versionDescription, "2.15")
-        // Le cœur est choisi tout seul — mais il n'est pas encore branché dans
-        // l'application, et c'est cette seconde question que `couldBootHere`
-        // pose.
+        // Le cœur est choisi tout seul, et depuis que `GuestMachineFactory` le
+        // construit, le choix mène vraiment à une machine.
         XCTAssertEqual(kind.core, .x86_64)
-        XCTAssertFalse(kind.couldBootHere)
+        XCTAssertTrue(kind.couldBootHere)
     }
 
-    /// Le refus d'un noyau PC dit que le fichier est bon et que la machine ne
-    /// l'est pas encore — et ne parle toujours pas de mémoire.
-    func testThePCKernelRefusalSaysTheFileIsRightAndTheMachineIsNotYet() throws {
+    /// **Un noyau PC n'est plus refusé du tout.**
+    ///
+    /// Il l'était, et le refus disait vrai : « le cœur x86-64 existe, il n'est
+    /// pas encore branché dans l'application ». `GuestMachineFactory` le
+    /// branche, donc cette phrase est morte et le fichier passe. Sur les vrais
+    /// octets d'un en-tête de démarrage, pas sur un `KernelImage` fabriqué à
+    /// la main : c'est le chemin que l'application emprunte.
+    func testAPCKernelIsNoLongerRefused() {
         let kind = KernelImageKind.identify(
             prefix: Data(LinuxBootProtocolTests.header()),
             totalBytes: LinuxBootProtocolTests.measuredTotalBytes)
-        let message = try XCTUnwrap(
-            KernelImageKind.cannotRunHereExplanation(kind, name: "vmlinuz-lts"))
-        XCTAssertTrue(message.contains("vmlinuz-lts"), message)
-        XCTAssertTrue(message.contains("x86-64"), message)
-        XCTAssertTrue(message.contains("2.15"), message)
+        XCTAssertNil(KernelImageKind.cannotRunHereExplanation(kind, name: "vmlinuz-lts"))
+    }
+
+    /// Un noyau pour une architecture **sans** cœur reste refusé, et le refus
+    /// dit encore que c'est le bon genre de fichier : quelqu'un qui a pris un
+    /// noyau plutôt qu'un ISO ne doit pas repartir en chercher un autre. Et il
+    /// ne parle pas de mémoire, parce que la mémoire n'y changerait rien.
+    func testAKernelForAnArchitectureWithNoCoreIsRefusedByName() throws {
+        var bytes = [UInt8](repeating: 0, count: 0x40)
+        bytes.replaceSubrange(0x38..<0x3C, with: [0x41, 0x52, 0x4D, 0x64])
+        let message = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
+            KernelImageKind.identify(prefix: Data(bytes)), name: "Image"))
+        XCTAssertTrue(message.contains("Image est un noyau Linux pour ARM64"), message)
         XCTAssertTrue(
             message.contains("C'est le bon genre de fichier"),
             "un noyau n'est pas un ISO : le message doit le distinguer — \(message)")
-        XCTAssertTrue(
-            message.contains("wisq a bien un cœur x86-64"),
-            "le cœur existe : dire le contraire enverrait attendre une chose "
-                + "déjà écrite — \(message)")
-        XCTAssertTrue(
-            message.contains("Ce n'est pas une question de mémoire"), message)
+        XCTAssertTrue(message.contains("pas de cœur pour cette architecture"), message)
+        XCTAssertTrue(message.contains("Ce n'est pas une question de mémoire"), message)
         XCTAssertFalse(message.contains("Mo de mémoire"), message)
     }
 

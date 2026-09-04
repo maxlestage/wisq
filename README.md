@@ -13,10 +13,12 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
   interpreted and an order of magnitude slow — that is UTM SE's glass
   ceiling, and no amount of better code breaks it. Moving execution off the
   phone does.
-- **Local** — an interpreted rv32ima RISC-V machine written in Swift boots
-  a real Linux kernel **on the phone** in well under a second, shell
-  included, fully offline. Interpretation needs no JIT, which keeps it
-  clean under App Store rules (precedent: iSH).
+- **Local** — two interpreted machines, a RISC-V rv32ima and an x86-64 PC,
+  boot a real Linux kernel **on the phone**, fully offline: the RISC-V one
+  in well under a second, shell included. wisq reads the file you hand it
+  and picks the core itself — twenty-one architecture families recognised,
+  two of them executed. Interpretation needs no JIT, which keeps it clean
+  under App Store rules (precedent: iSH).
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
@@ -48,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (1584 tests across Swift and Rust) and
+Everything below is implemented, tested (1594 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose

@@ -101,24 +101,23 @@ public struct GuestArchitecture: Hashable, Sendable {
             }
         }
 
-        /// **Est-ce que la machine locale de l'application sait le piloter ?**
-        ///
-        /// Ce n'est pas la même question que « le cœur existe ». Le cœur
-        /// x86-64 existe, il démarre un vrai noyau d'Alpine jusqu'à son espace
-        /// utilisateur, et `X86BootAttemptTests` l'exige à chaque exécution —
-        /// mais `LinuxMachine` est encore câblée sur le RISC-V, et personne
-        /// dans l'application ne sait encore lancer l'autre.
-        ///
-        /// Les deux notions sont séparées ici pour que le refus dise la
-        /// vérité. « wisq n'a pas de cœur pour cette architecture » serait
-        /// faux ; « le cœur existe, il n'est pas encore branché » est ce qui
-        /// est, et ça n'envoie pas chercher au mauvais endroit.
-        public var availableInTheApp: Bool {
-            switch self {
-            case .riscv32: return true
-            case .x86_64: return false
-            }
-        }
+        // **Il y avait ici `availableInTheApp`**, et son absence est le sujet
+        // de ce changement.
+        //
+        // Elle séparait deux questions qui n'étaient pas la même : « wisq a-t-il
+        // un cœur pour cette architecture » et « l'application sait-elle le
+        // lancer ». Le cœur x86-64 démarrait un vrai noyau d'Alpine pendant que
+        // `LocalVMModel` ne savait construire que la machine RISC-V, et refuser
+        // en disant « pas de cœur » aurait envoyé quelqu'un attendre une chose
+        // déjà écrite.
+        //
+        // `GuestMachineFactory` construit maintenant l'un ou l'autre selon
+        // `KernelImageKind.core`, donc les deux questions ont la même réponse et
+        // le drapeau n'avait plus de valeur `false` à rendre. Le garder aurait
+        // laissé une branche de refus qu'aucun test ne pouvait plus atteindre —
+        // et une phrase que personne ne pourrait plus lire est pire qu'une
+        // phrase absente. Le jour où un troisième cœur arrivera avant son
+        // câblage, il faudra la réécrire ; ce jour-là elle aura un cas.
     }
 
     /// **Le cœur que wisq choisira pour cette architecture**, ou `nil` s'il
@@ -141,18 +140,14 @@ public struct GuestArchitecture: Hashable, Sendable {
         }
     }
 
-    /// Toutes les architectures pour lesquelles un cœur **existe**, pour qu'un
-    /// texte n'ait jamais à les énumérer à la main et se trompe le jour où la
-    /// liste change.
+    /// Toutes les architectures pour lesquelles un cœur **existe** — et, depuis
+    /// que `GuestMachineFactory` les construit toutes les deux, toutes celles
+    /// que l'application sait lancer. C'est la seule liste : un texte n'a
+    /// jamais à les énumérer à la main, et ne se trompera donc pas le jour où
+    /// elle changera.
     public static let runnable: [GuestArchitecture] = [
         GuestArchitecture(.riscv, bits: 32), GuestArchitecture(.x86, bits: 64),
     ]
-
-    /// Celles que l'**application** sait lancer aujourd'hui. Sous-ensemble du
-    /// dessus, et c'est volontaire — voir `Core.availableInTheApp`.
-    public static var runnableInTheApp: [GuestArchitecture] {
-        runnable.filter { $0.core?.availableInTheApp == true }
-    }
 
     // MARK: - Ce qu'un ELF en dit
 
