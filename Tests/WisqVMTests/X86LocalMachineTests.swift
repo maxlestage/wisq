@@ -184,6 +184,9 @@ final class X86SnapshotTests: XCTestCase {
             machine.core.descriptorBases[index] = 0xD000 + UInt64(index)
             machine.core.descriptorLimits[index] = 0xE000 + UInt64(index)
         }
+        machine.core.taskSelector = 0x0040
+        machine.core.taskBase = 0xFFFF_8000_0001_2340
+        machine.core.taskLimit = 0x0000_206F
         machine.core.x87Control = 0x0300
         machine.core.x87Status = 0x1234
         machine.core.mxcsr = 0x1DC0
@@ -242,6 +245,9 @@ final class X86SnapshotTests: XCTestCase {
             XCTAssertEqual(core.descriptorBases[index], 0xD000 + UInt64(index))
             XCTAssertEqual(core.descriptorLimits[index], 0xE000 + UInt64(index))
         }
+        XCTAssertEqual(core.taskSelector, 0x0040)
+        XCTAssertEqual(core.taskBase, 0xFFFF_8000_0001_2340)
+        XCTAssertEqual(core.taskLimit, 0x0000_206F)
         XCTAssertEqual(core.x87Control, 0x0300)
         XCTAssertEqual(core.x87Status, 0x1234)
         XCTAssertEqual(core.mxcsr, 0x1DC0)

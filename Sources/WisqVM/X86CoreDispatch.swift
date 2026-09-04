@@ -365,8 +365,26 @@ extension X86Core {
                 throw Fault.unsupported("le groupe 7 /\((instruction.modrm! >> 3) & 0x07)")
             }
 
-        case 0x00:  // LLDT, LTR et leurs voisines : notées, pas exécutées
-            _ = try decodeFields(instruction)
+        case 0x00:
+            // Le groupe 6, celui du registre de tâche et de la LDT.
+            let fields = try decodeFields(instruction)
+            switch (instruction.modrm! >> 3) & 0x07 {
+            // L'opérande est le **r/m**, pas le `reg` : dans un groupe, `reg`
+            // porte le numéro de l'instruction. Les confondre lirait le
+            // sélecteur dans le registre 3, qui est RBX.
+            case 1:  // STR : rendre le sélecteur de tâche.
+                try writeRM(fields, 2, UInt64(taskSelector))
+            case 3:  // LTR : charger le registre de tâche.
+                try loadTaskRegister(UInt16(truncatingIfNeeded: try readRM(fields, 2)))
+            case 0, 2, 4, 5:
+                // SLDT, LLDT, VERR, VERW. La LDT est un mécanisme du 286 dont
+                // Linux 64 bits ne se sert pas : il charge un sélecteur nul et
+                // n'y revient jamais. Les noter suffit ; leur écrire un
+                // comportement serait écrire du code que rien n'appelle.
+                break
+            default:
+                throw Fault.unsupported("le groupe 6 /\((instruction.modrm! >> 3) & 0x07)")
+            }
 
         case 0x0B: throw Fault.unsupported("UD2 : l'invité s'est arrêté lui-même")
 

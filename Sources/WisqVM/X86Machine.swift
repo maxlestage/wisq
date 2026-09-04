@@ -234,6 +234,13 @@ public final class X86Machine: @unchecked Sendable {
             writer.u64(core.descriptorBases[index])
             writer.u64(core.descriptorLimits[index])
         }
+        // Le registre de tâche. Sans lui, une machine reprise depuis un
+        // instantané ne saurait plus où est la pile du noyau, et la première
+        // interruption prise en anneau trois après la reprise s'arrêterait —
+        // très loin de la reprise, et sans rapport visible avec elle.
+        writer.u32(UInt32(core.taskSelector))
+        writer.u64(core.taskBase)
+        writer.u64(core.taskLimit)
         writer.u32(UInt32(core.x87Control))
         writer.u32(UInt32(core.x87Status))
         writer.u32(core.mxcsr)
@@ -275,6 +282,9 @@ public final class X86Machine: @unchecked Sendable {
             restored.descriptorBases[index] = try reader.u64()
             restored.descriptorLimits[index] = try reader.u64()
         }
+        restored.taskSelector = UInt16(truncatingIfNeeded: try reader.u32())
+        restored.taskBase = try reader.u64()
+        restored.taskLimit = try reader.u64()
         restored.x87Control = UInt16(truncatingIfNeeded: try reader.u32())
         restored.x87Status = UInt16(truncatingIfNeeded: try reader.u32())
         restored.mxcsr = try reader.u32()
