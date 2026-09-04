@@ -15,6 +15,10 @@ extension X86Core {
             switch form {
             case 0, 1:  // r/m ← r/m op reg
                 let fields = try decodeFields(instruction)
+                // CMP ne réécrit rien : le vérifier ferait fauter une
+                // comparaison contre une page en lecture seule, ce qu'aucun
+                // processeur ne fait.
+                if index != 7 { try probeWrite(fields, size) }
                 let result = arithmetic(index, try readRM(fields, size), readReg(fields, size), size)
                 if let result { try writeRM(fields, size, result) }
             case 2, 3:  // reg ← reg op r/m
@@ -164,6 +168,7 @@ extension X86Core {
         case 0x80, 0x81, 0x83:
             let size = Self.operandSize(instruction, byteForm: opcode == 0x80)
             let fields = try decodeFields(instruction)
+            if (instruction.modrm! >> 3) & 0x07 != 7 { try probeWrite(fields, size) }
             let result = arithmetic(
                 Int((instruction.modrm! >> 3) & 0x07), try readRM(fields, size),
                 Self.immediate(instruction, size), size)
@@ -261,6 +266,7 @@ extension X86Core {
             default: count = registers[1] & 0xFF  // CL
             }
             let kind = Int((instruction.modrm! >> 3) & 0x07)
+            try probeWrite(fields, size)
             let value = try readRM(fields, size)
             let result = kind <= 3
                 ? rotate(kind, value, count, size)
@@ -290,7 +296,9 @@ extension X86Core {
             switch (instruction.modrm! >> 3) & 0x07 {
             case 0, 1: _ = logic(value & Self.immediate(instruction, size), size)
             case 2: try writeRM(fields, size, ~value & Self.mask(size))  // NOT : aucun drapeau
-            case 3: try writeRM(fields, size, subtract(0, value, size))  // NEG
+            case 3:
+                try probeWrite(fields, size)
+                try writeRM(fields, size, subtract(0, value, size))  // NEG
             case 4: multiplyUnsigned(value, size)
             case 5: multiplySigned(value, size)
             case 6: try divideUnsigned(value, size)
@@ -326,6 +334,7 @@ extension X86Core {
         case 0xFE, 0xFF:  // INC et DEC, qui ne touchent pas à la retenue
             let size = Self.operandSize(instruction, byteForm: opcode == 0xFE)
             let fields = try decodeFields(instruction)
+            try probeWrite(fields, size)
             let value = try readRM(fields, size)
             let kept = flags & Flag.carry
             let result = (instruction.modrm! >> 3) & 0x07 == 0
@@ -517,6 +526,7 @@ extension X86Core {
             let count = (opcode == 0xA4 || opcode == 0xAC)
                 ? (instruction.immediate & 0xFF)
                 : (registers[1] & 0xFF)
+            try probeWrite(fields, size)
             let destination = try readRM(fields, size)
             let result = doubleShift(
                 left: opcode < 0xAC, destination, readReg(fields, size), count, size)
@@ -573,6 +583,7 @@ extension X86Core {
             // `futex(verrou, WAIT, -1)` que personne ne réveillerait.
             let size = Self.operandSize(instruction, byteForm: opcode == 0xC0)
             let fields = try decodeFields(instruction)
+            try probeWrite(fields, size)
             let destination = try readRM(fields, size)
             let source = readReg(fields, size)
             try writeRM(fields, size, add(destination, source, size))
@@ -906,6 +917,9 @@ extension X86Core {
 
     /// BT, BTS, BTR, BTC : lire le bit, puis éventuellement le changer.
     mutating func bit(_ kind: Int, _ fields: Fields, _ size: Int, _ offset: UInt64) throws {
+        // BT seul ne réécrit rien ; les trois autres si, et leur retenue est
+        // posée avant l'écriture.
+        if kind != 0 { try probeWrite(fields, size) }
         let value = try readRM(fields, size)
         let selected = (value >> offset) & 1
         set(Flag.carry, selected != 0)
