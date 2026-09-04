@@ -64,6 +64,16 @@ extension X86Core {
     /// millions d'instructions avant la faute. C'est la même leçon que le
     /// registre des mouvements de pile a déjà enseignée — ce qui compte est ce
     /// qui précède l'événement, pas ce qui ouvre la course.
+    /// La profondeur **par défaut**. Elle se change en redimensionnant
+    /// `addressTouches` avant de lancer : soixante-quatre suffisait tant qu'on
+    /// surveillait une seule case, et ne suffit plus pour une structure.
+    ///
+    /// **Ce n'est pas un détail de confort.** Deux mesures d'un même
+    /// démarrage, l'une sur `wpos` et l'autre sur `buf`, se sont contredites —
+    /// et les deux tampons étaient pleins. Chacune ne voyait qu'une fenêtre de
+    /// quelques milliers d'instructions, et les deux fenêtres ne se
+    /// recouvraient pas. Deux fenêtres disjointes ne se recollent pas : il
+    /// faut tout voir d'un coup, ou l'on raconte.
     public static let addressTouchLimit = 64
 
     /// Les passages gardés, du plus ancien au plus récent.
@@ -84,6 +94,6 @@ extension X86Core {
         addressTouches[addressTouchNext] = AddressTouch(
             at: rip, writing: writing, retired: retired,
             offset: virtual &- start, before: before ?? 0)
-        addressTouchNext = (addressTouchNext + 1) % Self.addressTouchLimit
+        addressTouchNext = (addressTouchNext + 1) % addressTouches.count
     }
 }

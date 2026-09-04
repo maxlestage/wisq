@@ -138,6 +138,13 @@ final class X86BootAttemptTests: XCTestCase {
             if halves.count == 2, let length = UInt64(halves[1], radix: 16), length > 0 {
                 core.watchedLength = length
             }
+            // Et la profondeur, parce que soixante-quatre passages sur une
+            // structure ne couvrent que quelques milliers d'instructions.
+            if let depth = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_DEPTH"]
+                .flatMap({ Int($0) }), depth > 0 {
+                core.addressTouches = [X86Core.AddressTouch](repeating: .none,
+                                                             count: depth)
+            }
         }
 
         var stopped: Error?

@@ -112,6 +112,26 @@ final class X86AddressWatchTests: XCTestCase {
         XCTAssertEqual(seen.last?.at, UInt64(many - 1))
     }
 
+    /// **Et la profondeur se choisit.** Soixante-quatre passages sur une
+    /// structure ne couvrent que quelques milliers d'instructions ; deux
+    /// mesures d'un même démarrage, chacune avec son tampon plein, se sont
+    /// contredites parce que leurs fenêtres ne se recouvraient pas. Un témoin
+    /// qu'on ne peut pas creuser force à recoller deux récits, ce qui n'est
+    /// plus mesurer.
+    func testTheDepthCanBeChosen() throws {
+        var core = try Self.core()
+        core.watchedAddress = Self.cell
+        core.addressTouches = [X86Core.AddressTouch](repeating: .none, count: 200)
+        for index in 0..<250 {
+            core.rip = UInt64(index)
+            _ = try core.translate(Self.cell)
+        }
+        let seen = core.addressTouched
+        XCTAssertEqual(seen.count, 200)
+        XCTAssertEqual(seen.first?.at, 50, "les cinquante premiers sont oubliés")
+        XCTAssertEqual(seen.last?.at, 249)
+    }
+
     /// Le témoin s'éteint pendant qu'il lit : sans ça, relire la case
     /// repasserait par la traduction, donc par lui, sans fin.
     func testTheWatchDoesNotRecordItsOwnReading() throws {
