@@ -78,6 +78,15 @@ public struct X86Core: @unchecked Sendable {
     /// trois qui l'a écrit. C'est ce tableau qui permet de remonter de
     /// l'emploi d'une adresse à sa fabrication.
     public var registerBornAt = [UInt64](repeating: 0, count: 16)
+    /// Et d'où sa valeur a été lue, quand elle venait de la mémoire.
+    public var registerBornFrom = [UInt64](repeating: 0, count: 16)
+    /// L'adresse surveillée, et ce qui l'a touchée. Voir `X86AddressWatch.swift`.
+    public var watchedAddress: UInt64?
+    /// Combien d'octets à partir de là. Huit par défaut : une case.
+    public var watchedLength: UInt64 = 8
+    public var addressTouches = [AddressTouch](repeating: .none,
+                                               count: X86Core.addressTouchLimit)
+    var addressTouchNext = 0
     /// La dernière instruction d'anneau trois qui a abouti. Quand l'adresse
     /// fautive est RIP lui-même, c'est elle qui a sauté dans le décor.
     public var previousRip: UInt64 = 0
@@ -378,7 +387,12 @@ public struct X86Core: @unchecked Sendable {
                 let stackBefore = watching ? registers[4] : 0
                 try execute(instruction)
                 if watching {
-                    rememberBirths(before: before, rip: entry)
+                    // `lastAddress` ne veut dire quelque chose que si
+                    // l'instruction avait un opérande en mémoire ; le champ
+                    // `mod` du ModRM le dit.
+                    let read = (instruction.modrm.map { $0 < 0xC0 } ?? false)
+                        ? lastAddress : nil
+                    rememberBirths(before: before, rip: entry, from: read)
                     previousRip = entry
                     // **Qui bouge la pile.** Noté avant d'examiner le retour,
                     // pour que le `ret` fautif figure lui-même dans la trace

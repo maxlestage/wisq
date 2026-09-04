@@ -39,6 +39,13 @@ extension X86Core {
     /// juste en dessous.
     @inline(__always)
     mutating func translate(_ virtual: UInt64, _ access: Access = .read) throws -> UInt64 {
+        // Le témoin d'adresse, quand il est armé. La condition est d'abord sur
+        // l'option : éteinte — le cas de toute exécution normale — le chemin
+        // chaud reste ce qu'il était.
+        if let watched = watchedAddress, privilege == 3,
+           virtual >= watched, virtual &- watched < watchedLength {
+            noteAddressTouch(virtual, writing: access == .write)
+        }
         guard pagingActive else { return virtual }
         let page = virtual & ~UInt64(0xFFF)
         let slot = Int((page >> 12) & UInt64(Self.translationSlots - 1))
