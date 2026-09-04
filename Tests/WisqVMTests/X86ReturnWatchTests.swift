@@ -70,7 +70,8 @@ final class X86ReturnWatchTests: XCTestCase {
     }
 
     /// Un retour dont on n'a pas vu l'appel n'est pas un désaccord : la pile
-    /// d'ombre commence vide au milieu d'un programme déjà lancé.
+    /// d'ombre commence vide au milieu d'un programme déjà lancé. Il est
+    /// compté à part — voir `testAReturnWithoutAPromiseIsCountedNotJustSkipped`.
     func testAReturnWithoutItsCallIsNotAccused() throws {
         var core = try Self.core([0xC3])
         try core.memory?.write(Self.stack, 8, 0x4000)
@@ -143,6 +144,47 @@ final class X86ReturnWatchTests: XCTestCase {
         core.rememberReturn(taken: 0x3333, at: 0x4444)
         XCTAssertTrue(core.brokenReturns.isEmpty)
         XCTAssertTrue(core.shadowStack.isEmpty, "la promesse abandonnée est jetée")
+    }
+
+    /// **Les silences comptent.** Un retour dont aucune promesse ne porte le
+    /// cadre était écarté sans laisser de trace ; or c'est par là qu'est passé
+    /// le `ret` qui envoie `/init` dans des données. Un instrument qui écarte
+    /// un cas doit dire combien de fois il l'a fait, et lequel.
+    func testAReturnWithoutAPromiseIsCountedNotJustSkipped() throws {
+        var core = try Self.core([0xC3])
+        try core.memory?.write(Self.stack, 8, 0x4000)
+        _ = try? core.run(budget: 1)
+        XCTAssertTrue(core.brokenReturns.isEmpty, "ce n'est pas une accusation")
+        XCTAssertEqual(core.unmatchedReturns.count, 1, "mais ce n'est plus un silence")
+        let seen = try XCTUnwrap(core.unmatchedReturns.first)
+        XCTAssertEqual(seen.at, Self.program)
+        XCTAssertEqual(seen.taken, 0x4000)
+        XCTAssertEqual(seen.frame, Self.stack)
+        XCTAssertEqual(seen.pendingFrame, 0, "la pile d'ombre était vide")
+    }
+
+    /// Et quand une promesse attend sans porter le bon cadre, le rapport la
+    /// nomme : c'est elle qui dit de combien on a dérivé.
+    func testThePendingPromiseIsNamedWhenThereIsOne() throws {
+        var core = try Self.core([0x90])
+        core.rememberCall(promised: 0x1111, at: 0x2222)
+        core.registers[4] = Self.stack &+ 0x400
+        core.rememberReturn(taken: 0x3333, at: 0x4444)
+        // La promesse était plus profonde : elle a été jetée, et le retour est
+        // compté comme sans promesse.
+        let seen = try XCTUnwrap(core.unmatchedReturns.first)
+        XCTAssertEqual(seen.taken, 0x3333)
+        XCTAssertEqual(seen.frame, Self.stack &+ 0x3F8)
+        XCTAssertEqual(seen.pendingFrame, 0)
+    }
+
+    func testTheSilencesStopAtTheirLimit() throws {
+        var core = try Self.core([0x90])
+        for index in 0...(X86Core.unmatchedReturnLimit + 3) {
+            core.noteUnmatchedReturn(taken: UInt64(index), at: UInt64(index),
+                                     frame: UInt64(index))
+        }
+        XCTAssertEqual(core.unmatchedReturns.count, X86Core.unmatchedReturnLimit)
     }
 
     func testTheKernelIsNotWatched() throws {
