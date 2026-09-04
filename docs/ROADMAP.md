@@ -3025,9 +3025,38 @@ habitude.
      Ce n'est plus une instruction qui manque, **c'est une valeur qui se
      corrompt**. Trouver un défaut et écrire une brique sont deux métiers
      différents : le premier se lit dans un arrêt, le second demande un témoin.
-     La tranche suivante est donc le harnais différentiel contre QEMU —
-     planifié une première fois puis abandonné parce que lire l'IDT du noyau
-     avait suffi ; cette fois il n'y a pas de raccourci.
+
+   - **Le témoin, et deux pistes fermées.** `qemu-system-x86_64` 8.2.2 fait
+     tourner le **même** noyau avec le **même** initramfs jusqu'au shell de
+     secours d'Alpine en seize secondes de temps invité, **sans un seul
+     segfault**. La divergence est donc bien la nôtre : ce n'est ni l'image, ni
+     la configuration matérielle minimale.
+
+     Deux pistes écartées, chacune par une mesure :
+
+     - **La livraison des fautes de page.** 295 fautes en anneau trois sur un
+       démarrage, tracées et comparées à ce que Linux imprime. L'écart apparent
+       — code 4 chez nous, « error 5 » chez lui — n'en est pas un : Linux
+       ajoute lui-même le bit de présence quand l'adresse dépasse l'espace
+       utilisateur, pour ne pas renseigner un programme sur la mémoire du
+       noyau.
+     - **Les instructions de chaîne.** Sur les 389 formes du corpus
+       arithmétique, *aucune* n'était un `MOVS`, `STOS`, `SCAS`, `CMPS` ou
+       `LODS` — les dix-sept « movs » qu'on y trouvait étaient des `MOVSX` et
+       des `CMOVS`. C'était la classe la plus plausible, puisque
+       `copy_to_user` est un `rep movsq` et que la pile initiale d'un processus
+       arrive par là. Elle est maintenant couverte : 47 formes, **376 cas,
+       zéro désaccord**. Ce n'est pas là.
+
+     **Et un défaut du harnais**, révélé par le premier cas qui pouvait le
+     voir : en essayant les chaînes en arrière, c'est le harnais qui plantait,
+     pas l'instruction. L'ABI exige que le drapeau de direction soit effacé à
+     la sortie de toute fonction ; il ne l'était pas, et le `memcpy` du pilote
+     partait à l'envers. Rien n'avait jamais posé ce drapeau, donc l'oubli ne
+     pouvait pas se voir — la leçon de l'oracle, retournée contre lui.
+
+     Reste le harnais différentiel qui aligne les deux exécutions et dise à
+     quelle instruction elles divergent.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
