@@ -25,8 +25,27 @@ break APIs.
   read and write the same location — and not on `CMP` or `BT`, which write
   nothing, since checking those would fault a comparison against a read-only
   page, which no processor does.
+- **`UCOMISS` with a scalar prefix was executed instead of refused.** In Swift
+  a `where` written after a list of patterns guards only the last one, so
+  `case 0x2E, 0x2F where !single && !doubleWide` left `f3 0f 2e` — which is
+  not an instruction — going through the comparison path and setting flags. The
+  condition is now written on both patterns. The neighbouring `0x2C, 0x2D` arm
+  had the same shape but a guard inside its body, which does cover both: the
+  redundant `where` is gone and the guard stays.
 
 ### Added
+- **A disk for the x86-64 machine: virtio over MMIO.** A PCI disk would have
+  needed a PCI bus first — configuration space through ports 0xCF8/0xCFC, BARs
+  to place, an interrupt table — all before the first sector. The MMIO
+  transport needs no bus: the kernel takes the address and the interrupt line
+  from its own command line (`virtio_mmio.device=0x200@0xd0000000:5`) and the
+  driver above is the same one. The device implements version 2 of the
+  transport, one queue, and read, write and get-id requests; a sector beyond
+  the disk is an error, not a page of zeros, and an unknown request type is
+  answered rather than met with silence, which would leave the driver waiting
+  forever. It lives behind memory rather than inside it: its registers answer
+  at addresses no RAM covers, which is exactly the path that used to raise
+  "outside memory", so an ordinary address never meets it.
 - **The x86-64 machine takes keystrokes, and the boot test holds it to an
   answer.** A console that writes without reading is a log; this one is a
   terminal. The boot test runs the guest in rounds: each round ends when the

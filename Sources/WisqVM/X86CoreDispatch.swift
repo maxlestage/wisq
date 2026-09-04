@@ -145,13 +145,13 @@ extension X86Core {
         case 0xE4, 0xE5, 0xEC, 0xED:  // IN
             let port = (opcode <= 0xE5) ? UInt16(instruction.immediate & 0xFF)
                 : UInt16(registers[2] & 0xFFFF)
-            let size = opcode == 0xE4 || opcode == 0xEC ? 1 : 4
-            write(0, size, highByte: false, portRead(port))
+            let size = Self.portSize(instruction, byteForm: opcode == 0xE4 || opcode == 0xEC)
+            write(0, size, highByte: false, portRead(port, size))
         case 0xE6, 0xE7, 0xEE, 0xEF:  // OUT
             let port = (opcode <= 0xE7) ? UInt16(instruction.immediate & 0xFF)
                 : UInt16(registers[2] & 0xFFFF)
-            let size = opcode == 0xE6 || opcode == 0xEE ? 1 : 4
-            portWrite(port, read(0, size, highByte: false))
+            let size = Self.portSize(instruction, byteForm: opcode == 0xE6 || opcode == 0xEE)
+            portWrite(port, size, read(0, size, highByte: false))
 
         case 0x63:
             let size = Self.operandSize(instruction, byteForm: false)
@@ -730,13 +730,45 @@ extension X86Core {
     }
 
     /// Les ports : le série, les deux 8259 et le 8253.
-    mutating func portWrite(_ port: UInt16, _ value: UInt64) {
+    /// **Un port se lit et s'écrit en un, deux ou quatre octets**, et jamais
+    /// en huit : `REX.W` ne dit rien ici, seul le préfixe de taille compte.
+    /// La largeur était figée à quatre, ce qui suffisait à un port série d'un
+    /// octet et se voyait dès qu'un périphérique attendait un mot de deux —
+    /// le pilote virtio écrit le numéro de sa file ainsi.
+    static func portSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
+        if byteForm { return 1 }
+        return instruction.hasPrefix(0x66) ? 2 : 4
+    }
+
+    mutating func portWrite(_ port: UInt16, _ size: Int, _ value: UInt64) {
         let byte = UInt8(truncatingIfNeeded: value)
         switch port {
         // Le port série, celui par lequel un noyau Linux dit ses premiers
         // mots — et par lequel, une fois sondé, l'espace utilisateur parle.
         case Self.serialBase...(Self.serialBase &+ 7):
             serialWrite(port &- Self.serialBase, byte)
+
+        // Le bus PCI : une adresse, puis une donnée. Sans ces deux ports, le
+        // noyau conclut « PCI: System does not support PCI » et n'énumère rien.
+        case X86PCIHost.addressPort:
+            memory?.bus?.writeAddress(UInt32(truncatingIfNeeded: value))
+        case X86PCIHost.dataPort...(X86PCIHost.dataPort &+ 3):
+            guard let bus = memory?.bus else { break }
+            let within = UInt32(port &- X86PCIHost.dataPort)
+            if size == 4 && within == 0 {
+                bus.writeConfiguration(UInt32(truncatingIfNeeded: value), 4, 0)
+            } else {
+                // Une écriture partielle : relire, remplacer les octets visés,
+                // réécrire. Le noyau écrit la ligne d'interruption ainsi.
+                var word = bus.configuration()
+                for byte in 0..<UInt32(size) {
+                    let shift = 8 * (within &+ byte)
+                    guard shift < 32 else { break }
+                    word &= ~(UInt32(0xFF) << shift)
+                    word |= (UInt32(truncatingIfNeeded: value >> (8 * UInt64(byte))) & 0xFF) << shift
+                }
+                bus.writeConfiguration(word, size, within)
+            }
 
         // Le 8259 maître. La commande, d'abord : le bit 4 lance une
         // initialisation, et les trois octets qui suivent arrivent par le port
@@ -827,14 +859,30 @@ extension X86Core {
             }
 
         default:
-            break
+            // La fenêtre de ports du disque, là où le noyau l'a placée.
+            if let bus = memory?.bus, let device = bus.storage,
+               let at = bus.windowOffset(port), let memory {
+                device.writePort(at, size, value, memory)
+            }
         }
     }
 
-    mutating func portRead(_ port: UInt16) -> UInt64 {
+    mutating func portRead(_ port: UInt16, _ size: Int = 4) -> UInt64 {
         switch port {
         case Self.serialBase...(Self.serialBase &+ 7):
             return UInt64(serialRead(port &- Self.serialBase))
+        case X86PCIHost.addressPort:
+            return UInt64(memory?.bus?.address ?? 0)
+        // La fenêtre de ports du disque, là où le noyau l'a placée.
+        case let window where memory?.bus?.windowOffset(window) != nil:
+            guard let bus = memory?.bus, let device = bus.storage,
+                  let at = bus.windowOffset(window) else { return 0 }
+            return device.readPort(at, size)
+        case X86PCIHost.dataPort...(X86PCIHost.dataPort &+ 3):
+            guard let bus = memory?.bus else { return 0xFFFF_FFFF }
+            let word = bus.configuration()
+            let shift = 8 * UInt64(port &- X86PCIHost.dataPort)
+            return (UInt64(word) >> shift) & Self.mask(size)
         case 0x20:
             return UInt64(devices.primary.readsService
                 ? devices.primary.service : devices.primary.request)

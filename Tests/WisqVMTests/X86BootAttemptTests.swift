@@ -118,8 +118,28 @@ final class X86BootAttemptTests: XCTestCase {
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
         let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
+        // Un disque, quand on en donne un. Le noyau ne le trouvera que si la
+        // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
+           let image = FileManager.default.contents(atPath: path) {
+            let disk = X86VirtioBlock(image: [UInt8](image))
+            // **Deux portes vers le même disque.** Le transport MMIO répond
+            // aux adresses, le bus PCI aux ports ; ce noyau-ci ne sait passer
+            // que par le second — son `virtio_mmio` est compilé sans les
+            // périphériques de la ligne de commande —, mais un noyau qui les
+            // a saura passer par le premier.
+            memory.storage = disk
+            memory.bus = X86PCIHost(storage: disk)
+        }
+        // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
+        // défaut plutôt que de la remplacer : la console série en fait partie,
+        // et une mesure qui la perdrait ne dirait plus rien du tout.
+        let extra = ProcessInfo.processInfo.environment["WISQ_PC_CMDLINE"]
+        let commandLine = [X86BootLoader.defaultCommandLine, extra]
+            .compactMap { $0 }.joined(separator: " ")
         let placement = try X86BootLoader.load(
-            kernel: [UInt8](data), into: memory, initialRamdisk: ramdisk)
+            kernel: [UInt8](data), into: memory, commandLine: commandLine,
+            initialRamdisk: ramdisk)
 
         // Les tables, hors du chemin du noyau et de la page zéro.
         let pml4: UInt64 = 0x5_0000
@@ -301,6 +321,14 @@ final class X86BootAttemptTests: XCTestCase {
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             fils vus              : \(core.threadActivity.count)
             dialogue              : \(typed.isEmpty ? "rien tapé" : typed.joined(separator: " | "))
+            bus PCI               : \(core.memory?.bus.map {
+                String(format: "fenêtre %04x, commande %04x, ligne %d",
+                       $0.window, $0.command, $0.interruptLine)
+            } ?? "aucun")
+            disque                : \(core.memory?.storage.map {
+                "\($0.sectors) secteurs, \($0.served) requêtes servies,"
+                    + " \($0.refused) refusées, état \($0.status)"
+            } ?? "aucun")
             """)
 
         func list(_ title: String, _ lines: [String]) {
