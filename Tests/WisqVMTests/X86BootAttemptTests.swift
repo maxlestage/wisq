@@ -149,11 +149,9 @@ final class X86BootAttemptTests: XCTestCase {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
             port série            : \(core.serialOutput.count) octets
-            valeurs non canoniques : \(core.nonCanonicalSeen.isEmpty ? "aucune"
-                : "\n" + core.nonCanonicalSeen.map {
-                    "  " + $0.description + "  ["
-                        + $0.bytes.map { String(format: "%02x", $0) }.joined() + "]"
-                }.joined(separator: "\n"))
+            adresses non canoniques : \(core.nonCanonicalSeen.isEmpty ? "aucune"
+                : "\n" + core.nonCanonicalSeen.map { "  " + $0.description }
+                    .joined(separator: "\n"))
             \(serial.isEmpty ? "" : serial)
             =====================================
 

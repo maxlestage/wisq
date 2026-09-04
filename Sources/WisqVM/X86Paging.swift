@@ -55,6 +55,13 @@ extension X86Core {
     /// cache. Séparé de `translate` pour que le cas courant — une étiquette
     /// qui correspond — tienne dans quelques instructions.
     mutating func fill(_ at: UInt64, _ page: UInt64, _ slot: Int, _ how: Access) throws -> UInt64 {
+        // Le témoin, au seul endroit où une valeur cesse d'être un nombre pour
+        // devenir une adresse. Il est ici et pas sur le chemin rapide parce
+        // qu'une adresse non canonique n'est cartographiée nulle part : elle
+        // ne peut pas être dans le cache, donc elle passe forcément par ici.
+        if canonicalWatchArmed && privilege == 3 && !Self.isCanonical(at) {
+            noteNonCanonical(address: at)
+        }
         let frame: UInt64
         do {
             frame = try walk(page)

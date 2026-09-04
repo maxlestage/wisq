@@ -74,6 +74,10 @@ public struct X86Core: @unchecked Sendable {
     /// de mesure qu'on avait allumé ici. Voir `X86CanonicalWatch.swift`.
     public var canonicalWatchArmed = false
     public var nonCanonicalSeen: [NonCanonical] = []
+    /// Pour chaque registre, l'adresse de la dernière instruction d'anneau
+    /// trois qui l'a écrit. C'est ce tableau qui permet de remonter de
+    /// l'emploi d'une adresse à sa fabrication.
+    public var registerBornAt = [UInt64](repeating: 0, count: 16)
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -313,12 +317,8 @@ public struct X86Core: @unchecked Sendable {
                 let watching = canonicalWatchArmed && privilege == 3
                 let entry = rip
                 let before = watching ? registers : []
-                let bytes = watching
-                    ? Array(UnsafeBufferPointer(start: memory.bytes + start,
-                                                count: Int(instruction.length)))
-                    : []
                 try execute(instruction)
-                if watching { noteNonCanonical(before: before, rip: entry, bytes) }
+                if watching { rememberBirths(before: before, rip: entry) }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
                 // les autres sortent d'ici, parce qu'un cœur qui avale une

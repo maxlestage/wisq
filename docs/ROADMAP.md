@@ -3082,7 +3082,8 @@ habitude.
        reste — soixante-quatre formes de registre, `leave`, `movabs`, les
        vingt-cinq atomiques — était déjà juste. **Ce n'est pas là non plus.**
 
-     **L'instrument qui manquait : le témoin des adresses non canoniques.**
+     **L'instrument qui manquait : le témoin des adresses non canoniques**, et
+     sa première version démolie par la mesure en un essai.
      Sur x86-64, un pointeur licite a ses bits 63 à 48 identiques au bit 47 —
      les programmes en bas, le noyau en haut, un trou immense entre les deux.
      `0x00037cde165f7280` tombe dans le trou : ce n'est l'adresse de rien. Le
@@ -3092,6 +3093,17 @@ habitude.
      l'histoire. Armé, le cœur regarde après chaque instruction d'anneau trois
      si un registre vient d'**acquérir** une valeur non canonique, et retient
      laquelle, où, et avec quels octets — il remonte de la mort à la naissance.
+     **La première version signalait tout registre qui *acquérait* une valeur
+     non canonique. Sur un vrai démarrage, elle a rempli son rapport de
+     trente-deux lignes avec le filtre de Bloom du chargeur dynamique** — un
+     `shl %cl, %r12` qui fabrique `1 << 61`, un `mov 0x10(%rsi,%rax,8), %rax`
+     qui lit un mot de hachage — et n'était pas arrivée au dixième du chemin
+     jusqu'à la mort. Ce sont des masques de bits, pas des adresses, et rien
+     dans un registre ne dit lequel des deux il est. **Seul l'usage le dit.**
+     Le témoin attend donc qu'une adresse non canonique soit *employée* en
+     anneau trois — ce qui n'arrive qu'une fois — et rend alors, pour chaque
+     registre qui en porte une, l'adresse de l'instruction qui l'y a mise.
+
      Éteint par défaut, et l'anneau zéro n'est jamais regardé : le noyau met
      légitimement des masques et des entrées de table de pages dans les mêmes
      registres.
