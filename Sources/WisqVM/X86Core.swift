@@ -95,6 +95,11 @@ public struct X86Core: @unchecked Sendable {
     /// Ce que le témoin a vu passer, décalé ou non : sans ce compte, un
     /// rapport vide ne dit pas si tout allait bien ou si rien n'a regardé.
     public var ringPassages = RingTally()
+    /// Les derniers mouvements de RSP, en anneau trois. Voir
+    /// `X86StackLedger.swift`.
+    public var stackLedger = [StackMove](repeating: .none,
+                                         count: X86Core.stackLedgerDepth)
+    var stackLedgerNext = 0
     var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64,
                         retired: UInt64)?
     /// Les appels qui prennent leur adresse en mémoire. Voir
@@ -363,10 +368,18 @@ public struct X86Core: @unchecked Sendable {
                 let throughMemory = watching ? Self.indirectThroughMemory(instruction) : nil
                 let entry = rip
                 let before = watching ? registers : []
+                let stackBefore = watching ? registers[4] : 0
                 try execute(instruction)
                 if watching {
                     rememberBirths(before: before, rip: entry)
                     previousRip = entry
+                    // **Qui bouge la pile.** Noté avant d'examiner le retour,
+                    // pour que le `ret` fautif figure lui-même dans la trace
+                    // qu'on montrera de lui.
+                    if registers[4] != stackBefore {
+                        noteStackMove(at: entry, from: stackBefore,
+                                      to: registers[4], instruction)
+                    }
                     if wasCall {
                         rememberCall(promised: entry &+ UInt64(instruction.length),
                                      at: entry)
@@ -509,6 +522,9 @@ public struct X86Core: @unchecked Sendable {
             // `MOVDQA` avec un préfixe et rien du tout sans, et la table
             // ordinaire ne saurait pas les départager.
             if try vectorInstruction(instruction, opcode) { return }
+            // Puis l'arithmétique vectorielle, qui occupe encore d'autres
+            // octets de la même table. Voir `X86VectorArithmetic.swift`.
+            if try vectorArithmetic(instruction, opcode) { return }
             try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }

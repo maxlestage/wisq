@@ -111,12 +111,31 @@ extension X86Core {
 
     // MARK: - La pile
 
+    /// **RSP ne bouge qu'une fois l'écriture faite.**
+    ///
+    /// L'ordre inverse — descendre la pile, puis écrire — a coûté six
+    /// milliards d'instructions à comprendre. Une pile qui grandit tombe sur
+    /// une page absente ; le processeur lève une faute, le noyau ajoute la
+    /// page, et l'`IRETQ` **recommence l'instruction fautive**. C'est une
+    /// garantie du matériel : une instruction qui faute ne laisse aucune
+    /// trace. Si RSP est déjà descendu quand la faute part, le `push`
+    /// redescend une seconde fois au redémarrage, et le programme perd huit
+    /// octets de pile qu'il ne récupérera jamais. Son `ret` dépile alors un
+    /// mot de trop et s'en va n'importe où — ce qui est exactement la façon
+    /// dont `/init` mourait.
+    ///
+    /// La traduction d'abord, l'écriture ensuite, et le registre en dernier :
+    /// tout ce qui peut lever une faute a lieu avant que quoi que ce soit
+    /// d'observable ne change.
     mutating func push(_ value: UInt64, _ size: Int) throws {
         guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
-        registers[4] = registers[4] &- UInt64(size)
-        try memory.write(try translate(registers[4], .write), size, value)
+        let lowered = registers[4] &- UInt64(size)
+        try memory.write(try translate(lowered, .write), size, value)
+        registers[4] = lowered
     }
 
+    /// Le `pop` a toujours eu le bon ordre — il lit avant de remonter — et le
+    /// garder tel quel est un choix, pas un oubli.
     mutating func pop(_ size: Int) throws -> UInt64 {
         guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
         let value = try memory.read(try translate(registers[4]), size)
