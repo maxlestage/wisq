@@ -21,7 +21,7 @@ public final class LocalVMModel {
     /// Console text, ANSI-stripped and line-edited, bounded in lines.
     public private(set) var consoleText = ""
 
-    private var machine: LocalMachine?
+    private var machine: GuestMachine?
     private let sink = ConsoleSink()
     /// Signalled when the emulation thread leaves `run()`. Suspending has to
     /// wait for that: `snapshot()` reads the machine's state, and reading it
@@ -98,7 +98,61 @@ public final class LocalVMModel {
             runFinished = nil
             return
         }
-        let machine = LocalMachine(ramSize: ramSize) { [sink] chunk in
+        // **Ce que le fichier est, avant de fabriquer quoi que ce soit.**
+        //
+        // L'ordre a changé ici, et c'est le cœur du branchement : la machine
+        // était construite d'abord, parce qu'il n'y en avait qu'une sorte.
+        // Maintenant qu'un fichier peut demander un cœur x86-64 ou un cœur
+        // RISC-V, il faut l'avoir lu avant de savoir quoi construire.
+        //
+        // L'ordre compte aussi pour une raison plus ancienne, et c'est un
+        // défaut vécu : sur une image d'installation d'Arch, le refus disait
+        // « fait 5939.2 Mo, la machine n'a que 64.0 Mo » — vrai mot pour mot,
+        // et trompeur en entier, parce qu'il désigne un nombre et pousse donc
+        // vers le réglage de mémoire. Quarante kibioctets suffisent à savoir
+        // qu'aucune mémoire n'y changera rien.
+        let kind = KernelImageKind.identify(fileAt: kernelURL)
+        if let refusal = KernelImageKind.cannotRunHereExplanation(
+            kind, name: kernelURL.lastPathComponent) {
+            _ = life.guestFinished()
+            finish(with: refusal)
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+        // Un fichier que personne n'a reconnu part sur le cœur historique :
+        // `unknown` est une permission, pas un doute, et refuser faute d'avoir
+        // su lire serait pire que de laisser essayer.
+        let core = kind.core ?? .riscv32
+
+        // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
+        // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
+        // le plafond du téléphone, lui, ne change pas. Quand les deux ne se
+        // rencontrent pas, on le dit au lieu de démarrer une machine trop
+        // petite qui échouerait sans expliquer pourquoi.
+        var machineRAM = Int(ramSize)
+        if core == .x86_64 {
+            machineRAM = max(machineRAM, X86Machine.minimumRAMSize)
+            if machineRAM > Int(roomNow) {
+                _ = life.guestFinished()
+                finish(with: """
+                    \(kernelURL.lastPathComponent) est un noyau pour PC, et une \
+                    machine PC a besoin d'au moins \
+                    \(X86Machine.minimumRAMSize >> 20) Mo — son noyau \
+                    décompressé en fait trente-cinq à lui seul.
+
+                    Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
+                    moment. Fermez ce qui tourne à côté et réessayez.
+                    """)
+                self.machine = nil
+                runFinished = nil
+                return
+            }
+        }
+
+        let machine = makeLocalMachine(
+            for: core, ramSizeBytes: machineRAM
+        ) { [sink] chunk in
             guard sink.append(chunk) else { return }
             Task { @MainActor [weak self] in
                 self?.consoleText = sink.takeText()
@@ -122,24 +176,6 @@ public final class LocalVMModel {
         // of which the view can trigger the instant this returns. A few
         // megabytes off local storage is a few milliseconds, and this method
         // already read a larger snapshot synchronously.
-        // Ce que le fichier **est**, avant ce qu'il pèse.
-        //
-        // L'ordre compte, et c'est un défaut vécu : sur une image
-        // d'installation d'Arch, le refus disait « fait 5939.2 Mo, la machine
-        // n'a que 64.0 Mo » — vrai mot pour mot, et trompeur en entier, parce
-        // qu'il désigne un nombre et pousse donc vers le réglage de mémoire.
-        // Aucune mémoire ne fera jamais démarrer un ISO x86 sur un RISC-V
-        // 32 bits sans disque. Quarante kibioctets suffisent à le savoir.
-        if let refusal = KernelImageKind.cannotRunHereExplanation(
-            KernelImageKind.identify(fileAt: kernelURL),
-            name: kernelURL.lastPathComponent) {
-            _ = life.guestFinished()
-            finish(with: refusal)
-            self.machine = nil
-            runFinished = nil
-            return
-        }
-
         // Asked of the filesystem, before a single byte is read.
         //
         // This is where the app died. `Data(contentsOf:)` reads the whole file
@@ -149,7 +185,12 @@ public final class LocalVMModel {
         // the phone's memory pressure killer instead of a refusal: the app
         // vanished with no message, on a file the next line would have rejected
         // in microseconds.
-        if let size = try? FileManager.default.attributesOfItem(
+        // Ce plafond-là est celui de la machine RISC-V : son image est copiée
+        // dans la RAM de l'invité, sous l'arbre de périphériques. Le chargeur
+        // PC a le sien et refuse proprement, donc l'appliquer aux deux
+        // refuserait des noyaux parfaitement valables.
+        if core == .riscv32,
+            let size = try? FileManager.default.attributesOfItem(
             atPath: kernelURL.path)[.size] as? Int,
             size > LinuxMachine.maximumKernelImageBytes(forRAMSize: ramSize) {
             _ = life.guestFinished()
@@ -175,7 +216,7 @@ public final class LocalVMModel {
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
-            let outcome: LocalMachine.Outcome
+            let outcome: GuestOutcome
             do {
                 // A saved machine is resumed in place of booting. If the file
                 // is not a snapshot — an older format, a truncated write — the
@@ -184,9 +225,10 @@ public final class LocalVMModel {
                 if let saved, (try? machine.restore(saved)) != nil {
                     // nothing else to do: the guest is already mid-life
                 } else {
-                    try machine.load(kernelImage: image)
+                    try machine.load(
+                        kernelImage: image, commandLine: nil, initialRamdisk: nil)
                 }
-                outcome = machine.run()
+                outcome = machine.runGuest(instructionBudget: .max)
             } catch {
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
@@ -215,6 +257,11 @@ public final class LocalVMModel {
                 case .powerOff: self.finish(with: "La machine s'est éteinte.")
                 case .reboot: self.finish(with: "La machine a redémarré ; relancez-la.")
                 case .stopped: self.finish(with: "Arrêtée.")
+                // Un refus du cœur est **nommé**. « Arrêtée » à sa place
+                // enverrait chercher partout ; l'instruction qui a manqué est
+                // ce qui permet de savoir quoi écrire ensuite.
+                case .faulted(let reason):
+                    self.finish(with: "La machine s'est arrêtée : \(reason)")
                 }
             }
         }

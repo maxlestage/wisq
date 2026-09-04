@@ -2599,19 +2599,22 @@ Deux cœurs existent : **RISC-V 32 bits** (rv32ima, écrit deux fois, en Swift e
 en Rust) et **x86-64** (prouvé instruction par instruction contre le vrai
 processeur, et qui démarre un noyau d'Alpine jusqu'à son espace utilisateur).
 
-Un seul est **branché dans l'application** : `LinuxMachine` est encore câblée
-sur le RISC-V. `Core.availableInTheApp` porte cette distinction, et les refus
-la disent :
+**Les deux sont branchés dans l'application.** Ça n'a pas toujours été le cas :
+il y a eu une tranche où le cœur x86-64 démarrait un vrai noyau d'Alpine
+pendant que `LocalVMModel` ne savait construire que la machine RISC-V. Un
+booléen — `Core.availableInTheApp` — portait la distinction, pour qu'un refus
+ne dise jamais « pas de cœur » d'un cœur qui existe et enverrait ainsi
+quelqu'un attendre une chose déjà écrite.
 
-- une architecture sans cœur → « wisq n'a pas de cœur pour cette architecture » ;
-- x86-64 → « wisq a bien un cœur x86-64 […] il n'est pas encore branché dans
-  l'application ».
+`GuestMachineFactory` construit maintenant l'une ou l'autre selon
+`KernelImageKind.core`, donc les deux questions ont la même réponse et le
+booléen a disparu avec sa branche de refus — une phrase qu'aucun test ne
+pouvait plus atteindre est pire qu'une phrase absente. Il reste un seul refus,
+pour une architecture sans cœur, et il nomme quand même le fichier :
 
-Dire « pas de cœur » d'un cœur qui existe et démarre un vrai noyau enverrait
-quelqu'un attendre une chose déjà écrite. **La tranche suivante est donc de
-brancher la machine x86-64 dans l'application** — et à ce moment-là, un seul
-booléen change et tous les textes suivent, parce qu'aucun n'énumère les
-architectures à la main.
+> `Image` est un noyau Linux pour ARM64, au format Image ARM64. C'est le bon
+> genre de fichier — un noyau, pas une image de disque — mais wisq n'a pas de
+> cœur pour cette architecture.
 
 `X86Machine` **est écrite** : même forme que `LinuxMachine` — charger, tourner,
 taper, arrêter —, avec la file d'entrée série qu'il a fallu ajouter au cœur
@@ -2626,9 +2629,26 @@ servir. Onze tests, dont un qui pose une valeur distinctive dans **chaque**
 champ et la redemande — comparer deux instantanés ne prouverait rien, un champ
 oublié étant absent des deux.
 
-Reste à écrire pour brancher : le protocole commun aux deux machines, la
-fabrique qui choisit selon `KernelImageKind.core`, et le passage de
-`LocalVMModel` par elle.
+**Le branchement est fait**, en trois pièces : `GuestMachine`, le protocole
+commun aux deux machines ; `GuestMachineFactory`, qui choisit selon
+`KernelImageKind.core` ; et `LocalVMModel`, qui identifie le fichier **avant**
+de fabriquer quoi que ce soit — l'ordre a dû s'inverser, puisqu'on ne peut plus
+savoir quoi construire sans avoir lu. Dix tests de plus, treize sabotages.
+
+Deux choses que le protocole a fait apparaître, et qui n'étaient nulle part
+avant. Un disque en mémoire donné à la machine RISC-V est **refusé et nommé**
+plutôt qu'ignoré : son chargeur place un noyau et un arbre de périphériques, et
+l'accepter en silence donnerait un démarrage qui va jusqu'au bout puis panique
+faute de racine — un symptôme à quatre milliards d'instructions de sa cause. Et
+une faute du cœur PC traverse le protocole **avec son nom** : « arrêtée » à sa
+place enverrait chercher partout, alors que l'instruction qui a manqué est
+justement ce qui dit quelle brique poser ensuite.
+
+Le plancher de mémoire aussi est arrivé là : une machine PC a besoin de cent
+vingt-huit mébioctets — son noyau décompressé en fait trente-cinq à lui seul —
+et le plafond du téléphone, lui, ne change pas. Quand les deux ne se
+rencontrent pas, l'application le dit au lieu de démarrer une machine trop
+petite qui échouerait sans expliquer pourquoi.
 
 **Deux défauts que le sabotage a trouvés en pendant, pas en échouant.** Le
 budget ne comptait que les instructions retirées — or un `HLT` n'en retire
