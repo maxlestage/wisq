@@ -172,6 +172,20 @@ final class X86BootAttemptTests: XCTestCase {
         let brokenSaid = Self.kept(core.brokenReturns.count,
                                    of: core.brokenReturnTally)
         let started = Self.kept(core.processStarts.count, of: core.processStartsSeen)
+        // **Un `hlt` a deux fins, et elles ne se lisent pas pareil.** Le
+        // programme qui attend une interruption qui viendra, et celui qui en
+        // attend une qui ne viendra jamais — horloge non armée, ou
+        // interruptions masquées. Sans ces deux faits, « arrêt : hlt » se lit
+        // comme « la machine dort », alors que c'est peut-être « la machine
+        // est morte et personne ne le dit ».
+        let clock = core.devices.reload != 0
+            ? "horloge armée (rechargement \(core.devices.reload))"
+            : "horloge NON armée"
+        let masked = core.flags & X86Core.Flag.interrupt != 0
+            ? "interruptions permises" : "interruptions MASQUÉES"
+        let halt = core.halted
+            ? clock + ", " + masked + ", \(core.idled) tours d'attente"
+            : "non"
         let lost = Self.kept(core.lostJumps.count, of: core.lostJumpsUnresolved)
             + " non résolus, sur \(core.lostJumpTally) sauts vers une page absente"
 
@@ -195,6 +209,7 @@ final class X86BootAttemptTests: XCTestCase {
             instructions retirées : \(core.retired)
             arrêt                 : \(stopped.map { "\($0)" } ?? (core.halted ? "hlt" : "budget"))
             rip                   : 0x\(String(core.rip, radix: 16))
+            au repos              : \(halt)
             octets à RIP          : \(core.memory.map {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
