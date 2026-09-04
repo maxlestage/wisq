@@ -2,7 +2,7 @@ import type { Doc } from "../doc";
 
 /// Versions listed on the page. A test checks each one has a dated section in
 /// CHANGELOG.md, so this page cannot quietly fall behind the repository.
-export const RELEASED_VERSIONS = ["0.3.0", "0.2.0", "0.1.1", "0.1.0"] as const;
+export const RELEASED_VERSIONS = ["0.4.0", "0.3.0", "0.2.0", "0.1.1", "0.1.0"] as const;
 
 export const releasesEn: Doc = {
   title: "Releases",
@@ -12,6 +12,26 @@ export const releasesEn: Doc = {
       kind: "p",
       text:
         "Versions follow semantic versioning. Before 1.0.0 a minor version may break an API — the changelog says when one does.",
+    },
+
+    { kind: "h2", text: "0.4.0" },
+    {
+      kind: "p",
+      text:
+        "A second local architecture: an x86-64 core that runs a stock Alpine kernel and its initramfs to the initramfs rescue shell — 4 billion instructions with no program dying, ending exactly where QEMU ends on the same images. Getting there took six defects, and every one of them was found by measurement rather than by reading the code.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "The x86-64 core is held by nine hardware corpora: the reference is this machine's own processor, which executes the same bytes on the same state and is asked what it produced. Arithmetic, XMM, strings, stack, branches, SSE2 integer, scalar float, the x87 stack, and the 512-byte FXSAVE area — over 24 000 cases.",
+        "PUSH decremented the stack pointer before translating the address it was about to write. A page fault then restarted the instruction with the pointer already moved, and it moved again: eight bytes lost for good. That is what killed /init.",
+        "FXSAVE wrote zeros where the sixteen XMM registers belong, and FXRSTOR never read them back. The comment explaining why that was acceptable — \u2018nothing here computes in floating point\u2019 — had stopped being true, and the two tests covering it required the wrong behaviour: they held the defect in place.",
+        "An instruction was fetched by translating only its first byte, then reading up to fourteen more contiguously in physical memory. The physically next frame is almost never the virtually next page, so an instruction straddling a page boundary decoded from someone else\u2019s bytes. Fourteen bytes in every 4096 can straddle: rare enough to survive nine corpora, frequent enough to kill a program that runs long enough.",
+        "RDTSC stood still while the machine slept: it returned retired instructions, which do not move during HLT, while the 8253 counts idle turns too. The kernel had picked the TSC as its clock and calibrated it against the 8253, then found it frozen at every wake-up — a twelve-second timeout cannot expire on a clock that does not advance.",
+        "The serial port failed the 8250 driver\u2019s existence test, so ttyS0 was never registered as a terminal and user space had no console. The kernel\u2019s own lines never hinted at it: printk writes the port directly. The port is a 16550 now, and its transmitter interrupts on line four.",
+        "XADD wrote its source register before writing memory. When the write faulted \u2014 the page had just been shared by fork() \u2014 the kernel copied the page and replayed the instruction with the register already overwritten: the replay added the destination to itself. That is how musl\u2019s lock word reached 0xFFFFFFFF and nlplug-findfs slept on a futex nobody would wake. POP to memory moved the stack pointer before the same kind of fault; both now write memory first.",
+        "Measured on the same kernel and initramfs: zero segfaults, zero non-canonical addresses, zero of the 27 413 ring transitions returns a corrupted stack \u2014 and the init ends on \u2018Mounting boot media: failed.\u2019 followed by the initramfs emergency shell, exactly like QEMU. A disk is the next step.",
+      ],
     },
 
     { kind: "h2", text: "0.3.0" },
@@ -90,6 +110,26 @@ export const releasesFr: Doc = {
       kind: "p",
       text:
         "Les versions suivent le versionnage sémantique. Avant 1.0.0, une version mineure peut rompre une API — le journal le signale quand c'est le cas.",
+    },
+
+    { kind: "h2", text: "0.4.0" },
+    {
+      kind: "p",
+      text:
+        "Une seconde architecture locale : un cœur x86-64 qui fait tourner un noyau Alpine standard et son initramfs jusqu\u2019au shell de secours — 4 milliards d\u2019instructions sans qu\u2019un seul programme meure, pour finir exactement là où QEMU finit sur les mêmes images. Il a fallu six défauts pour y arriver, et chacun a été trouvé par la mesure, jamais par la lecture du code.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "Le cœur x86-64 est tenu par neuf corpus matériels : la référence n\u2019est ni un document ni un autre émulateur, c\u2019est le processeur de cette machine, à qui l\u2019on fait exécuter les mêmes octets sur le même état. Arithmétique, XMM, chaînes, pile, branchements, SSE2 entier, flottant scalaire, pile x87, et la zone FXSAVE de 512 octets — plus de 24 000 cas.",
+        "PUSH descendait le pointeur de pile avant de traduire l\u2019adresse où il allait écrire. Une faute de page reprenait alors l\u2019instruction avec le pointeur déjà descendu, et il redescendait : huit octets perdus pour toujours. C\u2019est ce qui tuait /init.",
+        "FXSAVE écrivait des zéros à la place des seize registres XMM, et FXRSTOR ne les relisait jamais. Le commentaire qui expliquait pourquoi c\u2019était acceptable — « rien ici ne calcule en virgule flottante » — avait cessé d\u2019être vrai, et les deux tests qui couvraient ces instructions exigeaient le mauvais comportement : ils tenaient le défaut en place.",
+        "Une instruction était lue en ne traduisant que son premier octet, puis en prenant jusqu\u2019à quatorze octets contigus en mémoire physique. Or la trame physiquement suivante n\u2019est presque jamais la page virtuellement suivante : une instruction à cheval sur une frontière de page se décodait sur les octets d\u2019ailleurs. Quatorze octets sur 4096 peuvent traverser — assez rare pour survivre à neuf corpus, assez fréquent pour tuer un programme qui dure.",
+        "RDTSC restait figé pendant que la machine dormait : il rendait les instructions retirées, qui ne bougent pas pendant un HLT, alors que le 8253 compte aussi les tours d\u2019attente. Le noyau avait pris le TSC pour horloge, l\u2019avait étalonné contre le 8253, et le trouvait immobile à chaque réveil — une temporisation de douze secondes ne peut pas expirer sur une horloge qui n\u2019avance pas.",
+        "Le port série échouait au test d\u2019existence du pilote 8250 : ttyS0 n\u2019était jamais enregistré comme terminal, et l\u2019espace utilisateur n\u2019avait pas de console. Les lignes du noyau ne le laissaient pas voir : printk écrit le port directement. Le port est un 16550 maintenant, et son émetteur interrompt sur la ligne quatre.",
+        "XADD écrivait son registre source avant d\u2019écrire la mémoire. Quand l\u2019écriture fautait — la page venait d\u2019être partagée par fork() —, le noyau copiait la page et rejouait l\u2019instruction avec le registre déjà écrasé : la reprise additionnait la destination à elle-même. C\u2019est ainsi que le mot d\u2019un verrou de musl a atteint 0xFFFFFFFF et que nlplug-findfs s\u2019est endormi sur un futex que personne ne réveillerait. POP vers la mémoire bougeait le pointeur de pile avant la même faute ; les deux écrivent la mémoire d\u2019abord.",
+        "Mesuré sur le même noyau et le même initramfs : zéro segfault, zéro adresse non canonique, aucun des 27 413 passages d\u2019anneau ne rend une pile corrompue — et l\u2019init finit sur « Mounting boot media: failed. » puis le shell de secours de l\u2019initramfs, exactement comme QEMU. Un disque est le pas suivant.",
+      ],
     },
 
     { kind: "h2", text: "0.3.0" },

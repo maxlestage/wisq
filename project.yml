@@ -84,7 +84,7 @@ targets:
         # et c'est l'envoi à Apple qui la refuse — un rouge qui n'arrive qu'au
         # dernier moment.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "0.3.0"
+        MARKETING_VERSION: "0.4.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
