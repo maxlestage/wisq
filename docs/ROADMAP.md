@@ -3082,6 +3082,26 @@ habitude.
        reste — soixante-quatre formes de registre, `leave`, `movabs`, les
        vingt-cinq atomiques — était déjà juste. **Ce n'est pas là non plus.**
 
+     **L'instrument qui manquait : le témoin des adresses non canoniques.**
+     Sur x86-64, un pointeur licite a ses bits 63 à 48 identiques au bit 47 —
+     les programmes en bas, le noyau en haut, un trou immense entre les deux.
+     `0x00037cde165f7280` tombe dans le trou : ce n'est l'adresse de rien. Le
+     processeur ne dit pourtant rien tant qu'on ne s'en sert pas comme adresse,
+     et c'est là le problème : quand la faute se voit, l'instruction qui a
+     fabriqué la valeur est loin derrière, et le noyau n'imprime que la fin de
+     l'histoire. Armé, le cœur regarde après chaque instruction d'anneau trois
+     si un registre vient d'**acquérir** une valeur non canonique, et retient
+     laquelle, où, et avec quels octets — il remonte de la mort à la naissance.
+     Éteint par défaut, et l'anneau zéro n'est jamais regardé : le noyau met
+     légitimement des masques et des entrées de table de pages dans les mêmes
+     registres.
+
+     La voie qui a été essayée et écartée avant lui : tracer l'exécution de
+     QEMU pour la comparer à la nôtre. `-d exec` avec `-dfilter` sur l'espace
+     utilisateur a produit **6,8 Go en deux minutes** sans rien filtrer du
+     tout, et le démarrage n'était pas au tiers. Un instrument qui coûte plus
+     que ce qu'il mesure n'en est pas un.
+
      Reste le harnais différentiel qui aligne les deux exécutions et dise à
      quelle instruction elles divergent.
 

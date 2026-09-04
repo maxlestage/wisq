@@ -124,6 +124,12 @@ final class X86BootAttemptTests: XCTestCase {
 
         XCTAssertTrue(core.system.longMode, "le mode long doit être actif avant le saut")
 
+        // Le témoin des adresses non canoniques, quand on le demande. Il coûte
+        // une recopie des seize registres par instruction d'anneau trois, donc
+        // il n'est pas armé pour le démarrage ordinaire.
+        core.canonicalWatchArmed =
+            ProcessInfo.processInfo.environment["WISQ_PC_WATCH"] != nil
+
         var stopped: Error?
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
@@ -143,6 +149,11 @@ final class X86BootAttemptTests: XCTestCase {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
             port série            : \(core.serialOutput.count) octets
+            valeurs non canoniques : \(core.nonCanonicalSeen.isEmpty ? "aucune"
+                : "\n" + core.nonCanonicalSeen.map {
+                    "  " + $0.description + "  ["
+                        + $0.bytes.map { String(format: "%02x", $0) }.joined() + "]"
+                }.joined(separator: "\n"))
             \(serial.isEmpty ? "" : serial)
             =====================================
 

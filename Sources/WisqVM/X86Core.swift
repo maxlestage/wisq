@@ -61,6 +61,20 @@ public struct X86Core: @unchecked Sendable {
     public var system = X86SystemState()
     /// Le contrôleur d'interruptions et l'horloge d'un PC.
     public var devices = X86LegacyDevices()
+    /// Le témoin des adresses non canoniques : armé ou non, et ce qu'il a vu.
+    ///
+    /// **Seul l'anneau trois est regardé** quand il est armé, et ce n'est pas
+    /// une économie gratuite : le noyau manipule légitimement, dans les mêmes
+    /// registres, des valeurs qui ne sont pas des adresses — masques,
+    /// compteurs, entrées de table de pages. Les signaler rendrait le témoin
+    /// inutilisable à force de bruit.
+    ///
+    /// **Ce ne sont pas des champs de l'invité**, et l'instantané ne les porte
+    /// pas : une machine reprise ailleurs ne doit pas hériter d'un instrument
+    /// de mesure qu'on avait allumé ici. Voir `X86CanonicalWatch.swift`.
+    public var canonicalWatchArmed = false
+    public var nonCanonicalSeen: [NonCanonical] = []
+
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
     /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
@@ -292,7 +306,19 @@ public struct X86Core: @unchecked Sendable {
                 }
                 let available = min(X86Instruction.maximumLength, memory.size - start)
                 let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
+                // Le témoin, quand il est armé et qu'on est dans un programme.
+                // La condition est d'abord sur le drapeau : éteint — le cas de
+                // toute exécution normale — il n'y a pas même de lecture du
+                // privilège, et le chemin chaud reste ce qu'il était.
+                let watching = canonicalWatchArmed && privilege == 3
+                let entry = rip
+                let before = watching ? registers : []
+                let bytes = watching
+                    ? Array(UnsafeBufferPointer(start: memory.bytes + start,
+                                                count: Int(instruction.length)))
+                    : []
                 try execute(instruction)
+                if watching { noteNonCanonical(before: before, rip: entry, bytes) }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
                 // les autres sortent d'ici, parce qu'un cœur qui avale une
