@@ -53,10 +53,16 @@ extension X86Core {
             try push(Self.signExtend(instruction.immediate, instruction.immediateBytes),
                      Self.stackSize(instruction))
         case 0x8F:  // POP r/m
+            // **La mémoire d'abord, la pile ensuite.** L'écriture peut fauter
+            // — une page qu'un `fork()` vient de rendre lisible seulement —,
+            // et le noyau rejoue l'instruction après avoir copié la page. Si
+            // RSP avait déjà avancé, le rejeu dépilerait la case suivante.
+            guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
             let fields = try decodeFields(instruction)
             let size = Self.stackSize(instruction)
-            let value = try pop(size)
+            let value = try memory.read(try translate(registers[4]), size)
             try writeRM(fields, size, value)
+            registers[4] = registers[4] &+ UInt64(size)
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
@@ -556,12 +562,21 @@ extension X86Core {
             }
 
         case 0xC0, 0xC1:  // XADD : échanger, puis additionner
+            // **La mémoire d'abord, le registre ensuite.** Le registre source
+            // recevait l'ancienne valeur *avant* l'écriture en mémoire ; quand
+            // celle-ci fautait — la page venait d'être partagée par un
+            // `fork()` et n'était plus inscriptible —, le noyau copiait la
+            // page et rejouait l'instruction avec le registre déjà écrasé :
+            // la reprise additionnait la destination à elle-même. C'est ainsi
+            // que le verrou de musl passait de 0xBFFFFFFF à 0x7FFFFFFE au lieu
+            // de 0x3FFFFFFE, et que nlplug-findfs s'endormait sur un
+            // `futex(verrou, WAIT, -1)` que personne ne réveillerait.
             let size = Self.operandSize(instruction, byteForm: opcode == 0xC0)
             let fields = try decodeFields(instruction)
             let destination = try readRM(fields, size)
             let source = readReg(fields, size)
-            writeReg(fields, size, destination)
             try writeRM(fields, size, add(destination, source, size))
+            writeReg(fields, size, destination)
 
         case 0xB6, 0xB7:  // MOVZX
             let size = Self.operandSize(instruction, byteForm: false)

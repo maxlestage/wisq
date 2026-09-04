@@ -164,8 +164,13 @@ final class X86BootAttemptTests: XCTestCase {
             // jamais expirer — on lui coupe le courant avant.
             let patience = ProcessInfo.processInfo.environment["WISQ_PC_WAIT"]
                 .flatMap { UInt64($0) }
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 3_500_000_000,
-                         waiting: patience)
+            // **Les valeurs par défaut vont jusqu'au shell de secours.** Alpine
+            // y arrive après quatre milliards d'instructions retirées, et il
+            // lui faut patienter devant un média de démarrage absent — douze
+            // secondes de temps invité, soit deux cents millions de tours ;
+            // on en donne le double.
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 4_500_000_000,
+                         waiting: patience ?? 400_000_000)
         } catch {
             stopped = error
         }
@@ -263,6 +268,7 @@ final class X86BootAttemptTests: XCTestCase {
             programmes démarrés   : \(started)
             sauts dans le vide    : \(lost)
             adresses non canoniques : \(core.nonCanonicalSeen.count)
+            fils vus              : \(core.threadActivity.count)
             """)
 
         func list(_ title: String, _ lines: [String]) {
@@ -285,6 +291,9 @@ final class X86BootAttemptTests: XCTestCase {
         list("retours rompus", core.returnsBroken.map { $0.description })
         list("sauts dans le vide", core.jumpsLost.map { $0.description })
         list("programmes démarrés", core.processesStarted.map { $0.description })
+        // Qui tourne et qui attend quoi : le plus récemment actif en premier.
+        list("fils, du plus récent au plus ancien",
+             core.threadsByLastActivity.map { $0.description })
         list("adresses non canoniques", core.nonCanonicalSeen.map { $0.description })
         if !serial.isEmpty { say("\n" + serial) }
         say("\n=====================================\n")
@@ -315,6 +324,19 @@ final class X86BootAttemptTests: XCTestCase {
         }
         XCTAssertTrue(serial.contains("Freeing initrd memory"),
                       "avec un disque en mémoire, le noyau doit le déballer et le rendre")
+        // **Jusqu'au bout, comme la référence.** Sur les mêmes images, QEMU
+        // imprime « Mounting boot media: failed. » douze secondes après avoir
+        // commencé à chercher, puis lance le shell de secours de l'initramfs.
+        // C'est ce que cette machine doit faire aussi, et c'est la phrase qui
+        // dit qu'elle se comporte comme la référence jusqu'au bout — avant
+        // d'investir dans un disque. Trois défauts l'en empêchaient : RDTSC
+        // figé pendant le sommeil, un port série que le pilote 8250 ne
+        // trouvait pas, et un XADD qui doublait sa destination quand son
+        // écriture fautait sur une page copiée par fork().
+        XCTAssertTrue(serial.contains("Mounting boot media: failed."),
+                      "l'init doit renoncer au média de démarrage, comme QEMU")
+        XCTAssertTrue(serial.contains("initramfs emergency recovery shell launched"),
+                      "et lancer son shell de secours, comme QEMU")
         // **Ce qui remplace « on s'arrête en anneau trois ».** Cette
         // assertion-là tenait tant que le cœur s'arrêtait *pendant* que le
         // programme tournait ; depuis que plus aucun opcode ne manque, la
