@@ -207,6 +207,11 @@ def snippets():
         yield f"cmpxchg{suffix} {source}, {destination}"
         yield f"xadd{suffix} {source}, {destination}"
 
+    for register in ["%rax", "%rcx", "%rdx"]:
+        yield f"bswapq {register}"
+    for register in ["%eax", "%ecx", "%edx"]:
+        yield f"bswapl {register}"
+
     yield "xchgq %rcx, %rax"
     yield "xchgl %ecx, %eax"
     yield "leaq 8(%rcx), %rax"
@@ -322,6 +327,22 @@ PROGRAMS = [
         "addq %rax, (%rsi)", "xorq %rcx, 8(%rsi)", "incq 16(%rsi)"]),
     ("un saut indirect par registre", [
         "leaq 1f(%rip), %rdx", "jmp *%rdx", "movq $0, %rax", "1: incq %rdx"]),
+    # Les chaînes de bits. C'est la forme que le manuel appelle « bit string » :
+    # quand la destination est en mémoire, le numéro n'est **pas** réduit au
+    # modulo, il est signé, et le processeur va chercher le mot qui contient ce
+    # bit-là. Le noyau de Linux tient ses vecteurs d'interruption réservés dans
+    # un tableau de 256 bits qu'il pose comme ça ; un cœur qui replie tous les
+    # numéros dans le premier mot lui fait croire que l'horloge est déjà prise.
+    ("un tableau de bits, au-delà du premier mot", [
+        "andl $0x1ff, %ecx", "btsq %rcx, (%rsi)",
+        "movq %rcx, %rdx", "addq $64, %rdx", "andl $0x1ff, %edx",
+        "btrq %rdx, (%rsi)", "btq %rcx, (%rsi)", "setc %al"]),
+    ("un tableau de bits, avec un numéro négatif", [
+        "andl $0xff, %ecx", "subl $128, %ecx", "movslq %ecx, %rcx",
+        "leaq 32(%rsi), %rax", "btsq %rcx, (%rax)", "btq %rcx, (%rax)", "setc %dl"]),
+    ("un tableau de bits en trente-deux bits", [
+        "andl $0xff, %ecx", "btsl %ecx, (%rsi)", "btcl %ecx, 4(%rsi)",
+        "btl %ecx, (%rsi)", "setc %dl"]),
     ("une boucle qui parcourt la mémoire", [
         "movl $4, %ecx", "xorq %rdx, %rdx",
         "1: addq (%rsi), %rdx", "addq $8, %rsi", "decl %ecx", "jnz 1b"]),

@@ -12,35 +12,38 @@ import XCTest
 /// Il n'échoue donc que si la préparation elle-même casse, jamais parce que le
 /// noyau ne va pas assez loin.
 ///
-/// **Où on en est, mesuré le 3 septembre 2026 : Linux démarre.** Le vrai
-/// noyau d'Alpine 3.20 — Linux 6.6.134-0-lts — se décompresse, entre dans son
-/// propre espace d'adressage, et **écrit sur le port série de wisq**. Sa
-/// bannière, la carte E820 qu'on lui a donnée, ses zones mémoire, son RCU, sa
-/// console :
+/// **Où on en est, mesuré le 4 septembre 2026 : Linux démarre jusqu'au bout.**
+/// Le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts — se décompresse, entre
+/// dans son propre espace d'adressage, trouve son horloge, initialise ses
+/// sous-systèmes, et arrive à `kernel_init`, où il s'arrête pour la seule
+/// raison qui reste :
 ///
 /// ```
 /// [    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
-/// [    0.000000] CPU: vendor_id 'wisq  x86-64' unknown, using generic init.
-/// [    0.000000] Memory: 218360K/261752K available (14336K kernel code, …)
-/// [    0.000000] printk: console [ttyS0] enabled
-/// [    0.000000] Failed to register legacy timer interrupt
+/// [    8.929917] printk: console [ttyS0] enabled
+/// [   21.480833] smpboot: Total of 1 processors activated (28.82 BogoMIPS)
+/// [   21.546634] devtmpfs: initialized
+/// [   32.137346] TCP: Hash tables configured (established 2048 bind 2048)
+/// [   44.818378] ---[ end Kernel panic - not syncing: VFS: Unable to mount
+///                    root fs on unknown-block(0,0) ]---
 /// ```
 ///
-/// **Où ça s'arrête, et c'est nommé par le noyau lui-même** : il n'y a ni PIT
-/// ni APIC, donc aucune horloge ne bat, et il tourne en rond dans une boucle
-/// d'attente. Presque cinq mille octets de journal en sortent avant. La
-/// tranche suivante est écrite dans ce message d'erreur.
+/// **C'est la bonne fin.** Un noyau sans disque et sans initrd dit exactement
+/// ça, sur une vraie machine comme ici. 262 lignes de journal, une trace
+/// d'appels avec les noms des fonctions — donc `printk`, la table des
+/// symboles, le dérouleur de pile, les exceptions et l'horloge marchent tous.
+/// Ce qui manque n'est plus dans le processeur : c'est un disque, et c'est la
+/// tranche suivante de la feuille de route.
 ///
-/// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante. La
-/// livraison d'exception (`X86InterruptTests`), puis l'octet haut lu par une
-/// instruction plus large que lui, puis `ENDBR64`, les bases de FS et GS,
-/// `CMPXCHG`, les registres de débogage, `PREFETCH` — voir
-/// `X86KernelBricksTests`, où chacune est tenue par un test.
+/// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
+/// jamais l'inverse. Voir `X86InterruptTests` pour la livraison d'exception,
+/// `X86KernelBricksTests` pour les instructions, `X86LegacyDevicesTests` pour
+/// le contrôleur d'interruptions et l'horloge.
 ///
-/// **Le budget par défaut est de neuf cents millions d'instructions**, ce qui
-/// prend environ 75 s en release et bien plus en debug ; `WISQ_PC_BUDGET` le
-/// change, et l'assertion sur la bannière ne tient que si on ne l'a pas
-/// baissé.
+/// **Le budget par défaut est de 3,5 milliards d'instructions**, ce qui prend
+/// environ quatre minutes et demie en release et bien plus en debug ;
+/// `WISQ_PC_BUDGET` le change, et les assertions ne tiennent que si on ne l'a
+/// pas baissé.
 final class X86BootAttemptTests: XCTestCase {
     /// Une pagination d'identité sur les quatre premiers gibioctets, en pages
     /// de un gibioctet : quatre entrées suffisent, là où des pages de quatre
@@ -87,7 +90,7 @@ final class X86BootAttemptTests: XCTestCase {
         var stopped: Error?
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 900_000_000)
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 3_500_000_000)
         } catch {
             stopped = error
         }
@@ -118,5 +121,9 @@ final class X86BootAttemptTests: XCTestCase {
                       "le noyau doit écrire sa bannière sur le port série")
         XCTAssertTrue(serial.contains("console [ttyS0] enabled"),
                       "et aller jusqu'à ouvrir sa console")
+        XCTAssertTrue(serial.contains("processors activated"),
+                      "et activer son processeur, ce qui demande une horloge")
+        XCTAssertTrue(serial.contains("Unable to mount root fs"),
+                      "et arriver à la seule chose qui manque encore : un disque")
     }
 }

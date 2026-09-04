@@ -75,8 +75,16 @@ extension X86Core {
     /// simples, donc ça tient ; l'écrire ailleurs que dans ce commentaire
     /// serait prématuré.
     mutating func deliver(_ fault: Fault) throws -> Bool {
-        guard let vector = Self.vector(of: fault), let gate = try gate(vector) else { return false }
+        guard let vector = Self.vector(of: fault) else { return false }
         if case .pageFault(let address) = fault { system.control[2] = address }
+        return try enter(vector, errorCode: vector == 14 ? pageFaultErrorCode : 0)
+    }
+
+    /// Entrer dans le gestionnaire d'un vecteur, et dire si ça a été fait.
+    /// C'est le même chemin pour une faute et pour une interruption de
+    /// matériel ; seuls le vecteur et le code d'erreur changent.
+    mutating func enter(_ vector: UInt8, errorCode: UInt64) throws -> Bool {
+        guard let gate = try gate(vector) else { return false }
 
         // Le cadre du mode long : toujours SS et RSP, même sans changement de
         // privilège — c'est ce qui distingue le 64 bits du 32, où ils ne
@@ -92,9 +100,7 @@ extension X86Core {
         try push(flags | Flag.reserved)
         try push(UInt64(segments[1]))
         try push(rip)
-        if Self.vectorsWithErrorCode.contains(vector) {
-            try push(vector == 14 ? pageFaultErrorCode : 0)
-        }
+        if Self.vectorsWithErrorCode.contains(vector) { try push(errorCode) }
         registers[4] = pointer
 
         segments[1] = gate.selector
@@ -104,6 +110,7 @@ extension X86Core {
         // dans les deux cas.
         flags &= ~(Flag.trap | Flag.nested | Flag.resume)
         if gate.kind == 0x0E { flags &= ~Flag.interrupt }
+        halted = false  // une interruption réveille un `HLT`
         // **Pas de `jumped` ici.** Un branchement le pose pour dire à
         // `execute` de ne pas avancer RIP ; mais la livraison a lieu *après*
         // que `execute` a levé, donc personne ne le lira — sauf la première
@@ -141,4 +148,43 @@ extension X86Core {
         segments[2] = UInt16(truncatingIfNeeded: stackSelector)
         jumped = true
     }
+}
+
+// Les interruptions de matériel : celles que le 8259 présente, et le battement
+// du 8253 qui les provoque.
+extension X86Core {
+    /// Le temps de l'invité, en battements du 8253. Il vient du compteur
+    /// d'instructions — voir `X86LegacyDevices` pour pourquoi, et pourquoi
+    /// c'est une décision plutôt qu'une mesure.
+    var ticks: UInt64 { (retired &+ idled) / X86LegacyDevices.instructionsPerTick }
+
+    /// Lever ce qui est dû, puis livrer la ligne la plus prioritaire.
+    ///
+    /// Appelée périodiquement plutôt qu'à chaque instruction : un vrai
+    /// processeur regarde sa broche entre deux instructions, et le faire ici
+    /// coûterait un test sur le chemin le plus chaud du programme pour un
+    /// événement qui arrive toutes les dizaines de milliers d'instructions.
+    /// Le prix est une latence bornée par la période de contrôle, ce qu'aucun
+    /// noyau ne peut distinguer d'une horloge un peu moins précise.
+    mutating func serviceInterrupts() throws {
+        let due = devices.expirations(at: ticks)
+        if due > devices.raised {
+            devices.raised = due
+            devices.primary.request |= 1  // la ligne zéro : l'horloge
+        }
+        guard flags & Flag.interrupt != 0 else { return }
+        let pending = devices.primary.request & ~devices.primary.mask
+        guard pending != 0 else { return }
+        let line = UInt8(pending.trailingZeroBitCount)
+        let vector = devices.primary.vectorBase &+ line
+        guard try enter(vector, errorCode: 0) else { return }
+        // La demande n'est retirée **que** si elle a été livrée : sinon elle
+        // reste, et le noyau la trouvera quand il aura posé sa porte.
+        devices.primary.request &= ~(1 << line)
+        devices.primary.service |= (1 << line)
+    }
+
+    /// Vrai quand une horloge a été armée. Tant que non, rien ne peut arriver
+    /// et la boucle n'a pas à regarder.
+    var devicesArmed: Bool { devices.reload != 0 }
 }
