@@ -2613,6 +2613,23 @@ brancher la machine x86-64 dans l'application** — et à ce moment-là, un seul
 booléen change et tous les textes suivent, parce qu'aucun n'énumère les
 architectures à la main.
 
+`X86Machine` **est écrite** : même forme que `LinuxMachine` — charger, tourner,
+taper, arrêter —, avec la file d'entrée série qu'il a fallu ajouter au cœur
+pour qu'un invité sache qu'on vient de taper. Sept tests, cinq sabotages.
+
+Ce qui manque avant de brancher : **l'instantané**. La RAM d'une machine PC se
+compte en centaines de mébioctets là où celle du RISC-V en fait
+soixante-quatre, et la recopier à chaque passage en arrière-plan demande une
+stratégie plutôt qu'une boucle.
+
+**Deux défauts que le sabotage a trouvés en pendant, pas en échouant.** Le
+budget ne comptait que les instructions retirées — or un `HLT` n'en retire
+aucune, donc la boucle tournait sans fin autour d'un invité qui dort, à plein
+régime, sur un téléphone. Et la sortie reposait sur `halted` au lieu du
+progrès. Les deux corrigés ; la garde porte maintenant sur « cette tranche
+n'a rien exécuté », ce qui couvre les deux cas et tous ceux qu'on n'a pas
+imaginés.
+
 ### Ce qui n'est pas promis
 
 Reconnaître vingt et une familles n'en fait pas tourner vingt et une. Écrire un

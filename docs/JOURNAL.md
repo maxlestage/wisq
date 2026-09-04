@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~01h45 UTC — la machine PC, et deux défauts que seul le sabotage a vus
+
+`X86Machine` : le pendant de `LinuxMachine` pour le x86-64. Même forme —
+charger, tourner, taper, arrêter — parce que c'est l'application qui choisira
+laquelle selon le fichier, et qu'elle n'a pas à connaître la différence.
+
+Le cœur a gagné une file d'entrée série, et le registre d'état de la ligne
+annonce « une donnée est prête » tant qu'il en reste. Sans ce bit, un invité
+qui attend une touche ne saurait jamais qu'il y en a une, et la console aurait
+l'air figée au moment précis où quelqu'un vient de taper.
+
+### Les deux défauts, et pourquoi les tests seuls ne les voyaient pas
+
+**Le budget ne comptait que les instructions retirées.** Un processeur arrêté
+sur un `HLT` n'en retire aucune : la boucle de la machine tournait donc sans
+fin autour d'un invité qui dort, à plein régime, sur un téléphone, sans
+qu'aucun budget puisse l'arrêter. `idled` est l'autre moitié de l'horloge, et
+il compte maintenant dans le budget.
+
+**Et la sortie reposait sur `halted`** au lieu du progrès. Une tranche qui
+n'exécute rien veut dire que plus rien ne peut arriver — quelle qu'en soit la
+raison. La garde porte désormais sur `executed == 0`, ce qui couvre `halted` et
+tout ce qui rendrait la main sans avancer.
+
+Aucun des sept tests ne voyait ces deux-là. C'est le sabotage qui les a
+trouvés, et pas en faisant tomber un test : en **pendant**. Le premier m'a fait
+attendre dix minutes avant d'aller couper le courant, et c'est ce silence-là
+qui a nommé le défaut.
+
+**Un test trop lâche, aussi.** « le budget borne » tolérait un dépassement de
+la taille d'une tranche — deux cent mille instructions pour un budget de
+cinquante mille — donc le sabotage qui supprimait le calcul du reste passait
+sans être vu. Il exige maintenant le compte **exact**.
+
+Troisième fois cette nuit qu'un sabotage révèle un test qui passait pour la
+mauvaise raison. C'est à ça qu'il sert : pas à vérifier qu'un test passe, mais
+qu'il tient ce qu'il prétend tenir.
+
+### Ce qui reste avant de brancher
+
+Pas d'instantané : la RAM d'une machine PC se compte en centaines de
+mébioctets là où celle du RISC-V en fait soixante-quatre, et recopier ça à
+chaque passage en arrière-plan demande une stratégie, pas une boucle. C'est
+écrit à côté du code plutôt que laissé à découvrir — et c'est la dernière
+chose qui manque avant que `Core.availableInTheApp` passe à vrai pour le
+x86-64.
+
+---
+
 ## 2026-09-04, ~01h15 UTC — toutes les architectures, et le cœur choisi par le fichier
 
 Maxime : « sur wisq il me faut toutes les architectures Linux qui peuvent
