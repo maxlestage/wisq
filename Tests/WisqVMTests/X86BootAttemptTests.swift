@@ -129,6 +129,16 @@ final class X86BootAttemptTests: XCTestCase {
         // il n'est pas armé pour le démarrage ordinaire.
         core.canonicalWatchArmed =
             ProcessInfo.processInfo.environment["WISQ_PC_WATCH"] != nil
+        // Le témoin d'adresse ne s'arme que si on lui en donne une : elle n'est
+        // connue qu'après une première mesure. Voir `X86AddressWatch.swift`.
+        // La forme est `adresse` ou `adresse+longueur`, en hexadécimal.
+        if let asked = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_ADDRESS"] {
+            let halves = asked.split(separator: "+", maxSplits: 1)
+            core.watchedAddress = halves.first.flatMap { UInt64($0, radix: 16) }
+            if halves.count == 2, let length = UInt64(halves[1], radix: 16), length > 0 {
+                core.watchedLength = length
+            }
+        }
 
         var stopped: Error?
         do {
@@ -186,6 +196,8 @@ final class X86BootAttemptTests: XCTestCase {
         list("passages d'anneau qui décalent la pile",
              core.ringTrips.map { $0.description })
         list("retours sans promesse", core.unmatchedReturns.map { $0.description })
+        list("passages sur l'adresse surveillée",
+             core.addressTouched.filter { $0.retired != 0 }.map { $0.description })
         say("mouvements de pile gardés : \(core.stackMoves.count)")
         list("retours rompus", core.brokenReturns.map { $0.description })
         list("programmes démarrés", core.processStarts.map { $0.description })
