@@ -45,6 +45,13 @@ public struct X86Core: @unchecked Sendable {
     public var memory: X86Memory?
     /// Les octets sortis par le port série, dans l'ordre.
     public var serialOutput: [UInt8] = []
+    /// Les octets tapés qui attendent d'être lus par le port série.
+    ///
+    /// Le registre d'état de la ligne annonce « une donnée est prête » tant
+    /// qu'il en reste : sans ça un invité qui attend une touche ne saurait
+    /// jamais qu'il y en a une, et la console aurait l'air figée au moment
+    /// précis où quelqu'un vient de taper.
+    public var serialInput: [UInt8] = []
     /// Combien d'instructions ont été exécutées. C'est ce compteur qui donne
     /// le chiffre de vitesse.
     public var retired: UInt64 = 0
