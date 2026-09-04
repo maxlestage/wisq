@@ -3181,8 +3181,36 @@ habitude.
      `segfault at 0`, `at 1`, `at 199`, toutes avec `error 4` — une lecture,
      en anneau trois, d'une page absente. Le témoin des adresses non canoniques
      ne peut rien dire de celles-là : zéro est une adresse parfaitement
-     canonique. C'est le prochain instrument à trouver, et la prochaine
-     tranche.
+     canonique — il a fallu le lui apprendre, et lui apprendre du même coup
+     qu'un registre à zéro n'a pas *formé* l'adresse, sans quoi il accusait les
+     seize d'un coup.
+
+     **Ce que le témoin élargi a dit, et c'est net.** Le chargeur `ld-musl` a
+     été extrait de l'initramfs et sa base de chargement retrouvée —
+     `0x7f89e846f000`, six témoins concordants. Aux offsets nommés on trouve
+     `__syscall_ret`, appelé par un `fork()`. Le parent reçoit **409**, le PID
+     de son enfant — que le noyau confirme, `init[409]` — et le déréférence
+     comme un pointeur ; l'enfant reçoit **0** et déréférence 0. Les deux
+     meurent à la même adresse dans le code de `/init`. **Un symbole s'est donc
+     résolu vers la mauvaise fonction** : `/init` appelle quelque chose et
+     atterrit dans `fork()`, dont le retour est un nombre là où le code attend
+     une adresse.
+
+     **Le plancher du branchement, et il n'est pas là non plus.** Le comptage
+     réclamait ce cinquième corpus : 4 659 `jmp`, 4 436 `call`, 1 851 `ret` et
+     près de neuf mille sauts conditionnels dans le chargeur, et **aucune forme
+     de branchement** dans les quatre corpus. Le tableau des conditions, lui,
+     était déjà prouvé — seize `setcc`, seize `cmovcc`, et le cœur évalue la
+     condition d'un saut par la même fonction. Ce qui ne l'était pas, c'est
+     **où un branchement atterrit**. 63 programmes, **630 cas, zéro
+     désaccord** : les seize conditions aux deux largeurs et en arrière, les
+     quatre formes de `jmp`, les trois formes de `call` avec leur retour,
+     `ret` qui jette ses arguments, deux appels imbriqués, `loop`, `loope`,
+     `loopne` et `jrcxz`. Ce n'est pas là.
+
+     La piste du masque de décalage a été vérifiée et **écartée** : les six
+     bits en soixante-quatre et cinq en trente-deux, le cœur les avait déjà
+     justes.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une

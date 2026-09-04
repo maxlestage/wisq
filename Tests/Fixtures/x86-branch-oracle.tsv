@@ -1,0 +1,711 @@
+# Ce que le vrai processeur répond sur les branchements.
+# Voir scripts/build-x86-branch-oracle.py.
+# état	<indice>	<drapeaux>
+# instr	<indice>	<octets>	<nom>
+# cas	<instr>	<état>	<rax>	<rcx>	<rdx>	<rsp>	<drapeaux>
+#   RAX porte la marque du bras où l'on a atterri :
+#   a1 pris, b2 tombé à côté, c3 jamais entré dans la boucle.
+#   RSP dit que la pile est revenue là où elle était.
+état	0	0
+état	1	1
+état	2	40
+état	3	80
+état	4	800
+état	5	4
+état	6	41
+état	7	880
+état	8	8c0
+état	9	8d5
+instr	0	48c7c000000000700948c7c0b2000000eb0748c7c0a1000000	jo court
+instr	1	48c7c0000000000f80d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jo long
+instr	2	48c7c0c3000000b90300000048c7c0a1000000ffc97002eb0c83f90075ee48c7c0b2000000	jo en arrière
+instr	3	48c7c000000000710948c7c0b2000000eb0748c7c0a1000000	jno court
+instr	4	48c7c0000000000f81d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jno long
+instr	5	48c7c0c3000000b90300000048c7c0a1000000ffc97102eb0c83f90075ee48c7c0b2000000	jno en arrière
+instr	6	48c7c000000000720948c7c0b2000000eb0748c7c0a1000000	jb court
+instr	7	48c7c0000000000f82d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jb long
+instr	8	48c7c0c3000000b90300000048c7c0a1000000ffc97202eb0c83f90075ee48c7c0b2000000	jb en arrière
+instr	9	48c7c000000000730948c7c0b2000000eb0748c7c0a1000000	jae court
+instr	10	48c7c0000000000f83d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jae long
+instr	11	48c7c0c3000000b90300000048c7c0a1000000ffc97302eb0c83f90075ee48c7c0b2000000	jae en arrière
+instr	12	48c7c000000000740948c7c0b2000000eb0748c7c0a1000000	je court
+instr	13	48c7c0000000000f84d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	je long
+instr	14	48c7c0c3000000b90300000048c7c0a1000000ffc97402eb0c83f90075ee48c7c0b2000000	je en arrière
+instr	15	48c7c000000000750948c7c0b2000000eb0748c7c0a1000000	jne court
+instr	16	48c7c0000000000f85d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jne long
+instr	17	48c7c0c3000000b90300000048c7c0a1000000ffc97502eb0c83f90075ee48c7c0b2000000	jne en arrière
+instr	18	48c7c000000000760948c7c0b2000000eb0748c7c0a1000000	jbe court
+instr	19	48c7c0000000000f86d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jbe long
+instr	20	48c7c0c3000000b90300000048c7c0a1000000ffc97602eb0c83f90075ee48c7c0b2000000	jbe en arrière
+instr	21	48c7c000000000770948c7c0b2000000eb0748c7c0a1000000	ja court
+instr	22	48c7c0000000000f87d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	ja long
+instr	23	48c7c0c3000000b90300000048c7c0a1000000ffc97702eb0c83f90075ee48c7c0b2000000	ja en arrière
+instr	24	48c7c000000000780948c7c0b2000000eb0748c7c0a1000000	js court
+instr	25	48c7c0000000000f88d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	js long
+instr	26	48c7c0c3000000b90300000048c7c0a1000000ffc97802eb0c83f90075ee48c7c0b2000000	js en arrière
+instr	27	48c7c000000000790948c7c0b2000000eb0748c7c0a1000000	jns court
+instr	28	48c7c0000000000f89d400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jns long
+instr	29	48c7c0c3000000b90300000048c7c0a1000000ffc97902eb0c83f90075ee48c7c0b2000000	jns en arrière
+instr	30	48c7c0000000007a0948c7c0b2000000eb0748c7c0a1000000	jp court
+instr	31	48c7c0000000000f8ad400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jp long
+instr	32	48c7c0c3000000b90300000048c7c0a1000000ffc97a02eb0c83f90075ee48c7c0b2000000	jp en arrière
+instr	33	48c7c0000000007b0948c7c0b2000000eb0748c7c0a1000000	jnp court
+instr	34	48c7c0000000000f8bd400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jnp long
+instr	35	48c7c0c3000000b90300000048c7c0a1000000ffc97b02eb0c83f90075ee48c7c0b2000000	jnp en arrière
+instr	36	48c7c0000000007c0948c7c0b2000000eb0748c7c0a1000000	jl court
+instr	37	48c7c0000000000f8cd400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jl long
+instr	38	48c7c0c3000000b90300000048c7c0a1000000ffc97c02eb0c83f90075ee48c7c0b2000000	jl en arrière
+instr	39	48c7c0000000007d0948c7c0b2000000eb0748c7c0a1000000	jge court
+instr	40	48c7c0000000000f8dd400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jge long
+instr	41	48c7c0c3000000b90300000048c7c0a1000000ffc97d02eb0c83f90075ee48c7c0b2000000	jge en arrière
+instr	42	48c7c0000000007e0948c7c0b2000000eb0748c7c0a1000000	jle court
+instr	43	48c7c0000000000f8ed400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jle long
+instr	44	48c7c0c3000000b90300000048c7c0a1000000ffc97e02eb0c83f90075ee48c7c0b2000000	jle en arrière
+instr	45	48c7c0000000007f0948c7c0b2000000eb0748c7c0a1000000	jg court
+instr	46	48c7c0000000000f8fd400000048c7c0b2000000e9cf000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jg long
+instr	47	48c7c0c3000000b90300000048c7c0a1000000ffc97f02eb0c83f90075ee48c7c0b2000000	jg en arrière
+instr	48	48c7c000000000eb0748c7c0b200000048c7c0a1000000	jmp court
+instr	49	48c7c000000000e9cf00000048c7c0b2000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jmp long
+instr	50	488d1509000000ffe248c7c0b200000048c7c0a1000000	jmp par registre
+instr	51	488d150c000000488916ff2648c7c0b200000048c7c0a1000000	jmp par la mémoire
+instr	52	48c7c00000000066e9cf00000048c7c0b2000000909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909048c7c0a1000000	jmp long avec le préfixe de taille
+instr	53	e802000000eb0848c7c0a1000000c34805b2000000	call et ret
+instr	54	488d1504000000ffd2eb0848c7c0a1000000c34805b2000000	call par registre et ret
+instr	55	488d1507000000488916ff16eb0848c7c0a1000000c34805b2000000	call par la mémoire et ret
+instr	56	68111100006822220000e802000000eb0a48c7c0a1000000c210004805b2000000	ret qui jette ses arguments
+instr	57	e802000000eb12e8050000004883c001c348c7c0a1000000c34805b2000000	deux appels imbriqués
+instr	58	b9040000004831c048ffc0e2fb	loop
+instr	59	b9040000004831c048ffc04839c0e1f8	loope
+instr	60	b9040000004831c048ffc04839c0e0f8	loopne
+instr	61	31c9e30948c7c0b2000000eb0748c7c0a1000000	jrcxz avec rcx nul
+instr	62	b907000000e30948c7c0b2000000eb0748c7c0a1000000	jrcxz avec rcx non nul
+cas	0	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	0	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	0	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	0	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	0	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	0	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	0	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	0	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	0	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	0	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	1	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	1	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	1	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	1	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	1	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	1	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	1	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	1	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	1	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	1	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	2	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	2	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	2	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	2	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	3	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	3	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	3	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	3	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	3	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	3	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	3	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	3	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	3	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	3	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	4	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	4	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	4	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	4	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	4	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	4	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	4	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	4	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	4	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	4	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	5	0	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	1	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	2	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	3	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	4	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	5	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	6	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	7	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	8	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	5	9	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	6	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	6	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	6	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	6	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	6	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	6	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	6	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	6	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	6	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	6	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	7	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	7	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	7	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	7	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	7	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	7	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	7	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	7	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	7	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	7	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	8	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	1	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	8	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	6	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	8	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	8	9	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	9	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	9	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	9	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	9	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	9	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	9	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	9	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	9	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	9	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	9	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	10	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	10	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	10	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	10	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	10	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	10	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	10	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	10	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	10	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	10	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	11	0	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	11	2	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	3	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	4	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	5	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	11	7	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	8	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	11	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	12	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	12	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	12	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	12	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	12	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	12	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	12	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	12	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	12	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	12	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	13	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	13	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	13	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	13	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	13	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	13	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	13	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	13	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	13	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	13	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	14	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	14	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	14	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	14	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	15	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	15	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	15	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	15	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	15	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	15	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	15	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	15	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	15	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	15	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	16	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	16	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	16	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	16	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	16	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	16	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	16	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	16	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	16	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	16	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	17	0	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	1	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	2	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	3	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	4	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	5	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	6	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	7	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	8	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	17	9	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	18	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	18	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	18	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	18	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	18	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	18	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	18	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	18	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	18	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	18	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	19	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	19	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	19	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	19	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	19	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	19	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	19	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	19	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	19	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	19	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	20	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	1	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	20	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	6	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	20	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	20	9	a1	1	aaaaaaaaaaaaaaac	30003000	0
+cas	21	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	21	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	21	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	21	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	21	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	21	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	21	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	21	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	21	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	21	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	22	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	22	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	22	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	22	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	22	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	22	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	22	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	22	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	22	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	22	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	23	0	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	23	2	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	3	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	4	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	5	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	23	7	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	8	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	23	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	24	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	24	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	24	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	24	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	24	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	24	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	24	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	24	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	24	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	24	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	25	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	25	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	25	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	25	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	25	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	25	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	25	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	25	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	25	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	25	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	26	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	26	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	26	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	26	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	27	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	27	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	27	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	27	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	27	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	27	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	27	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	27	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	27	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	27	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	28	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	28	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	28	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	28	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	28	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	28	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	28	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	28	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	28	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	28	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	29	0	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	1	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	2	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	3	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	4	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	5	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	6	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	7	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	8	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	29	9	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	30	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	30	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	30	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	30	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	30	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	30	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	30	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	30	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	30	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	30	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	31	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	31	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	31	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	31	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	31	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	31	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	31	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	31	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	31	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	31	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	32	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	32	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	32	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	32	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	33	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	33	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	33	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	33	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	33	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	33	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	33	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	33	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	33	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	33	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	34	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	34	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	34	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	34	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	34	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	34	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	34	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	34	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	34	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	34	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	35	0	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	1	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	2	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	3	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	4	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	5	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	6	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	7	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	8	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	35	9	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	36	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	36	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	36	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	36	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	36	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	36	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	36	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	36	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	36	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	36	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	37	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	37	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	37	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	37	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	37	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	37	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	37	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	37	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	37	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	37	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	38	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	38	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	38	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	38	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	39	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	39	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	39	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	39	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	39	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	39	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	39	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	39	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	39	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	39	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	40	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	40	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	40	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	40	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	40	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	40	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	40	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	40	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	40	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	40	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	41	0	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	1	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	2	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	3	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	4	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	5	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	6	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	7	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	8	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	41	9	b2	0	aaaaaaaaaaaaaaac	30003000	44
+cas	42	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	42	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	42	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	42	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	42	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	42	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	42	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	42	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	42	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	42	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	43	0	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	43	1	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	43	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	43	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	43	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	43	5	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	43	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	43	7	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	43	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	43	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	44	0	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	1	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	44	2	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	3	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	4	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	5	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	6	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	44	7	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	8	a1	2	aaaaaaaaaaaaaaac	30003000	0
+cas	44	9	a1	2	aaaaaaaaaaaaaaac	30003000	1
+cas	45	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	45	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	45	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	45	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	45	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	45	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	45	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	45	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	45	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	45	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	46	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	46	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	46	2	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	46	3	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	46	4	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	46	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	46	6	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	46	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	46	8	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	46	9	b2	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	47	0	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	1	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	2	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	3	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	4	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	5	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	6	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	7	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	8	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	47	9	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	48	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	48	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	48	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	48	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	48	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	48	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	48	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	48	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	48	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	48	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	49	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	49	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	49	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	49	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	49	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	49	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	49	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	49	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	49	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	49	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	50	0	a1	aaaaaaaaaaaaaaab	30000010	30003000	0
+cas	50	1	a1	aaaaaaaaaaaaaaab	30000010	30003000	1
+cas	50	2	a1	aaaaaaaaaaaaaaab	30000010	30003000	40
+cas	50	3	a1	aaaaaaaaaaaaaaab	30000010	30003000	80
+cas	50	4	a1	aaaaaaaaaaaaaaab	30000010	30003000	800
+cas	50	5	a1	aaaaaaaaaaaaaaab	30000010	30003000	4
+cas	50	6	a1	aaaaaaaaaaaaaaab	30000010	30003000	41
+cas	50	7	a1	aaaaaaaaaaaaaaab	30000010	30003000	880
+cas	50	8	a1	aaaaaaaaaaaaaaab	30000010	30003000	8c0
+cas	50	9	a1	aaaaaaaaaaaaaaab	30000010	30003000	8d5
+cas	51	0	a1	aaaaaaaaaaaaaaab	30000013	30003000	0
+cas	51	1	a1	aaaaaaaaaaaaaaab	30000013	30003000	1
+cas	51	2	a1	aaaaaaaaaaaaaaab	30000013	30003000	40
+cas	51	3	a1	aaaaaaaaaaaaaaab	30000013	30003000	80
+cas	51	4	a1	aaaaaaaaaaaaaaab	30000013	30003000	800
+cas	51	5	a1	aaaaaaaaaaaaaaab	30000013	30003000	4
+cas	51	6	a1	aaaaaaaaaaaaaaab	30000013	30003000	41
+cas	51	7	a1	aaaaaaaaaaaaaaab	30000013	30003000	880
+cas	51	8	a1	aaaaaaaaaaaaaaab	30000013	30003000	8c0
+cas	51	9	a1	aaaaaaaaaaaaaaab	30000013	30003000	8d5
+cas	52	0	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	52	1	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	1
+cas	52	2	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	40
+cas	52	3	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	80
+cas	52	4	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	800
+cas	52	5	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	52	6	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	41
+cas	52	7	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	880
+cas	52	8	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8c0
+cas	52	9	a1	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	8d5
+cas	53	0	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	1	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	2	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	3	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	4	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	5	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	6	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	7	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	8	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	53	9	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	54	0	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	1	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	2	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	3	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	4	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	5	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	6	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	7	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	8	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	54	9	153	aaaaaaaaaaaaaaab	3000000b	30003000	4
+cas	55	0	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	1	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	2	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	3	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	4	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	5	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	6	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	7	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	8	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	55	9	153	aaaaaaaaaaaaaaab	3000000e	30003000	4
+cas	56	0	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	1	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	2	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	3	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	4	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	5	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	6	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	7	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	8	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	56	9	153	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	4
+cas	57	0	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	1	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	2	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	3	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	4	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	5	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	6	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	7	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	8	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	57	9	154	aaaaaaaaaaaaaaab	aaaaaaaaaaaaaaac	30003000	0
+cas	58	0	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	1	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	2	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	3	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	4	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	5	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	6	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	7	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	8	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	58	9	4	0	aaaaaaaaaaaaaaac	30003000	0
+cas	59	0	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	1	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	2	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	3	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	4	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	5	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	6	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	7	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	8	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	59	9	4	0	aaaaaaaaaaaaaaac	30003000	44
+cas	60	0	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	1	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	2	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	3	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	4	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	5	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	6	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	7	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	8	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	60	9	1	3	aaaaaaaaaaaaaaac	30003000	44
+cas	61	0	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	1	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	2	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	3	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	4	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	5	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	6	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	7	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	8	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	61	9	a1	0	aaaaaaaaaaaaaaac	30003000	44
+cas	62	0	b2	7	aaaaaaaaaaaaaaac	30003000	0
+cas	62	1	b2	7	aaaaaaaaaaaaaaac	30003000	1
+cas	62	2	b2	7	aaaaaaaaaaaaaaac	30003000	40
+cas	62	3	b2	7	aaaaaaaaaaaaaaac	30003000	80
+cas	62	4	b2	7	aaaaaaaaaaaaaaac	30003000	800
+cas	62	5	b2	7	aaaaaaaaaaaaaaac	30003000	4
+cas	62	6	b2	7	aaaaaaaaaaaaaaac	30003000	41
+cas	62	7	b2	7	aaaaaaaaaaaaaaac	30003000	880
+cas	62	8	b2	7	aaaaaaaaaaaaaaac	30003000	8c0
+cas	62	9	b2	7	aaaaaaaaaaaaaaac	30003000	8d5
