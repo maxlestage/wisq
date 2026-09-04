@@ -136,6 +136,9 @@ public struct X86Core: @unchecked Sendable {
     /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
     /// donc l'interruption qui doit le réveiller n'arriverait jamais.
     public var idled: UInt64 = 0
+    /// L'allocation d'attente s'est épuisée avant le budget d'instructions.
+    /// Voir `run(budget:waiting:)`.
+    public private(set) var outOfPatience = false
     /// Les six sélecteurs de segment : ES, CS, SS, DS, FS, GS. En mode long
     /// leurs bases valent zéro sauf pour FS et GS, qui les prennent dans des
     /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
@@ -347,10 +350,24 @@ public struct X86Core: @unchecked Sendable {
     /// C'est cette boucle qui sera mesurée : elle ne fait rien d'autre que
     /// décoder et exécuter, donc le chiffre qui en sort est celui de
     /// l'interprète.
+    /// Faire tourner la machine, au plus `budget` instructions.
+    ///
+    /// **`waiting` sépare travailler d'attendre.** Sans lui, un tour d'attente
+    /// coûte autant qu'une instruction, et un invité au repos consomme son
+    /// budget à ne rien faire : la mesure du vrai noyau a brûlé deux
+    /// milliards et demi des six milliards accordés à patienter devant un
+    /// média de démarrage absent, si bien que ses temporisations ne pouvaient
+    /// pas expirer. On coupait le courant pendant l'attente et on lisait ça
+    /// comme un arrêt.
+    ///
+    /// Donné, `waiting` est une allocation **à part** pour les tours d'attente,
+    /// et ceux-ci ne sont plus décomptés du budget d'instructions. Absent, rien
+    /// ne change : c'est le comportement d'avant, où l'un puisait dans l'autre.
     @discardableResult
-    public mutating func run(budget: UInt64) throws -> UInt64 {
+    public mutating func run(budget: UInt64, waiting: UInt64? = nil) throws -> UInt64 {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
+        var waited: UInt64 = 0
         while executed < budget {
             // Le matériel, entre deux instructions. Le masque plutôt qu'un
             // test à chaque tour : voir `serviceInterrupts`.
@@ -362,7 +379,14 @@ public struct X86Core: @unchecked Sendable {
                 // mieux que de brûler le budget à ne rien faire.
                 guard devicesArmed && flags & Flag.interrupt != 0 else { break }
                 idled &+= 1
-                executed += 1
+                if let waiting {
+                    waited += 1
+                    // L'attente a sa propre fin, et elle se dit autrement
+                    // qu'un budget d'instructions épuisé.
+                    if waited >= waiting { outOfPatience = true; break }
+                } else {
+                    executed += 1
+                }
                 continue
             }
             do {

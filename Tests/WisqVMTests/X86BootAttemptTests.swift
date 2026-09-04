@@ -158,7 +158,14 @@ final class X86BootAttemptTests: XCTestCase {
         var stopped: Error?
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 3_500_000_000)
+            // **L'attente a sa propre allocation.** Sans elle, l'invité qui
+            // patiente devant un média de démarrage absent brûle son budget
+            // d'instructions à ne rien faire, et ses temporisations ne peuvent
+            // jamais expirer — on lui coupe le courant avant.
+            let patience = ProcessInfo.processInfo.environment["WISQ_PC_WAIT"]
+                .flatMap { UInt64($0) }
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 3_500_000_000,
+                         waiting: patience)
         } catch {
             stopped = error
         }
@@ -192,6 +199,8 @@ final class X86BootAttemptTests: XCTestCase {
         let ending: String
         if let stopped {
             ending = "\(stopped)"
+        } else if core.outOfPatience {
+            ending = "attente épuisée (la machine patientait encore)"
         } else if core.halted && core.idled > 0 {
             ending = "budget épuisé pendant l'attente"
         } else if core.halted {
