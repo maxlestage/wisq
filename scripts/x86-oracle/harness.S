@@ -135,6 +135,13 @@ wisq_return:
     pushfq
     pop     %rax
     mov     %rax, wisq_out+16*8(%rip)
+    // **Et le drapeau de direction est effacé, une fois relu.** L'ABI exige
+    // qu'il le soit à l'entrée comme à la sortie de toute fonction ; le C qui
+    // nous appelle s'en sert sans le savoir, dans son `memcpy` et son
+    // `printf`. Tant que rien n'essayait une instruction de chaîne en arrière,
+    // il ne pouvait pas être posé et l'oubli ne se voyait pas — le premier cas
+    // qui l'a posé a fait planter le harnais, pas l'instruction à l'essai.
+    cld
     mov     wisq_host_rbp(%rip), %rbp
 
     // Recopier dans le tampon de l'appelant.
