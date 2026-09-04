@@ -49,6 +49,9 @@ public struct X86LegacyDevices: Sendable, Equatable {
     public var primary = Controller()
     public var secondary = Controller()
 
+    /// Le 16550. Voir `X86SerialPort.swift`.
+    public var serial = SerialPort()
+
     // MARK: - Le 8253
 
     /// La valeur de rechargement du canal zéro, celui qui bat.

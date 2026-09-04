@@ -332,6 +332,16 @@ public final class X86Machine: @unchecked Sendable {
         writer.u32(devices.speakerReadHighNext ? 1 : 0)
         writer.u64(devices.speakerStartedAt)
         writer.u32(devices.speakerGate ? 1 : 0)
+        // Le port série, tel que le pilote l'a programmé : sans lui, une
+        // machine reprise aurait un terminal que le noyau croit configuré et
+        // qui ne l'est plus — et l'émission n'interromprait plus jamais.
+        writer.u32(UInt32(devices.serial.interruptEnable))
+        writer.u32(UInt32(devices.serial.fifoControl))
+        writer.u32(UInt32(devices.serial.lineControl))
+        writer.u32(UInt32(devices.serial.modemControl))
+        writer.u32(UInt32(devices.serial.scratch))
+        writer.u32(UInt32(devices.serial.divisor))
+        writer.u32(devices.serial.transmitPending ? 1 : 0)
     }
 
     private func read(_ reader: inout Snapshot.Reader) throws -> X86LegacyDevices {
@@ -358,6 +368,13 @@ public final class X86Machine: @unchecked Sendable {
         devices.speakerReadHighNext = try reader.u32() != 0
         devices.speakerStartedAt = try reader.u64()
         devices.speakerGate = try reader.u32() != 0
+        devices.serial.interruptEnable = UInt8(truncatingIfNeeded: try reader.u32())
+        devices.serial.fifoControl = UInt8(truncatingIfNeeded: try reader.u32())
+        devices.serial.lineControl = UInt8(truncatingIfNeeded: try reader.u32())
+        devices.serial.modemControl = UInt8(truncatingIfNeeded: try reader.u32())
+        devices.serial.scratch = UInt8(truncatingIfNeeded: try reader.u32())
+        devices.serial.divisor = UInt16(truncatingIfNeeded: try reader.u32())
+        devices.serial.transmitPending = try reader.u32() != 0
         return devices
     }
 

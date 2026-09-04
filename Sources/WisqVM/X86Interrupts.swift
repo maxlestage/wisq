@@ -280,6 +280,11 @@ extension X86Core {
             devices.raised = due
             devices.primary.request |= 1  // la ligne zéro : l'horloge
         }
+        // La ligne quatre : le port série. À niveau, pas à front — la demande
+        // suit la condition, dans les deux sens. Une demande qui resterait
+        // après que le pilote a tout acquitté serait livrée pour rien, et le
+        // pilote lirait « rien en attente » dans l'identification.
+        if serialInterrupting { devices.primary.request |= 0x10 } else { devices.primary.request &= ~0x10 }
         guard flags & Flag.interrupt != 0 else { return }
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
@@ -292,7 +297,8 @@ extension X86Core {
         devices.primary.service |= (1 << line)
     }
 
-    /// Vrai quand une horloge a été armée. Tant que non, rien ne peut arriver
-    /// et la boucle n'a pas à regarder.
-    var devicesArmed: Bool { devices.reload != 0 }
+    /// Vrai quand quelque chose peut arriver : une horloge armée, ou un port
+    /// série dont on a autorisé la réception ou l'émission. Tant que non,
+    /// rien ne viendra et la boucle n'a pas à regarder.
+    var devicesArmed: Bool { devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0 }
 }

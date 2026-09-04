@@ -703,16 +703,14 @@ extension X86Core {
         jumped = true
     }
 
-    /// Les ports. Un seul compte pour l'instant : le port série, celui par
-    /// lequel un noyau Linux dit ses premiers mots avant d'avoir quoi que ce
-    /// soit d'autre.
-    static let serialBase: UInt16 = 0x3F8
-
+    /// Les ports : le série, les deux 8259 et le 8253.
     mutating func portWrite(_ port: UInt16, _ value: UInt64) {
         let byte = UInt8(truncatingIfNeeded: value)
         switch port {
-        case Self.serialBase:
-            serialOutput.append(byte)
+        // Le port série, celui par lequel un noyau Linux dit ses premiers
+        // mots — et par lequel, une fois sondé, l'espace utilisateur parle.
+        case Self.serialBase...(Self.serialBase &+ 7):
+            serialWrite(port &- Self.serialBase, byte)
 
         // Le 8259 maître. La commande, d'abord : le bit 4 lance une
         // initialisation, et les trois octets qui suivent arrivent par le port
@@ -809,11 +807,8 @@ extension X86Core {
 
     mutating func portRead(_ port: UInt16) -> UInt64 {
         switch port {
-        // Le registre d'état de la ligne : « le transmetteur est vide ». Sans
-        // ça, un noyau attend indéfiniment de pouvoir écrire.
-        case Self.serialBase &+ 5: return 0x60 | (serialInput.isEmpty ? 0 : 1)
-        case Self.serialBase where !serialInput.isEmpty:
-            return UInt64(serialInput.removeFirst())
+        case Self.serialBase...(Self.serialBase &+ 7):
+            return UInt64(serialRead(port &- Self.serialBase))
         case 0x20:
             return UInt64(devices.primary.readsService
                 ? devices.primary.service : devices.primary.request)
