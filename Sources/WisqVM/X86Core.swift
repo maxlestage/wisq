@@ -81,6 +81,10 @@ public struct X86Core: @unchecked Sendable {
     /// La dernière instruction d'anneau trois qui a abouti. Quand l'adresse
     /// fautive est RIP lui-même, c'est elle qui a sauté dans le décor.
     public var previousRip: UInt64 = 0
+    /// Les démarrages de programmes déjà vus, et les espaces d'adressage qui
+    /// les portent. Voir `X86ProcessStartWatch.swift`.
+    public var processStarts: [ProcessStart] = []
+    public var addressSpacesSeen: [UInt64] = []
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -321,6 +325,14 @@ public struct X86Core: @unchecked Sendable {
                 // toute exécution normale — il n'y a pas même de lecture du
                 // privilège, et le chemin chaud reste ce qu'il était.
                 let watching = canonicalWatchArmed && privilege == 3
+                // **Un programme qui prend la main dans un espace d'adressage
+                // neuf vient de naître.** C'est le seul instant où sa pile
+                // porte encore ce que le noyau y a posé, avant qu'il n'écrive
+                // dessus.
+                if watching, !addressSpacesSeen.contains(system.control[3]) {
+                    addressSpacesSeen.append(system.control[3])
+                    noteProcessStart()
+                }
                 let entry = rip
                 let before = watching ? registers : []
                 try execute(instruction)
