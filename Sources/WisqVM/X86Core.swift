@@ -89,6 +89,14 @@ public struct X86Core: @unchecked Sendable {
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
     public var unmatchedReturns: [UnmatchedReturn] = []
+    /// Les aller-retours en anneau zéro qui rendent une pile décalée, et le
+    /// départ en cours. Voir `X86RingWatch.swift`.
+    public var ringTrips: [RingTrip] = []
+    /// Ce que le témoin a vu passer, décalé ou non : sans ce compte, un
+    /// rapport vide ne dit pas si tout allait bien ou si rien n'a regardé.
+    public var ringPassages = RingTally()
+    var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64,
+                        retired: UInt64)?
     /// Les appels qui prennent leur adresse en mémoire. Voir
     /// `X86IndirectCallWatch.swift`.
     public var indirectCalls: [IndirectCall] = []
@@ -332,6 +340,13 @@ public struct X86Core: @unchecked Sendable {
                 // toute exécution normale — il n'y a pas même de lecture du
                 // privilège, et le chemin chaud reste ce qu'il était.
                 let watching = canonicalWatchArmed && privilege == 3
+                // **Le passage d'anneau, des deux côtés.** On note la pile en
+                // partant, et on la compare en revenant : c'est le seul endroit
+                // où celle d'un programme peut bouger sans qu'il y soit pour
+                // quelque chose.
+                if canonicalWatchArmed, privilege == 3, ringDeparture != nil {
+                    returningToRingThree()
+                }
                 // **Un programme qui prend la main dans un espace d'adressage
                 // neuf vient de naître.** C'est le seul instant où sa pile
                 // porte encore ce que le noyau y a posé, avant qu'il n'écrive
