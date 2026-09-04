@@ -78,6 +78,9 @@ public struct X86Core: @unchecked Sendable {
     /// trois qui l'a écrit. C'est ce tableau qui permet de remonter de
     /// l'emploi d'une adresse à sa fabrication.
     public var registerBornAt = [UInt64](repeating: 0, count: 16)
+    /// La dernière instruction d'anneau trois qui a abouti. Quand l'adresse
+    /// fautive est RIP lui-même, c'est elle qui a sauté dans le décor.
+    public var previousRip: UInt64 = 0
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -318,7 +321,10 @@ public struct X86Core: @unchecked Sendable {
                 let entry = rip
                 let before = watching ? registers : []
                 try execute(instruction)
-                if watching { rememberBirths(before: before, rip: entry) }
+                if watching {
+                    rememberBirths(before: before, rip: entry)
+                    previousRip = entry
+                }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
                 // les autres sortent d'ici, parce qu'un cœur qui avale une

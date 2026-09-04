@@ -86,6 +86,30 @@ final class X86CanonicalWatchTests: XCTestCase {
         XCTAssertEqual(carried.value, Self.corrupt)
         XCTAssertEqual(carried.bornAt, Self.program,
                        "et c'est le movabs qui l'y a mise")
+        XCTAssertEqual(Array(carried.bornBytes.prefix(Self.makeCorrupt.count)),
+                       Self.makeCorrupt,
+                       "avec ses octets, pour qu'on la désassemble sans deviner")
+        XCTAssertEqual(seen.cameFrom, Self.program,
+                       "la dernière instruction qui a abouti")
+        XCTAssertEqual(Array(seen.cameFromBytes.prefix(Self.makeCorrupt.count)),
+                       Self.makeCorrupt)
+    }
+
+    /// Quand l'adresse fautive **est** RIP, c'est un saut parti dans le décor,
+    /// et ce qu'on veut savoir est quelle instruction a sauté. C'est la forme
+    /// qu'a prise cinq fois le vrai démarrage avant la mort de `/init`.
+    func testAJumpIntoTheHoleNamesTheInstructionThatJumped() throws {
+        // movabs $corrompu, %rax ; jmp *%rax
+        let jump: [UInt8] = [0xFF, 0xE0]
+        var core = try Self.core(Self.makeCorrupt + jump)
+        Self.run(&core, 3)
+        let seen = try XCTUnwrap(core.nonCanonicalSeen.first)
+        XCTAssertEqual(seen.address, Self.corrupt)
+        XCTAssertEqual(seen.rip, Self.corrupt,
+                       "l'adresse employée est RIP lui-même : c'est une lecture d'instruction")
+        XCTAssertEqual(seen.cameFrom, Self.program &+ UInt64(Self.makeCorrupt.count),
+                       "et c'est le saut indirect qui y a mené")
+        XCTAssertEqual(Array(seen.cameFromBytes.prefix(2)), jump)
     }
 
     func testMakingTheValueIsNotEnoughToFire() throws {

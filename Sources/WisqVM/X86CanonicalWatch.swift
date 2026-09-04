@@ -50,6 +50,9 @@ extension X86Core {
         /// Zéro quand aucune instruction d'anneau trois ne l'a écrit depuis
         /// que le témoin est armé — la valeur vient d'avant, ou du noyau.
         public let bornAt: UInt64
+        /// Les octets qui sont à cette adresse, pour qu'on puisse la
+        /// désassembler. Vide quand elle n'est plus lisible.
+        public let bornBytes: [UInt8]
     }
 
     /// Ce qu'on retient du moment où une adresse non canonique est employée.
@@ -58,11 +61,20 @@ extension X86Core {
         public let address: UInt64
         /// L'instruction qui s'en est servie.
         public let rip: UInt64
+        /// La dernière instruction d'anneau trois qui a abouti avant celle-là,
+        /// et ses octets. Quand l'adresse fautive **est** RIP, c'est un saut
+        /// parti dans le décor, et c'est cette instruction-là qui a sauté.
+        public let cameFrom: UInt64
+        public let cameFromBytes: [UInt8]
         /// Combien d'instructions avaient été retirées, pour situer.
         public let retired: UInt64
         /// Tous les registres qui portent une valeur non canonique à cet
         /// instant, avec l'endroit où chacune est née.
         public let carrying: [Birth]
+
+        static func hex(_ bytes: [UInt8]) -> String {
+            bytes.map { String(format: "%02x", $0) }.joined()
+        }
 
         public static let names = [
             "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
@@ -71,12 +83,13 @@ extension X86Core {
 
         public var description: String {
             let born = carrying.map {
-                String(format: "%@=%llx né à %llx", Self.names[$0.register],
-                       $0.value, $0.bornAt)
+                String(format: "%@=%llx né à %llx [%@]", Self.names[$0.register],
+                       $0.value, $0.bornAt, Self.hex($0.bornBytes))
             }.joined(separator: ", ")
+            let previous = String(format: " ; venue de %llx [%@]", cameFrom, Self.hex(cameFromBytes))
             return String(format: "adresse %llx employée par rip=%llx après %llu instructions",
                           address, rip, retired)
-                + (born.isEmpty ? "" : " — " + born)
+                + (born.isEmpty ? "" : " — " + born) + previous
         }
     }
 
@@ -98,12 +111,32 @@ extension X86Core {
     /// qu'au moment où on s'en sert comme telle.
     mutating func noteNonCanonical(address: UInt64) {
         guard nonCanonicalSeen.count < Self.nonCanonicalLimit else { return }
+        // **Le témoin s'éteint pendant qu'il écrit son rapport.** Relire les
+        // octets d'une adresse passe par la traduction, donc par l'endroit
+        // même d'où l'on vient : sans ça, un rapport en déclencherait un autre.
+        canonicalWatchArmed = false
+        defer { canonicalWatchArmed = true }
         let carrying = (0..<16).compactMap { index -> Birth? in
             guard !Self.isCanonical(registers[index]) else { return nil }
             return Birth(register: index, value: registers[index],
-                         bornAt: registerBornAt[index])
+                         bornAt: registerBornAt[index],
+                         bornBytes: peek(registerBornAt[index]))
         }
         nonCanonicalSeen.append(NonCanonical(
-            address: address, rip: rip, retired: retired, carrying: carrying))
+            address: address, rip: rip, cameFrom: previousRip,
+            cameFromBytes: peek(previousRip), retired: retired, carrying: carrying))
+    }
+
+    /// Les octets d'une adresse de l'invité, ou rien du tout si elle n'est
+    /// plus lisible. Un témoin qui lèverait en rendant compte serait pire que
+    /// pas de témoin.
+    mutating func peek(_ address: UInt64, _ count: Int = 12) -> [UInt8] {
+        guard address != 0, let memory else { return [] }
+        guard let physical = try? translate(address),
+              let start = memory.offset(physical, 1)
+        else { return [] }
+        let available = min(count, memory.size - start)
+        guard available > 0 else { return [] }
+        return Array(UnsafeBufferPointer(start: memory.bytes + start, count: available))
     }
 }
