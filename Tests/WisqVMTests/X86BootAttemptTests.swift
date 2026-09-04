@@ -183,6 +183,22 @@ final class X86BootAttemptTests: XCTestCase {
             : "horloge NON armée"
         let masked = core.flags & X86Core.Flag.interrupt != 0
             ? "interruptions permises" : "interruptions MASQUÉES"
+        // **Et « hlt » n'est pas une raison d'arrêt.** Le champ disait « hlt »
+        // dès que le cœur était au repos, quelle que soit la vraie cause — et
+        // il a menti dans la mesure d'après : la machine attendait, horloge
+        // armée et interruptions permises, et c'est le **budget** qui s'est
+        // épuisé pendant l'attente. « La machine dort » et « la course s'est
+        // arrêtée » ne sont pas la même phrase.
+        let ending: String
+        if let stopped {
+            ending = "\(stopped)"
+        } else if core.halted && core.idled > 0 {
+            ending = "budget épuisé pendant l'attente"
+        } else if core.halted {
+            ending = "hlt sans réveil possible"
+        } else {
+            ending = "budget épuisé en exécutant"
+        }
         let halt = core.halted
             ? clock + ", " + masked + ", \(core.idled) tours d'attente"
             : "non"
@@ -207,7 +223,7 @@ final class X86BootAttemptTests: XCTestCase {
 
             === tentative de démarrage x86-64 ===
             instructions retirées : \(core.retired)
-            arrêt                 : \(stopped.map { "\($0)" } ?? (core.halted ? "hlt" : "budget"))
+            arrêt                 : \(ending)
             rip                   : 0x\(String(core.rip, radix: 16))
             au repos              : \(halt)
             octets à RIP          : \(core.memory.map {
