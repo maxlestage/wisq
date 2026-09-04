@@ -76,18 +76,26 @@ extension X86Core {
         let wide = (instruction.rex ?? 0) & 0x08 != 0
 
         switch opcode {
-        case 0x58 where single || doubleWide: try arithmetic(instruction, single) { $0 + $1 }
-        case 0x59 where single || doubleWide: try arithmetic(instruction, single) { $0 * $1 }
-        case 0x5C where single || doubleWide: try arithmetic(instruction, single) { $0 - $1 }
-        case 0x5E where single || doubleWide: try arithmetic(instruction, single) { $0 / $1 }
+        case 0x58 where single || doubleWide:
+            try arithmetic(instruction, single, { $0 + $1 }, { $0 + $1 })
+        case 0x59 where single || doubleWide:
+            try arithmetic(instruction, single, { $0 * $1 }, { $0 * $1 })
+        case 0x5C where single || doubleWide:
+            try arithmetic(instruction, single, { $0 - $1 }, { $0 - $1 })
+        case 0x5E where single || doubleWide:
+            try arithmetic(instruction, single, { $0 / $1 }, { $0 / $1 })
         // `MIN` et `MAX` rendent **la source** dès que la comparaison échoue,
         // ce qui couvre le NaN des deux côtés et les zéros de signes opposés.
         case 0x5D where single || doubleWide:
-            try arithmetic(instruction, single) { $0 < $1 ? $0 : $1 }
+            try arithmetic(instruction, single,
+                           { $0 < $1 ? $0 : $1 }, { $0 < $1 ? $0 : $1 })
         case 0x5F where single || doubleWide:
-            try arithmetic(instruction, single) { $0 > $1 ? $0 : $1 }
+            try arithmetic(instruction, single,
+                           { $0 > $1 ? $0 : $1 }, { $0 > $1 ? $0 : $1 })
         case 0x51 where single || doubleWide:
-            try arithmetic(instruction, single) { _, source in source.squareRoot() }
+            try arithmetic(instruction, single,
+                           { _, source in source.squareRoot() },
+                           { _, source in source.squareRoot() })
 
         // Les comparaisons, seules de tout le vectoriel à écrire des drapeaux.
         case 0x2E, 0x2F where !single && !doubleWide:
@@ -138,21 +146,32 @@ extension X86Core {
 
     /// Une opération scalaire : **seule la partie basse de la destination
     /// change**, le reste est laissé tel quel.
+    ///
+    /// **Deux fermetures, et pas une.** Le premier jet n'en avait qu'une, sur
+    /// des `Double`, et convertissait les valeurs simples dans les deux sens
+    /// autour. C'est faux, et d'une façon qui ne se voit que sur un cas :
+    /// convertir un **NaN signalant** simple en double le rend silencieux, et
+    /// le retour donne `7fc00001` là où le processeur rend `7f800001` — ses
+    /// bits, intacts.
+    ///
+    /// Six cas sur 4 554 le montrent. Et ils ne se sont montrés qu'**en
+    /// débogage** : la course en optimisé les passait, parce que le
+    /// compilateur y replie autrement la conversion. Une suite verte dans un
+    /// seul mode de construction n'est pas une suite verte.
     private mutating func arithmetic(
         _ instruction: X86Instruction, _ single: Bool,
-        _ operation: (Double, Double) -> Double
+        _ wide: (Double, Double) -> Double,
+        _ narrow: (Float, Float) -> Float
     ) throws {
         let fields = try decodeFields(instruction)
         let source = try readVectorRM(fields, single ? 4 : 8)
         let destination = vector(fields.reg)
         if single {
-            let left = Self.asSingle(destination.low)
-            let right = Self.asSingle(source.0)
-            let result = Float(operation(Double(left), Double(right)))
+            let result = narrow(Self.asSingle(destination.low), Self.asSingle(source.0))
             let low = (destination.low & ~0xFFFF_FFFF) | UInt64(result.bitPattern)
             setVector(fields.reg, low, destination.high)
         } else {
-            let result = operation(Self.asDouble(destination.low), Self.asDouble(source.0))
+            let result = wide(Self.asDouble(destination.low), Self.asDouble(source.0))
             setVector(fields.reg, result.bitPattern, destination.high)
         }
     }
