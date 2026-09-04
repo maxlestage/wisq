@@ -93,11 +93,17 @@ public struct X86Core: @unchecked Sendable {
     /// Les démarrages de programmes déjà vus, et les espaces d'adressage qui
     /// les portent. Voir `X86ProcessStartWatch.swift`.
     public var processStarts: [ProcessStart] = []
+    var processStartNext = 0
+    var processStartTally: UInt64 = 0
     public var addressSpacesSeen: [UInt64] = []
     /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
+    var brokenReturnNext = 0
+    public internal(set) var brokenReturnTally: UInt64 = 0
     public var unmatchedReturns: [UnmatchedReturn] = []
+    var unmatchedReturnNext = 0
+    public internal(set) var unmatchedReturnTally: UInt64 = 0
     /// Les aller-retours en anneau zéro qui rendent une pile décalée, et le
     /// départ en cours. Voir `X86RingWatch.swift`.
     public var ringTrips: [RingTrip] = []

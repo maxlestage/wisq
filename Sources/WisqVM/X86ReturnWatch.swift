@@ -77,8 +77,16 @@ extension X86Core {
         public let stack: UInt64
     }
 
-    /// Combien de désaccords on retient. Le premier est celui qui compte ; les
-    /// suivants ne font que le suivre.
+    /// Combien de désaccords on retient, **et ce sont les derniers**.
+    ///
+    /// Le commentaire d'avant disait « le premier est celui qui compte ; les
+    /// suivants ne font que le suivre ». C'était vrai tant que le premier
+    /// désaccord tuait le programme. Il ne le tue plus : le démarrage va
+    /// maintenant jusqu'à `mdev`, deux cents millions d'instructions après ces
+    /// huit-là, et ce sont les derniers qu'on veut voir.
+    ///
+    /// Et le rapport disait « retours rompus : 8 » — exactement le plafond.
+    /// Un nombre qui vaut sa propre limite ne compte rien.
     public static let brokenReturnLimit = 8
     /// La profondeur de la pile d'ombre. Au-delà, on oublie le fond plutôt que
     /// de grandir sans fin : un programme qui récurse profond n'est pas un
@@ -123,11 +131,17 @@ extension X86Core {
         }
         shadowStack.removeLast()
         guard pending.promised != taken else { return }
-        guard brokenReturns.count < Self.brokenReturnLimit else { return }
-        brokenReturns.append(BrokenReturn(
+        brokenReturnTally &+= 1
+        let broken = BrokenReturn(
             at: at, taken: taken, promised: pending.promised,
             calledAt: pending.calledAt, stackAtCall: pending.stack,
-            stackAtReturn: registers[4], retired: retired))
+            stackAtReturn: registers[4], retired: retired)
+        if brokenReturns.count < Self.brokenReturnLimit {
+            brokenReturns.append(broken)
+        } else {
+            brokenReturns[brokenReturnNext] = broken
+        }
+        brokenReturnNext = (brokenReturnNext + 1) % Self.brokenReturnLimit
     }
 
     /// Un retour dont aucune promesse ne porte le cadre.
@@ -169,12 +183,34 @@ extension X86Core {
     public static let unmatchedReturnLimit = 16
 
     mutating func noteUnmatchedReturn(taken: UInt64, at: UInt64, frame: UInt64) {
-        guard unmatchedReturns.count < Self.unmatchedReturnLimit else { return }
+        unmatchedReturnTally &+= 1
         let top = shadowStack.last
-        unmatchedReturns.append(UnmatchedReturn(
+        let unmatched = UnmatchedReturn(
             at: at, taken: taken, frame: frame,
             pendingPromise: top?.promised ?? 0, pendingFrame: top?.stack ?? 0,
-            retired: retired, moves: stackMoves))
+            retired: retired, moves: stackMoves)
+        if unmatchedReturns.count < Self.unmatchedReturnLimit {
+            unmatchedReturns.append(unmatched)
+        } else {
+            unmatchedReturns[unmatchedReturnNext] = unmatched
+        }
+        unmatchedReturnNext = (unmatchedReturnNext + 1) % Self.unmatchedReturnLimit
+    }
+
+    /// Les désaccords gardés, du plus ancien au plus récent — et combien il y
+    /// en a eu en tout.
+    public var returnsBroken: [BrokenReturn] {
+        brokenReturnTally <= UInt64(Self.brokenReturnLimit)
+            ? brokenReturns
+            : Array(brokenReturns[brokenReturnNext...])
+                + Array(brokenReturns[..<brokenReturnNext])
+    }
+
+    public var returnsUnmatched: [UnmatchedReturn] {
+        unmatchedReturnTally <= UInt64(Self.unmatchedReturnLimit)
+            ? unmatchedReturns
+            : Array(unmatchedReturns[unmatchedReturnNext...])
+                + Array(unmatchedReturns[..<unmatchedReturnNext])
     }
 
     /// Un changement d'anneau ou d'espace d'adressage rend la pile d'ombre

@@ -88,6 +88,14 @@ final class X86BootAttemptTests: XCTestCase {
         }
     }
 
+    /// **Ce qu'on a gardé, et ce qu'on a vu.** Quand un témoin ne retient que
+    /// les derniers cas, dire leur nombre revient à réciter son propre plafond
+    /// — « retours rompus : 8 » quand la limite est huit ne compte rien. Le
+    /// total le sépare de « huit et quelques ».
+    static func kept(_ kept: Int, of seen: UInt64) -> String {
+        UInt64(kept) == seen ? "\(seen)" : "\(kept) gardés sur \(seen)"
+    }
+
     func testHowFarARealKernelGets() throws {
         guard let path = ProcessInfo.processInfo.environment["WISQ_PC_KERNEL"],
               let data = FileManager.default.contents(atPath: path)
@@ -157,6 +165,14 @@ final class X86BootAttemptTests: XCTestCase {
 
         let serial = String(decoding: core.serialOutput, as: UTF8.self)
 
+        // Ce qu'on a gardé, et ce qu'on a vu : les trois témoins ne retiennent
+        // que les derniers cas, et leur nombre vaudrait sinon leur plafond.
+        let unmatched = Self.kept(core.unmatchedReturns.count,
+                                  of: core.unmatchedReturnTally)
+        let brokenSaid = Self.kept(core.brokenReturns.count,
+                                   of: core.brokenReturnTally)
+        let started = Self.kept(core.processStarts.count, of: core.processStartsSeen)
+
         // Le rapport sort **section par section**, et pas d'un seul `print`.
         //
         // Il l'a été, et il se faisait couper à seize kilo-octets pile : la
@@ -183,9 +199,9 @@ final class X86BootAttemptTests: XCTestCase {
             port série            : \(core.serialOutput.count) octets
             appels par la mémoire : \(core.indirectCalls.count) distincts
             passages d'anneau     : \(core.ringPassages.description)
-            retours sans promesse : \(core.unmatchedReturns.count)
-            retours rompus        : \(core.brokenReturns.count)
-            programmes démarrés   : \(core.processStarts.count)
+            retours sans promesse : \(unmatched)
+            retours rompus        : \(brokenSaid)
+            programmes démarrés   : \(started)
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             """)
 
@@ -202,12 +218,12 @@ final class X86BootAttemptTests: XCTestCase {
         list("appels par la mémoire", core.indirectCalls.map { $0.description })
         list("passages d'anneau qui décalent la pile",
              core.ringTrips.map { $0.description })
-        list("retours sans promesse", core.unmatchedReturns.map { $0.description })
+        list("retours sans promesse", core.returnsUnmatched.map { $0.description })
         list("passages sur l'adresse surveillée",
              core.addressTouched.filter { $0.retired != 0 }.map { $0.description })
         say("mouvements de pile gardés : \(core.stackMoves.count)")
-        list("retours rompus", core.brokenReturns.map { $0.description })
-        list("programmes démarrés", core.processStarts.map { $0.description })
+        list("retours rompus", core.returnsBroken.map { $0.description })
+        list("programmes démarrés", core.processesStarted.map { $0.description })
         list("adresses non canoniques", core.nonCanonicalSeen.map { $0.description })
         if !serial.isEmpty { say("\n" + serial) }
         say("\n=====================================\n")
