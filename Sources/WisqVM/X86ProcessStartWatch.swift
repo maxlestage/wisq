@@ -68,9 +68,33 @@ extension X86Core {
         }
     }
 
-    /// Combien de démarrages on retient. Un démarrage d'Alpine en lance une
-    /// poignée ; au-delà, ils se répètent.
+    /// Combien de démarrages on retient, **et ce sont les derniers**.
+    ///
+    /// La première version gardait les huit premiers, et le rapport disait
+    /// « programmes démarrés : 8 » — c'est-à-dire exactement son plafond, un
+    /// nombre qui ne comptait rien. Un démarrage d'Alpine en lance bien plus
+    /// que huit, et les seuls qui comptaient — ceux de `mdev`, qui saute dans
+    /// le vide — arrivaient trop tard pour être vus.
+    ///
+    /// C'est la même leçon que le registre des mouvements de pile et le témoin
+    /// d'adresse ont déjà enseignée, et c'est la troisième fois : **ce qui
+    /// compte est ce qui précède l'événement, pas ce qui ouvre la course.**
     public static let processStartLimit = 8
+
+    /// Combien il y en a eu en tout. Sans lui, « huit » et « huit et
+    /// quelques » se lisent pareil.
+    public var processStartsSeen: UInt64 {
+        get { processStartTally }
+        set { processStartTally = newValue }
+    }
+
+    /// Les démarrages gardés, du plus ancien au plus récent.
+    public var processesStarted: [ProcessStart] {
+        processStartTally <= UInt64(Self.processStartLimit)
+            ? processStarts
+            : Array(processStarts[processStartNext...])
+                + Array(processStarts[..<processStartNext])
+    }
 
     /// À appeler quand un programme prend la main dans un espace d'adressage
     /// qu'on n'avait pas encore vu.
@@ -80,7 +104,7 @@ extension X86Core {
     /// illisible rend un démarrage sans vecteur plutôt qu'une erreur : un
     /// témoin qui lèverait en rendant compte serait pire que pas de témoin.
     mutating func noteProcessStart() {
-        guard processStarts.count < Self.processStartLimit else { return }
+        processStartTally &+= 1
         canonicalWatchArmed = false
         defer { canonicalWatchArmed = true }
         let stack = registers[4]
@@ -101,9 +125,15 @@ extension X86Core {
             cursor &+= 16
             if type == 0 { break }
         }
-        processStarts.append(ProcessStart(
+        let start = ProcessStart(
             addressSpace: system.control[3], entry: rip, stack: stack,
-            argumentCount: count, auxiliary: auxiliary, retired: retired))
+            argumentCount: count, auxiliary: auxiliary, retired: retired)
+        if processStarts.count < Self.processStartLimit {
+            processStarts.append(start)
+        } else {
+            processStarts[processStartNext] = start
+        }
+        processStartNext = (processStartNext + 1) % Self.processStartLimit
     }
 
     /// Un mot de la mémoire de l'invité, ou rien si l'adresse ne s'y trouve
