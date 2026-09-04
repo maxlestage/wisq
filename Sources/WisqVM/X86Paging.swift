@@ -197,6 +197,42 @@ extension X86Core {
         for slot in 0..<Self.translationSlots { translationTags[slot] = 0 }
     }
 
+    /// Écrire un registre de contrôle, et vider le cache de traductions quand
+    /// il le faut.
+    ///
+    /// **Trois écritures le vident, et la troisième manquait.** Poser CR3
+    /// change d'espace d'adressage ; allumer ou éteindre la pagination change
+    /// tout ; et **écrire CR4 aussi** — c'est même la seule façon dont un
+    /// noyau Linux sans `INVPCID` vide *tout* le cache :
+    ///
+    ///     native_write_cr4(cr4 ^ X86_CR4_PGE);   /* PGE tombe : tout est vidé */
+    ///     native_write_cr4(cr4);                 /* et on le remet */
+    ///
+    /// C'est `__flush_tlb_global()`, et `vfree` l'appelle en rendant une plage
+    /// large — celle d'un module, par exemple. Sans ce vidage, une adresse
+    /// noyau réutilisée après un `vfree` gardait l'ancienne trame : le noyau
+    /// lisait les octets du module précédent, refusait la relocalisation
+    /// (« existing value is nonzero »), rejetait la signature du suivant, et
+    /// finissait par lire une table de pages qui n'en était plus une
+    /// (« bad pud »).
+    ///
+    /// On vide sur **toute** écriture de CR4, pas seulement sur celles qui
+    /// touchent PGE : c'est plus large que ce que le manuel exige, jamais
+    /// faux, et un cœur qui essaierait d'être fin ici se tromperait un jour
+    /// sur un bit qu'il n'avait pas prévu — PAE, PSE, SMEP, PCIDE.
+    mutating func writeControlRegister(_ index: Int, _ value: UInt64) {
+        let previous = system.control[index]
+        system.control[index] = value
+        if index == 3 || index == 4
+            || (index == 0 && (previous ^ value) & Self.pagingBit != 0) {
+            flushTranslations()
+        }
+        if index == 0 {
+            system.refreshLongMode()
+            pagingActive = system.pagingOn
+        }
+    }
+
     // MARK: - Les instructions système
 
     mutating func systemInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
@@ -207,18 +243,7 @@ extension X86Core {
             return true
         case 0x22:  // MOV CRn, r64
             let fields = try Self.fields(instruction)
-            let value = registers[fields.rm]
-            let previous = system.control[fields.reg]
-            system.control[fields.reg] = value
-            // Poser CR3 change l'espace d'adressage ; allumer ou éteindre la
-            // pagination aussi. Dans les deux cas le cache ment désormais.
-            if fields.reg == 3 || (fields.reg == 0 && (previous ^ value) & Self.pagingBit != 0) {
-                flushTranslations()
-            }
-            if fields.reg == 0 {
-                system.refreshLongMode()
-                pagingActive = system.pagingOn
-            }
+            writeControlRegister(fields.reg, registers[fields.rm])
             return true
         case 0x21:  // MOV r64, DRn
             let fields = try Self.fields(instruction)

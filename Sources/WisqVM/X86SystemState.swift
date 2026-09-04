@@ -27,6 +27,9 @@ public struct X86SystemState: Equatable, Sendable {
     public static let paging: UInt64 = 1 << 31       // CR0.PG
     public static let protectedMode: UInt64 = 1 << 0  // CR0.PE
     public static let physicalAddressExtension: UInt64 = 1 << 5  // CR4.PAE
+    /// CR4.PGE : les pages globales. C'est le bit qu'un noyau Linux éteint et
+    /// rallume pour vider tout le cache de traductions d'un coup.
+    public static let pageGlobalEnable: UInt64 = 1 << 7
     /// EFER, et les deux bits qui y comptent : LME (mode long demandé) et LMA
     /// (mode long actif).
     public static let efer: UInt32 = 0xC000_0080
