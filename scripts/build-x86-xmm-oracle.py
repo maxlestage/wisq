@@ -58,6 +58,32 @@ EXPLICIT = [
 ]
 
 
+def tailForms():
+    """Ce qui s'ajoute **après** tout le reste.
+
+    Un numéro d'instruction déjà attribué ne doit pas changer : le fichier
+    d'oracle est une référence, et renuméroter ses cas ferait passer une
+    simple addition pour une réécriture. Les formes neuves entrent donc en
+    queue, après même les encodages explicites.
+
+    `MOVSS` et `MOVSD` portent des noms de virgule flottante et ne calculent
+    rien : ils déplacent trente-deux ou soixante-quatre bits. Mais ils ont une
+    règle que rien d'autre n'a — **elle dépend de la source**. Depuis la
+    mémoire, le reste du registre est mis à zéro ; depuis un autre registre, le
+    reste est **laissé tel quel**. Confondre les deux écrase ce que le
+    programme voulait garder, et aucune lecture attentive ne remplace la
+    réponse du processeur là-dessus.
+    """
+    out = []
+    for name in ["movss", "movsd"]:
+        out += [
+            f"{name} %xmm1, %xmm0",
+            f"{name} {UNALIGNED:#x}(%rsi), %xmm0",
+            f"{name} %xmm1, {UNALIGNED:#x}(%rsi)",
+        ]
+    return out
+
+
 def forms():
     """Les formes à l'essai. Chacune ne touche que xmm0, xmm1 et RAX."""
     out = []
@@ -198,6 +224,9 @@ def main():
     for hexadecimal, name in EXPLICIT:
         encoded.append(hexadecimal)
         texts.append(name)
+    tail = tailForms()
+    encoded += assemble(tail)
+    texts += tail
     chosen = list(states())
 
     request = []

@@ -150,6 +150,43 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             try writeVectorRM(fields, 16, vector(fields.reg))
 
+        // **`MOVSS` et `MOVSD`, dont la règle dépend de la source.** Ils
+        // portent des noms de virgule flottante et ne calculent rien : ils
+        // déplacent trente-deux ou soixante-quatre bits. Mais depuis la
+        // **mémoire** le reste du registre est mis à zéro, tandis que depuis un
+        // autre **registre** il est laissé tel quel. Confondre les deux écrase
+        // ce que le programme voulait garder ; c'est l'oracle qui le dit, pas
+        // une lecture.
+        case 0x10 where repeatFE || repeatFD:  // vers le registre
+            let fields = try decodeFields(instruction)
+            let width = repeatFE ? 4 : 8
+            if fields.mod == 0b11 {
+                let source = vector(fields.rm)
+                let mask = width == 4 ? UInt64(0xFFFF_FFFF) : UInt64.max
+                let low = (vector(fields.reg).low & ~mask) | (source.low & mask)
+                setVector(fields.reg, low, vector(fields.reg).high)
+            } else {
+                guard let memory else {
+                    throw Fault.unsupported("un opérande vectoriel en mémoire")
+                }
+                setVector(fields.reg, try memory.read(try translate(lastAddress), width), 0)
+            }
+
+        case 0x11 where repeatFE || repeatFD:  // depuis le registre
+            let fields = try decodeFields(instruction)
+            let width = repeatFE ? 4 : 8
+            let value = vector(fields.reg)
+            if fields.mod == 0b11 {
+                let mask = width == 4 ? UInt64(0xFFFF_FFFF) : UInt64.max
+                let low = (vector(fields.rm).low & ~mask) | (value.low & mask)
+                setVector(fields.rm, low, vector(fields.rm).high)
+            } else {
+                guard let memory else {
+                    throw Fault.unsupported("un opérande vectoriel en mémoire")
+                }
+                try memory.write(try translate(lastAddress, .write), width, value.low)
+            }
+
         // Les entrelacements. Chacun prend des morceaux de la même taille
         // alternativement dans la destination et la source, en commençant par
         // la destination — l'ordre est ce qu'un test doit fixer, parce que

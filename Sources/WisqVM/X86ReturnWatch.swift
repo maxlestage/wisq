@@ -149,6 +149,9 @@ extension X86Core {
         public let pendingPromise: UInt64
         public let pendingFrame: UInt64
         public let retired: UInt64
+        /// Ce qui a bougé la pile juste avant, du plus ancien au plus récent.
+        /// C'est là que se lit qui a laissé un mot de trop.
+        public let moves: [StackMove]
 
         public var description: String {
             let waiting = pendingFrame == 0
@@ -158,6 +161,8 @@ extension X86Core {
             return String(format: "ret à %llx est parti à %llx depuis le cadre %llx",
                           at, taken, frame)
                 + " — " + waiting + String(format: ", après %llu instructions", retired)
+                + (moves.isEmpty ? "" : "\n" + moves.map { "      " + $0.description }
+                    .joined(separator: "\n"))
         }
     }
 
@@ -169,7 +174,7 @@ extension X86Core {
         unmatchedReturns.append(UnmatchedReturn(
             at: at, taken: taken, frame: frame,
             pendingPromise: top?.promised ?? 0, pendingFrame: top?.stack ?? 0,
-            retired: retired))
+            retired: retired, moves: stackMoves))
     }
 
     /// Un changement d'anneau ou d'espace d'adressage rend la pile d'ombre
