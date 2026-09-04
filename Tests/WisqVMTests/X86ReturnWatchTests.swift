@@ -101,6 +101,50 @@ final class X86ReturnWatchTests: XCTestCase {
         XCTAssertTrue(core.shadowStack.isEmpty)
     }
 
+    /// **La leçon du vrai démarrage.** Un saut de queue — `jmp` dans une
+    /// fonction qui rendra la main à l'appelant d'origine — laisse un `ret`
+    /// sans `call` à lui. La première version se contentait de dépiler, et le
+    /// noyau l'a démolie en une exécution : elle rendait des désaccords dont
+    /// ses propres chiffres la contredisaient, la pile y étant *identique* à
+    /// l'appel et au retour alors qu'un couple équilibré montre huit octets
+    /// d'écart. C'est le cadre qui apparie, pas l'ordre.
+    func testATailJumpDoesNotDeriveTheShadowStack() throws {
+        // call +5 ; ret (jamais atteint) ; jmp +1 ; ret
+        //  0: e8 05 00 00 00   call → 0xa
+        //  5: c3               ret   (le retour de la fonction appelée)
+        //  6: eb 01            jmp   → 0x9   (le saut de queue)
+        //  8: 90               nop   (sauté)
+        //  9: c3               ret   (rend la main à l'appelant du call)
+        //  a: eb fa            jmp   → 0x6
+        let program: [UInt8] = [0xE8, 0x05, 0, 0, 0, 0xC3, 0xEB, 0x01, 0x90, 0xC3,
+                                0xEB, 0xFA]
+        var core = try Self.core(program)
+        _ = try? core.run(budget: 4)
+        XCTAssertTrue(core.brokenReturns.isEmpty,
+                      "le ret du saut de queue tient bien la promesse du call")
+        XCTAssertTrue(core.shadowStack.isEmpty, "et la promesse a été dépilée")
+    }
+
+    /// Une promesse dont le cadre est **plus profond** que le retour est une
+    /// promesse abandonnée : la pile descend, donc une adresse plus basse est
+    /// un cadre plus récent, et revenir au-dessus de lui veut dire que
+    /// personne ne viendra plus la tenir. C'est ce que fait un `longjmp`, qui
+    /// déroule plusieurs cadres d'un coup.
+    ///
+    /// Le témoin la jette au lieu de l'accuser — et cette écriture-là est
+    /// venue de la machine : le test attendait d'abord qu'elle reste en
+    /// attente, et il avait tort.
+    func testAPromiseFromAnAbandonedFrameIsDroppedNotAccused() throws {
+        var core = try Self.core([0x90])
+        core.rememberCall(promised: 0x1111, at: 0x2222)
+        // Le retour vient d'un cadre bien plus haut : celui d'en dessous a été
+        // déroulé sans que personne ne le dépile.
+        core.registers[4] = Self.stack &+ 0x400
+        core.rememberReturn(taken: 0x3333, at: 0x4444)
+        XCTAssertTrue(core.brokenReturns.isEmpty)
+        XCTAssertTrue(core.shadowStack.isEmpty, "la promesse abandonnée est jetée")
+    }
+
     func testTheKernelIsNotWatched() throws {
         var core = try Self.core(Self.dishonest, ring: 0)
         _ = try? core.run(budget: 4)

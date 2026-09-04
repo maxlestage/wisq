@@ -98,8 +98,27 @@ extension X86Core {
     /// commence vide au milieu d'un programme déjà lancé, et les premiers
     /// retours dépilent des appels qu'on n'a pas vus. Les taire est le seul
     /// choix honnête.
+    ///
+    /// **Et c'est le cadre qui apparie, pas l'ordre.** La première version se
+    /// contentait de dépiler, et le vrai démarrage l'a démolie en une
+    /// exécution : elle a rendu quatre désaccords dont les propres chiffres la
+    /// contredisaient — la pile y était *identique* à l'appel et au retour,
+    /// alors qu'un couple équilibré doit montrer huit octets d'écart. La cause
+    /// est légitime et courante : un **saut de queue**. `jmp *GOT` entre
+    /// directement dans une fonction qui rendra la main à l'appelant
+    /// d'origine, et ce `ret`-là n'a pas de `call` à lui. Chaque saut de queue
+    /// décale la pile d'ombre d'un cran, et tout ce qui suit devient faux.
+    ///
+    /// On jette donc les promesses dont le cadre est déjà abandonné, et on ne
+    /// compare que si le sommet correspond exactement à l'endroit d'où ce
+    /// `ret` vient de dépiler.
     mutating func rememberReturn(taken: UInt64, at: UInt64) {
-        guard let pending = shadowStack.popLast() else { return }
+        // Le `ret` a déjà dépilé : le cadre dont il vient est huit octets plus
+        // bas que la pile d'à présent.
+        let frame = registers[4] &- 8
+        while let top = shadowStack.last, top.stack < frame { shadowStack.removeLast() }
+        guard let pending = shadowStack.last, pending.stack == frame else { return }
+        shadowStack.removeLast()
         guard pending.promised != taken else { return }
         guard brokenReturns.count < Self.brokenReturnLimit else { return }
         brokenReturns.append(BrokenReturn(
