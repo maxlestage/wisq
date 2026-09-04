@@ -8,6 +8,68 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~01h00 UTC — un programme tourne en anneau trois
+
+#174 fusionné. Le noyau réclamait un disque ; j'allais écrire virtio-blk. Avant
+ça, j'ai regardé si le noyau d'Alpine avait le pilote : `strings` sur le vmlinux
+décompressé, aucune trace de `virtio_blk`, `virtio_pci` ni `virtio_mmio`. **Ce
+sont des modules, et ils vivent dans l'initramfs.**
+
+Donc ce n'était pas un pilote de disque qu'il fallait, c'était un **initrd** :
+deux champs de la page zéro, `ramdisk_image` et `ramdisk_size`, et l'archive
+posée en haut de la mémoire. Le noyau la déballe dans un tmpfs et exécute son
+`/init`.
+
+**Premier programme utilisateur jamais lancé par wisq.** `CS: 0033` — anneau
+trois.
+
+### Le bit qui manquait pour qu'il vive
+
+Il mourait aussitôt :
+
+```
+[  153.339513] BUG: unable to handle page fault for address: 00007f0f12ae7a62
+[  153.340189] Oops: 0010 [#1] PREEMPT SMP PTI
+[  153.340189] RIP: 0033:0x7f0f12ae7a62
+[  158.380734] Kernel panic - not syncing: Attempted to kill init! exitcode=0x9
+```
+
+`Oops: 0010` : bit 4 posé — lecture d'instruction —, bit 2 **absent**. Le bit 2
+dit que l'accès vient de l'espace utilisateur, et c'est celui-là que Linux
+regarde pour trancher entre « une page manque à un programme, je la lui pose »
+et « le noyau est parti dans le décor, j'affiche un oops ».
+
+Le programme n'avait rien fait de mal. On avait juste oublié de dire qu'il
+était le programme. Le niveau de privilège vient des deux bits du bas de CS, et
+de rien d'autre.
+
+Avec le bit : **2,7 milliards d'instructions**, plus un seul oops, 12 685
+octets de journal, `random: crng init done`, `rtc_cmos`, `PF_INET6`.
+
+### L'arrêt suivant, et il est nommé
+
+Une faute de page sur la **pile utilisateur**, depuis le code d'entrée du
+noyau. C'est le changement d'anneau : quand une interruption arrive pendant
+qu'un programme tourne, le processeur charge RSP depuis le **TSS** avant
+d'empiler quoi que ce soit. Ce cœur pousse encore le cadre sur la pile qu'il
+trouve — celle de l'utilisateur —, et elle n'est pas forcément là.
+
+La tranche suivante est donc : le TSS et le changement de pile, puis
+`SYSCALL`/`SYSRET`. Après ça, un programme pourra appeler le noyau.
+
+### Un test qui passait pour la mauvaise raison
+
+Le sabotage a attrapé autre chose : mon test « un disque trop grand est
+refusé » prenait une mémoire trop petite pour le **noyau** lui-même. Il passait,
+mais c'était la garde du noyau qui refusait, pas celle du disque. Retirer la
+garde du disque ne le faisait pas tomber. Corrigé : même mémoire que le test
+voisin, disque plus gros que ce qui reste.
+
+C'est exactement ce à quoi sert le sabotage — pas à vérifier qu'un test passe,
+mais à vérifier qu'il **tient** ce qu'il prétend tenir.
+
+---
+
 ## 2026-09-04, ~00h00 UTC — Linux va jusqu'au bout, et s'arrête faute de disque
 
 #173 fusionné. Le vrai noyau d'Alpine 3.20 arrive maintenant à `kernel_init` :

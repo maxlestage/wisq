@@ -65,8 +65,15 @@ final class X86BootAttemptTests: XCTestCase {
             throw XCTSkip("noyau PC absent : définir WISQ_PC_KERNEL pour ce test")
         }
 
-        let memory = X86Memory(size: 256 << 20, base: 0)
-        let placement = try X86BootLoader.load(kernel: [UInt8](data), into: memory)
+        // Un disque en mémoire, quand on en désigne un : c'est ce qui donne un
+        // espace utilisateur, puisque le noyau d'Alpine n'a aucun pilote de
+        // disque compilé dedans — ce sont des modules, et ils sont là-dedans.
+        let ramdisk = ProcessInfo.processInfo.environment["WISQ_PC_INITRD"]
+            .flatMap { FileManager.default.contents(atPath: $0) }
+            .map { [UInt8]($0) }
+        let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
+        let placement = try X86BootLoader.load(
+            kernel: [UInt8](data), into: memory, initialRamdisk: ramdisk)
 
         // Les tables, hors du chemin du noyau et de la page zéro.
         let pml4: UInt64 = 0x5_0000

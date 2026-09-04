@@ -288,6 +288,11 @@ public struct X86Core: @unchecked Sendable {
         retired &+= 1
     }
 
+    /// Le niveau de privilège courant, lu dans les deux bits du bas de CS.
+    /// Zéro pour le noyau, trois pour un programme — c'est le sélecteur qui le
+    /// porte, et rien d'autre.
+    public var privilege: Int { Int(segments[1] & 3) }
+
     /// Vrai le temps d'une instruction qui a posé RIP elle-même.
     var jumped = false
     /// Le code d'erreur de la dernière faute de page : ce que le gestionnaire
