@@ -89,6 +89,22 @@ public struct X86Core: @unchecked Sendable {
     /// Les limites qui vont avec, en octets moins un. Une IDT dont la limite
     /// ne couvre pas un vecteur ne le livre pas.
     public var descriptorLimits = [UInt64](repeating: 0, count: 2)
+    /// Le sélecteur que `LTR` a chargé. Gardé pour que `STR` le rende, et pour
+    /// qu'un instantané reprenne une machine dans le même état.
+    public var taskSelector: UInt16 = 0
+    /// La base du segment d'état de tâche, recopiée depuis le descripteur au
+    /// moment du `LTR` — comme la GDT et l'IDT, et pour la même raison : un
+    /// vrai processeur ne relit pas la table à chaque interruption.
+    ///
+    /// **C'est là que vit la pile du noyau.** Quand une interruption arrive
+    /// pendant qu'un programme tourne en anneau trois, le processeur ne peut
+    /// pas empiler le cadre sur la pile de ce programme — elle est écrivable
+    /// par lui, et il n'y a aucune raison qu'elle soit valide. Il va donc
+    /// chercher `RSP0` ici, **avant** de pousser quoi que ce soit.
+    public var taskBase: UInt64 = 0
+    /// La limite du même segment. Un TSS trop court ne rend pas de pile : le
+    /// dire vaut mieux que lire au-delà et empiler sur une adresse inventée.
+    public var taskLimit: UInt64 = 0
     /// Les deux seuls mots d'état x87 qui existent ici : ceux que la séquence
     /// de détection de Linux range et relit. Voir `minimalX87`.
     public var x87Status: UInt16 = 0

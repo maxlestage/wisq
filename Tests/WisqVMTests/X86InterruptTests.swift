@@ -69,6 +69,23 @@ final class X86InterruptTests: XCTestCase {
         return core
     }
 
+    /// Un segment d'état de tâche à 0x6000, avec la pile de noyau qu'on veut.
+    /// La GDT tient dans la page 0x6000 aussi, juste devant.
+    static func loadTaskSegment(
+        _ ram: X86Memory, _ core: inout X86Core, kernelStack: UInt64
+    ) throws {
+        let gdt: UInt64 = 0x6000
+        let tss: UInt64 = 0x6100
+        let limit: UInt64 = 0x67
+        let low = (limit & 0xFFFF) | ((tss & 0xFF_FFFF) << 16) | (UInt64(0x89) << 40)
+        try ram.write(gdt &+ 0x40, 8, low)
+        try ram.write(gdt &+ 0x48, 8, 0)
+        try ram.write(tss &+ 4, 8, kernelStack)
+        core.descriptorBases[0] = gdt
+        core.descriptorLimits[0] = 0x7F
+        try core.loadTaskRegister(0x40)
+    }
+
     static func prepared(code: [UInt8]) throws -> (X86Memory, X86Core) {
         let ram = X86Memory(size: 1 << 20, base: 0)
         try map(ram, mapped)
@@ -391,6 +408,13 @@ final class X86InterruptTests: XCTestCase {
             var core = base
             core.registers[3] = Self.missing
             core.segments[1] = selector
+            // Un TSS, parce qu'une faute prise en anneau trois change de pile
+            // avant d'empiler quoi que ce soit — et que sans registre de
+            // tâche, le cœur refuse plutôt que d'inventer une adresse.
+            // `RSP0` est la même pile : ce test parle du code d'erreur, et
+            // faire atterrir le cadre ailleurs ne changerait que l'endroit où
+            // le relire.
+            try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
             try core.run(budget: 1)
             let code = try ram.read(core.registers[4], 8)
             XCTAssertEqual(code & (1 << 2) != 0, user,
