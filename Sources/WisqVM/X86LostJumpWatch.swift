@@ -41,6 +41,13 @@ import Foundation
 extension X86Core {
     /// Un saut d'anneau trois vers une page qu'aucune table ne porte.
     public struct LostJump: Sendable, Equatable {
+        /// L'espace d'adressage — le processus — qui a sauté. **Lui seul peut
+        /// trancher** : sur un seul processeur, une faute de page peut céder
+        /// la main, et la première instruction d'anneau trois qui aboutit
+        /// ensuite est alors celle d'un autre programme, ailleurs. Seize
+        /// enfants de `fork()` ont été déclarés perdus ainsi, à tort ou à
+        /// raison — le témoin ne pouvait pas le dire.
+        public let addressSpace: UInt64
         /// L'adresse où l'on a atterri, et qui n'existe pas.
         public let at: UInt64
         /// La dernière instruction qui a abouti, et ses octets. C'est elle qui
@@ -49,10 +56,10 @@ extension X86Core {
         public let fromBytes: [UInt8]
         public let retired: UInt64
 
-        static let none = LostJump(at: 0, from: 0, fromBytes: [], retired: 0)
+        static let none = LostJump(addressSpace: 0, at: 0, from: 0, fromBytes: [], retired: 0)
 
         public var description: String {
-            String(format: "saut vers %llx depuis %llx", at, from)
+            String(format: "cr3=%llx saut vers %llx depuis %llx", addressSpace, at, from)
                 + (fromBytes.isEmpty
                     ? ""
                     : " [" + fromBytes.map { String(format: "%02x", $0) }
@@ -82,15 +89,18 @@ extension X86Core {
         let armed = canonicalWatchArmed
         canonicalWatchArmed = false
         defer { canonicalWatchArmed = armed }
-        pendingLostJump = LostJump(at: at, from: previousRip,
-                                   fromBytes: peek(previousRip), retired: retired)
+        pendingLostJump = LostJump(addressSpace: system.control[3], at: at,
+                                   from: previousRip, fromBytes: peek(previousRip),
+                                   retired: retired)
     }
 
     /// À appeler quand une instruction d'anneau trois aboutit à `entry`. Si un
-    /// saut était en attente et que la main revient ailleurs qu'à l'endroit
-    /// visé, c'est que le noyau ne l'a pas résolu.
+    /// saut était en attente **dans cet espace d'adressage** et que la main
+    /// revient ailleurs qu'à l'endroit visé, c'est que le noyau ne l'a pas
+    /// résolu. Un autre processus qui passe ne tranche rien.
     mutating func settleLostJump(_ entry: UInt64) {
-        guard let pending = pendingLostJump else { return }
+        guard let pending = pendingLostJump,
+              pending.addressSpace == system.control[3] else { return }
         pendingLostJump = nil
         guard entry != pending.at else { return }
         lostJumpsUnresolved &+= 1

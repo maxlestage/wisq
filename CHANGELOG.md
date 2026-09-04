@@ -9,7 +9,45 @@ break APIs.
 
 ## [0.4.0] — 2026-09-04
 
+### Added
+- **A second local architecture: an x86-64 core that runs a stock Alpine
+  kernel and its initramfs.** The core is held by nine hardware corpora — the
+  reference is this machine's own processor, asked what it produced for the
+  same bytes on the same state: arithmetic, XMM, strings, stack, branches,
+  SSE2 integer, scalar float, the x87 stack and the 512-byte FXSAVE area, over
+  24 000 cases. Measured on the same kernel and initramfs as QEMU: zero
+  segfaults, zero non-canonical addresses, zero of 27 413 ring transitions
+  returning a corrupted stack. Getting there took the defects below, each
+  found by measurement rather than by reading the code.
+
 ### Fixed
+- **`PUSH` decremented the stack pointer before translating the address it
+  was about to write.** A page fault restarted the instruction with the
+  pointer already moved, and it moved again: eight bytes lost for good. That
+  is what killed `/init`.
+- **`FXSAVE` wrote zeros where the sixteen XMM registers belong, and `FXRSTOR`
+  never read them back.** The comment explaining why that was acceptable had
+  stopped being true, and the two tests covering it required the wrong
+  behaviour: they held the defect in place.
+- **An instruction was fetched by translating only its first byte**, then
+  reading up to fourteen more contiguously in physical memory. The physically
+  next frame is almost never the virtually next page, so an instruction
+  straddling a page boundary decoded from someone else's bytes.
+- **`RDTSC` stood still while the machine slept.** It returned the count of
+  *retired* instructions, which does not move during `HLT`; the 8253 counts
+  idle turns too. The kernel had picked the TSC as its clock source and
+  calibrated it against the 8253 at boot, then found it frozen every time a
+  tick woke it: a twelve-second timeout cannot expire on a clock that does not
+  advance. Both now read the same time, and Alpine's init runs on after
+  « Mounting boot media... » where it used to sleep forever.
+- **The serial port failed the 8250 driver's existence test**, so the kernel
+  never registered `ttyS0` as a terminal and user space had no console —
+  `printk` wrote the port directly, which is why the kernel's own lines never
+  hinted at it. The port models the 16550's eight registers, passes the
+  driver's probe (« ttyS0 at I/O 0x3f8 (irq = 4) is a 16550A », as under
+  QEMU), and its transmitter interrupts on line four, which is how the driver
+  moves user-space output at all. Init's own « * Mounting boot media: » now
+  appears on the console.
 - **A VM identifier reached `virsh` with no validation at all.** `service.rs`
   took the path segment straight from the URL and handed it to
   `backend.get/start/stop`, which passes it to `virsh` as an argument.
