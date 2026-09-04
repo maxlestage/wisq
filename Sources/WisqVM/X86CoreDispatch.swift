@@ -442,32 +442,8 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             guard let memory else { throw Fault.unsupported("0F AE sans mémoire") }
             switch extension_ {
-            case 0:
-                // **FXSAVE, et ce qu'il ne sauvegarde pas ici.** La zone fait
-                // 512 octets et porte, sur un vrai processeur, les huit
-                // registres x87 et les seize XMM. Ce cœur n'en a aucun : il
-                // écrit les mots de contrôle qu'il tient vraiment et met le
-                // reste à zéro. Un invité qui **calculerait** en virgule
-                // flottante ne serait pas servi par ça — mais rien ici ne
-                // calcule en virgule flottante, et un noyau x86-64 range cette
-                // zone dès son démarrage sans jamais demander à `CPUID` si
-                // elle existe, parce que l'architecture la lui garantit.
-                for offset in stride(from: 0, to: 512, by: 8) {
-                    try memory.write(try translate(lastAddress &+ UInt64(offset), .write), 8, 0)
-                }
-                try memory.write(try translate(lastAddress, .write), 2, UInt64(x87Control))
-                try memory.write(try translate(lastAddress &+ 2, .write), 2, UInt64(x87Status))
-                try memory.write(try translate(lastAddress &+ 24, .write), 4, UInt64(mxcsr))
-                // Le masque des bits de MXCSR qu'un processeur accepte. Zéro
-                // voudrait dire « aucun », et Linux le prend au mot.
-                try memory.write(try translate(lastAddress &+ 28, .write), 4, 0xFFFF)
-            case 1:
-                x87Control = UInt16(truncatingIfNeeded:
-                    try memory.read(try translate(lastAddress), 2))
-                x87Status = UInt16(truncatingIfNeeded:
-                    try memory.read(try translate(lastAddress &+ 2), 2))
-                mxcsr = UInt32(truncatingIfNeeded:
-                    try memory.read(try translate(lastAddress &+ 24), 4))
+            case 0: try saveFloatingPointState()
+            case 1: try restoreFloatingPointState()
             case 2:  // LDMXCSR
                 mxcsr = UInt32(truncatingIfNeeded: try readRM(fields, 4))
             case 3:  // STMXCSR

@@ -74,6 +74,15 @@ extension X86Core {
         /// Les octets qui sont à cette adresse, pour qu'on puisse la
         /// désassembler. Vide quand elle n'est plus lisible.
         public let bornBytes: [UInt8]
+        /// **D'où la valeur a été lue**, quand l'instruction qui l'a écrite
+        /// lisait la mémoire. Zéro sinon.
+        ///
+        /// C'est la question que le témoin ne savait pas répondre. Il nommait
+        /// bien l'instruction — `mov 0x28(%r12),%rdi` — mais pas l'adresse
+        /// qu'elle avait lue, et sans elle on ne peut pas aller voir qui a
+        /// écrit le zéro. Un pointeur nul *calculé* et un pointeur nul *lu*
+        /// sont deux défauts différents, et seule l'adresse les sépare.
+        public let bornFrom: UInt64
     }
 
     /// Ce qu'on retient du moment où une adresse non canonique est employée.
@@ -106,6 +115,7 @@ extension X86Core {
             let born = carrying.map {
                 String(format: "%@=%llx né à %llx [%@]", Self.names[$0.register],
                        $0.value, $0.bornAt, Self.hex($0.bornBytes))
+                    + ($0.bornFrom == 0 ? "" : String(format: " lu depuis %llx", $0.bornFrom))
             }.joined(separator: ", ")
             let previous = String(format: " ; venue de %llx [%@]", cameFrom, Self.hex(cameFromBytes))
             return String(format: "adresse %llx employée par rip=%llx après %llu instructions",
@@ -121,9 +131,11 @@ extension X86Core {
     /// À appeler juste après une instruction d'anneau trois, avec les
     /// registres d'avant : chaque registre qui a changé note ici l'adresse de
     /// l'instruction qui l'a écrit.
-    mutating func rememberBirths(before: [UInt64], rip entry: UInt64) {
+    mutating func rememberBirths(before: [UInt64], rip entry: UInt64,
+                                 from address: UInt64?) {
         for index in 0..<16 where registers[index] != before[index] {
             registerBornAt[index] = entry
+            registerBornFrom[index] = address ?? 0
         }
     }
 
@@ -155,7 +167,8 @@ extension X86Core {
             }
             return Birth(register: index, value: value,
                          bornAt: registerBornAt[index],
-                         bornBytes: peek(registerBornAt[index]))
+                         bornBytes: peek(registerBornAt[index]),
+                         bornFrom: registerBornFrom[index])
         }
         nonCanonicalSeen.append(NonCanonical(
             address: address, rip: rip, cameFrom: previousRip,
