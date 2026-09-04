@@ -116,6 +116,7 @@ public struct X86Core: @unchecked Sendable {
     /// Les aller-retours en anneau zéro qui rendent une pile décalée, et le
     /// départ en cours. Voir `X86RingWatch.swift`.
     public var ringTrips: [RingTrip] = []
+    var ringTripNext = 0
     /// Ce que le témoin a vu passer, décalé ou non : sans ce compte, un
     /// rapport vide ne dit pas si tout allait bien ou si rien n'a regardé.
     public var ringPassages = RingTally()
@@ -124,7 +125,7 @@ public struct X86Core: @unchecked Sendable {
     public var stackLedger = [StackMove](repeating: .none,
                                          count: X86Core.stackLedgerDepth)
     var stackLedgerNext = 0
-    var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64,
+    var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64, space: UInt64,
                         retired: UInt64)?
     /// Les appels qui prennent leur adresse en mémoire. Voir
     /// `X86IndirectCallWatch.swift`.

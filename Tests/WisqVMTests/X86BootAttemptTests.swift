@@ -172,6 +172,36 @@ final class X86BootAttemptTests: XCTestCase {
         let brokenSaid = Self.kept(core.brokenReturns.count,
                                    of: core.brokenReturnTally)
         let started = Self.kept(core.processStarts.count, of: core.processStartsSeen)
+        // **Un `hlt` a deux fins, et elles ne se lisent pas pareil.** Le
+        // programme qui attend une interruption qui viendra, et celui qui en
+        // attend une qui ne viendra jamais — horloge non armée, ou
+        // interruptions masquées. Sans ces deux faits, « arrêt : hlt » se lit
+        // comme « la machine dort », alors que c'est peut-être « la machine
+        // est morte et personne ne le dit ».
+        let clock = core.devices.reload != 0
+            ? "horloge armée (rechargement \(core.devices.reload))"
+            : "horloge NON armée"
+        let masked = core.flags & X86Core.Flag.interrupt != 0
+            ? "interruptions permises" : "interruptions MASQUÉES"
+        // **Et « hlt » n'est pas une raison d'arrêt.** Le champ disait « hlt »
+        // dès que le cœur était au repos, quelle que soit la vraie cause — et
+        // il a menti dans la mesure d'après : la machine attendait, horloge
+        // armée et interruptions permises, et c'est le **budget** qui s'est
+        // épuisé pendant l'attente. « La machine dort » et « la course s'est
+        // arrêtée » ne sont pas la même phrase.
+        let ending: String
+        if let stopped {
+            ending = "\(stopped)"
+        } else if core.halted && core.idled > 0 {
+            ending = "budget épuisé pendant l'attente"
+        } else if core.halted {
+            ending = "hlt sans réveil possible"
+        } else {
+            ending = "budget épuisé en exécutant"
+        }
+        let halt = core.halted
+            ? clock + ", " + masked + ", \(core.idled) tours d'attente"
+            : "non"
         let lost = Self.kept(core.lostJumps.count, of: core.lostJumpsUnresolved)
             + " non résolus, sur \(core.lostJumpTally) sauts vers une page absente"
 
@@ -193,8 +223,9 @@ final class X86BootAttemptTests: XCTestCase {
 
             === tentative de démarrage x86-64 ===
             instructions retirées : \(core.retired)
-            arrêt                 : \(stopped.map { "\($0)" } ?? (core.halted ? "hlt" : "budget"))
+            arrêt                 : \(ending)
             rip                   : 0x\(String(core.rip, radix: 16))
+            au repos              : \(halt)
             octets à RIP          : \(core.memory.map {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
@@ -220,7 +251,7 @@ final class X86BootAttemptTests: XCTestCase {
 
         list("appels par la mémoire", core.indirectCalls.map { $0.description })
         list("passages d'anneau qui décalent la pile",
-             core.ringTrips.map { $0.description })
+             core.tripsShifted.map { $0.description })
         list("retours sans promesse", core.returnsUnmatched.map { $0.description })
         list("passages sur l'adresse surveillée",
              core.addressTouched.filter { $0.retired != 0 }.map { $0.description })
