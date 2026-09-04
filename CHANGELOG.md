@@ -38,8 +38,7 @@ break APIs.
   idle turns too. The kernel had picked the TSC as its clock source and
   calibrated it against the 8253 at boot, then found it frozen every time a
   tick woke it: a twelve-second timeout cannot expire on a clock that does not
-  advance. Both now read the same time, and Alpine's init runs on after
-  « Mounting boot media... » where it used to sleep forever.
+  advance. Both now read the same time.
 - **The serial port failed the 8250 driver's existence test**, so the kernel
   never registered `ttyS0` as a terminal and user space had no console —
   `printk` wrote the port directly, which is why the kernel's own lines never
@@ -48,6 +47,20 @@ break APIs.
   QEMU), and its transmitter interrupts on line four, which is how the driver
   moves user-space output at all. Init's own « * Mounting boot media: » now
   appears on the console.
+- **`XADD` wrote its source register before writing memory, and `POP` to
+  memory moved the stack pointer before writing.** When the memory write
+  faulted — the page had just been shared by `fork()` and was no longer
+  writable — the kernel copied the page and replayed the instruction with
+  the register already overwritten: the replay added the destination to
+  itself. Measured on the lock word of musl's `__unlock`, cycle after cycle:
+  0x9FFFFFFF → 0x3FFFFFFE, 0xBFFFFFFF → 0x7FFFFFFE, 0xFFFFFFFF → 0xFFFFFFFE —
+  always v + v, never v + 0x7FFFFFFF. That is how nlplug-findfs came to sleep
+  on `futex(lock, WAIT, -1)`, a value impossible by construction, with nobody
+  left to wake it. Both instructions write memory first now, and a test
+  faults each of them on a read-only page and replays it, as the kernel
+  does. With the three fixes above, Alpine's init ends on « Mounting boot
+  media: failed. » and launches the initramfs emergency shell — exactly
+  where QEMU ends on the same images, after 4 billion instructions.
 - **A VM identifier reached `virsh` with no validation at all.** `service.rs`
   took the path segment straight from the URL and handed it to
   `backend.get/start/stop`, which passes it to `virsh` as an argument.

@@ -120,7 +120,7 @@ const en: Copy = {
       points: [
         "rv32ima core, 64 MB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
-        "x86-64 core: runs a stock Alpine kernel and its init, 3.4 billion instructions, no program dying — it stops for want of a boot medium, where QEMU stops too",
+        "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images",
         "Nine hardware corpora hold that core: the reference is a real processor, asked what it produced",
         "Entirely offline — no server, no network",
         "CI boots that kernel on every commit, as a test",
@@ -167,7 +167,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "1752", label: "tests" },
+      { value: "1765", label: "tests" },
       { value: "6", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -243,7 +243,7 @@ const fr: Copy = {
       points: [
         "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
-        "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 3,4 milliards d'instructions, sans qu'un programme meure — il s'arrête faute de média de démarrage, là où QEMU s'arrête aussi",
+        "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images",
         "Neuf corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit",
         "Entièrement hors ligne — aucun serveur, aucun réseau",
         "La CI démarre ce noyau à chaque commit, comme test",
@@ -285,7 +285,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "1752", label: "tests" },
+      { value: "1765", label: "tests" },
       { value: "6", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
