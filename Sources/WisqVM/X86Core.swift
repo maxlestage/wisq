@@ -88,6 +88,9 @@ public struct X86Core: @unchecked Sendable {
     /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
+    /// Les appels qui prennent leur adresse en mémoire. Voir
+    /// `X86IndirectCallWatch.swift`.
+    public var indirectCalls: [IndirectCall] = []
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -341,6 +344,7 @@ public struct X86Core: @unchecked Sendable {
                 }
                 let wasCall = watching && Self.callsOrReturns(instruction) == .call
                 let wasReturn = watching && Self.callsOrReturns(instruction) == .ret
+                let throughMemory = watching ? Self.indirectThroughMemory(instruction) : nil
                 let entry = rip
                 let before = watching ? registers : []
                 try execute(instruction)
@@ -352,6 +356,14 @@ public struct X86Core: @unchecked Sendable {
                                      at: entry)
                     } else if wasReturn {
                         rememberReturn(taken: rip, at: entry)
+                    }
+                    if let jumped = throughMemory {
+                        // `lastAddress` porte la case que le ModRM désignait :
+                        // le cœur l'a calculée pour lire l'adresse, et la
+                        // recalculer ici donnerait un second résultat qu'il
+                        // faudrait garder d'accord avec le premier.
+                        rememberIndirectCall(at: entry, slot: lastAddress,
+                                             jumped: jumped)
                     }
                 }
             } catch let fault as Fault {
