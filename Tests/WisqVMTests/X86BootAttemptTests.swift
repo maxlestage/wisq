@@ -220,7 +220,7 @@ final class X86BootAttemptTests: XCTestCase {
 
         list("appels par la mémoire", core.indirectCalls.map { $0.description })
         list("passages d'anneau qui décalent la pile",
-             core.ringTrips.map { $0.description })
+             core.tripsShifted.map { $0.description })
         list("retours sans promesse", core.returnsUnmatched.map { $0.description })
         list("passages sur l'adresse surveillée",
              core.addressTouched.filter { $0.retired != 0 }.map { $0.description })

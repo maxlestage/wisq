@@ -175,6 +175,40 @@ final class X86RingWatchTests: XCTestCase {
         XCTAssertTrue(core.ringTrips.isEmpty)
     }
 
+    /// **Une pile à des gigaoctets de l'autre n'est pas la même déplacée.**
+    /// `clone` avec `CLONE_VM` partage l'espace d'adressage : le fils reprend
+    /// après l'appel système, dans le même CR3, sur sa propre pile. Les deux
+    /// premiers critères ne peuvent pas le voir, et la mesure en a rendu cent
+    /// quatre-vingts d'un coup.
+    ///
+    /// Le seuil est une page, et c'est un **seuil** — le défaut recherché
+    /// déplaçait RSP de huit octets, ceux-ci de trois cent quarante-quatre
+    /// gigaoctets.
+    func testAStackGigabytesAwayIsAnotherStackAndNotAMovedOne() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: Self.program, cause: .systemCall)
+        core.rip = Self.program &+ 2
+        core.registers[4] = Self.stack &+ 0x50_0000_0000
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.otherStack, 1)
+        XCTAssertEqual(core.ringPassages.unexplained, 0)
+        XCTAssertTrue(core.ringTrips.isEmpty, "il n'accuse personne")
+    }
+
+    /// Et juste en dessous du seuil, on accuse encore : c'est là que vit le
+    /// défaut, qui déplaçait la pile de huit octets.
+    func testAShiftOfAFewWordsIsStillUnexplained() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: Self.program, cause: .systemCall)
+        core.rip = Self.program &+ 2
+        core.registers[4] = Self.stack &- 8
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.unexplained, 1)
+        XCTAssertEqual(core.ringPassages.otherStack, 0)
+    }
+
     /// **Et une continuation reste une reprise.** Un appel système repart
     /// juste après l'instruction : quinze octets sont la limite, pas zéro.
     /// Confondre les deux ferait passer tout appel système décalé pour un
@@ -271,6 +305,6 @@ final class X86RingWatchTests: XCTestCase {
         XCTAssertEqual(core.ringPassages.description,
                        "2 achevés (syscall 1, faute 1, interruption 0),"
                        + " dont 1 décalent la pile (0 autre programme,"
-                       + " 0 flot détourné, 1 inexpliqué)")
+                       + " 0 flot détourné, 0 autre pile, 1 inexpliqué)")
     }
 }

@@ -44,9 +44,26 @@ import Foundation
 //     est un **détournement** du flot par le noyau — la livraison d'un signal
 //     — et déplacer la pile est alors son droit.
 //
-// Reste le seul cas qui accuse : **même programme, reprise là où l'on était,
-// et pourtant la pile a bougé.** C'est exactement la forme du défaut que la
-// pile d'ombre avait fait apparaître, et c'est ce nombre-là qu'il faut lire.
+// **Et la mesure en a exigé un troisième.** Ces deux-là laissaient cent
+// quatre-vingts décalages « inexpliqués », tous avec la même signature : le
+// même appel système, le même espace d'adressage, une reprise deux octets plus
+// loin, et une pile qui fait l'aller-retour entre `7ffd…` et `7fad…`. Ce sont
+// des **fils d'exécution** : `clone` avec `CLONE_VM` partage CR3, donc le
+// premier critère ne peut pas les voir, et le fils reprend bien après l'appel,
+// donc le second non plus.
+//
+// Le fait qui les sépare n'est pas exact, et c'est important de le dire : on
+// compare **l'ampleur** du décalage à une page. Le raisonnement est celui-ci —
+// une pile de fil est une projection à elle, à des mégaoctets de l'autre,
+// tandis qu'une pile *corrompue* bouge de quelques mots. Le défaut que la pile
+// d'ombre avait fait apparaître déplaçait RSP de **huit octets** ; ceux-ci le
+// déplacent de trois cent quarante-quatre gigaoctets. Aucun mécanisme
+// plausible ne fait l'un en croyant faire l'autre.
+//
+// C'est donc un seuil, pas une preuve, et il est écrit ici pour qu'on puisse
+// le contester. Reste, après lui, le seul cas qui accuse : **même programme,
+// même pile, reprise là où l'on était, et pourtant RSP a bougé de quelques
+// mots.** C'est ce nombre-là qu'il faut lire.
 extension X86Core {
     /// Un aller-retour en anneau zéro, et ce que la pile en a retenu.
     public struct RingTrip: Sendable, Equatable {
@@ -68,8 +85,14 @@ extension X86Core {
         public enum Explanation: String, Sendable {
             case otherProgram = "autre programme"
             case redirected = "flot détourné"
+            case otherStack = "autre pile"
             case unexplained = "inexpliqué"
         }
+
+        /// Au-delà d'une page, ce n'est plus la même pile déplacée : c'en est
+        /// une autre. **C'est un seuil et non une preuve** — voir l'en-tête du
+        /// fichier pour ce qui le justifie et ce qu'il coûte.
+        public static let otherStackThreshold: Int64 = 0x1000
 
         public var explanation: Explanation {
             guard leavingSpace == returningSpace else { return .otherProgram }
@@ -77,8 +100,8 @@ extension X86Core {
             // aucune instruction x86 ne fait plus de quinze octets, donc au
             // delà c'est le noyau qui a détourné le flot.
             let ahead = resumed &- at
-            return ahead <= UInt64(X86Instruction.maximumLength)
-                ? .unexplained : .redirected
+            guard ahead <= UInt64(X86Instruction.maximumLength) else { return .redirected }
+            return abs(shift) >= Self.otherStackThreshold ? .otherStack : .unexplained
         }
 
         public enum Cause: String, Sendable {
@@ -122,6 +145,7 @@ extension X86Core {
         /// seul le troisième accuse.
         public var otherProgram: UInt64 = 0
         public var redirected: UInt64 = 0
+        public var otherStack: UInt64 = 0
         public var unexplained: UInt64 = 0
         /// Les départs recouverts par un autre avant d'être revenus : une
         /// faute pendant un appel système, par exemple. Le témoin ne suit
@@ -148,6 +172,7 @@ extension X86Core {
             guard shifted > 0 else { return said + ", aucun ne décale la pile" }
             said += ", dont \(shifted) décalent la pile"
                 + " (\(otherProgram) autre programme, \(redirected) flot détourné,"
+                + " \(otherStack) autre pile,"
                 + " \(unexplained) inexpliqué\(unexplained > 1 ? "s" : ""))"
             return said
         }
@@ -158,6 +183,13 @@ extension X86Core {
     /// dont le décalage s'explique non plus : les garder noierait les seuls
     /// qui accusent. Le compte, lui, les voit tous, rangés par explication.
     public static let ringTripLimit = 16
+
+    /// Les décalages inexpliqués gardés, du plus ancien au plus récent.
+    public var tripsShifted: [RingTrip] {
+        ringPassages.unexplained <= UInt64(Self.ringTripLimit)
+            ? ringTrips
+            : Array(ringTrips[ringTripNext...]) + Array(ringTrips[..<ringTripNext])
+    }
 
     /// À appeler au moment de quitter l'anneau trois.
     mutating func leavingRingThree(at: UInt64, cause: RingTrip.Cause) {
@@ -181,12 +213,18 @@ extension X86Core {
         switch trip.explanation {
         case .otherProgram: ringPassages.otherProgram += 1
         case .redirected: ringPassages.redirected += 1
+        case .otherStack: ringPassages.otherStack += 1
         case .unexplained: ringPassages.unexplained += 1
         }
         // Seuls les inexpliqués sont gardés : les autres sont dus, et les
-        // retenir noierait ceux-là.
+        // retenir noierait ceux-là. Et ce sont les **derniers** — la leçon a
+        // déjà été payée quatre fois dans ce dépôt.
         guard trip.explanation == .unexplained else { return }
-        guard ringTrips.count < Self.ringTripLimit else { return }
-        ringTrips.append(trip)
+        if ringTrips.count < Self.ringTripLimit {
+            ringTrips.append(trip)
+        } else {
+            ringTrips[ringTripNext] = trip
+        }
+        ringTripNext = (ringTripNext + 1) % Self.ringTripLimit
     }
 }

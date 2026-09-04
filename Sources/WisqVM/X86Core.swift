@@ -116,6 +116,7 @@ public struct X86Core: @unchecked Sendable {
     /// Les aller-retours en anneau zéro qui rendent une pile décalée, et le
     /// départ en cours. Voir `X86RingWatch.swift`.
     public var ringTrips: [RingTrip] = []
+    var ringTripNext = 0
     /// Ce que le témoin a vu passer, décalé ou non : sans ce compte, un
     /// rapport vide ne dit pas si tout allait bien ou si rien n'a regardé.
     public var ringPassages = RingTally()
