@@ -130,15 +130,21 @@ final class X86CoreTests: XCTestCase {
 
     /// Un opcode que ce cœur n'exécute pas encore est **nommé**. « Non
     /// supporté » sans dire lequel obligerait à relire les octets à la main.
+    ///
+    /// **Troisième exemple, et la raison est la bonne.** C'était `0F 05` —
+    /// SYSCALL — jusqu'à ce que le noyau le réclame ; puis `F3 0F 58` — une
+    /// addition scalaire — jusqu'à ce qu'Alpine la réclame. Un test dont
+    /// l'exemple finit par marcher ne tient plus rien, et celui-ci a cédé deux
+    /// fois parce que le cœur grandit du côté où la machine pousse.
+    ///
+    /// L'exemple d'aujourd'hui est `0F 58` **sans préfixe** : `ADDPS`, la même
+    /// addition mais sur les quatre valeurs du registre à la fois. Elle
+    /// apparaît deux fois dans tout l'espace utilisateur de l'invité, dans du
+    /// code que ce démarrage n'atteint pas — et le jour où elle sera réclamée,
+    /// ce test cédera une troisième fois, ce qui sera encore la bonne nouvelle.
     func testAnOpcodeTheCoreDoesNotRunYetIsNamed() {
         var machine = core()
-        // `f3 0f 58 c1` : addss %xmm1,%xmm0. L'exemple était `0f 05` — SYSCALL
-        // — jusqu'à ce que le noyau le réclame et qu'il soit écrit ; un test
-        // dont l'exemple finit par marcher ne tient plus rien. Celui-ci est
-        // une addition en virgule flottante, que ce cœur ne fait pas et dont
-        // il est écrit ailleurs qu'il ne la fera pas avant qu'on la lui
-        // demande.
-        XCTAssertThrowsError(try run([0xF3, 0x0F, 0x58, 0xC1], on: &machine)) { error in
+        XCTAssertThrowsError(try run([0x0F, 0x58, 0xC1], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
