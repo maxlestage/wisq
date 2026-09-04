@@ -8,6 +8,100 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~00h00 UTC — Linux va jusqu'au bout, et s'arrête faute de disque
+
+#173 fusionné. Le vrai noyau d'Alpine 3.20 arrive maintenant à `kernel_init` :
+
+```
+[    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
+[    8.929917] printk: console [ttyS0] enabled
+[   21.480833] smpboot: Total of 1 processors activated (28.82 BogoMIPS)
+[   21.546634] devtmpfs: initialized
+[   32.137346] TCP: Hash tables configured (established 2048 bind 2048)
+[   44.818378] ---[ end Kernel panic - not syncing: VFS: Unable to mount root
+                   fs on unknown-block(0,0) ]---
+```
+
+**C'est la bonne fin.** Un noyau sans disque et sans initrd dit exactement ça,
+sur une vraie machine comme ici. 262 lignes de journal, une trace d'appels avec
+les noms des fonctions — donc `printk`, la table des symboles, le dérouleur de
+pile, les exceptions, l'horloge et la mémoire virtuelle marchent tous. Ce qui
+manque n'est plus dans le processeur.
+
+3,5 milliards d'instructions en 4 min 30 s, quarante-quatre secondes de temps
+invité.
+
+### Le contrôleur d'interruptions, et ce qu'il a révélé
+
+Le noyau s'arrêtait sur `Failed to register legacy timer interrupt`, après
+avoir écrit `Using NULL legacy PIC`. Sa sonde du 8259 est **deux lignes** :
+écrire un masque dans le port 0x21, le relire. Une fois ça fait, plus le 8253
+et la livraison des interruptions de matériel — qui réutilise le chemin des
+exceptions —, le noyau a trouvé son horloge.
+
+Sauf qu'il ne l'a pas trouvée. La ligne zéro restait en demande, onze mille
+fois de suite, sans jamais être livrée : **l'IDT n'avait pas de porte pour le
+vecteur 0x30**. En listant les vecteurs absents, quinze en tout :
+
+    0x2C, 0x30, 0x31, 0x32, 0x34, 0x36 … 0x3F
+
+Et les vecteurs système que Linux réserve vraiment :
+
+    0xEC, 0xF0, 0xF1, 0xF2, 0xF4, 0xF6 … 0xFF
+
+**Les mêmes, modulo 64.** Le noyau les pose avec `BTS` dans un tableau de
+256 bits, et ce cœur repliait le numéro dans le premier mot. Ils atterrissaient
+pile sur les vecteurs des interruptions ISA ; le noyau les croyait pris, ne
+posait plus de porte pour l'horloge, et attendait un battement qui ne pouvait
+plus arriver.
+
+La règle : quand la destination de `BT`/`BTS`/`BTR`/`BTC` est **en mémoire**,
+le numéro de bit n'est pas réduit au modulo. C'est la forme « chaîne de bits »
+du manuel : le numéro est signé, il désigne un bit n'importe où autour de
+l'adresse, et le processeur va chercher le mot qui le contient. La division du
+numéro par la largeur doit être arrondie **vers le bas**, ce que celle des
+entiers ne fait pas.
+
+L'oracle matériel porte maintenant trois programmes de chaîne de bits, numéros
+négatifs compris. Deux défauts en deux jours trouvés par un vrai noyau et non
+par l'oracle : les deux fois, c'était une forme que l'oracle ne produisait pas.
+C'est la leçon qui vaut d'être gardée — **un oracle ne prouve que ce qu'on lui
+donne à exécuter**, et un vrai noyau donne ce à quoi on n'avait pas pensé.
+
+### Le temps de l'invité
+
+Il vient du compteur d'instructions, à raison de douze par battement du 8253.
+C'est une décision, pas une mesure : brancher une vraie horloge rendrait les
+exécutions irreproductibles, et un instantané ne rendrait plus la machine telle
+quelle. `HLT` attend désormais au lieu de s'arrêter — avec un second compteur
+pour le temps qui passe, sans quoi l'horloge s'arrêterait avec le processeur et
+le réveil n'arriverait jamais.
+
+### Le reste, nommé par les arrêts
+
+`BSWAP`, `FXSAVE`/`FXRSTOR`, `LDMXCSR`/`STMXCSR`, `FWAIT`, `INT3` et `INT n`.
+Chacune est l'instruction sur laquelle la tentative s'arrêtait. `INT3` reprend
+**après** l'instruction et non dessus : c'est un appel, pas une faute, et les
+confondre fait boucler le gestionnaire sur son propre point d'arrêt.
+
+`FXSAVE` écrit les mots de contrôle que ce cœur tient vraiment et met le reste
+à zéro. Il n'a ni registres x87 ni XMM ; un invité qui *calculerait* en virgule
+flottante ne serait pas servi par ça, et c'est écrit à côté du code.
+
+### Ce qui est tenu
+
+1 453 tests Swift, 101 en Rust, 0 échec. Quinze nouveaux dans
+`X86LegacyDevicesTests`, sept de plus dans `X86KernelBricksTests`, et l'oracle
+matériel passé de 9 804 à **10 020 cas** contre le vrai processeur. Quinze
+sabotages, quinze attrapés — le dernier seulement après avoir écrit le test qui
+manquait, celui d'une ligne en demande dont le vecteur n'a pas encore de porte.
+
+Et la tentative de démarrage exige maintenant la bannière, l'ouverture de la
+console, l'activation du processeur **et** la panique faute de disque. C'est un
+contrat de bout en bout.
+
+---
+
 ## 2026-09-03, ~23h00 UTC — Linux démarre
 
 Maxime : « Vas plus vite que jamais ! ». #172 fusionné (sept vérifications
