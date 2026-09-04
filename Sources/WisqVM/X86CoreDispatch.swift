@@ -386,6 +386,9 @@ extension X86Core {
                 throw Fault.unsupported("le groupe 6 /\((instruction.modrm! >> 3) & 0x07)")
             }
 
+        case 0x05: try systemCall(length: instruction.length)
+        case 0x07: try systemReturn(wide: (instruction.rex ?? 0) & 0x08 != 0)
+
         case 0x0B: throw Fault.unsupported("UD2 : l'invité s'est arrêté lui-même")
 
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici

@@ -38,24 +38,32 @@ import XCTest
 /// l'`initramfs-lts` d'Alpine, mesuré le 4 septembre 2026 après le TSS :
 ///
 /// ```
-/// [   74.024812] random: crng init done
-/// [  152.571425] Freeing initrd memory: 25404K
-/// arrêt : unsupported("l'opcode 0F 05") à RIP 0x7f0f12ae386d
+/// [  156.951571] modprobe[405]: segfault at 27d7eb9f76ac0 …
+/// [  158.985105] Run /init as init process
+/// [  159.045459] init[1]: segfault at 37cde165f730c ip 00007f89e84be249
+///                sp 00007ffd96773770 error 5 in ld-musl-x86_64.so.1
+/// [  159.051870] Kernel panic — Attempted to kill init! exitcode=0x0000000b
 /// ```
 ///
-/// 2 712 254 858 instructions, 12 685 octets de journal, et un arrêt dont
-/// l'adresse commence par `0x7f` : c'est de l'espace utilisateur. `0F 05` est
-/// `SYSCALL` — le chargeur dynamique de musl demande son premier service au
-/// noyau.
+/// **Plus aucun opcode refusé** : le budget entier de 3,5 milliards
+/// d'instructions passe, le journal grandit de 12 685 à 17 225 octets, le
+/// noyau finit son initialisation et lance `/init`, qui fait de vrais appels
+/// système — `modprobe` tourne deux fois avant lui.
 ///
-/// **L'ordre des deux dernières briques n'était pas celui du plan.** Il disait
-/// « le TSS, puis SYSCALL » ; la machine a dit que `0F 6E` — `MOVD` entre un
-/// registre général et un registre SSE — venait d'abord, parce que la
-/// bibliothèque C se sert de SSE dans ses fonctions de chaîne **avant** son
-/// premier appel système. Les seize registres XMM écrits, dix instructions de
-/// plus ont suffi pour arriver à `SYSCALL`. Le plan avait raison sur le quoi
-/// et tort sur l'ordre ; c'est exactement ce qu'un test qui essaie et rapporte
-/// est là pour dire.
+/// **Et l'arrêt suivant est nommé, précisément.** Le programme meurt d'un
+/// SIGSEGV dans le chargeur de musl. Les octets que le noyau imprime —
+/// `<8b> 87 8c 00 00 00`, c'est-à-dire `mov 0x8c(%rdi),%eax` — se retrouvent à
+/// l'offset 0x4f209 de `ld-musl-x86_64.so.1`, au début de **`feof`**. Le
+/// `FILE *` qu'on lui passe vaut `0x00037cde165f7280` là où un pointeur de
+/// cette bibliothèque ressemble à `0x00007f89e85118a0`. Ce n'est donc plus une
+/// instruction qui manque : c'est une valeur qui se corrompt quelque part, et
+/// c'est la tranche suivante.
+///
+/// **L'ordre des trois dernières briques n'était pas celui du plan.** Il
+/// disait « le TSS, puis SYSCALL » ; la machine a dit que `MOVD` venait
+/// d'abord, parce que la bibliothèque C se sert de SSE dans ses fonctions de
+/// chaîne **avant** son premier appel système. Le plan avait raison sur le
+/// quoi et tort sur l'ordre, deux fois de suite.
 ///
 /// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
 /// jamais l'inverse. Voir `X86InterruptTests` pour la livraison d'exception,
@@ -166,7 +174,13 @@ final class X86BootAttemptTests: XCTestCase {
         }
         XCTAssertTrue(serial.contains("Freeing initrd memory"),
                       "avec un disque en mémoire, le noyau doit le déballer et le rendre")
-        XCTAssertEqual(core.privilege, 3,
-                       "et un programme doit tourner en anneau trois quand on s'arrête")
+        // **Ce qui remplace « on s'arrête en anneau trois ».** Cette
+        // assertion-là tenait tant que le cœur s'arrêtait *pendant* que le
+        // programme tournait ; depuis que plus aucun opcode ne manque, la
+        // course va plus loin et finit dans le noyau — donc en anneau zéro.
+        // Ce qu'il faut exiger n'est pas où l'on s'arrête, c'est que l'espace
+        // utilisateur ait bien été atteint, et le noyau le dit lui-même.
+        XCTAssertTrue(serial.contains("Run /init as init process"),
+                      "et passer la main à un programme")
     }
 }

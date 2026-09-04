@@ -8,6 +8,74 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~05h50 UTC — le programme fait de vrais appels, et meurt d'autre chose
+
+`SYSCALL` et `SYSRET`. La brique que le noyau avait nommée dix instructions
+après les registres XMM.
+
+### Pourquoi ce n'est pas une interruption
+
+L'ancienne façon d'appeler le noyau — `INT 0x80` — passait par l'IDT, le TSS et
+un cadre de pile complet. `SYSCALL` ne fait rien de tout ça : l'adresse de
+retour dans RCX, les drapeaux dans R11, le segment et l'adresse dans des MSR,
+et un saut. **Il ne change pas de pile** : RSP reste celui du programme, et
+c'est au noyau de le remplacer — d'où le `SWAPGS` en tête de son gestionnaire,
+qui lui rend d'abord sa zone par processeur pour qu'il puisse y lire la sienne.
+
+Trois pièges que les tests fixent. RCX porte l'adresse de la **suite** : la
+confondre avec celle de l'appel ferait boucler le programme sur son propre
+`SYSCALL`, à l'infini et en silence. Les sélecteurs sont forcés à l'anneau
+zéro, quoi qu'un noyau ait laissé traîner dans `STAR`. Et le retour n'emprunte
+pas le chemin de l'aller : seize de plus pour le code, huit pour la pile.
+
+### Le second endroit qui n'est pas prouvé contre la machine
+
+Il faut le dire plutôt que le laisser croire. Un `SYSCALL` dans le harnais de
+l'oracle entrerait dans le noyau de l'**hôte** au lieu de répondre ; un
+`SYSRET` partirait en anneau trois avec des sélecteurs qui n'existent pas. Le
+harnais mourrait sans rien rendre. C'est donc, après la division par zéro, le
+second endroit du cœur écrit contre le manuel et non contre le processeur. Dix
+tests à la main, sept sabotages, chacun faisant tomber le test nommé.
+
+### Ce que la machine dit maintenant
+
+**Plus aucun opcode refusé.** Le budget entier de 3,5 milliards d'instructions
+passe, le journal grandit de 12 685 à 17 225 octets, le noyau finit son
+initialisation et lance `/init`, qui fait de vrais appels système — `modprobe`
+tourne deux fois avant lui.
+
+Et l'arrêt suivant change de nature. Le programme meurt d'un SIGSEGV dans le
+chargeur de musl. Les octets que le noyau imprime — `<8b> 87 8c 00 00 00`,
+c'est-à-dire `mov 0x8c(%rdi),%eax` — se retrouvent à l'offset `0x4f209` de
+`ld-musl-x86_64.so.1`, au début de **`feof`**. Le `FILE *` qu'on lui passe vaut
+`0x00037cde165f7280` là où un pointeur de cette bibliothèque ressemble à
+`0x00007f89e85118a0`.
+
+**Ce n'est plus une instruction qui manque : c'est une valeur qui se corrompt
+quelque part.** La tranche suivante n'est donc pas « écrire une brique » mais
+« trouver un défaut », et ce sont deux métiers différents. Le premier se fait
+en lisant un arrêt ; le second demandera un témoin — un second émulateur qui
+exécute le même noyau et dise à quelle instruction les deux divergent.
+
+### Une assertion qui ne tenait que par accident
+
+« On s'arrête en anneau trois » ne valait que tant qu'un opcode manquait
+**pendant** que le programme tournait. Maintenant que la course va plus loin,
+elle finit dans le noyau, donc en anneau zéro. Ce qu'il faut exiger n'est pas
+où l'on s'arrête, c'est que l'espace utilisateur ait été atteint — et le noyau
+le dit lui-même : « Run /init as init process ».
+
+### Un test dont l'exemple avait fini par marcher
+
+`testAnOpcodeTheCoreDoesNotRunYetIsNamed` prenait `0F 05` comme exemple
+d'opcode non écrit. Il l'est maintenant. Un test dont l'exemple finit par
+marcher ne tient plus rien ; il pointe désormais une addition en virgule
+flottante, dont il est écrit ailleurs qu'elle attendra qu'on la demande.
+
+### Mesures
+
+1 480 tests Swift, zéro échec ; 246 côté site. Dix tests neufs, sept sabotages.
+
 ## 2026-09-04, ~05h20 UTC — les seize registres XMM, et un oracle qui a grandi
 
 Le noyau s'était arrêté sur `0F 6E` dans l'espace utilisateur : `MOVD` entre un
