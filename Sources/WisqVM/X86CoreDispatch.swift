@@ -314,8 +314,8 @@ extension X86Core {
                 throw Fault.unsupported("le groupe 5 /\((instruction.modrm! >> 3) & 0x07)")
             }
 
-        case 0xDB, 0xDD, 0xD9:
-            try minimalX87(instruction, opcode)
+        case 0xD8...0xDF:
+            try x87Instruction(instruction, opcode)
 
         case 0xFE, 0xFF:  // INC et DEC, qui ne touchent pas à la retenue
             let size = Self.operandSize(instruction, byteForm: opcode == 0xFE)

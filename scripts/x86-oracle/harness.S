@@ -57,6 +57,17 @@ wisq_x86_run:
     mov     wisq_state(%rip), %rdi
 
     // Les XMM d'abord, tant que RDI porte encore le pointeur d'état.
+    // **La pile x87, chargée par FRSTOR.** L'image de 108 octets vit dans les
+    // cases qui suivent les XMM ; c'est le pilote qui la fabrique, parce
+    // qu'assembler un mot d'étiquettes en assembleur ne rendrait service à
+    // personne.
+    //
+    // `FRSTOR` ne touche ni aux drapeaux, ni aux registres généraux, ni aux
+    // XMM : c'est ce qui permet de l'ajouter sans rien changer aux sept corpus
+    // déjà figés. `FNSAVE` au retour a la même propriété, et il n'attend pas
+    // les exceptions — ce que ferait `FSAVE`, qui pourrait piéger.
+    frstor  49*8(%rdi)
+
     movdqu  17*8(%rdi), %xmm0
     movdqu  19*8(%rdi), %xmm1
     movdqu  21*8(%rdi), %xmm2
@@ -113,6 +124,7 @@ wisq_return:
     mov     %r13, wisq_out+13*8(%rip)
     mov     %r14, wisq_out+14*8(%rip)
     mov     %r15, wisq_out+15*8(%rip)
+    fnsave  wisq_out+49*8(%rip)
     movdqu  %xmm0, wisq_out+17*8(%rip)
     movdqu  %xmm1, wisq_out+19*8(%rip)
     movdqu  %xmm2, wisq_out+21*8(%rip)
@@ -147,7 +159,7 @@ wisq_return:
     // Recopier dans le tampon de l'appelant.
     mov     wisq_state(%rip), %rdi
     leaq    wisq_out(%rip), %rsi
-    mov     $49, %rcx
+    mov     $63, %rcx
 1:  mov     (%rsi), %rax
     mov     %rax, (%rdi)
     add     $8, %rsi
@@ -171,5 +183,11 @@ wisq_code:         .quad 0
 wisq_host_rsp:     .quad 0
 wisq_host_rbp:     .quad 0
 wisq_return_slot:  .quad 0
-wisq_out:          .fill 49, 8, 0
+// Quarante-neuf cases pour les registres, plus quatorze pour l'image x87 que
+// `FNSAVE` y dépose — 108 octets arrondis à la case. Le premier jet avait
+// gardé les quarante-neuf : `FNSAVE` écrivait alors au-delà de la fin de la
+// section, et le harnais mourait d'un défaut de segmentation. Les sept corpus
+// se régénéraient quand même, parce que ce qui suivait n'était plus lu ; c'est
+// le premier cas qui a demandé la pile x87 qui l'a fait tomber.
+wisq_out:          .fill 63, 8, 0
     .section .note.GNU-stack,"",@progbits
