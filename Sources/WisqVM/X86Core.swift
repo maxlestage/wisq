@@ -92,6 +92,10 @@ public struct X86Core: @unchecked Sendable {
     public var previousRip: UInt64 = 0
     /// Les démarrages de programmes déjà vus, et les espaces d'adressage qui
     /// les portent. Voir `X86ProcessStartWatch.swift`.
+    /// Les sauts vers une page absente. Voir `X86LostJumpWatch.swift`.
+    public var lostJumps: [LostJump] = []
+    var lostJumpNext = 0
+    public internal(set) var lostJumpTally: UInt64 = 0
     public var processStarts: [ProcessStart] = []
     var processStartNext = 0
     var processStartTally: UInt64 = 0

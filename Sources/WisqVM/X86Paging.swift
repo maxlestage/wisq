@@ -112,6 +112,11 @@ extension X86Core {
             // programme n'avait rien fait de mal ; on avait juste oublié de
             // dire qu'il était le programme.
             pageFaultErrorCode = how.errorCode | (privilege == 3 ? 1 << 2 : 0)
+            // Un saut d'anneau trois vers une page qu'aucune table ne porte :
+            // c'est le seul endroit où l'on sait encore d'où l'on venait.
+            if canonicalWatchArmed && privilege == 3 && how == .fetch {
+                noteLostJump(at)
+            }
             throw Fault.pageFault(at)
         }
         // **La page est là, mais l'a-t-on le droit ?** Le code d'erreur porte

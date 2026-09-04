@@ -172,6 +172,7 @@ final class X86BootAttemptTests: XCTestCase {
         let brokenSaid = Self.kept(core.brokenReturns.count,
                                    of: core.brokenReturnTally)
         let started = Self.kept(core.processStarts.count, of: core.processStartsSeen)
+        let lost = Self.kept(core.lostJumps.count, of: core.lostJumpTally)
 
         // Le rapport sort **section par section**, et pas d'un seul `print`.
         //
@@ -202,6 +203,7 @@ final class X86BootAttemptTests: XCTestCase {
             retours sans promesse : \(unmatched)
             retours rompus        : \(brokenSaid)
             programmes démarrés   : \(started)
+            sauts dans le vide    : \(lost)
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             """)
 
@@ -223,6 +225,7 @@ final class X86BootAttemptTests: XCTestCase {
              core.addressTouched.filter { $0.retired != 0 }.map { $0.description })
         say("mouvements de pile gardés : \(core.stackMoves.count)")
         list("retours rompus", core.returnsBroken.map { $0.description })
+        list("sauts dans le vide", core.jumpsLost.map { $0.description })
         list("programmes démarrés", core.processesStarted.map { $0.description })
         list("adresses non canoniques", core.nonCanonicalSeen.map { $0.description })
         if !serial.isEmpty { say("\n" + serial) }
