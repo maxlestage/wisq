@@ -151,7 +151,7 @@ final class X86BootAttemptTests: XCTestCase {
             port série            : \(core.serialOutput.count) octets
             appels par la mémoire : \(core.indirectCalls.isEmpty ? "aucun"
                 : "\(core.indirectCalls.count) distincts\n"
-                    + core.indirectCalls.prefix(24).map { "  " + $0.description }
+                    + core.indirectCalls.map { "  " + $0.description }
                         .joined(separator: "\n"))
             retours rompus : \(core.brokenReturns.isEmpty ? "aucun"
                 : "\n" + core.brokenReturns.map { "  " + $0.description }
