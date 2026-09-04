@@ -53,6 +53,9 @@ extension X86Core {
         // donc il faut ajouter sa longueur ici. La confondre avec l'adresse
         // courante ferait boucler le programme sur son propre appel, à
         // l'infini et sans rien signaler.
+        if canonicalWatchArmed, privilege == 3 {
+            leavingRingThree(at: rip, cause: .systemCall)
+        }
         registers[1] = rip &+ UInt64(length)
         registers[11] = flags | Flag.reserved
         // Les drapeaux que le noyau a demandé d'effacer. Le masque est à lui :

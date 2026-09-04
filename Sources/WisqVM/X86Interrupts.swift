@@ -174,6 +174,12 @@ extension X86Core {
         let stack = registers[4]
         let stackSelector = segments[2]
         let code = segments[1]
+        if canonicalWatchArmed, privilege == 3 {
+            // Une faute porte un code d'erreur, une interruption de matériel
+            // n'en porte pas : c'est ce qui les distingue ici.
+            leavingRingThree(at: rip, cause: Self.vectorsWithErrorCode.contains(vector)
+                ? .fault : .interrupt)
+        }
         // Et c'est seulement après l'avoir notée qu'on peut en prendre une
         // autre. Le sélecteur de pile devient nul en même temps, comme le fait
         // le processeur : en mode long il n'a plus de base ni de limite, et le
