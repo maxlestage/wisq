@@ -66,6 +66,30 @@ final class X86WaitingBudgetTests: XCTestCase {
         XCTAssertEqual(done, 4, "trois nop et le hlt : le budget n'a pas payé l'attente")
     }
 
+    /// **Une machine endormie doit pouvoir être réveillée.** C'est le défaut
+    /// que l'allocation d'attente a failli introduire, et que les trois tests
+    /// précédents ne voyaient pas : ils comptaient les tours sans jamais
+    /// vérifier que l'horloge servait encore à quelque chose.
+    ///
+    /// Le service du matériel est cadencé sur les instructions **exécutées**.
+    /// Une machine au repos n'en exécute aucune, donc ce compteur se fige — et
+    /// s'il ne tombait pas juste au moment de l'endormissement, plus rien ne
+    /// regardait l'horloge. Elle avançait, personne ne la lisait.
+    ///
+    /// Un `nop` avant le `hlt` suffit à le montrer : il décale le compteur
+    /// d'un cran, et ça change tout.
+    func testASleepingMachineIsStillWoken() throws {
+        let memory = X86Memory(size: 0x1000, base: 0)
+        try memory.load([0x90, 0xF4], at: 0)  // nop, puis hlt
+        var core = X86Core(registers: [UInt64](repeating: 0, count: 16),
+                           rip: 0, memory: memory)
+        core.flags |= X86Core.Flag.interrupt
+        core.devices.reload = 4  // une horloge qui bat vite
+        _ = try core.run(budget: 1000, waiting: 500)
+        XCTAssertGreaterThan(core.devices.raised, 0,
+                             "l'horloge a battu, et quelqu'un l'a lue")
+    }
+
     /// Une machine qui ne peut **pas** être réveillée s'arrête tout de suite,
     /// allocation ou pas : sans horloge, l'attente serait éternelle.
     func testAMachineThatCannotBeWokenStopsAtOnce() throws {

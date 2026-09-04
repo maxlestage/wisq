@@ -51,7 +51,7 @@ jailbreak or a special entitlement.
 ## Status
 
 <<<<<<< HEAD
-Everything below is implemented, tested (1737 tests across Swift and Rust) and
+Everything below is implemented, tested (1738 tests across Swift and Rust) and
 =======
 Everything below is implemented, tested (1716 tests across Swift and Rust) and
 >>>>>>> origin/claude/concurrent-utm-app-stores-ofjujj

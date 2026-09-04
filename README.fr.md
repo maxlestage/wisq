@@ -83,7 +83,7 @@ n'est pas implémenté (voir `docs/ROADMAP.md`).
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
 <<<<<<< HEAD
-leurs tests passent (1737 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (1738 avec ceux du Rust) — dont un bout-à-bout où le vrai
 =======
 leurs tests passent (1716 avec ceux du Rust) — dont un bout-à-bout où le vrai
 >>>>>>> origin/claude/concurrent-utm-app-stores-ofjujj

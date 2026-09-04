@@ -378,6 +378,18 @@ public struct X86Core: @unchecked Sendable {
                 // un arrêt, pas une attente, et le dire tout de suite vaut
                 // mieux que de brûler le budget à ne rien faire.
                 guard devicesArmed && flags & Flag.interrupt != 0 else { break }
+                // **Au repos, on interroge le matériel à chaque tour.** Le
+                // service est cadencé sur les instructions *exécutées*, et une
+                // machine endormie n'en exécute aucune : le compteur reste
+                // figé, et si sa valeur ne tombait pas juste au moment de
+                // l'endormissement, plus personne ne regardait l'horloge. Elle
+                // avançait — `ticks` compte aussi les tours d'attente — mais
+                // rien ne venait la lire, et la machine dormait pour toujours.
+                //
+                // Il n'y a de toute façon rien d'autre à faire pendant ce
+                // tour-là, donc ça ne coûte rien.
+                try serviceInterrupts()
+                if !halted { continue }
                 idled &+= 1
                 if let waiting {
                     waited += 1
