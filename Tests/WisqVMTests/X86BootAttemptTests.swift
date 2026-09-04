@@ -139,7 +139,22 @@ final class X86BootAttemptTests: XCTestCase {
         }
 
         let serial = String(decoding: core.serialOutput, as: UTF8.self)
-        print("""
+
+        // Le rapport sort **section par section**, et pas d'un seul `print`.
+        //
+        // Il l'a été, et il se faisait couper à seize kilo-octets pile : la
+        // liste des appels indirects s'arrêtait au milieu d'une ligne et tout
+        // ce qui la suivait — les passages d'anneau, les retours, les
+        // programmes démarrés, les adresses non canoniques — disparaissait
+        // sans un mot. Un rapport tronqué se lit exactement comme un rapport
+        // vide, et c'est la sixième fois aujourd'hui qu'un instrument dit
+        // « rien » quand il veut dire « je n'ai pas pu parler ».
+        //
+        // Le résumé passe donc en tête : quoi qu'il arrive aux listes, les
+        // nombres, eux, sortent.
+        func say(_ text: String) { print(text) }
+
+        say("""
 
             === tentative de démarrage x86-64 ===
             instructions retirées : \(core.retired)
@@ -149,29 +164,34 @@ final class X86BootAttemptTests: XCTestCase {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
             port série            : \(core.serialOutput.count) octets
-            appels par la mémoire : \(core.indirectCalls.isEmpty ? "aucun"
-                : "\(core.indirectCalls.count) distincts\n"
-                    + core.indirectCalls.map { "  " + $0.description }
-                        .joined(separator: "\n"))
-            passages d'anneau : \(core.ringPassages.description)\(core.ringTrips.isEmpty
-                ? "" : "\n" + core.ringTrips.map { "  " + $0.description }
-                    .joined(separator: "\n"))
-            retours sans promesse : \(core.unmatchedReturns.isEmpty ? "aucun"
-                : "\n" + core.unmatchedReturns.map { "  " + $0.description }
-                    .joined(separator: "\n"))
-            retours rompus : \(core.brokenReturns.isEmpty ? "aucun"
-                : "\n" + core.brokenReturns.map { "  " + $0.description }
-                    .joined(separator: "\n"))
-            programmes démarrés : \(core.processStarts.isEmpty ? "aucun"
-                : "\n" + core.processStarts.map { "  " + $0.description }
-                    .joined(separator: "\n"))
-            adresses non canoniques : \(core.nonCanonicalSeen.isEmpty ? "aucune"
-                : "\n" + core.nonCanonicalSeen.map { "  " + $0.description }
-                    .joined(separator: "\n"))
-            \(serial.isEmpty ? "" : serial)
-            =====================================
-
+            appels par la mémoire : \(core.indirectCalls.count) distincts
+            passages d'anneau     : \(core.ringPassages.description)
+            retours sans promesse : \(core.unmatchedReturns.count)
+            retours rompus        : \(core.brokenReturns.count)
+            programmes démarrés   : \(core.processStarts.count)
+            adresses non canoniques : \(core.nonCanonicalSeen.count)
             """)
+
+        func list(_ title: String, _ lines: [String]) {
+            guard !lines.isEmpty else { return }
+            say("\n\(title) :")
+            // Par paquets : un seul écrit trop gros se fait couper.
+            for start in stride(from: 0, to: lines.count, by: 32) {
+                say(lines[start..<min(start + 32, lines.count)]
+                    .map { "  " + $0 }.joined(separator: "\n"))
+            }
+        }
+
+        list("appels par la mémoire", core.indirectCalls.map { $0.description })
+        list("passages d'anneau qui décalent la pile",
+             core.ringTrips.map { $0.description })
+        list("retours sans promesse", core.unmatchedReturns.map { $0.description })
+        say("mouvements de pile gardés : \(core.stackMoves.count)")
+        list("retours rompus", core.brokenReturns.map { $0.description })
+        list("programmes démarrés", core.processStarts.map { $0.description })
+        list("adresses non canoniques", core.nonCanonicalSeen.map { $0.description })
+        if !serial.isEmpty { say("\n" + serial) }
+        say("\n=====================================\n")
 
         XCTAssertGreaterThan(core.retired, 0, "au moins une instruction doit s'exécuter")
         // Avec le budget entier, la bannière est un **contrat** : c'est la

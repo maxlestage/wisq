@@ -53,21 +53,48 @@ final class X86VectorTests: XCTestCase {
         }
     }
 
-    /// **Une forme scalaire est refusée, et nommée.** `MOVSS` et `MOVSD`
-    /// partagent leurs octets avec `MOVUPS` — seul le préfixe les sépare — et
-    /// elles n'écrivent qu'une partie du registre. Les confondre écraserait ce
-    /// que le programme voulait garder, sans rien signaler ; le refus, lui,
-    /// dira quelle brique poser le jour où le noyau la demandera.
-    func testAScalarMoveIsRefusedRatherThanTakenForItsWideNeighbour() throws {
-        for prefix in [UInt8(0xF3), UInt8(0xF2)] {
+    /// **Le jour est venu, et le refus est devenu une règle.**
+    ///
+    /// Cette place tenait l'inverse : `MOVSS` et `MOVSD` partagent leurs octets
+    /// avec `MOVUPS` — seul le préfixe les sépare — et le cœur les refusait
+    /// plutôt que de les confondre avec leur voisine large. Le refus disait
+    /// quelle brique poser le jour où la machine la demanderait. Elle l'a
+    /// demandée : une fois `/init` vivant et le SSE2 entier en place, la course
+    /// s'arrête sur `0F 11` préfixé, dans le binaire d'Alpine.
+    ///
+    /// Ce que le test exige maintenant est **ce que le processeur fait**, et
+    /// c'est une règle qui n'appartient qu'à ces deux instructions : la source
+    /// décide. Depuis un **registre**, seuls les bits utiles bougent et le
+    /// reste de la destination est laissé tel quel. Depuis la **mémoire**, tout
+    /// le reste est mis à zéro. L'oracle le tient sur 928 cas ; ici on fixe le
+    /// cas de registre, parce que c'est le seul où une lecture rapide se
+    /// tromperait.
+    func testAScalarMoveFromARegisterLeavesTheRestAlone() throws {
+        for (prefix, kept) in [(UInt8(0xF3), UInt64(0x1111_0000_3333)),
+                               (UInt8(0xF2), UInt64(0x3333_0000_3333))] {
             let ram = try Self.memory([prefix, 0x0F, 0x10, 0xC1])  // movss/movsd %xmm1,%xmm0
             var core = Self.core(ram)
-            core.setVector(0, 0x1111, 0x2222)
-            core.setVector(1, 0x3333, 0x4444)
-            XCTAssertThrowsError(try core.run(budget: 1), "préfixe \(prefix)")
-            XCTAssertEqual(core.vectors[0], 0x1111, "et rien n'a été écrit avant de refuser")
-            XCTAssertEqual(core.vectors[1], 0x2222)
+            core.setVector(0, 0x1111_0000_1111, 0x2222)
+            core.setVector(1, 0x3333_0000_3333, 0x4444)
+            _ = try core.run(budget: 1)
+            XCTAssertEqual(core.vectors[0], kept, "préfixe \(prefix)")
+            XCTAssertEqual(core.vectors[1], 0x2222, "le haut ne bouge pas depuis un registre")
         }
+    }
+
+    /// Et depuis la mémoire, la même instruction efface tout le reste. Les
+    /// deux moitiés de la règle sont dans le même fichier parce que c'est leur
+    /// écart qui est la règle.
+    func testAScalarMoveFromMemoryClearsEverythingElse() throws {
+        // movss (%rsi),%xmm0
+        let ram = try Self.memory([0xF3, 0x0F, 0x10, 0x06])
+        try ram.write(0x2000, 8, 0x0123_4567_89AB_CDEF)
+        var core = Self.core(ram)
+        core.registers[6] = 0x2000
+        core.setVector(0, 0x1111_1111_1111_1111, 0x2222_2222_2222_2222)
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.vectors[0], 0x89AB_CDEF, "trente-deux bits lus")
+        XCTAssertEqual(core.vectors[1], 0, "et tout le reste effacé")
     }
 
     /// L'arithmétique en virgule flottante est refusée de la même façon.
