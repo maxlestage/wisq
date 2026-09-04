@@ -153,6 +153,9 @@ final class X86BootAttemptTests: XCTestCase {
                 : "\(core.indirectCalls.count) distincts\n"
                     + core.indirectCalls.map { "  " + $0.description }
                         .joined(separator: "\n"))
+            passages d'anneau qui décalent la pile : \(core.ringTrips.isEmpty ? "aucun"
+                : "\n" + core.ringTrips.map { "  " + $0.description }
+                    .joined(separator: "\n"))
             retours sans promesse : \(core.unmatchedReturns.isEmpty ? "aucun"
                 : "\n" + core.unmatchedReturns.map { "  " + $0.description }
                     .joined(separator: "\n"))
