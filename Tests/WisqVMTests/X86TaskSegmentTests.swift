@@ -102,7 +102,9 @@ final class X86TaskSegmentTests: XCTestCase {
     func testANullSelectorIsRefusedRatherThanRead() throws {
         let ram = Self.machine()
         var core = try Self.core(ram)
-        XCTAssertThrowsError(try core.loadTaskRegister(0))
+        XCTAssertThrowsError(try core.loadTaskRegister(0)) { error in
+            XCTAssertEqual(error as? X86Core.Fault, .unsupported("un LTR sur le sélecteur nul"))
+        }
     }
 
     /// Et un sélecteur qui déborde de la GDT aussi.
@@ -110,7 +112,9 @@ final class X86TaskSegmentTests: XCTestCase {
         let ram = Self.machine()
         var core = try Self.core(ram)
         core.descriptorLimits[0] = 0x3F
-        XCTAssertThrowsError(try core.loadTaskRegister(0x40))
+        XCTAssertThrowsError(try core.loadTaskRegister(0x40)) { error in
+            XCTAssertEqual(error as? X86Core.Fault, .unsupported("un LTR hors de la GDT"))
+        }
     }
 
     /// `STR` rend ce que `LTR` a mis. Sans lui, l'écrire ne serait tenu par
@@ -236,7 +240,15 @@ final class X86TaskSegmentTests: XCTestCase {
         core.taskBase = 0
         core.taskLimit = 0
         try Self.installGate(ram, vector: 14, target: 0x5000)
-        XCTAssertThrowsError(try core.enter(14, errorCode: 0))
+        // **La faute exacte, pas « une faute ».** Le sabotage a montré que ce
+        // test passait sans la garde : sans elle, le cœur lit une pile à
+        // l'adresse quatre, y trouve zéro, et l'empilement sort de la mémoire
+        // — donc il lève quand même, mais un `outsideMemory` qui envoie
+        // chercher du côté de la RAM au lieu du registre de tâche.
+        XCTAssertThrowsError(try core.enter(14, errorCode: 0)) { error in
+            XCTAssertEqual(error as? X86Core.Fault,
+                           .unsupported("un changement de pile sans TSS chargé"))
+        }
     }
 
     /// Un TSS trop court pour porter ses piles est refusé de même : lire
@@ -246,7 +258,10 @@ final class X86TaskSegmentTests: XCTestCase {
         var core = try Self.core(ram, privilege: 3)
         core.taskLimit = 0x20
         try Self.installGate(ram, vector: 14, target: 0x5000)
-        XCTAssertThrowsError(try core.enter(14, errorCode: 0))
+        XCTAssertThrowsError(try core.enter(14, errorCode: 0)) { error in
+            XCTAssertEqual(error as? X86Core.Fault,
+                           .unsupported("un changement de pile sans TSS chargé"))
+        }
     }
 
     // MARK: - L'aller-retour complet

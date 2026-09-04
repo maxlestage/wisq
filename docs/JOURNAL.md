@@ -66,11 +66,29 @@ donc pas passer dans la configuration où il va le plus loin. Deux fins
 maintenant, une par machine : sans disque en mémoire, la panique ; avec, le
 déballage de l'initrd **et** un programme en anneau trois au moment de l'arrêt.
 
-### Deux tests qui passaient pour la mauvaise raison
+### Trois tests qui passaient pour la mauvaise raison
 
-Les miens, cette fois, et attrapés par le sabotage : mon échafaudage installait
-un TSS avant de rendre le cœur, donc il écrasait celui que le test venait de
-poser. `LTR` était mesuré sur la mauvaise base et disait quand même vrai.
+Les miens, cette fois, et tous attrapés par le sabotage.
+
+Deux d'abord : mon échafaudage installait un TSS avant de rendre le cœur, donc
+il écrasait celui que le test venait de poser. `LTR` était mesuré sur la
+mauvaise base et disait quand même vrai.
+
+Le troisième est plus intéressant. « Un changement de pile sans registre de
+tâche est refusé » passait **sans la garde** : le cœur lit alors une pile à
+l'adresse quatre, y trouve zéro, et l'empilement sort de la mémoire — donc il
+lève quand même, mais un `outsideMemory` qui envoie chercher du côté de la RAM
+au lieu du registre de tâche. `XCTAssertThrowsError` sans regarder l'erreur ne
+tient que « quelque chose s'est mal passé », ce qui est presque toujours vrai
+quand on casse du code. Les quatre refus de cette tranche nomment maintenant la
+faute exacte qu'ils attendent.
+
+### Mesures
+
+Quinze tests neufs, neuf sabotages — tous attrapés, dont celui qui a révélé le
+test ci-dessus. Suite complète : 1 464 tests Swift, zéro échec ; 246 côté site.
+Le démarrage du vrai noyau, avec initrd, passe maintenant : 2 712 254 848
+instructions en trois minutes.
 
 ## 2026-09-04, ~03h50 UTC — la sélection automatique a maintenant deux destinations
 
