@@ -59,6 +59,25 @@ extension X86Core {
         case 0xC3:
             rip = try pop(8)
             jumped = true
+        case 0x9B:
+            // FWAIT : attendre que le coprocesseur ait fini, et prendre son
+            // exception s'il en a une. Ce cœur n'a pas de coprocesseur qui
+            // calcule, donc il n'y a jamais rien à attendre ni à prendre.
+            break
+
+        case 0xCC, 0xCD:  // INT3 et INT n : une interruption demandée par le code
+            let vector: UInt8 = opcode == 0xCC
+                ? 3 : UInt8(truncatingIfNeeded: instruction.immediate)
+            // Une interruption **logicielle** reprend **après** l'instruction,
+            // pas dessus : c'est un appel, pas une faute. Avancer RIP d'abord
+            // est donc la seule façon d'empiler la bonne adresse.
+            rip &+= UInt64(instruction.length)
+            guard try enter(vector, errorCode: 0) else {
+                rip &-= UInt64(instruction.length)
+                throw Fault.unsupported("INT \(vector) sans porte pour ce vecteur")
+            }
+            jumped = true
+
         case 0xCF:  // IRETQ : le retour d'un gestionnaire d'exception
             guard let rex = instruction.rex, rex & 0x08 != 0 else {
                 throw Fault.unsupported("IRET hors du mode 64 bits")
@@ -374,12 +393,49 @@ extension X86Core {
         case 0x1F:  // le NOP long, celui que les compilateurs sèment partout
             _ = try decodeFields(instruction)
 
-        case 0xAE:  // les barrières mémoire, et les sauvegardes d'état FPU
+        case 0xAE:  // les barrières mémoire, et l'état de la virgule flottante
             let extension_ = (instruction.modrm ?? 0) >> 3 & 0x07
-            // MFENCE, LFENCE, SFENCE : un seul cœur, rien à ordonner. Les
-            // formes en mémoire du même opcode sauvegardent l'état FPU, et
-            // celles-là ne sont pas écrites : elles sont refusées, pas ignorées.
-            guard (instruction.modrm ?? 0) >> 6 == 0b11 && extension_ >= 5 else {
+            guard (instruction.modrm ?? 0) >> 6 != 0b11 else {
+                // MFENCE, LFENCE, SFENCE : un seul cœur, rien à ordonner.
+                guard extension_ >= 5 else {
+                    throw Fault.unsupported("0F AE /\(extension_) en registre")
+                }
+                return
+            }
+            let fields = try decodeFields(instruction)
+            guard let memory else { throw Fault.unsupported("0F AE sans mémoire") }
+            switch extension_ {
+            case 0:
+                // **FXSAVE, et ce qu'il ne sauvegarde pas ici.** La zone fait
+                // 512 octets et porte, sur un vrai processeur, les huit
+                // registres x87 et les seize XMM. Ce cœur n'en a aucun : il
+                // écrit les mots de contrôle qu'il tient vraiment et met le
+                // reste à zéro. Un invité qui **calculerait** en virgule
+                // flottante ne serait pas servi par ça — mais rien ici ne
+                // calcule en virgule flottante, et un noyau x86-64 range cette
+                // zone dès son démarrage sans jamais demander à `CPUID` si
+                // elle existe, parce que l'architecture la lui garantit.
+                for offset in stride(from: 0, to: 512, by: 8) {
+                    try memory.write(try translate(lastAddress &+ UInt64(offset), .write), 8, 0)
+                }
+                try memory.write(try translate(lastAddress, .write), 2, UInt64(x87Control))
+                try memory.write(try translate(lastAddress &+ 2, .write), 2, UInt64(x87Status))
+                try memory.write(try translate(lastAddress &+ 24, .write), 4, UInt64(mxcsr))
+                // Le masque des bits de MXCSR qu'un processeur accepte. Zéro
+                // voudrait dire « aucun », et Linux le prend au mot.
+                try memory.write(try translate(lastAddress &+ 28, .write), 4, 0xFFFF)
+            case 1:
+                x87Control = UInt16(truncatingIfNeeded:
+                    try memory.read(try translate(lastAddress), 2))
+                x87Status = UInt16(truncatingIfNeeded:
+                    try memory.read(try translate(lastAddress &+ 2), 2))
+                mxcsr = UInt32(truncatingIfNeeded:
+                    try memory.read(try translate(lastAddress &+ 24), 4))
+            case 2:  // LDMXCSR
+                mxcsr = UInt32(truncatingIfNeeded: try readRM(fields, 4))
+            case 3:  // STMXCSR
+                try writeRM(fields, 4, UInt64(mxcsr))
+            default:
                 throw Fault.unsupported("0F AE /\(extension_) en mémoire")
             }
 
@@ -403,8 +459,32 @@ extension X86Core {
         case 0xA3, 0xAB, 0xB3, 0xBB:  // BT, BTS, BTR, BTC — le bit est nommé par un registre
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
-            let offset = readReg(fields, size) & UInt64(8 * size - 1)
-            try bit(Int((opcode >> 3) & 0x03), fields, size, offset)
+            // **Le décalage n'est pas borné quand la destination est en
+            // mémoire.** C'est la forme « chaîne de bits » : le numéro est
+            // signé, il désigne un bit n'importe où autour de l'adresse, et le
+            // processeur va chercher le mot qui le contient. Le réduire au
+            // modulo, comme pour un registre, replierait tous les bits d'un
+            // tableau de bits dans son premier mot.
+            //
+            // C'est ce qui arrivait, et un vrai noyau l'a montré : Linux tient
+            // ses vecteurs d'interruption réservés dans un tableau de 256
+            // bits, et posait ceux de 0xEC à 0xFF avec cette instruction. Ils
+            // atterrissaient dans le premier mot, donc aux numéros 44 et 48 à
+            // 63 — c'est-à-dire pile sur les vecteurs des interruptions ISA,
+            // que le noyau croyait alors déjà pris. Il ne posait plus de porte
+            // pour l'horloge, et attendait un battement qui ne pouvait plus
+            // arriver.
+            let raw = Int64(bitPattern: readReg(fields, size))
+            let bits = Int64(8 * size)
+            if fields.mod != 0b11 {
+                // La division est **arrondie vers le bas**, pour que les
+                // numéros négatifs descendent d'un mot au lieu de remonter.
+                let word = raw >= 0 ? raw / bits : ((raw &+ 1) / bits) &- 1
+                lastAddress = lastAddress &+ UInt64(bitPattern: word &* Int64(size))
+            }
+            let offset = UInt64(bitPattern: raw &- (raw >= 0
+                ? (raw / bits) &* bits : (((raw &+ 1) / bits) &- 1) &* bits))
+            try bit(Int((opcode >> 3) & 0x03), fields, size, offset & UInt64(bits - 1))
 
         case 0xBA:  // le groupe 8 : les mêmes, avec un immédiat
             let size = Self.operandSize(instruction, byteForm: false)
@@ -432,6 +512,16 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             writeReg(fields, size, multiplyTruncating(readReg(fields, size),
                                                       try readRM(fields, size), size))
+
+        case 0xC8...0xCF:  // BSWAP : renverser les octets d'un registre
+            let size = Self.operandSize(instruction, byteForm: false)
+            let index = Int(((instruction.rex ?? 0) & 0x01) << 3 | (opcode & 0x07))
+            let value = read(index, size, highByte: false)
+            // En trente-deux bits, le renversement porte sur ces quatre
+            // octets-là ; renverser les huit puis tronquer rendrait zéro.
+            write(index, size, highByte: false, size == 8
+                ? value.byteSwapped
+                : UInt64(UInt32(truncatingIfNeeded: value).byteSwapped))
 
         case 0xB0, 0xB1:  // CMPXCHG
             // La primitive dont toutes les serrures du noyau sont faites.
@@ -606,14 +696,141 @@ extension X86Core {
     static let serialBase: UInt16 = 0x3F8
 
     mutating func portWrite(_ port: UInt16, _ value: UInt64) {
-        if port == Self.serialBase { serialOutput.append(UInt8(value & 0xFF)) }
+        let byte = UInt8(truncatingIfNeeded: value)
+        switch port {
+        case Self.serialBase:
+            serialOutput.append(byte)
+
+        // Le 8259 maître. La commande, d'abord : le bit 4 lance une
+        // initialisation, et les trois octets qui suivent arrivent par le port
+        // de données — sans compter les étapes, le premier serait pris pour un
+        // masque.
+        case 0x20:
+            if byte & 0x10 != 0 {
+                devices.primary.initialisationStep = 1
+            } else if byte & 0x08 != 0 {
+                devices.primary.readsService = byte & 0x01 != 0
+            } else if byte & 0x20 != 0 {
+                // Fin d'interruption : la ligne la plus prioritaire en service
+                // cesse de l'être.
+                let service = devices.primary.service
+                if service != 0 { devices.primary.service &= ~(1 << service.trailingZeroBitCount) }
+            }
+        case 0x21:
+            switch devices.primary.initialisationStep {
+            case 1:
+                devices.primary.vectorBase = byte & 0xF8
+                devices.primary.initialisationStep = 2
+            case 2, 3:
+                devices.primary.initialisationStep += 1
+                if devices.primary.initialisationStep > 3 { devices.primary.initialisationStep = 0 }
+            default:
+                devices.primary.mask = byte
+            }
+        case 0xA0:
+            if byte & 0x10 != 0 { devices.secondary.initialisationStep = 1 }
+        case 0xA1:
+            if devices.secondary.initialisationStep != 0 {
+                if devices.secondary.initialisationStep == 1 {
+                    devices.secondary.vectorBase = byte & 0xF8
+                }
+                devices.secondary.initialisationStep += 1
+                if devices.secondary.initialisationStep > 3 {
+                    devices.secondary.initialisationStep = 0
+                }
+            } else {
+                devices.secondary.mask = byte
+            }
+
+        // Le 8253. Seul le canal zéro bat ; les autres se laissent écrire sans
+        // rien produire, ce qui suffit à ne pas arrêter un noyau qui les
+        // programme pour le haut-parleur.
+        case 0x61:
+            // Le port B : le bit 0 ouvre la porte du canal deux. C'est par là
+            // que Linux étalonne son compteur de cycles — il lance le canal,
+            // puis attend que le bit 5 lui dise que c'est fini.
+            let opened = byte & 0x01 != 0
+            if opened && !devices.speakerGate { devices.speakerStartedAt = ticks }
+            devices.speakerGate = opened
+        case 0x42:
+            if devices.speakerWriteHighNext {
+                devices.speakerReload = (devices.speakerReload & 0x00FF) | (UInt16(byte) << 8)
+                devices.speakerWriteHighNext = false
+                devices.speakerStartedAt = ticks
+            } else {
+                devices.speakerReload = (devices.speakerReload & 0xFF00) | UInt16(byte)
+                devices.speakerWriteHighNext = true
+            }
+        case 0x43 where byte >> 6 == 2:
+            devices.speakerWriteHighNext = false
+            devices.speakerReadHighNext = false
+        case 0x43:
+            guard byte >> 6 == 0 else { return }
+            if (byte >> 4) & 0x03 == 0 {
+                // Commande de verrouillage : figer le compte pour qu'une
+                // lecture en deux octets voie la **même** valeur deux fois.
+                devices.latched = devices.count(at: ticks)
+                devices.readHighNext = false
+            } else {
+                devices.writeHighNext = false
+                devices.readHighNext = false
+                devices.latched = nil
+            }
+        case 0x40:
+            if devices.writeHighNext {
+                devices.reload = (devices.reload & 0x00FF) | (UInt16(byte) << 8)
+                devices.writeHighNext = false
+                // Un rechargement repart de maintenant, et ce qui était dû
+                // avant ne l'est plus.
+                devices.reloadedAt = ticks
+                devices.raised = 0
+            } else {
+                devices.reload = (devices.reload & 0xFF00) | UInt16(byte)
+                devices.writeHighNext = true
+            }
+
+        default:
+            break
+        }
     }
 
-    func portRead(_ port: UInt16) -> UInt64 {
+    mutating func portRead(_ port: UInt16) -> UInt64 {
+        switch port {
         // Le registre d'état de la ligne : « le transmetteur est vide ». Sans
         // ça, un noyau attend indéfiniment de pouvoir écrire.
-        if port == Self.serialBase &+ 5 { return 0x60 }
-        return 0
+        case Self.serialBase &+ 5: return 0x60
+        case 0x20:
+            return UInt64(devices.primary.readsService
+                ? devices.primary.service : devices.primary.request)
+        // Le masque relu. C'est **toute** la sonde de Linux : il écrit une
+        // valeur dans ce port et la relit ; si elle ne revient pas, il conclut
+        // qu'il n'y a pas de contrôleur et n'a plus personne à qui demander
+        // l'interruption zéro. C'est le message `Using NULL legacy PIC`.
+        case 0x21: return UInt64(devices.primary.mask)
+        case 0xA0:
+            return UInt64(devices.secondary.readsService
+                ? devices.secondary.service : devices.secondary.request)
+        case 0xA1: return UInt64(devices.secondary.mask)
+        case 0x61:
+            // Le bit 5 : « le canal deux est arrivé à zéro ». Le bit 4 change
+            // à chaque rafraîchissement mémoire sur un vrai PC ; le faire
+            // basculer évite qu'un noyau qui l'attend tourne indéfiniment.
+            return (devices.speakerFinished(at: ticks) ? 0x20 : 0)
+                | (ticks & 1) << 4
+                | (devices.speakerGate ? 1 : 0)
+        case 0x42:
+            let count = devices.speakerCount(at: ticks)
+            defer { devices.speakerReadHighNext.toggle() }
+            return UInt64(devices.speakerReadHighNext ? count >> 8 : count & 0xFF)
+        case 0x40:
+            let value = devices.latched ?? devices.count(at: ticks)
+            defer {
+                devices.readHighNext.toggle()
+                if !devices.readHighNext { devices.latched = nil }
+            }
+            return UInt64(devices.readHighNext ? value >> 8 : value & 0xFF)
+        default: return 0
+        }
     }
 
     /// L'adresse qu'un ModRM désigne. `LEA` la calcule sans la lire ; tout le

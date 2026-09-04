@@ -52,6 +52,13 @@ public struct X86Core: @unchecked Sendable {
     public var halted = false
     /// Les registres de contrôle, les MSR, et de quoi traduire une adresse.
     public var system = X86SystemState()
+    /// Le contrôleur d'interruptions et l'horloge d'un PC.
+    public var devices = X86LegacyDevices()
+    /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
+    /// vient du compteur d'instructions ; un processeur arrêté n'en retire
+    /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
+    /// donc l'interruption qui doit le réveiller n'arriverait jamais.
+    public var idled: UInt64 = 0
     /// Les six sélecteurs de segment : ES, CS, SS, DS, FS, GS. En mode long
     /// leurs bases valent zéro sauf pour FS et GS, qui les prennent dans des
     /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
@@ -79,6 +86,11 @@ public struct X86Core: @unchecked Sendable {
     /// de détection de Linux range et relit. Voir `minimalX87`.
     public var x87Status: UInt16 = 0
     public var x87Control: UInt16 = 0x037F
+    /// Le mot de contrôle SSE. Ce cœur ne calcule pas en virgule flottante,
+    /// mais un noyau x86-64 le range et le relit dès son démarrage : sur cette
+    /// architecture, SSE est garanti par l'architecture et Linux ne demande
+    /// même pas à `CPUID` s'il est là.
+    public var mxcsr: UInt32 = 0x1F80
     /// Le cache de traduction : étiquettes et cadres, côte à côte.
     var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
     var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
@@ -222,7 +234,20 @@ public struct X86Core: @unchecked Sendable {
     public mutating func run(budget: UInt64) throws -> UInt64 {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
-        while executed < budget && !halted {
+        while executed < budget {
+            // Le matériel, entre deux instructions. Le masque plutôt qu'un
+            // test à chaque tour : voir `serviceInterrupts`.
+            if devicesArmed && executed & 0x3F == 0 { try serviceInterrupts() }
+            if halted {
+                // `HLT` attend une interruption. Sans horloge armée, ou les
+                // interruptions masquées, plus rien ne viendra jamais : c'est
+                // un arrêt, pas une attente, et le dire tout de suite vaut
+                // mieux que de brûler le budget à ne rien faire.
+                guard devicesArmed && flags & Flag.interrupt != 0 else { break }
+                idled &+= 1
+                executed += 1
+                continue
+            }
             do {
                 let physical = try translate(rip, .fetch)
                 guard let start = memory.offset(physical, 1) else {
