@@ -3243,7 +3243,29 @@ habitude.
      `argv`, `envp`, et surtout le vecteur auxiliaire (`AT_PHDR`, `AT_BASE`,
      `AT_ENTRY`, `AT_SYSINFO_EHDR`) : si le chargeur lit là de mauvaises
      tables, il résout contre les mauvais symboles et tout le reste suit. Puis
-     ce que `CPUID` annonce, et l'horloge. C'est le prochain comptage.
+     ce que `CPUID` annonce, et l'horloge.
+
+     **Le témoin des démarrages a répondu du premier coup, et ce n'est pas
+     ça.** Il lit la pile d'un programme à l'instant où celui-ci prend la main
+     dans un espace d'adressage neuf — le seul instant où elle porte encore ce
+     que le noyau y a posé. Sur le vrai démarrage, quatre programmes, et le
+     vecteur du dernier :
+
+     ```
+     AT_BASE   = 7f89e846f000     AT_PAGESZ = 1000
+     AT_PHDR   = 560a008e3040     AT_PHENT  = 38     AT_PHNUM = c
+     AT_ENTRY  = 560a008e9ed1     AT_SYSINFO_EHDR = 7ffd967eb000
+     ```
+
+     `AT_BASE` vaut **exactement** la base retrouvée par ailleurs en
+     désassemblant `ld-musl` extrait de l'initramfs — deux mesures qui ne se
+     parlent pas, le même nombre. `AT_PHENT` vaut 0x38, la taille d'un en-tête
+     de programme ELF64 ; `AT_PAGESZ` vaut 4096 ; `AT_PHDR` pointe à l'offset
+     0x40 de l'exécutable, là où sont les en-têtes. **La pile initiale est
+     juste**, et c'est une piste fermée par une confirmation positive plutôt
+     que par une absence.
+
+     Restent `CPUID` et l'horloge.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
