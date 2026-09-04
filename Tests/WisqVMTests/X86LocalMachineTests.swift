@@ -154,3 +154,167 @@ final class X86LocalMachineTests: XCTestCase {
         }
     }
 }
+
+/// « L'instantané rend la machine telle quelle » — champ par champ.
+///
+/// Le piège, mesuré une première fois sur le RISC-V : comparer deux
+/// instantanés ne prouve rien. Un champ qu'on oublie d'écrire est absent des
+/// deux, et ils se ressemblent parfaitement. Il faut poser une valeur
+/// distinctive dans **chaque** champ, faire l'aller-retour, et la redemander.
+final class X86SnapshotTests: XCTestCase {
+    /// Une machine dont chaque champ porte une valeur qu'on reconnaîtra.
+    static func marked() throws -> X86Machine {
+        let machine = X86Machine(onOutput: { _ in })
+        try machine.load(kernelImage: X86LocalMachineTests.kernel([0xF4]))
+        for index in 0..<16 { machine.core.registers[index] = 0xA000 + UInt64(index) }
+        machine.core.flags = X86Core.Flag.carry | X86Core.Flag.reserved | X86Core.Flag.direction
+        machine.core.rip = 0xDEAD_BEEF
+        machine.core.retired = 123_456
+        machine.core.idled = 7890
+        machine.core.halted = true
+        machine.core.pagingActive = true
+        for index in 0..<16 { machine.core.system.control[index] = 0xB000 + UInt64(index) }
+        for index in 0..<8 { machine.core.system.debug[index] = 0xC000 + UInt64(index) }
+        machine.core.system.modelSpecific = [
+            X86SystemState.efer: 0x501, X86SystemState.gsBase: 0xFEED,
+            X86SystemState.fsBase: 0xF00D,
+        ]
+        for index in 0..<6 { machine.core.segments[index] = UInt16(0x10 + index * 8) }
+        for index in 0..<2 {
+            machine.core.descriptorBases[index] = 0xD000 + UInt64(index)
+            machine.core.descriptorLimits[index] = 0xE000 + UInt64(index)
+        }
+        machine.core.x87Control = 0x0300
+        machine.core.x87Status = 0x1234
+        machine.core.mxcsr = 0x1DC0
+        machine.core.devices.primary.mask = 0xFE
+        machine.core.devices.primary.request = 0x03
+        machine.core.devices.primary.service = 0x01
+        machine.core.devices.primary.vectorBase = 0x30
+        machine.core.devices.primary.initialisationStep = 2
+        machine.core.devices.primary.readsService = true
+        machine.core.devices.secondary.mask = 0xAB
+        machine.core.devices.secondary.vectorBase = 0x38
+        machine.core.devices.reload = 0x1234
+        machine.core.devices.writeHighNext = true
+        machine.core.devices.readHighNext = true
+        machine.core.devices.latched = 0x4321
+        machine.core.devices.reloadedAt = 55555
+        machine.core.devices.raised = 4242
+        machine.core.devices.speakerReload = 0x2468
+        machine.core.devices.speakerWriteHighNext = true
+        machine.core.devices.speakerStartedAt = 99999
+        machine.core.devices.speakerGate = true
+        machine.core.serialInput = [0x41, 0x42]
+        try machine.core.memory?.write(0x30_0000, 8, 0xCAFE_F00D)
+        return machine
+    }
+
+    /// Chaque champ, redemandé après l'aller-retour.
+    func testEveryFieldComesBack() throws {
+        let saved = try Self.marked().snapshot()
+        let machine = X86Machine(onOutput: { _ in })
+        try machine.restore(saved)
+        let core = machine.core
+
+        for index in 0..<16 {
+            XCTAssertEqual(core.registers[index], 0xA000 + UInt64(index), "registre \(index)")
+        }
+        XCTAssertEqual(core.flags,
+                       X86Core.Flag.carry | X86Core.Flag.reserved | X86Core.Flag.direction)
+        XCTAssertEqual(core.rip, 0xDEAD_BEEF)
+        XCTAssertEqual(core.retired, 123_456)
+        XCTAssertEqual(core.idled, 7890)
+        XCTAssertTrue(core.halted)
+        XCTAssertTrue(core.pagingActive)
+        for index in 0..<16 {
+            XCTAssertEqual(core.system.control[index], 0xB000 + UInt64(index), "CR\(index)")
+        }
+        for index in 0..<8 {
+            XCTAssertEqual(core.system.debug[index], 0xC000 + UInt64(index), "DR\(index)")
+        }
+        XCTAssertEqual(core.system.modelSpecific[X86SystemState.gsBase], 0xFEED)
+        XCTAssertEqual(core.system.modelSpecific[X86SystemState.fsBase], 0xF00D)
+        for index in 0..<6 {
+            XCTAssertEqual(core.segments[index], UInt16(0x10 + index * 8), "segment \(index)")
+        }
+        for index in 0..<2 {
+            XCTAssertEqual(core.descriptorBases[index], 0xD000 + UInt64(index))
+            XCTAssertEqual(core.descriptorLimits[index], 0xE000 + UInt64(index))
+        }
+        XCTAssertEqual(core.x87Control, 0x0300)
+        XCTAssertEqual(core.x87Status, 0x1234)
+        XCTAssertEqual(core.mxcsr, 0x1DC0)
+        XCTAssertEqual(core.devices.primary.mask, 0xFE)
+        XCTAssertEqual(core.devices.primary.request, 0x03)
+        XCTAssertEqual(core.devices.primary.service, 0x01)
+        XCTAssertEqual(core.devices.primary.vectorBase, 0x30)
+        XCTAssertEqual(core.devices.primary.initialisationStep, 2)
+        XCTAssertTrue(core.devices.primary.readsService)
+        XCTAssertEqual(core.devices.secondary.mask, 0xAB)
+        XCTAssertEqual(core.devices.secondary.vectorBase, 0x38)
+        XCTAssertEqual(core.devices.reload, 0x1234)
+        XCTAssertTrue(core.devices.writeHighNext)
+        XCTAssertTrue(core.devices.readHighNext)
+        XCTAssertEqual(core.devices.latched, 0x4321)
+        XCTAssertEqual(core.devices.reloadedAt, 55555)
+        XCTAssertEqual(core.devices.raised, 4242)
+        XCTAssertEqual(core.devices.speakerReload, 0x2468)
+        XCTAssertTrue(core.devices.speakerWriteHighNext)
+        XCTAssertEqual(core.devices.speakerStartedAt, 99999)
+        XCTAssertTrue(core.devices.speakerGate)
+        XCTAssertEqual(core.serialInput, [0x41, 0x42])
+        XCTAssertEqual(try core.memory?.read(0x30_0000, 8), 0xCAFE_F00D, "la RAM")
+    }
+
+    /// **Le verrou de l'horloge figée.** `latched` vaut `nil` quand aucune
+    /// commande de verrouillage n'est en cours, et 0 est une valeur
+    /// parfaitement légitime — les confondre ferait rendre au noyau un compte
+    /// figé qu'il n'a pas demandé.
+    func testTheLatchTellsNoneFromZero() throws {
+        for latched in [nil, UInt16(0), UInt16(7)] {
+            let machine = try Self.marked()
+            machine.core.devices.latched = latched
+            let restored = X86Machine(onOutput: { _ in })
+            try restored.restore(machine.snapshot())
+            XCTAssertEqual(restored.core.devices.latched, latched, "\(String(describing: latched))")
+        }
+    }
+
+    /// Le vrai contrat : une machine reprise **continue** comme l'originale.
+    /// Pas « se ressemble » — produit les mêmes octets et s'arrête au même
+    /// endroit.
+    func testARestoredMachineContinuesIdentically() throws {
+        let first = X86LocalMachineTests.Collector()
+        let original = X86Machine(onOutput: { first.append($0) })
+        try original.load(kernelImage: X86LocalMachineTests.kernel(
+            X86LocalMachineTests.printing("bonjour")))
+        // Quelques instructions, puis on sauve à mi-chemin.
+        original.run(instructionBudget: 5)
+        let saved = original.snapshot()
+        original.run(instructionBudget: 1000)
+
+        let second = X86LocalMachineTests.Collector()
+        let resumed = X86Machine(onOutput: { second.append($0) })
+        try resumed.restore(saved)
+        resumed.run(instructionBudget: 1000)
+
+        XCTAssertEqual(resumed.retiredInstructions, original.retiredInstructions)
+        XCTAssertEqual(resumed.core.rip, original.core.rip)
+        // La première machine a écrit le début avant d'être sauvée ; les deux
+        // moitiés recollées doivent faire le texte entier.
+        XCTAssertEqual(first.text, "bonjour")
+        XCTAssertTrue("bonjour".hasSuffix(second.text), "\(second.text)")
+        XCTAssertFalse(second.text.isEmpty, "la reprise doit continuer à écrire")
+    }
+
+    /// Des octets qui ne sont pas un instantané sont **refusés**, pas
+    /// interprétés. Une machine à moitié restaurée est pire qu'une machine
+    /// perdue : elle a l'air de marcher.
+    func testRubbishIsRefused() throws {
+        let machine = X86Machine(onOutput: { _ in })
+        XCTAssertThrowsError(try machine.restore(Data([0x00, 0x01, 0x02]))) {
+            XCTAssertEqual($0 as? Snapshot.Failure, .notASnapshot)
+        }
+    }
+}

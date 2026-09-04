@@ -2617,10 +2617,18 @@ architectures à la main.
 taper, arrêter —, avec la file d'entrée série qu'il a fallu ajouter au cœur
 pour qu'un invité sache qu'on vient de taper. Sept tests, cinq sabotages.
 
-Ce qui manque avant de brancher : **l'instantané**. La RAM d'une machine PC se
-compte en centaines de mébioctets là où celle du RISC-V en fait
-soixante-quatre, et la recopier à chaque passage en arrière-plan demande une
-stratégie plutôt qu'une boucle.
+**L'instantané est fait**, et mesuré avant d'être conçu. Après un démarrage
+complet d'Alpine, sur 65 536 pages de quatre kibioctets, **14 471 ne sont pas
+entièrement nulles** — vingt-deux pour cent, soit 56 Mio de contenu réel et
+26 Mio gzippés. Or le format d'instantané de ce dépôt code déjà les suites de
+zéros par leur longueur : il n'y avait rien à inventer, seulement à s'en
+servir. Onze tests, dont un qui pose une valeur distinctive dans **chaque**
+champ et la redemande — comparer deux instantanés ne prouverait rien, un champ
+oublié étant absent des deux.
+
+Reste à écrire pour brancher : le protocole commun aux deux machines, la
+fabrique qui choisit selon `KernelImageKind.core`, et le passage de
+`LocalVMModel` par elle.
 
 **Deux défauts que le sabotage a trouvés en pendant, pas en échouant.** Le
 budget ne comptait que les instructions retirées — or un `HLT` n'en retire

@@ -8,6 +8,58 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~02h10 UTC — l'instantané de la machine PC, mesuré avant d'être conçu
+
+Le seul obstacle à brancher `X86Machine` était l'instantané : 256 Mio de RAM
+contre 64 pour le RISC-V, à recopier à chaque passage en arrière-plan.
+
+**J'ai mesuré avant de concevoir.** Après un démarrage complet d'Alpine — trois
+milliards et demi d'instructions, jusqu'à `kernel_init` —, sur 65 536 pages de
+quatre kibioctets, **14 471 ne sont pas entièrement nulles**. Vingt-deux pour
+cent. Soit 56 Mio de contenu réel, 26 Mio une fois gzippés.
+
+Et le format d'instantané de ce dépôt **code déjà les suites de zéros par leur
+longueur**. Il n'y avait donc rien à inventer : la stratégie que je cherchais
+existait, écrite pour le RISC-V, et elle vaut exactement pour la même raison
+ici. Une demi-heure de mesure a remplacé une conception.
+
+### Ce que l'instantané porte
+
+Les seize registres, les drapeaux, RIP, le compteur d'instructions **et celui
+du temps dormi**, l'arrêt, la pagination, les seize registres de contrôle, les
+huit de débogage, les MSR, les six segments, les deux tables de descripteurs,
+les mots x87 et SSE, le 8259 et le 8253 en entier, ce qui attend d'être tapé,
+et la RAM.
+
+Pas la sortie console : elle est déjà partie au rappel et appartient à qui
+dessine le terminal. Pas le cache de traduction : il se reconstruit, et le
+figer reviendrait à garder une réponse qu'on peut recalculer, avec le risque
+qu'elle mente si les tables ont bougé.
+
+### Le piège que la mesure du RISC-V avait déjà nommé
+
+Comparer deux instantanés ne prouve rien : un champ qu'on oublie d'écrire est
+absent des deux, et ils se ressemblent parfaitement. Il faut poser une valeur
+distinctive dans **chaque** champ et la redemander après l'aller-retour. C'est
+ce que fait `testEveryFieldComesBack`, et sept sabotages le confirment.
+
+Un cas mérite son propre test : **le verrou du 8253**. `latched` vaut `nil`
+quand aucune commande de verrouillage n'est en cours, et zéro est une valeur
+parfaitement légitime. Les confondre rendrait au noyau un compte figé qu'il n'a
+pas demandé.
+
+### Une ligne que rien ne tenait
+
+Le premier jet recalculait le mode long après restauration. Aucun sabotage ne
+le faisait tomber — et pour cause : `pagingOn` et `longMode` se lisent dans CR0
+et EFER, tous deux restaurés tels quels. L'appel ne faisait rien. Retiré, avec
+la raison écrite à sa place.
+
+C'est la définition d'une ligne que rien ne tient, et le sabotage la trouve
+aussi bien qu'il trouve les défauts.
+
+---
+
 ## 2026-09-04, ~01h45 UTC — la machine PC, et deux défauts que seul le sabotage a vus
 
 `X86Machine` : le pendant de `LinuxMachine` pour le x86-64. Même forme —
