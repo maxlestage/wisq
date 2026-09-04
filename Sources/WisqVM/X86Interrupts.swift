@@ -264,7 +264,7 @@ extension X86Core {
     /// Le temps de l'invité, en battements du 8253. Il vient du compteur
     /// d'instructions — voir `X86LegacyDevices` pour pourquoi, et pourquoi
     /// c'est une décision plutôt qu'une mesure.
-    var ticks: UInt64 { (retired &+ idled) / X86LegacyDevices.instructionsPerTick }
+    public var ticks: UInt64 { (retired &+ idled) / X86LegacyDevices.instructionsPerTick }
 
     /// Lever ce qui est dû, puis livrer la ligne la plus prioritaire.
     ///

@@ -208,6 +208,19 @@ final class X86BootAttemptTests: XCTestCase {
         } else {
             ending = "budget épuisé en exécutant"
         }
+        // **Quatre conditions séparent un battement d'une interruption
+        // livrée**, et « la machine attend encore » ne dit pas laquelle a
+        // manqué. Il faut un battement dû, le drapeau d'interruption levé, la
+        // ligne non masquée, et une porte que l'IDT porte. Le rapport les
+        // donne toutes les quatre plutôt que de laisser deviner.
+        let pic = core.devices.primary
+        let due = core.devices.expirations(at: core.ticks)
+        let pending = pic.request & ~pic.mask
+        let controller = "battements dus \(due), levés \(core.devices.raised)"
+            + String(format: ", demande %02x, masque %02x, service %02x,"
+                     + " base de vecteur %02x", pic.request, pic.mask,
+                     pic.service, pic.vectorBase)
+            + (pending == 0 ? " — RIEN NE PASSE LE MASQUE" : "")
         let halt = core.halted
             ? clock + ", " + masked + ", \(core.idled) tours d'attente"
             : "non"
@@ -235,6 +248,7 @@ final class X86BootAttemptTests: XCTestCase {
             arrêt                 : \(ending)
             rip                   : 0x\(String(core.rip, radix: 16))
             au repos              : \(halt)
+            contrôleur            : \(controller)
             octets à RIP          : \(core.memory.map {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
