@@ -32,8 +32,27 @@ import XCTest
 /// ça, sur une vraie machine comme ici. 262 lignes de journal, une trace
 /// d'appels avec les noms des fonctions — donc `printk`, la table des
 /// symboles, le dérouleur de pile, les exceptions et l'horloge marchent tous.
-/// Ce qui manque n'est plus dans le processeur : c'est un disque, et c'est la
-/// tranche suivante de la feuille de route.
+///
+/// **Avec un initrd, ça va plus loin.** `WISQ_PC_INITRD` désigne un
+/// initramfs ; le noyau le déballe dans un tmpfs et exécute son `/init`. Avec
+/// l'`initramfs-lts` d'Alpine, mesuré le 4 septembre 2026 après le TSS :
+///
+/// ```
+/// [   74.024812] random: crng init done
+/// [  152.571425] Freeing initrd memory: 25404K
+/// arrêt : unsupported("l'opcode 0F 6E") à RIP 0x7f0f12aa143e
+/// ```
+///
+/// 2 712 254 848 instructions, 12 685 octets de journal, et un arrêt dont
+/// l'adresse commence par `0x7f` : c'est de l'espace utilisateur. `0F 6E` est
+/// `MOVD`/`MOVQ` entre un registre général et un registre SSE, et la
+/// bibliothèque C s'en sert dans ses fonctions de chaîne avant même son
+/// premier appel système.
+///
+/// **Ce n'est pas la brique que j'avais prévue**, et c'est justement pourquoi
+/// ce test existe. Le plan disait « le TSS, puis SYSCALL » ; la machine dit
+/// que `SYSCALL` n'est pas encore atteint et que ce sont les seize registres
+/// XMM qu'il faut d'abord. Le plan avait tort, la machine a raison.
 ///
 /// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
 /// jamais l'inverse. Voir `X86InterruptTests` pour la livraison d'exception,
@@ -130,7 +149,21 @@ final class X86BootAttemptTests: XCTestCase {
                       "et aller jusqu'à ouvrir sa console")
         XCTAssertTrue(serial.contains("processors activated"),
                       "et activer son processeur, ce qui demande une horloge")
-        XCTAssertTrue(serial.contains("Unable to mount root fs"),
-                      "et arriver à la seule chose qui manque encore : un disque")
+
+        // **Deux fins différentes, parce que ce sont deux machines
+        // différentes.** Sans disque en mémoire, un noyau panique faute de
+        // racine, et c'est la bonne fin. Avec, il en a une : exiger la même
+        // phrase serait exiger qu'un mécanisme qui marche échoue quand même —
+        // et cette assertion-là était bel et bien écrite ainsi, donc ce test
+        // ne pouvait pas passer dans la configuration où il va le plus loin.
+        guard ramdisk != nil else {
+            XCTAssertTrue(serial.contains("Unable to mount root fs"),
+                          "sans disque, c'est la seule chose qui manque")
+            return
+        }
+        XCTAssertTrue(serial.contains("Freeing initrd memory"),
+                      "avec un disque en mémoire, le noyau doit le déballer et le rendre")
+        XCTAssertEqual(core.privilege, 3,
+                       "et un programme doit tourner en anneau trois quand on s'arrête")
     }
 }

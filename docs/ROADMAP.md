@@ -2951,9 +2951,30 @@ habitude.
      Avec le bit : **2,7 milliards d'instructions**, plus un seul oops, le
      journal passe à 12 685 octets — et l'arrêt suivant est nommé. Une faute
      de page sur la **pile utilisateur**, depuis le code d'entrée du noyau :
-     un changement d'anneau doit charger RSP depuis le TSS, et ce cœur pousse
-     encore le cadre sur la pile qu'il trouve. C'est la tranche suivante, avec
-     `SYSCALL`/`SYSRET`.
+     un changement d'anneau doit charger RSP depuis le TSS, et ce cœur poussait
+     encore le cadre sur la pile qu'il trouvait.
+
+   - **Le TSS, et la pile que le processeur va y chercher.** `LTR` et `STR`
+     avec le registre de tâche ; puis, à l'entrée d'une porte, `RSP0` quand le
+     niveau de privilège baisse et une des sept piles d'interruption quand la
+     porte en nomme une — celle-là s'imposant même sans changement de niveau,
+     ce qui est propre au mode long. Ce qu'on empile reste la pile d'**avant** :
+     c'est elle que l'`IRETQ` rendra au programme.
+
+     Deux refus plutôt que deux suppositions : un `LTR` sur le sélecteur nul
+     donnerait un TSS à l'adresse zéro, donc une pile de noyau au début de la
+     mémoire ; et un changement de pile sans registre de tâche chargé, ou avec
+     un TSS trop court pour porter ses piles, s'arrête au lieu d'inventer une
+     adresse.
+
+     **La tranche suivante n'est pas celle qui était annoncée ici**, et c'est
+     la machine qui l'a dit. Le plan écrivait « puis `SYSCALL`/`SYSRET` ». Avec
+     le TSS, le noyau va jusqu'à `Freeing initrd memory: 25404K` puis s'arrête
+     sur l'opcode `0F 6E` à RIP `0x7f0f12aa143e` — une adresse d'espace
+     utilisateur. `0F 6E` est `MOVD`/`MOVQ` entre un registre général et un
+     registre SSE, et la bibliothèque C s'en sert dans ses fonctions de chaîne
+     **avant** son premier appel système. Ce sont donc les seize registres XMM
+     qu'il faut d'abord, et `SYSCALL` vient après.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
@@ -2975,8 +2996,15 @@ habitude.
      ça, sur une vraie machine comme ici. **262 lignes de journal**, une trace
      d'appels avec les noms des fonctions — donc `printk`, la table des
      symboles, le dérouleur de pile, les exceptions, l'horloge et la mémoire
-     virtuelle marchent tous. Ce qui manque n'est plus dans le processeur :
-     c'est un disque, et c'est la tranche suivante.
+     virtuelle marchent tous. Ce qui manque là n'est plus dans le processeur :
+     c'est un disque — et avec un initrd, le test va au-delà, jusqu'à l'espace
+     utilisateur.
+
+     **Le test avait une assertion qui ne pouvait pas être vraie** : il
+     exigeait `Unable to mount root fs` même quand on lui donne un initrd,
+     c'est-à-dire précisément le cas où cette ligne ne doit pas apparaître. Il
+     ne pouvait donc pas passer dans la configuration où il va le plus loin.
+     Deux fins maintenant, une par machine.
 
      **3,5 milliards d'instructions en 4 min 30 s** en release, soit 13 MIPS
      sur du vrai code de noyau — un chiffre plus honnête que celui du banc, qui

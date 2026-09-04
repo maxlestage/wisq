@@ -8,6 +8,88 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~04h40 UTC — le TSS, et une brique que le plan n'avait pas prévue
+
+Le noyau s'arrêtait sur une faute de page **sur la pile utilisateur**, levée
+depuis son propre code d'entrée. Le programme n'avait rien fait de mal : c'est
+le processeur qui aurait dû changer de pile avant d'empiler le cadre, et qui
+empilait sur celle qu'il trouvait. Une pile d'anneau trois n'a aucune raison
+d'être là où le noyau écrit, ni d'être encore valide quand l'interruption
+tombe ; c'est exactement pour ça que le mécanisme existe.
+
+### Ce que le segment d'état de tâche a demandé
+
+`LTR` recopie la base et la limite depuis un descripteur de **seize** octets —
+c'est ce qui permet à la base d'être une adresse de soixante-quatre bits — et
+cette base arrive en quatre morceaux dispersés par l'héritage du 386. Le bit de
+granularité compte des pages et non des octets. `STR` la rend.
+
+Puis le choix de la pile, à l'entrée d'une porte : `RSP0` quand le niveau de
+privilège baisse, une des sept piles d'interruption quand la porte en nomme
+une — et celle-là s'impose **même sans changement de niveau**, ce qui est
+propre au mode long. Ce qu'on empile reste la pile d'avant : c'est elle que
+l'`IRETQ` rendra au programme, et l'empiler après le changement rendrait la
+pile du noyau à un programme d'anneau trois.
+
+Deux refus plutôt que deux suppositions. Un `LTR` sur le sélecteur nul : le
+lire comme l'entrée zéro de la GDT, qui est obligatoirement nulle, donnerait un
+TSS à l'adresse zéro — une pile de noyau au début de la mémoire, qui écrirait
+sur la table des pages avant que rien ne le signale. Et un changement de pile
+sans registre de tâche chargé, ou avec un TSS trop court pour porter ses piles.
+
+### Ce que la machine a dit, contre ce que le plan disait
+
+Le plan était écrit noir sur blanc : « le TSS et le changement de pile, puis
+`SYSCALL`/`SYSRET` ». La machine dit autre chose.
+
+Avec le TSS, le noyau passe de la faute d'entrée à **2 712 254 848
+instructions** et 12 685 octets de journal : PCI, les tables de hachage TCP,
+`random: crng init done`, `Freeing initrd memory: 25404K` — l'initramfs déballé
+et rendu. Puis il s'arrête sur `l'opcode 0F 6E`, à RIP `0x7f0f12aa143e`.
+
+Cette adresse commence par `0x7f` : c'est de l'espace utilisateur. `0F 6E` est
+`MOVD`/`MOVQ` entre un registre général et un registre SSE. La bibliothèque C
+s'en sert dans ses fonctions de chaîne — et elle le fait **avant** son premier
+appel système, ce qui est pourquoi `SYSCALL` n'a pas encore été atteint.
+
+La tranche suivante n'est donc pas celle que j'avais annoncée : ce sont les
+seize registres XMM. Le plan avait tort et la machine a raison ; c'est
+précisément à ça que sert un test qui essaie et rapporte plutôt qu'un test qui
+exige.
+
+### Une assertion qui ne pouvait pas être vraie
+
+`X86BootAttemptTests` exigeait `Unable to mount root fs` — la bonne fin d'un
+noyau sans disque — **même quand on lui donne un initrd**, c'est-à-dire
+précisément le cas où cette ligne ne doit pas apparaître. Le test ne pouvait
+donc pas passer dans la configuration où il va le plus loin. Deux fins
+maintenant, une par machine : sans disque en mémoire, la panique ; avec, le
+déballage de l'initrd **et** un programme en anneau trois au moment de l'arrêt.
+
+### Trois tests qui passaient pour la mauvaise raison
+
+Les miens, cette fois, et tous attrapés par le sabotage.
+
+Deux d'abord : mon échafaudage installait un TSS avant de rendre le cœur, donc
+il écrasait celui que le test venait de poser. `LTR` était mesuré sur la
+mauvaise base et disait quand même vrai.
+
+Le troisième est plus intéressant. « Un changement de pile sans registre de
+tâche est refusé » passait **sans la garde** : le cœur lit alors une pile à
+l'adresse quatre, y trouve zéro, et l'empilement sort de la mémoire — donc il
+lève quand même, mais un `outsideMemory` qui envoie chercher du côté de la RAM
+au lieu du registre de tâche. `XCTAssertThrowsError` sans regarder l'erreur ne
+tient que « quelque chose s'est mal passé », ce qui est presque toujours vrai
+quand on casse du code. Les quatre refus de cette tranche nomment maintenant la
+faute exacte qu'ils attendent.
+
+### Mesures
+
+Quinze tests neufs, neuf sabotages — tous attrapés, dont celui qui a révélé le
+test ci-dessus. Suite complète : 1 464 tests Swift, zéro échec ; 246 côté site.
+Le démarrage du vrai noyau, avec initrd, passe maintenant : 2 712 254 848
+instructions en trois minutes.
+
 ## 2026-09-04, ~03h50 UTC — la sélection automatique a maintenant deux destinations
 
 Maxime, hier : « il me faut toutes les architectures Linux qui peuvent exister
