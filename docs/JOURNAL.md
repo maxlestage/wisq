@@ -8,6 +8,77 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~06h30 UTC — un témoin, un trou compté, et un défaut du harnais
+
+La tranche a changé de métier : il ne s'agit plus d'écrire une brique mais de
+**trouver un défaut**. Le programme meurt d'un SIGSEGV avec un pointeur
+corrompu, et rien dans le journal ne dit d'où il vient.
+
+### D'abord un témoin, parce qu'il fallait savoir à qui est la faute
+
+`qemu-system-x86_64` 8.2.2 est dans le conteneur. Le **même** `vmlinuz-lts`
+avec le **même** `initramfs-lts`, 512 Mio, la même ligne de commande :
+
+| | wisq | QEMU |
+|---|---|---|
+| `/init` lancé | oui | oui |
+| segfauts | **3** | **0** |
+| aboutit à | panique « Attempted to kill init! » | shell de secours d'Alpine |
+
+Seize secondes de temps invité et le shell est là. **La divergence est donc
+bien la nôtre**, et c'est mesuré et non supposé — l'initramfs aurait pu être en
+cause, ou la configuration matérielle minimale.
+
+### Ce que la trace a écarté
+
+J'ai instrumenté la livraison des fautes de page en anneau trois — 295 sur un
+démarrage — et comparé avec ce que Linux imprime. Mon code d'erreur vaut 4 pour
+la faute fatale, Linux imprime 5. Ce n'est pas un écart : Linux ajoute lui-même
+le bit de présence quand l'adresse est au-dessus de l'espace utilisateur, pour
+ne pas renseigner un programme sur la mémoire du noyau. **La livraison est
+juste** ; la corruption est en amont.
+
+### Le trou, compté plutôt que soupçonné
+
+Sur les 389 formes du corpus arithmétique, **aucune** n'est un `MOVS`, un
+`STOS`, un `SCAS`, un `CMPS` ni un `LODS`. Les dix-sept correspondances de
+« movs » qu'on y trouve sont des `MOVSX` et des `CMOVS`.
+
+Or `copy_to_user` et `copy_from_user` sont des `rep movsq` et des `rep movsb` :
+la pile initiale d'un processus — arguments, environnement, vecteur auxiliaire,
+tous des pointeurs — arrive par là. C'était la classe la plus plausible, et
+elle n'était couverte par rien.
+
+Elle l'est maintenant : 47 formes, **376 cas, zéro désaccord**. Ce n'est donc
+pas là — et c'est un résultat utile, parce qu'il ferme la classe entière au
+lieu de la laisser dans un coin de la tête.
+
+### Un défaut du harnais, révélé par le premier cas qui pouvait le voir
+
+En essayant les chaînes **en arrière**, le harnais de l'oracle s'est mis à
+planter — pas l'instruction à l'essai, le harnais lui-même. L'ABI exige que le
+drapeau de direction soit effacé à l'entrée comme à la sortie de toute
+fonction ; le harnais rendait la main au C sans le faire, et le `memcpy` de son
+propre pilote partait à l'envers.
+
+Il n'avait jamais pu se voir : rien n'essayait de poser ce drapeau. C'est la
+même leçon que l'oracle enseigne depuis le début, retournée contre lui —
+**il ne prouve que ce qu'on lui donne à exécuter**. Le `cld` ajouté ne change
+rien aux 10 020 cas existants, vérifié à l'octet près.
+
+### Où en est la chasse
+
+La corruption reste à trouver. Ce qui est acquis : ce n'est pas la livraison
+des fautes, ce ne sont pas les instructions de chaîne, ce n'est pas
+l'initramfs, ce n'est pas la mémoire disponible. Ce qui reste : un harnais
+différentiel qui aligne les deux exécutions et dise à quelle instruction elles
+divergent.
+
+### Mesures
+
+1 481 tests Swift, 246 côté site, zéro échec. Un test neuf, quatre sabotages,
+tous attrapés. 47 formes de chaîne, 376 cas, zéro désaccord avec le processeur.
+
 ## 2026-09-04, ~05h50 UTC — le programme fait de vrais appels, et meurt d'autre chose
 
 `SYSCALL` et `SYSRET`. La brique que le noyau avait nommée dix instructions
