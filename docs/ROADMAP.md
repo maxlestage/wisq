@@ -2540,6 +2540,89 @@ Ce qui reste sur ce sujet : rien de décidé. Un réglage de la **vitesse** (le
 budget d'instructions par tranche) serait le voisin naturel, mais personne ne
 l'a demandé et il n'a pas d'utilisateur connu.
 
+## Toutes les architectures Linux, et le cœur choisi tout seul (demandé par Maxime)
+
+Maxime, le 4 septembre : « sur wisq il me faut toutes les architectures Linux
+qui peuvent exister et la bonne par rapport à l'image sera automatiquement
+sélectionnée ».
+
+### Ce qui est fait, et ce que ça sépare
+
+**Reconnaître n'est pas exécuter**, et les deux sont désormais deux questions
+distinctes dans le code plutôt qu'un booléen qui les mélange.
+
+`GuestArchitecture` nomme les **vingt et une familles** pour lesquelles le
+noyau Linux a un répertoire dans `arch/`, plus celles qu'il a portées assez
+longtemps pour que des images traînent encore : x86, ARM, RISC-V, MIPS,
+PowerPC, IBM Z, SPARC, LoongArch, Alpha, ARC, C-SKY, Hexagon, Itanium, 68000,
+MicroBlaze, Nios II, OpenRISC, PA-RISC, SuperH, Xtensa. Chacune porte son nom,
+sa largeur quand le fichier la dit, et son boutisme.
+
+**La famille et la largeur sont séparées, et la largeur est optionnelle.** Un
+ELF porte sa classe au cinquième octet, donc on sait. L'image brute que Linux
+produit pour RISC-V n'a **aucun** champ qui dise 32 ou 64 bits : un noyau rv32
+et un rv64 y sont indiscernables. Alors `bits` vaut `nil`, ce qui veut dire
+« le fichier ne le dit pas » et non « 32 par défaut ». Deviner ici serait la
+même faute que d'invoquer la mémoire pour expliquer un refus.
+
+### Les formats reconnus, et pourquoi ceux-là
+
+| format | ce qui le nomme | ce qu'on en tire |
+|---|---|---|
+| ELF | `e_machine`, la classe, le boutisme | l'architecture exacte |
+| `uImage` (U-Boot) | un octet à l'offset 29 | **le seul format qui nomme son architecture** |
+| `bzImage` | `HdrS` à 0x202, `xloadflags` | x86, 32 ou 64 bits |
+| `Image` ARM64 | `ARM\x64` au 56ᵉ octet | ARM64 |
+| `Image` RISC-V | `RISCV` à 0x30, `RSC\x05` à 0x38 | RISC-V, largeur inconnue |
+| `zImage` ARM | 0x016F2818 à 0x24 | ARM 32 bits |
+| gzip, xz, zstd, bzip2, lz4, lzop | leur magique | l'enveloppe, et l'aveu que l'architecture est dedans |
+| ISO 9660 | `CD001` au secteur 16 | une image de disque, pas un noyau |
+
+Un `vmlinuz` compressé est le cas le plus courant du monde réel — celui de
+Debian pour ARM64 est un `Image` gzippé —, et se taire laisserait croire que
+le fichier n'est rien. Le message nomme l'enveloppe **et** dit ce qu'il ne peut
+pas voir.
+
+### La sélection automatique
+
+`GuestArchitecture.core` répond quel cœur exécute une architecture, et
+`KernelImageKind.core` le fait remonter depuis le fichier. Personne n'a à
+choisir : l'image le dit.
+
+Une largeur inconnue ne bloque pas. Quand le fichier ne dit pas s'il est en 32
+ou en 64 bits et qu'un seul cœur existe pour la famille, c'est celui-là — la
+même règle que `unknown`, qui est une permission et non un doute.
+
+### Ce que wisq exécute, et ce qu'il ne fait qu'exécuter dans ses tests
+
+Deux cœurs existent : **RISC-V 32 bits** (rv32ima, écrit deux fois, en Swift et
+en Rust) et **x86-64** (prouvé instruction par instruction contre le vrai
+processeur, et qui démarre un noyau d'Alpine jusqu'à son espace utilisateur).
+
+Un seul est **branché dans l'application** : `LinuxMachine` est encore câblée
+sur le RISC-V. `Core.availableInTheApp` porte cette distinction, et les refus
+la disent :
+
+- une architecture sans cœur → « wisq n'a pas de cœur pour cette architecture » ;
+- x86-64 → « wisq a bien un cœur x86-64 […] il n'est pas encore branché dans
+  l'application ».
+
+Dire « pas de cœur » d'un cœur qui existe et démarre un vrai noyau enverrait
+quelqu'un attendre une chose déjà écrite. **La tranche suivante est donc de
+brancher la machine x86-64 dans l'application** — et à ce moment-là, un seul
+booléen change et tous les textes suivent, parce qu'aucun n'énumère les
+architectures à la main.
+
+### Ce qui n'est pas promis
+
+Reconnaître vingt et une familles n'en fait pas tourner vingt et une. Écrire un
+cœur ARM64 ou PowerPC est un lot par architecture, pas une case à cocher. Ce
+que cette tranche change, c'est qu'un fichier refusé est désormais **nommé** :
+« un noyau Linux pour ARM64, au format Image ARM64 » au lieu du silence. C'est
+la différence entre un mur et une carte.
+
+---
+
 ## Lot 7 — la plate-forme locale devient x86-64 (décidé par Maxime)
 
 Maxime, le 3 septembre : « faut changer la plate-forme car risc-v c'est pas la

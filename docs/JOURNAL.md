@@ -8,6 +8,81 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~01h15 UTC — toutes les architectures, et le cœur choisi par le fichier
+
+Maxime : « sur wisq il me faut toutes les architectures Linux qui peuvent
+exister et la bonne par rapport à l'image sera automatiquement sélectionnée ».
+
+Deux moitiés, et il fallait les séparer avant d'écrire une ligne : **reconnaître
+n'est pas exécuter**. wisq reconnaît maintenant vingt et une familles ; il en
+exécute deux. Les confondre aurait produit exactement le genre de phrase que ce
+dépôt passe son temps à corriger.
+
+### Ce qui est écrit
+
+`GuestArchitecture` : les familles pour lesquelles le noyau Linux a un
+répertoire dans `arch/`, plus celles qu'il a portées assez longtemps pour que
+des images traînent encore. Chacune porte son nom, sa largeur **quand le
+fichier la dit**, et son boutisme.
+
+La largeur est optionnelle, et c'est le point qui m'a demandé le plus de soin.
+Un ELF porte sa classe au cinquième octet. L'image brute de Linux pour RISC-V
+n'a **aucun** champ qui dise 32 ou 64 bits : décalage, taille, drapeaux dont le
+bit zéro est le boutisme, version, deux nombres magiques, et c'est tout. Un
+noyau rv32 et un rv64 y sont indiscernables. Alors `bits` vaut `nil` — « le
+fichier ne le dit pas », et non « 32 par défaut ». Écrire 32 aurait eu l'air
+d'une lecture.
+
+Sept formats reconnus : ELF, `uImage`, `bzImage`, l'`Image` d'ARM64, celle de
+RISC-V, le `zImage` d'ARM, et six enveloppes de compression. L'`uImage`
+d'U-Boot est le seul qui **nomme** son architecture au lieu de la laisser
+deviner — un octet, à l'offset 29 — donc il est lu en premier, avant que le
+contenu emballé ne fasse conclure sur l'emballé au lieu de l'emballage.
+
+### La sélection automatique
+
+`KernelImageKind.core` remonte du fichier au cœur. Personne n'a à choisir.
+
+Une largeur inconnue ne bloque pas : quand un seul cœur existe pour la famille,
+c'est celui-là. C'est la même règle que `unknown`, qui est une permission et
+non un doute — le laisser essayer en dit plus long qu'un refus fondé sur ce
+qu'on n'a pas lu.
+
+### La distinction qui rendait les messages faux
+
+Le cœur x86-64 **existe** depuis ce soir et démarre un vrai noyau d'Alpine
+jusqu'à son espace utilisateur. Il n'est **pas branché** dans l'application :
+`LinuxMachine` est encore câblée sur le RISC-V.
+
+Un seul booléen aurait forcé à mentir dans un sens ou dans l'autre — soit
+promettre un démarrage qui n'arrive pas, soit annoncer « pas de cœur » d'un
+cœur écrit et prouvé. `Core.availableInTheApp` sépare les deux, et les refus
+disent laquelle des deux situations c'est.
+
+**La tranche suivante est donc de brancher la machine x86-64 dans
+l'application.** Ce jour-là, un seul booléen change et tous les textes suivent :
+aucun n'énumère les architectures à la main, un test le tient.
+
+### Ce qui change pour quelqu'un qui importe un fichier
+
+Avant, une `Image` ARM64 tombait dans `unknown` — donc acceptée, puis un échec
+incompréhensible. Maintenant : « un noyau Linux pour ARM64, au format Image
+ARM64 […] wisq n'a pas de cœur pour cette architecture ». Un `vmlinuz` gzippé
+n'est plus rien du tout : c'est « un fichier compressé (gzip), probablement un
+noyau, mais son architecture est à l'intérieur ».
+
+C'est la différence entre un mur et une carte.
+
+### Ce qui n'est pas promis
+
+Reconnaître vingt et une familles n'en fait pas tourner vingt et une. Un cœur
+ARM64 ou PowerPC est un lot par architecture, pas une case à cocher. Ce que
+cette tranche change, c'est qu'un fichier refusé est désormais **nommé**.
+
+Quinze tests neufs, dix sabotages, dix attrapés.
+
+---
+
 ## 2026-09-04, ~01h00 UTC — un programme tourne en anneau trois
 
 #174 fusionné. Le noyau réclamait un disque ; j'allais écrire virtio-blk. Avant

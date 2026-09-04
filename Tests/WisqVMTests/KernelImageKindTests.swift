@@ -26,7 +26,9 @@ final class KernelImageKindTests: XCTestCase {
             throw XCTSkip("image Linux absente : définir WISQ_LINUX_IMAGE pour ce test")
         }
         let kind = KernelImageKind.identify(fileAt: URL(fileURLWithPath: path))
-        XCTAssertEqual(kind, .riscvLinuxImage)
+        XCTAssertEqual(kind, .linuxKernel(KernelImage(
+            GuestArchitecture(.riscv), format: "Image RISC-V")))
+        XCTAssertEqual(kind.core, .riscv32, "le cœur doit être choisi tout seul")
         XCTAssertTrue(kind.couldBootHere)
         XCTAssertNil(
             KernelImageKind.cannotRunHereExplanation(kind, name: "Image"),
@@ -63,11 +65,13 @@ final class KernelImageKindTests: XCTestCase {
             bytes[0x13] = UInt8(machine >> 8)
             return Data(bytes)
         }
-        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x3E)), .executable("x86-64"))
-        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0xB7)), .executable("ARM64"))
-        XCTAssertEqual(
-            KernelImageKind.identify(prefix: elf(machine: 0x1234)),
-            .executable("une autre architecture"))
+        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x3E)).architecture,
+                       GuestArchitecture(.x86, bits: 64, bigEndian: false))
+        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0xB7)).architecture?.name,
+                       "ARM64")
+        // Un numéro qu'aucune architecture ne porte n'est pas nommé au hasard :
+        // il retombe sur `unknown`, qui est une permission.
+        XCTAssertEqual(KernelImageKind.identify(prefix: elf(machine: 0x1234)), .unknown)
     }
 
     /// **Un ELF RISC-V n'est pas refusé.** Ce n'est pas l'image brute que
@@ -124,11 +128,16 @@ final class KernelImageKindTests: XCTestCase {
         let bytes = Data(LinuxBootProtocolTests.header())
         let kind = KernelImageKind.identify(
             prefix: bytes, totalBytes: LinuxBootProtocolTests.measuredTotalBytes)
-        guard case .pcLinuxKernel(let header) = kind else {
+        guard case .linuxKernel(let image) = kind, let header = image.bootProtocol else {
             return XCTFail("attendu un noyau PC, obtenu \(kind)")
         }
-        XCTAssertEqual(header.architecture, "x86-64")
+        XCTAssertEqual(image.architecture, GuestArchitecture(.x86, bits: 64))
+        XCTAssertEqual(image.format, "bzImage")
         XCTAssertEqual(header.versionDescription, "2.15")
+        // Le cœur est choisi tout seul — mais il n'est pas encore branché dans
+        // l'application, et c'est cette seconde question que `couldBootHere`
+        // pose.
+        XCTAssertEqual(kind.core, .x86_64)
         XCTAssertFalse(kind.couldBootHere)
     }
 
@@ -147,8 +156,9 @@ final class KernelImageKindTests: XCTestCase {
             message.contains("C'est le bon genre de fichier"),
             "un noyau n'est pas un ISO : le message doit le distinguer — \(message)")
         XCTAssertTrue(
-            message.contains("lot 7"),
-            "il faut dire où en est le travail plutôt que « non » — \(message)")
+            message.contains("wisq a bien un cœur x86-64"),
+            "le cœur existe : dire le contraire enverrait attendre une chose "
+                + "déjà écrite — \(message)")
         XCTAssertTrue(
             message.contains("Ce n'est pas une question de mémoire"), message)
         XCTAssertFalse(message.contains("Mo de mémoire"), message)
@@ -173,7 +183,8 @@ final class KernelImageKindTests: XCTestCase {
         var bytes = [UInt8](repeating: 0, count: 0x0300)
         bytes.replaceSubrange(0x30..<0x35, with: Array("RISCV".utf8))
         bytes.replaceSubrange(0x38..<0x3C, with: Array("RSC".utf8) + [0x05])
-        XCTAssertEqual(KernelImageKind.identify(prefix: Data(bytes)), .riscvLinuxImage)
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(bytes)).architecture,
+                       GuestArchitecture(.riscv))
         XCTAssertNil(LinuxBootProtocol.read(from: bytes))
     }
 
