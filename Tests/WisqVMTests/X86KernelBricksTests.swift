@@ -14,6 +14,16 @@ import XCTest
 /// ici, c'est ce qu'il ne peut pas atteindre : les bases de segment vivent
 /// dans des MSR, et le harnais n'en écrit pas.
 final class X86KernelBricksTests: XCTestCase {
+    static let idt: UInt64 = 0x9000
+
+    /// Une porte d'interruption, dans la forme dispersée du 386.
+    static func installGate(_ ram: X86Memory, vector: Int, target: UInt64) throws {
+        let low = (target & 0xFFFF) | (UInt64(0x10) << 16)
+            | (UInt64(0x8E) << 40) | ((target & 0xFFFF_0000) << 32)
+        try ram.write(idt &+ UInt64(vector) * 16, 8, low)
+        try ram.write(idt &+ UInt64(vector) * 16 &+ 8, 8, 0)
+    }
+
     static func core(_ ram: X86Memory, _ code: [UInt8], at rip: UInt64 = 0x100) throws -> X86Core {
         try ram.load(code, at: rip)
         return X86Core(registers: [UInt64](repeating: 0, count: 16), rip: rip, memory: ram)
@@ -209,5 +219,121 @@ final class X86KernelBricksTests: XCTestCase {
         core.registers[5] = 0xAABB  // BPL vaut 0xBB
         try core.run(budget: 1)
         XCTAssertEqual(core.registers[0], 0xBB, "BPL, pas CH")
+    }
+
+    // MARK: - L'état de la virgule flottante, que le noyau range sans demander
+
+    /// `FXSAVE` écrit une zone de 512 octets. **Ce cœur n'a ni registres x87
+    /// ni XMM** : il y met les mots de contrôle qu'il tient vraiment et met le
+    /// reste à zéro. Un invité qui *calculerait* en virgule flottante ne serait
+    /// pas servi par ça — mais rien ici ne calcule en virgule flottante, et un
+    /// noyau x86-64 range cette zone dès son démarrage sans jamais demander à
+    /// `CPUID` si elle existe : sur cette architecture, elle est garantie.
+    func testFXSAVEWritesTheControlWordsItActuallyHas() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        // De la garniture, pour vérifier que la zone est bien remise à zéro.
+        try ram.load([UInt8](repeating: 0xEE, count: 512), at: 0x2000)
+        // `0f ae 06` : fxsave (%rsi)
+        var core = try Self.core(ram, [0x0F, 0xAE, 0x06])
+        core.registers[6] = 0x2000
+        core.x87Control = 0x027F
+        core.x87Status = 0x1234
+        core.mxcsr = 0x1F80
+        try core.run(budget: 1)
+        XCTAssertEqual(try ram.read(0x2000, 2), 0x027F, "le mot de contrôle x87")
+        XCTAssertEqual(try ram.read(0x2002, 2), 0x1234, "le mot d'état x87")
+        XCTAssertEqual(try ram.read(0x2018, 4), 0x1F80, "MXCSR")
+        XCTAssertEqual(try ram.read(0x201C, 4), 0xFFFF,
+                       "le masque des bits acceptés — zéro voudrait dire aucun")
+        XCTAssertEqual(try ram.read(0x2020, 8), 0, "et le reste de la zone est nettoyé")
+        XCTAssertEqual(try ram.read(0x21F8, 8), 0, "jusqu'au dernier des 512 octets")
+    }
+
+    /// Et `FXRSTOR` les relit. L'aller-retour est ce que le noyau fait à chaque
+    /// changement de contexte.
+    func testFXRSTORReadsThemBack() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        // `0f ae 06` fxsave, puis `0f ae 0e` fxrstor, au même endroit.
+        var core = try Self.core(ram, [0x0F, 0xAE, 0x06, 0x0F, 0xAE, 0x0E])
+        core.registers[6] = 0x2000
+        core.x87Control = 0x0300
+        core.mxcsr = 0x1DC0
+        try core.run(budget: 1)
+        core.x87Control = 0
+        core.mxcsr = 0
+        try core.run(budget: 1)
+        XCTAssertEqual(core.x87Control, 0x0300)
+        XCTAssertEqual(core.mxcsr, 0x1DC0)
+    }
+
+    /// `STMXCSR` et `LDMXCSR` seuls, sans la zone entière.
+    func testMXCSRGoesOutAndComesBack() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        // `0f ae 1e` stmxcsr (%rsi) ; `0f ae 16` ldmxcsr (%rsi)
+        var core = try Self.core(ram, [0x0F, 0xAE, 0x1E, 0x0F, 0xAE, 0x16])
+        core.registers[6] = 0x2000
+        core.mxcsr = 0x1F80
+        try core.run(budget: 1)
+        XCTAssertEqual(try ram.read(0x2000, 4), 0x1F80)
+        try ram.write(0x2000, 4, 0x1DC0)
+        try core.run(budget: 1)
+        XCTAssertEqual(core.mxcsr, 0x1DC0)
+    }
+
+    /// `FWAIT` attend que le coprocesseur ait fini. Il n'y en a pas qui
+    /// calcule, donc il n'y a jamais rien à attendre — mais le noyau en sème
+    /// autour de ses instructions x87.
+    func testFWAITIsANoOp() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0x9B, 0xF4])
+        try core.run(budget: 2)
+        XCTAssertTrue(core.halted)
+    }
+
+    // MARK: - Les interruptions que le code demande lui-même
+
+    /// **`INT3` reprend *après* l'instruction, pas dessus.** C'est un appel,
+    /// pas une faute : une faute dépose l'adresse de l'instruction fautive
+    /// pour qu'on puisse la rejouer, une interruption logicielle dépose la
+    /// suivante pour qu'on puisse continuer. Confondre les deux fait boucler
+    /// le gestionnaire sur son propre point d'arrêt.
+    func testINT3PushesTheAddressAfterItself() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.installGate(ram, vector: 3, target: 0x8000)
+        try ram.load([0xF4], at: 0x8000)
+        // `cc` puis `90` : le retour doit pointer sur le NOP.
+        var core = try Self.core(ram, [0xCC, 0x90])
+        core.descriptorBases[1] = Self.idt
+        core.descriptorLimits[1] = 0x1FF
+        core.registers[4] = 0x7000
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, 0x8000)
+        // Le cadre : cinq cases, l'adresse de reprise en bas.
+        XCTAssertEqual(try ram.read(core.registers[4], 8), 0x101,
+                       "l'adresse **après** l'INT3")
+    }
+
+    /// `INT n` fait la même chose, avec le vecteur qu'on lui donne.
+    func testINTWithANumberEntersThatVector() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.installGate(ram, vector: 0x80, target: 0x8000)
+        try ram.load([0xF4], at: 0x8000)
+        var core = try Self.core(ram, [0xCD, 0x80, 0x90])
+        core.descriptorBases[1] = Self.idt
+        core.descriptorLimits[1] = 0xFFF
+        core.registers[4] = 0x7000
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, 0x8000)
+        XCTAssertEqual(try ram.read(core.registers[4], 8), 0x102)
+    }
+
+    /// Sans porte pour ce vecteur, l'instruction est **refusée** plutôt
+    /// qu'ignorée — et RIP ne bouge pas, pour que l'arrêt nomme la bonne
+    /// instruction.
+    func testAnINTWithoutAGateIsRefusedWithoutMovingRIP() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xCC])
+        XCTAssertThrowsError(try core.run(budget: 1))
+        XCTAssertEqual(core.rip, 0x100)
     }
 }

@@ -2755,42 +2755,86 @@ habitude.
      Douze tests écrits à la main dans `X86KernelBricksTests`, plus ce que
      l'oracle a gagné. **9 036 → 9 804 cas** contre le vrai processeur.
 
-   - **La tentative : Linux démarre.** `X86BootAttemptTests` charge le vrai
-     noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une pagination
-     d'identité, entre en mode long et saute. Le noyau se décompresse, entre
-     dans son propre espace d'adressage, et **écrit sur le port série de
-     wisq** :
+   - **3f. Le contrôleur d'interruptions et l'horloge** — *fait*. Le noyau
+     s'arrêtait sur `Failed to register legacy timer interrupt`, après avoir
+     écrit `Using NULL legacy PIC` : sa sonde du 8259 avait échoué, donc il
+     n'avait personne à qui demander l'interruption zéro. La sonde est **deux
+     lignes** — écrire un masque dans le port 0x21 et le relire.
+
+     `X86LegacyDevices` porte le couple de 8259 (séquence d'initialisation,
+     masque, demande, service, fin d'interruption) et le 8253 (canal zéro qui
+     bat, canal deux que Linux utilise pour étalonner son compteur de cycles,
+     commande de verrouillage, port 0x61). La livraison réutilise le chemin
+     des exceptions ; seuls le vecteur et le code d'erreur changent.
+
+     **Le temps de l'invité vient du compteur d'instructions**, à raison de
+     douze instructions par battement. C'est une **décision**, pas une mesure :
+     brancher une vraie horloge rendrait les exécutions irreproductibles, et un
+     instantané ne rendrait plus la machine telle quelle. `HLT` attend
+     désormais au lieu de s'arrêter — avec un second compteur pour le temps qui
+     passe, sans quoi l'horloge s'arrêterait avec le processeur et le réveil
+     n'arriverait jamais.
+
+     **Et le défaut que ça a révélé** : `BT`/`BTS`/`BTR`/`BTC` avec une
+     destination en mémoire. Le numéro de bit n'y est **pas** réduit au modulo
+     — c'est la forme « chaîne de bits » du manuel : le numéro est signé, et le
+     processeur va chercher le mot qui contient ce bit-là. Le replier dans le
+     premier mot, comme pour un registre, écrase tout un tableau de bits sur
+     ses soixante-quatre premiers.
+
+     Linux tient ses vecteurs réservés dans un tableau de 256 bits. Ceux de
+     0xEC à 0xFF atterrissaient aux numéros 44 et 48 à 63 — **pile sur les
+     vecteurs des interruptions ISA**. Le noyau les croyait pris, ne posait
+     plus de porte pour l'horloge, et attendait un battement qui ne pouvait
+     plus arriver. Les quinze vecteurs manquants dans son IDT étaient
+     exactement ses vecteurs système modulo 64, ce qui a nommé le défaut sans
+     avoir à le chercher. L'oracle matériel porte maintenant trois programmes
+     de chaîne de bits, numéros négatifs compris.
+
+     Avec ça : `BSWAP`, `FXSAVE`/`FXRSTOR`, `LDMXCSR`/`STMXCSR`, `FWAIT`,
+     `INT3` et `INT n` — toutes nommées par un arrêt, comme les précédentes.
+     `FXSAVE` écrit les mots de contrôle que ce cœur tient vraiment et met le
+     reste à zéro : il n'a ni registres x87 ni XMM, et rien ici ne calcule en
+     virgule flottante.
+
+   - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
+     charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
+     pagination d'identité, entre en mode long et saute. Le noyau va jusqu'à
+     `kernel_init` et s'arrête pour la seule raison qui reste :
 
      ```
      [    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) …
      [    0.000000] CPU: vendor_id 'wisq  x86-64' unknown, using generic init.
-     [    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000000fffffff] usable
-     [    0.000000] Memory: 218360K/261752K available (14336K kernel code, …)
-     [    0.000000] printk: console [ttyS0] enabled
-     [    0.000000] Failed to register legacy timer interrupt
+     [    8.929917] printk: console [ttyS0] enabled
+     [   21.480833] smpboot: Total of 1 processors activated (28.82 BogoMIPS)
+     [   21.546634] devtmpfs: initialized
+     [   32.137346] TCP: Hash tables configured (established 2048 bind 2048)
+     [   44.818378] ---[ end Kernel panic - not syncing: VFS: Unable to mount
+                        root fs on unknown-block(0,0) ]---
      ```
 
-     **Presque cinq mille octets de journal**, et un arrêt que le noyau nomme
-     lui-même : il n'y a ni PIT ni APIC, donc aucune horloge ne bat et il
-     tourne en rond dans une boucle d'attente. La tranche suivante est écrite
-     dans ce message d'erreur.
+     **C'est la bonne fin.** Un noyau sans disque et sans initrd dit exactement
+     ça, sur une vraie machine comme ici. **262 lignes de journal**, une trace
+     d'appels avec les noms des fonctions — donc `printk`, la table des
+     symboles, le dérouleur de pile, les exceptions, l'horloge et la mémoire
+     virtuelle marchent tous. Ce qui manque n'est plus dans le processeur :
+     c'est un disque, et c'est la tranche suivante.
 
-     Deux milliards d'instructions en **142,9 s**, soit **14,0 MIPS** sur du
-     vrai code de noyau — un chiffre plus honnête que celui du banc, qui
-     tourne sur une boucle choisie.
+     **3,5 milliards d'instructions en 4 min 30 s** en release, soit 13 MIPS
+     sur du vrai code de noyau — un chiffre plus honnête que celui du banc, qui
+     tourne sur une boucle choisie. Quarante-quatre secondes de temps invité.
 
      **Ce qui a rendu tout ça visible** : `earlyprintk=serial` dans la ligne de
      commande. `console=ttyS0` seul n'ouvre la console qu'une fois le pilote
      série chargé, c'est-à-dire après tout ce qui aurait pu mal tourner avant.
-     Sans `earlyprintk`, un démarrage qui échoue à mi-chemin ne dit rien du
-     tout. C'est la différence entre « ça s'arrête quelque part » et une
-     bannière suivie d'un message d'erreur nommé.
 
      **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
      jamais l'inverse. `CLD`/`CLI`, les segments, le retour lointain,
      `PUSHF`/`POPF`, les opérations sur chaînes, trois instructions x87, la
-     carte E820, la livraison d'exception, puis les six briques ci-dessus.
-     Aucune n'a été écrite « au cas où ».
+     carte E820, la livraison d'exception, l'octet haut lu par une instruction
+     plus large, `ENDBR64`, les bases de FS et GS, `CMPXCHG`, les registres de
+     débogage, le 8259, le 8253, la chaîne de bits, `BSWAP`, `FXSAVE`,
+     `INT3`. Aucune n'a été écrite « au cas où ».
 
      Coût de tout cet ajout sur le débit : **15,4 → 13,5 MIPS**.
 4. **La MMU.** Pagination à quatre niveaux, TLB, fautes de page. C'est le
