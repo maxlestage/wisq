@@ -88,6 +88,7 @@ public struct X86Core: @unchecked Sendable {
     /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
+    public var unmatchedReturns: [UnmatchedReturn] = []
     /// Les appels qui prennent leur adresse en mémoire. Voir
     /// `X86IndirectCallWatch.swift`.
     public var indirectCalls: [IndirectCall] = []
