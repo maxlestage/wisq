@@ -258,3 +258,46 @@ extension X86Core {
 
     static let pagingBit: UInt64 = X86SystemState.paging
 }
+
+// **Une instruction à cheval sur deux pages.**
+//
+// Le cœur ne traduisait que le **premier octet** de l'instruction, puis
+// laissait le décodeur lire jusqu'à quatorze octets de plus, contigus en
+// mémoire *physique*. Or la trame physiquement suivante n'est presque jamais
+// la page virtuellement suivante : une instruction qui traverse se décodait
+// sur les octets d'ailleurs.
+//
+// **C'est ce qui tuait `mdev`.** Le témoin des sauts dans le vide a fait
+// partir les trois morts qu'il a vues de la même place dans une page — le
+// déplacement `ffd`, trois octets avant la fin — avec les mêmes octets de
+// départ. Un `jle rel32` en fait six : les deux premiers venaient de la bonne
+// page, les quatre du déplacement d'une autre. Le saut atterrissait dans le
+// vide, et le noyau tuait le programme.
+//
+// Quatorze octets sur quatre mille quatre-vingt-seize peuvent traverser, et
+// seulement quand la pagination est active. Le chemin rapide reste donc ce
+// qu'il était ; celui-ci ne sert que quand le décodeur dit qu'il lui manque
+// des octets.
+extension X86Core {
+    /// Recoller les deux moitiés, en traduisant la seconde page.
+    ///
+    /// **La faute sur cette seconde page est la bonne.** Un processeur la
+    /// prend ; il n'invente pas des octets. C'est le second test de
+    /// `X86PageStraddlingFetchTests`, et sans lui un programme dont la page
+    /// suivante n'est pas encore là exécuterait n'importe quoi.
+    mutating func decodeAcrossPageBoundary(from start: Int, have: Int) throws -> X86Instruction {
+        guard let memory else { throw Fault.unsupported("une instruction sans mémoire") }
+        for index in 0..<have { fetchWindow[index] = memory.bytes[start + index] }
+        let next = (rip & ~UInt64(0xFFF)) &+ 0x1000
+        let physical = try translate(next, .fetch)
+        guard let beyond = memory.offset(physical, 1) else {
+            throw Fault.outsideMemory(physical)
+        }
+        let more = min(X86Instruction.maximumLength - have, memory.size - beyond)
+        for index in 0..<more { fetchWindow[have + index] = memory.bytes[beyond + index] }
+        return try fetchWindow.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { throw X86DecodeError.truncated }
+            return try X86Decoder.decode(base, available: have + more)
+        }
+    }
+}
