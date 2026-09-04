@@ -169,6 +169,81 @@ final class X86PagePermissionTests: XCTestCase {
                        "présente, depuis un programme, et c'est une lecture d'instruction")
     }
 
+    // MARK: - L'entrée en interruption
+
+    static let idt: UInt64 = 0x9000
+    static let handler: UInt64 = 0xB000
+    static let taskSegment: UInt64 = 0xC000
+    static let kernelStackTop: UInt64 = 0xE000
+
+    /// La même pagination, mais la moitié haute de la mémoire est **interdite
+    /// aux programmes** : c'est là que vivent l'IDT, le gestionnaire, le TSS et
+    /// la pile du noyau, comme sur une vraie machine.
+    static func machineWithAKernelHalf() throws -> X86Core {
+        let memory = X86Memory(size: 0x10000, base: 0)
+        // `int3` : n'importe quelle instruction ferait l'affaire, on entre à
+        // la main.
+        try memory.load([0xCC], at: program)
+        let open = present | writable | user
+        let closed = present | writable
+        try memory.write(pml4, 8, pdpt | open)
+        try memory.write(pdpt, 8, directory | open)
+        try memory.write(directory, 8, table | open)
+        for page in stride(from: UInt64(0), to: UInt64(0x10000), by: 0x1000) {
+            try memory.write(table &+ (page >> 12) * 8, 8,
+                             page | (page < 0x9000 ? open : closed))
+        }
+        // Une porte pour le vecteur 14, vers le gestionnaire du noyau.
+        let low = (handler & 0xFFFF) | (UInt64(0x10) << 16)
+            | (UInt64(0x8E) << 40) | ((handler & 0xFFFF_0000) << 32)
+        try memory.write(idt &+ 14 * 16, 8, low)
+        try memory.write(idt &+ 14 * 16 &+ 8, 8, 0)
+        // Le TSS : RSP0 au sommet de la pile du noyau.
+        try memory.write(taskSegment &+ 4, 8, kernelStackTop)
+
+        var core = X86Core(registers: [UInt64](repeating: 0, count: 16),
+                           rip: program, memory: memory)
+        core.system.control[3] = pml4
+        core.system.control[0] = X86Core.writeProtect
+        core.pagingActive = true
+        core.descriptorBases[1] = idt
+        core.descriptorLimits[1] = 0xFFF
+        core.taskSelector = 0x28
+        core.taskBase = taskSegment
+        core.taskLimit = 0x67
+        core.segments[1] = 0x33
+        core.segments[2] = 0x1B
+        core.registers[4] = 0x7000  // la pile du programme
+        return core
+    }
+
+    /// **L'ordre compte, et il ne se voyait pas avant.** Le cadre d'une
+    /// interruption s'écrit sur la pile du noyau, qui est interdite aux
+    /// programmes. Le processeur y arrive parce qu'il est **déjà** passé en
+    /// anneau zéro quand il empile.
+    ///
+    /// Tant que rien ne vérifiait le bit utilisateur, empiler avant ou après le
+    /// changement d'anneau revenait au même. Dès qu'on l'a vérifié, la toute
+    /// première faute de page d'un programme n'a plus pu être livrée : le
+    /// noyau se faisait refuser sa propre pile d'entrée, et le vrai démarrage
+    /// s'arrêtait net sur `pageFault(0xfffffe00000000e0)` — l'aire d'entrée du
+    /// processeur, chez Linux.
+    func testTheFrameIsWrittenInTheRingOfTheHandlerNotTheProgram() throws {
+        var core = try Self.machineWithAKernelHalf()
+        XCTAssertEqual(core.privilege, 3, "on part bien d'un programme")
+        XCTAssertTrue(try core.enter(14, errorCode: 0),
+                      "la porte existe et la pile du noyau est atteignable")
+        XCTAssertEqual(core.privilege, 0)
+        XCTAssertEqual(core.rip, Self.handler)
+        // Six mots depuis RSP0 : SS, RSP, RFLAGS, CS, RIP, code d'erreur.
+        XCTAssertEqual(core.registers[4], Self.kernelStackTop - 48)
+        // Et c'est bien le CS **d'avant** qui est dans le cadre, pas celui du
+        // gestionnaire : c'est lui que l'IRETQ rendra au programme.
+        XCTAssertEqual(try core.memory?.read(Self.kernelStackTop - 32, 8), 0x33)
+        XCTAssertEqual(try core.memory?.read(Self.kernelStackTop - 8, 8), 0x1B)
+        XCTAssertEqual(try core.memory?.read(Self.kernelStackTop - 16, 8), 0x7000)
+    }
+
     private func memoryHolds(_ core: inout X86Core, _ value: UInt64) throws {
         try core.memory?.write(Self.subject, 8, value)
     }

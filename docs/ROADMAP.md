@@ -3152,6 +3152,21 @@ habitude.
      le contrôle **aussi sur le succès de cache** — sans quoi il aurait suffi
      de lire une page avant de l'écrire pour passer au travers.
 
+     **Et la correction en a réclamé deux autres**, chacune nommée par le
+     noyau lui-même. Tant que rien ne vérifiait le bit utilisateur, deux ordres
+     de choses ne pouvaient pas se voir :
+
+     - **Le cadre d'une interruption s'écrit dans l'anneau du gestionnaire**,
+       pas dans celui du programme. wisq empilait avant de changer d'anneau ;
+       le noyau s'est fait refuser sa propre pile d'entrée, et le démarrage
+       s'est arrêté net sur `pageFault(0xfffffe00000000e0)` — l'aire d'entrée
+       du processeur, chez Linux.
+     - **Le processeur lit ses propres tables en son nom.** L'IDT, la GDT et le
+       segment de tâche ne sont pas ouverts aux programmes — c'est la bonne
+       configuration — et un programme qui prend une faute ne demande pas à
+       lire l'IDT : c'est la machine qui va y chercher la porte. Un accès
+       `.machine` distingue désormais les deux.
+
      Le harnais différentiel n'aura pas été nécessaire.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`

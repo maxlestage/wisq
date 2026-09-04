@@ -56,13 +56,23 @@ extension X86Core {
         case write
         /// La lecture de l'instruction elle-même.
         case fetch
+        /// **Le processeur lisant ses propres tables** : l'IDT, la GDT, le
+        /// segment de tâche. Ces lectures-là ne sont ni celles du programme ni
+        /// celles du noyau — c'est la machine qui les fait, en son nom, et
+        /// aucun bit de permission ne les concerne. Un programme d'anneau
+        /// trois qui prend une faute ne demande pas à lire l'IDT ; c'est le
+        /// processeur qui va y chercher la porte, et il l'a toujours le droit.
+        ///
+        /// Sans cette distinction, la toute première faute d'un programme ne
+        /// pouvait plus être livrée : la lecture de la porte était refusée
+        /// parce que l'IDT n'est pas ouverte aux programmes — ce qui est la
+        /// bonne configuration, et la mauvaise question.
+        case machine
 
-        /// Le code d'erreur d'une faute de page pour cet accès. Le bit de
-        /// présence reste à zéro : ce cœur ne faute que sur une entrée
-        /// absente, jamais sur une protection.
+        /// Le code d'erreur d'une faute de page pour cet accès.
         var errorCode: UInt64 {
             switch self {
-            case .read: return 0
+            case .read, .machine: return 0
             case .write: return 1 << 1
             case .fetch: return 1 << 4
             }
@@ -122,6 +132,7 @@ extension X86Core {
     /// la page en cache et une écriture ultérieure passerait sans être vue.
     @inline(__always)
     func allowed(_ flags: UInt8, _ access: Access) -> Bool {
+        if access == .machine { return true }
         if privilege == 3 {
             guard flags & Self.mayReachFromRingThree != 0 else { return false }
             return access != .write || flags & Self.mayWrite != 0
