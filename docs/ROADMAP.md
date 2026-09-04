@@ -3000,6 +3000,35 @@ habitude.
      s'arrête sur `0F 05` à RIP `0x7f0f12ae386d`. C'est `SYSCALL`. Le plan
      avait raison sur le quoi et tort sur l'ordre.
 
+   - **`SYSCALL` et `SYSRET`.** Pas une interruption, et c'est tout l'intérêt :
+     l'adresse de retour dans RCX, les drapeaux dans R11, le segment et
+     l'adresse dans des MSR, un saut — et **aucun changement de pile**. RSP
+     reste celui du programme, et c'est au noyau de le remplacer, d'où le
+     `SWAPGS` en tête de son gestionnaire.
+
+     **C'est le second endroit du cœur qui ne soit pas prouvé contre la
+     machine**, après la division par zéro : un `SYSCALL` dans le harnais de
+     l'oracle entrerait dans le noyau de l'hôte au lieu de répondre. Dix tests
+     écrits à la main contre le manuel, sept sabotages.
+
+     **Plus aucun opcode refusé.** Le budget entier de 3,5 milliards passe, le
+     journal grandit de 12 685 à 17 225 octets, et `/init` fait de vrais appels
+     système — `modprobe` tourne deux fois avant lui.
+
+   - **Ce qui reste, et ce n'est plus une brique.** Le programme meurt d'un
+     SIGSEGV dans le chargeur de musl. Les octets que le noyau imprime —
+     `mov 0x8c(%rdi),%eax` — se retrouvent à l'offset `0x4f209` de
+     `ld-musl-x86_64.so.1`, au début de **`feof`** ; le `FILE *` qu'on lui
+     passe vaut `0x00037cde165f7280` là où un pointeur de cette bibliothèque
+     ressemble à `0x00007f89e85118a0`.
+
+     Ce n'est plus une instruction qui manque, **c'est une valeur qui se
+     corrompt**. Trouver un défaut et écrire une brique sont deux métiers
+     différents : le premier se lit dans un arrêt, le second demande un témoin.
+     La tranche suivante est donc le harnais différentiel contre QEMU —
+     planifié une première fois puis abandonné parce que lire l'IDT du noyau
+     avait suffi ; cette fois il n'y a pas de raccourci.
+
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
      pagination d'identité, entre en mode long et saute. Le noyau va jusqu'à
