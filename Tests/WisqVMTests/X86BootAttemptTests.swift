@@ -149,6 +149,9 @@ final class X86BootAttemptTests: XCTestCase {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
             port série            : \(core.serialOutput.count) octets
+            retours rompus : \(core.brokenReturns.isEmpty ? "aucun"
+                : "\n" + core.brokenReturns.map { "  " + $0.description }
+                    .joined(separator: "\n"))
             programmes démarrés : \(core.processStarts.isEmpty ? "aucun"
                 : "\n" + core.processStarts.map { "  " + $0.description }
                     .joined(separator: "\n"))

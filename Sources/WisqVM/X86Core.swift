@@ -85,6 +85,9 @@ public struct X86Core: @unchecked Sendable {
     /// les portent. Voir `X86ProcessStartWatch.swift`.
     public var processStarts: [ProcessStart] = []
     public var addressSpacesSeen: [UInt64] = []
+    /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
+    public var shadowStack: [PendingReturn] = []
+    public var brokenReturns: [BrokenReturn] = []
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -332,13 +335,24 @@ public struct X86Core: @unchecked Sendable {
                 if watching, !addressSpacesSeen.contains(system.control[3]) {
                     addressSpacesSeen.append(system.control[3])
                     noteProcessStart()
+                    // Un espace d'adressage neuf est un autre programme : ses
+                    // retours n'ont rien à voir avec ceux d'avant.
+                    forgetShadowStack()
                 }
+                let wasCall = watching && Self.callsOrReturns(instruction) == .call
+                let wasReturn = watching && Self.callsOrReturns(instruction) == .ret
                 let entry = rip
                 let before = watching ? registers : []
                 try execute(instruction)
                 if watching {
                     rememberBirths(before: before, rip: entry)
                     previousRip = entry
+                    if wasCall {
+                        rememberCall(promised: entry &+ UInt64(instruction.length),
+                                     at: entry)
+                    } else if wasReturn {
+                        rememberReturn(taken: rip, at: entry)
+                    }
                 }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
