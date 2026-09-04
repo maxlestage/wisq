@@ -8,6 +8,101 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~03h50 UTC — la sélection automatique a maintenant deux destinations
+
+Maxime, hier : « il me faut toutes les architectures Linux qui peuvent exister
+et la bonne par rapport à l'image sera automatiquement sélectionnée ». La
+première moitié était faite — vingt et une familles reconnues, le cœur nommé
+par le fichier. La seconde ne l'était qu'à moitié, et je l'avais écrit ainsi :
+le cœur x86-64 démarrait un vrai noyau d'Alpine pendant que `LocalVMModel` ne
+savait construire que la machine RISC-V. Une sélection à une seule destination
+n'est pas une sélection.
+
+### Les trois pièces
+
+`GuestMachine` est le protocole commun : charger, tourner, arrêter, taper,
+sauver, reprendre. `GuestMachineFactory` choisit selon `KernelImageKind.core`.
+`LocalVMModel` passe par elle — et **l'ordre a dû s'inverser** : la machine
+était construite d'abord, parce qu'il n'y en avait qu'une sorte ; maintenant il
+faut avoir lu le fichier avant de savoir quoi construire.
+
+Un détail qui n'en est pas un : `runGuest` ne s'appelle pas `run`. Les deux
+machines ont déjà un `run`, et ils rendent des types différents ; une exigence
+de protocole nommée `run` aurait créé une surcharge que seul le type de retour
+distingue, donc un appel ambigu à chaque site. Un nom un peu plus long vaut
+mieux qu'une ambiguïté que le compilateur tranche au hasard.
+
+### Deux refus que le protocole a fait apparaître
+
+**Un disque en mémoire donné à la machine RISC-V est refusé, et nommé.** Son
+chargeur place un noyau et un arbre de périphériques ; un initramfs n'y a aucun
+champ où être annoncé. L'ignorer en silence donnerait un démarrage qui va
+jusqu'au bout puis panique faute de racine — un symptôme à quatre milliards
+d'instructions de sa cause. Le test qui le tient a une seconde moitié qui
+compte autant : la **même** image, sans disque, échoue pour une **autre**
+raison. Sans elle, la garde pourrait être placée après le chargement et le test
+passerait quand même.
+
+**Une faute du cœur PC traverse le protocole avec son nom.** C'est la seule
+sortie que le RISC-V n'a pas, donc la seule que la traduction pouvait perdre.
+La perdre transformerait « l'instruction telle n'est pas écrite » en
+« arrêtée », et cette phrase-là n'aide personne à savoir quelle brique poser
+ensuite — or c'est exactement comme ça que ce cœur s'est construit.
+
+### Ce qui a disparu, et pourquoi c'est le bon geste
+
+`Core.availableInTheApp` existait pour que le refus dise la vérité : « le cœur
+existe, il n'est pas branché » plutôt que « pas de cœur ». Une fois la fabrique
+en place, les deux questions ont la même réponse et le drapeau n'avait plus de
+valeur `false` à rendre. Sa branche de refus devenait **inatteignable par
+n'importe quel test**.
+
+Je l'ai supprimée. Une phrase que personne ne pourra plus lire est pire qu'une
+phrase absente : elle a l'air d'une garantie et n'en est plus une. Le jour où
+un troisième cœur arrivera avant son câblage, il faudra la réécrire — et ce
+jour-là elle aura un cas. Le raisonnement est écrit à l'endroit exact où elle
+se trouvait, pour que le prochain à passer n'ait pas à le refaire.
+
+Trois tests ailleurs ont changé de résultat à cause de ça, et ce sont de vraies
+conséquences, pas des ajustements : un `bzImage` n'est plus refusé, son
+`couldBootHere` est vrai, et un ELF x86-64 est maintenant **laissé passer** au
+lieu d'être nommé — parce que la règle « un ELF pour une architecture qu'on
+fait tourner n'est pas refusé, un `vmlinux` arrive sous cette forme » couvre
+désormais x86-64 aussi.
+
+### Ce qui n'est pas promis
+
+Les deux cœurs demandent un noyau avec un **initramfs embarqué** : ni l'un ni
+l'autre des chargeurs ne monte de racine, et l'application ne passe pas de
+disque. Le noyau d'Alpine sans initrd démarre entièrement puis panique, comme
+il le fait déjà dans `X86BootAttemptTests`. Les deux machines sont donc à
+égalité là-dessus, ce qui rend le branchement honnête ; ça ne le rend pas
+suffisant pour une distribution complète.
+
+Et le plancher de mémoire : une machine PC a besoin de cent vingt-huit
+mébioctets — son noyau décompressé en fait trente-cinq à lui seul. Le plafond
+du téléphone, lui, ne change pas. Quand les deux ne se rencontrent pas,
+l'application le dit ; c'est une des rares fois où parler de mégaoctets est la
+bonne réponse, parce qu'ici la mémoire est vraiment le problème.
+
+### Mesures
+
+Dix tests nouveaux, treize sabotages — chacun a fait échouer le test **nommé**,
+et rien d'autre. Trois tests mis à jour, chacun sabordé à son tour. Suite
+complète : 1449 tests, zéro échec. Le site : 246, zéro échec — dont la garde de
+mise en forme, qui a attrapé deux lignes vides consécutives laissées par une
+suppression.
+
+Ce qui n'a **pas** pu être vérifié d'ici : `LocalVMModel` et `LocalMachine` sont
+sous `#if os(iOS)` et ne compilent pas sur Linux. Je les ai typés hors de
+l'arbre, contre les vrais modules construits, avec `swiftc -typecheck` — ce qui
+attrape les erreurs de type mais pas ce qui dépend de SwiftUI. Seul le travail
+« App iOS » de l'intégration continue peut trancher. Un avertissement en est
+sorti et a été corrigé : la conformance du cœur Rust au protocole est
+`@retroactive`, parce que ni le type ni le protocole n'appartiennent au module
+où elle vit — et elle ne peut pas vivre ailleurs, `WisqVMRust` ne dépendant
+délibérément pas de `WisqVM`.
+
 ## 2026-09-04, ~02h10 UTC — l'instantané de la machine PC, mesuré avant d'être conçu
 
 Le seul obstacle à brancher `X86Machine` était l'instantané : 256 Mio de RAM
