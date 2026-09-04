@@ -139,4 +139,87 @@ final class X86RingWatchTests: XCTestCase {
         }
         XCTAssertEqual(core.ringTrips.count, X86Core.ringTripLimit)
     }
+
+    /// Un rapport vide a deux causes possibles — tout allait bien, ou rien
+    /// n'a regardé. Le compte les sépare, et c'est sa seule raison d'être.
+    func testAPassageThatChangesNothingIsStillCounted() throws {
+        var core = try Self.core([0x90])
+        for _ in 0..<5 {
+            core.registers[4] = Self.stack
+            core.leavingRingThree(at: 0x1000, cause: .systemCall)
+            core.returningToRingThree()
+        }
+        XCTAssertTrue(core.ringTrips.isEmpty, "aucune pile n'a bougé")
+        XCTAssertEqual(core.ringPassages.total, 5)
+        XCTAssertEqual(core.ringPassages.systemCalls, 5)
+        XCTAssertEqual(core.ringPassages.shifted, 0)
+    }
+
+    func testATallyThatSawNothingSaysSoRatherThanSayingZero() {
+        XCTAssertEqual(X86Core.RingTally().description,
+                       "aucun — le témoin n'a jamais été appelé")
+    }
+
+    func testTheCountSeparatesTheThreeCauses() throws {
+        var core = try Self.core([0x90])
+        for cause in [X86Core.RingTrip.Cause.systemCall, .fault, .fault,
+                      .interrupt, .interrupt, .interrupt] {
+            core.registers[4] = Self.stack
+            core.leavingRingThree(at: 0x1000, cause: cause)
+            core.returningToRingThree()
+        }
+        XCTAssertEqual(core.ringPassages.systemCalls, 1)
+        XCTAssertEqual(core.ringPassages.faults, 2)
+        XCTAssertEqual(core.ringPassages.interrupts, 3)
+        XCTAssertEqual(core.ringPassages.total, 6)
+    }
+
+    /// Le rapport ne garde que seize décalages ; le compte, lui, les voit
+    /// tous. Sans ça, « seize » serait indiscernable de « seize et quelques ».
+    func testTheCountSeesTheShiftsTheReportCannotKeep() throws {
+        var core = try Self.core([0x90])
+        let many = X86Core.ringTripLimit + 4
+        for index in 0..<many {
+            core.registers[4] = Self.stack
+            core.leavingRingThree(at: UInt64(index), cause: .fault)
+            core.registers[4] = Self.stack &- 8
+            core.returningToRingThree()
+        }
+        XCTAssertEqual(core.ringTrips.count, X86Core.ringTripLimit)
+        XCTAssertEqual(core.ringPassages.shifted, UInt64(many))
+        XCTAssertEqual(core.ringPassages.total, UInt64(many))
+    }
+
+    /// Le témoin ne suit qu'un départ à la fois. Une faute pendant un appel
+    /// système recouvre donc le départ en cours — ce qui est acceptable, mais
+    /// doit se compter, sans quoi le total mentirait par omission.
+    func testADepartureCoveredByAnotherIsCountedAsAbandoned() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: 0x1000, cause: .systemCall)
+        core.leavingRingThree(at: 0x2000, cause: .fault)
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.abandoned, 1)
+        XCTAssertEqual(core.ringPassages.total, 1)
+        XCTAssertEqual(core.ringPassages.faults, 1)
+        XCTAssertEqual(core.ringPassages.systemCalls, 0)
+    }
+
+    func testTheTallySaysWhatItSawAndWhatItFound() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: 0x1000, cause: .systemCall)
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.description,
+                       "1 achevés (syscall 1, faute 0, interruption 0),"
+                       + " aucun ne décale la pile")
+
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: 0x1000, cause: .fault)
+        core.registers[4] = Self.stack &- 8
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.description,
+                       "2 achevés (syscall 1, faute 1, interruption 0),"
+                       + " dont 1 décalent la pile")
+    }
 }

@@ -55,13 +55,58 @@ extension X86Core {
         }
     }
 
+    /// Ce que le témoin a vu passer, et non pas seulement ce qu'il a retenu.
+    ///
+    /// Un témoin qui ne garde que les cas remarquables rend un rapport où
+    /// « aucun » a deux sens : *j'ai regardé des millions de fois et tout
+    /// allait bien*, et *je n'ai jamais été appelé*. Ces deux-là ne se
+    /// distinguent pas à l'œil, et le second est un défaut d'instrument qui
+    /// se lit comme un résultat. Le compte les sépare.
+    public struct RingTally: Sendable, Equatable {
+        /// Les passages achevés — partis de l'anneau trois et revenus —
+        /// rangés par ce qui les a provoqués.
+        public var systemCalls: UInt64 = 0
+        public var faults: UInt64 = 0
+        public var interrupts: UInt64 = 0
+        /// Ceux qui ont rendu une pile décalée, y compris au-delà de ce que
+        /// `ringTripLimit` permet de garder.
+        public var shifted: UInt64 = 0
+        /// Les départs recouverts par un autre avant d'être revenus : une
+        /// faute pendant un appel système, par exemple. Le témoin ne suit
+        /// qu'un départ à la fois et le dit plutôt que de le taire.
+        public var abandoned: UInt64 = 0
+
+        public var total: UInt64 { systemCalls + faults + interrupts }
+
+        mutating func count(_ cause: RingTrip.Cause) {
+            switch cause {
+            case .systemCall: systemCalls += 1
+            case .fault: faults += 1
+            case .interrupt: interrupts += 1
+            }
+        }
+
+        public var description: String {
+            guard total > 0 || abandoned > 0 else {
+                return "aucun — le témoin n'a jamais été appelé"
+            }
+            var said = "\(total) achevés (syscall \(systemCalls),"
+                + " faute \(faults), interruption \(interrupts))"
+            if abandoned > 0 { said += ", \(abandoned) recouverts" }
+            said += shifted > 0 ? ", dont \(shifted) décalent la pile"
+                : ", aucun ne décale la pile"
+            return said
+        }
+    }
+
     /// Combien d'aller-retours **décalés** on retient. Ceux qui rendent la
     /// pile intacte ne sont pas gardés : il y en a des millions, et ils
-    /// n'apprennent rien.
+    /// n'apprennent rien. Le compte, lui, les voit tous.
     public static let ringTripLimit = 16
 
     /// À appeler au moment de quitter l'anneau trois.
     mutating func leavingRingThree(at: UInt64, cause: RingTrip.Cause) {
+        if ringDeparture != nil { ringPassages.abandoned += 1 }
         ringDeparture = (at, cause, registers[4], retired)
     }
 
@@ -70,7 +115,9 @@ extension X86Core {
     mutating func returningToRingThree() {
         guard let departure = ringDeparture else { return }
         ringDeparture = nil
+        ringPassages.count(departure.cause)
         guard departure.stack != registers[4] else { return }
+        ringPassages.shifted += 1
         guard ringTrips.count < Self.ringTripLimit else { return }
         ringTrips.append(RingTrip(
             at: departure.at, cause: departure.cause, leaving: departure.stack,
