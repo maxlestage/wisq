@@ -45,6 +45,24 @@ extension X86Core {
         Float(bitPattern: UInt32(truncatingIfNeeded: bits))
     }
 
+    /// **Le NaN « indéfini réel »**, celui que x86 fabrique quand l'opération
+    /// elle-même est invalide : `0/0`, `inf - inf`, `0 × inf`, la racine d'un
+    /// négatif. Le bit de signe est **posé** — c'est un NaN *négatif*, et ce
+    /// détail n'est pas cosmétique : un ARM rend `7ff8…`, un x86 rend `fff8…`,
+    /// et un émulateur qui laisse l'hôte décider donne deux réponses selon la
+    /// machine où il tourne.
+    static let indefiniteDouble = Double(bitPattern: 0xFFF8_0000_0000_0000)
+    static let indefiniteSingle = Float(bitPattern: 0xFFC0_0000)
+
+    /// Un NaN rendu silencieux, sa charge utile gardée.
+    static func quiet(_ value: Double) -> Double {
+        Double(bitPattern: value.bitPattern | 0x0008_0000_0000_0000)
+    }
+
+    static func quiet(_ value: Float) -> Float {
+        Float(bitPattern: value.bitPattern | 0x0040_0000)
+    }
+
     /// L'« entier indéfini » que rend une conversion qui ne peut pas aboutir.
     static func indefinite(_ width: Int) -> UInt64 {
         width == 8 ? 0x8000_0000_0000_0000 : 0x8000_0000
@@ -86,16 +104,9 @@ extension X86Core {
             try arithmetic(instruction, single, { $0 / $1 }, { $0 / $1 })
         // `MIN` et `MAX` rendent **la source** dès que la comparaison échoue,
         // ce qui couvre le NaN des deux côtés et les zéros de signes opposés.
-        case 0x5D where single || doubleWide:
-            try arithmetic(instruction, single,
-                           { $0 < $1 ? $0 : $1 }, { $0 < $1 ? $0 : $1 })
-        case 0x5F where single || doubleWide:
-            try arithmetic(instruction, single,
-                           { $0 > $1 ? $0 : $1 }, { $0 > $1 ? $0 : $1 })
-        case 0x51 where single || doubleWide:
-            try arithmetic(instruction, single,
-                           { _, source in source.squareRoot() },
-                           { _, source in source.squareRoot() })
+        case 0x5D where single || doubleWide: try select(instruction, single, keepLower: true)
+        case 0x5F where single || doubleWide: try select(instruction, single, keepLower: false)
+        case 0x51 where single || doubleWide: try squareRoot(instruction, single)
 
         // Les comparaisons, seules de tout le vectoriel à écrire des drapeaux.
         case 0x2E, 0x2F where !single && !doubleWide:
@@ -106,10 +117,30 @@ extension X86Core {
             let source = try readVectorRM(fields, single ? 4 : 8)
             let destination = vector(fields.reg)
             if single {
-                let value = Double(Self.asSingle(source.0))
+                // La charge utile monte de vingt-neuf bits, et le bit
+                // silencieux est posé. Laisser l'hôte convertir donnerait son
+                // NaN à lui.
+                let from = Self.asSingle(source.0)
+                let value: Double
+                if from.isNaN {
+                    let sign = UInt64(from.bitPattern & 0x8000_0000) << 32
+                    let payload = UInt64(from.bitPattern & 0x007F_FFFF) << 29
+                    value = Double(bitPattern: sign | 0x7FF8_0000_0000_0000 | payload)
+                } else {
+                    value = Double(from)
+                }
                 setVector(fields.reg, value.bitPattern, destination.high)
             } else {
-                let value = Float(Self.asDouble(source.0))
+                let from = Self.asDouble(source.0)
+                let value: Float
+                if from.isNaN {
+                    let sign = UInt32(truncatingIfNeeded: from.bitPattern >> 32) & 0x8000_0000
+                    let payload = UInt32(truncatingIfNeeded:
+                        (from.bitPattern & 0x000F_FFFF_FFFF_FFFF) >> 29)
+                    value = Float(bitPattern: sign | 0x7FC0_0000 | payload)
+                } else {
+                    value = Float(from)
+                }
                 let low = (destination.low & ~0xFFFF_FFFF) | UInt64(value.bitPattern)
                 setVector(fields.reg, low, destination.high)
             }
@@ -152,12 +183,26 @@ extension X86Core {
     /// autour. C'est faux, et d'une façon qui ne se voit que sur un cas :
     /// convertir un **NaN signalant** simple en double le rend silencieux, et
     /// le retour donne `7fc00001` là où le processeur rend `7f800001` — ses
-    /// bits, intacts.
+    /// bits, intacts. Six cas sur 4 554, et **seulement en débogage** : la
+    /// course en optimisé les passait. Une suite verte dans un seul mode de
+    /// construction n'est pas une suite verte.
     ///
-    /// Six cas sur 4 554 le montrent. Et ils ne se sont montrés qu'**en
-    /// débogage** : la course en optimisé les passait, parce que le
-    /// compilateur y replie autrement la conversion. Une suite verte dans un
-    /// seul mode de construction n'est pas une suite verte.
+    /// **Et les NaN ne sont pas laissés à l'hôte.** Le second jet déléguait
+    /// l'arithmétique à Swift, donc au processeur qui fait tourner wisq. Sur
+    /// x86 ça tombait juste ; sur l'ARM d'un Mac, non — `0.0/0.0` y rend
+    /// `7ff8…` là où x86 rend `fff8…`, le NaN indéfini **négatif**. Un
+    /// émulateur dont le résultat dépend de la machine qui l'exécute n'émule
+    /// rien. Les trois règles sont donc écrites ici :
+    ///
+    /// 1. si la destination est un NaN, c'est **elle** qui ressort, rendue
+    ///    silencieuse et sa charge gardée ;
+    /// 2. sinon, si la source en est un, c'est elle, de même ;
+    /// 3. sinon on calcule — et si le calcul fabrique un NaN à partir de deux
+    ///    nombres, c'est l'indéfini réel qui ressort, pas celui de l'hôte.
+    ///
+    /// Ce qui reste délégué — les sommes, produits et quotients de valeurs
+    /// ordinaires — est exactement spécifié par IEEE 754 et ne varie pas d'une
+    /// machine à l'autre.
     private mutating func arithmetic(
         _ instruction: X86Instruction, _ single: Bool,
         _ wide: (Double, Double) -> Double,
@@ -167,11 +212,81 @@ extension X86Core {
         let source = try readVectorRM(fields, single ? 4 : 8)
         let destination = vector(fields.reg)
         if single {
-            let result = narrow(Self.asSingle(destination.low), Self.asSingle(source.0))
+            let left = Self.asSingle(destination.low)
+            let right = Self.asSingle(source.0)
+            let result: Float
+            if left.isNaN { result = Self.quiet(left) }
+            else if right.isNaN { result = Self.quiet(right) }
+            else {
+                let computed = narrow(left, right)
+                result = computed.isNaN ? Self.indefiniteSingle : computed
+            }
             let low = (destination.low & ~0xFFFF_FFFF) | UInt64(result.bitPattern)
             setVector(fields.reg, low, destination.high)
         } else {
-            let result = wide(Self.asDouble(destination.low), Self.asDouble(source.0))
+            let left = Self.asDouble(destination.low)
+            let right = Self.asDouble(source.0)
+            let result: Double
+            if left.isNaN { result = Self.quiet(left) }
+            else if right.isNaN { result = Self.quiet(right) }
+            else {
+                let computed = wide(left, right)
+                result = computed.isNaN ? Self.indefiniteDouble : computed
+            }
+            setVector(fields.reg, result.bitPattern, destination.high)
+        }
+    }
+
+    /// `MIN` et `MAX`, qui **ne sont pas de l'arithmétique** et n'en suivent
+    /// pas les règles.
+    ///
+    /// Ils comparent et choisissent : rien n'est calculé, donc rien n'est
+    /// arrondi ni rendu silencieux. Quand la comparaison échoue — un NaN d'un
+    /// côté ou de l'autre, ou deux zéros de signes opposés — c'est **la
+    /// source** qui ressort, **telle quelle**, bit pour bit. Un NaN signalant
+    /// entré signalant ressort signalant. Les fondre avec l'addition, comme
+    /// le faisait le jet précédent, leur imposait le silencieux et faussait
+    /// quatre-vingt-treize cas.
+    private mutating func select(
+        _ instruction: X86Instruction, _ single: Bool, keepLower: Bool
+    ) throws {
+        let fields = try decodeFields(instruction)
+        let source = try readVectorRM(fields, single ? 4 : 8)
+        let destination = vector(fields.reg)
+        if single {
+            let left = Self.asSingle(destination.low)
+            let right = Self.asSingle(source.0)
+            let chosen = (keepLower ? left < right : left > right) ? left : right
+            let low = (destination.low & ~0xFFFF_FFFF) | UInt64(chosen.bitPattern)
+            setVector(fields.reg, low, destination.high)
+        } else {
+            let left = Self.asDouble(destination.low)
+            let right = Self.asDouble(source.0)
+            let chosen = (keepLower ? left < right : left > right) ? left : right
+            setVector(fields.reg, chosen.bitPattern, destination.high)
+        }
+    }
+
+    /// La racine carrée, qui **ne regarde que sa source**. La destination ne
+    /// participe pas au calcul : la mettre dans la règle des NaN, comme le
+    /// faisait le jet précédent, faisait ressortir la destination quand elle
+    /// se trouvait être un NaN.
+    private mutating func squareRoot(
+        _ instruction: X86Instruction, _ single: Bool
+    ) throws {
+        let fields = try decodeFields(instruction)
+        let source = try readVectorRM(fields, single ? 4 : 8)
+        let destination = vector(fields.reg)
+        if single {
+            let from = Self.asSingle(source.0)
+            let result = from.isNaN ? Self.quiet(from)
+                : (from < 0 ? Self.indefiniteSingle : from.squareRoot())
+            let low = (destination.low & ~0xFFFF_FFFF) | UInt64(result.bitPattern)
+            setVector(fields.reg, low, destination.high)
+        } else {
+            let from = Self.asDouble(source.0)
+            let result = from.isNaN ? Self.quiet(from)
+                : (from < 0 ? Self.indefiniteDouble : from.squareRoot())
             setVector(fields.reg, result.bitPattern, destination.high)
         }
     }
