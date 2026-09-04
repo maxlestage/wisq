@@ -29,22 +29,34 @@ extension X86Core {
 
         // MOVSXD : la seule instruction dont le nom dit ce que fait la moitié
         // du jeu d'instructions x86-64 sans le dire.
-        // La pile : PUSH et POP font toujours huit octets en mode 64 bits, que
-        // REX.W soit là ou non. C'est une des rares largeurs qui ne se négocie
-        // pas.
+        // La pile : PUSH et POP font huit octets en mode 64 bits, et **REX.W
+        // n'y change rien** — c'est une des rares largeurs qui ne se négocie
+        // pas par là. Le préfixe de taille, lui, la négocie : sous `66` le
+        // sommet ne descend que de deux octets.
+        //
+        // Le cœur a longtemps écrit `8` partout ici, avec un commentaire qui
+        // disait « toujours huit ». La moitié était vraie — celle sur REX.W —
+        // et c'est ce qui l'a rendue crédible. Le vrai processeur a tranché :
+        // `pushw %ax` rend RSP à 0x30002ffe, pas à 0x30002ff8.
         case 0x50...0x57:
             let rex = instruction.rex ?? 0
-            try push(registers[Int((rex & 0x01) << 3 | (opcode & 0x07))], 8)
+            let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
+            try push(registers[index], Self.stackSize(instruction))
         case 0x58...0x5F:
             let rex = instruction.rex ?? 0
-            registers[Int((rex & 0x01) << 3 | (opcode & 0x07))] = try pop(8)
+            let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
+            let size = Self.stackSize(instruction)
+            // `write` et non une affectation : un dépilement de deux octets ne
+            // touche que les seize bits du bas, et laisse le reste tel quel.
+            write(index, size, highByte: false, try pop(size))
         case 0x68, 0x6A:
-            try push(Self.signExtend(instruction.immediate,
-                                     instruction.immediateBytes), 8)
+            try push(Self.signExtend(instruction.immediate, instruction.immediateBytes),
+                     Self.stackSize(instruction))
         case 0x8F:  // POP r/m
             let fields = try decodeFields(instruction)
-            let value = try pop(8)
-            try writeRM(fields, 8, value)
+            let size = Self.stackSize(instruction)
+            let value = try pop(size)
+            try writeRM(fields, size, value)
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
@@ -283,7 +295,11 @@ extension X86Core {
             // Le groupe 5 : appeler, sauter, empiler — tous par une valeur
             // qu'on va chercher plutôt que par un déplacement.
             let fields = try decodeFields(instruction)
-            let target = try readRM(fields, 8)
+            // `/6` empile, et sa largeur est celle de la pile ; `/2` et `/4`
+            // sautent, et une destination de saut fait toujours huit octets.
+            let reach = (instruction.modrm! >> 3) & 0x07 == 6
+                ? Self.stackSize(instruction) : 8
+            let target = try readRM(fields, reach)
             switch (instruction.modrm! >> 3) & 0x07 {
             case 2:
                 try push(rip &+ UInt64(instruction.length), 8)
@@ -293,7 +309,7 @@ extension X86Core {
                 rip = target
                 jumped = true
             case 6:
-                try push(target, 8)
+                try push(target, Self.stackSize(instruction))
             default:
                 throw Fault.unsupported("le groupe 5 /\((instruction.modrm! >> 3) & 0x07)")
             }

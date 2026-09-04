@@ -72,8 +72,8 @@ extension X86Core {
         // **entièrement** dedans.
         guard position &+ 15 <= descriptorLimits[1] else { return nil }
         let entry = descriptorBases[1] &+ position
-        let low = try memory.read(try translate(entry), 8)
-        let high = try memory.read(try translate(entry &+ 8), 8)
+        let low = try memory.read(try translate(entry, .machine), 8)
+        let high = try memory.read(try translate(entry &+ 8, .machine), 8)
         guard low & (1 << 47) != 0 else { return nil }
         // Le décalage est en trois morceaux, dispersés par l'héritage du 386 :
         // les seize bits du bas, les seize du milieu tout en haut du mot bas,
@@ -104,8 +104,8 @@ extension X86Core {
             throw Fault.unsupported("un LTR hors de la GDT")
         }
         let entry = descriptorBases[0] &+ position
-        let low = try memory.read(try translate(entry), 8)
-        let high = try memory.read(try translate(entry &+ 8), 8)
+        let low = try memory.read(try translate(entry, .machine), 8)
+        let high = try memory.read(try translate(entry &+ 8, .machine), 8)
         taskBase = ((low >> 16) & 0xFF_FFFF) | (((low >> 56) & 0xFF) << 24)
             | ((high & 0xFFFF_FFFF) << 32)
         var limit = (low & 0xFFFF) | (((low >> 48) & 0x0F) << 16)
@@ -140,7 +140,7 @@ extension X86Core {
         let offset = gate.interruptStack != 0
             ? TaskSegment.interruptStack(gate.interruptStack)
             : TaskSegment.stackPointer(forPrivilege: target)
-        return try memory.read(try translate(taskBase &+ offset), 8)
+        return try memory.read(try translate(taskBase &+ offset, .machine), 8)
     }
 
     /// Livrer la faute au noyau, et dire si ça a été fait.
@@ -173,6 +173,7 @@ extension X86Core {
         // changement : c'est elle que l'`IRETQ` rendra au programme.
         let stack = registers[4]
         let stackSelector = segments[2]
+        let code = segments[1]
         // Et c'est seulement après l'avoir notée qu'on peut en prendre une
         // autre. Le sélecteur de pile devient nul en même temps, comme le fait
         // le processeur : en mode long il n'a plus de base ni de limite, et le
@@ -181,6 +182,17 @@ extension X86Core {
             registers[4] = switched
             segments[2] = 0
         }
+        // **Et l'anneau change avant les empilements, pas après.** Le cadre
+        // s'écrit sur la pile du noyau, qui est interdite aux programmes ; le
+        // processeur y écrit parce qu'il est déjà passé en anneau zéro à ce
+        // moment-là. Tant que rien ne vérifiait le bit utilisateur, l'ordre ne
+        // se voyait pas ; dès qu'on l'a vérifié, la toute première faute de
+        // page d'un programme n'a plus pu être livrée — le noyau a été refusé
+        // sur sa propre pile d'entrée, à `0xfffffe00000000e0`.
+        //
+        // Le CS d'avant a été noté plus haut : c'est lui qu'on empile, et
+        // c'est lui que l'`IRETQ` rendra.
+        segments[1] = gate.selector
         var pointer = registers[4] & ~UInt64(0xF)
         func push(_ value: UInt64) throws {
             pointer &-= 8
@@ -189,12 +201,11 @@ extension X86Core {
         try push(UInt64(stackSelector))
         try push(stack)
         try push(flags | Flag.reserved)
-        try push(UInt64(segments[1]))
+        try push(UInt64(code))
         try push(rip)
         if Self.vectorsWithErrorCode.contains(vector) { try push(errorCode) }
         registers[4] = pointer
 
-        segments[1] = gate.selector
         rip = gate.offset
         // Une porte d'interruption masque les interruptions en entrant ; une
         // porte de trappe les laisse. Le pas-à-pas et la reprise s'éteignent

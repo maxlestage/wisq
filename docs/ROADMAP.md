@@ -3055,8 +3055,134 @@ habitude.
      partait à l'envers. Rien n'avait jamais posé ce drapeau, donc l'oubli ne
      pouvait pas se voir — la leçon de l'oracle, retournée contre lui.
 
-     Reste le harnais différentiel qui aligne les deux exécutions et dise à
-     quelle instruction elles divergent.
+     - **La pile et les atomiques.** Le comptage a d'abord été mal cadré : le
+       corpus arithmétique *contient* de la pile — trois de ses seize
+       programmes empilent, appellent, posent un cadre complet. Ce qui manquait
+       n'était pas l'instruction, c'était le **témoin**. Ce fichier-là ne rend
+       que RAX, RCX, RDX et les drapeaux ; ni RSP, ni RBP, ni un seul octet de
+       la pile n'y étaient observés, sa fenêtre de mémoire étant deux pages
+       plus bas que le sommet. Un cœur qui décale RSP de travers traversait ces
+       trois programmes sans rien déclencher — et le registre corrompu quand
+       `/init` meurt est justement RBP. Le second trou était net : sur les dix
+       atomiques du corpus, les dix ont un registre pour destination, aucune ne
+       porte le préfixe `lock`, alors que le chargeur de la bibliothèque C de
+       l'invité en compte cent vingt-trois, toutes sur de la mémoire. Le
+       harnais a donc gagné une **seconde fenêtre**, de part et d'autre du
+       sommet de pile, et les trois corpus déjà figés se régénèrent à l'octet
+       près. 81 formes, **648 cas**, et ce corpus rend les **seize** registres
+       plutôt que trois — quand on cherche quel registre se fait corrompre, on
+       ne peut pas décider d'avance lequel regarder.
+
+       **Un défaut, et ce n'est pas celui qu'on cherchait :** `push` et `pop`
+       tenaient huit octets pour acquis. Le commentaire qui l'affirmait avait
+       raison sur `REX.W` — qui ne les élargit pas — et c'est cette moitié
+       vraie qui l'a rendu crédible ; le préfixe de taille, lui, les raccourcit
+       bel et bien à deux. Corrigé, avec les formes en mémoire et les
+       encodages `ff /6` et `8f /0` que l'assembleur ne choisit jamais. Le
+       reste — soixante-quatre formes de registre, `leave`, `movabs`, les
+       vingt-cinq atomiques — était déjà juste. **Ce n'est pas là non plus.**
+
+     **L'instrument qui manquait : le témoin des adresses non canoniques**, et
+     sa première version démolie par la mesure en un essai.
+     Sur x86-64, un pointeur licite a ses bits 63 à 48 identiques au bit 47 —
+     les programmes en bas, le noyau en haut, un trou immense entre les deux.
+     `0x00037cde165f7280` tombe dans le trou : ce n'est l'adresse de rien. Le
+     processeur ne dit pourtant rien tant qu'on ne s'en sert pas comme adresse,
+     et c'est là le problème : quand la faute se voit, l'instruction qui a
+     fabriqué la valeur est loin derrière, et le noyau n'imprime que la fin de
+     l'histoire. Armé, le cœur regarde après chaque instruction d'anneau trois
+     si un registre vient d'**acquérir** une valeur non canonique, et retient
+     laquelle, où, et avec quels octets — il remonte de la mort à la naissance.
+     **La première version signalait tout registre qui *acquérait* une valeur
+     non canonique. Sur un vrai démarrage, elle a rempli son rapport de
+     trente-deux lignes avec le filtre de Bloom du chargeur dynamique** — un
+     `shl %cl, %r12` qui fabrique `1 << 61`, un `mov 0x10(%rsi,%rax,8), %rax`
+     qui lit un mot de hachage — et n'était pas arrivée au dixième du chemin
+     jusqu'à la mort. Ce sont des masques de bits, pas des adresses, et rien
+     dans un registre ne dit lequel des deux il est. **Seul l'usage le dit.**
+     Le témoin attend donc qu'une adresse non canonique soit *employée* en
+     anneau trois — ce qui n'arrive qu'une fois — et rend alors, pour chaque
+     registre qui en porte une, l'adresse de l'instruction qui l'y a mise.
+
+     Éteint par défaut, et l'anneau zéro n'est jamais regardé : le noyau met
+     légitimement des masques et des entrées de table de pages dans les mêmes
+     registres.
+
+     La voie qui a été essayée et écartée avant lui : tracer l'exécution de
+     QEMU pour la comparer à la nôtre. `-d exec` avec `-dfilter` sur l'espace
+     utilisateur a produit **6,8 Go en deux minutes** sans rien filtrer du
+     tout, et le démarrage n'était pas au tiers. Un instrument qui coûte plus
+     que ce qu'il mesure n'en est pas un.
+
+     **Et le témoin a trouvé, en une exécution.** Six adresses non canoniques
+     employées ; cinq d'entre elles sont RIP lui-même — donc des sauts partis
+     dans le décor — et les cinq viennent des **mêmes octets**, `41 ff 57 f8`,
+     c'est-à-dire `call *-0x8(%r15)` : la boucle qui appelle les constructeurs
+     d'un programme, pointeur par pointeur. La sixième, celle qui tue, naît
+     d'un `mov 0x79d82(%rip), %rdi` — un pointeur relu depuis la table des
+     globales. Dans les deux cas, **un pointeur relu de la mémoire**, jamais un
+     calcul.
+
+     Puis l'arithmétique a tranché. L'écart entre deux valeurs corrompues
+     successives vaut, **à l'octet près et quatre fois de suite**, la base de
+     chargement du processus suivant :
+
+     | écart mesuré     | base du chargeur | différence  |
+     |------------------|------------------|-------------|
+     | `0x7f4c2a91e000` | `0x7f4c2aa33000` | `-0x115000` |
+     | `0x7f695a0c3000` | `0x7f695a1d8000` | `-0x115000` |
+     | `0x7fc28f3d5000` | `0x7fc28f4ea000` | `-0x115000` |
+     | `0x7fd573dbc000` | `0x7fd573ed1000` | `-0x115000` |
+
+     Une constante parfaite — le décalage du code dans l'image. Les relocations
+     de cinq processus successifs **s'additionnaient dans la même page**.
+
+     **La cause : le parcours des tables ne regardait que le bit de présence.**
+     Un commentaire l'annonçait même comme un choix — « ce cœur ne faute que
+     sur une entrée absente, jamais sur une protection ». Or le bit d'écriture
+     et le bit utilisateur *sont* la copie sur écriture : quand un programme se
+     dédouble, le noyau ne recopie pas sa mémoire, il donne les mêmes pages aux
+     deux et retire le bit d'écriture. La première écriture faute, et c'est là
+     que la copie se fait. wisq laissait l'écriture passer — la copie n'avait
+     jamais lieu, et tous les programmes écrivaient dans la même page.
+
+     Corrigé : le bit d'écriture, le bit utilisateur, `CR0.WP`, le ET des
+     quatre niveaux, le bit de présence dans le code d'erreur (ce qui dit au
+     noyau « fais la copie » plutôt que « va la chercher sur le disque »), et
+     le contrôle **aussi sur le succès de cache** — sans quoi il aurait suffi
+     de lire une page avant de l'écrire pour passer au travers.
+
+     **Et la correction en a réclamé deux autres**, chacune nommée par le
+     noyau lui-même. Tant que rien ne vérifiait le bit utilisateur, deux ordres
+     de choses ne pouvaient pas se voir :
+
+     - **Le cadre d'une interruption s'écrit dans l'anneau du gestionnaire**,
+       pas dans celui du programme. wisq empilait avant de changer d'anneau ;
+       le noyau s'est fait refuser sa propre pile d'entrée, et le démarrage
+       s'est arrêté net sur `pageFault(0xfffffe00000000e0)` — l'aire d'entrée
+       du processeur, chez Linux.
+     - **Le processeur lit ses propres tables en son nom.** L'IDT, la GDT et le
+       segment de tâche ne sont pas ouverts aux programmes — c'est la bonne
+       configuration — et un programme qui prend une faute ne demande pas à
+       lire l'IDT : c'est la machine qui va y chercher la porte. Un accès
+       `.machine` distingue désormais les deux.
+
+     Le harnais différentiel n'aura pas été nécessaire.
+
+     **Ce que les trois corrections ont donné, mesuré.** Le démarrage ne
+     s'arrête plus sur une adresse impossible : **zéro adresse non canonique**,
+     là où le témoin en comptait six, et plus un seul saut dans le décor. Le
+     noyau consomme désormais le budget entier — six milliards d'instructions —
+     au lieu de mourir à 2,79 milliards, et le journal série passe de 12 685 à
+     **16 793 octets**. `/init` démarre.
+
+     **Mais il meurt encore**, et la faute a changé de nature : ce ne sont plus
+     des adresses au-dessus du bit 47, ce sont des **pointeurs nuls**.
+     `segfault at 0`, `at 1`, `at 199`, toutes avec `error 4` — une lecture,
+     en anneau trois, d'une page absente. Le témoin des adresses non canoniques
+     ne peut rien dire de celles-là : zéro est une adresse parfaitement
+     canonique. C'est le prochain instrument à trouver, et la prochaine
+     tranche.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
