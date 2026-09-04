@@ -525,6 +525,9 @@ public struct X86Core: @unchecked Sendable {
             // Puis l'arithmétique vectorielle, qui occupe encore d'autres
             // octets de la même table. Voir `X86VectorArithmetic.swift`.
             if try vectorArithmetic(instruction, opcode) { return }
+            // Puis le flottant scalaire, qui occupe encore d'autres octets de
+            // la même table. Voir `X86Float.swift`.
+            if try floatInstruction(instruction, opcode) { return }
             try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
