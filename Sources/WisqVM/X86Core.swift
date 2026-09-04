@@ -81,6 +81,16 @@ public struct X86Core: @unchecked Sendable {
     /// La dernière instruction d'anneau trois qui a abouti. Quand l'adresse
     /// fautive est RIP lui-même, c'est elle qui a sauté dans le décor.
     public var previousRip: UInt64 = 0
+    /// Les démarrages de programmes déjà vus, et les espaces d'adressage qui
+    /// les portent. Voir `X86ProcessStartWatch.swift`.
+    public var processStarts: [ProcessStart] = []
+    public var addressSpacesSeen: [UInt64] = []
+    /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
+    public var shadowStack: [PendingReturn] = []
+    public var brokenReturns: [BrokenReturn] = []
+    /// Les appels qui prennent leur adresse en mémoire. Voir
+    /// `X86IndirectCallWatch.swift`.
+    public var indirectCalls: [IndirectCall] = []
 
     /// Combien de battements ont passé pendant un `HLT`. Le temps de l'invité
     /// vient du compteur d'instructions ; un processeur arrêté n'en retire
@@ -321,12 +331,40 @@ public struct X86Core: @unchecked Sendable {
                 // toute exécution normale — il n'y a pas même de lecture du
                 // privilège, et le chemin chaud reste ce qu'il était.
                 let watching = canonicalWatchArmed && privilege == 3
+                // **Un programme qui prend la main dans un espace d'adressage
+                // neuf vient de naître.** C'est le seul instant où sa pile
+                // porte encore ce que le noyau y a posé, avant qu'il n'écrive
+                // dessus.
+                if watching, !addressSpacesSeen.contains(system.control[3]) {
+                    addressSpacesSeen.append(system.control[3])
+                    noteProcessStart()
+                    // Un espace d'adressage neuf est un autre programme : ses
+                    // retours n'ont rien à voir avec ceux d'avant.
+                    forgetShadowStack()
+                }
+                let wasCall = watching && Self.callsOrReturns(instruction) == .call
+                let wasReturn = watching && Self.callsOrReturns(instruction) == .ret
+                let throughMemory = watching ? Self.indirectThroughMemory(instruction) : nil
                 let entry = rip
                 let before = watching ? registers : []
                 try execute(instruction)
                 if watching {
                     rememberBirths(before: before, rip: entry)
                     previousRip = entry
+                    if wasCall {
+                        rememberCall(promised: entry &+ UInt64(instruction.length),
+                                     at: entry)
+                    } else if wasReturn {
+                        rememberReturn(taken: rip, at: entry)
+                    }
+                    if let jumped = throughMemory {
+                        // `lastAddress` porte la case que le ModRM désignait :
+                        // le cœur l'a calculée pour lire l'adresse, et la
+                        // recalculer ici donnerait un second résultat qu'il
+                        // faudrait garder d'accord avec le premier.
+                        rememberIndirectCall(at: entry, slot: lastAddress,
+                                             jumped: jumped)
+                    }
                 }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
