@@ -151,6 +151,36 @@ final class X86ProcessStartTests: XCTestCase {
         XCTAssertEqual(core.processStarts.last?.addressSpace, 0x4000)
     }
 
+    /// **Le rapport garde les derniers démarrages, et dit combien il y en a
+    /// eu.** Il gardait les huit premiers et annonçait « programmes démarrés :
+    /// 8 » — son propre plafond. Un démarrage d'Alpine en lance bien plus, et
+    /// les seuls qui comptaient, ceux de `mdev`, arrivaient trop tard pour
+    /// être vus.
+    func testTheStartsKeepTheLastOnesAndSayHowManyThereWere() throws {
+        var core = try Self.core(Self.initialStack(
+            arguments: 1, environment: 1, auxiliary: Self.measured))
+        try core.memory?.load([UInt8](repeating: 0x90, count: 32), at: Self.program)
+        let many = X86Core.processStartLimit + 3
+        for index in 0..<many {
+            // Un espace d'adressage neuf à chaque fois : c'est ce qui
+            // distingue un processus d'un autre.
+            let table = UInt64(0x4000 + index * 0x1000)
+            try core.memory?.write(table, 8, Self.pdpt | X86Core.present
+                | X86Core.writable | X86Core.userAccessible)
+            core.system.control[3] = table
+            core.flushTranslations()
+            _ = try core.run(budget: 1)
+        }
+        XCTAssertEqual(core.processStarts.count, X86Core.processStartLimit)
+        // Onze, et non douze : l'espace d'adressage d'origine ne tourne
+        // jamais — la boucle change CR3 avant la première instruction.
+        XCTAssertEqual(core.processStartsSeen, UInt64(many),
+                       "le compte voit tout ce que le rapport ne garde pas")
+        XCTAssertEqual(core.processesStarted.last?.addressSpace,
+                       UInt64(0x4000 + (many - 1) * 0x1000),
+                       "et c'est bien le dernier qu'on garde")
+    }
+
     /// Une pile qu'on ne peut pas lire rend un démarrage sans vecteur plutôt
     /// qu'une erreur : un témoin qui lèverait en rendant compte serait pire
     /// que pas de témoin.

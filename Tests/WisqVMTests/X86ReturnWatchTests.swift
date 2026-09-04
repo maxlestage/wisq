@@ -178,13 +178,42 @@ final class X86ReturnWatchTests: XCTestCase {
         XCTAssertEqual(seen.pendingFrame, 0)
     }
 
-    func testTheSilencesStopAtTheirLimit() throws {
+    /// **Le rapport garde les derniers silences, et dit combien il y en a
+    /// eu.** La première version gardait les seize premiers et annonçait
+    /// « retours sans promesse : 16 » — c'est-à-dire son propre plafond, un
+    /// nombre qui ne compte rien. Or le démarrage va maintenant deux cents
+    /// millions d'instructions plus loin que ces seize-là, et ce sont les
+    /// derniers qu'on veut lire.
+    func testTheSilencesKeepTheLastOnesAndSayHowManyThereWere() throws {
         var core = try Self.core([0x90])
-        for index in 0...(X86Core.unmatchedReturnLimit + 3) {
+        let many = X86Core.unmatchedReturnLimit + 4
+        for index in 0..<many {
             core.noteUnmatchedReturn(taken: UInt64(index), at: UInt64(index),
                                      frame: UInt64(index))
         }
         XCTAssertEqual(core.unmatchedReturns.count, X86Core.unmatchedReturnLimit)
+        XCTAssertEqual(core.unmatchedReturnTally, UInt64(many),
+                       "le compte voit tout ce que le rapport ne garde pas")
+        let kept = core.returnsUnmatched
+        XCTAssertEqual(kept.first?.at, UInt64(many - X86Core.unmatchedReturnLimit))
+        XCTAssertEqual(kept.last?.at, UInt64(many - 1))
+    }
+
+    /// Et les désaccords, pareil.
+    func testTheBrokenReturnsKeepTheLastOnesToo() throws {
+        var core = try Self.core([0x90])
+        let many = X86Core.brokenReturnLimit + 3
+        for index in 0..<many {
+            core.registers[4] = 0x6000
+            core.rememberCall(promised: 0x1111, at: UInt64(index))
+            core.registers[4] = 0x6008
+            core.rememberReturn(taken: 0x2222, at: UInt64(index))
+        }
+        XCTAssertEqual(core.brokenReturns.count, X86Core.brokenReturnLimit)
+        XCTAssertEqual(core.brokenReturnTally, UInt64(many))
+        let kept = core.returnsBroken
+        XCTAssertEqual(kept.first?.at, UInt64(many - X86Core.brokenReturnLimit))
+        XCTAssertEqual(kept.last?.at, UInt64(many - 1))
     }
 
     func testTheKernelIsNotWatched() throws {
