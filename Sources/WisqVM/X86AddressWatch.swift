@@ -78,7 +78,9 @@ extension X86Core {
         let watched = watchedAddress
         watchedAddress = nil
         defer { watchedAddress = watched }
-        let before = (try? memory?.read(try translate(virtual), 8)) ?? nil
+        // `try?` aplatit déjà l'option de `memory?` : un `?? nil` de plus ne
+        // dirait rien, et SwiftLint le refuse.
+        let before = try? memory?.read(try translate(virtual), 8)
         addressTouches[addressTouchNext] = AddressTouch(
             at: rip, writing: writing, retired: retired,
             offset: virtual &- start, before: before ?? 0)
