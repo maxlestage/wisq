@@ -131,13 +131,63 @@ final class X86RingWatchTests: XCTestCase {
 
     func testTheReportStopsAtItsLimit() throws {
         var core = try Self.core([0x90])
-        for index in 0...(X86Core.ringTripLimit + 3) {
+        for _ in 0...(X86Core.ringTripLimit + 3) {
             core.registers[4] = Self.stack
-            core.leavingRingThree(at: UInt64(index), cause: .fault)
+            // Le départ est à l'adresse où le cœur se trouve : la reprise y
+            // est donc, et le décalage reste inexpliqué.
+            core.leavingRingThree(at: Self.program, cause: .fault)
             core.registers[4] = Self.stack &- 8
             core.returningToRingThree()
         }
         XCTAssertEqual(core.ringTrips.count, X86Core.ringTripLimit)
+    }
+
+    // MARK: - Ce qui explique un décalage, et ce qui ne l'explique pas
+
+    /// **Un autre espace d'adressage est un autre programme.** Comparer sa
+    /// pile à celle du précédent ne veut rien dire, et compter ce décalage
+    /// comme un défaut serait accuser à tort.
+    func testAShiftAcrossAddressSpacesIsExplainedByTheOtherProgram() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: Self.program, cause: .systemCall)
+        core.system.control[3] = 0x9_9000
+        core.registers[4] = Self.stack &- 0x400
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.otherProgram, 1)
+        XCTAssertEqual(core.ringPassages.unexplained, 0)
+        XCTAssertTrue(core.ringTrips.isEmpty, "il n'accuse personne")
+    }
+
+    /// **Une reprise ailleurs est un flot détourné.** Aucune instruction x86
+    /// ne fait plus de quinze octets : au-delà, ce n'est plus une reprise,
+    /// c'est le noyau qui envoie le programme autre part — un gestionnaire de
+    /// signal — et déplacer la pile est alors son droit.
+    func testAShiftWithAResumptionElsewhereIsExplainedByTheRedirection() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: Self.program, cause: .interrupt)
+        core.rip = Self.program &+ 0x2000
+        core.registers[4] = Self.stack &- 0x80
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.redirected, 1)
+        XCTAssertEqual(core.ringPassages.unexplained, 0)
+        XCTAssertTrue(core.ringTrips.isEmpty)
+    }
+
+    /// **Et une continuation reste une reprise.** Un appel système repart
+    /// juste après l'instruction : quinze octets sont la limite, pas zéro.
+    /// Confondre les deux ferait passer tout appel système décalé pour un
+    /// détournement, et le défaut recherché est précisément là.
+    func testAContinuationJustAfterTheInstructionIsStillAResumption() throws {
+        var core = try Self.core([0x90])
+        core.registers[4] = Self.stack
+        core.leavingRingThree(at: Self.program, cause: .systemCall)
+        core.rip = Self.program &+ 2  // syscall fait deux octets
+        core.registers[4] = Self.stack &- 8
+        core.returningToRingThree()
+        XCTAssertEqual(core.ringPassages.unexplained, 1)
+        XCTAssertEqual(core.ringTrips.count, 1, "et celui-là, on le garde")
     }
 
     /// Un rapport vide a deux causes possibles — tout allait bien, ou rien
@@ -179,9 +229,9 @@ final class X86RingWatchTests: XCTestCase {
     func testTheCountSeesTheShiftsTheReportCannotKeep() throws {
         var core = try Self.core([0x90])
         let many = X86Core.ringTripLimit + 4
-        for index in 0..<many {
+        for _ in 0..<many {
             core.registers[4] = Self.stack
-            core.leavingRingThree(at: UInt64(index), cause: .fault)
+            core.leavingRingThree(at: Self.program, cause: .fault)
             core.registers[4] = Self.stack &- 8
             core.returningToRingThree()
         }
@@ -220,6 +270,7 @@ final class X86RingWatchTests: XCTestCase {
         core.returningToRingThree()
         XCTAssertEqual(core.ringPassages.description,
                        "2 achevés (syscall 1, faute 1, interruption 0),"
-                       + " dont 1 décalent la pile")
+                       + " dont 1 décalent la pile (0 autre programme,"
+                       + " 0 flot détourné, 1 inexpliqué)")
     }
 }

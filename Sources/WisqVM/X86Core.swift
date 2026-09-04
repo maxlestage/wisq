@@ -124,7 +124,7 @@ public struct X86Core: @unchecked Sendable {
     public var stackLedger = [StackMove](repeating: .none,
                                          count: X86Core.stackLedgerDepth)
     var stackLedgerNext = 0
-    var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64,
+    var ringDeparture: (at: UInt64, cause: RingTrip.Cause, stack: UInt64, space: UInt64,
                         retired: UInt64)?
     /// Les appels qui prennent leur adresse en mémoire. Voir
     /// `X86IndirectCallWatch.swift`.
