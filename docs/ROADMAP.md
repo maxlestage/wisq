@@ -2967,14 +2967,38 @@ habitude.
      un TSS trop court pour porter ses piles, s'arrête au lieu d'inventer une
      adresse.
 
-     **La tranche suivante n'est pas celle qui était annoncée ici**, et c'est
+     **La tranche suivante n'était pas celle qui était annoncée ici**, et c'est
      la machine qui l'a dit. Le plan écrivait « puis `SYSCALL`/`SYSRET` ». Avec
      le TSS, le noyau va jusqu'à `Freeing initrd memory: 25404K` puis s'arrête
      sur l'opcode `0F 6E` à RIP `0x7f0f12aa143e` — une adresse d'espace
      utilisateur. `0F 6E` est `MOVD`/`MOVQ` entre un registre général et un
      registre SSE, et la bibliothèque C s'en sert dans ses fonctions de chaîne
-     **avant** son premier appel système. Ce sont donc les seize registres XMM
-     qu'il faut d'abord, et `SYSCALL` vient après.
+     **avant** son premier appel système.
+
+   - **Les seize registres XMM, contre le vrai processeur.** `MOVD`/`MOVQ` dans
+     les deux sens et aux deux largeurs, `MOVDQA`/`MOVDQU`/`MOVAPS`/`MOVUPS`/
+     `MOVAPD`/`MOVUPD`, dix entrelacements, douze opérations logiques. Aucune
+     arithmétique en virgule flottante : sur les 8 663 instructions
+     vectorielles du chargeur de musl, celles qui calculent appartiennent au
+     formatage des nombres dans `printf`, qui ne tourne pas au démarrage.
+     `MULSD` est refusée et **nommée**.
+
+     **L'oracle matériel a grandi pour ça** : son harnais ne portait que les
+     seize registres généraux et RFLAGS, il porte maintenant les seize XMM en
+     plus. La preuve que ça n'a rien changé au reste est que les 10 020 cas
+     arithmétiques existants se régénèrent **à l'octet près**. 832 cas neufs,
+     52 formes, zéro désaccord.
+
+     Trois trous que le sabotage a trouvés dans ce corpus-là : une branche
+     qu'aucun cas ne pouvait atteindre, retirée ; une forme que l'assembleur ne
+     choisit jamais — `66 0F D6` là où `as` prend toujours `F3 0F 7E` — dont
+     les octets sont donnés à la main, le processeur disant toujours ce qu'ils
+     font ; et une distinction que l'oracle ne peut pas mesurer, parce qu'un
+     harnais qui exécute ne peut pas produire une faute sans mourir.
+
+     **Et le noyau nomme la brique suivante** : dix instructions plus loin, il
+     s'arrête sur `0F 05` à RIP `0x7f0f12ae386d`. C'est `SYSCALL`. Le plan
+     avait raison sur le quoi et tort sur l'ordre.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une

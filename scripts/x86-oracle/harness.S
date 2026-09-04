@@ -21,8 +21,16 @@
 //   state[0..15]  les registres, dans l'ordre de l'encodage
 //                 (rax rcx rdx rbx rsp rbp rsi rdi r8..r15)
 //   state[16]     RFLAGS
+//   state[17..48] les seize registres XMM, deux mots chacun, le bas d'abord
 //   code          la page exécutable, terminée par le saut de retour
 // Lu puis réécrit sur place.
+//
+// **Les XMM voyagent par `movdqu` et non `movdqa`.** L'alignement du tampon
+// de l'appelant n'est pas le nôtre à décider ; exiger seize octets ferait
+// dépendre le harnais d'une chose que le pilote pourrait changer sans le
+// savoir, et la faute serait un plantage et non un mauvais chiffre. `movdqu`
+// ne touche pas non plus aux drapeaux, ce qui est la même raison qui fait
+// voyager les registres généraux par `mov`.
 wisq_x86_run:
     push    %rbx
     push    %rbp
@@ -47,6 +55,25 @@ wisq_x86_run:
     // Les seize registres, relatifs à RIP, sans registre de travail. RDI est
     // chargé en dernier parce qu'il portait le pointeur.
     mov     wisq_state(%rip), %rdi
+
+    // Les XMM d'abord, tant que RDI porte encore le pointeur d'état.
+    movdqu  17*8(%rdi), %xmm0
+    movdqu  19*8(%rdi), %xmm1
+    movdqu  21*8(%rdi), %xmm2
+    movdqu  23*8(%rdi), %xmm3
+    movdqu  25*8(%rdi), %xmm4
+    movdqu  27*8(%rdi), %xmm5
+    movdqu  29*8(%rdi), %xmm6
+    movdqu  31*8(%rdi), %xmm7
+    movdqu  33*8(%rdi), %xmm8
+    movdqu  35*8(%rdi), %xmm9
+    movdqu  37*8(%rdi), %xmm10
+    movdqu  39*8(%rdi), %xmm11
+    movdqu  41*8(%rdi), %xmm12
+    movdqu  43*8(%rdi), %xmm13
+    movdqu  45*8(%rdi), %xmm14
+    movdqu  47*8(%rdi), %xmm15
+
     mov     0*8(%rdi), %rax
     mov     1*8(%rdi), %rcx
     mov     2*8(%rdi), %rdx
@@ -86,6 +113,22 @@ wisq_return:
     mov     %r13, wisq_out+13*8(%rip)
     mov     %r14, wisq_out+14*8(%rip)
     mov     %r15, wisq_out+15*8(%rip)
+    movdqu  %xmm0, wisq_out+17*8(%rip)
+    movdqu  %xmm1, wisq_out+19*8(%rip)
+    movdqu  %xmm2, wisq_out+21*8(%rip)
+    movdqu  %xmm3, wisq_out+23*8(%rip)
+    movdqu  %xmm4, wisq_out+25*8(%rip)
+    movdqu  %xmm5, wisq_out+27*8(%rip)
+    movdqu  %xmm6, wisq_out+29*8(%rip)
+    movdqu  %xmm7, wisq_out+31*8(%rip)
+    movdqu  %xmm8, wisq_out+33*8(%rip)
+    movdqu  %xmm9, wisq_out+35*8(%rip)
+    movdqu  %xmm10, wisq_out+37*8(%rip)
+    movdqu  %xmm11, wisq_out+39*8(%rip)
+    movdqu  %xmm12, wisq_out+41*8(%rip)
+    movdqu  %xmm13, wisq_out+43*8(%rip)
+    movdqu  %xmm14, wisq_out+45*8(%rip)
+    movdqu  %xmm15, wisq_out+47*8(%rip)
 
     // La pile redevient la nôtre avant qu'on ose un pushfq.
     mov     wisq_host_rsp(%rip), %rsp
@@ -97,7 +140,7 @@ wisq_return:
     // Recopier dans le tampon de l'appelant.
     mov     wisq_state(%rip), %rdi
     leaq    wisq_out(%rip), %rsi
-    mov     $17, %rcx
+    mov     $49, %rcx
 1:  mov     (%rsi), %rax
     mov     %rax, (%rdi)
     add     $8, %rsi
@@ -121,5 +164,5 @@ wisq_code:         .quad 0
 wisq_host_rsp:     .quad 0
 wisq_host_rbp:     .quad 0
 wisq_return_slot:  .quad 0
-wisq_out:          .fill 17, 8, 0
+wisq_out:          .fill 49, 8, 0
     .section .note.GNU-stack,"",@progbits
