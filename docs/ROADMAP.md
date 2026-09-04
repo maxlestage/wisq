@@ -3212,6 +3212,39 @@ habitude.
      bits en soixante-quatre et cinq en trente-deux, le cœur les avait déjà
      justes.
 
+     **Ce que les cinq corpus établissent ensemble, et c'est la conclusion qui
+     compte.** En désassemblant le chargeur de l'invité et en comptant ses
+     mnémoniques contre les cinq fixtures, il ne reste **plus une seule
+     instruction entière non couverte** en dehors de sept cas, et aucun d'eux
+     ne calcule :
+
+     | ce qui reste | occurrences | pourquoi ce n'est pas un trou |
+     |---|---|---|
+     | `syscall` | 504 | aucun oracle ne peut l'exécuter — il entrerait dans le noyau de l'hôte. Dix tests écrits à la main le tiennent |
+     | `hlt` | 101 | ne calcule rien |
+     | `nop` sous quatre formes | 37 | non plus |
+     | `pause`, `cs`, `std`, `cld` | 13 | non plus |
+     | quelques SSE entiers | ~30 | le chargeur ne les exécute pas sur ce chemin |
+
+     Le reste — la virgule flottante — n'est pas exécuté sur ce chemin, et le
+     cœur la **refuserait en la nommant** plutôt que de la calculer faux.
+
+     Le chemin `SYSCALL`/`SYSRET` a été relu à la main dans la foulée, parce
+     qu'il aurait fait un excellent coupable : un `SYSRET` qui rendrait de
+     mauvais drapeaux enverrait le tout premier branchement suivant du mauvais
+     côté. Il est juste — RCX prend l'instruction suivante, R11 les drapeaux
+     d'avant le masque, le masque du noyau s'applique, les sélecteurs sont
+     forcés à l'anneau zéro, et le retour rend les drapeaux depuis R11 en
+     effaçant RF et NT.
+
+     **Donc une instruction mal exécutée n'explique plus rien.** Le suspect
+     n'est plus dans le jeu d'instructions : il est dans ce que la machine
+     *fournit*. Ce que le noyau pose sur la pile initiale d'un processus —
+     `argv`, `envp`, et surtout le vecteur auxiliaire (`AT_PHDR`, `AT_BASE`,
+     `AT_ENTRY`, `AT_SYSINFO_EHDR`) : si le chargeur lit là de mauvaises
+     tables, il résout contre les mauvais symboles et tout le reste suit. Puis
+     ce que `CPUID` annonce, et l'horloge. C'est le prochain comptage.
+
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
      pagination d'identité, entre en mode long et saute. Le noyau va jusqu'à
