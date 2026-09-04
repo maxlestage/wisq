@@ -29,6 +29,14 @@ extern char wisq_return[];
 // Le harnais lit et écrit toujours quarante-neuf mots ; le pilote ne montre
 // que ceux qu'on lui a demandés.
 #define SLOTS 49
+// **La pile x87, ajoutée en queue.** Quatorze cases portent l'image de 108
+// octets que `FRSTOR` charge et que `FNSAVE` rend : mot de contrôle, mot
+// d'état, mot d'étiquettes, les quatre pointeurs, puis huit registres de dix
+// octets. Le pilote peut n'en envoyer aucune — c'est le cas des sept corpus
+// déjà figés — et l'oracle charge alors l'état par défaut d'un processeur qui
+// vient d'être remis à zéro : contrôle 0x037F, pile vide.
+#define FPUSLOTS 14
+#define ALLSLOTS (SLOTS + FPUSLOTS)
 #define GENERAL 17
 #define MAX_CODE 512
 
@@ -66,24 +74,33 @@ int main(void) {
     while (fgets(line, sizeof line, stdin)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char hex[512];
-        uint64_t in[SLOTS] = {0};
+        uint64_t in[ALLSLOTS] = {0};
         char *cursor = line;
         if (sscanf(cursor, "%511s", hex) != 1) {
             fprintf(stderr, "ligne sans octets : %s", line); return 1;
         }
         cursor += strlen(hex);
         int count = 0;
-        while (count < SLOTS) {
+        while (count < ALLSLOTS) {
             char *next;
             unsigned long long value = strtoull(cursor, &next, 16);
             if (next == cursor) break;
             in[count++] = value;
             cursor = next;
         }
-        if (count != GENERAL && count != SLOTS) {
-            fprintf(stderr, "ligne à %d valeurs, il en faut %d ou %d : %s",
-                    count, GENERAL, SLOTS, line);
+        if (count != GENERAL && count != SLOTS && count != ALLSLOTS) {
+            fprintf(stderr, "ligne à %d valeurs, il en faut %d, %d ou %d : %s",
+                    count, GENERAL, SLOTS, ALLSLOTS, line);
             return 1;
+        }
+        // Sans image x87 donnée, celle d'un processeur remis à zéro : le mot
+        // de contrôle à 0x037F — arrondi au plus proche, précision étendue,
+        // toutes les exceptions masquées — et les huit registres vides.
+        if (count <= SLOTS) {
+            unsigned char image[112] = {0};
+            image[0] = 0x7F; image[1] = 0x03;   // contrôle
+            image[8] = 0xFF; image[9] = 0xFF;   // étiquettes : tout est vide
+            memcpy(in + SLOTS, image, sizeof image);
         }
 
         size_t length = strlen(hex) / 2;
@@ -113,7 +130,7 @@ int main(void) {
         for (int i = 0; i < STACKWIN; i++)
             below[STACKWIN + i] = (unsigned char)(0x40 + i);
 
-        uint64_t state[SLOTS];
+        uint64_t state[ALLSLOTS];
         memcpy(state, in, sizeof state);
         // La pile de l'invité, loin du harnais, et à une adresse fixe.
         state[4] = STACK;
@@ -128,6 +145,11 @@ int main(void) {
         for (int i = 0; i < WINDOW; i++) printf("%02x", data[i]);
         printf("\t");
         for (int i = 0; i < 2 * STACKWIN; i++) printf("%02x", below[i]);
+        // L'image x87 d'après, **après** les fenêtres : un corpus qui ne la
+        // demande pas ne lit pas jusque-là, et ses colonnes ne bougent pas.
+        printf("\t");
+        for (int i = 0; i < FPUSLOTS; i++)
+            printf("%llx,", (unsigned long long)state[SLOTS + i]);
         printf("\n");
     }
     return 0;

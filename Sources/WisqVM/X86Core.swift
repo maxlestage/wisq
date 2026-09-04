@@ -154,6 +154,13 @@ public struct X86Core: @unchecked Sendable {
     /// de détection de Linux range et relit. Voir `minimalX87`.
     public var x87Status: UInt16 = 0
     public var x87Control: UInt16 = 0x037F
+    /// **Les huit registres de quatre-vingts bits, et ce qui en fait une
+    /// pile.** `ST(i)` désigne `R[(sommet + i) mod 8]` ; le sommet vit dans
+    /// les bits 11 à 13 du mot d'état, et le mot d'étiquettes dit lesquels
+    /// portent une valeur — indexé par registre **physique**. Voir
+    /// `X86X87.swift`.
+    public var x87 = [X86Extended](repeating: .zero, count: 8)
+    public var x87Tags: UInt16 = 0xFFFF
     /// **Les seize registres XMM**, deux mots de soixante-quatre bits chacun :
     /// `vectors[2 * n]` est le bas de `xmm<n>`, `vectors[2 * n + 1]` le haut.
     ///
