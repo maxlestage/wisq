@@ -7,6 +7,35 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **An instruction that faults must leave no flag behind, and four of them
+  did.** `XADD` writing its register before its memory was one member of a
+  family; the flags are another. An instruction that reads a location,
+  computes and writes it back set its flags *before* the store — and for
+  `ADC`, `SBB`, `RCL` and `RCR` the carry is an **input**: when the store
+  faulted on a page `fork()` had just shared, the kernel copied the page,
+  replayed the instruction, and it read back the carry it had just written.
+  Measured in four lines: `stc ; adcl $1,(%rbx)` on 0x10 must give 0x12 and
+  gave 0x11; `sbb` gave 0x0F for 0x0E; `rcl` 0x20 for 0x21. And an
+  `addl $1,(%rbx)` on 0xFFFFFFFF that faults left the flags at 0x87 instead
+  of 0x02, so the frame the kernel pushes would have carried flags the
+  instruction had no right to set. The fix is what the processor does: check
+  **both** accesses before changing anything. `probeWrite` translates the
+  write address before the instruction computes, on the eight families that
+  read and write the same location — and not on `CMP` or `BT`, which write
+  nothing, since checking those would fault a comparison against a read-only
+  page, which no processor does.
+
+### Added
+- **The x86-64 machine takes keystrokes, and the boot test holds it to an
+  answer.** A console that writes without reading is a log; this one is a
+  terminal. The boot test runs the guest in rounds: each round ends when the
+  machine has nothing left to do, and that is when it types. By default it
+  types one line into Alpine's rescue shell and requires the answer to come
+  back twice — the terminal's echo, then the shell's reply. `WISQ_PC_INPUT`
+  replaces the lines (separated by `;;`) for measurements that need to ask
+  the guest something.
+
 ## [0.4.0] — 2026-09-04
 
 ### Added

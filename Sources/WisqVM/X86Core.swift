@@ -370,6 +370,12 @@ public struct X86Core: @unchecked Sendable {
         guard let memory else { throw Fault.unsupported("une exécution sans mémoire") }
         var executed: UInt64 = 0
         var waited: UInt64 = 0
+        // **Chaque course a sa propre patience.** Le drapeau restait posé, et
+        // une machine relancée après une frappe rendait encore « attente
+        // épuisée » alors qu'elle venait de travailler : impossible de tenir
+        // une conversation avec l'invité, le premier silence rendant tous les
+        // suivants illisibles.
+        outOfPatience = false
         while executed < budget {
             // Le matériel, entre deux instructions. Le masque plutôt qu'un
             // test à chaque tour : voir `serviceInterrupts`.
