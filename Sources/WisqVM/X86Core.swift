@@ -152,6 +152,9 @@ public struct X86Core: @unchecked Sendable {
     /// Le cache de traduction : étiquettes et cadres, côte à côte.
     var translationTags = [UInt64](repeating: 0, count: X86Core.translationSlots)
     var translationFrames = [UInt64](repeating: 0, count: X86Core.translationSlots)
+    /// Les permissions de chaque page mise en cache. Sans elles, une lecture
+    /// autorisée ouvrirait la porte à une écriture qui ne l'est pas.
+    var translationFlags = [UInt8](repeating: 0, count: X86Core.translationSlots)
 
     public init(registers: [UInt64] = [UInt64](repeating: 0, count: 16),
                 flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,

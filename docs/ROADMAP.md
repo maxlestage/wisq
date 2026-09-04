@@ -3114,8 +3114,45 @@ habitude.
      tout, et le démarrage n'était pas au tiers. Un instrument qui coûte plus
      que ce qu'il mesure n'en est pas un.
 
-     Reste le harnais différentiel qui aligne les deux exécutions et dise à
-     quelle instruction elles divergent.
+     **Et le témoin a trouvé, en une exécution.** Six adresses non canoniques
+     employées ; cinq d'entre elles sont RIP lui-même — donc des sauts partis
+     dans le décor — et les cinq viennent des **mêmes octets**, `41 ff 57 f8`,
+     c'est-à-dire `call *-0x8(%r15)` : la boucle qui appelle les constructeurs
+     d'un programme, pointeur par pointeur. La sixième, celle qui tue, naît
+     d'un `mov 0x79d82(%rip), %rdi` — un pointeur relu depuis la table des
+     globales. Dans les deux cas, **un pointeur relu de la mémoire**, jamais un
+     calcul.
+
+     Puis l'arithmétique a tranché. L'écart entre deux valeurs corrompues
+     successives vaut, **à l'octet près et quatre fois de suite**, la base de
+     chargement du processus suivant :
+
+     | écart mesuré     | base du chargeur | différence  |
+     |------------------|------------------|-------------|
+     | `0x7f4c2a91e000` | `0x7f4c2aa33000` | `-0x115000` |
+     | `0x7f695a0c3000` | `0x7f695a1d8000` | `-0x115000` |
+     | `0x7fc28f3d5000` | `0x7fc28f4ea000` | `-0x115000` |
+     | `0x7fd573dbc000` | `0x7fd573ed1000` | `-0x115000` |
+
+     Une constante parfaite — le décalage du code dans l'image. Les relocations
+     de cinq processus successifs **s'additionnaient dans la même page**.
+
+     **La cause : le parcours des tables ne regardait que le bit de présence.**
+     Un commentaire l'annonçait même comme un choix — « ce cœur ne faute que
+     sur une entrée absente, jamais sur une protection ». Or le bit d'écriture
+     et le bit utilisateur *sont* la copie sur écriture : quand un programme se
+     dédouble, le noyau ne recopie pas sa mémoire, il donne les mêmes pages aux
+     deux et retire le bit d'écriture. La première écriture faute, et c'est là
+     que la copie se fait. wisq laissait l'écriture passer — la copie n'avait
+     jamais lieu, et tous les programmes écrivaient dans la même page.
+
+     Corrigé : le bit d'écriture, le bit utilisateur, `CR0.WP`, le ET des
+     quatre niveaux, le bit de présence dans le code d'erreur (ce qui dit au
+     noyau « fais la copie » plutôt que « va la chercher sur le disque »), et
+     le contrôle **aussi sur le succès de cache** — sans quoi il aurait suffi
+     de lire une page avant de l'écrire pour passer au travers.
+
+     Le harnais différentiel n'aura pas été nécessaire.
 
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une

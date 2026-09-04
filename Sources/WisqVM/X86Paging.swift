@@ -11,6 +11,22 @@ extension X86Core {
     /// s'arrête ici » : deux mébioctets au troisième niveau, un gibioctet au
     /// deuxième.
     static let hugePage: UInt64 = 1 << 7
+    /// Le bit d'écriture d'une entrée, et celui qui l'ouvre aux programmes.
+    ///
+    /// **Ils sont la copie sur écriture.** Quand un programme se dédouble, le
+    /// noyau ne recopie pas sa mémoire : il donne les mêmes pages aux deux et
+    /// retire ce bit-là des deux côtés. La première écriture faute, le noyau
+    /// fait la copie à ce moment-là, et remet le bit sur l'exemplaire du
+    /// coupable. Un cœur qui ne regarde pas ce bit laisse l'écriture passer,
+    /// la copie n'a jamais lieu, et **tous les programmes partagent la même
+    /// page**.
+    static let writable: UInt64 = 1 << 1
+    static let userAccessible: UInt64 = 1 << 2
+    /// CR0.WP. Sans lui, le noyau écrit à travers une page en lecture seule ;
+    /// avec, il faute comme un programme. Linux l'allume, et c'est ce qui rend
+    /// la copie sur écriture sûre même quand c'est le noyau qui écrit dans la
+    /// mémoire d'un programme.
+    static let writeProtect: UInt64 = 1 << 16
     /// Les bits d'adresse d'une entrée : de 12 à 51.
     static let frameMask: UInt64 = 0x000F_FFFF_FFFF_F000
 
@@ -26,7 +42,9 @@ extension X86Core {
         guard pagingActive else { return virtual }
         let page = virtual & ~UInt64(0xFFF)
         let slot = Int((page >> 12) & UInt64(Self.translationSlots - 1))
-        if translationTags[slot] == page &+ 1 { return translationFrames[slot] | (virtual & 0xFFF) }
+        if translationTags[slot] == page &+ 1, allowed(translationFlags[slot], access) {
+            return translationFrames[slot] | (virtual & 0xFFF)
+        }
         return try fill(virtual, page, slot, access)
     }
 
@@ -62,9 +80,9 @@ extension X86Core {
         if canonicalWatchArmed && privilege == 3 && !Self.isCanonical(at) {
             noteNonCanonical(address: at)
         }
-        let frame: UInt64
+        let walked: (frame: UInt64, flags: UInt8)
         do {
-            frame = try walk(page)
+            walked = try walk(page)
         } catch Fault.pageFault {
             // CR2 porte l'adresse **entière**, pas la page : c'est ce qu'un
             // gestionnaire y lit, et l'arrondir lui cacherait l'octet visé.
@@ -79,29 +97,66 @@ extension X86Core {
             pageFaultErrorCode = how.errorCode | (privilege == 3 ? 1 << 2 : 0)
             throw Fault.pageFault(at)
         }
+        // **La page est là, mais l'a-t-on le droit ?** Le code d'erreur porte
+        // alors le bit de présence, et c'est lui qui dit au noyau « ce n'est
+        // pas une page qui manque, c'est une permission » — donc « fais la
+        // copie » plutôt que « va la chercher sur le disque ».
+        guard allowed(walked.flags, how) else {
+            pageFaultErrorCode = Self.present | how.errorCode | (privilege == 3 ? 1 << 2 : 0)
+            throw Fault.pageFault(at)
+        }
         translationTags[slot] = page &+ 1
-        translationFrames[slot] = frame
-        return frame | (at & 0xFFF)
+        translationFrames[slot] = walked.frame
+        translationFlags[slot] = walked.flags
+        return walked.frame | (at & 0xFFF)
+    }
+
+    /// Les deux permissions d'une page, telles qu'on les range dans le cache.
+    static let mayWrite: UInt8 = 1
+    static let mayReachFromRingThree: UInt8 = 2
+
+    /// Cet accès a-t-il le droit ?
+    ///
+    /// **Le contrôle est ici et pas dans le parcours**, parce qu'il doit valoir
+    /// aussi sur un succès de cache : sans ça, une lecture autorisée mettrait
+    /// la page en cache et une écriture ultérieure passerait sans être vue.
+    @inline(__always)
+    func allowed(_ flags: UInt8, _ access: Access) -> Bool {
+        if privilege == 3 {
+            guard flags & Self.mayReachFromRingThree != 0 else { return false }
+            return access != .write || flags & Self.mayWrite != 0
+        }
+        guard access == .write, system.control[0] & Self.writeProtect != 0 else { return true }
+        return flags & Self.mayWrite != 0
     }
 
     /// Le parcours lui-même. Quatre index de neuf bits, pris du haut vers le
     /// bas, et une grande page peut l'arrêter en chemin.
-    mutating func walk(_ page: UInt64) throws -> UInt64 {
+    mutating func walk(_ page: UInt64) throws -> (frame: UInt64, flags: UInt8) {
         guard let memory else { throw Fault.unsupported("une traduction sans mémoire") }
         var table = system.control[3] & Self.frameMask
+        // **Les permissions sont le ET des quatre niveaux.** Une table qui
+        // n'est pas inscriptible interdit d'écrire dans tout ce qu'elle
+        // couvre, même si la feuille au bout dit le contraire ; c'est ainsi
+        // qu'un noyau ferme un espace entier d'un seul bit.
+        var writable = true
+        var user = true
         for level in stride(from: 39, through: 12, by: -9) {
             let index = (page >> UInt64(level)) & 0x1FF
             let entry = try memory.read(table &+ index * 8, 8)
             guard entry & Self.present != 0 else { throw Fault.pageFault(page) }
+            writable = writable && entry & Self.writable != 0
+            user = user && entry & Self.userAccessible != 0
+            let flags = (writable ? Self.mayWrite : 0) | (user ? Self.mayReachFromRingThree : 0)
             if level > 12 && entry & Self.hugePage != 0 {
                 // Une grande page : le reste de l'adresse virtuelle sert de
                 // décalage dedans, et le parcours s'arrête.
                 let size = UInt64(1) << UInt64(level)
-                return (entry & Self.frameMask & ~(size &- 1)) | (page & (size &- 1))
+                return ((entry & Self.frameMask & ~(size &- 1)) | (page & (size &- 1)), flags)
             }
             table = entry & Self.frameMask
         }
-        return table
+        return (table, (writable ? Self.mayWrite : 0) | (user ? Self.mayReachFromRingThree : 0))
     }
 
     /// Le cache de traduction, direct et minuscule. Un vrai processeur en a

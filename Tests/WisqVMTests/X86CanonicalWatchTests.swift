@@ -36,8 +36,10 @@ final class X86CanonicalWatchTests: XCTestCase {
     static func core(_ instructions: [UInt8], ring: UInt16 = 3) throws -> X86Core {
         let memory = X86Memory(size: 0x10000, base: 0)
         try memory.load(instructions, at: program)
-        try memory.write(pml4, 8, pdpt | X86Core.present | 0x2)
-        try memory.write(pdpt, 8, X86Core.present | X86Core.hugePage | 0x2)
+        try memory.write(pml4, 8, pdpt | X86Core.present | X86Core.writable
+            | X86Core.userAccessible)
+        try memory.write(pdpt, 8, X86Core.present | X86Core.hugePage | X86Core.writable
+            | X86Core.userAccessible)
         var core = X86Core(registers: [UInt64](repeating: 0, count: 16),
                            rip: program, memory: memory)
         core.system.control[3] = pml4
