@@ -1,4 +1,7 @@
 #if os(iOS)
+// `Data` : le protocole `GuestMachine` en prend et en rend, et ce fichier écrit
+// une conformance. Aucun des autres types d'ici n'en avait besoin jusque-là.
+import Foundation
 import WisqVM
 #if WISQ_RUST_CORE
 import WisqVMRust
@@ -41,14 +44,15 @@ typealias LocalRISCVMachine = LinuxMachine
 /// dépend pas de `WisqVM` — et c'est voulu : l'interprète Rust ne doit rien au
 /// côté Swift, ce qui est justement ce qui en fait un témoin utilisable.
 ///
-/// **`@retroactive`** parce que ni le type ni le protocole n'appartiennent à ce
-/// module-ci ; le compilateur avertit qu'un jour `WisqVMRust` pourrait déclarer
-/// la même conformance et que les deux se marcheraient dessus. Ici il ne le
-/// pourra jamais : il faudrait qu'il dépende de `WisqVM`, ce que le paragraphe
-/// au-dessus interdit exprès. L'attribut dit qu'on a lu l'avertissement, pas
-/// qu'on l'a contourné.
+/// **Pas de `@retroactive` ici**, et c'est une leçon payée par une intégration
+/// rouge. L'attribut existe pour une conformance dont on ne possède ni le type
+/// ni le protocole ; `swiftc` seul, sans savoir de quel paquet vient quoi, le
+/// réclame. Le vrai bâti passe `-package-name wisq` : les trois modules sont du
+/// même paquet, la conformance n'a donc rien de rétroactif, et l'attribut
+/// devient une erreur. Le compilateur a raison — personne d'autre ne peut
+/// déclarer celle-ci.
 #if WISQ_RUST_CORE
-extension RustLinuxMachine: @retroactive GuestMachine {
+extension RustLinuxMachine: GuestMachine {
     public var ramSizeBytes: Int { Int(ramSize) }
 
     public func load(kernelImage: Data, commandLine: String?, initialRamdisk: Data?) throws {
