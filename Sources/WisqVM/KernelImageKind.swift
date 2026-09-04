@@ -82,7 +82,7 @@ public enum KernelImageKind: Equatable, Sendable {
     public var couldBootHere: Bool {
         switch self {
         case .unknown: return true
-        case .linuxKernel(let image): return image.architecture.core?.availableInTheApp == true
+        case .linuxKernel(let image): return image.architecture.core != nil
         case .executable, .discImage, .compressedKernel: return false
         }
     }
@@ -194,8 +194,7 @@ public enum KernelImageKind: Equatable, Sendable {
             // supposition sur ce que quelqu'un voulait. `unknown` le laisse
             // déjà essayer. Pour les autres, le nom vaut mieux que le
             // silence.
-            return architecture.core?.availableInTheApp == true
-                ? .unknown : .executable(architecture)
+            return architecture.core != nil ? .unknown : .executable(architecture)
         }
 
         // Les enveloppes. Un `vmlinuz` compressé sans en-tête de démarrage est
@@ -239,38 +238,20 @@ public enum KernelImageKind: Equatable, Sendable {
         let what: String
         switch kind {
         case .unknown: return nil
-        case .linuxKernel(let image)
-            where image.architecture.core?.availableInTheApp == true: return nil
+        case .linuxKernel(let image) where image.architecture.core != nil: return nil
         case .linuxKernel(let image):
             let protocolNote = image.bootProtocol
                 .map { " (protocole de démarrage \($0.versionDescription))" } ?? ""
-            let what = """
+            // Un noyau, mais pour une architecture dont wisq n'a pas le cœur.
+            // Le refus nomme quand même le fichier et ce qu'il est : quelqu'un
+            // qui a pris le bon genre de fichier mérite de le savoir, sinon il
+            // en cherchera un autre du même genre.
+            return """
                 \(name) est un noyau Linux pour \(image.architecture.name), \
                 au format \(image.format)\(protocolNote).
 
                 C'est le bon genre de fichier — un noyau, pas une image de \
-                disque —
-                """
-            // **Deux refus différents, parce que ce sont deux situations
-            // différentes.** Dire « pas de cœur » d'une architecture dont le
-            // cœur existe et démarre un vrai noyau serait faux, et enverrait
-            // quelqu'un attendre une chose déjà écrite.
-            if let core = image.architecture.core {
-                return """
-                    \(what) et wisq a bien un cœur \(core.name), qui démarre \
-                    un vrai noyau Linux. Il n'est pas encore branché dans \
-                    l'application : la machine locale ne sait lancer que \
-                    \(GuestArchitecture.runnableInTheApp.map(\.name)
-                        .joined(separator: " et ")).
-
-                    Ce n'est pas une question de mémoire. En attendant, pour \
-                    faire tourner cette distribution : installez-la sur un \
-                    hôte (un PC, un Mac, un serveur), et connectez-vous dessus \
-                    depuis wisq.
-                    """
-            }
-            return """
-                \(what) mais wisq n'a pas de cœur pour cette architecture. Il \
+                disque — mais wisq n'a pas de cœur pour cette architecture. Il \
                 en a deux : \
                 \(GuestArchitecture.runnable.map(\.name).joined(separator: " et ")).
 
@@ -298,7 +279,7 @@ public enum KernelImageKind: Equatable, Sendable {
             \(name) est \(what).
 
             La machine locale de wisq démarre un noyau Linux pour \
-            \(GuestArchitecture.runnableInTheApp.map(\.name)
+            \(GuestArchitecture.runnable.map(\.name)
                 .joined(separator: " et ")), et rien d'autre. Ce n'est pas une \
             question de mémoire — aucun réglage ne changera ça.
 

@@ -10,9 +10,11 @@ wisq se place face à UTM sur deux fronts à la fois :
 - **Distant** : l'iPhone est un client rapide vers des VM qui tournent là où il
   y a du silicium — un Mac, un PC, un NAS, un serveur. C'est le mode principal,
   celui qui donne un vrai bureau à pleine vitesse.
-- **Local** : un émulateur RISC-V rv32ima interprété, écrit en Swift, boote un
-  vrai noyau Linux **sur le téléphone** en moins d'une seconde — sans réseau,
-  sans serveur, shell compris. Interprété, donc sans JIT : conforme aux règles
+- **Local** : deux machines interprétées — un RISC-V rv32ima et un PC x86-64 —
+  bootent un vrai noyau Linux **sur le téléphone**, sans réseau ni serveur ; la
+  RISC-V en moins d'une seconde, shell compris. wisq lit le fichier qu'on lui
+  donne et choisit le cœur tout seul : vingt et une familles d'architectures
+  reconnues, deux exécutées. Interprété, donc sans JIT : conforme aux règles
   d'iOS, là où UTM SE vit dans une zone grise.
 
 | | UTM SE (App Store) | wisq |
@@ -80,7 +82,7 @@ n'est pas implémenté (voir `docs/ROADMAP.md`).
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (1584 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (1594 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

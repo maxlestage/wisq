@@ -97,16 +97,27 @@ final class GuestArchitectureTests: XCTestCase {
         }
     }
 
-    /// **Un cœur qui existe n'est pas un cœur branché**, et les deux se
-    /// répondent séparément. Le cœur x86-64 démarre un vrai noyau d'Alpine
-    /// jusqu'à son espace utilisateur ; `LinuxMachine` est encore câblée sur
-    /// le RISC-V. Confondre les deux ferait dire à l'application soit une
-    /// promesse qu'elle ne tient pas, soit un « pas de cœur » qui est faux.
-    func testExistingIsNotTheSameAsWiredIn() {
-        XCTAssertTrue(GuestArchitecture.Core.riscv32.availableInTheApp)
-        XCTAssertFalse(GuestArchitecture.Core.x86_64.availableInTheApp)
-        XCTAssertEqual(GuestArchitecture.runnable.count, 2)
-        XCTAssertEqual(GuestArchitecture.runnableInTheApp.map(\.name), ["RISC-V 32 bits"])
+    /// **Les deux cœurs sont branchés**, et c'est ce qui rend la liste unique.
+    ///
+    /// Il y avait deux listes — celles qui ont un cœur, et celles que
+    /// l'application savait lancer — parce que le cœur x86-64 démarrait un
+    /// vrai noyau d'Alpine pendant que `LocalVMModel` ne construisait que la
+    /// machine RISC-V. `GuestMachineFactory` construit maintenant l'une ou
+    /// l'autre, donc il n'y a plus qu'une liste, et ce test tient le fait que
+    /// chacune de ses entrées mène vraiment à une machine.
+    func testEveryRunnableArchitectureReachesAMachine() {
+        XCTAssertEqual(GuestArchitecture.runnable.map(\.name),
+                       ["RISC-V 32 bits", "x86-64"])
+        for architecture in GuestArchitecture.runnable {
+            guard let core = architecture.core else {
+                XCTFail("\(architecture.name) est dans `runnable` sans cœur")
+                continue
+            }
+            let machine = GuestMachineFactory.make(
+                for: core, ramSizeBytes: 128 << 20, onOutput: { _ in })
+            XCTAssertEqual(machine.ramSizeBytes, 128 << 20, architecture.name)
+            XCTAssertEqual(machine.retiredInstructions, 0, architecture.name)
+        }
     }
 
     // MARK: - Les formats, sur des octets
@@ -198,25 +209,13 @@ final class GuestArchitectureTests: XCTestCase {
         XCTAssertFalse(message.contains("Mo de mémoire"), message)
     }
 
-    /// Et il ne dit **jamais** « pas de cœur » d'une architecture dont le cœur
-    /// existe. Le cœur x86-64 démarre un vrai noyau ; l'annoncer absent
-    /// enverrait quelqu'un attendre une chose déjà écrite.
-    func testARefusalNeverDeniesACoreThatExists() throws {
-        let message = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
-            .linuxKernel(KernelImage(GuestArchitecture(.x86, bits: 64), format: "bzImage")),
-            name: "vmlinuz-lts"))
-        XCTAssertTrue(message.contains("wisq a bien un cœur x86-64"), message)
-        XCTAssertTrue(message.contains("pas encore branché"), message)
-        XCTAssertFalse(message.contains("pas de cœur pour cette architecture"), message)
-    }
-
     /// Les textes des refus n'énumèrent pas les architectures à la main : ils
     /// les prennent dans la table. Sans ça, brancher un cœur laisserait des
     /// phrases périmées derrière.
     func testTheRefusalsReadTheTableRatherThanRepeatingIt() throws {
         let message = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
             .discImage("ISO 9660"), name: "arch.iso"))
-        for architecture in GuestArchitecture.runnableInTheApp {
+        for architecture in GuestArchitecture.runnable {
             XCTAssertTrue(message.contains(architecture.name), message)
         }
     }
