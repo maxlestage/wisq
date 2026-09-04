@@ -2,7 +2,7 @@ import type { Doc } from "../doc";
 
 /// Versions listed on the page. A test checks each one has a dated section in
 /// CHANGELOG.md, so this page cannot quietly fall behind the repository.
-export const RELEASED_VERSIONS = ["0.3.0", "0.2.0", "0.1.1", "0.1.0"] as const;
+export const RELEASED_VERSIONS = ["0.4.0", "0.3.0", "0.2.0", "0.1.1", "0.1.0"] as const;
 
 export const releasesEn: Doc = {
   title: "Releases",
@@ -12,6 +12,24 @@ export const releasesEn: Doc = {
       kind: "p",
       text:
         "Versions follow semantic versioning. Before 1.0.0 a minor version may break an API — the changelog says when one does.",
+    },
+
+    { kind: "h2", text: "0.4.0" },
+    {
+      kind: "p",
+      text:
+        "A second local architecture: an x86-64 core that runs a stock Alpine kernel and its initramfs — 3.4 billion instructions with no program dying. Getting there took three defects, and every one of them was found by measurement rather than by reading the code.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "The x86-64 core is held by nine hardware corpora: the reference is this machine's own processor, which executes the same bytes on the same state and is asked what it produced. Arithmetic, XMM, strings, stack, branches, SSE2 integer, scalar float, the x87 stack, and the 512-byte FXSAVE area — over 24 000 cases.",
+        "PUSH decremented the stack pointer before translating the address it was about to write. A page fault then restarted the instruction with the pointer already moved, and it moved again: eight bytes lost for good. That is what killed /init.",
+        "FXSAVE wrote zeros where the sixteen XMM registers belong, and FXRSTOR never read them back. The comment explaining why that was acceptable — \u2018nothing here computes in floating point\u2019 — had stopped being true, and the two tests covering it required the wrong behaviour: they held the defect in place.",
+        "An instruction was fetched by translating only its first byte, then reading up to fourteen more contiguously in physical memory. The physically next frame is almost never the virtually next page, so an instruction straddling a page boundary decoded from someone else\u2019s bytes. Fourteen bytes in every 4096 can straddle: rare enough to survive nine corpora, frequent enough to kill a program that runs long enough.",
+        "Measured on the same kernel and initramfs: zero segfaults, zero non-canonical addresses, and zero of the 27 413 ring transitions returns a corrupted stack.",
+        "The x86-64 machine does not reach a login prompt: it stops for want of a boot medium, exactly where QEMU stops on the same images. A disk is the next step, not a defect.",
+      ],
     },
 
     { kind: "h2", text: "0.3.0" },
@@ -90,6 +108,24 @@ export const releasesFr: Doc = {
       kind: "p",
       text:
         "Les versions suivent le versionnage sémantique. Avant 1.0.0, une version mineure peut rompre une API — le journal le signale quand c'est le cas.",
+    },
+
+    { kind: "h2", text: "0.4.0" },
+    {
+      kind: "p",
+      text:
+        "Une seconde architecture locale : un cœur x86-64 qui fait tourner un noyau Alpine standard et son initramfs — 3,4 milliards d\u2019instructions sans qu\u2019un seul programme meure. Il a fallu trois défauts pour y arriver, et chacun a été trouvé par la mesure, jamais par la lecture du code.",
+    },
+    {
+      kind: "ul",
+      items: [
+        "Le cœur x86-64 est tenu par neuf corpus matériels : la référence n\u2019est ni un document ni un autre émulateur, c\u2019est le processeur de cette machine, à qui l\u2019on fait exécuter les mêmes octets sur le même état. Arithmétique, XMM, chaînes, pile, branchements, SSE2 entier, flottant scalaire, pile x87, et la zone FXSAVE de 512 octets — plus de 24 000 cas.",
+        "PUSH descendait le pointeur de pile avant de traduire l\u2019adresse où il allait écrire. Une faute de page reprenait alors l\u2019instruction avec le pointeur déjà descendu, et il redescendait : huit octets perdus pour toujours. C\u2019est ce qui tuait /init.",
+        "FXSAVE écrivait des zéros à la place des seize registres XMM, et FXRSTOR ne les relisait jamais. Le commentaire qui expliquait pourquoi c\u2019était acceptable — « rien ici ne calcule en virgule flottante » — avait cessé d\u2019être vrai, et les deux tests qui couvraient ces instructions exigeaient le mauvais comportement : ils tenaient le défaut en place.",
+        "Une instruction était lue en ne traduisant que son premier octet, puis en prenant jusqu\u2019à quatorze octets contigus en mémoire physique. Or la trame physiquement suivante n\u2019est presque jamais la page virtuellement suivante : une instruction à cheval sur une frontière de page se décodait sur les octets d\u2019ailleurs. Quatorze octets sur 4096 peuvent traverser — assez rare pour survivre à neuf corpus, assez fréquent pour tuer un programme qui dure.",
+        "Mesuré sur le même noyau et le même initramfs : zéro segfault, zéro adresse non canonique, et aucun des 27 413 passages d\u2019anneau ne rend une pile corrompue.",
+        "La machine x86-64 n\u2019atteint pas l\u2019invite de connexion : elle s\u2019arrête faute de média de démarrage, exactement là où QEMU s\u2019arrête sur les mêmes images. Un disque est le pas suivant, pas un défaut.",
+      ],
     },
 
     { kind: "h2", text: "0.3.0" },

@@ -15,7 +15,7 @@
 class WisqAgent < Formula
   desc "Host daemon that lets wisq on iPhone power VMs on and connect to them"
   homepage "https://github.com/maxlestage/wisq"
-  url "https://github.com/maxlestage/wisq.git", tag: "v0.3.0"
+  url "https://github.com/maxlestage/wisq.git", tag: "v0.4.0"
   # No licence line: none has been chosen for this project yet, and Homebrew
   # treats this field as a statement of what the user may do with the code.
   # Declaring one here would grant rights nobody decided to grant.

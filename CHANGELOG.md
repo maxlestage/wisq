@@ -7,6 +7,8 @@ break APIs.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-04
+
 ### Fixed
 - **A VM identifier reached `virsh` with no validation at all.** `service.rs`
   took the path segment straight from the URL and handed it to
