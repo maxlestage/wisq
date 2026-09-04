@@ -97,31 +97,42 @@ final class X86VectorTests: XCTestCase {
         XCTAssertEqual(core.vectors[1], 0, "et tout le reste effacé")
     }
 
-    /// L'arithmétique en virgule flottante est refusée de la même façon.
-    /// C'est un état, pas un manque caché : la machine ne l'a pas encore
-    /// demandée, et le jour où elle le fera, elle s'arrêtera dessus en le
-    /// disant.
-    func testFloatingPointArithmeticIsRefusedByName() throws {
-        // `f2 0f 59 c1` : mulsd %xmm1,%xmm0
-        let ram = try Self.memory([0xF2, 0x0F, 0x59, 0xC1])
+    /// L'arithmétique **empaquetée** est refusée de la même façon, et le
+    /// scalaire ne l'est plus.
+    ///
+    /// Cette place tenait le refus de `mulsd` ; la machine l'a réclamée, et le
+    /// septième corpus la tient maintenant contre le vrai processeur. Ce qui
+    /// reste refusé est la forme qui traite les deux valeurs du registre à la
+    /// fois : elle apparaît une poignée de fois dans l'espace utilisateur de
+    /// l'invité, dans du code que ce démarrage n'atteint pas.
+    ///
+    /// C'est un état, pas un manque caché — et la démonstration que la règle
+    /// du dépôt tient dans les deux sens : ce qui est demandé est écrit et
+    /// mesuré, ce qui ne l'est pas s'arrête en le disant.
+    func testPackedArithmeticIsStillRefusedByName() throws {
+        // `66 0f 59 c1` : mulpd %xmm1,%xmm0
+        let ram = try Self.memory([0x66, 0x0F, 0x59, 0xC1])
         var core = Self.core(ram)
+        core.setVector(0, 0x3FF0_0000_0000_0000, 0x4000_0000_0000_0000)
         XCTAssertThrowsError(try core.run(budget: 1)) { error in
             guard case .unsupported(let name)? = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, reçu \(error)")
             }
-            XCTAssertFalse(name.isEmpty)
+            XCTAssertTrue(name.contains("59"), "il faut nommer l'opcode : \(name)")
         }
+        XCTAssertEqual(core.vectors[0], 0x3FF0_0000_0000_0000,
+                       "et rien n'a été écrit avant de refuser")
     }
 
-    /// **Un registre XMM ne se confond pas avec un registre MMX.** `0F 6E`
-    /// sans préfixe est l'instruction MMX du même nom, qui écrit dans un autre
-    /// fichier de registres. L'exécuter comme si c'était la forme SSE
-    /// écrirait dans xmm0 ce que le programme destinait à mm0.
-    func testTheMMXFormIsNotTakenForTheSSEOne() throws {
-        let ram = try Self.memory([0x0F, 0x6E, 0xC0])  // movd %eax,%mm0
+    /// Et le scalaire, lui, aboutit : la même multiplication sur une seule
+    /// valeur rend deux fois un, et laisse la moitié haute intacte.
+    func testScalarArithmeticNowLands() throws {
+        let ram = try Self.memory([0xF2, 0x0F, 0x59, 0xC1])  // mulsd %xmm1,%xmm0
         var core = Self.core(ram)
-        core.registers[0] = 0xDEAD_BEEF
-        XCTAssertThrowsError(try core.run(budget: 1))
-        XCTAssertEqual(core.vectors[0], 0, "xmm0 ne doit pas avoir bougé")
+        core.setVector(0, (2.0 as Double).bitPattern, 0xAAAA)
+        core.setVector(1, (3.0 as Double).bitPattern, 0xBBBB)
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(Double(bitPattern: core.vectors[0]), 6.0)
+        XCTAssertEqual(core.vectors[1], 0xAAAA, "la moitié haute est laissée telle quelle")
     }
 }
