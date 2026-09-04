@@ -172,7 +172,8 @@ final class X86BootAttemptTests: XCTestCase {
         let brokenSaid = Self.kept(core.brokenReturns.count,
                                    of: core.brokenReturnTally)
         let started = Self.kept(core.processStarts.count, of: core.processStartsSeen)
-        let lost = Self.kept(core.lostJumps.count, of: core.lostJumpTally)
+        let lost = Self.kept(core.lostJumps.count, of: core.lostJumpsUnresolved)
+            + " non résolus, sur \(core.lostJumpTally) sauts vers une page absente"
 
         // Le rapport sort **section par section**, et pas d'un seul `print`.
         //

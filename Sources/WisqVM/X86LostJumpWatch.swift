@@ -24,11 +24,20 @@ import Foundation
 // octets qui s'y trouvent suffisent à retrouver l'endroit dans le binaire, et
 // c'est de là que la question repart.
 //
-// **Ce témoin ne juge pas non plus.** Un saut vers une page absente est
-// parfaitement légitime dans un programme qui étend sa pile ou touche une page
-// à la demande ; ce qui ne l'est pas, c'est de le faire en **récupération
-// d'instruction** depuis un endroit qui n'y menait pas. Le témoin rend compte,
-// et c'est à l'œil de trancher.
+// **Et il ne garde que les sauts dont le programme n'est pas revenu.** La
+// première version gardait toutes les récupérations d'instruction sur une page
+// absente, et la mesure l'a démolie en une exécution : neuf cent quatre, dont
+// la quasi-totalité sont le cas le plus ordinaire du monde — une page de code
+// chargée à la demande. Le noyau la pose, l'instruction reprend, et il ne s'est
+// rien passé. Les seize gardés étaient tous de ceux-là, et les quatre qui
+// tuaient `mdev` étaient parmi les huit cent quatre-vingt-huit jetés.
+//
+// Le discriminant ne demande pourtant rien de plus que ce qu'on a déjà : **une
+// faute que le noyau résout reprend à la même adresse.** Celle qui tue le
+// processus, non — la main revient ailleurs, dans un gestionnaire de signal ou
+// dans un autre programme. Le témoin retient donc le saut *en attente*, et la
+// première instruction d'anneau trois qui aboutit ensuite tranche : au même
+// endroit, on oublie ; ailleurs, on garde.
 extension X86Core {
     /// Un saut d'anneau trois vers une page qu'aucune table ne porte.
     public struct LostJump: Sendable, Equatable {
@@ -58,13 +67,14 @@ extension X86Core {
 
     /// Les sauts gardés, du plus ancien au plus récent.
     public var jumpsLost: [LostJump] {
-        lostJumpTally <= UInt64(Self.lostJumpLimit)
+        lostJumpsUnresolved <= UInt64(Self.lostJumpLimit)
             ? lostJumps
             : Array(lostJumps[lostJumpNext...]) + Array(lostJumps[..<lostJumpNext])
     }
 
     /// À appeler quand une récupération d'instruction d'anneau trois tombe sur
-    /// une page absente.
+    /// une page absente. Le saut est mis **en attente** : c'est la suite qui
+    /// dira s'il comptait.
     mutating func noteLostJump(_ at: UInt64) {
         lostJumpTally &+= 1
         // Le témoin s'éteint pendant qu'il lit : relire passe par la
@@ -72,12 +82,22 @@ extension X86Core {
         let armed = canonicalWatchArmed
         canonicalWatchArmed = false
         defer { canonicalWatchArmed = armed }
-        let jump = LostJump(at: at, from: previousRip,
-                            fromBytes: peek(previousRip), retired: retired)
+        pendingLostJump = LostJump(at: at, from: previousRip,
+                                   fromBytes: peek(previousRip), retired: retired)
+    }
+
+    /// À appeler quand une instruction d'anneau trois aboutit à `entry`. Si un
+    /// saut était en attente et que la main revient ailleurs qu'à l'endroit
+    /// visé, c'est que le noyau ne l'a pas résolu.
+    mutating func settleLostJump(_ entry: UInt64) {
+        guard let pending = pendingLostJump else { return }
+        pendingLostJump = nil
+        guard entry != pending.at else { return }
+        lostJumpsUnresolved &+= 1
         if lostJumps.count < Self.lostJumpLimit {
-            lostJumps.append(jump)
+            lostJumps.append(pending)
         } else {
-            lostJumps[lostJumpNext] = jump
+            lostJumps[lostJumpNext] = pending
         }
         lostJumpNext = (lostJumpNext + 1) % Self.lostJumpLimit
     }

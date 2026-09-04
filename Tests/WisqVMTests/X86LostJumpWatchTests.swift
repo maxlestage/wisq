@@ -8,6 +8,14 @@ import XCTest
 /// l'adresse d'arrivée n'apprend rien : elle n'existe pas. Ce qui apprend,
 /// c'est **l'adresse de départ** — la dernière instruction qui a abouti est,
 /// elle, dans du code cartographié, et ses octets la nomment.
+///
+/// **Et tous ne comptent pas.** Une première version gardait chaque
+/// récupération d'instruction sur une page absente ; la mesure en a rendu
+/// **neuf cent quatre** en une exécution, presque toutes le cas le plus
+/// ordinaire du monde — une page de code chargée à la demande. Le noyau la
+/// pose, l'instruction reprend, il ne s'est rien passé. Les seize gardés
+/// étaient tous de ceux-là, et les quatre qui tuaient `mdev` étaient parmi
+/// les jetés.
 final class X86LostJumpWatchTests: XCTestCase {
     static let pml4: UInt64 = 0x2000
     static let pdpt: UInt64 = 0x3000
@@ -49,6 +57,11 @@ final class X86LostJumpWatchTests: XCTestCase {
         })
         _ = try? core.run(budget: 2)
         XCTAssertEqual(core.lostJumpTally, 1)
+        // Le noyau de ce test ne résout rien : la main ne revient jamais à
+        // l'adresse visée, donc le saut compte.
+        core.rip = 0x1234
+        core.settleLostJump(0x1234)
+        XCTAssertEqual(core.lostJumpsUnresolved, 1)
         let lost = try XCTUnwrap(core.jumpsLost.last)
         XCTAssertEqual(lost.at, 0x4000_0000, "l'adresse qui n'existe pas")
         XCTAssertEqual(lost.from, Self.program, "et celle qui l'a fabriquée")
@@ -82,14 +95,31 @@ final class X86LostJumpWatchTests: XCTestCase {
         XCTAssertEqual(core.lostJumpTally, 0, "c'est une lecture, pas un saut")
     }
 
-    /// Et on garde les derniers, avec le compte de tout ce qu'on a vu.
+    /// **Un saut que le noyau résout ne compte pas.** C'est le cas ordinaire
+    /// — une page de code chargée à la demande — et il y en a des centaines
+    /// par démarrage. Les garder noierait les quatre qui tuent un programme.
+    func testAJumpTheKernelResolvesIsForgotten() throws {
+        var core = try Self.core([0x90])
+        core.previousRip = 0x1000
+        core.noteLostJump(0x4000_0000)
+        // La main revient **à l'endroit visé** : la page est là, l'instruction
+        // reprend, il ne s'est rien passé.
+        core.settleLostJump(0x4000_0000)
+        XCTAssertEqual(core.lostJumpTally, 1, "on l'a bien vu passer")
+        XCTAssertEqual(core.lostJumpsUnresolved, 0, "mais il ne comptait pas")
+        XCTAssertTrue(core.jumpsLost.isEmpty)
+    }
+
+    /// Et on garde les derniers de ceux qui comptent, avec leur total.
     func testItKeepsTheLastOnesAndSaysHowManyThereWere() throws {
         var core = try Self.core([0x90])
         let many = X86Core.lostJumpLimit + 5
         for index in 0..<many {
             core.previousRip = UInt64(index)
             core.noteLostJump(UInt64(0x9000_0000 + index))
+            core.settleLostJump(0)  // ailleurs : le noyau n'a rien résolu
         }
+        XCTAssertEqual(core.lostJumpsUnresolved, UInt64(many))
         XCTAssertEqual(core.lostJumps.count, X86Core.lostJumpLimit)
         XCTAssertEqual(core.lostJumpTally, UInt64(many))
         let kept = core.jumpsLost

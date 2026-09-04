@@ -95,7 +95,12 @@ public struct X86Core: @unchecked Sendable {
     /// Les sauts vers une page absente. Voir `X86LostJumpWatch.swift`.
     public var lostJumps: [LostJump] = []
     var lostJumpNext = 0
+    /// Combien de sauts vers une page absente en tout, et combien le noyau
+    /// n'a pas résolus. Les premiers sont le cas ordinaire ; seuls les
+    /// seconds sont un défaut.
     public internal(set) var lostJumpTally: UInt64 = 0
+    public internal(set) var lostJumpsUnresolved: UInt64 = 0
+    var pendingLostJump: LostJump?
     public var processStarts: [ProcessStart] = []
     var processStartNext = 0
     var processStartTally: UInt64 = 0
@@ -403,6 +408,10 @@ public struct X86Core: @unchecked Sendable {
                     let read = (instruction.modrm.map { $0 < 0xC0 } ?? false)
                         ? lastAddress : nil
                     rememberBirths(before: before, rip: entry, from: read)
+                    // Un saut vers une page absente était-il en attente ? Si
+                    // l'on reprend ailleurs qu'à l'endroit visé, le noyau ne
+                    // l'a pas résolu — et c'est le seul cas qui compte.
+                    settleLostJump(entry)
                     previousRip = entry
                     // **Qui bouge la pile.** Noté avant d'examiner le retour,
                     // pour que le `ret` fautif figure lui-même dans la trace
