@@ -116,10 +116,12 @@ const en: Copy = {
       name: "Local",
       head: "A real Linux kernel, on the phone",
       body:
-        "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak. And the machine survives iOS: set aside when the screen locks, it resumes your shell right where it was.",
+        "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak. And the machine survives iOS: set aside when the screen locks, it resumes your shell right where it was. An x86-64 core stands beside it, running a stock Alpine kernel and its init.",
       points: [
         "rv32ima core, 64 MB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
+        "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images",
+        "Nine hardware corpora hold that core: the reference is a real processor, asked what it produced",
         "Entirely offline — no server, no network",
         "CI boots that kernel on every commit, as a test",
       ],
@@ -165,7 +167,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "1733", label: "tests" },
+      { value: "1765", label: "tests" },
       { value: "6", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -237,10 +239,12 @@ const fr: Copy = {
       name: "Local",
       head: "Un vrai noyau Linux, sur le téléphone",
       body:
-        "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak. Et la machine survit à iOS : mise de côté quand l'écran se verrouille, elle reprend votre shell là où il était.",
+        "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak. Et la machine survit à iOS : mise de côté quand l'écran se verrouille, elle reprend votre shell là où il était. Un cœur x86-64 l'accompagne, qui fait tourner un noyau Alpine standard et son init.",
       points: [
         "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
+        "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images",
+        "Neuf corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit",
         "Entièrement hors ligne — aucun serveur, aucun réseau",
         "La CI démarre ce noyau à chaque commit, comme test",
       ],
@@ -281,7 +285,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "1733", label: "tests" },
+      { value: "1765", label: "tests" },
       { value: "6", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
@@ -335,4 +339,4 @@ export const AUTHOR_URL = "https://github.com/maxlestage";
 
 /// The version the footer shows. Checked against CHANGELOG.md by a test, so it
 /// cannot quietly describe a release the repository does not have.
-export const SITE_VERSION = "0.3.0";
+export const SITE_VERSION = "0.4.0";

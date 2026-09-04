@@ -55,6 +55,7 @@ extension X86Core {
         // l'infini et sans rien signaler.
         if canonicalWatchArmed, privilege == 3 {
             leavingRingThree(at: rip, cause: .systemCall)
+            noteSystemCall(registers[0])
         }
         registers[1] = rip &+ UInt64(length)
         registers[11] = flags | Flag.reserved

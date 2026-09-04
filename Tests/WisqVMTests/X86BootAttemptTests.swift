@@ -158,7 +158,19 @@ final class X86BootAttemptTests: XCTestCase {
         var stopped: Error?
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 3_500_000_000)
+            // **L'attente a sa propre allocation.** Sans elle, l'invité qui
+            // patiente devant un média de démarrage absent brûle son budget
+            // d'instructions à ne rien faire, et ses temporisations ne peuvent
+            // jamais expirer — on lui coupe le courant avant.
+            let patience = ProcessInfo.processInfo.environment["WISQ_PC_WAIT"]
+                .flatMap { UInt64($0) }
+            // **Les valeurs par défaut vont jusqu'au shell de secours.** Alpine
+            // y arrive après quatre milliards d'instructions retirées, et il
+            // lui faut patienter devant un média de démarrage absent — douze
+            // secondes de temps invité, soit deux cents millions de tours ;
+            // on en donne le double.
+            try core.run(budget: budget.flatMap { UInt64($0) } ?? 4_500_000_000,
+                         waiting: patience ?? 400_000_000)
         } catch {
             stopped = error
         }
@@ -192,6 +204,8 @@ final class X86BootAttemptTests: XCTestCase {
         let ending: String
         if let stopped {
             ending = "\(stopped)"
+        } else if core.outOfPatience {
+            ending = "attente épuisée (la machine patientait encore)"
         } else if core.halted && core.idled > 0 {
             ending = "budget épuisé pendant l'attente"
         } else if core.halted {
@@ -199,6 +213,22 @@ final class X86BootAttemptTests: XCTestCase {
         } else {
             ending = "budget épuisé en exécutant"
         }
+        // **Quatre conditions séparent un battement d'une interruption
+        // livrée**, et « la machine attend encore » ne dit pas laquelle a
+        // manqué. Il faut un battement dû, le drapeau d'interruption levé, la
+        // ligne non masquée, et une porte que l'IDT porte. Le rapport les
+        // donne toutes les quatre plutôt que de laisser deviner.
+        let pic = core.devices.primary
+        let due = core.devices.expirations(at: core.ticks)
+        let pending = pic.request & ~pic.mask
+        let controller = "battements dus \(due), levés \(core.devices.raised)"
+            + String(format: ", demande %02x, masque %02x, service %02x,"
+                     + " base de vecteur %02x", pic.request, pic.mask,
+                     pic.service, pic.vectorBase)
+            // Le suffixe ne vaut que si une ligne demande : sans demande, il
+            // n'y a rien à masquer, et le dire ferait accuser le masque quand
+            // c'est l'horloge qui n'a pas encore battu.
+            + (pic.request != 0 && pending == 0 ? " — RIEN NE PASSE LE MASQUE" : "")
         let halt = core.halted
             ? clock + ", " + masked + ", \(core.idled) tours d'attente"
             : "non"
@@ -226,6 +256,7 @@ final class X86BootAttemptTests: XCTestCase {
             arrêt                 : \(ending)
             rip                   : 0x\(String(core.rip, radix: 16))
             au repos              : \(halt)
+            contrôleur            : \(controller)
             octets à RIP          : \(core.memory.map {
                 (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
             } ?? "?")
@@ -237,6 +268,7 @@ final class X86BootAttemptTests: XCTestCase {
             programmes démarrés   : \(started)
             sauts dans le vide    : \(lost)
             adresses non canoniques : \(core.nonCanonicalSeen.count)
+            fils vus              : \(core.threadActivity.count)
             """)
 
         func list(_ title: String, _ lines: [String]) {
@@ -259,6 +291,9 @@ final class X86BootAttemptTests: XCTestCase {
         list("retours rompus", core.returnsBroken.map { $0.description })
         list("sauts dans le vide", core.jumpsLost.map { $0.description })
         list("programmes démarrés", core.processesStarted.map { $0.description })
+        // Qui tourne et qui attend quoi : le plus récemment actif en premier.
+        list("fils, du plus récent au plus ancien",
+             core.threadsByLastActivity.map { $0.description })
         list("adresses non canoniques", core.nonCanonicalSeen.map { $0.description })
         if !serial.isEmpty { say("\n" + serial) }
         say("\n=====================================\n")
@@ -289,6 +324,19 @@ final class X86BootAttemptTests: XCTestCase {
         }
         XCTAssertTrue(serial.contains("Freeing initrd memory"),
                       "avec un disque en mémoire, le noyau doit le déballer et le rendre")
+        // **Jusqu'au bout, comme la référence.** Sur les mêmes images, QEMU
+        // imprime « Mounting boot media: failed. » douze secondes après avoir
+        // commencé à chercher, puis lance le shell de secours de l'initramfs.
+        // C'est ce que cette machine doit faire aussi, et c'est la phrase qui
+        // dit qu'elle se comporte comme la référence jusqu'au bout — avant
+        // d'investir dans un disque. Trois défauts l'en empêchaient : RDTSC
+        // figé pendant le sommeil, un port série que le pilote 8250 ne
+        // trouvait pas, et un XADD qui doublait sa destination quand son
+        // écriture fautait sur une page copiée par fork().
+        XCTAssertTrue(serial.contains("Mounting boot media: failed."),
+                      "l'init doit renoncer au média de démarrage, comme QEMU")
+        XCTAssertTrue(serial.contains("initramfs emergency recovery shell launched"),
+                      "et lancer son shell de secours, comme QEMU")
         // **Ce qui remplace « on s'arrête en anneau trois ».** Cette
         // assertion-là tenait tant que le cœur s'arrêtait *pendant* que le
         // programme tournait ; depuis que plus aucun opcode ne manque, la
