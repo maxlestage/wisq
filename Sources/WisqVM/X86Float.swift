@@ -215,9 +215,11 @@ extension X86Core {
             let left = Self.asSingle(destination.low)
             let right = Self.asSingle(source.0)
             let result: Float
-            if left.isNaN { result = Self.quiet(left) }
-            else if right.isNaN { result = Self.quiet(right) }
-            else {
+            if left.isNaN {
+                result = Self.quiet(left)
+            } else if right.isNaN {
+                result = Self.quiet(right)
+            } else {
                 let computed = narrow(left, right)
                 result = computed.isNaN ? Self.indefiniteSingle : computed
             }
@@ -227,9 +229,11 @@ extension X86Core {
             let left = Self.asDouble(destination.low)
             let right = Self.asDouble(source.0)
             let result: Double
-            if left.isNaN { result = Self.quiet(left) }
-            else if right.isNaN { result = Self.quiet(right) }
-            else {
+            if left.isNaN {
+                result = Self.quiet(left)
+            } else if right.isNaN {
+                result = Self.quiet(right)
+            } else {
                 let computed = wide(left, right)
                 result = computed.isNaN ? Self.indefiniteDouble : computed
             }
