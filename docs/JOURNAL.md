@@ -8,6 +8,73 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~05h20 UTC — les seize registres XMM, et un oracle qui a grandi
+
+Le noyau s'était arrêté sur `0F 6E` dans l'espace utilisateur : `MOVD` entre un
+registre général et un registre SSE, dans le chargeur dynamique de musl.
+
+### Savoir avant d'écrire
+
+Plutôt que de deviner quelles instructions vectorielles il faut, j'ai déballé
+l'`initramfs-lts` d'Alpine et désassemblé le chargeur. **8 663 instructions y
+touchent un registre XMM**, et la répartition dit quoi écrire :
+
+| déplacement de bits | calcul flottant |
+|---|---|
+| `movaps` 707, `movapd` 691, `pxor` 363, `movups` 244, `movd` 203, `movdqa` 113, `movdqu` 85, `punpcklqdq` 59 | `movsd` 1173, `mulsd` 847, `addsd` 641, `divsd` 129, `cvt*` ~150 |
+
+La colonne de droite est le formatage des flottants dans `printf`, qui ne
+tourne pas au démarrage. Ce sont deux décisions différentes, et une seule a été
+demandée.
+
+### L'oracle a dû grandir
+
+Le harnais ne portait que les seize registres généraux et RFLAGS. Il porte
+maintenant les seize XMM, par `movdqu` — non aligné exprès : l'alignement du
+tampon de l'appelant n'est pas au harnais de le décider, et un `movdqa` ferait
+dépendre le harnais d'une chose que le pilote pourrait changer sans le savoir.
+Le pilote lit un nombre de valeurs variable, dix-sept ou quarante-neuf, pour
+que le corpus arithmétique existant reste lisible tel quel.
+
+**La preuve que ça n'a rien changé au reste : les 10 020 cas existants se
+régénèrent à l'octet près.** C'est la vérification qui rendait le changement
+publiable sans relire dix mille lignes.
+
+832 cas neufs, 52 formes, **zéro désaccord** avec le processeur.
+
+### Trois trous dans mon propre corpus, trouvés par le sabotage
+
+**Une branche que rien ne pouvait atteindre.** `readVectorRM` effaçait la
+moitié haute quand la source était un registre lu sur huit octets. Sans effet :
+la seule forme concernée efface ce haut elle-même. Le sabotage ne cassait rien,
+ce qui est la définition d'une branche morte. Retirée, avec la raison à sa
+place.
+
+**Une forme que l'assembleur ne choisit jamais.** `movq %xmm1, %xmm0` a deux
+encodages ; `as` prend toujours `F3 0F 7E`, jamais `66 0F D6`, alors qu'un
+compilateur émet les deux. J'ai donné les octets de celle-là à la main — et
+rien d'autre : c'est toujours le vrai processeur qui dit ce qu'ils font. Il a
+confirmé qu'elle efface le haut de sa destination, et le sabotage tombe
+maintenant dessus.
+
+**Une distinction que l'oracle ne peut pas mesurer.** Lire huit octets ou seize
+donne le même registre — sauf au bord de la mémoire, où huit tiennent et seize
+non. Un harnais qui exécute ne peut pas produire cette faute sans mourir ; deux
+tests écrits à la main la tiennent, l'un pour chaque moitié de la règle.
+
+### Ce que la machine dit maintenant
+
+Dix instructions plus loin : `0F 05` à RIP `0x7f0f12ae386d`. C'est **`SYSCALL`**
+— musl demande son premier service au noyau. Le plan d'il y a deux tranches
+disait « le TSS, puis SYSCALL » : il avait raison sur le quoi, tort sur
+l'ordre, et c'est la machine qui a tranché les deux fois.
+
+### Mesures
+
+Six tests neufs, onze sabotages — tous attrapés après correction des trois
+trous ci-dessus. Le démarrage du vrai noyau passe : 2 712 254 858 instructions
+en deux minutes quarante-sept.
+
 ## 2026-09-04, ~04h40 UTC — le TSS, et une brique que le plan n'avait pas prévue
 
 Le noyau s'arrêtait sur une faute de page **sur la pile utilisateur**, levée
