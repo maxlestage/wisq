@@ -3169,6 +3169,21 @@ habitude.
 
      Le harnais différentiel n'aura pas été nécessaire.
 
+     **Ce que les trois corrections ont donné, mesuré.** Le démarrage ne
+     s'arrête plus sur une adresse impossible : **zéro adresse non canonique**,
+     là où le témoin en comptait six, et plus un seul saut dans le décor. Le
+     noyau consomme désormais le budget entier — six milliards d'instructions —
+     au lieu de mourir à 2,79 milliards, et le journal série passe de 12 685 à
+     **16 793 octets**. `/init` démarre.
+
+     **Mais il meurt encore**, et la faute a changé de nature : ce ne sont plus
+     des adresses au-dessus du bit 47, ce sont des **pointeurs nuls**.
+     `segfault at 0`, `at 1`, `at 199`, toutes avec `error 4` — une lecture,
+     en anneau trois, d'une page absente. Le témoin des adresses non canoniques
+     ne peut rien dire de celles-là : zéro est une adresse parfaitement
+     canonique. C'est le prochain instrument à trouver, et la prochaine
+     tranche.
+
    - **La tentative : Linux démarre jusqu'au bout.** `X86BootAttemptTests`
      charge le vrai noyau d'Alpine 3.20 — Linux 6.6.134-0-lts —, pose une
      pagination d'identité, entre en mode long et saute. Le noyau va jusqu'à
