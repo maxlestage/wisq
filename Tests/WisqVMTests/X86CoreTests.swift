@@ -132,13 +132,17 @@ final class X86CoreTests: XCTestCase {
     /// supporté » sans dire lequel obligerait à relire les octets à la main.
     func testAnOpcodeTheCoreDoesNotRunYetIsNamed() {
         var machine = core()
-        // 0f 05 : syscall — le décodeur le lit depuis la tranche 2, le cœur
-        // n'a pas encore d'appel système à lui donner.
-        XCTAssertThrowsError(try run([0x0F, 0x05], on: &machine)) { error in
+        // `f3 0f 58 c1` : addss %xmm1,%xmm0. L'exemple était `0f 05` — SYSCALL
+        // — jusqu'à ce que le noyau le réclame et qu'il soit écrit ; un test
+        // dont l'exemple finit par marcher ne tient plus rien. Celui-ci est
+        // une addition en virgule flottante, que ce cœur ne fait pas et dont
+        // il est écrit ailleurs qu'il ne la fera pas avant qu'on la lui
+        // demande.
+        XCTAssertThrowsError(try run([0xF3, 0x0F, 0x58, 0xC1], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
-            XCTAssertTrue(what.contains("05"), "il faut nommer l'opcode : \(what)")
+            XCTAssertTrue(what.contains("58"), "il faut nommer l'opcode : \(what)")
         }
     }
 
