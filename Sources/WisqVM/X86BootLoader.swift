@@ -25,6 +25,10 @@ public struct X86BootLoader {
         public let bootParametersAddress: UInt64
         /// Où la ligne de commande a été écrite.
         public let commandLineAddress: UInt64
+        /// Où le disque en mémoire a été posé, et sa taille. Zéro quand il n'y
+        /// en a pas.
+        public let ramdiskAddress: UInt64
+        public let ramdiskBytes: Int
         /// Le point d'entrée 64 bits : le début du noyau, plus 0x200.
         public let entryPoint: UInt64
     }
@@ -80,7 +84,8 @@ public struct X86BootLoader {
     /// Charge le noyau dans la mémoire de l'invité et rend où tout a atterri.
     public static func load(
         kernel: [UInt8], into memory: X86Memory,
-        commandLine: String = X86BootLoader.defaultCommandLine
+        commandLine: String = X86BootLoader.defaultCommandLine,
+        initialRamdisk: [UInt8]? = nil
     ) throws -> Placement {
         guard let header = LinuxBootProtocol.read(from: kernel, totalBytes: kernel.count) else {
             throw LoadError.notAKernel
@@ -102,6 +107,9 @@ public struct X86BootLoader {
         guard top <= memory.size else {
             throw LoadError.notEnoughMemory(needed: top, available: memory.size)
         }
+
+        var ramdiskAddress: UInt64 = 0
+        var ramdiskBytes = 0
 
         let protectedMode = Array(
             kernel[header.setupBytes..<(header.setupBytes + header.protectedModeBytes)])
@@ -126,8 +134,34 @@ public struct X86BootLoader {
         // que le noyau l'a écrit.
         page[0x211] = (page[0x211] & ~0x80) | 0x01 | 0x80
         write32(&page, 0x214, UInt32(truncatingIfNeeded: kernelAddress))
-        write32(&page, 0x218, 0)  // ramdisk_image : il n'y en a pas
-        write32(&page, 0x21C, 0)  // ramdisk_size
+        // Le disque en mémoire, s'il y en a un.
+        //
+        // **C'est ce qui donne un espace utilisateur.** Le noyau d'Alpine n'a
+        // ni virtio ni pilote de disque compilé dedans — ce sont des modules,
+        // et ils vivent justement là-dedans. Sans initrd il n'a rien à monter
+        // et panique ; avec, il déballe cette archive dans un tmpfs et exécute
+        // son `/init`.
+        //
+        // Il est posé **en haut** de la mémoire, aligné sur une page : le
+        // décompresseur choisit où écrire le noyau en fonction de ce qu'il
+        // croit libre, et la page zéro est le seul endroit où on peut lui dire
+        // que ces octets-là ne le sont pas.
+        if let ramdisk = initialRamdisk, !ramdisk.isEmpty {
+            let top = memory.base &+ UInt64(memory.size)
+            let start = (top &- UInt64(ramdisk.count)) & ~UInt64(0xFFF)
+            guard start >= kernelAddress &+ UInt64(reserved) else {
+                throw LoadError.notEnoughMemory(
+                    needed: reserved + ramdisk.count, available: memory.size)
+            }
+            try memory.load(ramdisk, at: start)
+            write32(&page, 0x218, UInt32(truncatingIfNeeded: start))
+            write32(&page, 0x21C, UInt32(truncatingIfNeeded: ramdisk.count))
+            ramdiskAddress = start
+            ramdiskBytes = ramdisk.count
+        } else {
+            write32(&page, 0x218, 0)  // ramdisk_image : il n'y en a pas
+            write32(&page, 0x21C, 0)  // ramdisk_size
+        }
         write32(&page, 0x228, UInt32(truncatingIfNeeded: commandLineAddress))
 
         // La carte mémoire. **Sans elle, le noyau croit qu'il n'a aucune RAM**
@@ -160,6 +194,7 @@ public struct X86BootLoader {
             kernelAddress: kernelAddress, reservedBytes: reserved,
             bootParametersAddress: bootParametersAddress,
             commandLineAddress: commandLineAddress,
+            ramdiskAddress: ramdiskAddress, ramdiskBytes: ramdiskBytes,
             // L'entrée 64 bits est à 0x200 du début du noyau en mode protégé.
             entryPoint: kernelAddress &+ 0x200)
     }
