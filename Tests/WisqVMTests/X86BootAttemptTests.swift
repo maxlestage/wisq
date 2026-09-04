@@ -40,19 +40,22 @@ import XCTest
 /// ```
 /// [   74.024812] random: crng init done
 /// [  152.571425] Freeing initrd memory: 25404K
-/// arrêt : unsupported("l'opcode 0F 6E") à RIP 0x7f0f12aa143e
+/// arrêt : unsupported("l'opcode 0F 05") à RIP 0x7f0f12ae386d
 /// ```
 ///
-/// 2 712 254 848 instructions, 12 685 octets de journal, et un arrêt dont
-/// l'adresse commence par `0x7f` : c'est de l'espace utilisateur. `0F 6E` est
-/// `MOVD`/`MOVQ` entre un registre général et un registre SSE, et la
-/// bibliothèque C s'en sert dans ses fonctions de chaîne avant même son
-/// premier appel système.
+/// 2 712 254 858 instructions, 12 685 octets de journal, et un arrêt dont
+/// l'adresse commence par `0x7f` : c'est de l'espace utilisateur. `0F 05` est
+/// `SYSCALL` — le chargeur dynamique de musl demande son premier service au
+/// noyau.
 ///
-/// **Ce n'est pas la brique que j'avais prévue**, et c'est justement pourquoi
-/// ce test existe. Le plan disait « le TSS, puis SYSCALL » ; la machine dit
-/// que `SYSCALL` n'est pas encore atteint et que ce sont les seize registres
-/// XMM qu'il faut d'abord. Le plan avait tort, la machine a raison.
+/// **L'ordre des deux dernières briques n'était pas celui du plan.** Il disait
+/// « le TSS, puis SYSCALL » ; la machine a dit que `0F 6E` — `MOVD` entre un
+/// registre général et un registre SSE — venait d'abord, parce que la
+/// bibliothèque C se sert de SSE dans ses fonctions de chaîne **avant** son
+/// premier appel système. Les seize registres XMM écrits, dix instructions de
+/// plus ont suffi pour arriver à `SYSCALL`. Le plan avait raison sur le quoi
+/// et tort sur l'ordre ; c'est exactement ce qu'un test qui essaie et rapporte
+/// est là pour dire.
 ///
 /// **Comment on y est arrivé** : chaque arrêt a nommé la brique suivante, et
 /// jamais l'inverse. Voir `X86InterruptTests` pour la livraison d'exception,

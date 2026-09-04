@@ -244,6 +244,11 @@ public final class X86Machine: @unchecked Sendable {
         writer.u32(UInt32(core.x87Control))
         writer.u32(UInt32(core.x87Status))
         writer.u32(core.mxcsr)
+        // Les seize registres XMM, deux mots chacun. Un programme qui tourne
+        // en anneau trois en a le milieu d'une comparaison de chaîne à
+        // l'instant où l'on passe en arrière-plan ; les perdre le ferait
+        // repartir sur des octets qu'il croyait avoir lus.
+        for word in core.vectors { writer.u64(word) }
         write(&writer, core.devices)
         lock.lock()
         let queued = core.serialInput + inputQueue
@@ -288,6 +293,7 @@ public final class X86Machine: @unchecked Sendable {
         restored.x87Control = UInt16(truncatingIfNeeded: try reader.u32())
         restored.x87Status = UInt16(truncatingIfNeeded: try reader.u32())
         restored.mxcsr = try reader.u32()
+        for index in 0..<32 { restored.vectors[index] = try reader.u64() }
         restored.devices = try read(&reader)
         restored.serialInput = try reader.blob()
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))

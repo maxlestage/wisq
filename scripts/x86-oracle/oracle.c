@@ -1,13 +1,22 @@
 // Le pilote de l'oracle : lit des cas sur l'entrée standard, les fait exécuter
 // par le vrai processeur, écrit le verdict sur la sortie standard.
 //
-// Un cas par ligne :  <octets en hexa> TAB <17 valeurs d'entrée en hexa>
+// Un cas par ligne :  <octets en hexa> TAB <valeurs d'entrée en hexa>
 // Le verdict :        <octets> TAB <entrée> TAB <sortie>
 //
-// Les dix-sept valeurs sont les seize registres dans l'ordre de l'encodage
-// (rax rcx rdx rbx rsp rbp rsi rdi r8..r15) puis RFLAGS.
+// Les dix-sept premières valeurs sont les seize registres dans l'ordre de
+// l'encodage (rax rcx rdx rbx rsp rbp rsi rdi r8..r15) puis RFLAGS.
+//
+// **Le nombre de valeurs est celui de la ligne**, et la réponse en porte
+// autant. Une ligne de dix-sept ne parle que des registres généraux ; une de
+// quarante-neuf ajoute les seize XMM, deux mots chacun, le bas d'abord. Les
+// deux formes cohabitent exprès : le corpus arithmétique existant a été
+// produit avec dix-sept, et le régénérer avec quarante-neuf changerait dix
+// mille lignes pour des colonnes que personne ne lirait. Ce qui n'est pas
+// donné part à zéro, et ce qui n'est pas demandé n'est pas rendu.
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -17,7 +26,10 @@ void wisq_x86_run(uint64_t *state, void *code);
 // la page de code, qui est écrite avant.
 extern char wisq_return[];
 
-#define SLOTS 17
+// Le harnais lit et écrit toujours quarante-neuf mots ; le pilote ne montre
+// que ceux qu'on lui a demandés.
+#define SLOTS 49
+#define GENERAL 17
 #define MAX_CODE 512
 
 // Des adresses **fixes**, pour que le verdict se reproduise d'une exécution à
@@ -43,21 +55,25 @@ int main(void) {
     while (fgets(line, sizeof line, stdin)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char hex[512];
-        uint64_t in[SLOTS];
-        int read = sscanf(line,
-            "%511s %llx %llx %llx %llx %llx %llx %llx %llx "
-            "%llx %llx %llx %llx %llx %llx %llx %llx %llx",
-            hex,
-            (unsigned long long *)&in[0], (unsigned long long *)&in[1],
-            (unsigned long long *)&in[2], (unsigned long long *)&in[3],
-            (unsigned long long *)&in[4], (unsigned long long *)&in[5],
-            (unsigned long long *)&in[6], (unsigned long long *)&in[7],
-            (unsigned long long *)&in[8], (unsigned long long *)&in[9],
-            (unsigned long long *)&in[10], (unsigned long long *)&in[11],
-            (unsigned long long *)&in[12], (unsigned long long *)&in[13],
-            (unsigned long long *)&in[14], (unsigned long long *)&in[15],
-            (unsigned long long *)&in[16]);
-        if (read != SLOTS + 1) { fprintf(stderr, "ligne illisible : %s", line); return 1; }
+        uint64_t in[SLOTS] = {0};
+        char *cursor = line;
+        if (sscanf(cursor, "%511s", hex) != 1) {
+            fprintf(stderr, "ligne sans octets : %s", line); return 1;
+        }
+        cursor += strlen(hex);
+        int count = 0;
+        while (count < SLOTS) {
+            char *next;
+            unsigned long long value = strtoull(cursor, &next, 16);
+            if (next == cursor) break;
+            in[count++] = value;
+            cursor = next;
+        }
+        if (count != GENERAL && count != SLOTS) {
+            fprintf(stderr, "ligne à %d valeurs, il en faut %d ou %d : %s",
+                    count, GENERAL, SLOTS, line);
+            return 1;
+        }
 
         size_t length = strlen(hex) / 2;
         if (length > MAX_CODE) { fprintf(stderr, "cas trop long\n"); return 1; }
@@ -90,8 +106,8 @@ int main(void) {
         wisq_x86_run(state, code);
 
         printf("%s", hex);
-        for (int i = 0; i < SLOTS; i++) printf("\t%llx", (unsigned long long)in[i]);
-        for (int i = 0; i < SLOTS; i++) printf("\t%llx", (unsigned long long)state[i]);
+        for (int i = 0; i < count; i++) printf("\t%llx", (unsigned long long)in[i]);
+        for (int i = 0; i < count; i++) printf("\t%llx", (unsigned long long)state[i]);
         printf("\t");
         for (int i = 0; i < WINDOW; i++) printf("%02x", data[i]);
         printf("\n");

@@ -190,6 +190,11 @@ final class X86SnapshotTests: XCTestCase {
         machine.core.x87Control = 0x0300
         machine.core.x87Status = 0x1234
         machine.core.mxcsr = 0x1DC0
+        for index in 0..<16 {
+            machine.core.setVector(index,
+                                   0x7000_0000_0000_0000 + UInt64(index),
+                                   0x8000_0000_0000_0000 + UInt64(index))
+        }
         machine.core.devices.primary.mask = 0xFE
         machine.core.devices.primary.request = 0x03
         machine.core.devices.primary.service = 0x01
@@ -251,6 +256,12 @@ final class X86SnapshotTests: XCTestCase {
         XCTAssertEqual(core.x87Control, 0x0300)
         XCTAssertEqual(core.x87Status, 0x1234)
         XCTAssertEqual(core.mxcsr, 0x1DC0)
+        for index in 0..<16 {
+            XCTAssertEqual(core.vector(index).low,
+                           0x7000_0000_0000_0000 + UInt64(index), "xmm\(index) bas")
+            XCTAssertEqual(core.vector(index).high,
+                           0x8000_0000_0000_0000 + UInt64(index), "xmm\(index) haut")
+        }
         XCTAssertEqual(core.devices.primary.mask, 0xFE)
         XCTAssertEqual(core.devices.primary.request, 0x03)
         XCTAssertEqual(core.devices.primary.service, 0x01)

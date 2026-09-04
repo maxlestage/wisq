@@ -109,6 +109,20 @@ public struct X86Core: @unchecked Sendable {
     /// de détection de Linux range et relit. Voir `minimalX87`.
     public var x87Status: UInt16 = 0
     public var x87Control: UInt16 = 0x037F
+    /// **Les seize registres XMM**, deux mots de soixante-quatre bits chacun :
+    /// `vectors[2 * n]` est le bas de `xmm<n>`, `vectors[2 * n + 1]` le haut.
+    ///
+    /// Un tableau plat plutôt qu'un tableau de paires, parce que c'est la
+    /// forme que l'instantané et le harnais de l'oracle emploient tous les
+    /// deux, et qu'une conversion de plus serait un endroit de plus où se
+    /// tromper de moitié.
+    ///
+    /// **Pourquoi ils existent.** Le noyau d'Alpine arrive jusqu'à son espace
+    /// utilisateur, et s'y arrête sur `MOVD` : la bibliothèque C se sert de SSE
+    /// dans ses fonctions de chaîne, avant même son premier appel système. Ce
+    /// cœur ne calcule toujours pas en virgule flottante — il déplace des bits,
+    /// ce qui est une autre décision et la seule qu'on ait demandée.
+    public var vectors = [UInt64](repeating: 0, count: 32)
     /// Le mot de contrôle SSE. Ce cœur ne calcule pas en virgule flottante,
     /// mais un noyau x86-64 le range et le relit dès son démarrage : sur cette
     /// architecture, SSE est garanti par l'architecture et Linux ne demande
@@ -392,6 +406,10 @@ public struct X86Core: @unchecked Sendable {
             // Les instructions système d'abord : elles occupent des octets que
             // la table ordinaire ne connaît pas.
             if try systemInstruction(instruction, opcode) { return }
+            // Puis les vectorielles, pour la même raison : `0F 6F` est
+            // `MOVDQA` avec un préfixe et rien du tout sans, et la table
+            // ordinaire ne saurait pas les départager.
+            if try vectorInstruction(instruction, opcode) { return }
             try twoByte(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
