@@ -92,12 +92,27 @@ public struct X86Core: @unchecked Sendable {
     public var previousRip: UInt64 = 0
     /// Les démarrages de programmes déjà vus, et les espaces d'adressage qui
     /// les portent. Voir `X86ProcessStartWatch.swift`.
+    /// Les sauts vers une page absente. Voir `X86LostJumpWatch.swift`.
+    public var lostJumps: [LostJump] = []
+    var lostJumpNext = 0
+    /// Combien de sauts vers une page absente en tout, et combien le noyau
+    /// n'a pas résolus. Les premiers sont le cas ordinaire ; seuls les
+    /// seconds sont un défaut.
+    public internal(set) var lostJumpTally: UInt64 = 0
+    public internal(set) var lostJumpsUnresolved: UInt64 = 0
+    var pendingLostJump: LostJump?
     public var processStarts: [ProcessStart] = []
+    var processStartNext = 0
+    var processStartTally: UInt64 = 0
     public var addressSpacesSeen: [UInt64] = []
     /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
+    var brokenReturnNext = 0
+    public internal(set) var brokenReturnTally: UInt64 = 0
     public var unmatchedReturns: [UnmatchedReturn] = []
+    var unmatchedReturnNext = 0
+    public internal(set) var unmatchedReturnTally: UInt64 = 0
     /// Les aller-retours en anneau zéro qui rendent une pile décalée, et le
     /// départ en cours. Voir `X86RingWatch.swift`.
     public var ringTrips: [RingTrip] = []
@@ -354,8 +369,23 @@ public struct X86Core: @unchecked Sendable {
                 guard let start = memory.offset(physical, 1) else {
                     throw Fault.outsideMemory(physical)
                 }
-                let available = min(X86Instruction.maximumLength, memory.size - start)
-                let instruction = try X86Decoder.decode(memory.bytes + start, available: available)
+                // **Une instruction ne se lit pas au-delà de sa page.** La
+                // traduction ne porte que le premier octet ; les quatorze
+                // suivants étaient lus contigus en mémoire *physique*, et la
+                // trame physiquement voisine n'est presque jamais la page
+                // virtuellement voisine. Voir `decodeAcrossPageBoundary`.
+                let room = pagingActive
+                    ? min(X86Instruction.maximumLength, Int(0x1000 - (rip & 0xFFF)))
+                    : X86Instruction.maximumLength
+                let available = min(room, memory.size - start)
+                let instruction: X86Instruction
+                do {
+                    instruction = try X86Decoder.decode(memory.bytes + start,
+                                                        available: available)
+                } catch X86DecodeError.truncated
+                            where available < X86Instruction.maximumLength {
+                    instruction = try decodeAcrossPageBoundary(from: start, have: available)
+                }
                 // Le témoin, quand il est armé et qu'on est dans un programme.
                 // La condition est d'abord sur le drapeau : éteint — le cas de
                 // toute exécution normale — il n'y a pas même de lecture du
@@ -393,6 +423,10 @@ public struct X86Core: @unchecked Sendable {
                     let read = (instruction.modrm.map { $0 < 0xC0 } ?? false)
                         ? lastAddress : nil
                     rememberBirths(before: before, rip: entry, from: read)
+                    // Un saut vers une page absente était-il en attente ? Si
+                    // l'on reprend ailleurs qu'à l'endroit visé, le noyau ne
+                    // l'a pas résolu — et c'est le seul cas qui compte.
+                    settleLostJump(entry)
                     previousRip = entry
                     // **Qui bouge la pile.** Noté avant d'examiner le retour,
                     // pour que le `ret` fautif figure lui-même dans la trace
@@ -462,6 +496,10 @@ public struct X86Core: @unchecked Sendable {
     var pageFaultErrorCode: UInt64 = 0
     /// L'adresse que le dernier ModRM a désignée, calculée une seule fois.
     var lastAddress: UInt64 = 0
+    /// Le tampon des instructions à cheval sur deux pages. Il vit ici pour que
+    /// le chemin lent n'alloue pas : il est rare — quatorze octets sur quatre
+    /// mille quatre-vingt-seize — mais il est sur le chemin chaud.
+    var fetchWindow = [UInt8](repeating: 0, count: X86Instruction.maximumLength)
 
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
