@@ -40,6 +40,32 @@ public struct X86SystemState: Equatable, Sendable {
     public static let kernelGSBase: UInt32 = 0xC000_0102
     public static let longModeEnable: UInt64 = 1 << 8
     public static let longModeActive: UInt64 = 1 << 10
+    /// **SCE**, le bit qui autorise `SYSCALL`. Un noyau le pose au démarrage ;
+    /// sans lui, le processeur refuse l'instruction — et ce refus-là est une
+    /// vraie règle, pas une limite de ce cœur : un programme qui appelle sans
+    /// que le noyau ait ouvert la porte doit être arrêté, pas servi.
+    public static let systemCallEnable: UInt64 = 1 << 0
+
+    /// Les quatre MSR de l'appel système rapide.
+    ///
+    /// `STAR` porte deux sélecteurs de segment de code dans ses trente-deux
+    /// bits hauts : celui de l'entrée en 47:32, celui du retour en 63:48. Les
+    /// segments de pile, eux, ne sont pas écrits : le processeur les déduit en
+    /// ajoutant huit. C'est ce qui oblige un noyau à ranger ses descripteurs
+    /// dans un ordre précis, et ce qui rend une inversion invisible jusqu'au
+    /// premier retour en anneau trois.
+    public static let star: UInt32 = 0xC000_0081
+    /// Où `SYSCALL` saute, en mode long.
+    public static let longSystemCallTarget: UInt32 = 0xC000_0082
+    /// Où il sauterait depuis le mode compatibilité. Ce cœur ne le fait pas
+    /// tourner ; la constante existe pour que le MSR soit **nommé** quand un
+    /// noyau l'écrit, plutôt que rangé sous un numéro nu.
+    public static let compatibilitySystemCallTarget: UInt32 = 0xC000_0083
+    /// Les drapeaux que `SYSCALL` efface en entrant. Linux y met au moins le
+    /// bit d'interruption et celui de direction : entrer dans le noyau avec
+    /// les interruptions ouvertes, ou avec une direction de chaîne héritée
+    /// d'un programme, serait lui faire exécuter son propre code de travers.
+    public static let systemCallFlagMask: UInt32 = 0xC000_0084
 
     public var pagingOn: Bool { control[0] & Self.paging != 0 }
     public var longMode: Bool {
