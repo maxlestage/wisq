@@ -220,7 +220,10 @@ final class X86BootAttemptTests: XCTestCase {
             + String(format: ", demande %02x, masque %02x, service %02x,"
                      + " base de vecteur %02x", pic.request, pic.mask,
                      pic.service, pic.vectorBase)
-            + (pending == 0 ? " — RIEN NE PASSE LE MASQUE" : "")
+            // Le suffixe ne vaut que si une ligne demande : sans demande, il
+            // n'y a rien à masquer, et le dire ferait accuser le masque quand
+            // c'est l'horloge qui n'a pas encore battu.
+            + (pic.request != 0 && pending == 0 ? " — RIEN NE PASSE LE MASQUE" : "")
         let halt = core.halted
             ? clock + ", " + masked + ", \(core.idled) tours d'attente"
             : "non"

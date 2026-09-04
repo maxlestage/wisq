@@ -238,9 +238,19 @@ extension X86Core {
             write(0, 4, highByte: false, value & 0xFFFF_FFFF)
             write(2, 4, highByte: false, value >> 32)
             return true
-        case 0x31:  // RDTSC : le compteur d'instructions fait l'affaire.
-            write(0, 4, highByte: false, retired & 0xFFFF_FFFF)
-            write(2, 4, highByte: false, (retired >> 32) & 0xFFFF_FFFF)
+        case 0x31:
+            // RDTSC : **le même temps que le 8253**, tours d'attente compris.
+            //
+            // Il rendait `retired` seul, et Alpine s'est arrêté sur « Mounting
+            // boot media... » sans jamais atteindre le « failed. » que QEMU
+            // imprime douze secondes plus tard. Le noyau avait pris le TSC pour
+            // source de temps, l'avait étalonné contre le 8253 au démarrage,
+            // et ne le voyait plus bouger dès qu'il dormait : chaque battement
+            // le réveillait, il lisait une heure inchangée et se rendormait.
+            // Une temporisation ne peut pas expirer sur une horloge figée.
+            let cycles = retired &+ idled
+            write(0, 4, highByte: false, cycles & 0xFFFF_FFFF)
+            write(2, 4, highByte: false, (cycles >> 32) & 0xFFFF_FFFF)
             return true
         case 0xA2:  // CPUID
             let (a, b, c, d) = X86CPUID.answer(
