@@ -34,12 +34,35 @@ final class X86PCITests: XCTestCase {
         XCTAssertEqual(bus.configuration(), 0xFFFF_FFFF, "sans le bit d'activation, rien")
     }
 
+    /// **Le pont hôte, sans lequel le bus n'existe pas.** Linux parcourt les
+    /// trente-deux emplacements et exige d'y trouver un pont hôte, du VGA, ou
+    /// un fabricant Intel ou Compaq : `pci_sanity_check`. Un bus qui ne
+    /// présente qu'un disque virtio échoue à cette épreuve, et le noyau
+    /// conclut « PCI: System does not support PCI » — mesuré, deux fois.
+    func testAHostBridgeAnswersAtSlotZero() {
+        let bus = Self.host()
+        bus.writeAddress(Self.addressOf(slot: 0, register: 0))
+        XCTAssertEqual(bus.configuration() & 0xFFFF, 0x8086, "un fabricant que Linux connaît")
+        bus.writeAddress(Self.addressOf(slot: 0, register: 0x08))
+        XCTAssertEqual(bus.configuration() >> 16, 0x0600, "et la classe « pont hôte »")
+    }
+
+    /// Le pont répond même sans disque : c'est le bus qui existe, pas le
+    /// périphérique.
+    func testTheBridgeIsThereEvenWithoutADisk() {
+        let bus = X86PCIHost()
+        bus.writeAddress(Self.addressOf(slot: 0, register: 0))
+        XCTAssertEqual(bus.configuration() & 0xFFFF, 0x8086)
+    }
+
     /// Un bus sans disque est un bus vide : le noyau énumère, ne trouve rien,
     /// et continue. C'est une réponse, pas une panne.
     func testAnEmptyBusIsHonest() {
         let bus = X86PCIHost()
         bus.writeAddress(Self.addressOf(slot: X86PCIHost.slot, register: 0))
-        XCTAssertEqual(bus.configuration(), 0xFFFF_FFFF)
+        XCTAssertEqual(bus.configuration(), 0xFFFF_FFFF, "l'emplacement du disque, vide")
+        bus.writeAddress(Self.addressOf(slot: 7, register: 0))
+        XCTAssertEqual(bus.configuration(), 0xFFFF_FFFF, "et tous les autres aussi")
     }
 
     /// La classe et le sous-système : c'est par là que le noyau sait que

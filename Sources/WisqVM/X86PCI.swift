@@ -28,6 +28,15 @@ public final class X86PCIHost: @unchecked Sendable {
     public static let dataPort: UInt16 = 0xCFC
     /// L'emplacement du disque sur le bus.
     public static let slot: UInt32 = 3
+    /// **Et un pont hôte à l'emplacement zéro, sans lequel rien n'existe.**
+    /// Linux ne se contente pas de voir répondre le port de configuration :
+    /// il parcourt les trente-deux emplacements et exige d'y trouver au moins
+    /// un pont hôte, une carte VGA, ou un fabricant Intel ou Compaq
+    /// (`pci_sanity_check`). Sans ça il conclut « PCI: System does not support
+    /// PCI » et n'énumère rien — c'est exactement ce qu'il disait de wisq une
+    /// fois les deux ports branchés. Le pont annoncé est celui de QEMU, un
+    /// 440FX, parce qu'un noyau le connaît par cœur et ne lui demande rien.
+    public static let bridgeSlot: UInt32 = 0
     /// La taille de la fenêtre de ports que le périphérique demande.
     public static let windowSize: UInt32 = 0x40
 
@@ -80,12 +89,31 @@ public final class X86PCIHost: @unchecked Sendable {
             && storage != nil
     }
 
+    /// Vrai quand l'adresse désigne le pont hôte.
+    var addressesTheBridge: Bool {
+        let it = selected
+        return it.enabled && it.bus == 0 && it.slot == Self.bridgeSlot && it.function == 0
+    }
+
+    /// Le pont : quatre registres, et rien d'autre. Il n'a ni fenêtre ni
+    /// interruption — il est là pour être reconnu.
+    func bridgeConfiguration() -> UInt32 {
+        switch selected.register {
+        case 0x00: return 0x1237_8086       // Intel 440FX, comme chez QEMU
+        case 0x04: return 0x0000_0006       // mémoire et maîtrise du bus
+        case 0x08: return 0x0600_0002       // pont hôte, révision deux
+        case 0x0C: return 0                 // en-tête de type zéro
+        default: return 0
+        }
+    }
+
     /// Les trente-deux bits du registre désigné.
     ///
     /// **Un emplacement vide rend tous les uns**, et c'est ce qui dit au noyau
     /// qu'il n'y a personne : rendre des zéros lui ferait croire à un
     /// périphérique de fabricant zéro.
     public func configuration() -> UInt32 {
+        if addressesTheBridge { return bridgeConfiguration() }
         guard addressesTheDevice else { return 0xFFFF_FFFF }
         switch selected.register {
         case 0x00: return 0x1001_1AF4          // virtio-blk, en version ancienne
