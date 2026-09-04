@@ -348,6 +348,16 @@ public struct X86Core: @unchecked Sendable {
         return instruction.hasPrefix(0x66) ? 2 : 4
     }
 
+    /// La largeur d'un aller-retour sur la pile : huit octets, deux sous le
+    /// préfixe de taille.
+    ///
+    /// **REX.W n'entre pas ici**, et c'est ce qui distingue cette fonction de
+    /// `operandSize` : en mode 64 bits, `push` et `pop` sont déjà larges sans
+    /// qu'on le demande, et le seul préfixe qui les raccourcit est `66`.
+    static func stackSize(_ instruction: X86Instruction) -> Int {
+        instruction.hasPrefix(0x66) ? 2 : 8
+    }
+
     struct Fields {
         let reg: Int
         let rm: Int

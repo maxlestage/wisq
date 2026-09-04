@@ -3055,6 +3055,33 @@ habitude.
      partait à l'envers. Rien n'avait jamais posé ce drapeau, donc l'oubli ne
      pouvait pas se voir — la leçon de l'oracle, retournée contre lui.
 
+     - **La pile et les atomiques.** Le comptage a d'abord été mal cadré : le
+       corpus arithmétique *contient* de la pile — trois de ses seize
+       programmes empilent, appellent, posent un cadre complet. Ce qui manquait
+       n'était pas l'instruction, c'était le **témoin**. Ce fichier-là ne rend
+       que RAX, RCX, RDX et les drapeaux ; ni RSP, ni RBP, ni un seul octet de
+       la pile n'y étaient observés, sa fenêtre de mémoire étant deux pages
+       plus bas que le sommet. Un cœur qui décale RSP de travers traversait ces
+       trois programmes sans rien déclencher — et le registre corrompu quand
+       `/init` meurt est justement RBP. Le second trou était net : sur les dix
+       atomiques du corpus, les dix ont un registre pour destination, aucune ne
+       porte le préfixe `lock`, alors que le chargeur de la bibliothèque C de
+       l'invité en compte cent vingt-trois, toutes sur de la mémoire. Le
+       harnais a donc gagné une **seconde fenêtre**, de part et d'autre du
+       sommet de pile, et les trois corpus déjà figés se régénèrent à l'octet
+       près. 81 formes, **648 cas**, et ce corpus rend les **seize** registres
+       plutôt que trois — quand on cherche quel registre se fait corrompre, on
+       ne peut pas décider d'avance lequel regarder.
+
+       **Un défaut, et ce n'est pas celui qu'on cherchait :** `push` et `pop`
+       tenaient huit octets pour acquis. Le commentaire qui l'affirmait avait
+       raison sur `REX.W` — qui ne les élargit pas — et c'est cette moitié
+       vraie qui l'a rendu crédible ; le préfixe de taille, lui, les raccourcit
+       bel et bien à deux. Corrigé, avec les formes en mémoire et les
+       encodages `ff /6` et `8f /0` que l'assembleur ne choisit jamais. Le
+       reste — soixante-quatre formes de registre, `leave`, `movabs`, les
+       vingt-cinq atomiques — était déjà juste. **Ce n'est pas là non plus.**
+
      Reste le harnais différentiel qui aligne les deux exécutions et dise à
      quelle instruction elles divergent.
 

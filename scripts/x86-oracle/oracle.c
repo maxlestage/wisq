@@ -40,6 +40,17 @@ extern char wisq_return[];
 #define DATA    (ARENA + 0x1000)
 #define STACK   (ARENA + 0x3000)
 #define WINDOW  64
+// La **fenêtre de pile** : soixante-quatre octets de part et d'autre de RSP.
+// En dessous vit ce qu'un `push` écrit ; au-dessus, ce qu'un `pop` relit. Les
+// deux moitiés portent des motifs différents pour qu'on voie du premier coup
+// de quel côté d'une pile un octet vient.
+//
+// **Elle est rendue après la fenêtre de données, et non à sa place.** Les dix
+// mille cas déjà figés lisent la fenêtre de données à un rang fixe ; une
+// colonne ajoutée en queue les laisse à l'octet près, une colonne insérée les
+// décalerait toutes.
+#define STACKWIN 64
+#define BELOW    (STACK - STACKWIN)
 
 int main(void) {
     // Une page inscriptible puis exécutable. La pile de l'invité vit dans la
@@ -96,6 +107,11 @@ int main(void) {
         // Une fenêtre de données au motif reconnaissable : si l'instruction
         // écrit là où il ne faut pas, ça se voit.
         for (int i = 0; i < WINDOW; i++) data[i] = (unsigned char)(0x10 + i);
+        // Et la pile, des deux côtés du sommet.
+        unsigned char *below = (unsigned char *)BELOW;
+        for (int i = 0; i < STACKWIN; i++) below[i] = (unsigned char)(0xB0 + i);
+        for (int i = 0; i < STACKWIN; i++)
+            below[STACKWIN + i] = (unsigned char)(0x40 + i);
 
         uint64_t state[SLOTS];
         memcpy(state, in, sizeof state);
@@ -110,6 +126,8 @@ int main(void) {
         for (int i = 0; i < count; i++) printf("\t%llx", (unsigned long long)state[i]);
         printf("\t");
         for (int i = 0; i < WINDOW; i++) printf("%02x", data[i]);
+        printf("\t");
+        for (int i = 0; i < 2 * STACKWIN; i++) printf("%02x", below[i]);
         printf("\n");
     }
     return 0;
