@@ -156,6 +156,7 @@ extension X86Core {
     mutating func deliver(_ fault: Fault) throws -> Bool {
         guard let vector = Self.vector(of: fault) else { return false }
         if case .pageFault(let address) = fault { system.control[2] = address }
+        if canonicalWatchArmed, privilege == 3 { noteFault(fault, at: rip) }
         return try enter(vector, errorCode: vector == 14 ? pageFaultErrorCode : 0)
     }
 

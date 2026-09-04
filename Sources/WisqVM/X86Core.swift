@@ -105,6 +105,8 @@ public struct X86Core: @unchecked Sendable {
     var processStartNext = 0
     var processStartTally: UInt64 = 0
     public var addressSpacesSeen: [UInt64] = []
+    /// Qui tourne et qui attend quoi. Voir `X86ProcessLedger.swift`.
+    public var threadActivity: [ThreadKey: ThreadActivity] = [:]
     /// La pile d'ombre et ses désaccords. Voir `X86ReturnWatch.swift`.
     public var shadowStack: [PendingReturn] = []
     public var brokenReturns: [BrokenReturn] = []
@@ -464,6 +466,7 @@ public struct X86Core: @unchecked Sendable {
                     // l'on reprend ailleurs qu'à l'endroit visé, le noyau ne
                     // l'a pas résolu — et c'est le seul cas qui compte.
                     settleLostJump(entry)
+                    noteProcessActivity(at: entry)
                     previousRip = entry
                     // **Qui bouge la pile.** Noté avant d'examiner le retour,
                     // pour que le `ret` fautif figure lui-même dans la trace
