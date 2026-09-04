@@ -798,7 +798,9 @@ extension X86Core {
         switch port {
         // Le registre d'état de la ligne : « le transmetteur est vide ». Sans
         // ça, un noyau attend indéfiniment de pouvoir écrire.
-        case Self.serialBase &+ 5: return 0x60
+        case Self.serialBase &+ 5: return 0x60 | (serialInput.isEmpty ? 0 : 1)
+        case Self.serialBase where !serialInput.isEmpty:
+            return UInt64(serialInput.removeFirst())
         case 0x20:
             return UInt64(devices.primary.readsService
                 ? devices.primary.service : devices.primary.request)

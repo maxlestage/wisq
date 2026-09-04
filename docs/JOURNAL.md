@@ -8,6 +8,182 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-04, ~02h10 UTC — l'instantané de la machine PC, mesuré avant d'être conçu
+
+Le seul obstacle à brancher `X86Machine` était l'instantané : 256 Mio de RAM
+contre 64 pour le RISC-V, à recopier à chaque passage en arrière-plan.
+
+**J'ai mesuré avant de concevoir.** Après un démarrage complet d'Alpine — trois
+milliards et demi d'instructions, jusqu'à `kernel_init` —, sur 65 536 pages de
+quatre kibioctets, **14 471 ne sont pas entièrement nulles**. Vingt-deux pour
+cent. Soit 56 Mio de contenu réel, 26 Mio une fois gzippés.
+
+Et le format d'instantané de ce dépôt **code déjà les suites de zéros par leur
+longueur**. Il n'y avait donc rien à inventer : la stratégie que je cherchais
+existait, écrite pour le RISC-V, et elle vaut exactement pour la même raison
+ici. Une demi-heure de mesure a remplacé une conception.
+
+### Ce que l'instantané porte
+
+Les seize registres, les drapeaux, RIP, le compteur d'instructions **et celui
+du temps dormi**, l'arrêt, la pagination, les seize registres de contrôle, les
+huit de débogage, les MSR, les six segments, les deux tables de descripteurs,
+les mots x87 et SSE, le 8259 et le 8253 en entier, ce qui attend d'être tapé,
+et la RAM.
+
+Pas la sortie console : elle est déjà partie au rappel et appartient à qui
+dessine le terminal. Pas le cache de traduction : il se reconstruit, et le
+figer reviendrait à garder une réponse qu'on peut recalculer, avec le risque
+qu'elle mente si les tables ont bougé.
+
+### Le piège que la mesure du RISC-V avait déjà nommé
+
+Comparer deux instantanés ne prouve rien : un champ qu'on oublie d'écrire est
+absent des deux, et ils se ressemblent parfaitement. Il faut poser une valeur
+distinctive dans **chaque** champ et la redemander après l'aller-retour. C'est
+ce que fait `testEveryFieldComesBack`, et sept sabotages le confirment.
+
+Un cas mérite son propre test : **le verrou du 8253**. `latched` vaut `nil`
+quand aucune commande de verrouillage n'est en cours, et zéro est une valeur
+parfaitement légitime. Les confondre rendrait au noyau un compte figé qu'il n'a
+pas demandé.
+
+### Une ligne que rien ne tenait
+
+Le premier jet recalculait le mode long après restauration. Aucun sabotage ne
+le faisait tomber — et pour cause : `pagingOn` et `longMode` se lisent dans CR0
+et EFER, tous deux restaurés tels quels. L'appel ne faisait rien. Retiré, avec
+la raison écrite à sa place.
+
+C'est la définition d'une ligne que rien ne tient, et le sabotage la trouve
+aussi bien qu'il trouve les défauts.
+
+---
+
+## 2026-09-04, ~01h45 UTC — la machine PC, et deux défauts que seul le sabotage a vus
+
+`X86Machine` : le pendant de `LinuxMachine` pour le x86-64. Même forme —
+charger, tourner, taper, arrêter — parce que c'est l'application qui choisira
+laquelle selon le fichier, et qu'elle n'a pas à connaître la différence.
+
+Le cœur a gagné une file d'entrée série, et le registre d'état de la ligne
+annonce « une donnée est prête » tant qu'il en reste. Sans ce bit, un invité
+qui attend une touche ne saurait jamais qu'il y en a une, et la console aurait
+l'air figée au moment précis où quelqu'un vient de taper.
+
+### Les deux défauts, et pourquoi les tests seuls ne les voyaient pas
+
+**Le budget ne comptait que les instructions retirées.** Un processeur arrêté
+sur un `HLT` n'en retire aucune : la boucle de la machine tournait donc sans
+fin autour d'un invité qui dort, à plein régime, sur un téléphone, sans
+qu'aucun budget puisse l'arrêter. `idled` est l'autre moitié de l'horloge, et
+il compte maintenant dans le budget.
+
+**Et la sortie reposait sur `halted`** au lieu du progrès. Une tranche qui
+n'exécute rien veut dire que plus rien ne peut arriver — quelle qu'en soit la
+raison. La garde porte désormais sur `executed == 0`, ce qui couvre `halted` et
+tout ce qui rendrait la main sans avancer.
+
+Aucun des sept tests ne voyait ces deux-là. C'est le sabotage qui les a
+trouvés, et pas en faisant tomber un test : en **pendant**. Le premier m'a fait
+attendre dix minutes avant d'aller couper le courant, et c'est ce silence-là
+qui a nommé le défaut.
+
+**Un test trop lâche, aussi.** « le budget borne » tolérait un dépassement de
+la taille d'une tranche — deux cent mille instructions pour un budget de
+cinquante mille — donc le sabotage qui supprimait le calcul du reste passait
+sans être vu. Il exige maintenant le compte **exact**.
+
+Troisième fois cette nuit qu'un sabotage révèle un test qui passait pour la
+mauvaise raison. C'est à ça qu'il sert : pas à vérifier qu'un test passe, mais
+qu'il tient ce qu'il prétend tenir.
+
+### Ce qui reste avant de brancher
+
+Pas d'instantané : la RAM d'une machine PC se compte en centaines de
+mébioctets là où celle du RISC-V en fait soixante-quatre, et recopier ça à
+chaque passage en arrière-plan demande une stratégie, pas une boucle. C'est
+écrit à côté du code plutôt que laissé à découvrir — et c'est la dernière
+chose qui manque avant que `Core.availableInTheApp` passe à vrai pour le
+x86-64.
+
+---
+
+## 2026-09-04, ~01h15 UTC — toutes les architectures, et le cœur choisi par le fichier
+
+Maxime : « sur wisq il me faut toutes les architectures Linux qui peuvent
+exister et la bonne par rapport à l'image sera automatiquement sélectionnée ».
+
+Deux moitiés, et il fallait les séparer avant d'écrire une ligne : **reconnaître
+n'est pas exécuter**. wisq reconnaît maintenant vingt et une familles ; il en
+exécute deux. Les confondre aurait produit exactement le genre de phrase que ce
+dépôt passe son temps à corriger.
+
+### Ce qui est écrit
+
+`GuestArchitecture` : les familles pour lesquelles le noyau Linux a un
+répertoire dans `arch/`, plus celles qu'il a portées assez longtemps pour que
+des images traînent encore. Chacune porte son nom, sa largeur **quand le
+fichier la dit**, et son boutisme.
+
+La largeur est optionnelle, et c'est le point qui m'a demandé le plus de soin.
+Un ELF porte sa classe au cinquième octet. L'image brute de Linux pour RISC-V
+n'a **aucun** champ qui dise 32 ou 64 bits : décalage, taille, drapeaux dont le
+bit zéro est le boutisme, version, deux nombres magiques, et c'est tout. Un
+noyau rv32 et un rv64 y sont indiscernables. Alors `bits` vaut `nil` — « le
+fichier ne le dit pas », et non « 32 par défaut ». Écrire 32 aurait eu l'air
+d'une lecture.
+
+Sept formats reconnus : ELF, `uImage`, `bzImage`, l'`Image` d'ARM64, celle de
+RISC-V, le `zImage` d'ARM, et six enveloppes de compression. L'`uImage`
+d'U-Boot est le seul qui **nomme** son architecture au lieu de la laisser
+deviner — un octet, à l'offset 29 — donc il est lu en premier, avant que le
+contenu emballé ne fasse conclure sur l'emballé au lieu de l'emballage.
+
+### La sélection automatique
+
+`KernelImageKind.core` remonte du fichier au cœur. Personne n'a à choisir.
+
+Une largeur inconnue ne bloque pas : quand un seul cœur existe pour la famille,
+c'est celui-là. C'est la même règle que `unknown`, qui est une permission et
+non un doute — le laisser essayer en dit plus long qu'un refus fondé sur ce
+qu'on n'a pas lu.
+
+### La distinction qui rendait les messages faux
+
+Le cœur x86-64 **existe** depuis ce soir et démarre un vrai noyau d'Alpine
+jusqu'à son espace utilisateur. Il n'est **pas branché** dans l'application :
+`LinuxMachine` est encore câblée sur le RISC-V.
+
+Un seul booléen aurait forcé à mentir dans un sens ou dans l'autre — soit
+promettre un démarrage qui n'arrive pas, soit annoncer « pas de cœur » d'un
+cœur écrit et prouvé. `Core.availableInTheApp` sépare les deux, et les refus
+disent laquelle des deux situations c'est.
+
+**La tranche suivante est donc de brancher la machine x86-64 dans
+l'application.** Ce jour-là, un seul booléen change et tous les textes suivent :
+aucun n'énumère les architectures à la main, un test le tient.
+
+### Ce qui change pour quelqu'un qui importe un fichier
+
+Avant, une `Image` ARM64 tombait dans `unknown` — donc acceptée, puis un échec
+incompréhensible. Maintenant : « un noyau Linux pour ARM64, au format Image
+ARM64 […] wisq n'a pas de cœur pour cette architecture ». Un `vmlinuz` gzippé
+n'est plus rien du tout : c'est « un fichier compressé (gzip), probablement un
+noyau, mais son architecture est à l'intérieur ».
+
+C'est la différence entre un mur et une carte.
+
+### Ce qui n'est pas promis
+
+Reconnaître vingt et une familles n'en fait pas tourner vingt et une. Un cœur
+ARM64 ou PowerPC est un lot par architecture, pas une case à cocher. Ce que
+cette tranche change, c'est qu'un fichier refusé est désormais **nommé**.
+
+Quinze tests neufs, dix sabotages, dix attrapés.
+
+---
+
 ## 2026-09-04, ~01h00 UTC — un programme tourne en anneau trois
 
 #174 fusionné. Le noyau réclamait un disque ; j'allais écrire virtio-blk. Avant
