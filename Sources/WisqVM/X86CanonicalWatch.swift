@@ -42,6 +42,27 @@ extension X86Core {
         return top == 0 || top == 0x1FFFF
     }
 
+    /// La première page n'est **jamais** cartographiée pour un programme.
+    ///
+    /// Linux l'interdit même explicitement (`mmap_min_addr`), et c'est ce qui
+    /// fait qu'un pointeur nul se plaint au lieu de lire n'importe quoi. Un
+    /// programme qui déréférence une adresse là-dedans a lu un pointeur qui
+    /// n'a jamais été écrit, ou qui a été effacé.
+    public static let firstPage: UInt64 = 0x1000
+
+    /// Une adresse qu'un programme peut avoir voulu atteindre.
+    ///
+    /// **C'est le prédicat, et il a grandi une fois.** Il ne demandait d'abord
+    /// que la forme canonique, parce que la corruption d'alors posait des bits
+    /// au-dessus du bit 47. Une fois celle-là corrigée, `/init` mourait encore
+    /// — mais sur `segfault at 0`, `at 1`, `at 199`. Zéro est parfaitement
+    /// canonique ; le témoin ne pouvait rien en dire, et il fallait le lui
+    /// apprendre.
+    @inline(__always)
+    public static func isAddressable(_ value: UInt64) -> Bool {
+        isCanonical(value) && value >= firstPage
+    }
+
     /// L'acte de naissance d'une valeur : le registre, ce qu'il porte, et
     /// l'adresse de l'instruction qui l'y a mise.
     public struct Birth: Sendable, Equatable {
@@ -116,9 +137,23 @@ extension X86Core {
         // même d'où l'on vient : sans ça, un rapport en déclencherait un autre.
         canonicalWatchArmed = false
         defer { canonicalWatchArmed = true }
+        // **Le registre doit avoir servi à former l'adresse**, pas seulement
+        // porter une valeur impossible. Une adresse se calcule comme
+        // « registre plus déplacement », et un déplacement de structure tient
+        // dans une page : on ne retient donc que les registres dont la valeur
+        // est à moins de quatre kibioctets en dessous de l'adresse employée.
+        //
+        // Sans cette condition, élargir le prédicat aux pointeurs nuls faisait
+        // accuser les seize registres d'un coup, puisque zéro n'est pas une
+        // adresse et que la moitié d'un fichier de registres vaut zéro à tout
+        // instant. C'est la deuxième fois que ce témoin apprend la même
+        // leçon : ce qui compte n'est pas la valeur, c'est son emploi.
         let carrying = (0..<16).compactMap { index -> Birth? in
-            guard !Self.isCanonical(registers[index]) else { return nil }
-            return Birth(register: index, value: registers[index],
+            let value = registers[index]
+            guard !Self.isAddressable(value), address &- value < Self.firstPage else {
+                return nil
+            }
+            return Birth(register: index, value: value,
                          bornAt: registerBornAt[index],
                          bornBytes: peek(registerBornAt[index]))
         }

@@ -87,7 +87,7 @@ extension X86Core {
         // devenir une adresse. Il est ici et pas sur le chemin rapide parce
         // qu'une adresse non canonique n'est cartographiée nulle part : elle
         // ne peut pas être dans le cache, donc elle passe forcément par ici.
-        if canonicalWatchArmed && privilege == 3 && !Self.isCanonical(at) {
+        if canonicalWatchArmed && privilege == 3 && !Self.isAddressable(at) {
             noteNonCanonical(address: at)
         }
         let walked: (frame: UInt64, flags: UInt8)

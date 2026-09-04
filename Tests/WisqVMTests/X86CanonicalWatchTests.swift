@@ -114,6 +114,30 @@ final class X86CanonicalWatchTests: XCTestCase {
         XCTAssertEqual(Array(seen.cameFromBytes.prefix(2)), jump)
     }
 
+    /// **Un registre qui vaut zéro n'a pas fabriqué l'adresse.** Le prédicat
+    /// a grandi pour voir les pointeurs nuls, et il s'est mis à accuser les
+    /// seize registres d'un coup — la moitié d'un fichier de registres vaut
+    /// zéro à tout instant. Une adresse se calcule comme « registre plus
+    /// déplacement », et un déplacement de structure tient dans une page :
+    /// seuls les registres à moins de quatre kibioctets sous l'adresse
+    /// employée sont retenus.
+    func testARegisterThatDidNotFormTheAddressIsNotAccused() throws {
+        var core = try Self.core(Self.makeCorrupt + Self.dereference)
+        Self.run(&core, 2)
+        let seen = try XCTUnwrap(core.nonCanonicalSeen.first)
+        XCTAssertEqual(seen.carrying.count, 1,
+                       "quinze registres valent zéro, et aucun n'a formé cette adresse")
+        XCTAssertEqual(seen.carrying.first?.register, 0)
+    }
+
+    func testANullPointerIsAlsoImpossible() {
+        XCTAssertTrue(X86Core.isCanonical(0), "zéro est canonique")
+        XCTAssertFalse(X86Core.isAddressable(0), "mais ce n'est l'adresse de rien")
+        XCTAssertFalse(X86Core.isAddressable(0xFFF), "la première page entière")
+        XCTAssertTrue(X86Core.isAddressable(0x1000), "et la deuxième commence là")
+        XCTAssertFalse(X86Core.isAddressable(Self.corrupt), "le trou reste le trou")
+    }
+
     func testMakingTheValueIsNotEnoughToFire() throws {
         var core = try Self.core(Self.makeCorrupt)
         Self.run(&core, 1)
