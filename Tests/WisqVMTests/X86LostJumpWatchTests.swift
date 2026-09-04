@@ -110,6 +110,51 @@ final class X86LostJumpWatchTests: XCTestCase {
         XCTAssertTrue(core.jumpsLost.isEmpty)
     }
 
+    /// **Un autre processus qui prend la main ne résout rien et ne perd
+    /// rien.** Sur un seul processeur, une faute de page peut céder la main :
+    /// le noyau la résout, puis ordonnance le parent avant que l'enfant ne
+    /// reprenne. La première instruction d'anneau trois qui aboutit est alors
+    /// celle du parent, ailleurs — et le témoin comptait le saut de l'enfant
+    /// comme perdu. Seize enfants de `fork()` de nlplug-findfs ont été
+    /// déclarés perdus ainsi, tous au premier saut hors de leur page, et rien
+    /// ne permettait de dire s'ils avaient repris ou non : la question de
+    /// cette mesure était précisément celle-là.
+    ///
+    /// Le saut en attente appartient à un espace d'adressage, et seul cet
+    /// espace peut le trancher.
+    func testAnotherProcessTakingOverNeitherResolvesNorLosesIt() throws {
+        var core = try Self.core([0x90])
+        core.previousRip = 0x1000
+        core.noteLostJump(0x4000_0000)
+        // Un autre CR3 : le parent, ailleurs. Le saut reste en attente.
+        let child = core.system.control[3]
+        core.system.control[3] = 0x9000
+        core.settleLostJump(0x5555_0000)
+        XCTAssertEqual(core.lostJumpsUnresolved, 0, "le parent ne tranche pas pour l'enfant")
+        XCTAssertNotNil(core.pendingLostJump, "et le saut attend toujours")
+        // L'enfant revient, à l'endroit visé : résolu.
+        core.system.control[3] = child
+        core.settleLostJump(0x4000_0000)
+        XCTAssertEqual(core.lostJumpsUnresolved, 0)
+        XCTAssertNil(core.pendingLostJump)
+    }
+
+    /// Et quand l'enfant revient **ailleurs**, c'est bien perdu — et le
+    /// rapport dit dans quel espace d'adressage.
+    func testTheSameProcessResumingElsewhereIsWhatCounts() throws {
+        var core = try Self.core([0x90])
+        core.previousRip = 0x1000
+        core.noteLostJump(0x4000_0000)
+        core.system.control[3] = 0x9000
+        core.settleLostJump(0x5555_0000)
+        core.system.control[3] = Self.pml4
+        core.settleLostJump(0x1234)
+        XCTAssertEqual(core.lostJumpsUnresolved, 1)
+        let lost = try XCTUnwrap(core.jumpsLost.last)
+        XCTAssertEqual(lost.addressSpace, Self.pml4)
+        XCTAssertTrue(lost.description.contains("cr3=2000"))
+    }
+
     /// Et on garde les derniers de ceux qui comptent, avec leur total.
     func testItKeepsTheLastOnesAndSaysHowManyThereWere() throws {
         var core = try Self.core([0x90])

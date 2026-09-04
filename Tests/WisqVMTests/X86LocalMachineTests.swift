@@ -213,6 +213,13 @@ final class X86SnapshotTests: XCTestCase {
         machine.core.devices.speakerWriteHighNext = true
         machine.core.devices.speakerStartedAt = 99999
         machine.core.devices.speakerGate = true
+        machine.core.devices.serial.interruptEnable = 0x03
+        machine.core.devices.serial.fifoControl = 0xC7
+        machine.core.devices.serial.lineControl = 0x03
+        machine.core.devices.serial.modemControl = 0x0B
+        machine.core.devices.serial.scratch = 0x5A
+        machine.core.devices.serial.divisor = 0x000C
+        machine.core.devices.serial.transmitPending = true
         machine.core.serialInput = [0x41, 0x42]
         try machine.core.memory?.write(0x30_0000, 8, 0xCAFE_F00D)
         return machine
@@ -280,6 +287,13 @@ final class X86SnapshotTests: XCTestCase {
         XCTAssertTrue(core.devices.speakerWriteHighNext)
         XCTAssertEqual(core.devices.speakerStartedAt, 99999)
         XCTAssertTrue(core.devices.speakerGate)
+        XCTAssertEqual(core.devices.serial.interruptEnable, 0x03)
+        XCTAssertEqual(core.devices.serial.fifoControl, 0xC7)
+        XCTAssertEqual(core.devices.serial.lineControl, 0x03)
+        XCTAssertEqual(core.devices.serial.modemControl, 0x0B)
+        XCTAssertEqual(core.devices.serial.scratch, 0x5A)
+        XCTAssertEqual(core.devices.serial.divisor, 0x000C)
+        XCTAssertTrue(core.devices.serial.transmitPending)
         XCTAssertEqual(core.serialInput, [0x41, 0x42])
         XCTAssertEqual(try core.memory?.read(0x30_0000, 8), 0xCAFE_F00D, "la RAM")
     }
