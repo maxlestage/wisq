@@ -74,9 +74,12 @@ public protocol GuestMachine: AnyObject, Sendable {
 /// que ces cas existent pour dire.
 public enum GuestMachineRefusal: Error, Equatable, LocalizedError {
     /// Un disque en mémoire donné à une machine qui n'en prend pas.
+    ///
+    /// Il y avait ici un second cas, `noDiskHere`, pour une machine sans
+    /// contrôleur à qui parler. Les deux machines en ont un maintenant, et un
+    /// cas d'erreur que plus rien ne peut lever est un mensonge qui attend
+    /// d'être cru : il est parti avec le refus.
     case noRamdiskHere(architecture: String)
-    /// Un disque donné à une machine qui n'a pas de contrôleur pour le porter.
-    case noDiskHere(architecture: String)
 
     public var errorDescription: String? {
         switch self {
@@ -85,12 +88,6 @@ public enum GuestMachineRefusal: Error, Equatable, LocalizedError {
                 La machine \(architecture) ne prend pas d'initramfs : son \
                 chargeur place un noyau et un arbre de périphériques, et rien \
                 d'autre.
-                """
-        case .noDiskHere(let architecture):
-            return """
-                La machine \(architecture) n'a pas de disque : son noyau n'a \
-                aucun pilote bloc, et c'est l'instantané de la machine entière \
-                qui garde ce qu'elle contient.
                 """
         }
     }
@@ -117,9 +114,18 @@ extension LinuxMachine: GuestMachine {
     /// dedans ; c'est l'instantané de la machine entière qui fait le travail
     /// qu'un disque aurait fait. Un contrôleur virtio ici serait un
     /// périphérique que personne n'énumère.
-    public func attachDisk(_ image: Data) throws {
-        throw GuestMachineRefusal.noDiskHere(architecture: "RISC-V 32 bits")
-    }
+    /// **Le refus a disparu, et c'est une machine qui a changé, pas un texte.**
+    ///
+    /// Cette conformance jetait `noDiskHere` : la carte rv32 n'avait ni
+    /// contrôleur d'interruption pour un périphérique, ni moyen de le déclarer
+    /// — le blob d'arbre était figé. Les deux manques ont été comblés, la
+    /// fenêtre est décodée, et le disque sert de vraies requêtes.
+    ///
+    /// Ce que wisq ne peut toujours pas faire, et qui reste vrai : mettre le
+    /// pilote bloc dans le noyau de la personne. Un noyau qui n'en a pas ne
+    /// touchera jamais la fenêtre — et le périphérique compte ses requêtes,
+    /// donc la machine sait le dire.
+    public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {

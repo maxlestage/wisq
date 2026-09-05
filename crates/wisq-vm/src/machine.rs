@@ -8,6 +8,7 @@
 use crate::core::{Bus, Core, StepResult, RAM_BASE};
 use crate::dtb;
 use crate::snapshot::{Reader, SnapshotError, Writer};
+use crate::virtio::{Guest, VirtioBlock, MMIO_BASE, MMIO_SPAN};
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,6 +93,7 @@ pub struct Machine {
     shared: Arc<Shared>,
     pending_output: Vec<u8>,
     on_output: OutputSink,
+    disk: Option<VirtioBlock>,
 }
 
 impl Machine {
@@ -106,8 +108,58 @@ impl Machine {
             ram: vec![0u8; ram_size].into_boxed_slice(),
             core: Core::new(),
             shared: Arc::new(Shared::default()),
+            disk: None,
             pending_output: Vec::with_capacity(4096),
             on_output,
+        }
+    }
+
+    /// Gives the machine a disk, before `load`.
+    ///
+    /// Before, because it is `load` that writes the device tree, and a tree
+    /// already placed is not rewritten: a device the tree does not declare
+    /// does not exist for the kernel. The Swift machine builds its own tree
+    /// and so decides this itself; here the tree arrives from outside, and it
+    /// is the caller — `WisqUI` — that must ask for the node.
+    pub fn attach_disk(&mut self, image: &[u8]) {
+        self.disk = Some(VirtioBlock::new(image.to_vec()));
+    }
+
+    /// Takes it away, and drops the line with it.
+    ///
+    /// An interrupt raised that nobody will ever serve locks the guest inside
+    /// its handler.
+    pub fn detach_disk(&mut self) {
+        self.disk = None;
+        self.core.mip &= !crate::core::EXTERNAL_BIT;
+    }
+
+    pub fn disk_served(&self) -> u64 {
+        self.disk.as_ref().map_or(0, |disk| disk.served)
+    }
+
+    pub fn disk_refused(&self) -> u64 {
+        self.disk.as_ref().map_or(0, |disk| disk.refused)
+    }
+
+    pub fn has_disk(&self) -> bool {
+        self.disk.is_some()
+    }
+
+    /// Carries what the devices are asking for onto the hart's line.
+    ///
+    /// **Called after each slice, not inside the store that caused it.** The
+    /// Swift machine polls from within `mmioStore`, which it can because the
+    /// core and the device share an owner there; the borrow checker will not
+    /// allow it here. The two come to the same thing: the trap is only taken
+    /// between slices either way, and the line's state at that moment is what
+    /// decides.
+    fn poll_devices(&mut self) {
+        let asking = self.disk.as_ref().is_some_and(|disk| disk.interrupting());
+        if asking {
+            self.core.mip |= crate::core::EXTERNAL_BIT;
+        } else {
+            self.core.mip &= !crate::core::EXTERNAL_BIT;
         }
     }
 
@@ -206,6 +258,8 @@ impl Machine {
             // the call and put back after.
             let mut bus = MachineBus {
                 shared: &self.shared,
+                disk: self.disk.as_mut(),
+                disk_touched: false,
                 pending_output: &mut self.pending_output,
                 on_output: &mut self.on_output,
                 timerl: self.core.timerl,
@@ -217,6 +271,9 @@ impl Machine {
             let (matchl, matchh) = (bus.timermatchl, bus.timermatchh);
             self.core.timermatchl = matchl;
             self.core.timermatchh = matchh;
+            if bus.disk_touched {
+                self.poll_devices();
+            }
 
             // Prompts end without a newline; without a periodic flush they
             // would sit in the batch buffer forever and the console would look
@@ -272,6 +329,12 @@ impl Machine {
         let queued: Vec<u8> = self.shared.input.lock().unwrap().iter().copied().collect();
         writer.bytes(&queued);
         writer.bytes(&self.pending_output);
+        // The disk comes last, and only when there is one: a machine saved
+        // before disks existed has nothing here, and reading it back must stay
+        // possible — the phones already carry such snapshots.
+        if let Some(disk) = self.disk.as_ref() {
+            disk.save(&mut writer);
+        }
         writer.finish()
     }
 
@@ -289,10 +352,18 @@ impl Machine {
         reader.ram(&mut ram)?;
         let queued = reader.bytes()?.to_vec();
         let pending = reader.bytes()?.to_vec();
+        // Absent in a snapshot taken before the machine had a disk. Its
+        // absence reads as "no disk", not as a corrupt file.
+        let restored_disk = if reader.is_at_end() {
+            None
+        } else {
+            Some(VirtioBlock::restored(&mut reader)?)
+        };
         reader.finish()?;
 
         self.core = core;
         self.ram = ram;
+        self.disk = restored_disk;
         {
             let mut input = self.shared.input.lock().unwrap();
             input.clear();
@@ -323,6 +394,17 @@ impl Machine {
 /// The devices, borrowed apart from the machine for the duration of one step.
 struct MachineBus<'a> {
     shared: &'a Arc<Shared>,
+    disk: Option<&'a mut VirtioBlock>,
+    /// Set when an access landed in the disk's window during this slice.
+    ///
+    /// **It is what says whether the line may be touched at all.** The Swift
+    /// machine polls from inside the store that reached the device, so a guest
+    /// that writes `mip` itself is never overwritten. Polling after every
+    /// slice instead looked equivalent and was not: with no disk attached it
+    /// cleared the bit the guest had just set by hand, and the differential
+    /// test that compares the two cores on interrupt priority went red — which
+    /// is exactly what it is for.
+    disk_touched: bool,
     pending_output: &'a mut Vec<u8>,
     on_output: &'a mut OutputSink,
     timerl: u32,
@@ -332,7 +414,17 @@ struct MachineBus<'a> {
 }
 
 impl Bus for MachineBus<'_> {
-    fn mmio_load(&mut self, address: u32) -> u32 {
+    fn mmio_load(&mut self, _ram: &mut [u8], address: u32) -> u32 {
+        // The disk decodes its own window first: everything else here is a
+        // fixed address, and a device with a span has to be asked whether the
+        // address is its own.
+        if let Some(disk) = self.disk.as_deref_mut() {
+            if (MMIO_BASE..MMIO_BASE + MMIO_SPAN).contains(&address) {
+                let value = disk.read(u64::from(address - MMIO_BASE), 4) as u32;
+                self.disk_touched = true;
+                return value;
+            }
+        }
         match address {
             // UART LSR: TX empty | RX ready
             0x1000_0005 => {
@@ -359,7 +451,15 @@ impl Bus for MachineBus<'_> {
         self.timerh = high;
     }
 
-    fn mmio_store(&mut self, address: u32, value: u32) -> Option<u32> {
+    fn mmio_store(&mut self, ram: &mut [u8], address: u32, value: u32) -> Option<u32> {
+        if let Some(disk) = self.disk.as_deref_mut() {
+            if (MMIO_BASE..MMIO_BASE + MMIO_SPAN).contains(&address) {
+                let mut guest = Guest::new(ram, RAM_BASE);
+                disk.write(u64::from(address - MMIO_BASE), u64::from(value), &mut guest);
+                self.disk_touched = true;
+                return None;
+            }
+        }
         match address {
             // UART TX
             0x1000_0000 => {

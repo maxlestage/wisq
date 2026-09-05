@@ -83,6 +83,31 @@ int wisq_vm_load_with_tree(WisqVM *vm, const uint8_t *image, size_t len,
                            const uint8_t *tree, size_t tree_len);
 
 /*
+ * Gives the machine a disk, seen by the guest on /dev/vda.
+ *
+ * Call before loading: it is the tree that makes the device findable, and the
+ * tree arrives from the caller. A tree without the node describes a machine
+ * with no disk, and the guest never probes the window.
+ *
+ * The image is copied — the device holds it whole and writes into it, which is
+ * what lets the guest's writes survive a suspension.
+ */
+int wisq_vm_attach_disk(WisqVM *vm, const uint8_t *image, size_t len);
+
+/* Takes the disk away, and drops the interrupt line with it. */
+int wisq_vm_detach_disk(WisqVM *vm);
+
+/*
+ * How many requests the disk served, and how many it refused. A device that
+ * refuses everything and a device nobody calls read the same without both.
+ */
+uint64_t wisq_vm_disk_served(const WisqVM *vm);
+uint64_t wisq_vm_disk_refused(const WisqVM *vm);
+
+/* Non-zero while a disk is attached. */
+int wisq_vm_has_disk(const WisqVM *vm);
+
+/*
  * Runs until shutdown, reboot, stop, or the instruction budget is spent.
  * Returns one of WISQ_VM_POWER_OFF / REBOOT / STOPPED. Blocks the calling
  * thread — that is the point; the caller owns a thread for it.
