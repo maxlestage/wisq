@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (1841 tests across Swift and Rust) and
+Everything below is implemented, tested (2000 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -76,7 +76,8 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | SPICE: link, main/display/inputs/cursor channels, `.vv` import | done |
 | SPICE codecs: LZ, GLZ (with its window), QUIC, LZ4, JPEG, palette forms | done |
 | SPICE: clipboard, sound both ways, draw operations, video streams, three caches | done |
-| RDP | roadmap |
+| RDP: negotiation, MCS, key exchange, licensing, capabilities, RLE bitmaps, input | done |
+| RDP: NLA/CredSSP, virtual channels, cursor, mid-session resize | roadmap |
 
 ## Building
 
@@ -122,7 +123,7 @@ xcodegen generate`.
 ```
 Sources/WisqCore     domain model, persistence, Keychain, HID table, pairing codec
 Sources/WisqNet      byte transport: TCP/TLS, persistent zlib streams, test pipes
-Sources/WisqRemote   RFB/VNC and SPICE clients, reconnection, agent client, RDP slot
+Sources/WisqRemote   RFB/VNC, SPICE and RDP clients, reconnection, agent client
 Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends

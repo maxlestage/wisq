@@ -71,11 +71,34 @@ describe("the formatting floor refuses each thing it names", () => {
       "import Foundation\n\n\nstruct A {\n    let b = 1\n}\n",
       "vertical_whitespace",
     ],
+    [
+      "une garde de plateforme refermée trop tôt",
+      "#if canImport(Glibc)\nimport Foundation\nlet a = 1\n#endif\n\nlet b = 2\n",
+      "garde de plateforme",
+    ],
   ])("%s is refused", (_name, contents, rule) => {
     const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
     expect(code, `la garde a accepté : ${rule}\n${output}`).not.toBe(0);
     expect(output).toContain(rule);
     expect(output).toContain("Sources/WisqCore/A.swift");
+  });
+
+  /// **A `#if` around an import is not a file-wide guard**, and the rule must
+  /// not touch it. Six files in this repository have that shape — a platform
+  /// module imported conditionally in the middle of an otherwise ordinary file
+  /// — and a rule that flagged them would be turned off within the day.
+  test("an import guard in the middle of a file is left alone", () => {
+    const contents =
+      "import Foundation\n\n#if canImport(CryptoKit)\nimport CryptoKit\n#endif\n\nlet c = 3\n";
+    const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
+    expect(code, `une garde d'import légitime a été refusée :\n${output}`).toBe(0);
+  });
+
+  /// And a file-wide guard that does reach the end passes.
+  test("a platform guard that covers the whole file is accepted", () => {
+    const contents = "// un mot d'abord\n#if canImport(Glibc)\nimport Foundation\n\nlet a = 1\n#endif\n";
+    const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
+    expect(code, `une garde correcte a été refusée :\n${output}`).toBe(0);
   });
 
   /// The file the old scope missed entirely. `App/` has no subdirectory, so
