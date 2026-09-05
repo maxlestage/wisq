@@ -24,6 +24,19 @@ import XCTest
 /// dans la vue avant de chronométrer, pour qu'un module abîmé en route ne
 /// rende pas un débit magnifique et faux.
 ///
+/// **Ce que le coureur Apple a rendu, le 5 septembre 2026 :** 1300 MIPS sur
+/// 160 M instructions, et 0,479 ms par aller-retour vers la vue. Le pont laisse
+/// donc trente-cinq allers-retours par image à soixante par seconde.
+///
+/// **Et ce que ces chiffres ne prouvent pas.** Le simulateur tourne sur le Mac
+/// Apple Silicon du coureur, et **macOS ne restreint pas le JIT**. Ils mesurent
+/// JavaScriptCore sur un Mac, à travers le chemin de code d'un `WKWebView`
+/// hébergé — pas sous les règles d'iOS. Que le processus de contenu de WebKit
+/// garde le droit de compiler **sur un vrai iPhone** est la conception
+/// documentée d'iOS, pas une mesure d'ici. La même sonde, dans un envoi
+/// TestFlight, la rendrait. Ce qui est acquis : le module est correct, un
+/// `WKWebView` hébergé le compile et l'exécute, et le pont ne coûte rien.
+///
 /// **Ce paquet est hébergé par l'application, et ce n'est pas un détail.**
 /// La première version vivait dans `WisqUITests`, qui n'a pas d'hôte : les deux
 /// tests y ont été **sautés**, « le WKWebView n'a pas fini de charger », après
