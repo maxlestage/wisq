@@ -41,6 +41,11 @@ export const faqEn: Doc = {
 
     { kind: "h2", text: "Can the local machine keep files?" },
     {
+      question: "Can I run a real desktop — Omarchy, Ubuntu — with my own image?",
+      answer:
+        "Yes, and on the machine that can actually run it. Point wisq-agent at your ISO on a computer that stays on: `wisq-agent bureau --image ~/omarchy-4.0.2.iso` builds the disk, writes the libvirt domain, starts it, and prints the desktop's password. The image runs there with the host's accelerator — KVM on Linux, HVF on a Mac — at full speed, and the phone shows it over SPICE, with sound, clipboard and file drop. The local machine on the phone is a different thing and always will be: iOS allows no JIT, so it interprets, and it gives you a text console. A desktop needs an accelerator, and a phone running an App Store app does not have one. wisq does both and does not pretend they are the same.",
+    },
+    {
       kind: "p",
       text:
         "Two answers, and they are not the same thing. The machine itself is saved: set aside when the screen locks, it comes back with your shell exactly where it was, mid-command if that is where you left it — no second boot. And since recently it can also have a disk: a filesystem or installer image you import, of any size, seen on /dev/vda and read in place. What the guest writes goes into a layer kept beside the image, durable at every write: it survives suspension, a restart of the app, and the app being killed, and the file you imported never changes. What wisq cannot do is put a block driver into the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch the device — so wisq counts the requests and tells you at the end, instead of leaving you with a silent disk.",
@@ -137,6 +142,11 @@ export const faqFr: Doc = {
     },
 
     { kind: "h2", text: "La machine locale peut-elle garder des fichiers ?" },
+    {
+      question: "Puis-je avoir un vrai bureau — Omarchy, Ubuntu — avec mon image ?",
+      answer:
+        "Oui, et sur la machine qui sait vraiment le faire tourner. Donnez votre ISO à wisq-agent, sur un ordinateur qui reste allumé : `wisq-agent bureau --image ~/omarchy-4.0.2.iso` construit le disque, écrit le domaine libvirt, le démarre, et affiche le mot de passe du bureau. L'image tourne là-bas avec l'accélérateur de l'hôte — KVM sous Linux, HVF sur un Mac —, à pleine vitesse, et le téléphone l'affiche par SPICE, avec le son, le presse-papiers et le dépôt de fichier. La machine locale du téléphone est autre chose, et le restera : iOS n'autorise aucun JIT, donc elle interprète, et elle rend une console texte. Un bureau demande un accélérateur, et un téléphone qui fait tourner une application de l'App Store n'en a pas. wisq fait les deux et ne prétend pas que c'est pareil.",
+    },
     {
       kind: "p",
       text:

@@ -110,6 +110,7 @@ const en: Copy = {
         "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor, input, sound both ways, clipboard, file drop into the guest",
         "Reconnects through cell handoffs, never retries a bad password",
         "A host agent boots a powered-off VM when you tap it — and shuts it down, politely or hard, when you ask",
+        "wisq-agent bureau builds the machine from an installation image: the qcow2 disk, the image booted first, a SPICE desktop with a generated password, the tablet, the sound and the guest agent channel — one command, then the desktop is on the phone",
       ],
     },
     local: {
@@ -234,6 +235,7 @@ const fr: Copy = {
         "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur, entrées, son dans les deux sens, presse-papiers, dépôt de fichiers dans l'invité",
         "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé",
         "Un agent hôte démarre une VM éteinte quand vous la tapez — et l'éteint, poliment ou de force, quand vous le demandez",
+        "wisq-agent bureau construit la machine autour d'une image d'installation : le disque qcow2, l'image amorcée en premier, un bureau SPICE avec mot de passe engendré, la tablette, le son et le canal de l'agent invité — une commande, et le bureau est sur le téléphone",
       ],
     },
     local: {
