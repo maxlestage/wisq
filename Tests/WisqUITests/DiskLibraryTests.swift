@@ -67,18 +67,12 @@ final class DiskLibraryTests: XCTestCase {
         XCTAssertEqual(KernelImageKind.identify(fileAt: kept), .filesystemImage("ext2/3/4"))
     }
 
-    /// Un fichier de moins d'un secteur, lui, reste refusé — c'est le seul
-    /// refus de taille qui reste, et il dit le nombre.
-    func testADiskSmallerThanASectorIsStillRefused() throws {
-        let url = source.appendingPathComponent("essai-minuscule.img")
-        try Data([UInt8](repeating: 0, count: 300)).write(to: url)
-        XCTAssertThrowsError(try KernelLibrary.importKernel(from: url)) { error in
-            guard case KernelImportError.refused(let explanation) = error else {
-                return XCTFail("refus attendu, obtenu : \(error)")
-            }
-            XCTAssertTrue(explanation.contains("300"), explanation)
-        }
-    }
+    // **Et le plancher n'est pas atteignable par ici**, ce qui vaut d'être
+    // écrit plutôt que testé de travers. Un fichier de moins d'un secteur ne
+    // peut pas porter la marque d'un système de fichiers — elle vit à l'octet
+    // 1080 — donc il n'est jamais reconnu comme un disque, et c'est le chemin
+    // des fichiers inconnus qui le prend. Le refus du secteur unique est tenu
+    // là où il vit, dans `LocalDiskTests`, avec son nombre.
 
     /// **Supprimer un noyau oublie le disque qu'on lui avait donné**, et
     /// supprimer un disque l'oublie chez les noyaux qui l'avaient.
