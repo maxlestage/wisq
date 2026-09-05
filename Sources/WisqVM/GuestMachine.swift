@@ -41,6 +41,14 @@ public protocol GuestMachine: AnyObject, Sendable {
     /// échoue plus loin, pour une raison que personne ne relierait à ça.
     func load(kernelImage: Data, commandLine: String?, initialRamdisk: Data?) throws
 
+    /// Branche un disque, que l'invité verra comme un périphérique bloc.
+    ///
+    /// **Refusé et nommé** par une machine qui n'en a pas, pour la raison que
+    /// `load` donne pour le disque en mémoire : accepter en silence donnerait
+    /// un invité qui cherche une racine qu'il ne trouvera jamais, et rien ne
+    /// relierait ça au réglage qui l'a causé.
+    func attachDisk(_ image: Data) throws
+
     /// Fait tourner l'invité jusqu'à ce qu'il s'arrête, qu'on le lui demande,
     /// ou que le budget s'épuise.
     @discardableResult
@@ -58,9 +66,34 @@ public protocol GuestMachine: AnyObject, Sendable {
 }
 
 /// Ce qu'une machine refuse quand on lui demande ce qu'elle ne sait pas faire.
-public enum GuestMachineRefusal: Error, Equatable {
+///
+/// **Elle porte ses phrases**, et pas seulement ses cas. L'application affiche
+/// `error.localizedDescription` de tout ce qui remonte du démarrage ; sans
+/// `LocalizedError`, un refus parfaitement précis arrivait à l'écran sous la
+/// forme « The operation couldn't be completed », qui est le contraire de ce
+/// que ces cas existent pour dire.
+public enum GuestMachineRefusal: Error, Equatable, LocalizedError {
     /// Un disque en mémoire donné à une machine qui n'en prend pas.
     case noRamdiskHere(architecture: String)
+    /// Un disque donné à une machine qui n'a pas de contrôleur pour le porter.
+    case noDiskHere(architecture: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noRamdiskHere(let architecture):
+            return """
+                La machine \(architecture) ne prend pas d'initramfs : son \
+                chargeur place un noyau et un arbre de périphériques, et rien \
+                d'autre.
+                """
+        case .noDiskHere(let architecture):
+            return """
+                La machine \(architecture) n'a pas de disque : son noyau n'a \
+                aucun pilote bloc, et c'est l'instantané de la machine entière \
+                qui garde ce qu'elle contient.
+                """
+        }
+    }
 }
 
 // MARK: - Les deux machines de ce module
@@ -79,6 +112,15 @@ extension LinuxMachine: GuestMachine {
         try load(kernelImage: kernelImage, commandLine: commandLine)
     }
 
+    /// **Cette machine-ci n'a pas de disque, et ce n'est pas un oubli.** Le
+    /// noyau rv32 « nommu » de cette famille n'a aucun pilote bloc compilé
+    /// dedans ; c'est l'instantané de la machine entière qui fait le travail
+    /// qu'un disque aurait fait. Un contrôleur virtio ici serait un
+    /// périphérique que personne n'énumère.
+    public func attachDisk(_ image: Data) throws {
+        throw GuestMachineRefusal.noDiskHere(architecture: "RISC-V 32 bits")
+    }
+
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {
@@ -91,6 +133,10 @@ extension LinuxMachine: GuestMachine {
 
 extension X86Machine: GuestMachine {
     public var ramSizeBytes: Int { ramSize }
+
+    /// Les deux portes de `attach(disk:)` — MMIO et PCI — sont posées d'un
+    /// coup ; c'est le noyau qui choisit celle qu'il sait ouvrir.
+    public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
