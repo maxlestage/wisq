@@ -78,6 +78,7 @@ export const docsEn: Doc = {
         "Get an rv32ima nommu kernel image. Ready-made ones live in the mini-rv32ima project.",
         "Put it somewhere the Files app can reach — iCloud Drive, or On My iPhone.",
         "In wisq, open the local machine screen and import the image.",
+        "Optional: import a filesystem image too, and pick it under the kernel as its disk. The guest sees it on /dev/vda.",
         "Tap boot. The console appears as the kernel writes to its UART.",
       ],
     },
@@ -85,6 +86,11 @@ export const docsEn: Doc = {
       kind: "p",
       text:
         "The virtual clock advances with executed instructions rather than wall time, so the same image boots the same way on every device — which is also what makes the boot testable in CI.",
+    },
+    {
+      kind: "p",
+      text:
+        "About the disk: wisq emulates the device, and cannot add a block driver to the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch it — so the device counts its requests, and wisq tells you at the end of the session rather than leaving you with a disk that is silent for a reason you cannot see. The image is held in memory whole, which is what lets the guest's writes survive a suspension inside the snapshot, and also why its size has a ceiling.",
     },
 
     { kind: "h2", text: "When something does not work" },
@@ -199,6 +205,7 @@ export const docsFr: Doc = {
         "Procurez-vous une image de noyau rv32ima nommu. Le projet mini-rv32ima en propose des prêtes à l'emploi.",
         "Placez-la où l'app Fichiers peut la lire — iCloud Drive, ou Sur mon iPhone.",
         "Dans wisq, ouvrez l'écran de machine locale et importez l'image.",
+        "Facultatif : importez aussi une image de système de fichiers, et choisissez-la sous le noyau comme son disque. L'invité la voit sur /dev/vda.",
         "Touchez démarrer. La console apparaît au fil de ce que le noyau écrit sur son UART.",
       ],
     },
@@ -206,6 +213,11 @@ export const docsFr: Doc = {
       kind: "p",
       text:
         "L'horloge virtuelle avance avec les instructions exécutées et non avec le temps réel : la même image démarre donc de la même façon sur chaque appareil — ce qui est aussi ce qui rend ce démarrage testable en intégration continue.",
+    },
+    {
+      kind: "p",
+      text:
+        "À propos du disque : wisq émule le périphérique, et ne peut pas ajouter un pilote bloc au noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas n'y touchera jamais — alors le périphérique compte ses requêtes, et wisq vous le dit à la fin de la session plutôt que de vous laisser devant un disque muet pour une raison invisible. L'image est tenue en mémoire, entière : c'est ce qui permet aux écritures de l'invité de survivre à une suspension, dans l'instantané, et c'est aussi pourquoi sa taille a un plafond.",
     },
 
     { kind: "h2", text: "Quand quelque chose ne marche pas" },

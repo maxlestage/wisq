@@ -2493,12 +2493,13 @@ entière ; la vue est mince et jugée par le simulateur.
   vrai hôte : testable, pas jugeable.
 
 Et une chose qui n'était plus sur la liste, et qui y est revenue par la
-grande porte : **le disque virtuel pour la machine locale**. Le refus tenait
-pour la machine rv32 et tient toujours — les noyaux nommu de cette famille ont
-virtio-mmio mais aucun pilote bloc, et sauver la machine entière contourne
-l'invité et marche avec n'importe quel noyau. Il ne tient plus pour la machine
-PC, qui a un vrai `virtio-blk` depuis le lot 7 : voir « Un disque pour la
-machine x86-64 » plus bas.
+grande porte : **le disque virtuel pour la machine locale**. Le refus ne tient
+plus nulle part. La machine PC a un vrai `virtio-blk` depuis le lot 7 ; la
+machine rv32 en a un depuis « Un disque pour la machine rv32 » plus bas, et le
+refus qui la concernait était juste sur les faits et faux sur la conclusion :
+ce n'était pas le noyau des gens qui bloquait, c'est que wisq n'offrait rien à
+trouver. Sauver la machine entière reste la réponse qui marche avec n'importe
+quel noyau ; le disque est celle qui garde des fichiers.
 
 ## La mémoire de la machine locale, réglable (fait)
 
@@ -3585,18 +3586,49 @@ Les tranches, dans l'ordre où elles se tiennent :
    pas de bannière, pas de panique, une sortie parfaitement vide. Le seul
    symptôme d'un DTB mal aligné est le silence. La taille totale est arrondie à
    huit depuis, et deux tests le tiennent.
-3. **Le périphérique.** Celui du lot 7 parle virtio-mmio v2 et s'appelle
-   `VirtioBlock` par accident d'histoire ; il devient commun aux deux
-   machines plutôt qu'écrit deux fois.
-4. **Un invité rv32 écrit à la main** qui pilote la file depuis du code que
-   l'interpréteur exécute, plutôt que depuis Swift — comme `TinyGuestTests`.
-   Ce que la tranche 3 mesure est le périphérique et son interruption ; ce qui
-   manque encore est qu'un programme **dans** la machine s'en serve, ce qui
-   exercerait le chemin entier : instruction, MMIO, file, interruption,
-   gestionnaire.
-5. **Le cœur Rust**, sinon l'application n'en voit rien : c'est lui qu'elle
-   embarque.
-6. **L'application et le site.**
+3. **Le périphérique** (fait). Celui du lot 7 parle virtio-mmio v2 et
+   s'appelait `X86VirtioBlock` par accident d'histoire ; il est devenu commun
+   aux deux machines plutôt qu'écrit deux fois, avec un `Placement` qui dit où
+   chacune le pose — `0xD000_0000` sur le PC, `0x1000_1000` sur la carte rv32,
+   l'adresse de la carte `virt` de QEMU. La preuve est une vraie requête posée
+   dans les anneaux et sonnée par une écriture MMIO, pas une interruption levée
+   à la main : lever la ligne à la main n'aurait mesuré que la main.
+4. **Un invité rv32 écrit à la main** (fait) qui pilote la file depuis du code
+   que l'interpréteur exécute. Il fait la poignée de main, pose ses trois
+   descripteurs, sonne la file — puis **attend son gestionnaire** avant de
+   regarder son tampon. Sans interruption livrée il tourne en rond et la
+   console reste vide ; avec, elle dit `OK`, où le `O` est le premier octet du
+   secteur 1 du disque et le `K` est `'K' + statut`. C'est ce qui rend la
+   sortie une preuve et pas une coïncidence.
+
+   Un piège trouvé là : l'arbre remis à l'invité est désigné par `a1`,
+   c'est-à-dire `x11`, et ce programme se sert de `x11` pour son octet de
+   statut. Le relire après le passage mesurerait le tampon de statut.
+5. **Le cœur Rust** (fait), sinon l'application n'en voit rien : c'est lui
+   qu'elle embarque. La ligne externe d'abord, avec un test différentiel qui
+   se la fait lever par l'invité lui-même — `mip` est un CSR — ; puis
+   `virtio.rs`, porté registre pour registre, avec des instantanés comparés
+   octet pour octet entre les deux cœurs, disque compris.
+
+   **Un défaut que ce test a attrapé, et qui vaut d'être écrit.** Le sondage de
+   la ligne se faisait après chaque tranche d'instructions, ce qui semblait
+   équivalent au sondage de Swift depuis l'écriture elle-même. Ça ne l'était
+   pas : sans disque branché, il effaçait le bit que l'invité venait de poser à
+   la main. Il n'est apparu que parce que la reconstruction du `.a` a été
+   forcée avant de relancer — SwiftPM ne sait pas que la bibliothèque Rust est
+   une entrée, et un test qui passe contre le code d'hier ne prouve rien.
+6. **L'application et le site** (fait). Le menu « disque » s'ouvre à tout ce
+   qui démarre ici, plus seulement aux noyaux de PC. Les deux phrases de
+   l'écran qui affirmaient que le noyau rv32 n'a pas de disque du tout sont
+   parties ; le paragraphe du site aussi, de « Non prévu » vers « Fait depuis ».
+
+   **Et ce que wisq ne pourra pas faire est dit plutôt que subi.** Il ne peut
+   pas mettre le pilote bloc dans le noyau que quelqu'un apporte. Le
+   périphérique compte ses requêtes : quand il y en a zéro à la fin d'une
+   session, la machine le dit — « L'invité n'a jamais touché ce disque » — au
+   lieu de laisser quelqu'un devant un disque muet, indiscernable d'un disque
+   cassé ou d'un réglage qui n'aurait pas pris. Une seule requête, même
+   refusée, fait taire la phrase : un refus prouve que le pilote est là.
 
 **Ce que wisq ne pourra pas faire, et qu'il faut dire au lieu de le taire :
 mettre le pilote dans le noyau de la personne.** Ce qui remplace le silence :
