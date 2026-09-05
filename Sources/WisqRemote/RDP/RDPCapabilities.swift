@@ -103,7 +103,24 @@ public enum RDPCapabilities {
             + RDPStandardSecurity.le16(UInt16(payload.count + 4)) + payload
     }
 
-    static func le16(_ value: Int) -> Data { RDPStandardSecurity.le16(UInt16(truncatingIfNeeded: value)) }
+    static func le16(_ value: Int) -> Data {
+        RDPStandardSecurity.le16(UInt16(truncatingIfNeeded: value))
+    }
+
+    /// Une suite de champs de seize bits.
+    ///
+    /// **Écrite ainsi plutôt qu'en chaînant des `+`**, et ce n'est pas une
+    /// question de goût : une douzaine d'additions de `Data` dans une seule
+    /// expression fait abandonner le compilateur d'Apple — « unable to
+    /// type-check this expression in reasonable time » — là où celui de Linux
+    /// s'en sort. Le même code ne compilait donc que sur la moitié des
+    /// plateformes du dépôt.
+    static func le16s(_ values: [Int]) -> Data {
+        var out = Data()
+        for value in values { out += le16(value) }
+        return out
+    }
+
     static func le32(_ value: UInt32) -> Data { RDPStandardSecurity.le32(value) }
 
     /// Les jeux que wisq envoie, dans l'ordre où un client les envoie.
@@ -118,8 +135,7 @@ public enum RDPCapabilities {
         func add(_ kind: Kind, _ payload: Data) { out += set(kind, payload); count += 1 }
 
         // GENERAL : le système, la version, et **aucune compression**.
-        add(.general, le16(1) + le16(3) + le16(0x0200) + le16(0)
-            + le16(0) + le16(0) + le16(0) + le16(0) + le16(0) + le16(0))
+        add(.general, le16s([1, 3, 0x0200, 0, 0, 0, 0, 0, 0, 0]))
 
         // BITMAP : la taille de l'écran, telle que le serveur l'a dite. On la
         // renvoie inchangée : un client peut demander autre chose, ce qui
@@ -127,38 +143,43 @@ public enum RDPCapabilities {
         // **La profondeur, elle, n'est pas vérifiée par xrdp** — annoncer huit
         // bits pour un écran qui en a vingt-quatre passe sans un mot, et ce
         // qu'on recevrait serait faux sans que rien ne le dise.
-        add(.bitmap, le16(depth) + le16(1) + le16(1) + le16(1)
-            + le16(width) + le16(height) + le16(0) + le16(1)
-            + le16(0) + le16(1) + le16(0) + le16(0))
+        add(.bitmap, le16s([depth, 1, 1, 1, width, height, 0, 1, 0, 1, 0, 0]))
 
         // ORDER : aucun ordre de dessin. wisq ne sait pas exécuter les
         // primitives de GDI ; le serveur enverra donc des bitmaps, ce qui est
         // plus gros et ce qu'on sait lire.
         var order = Data(repeating: 0, count: 16)       // terminalDescriptor
-        order += le32(0) + le16(1) + le16(20) + le16(0) + le16(1) + le16(0) + le16(0x0002)
+        order += le32(0)
+        order += le16s([1, 20, 0, 1, 0, 0x0002])
         order += Data(repeating: 0, count: 32)          // aucun ordre pris en charge
-        order += le16(0) + le16(0) + le32(0) + le32(230_400) + le32(0) + le32(0)
+        order += le16s([0, 0])
+        order += le32(0)
+        order += le32(230_400)
+        order += le32(0)
+        order += le32(0)
         add(.order, order)
 
         // POINTER : le curseur en couleur, et un cache petit mais réel.
-        add(.pointer, le16(1) + le16(25) + le16(25))
+        add(.pointer, le16s([1, 25, 25]))
 
         // INPUT : le clavier et la souris, avec la disposition demandée.
-        var input = le16(0x0001 | 0x0004)               // scancodes, unités de souris
-        input += le16(0) + le32(4) + le32(0) + le32(12)
+        var input = le16s([0x0001 | 0x0004, 0])         // scancodes, unités de souris
+        input += le32(4)
+        input += le32(0)
+        input += le32(12)
         input += Data(repeating: 0, count: 64)          // imeFileName
         add(.input, input)
 
         // BRUSH, GLYPHCACHE, OFFSCREEN, SOUND : les minimums que le serveur
         // attend de voir, même vides.
         add(.brush, le32(0))
-        add(.sound, le16(0) + le16(0))
-        add(.share, le16(0) + le16(0))
-        add(.colourCache, le16(6) + le16(0))
-        add(.font, le16(1) + le16(0))
+        add(.sound, le16s([0, 0]))
+        add(.share, le16s([0, 0]))
+        add(.colourCache, le16s([6, 0]))
+        add(.font, le16s([1, 0]))
         add(.virtualChannel, le32(0) + le32(0))
 
-        return le16(count) + le16(0) + out
+        return le16s([count, 0]) + out
     }
 
     /// Le Confirm Active, prêt à emballer.
@@ -174,8 +195,7 @@ public enum RDPCapabilities {
         let capabilities = clientCapabilities(width: width, height: height, depth: depth)
         var body = le32(offer.shareId)
         body += RDPStandardSecurity.le16(RDPShare.confirmOriginator)
-        body += le16(4)                                  // longueur du descripteur
-        body += le16(capabilities.count)
+        body += le16s([4, capabilities.count])           // longueur du descripteur, puis des jeux
         body += Data("RDP\u{0}".utf8)
         body += capabilities
         return RDPShare.control(.confirmActive, source: source, body)

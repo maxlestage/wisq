@@ -121,14 +121,17 @@ public struct RDPStandardSecurity {
         }
         let client = Array(clientRandom.prefix(32))
         let server = Array(serverRandom.prefix(32))
-        let preMaster = Array(client.prefix(24)) + Array(server.prefix(24))
+        // MS-RDPBCGR nomme ces deux valeurs le « pre-master secret » et le
+        // « master secret » ; le dépôt refuse ce mot, et les noms d'ici disent
+        // la même chose : un pré-secret, puis le secret dont tout le reste sort.
+        let preSecret = Array(client.prefix(24)) + Array(server.prefix(24))
 
-        let master = saltedHash(preMaster, Array("A".utf8), client, server)
-            + saltedHash(preMaster, Array("BB".utf8), client, server)
-            + saltedHash(preMaster, Array("CCC".utf8), client, server)
-        let session = saltedHash(master, Array("X".utf8), client, server)
-            + saltedHash(master, Array("YY".utf8), client, server)
-            + saltedHash(master, Array("ZZZ".utf8), client, server)
+        let rootSecret = saltedHash(preSecret, Array("A".utf8), client, server)
+            + saltedHash(preSecret, Array("BB".utf8), client, server)
+            + saltedHash(preSecret, Array("CCC".utf8), client, server)
+        let session = saltedHash(rootSecret, Array("X".utf8), client, server)
+            + saltedHash(rootSecret, Array("YY".utf8), client, server)
+            + saltedHash(rootSecret, Array("ZZZ".utf8), client, server)
 
         let macKey = Array(session[0..<16])
         var toServer = finalHash(Array(session[32..<48]), client, server)
