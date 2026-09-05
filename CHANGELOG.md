@@ -8,6 +8,18 @@ break APIs.
 ## [Unreleased]
 
 ### Fixed
+- **The interrupt controller ignored its own priority rule.** A real 8259 will
+  not deliver a line while one of equal or higher priority is in service —
+  that is, until the handler sends its end-of-interrupt. Ours delivered
+  whatever was unmasked whenever the interrupt flag was up. That is not
+  decorative: a handler re-enables interrupts before it is done (Linux runs
+  its softirqs that way), and without the rule the same line interrupts it
+  again, on its own stack, for as long as the condition lasts. A kernel stack
+  is sixteen kilobytes; what lies below it belongs to someone else. Fixing it
+  exposed a second defect in the same place: Linux sends a **specific**
+  end-of-interrupt (`0x60 + irq`), naming the line to retire, and we always
+  retired the most urgent one — which, once the service bits mattered, would
+  have left a line in service forever and starved everything below it.
 - **An instruction that faults must leave no flag behind, and four of them
   did.** `XADD` writing its register before its memory was one member of a
   family; the flags are another. An instruction that reads a location,
@@ -34,6 +46,14 @@ break APIs.
   redundant `where` is gone and the guard stays.
 
 ### Added
+- **The PCI bus, and a disk on it.** The kernel probes ports 0xCF8/0xCFC at
+  every boot and used to conclude "PCI: Fatal: No config space access function
+  found" — so it answers now. It is not enough to answer: `pci_sanity_check`
+  walks all thirty-two slots and demands a host bridge, a VGA card, or an
+  Intel/Compaq vendor before it believes the bus, so slot zero presents the
+  440FX bridge QEMU presents. Measured after: « PCI: Using configuration type
+  1 », « pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000 », and the
+  kernel assigning our device its I/O window at 0x1000.
 - **A disk for the x86-64 machine: virtio over MMIO.** A PCI disk would have
   needed a PCI bus first — configuration space through ports 0xCF8/0xCFC, BARs
   to place, an interrupt table — all before the first sector. The MMIO
