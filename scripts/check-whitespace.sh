@@ -73,8 +73,16 @@ while IFS= read -r file; do
   # import, c'est qu'elle est la **première chose** du fichier, commentaires de
   # tête mis à part. Une garde d'import arrive après d'autres lignes, et se
   # referme aussitôt : elle est correcte, et ce contrôle ne doit pas la voir.
-  if [ "$(awk '!/^[[:space:]]*$/ && !/^[[:space:]]*\/\// { print; exit }' "$file" \
-          | grep -c '^#if canImport')" = "1" ] \
+  #
+  # Le `grep -q` d'abord : il coupe court pour les trois cent cinquante
+  # fichiers qui n'ont aucune garde, et laisse les deux commandes chères aux
+  # quatorze qui en ont une. Sans lui la garde entière passait de quatre
+  # secondes et demie à plus de cinq, et le test du site qui l'exerce tombait
+  # sur son propre délai — un contrôle qui échoue parce qu'il est lent
+  # n'apprend rien à personne.
+  if grep -q '^#if canImport' "$file" \
+     && [ "$(awk '!/^[[:space:]]*$/ && !/^[[:space:]]*\/\// { print; exit }' "$file" \
+             | grep -c '^#if canImport')" = "1" ] \
      && [ "$(tail -1 "$file")" != "#endif" ]; then
     report "$file : la garde de plateforme ne couvre pas la fin du fichier"
   fi
