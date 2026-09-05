@@ -112,6 +112,24 @@ public final class LocalVMModel {
         // vers le réglage de mémoire. Quarante kibioctets suffisent à savoir
         // qu'aucune mémoire n'y changera rien.
         let kind = KernelImageKind.identify(fileAt: kernelURL)
+        // **Un média de démarrage n'est pas un noyau, et le dire passe avant
+        // tout le reste.** Depuis que l'import le garde, il apparaît dans la
+        // liste ; le toucher rendait le refus d'un noyau compressé, qui envoie
+        // chercher une version non compressée d'un fichier qui n'en a pas.
+        if kind.core == nil, BootMedia.couldBeMedia(fileAt: kernelURL) {
+            _ = life.guestFinished()
+            finish(with: """
+                \(kernelURL.lastPathComponent) est un fichier compressé — wisq \
+                le garde comme initramfs.
+
+                Un initramfs ne démarre pas tout seul : c'est le noyau qui le \
+                déballe. Touchez le noyau — `vmlinuz…`, `bzImage` — et wisq \
+                prendra celui-ci avec.
+                """)
+            self.machine = nil
+            runFinished = nil
+            return
+        }
         if let refusal = KernelImageKind.cannotRunHereExplanation(
             kind, name: kernelURL.lastPathComponent) {
             _ = life.guestFinished()
@@ -214,6 +232,41 @@ public final class LocalVMModel {
         kernelName = SuspendedMachine.identity(of: image, named: kernelURL.lastPathComponent)
         let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
 
+        // **Un noyau de PC ne démarre à rien sans son initramfs.** Il n'a
+        // aucun pilote de disque compilé dedans — ce sont des modules, et ils
+        // vivent justement là. Sans lui, ce qui suit est un démarrage complet,
+        // 262 lignes de journal, puis « VFS: Unable to mount root fs on
+        // unknown-block(0,0) » : le dire ici vaut mieux que de le faire vivre.
+        //
+        // **Mais une machine sauvée n'en a pas besoin** : elle est déjà
+        // démarrée, son initramfs est déballé dans sa mémoire, et l'instantané
+        // porte les deux. Refuser de la reprendre parce que le fichier a été
+        // supprimé depuis lui coûterait sa session pour une raison qui ne la
+        // concerne pas.
+        let ramdisk: Data?
+        if core == .x86_64 {
+            let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
+            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media)
+                .url.flatMap { try? Data(contentsOf: $0) }
+            if ramdisk == nil, saved == nil {
+                _ = life.guestFinished()
+                finish(with: """
+                    \(kernelURL.lastPathComponent) est un noyau pour PC, et un \
+                    noyau de PC a besoin d'un initramfs pour démarrer : ses \
+                    pilotes de disque n'y sont pas compilés, ils vivent dedans.
+
+                    Importez celui de votre distribution — il s'appelle \
+                    `initramfs-…` ou `initrd.img-…`, et il est compressé — et \
+                    wisq le prendra avec ce noyau.
+                    """)
+                self.machine = nil
+                runFinished = nil
+                return
+            }
+        } else {
+            ramdisk = nil
+        }
+
         let thread = Thread { [weak self] in
             defer { finished.signal() }
             let outcome: GuestOutcome
@@ -226,7 +279,7 @@ public final class LocalVMModel {
                     // nothing else to do: the guest is already mid-life
                 } else {
                     try machine.load(
-                        kernelImage: image, commandLine: nil, initialRamdisk: nil)
+                        kernelImage: image, commandLine: nil, initialRamdisk: ramdisk)
                 }
                 outcome = machine.runGuest(instructionBudget: .max)
             } catch {
@@ -436,9 +489,20 @@ public enum KernelLibrary {
         // Ce que le fichier est passe avant ce qu'il pèse, ici aussi : un ISO
         // de six gigaoctets est refusé pour la bonne raison, pas pour sa
         // taille — sinon quelqu'un croit qu'un plus petit passerait.
+        // **Un initramfs est gardé, pas refusé.** Il arrive compressé — celui
+        // d'Alpine commence par `1f 8b` —, et `cannotRunHereExplanation` y
+        // voyait donc « probablement un noyau compressé », avec le conseil de
+        // prendre plutôt la version non compressée. Pour ce fichier-là il n'y
+        // en a pas : c'est l'initramfs qui est demandé, et sans lui un noyau
+        // de PC démarre entièrement puis panique faute de racine à monter.
+        //
+        // Rien n'est perdu à l'accepter : un noyau **vraiment** compressé ne
+        // pouvait de toute façon pas démarrer ici, donc le garder comme média
+        // de démarrage ne prend la place d'aucun usage qui marchait.
         if let refusal = KernelImageKind.cannotRunHereExplanation(
             KernelImageKind.identify(fileAt: source),
-            name: source.lastPathComponent) {
+            name: source.lastPathComponent),
+            BootMedia.refusal(forFileAt: source) != nil {
             throw KernelImportError.tooLarge(refusal)
         }
         if let size = try? FileManager.default.attributesOfItem(
