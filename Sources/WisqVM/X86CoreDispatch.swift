@@ -463,6 +463,14 @@ extension X86Core {
                 mxcsr = UInt32(truncatingIfNeeded: try readRM(fields, 4))
             case 3:  // STMXCSR
                 try writeRM(fields, 4, UInt64(mxcsr))
+            case 7:
+                // CLFLUSH et CLFLUSHOPT : vider une ligne de cache. Il n'y a
+                // pas de cache ici, donc rien à vider — mais refuser ces
+                // deux-là arrêterait net un noyau qui repose ses permissions
+                // de page, et `CPUID` ne les annonce pas seulement pour que
+                // personne ne les demande : un noyau qui les trouve les
+                // utilise sans prévenir.
+                _ = try? readRM(fields, 1)
             default:
                 throw Fault.unsupported("0F AE /\(extension_) en mémoire")
             }

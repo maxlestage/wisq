@@ -168,6 +168,9 @@ final class X86BootAttemptTests: XCTestCase {
         // Le témoin d'adresse ne s'arme que si on lui en donne une : elle n'est
         // connue qu'après une première mesure. Voir `X86AddressWatch.swift`.
         // La forme est `adresse` ou `adresse+longueur`, en hexadécimal.
+        // Le témoin d'adresse suit un programme par défaut ; pour suivre le
+        // chargeur de modules, il faut lui dire de regarder aussi le noyau.
+        core.watchesKernel = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_KERNEL"] != nil
         if let asked = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_ADDRESS"] {
             let halves = asked.split(separator: "+", maxSplits: 1)
             core.watchedAddress = halves.first.flatMap { UInt64($0, radix: 16) }

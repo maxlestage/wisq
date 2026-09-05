@@ -164,6 +164,23 @@ final class X86VectorTests: XCTestCase {
         }
     }
 
+    /// **`CLFLUSH` ne fait rien, mais ne doit pas refuser.** Il n'y a pas de
+    /// cache à vider ici ; refuser l'instruction arrêterait net un noyau qui
+    /// repose les permissions d'une page — `cpa_flush` l'appelle. `CPUID` ne
+    /// l'annonce pas, et ce n'est pas une raison : un noyau qui la trouve s'en
+    /// sert sans prévenir, et une machine qui s'arrête sur une instruction
+    /// sans effet est pire qu'une machine qui l'ignore.
+    func testCacheFlushIsAcceptedAndDoesNothing() throws {
+        // `0f ae 38` : clflush (%rax) — l'adresse est cartographiée.
+        let ram = try Self.memory([0x0F, 0xAE, 0x38])
+        var core = Self.core(ram)
+        core.registers[0] = 0x200
+        try ram.write(0x200, 8, 0xC0FFEE)
+        try core.run(budget: 1)
+        XCTAssertEqual(try ram.read(0x200, 8), 0xC0FFEE, "la mémoire est intacte")
+        XCTAssertEqual(core.rip, 0x103, "et l'instruction est passée")
+    }
+
     /// Et le scalaire, lui, aboutit : la même multiplication sur une seule
     /// valeur rend deux fois un, et laisse la moitié haute intacte.
     func testScalarArithmeticNowLands() throws {

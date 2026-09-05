@@ -81,6 +81,11 @@ public struct X86Core: @unchecked Sendable {
     /// Et d'où sa valeur a été lue, quand elle venait de la mémoire.
     public var registerBornFrom = [UInt64](repeating: 0, count: 16)
     /// L'adresse surveillée, et ce qui l'a touchée. Voir `X86AddressWatch.swift`.
+    /// **Le témoin d'adresse regarde-t-il aussi le noyau ?** Par défaut non :
+    /// il a été écrit pour suivre une case d'un programme, et le noyau touche
+    /// tout. Mais quand c'est le chargeur de modules qui relit une case qu'il
+    /// vient d'écrire, c'est le noyau qu'il faut regarder.
+    public var watchesKernel = false
     public var watchedAddress: UInt64?
     /// Combien d'octets à partir de là. Huit par défaut : une case.
     public var watchedLength: UInt64 = 8

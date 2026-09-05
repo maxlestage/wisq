@@ -42,7 +42,7 @@ extension X86Core {
         // Le témoin d'adresse, quand il est armé. La condition est d'abord sur
         // l'option : éteinte — le cas de toute exécution normale — le chemin
         // chaud reste ce qu'il était.
-        if let watched = watchedAddress, privilege == 3,
+        if let watched = watchedAddress, privilege == 3 || watchesKernel,
            virtual >= watched, virtual &- watched < watchedLength {
             noteAddressTouch(virtual, writing: access == .write)
         }
