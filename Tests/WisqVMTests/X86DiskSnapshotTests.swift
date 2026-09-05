@@ -40,8 +40,8 @@ final class X86DiskSnapshotTests: XCTestCase {
     static func driveOneRequest(_ machine: X86Machine) throws {
         let memory = try XCTUnwrap(machine.core.memory)
         let disk = try XCTUnwrap(machine.disk)
-        X86VirtioBlockTests.start(disk, memory)
-        try X86VirtioBlockTests.request(memory, kind: 0, sector: 3,
+        VirtioBlockTests.start(disk, memory)
+        try VirtioBlockTests.request(memory, kind: 0, sector: 3,
                                         buffer: .init(at: 0x5000, length: 512, writable: true))
         disk.write(0x050, 4, 0, memory)
     }
@@ -62,7 +62,7 @@ final class X86DiskSnapshotTests: XCTestCase {
     func testAnAttachedDiskAnswersThroughMemory() throws {
         let machine = Self.machine()
         let memory = try XCTUnwrap(machine.core.memory)
-        XCTAssertEqual(try memory.read(X86VirtioBlock.base, 4), 0x7472_6976, "« virt »")
+        XCTAssertEqual(try memory.read(VirtioBlock.pc.base, 4), 0x7472_6976, "« virt »")
         XCTAssertNotNil(memory.bus, "et le bus est là aussi")
         XCTAssertEqual(machine.disk?.sectors, 64)
     }
@@ -74,9 +74,9 @@ final class X86DiskSnapshotTests: XCTestCase {
         let machine = Self.machine()
         let memory = try XCTUnwrap(machine.core.memory)
         let disk = try XCTUnwrap(machine.disk)
-        X86VirtioBlockTests.start(disk, memory)
+        VirtioBlockTests.start(disk, memory)
         for byte in 0..<UInt64(512) { try memory.write(0x5000 + byte, 1, 0x77) }
-        try X86VirtioBlockTests.request(memory, kind: 1, sector: 2,
+        try VirtioBlockTests.request(memory, kind: 1, sector: 2,
                                         buffer: .init(at: 0x5000, length: 512, writable: false))
         disk.write(0x050, 4, 0, memory)
         XCTAssertEqual(disk.image[1024], 0x77, "le secteur deux a bien changé")
@@ -146,14 +146,14 @@ final class X86DiskSnapshotTests: XCTestCase {
         let disk = try XCTUnwrap(restored.disk)
 
         // La seconde entrée de l'anneau des disponibles, puis son index.
-        try memory.write(X86VirtioBlockTests.available + 6, 2, 0)
-        try memory.write(X86VirtioBlockTests.available + 2, 2, 2)
-        try memory.write(X86VirtioBlockTests.scratch + 8, 8, 1)  // le secteur un
-        try memory.write(X86VirtioBlockTests.scratch + 0x800, 1, 0xFF)
+        try memory.write(VirtioBlockTests.available + 6, 2, 0)
+        try memory.write(VirtioBlockTests.available + 2, 2, 2)
+        try memory.write(VirtioBlockTests.scratch + 8, 8, 1)  // le secteur un
+        try memory.write(VirtioBlockTests.scratch + 0x800, 1, 0xFF)
         disk.write(0x050, 4, 0, memory)
 
         XCTAssertEqual(disk.served, 2, "deux servies en tout, pas une")
-        XCTAssertEqual(try memory.read(X86VirtioBlockTests.used + 2, 2), 2)
+        XCTAssertEqual(try memory.read(VirtioBlockTests.used + 2, 2), 2)
         XCTAssertEqual(try memory.read(0x5000, 1), 2, "le secteur un porte des 2")
     }
 

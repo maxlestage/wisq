@@ -88,6 +88,40 @@ pub unsafe extern "C" fn wisq_vm_load(
     }
 }
 
+/// Loads a kernel image with the device tree supplied by the caller.
+///
+/// The tree is what the firmware tells the kernel about the board, and wisq
+/// runs two interpreters on the same board: one producer keeps them describing
+/// the same machine, and lets the app declare a device without teaching two
+/// codebases about it. `wisq_vm_load` remains for a caller with no tree.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`; `image` must point at `len` readable
+/// bytes; `tree` must point at `tree_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_load_with_tree(
+    vm: *mut WisqVM,
+    image: *const u8,
+    len: usize,
+    tree: *const u8,
+    tree_len: usize,
+) -> c_int {
+    let Some(vm) = vm.as_mut() else { return -1 };
+    if image.is_null() || tree.is_null() {
+        return -1;
+    }
+    let bytes = std::slice::from_raw_parts(image, len);
+    let tree = std::slice::from_raw_parts(tree, tree_len);
+
+    match vm.machine.load_with_tree(bytes, tree) {
+        Ok(()) => 0,
+        Err(crate::machine::LoadError::ImageEmpty) => -3,
+        Err(crate::machine::LoadError::ImageTooLarge) => -4,
+        Err(crate::machine::LoadError::CommandLineTooLong) => -5,
+        Err(crate::machine::LoadError::RamSizeUnsupported) => -6,
+    }
+}
+
 /// Runs until shutdown, reboot, stop, or the budget is spent.
 ///
 /// Returns 0 for power off, 1 for reboot, 2 for stopped. Blocks the calling

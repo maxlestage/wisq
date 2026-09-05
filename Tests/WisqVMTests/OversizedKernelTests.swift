@@ -14,8 +14,15 @@ final class OversizedKernelTests: XCTestCase {
         let limit = LinuxMachine.maximumKernelImageBytes(forRAMSize: LinuxMachine.defaultRAMSize)
         XCTAssertGreaterThan(limit, 0)
         XCTAssertLessThan(limit, Int(LinuxMachine.defaultRAMSize))
+        // Recalculé depuis l'arbre **construit**, pas depuis le blob : c'est
+        // celui-là que `load` pose, et il ne fait pas la même taille. Le
+        // nombre en dur qui était ici mesurait la disposition d'un fichier qui
+        // n'est plus donné à personne.
         XCTAssertEqual(
-            limit, Int(LinuxMachine.defaultRAMSize) - DefaultDTB.bytes.count - 192,
+            limit,
+            Int(LinuxMachine.defaultRAMSize)
+                - RV32DeviceTree.tree(ramSize: Int(LinuxMachine.defaultRAMSize)).flatten().count
+                - 192,
             "le plafond doit rester ce que la disposition mémoire laisse")
     }
 

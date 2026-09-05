@@ -18,7 +18,7 @@ final class X86PCITests: XCTestCase {
     }
 
     static func host() -> X86PCIHost {
-        X86PCIHost(storage: X86VirtioBlock(image: [UInt8](repeating: 0, count: 8 * 512)))
+        X86PCIHost(storage: VirtioBlock(image: [UInt8](repeating: 0, count: 8 * 512)))
     }
 
     /// L'emplacement qu'on occupe se présente ; les autres rendent **tous les
@@ -181,7 +181,7 @@ final class X86PCITests: XCTestCase {
     /// anneau que personne n'a écrit. C'est `vring_init`, à la lettre.
     func testTheOldFormPlacesItsRingsWhereTheDriverPutThem() {
         let size: UInt32 = 128
-        let (descriptors, available, used) = X86VirtioBlock.rings(pageNumber: 4, size: size)
+        let (descriptors, available, used) = VirtioBlock.rings(pageNumber: 4, size: size)
         XCTAssertEqual(descriptors, 4 * 4096)
         XCTAssertEqual(available, descriptors + 16 * UInt64(size))
         // Après l'anneau des disponibles — drapeaux, index, la table, et le

@@ -75,7 +75,7 @@ final class DifferentialResizedTests: XCTestCase {
         let swiftMachine = LinuxMachine(ramSize: large) { swiftConsole.append($0) }
         let rustMachine = RustLinuxMachine(ramSize: large) { rustConsole.append($0) }
         try swiftMachine.load(kernelImage: image, commandLine: "console=ttyS0")
-        try rustMachine.load(kernelImage: image, commandLine: "console=ttyS0")
+        try rustMachine.loadOnTheSameBoard(kernelImage: image, commandLine: "console=ttyS0")
 
         let budget: UInt64 = 40_000_000
         XCTAssertEqual(swiftMachine.run(instructionBudget: budget), .stopped)

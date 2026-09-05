@@ -65,14 +65,14 @@ public final class X86Machine: @unchecked Sendable {
     /// logical blocks », et le `md5sum` de `/dev/vda` dans l'invité est celui
     /// de l'image sur l'hôte. Mais rien de tout ça ne passait par
     /// `X86Machine` : seule la mesure de démarrage les branchait à la main.
-    public private(set) var disk: X86VirtioBlock?
+    public private(set) var disk: VirtioBlock?
 
     /// Brancher un disque. Deux portes vers la même image : le transport MMIO
     /// répond aux adresses, le bus PCI aux ports. Le noyau d'Alpine passe par
     /// le second — son `virtio_mmio` est compilé sans les périphériques de la
     /// ligne de commande — mais un noyau qui les a saura passer par le premier.
     public func attach(disk image: [UInt8]) {
-        let device = X86VirtioBlock(image: image)
+        let device = VirtioBlock(image: image)
         disk = device
         memory.storage = device
         memory.bus = X86PCIHost(storage: device)
@@ -337,10 +337,10 @@ public final class X86Machine: @unchecked Sendable {
         // Le disque, s'il reste des octets. Construit à part et posé tout à la
         // fin : une lecture qui échoue ici laisse à la machine le disque
         // qu'elle avait, plutôt qu'un disque à moitié repris.
-        var restoredDisk: X86VirtioBlock?
+        var restoredDisk: VirtioBlock?
         var restoredBus: X86PCIHost?
         if !reader.isAtEnd {
-            let device = try X86VirtioBlock.restored(from: &reader)
+            let device = try VirtioBlock.restored(from: &reader)
             let bus = X86PCIHost(storage: device)
             try bus.restore(from: &reader)
             restoredDisk = device

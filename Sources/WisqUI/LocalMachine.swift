@@ -62,7 +62,14 @@ extension RustLinuxMachine: GuestMachine {
         guard initialRamdisk == nil else {
             throw GuestMachineRefusal.noRamdiskHere(architecture: "RISC-V 32 bits")
         }
-        try load(kernelImage: kernelImage, commandLine: commandLine)
+        // **L'arbre est construit ici, une fois, pour les deux cœurs.** C'est
+        // le seul endroit du programme qui connaît les deux côtés, et c'est
+        // donc le seul où « la même carte » peut être autre chose qu'une
+        // intention : `RV32DeviceTree` dit la machine, `WisqVMRust` la reçoit
+        // en octets sans savoir qui l'a écrite, et le cœur Swift lit la même.
+        try load(kernelImage: kernelImage,
+                 deviceTree: RV32DeviceTree.tree(
+                    ramSize: Int(ramSize), commandLine: commandLine).flatten())
     }
 
     /// Et le même refus pour le disque, pour la même raison : ce noyau-là n'a

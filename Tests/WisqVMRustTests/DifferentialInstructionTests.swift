@@ -116,7 +116,7 @@ final class DifferentialInstructionTests: XCTestCase {
 
         do {
             try swiftMachine.load(kernelImage: bytes)
-            try rustMachine.load(kernelImage: bytes)
+            try rustMachine.loadOnTheSameBoard(kernelImage: bytes)
         } catch {
             return XCTFail("\(label) : chargement impossible — \(error)", file: file, line: line)
         }

@@ -40,7 +40,7 @@ public final class X86Memory: @unchecked Sendable {
     /// couvre, et c'est exactement le chemin qui levait « hors mémoire »
     /// jusqu'ici. Le brancher là ne coûte donc rien au chemin chaud — une
     /// adresse ordinaire ne le rencontre jamais.
-    public var storage: X86VirtioBlock?
+    public var storage: VirtioBlock?
 
     /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
     /// objet que le cœur et les ports ont tous les deux sous la main.
@@ -49,9 +49,8 @@ public final class X86Memory: @unchecked Sendable {
     /// Vrai quand l'adresse tombe dans la fenêtre du périphérique.
     @inline(__always)
     func storageOffset(_ address: UInt64) -> UInt64? {
-        guard storage != nil, address >= X86VirtioBlock.base,
-              address &- X86VirtioBlock.base < X86VirtioBlock.span else { return nil }
-        return address &- X86VirtioBlock.base
+        guard storage != nil, VirtioBlock.pc.contains(address) else { return nil }
+        return address &- VirtioBlock.pc.base
     }
 
     public func read(_ address: UInt64, _ width: Int) throws -> UInt64 {

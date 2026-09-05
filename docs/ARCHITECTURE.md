@@ -239,7 +239,7 @@ disque est un choix, retenu sous le nom du noyau dans `kernel-disk.json`, à
 côté du réglage de mémoire.
 
 **Le disque est tenu en mémoire, entier**, et c'est le fait qui commande son
-plafond : `X86VirtioBlock` garde son image dans un tableau d'octets parce que
+plafond : `VirtioBlock` garde son image dans un tableau d'octets parce que
 l'invité écrit dedans et que l'instantané emporte ces écritures. Un disque de
 deux cents mébioctets coûte donc deux cents mébioctets, à côté de la RAM de
 l'invité — d'où un plafond qui est « ce que le téléphone laisse, moins la plus

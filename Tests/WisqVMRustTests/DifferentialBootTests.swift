@@ -1,5 +1,5 @@
 import Foundation
-import WisqVM
+@testable import WisqVM
 import WisqVMRust
 import XCTest
 
@@ -68,7 +68,7 @@ final class DifferentialBootTests: XCTestCase {
         let swiftMachine = LinuxMachine { swiftConsole.append($0) }
         let rustMachine = RustLinuxMachine { rustConsole.append($0) }
         try swiftMachine.load(kernelImage: image, commandLine: "console=ttyS0")
-        try rustMachine.load(kernelImage: image, commandLine: "console=ttyS0")
+        try rustMachine.loadOnTheSameBoard(kernelImage: image, commandLine: "console=ttyS0")
 
         for checkpoint in 1...Self.checkpoints {
             let swiftOutcome = swiftMachine.run(instructionBudget: Self.checkpoint)
@@ -128,7 +128,7 @@ final class DifferentialBootTests: XCTestCase {
         let swiftMachine = LinuxMachine { swiftConsole.append($0) }
         let rustMachine = RustLinuxMachine { rustConsole.append($0) }
         try swiftMachine.load(kernelImage: image)
-        try rustMachine.load(kernelImage: image)
+        try rustMachine.loadOnTheSameBoard(kernelImage: image)
 
         // Boot far enough that the shell is reading the console, then type the
         // same thing at both and let them answer.
@@ -158,16 +158,34 @@ final class DifferentialBootTests: XCTestCase {
     func testBothCoresRejectTheSameImages() {
         let swiftMachine = LinuxMachine { _ in }
         let rustMachine = RustLinuxMachine { _ in }
-        let tooLong = String(repeating: "x", count: 4096)
 
         XCTAssertThrowsError(try swiftMachine.load(kernelImage: Data()))
-        XCTAssertThrowsError(try rustMachine.load(kernelImage: Data()))
-        XCTAssertThrowsError(
-            try swiftMachine.load(kernelImage: Data([0x13, 0, 0, 0]), commandLine: tooLong)
-        )
-        XCTAssertThrowsError(
-            try rustMachine.load(kernelImage: Data([0x13, 0, 0, 0]), commandLine: tooLong)
-        )
+        XCTAssertThrowsError(try rustMachine.loadOnTheSameBoard(kernelImage: Data()))
+    }
+
+    /// **Et ni l'un ni l'autre ne refuse plus une longue ligne de commande.**
+    ///
+    /// Les deux la refusaient au-delà de cinquante-quatre caractères, et ce
+    /// n'était pas une règle de la machine : c'était la place que le blob de
+    /// référence se trouvait avoir entre deux propriétés. L'arbre est
+    /// construit depuis, la ligne est une propriété comme une autre, et le
+    /// plafond n'a plus de raison d'exister — la mesure ici est que les deux
+    /// cœurs l'acceptent **et** qu'ils démarrent sur la même carte.
+    func testNeitherCoreCapsTheCommandLineAnyMore() throws {
+        let long = String(repeating: "console=ttyS0 ", count: 40)
+        XCTAssertGreaterThan(long.count, 54, "plus long que ce que le blob permettait")
+        let image = Data([0x13, 0, 0, 0])
+
+        let swiftMachine = LinuxMachine { _ in }
+        let rustMachine = RustLinuxMachine { _ in }
+        XCTAssertNoThrow(try swiftMachine.load(kernelImage: image, commandLine: long))
+        XCTAssertNoThrow(
+            try rustMachine.loadOnTheSameBoard(kernelImage: image, commandLine: long))
+
+        // Et l'invité la lit vraiment : le cœur Swift laisse relire l'arbre
+        // qu'il a posé, et `bootargs` y est en entier.
+        let tree = try DeviceTree.read(swiftMachine.deviceTreeHandedToTheGuest)
+        XCTAssertEqual(tree.root.child("chosen")?.property("bootargs"), .string(long))
     }
 
     /// Where the two byte streams first part company, with enough context
@@ -241,7 +259,7 @@ final class SnapshotAgreementTests: XCTestCase {
         let swiftMachine = LinuxMachine { swiftConsole.append($0) }
         let rustMachine = RustLinuxMachine { rustConsole.append($0) }
         try swiftMachine.load(kernelImage: image, commandLine: "console=ttyS0")
-        try rustMachine.load(kernelImage: image, commandLine: "console=ttyS0")
+        try rustMachine.loadOnTheSameBoard(kernelImage: image, commandLine: "console=ttyS0")
         swiftMachine.run(instructionBudget: budget)
         rustMachine.run(instructionBudget: budget)
 
