@@ -102,28 +102,50 @@ Le correctif est de re-résoudre à chaque tentative, ce qui rend
 la promesse phare du projet. À faire avec le temps de le juger, pas en marge
 d'autre chose.
 
-## Lot 3 — RDP
+## Lot 3 — RDP (fait, en Swift)
 
-FreeRDP 3 compilé pour iOS/arm64, piloté par une passerelle C mince derrière
-`RDPSession`. Points à trancher avant d'écrire du code :
+**La raison de ne pas faire ce lot n'était plus vraie.** Ce fichier disait que
+rien n'en était vérifiable dans un conteneur Linux, et que « la seule preuve
+qu'une session RDP fonctionne est une session RDP ». La deuxième phrase reste
+juste ; la première était fausse dès qu'on a essayé. **xrdp 0.9** (serveur) et
+**FreeRDP 2.11** (client et bibliothèque de référence) s'installent tous les
+deux ici, et tout le lot a été écrit contre eux.
 
-- Construction reproductible en CI plutôt qu'un `xcframework` versionné, qui
-  devient un piège dès la première CVE.
-- FreeRDP est sous Apache 2.0 : la distribution sur l'App Store ne pose pas le
-  problème de licence qui contraint les concurrents fondés sur QEMU.
-- NLA/CredSSP d'abord — sans lui, aucun Windows moderne n'accepte la connexion.
+RDP est donc écrit **en Swift**, comme RFB et SPICE, plutôt que derrière une
+passerelle C vers FreeRDP 3. Ce qui change par rapport au plan d'origine :
 
-**Pourquoi ce lot n'avance pas ici.** Rien de tout cela n'est vérifiable dans un
-conteneur Linux : FreeRDP doit être croisé pour iOS/arm64, la passerelle C se lie
-à un `xcframework`, et la seule preuve qu'une session RDP fonctionne est une
-session RDP. Écrire ce code sans pouvoir l'exécuter produirait des centaines de
-lignes dont personne ne saurait dire si elles marchent — exactement ce que la
-discipline du reste de ce dépôt refuse. Les trois points ci-dessus sont donc
-tranchés à l'avance, et le code attend une machine Apple.
+- Plus d'`xcframework` à construire, donc plus de piège de CVE — c'était le
+  risque principal que ce fichier signalait lui-même.
+- Plus de croisement pour iOS/arm64 : le code est du Swift ordinaire, testé sur
+  Linux comme sur Apple par la CI qui existe déjà.
+- **NLA/CredSSP n'est pas fait, et c'est dit.** xrdp 0.9 n'est pas un serveur
+  NLA ; l'écrire sans rien contre quoi le juger donnerait du code qu'on croit
+  bon. Un serveur qui l'exige est refusé en le nommant. Les Windows modernes
+  l'exigent par défaut : **wisq ne s'y connecte pas encore.**
 
-Un quatrième point à trancher, apparu en écrivant le reste : **le décodage RDP
-ne doit pas repasser par les surfaces de SPICE.** Les deux protocoles partagent
-la forme (des rectangles, des codecs, un curseur) et rien de leur sémantique ;
+Ce qui est fait et mesuré contre un vrai serveur, dans l'ordre où ça se parle :
+TPKT et X.224, MCS avec BER/PER et la jonction des canaux, l'échange de clés
+d'origine et la signature des messages, la licence, les capacités et les quatre
+messages de fin, les mises à jour d'écran avec leur codec entrelacé, et les
+entrées. `RDPSession` relie le tout, et un test bout-à-bout ouvre une session,
+attend le bureau et compte les pixels non noirs de la trame.
+
+**Ce que la mesure a valu, et qu'aucune lecture de la spécification n'aurait
+donné :** le décodeur de pixels est comparé à celui de FreeRDP sur deux cent
+soixante-dix-neuf vecteurs, ce qui a corrigé trois erreurs à moi ; et sabotés
+tour à tour contre xrdp, six champs sur huit du Confirm Active se sont révélés
+n'être vérifiés par personne — ce que les commentaires disent maintenant, au
+lieu d'affirmer le contraire.
+
+**Ce qui reste.** Le curseur (les PDU de pointeur sont lus et jetés), les
+canaux virtuels — donc le presse-papiers —, la renégociation de taille en cours
+de session, RemoteFX et H.264, et NLA. La sécurité employée aujourd'hui
+n'authentifie pas le serveur : son certificat est signé par une clé que
+Microsoft a publiée en 1998.
+
+Un point tranché en écrivant le reste, et toujours valable : **le décodage RDP
+ne repasse pas par les surfaces de SPICE.** Les deux protocoles partagent la
+forme (des rectangles, des codecs, un curseur) et rien de leur sémantique ;
 `SpiceSurfaces` porte déjà les ROP3, les masques et le cache d'images de SPICE,
 et y greffer RDP ferait un type qui a deux protocoles dans la tête. La couche
 commune, si elle existe un jour, est la cible de dessin, pas le décodeur.

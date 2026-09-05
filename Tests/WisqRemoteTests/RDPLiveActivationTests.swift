@@ -1,6 +1,7 @@
 #if canImport(Glibc)
 import XCTest
 
+@testable import WisqCore
 @testable import WisqNet
 @testable import WisqRemote
 
@@ -300,6 +301,67 @@ final class RDPLiveInputTests: XCTestCase {
                                                      source: live.session.user))
         let painted = await live.drain()
         XCTAssertFalse(painted.isEmpty, "plus rien ne se peint")
+    }
+}
+
+/// **La session entière, de la socket aux pixels**, contre un vrai xrdp.
+///
+/// Tout le reste de ce lot mesure une couche à la fois. Celui-ci mesure
+/// `RDPSession` comme l'application l'emploie : on l'ouvre, on écoute ses
+/// événements, et on regarde la trame. C'est la seule preuve que les morceaux
+/// sont branchés les uns aux autres — chacun peut être juste pendant que le
+/// tout ne peint rien.
+final class RDPLiveSessionTests: XCTestCase {
+    func testTheSessionReachesAReadyDesktopAndPaintsIt() async throws {
+        let target = try RDPLiveHandshakeTests.target()
+        let configuration = SessionConfiguration(
+            host: target.host, port: target.port, security: .none,
+            username: "essai", password: "mauvais")
+        let session = RDPSession(configuration: configuration) { _ in
+            try PosixByteStream(host: target.host, port: target.port, readTimeout: 5)
+        }
+
+        await session.start()
+        var ready: (width: Int, height: Int)?
+        var painted = 0
+        var failure: WisqError?
+
+        // On s'arrête dès qu'il y a de quoi juger : le bureau est annoncé et
+        // quelques régions ont été peintes.
+        for await event in session.events {
+            switch event {
+            case .ready(_, let width, let height):
+                ready = (width, height)
+            case .framebufferChanged(let rectangles):
+                painted += rectangles.count
+            case .disconnected(let error):
+                failure = error
+            default:
+                break
+            }
+            if painted >= 8 { break }
+            if failure != nil { break }
+        }
+        await session.stop()
+
+        XCTAssertNil(failure, "la session s'est fermée : \(String(describing: failure))")
+        let desktop = try XCTUnwrap(ready, "aucun bureau annoncé")
+        XCTAssertEqual(desktop.width, 1024)
+        XCTAssertEqual(desktop.height, 768)
+        XCTAssertGreaterThanOrEqual(painted, 8)
+
+        // **Et la trame porte vraiment des pixels.** Un décodeur branché de
+        // travers annonce des régions repeintes et laisse l'écran noir ; c'est
+        // le défaut qu'aucune des couches d'en dessous ne peut voir.
+        let (width, height, pixels) = session.framebuffer.snapshot()
+        XCTAssertEqual(width, desktop.width)
+        XCTAssertEqual(height, desktop.height)
+        var lit = 0
+        for at in stride(from: 0, to: pixels.count, by: 4) where pixels[at] != 0 {
+            lit += 1
+        }
+        XCTAssertGreaterThan(lit, 1000,
+                             "seulement \(lit) pixels non noirs sur \(width * height)")
     }
 }
 #endif

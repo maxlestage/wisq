@@ -1,6 +1,8 @@
 #if canImport(Glibc)
 import Foundation
 
+@testable import WisqRemote
+
 /// Les vecteurs du codec entrelacé, et **l'oracle qui les a jugés**.
 ///
 /// La question qu'un décodeur de compression pose est simple et sans réponse
@@ -51,43 +53,14 @@ enum RDPBitmapVectors {
         return out
     }
 
-    /// Étendre un canal de cinq bits à huit, **comme FreeRDP le fait** : un
-    /// décalage plus les bits hauts, additionnés et non ou-és — ce qui change le
-    /// résultat d'une unité quand les deux se recouvrent — puis borné à 255.
-    /// Mesuré sur ses sorties, pas déduit d'une spécification.
-    static func widen(_ value: UInt32, bits: Int) -> UInt8 {
-        let shift = 8 - bits
-        return UInt8(min(255, (value << shift) + (value >> (bits - shift))))
-    }
-
     /// Ce que wisq vient de décoder, mis dans la forme où FreeRDP l'écrit.
+    ///
+    /// **C'est la conversion de production qui est appelée ici**, pas une copie
+    /// à part : `RDPBitmapUpdate.bgra` est ce qui peint l'écran, et l'extension
+    /// des canaux de cinq et six bits qu'elle emploie est mesurée par ces
+    /// vecteurs comme le reste.
     static func asBGRX32(_ pixels: [UInt8], depth: Int) -> [UInt8] {
-        guard depth != 24 else {
-            var out = [UInt8]()
-            out.reserveCapacity(pixels.count / 3 * 4)
-            for at in stride(from: 0, to: pixels.count, by: 3) {
-                out += [pixels[at], pixels[at + 1], pixels[at + 2], 0xFF]
-            }
-            return out
-        }
-        var out = [UInt8]()
-        out.reserveCapacity(pixels.count / 2 * 4)
-        for at in stride(from: 0, to: pixels.count, by: 2) {
-            let value = UInt32(pixels[at]) | UInt32(pixels[at + 1]) << 8
-            if depth == 16 {
-                let six: UInt32 = (value >> 5) & 0x3F
-                let green: UInt32 = min(255, (six << 2) + (six >> 3))
-                out.append(widen(value & 0x1F, bits: 5))
-                out.append(UInt8(green))
-                out.append(widen((value >> 11) & 0x1F, bits: 5))
-            } else {
-                out.append(widen(value & 0x1F, bits: 5))
-                out.append(widen((value >> 5) & 0x1F, bits: 5))
-                out.append(widen((value >> 10) & 0x1F, bits: 5))
-            }
-            out.append(0xFF)
-        }
-        return out
+        RDPBitmapUpdate.bgra(pixels, depth: depth)
     }
 
     static let all: [Vector] = [

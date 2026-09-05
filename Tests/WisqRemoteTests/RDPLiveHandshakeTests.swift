@@ -1,3 +1,7 @@
+// **La garde couvre le fichier entier**, et non sa première suite. Elle ne
+// s'est pas mise là toute seule : les classes suivantes ont été ajoutées
+// après le `#endif`, où elles compilaient très bien sur Linux et pas du
+// tout sur Apple, faute des imports qui, eux, sont dedans.
 #if canImport(Glibc)
 import XCTest
 
@@ -108,7 +112,6 @@ final class RDPLiveHandshakeTests: XCTestCase {
         XCTAssertTrue(protocols.contains(.tls), "le serveur a choisi \(protocols.rawValue)")
     }
 }
-#endif
 
 /// Le domaine MCS, contre un **vrai serveur**.
 ///
@@ -218,3 +221,4 @@ final class RDPLiveSecurityTests: XCTestCase {
                           "attendu un message de licence, drapeaux 0x\(String(flags, radix: 16))")
     }
 }
+#endif

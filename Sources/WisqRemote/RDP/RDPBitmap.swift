@@ -114,6 +114,112 @@ public enum RDPBitmapUpdate {
     }
 }
 
+extension RDPBitmapUpdate {
+    /// Les pixels d'un rectangle, en BGRA de trente-deux bits — ce que la trame
+    /// de wisq attend.
+    ///
+    /// **L'extension d'un canal de cinq ou six bits vers huit n'est pas un
+    /// décalage.** C'est un décalage *plus* les bits hauts, additionnés et non
+    /// ou-és — ce qui change la valeur d'une unité quand les deux se recouvrent
+    /// — puis borné à 255. Ce n'est pas déduit d'une spécification : c'est ce
+    /// que fait FreeRDP, relevé sur ses sorties, et les vecteurs du dépôt
+    /// comparent les nôtres aux siennes canal par canal.
+    public static func widen(_ value: UInt32, bits: Int) -> UInt8 {
+        let shift = 8 - bits
+        return UInt8(min(255, (value << shift) + (value >> (bits - shift))))
+    }
+
+    /// Convertir des pixels tels qu'ils voyagent en BGRA.
+    public static func bgra(_ pixels: [UInt8], depth: Int) -> [UInt8] {
+        var out = [UInt8]()
+        guard depth != 24 else {
+            out.reserveCapacity(pixels.count / 3 * 4)
+            for at in stride(from: 0, to: pixels.count - 2, by: 3) {
+                out.append(pixels[at])
+                out.append(pixels[at + 1])
+                out.append(pixels[at + 2])
+                out.append(0xFF)
+            }
+            return out
+        }
+        out.reserveCapacity(pixels.count / 2 * 4)
+        for at in stride(from: 0, to: pixels.count - 1, by: 2) {
+            let value = UInt32(pixels[at]) | UInt32(pixels[at + 1]) << 8
+            if depth == 16 {
+                let six: UInt32 = (value >> 5) & 0x3F
+                let green: UInt32 = min(255, (six << 2) + (six >> 3))
+                out.append(widen(value & 0x1F, bits: 5))
+                out.append(UInt8(green))
+                out.append(widen((value >> 11) & 0x1F, bits: 5))
+            } else {
+                out.append(widen(value & 0x1F, bits: 5))
+                out.append(widen((value >> 5) & 0x1F, bits: 5))
+                out.append(widen((value >> 10) & 0x1F, bits: 5))
+            }
+            out.append(0xFF)
+        }
+        return out
+    }
+
+    /// Les pixels d'un rectangle, décomprimés s'il le faut et remis à
+    /// l'endroit.
+    ///
+    /// **Les données non comprimées arrivent de bas en haut elles aussi.** Le
+    /// codec n'y est pour rien : c'est la convention de RDP, et l'oublier
+    /// retourne l'image sans qu'aucune erreur ne le dise.
+    public static func pixels(of rectangle: Rectangle) throws -> [UInt8] {
+        guard let unit = RDPInterleavedRLE.bytesPerPixel(rectangle.bitsPerPixel) else {
+            throw WisqError.unsupportedEncoding(Int32(rectangle.bitsPerPixel))
+        }
+        guard rectangle.compressed else {
+            let stride = rectangle.width * unit
+            let expected = stride * rectangle.height
+            guard rectangle.data.count >= expected else {
+                throw WisqError.malformedMessage(
+                    "rectangle brut de \(rectangle.data.count) octets pour \(expected) attendus")
+            }
+            let bytes = [UInt8](rectangle.data.prefix(expected))
+            var out = [UInt8](repeating: 0, count: expected)
+            for line in 0..<rectangle.height {
+                let from = line * stride
+                let to = (rectangle.height - 1 - line) * stride
+                out[to..<(to + stride)] = bytes[from..<(from + stride)]
+            }
+            return out
+        }
+        return try RDPInterleavedRLE.decompress(
+            rectangle.data, width: rectangle.width, height: rectangle.height,
+            bitsPerPixel: rectangle.bitsPerPixel)
+    }
+
+    /// Où peindre, et quoi.
+    ///
+    /// **La destination est plus petite que le bloc**, et c'est le serveur qui
+    /// le veut : il arrondit la largeur au multiple qui l'arrange. Peindre le
+    /// bloc entier déborderait de quelques pixels sur la droite, et la trace
+    /// resterait à l'écran jusqu'au prochain rafraîchissement de la zone.
+    public static func paintable(_ rectangle: Rectangle) throws -> (Rect, [UInt8]) {
+        let width = min(rectangle.right - rectangle.left + 1, rectangle.width)
+        let height = min(rectangle.bottom - rectangle.top + 1, rectangle.height)
+        guard width > 0, height > 0 else {
+            throw WisqError.malformedMessage(
+                "rectangle de destination de \(width)×\(height)")
+        }
+        let whole = bgra(try pixels(of: rectangle), depth: rectangle.bitsPerPixel)
+        let stride = rectangle.width * 4
+        var out = [UInt8]()
+        out.reserveCapacity(width * height * 4)
+        for line in 0..<height {
+            let from = line * stride
+            guard from + width * 4 <= whole.count else {
+                throw WisqError.malformedMessage("rectangle plus court que sa taille annoncée")
+            }
+            out += whole[from..<(from + width * 4)]
+        }
+        return (Rect(x: rectangle.left, y: rectangle.top, width: width, height: height), out)
+    }
+}
+
 /// Le codec entrelacé de RDP, celui que MS-RDPEGDI appelle « RLE ».
 ///
 /// **Ce n'est pas un RLE ordinaire.** Deux tiers de ses codes ne décrivent pas
