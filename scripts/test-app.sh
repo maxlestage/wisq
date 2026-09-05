@@ -40,10 +40,49 @@ raise SystemExit("aucun iPhone simulé disponible")
 echo "    $udid"
 
 echo "==> Tests de la couche application, dans un iPhone simulé"
+# **La sortie est gardée**, et pas seulement regardée passer. `xcodebuild`
+# écrit des dizaines de milliers de lignes ; les quelques-unes qui portent une
+# mesure — le débit de WebKit, le coût du pont — s'y noient, et une mesure
+# qu'on ne retrouve pas est une mesure qu'on refait. Elles sont donc extraites
+# à la fin, et poussées dans le résumé du job quand il y en a un.
+sortie=$(mktemp)
+trap 'rm -f "$sortie"' EXIT
+# Les mesures survivent au script, dans un fichier que la CI relit à la toute
+# fin : `xcodebuild` écrit ensuite des milliers de lignes de compilation, et
+# ce qui est au milieu d'un log de cette taille est introuvable en pratique.
+mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
+# **Un fichier, pas un tube.** `xcodebuild | tee` ne se termine pas : les
+# démons du simulateur héritent du bout écrivain du tube et le gardent ouvert
+# après la fin des tests, donc `tee` attend une fin de fichier qui ne vient
+# jamais et le script pend. Mesuré : un pas de quatre minutes qui en a duré
+# plus de vingt. Une redirection vers un fichier n'attend personne.
+set +e
 xcodebuild test \
   -project Wisq.xcodeproj \
   -scheme Wisq \
   -destination "id=${udid%% *}" \
-  CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_ALLOWED=NO > "$sortie" 2>&1
+issue=$?
+set -e
+cat "$sortie"
+
+# Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
+# sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
+mesures=$(grep -E "^(WebKit|pont) :|Executed [0-9]+ tests" "$sortie" | tail -20 || true)
+if [ -n "$mesures" ]; then
+  echo "==> Mesures"
+  echo "$mesures"
+  printf '%s\n' "$mesures" > "$mesuresFichier"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "### Ce que l'iPhone simulé a mesuré"
+      echo ""
+      echo '```'
+      echo "$mesures"
+      echo '```'
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+fi
+[ "$issue" -eq 0 ] || exit "$issue"
 
 echo "==> La couche application est vérifiée, pas seulement compilée."
