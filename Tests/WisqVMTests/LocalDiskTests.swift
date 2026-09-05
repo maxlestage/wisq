@@ -110,34 +110,72 @@ final class LocalDiskTests: XCTestCase {
         XCTAssertNil(LocalDisk.recordedName(forKernel: "vmlinuz-lts", in: folder))
     }
 
-    // MARK: - Ce que la place permet
+    // MARK: - Ce qui est un disque
 
-    /// Le plafond laisse la place d'une machine, et jamais moins que rien.
-    func testTheCeilingLeavesRoomForTheSmallestMachine() {
-        let ceiling: UInt32 = 1024 << 20
-        XCTAssertEqual(
-            LocalDisk.maximumBytes(ceiling: ceiling),
-            Int(ceiling) - X86Machine.minimumRAMSize)
-        XCTAssertEqual(
-            LocalDisk.maximumBytes(ceiling: 64 << 20), 0,
-            "un téléphone qui ne peut pas porter la plus petite machine ne porte aucun disque")
+    /// **Il n'y a plus de plafond.** Le disque est lu sur place ; une image
+    /// de plusieurs gigaoctets passe, et c'est la correction que Maxime a
+    /// demandée : « n'importe quelle image doit fonctionner ».
+    func testThereIsNoCeilingAnyMore() {
+        XCTAssertNil(LocalDisk.refusal(size: 6 << 30, name: "grosse.img"))
+        XCTAssertNil(LocalDisk.refusal(size: Int.max, name: "immense.img"))
     }
 
-    /// Les deux bords du refus, et le milieu qui passe.
+    /// Le plancher reste, et il nomme le nombre qui bloque.
     func testTheRefusalNamesTheNumberThatBlocks() {
-        let ceiling: UInt32 = 1024 << 20
-        let maximum = LocalDisk.maximumBytes(ceiling: ceiling)
-        XCTAssertNil(LocalDisk.refusal(size: maximum, name: "r.img", ceiling: ceiling),
-                     "exactement le plafond passe")
-        let tooBig = LocalDisk.refusal(size: maximum + 1, name: "r.img", ceiling: ceiling)
-        XCTAssertNotNil(tooBig)
-        XCTAssertTrue(tooBig?.contains("r.img") == true, "le refus nomme le fichier")
-        XCTAssertTrue(tooBig?.contains("mémoire") == true,
-                      "et dit pourquoi : le disque est tenu en mémoire")
-        XCTAssertNil(LocalDisk.refusal(size: 512, name: "r.img", ceiling: ceiling),
+        XCTAssertNil(LocalDisk.refusal(size: 512, name: "r.img"),
                      "un secteur exactement est un disque")
-        XCTAssertNotNil(LocalDisk.refusal(size: 511, name: "r.img", ceiling: ceiling),
-                        "moins d'un secteur n'en est pas un")
+        let tooSmall = LocalDisk.refusal(size: 511, name: "r.img")
+        XCTAssertNotNil(tooSmall, "moins d'un secteur n'en est pas un")
+        XCTAssertTrue(tooSmall?.contains("r.img") == true, "le refus nomme le fichier")
+        XCTAssertTrue(tooSmall?.contains("511") == true, "et le nombre")
+        XCTAssertFalse(tooSmall?.contains("mémoire") == true,
+                       "et ne parle plus de mémoire : le disque n'y est plus")
+    }
+
+    // MARK: - La couche d'écriture
+
+    /// La couche d'un disque a une place, sous son nom, dans un dossier à
+    /// côté des machines sauvegardées.
+    func testTheOverlayLivesUnderTheDiskName() throws {
+        let url = try LocalDisk.writesURL(for: "racine.img", in: folder)
+        XCTAssertEqual(url.lastPathComponent, "racine.img.writes")
+        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "disk-writes")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: url.deletingLastPathComponent().path), "le dossier est créé")
+    }
+
+    /// Jeter la couche jette les deux fichiers — et rien d'autre.
+    func testDiscardingTheOverlayRemovesBothFilesAndNothingElse() throws {
+        let url = try LocalDisk.writesURL(for: "racine.img", in: folder)
+        try Data([1]).write(to: url)
+        try Data([2]).write(to: URL(fileURLWithPath: url.path + ".map"))
+        let other = try LocalDisk.writesURL(for: "autre.img", in: folder)
+        try Data([3]).write(to: other)
+
+        LocalDisk.discardWrites(for: "racine.img", in: folder)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + ".map"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path), "le voisin reste")
+    }
+
+    /// **Ce que la couche occupe se mesure en blocs alloués**, pas en taille
+    /// apparente : le fichier des écritures est épars et fait la taille de la
+    /// base. Un disque de quatre mille secteurs dont un seul est écrit ne doit
+    /// pas se lire « deux mébioctets » dans le rapport de stockage.
+    func testOverlayBytesCountAllocatedBlocksNotApparentSize() throws {
+        XCTAssertEqual(LocalDisk.overlayBytes(for: "racine.img", in: folder), 0, "rien avant")
+        var base = [UInt8](repeating: 0, count: 4000 * 512)
+        base[0] = 1
+        let baseURL = folder.appendingPathComponent("racine.img")
+        try Data(base).write(to: baseURL)
+        let store = try FileDiskStore(
+            base: baseURL, writes: try LocalDisk.writesURL(for: "racine.img", in: folder))
+        XCTAssertTrue(store.write(at: 3999 * 512, [UInt8](repeating: 7, count: 512)))
+        store.flush()
+
+        let bytes = LocalDisk.overlayBytes(for: "racine.img", in: folder)
+        XCTAssertGreaterThan(bytes, 0, "un secteur écrit occupe quelque chose")
+        XCTAssertLessThan(bytes, 200 << 10, "mais pas la taille apparente : \(bytes)")
     }
 
     // MARK: - Le disque que personne n'a touché
@@ -185,12 +223,11 @@ final class LocalDiskTests: XCTestCase {
     /// C'est la leçon de l'ISO refusé pour sa taille, reprise par l'autre
     /// bout : pointer un nombre envoie le lecteur au réglage de mémoire, où
     /// il n'y a rien à trouver.
-    func testAnOversizedDiscImageIsToldWhatItIsBeforeWhatItWeighs() throws {
+    func testATinyDiscImageIsToldWhatItIsBeforeWhatItWeighs() throws {
         let refusal = try XCTUnwrap(LocalDisk.refusal(
-            size: 5_800 << 20, name: "omarchy-4.0.2.iso",
-            kind: .discImage("ISO 9660"), ceiling: 2048 << 20))
+            size: 100, name: "omarchy-4.0.2.iso", kind: .discImage("ISO 9660")))
         let what = try XCTUnwrap(refusal.range(of: "ISO 9660"))
-        let weight = try XCTUnwrap(refusal.range(of: "Gio"))
+        let weight = try XCTUnwrap(refusal.range(of: "100 octets"))
         XCTAssertLessThan(what.lowerBound, weight.lowerBound,
                           "ce que c'est passe avant ce que ça pèse")
         XCTAssertTrue(refusal.contains("/boot"),
@@ -204,10 +241,9 @@ final class LocalDiskTests: XCTestCase {
     }
 
     /// La même composition pour un système de fichiers, et le pronom qui suit.
-    func testAnOversizedFilesystemImageNamesItselfThenItsSize() throws {
+    func testATinyFilesystemImageNamesItselfThenItsSize() throws {
         let refusal = try XCTUnwrap(LocalDisk.refusal(
-            size: 4 << 30, name: "racine.img",
-            kind: .filesystemImage("ext4"), ceiling: 2048 << 20))
+            size: 300, name: "racine.img", kind: .filesystemImage("ext4")))
         XCTAssertTrue(refusal.contains("ext4"))
         XCTAssertTrue(refusal.contains("Elle fait"),
                       "la seconde phrase reprend l'image, sans réciter le nom")
@@ -215,14 +251,14 @@ final class LocalDiskTests: XCTestCase {
                        "le nom du fichier est dit une fois")
     }
 
-    /// **Ce qui tient n'est pas refusé**, quel que soit ce que c'est.
-    ///
-    /// Sans ça, la composition pourrait devenir un refus permanent des images
-    /// de disque, ce qui fermerait le réglage entier.
-    func testADiscImageThatFitsIsNotRefusedAtAll() {
+    /// **Une image d'installation n'est pas refusée**, quelle que soit sa
+    /// taille. C'est l'ISO d'Omarchy de 5,8 Gio que l'application avait
+    /// renvoyé ; il passe, et c'est T3 qui démarrera dessus.
+    func testADiscImageOfAnySizeIsNotRefusedAtAll() {
         XCTAssertNil(LocalDisk.refusal(size: 200 << 20, name: "petit.iso",
-                                       kind: .discImage("ISO 9660"),
-                                       ceiling: 2048 << 20))
+                                       kind: .discImage("ISO 9660")))
+        XCTAssertNil(LocalDisk.refusal(size: 5_800 << 20, name: "omarchy-4.0.2.iso",
+                                       kind: .discImage("ISO 9660")))
     }
 
     /// Un fichier que personne n'a reconnu garde le refus qu'il avait.
@@ -231,11 +267,9 @@ final class LocalDiskTests: XCTestCase {
     /// devant une image de deux gigaoctets ; le composer avec une identité
     /// qu'on n'a pas serait le remplacer par du vide.
     func testAnUnrecognisedFileKeepsThePlainRefusal() {
-        let ceiling: UInt32 = 1024 << 20
-        let size = LocalDisk.maximumBytes(ceiling: ceiling) + 1
         XCTAssertEqual(
-            LocalDisk.refusal(size: size, name: "x.bin", kind: .unknown, ceiling: ceiling),
-            LocalDisk.refusal(size: size, name: "x.bin", ceiling: ceiling))
+            LocalDisk.refusal(size: 511, name: "x.bin", kind: .unknown),
+            LocalDisk.refusal(size: 511, name: "x.bin"))
     }
 
     /// Ce que `whatItIs` dit, et ce qu'il se garde de dire.

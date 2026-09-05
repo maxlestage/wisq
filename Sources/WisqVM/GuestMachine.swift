@@ -48,6 +48,20 @@ public protocol GuestMachine: AnyObject, Sendable {
     /// `diskActivity` sert.
     func attachDisk(_ image: Data) throws
 
+    /// Branche un disque **lu sur place**, avec sa couche d'écriture durable
+    /// à côté — voir `FileDiskStore`. Rien de la base n'est copié : c'est la
+    /// porte par laquelle passe une image de plusieurs gigaoctets.
+    func attachDisk(fileAt base: URL, writes: URL) throws
+
+    /// Pousse ce que l'invité a écrit sur son disque jusqu'au stockage
+    /// durable. Chaque écriture y est déjà ; ceci ajoute `fsync`, pour le
+    /// passage en arrière-plan.
+    func flushDisk()
+
+    /// Combien d'octets de disque l'invité a changés — la couche pour un
+    /// disque sur fichier, l'image entière pour un disque en mémoire.
+    var diskBytesWritten: Int { get }
+
     /// Ce que le disque a vu — servies, refusées — ou `nil` s'il n'y en a pas.
     ///
     /// **Zéro et zéro est la réponse qui compte.** wisq ne peut pas mettre un
@@ -135,6 +149,14 @@ extension LinuxMachine: GuestMachine {
     /// donc la machine sait le dire.
     public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
+    public func attachDisk(fileAt base: URL, writes: URL) throws {
+        try attach(diskFileAt: base, writes: writes)
+    }
+
+    public func flushDisk() { disk?.flush() }
+
+    public var diskBytesWritten: Int { disk?.store.bytesWritten ?? 0 }
+
     public var diskActivity: (served: UInt64, refused: UInt64)? {
         disk.map { ($0.served, $0.refused) }
     }
@@ -155,6 +177,14 @@ extension X86Machine: GuestMachine {
     /// Les deux portes de `attach(disk:)` — MMIO et PCI — sont posées d'un
     /// coup ; c'est le noyau qui choisit celle qu'il sait ouvrir.
     public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
+
+    public func attachDisk(fileAt base: URL, writes: URL) throws {
+        try attach(diskFileAt: base, writes: writes)
+    }
+
+    public func flushDisk() { disk?.flush() }
+
+    public var diskBytesWritten: Int { disk?.store.bytesWritten ?? 0 }
 
     public var diskActivity: (served: UInt64, refused: UInt64)? {
         disk.map { ($0.served, $0.refused) }

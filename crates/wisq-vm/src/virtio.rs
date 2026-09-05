@@ -11,6 +11,7 @@
 //! all, and a door nobody knocks on is a door nobody maintains.
 
 use crate::snapshot::{Reader, SnapshotError, Writer};
+use crate::store::Store;
 
 /// Where the rv32 machine puts the device, matching QEMU's `virt` board so a
 /// kernel built for it lands on an address that does not surprise it.
@@ -88,7 +89,10 @@ impl Descriptor {
 }
 
 pub struct VirtioBlock {
-    pub image: Vec<u8>,
+    /// Where the bytes live: in memory, or in a file with its write overlay.
+    /// The device does not know which, and does not have to: it reads and
+    /// writes pieces, that is all.
+    pub store: Store,
     device_features_select: u32,
     driver_features_select: u32,
     driver_features: u64,
@@ -111,8 +115,12 @@ pub struct VirtioBlock {
 
 impl VirtioBlock {
     pub fn new(image: Vec<u8>) -> Self {
+        Self::with_store(Store::Memory(image))
+    }
+
+    pub fn with_store(store: Store) -> Self {
         VirtioBlock {
-            image,
+            store,
             device_features_select: 0,
             driver_features_select: 0,
             driver_features: 0,
@@ -132,7 +140,17 @@ impl VirtioBlock {
     }
 
     pub fn sectors(&self) -> u64 {
-        (self.image.len() / 512) as u64
+        self.store.sectors()
+    }
+
+    /// The whole content, re-read from the store. For tests and measurements.
+    pub fn image(&self) -> Vec<u8> {
+        self.store.image()
+    }
+
+    /// Pushes what the guest wrote down to durable storage.
+    pub fn flush(&self) {
+        self.store.flush();
     }
 
     /// True while the device is asking for the interrupt line.
@@ -340,7 +358,7 @@ impl VirtioBlock {
         // would read an empty superblock instead of learning it asked too far.
         let span: u64 = payload.iter().map(|one| u64::from(one.length)).sum();
         if (kind == 0 || kind == 1)
-            && sector.wrapping_mul(512).wrapping_add(span) > self.image.len() as u64
+            && sector.wrapping_mul(512).wrapping_add(span) > self.sectors().wrapping_mul(512)
         {
             return Err(Refusal::Malformed);
         }
@@ -353,9 +371,15 @@ impl VirtioBlock {
                     if !buffer.writable() {
                         return Err(Refusal::Malformed);
                     }
-                    for byte in 0..u64::from(buffer.length) {
-                        let value = self.image[(at + byte) as usize];
-                        guest.write(buffer.address.wrapping_add(byte), 1, u64::from(value));
+                    let Some(bytes) = self.store.read(at, buffer.length as usize) else {
+                        return Err(Refusal::Malformed);
+                    };
+                    for (index, value) in bytes.iter().enumerate() {
+                        guest.write(
+                            buffer.address.wrapping_add(index as u64),
+                            1,
+                            u64::from(*value),
+                        );
                     }
                     *written += buffer.length;
                     at += u64::from(buffer.length);
@@ -369,10 +393,16 @@ impl VirtioBlock {
                     if buffer.writable() {
                         return Err(Refusal::Malformed);
                     }
-                    for byte in 0..u64::from(buffer.length) {
-                        if let Some(value) = guest.read(buffer.address.wrapping_add(byte), 1) {
-                            self.image[(at + byte) as usize] = value as u8;
+                    let mut bytes = vec![0u8; buffer.length as usize];
+                    for (index, slot) in bytes.iter_mut().enumerate() {
+                        if let Some(value) =
+                            guest.read(buffer.address.wrapping_add(index as u64), 1)
+                        {
+                            *slot = value as u8;
                         }
+                    }
+                    if !self.store.write(at, &bytes) {
+                        return Err(Refusal::Malformed);
                     }
                     at += u64::from(buffer.length);
                 }
@@ -461,11 +491,23 @@ impl VirtioBlock {
         writer.u32(u32::from(self.next_used));
         writer.u64(self.served);
         writer.u64(self.refused);
-        writer.u64(self.image.len() as u64);
-        writer.ram(&self.image);
+        // Except when the content lives elsewhere. A file-backed disk does not
+        // travel: its overlay is already durable, and the snapshot of a machine
+        // with six gigabytes of disk would be six gigabytes. An impossible
+        // length marks "elsewhere"; the restore re-attaches the store the app
+        // hands it.
+        match &self.store {
+            Store::Memory(image) => {
+                writer.u64(image.len() as u64);
+                writer.ram(image);
+            }
+            Store::File(_) => writer.u64(CONTENT_LIVES_ELSEWHERE),
+        }
     }
 
-    pub(crate) fn restored(reader: &mut Reader) -> Result<VirtioBlock, SnapshotError> {
+    /// The device as it was, plus whether its content lives elsewhere — in
+    /// which case the caller puts the store it already holds back in.
+    pub(crate) fn restored(reader: &mut Reader) -> Result<(VirtioBlock, bool), SnapshotError> {
         let mut device = VirtioBlock::new(Vec::new());
         device.device_features_select = reader.u32()?;
         device.driver_features_select = reader.u32()?;
@@ -483,13 +525,21 @@ impl VirtioBlock {
         device.next_used = reader.u32()? as u16;
         device.served = reader.u64()?;
         device.refused = reader.u64()?;
-        let count = usize::try_from(reader.u64()?).map_err(|_| SnapshotError::Corrupt)?;
+        let length = reader.u64()?;
+        if length == CONTENT_LIVES_ELSEWHERE {
+            return Ok((device, true));
+        }
+        let count = usize::try_from(length).map_err(|_| SnapshotError::Corrupt)?;
         let mut image = vec![0u8; count];
         reader.ram(&mut image)?;
-        device.image = image;
-        Ok(device)
+        device.store = Store::Memory(image);
+        Ok((device, false))
     }
 }
+
+/// The mark, in place of the image length: no image has this size. The same
+/// value as the Swift device's `contentLivesElsewhere`.
+const CONTENT_LIVES_ELSEWHERE: u64 = u64::MAX;
 
 enum Refusal {
     Malformed,

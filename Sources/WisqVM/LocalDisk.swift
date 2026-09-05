@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
 /// Quel disque va avec quel noyau, retenu d'un lancement à l'autre.
 ///
 /// **Pourquoi un réglage et pas une détection.** Le disque de la machine PC
@@ -19,24 +25,17 @@ import Foundation
 /// même raison : le chemin de démarrage doit savoir quel disque prendre
 /// **avant** de lire l'image, et l'empreinte n'existe qu'après.
 ///
-/// **Et le disque est en mémoire, entier.** `VirtioBlock` tient son image
-/// dans un `[UInt8]`, parce que l'invité écrit dedans et que ces écritures
-/// doivent survivre à une suspension — l'instantané les emporte avec lui. Ce
-/// n'est donc pas un fichier qu'on lit par morceaux : brancher un disque de
-/// deux cents mébioctets prend deux cents mébioctets, à côté de la RAM de
-/// l'invité et du reste de l'application. C'est le fait qui commande tout le
-/// reste ici : le plafond, le refus, et la phrase que la vue affiche.
+/// **Et le disque est lu sur place.** `VirtioBlock` lisait son image dans
+/// un `[UInt8]`, entière ; c'était le fait qui commandait tout le reste ici —
+/// un plafond, un refus, et la phrase que la vue affichait. Il lit maintenant
+/// le fichier importé là où il est, en lecture seule, et range ce que
+/// l'invité écrit dans une **couche à part** (`FileDiskStore`) qui survit à
+/// une suspension, à un redémarrage de l'application et à sa mort. Il n'y a
+/// donc plus de plafond : une image d'installation de six gigaoctets se
+/// branche comme une ext4 de seize mébioctets. Ce qui reste, c'est le
+/// plancher — un secteur.
 public enum LocalDisk {
-    // MARK: - Ce que la place permet
-
-    /// Le plus gros disque que cet appareil autorise.
-    ///
-    /// Ce que le téléphone laisse, **moins la machine la plus petite qui
-    /// puisse le lire** : un disque qui ne laisse pas la place d'une machine
-    /// PC n'est pas un disque, c'est un refus au démarrage écrit d'avance.
-    public static func maximumBytes(ceiling limit: UInt32 = KernelMemory.ceiling) -> Int {
-        max(Int(limit) - X86Machine.minimumRAMSize, 0)
-    }
+    // MARK: - Ce qui est un disque
 
     /// Le plus petit qui ait un sens : un secteur.
     ///
@@ -47,12 +46,11 @@ public enum LocalDisk {
     /// Pourquoi ce fichier ne peut pas être le disque de cette machine — ou
     /// `nil` s'il peut.
     ///
-    /// Les deux refus **nomment le nombre qui bloque**, parce que « trop
-    /// gros » sans chiffre ne dit pas s'il faut changer de fichier ou changer
-    /// de téléphone.
-    public static func refusal(size: Int, name: String,
-                               ceiling limit: UInt32 = KernelMemory.ceiling) -> String? {
-        refusal(size: size, subject: name, ceiling: limit)
+    /// Il n'y a plus qu'un refus, et il **nomme le nombre qui bloque**. Le
+    /// second — « trop gros pour la mémoire » — est parti avec la raison
+    /// qu'il avait : le disque n'est plus tenu en mémoire.
+    public static func refusal(size: Int, name: String) -> String? {
+        refusal(size: size, subject: name)
     }
 
     /// Le même refus, précédé de **ce que le fichier est**.
@@ -66,52 +64,89 @@ public enum LocalDisk {
     /// Un fichier que rien n'a reconnu garde le refus qu'il avait : composer
     /// avec une identité qu'on n'a pas reviendrait à mettre une phrase vide
     /// devant la seule qui dit quelque chose.
-    public static func refusal(size: Int, name: String, kind: KernelImageKind,
-                               ceiling limit: UInt32 = KernelMemory.ceiling) -> String? {
+    public static func refusal(size: Int, name: String, kind: KernelImageKind) -> String? {
         guard let identity = KernelImageKind.whatItIs(kind, name: name) else {
-            return refusal(size: size, name: name, ceiling: limit)
+            return refusal(size: size, name: name)
         }
         // « Elle », parce que les deux genres que `whatItIs` nomme sont des
         // images : reprendre le nom du fichier une seconde fois se lit comme
         // deux refus collés plutôt que comme un seul.
-        guard let why = refusal(size: size, subject: "Elle", ceiling: limit) else { return nil }
+        guard let why = refusal(size: size, subject: "Elle") else { return nil }
         return identity + "\n\n" + why
     }
 
-    private static func refusal(size: Int, subject: String,
-                                ceiling limit: UInt32) -> String? {
-        if size < minimumBytes {
-            return """
-                \(subject) fait \(size) octet\(size == 1 ? "" : "s") — moins \
-                d'un secteur.
-
-                Un disque se lit par blocs de 512 octets ; celui-ci n'en \
-                contient pas un seul, et l'invité verrait un disque vide.
-                """
-        }
-        let maximum = maximumBytes(ceiling: limit)
-        guard size > maximum else { return nil }
+    private static func refusal(size: Int, subject: String) -> String? {
+        guard size < minimumBytes else { return nil }
         return """
-            \(subject) fait \(LocalStorage.describe(bytes: size)), et wisq ne \
-            peut pas en brancher plus de \(LocalStorage.describe(bytes: maximum)) \
-            sur ce téléphone en ce moment.
+            \(subject) fait \(size) octet\(size == 1 ? "" : "s") — moins \
+            d'un secteur.
 
-            Le disque est tenu **en mémoire**, entier : c'est ce qui permet à \
-            l'invité d'écrire dedans et à ces écritures de survivre à une \
-            suspension. Il partage donc la place avec la machine elle-même.
+            Un disque se lit par blocs de 512 octets ; celui-ci n'en \
+            contient pas un seul, et l'invité verrait un disque vide.
             """
     }
 
     /// La même décision, sur un fichier de la bibliothèque.
-    public static func refusal(forFileAt url: URL,
-                               ceiling limit: UInt32 = KernelMemory.ceiling) -> String? {
+    public static func refusal(forFileAt url: URL) -> String? {
         guard let size = try? FileManager.default.attributesOfItem(
             atPath: url.path)[.size] as? Int else {
             return "\(url.lastPathComponent) n'a pas pu être lu."
         }
         // Le fichier est là : on peut lire ce qu'il est, donc on le dit.
         return refusal(size: size, name: url.lastPathComponent,
-                       kind: KernelImageKind.identify(fileAt: url), ceiling: limit)
+                       kind: KernelImageKind.identify(fileAt: url))
+    }
+
+    // MARK: - La couche d'écriture
+
+    /// Le dossier des couches d'écriture, à côté des machines sauvegardées.
+    public static func writesDirectory(in directory: URL? = nil) throws -> URL {
+        let folder = try (directory ?? Self.directory())
+            .appendingPathComponent("disk-writes", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    /// Où vont les écritures de l'invité sur un disque de la bibliothèque.
+    ///
+    /// **Rangé sous le nom du disque, pas sous celui du noyau.** C'est le
+    /// disque qui porte les octets ; deux noyaux qui partagent une image
+    /// partagent ce qu'ils y ont écrit, exactement comme deux ordinateurs qui
+    /// démarreraient sur le même disque. La carte (`.map`) est posée à côté
+    /// par `FileDiskStore`.
+    public static func writesURL(for disk: String, in directory: URL? = nil) throws -> URL {
+        try writesDirectory(in: directory).appendingPathComponent(disk + ".writes")
+    }
+
+    /// Jette la couche d'un disque — quand le fichier de base s'en va. Une
+    /// couche sans sa base ne veut plus rien dire, et garder ses secteurs
+    /// serait garder des octets que personne ne pourra plus relire.
+    public static func discardWrites(for disk: String, in directory: URL? = nil) {
+        guard let url = try? writesURL(for: disk, in: directory) else { return }
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + ".map"))
+    }
+
+    /// Ce que la couche d'un disque occupe **réellement** : les blocs
+    /// alloués, pas la taille apparente. Le fichier des écritures est épars
+    /// et de la taille de la base ; sa taille dirait « six gigaoctets » pour
+    /// trois secteurs écrits.
+    public static func overlayBytes(for disk: String, in directory: URL? = nil) -> Int {
+        guard let folder = try? writesDirectory(in: directory) else { return 0 }
+        return overlayBytes(for: disk, inWritesDirectory: folder)
+    }
+
+    /// La même mesure, le dossier des couches déjà connu — ce que le rapport
+    /// de stockage a sous la main.
+    public static func overlayBytes(for disk: String, inWritesDirectory folder: URL) -> Int {
+        let path = folder.appendingPathComponent(disk + ".writes").path
+        return allocatedBytes(atPath: path) + allocatedBytes(atPath: path + ".map")
+    }
+
+    static func allocatedBytes(atPath path: String) -> Int {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return 0 }
+        return Int(info.st_blocks) * 512
     }
 
     // MARK: - Ce que le disque a vu

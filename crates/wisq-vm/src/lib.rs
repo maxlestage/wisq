@@ -13,6 +13,7 @@ pub mod dtb;
 pub mod ffi;
 pub mod machine;
 pub mod snapshot;
+pub mod store;
 pub mod virtio;
 
 pub use crate::core::{Bus, Core, StepResult, RAM_BASE};

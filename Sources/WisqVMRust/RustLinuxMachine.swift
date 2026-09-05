@@ -1,5 +1,6 @@
 import CWisqVM
 import Foundation
+import WisqVM
 
 /// The same machine as `WisqVM.LinuxMachine` — 64 MB of RAM by default, one
 /// rv32ima hart, an 8250 UART, a CLINT timer and a syscon — with the
@@ -131,6 +132,31 @@ public final class RustLinuxMachine: @unchecked Sendable {
             _ = wisq_vm_attach_disk(vm, bytes.baseAddress, bytes.count)
         }
     }
+
+    /// Le même disque, **lu sur place** depuis un fichier, avec sa couche
+    /// d'écriture durable à côté. Le format de la couche est celui de
+    /// `FileDiskStore`, octet pour octet : les deux cœurs ouvrent les mêmes
+    /// fichiers, et les refus sont les mêmes, avec les mêmes noms.
+    public func attach(diskFileAt base: URL, writes: URL) throws {
+        let code = base.withUnsafeFileSystemRepresentation { basePath in
+            writes.withUnsafeFileSystemRepresentation { writesPath in
+                wisq_vm_attach_disk_file(vm, basePath, writesPath)
+            }
+        }
+        switch code {
+        case 0: return
+        case -2: throw FileDiskStore.Failure.cannotOpenBase
+        case -3: throw FileDiskStore.Failure.notADisk
+        case -5: throw FileDiskStore.Failure.overlayBelongsToAnotherDisk
+        default: throw FileDiskStore.Failure.cannotOpenOverlay
+        }
+    }
+
+    /// Pousse ce que l'invité a écrit jusqu'au stockage durable.
+    public func flushDisk() { _ = wisq_vm_flush_disk(vm) }
+
+    /// Combien d'octets de disque l'invité a changés.
+    public var diskBytesWritten: Int { Int(wisq_vm_disk_bytes_written(vm)) }
 
     /// Le retire, et fait retomber la ligne avec lui.
     public func detachDisk() { _ = wisq_vm_detach_disk(vm) }

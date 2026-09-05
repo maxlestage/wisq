@@ -7,6 +7,31 @@ break APIs.
 
 ## [Unreleased]
 
+### Changed
+- **The local disk is read from its file, and what the guest writes is kept
+  beside it — durably, on both cores.** The virtio block device held its
+  image whole in a `[UInt8]`, and that one fact ruled everything downstream:
+  a size ceiling tied to the phone's memory, an import refusal for anything
+  above it (the 5.8 GiB installer image someone actually brought), and the
+  screen text explaining both. The device now reads through a `DiskStore`:
+  the imported file is opened read-only and read in place, sector by sector,
+  and every sector the guest writes goes to a sparse `writes` file plus a
+  one-bit-per-sector `writes.map`, both written **before the device answers
+  the guest** — so an app killed without notice loses nothing already written,
+  and the imported file never changes. Suspension adds an `fsync`. The
+  snapshot no longer carries the image for such a disk: it carries a
+  "content lives elsewhere" mark, and the restore puts the store the app
+  re-opened back under the restored registers; a snapshot with the image
+  inside (yesterday's) still restores as before. The Rust core writes
+  exactly the same two files (`store.rs`, with `wisq_vm_attach_disk_file`,
+  `wisq_vm_flush_disk`, `wisq_vm_disk_bytes_written`), and a differential
+  test has both cores run the same guest write and compares the overlays
+  byte for byte. The ceiling is gone (`LocalDisk.maximumBytes` and its
+  refusal); the one refusal left is a file under one sector. Deleting a
+  disk from the library discards its overlay; the storage report counts the
+  overlay's allocated blocks, not its apparent size. In-memory disks remain
+  for tests and for snapshots already on phones.
+
 ### Fixed
 - **The interrupt controller ignored its own priority rule.** A real 8259 will
   not deliver a line while one of equal or higher priority is in service —

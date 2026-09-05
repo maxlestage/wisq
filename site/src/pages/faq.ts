@@ -43,7 +43,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "Two answers, and they are not the same thing. The machine itself is saved: set aside when the screen locks, it comes back with your shell exactly where it was, mid-command if that is where you left it — no second boot. And since recently it can also have a disk: a filesystem image you import, seen on /dev/vda, that the guest reads and writes, with those writes carried inside the snapshot. What wisq cannot do is put a block driver into the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch the device — so wisq counts the requests and tells you at the end, instead of leaving you with a silent disk.",
+        "Two answers, and they are not the same thing. The machine itself is saved: set aside when the screen locks, it comes back with your shell exactly where it was, mid-command if that is where you left it — no second boot. And since recently it can also have a disk: a filesystem or installer image you import, of any size, seen on /dev/vda and read in place. What the guest writes goes into a layer kept beside the image, durable at every write: it survives suspension, a restart of the app, and the app being killed, and the file you imported never changes. What wisq cannot do is put a block driver into the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch the device — so wisq counts the requests and tells you at the end, instead of leaving you with a silent disk.",
     },
 
     { kind: "h2", text: "Is my connection encrypted?" },
@@ -140,7 +140,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Deux réponses, et ce n'est pas la même chose. La machine elle-même est sauvée : mise de côté quand l'écran se verrouille, elle revient avec votre shell exactement où il était, au milieu d'une commande si c'est là que vous l'avez laissée — pas de second démarrage. Et depuis peu elle peut aussi avoir un disque : une image de système de fichiers que vous importez, vue sur /dev/vda, que l'invité lit et écrit, et dont les écritures voyagent dans l'instantané. Ce que wisq ne peut pas faire, c'est mettre un pilote bloc dans le noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas ne touchera jamais le périphérique — alors wisq compte les requêtes et vous le dit à la fin, au lieu de vous laisser devant un disque muet.",
+        "Deux réponses, et ce n'est pas la même chose. La machine elle-même est sauvée : mise de côté quand l'écran se verrouille, elle revient avec votre shell exactement où il était, au milieu d'une commande si c'est là que vous l'avez laissée — pas de second démarrage. Et depuis peu elle peut aussi avoir un disque : une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, vue sur /dev/vda et lue sur place. Ce que l'invité écrit va dans une couche gardée à côté de l'image, durable à chaque écriture : elle survit à une suspension, à un redémarrage de l'app et à sa mort, et le fichier importé ne change jamais. Ce que wisq ne peut pas faire, c'est mettre un pilote bloc dans le noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas ne touchera jamais le périphérique — alors wisq compte les requêtes et vous le dit à la fin, au lieu de vous laisser devant un disque muet.",
     },
 
     { kind: "h2", text: "Ma connexion est-elle chiffrée ?" },

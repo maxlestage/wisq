@@ -102,7 +102,7 @@ let rustCoreTargets: [Target] = rustCoreEnabled ? [
     // LinuxMachine, so the app can be pointed at either.
     .target(
         name: "WisqVMRust",
-        dependencies: ["CWisqVM"],
+        dependencies: ["CWisqVM", "WisqVM"],
         linkerSettings: rustLinkerSettings
     ),
 

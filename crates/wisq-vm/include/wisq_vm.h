@@ -94,6 +94,28 @@ int wisq_vm_load_with_tree(WisqVM *vm, const uint8_t *image, size_t len,
  */
 int wisq_vm_attach_disk(WisqVM *vm, const uint8_t *image, size_t len);
 
+/*
+ * Gives the machine a disk read from a file, with a durable write overlay.
+ *
+ * base is opened read-only and never changes; writes and writes.map are
+ * created beside it if absent and hold every sector the guest writes, as it
+ * writes them. Nothing of the base is copied.
+ *
+ * Returns 0, or -1 for a null argument, -2 when the base cannot be opened,
+ * -3 when it is smaller than a sector, -4 when the overlay cannot be opened,
+ * -5 when the overlay belongs to another disk.
+ */
+int wisq_vm_attach_disk_file(WisqVM *vm, const char *base, const char *writes);
+
+/* Pushes what the guest wrote to its disk down to durable storage. */
+int wisq_vm_flush_disk(const WisqVM *vm);
+
+/*
+ * How many bytes of disk the guest changed: the overlay's size for a
+ * file-backed disk, the whole image for a memory one.
+ */
+uint64_t wisq_vm_disk_bytes_written(const WisqVM *vm);
+
 /* Takes the disk away, and drops the interrupt line with it. */
 int wisq_vm_detach_disk(WisqVM *vm);
 
