@@ -51,11 +51,48 @@ public struct X86BootLoader {
     public static let bootParametersSize = 4096
     /// Où la carte mémoire vit dans la page zéro : le nombre d'entrées à
     /// 0x1E8, puis la table à 0x2D0, vingt octets par entrée.
+    /// **L'écran qu'on annonce au noyau, ou rien.**
+    ///
+    /// Linux ne devine pas qu'il y a un cadre à peindre : il lit `screen_info`,
+    /// les soixante-quatre premiers octets de la page zéro. Le chemin moderne —
+    /// `sysfb`, puis `simpledrm` ou `simplefb` — s'accroche à
+    /// `VIDEO_TYPE_VLFB` et lit ensuite l'adresse, la géométrie et la place de
+    /// chaque couleur dans le pixel.
+    ///
+    /// Le format est **XRGB8888**, quatre octets par pixel : c'est celui que
+    /// `simpledrm` accepte sans conversion, et celui que Core Graphics et
+    /// Metal prennent tel quel de l'autre côté. Choisir autre chose ferait
+    /// payer une conversion à chaque image, des deux côtés.
+    public struct Framebuffer: Equatable, Sendable {
+        /// L'adresse physique invitée du premier pixel.
+        public let base: UInt64
+        public let width: Int
+        public let height: Int
+
+        public init(base: UInt64, width: Int, height: Int) {
+            self.base = base
+            self.width = width
+            self.height = height
+        }
+
+        /// Quatre octets par pixel, et pas de remplissage en fin de ligne.
+        public var bytesPerRow: Int { width * 4 }
+        public var byteCount: Int { bytesPerRow * height }
+    }
+
+    /// `VIDEO_TYPE_VLFB` : VESA en mode graphique, cadre linéaire. Sans cette
+    /// valeur dans `orig_video_isVGA`, le noyau ignore tout le reste de
+    /// `screen_info` et démarre sans écran.
+    public static let videoTypeLinearFramebuffer: UInt8 = 0x23
+
     public static let e820CountOffset = 0x1E8
     public static let e820TableOffset = 0x2D0
     /// Le type « mémoire utilisable ». Les autres — réservée, ACPI, défunte —
     /// ne nous servent pas encore.
     public static let e820Usable: UInt32 = 1
+    /// Type 2 : réservé. Le noyau le lit, ne l'alloue jamais, et le laisse à
+    /// qui l'a déclaré.
+    public static let e820Reserved: UInt32 = 2
     /// Le trou sous le mégaoctet : la mémoire vidéo et le BIOS y vivaient, et
     /// un noyau s'attend à ce qu'il soit là. Le déclarer utilisable ferait
     /// écrire le noyau dans un endroit qu'aucune vraie machine ne lui donne.
@@ -85,7 +122,8 @@ public struct X86BootLoader {
     public static func load(
         kernel: [UInt8], into memory: X86Memory,
         commandLine: String = X86BootLoader.defaultCommandLine,
-        initialRamdisk: [UInt8]? = nil
+        initialRamdisk: [UInt8]? = nil,
+        framebuffer: Framebuffer? = nil
     ) throws -> Placement {
         guard let header = LinuxBootProtocol.read(from: kernel, totalBytes: kernel.count) else {
             throw LoadError.notAKernel
@@ -164,6 +202,32 @@ public struct X86BootLoader {
         }
         write32(&page, 0x228, UInt32(truncatingIfNeeded: commandLineAddress))
 
+        // **L'écran, s'il y en a un.** Les décalages viennent de
+        // `struct screen_info` et ne se déduisent d'aucune règle : `lfb_base`
+        // est à 0x18, la longueur de ligne à 0x24, séparée de la géométrie par
+        // deux champs qui n'ont rien à voir. Un octet posé à côté donne un
+        // noyau qui peint dans le vide, sans rien dire.
+        if let screen = framebuffer {
+            page[0x0F] = videoTypeLinearFramebuffer
+            write16(&page, 0x12, UInt16(truncatingIfNeeded: screen.width))
+            write16(&page, 0x14, UInt16(truncatingIfNeeded: screen.height))
+            write16(&page, 0x16, 32)  // lfb_depth : quatre octets par pixel
+            write32(&page, 0x18, UInt32(truncatingIfNeeded: screen.base))
+            write32(&page, 0x1C, UInt32(truncatingIfNeeded: screen.byteCount))
+            write16(&page, 0x24, UInt16(truncatingIfNeeded: screen.bytesPerRow))
+            // XRGB8888 : bleu en bas, puis vert, puis rouge, l'octet inutilisé
+            // en haut. C'est l'ordre que `simpledrm` attend et celui que la
+            // couche d'affichage prend sans conversion.
+            page[0x26] = 8   // red_size
+            page[0x27] = 16  // red_pos
+            page[0x28] = 8   // green_size
+            page[0x29] = 8   // green_pos
+            page[0x2A] = 8   // blue_size
+            page[0x2B] = 0   // blue_pos
+            page[0x2C] = 8   // rsvd_size
+            page[0x2D] = 24  // rsvd_pos
+        }
+
         // La carte mémoire. **Sans elle, le noyau croit qu'il n'a aucune RAM**
         // et s'arrête : c'est le seul champ de la page zéro qu'un chargeur ne
         // peut pas laisser à zéro. Deux entrées suffisent — ce qui est sous le
@@ -172,6 +236,13 @@ public struct X86BootLoader {
         let memoryTop = memory.base &+ UInt64(memory.size)
         if memoryTop > 0x10_0000 {
             entries.append((0x10_0000, memoryTop &- 0x10_0000, e820Usable))
+        }
+        // **Un écran non réservé est de la mémoire que le noyau donnera à
+        // quelqu'un d'autre.** L'allocateur ne consulte que cette carte ; sans
+        // l'entrée, deux écritures se disputeraient les mêmes pages et le
+        // bureau se corromprait sous des causes sans rapport.
+        if let screen = framebuffer {
+            entries.append((screen.base, UInt64(screen.byteCount), e820Reserved))
         }
         page[e820CountOffset] = UInt8(entries.count)
         for (index, entry) in entries.enumerated() {
@@ -201,6 +272,10 @@ public struct X86BootLoader {
 
     static func write64(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt64) {
         for byte in 0..<8 { bytes[offset + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }
+    }
+
+    static func write16(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt16) {
+        for index in 0..<2 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (8 * index)) }
     }
 
     static func write32(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt32) {
