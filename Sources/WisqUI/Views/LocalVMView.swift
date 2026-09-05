@@ -135,7 +135,7 @@ struct LocalVMListView: View {
 
             if let importError {
                 Section {
-                    Label(importError, systemImage: "exclamationmark.triangle.fill")
+                    RefusalLabel(text: importError)
                         .foregroundStyle(.red)
                 }
             }
