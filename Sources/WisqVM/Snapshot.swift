@@ -144,6 +144,15 @@ enum Snapshot {
             }
         }
 
+        /// Whether every byte has been read.
+        ///
+        /// **A section that may be absent needs this**, and the x86 disk is
+        /// one: a snapshot taken before the machine had a disk simply ends
+        /// where the RAM ends. Refusing to read those would lose the machines
+        /// already saved on people's phones, so their absence is read as
+        /// "no disk" rather than as damage.
+        var isAtEnd: Bool { at == bytes.count }
+
         /// Refuses trailing bytes: a snapshot with something after its last
         /// section is one this build does not fully understand.
         func finish() throws {

@@ -336,4 +336,70 @@ public final class X86VirtioBlock: @unchecked Sendable {
         try? memory.write(usedRing &+ 2, 2, UInt64(nextUsed))
         interruptStatus |= 1
     }
+
+    // MARK: - Ce qu'on sauve
+
+    /// **Tout ce que le pilote a posé, plus où en est la file.**
+    ///
+    /// Les registres de découverte sont constants et ne se sauvent pas : le
+    /// magique, la version, la classe. Ce qui se sauve, c'est ce que le pilote
+    /// a écrit — l'état de la poignée de main, la taille et les trois adresses
+    /// de la file — et les deux index qui disent où elle en est. Ces deux-là
+    /// sont les seuls qu'une reprise ne peut pas recalculer : ils ne vivent
+    /// que dans ce périphérique, et le pilote, lui, garde les siens.
+    func save(into writer: inout Snapshot.Writer) {
+        writer.u32(deviceFeaturesSelect)
+        writer.u32(driverFeaturesSelect)
+        writer.u64(driverFeatures)
+        writer.u32(status)
+        writer.u32(queueSelect)
+        writer.u32(queueSize)
+        writer.u32(queueReady)
+        writer.u64(descriptorTable)
+        writer.u64(availableRing)
+        writer.u64(usedRing)
+        writer.u32(queuePageNumber)
+        writer.u32(interruptStatus)
+        writer.u32(UInt32(nextAvailable))
+        writer.u32(UInt32(nextUsed))
+        writer.u64(served)
+        writer.u64(refused)
+        // L'image, par l'encodage de la RAM : une image fraîchement formatée
+        // est presque entièrement nulle — treize pages sur quatre mille
+        // quatre-vingt-seize pour une ext4 de seize mébioctets — et la coder
+        // telle quelle rendrait l'instantané trop lourd pour être pris à
+        // chaque passage en arrière-plan, qui est le seul moment où on peut.
+        writer.u64(UInt64(image.count))
+        image.withUnsafeBytes { writer.ram($0) }
+    }
+
+    /// Le périphérique tel qu'il était. Construit plutôt que rempli sur place :
+    /// une reprise qui échoue en chemin ne doit pas laisser derrière elle un
+    /// disque à moitié rangé, et la machine ne prend celui-ci qu'une fois
+    /// toutes les lectures faites.
+    static func restored(from reader: inout Snapshot.Reader) throws -> X86VirtioBlock {
+        let device = X86VirtioBlock(image: [])
+        device.deviceFeaturesSelect = try reader.u32()
+        device.driverFeaturesSelect = try reader.u32()
+        device.driverFeatures = try reader.u64()
+        device.status = try reader.u32()
+        device.queueSelect = try reader.u32()
+        device.queueSize = try reader.u32()
+        device.queueReady = try reader.u32()
+        device.descriptorTable = try reader.u64()
+        device.availableRing = try reader.u64()
+        device.usedRing = try reader.u64()
+        device.queuePageNumber = try reader.u32()
+        device.interruptStatus = try reader.u32()
+        device.nextAvailable = UInt16(truncatingIfNeeded: try reader.u32())
+        device.nextUsed = UInt16(truncatingIfNeeded: try reader.u32())
+        device.served = try reader.u64()
+        device.refused = try reader.u64()
+        let count = try Int(exactly: reader.u64()) ?? -1
+        guard count >= 0 else { throw Snapshot.Failure.corrupt }
+        var image = [UInt8](repeating: 0, count: count)
+        try image.withUnsafeMutableBytes { try reader.ram($0) }
+        device.image = image
+        return device
+    }
 }
