@@ -1828,6 +1828,76 @@ prenons des branches différentes, c'est la nôtre qui est la moins éprouvée. 
 n'est pas symétrique, et ça ne demande pas de soupçonner un bug — juste de
 remarquer la divergence.
 
+## Lot 8 — le bureau local, et le JIT qu'on n'a pas le droit d'écrire
+
+**La contrainte, d'abord.** iOS n'accorde à aucune application de l'App Store
+une page à la fois inscriptible et exécutable. Pas de JIT, donc un
+interpréteur. Mesuré, sur ce dépôt :
+
+| Cœur | Débit |
+| --- | --- |
+| rv32ima, en Rust | 157 MIPS |
+| x86-64, en Swift | 10,6 MIPS |
+
+À 10,6 MIPS, un noyau seul demande trois minutes, et un bureau complet — de
+l'ordre de cinquante milliards d'instructions — **plus d'une heure**. C'est ce
+qui rend la machine locale utile en console et inutile en bureau.
+
+**Ce que l'optimisation de l'interpréteur peut rendre, et pas plus.** Le
+décodage a été chronométré séparément : il pèse **30 %** du temps du cœur x86.
+Un cache de décodage parfait plafonne donc à ×1,4. Le reste est dans le calcul
+des drapeaux, les accès mémoire et la répartition. Une réécriture soignée, ou
+un portage en Rust comme le cœur rv32, viserait ×5 à ×15 : le bureau passerait
+d'une heure à cinq ou dix minutes de démarrage. Mieux, et toujours pas un
+bureau.
+
+**Le contournement, et il est réel.** WebKit est la seule chose sur iOS qui ait
+le droit de compiler, et une application peut héberger un `WKWebView`. Un cœur
+qui **engendre du WebAssembly** plutôt que du code machine ne produit pas de
+code : il produit une donnée, que WebKit compile. C'est ce que fait v86 dans un
+navigateur, et c'est légal dans le bac à sable d'Apple.
+
+**Mesuré plutôt que supposé** — `scripts/wasm-jit-probe.ts`, à lancer avec
+`bun`. La boucle du banc x86, recompilée en WebAssembly, exécutée par
+JavaScriptCore, qui est le moteur exact de `WKWebView` (Bun l'embarque) :
+
+| Forme | Débit | Rapport |
+| --- | --- | --- |
+| Interpréteur Swift | 10,6 MIPS | ×1 |
+| WebAssembly, registres en mémoire, quatre drapeaux calculés, répartition indirecte | **831 MIPS** | ×78 |
+| WebAssembly, tout spécialisé — le plafond, irréaliste | 11 000 MIPS | ×1040 |
+
+La ligne du milieu est celle qui compte : elle paie ce qu'un vrai
+recompilateur paie. Un oracle en clair vérifie que le bloc recompilé calcule
+bien la même chose que le modèle ; un sabotage du drapeau zéro le fait tomber.
+
+**Ce que ce chiffre ne dit pas.** Une seule boucle de huit instructions, très
+prévisible. Un vrai cœur paie en plus la diversité des blocs, la traduction
+d'adresse par table de pages plutôt que par masque, les interruptions, les
+entrées-sorties, et la détection du code qui se modifie. L'attente honnête est
+« quelques centaines de MIPS », pas 831. À trois cents, un bureau complet
+démarre en moins de trois minutes et devient utilisable.
+
+**Les tranches, si on y va.**
+
+1. Un hôte `WKWebView` dans l'application, avec la RAM invitée en
+   `SharedArrayBuffer` et un pont pour l'écran et les entrées. Mesurer le pont
+   avant d'écrire le cœur : c'est lui qui peut tout gâcher.
+2. Un émetteur de WebAssembly, et le cœur x86 qui traduit un bloc de base à la
+   fois, avec le même corpus d'oracles matériels que le cœur Swift — les neuf
+   corpus existent déjà et ne demandent qu'à juger un troisième cœur.
+3. Un tampon d'affichage pour l'invité (`virtio-gpu` ou une VGA linéaire) et sa
+   vue. Sans lui, il n'y a pas de bureau à montrer, quelle que soit la vitesse.
+4. La bascule : le cœur WebAssembly quand le `WKWebView` compile, l'interpréteur
+   sinon. Le second reste le filet, et reste la seule chose qui marche sans
+   réseau ni WebKit.
+
+**Et ce qui ne changera pas.** Un bureau moderne accéléré — Hyprland, GNOME
+sous OpenGL — demande un GPU que l'invité n'a pas. Le bureau local visé est un
+bureau logiciel : X11 léger, ou Wayland sous rendu logiciel, à une définition
+modeste. Le bureau réel avec sa carte graphique reste du côté de l'hôte, par
+`wisq-agent bureau` et SPICE.
+
 ## Lot 6 — finition
 
 - iPad : curseur système, multi-fenêtres, pointeur indirect (souris et trackpad).
