@@ -33,8 +33,7 @@ public enum SpiceTicket {
     /// encryption, as the protocol specifies.
     public static let platform: SpiceTicketEncryptor = { password, publicKey in
         #if canImport(Security)
-        var padded = [UInt8](Array(password.utf8).prefix(ticketLength - 1))
-        padded.append(contentsOf: [UInt8](repeating: 0, count: ticketLength - padded.count))
+        let clear = clearText(password)
 
         var error: Unmanaged<CFError>?
         let attributes: [CFString: Any] = [
@@ -49,7 +48,7 @@ public enum SpiceTicket {
             throw SpiceError.ticketUnavailable
         }
         guard let encrypted = SecKeyCreateEncryptedData(
-            key, .rsaEncryptionOAEPSHA1, Data(padded) as CFData, &error
+            key, .rsaEncryptionOAEPSHA1, Data(clear) as CFData, &error
         ) else {
             throw SpiceError.ticketUnavailable
         }
@@ -65,6 +64,37 @@ public enum SpiceTicket {
 
     /// The password field a SPICE ticket carries, before encryption.
     static let ticketLength = 128
+
+    /// What actually goes through RSA: the password and one NUL, nothing more.
+    ///
+    /// **This used to be padded to 128 bytes, and that could never work.** The
+    /// ticket the server reads is 128 bytes because that is the size of a
+    /// 1024-bit RSA modulus — it is the size of the *ciphertext*. OAEP with
+    /// SHA-1 leaves 128 − 2×20 − 2 = 86 bytes for the plaintext, so handing it
+    /// 128 was asking a 128-byte key to carry 128 bytes of payload plus its own
+    /// padding. `SecKeyCreateEncryptedData` refuses, the client throws
+    /// `ticketUnavailable`, and every password-protected SPICE desktop was
+    /// unreachable.
+    ///
+    /// Nothing caught it because nothing here had ever spoken to a SPICE server:
+    /// the unit tests inject their own encryptor, and the seam above says in as
+    /// many words that it exists so a Linux runner can go red. It never ran.
+    /// `SPICELiveDesktopTests` is that runner, and this is what it found.
+    ///
+    /// The reference client does the same thing — spice-gtk encrypts
+    /// `strlen(passwd) + 1` bytes — and the server compares the decrypted string
+    /// against its own, so trailing padding was never wanted in the first place.
+    /// The truncation stays: SPICE's own limit is sixty characters, and 86 is
+    /// what OAEP allows here.
+    public static func clearText(_ password: String) -> [UInt8] {
+        var clear = [UInt8](Array(password.utf8).prefix(maximumPasswordBytes))
+        clear.append(0)
+        return clear
+    }
+
+    /// 128 − 2×20 − 2, the most OAEP-SHA1 fits through a 1024-bit key, minus the
+    /// NUL. SPICE's own maximum is sixty; this is the arithmetic bound.
+    static let maximumPasswordBytes = 85
 }
 
 /// The SPICE link handshake, over any byte stream.
