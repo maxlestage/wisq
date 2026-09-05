@@ -131,7 +131,6 @@ final class RDPCryptoTests: XCTestCase {
         XCTAssertEqual(identity, message, "élever à la puissance un ne change rien")
     }
 
-
     /// Le module public du serveur xrdp de ce conteneur, en petit-boutiste,
     /// tel que son certificat le donne.
     static let xrdpModulus: [UInt8] = [

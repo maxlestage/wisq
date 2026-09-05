@@ -34,6 +34,51 @@ final class RDPLiveHandshakeTests: XCTestCase {
         return try await stream.read(exactly: length)
     }
 
+    /// Une session dont l'échange de clés est fait : le canal du client, ce que
+    /// le serveur a décrit, et les clés dérivées.
+    struct Established {
+        var user: UInt16
+        var server: RDPConnect.ServerDescription
+        var security: RDPStandardSecurity
+    }
+
+    /// Aller jusqu'au Client Info, et rendre de quoi continuer. Ce chemin est
+    /// mesuré pas à pas par les deux suites d'en dessous ; les tranches
+    /// suivantes s'en servent comme d'un point de départ plutôt que de le
+    /// recopier.
+    static func establish(_ stream: PosixByteStream,
+                          user name: String = "essai") async throws -> Established {
+        func pdu() async throws -> Data { try await readPDU(stream) }
+        try await stream.write(RDPWire.connectionRequest(user: name, requesting: .standard))
+        guard try RDPWire.readConnectionConfirm(await pdu()) == .standardSecurity else {
+            throw XCTSkip("ce serveur ne parle pas la sécurité historique")
+        }
+        try await stream.write(RDPConnect.connectInitial(
+            .init(width: 1024, height: 768, name: "wisq")))
+        let server = try RDPConnect.readConnectResponse(await pdu())
+        try await stream.write(RDPMCS.erectDomainRequest())
+        try await stream.write(RDPMCS.attachUserRequest())
+        let user = try RDPMCS.readAttachUserConfirm(await pdu())
+        for channel in [user, server.ioChannel] {
+            try await stream.write(RDPMCS.channelJoinRequest(user: user, channel: channel))
+            try RDPMCS.readChannelJoinConfirm(await pdu(), expecting: channel)
+        }
+        let key = try RDPStandardSecurity.publicKey(fromCertificate: [UInt8](server.certificate))
+        let clientRandom = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        try await stream.write(RDPMCS.sendData(
+            user: user, channel: server.ioChannel,
+            RDPStandardSecurity.securityExchange(clientRandom: clientRandom, key: key)))
+        var security = RDPStandardSecurity(keys: try RDPStandardSecurity.deriveKeys(
+            clientRandom: clientRandom, serverRandom: [UInt8](server.serverRandom),
+            method: server.encryptionMethod))
+        let info = RDPClientInfo.packet(
+            user: name, password: "mauvais",
+            flags: RDPClientInfo.defaultFlags.union(.forceEncryptedCSPDU))
+        try await stream.write(RDPMCS.sendData(user: user, channel: server.ioChannel,
+                                               security.seal(info, flags: [.info])))
+        return Established(user: user, server: server, security: security)
+    }
+
     /// **Le serveur accepte notre premier paquet et répond une confirmation.**
     func testARealServerConfirmsTheConnection() async throws {
         let target = try Self.target()

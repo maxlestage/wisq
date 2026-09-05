@@ -33,6 +33,13 @@ actor PosixByteStream: ByteStream {
             if socketDescriptor >= 0 {
                 if connect(socketDescriptor, candidate.pointee.ai_addr,
                            candidate.pointee.ai_addrlen) == 0 {
+                    // **Une lecture qui n'aboutit pas doit échouer, pas
+                    // pendre.** Un test qui attend un message que le serveur
+                    // n'enverra jamais bloque la suite entière, et rien
+                    // n'indique lequel.
+                    var limit = timeval(tv_sec: 5, tv_usec: 0)
+                    setsockopt(socketDescriptor, SOL_SOCKET, SO_RCVTIMEO,
+                               &limit, socklen_t(MemoryLayout<timeval>.size))
                     descriptor = socketDescriptor
                     return
                 }
