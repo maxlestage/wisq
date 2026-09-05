@@ -88,6 +88,73 @@ pub unsafe extern "C" fn wisq_vm_load(
     }
 }
 
+/// Gives the machine a disk, seen by the guest on `/dev/vda`.
+///
+/// Call before loading: it is the tree that makes the device findable, and the
+/// tree arrives from the caller. A tree without the node describes a machine
+/// with no disk, and the guest will never probe the window.
+///
+/// The image is copied. The device holds it whole and writes into it — that is
+/// what lets the guest's writes survive a suspension — so it cannot borrow the
+/// caller's buffer.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`; `image` must point at `len` readable
+/// bytes.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_attach_disk(
+    vm: *mut WisqVM,
+    image: *const u8,
+    len: usize,
+) -> c_int {
+    let Some(vm) = vm.as_mut() else { return -1 };
+    if image.is_null() {
+        return -1;
+    }
+    vm.machine.attach_disk(std::slice::from_raw_parts(image, len));
+    0
+}
+
+/// Takes the disk away, and drops the interrupt line with it.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_detach_disk(vm: *mut WisqVM) -> c_int {
+    let Some(vm) = vm.as_mut() else { return -1 };
+    vm.machine.detach_disk();
+    0
+}
+
+/// How many requests the disk has served, and how many it refused.
+///
+/// A device that refuses everything and a device nobody calls read the same
+/// without both numbers — which is exactly what the app needs to tell someone
+/// their kernel has no block driver.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_disk_served(vm: *const WisqVM) -> u64 {
+    vm.as_ref().map_or(0, |vm| vm.machine.disk_served())
+}
+
+/// # Safety
+/// `vm` must come from `wisq_vm_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_disk_refused(vm: *const WisqVM) -> u64 {
+    vm.as_ref().map_or(0, |vm| vm.machine.disk_refused())
+}
+
+/// Non-zero while a disk is attached.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_has_disk(vm: *const WisqVM) -> c_int {
+    c_int::from(vm.as_ref().is_some_and(|vm| vm.machine.has_disk()))
+}
+
 /// Loads a kernel image with the device tree supplied by the caller.
 ///
 /// The tree is what the firmware tells the kernel about the board, and wisq

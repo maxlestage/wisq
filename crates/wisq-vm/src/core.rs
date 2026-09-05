@@ -24,9 +24,15 @@ pub const EXTERNAL_BIT: u32 = 1 << 11;
 
 /// Memory-mapped I/O the core does not implement itself.
 pub trait Bus {
-    fn mmio_load(&mut self, address: u32) -> u32;
+    /// The guest's memory comes with the access.
+    ///
+    /// Devices with a queue read their descriptors out of the guest's own
+    /// memory, and the core holds the only mutable borrow of it while it runs
+    /// — so the borrow is handed down rather than duplicated. Devices that do
+    /// not care (the UART, the CLINT) ignore it.
+    fn mmio_load(&mut self, ram: &mut [u8], address: u32) -> u32;
     /// `Some(code)` halts the machine with that code — the syscon path.
-    fn mmio_store(&mut self, address: u32, value: u32) -> Option<u32>;
+    fn mmio_store(&mut self, ram: &mut [u8], address: u32, value: u32) -> Option<u32>;
     /// The machine clock, handed to the devices once per step, after the timer
     /// has advanced and after any wait-for-interrupt jump.
     ///
@@ -293,7 +299,7 @@ impl Core {
                         if address >= ram_size.wrapping_sub(3) {
                             address = address.wrapping_add(RAM_BASE);
                             if Self::is_mmio(address) {
-                                rval = bus.mmio_load(address);
+                                rval = bus.mmio_load(ram, address);
                             } else {
                                 trap = 5 + 1; // load access fault
                                 rval = address;
@@ -319,7 +325,7 @@ impl Core {
                         if address >= ram_size.wrapping_sub(3) {
                             address = address.wrapping_add(RAM_BASE);
                             if Self::is_mmio(address) {
-                                if let Some(halt) = bus.mmio_store(address, rs2) {
+                                if let Some(halt) = bus.mmio_store(ram, address, rs2) {
                                     // Syscon: the reference advances PC before halting.
                                     self.pc = pc.wrapping_add(4);
                                     self.sync_cycles(cycle);
@@ -696,10 +702,10 @@ mod tests {
     struct NullBus;
 
     impl Bus for NullBus {
-        fn mmio_load(&mut self, _address: u32) -> u32 {
+        fn mmio_load(&mut self, _ram: &mut [u8], _address: u32) -> u32 {
             0
         }
-        fn mmio_store(&mut self, _address: u32, _value: u32) -> Option<u32> {
+        fn mmio_store(&mut self, _ram: &mut [u8], _address: u32, _value: u32) -> Option<u32> {
             None
         }
         fn set_time(&mut self, _low: u32, _high: u32) {}

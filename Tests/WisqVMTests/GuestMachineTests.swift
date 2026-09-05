@@ -202,26 +202,28 @@ final class GuestMachineTests: XCTestCase {
     }
     // MARK: - Le disque
 
-    /// **Un disque donné à la machine RISC-V est refusé, et nommé.**
+    /// **La machine RISC-V prend un disque, et le nœud suit.**
     ///
-    /// Le noyau rv32 « nommu » de cette famille n'a aucun pilote de bloc : un
-    /// contrôleur virtio serait un périphérique que personne n'énumère, et
-    /// accepter en silence laisserait croire que le réglage a pris.
-    func testTheRiscVMachineRefusesADiskByName() {
-        let machine: GuestMachine = LinuxMachine(ramSize: 32 << 20, onOutput: { _ in })
-        XCTAssertThrowsError(try machine.attachDisk(Data(repeating: 0, count: 512))) { error in
-            XCTAssertEqual(
-                error as? GuestMachineRefusal, .noDiskHere(architecture: "RISC-V 32 bits"))
-        }
+    /// Elle le refusait, et le refus était juste : la carte n'avait ni
+    /// contrôleur d'interruption pour un périphérique, ni moyen de le déclarer.
+    /// Les deux manques ont été comblés. Ce test tient le sens de ce
+    /// changement — le disque est là **et** l'arbre remis à l'invité le dit,
+    /// parce qu'un disque qu'aucun arbre n'annonce n'existe pas.
+    func testTheRiscVMachineTakesADiskAndDeclaresIt() throws {
+        let machine = LinuxMachine(ramSize: 32 << 20, onOutput: { _ in })
+        XCTAssertNil(machine.disk, "rien avant qu'on en donne un")
+        try (machine as GuestMachine).attachDisk(Data(repeating: 0x5A, count: 4096))
+        XCTAssertEqual(machine.disk?.sectors, 8)
+        try machine.load(kernelImage: Data(repeating: 0, count: 64))
+        XCTAssertNotNil(
+            try DeviceTree.read(machine.deviceTreeHandedToTheGuest)
+                .root.child("soc")?.child("virtio_mmio@10001000"),
+            "un noyau qui ne trouve pas ce nœud ne sondera jamais la fenêtre")
     }
 
-    /// Et le refus **porte sa phrase**, pas seulement son cas : c'est ce que
-    /// l'application affiche.
+    /// Et le refus qui reste **porte sa phrase**, pas seulement son cas :
+    /// c'est ce que l'application affiche.
     func testTheRefusalsCarryTheirOwnSentence() throws {
-        let disk = try XCTUnwrap(
-            GuestMachineRefusal.noDiskHere(architecture: "RISC-V 32 bits").errorDescription)
-        XCTAssertTrue(disk.contains("RISC-V 32 bits"), disk)
-        XCTAssertTrue(disk.contains("pilote bloc"), disk)
         let ramdisk = try XCTUnwrap(
             GuestMachineRefusal.noRamdiskHere(architecture: "RISC-V 32 bits").errorDescription)
         XCTAssertTrue(ramdisk.contains("initramfs"), ramdisk)

@@ -209,6 +209,14 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Whether everything has been read.
+    ///
+    /// Sections that arrived after the format existed are optional: their
+    /// absence is a snapshot from before them, not a corrupt one.
+    pub(crate) fn is_at_end(&self) -> bool {
+        self.at == self.bytes.len()
+    }
+
     /// Refuses trailing bytes. A snapshot with something after its last
     /// section is one this build does not fully understand.
     pub(crate) fn finish(self) -> Result<(), SnapshotError> {
