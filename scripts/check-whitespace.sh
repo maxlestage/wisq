@@ -58,6 +58,27 @@ while IFS= read -r file; do
     report "$file : accolade ouvrante seule sur sa ligne (opening_brace) — ligne $(grep -n '^[[:space:]]*{[[:space:]]*$' "$file" | head -1 | cut -d: -f1)"
   fi
 
+  # A platform guard must cover the whole file.
+  #
+  # Not a SwiftLint rule at all, and here for the same reason as the rest: it
+  # is a defect that Linux cannot see. A file that opens with
+  # `#if canImport(Glibc)` and closes its guard early compiles perfectly here —
+  # everything is inside it — and fails on Apple, where the imports vanish and
+  # whatever sits after the `#endif` is left looking for `XCTestCase`.
+  #
+  # It has happened once, to RDPLiveHandshakeTests: two suites appended after
+  # the `#endif` rather than before it. Ten minutes of CI to learn it, and
+  # nothing local could have said so.
+  # Ce qui distingue une garde de fichier entier d'un simple `#if` autour d'un
+  # import, c'est qu'elle est la **première chose** du fichier, commentaires de
+  # tête mis à part. Une garde d'import arrive après d'autres lignes, et se
+  # referme aussitôt : elle est correcte, et ce contrôle ne doit pas la voir.
+  if [ "$(awk '!/^[[:space:]]*$/ && !/^[[:space:]]*\/\// { print; exit }' "$file" \
+          | grep -c '^#if canImport')" = "1" ] \
+     && [ "$(tail -1 "$file")" != "#endif" ]; then
+    report "$file : la garde de plateforme ne couvre pas la fin du fichier"
+  fi
+
   # vertical_whitespace: at most one blank line in a row.
   if awk 'BEGIN { blank = 0 }
           /^[[:space:]]*$/ { blank++; if (blank > 1) { print NR; exit } }

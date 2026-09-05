@@ -104,7 +104,7 @@ const en: Copy = {
       name: "Remote",
       head: "The VM runs where the silicon is",
       body:
-        "Two hand-written clients built for a phone — VNC and SPICE, no library between them and the wire: compressed encodings so it stays usable on cellular, a touch model that actually hits small buttons, and it opens the .vv and .rdp files your hypervisors hand out.",
+        "Three hand-written clients built for a phone — VNC, SPICE and RDP, no library between them and the wire: compressed encodings so it stays usable on cellular, a touch model that actually hits small buttons, and it opens the .vv and .rdp files your hypervisors hand out.",
       points: [
         "VNC: ZRLE, Tight with JPEG, zlib — over session-lived streams",
         "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor, input, sound both ways, clipboard, file drop into the guest",
@@ -167,7 +167,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "1841", label: "tests" },
+      { value: "2000", label: "tests" },
       { value: "6", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -227,7 +227,7 @@ const fr: Copy = {
       name: "Distant",
       head: "La VM tourne là où il y a du silicium",
       body:
-        "Deux clients écrits à la main pour un téléphone — VNC et SPICE, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, un modèle tactile qui atteint vraiment les petits boutons, et l'ouverture des fichiers .vv et .rdp que vos hyperviseurs remettent.",
+        "Trois clients écrits à la main pour un téléphone — VNC, SPICE et RDP, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, un modèle tactile qui atteint vraiment les petits boutons, et l'ouverture des fichiers .vv et .rdp que vos hyperviseurs remettent.",
       points: [
         "VNC : ZRLE, Tight avec JPEG, zlib — sur des flux persistants",
         "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur, entrées, son dans les deux sens, presse-papiers, dépôt de fichiers dans l'invité",
@@ -285,7 +285,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "1841", label: "tests" },
+      { value: "2000", label: "tests" },
       { value: "6", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
