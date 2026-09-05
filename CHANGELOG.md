@@ -8,6 +8,22 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **`WebKitJITProbeTests` : la question qui décide du lot 8, posée à la pile
+  d'Apple.** iOS n'accorde à aucune application de l'App Store une page à la
+  fois inscriptible et exécutable, donc pas de JIT. WebKit est la seule
+  exception, et une application peut héberger un `WKWebView` : un cœur qui
+  engendre du WebAssembly ne produit pas de code, il produit une donnée que
+  WebKit compile. Sous Bun, qui embarque le même JavaScriptCore, le module
+  réaliste fait 831 MIPS contre 10,6 pour l'interpréteur. Restait à savoir si
+  un `WKWebView` **dans une application** en fait autant, et ce que coûte le
+  pont : ces deux mesures-là ne peuvent venir que du coureur Apple, et elles
+  y sont maintenant. Le module vient de `scripts/wasm-jit-probe.ts` et son
+  oracle est refait dans la vue avant tout chronomètre, pour qu'un module
+  abîmé en route ne rende pas un débit magnifique et faux. Une vue qui ne
+  démarre pas est un saut ; une vue qui démarre et rend un débit
+  d'interpréteur fait tomber le test.
+
+### Added
 - **`wisq-agent bureau` : d'une image d'installation à un bureau, en une
   commande.** wisq affichait un bureau distant depuis longtemps ; ce qui
   manquait, c'était la machine à afficher. Écrire un domaine libvirt à la main

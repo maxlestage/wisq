@@ -349,3 +349,10 @@ console.log(`  instructions  : ${(Number(done) / 1_000_000).toFixed(1)} M`);
 console.log(`  durée         : ${realSeconds.toFixed(3)} s`);
 console.log(`  débit         : ${realMips.toFixed(1)} MIPS`);
 console.log(`  rapport à l'interpréteur : ×${(realMips / 10.6).toFixed(0)}`);
+
+// `--module` écrit le module réaliste en base64 et s'arrête là. C'est ce que
+// la sonde `WebKitJITProbeTests` embarque : elle mesure le même module, mais
+// dans un `WKWebView`, sur la pile d'Apple, chez le coureur Apple.
+if (process.argv.includes("--module")) {
+  console.log(Buffer.from(realistic).toString("base64"));
+}

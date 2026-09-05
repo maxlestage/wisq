@@ -176,6 +176,11 @@ const GATES: Record<string, Verdict> = {
   "app › Run the app layer's tests in a simulated iPhone": {
     absent: "simulateur iPhone, donc macOS et Xcode",
   },
+  "app › Ce que l'iPhone simulé a mesuré": {
+    absent:
+      "relit le fichier de mesures que le pas précédent a laissé ; sans " +
+      "simulateur iPhone, verify.sh n'a rien à relire",
+  },
   "app › Build for simulator": { verify: /xcodebuild build/ },
   "app › Build for simulator on the Swift core": {
     absent:

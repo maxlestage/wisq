@@ -1878,6 +1878,33 @@ entrées-sorties, et la détection du code qui se modifie. L'attente honnête es
 « quelques centaines de MIPS », pas 831. À trois cents, un bureau complet
 démarre en moins de trois minutes et devient utilisable.
 
+**Et ce que la pile d'Apple a répondu.** `Tests/WisqWebKitTests` pose les deux
+questions qu'aucune mesure sous Bun ne tranche, dans un `WKWebView` **hébergé
+par l'application**, sur un iPhone simulé du coureur Apple :
+
+| Question | Mesure |
+| --- | --- |
+| Le module engendré, exécuté dans la vue | **1300 MIPS** sur 160 M instructions |
+| Un aller-retour vers la vue | **0,479 ms** |
+
+L'oracle est refait dans la vue avant le chronomètre : le module calcule bien
+ce que le modèle calcule. Le pont laisse trente-cinq allers-retours par image à
+soixante par seconde — il ne mange pas l'image.
+
+**Ce que ces deux chiffres ne prouvent pas, et il faut le dire.** Le simulateur
+tourne sur le Mac Apple Silicon du coureur, et **macOS ne restreint pas le
+JIT**. Ces 1300 MIPS mesurent donc JavaScriptCore sur un Mac, à travers le
+chemin de code d'un `WKWebView` hébergé — pas sous les règles d'iOS. Que le
+processus de contenu de WebKit garde le droit de compiler **sur un vrai
+iPhone** est la conception documentée d'iOS, pas une mesure de ce dépôt. La
+même sonde, dans un envoi TestFlight, la rendrait ; c'est la première chose à
+faire avant d'écrire une ligne d'émetteur.
+
+Ce qui est acquis malgré cette réserve : le module est correct, un `WKWebView`
+hébergé le compile et l'exécute, et le pont coûte un demi-millième de seconde.
+Le premier point de la tranche 1 — « mesurer le pont avant d'écrire le cœur,
+c'est lui qui peut tout gâcher » — est réglé, et il ne gâche rien.
+
 **Les tranches, si on y va.**
 
 1. Un hôte `WKWebView` dans l'application, avec la RAM invitée en
