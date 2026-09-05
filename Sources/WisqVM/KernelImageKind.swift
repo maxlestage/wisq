@@ -53,6 +53,15 @@ public enum KernelImageKind: Equatable, Sendable {
     case linuxKernel(KernelImage)
     /// A bootable disc image — an installer, a live CD. Named by its format.
     case discImage(String)
+    /// Un système de fichiers, nommé par son format.
+    ///
+    /// **Ce n'est pas un noyau, et ce n'est plus un refus sec non plus.** La
+    /// machine PC a un disque depuis le lot 7 : un fichier de cette sorte est
+    /// exactement ce qu'elle sait brancher sur `/dev/vda`. Le nommer permet à
+    /// la bibliothèque de dire « image de disque » là où elle disait « fichier
+    /// non reconnu », et au refus de démarrage de dire quoi en faire plutôt
+    /// que de s'arrêter à « non ».
+    case filesystemImage(String)
     /// An executable for some other architecture, named.
     case executable(GuestArchitecture)
     /// Un fichier compressé et rien d'autre : très probablement un noyau, mais
@@ -67,7 +76,7 @@ public enum KernelImageKind: Equatable, Sendable {
         switch self {
         case .linuxKernel(let image): return image.architecture
         case .executable(let architecture): return architecture
-        case .discImage, .compressedKernel, .unknown: return nil
+        case .discImage, .filesystemImage, .compressedKernel, .unknown: return nil
         }
     }
 
@@ -83,7 +92,7 @@ public enum KernelImageKind: Equatable, Sendable {
         switch self {
         case .unknown: return true
         case .linuxKernel(let image): return image.architecture.core != nil
-        case .executable, .discImage, .compressedKernel: return false
+        case .executable, .discImage, .filesystemImage, .compressedKernel: return false
         }
     }
 
@@ -212,7 +221,44 @@ public enum KernelImageKind: Equatable, Sendable {
             return .compressedKernel(format)
         }
 
+        // **Un système de fichiers.** Contrôlé en dernier, et c'est délibéré :
+        // chacun des tests ci-dessus s'appuie sur un nombre magique à une
+        // place fixe, et celui d'ext4 vit à 0x438 — assez loin dans le fichier
+        // pour qu'un noyau puisse porter ces deux octets-là par hasard. Ce qui
+        // arrive ici n'a ressemblé à rien d'autre.
+        if let format = filesystem(bytes) { return .filesystemImage(format) }
+
         return .unknown
+    }
+
+    /// Le système de fichiers que ces octets portent, ou `nil`.
+    ///
+    /// **Ce qui n'y est pas : btrfs.** Sa marque vit à 0x10040, soit au-delà
+    /// des quarante kibioctets que ce type lit, et lire davantage pour cette
+    /// seule famille coûterait à tous les fichiers. Un btrfs ressort donc en
+    /// `unknown` — ce qui le laisse passer comme disque, puisque `unknown` est
+    /// une permission ici.
+    static func filesystem(_ bytes: [UInt8]) -> String? {
+        // ext2, ext3, ext4 : le superbloc est au millième vingt-quatrième
+        // octet, et sa marque `0xEF53` cinquante-six octets plus loin. Les
+        // trois se lisent pareil ; les distinguer demanderait les drapeaux de
+        // fonctionnalités, et ce n'est pas ce qu'on a besoin de dire.
+        if bytes.count >= 0x43A, bytes[0x438] == 0x53, bytes[0x439] == 0xEF {
+            return "ext2/3/4"
+        }
+        // squashfs, dans les deux boutismes.
+        if bytes.count >= 4 {
+            let head = Array(bytes[0...3])
+            if head == Array("hsqs".utf8) || head == Array("sqsh".utf8) { return "squashfs" }
+        }
+        // FAT : l'étiquette du système, à une place qui dépend de la largeur.
+        for (offset, label) in [(0x36, "FAT12"), (0x36, "FAT16"), (0x52, "FAT32")]
+        where bytes.count >= offset + label.count {
+            if Array(bytes[offset..<(offset + label.count)]) == Array(label.utf8) {
+                return label
+            }
+        }
+        return nil
     }
 
     private static func be32(_ bytes: [UInt8], _ at: Int) -> UInt32 {
@@ -236,6 +282,12 @@ public enum KernelImageKind: Equatable, Sendable {
     /// la réponse utile n'est pas « non », c'est « pas ici, et voilà où ».
     public static func cannotRunHereExplanation(_ kind: KernelImageKind, name: String) -> String? {
         let what: String
+        // **Ce qu'on peut quand même en faire**, quand il y a quelque chose.
+        // Une image de disque amorçable ne démarre pas ici et n'a pas cessé de
+        // ne pas démarrer ; mais depuis que la machine PC a un disque, elle
+        // n'est plus un cul-de-sac, et s'arrêter à « non » serait maintenant
+        // faux par omission.
+        var also = ""
         switch kind {
         case .unknown: return nil
         case .linuxKernel(let image) where image.architecture.core != nil: return nil
@@ -262,6 +314,27 @@ public enum KernelImageKind: Equatable, Sendable {
                 """
         case .discImage(let format):
             what = "une image de disque amorçable (\(format))"
+            // Les deux sauts de ligne sont concaténés plutôt qu'écrits dans
+            // le littéral : deux lignes vides de suite y sont invisibles, et
+            // la garde de blancs du dépôt les refuse à juste titre.
+            also = "\n\n" + """
+                Vous pouvez en revanche la garder comme **disque** d'un noyau \
+                de PC : l'invité la verra sur `/dev/vda`, et pourra la lire.
+                """
+        case .filesystemImage(let format):
+            // **Ce cas-ci ne descend pas dans le message générique**, et c'est
+            // la seule différence qui compte : le message générique dit « pour
+            // faire tourner cette distribution, installez-la sur un hôte », ce
+            // qui n'a aucun sens pour un système de fichiers nu. Celui-ci dit
+            // ce qu'on en fait ici.
+            return """
+                \(name) est une image de disque (\(format)) — un système de \
+                fichiers, pas un noyau : il n'y a rien là-dedans qui démarre.
+
+                C'est en revanche exactement ce qu'un noyau de PC sait lire. \
+                Choisissez-la comme **disque** de votre noyau, et l'invité la \
+                verra sur `/dev/vda`.
+                """
         case .executable(let architecture):
             what = "un exécutable pour \(architecture.name)"
         case .compressedKernel(let format):
@@ -285,7 +358,7 @@ public enum KernelImageKind: Equatable, Sendable {
 
             Pour faire tourner cette distribution, installez-la sur un hôte \
             (un PC, un Mac, un serveur), et connectez-vous dessus depuis wisq : \
-            c'est exactement ce pour quoi le reste de l'application existe.
+            c'est exactement ce pour quoi le reste de l'application existe.\(also)
             """
     }
 }

@@ -267,10 +267,35 @@ public final class LocalVMModel {
             ramdisk = nil
         }
 
+        // **Le disque, s'il y en a un.** Choisi une fois par la personne et
+        // retenu sous le nom du noyau : rien dans les octets ne dit quel
+        // fichier va avec quel autre, et deviner fabriquerait un invité qui
+        // cherche une racine que personne ne lui a donnée.
+        //
+        // L'URL est résolue ici, sur la bibliothèque telle qu'elle est ; les
+        // octets, eux, sont lus sur le fil d'émulation. Un disque peut peser
+        // deux cents mébioctets, et les lire ici tiendrait l'interface pendant
+        // ce temps-là — alors que le noyau, lui, doit être lu avant parce que
+        // c'est son empreinte qui nomme la machine sauvegardée.
+        let diskURL = core == .x86_64
+            ? LocalDisk.attached(
+                kernel: kernelURL.lastPathComponent,
+                among: KernelLibrary.list(), in: storage)
+            : nil
+
         let thread = Thread { [weak self] in
             defer { finished.signal() }
             let outcome: GuestOutcome
             do {
+                // Le disque avant tout le reste : une machine reprise depuis
+                // un instantané porte le sien **dedans** — les octets que
+                // l'invité a écrits, pas ceux du fichier — et `restore` le
+                // remet donc à sa place, en écrasant celui-ci. C'est voulu, et
+                // c'est ce qui rend le changement de disque destructif pour la
+                // machine sauvegardée : la vue l'oublie au moment du choix.
+                if let diskURL {
+                    try machine.attachDisk(Data(contentsOf: diskURL))
+                }
                 // A saved machine is resumed in place of booting. If the file
                 // is not a snapshot — an older format, a truncated write — the
                 // restore throws and the kernel is booted instead, which is the
@@ -448,10 +473,15 @@ private final class ConsoleSink: @unchecked Sendable {
 /// Why an imported file was refused.
 public enum KernelImportError: Error, LocalizedError {
     case tooLarge(String)
+    /// Refusé pour ce qu'il **est**, et non pour ce qu'il pèse. Les deux
+    /// existent séparément parce que la phrase qu'ils portent n'envoie pas au
+    /// même endroit : l'une vers le curseur de mémoire, l'autre vers un autre
+    /// fichier.
+    case refused(String)
 
     public var errorDescription: String? {
         switch self {
-        case .tooLarge(let explanation): return explanation
+        case .tooLarge(let explanation), .refused(let explanation): return explanation
         }
     }
 }
@@ -486,6 +516,7 @@ public enum KernelLibrary {
         let destination = try directory().appendingPathComponent(source.lastPathComponent)
         _ = source.startAccessingSecurityScopedResource()
         defer { source.stopAccessingSecurityScopedResource() }
+        let kind = KernelImageKind.identify(fileAt: source)
         // Ce que le fichier est passe avant ce qu'il pèse, ici aussi : un ISO
         // de six gigaoctets est refusé pour la bonne raison, pas pour sa
         // taille — sinon quelqu'un croit qu'un plus petit passerait.
@@ -499,21 +530,35 @@ public enum KernelLibrary {
         // Rien n'est perdu à l'accepter : un noyau **vraiment** compressé ne
         // pouvait de toute façon pas démarrer ici, donc le garder comme média
         // de démarrage ne prend la place d'aucun usage qui marchait.
+        //
+        // **Et un disque est gardé aussi, depuis que la machine PC en a un.**
+        // Une image ext4 ne démarre pas et n'est pas un initramfs ; elle était
+        // donc refusée par les deux gardes ci-dessous, alors que c'est
+        // exactement le fichier que le réglage « disque » demande.
         if let refusal = KernelImageKind.cannotRunHereExplanation(
-            KernelImageKind.identify(fileAt: source),
-            name: source.lastPathComponent),
-            BootMedia.refusal(forFileAt: source) != nil {
-            throw KernelImportError.tooLarge(refusal)
+            kind, name: source.lastPathComponent),
+            BootMedia.refusal(forFileAt: source) != nil,
+            !LocalDisk.isDiskImage(kind) {
+            throw KernelImportError.refused(refusal)
         }
         if let size = try? FileManager.default.attributesOfItem(
-            atPath: source.path)[.size] as? Int,
-            size > KernelMemory.maximumImportableImageBytes() {
-            // Jugé sur la plus grande machine que cet appareil autorise, pas
-            // sur le réglage : au moment de l'import il n'y en a pas encore.
-            throw KernelImportError.tooLarge(
-                LinuxMachine.tooLargeExplanation(
-                    size: size, name: source.lastPathComponent,
-                    ramSize: KernelMemory.ceiling))
+            atPath: source.path)[.size] as? Int {
+            // **Deux plafonds, parce que deux usages.** Un disque n'est pas
+            // copié dans la RAM de l'invité : il vit à côté d'elle, et sa
+            // limite est donc celle de `LocalDisk` et non celle d'un noyau.
+            if LocalDisk.isDiskImage(kind) {
+                if let refusal = LocalDisk.refusal(size: size, name: source.lastPathComponent) {
+                    throw KernelImportError.refused(refusal)
+                }
+            } else if size > KernelMemory.maximumImportableImageBytes() {
+                // Jugé sur la plus grande machine que cet appareil autorise,
+                // pas sur le réglage : au moment de l'import il n'y en a pas
+                // encore.
+                throw KernelImportError.tooLarge(
+                    LinuxMachine.tooLargeExplanation(
+                        size: size, name: source.lastPathComponent,
+                        ramSize: KernelMemory.ceiling))
+            }
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
@@ -546,14 +591,22 @@ public enum KernelLibrary {
 
     /// Removes a kernel, and everything the app remembered about it.
     ///
-    /// Three things, not one: the file, the memory it was set to run with, and
-    /// any machine saved from it. Leaving the last two behind would mean a
-    /// kernel re-imported under the same name silently inherits a setting its
-    /// owner deleted, and a snapshot file nothing will ever read again.
+    /// Quatre choses, pas une : le fichier, la mémoire qu'il était réglé à
+    /// prendre, le disque qu'on lui avait donné, et toute machine sauvegardée
+    /// à partir de lui. Sans les trois dernières, un fichier réimporté sous le
+    /// même nom hériterait en silence de réglages que son propriétaire a
+    /// supprimés, et un instantané resterait là que plus personne ne lira.
+    ///
+    /// **Et le fichier supprimé pouvait être le disque d'un autre.** On oublie
+    /// donc aussi ce nom-là partout où il servait de disque — mais **pas** les
+    /// machines sauvegardées de ces noyaux : leur instantané porte les octets
+    /// du disque, pas son chemin, et il reste donc parfaitement reprenable.
     public static func delete(_ url: URL) {
         let name = url.lastPathComponent
         try? FileManager.default.removeItem(at: url)
         KernelMemory.forget(kernel: name)
+        LocalDisk.forget(kernel: name)
+        LocalDisk.forgetDisk(named: name)
         SuspendedMachine.clearAll(named: name)
     }
 }

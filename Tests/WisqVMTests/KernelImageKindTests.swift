@@ -218,4 +218,55 @@ final class KernelImageKindTests: XCTestCase {
             KernelImageKind.bytesNeeded, 0x9006,
             "il faut atteindre le troisième descripteur possible")
     }
+    // MARK: - Les images de disque
+
+    /// **Un ext4 est nommé, et n'est plus « rien de reconnu ».** C'est le
+    /// fichier que le réglage « disque » demande, et le nommer est ce qui
+    /// permet à la bibliothèque de le distinguer d'un initramfs.
+    func testAnExtFilesystemIsNamed() {
+        var bytes = [UInt8](repeating: 0, count: 0x1000)
+        bytes[0x438] = 0x53
+        bytes[0x439] = 0xEF
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(bytes)), .filesystemImage("ext2/3/4"))
+    }
+
+    /// squashfs, dans les deux boutismes, et FAT à ses deux places.
+    func testTheOtherFilesystemsAreNamedToo() {
+        XCTAssertEqual(
+            KernelImageKind.identify(prefix: Data(Array("hsqs".utf8) + [UInt8](repeating: 0, count: 64))),
+            .filesystemImage("squashfs"))
+        XCTAssertEqual(
+            KernelImageKind.identify(prefix: Data(Array("sqsh".utf8) + [UInt8](repeating: 0, count: 64))),
+            .filesystemImage("squashfs"))
+        var fat = [UInt8](repeating: 0, count: 0x200)
+        fat.replaceSubrange(0x36..<0x3B, with: Array("FAT16".utf8))
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(fat)), .filesystemImage("FAT16"))
+        var fat32 = [UInt8](repeating: 0, count: 0x200)
+        fat32.replaceSubrange(0x52..<0x57, with: Array("FAT32".utf8))
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(fat32)), .filesystemImage("FAT32"))
+    }
+
+    /// **Un vrai noyau ne devient pas un système de fichiers.** La marque
+    /// d'ext4 vit à 0x438, assez loin pour qu'un fichier quelconque la porte
+    /// par accident ; c'est pour ça qu'elle est contrôlée en dernier, et ce
+    /// test-ci le mesure au lieu de le supposer.
+    func testAKernelCarryingTheExtMagicByAccidentIsStillAKernel() {
+        var bytes = LinuxBootProtocolTests.header()
+        bytes += [UInt8](repeating: 0, count: 40 * 1024 - bytes.count)
+        bytes[0x438] = 0x53
+        bytes[0x439] = 0xEF
+        guard case .linuxKernel = KernelImageKind.identify(
+            prefix: Data(bytes), totalBytes: LinuxBootProtocolTests.measuredTotalBytes) else {
+            return XCTFail("le noyau est passé pour un disque")
+        }
+    }
+
+    /// Et le refus dit quoi en faire, plutôt que de s'arrêter à « non ».
+    func testTheRefusalForADiskSaysToAttachIt() throws {
+        let explanation = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
+            .filesystemImage("ext2/3/4"), name: "racine.img"))
+        XCTAssertTrue(explanation.contains("racine.img"))
+        XCTAssertTrue(explanation.contains("disque"), explanation)
+        XCTAssertTrue(explanation.contains("/dev/vda"), explanation)
+    }
 }

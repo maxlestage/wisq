@@ -7,12 +7,38 @@ import WisqVM
 struct LocalVMListView: View {
     let onClose: () -> Void
 
-    @State private var kernels = KernelLibrary.list()
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        // Les genres sont lus **avant la première image**, et pas dans
+        // `onAppear` : celui-ci ne se déclenche qu'après un premier rendu, et
+        // ce rendu-là afficherait la bibliothèque entière sous l'icône du
+        // « type inconnu » le temps d'une trame.
+        let files = KernelLibrary.list()
+        _kernels = State(initialValue: files)
+        _kinds = State(initialValue: Self.read(files))
+        _disks = State(initialValue: LocalDisk.allRecorded())
+    }
+
+    @State private var kernels: [URL]
+    /// Ce que chaque fichier est, lu **une fois** par changement de
+    /// bibliothèque.
+    ///
+    /// Pas dans la ligne : `KernelImageKind.identify` ouvre le fichier et en
+    /// lit quarante kibioctets, et une liste SwiftUI redessine ses lignes bien
+    /// plus souvent qu'elle ne change. Le faire dans le corps de la vue
+    /// reviendrait à lire la bibliothèque entière à chaque défilement, sur le
+    /// fil principal.
+    @State private var kinds: [URL: KernelImageKind]
+    /// Le disque de chaque noyau, sous le nom du fichier du noyau. Relu avec
+    /// la bibliothèque, pour la raison que `KernelDiskMenu` explique.
+    @State private var disks: [String: String] = [:]
     @State private var showImporter = false
     @State private var importError: String?
     @State private var booting: BootTarget?
-    /// Ce que le dernier changement de mémoire a coûté, à dire une fois.
-    @State private var memoryNote: String?
+    /// Ce que le dernier réglage a coûté, à dire une fois — et sous quelle
+    /// icône, parce que « mémoire changée » sous une puce mémoire et « disque
+    /// changé » sous la même puce enverraient chercher au mauvais endroit.
+    @State private var note: Note?
     /// Ce que Linux local occupe. Relu après chaque geste qui peut le changer.
     @State private var storage = LocalStorage.Report.empty
 
@@ -20,32 +46,42 @@ struct LocalVMListView: View {
         List {
             Section {
                 ForEach(kernels, id: \.self) { kernel in
-                    HStack {
-                        Button {
-                            booting = BootTarget(url: kernel)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Label(kernel.lastPathComponent, systemImage: "terminal")
-                                if let line = Self.storageLine(
-                                    storage.entry(forKernel: kernel.lastPathComponent)) {
-                                    Text(line)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Button {
+                                booting = BootTarget(url: kernel)
+                            } label: {
+                                LibraryRow(
+                                    kernel: kernel,
+                                    role: LibraryEntry.role(of: kinds[kernel] ?? .unknown),
+                                    storageLine: Self.storageLine(
+                                        storage.entry(forKernel: kernel.lastPathComponent)))
+                            }
+                            .buttonStyle(.plain)
+                            Spacer(minLength: 12)
+                            KernelMemoryMenu(kernel: kernel) { forgotten in
+                                note = Self.note(forgotten: forgotten)
+                                    .map { Note(text: $0, symbol: "memorychip") }
+                                storage = KernelLibrary.storageReport()
                             }
                         }
-                        .buttonStyle(.plain)
-                        Spacer(minLength: 12)
-                        KernelMemoryMenu(kernel: kernel) { forgotten in
-                            memoryNote = Self.note(forgotten: forgotten)
-                            storage = KernelLibrary.storageReport()
+                        // Le disque ne se propose qu'aux noyaux qui en ont un.
+                        // Une machine RISC-V refuse le sien, nommément ; le
+                        // réglage n'a donc rien à faire sous son nom.
+                        if kinds[kernel]?.core == .x86_64 {
+                            KernelDiskMenu(
+                                kernel: kernel, library: kernels,
+                                chosen: disks[kernel.lastPathComponent]
+                            ) { chosen in
+                                attach(chosen, to: kernel)
+                            }
                         }
                     }
                     .swipeActions {
                         Button(role: .destructive) {
                             KernelLibrary.delete(kernel)
-                            kernels = KernelLibrary.list()
-                            memoryNote = nil
+                            reloadLibrary()
+                            note = nil
                             storage = KernelLibrary.storageReport()
                         } label: {
                             Label("Supprimer", systemImage: "trash")
@@ -56,12 +92,13 @@ struct LocalVMListView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
                     Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(LinuxMachine.defaultRAMSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et l'émulateur ne peut pas dépasser \(KernelMemory.describe(LinuxMachine.maximumRAMSize)) — la mémoire de l'invité commence à 0x80000000 et son processeur adresse en 32 bits. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
+                    Text("Un noyau de PC peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. wisq ne l'y monte pas tout seul — c'est votre initramfs qui décide de la racine — mais l'invité peut la lire et écrire dedans, et ces écritures partent dans l'instantané. Le disque est tenu en mémoire, entier : il partage donc la place avec la machine, et wisq n'en branche pas plus de \(LocalStorage.describe(bytes: LocalDisk.maximumBytes())) ici.")
                 }
             }
 
-            if let memoryNote {
+            if let note {
                 Section {
-                    Label(memoryNote, systemImage: "memorychip")
+                    Label(note.text, systemImage: note.symbol)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -80,7 +117,9 @@ struct LocalVMListView: View {
                         Button {
                             let freed = KernelLibrary.freeOrphanedMachines()
                             storage = KernelLibrary.storageReport()
-                            memoryNote = "\(LocalStorage.describe(bytes: freed)) repris."
+                            note = Note(
+                                text: "\(LocalStorage.describe(bytes: freed)) repris.",
+                                symbol: "arrow.counterclockwise")
                         } label: {
                             Label(
                                 "Reprendre \(LocalStorage.describe(bytes: storage.orphanedBytes)) laissés par des noyaux supprimés",
@@ -90,7 +129,7 @@ struct LocalVMListView: View {
                 } header: {
                     Text("Stockage")
                 } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Il n'y a pas de disque à régler ici : ce noyau Linux « nommu » n'a pas de pilote de bloc, et c'est l'instantané de la machine entière qui fait le travail qu'un disque aurait fait.")
+                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine de PC à qui on a donné un disque pèse ce disque **en plus**, parce que l'instantané emporte les octets que l'invité y a écrits. Le noyau rv32ima « nommu », lui, n'a pas de disque du tout : aucun pilote de bloc dedans, et c'est l'instantané qui fait le travail qu'un disque aurait fait.")
                 }
             }
 
@@ -135,7 +174,7 @@ struct LocalVMListView: View {
             do {
                 if let source = try result.get().first {
                     _ = try KernelLibrary.importKernel(from: source)
-                    kernels = KernelLibrary.list()
+                    reloadLibrary()
                     storage = KernelLibrary.storageReport()
                     importError = nil
                 }
@@ -151,8 +190,122 @@ struct LocalVMListView: View {
         // Relu à l'ouverture, et au retour d'une session : c'est en quittant
         // une machine qu'elle est sauvegardée, donc c'est là que le chiffre
         // change le plus.
-        .onAppear { storage = KernelLibrary.storageReport() }
+        .onAppear {
+            reloadLibrary()
+            storage = KernelLibrary.storageReport()
+        }
         .onChange(of: booting == nil) { storage = KernelLibrary.storageReport() }
+    }
+
+    /// Relit la bibliothèque **et** ce que chaque fichier est. Les deux vont
+    /// ensemble : une liste sans ses genres dessinerait des icônes d'un
+    /// fichier qui n'est plus là.
+    private func reloadLibrary() {
+        kernels = KernelLibrary.list()
+        kinds = Self.read(kernels)
+        disks = LocalDisk.allRecorded()
+    }
+
+    /// Retient le disque choisi, et oublie ce que ce choix invalide.
+    ///
+    /// Les machines sauvegardées de ce noyau partent, comme au changement de
+    /// mémoire et pour une raison plus dure : leur instantané porte les octets
+    /// du disque tels que l'invité les a laissés. Les reprendre après un
+    /// changement rendrait le réglage muet.
+    private func attach(_ disk: String?, to kernel: URL) {
+        let name = kernel.lastPathComponent
+        guard disk != disks[name] else { return }
+        LocalDisk.attach(disk, forKernel: name)
+        disks = LocalDisk.allRecorded()
+        note = Self.diskNote(forgotten: SuspendedMachine.clearAll(named: name))
+            .map { Note(text: $0, symbol: "externaldrive") }
+        storage = KernelLibrary.storageReport()
+    }
+
+    /// Ce que chacun de ces fichiers est. Les doublons de clé sont impossibles
+    /// — un répertoire ne contient pas deux fois le même nom — mais
+    /// `uniqueKeysWithValues` s'arrêterait net s'ils l'étaient, et une
+    /// bibliothèque n'est pas un endroit où planter.
+    private static func read(_ files: [URL]) -> [URL: KernelImageKind] {
+        Dictionary(files.map { ($0, KernelImageKind.identify(fileAt: $0)) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+}
+
+/// Une ligne de la bibliothèque : son nom, ce qu'elle **est**, et ce qu'elle
+/// occupe.
+///
+/// Les trois sortes de fichiers vivaient dans la même liste sous la même icône
+/// de terminal, et rien ne disait laquelle démarre. Le rôle vient de
+/// `LibraryEntry`, qui se tient par des tests ; cette vue-ci le dessine.
+///
+/// **Aucune ligne n'est éteinte**, y compris celles qui ne démarreront pas.
+/// C'est la même permission que `KernelImageKind.unknown` : le refus d'un
+/// initramfs touché par erreur explique quoi faire, et une ligne grisée
+/// n'expliquerait rien du tout.
+private struct LibraryRow: View {
+    let kernel: URL
+    let role: LibraryEntry.Role
+    let storageLine: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(kernel.lastPathComponent, systemImage: LibraryEntry.symbol(role))
+            Text(LibraryEntry.word(role))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let storageLine {
+                Text(storageLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Quel disque ce noyau reçoit.
+///
+/// Un menu et non un curseur, parce que la question n'est pas « combien » mais
+/// « lequel » : une liste de fichiers, plus « aucun ». Ce qui est offert vient
+/// de `LocalDisk.candidates`, qui écarte les noyaux et les enveloppes
+/// compressées — on ne branche pas un initramfs sur `/dev/vda`.
+///
+/// **Le choix n'est pas un `@State` d'ici**, à la différence du curseur de
+/// mémoire, et c'est une correction : l'identité d'une ligne est l'URL de son
+/// noyau, donc supprimer le fichier du disque ne reconstruit pas ce menu. Un
+/// état local aurait continué d'afficher, en rouge, le nom d'un fichier que
+/// l'application venait elle-même d'oublier.
+private struct KernelDiskMenu: View {
+    let kernel: URL
+    let library: [URL]
+    let chosen: String?
+    let choose: (String?) -> Void
+
+    var body: some View {
+        let candidates = LocalDisk.candidates(
+            among: library, kernel: kernel.lastPathComponent)
+        Menu {
+            Button("Aucun") { choose(nil) }
+            ForEach(candidates, id: \.self) { disk in
+                Button(disk.lastPathComponent) { choose(disk.lastPathComponent) }
+            }
+        } label: {
+            Label(chosen.map { "Disque : \($0)" } ?? "Disque : aucun",
+                  systemImage: "externaldrive")
+                .font(.footnote)
+        }
+        // Un fichier choisi puis disparu autrement que par la corbeille de
+        // cette liste — remplacé, sorti du dossier — laisse un nom qui ne
+        // désigne plus rien. Le dire est plus utile que de l'effacer en
+        // silence : le démarrage, lui, se fera sans disque.
+        .foregroundStyle(missing(candidates) ? Color.red : Color.secondary)
+        .accessibilityLabel("Disque de \(kernel.lastPathComponent)")
+        .accessibilityValue(chosen ?? "aucun")
+    }
+
+    private func missing(_ candidates: [URL]) -> Bool {
+        guard let chosen else { return false }
+        return !candidates.contains { $0.lastPathComponent == chosen }
     }
 }
 
@@ -244,6 +397,28 @@ extension LocalVMListView {
             """
     }
 
+    /// Ce qu'un changement de disque a coûté, dit une fois et au passé.
+    ///
+    /// Séparé du message de mémoire, parce que la cause n'est pas la même et
+    /// que « mémoire changée » après avoir touché au disque enverrait chercher
+    /// au mauvais endroit.
+    static func diskNote(forgotten: Int) -> String? {
+        switch forgotten {
+        case 0: return nil
+        case 1:
+            return """
+                Disque changé : la machine sauvegardée pour ce noyau a été \
+                oubliée. Elle portait l'ancien disque dans son instantané.
+                """
+        default:
+            return """
+                Disque changé : \(forgotten) machines sauvegardées pour ce \
+                noyau ont été oubliées. Elles portaient l'ancien disque dans \
+                leur instantané.
+                """
+        }
+    }
+
     static func note(forgotten: Int) -> String? {
         switch forgotten {
         case 0: return nil
@@ -259,6 +434,12 @@ extension LocalVMListView {
                 """
         }
     }
+}
+
+/// Ce que le dernier geste a coûté, et sous quelle icône le dire.
+private struct Note {
+    let text: String
+    let symbol: String
 }
 
 /// Identifiable wrapper so a kernel can drive a cover presentation.
