@@ -40,10 +40,38 @@ raise SystemExit("aucun iPhone simulé disponible")
 echo "    $udid"
 
 echo "==> Tests de la couche application, dans un iPhone simulé"
+# **La sortie est gardée**, et pas seulement regardée passer. `xcodebuild`
+# écrit des dizaines de milliers de lignes ; les quelques-unes qui portent une
+# mesure — le débit de WebKit, le coût du pont — s'y noient, et une mesure
+# qu'on ne retrouve pas est une mesure qu'on refait. Elles sont donc extraites
+# à la fin, et poussées dans le résumé du job quand il y en a un.
+sortie=$(mktemp)
+trap 'rm -f "$sortie"' EXIT
+set +e
 xcodebuild test \
   -project Wisq.xcodeproj \
   -scheme Wisq \
   -destination "id=${udid%% *}" \
-  CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$sortie"
+issue=${PIPESTATUS[0]}
+set -e
+
+# Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
+# sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
+mesures=$(grep -E "^(WebKit|pont) :|Executed [0-9]+ tests" "$sortie" | tail -20 || true)
+if [ -n "$mesures" ]; then
+  echo "==> Mesures"
+  echo "$mesures"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "### Ce que l'iPhone simulé a mesuré"
+      echo ""
+      echo '```'
+      echo "$mesures"
+      echo '```'
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+fi
+[ "$issue" -eq 0 ] || exit "$issue"
 
 echo "==> La couche application est vérifiée, pas seulement compilée."
