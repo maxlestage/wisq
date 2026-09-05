@@ -57,6 +57,35 @@ public final class X86Machine: @unchecked Sendable {
     var core: X86Core
     private let onOutput: @Sendable (Data) -> Void
 
+    /// Le disque, quand il y en a un.
+    ///
+    /// **Il n'était nulle part.** Le périphérique virtio et le bus PCI
+    /// existaient et fonctionnaient — mesuré : le noyau d'Alpine énumère
+    /// `[1af4:1001]`, charge `virtio_blk`, annonce « [vda] 32768 512-byte
+    /// logical blocks », et le `md5sum` de `/dev/vda` dans l'invité est celui
+    /// de l'image sur l'hôte. Mais rien de tout ça ne passait par
+    /// `X86Machine` : seule la mesure de démarrage les branchait à la main.
+    public private(set) var disk: X86VirtioBlock?
+
+    /// Brancher un disque. Deux portes vers la même image : le transport MMIO
+    /// répond aux adresses, le bus PCI aux ports. Le noyau d'Alpine passe par
+    /// le second — son `virtio_mmio` est compilé sans les périphériques de la
+    /// ligne de commande — mais un noyau qui les a saura passer par le premier.
+    public func attach(disk image: [UInt8]) {
+        let device = X86VirtioBlock(image: image)
+        disk = device
+        memory.storage = device
+        memory.bus = X86PCIHost(storage: device)
+    }
+
+    /// Le retirer. Une machine reprise depuis un instantané sans disque n'en a
+    /// pas, même si celle qu'on reprend en avait un.
+    public func detachDisk() {
+        disk = nil
+        memory.storage = nil
+        memory.bus = nil
+    }
+
     private let lock = NSLock()
     private var stopRequested = false
     private var inputQueue: [UInt8] = []
@@ -255,6 +284,14 @@ public final class X86Machine: @unchecked Sendable {
         lock.unlock()
         writer.blob(queued)
         writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: ramSize))
+        // **Le disque en dernier, et seulement s'il y en a un.** Son absence
+        // est ce qui distingue un instantané d'avant le disque, et la reprise
+        // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
+        // machines déjà sauvées sur les téléphones seraient perdues.
+        if let disk {
+            disk.save(into: &writer)
+            memory.bus?.save(into: &writer)
+        }
         return Data(writer.bytes)
     }
 
@@ -297,6 +334,18 @@ public final class X86Machine: @unchecked Sendable {
         restored.devices = try read(&reader)
         restored.serialInput = try reader.blob()
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+        // Le disque, s'il reste des octets. Construit à part et posé tout à la
+        // fin : une lecture qui échoue ici laisse à la machine le disque
+        // qu'elle avait, plutôt qu'un disque à moitié repris.
+        var restoredDisk: X86VirtioBlock?
+        var restoredBus: X86PCIHost?
+        if !reader.isAtEnd {
+            let device = try X86VirtioBlock.restored(from: &reader)
+            let bus = X86PCIHost(storage: device)
+            try bus.restore(from: &reader)
+            restoredDisk = device
+            restoredBus = bus
+        }
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
         // qui viennent tous deux d'être restaurés tels quels : LMA est donc
@@ -308,6 +357,9 @@ public final class X86Machine: @unchecked Sendable {
         inputQueue.removeAll()
         stopRequested = false
         lock.unlock()
+        disk = restoredDisk
+        memory.storage = restoredDisk
+        memory.bus = restoredBus
         core = restored
     }
 

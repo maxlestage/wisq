@@ -157,4 +157,29 @@ public final class X86PCIHost: @unchecked Sendable {
     // MARK: - Les deux ports
 
     public func writeAddress(_ value: UInt32) { address = value }
+
+    // MARK: - Ce qu'on sauve
+
+    /// **Le bus garde trois choses qu'aucune valeur par défaut ne retrouve.**
+    /// L'adresse est celle du dernier `0xCF8` écrit, et une reprise au milieu
+    /// d'un couple adresse-donnée lirait sinon le mauvais registre. La
+    /// commande dit si les ports sont ouverts — refermés, le pilote croit
+    /// parler au périphérique et parle à personne. Et la fenêtre est là où le
+    /// noyau a placé le BAR : la reperdre déplacerait le disque sous un pilote
+    /// qui n'a aucune raison de le rechercher.
+    func save(into writer: inout Snapshot.Writer) {
+        writer.u32(address)
+        writer.u32(UInt32(command))
+        writer.u32(window)
+        writer.u32(UInt32(interruptLine))
+        writer.u32(sizing ? 1 : 0)
+    }
+
+    func restore(from reader: inout Snapshot.Reader) throws {
+        address = try reader.u32()
+        command = UInt16(truncatingIfNeeded: try reader.u32())
+        window = try reader.u32()
+        interruptLine = UInt8(truncatingIfNeeded: try reader.u32())
+        sizing = try reader.u32() != 0
+    }
 }
