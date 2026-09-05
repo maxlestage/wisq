@@ -94,6 +94,89 @@ final class X86LegacyDevicesTests: XCTestCase {
         XCTAssertEqual(core.flags & X86Core.Flag.interrupt, 0, "une porte d'interruption masque")
     }
 
+    /// **Une ligne en service bloque les moins prioritaires.** C'est la règle
+    /// du 8259, et elle n'est pas décorative : le gestionnaire d'une ligne
+    /// rouvre les interruptions avant d'avoir fini — Linux traite ses
+    /// « softirq » ainsi —, et sans cette règle la même ligne le
+    /// réinterromprait aussitôt, sur sa propre pile, aussi longtemps que la
+    /// condition dure. Une pile de noyau fait seize kilo-octets ; ce qui est
+    /// dessous ne lui appartient pas.
+    func testALineInServiceBlocksItsEqualsAndItsInferiors() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        Self.armed(&core)
+        try core.run(budget: 500)
+        XCTAssertEqual(core.devices.primary.service, 1, "la ligne zéro est en service")
+
+        // Le gestionnaire rouvre les interruptions, et l'horloge rebat.
+        core.flags |= X86Core.Flag.interrupt
+        core.halted = false
+        let entered = core.rip
+        core.devices.primary.request |= 1
+        try core.serviceInterrupts()
+        XCTAssertEqual(core.rip, entered, "rien n'est entré une seconde fois")
+        XCTAssertNotEqual(core.devices.primary.request & 1, 0, "et la demande attend")
+    }
+
+    /// Une ligne **plus prioritaire**, elle, passe : c'est l'autre moitié de
+    /// la règle, et l'oublier ferait attendre l'horloge derrière un clavier.
+    func testAMorePriorityLinePreemptsWhatIsInService() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        Self.armed(&core)
+        core.devices.primary.mask = 0xEE      // les lignes zéro et quatre
+        core.devices.primary.service = 1 << 4  // la quatre est en service
+        core.devices.primary.request |= 1      // la zéro demande
+        try core.serviceInterrupts()
+        XCTAssertEqual(core.rip, Self.handler, "la plus prioritaire est entrée")
+        XCTAssertEqual(core.devices.primary.service, 0x11, "les deux sont en service")
+    }
+
+    /// Et la fin d'interruption rouvre la porte.
+    func testAnEndOfInterruptLetsTheNextOneIn() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        Self.armed(&core)
+        core.devices.primary.service = 1
+        core.devices.primary.request |= 1
+        core.flags |= X86Core.Flag.interrupt
+        try core.serviceInterrupts()
+        XCTAssertNotEqual(core.devices.primary.request & 1, 0, "bloquée tant qu'elle sert")
+
+        core.portWrite(0x20, 1, 0x20)  // fin d'interruption non spécifique
+        XCTAssertEqual(core.devices.primary.service, 0)
+        try core.serviceInterrupts()
+        XCTAssertEqual(core.rip, Self.handler, "et elle entre")
+    }
+
+    /// **La fin d'interruption « spécifique », celle que Linux envoie.**
+    /// `mask_and_ack_8259A` écrit `0x60 + irq`, et non le 0x20 générique : elle
+    /// nomme la ligne à retirer du service. Prendre la plus prioritaire à la
+    /// place se voit dès que deux lignes sont en service — la ligne nommée
+    /// resterait en service pour toujours, et tout ce qui est moins
+    /// prioritaire qu'elle n'entrerait plus jamais. Sur un PC, « moins
+    /// prioritaire que le port série » comprend le disque.
+    func testASpecificEndOfInterruptClearsTheLineItNames() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        core.devices.primary.service = 0x11  // les lignes zéro et quatre
+        core.portWrite(0x20, 1, 0x64)        // fin d'interruption pour la quatre
+        XCTAssertEqual(core.devices.primary.service, 0x01,
+                       "la quatre part, la zéro reste")
+        core.portWrite(0x20, 1, 0x60)        // et pour la zéro
+        XCTAssertEqual(core.devices.primary.service, 0)
+    }
+
+    /// La forme générique, elle, retire la plus prioritaire — c'est sa
+    /// définition, et les deux formes ne doivent pas être confondues.
+    func testANonSpecificEndOfInterruptClearsTheMostUrgentOne() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        core.devices.primary.service = 0x11
+        core.portWrite(0x20, 1, 0x20)
+        XCTAssertEqual(core.devices.primary.service, 0x10, "la zéro part la première")
+    }
+
     /// Une ligne masquée n'est **pas** livrée, et sa demande **reste**. C'est
     /// ce qui permet au noyau de la trouver quand il démasque : la perdre
     /// ferait rater un battement à chaque fois qu'il ferme la porte.

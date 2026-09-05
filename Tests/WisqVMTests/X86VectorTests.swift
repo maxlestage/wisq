@@ -124,6 +124,63 @@ final class X86VectorTests: XCTestCase {
                        "et rien n'a été écrit avant de refuser")
     }
 
+    /// **`UCOMISS` et `UCOMISD` n'existent qu'à deux préfixes près**, et le
+    /// bras qui les portait n'en gardait qu'un.
+    ///
+    /// `case 0x2E, 0x2F where !single && !doubleWide` se lit comme si la
+    /// condition tenait pour les deux ; en Swift elle ne s'applique qu'au
+    /// **second** motif — le compilateur le dit d'ailleurs. `f3 0f 2e`, qui
+    /// n'est pas une instruction, était donc exécuté comme une comparaison au
+    /// lieu d'être refusé par son nom. Ce sont les encodages valides qui
+    /// comptent ici, et un cœur qui exécute ce qui n'existe pas ment sur ce
+    /// qu'il sait faire.
+    func testAComparisonWithAScalarPrefixIsNotAnInstruction() throws {
+        // `f3 0f 2e c1` : rien du tout. UCOMISS n'a pas de forme scalaire.
+        let ram = try Self.memory([0xF3, 0x0F, 0x2E, 0xC1])
+        var core = Self.core(ram)
+        let before = core.flags
+        XCTAssertThrowsError(try core.run(budget: 1)) { error in
+            guard case .unsupported(let name)? = error as? X86Core.Fault else {
+                return XCTFail("attendu un refus nommé, reçu \(error)")
+            }
+            XCTAssertTrue(name.contains("2E"), "il faut nommer l'opcode : \(name)")
+        }
+        XCTAssertEqual(core.flags, before, "et aucun drapeau posé avant de refuser")
+    }
+
+    /// Les deux formes qui existent, elles, comparent : sans préfixe sur des
+    /// flottants simples, et avec `66` sur des doubles.
+    func testBothRealComparisonsStillLand() throws {
+        for (code, bits) in [([0x0F, 0x2E, 0xC1] as [UInt8], (2.0 as Float).bitPattern == 0),
+                             ([0x66, 0x0F, 0x2E, 0xC1], true)] {
+            _ = bits
+            let ram = try Self.memory(code)
+            var core = Self.core(ram)
+            core.setVector(0, (1.0 as Double).bitPattern, 0)
+            core.setVector(1, (1.0 as Double).bitPattern, 0)
+            _ = try core.run(budget: 1)
+            XCTAssertNotEqual(core.flags & X86Core.Flag.zero, 0,
+                              "deux valeurs égales posent le zéro")
+        }
+    }
+
+    /// **`CLFLUSH` ne fait rien, mais ne doit pas refuser.** Il n'y a pas de
+    /// cache à vider ici ; refuser l'instruction arrêterait net un noyau qui
+    /// repose les permissions d'une page — `cpa_flush` l'appelle. `CPUID` ne
+    /// l'annonce pas, et ce n'est pas une raison : un noyau qui la trouve s'en
+    /// sert sans prévenir, et une machine qui s'arrête sur une instruction
+    /// sans effet est pire qu'une machine qui l'ignore.
+    func testCacheFlushIsAcceptedAndDoesNothing() throws {
+        // `0f ae 38` : clflush (%rax) — l'adresse est cartographiée.
+        let ram = try Self.memory([0x0F, 0xAE, 0x38])
+        var core = Self.core(ram)
+        core.registers[0] = 0x200
+        try ram.write(0x200, 8, 0xC0FFEE)
+        try core.run(budget: 1)
+        XCTAssertEqual(try ram.read(0x200, 8), 0xC0FFEE, "la mémoire est intacte")
+        XCTAssertEqual(core.rip, 0x103, "et l'instruction est passée")
+    }
+
     /// Et le scalaire, lui, aboutit : la même multiplication sur une seule
     /// valeur rend deux fois un, et laisse la moitié haute intacte.
     func testScalarArithmeticNowLands() throws {

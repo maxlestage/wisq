@@ -75,6 +75,14 @@ import XCTest
 /// `WISQ_PC_BUDGET` le change, et les assertions ne tiennent que si on ne l'a
 /// pas baissé.
 final class X86BootAttemptTests: XCTestCase {
+    /// L'invite du shell de secours d'Alpine. C'est elle qui dit qu'il y a
+    /// quelqu'un pour lire ce qu'on tape.
+    static let prompt = "~ # "
+    /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
+    /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
+    /// la réponse ne dépend d'aucun programme à charger.
+    static let greeting = "echo wisq-parle"
+
     /// Une pagination d'identité sur les quatre premiers gibioctets, en pages
     /// de un gibioctet : quatre entrées suffisent, là où des pages de quatre
     /// kibioctets en demanderaient un million.
@@ -110,8 +118,28 @@ final class X86BootAttemptTests: XCTestCase {
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
         let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
+        // Un disque, quand on en donne un. Le noyau ne le trouvera que si la
+        // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
+           let image = FileManager.default.contents(atPath: path) {
+            let disk = X86VirtioBlock(image: [UInt8](image))
+            // **Deux portes vers le même disque.** Le transport MMIO répond
+            // aux adresses, le bus PCI aux ports ; ce noyau-ci ne sait passer
+            // que par le second — son `virtio_mmio` est compilé sans les
+            // périphériques de la ligne de commande —, mais un noyau qui les
+            // a saura passer par le premier.
+            memory.storage = disk
+            memory.bus = X86PCIHost(storage: disk)
+        }
+        // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
+        // défaut plutôt que de la remplacer : la console série en fait partie,
+        // et une mesure qui la perdrait ne dirait plus rien du tout.
+        let extra = ProcessInfo.processInfo.environment["WISQ_PC_CMDLINE"]
+        let commandLine = [X86BootLoader.defaultCommandLine, extra]
+            .compactMap { $0 }.joined(separator: " ")
         let placement = try X86BootLoader.load(
-            kernel: [UInt8](data), into: memory, initialRamdisk: ramdisk)
+            kernel: [UInt8](data), into: memory, commandLine: commandLine,
+            initialRamdisk: ramdisk)
 
         // Les tables, hors du chemin du noyau et de la page zéro.
         let pml4: UInt64 = 0x5_0000
@@ -140,6 +168,9 @@ final class X86BootAttemptTests: XCTestCase {
         // Le témoin d'adresse ne s'arme que si on lui en donne une : elle n'est
         // connue qu'après une première mesure. Voir `X86AddressWatch.swift`.
         // La forme est `adresse` ou `adresse+longueur`, en hexadécimal.
+        // Le témoin d'adresse suit un programme par défaut ; pour suivre le
+        // chargeur de modules, il faut lui dire de regarder aussi le noyau.
+        core.watchesKernel = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_KERNEL"] != nil
         if let asked = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_ADDRESS"] {
             let halves = asked.split(separator: "+", maxSplits: 1)
             core.watchedAddress = halves.first.flatMap { UInt64($0, radix: 16) }
@@ -156,6 +187,13 @@ final class X86BootAttemptTests: XCTestCase {
         }
 
         var stopped: Error?
+        // Ce qu'on tape, quand l'invité se tait. Par défaut une seule ligne,
+        // dont la réponse est exigée plus bas : c'est la preuve que la machine
+        // **écoute**. `WISQ_PC_INPUT` les remplace, séparées par `;;`.
+        var toType = (ProcessInfo.processInfo.environment["WISQ_PC_INPUT"]
+            .map { $0.components(separatedBy: ";;") } ?? [Self.greeting])
+            .filter { !$0.isEmpty }
+        var typed: [String] = []
         do {
             let budget = ProcessInfo.processInfo.environment["WISQ_PC_BUDGET"]
             // **L'attente a sa propre allocation.** Sans elle, l'invité qui
@@ -169,8 +207,24 @@ final class X86BootAttemptTests: XCTestCase {
             // lui faut patienter devant un média de démarrage absent — douze
             // secondes de temps invité, soit deux cents millions de tours ;
             // on en donne le double.
-            try core.run(budget: budget.flatMap { UInt64($0) } ?? 4_500_000_000,
-                         waiting: patience ?? 400_000_000)
+            let allowance = budget.flatMap { UInt64($0) } ?? 4_500_000_000
+            let patient = patience ?? 400_000_000
+
+            // **La conversation.** Une course s'arrête quand la machine a
+            // épuisé sa patience, c'est-à-dire quand elle n'a plus rien à
+            // faire : c'est le moment de parler. Tant que l'invite n'est pas
+            // là, on la laisse continuer — taper avant qu'un shell existe
+            // n'écrirait que dans le tampon d'un pilote qui n'est pas encore
+            // ouvert.
+            for _ in 0...toType.count {
+                try core.run(budget: allowance, waiting: patient)
+                guard core.outOfPatience else { break }
+                let seen = String(decoding: core.serialOutput, as: UTF8.self)
+                guard seen.contains(Self.prompt), !toType.isEmpty else { break }
+                let line = toType.removeFirst()
+                typed.append(line)
+                core.serialInput.append(contentsOf: Array((line + "\n").utf8))
+            }
         } catch {
             stopped = error
         }
@@ -269,6 +323,15 @@ final class X86BootAttemptTests: XCTestCase {
             sauts dans le vide    : \(lost)
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             fils vus              : \(core.threadActivity.count)
+            dialogue              : \(typed.isEmpty ? "rien tapé" : typed.joined(separator: " | "))
+            bus PCI               : \(core.memory?.bus.map {
+                String(format: "fenêtre %04x, commande %04x, ligne %d",
+                       $0.window, $0.command, $0.interruptLine)
+            } ?? "aucun")
+            disque                : \(core.memory?.storage.map {
+                "\($0.sectors) secteurs, \($0.served) requêtes servies,"
+                    + " \($0.refused) refusées, état \($0.status)"
+            } ?? "aucun")
             """)
 
         func list(_ title: String, _ lines: [String]) {
@@ -337,6 +400,19 @@ final class X86BootAttemptTests: XCTestCase {
                       "l'init doit renoncer au média de démarrage, comme QEMU")
         XCTAssertTrue(serial.contains("initramfs emergency recovery shell launched"),
                       "et lancer son shell de secours, comme QEMU")
+
+        // **Et le shell écoute.** Une console qui écrit sans lire n'est qu'un
+        // journal ; celle-ci prend les frappes qu'on lui donne et répond. La
+        // réponse est exigée seulement quand personne n'a demandé autre chose :
+        // avec `WISQ_PC_INPUT`, ce qui revient n'est pas connu d'avance.
+        guard ProcessInfo.processInfo.environment["WISQ_PC_INPUT"] == nil else { return }
+        XCTAssertEqual(typed, [Self.greeting], "la ligne doit avoir été tapée")
+        // Deux fois plutôt qu'une : l'écho du terminal, puis la réponse du
+        // shell. Une seule voudrait dire que la frappe est arrivée sans être
+        // comprise — ou l'inverse.
+        let answers = serial.components(separatedBy: "wisq-parle").count - 1
+        XCTAssertGreaterThanOrEqual(answers, 2,
+                                    "le shell doit renvoyer la frappe, puis y répondre")
         // **Ce qui remplace « on s'arrête en anneau trois ».** Cette
         // assertion-là tenait tant que le cœur s'arrêtait *pendant* que le
         // programme tournait ; depuis que plus aucun opcode ne manque, la

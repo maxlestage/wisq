@@ -7,6 +7,74 @@ break APIs.
 
 ## [Unreleased]
 
+### Fixed
+- **The interrupt controller ignored its own priority rule.** A real 8259 will
+  not deliver a line while one of equal or higher priority is in service —
+  that is, until the handler sends its end-of-interrupt. Ours delivered
+  whatever was unmasked whenever the interrupt flag was up. That is not
+  decorative: a handler re-enables interrupts before it is done (Linux runs
+  its softirqs that way), and without the rule the same line interrupts it
+  again, on its own stack, for as long as the condition lasts. A kernel stack
+  is sixteen kilobytes; what lies below it belongs to someone else. Fixing it
+  exposed a second defect in the same place: Linux sends a **specific**
+  end-of-interrupt (`0x60 + irq`), naming the line to retire, and we always
+  retired the most urgent one — which, once the service bits mattered, would
+  have left a line in service forever and starved everything below it.
+- **An instruction that faults must leave no flag behind, and four of them
+  did.** `XADD` writing its register before its memory was one member of a
+  family; the flags are another. An instruction that reads a location,
+  computes and writes it back set its flags *before* the store — and for
+  `ADC`, `SBB`, `RCL` and `RCR` the carry is an **input**: when the store
+  faulted on a page `fork()` had just shared, the kernel copied the page,
+  replayed the instruction, and it read back the carry it had just written.
+  Measured in four lines: `stc ; adcl $1,(%rbx)` on 0x10 must give 0x12 and
+  gave 0x11; `sbb` gave 0x0F for 0x0E; `rcl` 0x20 for 0x21. And an
+  `addl $1,(%rbx)` on 0xFFFFFFFF that faults left the flags at 0x87 instead
+  of 0x02, so the frame the kernel pushes would have carried flags the
+  instruction had no right to set. The fix is what the processor does: check
+  **both** accesses before changing anything. `probeWrite` translates the
+  write address before the instruction computes, on the eight families that
+  read and write the same location — and not on `CMP` or `BT`, which write
+  nothing, since checking those would fault a comparison against a read-only
+  page, which no processor does.
+- **`UCOMISS` with a scalar prefix was executed instead of refused.** In Swift
+  a `where` written after a list of patterns guards only the last one, so
+  `case 0x2E, 0x2F where !single && !doubleWide` left `f3 0f 2e` — which is
+  not an instruction — going through the comparison path and setting flags. The
+  condition is now written on both patterns. The neighbouring `0x2C, 0x2D` arm
+  had the same shape but a guard inside its body, which does cover both: the
+  redundant `where` is gone and the guard stays.
+
+### Added
+- **The PCI bus, and a disk on it.** The kernel probes ports 0xCF8/0xCFC at
+  every boot and used to conclude "PCI: Fatal: No config space access function
+  found" — so it answers now. It is not enough to answer: `pci_sanity_check`
+  walks all thirty-two slots and demands a host bridge, a VGA card, or an
+  Intel/Compaq vendor before it believes the bus, so slot zero presents the
+  440FX bridge QEMU presents. Measured after: « PCI: Using configuration type
+  1 », « pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000 », and the
+  kernel assigning our device its I/O window at 0x1000.
+- **A disk for the x86-64 machine: virtio over MMIO.** A PCI disk would have
+  needed a PCI bus first — configuration space through ports 0xCF8/0xCFC, BARs
+  to place, an interrupt table — all before the first sector. The MMIO
+  transport needs no bus: the kernel takes the address and the interrupt line
+  from its own command line (`virtio_mmio.device=0x200@0xd0000000:5`) and the
+  driver above is the same one. The device implements version 2 of the
+  transport, one queue, and read, write and get-id requests; a sector beyond
+  the disk is an error, not a page of zeros, and an unknown request type is
+  answered rather than met with silence, which would leave the driver waiting
+  forever. It lives behind memory rather than inside it: its registers answer
+  at addresses no RAM covers, which is exactly the path that used to raise
+  "outside memory", so an ordinary address never meets it.
+- **The x86-64 machine takes keystrokes, and the boot test holds it to an
+  answer.** A console that writes without reading is a log; this one is a
+  terminal. The boot test runs the guest in rounds: each round ends when the
+  machine has nothing left to do, and that is when it types. By default it
+  types one line into Alpine's rescue shell and requires the answer to come
+  back twice — the terminal's echo, then the shell's reply. `WISQ_PC_INPUT`
+  replaces the lines (separated by `;;`) for measurements that need to ask
+  the guest something.
+
 ## [0.4.0] — 2026-09-04
 
 ### Added

@@ -141,4 +141,22 @@ final class X86AddressWatchTests: XCTestCase {
         XCTAssertEqual(core.addressTouched.filter { $0 != .none }.count, 1)
         XCTAssertEqual(core.watchedAddress, Self.cell, "et il se rallume après")
     }
+    /// **Le noyau n'est pas regardé, sauf si on le demande.** Le témoin suit
+    /// une case d'un programme ; le noyau, lui, touche tout, et l'écouter par
+    /// défaut noierait ce qu'on cherche. Mais quand c'est le chargeur de
+    /// modules qui relit une case qu'il vient d'écrire, c'est le noyau qu'il
+    /// faut regarder — et alors le drapeau se lève.
+    func testTheKernelIsWatchedOnlyWhenAsked() throws {
+        var core = try Self.core()
+        core.segments[1] = 0x10  // anneau zéro
+        core.watchedAddress = Self.cell
+        _ = try core.translate(Self.cell)
+        XCTAssertTrue(core.addressTouched.allSatisfy { $0 == .none },
+                      "en anneau zéro, le témoin se tait")
+
+        core.watchesKernel = true
+        _ = try core.translate(Self.cell)
+        XCTAssertEqual(core.addressTouched.filter { $0 != .none }.count, 1,
+                       "et parle quand on le lui demande")
+    }
 }
