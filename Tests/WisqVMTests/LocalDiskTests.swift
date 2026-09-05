@@ -140,6 +140,38 @@ final class LocalDiskTests: XCTestCase {
                         "moins d'un secteur n'en est pas un")
     }
 
+    // MARK: - Le disque que personne n'a touché
+
+    /// **La seule limite que wisq ne peut pas lever, dite plutôt que subie.**
+    ///
+    /// Le périphérique existe des deux côtés maintenant. Ce qui reste hors de
+    /// portée, c'est le pilote bloc dans le noyau que quelqu'un apporte : sans
+    /// lui, la fenêtre n'est jamais sondée et le disque est parfaitement muet
+    /// — indiscernable d'un disque cassé ou d'un réglage qui n'a pas pris.
+    func testADiskNobodyTouchedSaysSo() throws {
+        let note = try XCTUnwrap(
+            LocalDisk.silenceNote(activity: (served: 0, refused: 0), disk: "racine.img"))
+        XCTAssertTrue(note.contains("racine.img"), note)
+        XCTAssertTrue(note.contains("/dev/vda"), "et où il était")
+        XCTAssertTrue(note.contains("pilote"), "et pourquoi personne n'est venu")
+    }
+
+    /// **Une seule requête suffit à faire taire la phrase**, même refusée.
+    ///
+    /// Un refus prouve que le pilote est là et qu'il a parlé ; le silence
+    /// vient alors d'ailleurs, et répéter « votre noyau n'a pas de pilote »
+    /// enverrait chercher au mauvais endroit.
+    func testOneRequestIsEnoughToSilenceTheNote() {
+        XCTAssertNil(LocalDisk.silenceNote(activity: (served: 1, refused: 0), disk: "r.img"))
+        XCTAssertNil(LocalDisk.silenceNote(activity: (served: 0, refused: 1), disk: "r.img"),
+                     "un refus est une preuve que quelqu'un est venu")
+    }
+
+    /// Et sans disque du tout, il n'y a rien à dire.
+    func testWithNoDiskThereIsNothingToSay() {
+        XCTAssertNil(LocalDisk.silenceNote(activity: nil, disk: "r.img"))
+    }
+
     // MARK: - Ce que c'est, avant ce que ça pèse
 
     /// **Un ISO d'installation trop gros s'entend dire ce qu'il est.**

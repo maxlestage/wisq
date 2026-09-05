@@ -30,6 +30,11 @@ export const roadmapEn: Doc = {
           detail:
             "Solved by saving the machine rather than giving it a disk. The whole state below the kernel — RAM, registers, the timer, the bytes queued for the UART — is written out and restored exactly, so the guest comes back mid-syscall if that is where it was.",
         },
+        {
+          term: "A virtual disk for the local machine",
+          detail:
+            "This page said it was the wrong plan, and the reasoning was right on the facts and wrong on the conclusion. rv32 nommu kernels do often lack a block driver — but wisq was offering nothing to find: no interrupt controller a device could point at, and a device tree frozen in a blob that could not grow a node. Both are gone. Either machine now takes a disk image, the guest sees it on /dev/vda, and what it writes survives a suspension inside the snapshot. What wisq still cannot do is put the block driver into a kernel you brought: if yours has none, nothing will touch the device — so the device counts its requests, and wisq says so at the end rather than leaving you with a silent disk.",
+        },
       ],
     },
 
@@ -68,11 +73,6 @@ export const roadmapEn: Doc = {
           term: "A hosted service",
           detail:
             "wisq talks to machines you already have. There is no account, no server of ours in the path, and nothing to subscribe to.",
-        },
-        {
-          term: "A virtual disk for the local machine",
-          detail:
-            "This was the plan, and it was the wrong one. The rv32 nommu kernels this emulator runs have the virtio-mmio transport but no block driver at all — devtmpfs, proc, ramfs, sysfs, and nothing else. A perfect virtio-blk would have had nobody to talk to, and since you bring your own kernel, whether a disk worked would depend on a build we do not control. Saving the machine sidesteps the guest entirely.",
         },
       ],
     },
@@ -116,6 +116,11 @@ export const roadmapFr: Doc = {
           detail:
             "Résolue en sauvant la machine plutôt qu'en lui donnant un disque. Tout l'état sous le noyau — la RAM, les registres, le timer, les octets en attente sur l'UART — est écrit puis restauré à l'identique, si bien que l'invité revient au milieu d'un appel système si c'est là qu'il était.",
         },
+        {
+          term: "Un disque virtuel pour la machine locale",
+          detail:
+            "Cette page disait que c'était le mauvais plan, et le raisonnement était juste sur les faits et faux sur la conclusion. Les noyaux rv32 nommu manquent souvent de pilote bloc — mais wisq n'offrait rien à trouver : aucun contrôleur d'interruption qu'un périphérique puisse désigner, et un arbre de périphériques figé dans un blob où aucun nœud ne pouvait pousser. Les deux ont disparu. Les deux machines prennent maintenant une image de disque, l'invité la voit sur /dev/vda, et ce qu'il y écrit survit à une suspension, dans l'instantané. Ce que wisq ne peut toujours pas faire, c'est mettre le pilote bloc dans un noyau que vous apportez : si le vôtre n'en a pas, personne ne touchera le périphérique — alors le périphérique compte ses requêtes, et wisq le dit à la fin plutôt que de vous laisser devant un disque muet.",
+        },
       ],
     },
 
@@ -154,11 +159,6 @@ export const roadmapFr: Doc = {
           term: "Un service hébergé",
           detail:
             "wisq parle à des machines que vous avez déjà. Pas de compte, aucun serveur à nous sur le chemin, et rien à quoi s'abonner.",
-        },
-        {
-          term: "Un disque virtuel pour la machine locale",
-          detail:
-            "C'était le plan, et c'était le mauvais. Les noyaux rv32 nommu que cet émulateur fait tourner ont le transport virtio-mmio mais aucun pilote bloc — devtmpfs, proc, ramfs, sysfs, et rien d'autre. Un virtio-blk parfait n'aurait eu personne à qui parler, et comme vous apportez votre propre noyau, le fait qu'un disque marche dépendrait d'un build que nous ne contrôlons pas. Sauver la machine contourne l'invité entièrement.",
         },
       ],
     },

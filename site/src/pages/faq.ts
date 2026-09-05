@@ -39,6 +39,13 @@ export const faqEn: Doc = {
         "A real Linux kernel with a real shell, on a 32-bit RISC-V machine with no MMU and 64 MB of RAM. That is a working Unix — busybox, shell scripts, a compiler if you build one in. It is not a desktop, and it will not run anything compiled for x86 or ARM.",
     },
 
+    { kind: "h2", text: "Can the local machine keep files?" },
+    {
+      kind: "p",
+      text:
+        "Two answers, and they are not the same thing. The machine itself is saved: set aside when the screen locks, it comes back with your shell exactly where it was, mid-command if that is where you left it — no second boot. And since recently it can also have a disk: a filesystem image you import, seen on /dev/vda, that the guest reads and writes, with those writes carried inside the snapshot. What wisq cannot do is put a block driver into the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch the device — so wisq counts the requests and tells you at the end, instead of leaving you with a silent disk.",
+    },
+
     { kind: "h2", text: "Is my connection encrypted?" },
     {
       kind: "p",
@@ -127,6 +134,13 @@ export const faqFr: Doc = {
       kind: "p",
       text:
         "Un vrai noyau Linux avec un vrai shell, sur une machine RISC-V 32 bits sans MMU et 64 Mo de RAM. C'est un Unix qui fonctionne — busybox, scripts shell, un compilateur si vous en intégrez un. Ce n'est pas un bureau, et cela n'exécutera rien de compilé pour x86 ou ARM.",
+    },
+
+    { kind: "h2", text: "La machine locale peut-elle garder des fichiers ?" },
+    {
+      kind: "p",
+      text:
+        "Deux réponses, et ce n'est pas la même chose. La machine elle-même est sauvée : mise de côté quand l'écran se verrouille, elle revient avec votre shell exactement où il était, au milieu d'une commande si c'est là que vous l'avez laissée — pas de second démarrage. Et depuis peu elle peut aussi avoir un disque : une image de système de fichiers que vous importez, vue sur /dev/vda, que l'invité lit et écrit, et dont les écritures voyagent dans l'instantané. Ce que wisq ne peut pas faire, c'est mettre un pilote bloc dans le noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas ne touchera jamais le périphérique — alors wisq compte les requêtes et vous le dit à la fin, au lieu de vous laisser devant un disque muet.",
     },
 
     { kind: "h2", text: "Ma connexion est-elle chiffrée ?" },

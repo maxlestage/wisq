@@ -221,6 +221,22 @@ final class GuestMachineTests: XCTestCase {
             "un noyau qui ne trouve pas ce nœud ne sondera jamais la fenêtre")
     }
 
+    /// **Les deux machines rendent compte de leur disque**, et de la même
+    /// façon : c'est ce qui permet à l'application de le dire sans savoir
+    /// laquelle tourne.
+    func testBothMachinesReportWhatTheirDiskSaw() throws {
+        let riscv = LinuxMachine(ramSize: 32 << 20, onOutput: { _ in })
+        XCTAssertNil(riscv.diskActivity, "pas de disque, rien à rapporter")
+        try (riscv as GuestMachine).attachDisk(Data(repeating: 0, count: 4096))
+        XCTAssertEqual(riscv.diskActivity?.served, 0)
+        XCTAssertEqual(riscv.diskActivity?.refused, 0)
+
+        let pc = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
+        XCTAssertNil(pc.diskActivity)
+        try (pc as GuestMachine).attachDisk(Data(repeating: 0, count: 4096))
+        XCTAssertEqual(pc.diskActivity?.served, 0)
+    }
+
     /// Et le refus qui reste **porte sa phrase**, pas seulement son cas :
     /// c'est ce que l'application affiche.
     func testTheRefusalsCarryTheirOwnSentence() throws {

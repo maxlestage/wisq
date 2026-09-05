@@ -82,6 +82,10 @@ extension RustLinuxMachine: GuestMachine {
     /// Le disque, avant `load` — voir `attach(disk:)`.
     public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
+    public var diskActivity: (served: UInt64, refused: UInt64)? {
+        hasDisk ? (diskServed, diskRefused) : nil
+    }
+
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {

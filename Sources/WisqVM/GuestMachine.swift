@@ -43,11 +43,19 @@ public protocol GuestMachine: AnyObject, Sendable {
 
     /// Branche un disque, que l'invité verra comme un périphérique bloc.
     ///
-    /// **Refusé et nommé** par une machine qui n'en a pas, pour la raison que
-    /// `load` donne pour le disque en mémoire : accepter en silence donnerait
-    /// un invité qui cherche une racine qu'il ne trouvera jamais, et rien ne
-    /// relierait ça au réglage qui l'a causé.
+    /// Les deux machines savent le faire. Ce qu'aucune ne peut faire, c'est
+    /// mettre le pilote bloc dans le noyau de la personne : c'est à quoi
+    /// `diskActivity` sert.
     func attachDisk(_ image: Data) throws
+
+    /// Ce que le disque a vu — servies, refusées — ou `nil` s'il n'y en a pas.
+    ///
+    /// **Zéro et zéro est la réponse qui compte.** wisq ne peut pas mettre un
+    /// pilote bloc dans le noyau que quelqu'un apporte ; un noyau qui n'en a
+    /// pas ne touchera jamais la fenêtre du périphérique, et sans ce compteur
+    /// le symptôme est un disque parfaitement muet — impossible à distinguer
+    /// d'un disque cassé. Avec, la machine sait le dire.
+    var diskActivity: (served: UInt64, refused: UInt64)? { get }
 
     /// Fait tourner l'invité jusqu'à ce qu'il s'arrête, qu'on le lui demande,
     /// ou que le budget s'épuise.
@@ -127,6 +135,10 @@ extension LinuxMachine: GuestMachine {
     /// donc la machine sait le dire.
     public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
+    public var diskActivity: (served: UInt64, refused: UInt64)? {
+        disk.map { ($0.served, $0.refused) }
+    }
+
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {
@@ -143,6 +155,10 @@ extension X86Machine: GuestMachine {
     /// Les deux portes de `attach(disk:)` — MMIO et PCI — sont posées d'un
     /// coup ; c'est le noyau qui choisit celle qu'il sait ouvrir.
     public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
+
+    public var diskActivity: (served: UInt64, refused: UInt64)? {
+        disk.map { ($0.served, $0.refused) }
+    }
 
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
