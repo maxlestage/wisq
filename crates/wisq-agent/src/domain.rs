@@ -144,10 +144,20 @@ impl Desktop {
         out.push_str("  <os>\n    <type arch='x86_64' machine='q35'>hvm</type>\n");
         out.push_str("    <boot dev='cdrom'/>\n    <boot dev='hd'/>\n  </os>\n");
         out.push_str("  <features>\n    <acpi/>\n    <apic/>\n  </features>\n");
-        // Le processeur de l'hôte tel quel : un modèle générique retire les
+        // **Le processeur de l'hôte tel quel, et seulement quand il y a un
+        // hyperviseur pour le passer.** Un modèle générique retire les
         // instructions modernes, et un bureau qui s'en sert tombe sur une
-        // instruction illégale au lieu de démarrer.
-        out.push_str("  <cpu mode='host-passthrough' check='none'/>\n");
+        // instruction illégale au lieu de démarrer — d'où `host-passthrough`.
+        //
+        // Mais sans accélérateur, libvirt le refuse net : « CPU mode
+        // 'host-passthrough' for x86_64 qemu domain on x86_64 host is not
+        // supported by hypervisor », et la machine ne démarre pas du tout.
+        // Mesuré en lançant la commande pour de vrai sur un hôte sans KVM ;
+        // le schéma RelaxNG, lui, acceptait le domaine sans broncher. Sans
+        // accélérateur on ne dit donc rien, et QEMU choisit son modèle.
+        if self.accelerator != Accelerator::None {
+            out.push_str("  <cpu mode='host-passthrough' check='none'/>\n");
+        }
         out.push_str("  <clock offset='utc'/>\n");
         out.push_str("  <on_poweroff>destroy</on_poweroff>\n");
         out.push_str("  <on_reboot>restart</on_reboot>\n");
@@ -378,6 +388,28 @@ mod tests {
         );
     }
 
+    /// **Le mode processeur suit l'accélérateur, et c'est un vrai démarrage
+    /// qui l'a imposé.** `host-passthrough` demande un hyperviseur qui puisse
+    /// passer le processeur ; sans KVM ni HVF, libvirt refuse de démarrer le
+    /// domaine — pas de le définir, de le démarrer, ce qui rend le message
+    /// bien plus loin de sa cause. Le schéma RelaxNG acceptait pourtant le
+    /// domaine : seul un `virsh start` pouvait le dire.
+    #[test]
+    fn the_cpu_mode_follows_the_accelerator() {
+        let mut spec = desktop();
+        assert!(
+            spec.xml().contains("host-passthrough"),
+            "avec KVM, on le passe"
+        );
+        spec.accelerator = Accelerator::Hvf;
+        assert!(spec.xml().contains("host-passthrough"), "avec HVF aussi");
+        spec.accelerator = Accelerator::None;
+        assert!(
+            !spec.xml().contains("<cpu"),
+            "sans accélérateur, on ne dit rien : libvirt refuserait de démarrer"
+        );
+    }
+
     /// L'accélérateur se lit dans les capacités, et son absence n'est pas une
     /// panne : un bureau lent reste un bureau.
     #[test]
@@ -432,13 +464,19 @@ mod tests {
             );
             return;
         };
-        for video in [Video::Virtio, Video::Qxl] {
+        for (video, accelerator) in [
+            (Video::Virtio, Accelerator::Kvm),
+            (Video::Qxl, Accelerator::Kvm),
+            (Video::Virtio, Accelerator::None),
+        ] {
             let mut spec = desktop();
             spec.video = video;
+            spec.accelerator = accelerator;
             let path = std::env::temp_dir().join(format!(
-                "wisq-domaine-{}-{}.xml",
+                "wisq-domaine-{}-{}-{}.xml",
                 std::process::id(),
-                spec.video.model()
+                spec.video.model(),
+                spec.accelerator.domain_type()
             ));
             std::fs::write(&path, spec.xml()).unwrap();
             let output = std::process::Command::new(&tool)
@@ -449,8 +487,9 @@ mod tests {
             let _ = std::fs::remove_file(&path);
             assert!(
                 output.status.success(),
-                "libvirt refuse le domaine ({}) :\n{}\n{}",
+                "libvirt refuse le domaine ({} / {}) :\n{}\n{}",
                 spec.video.model(),
+                spec.accelerator.domain_type(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

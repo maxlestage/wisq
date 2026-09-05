@@ -71,16 +71,30 @@ d'accélérateur du tout, et il n'y en aura pas.
 `--montrer` écrit le domaine sur la sortie standard sans rien créer, pour le
 relire ou l'adapter.
 
-*Vérifié d'ici* : le domaine engendré passe `virt-xml-validate` contre le
-schéma RelaxNG de libvirt 10.0.0, pour les deux modèles de carte ; un test du
-dépôt le refait à chaque fois. Et le jeu de périphériques a été monté tel quel
-sous QEMU 8 avec une vraie ISO Alpine : l'invité atteint son invite de
-connexion, le serveur SPICE écoute, et le client de wisq s'y connecte, reçoit
-un bureau de 1280×800 et ses pixels — c'est `SPICELiveDesktopTests`, et c'est
-lui qui a trouvé que le ticket SPICE était mal chiffré.
+**Sur quelle connexion libvirt ?** Celle que `virsh` prend par défaut : pour un
+utilisateur ordinaire c'est `qemu:///session`, où QEMU tourne sous votre
+identité et lit donc vos fichiers sans rien demander. En root, ou avec
+`LIBVIRT_DEFAULT_URI=qemu:///system`, QEMU tourne sous l'utilisateur
+`libvirt-qemu` : il faut alors que l'image **et** le dossier des disques lui
+soient lisibles, sinon le démarrage échoue avec « Cannot access storage file
+… Permission denied ». Le plus simple est de rester en session, ou de mettre
+les fichiers sous `/var/lib/libvirt/images`. Rencontré ici, sur cette
+machine-ci.
 
-*Non vérifié d'ici* : l'installation d'un invité de bout en bout, faute de KVM
-et de temps machine.
+*Vérifié d'ici, de bout en bout.* La commande a été lancée pour de vrai contre
+libvirt 10.0.0 et QEMU 8, avec une vraie ISO Alpine : elle crée le disque,
+définit le domaine, le démarre, `virsh domdisplay` répond
+`spice://localhost:5900`, et le client SPICE de wisq s'y connecte avec le mot
+de passe engendré, reçoit un bureau de 1280×800 et ses pixels — c'est
+`SPICELiveDesktopTests`. Un mauvais mot de passe est refusé.
+
+C'est ce lancement qui a trouvé les deux défauts que le schéma ne pouvait pas
+voir : `host-passthrough` refusé par un hyperviseur sans accélérateur, et le
+ticket SPICE mal chiffré, qui rendait **tout** bureau protégé par mot de passe
+injoignable.
+
+*Non vérifié d'ici* : l'installation complète d'un invité depuis son
+installateur, faute de KVM et de temps machine.
 
 ### À la main, avec `virt-install`
 

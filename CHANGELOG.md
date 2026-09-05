@@ -26,7 +26,11 @@ break APIs.
   un clavier offerts au réseau. Le domaine engendré est validé par le schéma
   RelaxNG de libvirt lui-même — un test le confronte à `virt-xml-validate`, et
   c'est ce test, seul, qui a attrapé une balise hors de `<devices>` qu'aucune
-  assertion de texte ne pouvait voir.
+  assertion de texte ne pouvait voir. Puis la commande a été lancée pour de
+  vrai contre libvirt 10.0.0, ce qui a attrapé ce que le schéma ne pouvait
+  pas : un domaine est valide avec `<cpu mode='host-passthrough'/>` et refuse
+  de **démarrer** sans KVM ni HVF. L'élément n'est donc écrit que lorsqu'il y
+  a un accélérateur pour passer le processeur.
 - **`SPICELiveDesktopTests` : le client de wisq contre un vrai serveur SPICE.**
   Le même motif que le test RDP en direct, et il manquait. Rien dans ce dépôt
   n'avait jamais montré la pile SPICE parler à autre chose qu'à elle-même : les
