@@ -1,4 +1,5 @@
 #if canImport(WebKit)
+import UIKit
 import WebKit
 import XCTest
 
@@ -23,12 +24,30 @@ import XCTest
 /// dans la vue avant de chronométrer, pour qu'un module abîmé en route ne
 /// rende pas un débit magnifique et faux.
 ///
-/// **Une vue qui ne démarre pas est un saut, pas un échec** : un paquet de
-/// tests sans application hôte n'a pas toujours de processus de contenu web, et
-/// c'est une panne d'outillage, pas une réponse. En revanche, une vue qui
-/// démarre et rend un débit d'interpréteur est une réponse, et le test tombe.
+/// **Ce paquet est hébergé par l'application, et ce n'est pas un détail.**
+/// La première version vivait dans `WisqUITests`, qui n'a pas d'hôte : les deux
+/// tests y ont été **sautés**, « le WKWebView n'a pas fini de charger », après
+/// trente-six et vingt-quatre secondes d'attente. WebKit rend dans un processus
+/// séparé, et iOS ne le démarre pas pour un `xctest` qui n'est pas une
+/// application. Le vert du tour 581 ne disait donc rien — et c'est exactement
+/// la question posée ici qui l'exigeait : « un `WKWebView` **hébergé par une
+/// application** compile-t-il ? » ne se demande pas depuis un paquet qui n'en a
+/// pas. D'où `Tests/WisqWebKitTests`, avec `Wisq` pour hôte, et la vue posée
+/// dans une vraie fenêtre.
+///
+/// **Une vue qui ne démarre pas reste un saut, pas un échec** : c'est une panne
+/// d'outillage, pas une réponse, et le message dit alors ce qu'on a vu de la
+/// pile pour que la fois suivante ne reparte pas de zéro. En revanche, une vue
+/// qui démarre et rend un débit d'interpréteur est une réponse, et le test
+/// tombe.
 @MainActor
 final class WebKitJITProbeTests: XCTestCase {
+    /// Les fenêtres restent en vie tant que le test tourne : une fenêtre
+    /// relâchée emporte sa vue, et la vue son processus de contenu. XCTest
+    /// libère l'instance après le test, donc pas de `tearDown` — qui serait de
+    /// toute façon un conflit d'isolation avec `@MainActor` en Swift 6.
+    private var windows: [UIWindow] = []
+
     /// Le module réaliste, tel que le script l'écrit.
     private static let moduleBase64 =
         "AGFzbQEAAAABCgJgAX4BfmAAAX8DBAMBAQAEBAFwAAIFAwEAAgcPAgVkcml2ZQACA21lbQIA" +
@@ -44,15 +63,34 @@ final class WebKitJITProbeTests: XCTestCase {
         "IQEgAEIIfSEAIAFFIABCAFZxDQALIAAL"
 
     private func loadedWebView() async throws -> WKWebView {
-        let view = WKWebView(frame: .init(x: 0, y: 0, width: 320, height: 240))
+        let frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+        let view = WKWebView(frame: frame)
+        // **Une vue hors de toute fenêtre n'est pas sûre de démarrer.** WebKit
+        // rend dans un processus séparé, et iOS ne le réveille que pour une vue
+        // qui appartient à une fenêtre visible. Lui en donner une est aussi la
+        // seule façon de poser la vraie question : celle d'un `WKWebView` tel
+        // qu'une application l'héberge.
+        let window = UIWindow(frame: frame)
+        window.addSubview(view)
+        window.isHidden = false
+        windows.append(window)
+
         view.loadHTMLString("<!doctype html><meta charset=\"utf-8\"><title>sonde</title>",
-                            baseURL: URL(string: "about:blank"))
+                            baseURL: nil)
         let deadline = Date().addingTimeInterval(20)
         while view.isLoading && Date() < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         guard !view.isLoading else {
-            throw XCTSkip("le WKWebView n'a pas fini de charger : outillage, pas réponse")
+            // Ce que la pile montrait au moment du saut : sans ça, la fois
+            // suivante recommence l'enquête depuis rien.
+            let scenes = UIApplication.shared.connectedScenes.count
+            throw XCTSkip("""
+                le WKWebView n'a pas fini de charger en 20 s — \
+                scènes connectées : \(scenes), \
+                fenêtre à l'écran : \(!window.isHidden), \
+                hôte : \(Bundle.main.bundleIdentifier ?? "aucun")
+                """)
         }
         return view
     }
