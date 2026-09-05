@@ -56,15 +56,36 @@ mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
 # après la fin des tests, donc `tee` attend une fin de fichier qui ne vient
 # jamais et le script pend. Mesuré : un pas de quatre minutes qui en a duré
 # plus de vingt. Une redirection vers un fichier n'attend personne.
+#
+# **Et une laisse.** Ce pas dure cinq à onze minutes selon le coureur ; il lui
+# est arrivé d'en durer vingt-six sans rien produire, et un job qui pend ne
+# rend aucune information — il occupe un coureur jusqu'au délai du service,
+# six heures plus tard. Vingt-cinq minutes laissent passer un coureur
+# simplement lent et transforment un blocage en rouge lisible, avec le journal
+# écrit jusque-là. `timeout` n'existe pas sur macOS de base, d'où le chien de
+# garde en arrière-plan.
 set +e
 xcodebuild test \
   -project Wisq.xcodeproj \
   -scheme Wisq \
   -destination "id=${udid%% *}" \
-  CODE_SIGNING_ALLOWED=NO > "$sortie" 2>&1
+  CODE_SIGNING_ALLOWED=NO > "$sortie" 2>&1 &
+essai=$!
+( sleep 1500
+  kill -TERM "$essai" 2>/dev/null
+  sleep 10
+  kill -KILL "$essai" 2>/dev/null ) &
+chien=$!
+wait "$essai"
 issue=$?
+kill "$chien" 2>/dev/null
+wait "$chien" 2>/dev/null
 set -e
 cat "$sortie"
+if [ "$issue" -ge 128 ]; then
+  echo "==> xcodebuild a été arrêté après vingt-cinq minutes (signal $((issue - 128)))." >&2
+  echo "    Le journal ci-dessus est ce qu'il avait écrit avant." >&2
+fi
 
 # Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
 # sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
