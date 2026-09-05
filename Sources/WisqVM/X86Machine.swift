@@ -72,7 +72,16 @@ public final class X86Machine: @unchecked Sendable {
     /// le second — son `virtio_mmio` est compilé sans les périphériques de la
     /// ligne de commande — mais un noyau qui les a saura passer par le premier.
     public func attach(disk image: [UInt8]) {
-        let device = VirtioBlock(image: image)
+        attach(device: VirtioBlock(image: image))
+    }
+
+    /// Le même disque, lu depuis un fichier, avec sa couche d'écriture à
+    /// côté — voir `FileDiskStore`.
+    public func attach(diskFileAt base: URL, writes: URL) throws {
+        attach(device: VirtioBlock(store: try FileDiskStore(base: base, writes: writes)))
+    }
+
+    private func attach(device: VirtioBlock) {
         disk = device
         memory.storage = device
         memory.bus = X86PCIHost(storage: device)
@@ -340,7 +349,7 @@ public final class X86Machine: @unchecked Sendable {
         var restoredDisk: VirtioBlock?
         var restoredBus: X86PCIHost?
         if !reader.isAtEnd {
-            let device = try VirtioBlock.restored(from: &reader)
+            let device = try VirtioBlock.restored(from: &reader, keeping: disk?.store)
             let bus = X86PCIHost(storage: device)
             try bus.restore(from: &reader)
             restoredDisk = device

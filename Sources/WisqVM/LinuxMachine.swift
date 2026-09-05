@@ -142,6 +142,13 @@ public final class LinuxMachine: @unchecked Sendable {
     /// l'arbre déclare le nœud, et un arbre déjà posé ne se réécrit pas.
     public func attach(disk image: [UInt8]) { disk = VirtioBlock(image: image) }
 
+    /// Le même disque, lu depuis un fichier, avec sa couche d'écriture à
+    /// côté — voir `FileDiskStore`. À faire avant `load`, pour la même
+    /// raison.
+    public func attach(diskFileAt base: URL, writes: URL) throws {
+        disk = VirtioBlock(store: try FileDiskStore(base: base, writes: writes))
+    }
+
     /// Le retirer, et baisser sa ligne avec lui. Une interruption qui reste
     /// levée sans personne pour la servir enferme l'invité dans son
     /// gestionnaire.
@@ -490,7 +497,9 @@ public final class LinuxMachine: @unchecked Sendable {
         // fin : une lecture qui échoue ici laisse à la machine le disque
         // qu'elle avait, plutôt qu'un disque à moitié repris.
         var restoredDisk: VirtioBlock?
-        if !reader.isAtEnd { restoredDisk = try VirtioBlock.restored(from: &reader) }
+        if !reader.isAtEnd {
+            restoredDisk = try VirtioBlock.restored(from: &reader, keeping: disk?.store)
+        }
         try reader.finish()
 
         for index in 0..<32 { core.regs[index] = words[index] }

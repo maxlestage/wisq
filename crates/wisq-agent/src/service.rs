@@ -120,7 +120,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// `/v1/vms/{id}/start` is not asking about a domain, and no libvirt domain is
 /// called that. Found by making the phone run this same list of cases — both
 /// sides accepted them, and neither should.
-fn is_plausible_domain_name(id: &str) -> bool {
+pub fn is_plausible_domain_name(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 255
         && !id.starts_with('-')

@@ -37,6 +37,67 @@ sudo apt install qemu-system-x86 libvirt-daemon-system virtinst spice-vdagent
 sudo usermod -aG libvirt "$USER"    # puis se reconnecter
 ```
 
+### En une commande : `wisq-agent bureau`
+
+Le démon sait construire la machine lui-même, à partir de n'importe quelle
+image d'installation :
+
+```sh
+wisq-agent bureau --image ~/omarchy-4.0.2.iso --memoire 8192 --processeurs 6 --disque 80
+```
+
+Il crée le disque qcow2, écrit le domaine, le définit, le démarre, et affiche
+le mot de passe du bureau. Ce qu'il met dedans et qu'on oublie à la main :
+l'image amorcée **avant** le disque (sinon « no bootable device » au premier
+démarrage), l'image montée en lecture seule, la **tablette USB** — SPICE envoie
+des coordonnées absolues, ce qu'un doigt produit, et une souris relative dérive
+jusqu'à devenir impossible à poser —, le son `ich9`, le canal
+`com.redhat.spice.0` de l'agent invité, et un mot de passe tiré de
+`/dev/urandom`. Le bureau écoute sur `0.0.0.0` pour que le téléphone l'atteigne,
+et c'est ce mot de passe qui le garde : sans lui, ce serait un écran et un
+clavier offerts au réseau. Il n'est écrit nulle part ailleurs.
+
+`--video virtio` (par défaut) est le bon modèle pour un bureau Wayland —
+Hyprland, GNOME, KDE ; `--video qxl` pour un X11 léger. Se tromper ne casse
+rien : la machine démarre et l'écran reste noir, ce qui est le symptôme le plus
+pénible à relier à sa cause.
+
+L'accélérateur est lu dans `virsh capabilities` : KVM sous Linux, HVF sur un
+Mac, l'interprète sinon — et dans ce dernier cas la commande le dit, parce
+qu'un bureau interprété tourne, mais lentement. C'est la différence entre le
+bureau réel et la machine locale du téléphone : là-bas il n'y a pas
+d'accélérateur du tout, et il n'y en aura pas.
+
+`--montrer` écrit le domaine sur la sortie standard sans rien créer, pour le
+relire ou l'adapter.
+
+**Sur quelle connexion libvirt ?** Celle que `virsh` prend par défaut : pour un
+utilisateur ordinaire c'est `qemu:///session`, où QEMU tourne sous votre
+identité et lit donc vos fichiers sans rien demander. En root, ou avec
+`LIBVIRT_DEFAULT_URI=qemu:///system`, QEMU tourne sous l'utilisateur
+`libvirt-qemu` : il faut alors que l'image **et** le dossier des disques lui
+soient lisibles, sinon le démarrage échoue avec « Cannot access storage file
+… Permission denied ». Le plus simple est de rester en session, ou de mettre
+les fichiers sous `/var/lib/libvirt/images`. Rencontré ici, sur cette
+machine-ci.
+
+*Vérifié d'ici, de bout en bout.* La commande a été lancée pour de vrai contre
+libvirt 10.0.0 et QEMU 8, avec une vraie ISO Alpine : elle crée le disque,
+définit le domaine, le démarre, `virsh domdisplay` répond
+`spice://localhost:5900`, et le client SPICE de wisq s'y connecte avec le mot
+de passe engendré, reçoit un bureau de 1280×800 et ses pixels — c'est
+`SPICELiveDesktopTests`. Un mauvais mot de passe est refusé.
+
+C'est ce lancement qui a trouvé les deux défauts que le schéma ne pouvait pas
+voir : `host-passthrough` refusé par un hyperviseur sans accélérateur, et le
+ticket SPICE mal chiffré, qui rendait **tout** bureau protégé par mot de passe
+injoignable.
+
+*Non vérifié d'ici* : l'installation complète d'un invité depuis son
+installateur, faute de KVM et de temps machine.
+
+### À la main, avec `virt-install`
+
 Une VM Ubuntu invitée avec un affichage SPICE, l'agent invité (presse-papiers,
 transfert de fichiers, redimensionnement) et l'ACPI pour s'éteindre poliment :
 
@@ -70,8 +131,10 @@ fichier.
 
 ### Une autre distribution que Ubuntu
 
-La recette n'a rien d'Ubuntu : c'est le même `virt-install` avec **l'ISO qu'on
-veut** et le `--os-variant` correspondant. Pour Arch — donc pour Omarchy :
+La recette n'a rien d'Ubuntu : `wisq-agent bureau --image ~/omarchy-4.0.2.iso`
+prend n'importe quelle image. À la main, c'est le même `virt-install` avec
+**l'ISO qu'on veut** et le `--os-variant` correspondant. Pour Arch — donc pour
+Omarchy :
 
 ```sh
 virt-install --name omarchy --memory 4096 --vcpus 4 \

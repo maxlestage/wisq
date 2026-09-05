@@ -7,6 +7,84 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **`wisq-agent bureau` : d'une image d'installation à un bureau, en une
+  commande.** wisq affichait un bureau distant depuis longtemps ; ce qui
+  manquait, c'était la machine à afficher. Écrire un domaine libvirt à la main
+  demande de connaître le modèle de carte qui va avec son compositeur, l'ordre
+  d'amorçage, le canal de l'agent invité et le mot de passe SPICE — quatre
+  occasions de se tromper, dont trois donnent un écran noir sans message. La
+  commande crée le disque qcow2, écrit le domaine, le définit et le démarre,
+  puis affiche ce qu'il faut taper dans wisq. Le domaine amorce l'image avant
+  le disque, monte l'image en lecture seule (elle n'est jamais modifiée),
+  déclare la tablette USB (des coordonnées absolues, ce qu'un doigt produit),
+  le son ich9 et le canal `com.redhat.spice.0` — les trois choses que wisq sait
+  afficher —, et choisit son accélérateur dans `virsh capabilities` : KVM sous
+  Linux, HVF sur un Mac, l'interprète sinon, en le disant. Le bureau SPICE
+  porte **toujours** un mot de passe tiré de `/dev/urandom` : il écoute sur une
+  adresse que le téléphone atteint, et sans mot de passe ce serait un écran et
+  un clavier offerts au réseau. Le domaine engendré est validé par le schéma
+  RelaxNG de libvirt lui-même — un test le confronte à `virt-xml-validate`, et
+  c'est ce test, seul, qui a attrapé une balise hors de `<devices>` qu'aucune
+  assertion de texte ne pouvait voir. Puis la commande a été lancée pour de
+  vrai contre libvirt 10.0.0, ce qui a attrapé ce que le schéma ne pouvait
+  pas : un domaine est valide avec `<cpu mode='host-passthrough'/>` et refuse
+  de **démarrer** sans KVM ni HVF. L'élément n'est donc écrit que lorsqu'il y
+  a un accélérateur pour passer le processeur.
+- **`SPICELiveDesktopTests` : le client de wisq contre un vrai serveur SPICE.**
+  Le même motif que le test RDP en direct, et il manquait. Rien dans ce dépôt
+  n'avait jamais montré la pile SPICE parler à autre chose qu'à elle-même : les
+  tests unitaires injectent leur propre transport et leur propre chiffreur de
+  ticket. Ce test ouvre de vraies sockets, s'authentifie, et vérifie que le
+  bureau arrive et que des pixels le peignent. Mesuré ici contre QEMU 8 servant
+  une ISO Alpine : poignée de main en 0,33 s, bureau de 1280×800, pixels reçus
+  en 0,73 s.
+
+### Fixed
+- **Aucun bureau SPICE protégé par mot de passe n'était joignable.** Le ticket
+  bourrait le clair à 128 octets avant RSA-OAEP-SHA1. Or 128 est la taille du
+  **chiffré** — celle d'un module RSA de 1024 bits — et OAEP-SHA1 ne laisse
+  passer que 128 − 2×20 − 2 = 86 octets de clair. `SecKeyCreateEncryptedData`
+  refusait, le client rendait `ticketUnavailable`, et la session mourait avant
+  le premier pixel. Le client de référence chiffre `strlen(passwd) + 1` octets,
+  et c'est ce que wisq fait maintenant. Rien ne l'avait vu parce que rien
+  n'avait jamais parlé à un serveur : le fichier qui porte la couture dit
+  pourtant, en toutes lettres, qu'elle existe pour qu'un coureur Linux puisse
+  passer au rouge. Il n'avait jamais couru ; il court, et il l'a trouvé du
+  premier coup.
+
+### Changed
+- **The local disk is read from its file, and what the guest writes is kept
+  beside it — durably, on both cores.** The virtio block device held its
+  image whole in a `[UInt8]`, and that one fact ruled everything downstream:
+  a size ceiling tied to the phone's memory, an import refusal for anything
+  above it (the 5.8 GiB installer image someone actually brought), and the
+  screen text explaining both. The device now reads through a `DiskStore`:
+  the imported file is opened read-only and read in place, sector by sector,
+  and every sector the guest writes goes to a `writes` file plus a
+  `writes.map` that names its slot, both written **before the device answers
+  the guest** — so an app killed without notice loses nothing already written,
+  and the imported file never changes. The overlay is **packed**: the n-th
+  sector touched takes the n-th 512-byte slot, whatever its number on the
+  disk, so it costs 512 bytes per sector written and nothing for the rest.
+  It was sparse at first — one offset per sector, trusting the filesystem to
+  leave holes — and the Apple runner measured what that really costs on APFS:
+  2,052,096 bytes for a single sector written two mebibytes in. APFS is the
+  iPhone's filesystem too, so a six-gigabyte image whose guest touched its
+  last sector would have filled the phone. Suspension adds an `fsync`. The
+  snapshot no longer carries the image for such a disk: it carries a
+  "content lives elsewhere" mark, and the restore puts the store the app
+  re-opened back under the restored registers; a snapshot with the image
+  inside (yesterday's) still restores as before. The Rust core writes
+  exactly the same two files (`store.rs`, with `wisq_vm_attach_disk_file`,
+  `wisq_vm_flush_disk`, `wisq_vm_disk_bytes_written`), and a differential
+  test has both cores run the same guest write and compares the overlays
+  byte for byte. The ceiling is gone (`LocalDisk.maximumBytes` and its
+  refusal); the one refusal left is a file under one sector. Deleting a
+  disk from the library discards its overlay; the storage report counts the
+  overlay's allocated blocks, not its apparent size. In-memory disks remain
+  for tests and for snapshots already on phones.
+
 ### Fixed
 - **The interrupt controller ignored its own priority rule.** A real 8259 will
   not deliver a line while one of equal or higher priority is in service —

@@ -125,6 +125,35 @@ impl Machine {
         self.disk = Some(VirtioBlock::new(image.to_vec()));
     }
 
+    /// Gives the machine a disk read from a file, with a durable write
+    /// overlay beside it — see `store::FileStore`. Nothing of the base is
+    /// copied; this is how an installer image of several gigabytes gets
+    /// attached on a phone.
+    pub fn attach_disk_file(
+        &mut self,
+        base: &std::path::Path,
+        writes: &std::path::Path,
+    ) -> Result<(), crate::store::StoreError> {
+        let store = crate::store::FileStore::open(base, writes)?;
+        self.disk = Some(VirtioBlock::with_store(crate::store::Store::File(store)));
+        Ok(())
+    }
+
+    /// Pushes what the guest wrote to the disk down to durable storage.
+    pub fn flush_disk(&self) {
+        if let Some(disk) = self.disk.as_ref() {
+            disk.flush();
+        }
+    }
+
+    /// How many bytes of disk the guest has changed — the overlay's size for
+    /// a file-backed disk, the image's for a memory one.
+    pub fn disk_bytes_written(&self) -> u64 {
+        self.disk
+            .as_ref()
+            .map_or(0, |disk| disk.store.bytes_written())
+    }
+
     /// Takes it away, and drops the line with it.
     ///
     /// An interrupt raised that nobody will ever serve locks the guest inside
@@ -363,7 +392,20 @@ impl Machine {
 
         self.core = core;
         self.ram = ram;
-        self.disk = restored_disk;
+        // A disk whose content lives elsewhere takes the store the machine
+        // already holds — the one the app opened on the same file. Without
+        // one it comes back empty: zero sectors, I/O errors, the way a disk
+        // that was unplugged reads.
+        self.disk = match restored_disk {
+            None => None,
+            Some((disk, false)) => Some(disk),
+            Some((mut disk, true)) => {
+                if let Some(previous) = self.disk.take() {
+                    disk.store = previous.store;
+                }
+                Some(disk)
+            }
+        };
         {
             let mut input = self.shared.input.lock().unwrap();
             input.clear();
@@ -596,5 +638,54 @@ mod tests {
         );
         let line = &tree[dtb::COMMAND_LINE_OFFSET..dtb::COMMAND_LINE_OFFSET + 19];
         assert_eq!(line, b"console=ttyS0 quiet");
+    }
+
+    /// A file-backed disk does not travel in the snapshot: the snapshot is
+    /// small, and the restore puts the store the machine already holds back
+    /// under the restored registers. Without one, the disk comes back empty
+    /// rather than the restore failing.
+    #[test]
+    fn a_file_backed_disk_stays_out_of_the_snapshot_and_comes_back_on_restore() {
+        let folder = std::env::temp_dir().join(format!("wisq-machine-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let base = folder.join("base.img");
+        std::fs::write(&base, vec![7u8; 4096 * 512]).unwrap();
+        let writes = folder.join("disk.writes");
+
+        let image = [0x13, 0x00, 0x00, 0x00];
+        let mut machine = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_| {}));
+        machine
+            .attach_disk_file(&base, &writes)
+            .expect("le disque sur fichier");
+        machine.load(&image, None).expect("chargement");
+        machine.disk.as_mut().unwrap().store.write(512, &[1u8; 512]);
+        let saved = machine.snapshot();
+        assert!(
+            saved.len() < 1 << 20,
+            "l'image n'est pas dedans : {} octets",
+            saved.len()
+        );
+
+        let mut resumed = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_| {}));
+        resumed.attach_disk_file(&base, &writes).expect("rebranché");
+        resumed.restore(&saved).expect("reprise");
+        assert!(resumed.has_disk());
+        assert_eq!(
+            resumed.disk_bytes_written(),
+            512,
+            "la couche rebranchée porte le secteur"
+        );
+        assert_eq!(
+            resumed.disk.as_ref().unwrap().store.read(512, 2),
+            Some(vec![1, 1])
+        );
+
+        let mut bare = Machine::new(DEFAULT_RAM_SIZE, Box::new(|_| {}));
+        bare.restore(&saved).expect("reprise sans disque rebranché");
+        assert!(bare.has_disk(), "le périphérique est là");
+        assert_eq!(bare.disk.as_ref().unwrap().sectors(), 0, "mais vide");
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
