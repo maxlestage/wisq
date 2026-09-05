@@ -237,12 +237,18 @@ public final class LocalVMModel {
         // vivent justement là. Sans lui, ce qui suit est un démarrage complet,
         // 262 lignes de journal, puis « VFS: Unable to mount root fs on
         // unknown-block(0,0) » : le dire ici vaut mieux que de le faire vivre.
+        //
+        // **Mais une machine sauvée n'en a pas besoin** : elle est déjà
+        // démarrée, son initramfs est déballé dans sa mémoire, et l'instantané
+        // porte les deux. Refuser de la reprendre parce que le fichier a été
+        // supprimé depuis lui coûterait sa session pour une raison qui ne la
+        // concerne pas.
         let ramdisk: Data?
         if core == .x86_64 {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
-            guard let paired = BootMedia.pair(
-                kernel: kernelURL.lastPathComponent, among: media).url,
-                let bytes = try? Data(contentsOf: paired) else {
+            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media)
+                .url.flatMap { try? Data(contentsOf: $0) }
+            if ramdisk == nil, saved == nil {
                 _ = life.guestFinished()
                 finish(with: """
                     \(kernelURL.lastPathComponent) est un noyau pour PC, et un \
@@ -257,7 +263,6 @@ public final class LocalVMModel {
                 runFinished = nil
                 return
             }
-            ramdisk = bytes
         } else {
             ramdisk = nil
         }
