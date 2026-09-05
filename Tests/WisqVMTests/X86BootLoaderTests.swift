@@ -246,4 +246,103 @@ final class X86BootLoaderTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Le tampon d'affichage
+
+    /// **Sans écran déclaré, un noyau n'en cherche pas.**
+    ///
+    /// Linux ne devine pas qu'il y a un cadre à peindre : il lit `screen_info`,
+    /// les soixante-quatre premiers octets de la page zéro, et n'y touche que
+    /// si `orig_video_isVGA` annonce un mode graphique. Le chemin moderne —
+    /// `sysfb` puis `simpledrm` — s'accroche à `VIDEO_TYPE_VLFB`, et lit
+    /// ensuite l'adresse, la taille, la géométrie et la place de chaque
+    /// couleur dans le pixel.
+    ///
+    /// Les décalages viennent de `struct screen_info` et **ne se devinent
+    /// pas** : `lfb_base` est à 0x18 et non à 0x14, `lfb_linelength` à 0x24 et
+    /// non collé à la géométrie. Un octet posé à côté donne un noyau qui peint
+    /// dans le vide, sans rien dire.
+    func testTheZeroPageDeclaresALinearFramebuffer() throws {
+        let ram = memory()
+        let screen = X86BootLoader.Framebuffer(
+            base: 0xE000_0000, width: 1024, height: 768)
+        let placement = try X86BootLoader.load(
+            kernel: Self.syntheticKernel(), into: ram, framebuffer: screen)
+        let page = ram.dump(placement.bootParametersAddress, X86BootLoader.bootParametersSize)
+
+        func u16(_ offset: Int) -> UInt16 {
+            UInt16(page[offset]) | (UInt16(page[offset + 1]) << 8)
+        }
+        func u32(_ offset: Int) -> UInt32 {
+            (0..<4).reduce(UInt32(0)) { $0 | (UInt32(page[offset + $1]) << (8 * UInt32($1))) }
+        }
+
+        // 0x23 : VIDEO_TYPE_VLFB. Sans lui, tout le reste est ignoré.
+        XCTAssertEqual(page[0x0F], 0x23, "orig_video_isVGA doit annoncer un cadre linéaire")
+        XCTAssertEqual(u16(0x12), 1024, "lfb_width")
+        XCTAssertEqual(u16(0x14), 768, "lfb_height")
+        XCTAssertEqual(u16(0x16), 32, "lfb_depth : quatre octets par pixel")
+        XCTAssertEqual(u32(0x18), 0xE000_0000, "lfb_base")
+        XCTAssertEqual(u32(0x1C), 1024 * 768 * 4, "lfb_size")
+        XCTAssertEqual(u16(0x24), 1024 * 4, "lfb_linelength : une ligne, en octets")
+
+        // La place de chaque couleur dans le mot de trente-deux bits. En
+        // XRGB8888 le bleu occupe les bits 0 à 7, le vert 8 à 15, le rouge 16 à
+        // 23. Se tromper d'ordre rend un bureau aux couleurs inversées, ce
+        // qu'aucune assertion de géométrie n'attrape.
+        XCTAssertEqual(page[0x26], 8, "red_size")
+        XCTAssertEqual(page[0x27], 16, "red_pos")
+        XCTAssertEqual(page[0x28], 8, "green_size")
+        XCTAssertEqual(page[0x29], 8, "green_pos")
+        XCTAssertEqual(page[0x2A], 8, "blue_size")
+        XCTAssertEqual(page[0x2B], 0, "blue_pos")
+        XCTAssertEqual(page[0x2C], 8, "rsvd_size")
+        XCTAssertEqual(page[0x2D], 24, "rsvd_pos")
+    }
+
+    /// **Un écran non réservé est de la mémoire que le noyau va donner à
+    /// quelqu'un d'autre.**
+    ///
+    /// La carte e820 dit ce qui est utilisable. Si le cadre n'y est pas marqué
+    /// réservé, l'allocateur le distribuera, et deux écritures se disputeront
+    /// les mêmes pages — un bureau qui se corrompt sous des causes qui n'ont
+    /// rien à voir.
+    func testTheFramebufferIsReservedInTheMemoryMap() throws {
+        let ram = memory()
+        let screen = X86BootLoader.Framebuffer(
+            base: 0xE000_0000, width: 1024, height: 768)
+        let placement = try X86BootLoader.load(
+            kernel: Self.syntheticKernel(), into: ram, framebuffer: screen)
+        let page = ram.dump(placement.bootParametersAddress, X86BootLoader.bootParametersSize)
+
+        let count = Int(page[X86BootLoader.e820CountOffset])
+        var reserved: [(UInt64, UInt64, UInt32)] = []
+        for index in 0..<count {
+            let at = X86BootLoader.e820TableOffset + index * 20
+            let start = (0..<8).reduce(UInt64(0)) { $0 | (UInt64(page[at + $1]) << (8 * UInt64($1))) }
+            let size = (0..<8).reduce(UInt64(0)) {
+                $0 | (UInt64(page[at + 8 + $1]) << (8 * UInt64($1)))
+            }
+            let kind = (0..<4).reduce(UInt32(0)) {
+                $0 | (UInt32(page[at + 16 + $1]) << (8 * UInt32($1)))
+            }
+            if kind != X86BootLoader.e820Usable { reserved.append((start, size, kind)) }
+        }
+        XCTAssertTrue(
+            reserved.contains { $0.0 == 0xE000_0000 && $0.1 == UInt64(1024 * 768 * 4) },
+            "le cadre doit être réservé dans la carte e820, sinon il sera distribué")
+    }
+
+    /// **Sans écran demandé, la page zéro n'en annonce aucun.** C'est le
+    /// comportement d'aujourd'hui, et il ne doit pas bouger : une machine sans
+    /// affichage démarre en console série et ne doit pas voir un cadre
+    /// imaginaire.
+    func testNoFramebufferIsDeclaredWhenNoneIsAsked() throws {
+        let ram = memory()
+        let placement = try X86BootLoader.load(kernel: Self.syntheticKernel(), into: ram)
+        let page = ram.dump(placement.bootParametersAddress, X86BootLoader.bootParametersSize)
+        XCTAssertEqual(page[0x0F], 0, "orig_video_isVGA doit rester nul")
+        XCTAssertEqual(Array(page[0x12..<0x30]), Array(repeating: 0, count: 0x1E))
+    }
+
 }
