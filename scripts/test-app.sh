@@ -47,6 +47,10 @@ echo "==> Tests de la couche application, dans un iPhone simulé"
 # à la fin, et poussées dans le résumé du job quand il y en a un.
 sortie=$(mktemp)
 trap 'rm -f "$sortie"' EXIT
+# Les mesures survivent au script, dans un fichier que la CI relit à la toute
+# fin : `xcodebuild` écrit ensuite des milliers de lignes de compilation, et
+# ce qui est au milieu d'un log de cette taille est introuvable en pratique.
+mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
 set +e
 xcodebuild test \
   -project Wisq.xcodeproj \
@@ -62,6 +66,7 @@ mesures=$(grep -E "^(WebKit|pont) :|Executed [0-9]+ tests" "$sortie" | tail -20 
 if [ -n "$mesures" ]; then
   echo "==> Mesures"
   echo "$mesures"
+  printf '%s\n' "$mesures" > "$mesuresFichier"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
       echo "### Ce que l'iPhone simulé a mesuré"
