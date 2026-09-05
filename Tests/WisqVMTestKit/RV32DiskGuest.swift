@@ -52,8 +52,13 @@ public enum RV32DiskGuest {
     public static let hdr = 7, desc = 8, buf = 9, ring = 12
     public static let stat = 11, flag = 13, got = 14, byte = 15
 
-    public static func program() -> [UInt32] {
+    /// `kind` est le type de la requête : 0 lit le secteur 1 dans le tampon,
+    /// 1 y **écrit** le tampon — rempli de « W » d'abord, pour que ce qui
+    /// arrive dans la couche d'écriture soit reconnaissable à l'octet.
+    public static func program(kind: UInt32 = 0) -> [UInt32] {
         typealias Asm = RV32Asm
+        precondition(kind == 0 || kind == 1, "lecture ou écriture")
+        let bufferFlags: Int32 = kind == 0 ? 3 : 1  // NEXT | WRITE, ou NEXT seul
         var code: [UInt32] = [
             Asm.lui(dev, device >> 12),
             Asm.lui(tty, uart >> 12),
@@ -105,9 +110,10 @@ public enum RV32DiskGuest {
             Asm.addi(tmp, 0, 15),
             Asm.sw(tmp, 0x070, dev),               // | DRIVER_OK
 
-            // L'en-tête : lire, secteur 1.
+            // L'en-tête : lire ou écrire, secteur 1.
             Asm.lui(hdr, header >> 12),
-            Asm.sw(0, 0, hdr),
+            Asm.addi(tmp, 0, Int32(kind)),
+            Asm.sw(tmp, 0, hdr),
             Asm.sw(0, 4, hdr),
             Asm.addi(tmp, 0, 1),
             Asm.sw(tmp, 8, hdr),
@@ -131,12 +137,17 @@ public enum RV32DiskGuest {
             Asm.sw(tmp, 12, desc),
 
             Asm.lui(buf, buffer >> 12),
+            // Le tampon porte « WWWW » : ce qu'une écriture pose sur le
+            // disque, et ce qu'une lecture écrase.
+            Asm.lui(tmp, 0x57575),
+            Asm.addi(tmp, tmp, 0x757),
+            Asm.sw(tmp, 0, buf),
             Asm.sw(buf, 16, desc),
             Asm.sw(0, 20, desc),
             Asm.addi(tmp, 0, 512),
             Asm.sw(tmp, 24, desc),
             Asm.lui(tmp, 0x20),                    // next = 2
-            Asm.addi(tmp, tmp, 3),                 // flags = NEXT | WRITE
+            Asm.addi(tmp, tmp, bufferFlags),       // flags = NEXT | WRITE, ou NEXT
             Asm.sw(tmp, 28, desc),
 
             Asm.sw(stat, 32, desc),

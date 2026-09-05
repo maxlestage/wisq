@@ -47,35 +47,32 @@ final class DiskLibraryTests: XCTestCase {
             "le fichier copié est bien celui qu'on a reconnu")
     }
 
-    /// Et il reste refusé quand il est trop gros — mais avec le plafond des
-    /// disques, qui n'est pas celui des noyaux, et la phrase qui va avec.
-    func testAnOversizedDiskIsRefusedWithTheDiskCeiling() throws {
-        // Un téléphone si serré qu'il ne porterait même pas les quatre
-        // kibioctets de la marque n'a rien à mesurer ici.
-        try XCTSkipUnless(LocalDisk.maximumBytes() > 0x1000,
-                          "cet appareil ne peut porter aucun disque en ce moment")
+    /// **Et il n'est plus refusé pour sa taille.** Le disque est lu sur
+    /// place ; une image plus grosse que toute la mémoire du téléphone entre
+    /// dans la bibliothèque comme les autres. Creusée après coup : les octets
+    /// reconnaissables sont au début, la taille est réelle, et aucun
+    /// gigaoctet n'est écrit.
+    func testAHugeDiskImageIsKeptSinceNothingCopiesItIntoMemory() throws {
         let url = source.appendingPathComponent("essai-gros.img")
         var image = [UInt8](repeating: 0, count: 0x1000)
         image[0x438] = 0x53
         image[0x439] = 0xEF
         try Data(image).write(to: url)
-        // Creusé après coup : les octets reconnaissables sont au début, la
-        // taille est réelle, et aucun gigaoctet n'est écrit.
         let handle = try FileHandle(forWritingTo: url)
-        try handle.truncate(atOffset: UInt64(LocalDisk.maximumBytes()) + 1)
+        try handle.truncate(atOffset: UInt64(KernelMemory.ceiling) + 1)
         try handle.close()
 
-        XCTAssertThrowsError(try KernelLibrary.importKernel(from: url)) { error in
-            guard case KernelImportError.refused(let explanation) = error else {
-                return XCTFail("refus de disque attendu, obtenu : \(error)")
-            }
-            XCTAssertTrue(explanation.contains("essai-gros.img"), explanation)
-            XCTAssertTrue(explanation.contains("mémoire"), explanation)
-        }
-        XCTAssertFalse(
-            KernelLibrary.list().contains { $0.lastPathComponent == "essai-gros.img" },
-            "un fichier refusé ne doit pas rester dans le stockage de l'application")
+        let kept = try KernelLibrary.importKernel(from: url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+        XCTAssertEqual(KernelImageKind.identify(fileAt: kept), .filesystemImage("ext2/3/4"))
     }
+
+    // **Et le plancher n'est pas atteignable par ici**, ce qui vaut d'être
+    // écrit plutôt que testé de travers. Un fichier de moins d'un secteur ne
+    // peut pas porter la marque d'un système de fichiers — elle vit à l'octet
+    // 1080 — donc il n'est jamais reconnu comme un disque, et c'est le chemin
+    // des fichiers inconnus qui le prend. Le refus du secteur unique est tenu
+    // là où il vit, dans `LocalDiskTests`, avec son nombre.
 
     /// **Supprimer un noyau oublie le disque qu'on lui avait donné**, et
     /// supprimer un disque l'oublie chez les noyaux qui l'avaient.

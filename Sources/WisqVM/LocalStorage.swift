@@ -48,16 +48,22 @@ public enum LocalStorage {
         /// How many such machines there are, so a gesture can say what it
         /// would remove before removing it.
         public let savedMachineCount: Int
+        /// What guests wrote on this file when it served as a disk: the
+        /// overlay's allocated blocks, not its apparent size. Zero for a
+        /// kernel, and for a disk nobody has written to.
+        public let diskWritesBytes: Int
 
-        public var total: Int { kernelBytes + savedMachineBytes }
+        public var total: Int { kernelBytes + savedMachineBytes + diskWritesBytes }
 
         public init(
-            kernel: String, kernelBytes: Int, savedMachineBytes: Int, savedMachineCount: Int
+            kernel: String, kernelBytes: Int, savedMachineBytes: Int, savedMachineCount: Int,
+            diskWritesBytes: Int = 0
         ) {
             self.kernel = kernel
             self.kernelBytes = kernelBytes
             self.savedMachineBytes = savedMachineBytes
             self.savedMachineCount = savedMachineCount
+            self.diskWritesBytes = diskWritesBytes
         }
     }
 
@@ -98,7 +104,10 @@ public enum LocalStorage {
     }
 
     /// Adds up what is on disk. Reads no file's contents — only their sizes.
-    public static func report(kernels: URL, machines: URL) -> Report {
+    ///
+    /// `writes` is where the disk overlays live; nil counts none, which is
+    /// what a library with no disk has.
+    public static func report(kernels: URL, machines: URL, writes: URL? = nil) -> Report {
         let manager = FileManager.default
         let names = (try? manager.contentsOfDirectory(atPath: kernels.path))?.sorted() ?? []
 
@@ -114,7 +123,8 @@ public enum LocalStorage {
                     savedMachineBytes: files.reduce(0) {
                         $0 + size(of: machines.appendingPathComponent($1))
                     },
-                    savedMachineCount: files.count))
+                    savedMachineCount: files.count,
+                    diskWritesBytes: writes.map { LocalDisk.overlayBytes(for: name, inWritesDirectory: $0) } ?? 0))
         }
 
         let orphans = SuspendedMachine.allSavedMachineFiles(in: machines)

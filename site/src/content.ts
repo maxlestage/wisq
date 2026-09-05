@@ -110,6 +110,7 @@ const en: Copy = {
         "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor, input, sound both ways, clipboard, file drop into the guest",
         "Reconnects through cell handoffs, never retries a bad password",
         "A host agent boots a powered-off VM when you tap it — and shuts it down, politely or hard, when you ask",
+        "wisq-agent bureau builds the machine from an installation image: the qcow2 disk, the image booted first, a SPICE desktop with a generated password, the tablet, the sound and the guest agent channel — one command, then the desktop is on the phone",
       ],
     },
     local: {
@@ -120,7 +121,7 @@ const en: Copy = {
       points: [
         "rv32ima core, 64 MB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
-        "A disk on /dev/vda for either machine — a filesystem image you import, that the guest reads and writes, and whose writes survive a suspension. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so",
+        "A disk on /dev/vda for either machine — a filesystem or installer image you import, of any size, read in place; what the guest writes goes into a layer beside it that survives suspension and restarts, and the file you imported never changes. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so",
         "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images",
         "Nine hardware corpora hold that core: the reference is a real processor, asked what it produced",
         "Entirely offline — no server, no network",
@@ -168,7 +169,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "2078", label: "tests" },
+      { value: "2125", label: "tests" },
       { value: "6", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -234,6 +235,7 @@ const fr: Copy = {
         "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur, entrées, son dans les deux sens, presse-papiers, dépôt de fichiers dans l'invité",
         "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé",
         "Un agent hôte démarre une VM éteinte quand vous la tapez — et l'éteint, poliment ou de force, quand vous le demandez",
+        "wisq-agent bureau construit la machine autour d'une image d'installation : le disque qcow2, l'image amorcée en premier, un bureau SPICE avec mot de passe engendré, la tablette, le son et le canal de l'agent invité — une commande, et le bureau est sur le téléphone",
       ],
     },
     local: {
@@ -244,7 +246,7 @@ const fr: Copy = {
       points: [
         "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
-        "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers que vous importez, que l'invité lit et écrit, et dont les écritures survivent à une suspension. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit",
+        "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, lue sur place ; ce que l'invité écrit va dans une couche à côté qui survit aux suspensions et aux redémarrages, et le fichier importé ne change jamais. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit",
         "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images",
         "Neuf corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit",
         "Entièrement hors ligne — aucun serveur, aucun réseau",
@@ -287,7 +289,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "2078", label: "tests" },
+      { value: "2125", label: "tests" },
       { value: "6", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },
