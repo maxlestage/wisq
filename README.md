@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (2002 tests across Swift and Rust) and
+Everything below is implemented, tested (2027 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -68,6 +68,7 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | `wisq-agent` daemon (libvirt via virsh + demo backend), end-to-end tested | done |
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
+| A disk for the local PC: bring an image, the guest sees it on `/dev/vda` | done |
 | Agent TLS | done |
 | Power a remote VM off from the phone: polite ACPI, then the cord if the guest never answers | done |
 | SPICE: send a file from the phone into the guest (agent channel) | done |
@@ -124,7 +125,7 @@ xcodegen generate`.
 Sources/WisqCore     domain model, persistence, Keychain, HID table, pairing codec
 Sources/WisqNet      byte transport: TCP/TLS, persistent zlib streams, test pipes
 Sources/WisqRemote   RFB/VNC, SPICE and RDP clients, reconnection, agent client
-Sources/WisqVM       local Linux: interpreted rv32ima core, 64 MB machine, UART
+Sources/WisqVM       local Linux: rv32ima and x86-64 cores, UART, virtio-blk
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
 crates/wisq-vm       rv32ima interpreter (Rust) with a C ABI for the app

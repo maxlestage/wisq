@@ -79,6 +79,15 @@ public enum BootMedia {
                 L'initramfs est celui que votre distribution appelle \
                 `initramfs-…` ou `initrd.img-…`, et il est compressé.
                 """
+        case .filesystemImage(let format):
+            return """
+                \(name) est une image de disque (\(format)), pas un initramfs.
+
+                C'est le fichier d'un troisième bouton : gardez-la comme \
+                **disque** de votre noyau. L'initramfs est celui que votre \
+                distribution appelle `initramfs-…` ou `initrd.img-…`, et il \
+                est compressé.
+                """
         case .discImage(let format):
             return """
                 \(name) est une image de disque amorçable (\(format)).

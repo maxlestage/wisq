@@ -2492,11 +2492,13 @@ entière ; la vue est mince et jugée par le simulateur.
   au jugé. Dans les deux cas, écrit ici, ce serait du code jamais confronté à un
   vrai hôte : testable, pas jugeable.
 
-Et une chose qui n'est plus sur la liste : **le disque virtuel pour la machine
-locale**. C'était le plan ; c'était le mauvais. Les noyaux rv32 nommu de cette
-famille ont virtio-mmio mais aucun pilote bloc, et l'utilisateur apporte son
-propre noyau. Sauver la machine — RAM, registres, timer, octets en attente sur
-l'UART — contourne l'invité entièrement et marche avec n'importe quel noyau.
+Et une chose qui n'était plus sur la liste, et qui y est revenue par la
+grande porte : **le disque virtuel pour la machine locale**. Le refus tenait
+pour la machine rv32 et tient toujours — les noyaux nommu de cette famille ont
+virtio-mmio mais aucun pilote bloc, et sauver la machine entière contourne
+l'invité et marche avec n'importe quel noyau. Il ne tient plus pour la machine
+PC, qui a un vrai `virtio-blk` depuis le lot 7 : voir « Un disque pour la
+machine x86-64 » plus bas.
 
 ## La mémoire de la machine locale, réglable (fait)
 
@@ -3409,10 +3411,16 @@ maximum demande un redémarrage).
 
 ## « L'espace de stockage » : ce qui est montré, et ce qui ne sera pas fait (fait)
 
-Il n'y a **aucun disque** dans la machine locale, et c'est une décision écrite
+Il n'y a **aucun disque** dans la machine rv32, et c'est une décision écrite
 juste au-dessus : pas de pilote bloc dans les noyaux nommu de cette famille, et
 l'instantané fait le travail que le disque aurait fait. Un réglage « taille du
-disque » serait donc un curseur qui ne commande rien.
+disque » y serait donc un curseur qui ne commande rien.
+
+> **Ce paragraphe ne vaut plus que pour la machine rv32.** La machine PC a un
+> disque depuis « Un disque pour la machine x86-64 » : une image apportée par
+> la personne, choisie sous le nom du noyau, que l'invité voit sur `/dev/vda`.
+> Ce n'est toujours pas un curseur — on ne fabrique pas un disque, on en
+> branche un — mais ce n'est plus « pas de disque ».
 
 Ce qui est réel, c'est la place que **noyaux et machines sauvegardées**
 occupent dans le stockage de l'application : mesuré sur le vrai noyau arrivé à
@@ -3430,5 +3438,65 @@ la même promesse sans prendre la décision à sa place.
 
 Interprétation à confirmer avec Maxime si elle ne correspond pas à ce qu'il
 avait en tête : si « espace de stockage » voulait dire un disque pour l'invité,
-la réponse est plus haut et elle est non — mais elle mérite d'être rediscutée
-plutôt que classée.
+la réponse était non, et elle est devenue **oui sur la machine PC** — pas un
+curseur qui fabrique un disque, mais une image qu'on apporte et qu'on branche.
+
+## Un disque pour la machine x86-64 (fait)
+
+`X86VirtioBlock` existait depuis le lot 7, et **rien dans l'application ne
+l'appelait**. Le périphérique fonctionnait — mesuré dans ce conteneur, contre
+un vrai noyau Alpine : il énumère `[1af4:1001]`, charge `virtio_blk`, annonce
+« [vda] 32768 512-byte logical blocks », et une écriture de 256 Kio à
+`seek=1000` se relit avec le même md5 ; le md5 du disque entier change, donc
+les octets vont bien au bout. Mais la seule chose qui le branchait était la
+mesure de démarrage, à la main.
+
+Ce que cette tranche ajoute, du bas vers le haut :
+
+- **`GuestMachine.attachDisk`.** Un cinquième membre au protocole, et un refus
+  **nommé** pour la machine RISC-V — `noDiskHere` — au lieu d'un silence. Les
+  deux refus du protocole portent maintenant leur propre phrase
+  (`LocalizedError`) : l'application affiche `localizedDescription`, et sans
+  ça un refus parfaitement précis arrivait à l'écran sous la forme « The
+  operation couldn't be completed ».
+- **`KernelImageKind.filesystemImage`.** ext2/3/4 (la marque `0xEF53` à 0x438),
+  squashfs dans les deux boutismes, FAT à ses deux places. Contrôlé **en
+  dernier**, après tous les en-têtes de noyau : la marque d'ext4 est assez
+  loin dans le fichier pour qu'un noyau la porte par accident, et un test
+  mesure ce cas-là plutôt que de le supposer. btrfs n'y est pas, et le dit :
+  sa marque vit à 0x10040, au-delà des quarante kibioctets que ce type lit.
+- **`LocalDisk`.** Quel disque va avec quel noyau, sous le nom du fichier du
+  noyau, dans `kernel-disk.json` à côté de `kernel-memory.json`. Plus le
+  plafond, qui est le fait le plus important de la tranche : **le disque est
+  tenu en mémoire, entier**, parce que l'invité écrit dedans et que
+  l'instantané emporte ces écritures. Il partage donc la place avec la
+  machine, et le plafond est « ce que le téléphone laisse, moins la plus
+  petite machine PC ».
+- **`LibraryEntry`.** La bibliothèque contient trois sortes de fichiers depuis
+  que la machine PC existe — un noyau, son initramfs, son disque — et les
+  dessinait tous avec la même icône de terminal. Une seule des trois démarre.
+  Un test tient que deux rôles ne portent jamais la même icône ni le même mot.
+- **L'import garde un disque.** Une image ext4 ne démarre pas et n'est pas un
+  initramfs : les deux gardes la refusaient ensemble, alors que c'est
+  exactement le fichier que le réglage demande. Et elle est jugée sur le
+  plafond des **disques**, pas sur celui des noyaux — deux usages, deux
+  nombres, deux phrases.
+- **La vue.** Un menu « Disque » sous chaque noyau de PC, la liste des images
+  de la bibliothèque, et « aucun ». Changer de disque oublie les machines
+  sauvegardées de ce noyau, comme changer de mémoire et pour une raison plus
+  dure : l'instantané porte les octets du disque tels que l'invité les a
+  laissés.
+
+**Ce qui n'est pas fait, et qui se mesure.** Monter un vrai système de
+fichiers depuis l'invité échoue — non pas chez wisq, mais chez Alpine :
+`modprobe ext4` répond « Module ext4 not found in directory
+/lib/modules/6.6.134-0-lts ». L'initramfs d'une distribution ne porte que ses
+modules de démarrage ; le reste vit dans le `modloop`, qui n'est pas là. Le
+bloc, lui, est bon jusqu'au dernier octet — c'est ce que la mesure ci-dessus
+établit. Il faut donc un initramfs qui contienne le pilote du système de
+fichiers voulu, et c'est le fichier de la personne, pas le nôtre.
+
+**Ce que wisq ne fait pas non plus : décider de la racine.** La ligne de
+commande n'ajoute pas de `root=`. L'invité voit `/dev/vda` et c'est son
+initramfs qui décide quoi en faire — forcer une racine casserait le cas
+courant pour servir un cas qu'on ne connaît pas.
