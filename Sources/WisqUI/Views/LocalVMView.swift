@@ -65,10 +65,13 @@ struct LocalVMListView: View {
                                 storage = KernelLibrary.storageReport()
                             }
                         }
-                        // Le disque ne se propose qu'aux noyaux qui en ont un.
-                        // Une machine RISC-V refuse le sien, nommément ; le
-                        // réglage n'a donc rien à faire sous son nom.
-                        if kinds[kernel]?.core == .x86_64 {
+                        // Le disque se propose à tout ce qui démarre ici.
+                        // Il n'était offert qu'aux noyaux de PC, parce que la
+                        // machine RISC-V refusait le sien ; elle ne le refuse
+                        // plus. Ce qu'elle ne peut toujours pas, c'est mettre
+                        // le pilote bloc dans le noyau de quelqu'un — et ça,
+                        // seul un démarrage peut le dire, pas cette liste.
+                        if kinds[kernel]?.couldBootHere == true {
                             KernelDiskMenu(
                                 kernel: kernel, library: kernels,
                                 chosen: disks[kernel.lastPathComponent]
@@ -92,7 +95,7 @@ struct LocalVMListView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
                     Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(LinuxMachine.defaultRAMSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et l'émulateur ne peut pas dépasser \(KernelMemory.describe(LinuxMachine.maximumRAMSize)) — la mémoire de l'invité commence à 0x80000000 et son processeur adresse en 32 bits. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
-                    Text("Un noyau de PC peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. wisq ne l'y monte pas tout seul — c'est votre initramfs qui décide de la racine — mais l'invité peut la lire et écrire dedans, et ces écritures partent dans l'instantané. Le disque est tenu en mémoire, entier : il partage donc la place avec la machine, et wisq n'en branche pas plus de \(LocalStorage.describe(bytes: LocalDisk.maximumBytes())) ici.")
+                    Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est tenu en mémoire, entier : il partage la place avec la machine, et wisq n'en branche pas plus de \(LocalStorage.describe(bytes: LocalDisk.maximumBytes())) ici.")
                 }
             }
 
@@ -129,7 +132,7 @@ struct LocalVMListView: View {
                 } header: {
                     Text("Stockage")
                 } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine de PC à qui on a donné un disque pèse ce disque **en plus**, parce que l'instantané emporte les octets que l'invité y a écrits. Le noyau rv32ima « nommu », lui, n'a pas de disque du tout : aucun pilote de bloc dedans, et c'est l'instantané qui fait le travail qu'un disque aurait fait.")
+                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension.")
                 }
             }
 
