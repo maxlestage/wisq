@@ -58,27 +58,35 @@ final class X86VirtioBlockTests: XCTestCase {
         device.write(0x070, 4, 15, memory)     // | DRIVER_OK
     }
 
+    /// Un morceau de la mémoire de l'invité, tel qu'un descripteur le décrit :
+    /// où il commence, combien il fait, et si c'est le périphérique qui y écrit.
+    /// Les trois voyagent ensemble parce qu'ils ne veulent rien dire séparément.
+    struct Span {
+        var at: UInt64
+        var length: UInt32
+        var writable: Bool
+    }
+
     /// Poser un descripteur.
     static func describe(_ memory: X86Memory, _ index: UInt64,
-                         at address: UInt64, length: UInt32,
-                         writable: Bool, next: UInt16?) throws {
+                         _ span: Span, next: UInt16?) throws {
         let base = descriptors + index * 16
-        try memory.write(base, 8, address)
-        try memory.write(base + 8, 4, UInt64(length))
-        try memory.write(base + 12, 2, (writable ? 2 : 0) | (next != nil ? 1 : 0))
+        try memory.write(base, 8, span.at)
+        try memory.write(base + 8, 4, UInt64(span.length))
+        try memory.write(base + 12, 2, (span.writable ? 2 : 0) | (next != nil ? 1 : 0))
         try memory.write(base + 14, 2, UInt64(next ?? 0))
     }
 
     /// Une requête complète : l'en-tête, un tampon, l'octet de statut.
     static func request(_ memory: X86Memory, kind: UInt32, sector: UInt64,
-                        buffer: UInt64, length: UInt32, writable: Bool) throws {
+                        buffer: Span) throws {
         let header = scratch
         try memory.write(header, 4, UInt64(kind))
         try memory.write(header + 4, 4, 0)
         try memory.write(header + 8, 8, sector)
-        try describe(memory, 0, at: header, length: 16, writable: false, next: 1)
-        try describe(memory, 1, at: buffer, length: length, writable: writable, next: 2)
-        try describe(memory, 2, at: scratch + 0x800, length: 1, writable: true, next: nil)
+        try describe(memory, 0, .init(at: header, length: 16, writable: false), next: 1)
+        try describe(memory, 1, buffer, next: 2)
+        try describe(memory, 2, .init(at: scratch + 0x800, length: 1, writable: true), next: nil)
         try memory.write(scratch + 0x800, 1, 0xFF)  // ni réussite ni échec
         // L'anneau des disponibles : l'entrée, puis l'index qui la publie.
         try memory.write(available + 4, 2, 0)
@@ -130,7 +138,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// d'interruption se lève.
     func testAReadBringsTheSectorBack() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 0, sector: 2, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 2, buffer: .init(at: 0x5000, length: 512, writable: true))
         XCTAssertFalse(device.interrupting, "rien n'a encore été demandé")
         device.write(0x050, 4, 0, memory)  // QueueNotify
 
@@ -147,7 +155,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// L'interruption s'acquitte par le registre prévu, et pas autrement.
     func testTheInterruptIsAcknowledged() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 0, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertTrue(device.interrupting)
         device.write(0x064, 4, 1, memory)
@@ -158,7 +166,7 @@ final class X86VirtioBlockTests: XCTestCase {
     func testAWriteChangesTheDisk() throws {
         let (device, memory) = Self.started()
         for byte in 0..<UInt64(512) { try memory.write(0x5000 + byte, 1, 0xAB) }
-        try Self.request(memory, kind: 1, sector: 1, buffer: 0x5000, length: 512, writable: false)
+        try Self.request(memory, kind: 1, sector: 1, buffer: .init(at: 0x5000, length: 512, writable: false))
         device.write(0x050, 4, 0, memory)
 
         XCTAssertEqual(try Self.status(memory), 0)
@@ -173,7 +181,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// « il n'y a rien là ».
     func testASectorBeyondTheDiskIsRefused() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 0, sector: 99, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 99, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(try Self.status(memory), 1, "erreur d'entrée-sortie")
         XCTAssertEqual(device.refused, 1)
@@ -185,7 +193,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// pour toujours.
     func testAnUnknownRequestIsAnsweredAnyway() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 99, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 99, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(try Self.status(memory), 2, "non supporté")
         XCTAssertEqual(try memory.read(Self.used + 2, 2), 1, "et la requête est rendue")
@@ -195,10 +203,11 @@ final class X86VirtioBlockTests: XCTestCase {
     /// attribut `serial`.
     func testTheDiskSaysItsName() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 8, sector: 0, buffer: 0x5000, length: 20, writable: true)
+        try Self.request(memory, kind: 8, sector: 0, buffer: .init(at: 0x5000, length: 20, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(try Self.status(memory), 0)
-        let name = (0..<9).map { UInt8(try! memory.read(0x5000 + UInt64($0), 1)) }
+        var name = [UInt8]()
+        for offset in 0..<UInt64(9) { name.append(UInt8(try memory.read(0x5000 + offset, 1))) }
         XCTAssertEqual(String(decoding: name, as: UTF8.self), "wisq-disk")
     }
 
@@ -206,7 +215,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// de une : l'index des disponibles ne se relit pas, il se suit.
     func testTwoRequestsInARowAreBothServed() throws {
         let (device, memory) = Self.started()
-        try Self.request(memory, kind: 0, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         // La seconde entrée de l'anneau des disponibles, puis son index.
         try memory.write(Self.available + 6, 2, 0)
@@ -225,7 +234,7 @@ final class X86VirtioBlockTests: XCTestCase {
     func testAQueueThatIsNotReadyServesNothing() throws {
         let (device, memory) = Self.started()
         device.write(0x044, 4, 0, memory)
-        try Self.request(memory, kind: 0, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(device.served, 0)
         XCTAssertEqual(try Self.status(memory), 0xFF, "personne n'a répondu")
@@ -279,7 +288,7 @@ final class X86VirtioBlockTests: XCTestCase {
 
         // Une vraie requête, servie comme le pilote la ferait servir.
         Self.start(device, ram)
-        try Self.request(ram, kind: 0, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(ram, kind: 0, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, ram)
         core.halted = false
         core.rip = 0x100
@@ -295,7 +304,7 @@ final class X86VirtioBlockTests: XCTestCase {
         device.write(0x070, 4, 0, memory)
         XCTAssertEqual(device.queueReady, 0)
         XCTAssertEqual(device.status, 0)
-        try Self.request(memory, kind: 0, sector: 0, buffer: 0x5000, length: 512, writable: true)
+        try Self.request(memory, kind: 0, sector: 0, buffer: .init(at: 0x5000, length: 512, writable: true))
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(device.served, 0)
     }

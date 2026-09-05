@@ -50,11 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-<<<<<<< HEAD
-Everything below is implemented, tested (1807 tests across Swift and Rust) and
-=======
-Everything below is implemented, tested (1716 tests across Swift and Rust) and
->>>>>>> origin/claude/concurrent-utm-app-stores-ofjujj
+Everything below is implemented, tested (1811 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose

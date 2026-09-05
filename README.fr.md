@@ -82,11 +82,7 @@ n'est pas implémenté (voir `docs/ROADMAP.md`).
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-<<<<<<< HEAD
-leurs tests passent (1807 avec ceux du Rust) — dont un bout-à-bout où le vrai
-=======
-leurs tests passent (1716 avec ceux du Rust) — dont un bout-à-bout où le vrai
->>>>>>> origin/claude/concurrent-utm-app-stores-ofjujj
+leurs tests passent (1811 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
