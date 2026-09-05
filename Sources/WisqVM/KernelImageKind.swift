@@ -280,6 +280,39 @@ public enum KernelImageKind: Equatable, Sendable {
     /// vit la chose que la personne voulait vraiment. Quelqu'un qui arrive
     /// avec une image d'installation veut faire tourner cette distribution ;
     /// la réponse utile n'est pas « non », c'est « pas ici, et voilà où ».
+    /// Ce que ce fichier est, en une phrase — et rien d'autre.
+    ///
+    /// **`cannotRunHereExplanation` dit ce qu'il est *et* quoi en faire**, et
+    /// c'est ce second morceau qui ne se compose pas : le conseil qu'il donne
+    /// pour une image de disque — « gardez-la comme disque » — est justement
+    /// faux quand le fichier est trop gros pour être branché. Un refus qui
+    /// ferme une porte et pointe la même porte est pire qu'un refus sec.
+    ///
+    /// Alors cette phrase-ci ne conseille rien. Elle nomme, et laisse
+    /// l'appelant enchaîner avec la raison qui est la sienne.
+    ///
+    /// Ne répond que pour les deux genres qui **sont** un disque : ailleurs,
+    /// personne n'a besoin de composer, et prétendre reconnaître un fichier
+    /// que rien n'a reconnu serait un mensonge de plus.
+    public static func whatItIs(_ kind: KernelImageKind, name: String) -> String? {
+        switch kind {
+        case .discImage(let format):
+            return """
+                \(name) est une image de disque amorçable (\(format)) — un CD \
+                ou un DVD, pas un noyau. wisq ne démarre pas dessus : s'il y a \
+                un noyau là-dedans, il est **dedans**, sous `/boot`, avec son \
+                initramfs.
+                """
+        case .filesystemImage(let format):
+            return """
+                \(name) est une image de système de fichiers (\(format)) — ce \
+                qu'un noyau de PC sait lire sur `/dev/vda`.
+                """
+        case .unknown, .linuxKernel, .executable, .compressedKernel:
+            return nil
+        }
+    }
+
     public static func cannotRunHereExplanation(_ kind: KernelImageKind, name: String) -> String? {
         let what: String
         // **Ce qu'on peut quand même en faire**, quand il y a quelque chose.

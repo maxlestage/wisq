@@ -125,6 +125,102 @@ public final class LinuxMachine: @unchecked Sendable {
     private let ram: UnsafeMutableRawPointer
     private var core: RV32Core!
 
+    // MARK: - Le disque
+
+    /// Le disque, quand il y en a un.
+    ///
+    /// **Cette machine n'en avait pas, et la feuille de route disait pourquoi
+    /// : les noyaux rv32 « nommu » de cette famille n'ont aucun pilote bloc.**
+    /// C'est vrai du noyau de référence, et c'était la mauvaise conclusion —
+    /// un noyau compilé avec `CONFIG_VIRTIO_MMIO` et `CONFIG_VIRTIO_BLK` ne
+    /// trouvait rien ici parce que la carte ne déclarait aucun périphérique et
+    /// que le cœur n'avait qu'une source d'interruption. Les deux manques sont
+    /// comblés ; celui-ci est le périphérique lui-même.
+    public private(set) var disk: VirtioBlock?
+
+    /// Brancher un disque. À faire **avant** `load` : c'est lui qui décide si
+    /// l'arbre déclare le nœud, et un arbre déjà posé ne se réécrit pas.
+    public func attach(disk image: [UInt8]) { disk = VirtioBlock(image: image) }
+
+    /// Le retirer, et baisser sa ligne avec lui. Une interruption qui reste
+    /// levée sans personne pour la servir enferme l'invité dans son
+    /// gestionnaire.
+    public func detachDisk() {
+        disk = nil
+        core.mip &= ~RV32Core.externalBit
+    }
+
+    /// Porter à `mip` ce que les périphériques demandent.
+    ///
+    /// **Appelé entre deux tranches d'instructions**, comme le fait le
+    /// contrôleur du PC : le périphérique sert ses requêtes au moment où le
+    /// pilote sonne la file, et le cœur doit l'apprendre avant de reprendre.
+    /// Un sondage vaut mieux qu'un rappel ici — il n'y a qu'une source, et
+    /// elle est déjà interrogée une fois par tranche.
+    /// La ligne externe est-elle levée ?
+    ///
+    /// Exposée plutôt que `core` : ce qu'on veut savoir est une question, pas
+    /// un champ, et ouvrir l'interprète entier pour la poser donnerait à
+    /// n'importe qui de quoi écrire `mip` à la main.
+    var externalInterruptPending: Bool { core.mip & RV32Core.externalBit != 0 }
+
+    func pollDevices() {
+        if disk?.interrupting == true {
+            core.mip |= RV32Core.externalBit
+        } else {
+            core.mip &= ~RV32Core.externalBit
+        }
+    }
+
+    /// La mémoire de l'invité telle qu'un périphérique la voit.
+    ///
+    /// Les adresses des descripteurs sont celles que le pilote a écrites,
+    /// c'est-à-dire des adresses physiques de l'invité : elles commencent à
+    /// `0x8000_0000` sur cette machine. La conversion vit ici, une fois.
+    final class RAMView: GuestMemory {
+        let bytes: UnsafeMutableRawPointer
+        let size: UInt32
+        init(_ bytes: UnsafeMutableRawPointer, _ size: UInt32) {
+            self.bytes = bytes
+            self.size = size
+        }
+
+        /// Où cette adresse tombe dans le tampon, ou `nil` si elle en sort.
+        ///
+        /// Le périphérique lit des adresses que l'invité a écrites : une
+        /// adresse folle est un pilote qui se trompe, pas une raison de sortir
+        /// du tampon. Elle est refusée, et `VirtioBlock` traite le refus comme
+        /// une requête qui échoue.
+        private func offset(_ address: UInt64, _ width: Int) -> Int? {
+            guard address >= UInt64(RV32Core.ramBase) else { return nil }
+            let at = address - UInt64(RV32Core.ramBase)
+            guard at &+ UInt64(width) <= UInt64(size) else { return nil }
+            return Int(at)
+        }
+
+        func read(_ address: UInt64, _ width: Int) throws -> UInt64 {
+            guard let at = offset(address, width) else { throw LinuxMachineError.imageTooLarge }
+            var value: UInt64 = 0
+            for byte in 0..<width {
+                value |= UInt64(bytes.load(fromByteOffset: at + byte, as: UInt8.self))
+                    << (8 * byte)
+            }
+            return value
+        }
+
+        func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
+            guard let at = offset(address, width) else { throw LinuxMachineError.imageTooLarge }
+            for byte in 0..<width {
+                bytes.storeBytes(of: UInt8(truncatingIfNeeded: value >> (8 * byte)),
+                                 toByteOffset: at + byte, as: UInt8.self)
+            }
+        }
+    }
+
+    /// Construite une fois : elle ne porte qu'un pointeur et une taille, tous
+    /// deux fixés pour la vie de la machine.
+    lazy var guestMemory: RAMView = RAMView(ram, ramSize)
+
     private let lock = NSLock()
     private var inputQueue = [UInt8]()
     private var stopRequested = false
@@ -175,7 +271,8 @@ public final class LinuxMachine: @unchecked Sendable {
         // devenu le témoin contre lequel `DeviceTreeAgainstTheReferenceTests`
         // juge celui-ci.
         let dtb = RV32DeviceTree.tree(
-            ramSize: Int(ramSize), commandLine: commandLine).flatten()
+            ramSize: Int(ramSize), commandLine: commandLine,
+            disk: disk != nil).flatten()
         handedTreeBytes = dtb.count
 
         let dtbPointer = ramSize - UInt32(dtb.count) - Self.stateReserve
@@ -365,6 +462,12 @@ public final class LinuxMachine: @unchecked Sendable {
         lock.unlock()
         writer.blob(queued)
         writer.blob(pending)
+        // **Le disque en dernier, et seulement s'il y en a un.** Son absence
+        // est ce qui distingue un instantané d'avant le disque, et la reprise
+        // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
+        // machines déjà sauvées sur les téléphones seraient perdues. Même
+        // disposition que la machine PC, pour la même raison.
+        if let disk { disk.save(into: &writer) }
         return Data(writer.bytes)
     }
 
@@ -383,6 +486,11 @@ public final class LinuxMachine: @unchecked Sendable {
         try scratch.withUnsafeMutableBytes { try reader.ram($0) }
         let queued = try reader.blob()
         let pending = try reader.blob()
+        // Le disque, s'il reste des octets. Construit à part et posé tout à la
+        // fin : une lecture qui échoue ici laisse à la machine le disque
+        // qu'elle avait, plutôt qu'un disque à moitié repris.
+        var restoredDisk: VirtioBlock?
+        if !reader.isAtEnd { restoredDisk = try VirtioBlock.restored(from: &reader) }
         try reader.finish()
 
         for index in 0..<32 { core.regs[index] = words[index] }
@@ -398,6 +506,7 @@ public final class LinuxMachine: @unchecked Sendable {
         core.mtvec = words[41]
         core.mie = words[42]
         core.mip = words[43]
+        disk = restoredDisk
         core.mepc = words[44]
         core.mtval = words[45]
         core.mcause = words[46]
@@ -441,6 +550,13 @@ public enum LinuxMachineError: Error, Sendable {
 
 extension LinuxMachine: RV32Bus {
     public func mmioLoad(_ address: UInt32) -> UInt32 {
+        // La fenêtre du disque en premier : elle est contiguë et testée d'un
+        // coup, là où le reste est une poignée d'adresses isolées.
+        if let disk, VirtioBlock.riscv.contains(UInt64(address)) {
+            let value = disk.read(UInt64(address) - VirtioBlock.riscv.base, 4)
+            pollDevices()
+            return UInt32(truncatingIfNeeded: value)
+        }
         switch address {
         case 0x1000_0005:                        // UART LSR: TX empty | RX ready
             lock.lock()
@@ -462,6 +578,16 @@ extension LinuxMachine: RV32Bus {
     }
 
     public func mmioStore(_ address: UInt32, _ value: UInt32) -> UInt32? {
+        if let disk, VirtioBlock.riscv.contains(UInt64(address)) {
+            disk.write(UInt64(address) - VirtioBlock.riscv.base, 4,
+                       UInt64(value), guestMemory)
+            // **Le sondage est ici, juste après l'écriture.** C'est la
+            // notification de file qui fait servir les requêtes, donc c'est le
+            // seul instant où la ligne peut monter — et le pilote acquitte par
+            // une écriture aussi, donc le seul où elle peut descendre.
+            pollDevices()
+            return nil
+        }
         switch address {
         case 0x1000_0000:                        // UART TX
             pendingOutput.append(UInt8(truncatingIfNeeded: value))
