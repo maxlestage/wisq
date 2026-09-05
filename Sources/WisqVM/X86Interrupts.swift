@@ -66,14 +66,14 @@ extension X86Core {
     /// il n'y en a pas : pas d'IDT, une limite trop courte, ou une porte dont
     /// le bit de présence est à zéro.
     mutating func gate(_ vector: UInt8) throws -> Gate? {
-        guard let memory, descriptorLimits[1] >= 15 else { return nil }
+        guard memory != nil, descriptorLimits[1] >= 15 else { return nil }
         let position = UInt64(vector) * 16
         // La limite est le dernier octet valide : une porte doit tenir
         // **entièrement** dedans.
         guard position &+ 15 <= descriptorLimits[1] else { return nil }
         let entry = descriptorBases[1] &+ position
-        let low = try memory.read(try translate(entry, .machine), 8)
-        let high = try memory.read(try translate(entry &+ 8, .machine), 8)
+        let low = try readMemory(entry, 8, .machine)
+        let high = try readMemory(entry &+ 8, 8, .machine)
         guard low & (1 << 47) != 0 else { return nil }
         // Le décalage est en trois morceaux, dispersés par l'héritage du 386 :
         // les seize bits du bas, les seize du milieu tout en haut du mot bas,
@@ -92,7 +92,7 @@ extension X86Core {
     /// d'être une adresse de soixante-quatre bits. La base arrive en quatre
     /// morceaux, dispersés par la même histoire que le reste du format.
     mutating func loadTaskRegister(_ selector: UInt16) throws {
-        guard let memory else { throw Fault.unsupported("un LTR sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("un LTR sans mémoire") }
         // Un sélecteur nul ne désigne rien. Linux n'en charge pas dans TR,
         // mais le refuser en le lisant comme l'entrée zéro de la GDT — qui est
         // obligatoirement nulle — donnerait un TSS à l'adresse zéro.
@@ -104,8 +104,8 @@ extension X86Core {
             throw Fault.unsupported("un LTR hors de la GDT")
         }
         let entry = descriptorBases[0] &+ position
-        let low = try memory.read(try translate(entry, .machine), 8)
-        let high = try memory.read(try translate(entry &+ 8, .machine), 8)
+        let low = try readMemory(entry, 8, .machine)
+        let high = try readMemory(entry &+ 8, 8, .machine)
         taskBase = ((low >> 16) & 0xFF_FFFF) | (((low >> 56) & 0xFF) << 24)
             | ((high & 0xFFFF_FFFF) << 32)
         var limit = (low & 0xFFFF) | (((low >> 48) & 0x0F) << 16)
@@ -130,7 +130,9 @@ extension X86Core {
     mutating func stack(for gate: Gate) throws -> UInt64? {
         let target = Int(gate.selector & 3)
         guard gate.interruptStack != 0 || target < privilege else { return nil }
-        guard let memory else { throw Fault.unsupported("un changement de pile sans mémoire") }
+        guard memory != nil else {
+            throw Fault.unsupported("un changement de pile sans mémoire")
+        }
         // Le registre de tâche doit être chargé, et le segment assez long pour
         // porter ce qu'on va y lire. Un TSS trop court rendrait des octets qui
         // ne sont pas des piles.
@@ -140,7 +142,7 @@ extension X86Core {
         let offset = gate.interruptStack != 0
             ? TaskSegment.interruptStack(gate.interruptStack)
             : TaskSegment.stackPointer(forPrivilege: target)
-        return try memory.read(try translate(taskBase &+ offset, .machine), 8)
+        return try readMemory(taskBase &+ offset, 8, .machine)
     }
 
     /// Livrer la faute au noyau, et dire si ça a été fait.
@@ -203,7 +205,7 @@ extension X86Core {
         var pointer = registers[4] & ~UInt64(0xF)
         func push(_ value: UInt64) throws {
             pointer &-= 8
-            try memory?.write(try translate(pointer, .write), 8, value)
+            try writeMemory(pointer, 8, value)
         }
         try push(UInt64(stackSelector))
         try push(stack)
@@ -238,10 +240,10 @@ extension X86Core {
     /// gestionnaire de le faire, et Linux ajoute bien huit à RSP avant son
     /// `iretq`. Le dépiler ici ferait sauter deux fois la même case.
     mutating func returnFromInterrupt() throws {
-        guard let memory else { throw Fault.unsupported("un IRETQ sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("un IRETQ sans mémoire") }
         var pointer = registers[4]
         func pop() throws -> UInt64 {
-            let value = try memory.read(try translate(pointer), 8)
+            let value = try readMemory(pointer, 8)
             pointer &+= 8
             return value
         }
