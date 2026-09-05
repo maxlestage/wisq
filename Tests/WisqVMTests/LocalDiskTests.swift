@@ -158,11 +158,12 @@ final class LocalDiskTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.path), "le voisin reste")
     }
 
-    /// **Ce que la couche occupe se mesure en blocs alloués**, pas en taille
-    /// apparente : le fichier des écritures est épars et fait la taille de la
-    /// base. Un disque de quatre mille secteurs dont un seul est écrit ne doit
-    /// pas se lire « deux mébioctets » dans le rapport de stockage.
-    func testOverlayBytesCountAllocatedBlocksNotApparentSize() throws {
+    /// **Ce que la couche occupe, c'est ce que l'invité a écrit** — et rien
+    /// de plus, quelle que soit la taille du disque. Un disque de quatre mille
+    /// secteurs dont un seul est touché ne doit pas se lire « deux mébioctets »
+    /// dans le rapport de stockage ; c'est ce qu'il faisait quand la couche
+    /// était éparse et que le système de fichiers ne l'était pas.
+    func testOverlayBytesAreWhatTheGuestWroteAndNothingMore() throws {
         XCTAssertEqual(LocalDisk.overlayBytes(for: "racine.img", in: folder), 0, "rien avant")
         var base = [UInt8](repeating: 0, count: 4000 * 512)
         base[0] = 1
@@ -173,9 +174,9 @@ final class LocalDiskTests: XCTestCase {
         XCTAssertTrue(store.write(at: 3999 * 512, [UInt8](repeating: 7, count: 512)))
         store.flush()
 
-        let bytes = LocalDisk.overlayBytes(for: "racine.img", in: folder)
-        XCTAssertGreaterThan(bytes, 0, "un secteur écrit occupe quelque chose")
-        XCTAssertLessThan(bytes, 200 << 10, "mais pas la taille apparente : \(bytes)")
+        // Un secteur rangé, plus l'en-tête de la carte et le nom de son
+        // emplacement : 512 + 16 + 8.
+        XCTAssertEqual(LocalDisk.overlayBytes(for: "racine.img", in: folder), 536)
     }
 
     // MARK: - Le disque que personne n'a touché

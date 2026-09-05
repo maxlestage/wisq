@@ -115,28 +115,89 @@ final class FileDiskStoreTests: XCTestCase {
         XCTAssertEqual(store.read(at: 4 * 512 - 1, count: 1), [4], "le dernier octet, lui, existe")
     }
 
-    /// **La couche est éparse**, et la carte fait un bit par secteur.
+    /// **La couche est tassée**, et c'est une mesure qui l'a imposé.
     ///
-    /// Un disque de quatre mille secteurs dont un seul est écrit ne doit pas
-    /// coûter deux mégaoctets : c'est ce qui permet de brancher une image de
-    /// plusieurs gigaoctets sans en payer une copie.
-    func testTheOverlayIsSparseAndTheMapIsOneBitPerSector() throws {
+    /// Le premier jet rangeait chaque secteur à son propre décalage dans un
+    /// fichier épars, en comptant sur le système de fichiers pour ne rien
+    /// allouer entre les trous. Sur APFS — celui du Mac **et de l'iPhone** —
+    /// il alloue : un seul secteur écrit à deux mébioctets du début coûtait
+    /// 2 052 096 octets, mesuré par la CI Apple. Une image de six gigaoctets
+    /// dont l'invité touche le dernier secteur aurait rempli le téléphone.
+    ///
+    /// Tassée, la couche coûte 512 octets par secteur touché, sur n'importe
+    /// quel système de fichiers — et ce test le vérifie sur la **taille du
+    /// fichier**, pas sur ce que le système de fichiers a bien voulu allouer.
+    func testTheOverlayIsPackedNotSpread() throws {
         let store = try FileDiskStore(base: try base(sectors: 4000), writes: writes)
         XCTAssertTrue(store.write(at: 3999 * 512, [UInt8](repeating: 1, count: 512)))
         store.flush()
+        XCTAssertEqual(try Data(contentsOf: writes).count, 512,
+                       "un secteur touché, un secteur rangé — pas deux mébioctets")
         let map = try Data(contentsOf: URL(fileURLWithPath: writes.path + ".map"))
-        XCTAssertEqual(map.count, 500, "quatre mille secteurs, cinq cents octets")
-        XCTAssertEqual(map[499], 0x80, "le dernier bit du dernier octet")
+        XCTAssertEqual(map.count, 16 + 8, "l'en-tête, et un nom d'emplacement")
+        XCTAssertEqual(Array(map[0..<8]), Array("wisqdisk".utf8))
         XCTAssertEqual(store.bytesWritten, 512)
+
+        // Un second secteur ajoute un emplacement ; le réécrire n'en ajoute pas.
+        XCTAssertTrue(store.write(at: 0, [7, 7, 7]))
+        XCTAssertTrue(store.write(at: 3999 * 512, [UInt8](repeating: 2, count: 512)))
+        store.flush()
+        XCTAssertEqual(try Data(contentsOf: writes).count, 1024, "deux emplacements, pas trois")
+        XCTAssertEqual(store.bytesWritten, 1024)
+        XCTAssertEqual(store.read(at: 3999 * 512, count: 2), [2, 2], "et la réécriture a pris")
+        XCTAssertEqual(store.read(at: 0, count: 4), [7, 7, 7, 1], "le secteur zéro aussi")
     }
 
-    /// Une couche qui vient d'un autre disque est refusée, nommément : sa
-    /// carte n'a pas la taille de celui-ci, et la lire donnerait des secteurs
-    /// d'un autre fichier là où on attend ceux de la base.
+    /// **Un emplacement écrit mais pas encore nommé n'appartient à personne.**
+    ///
+    /// C'est l'application tuée entre les deux `pwrite`. À la réouverture, la
+    /// carte est en retard d'une entrée : l'emplacement est ignoré, le secteur
+    /// revient de la base, et le prochain secteur écrit reprend la place. Sans
+    /// ça, un emplacement orphelin décalerait tous les suivants.
+    func testASlotWrittenButNotYetNamedIsIgnored() throws {
+        let baseURL = try base(sectors: 8)
+        do {
+            let store = try FileDiskStore(base: baseURL, writes: writes)
+            XCTAssertTrue(store.write(at: 512, [UInt8](repeating: 0xAB, count: 512)))
+            XCTAssertTrue(store.write(at: 1024, [UInt8](repeating: 0xCD, count: 512)))
+            store.flush()
+        }
+        // La mort brutale : le second nom n'est jamais arrivé.
+        let mapURL = URL(fileURLWithPath: writes.path + ".map")
+        let map = try Data(contentsOf: mapURL)
+        try map.prefix(16 + 8).write(to: mapURL)
+
+        let reopened = try FileDiskStore(base: baseURL, writes: writes)
+        XCTAssertEqual(reopened.read(at: 512, count: 2), [0xAB, 0xAB], "le premier tient")
+        XCTAssertEqual(reopened.read(at: 1024, count: 2), [3, 3], "le second revient de la base")
+        XCTAssertEqual(reopened.bytesWritten, 512)
+        XCTAssertTrue(reopened.write(at: 2048, [UInt8](repeating: 0xEE, count: 512)))
+        XCTAssertEqual(try Data(contentsOf: writes).count, 1024,
+                       "le nouveau secteur a repris l'emplacement orphelin")
+        XCTAssertEqual(reopened.read(at: 2048, count: 2), [0xEE, 0xEE])
+    }
+
+    /// Une couche qui vient d'un autre disque est refusée, nommément : son
+    /// en-tête ne décrit pas celui-ci, et la lire donnerait des secteurs d'un
+    /// autre fichier là où on attend ceux de la base.
+    ///
+    /// **L'en-tête, et non plus la taille.** Tant que la carte faisait un bit
+    /// par secteur, sa taille identifiait le disque ; une carte tassée ne dit
+    /// plus rien de la base, et deux disques du même nombre de secteurs
+    /// seraient passés l'un pour l'autre.
     func testAnOverlayFromAnotherDiskIsRefused() throws {
         _ = try FileDiskStore(base: try base(sectors: 8), writes: writes)
         let other = try base(sectors: 16, named: "other.img")
         XCTAssertThrowsError(try FileDiskStore(base: other, writes: writes)) { error in
+            XCTAssertEqual(error as? FileDiskStore.Failure, .overlayBelongsToAnotherDisk)
+        }
+        // Et un fichier qui n'est pas une carte du tout.
+        let bogus = folder.appendingPathComponent("bogus.writes")
+        try Data("pas une carte du tout".utf8)
+            .write(to: URL(fileURLWithPath: bogus.path + ".map"))
+        XCTAssertThrowsError(
+            try FileDiskStore(base: try base(sectors: 8, named: "b.img"), writes: bogus)
+        ) { error in
             XCTAssertEqual(error as? FileDiskStore.Failure, .overlayBelongsToAnotherDisk)
         }
     }
@@ -149,6 +210,29 @@ final class FileDiskStoreTests: XCTestCase {
         try Data([1, 2, 3]).write(to: tiny)
         XCTAssertThrowsError(try FileDiskStore(base: tiny, writes: writes)) { error in
             XCTAssertEqual(error as? FileDiskStore.Failure, .notADisk)
+        }
+    }
+
+    /// **Une couche tronquée est refusée, pas devinée.** Un nom dont
+    /// l'emplacement n'existe plus veut dire que le fichier des écritures a
+    /// été coupé : rendre le secteur de la base à sa place serait servir un
+    /// contenu périmé sans le dire, ce qu'un système de fichiers ne pardonne
+    /// pas. C'est l'autre sens du désaccord — celui que l'ordre d'écriture ne
+    /// peut pas produire.
+    func testATruncatedOverlayIsRefusedRatherThanGuessed() throws {
+        let baseURL = try base(sectors: 8)
+        do {
+            let store = try FileDiskStore(base: baseURL, writes: writes)
+            XCTAssertTrue(store.write(at: 512, [UInt8](repeating: 0xAB, count: 512)))
+            XCTAssertTrue(store.write(at: 1024, [UInt8](repeating: 0xCD, count: 512)))
+            store.flush()
+        }
+        let content = try Data(contentsOf: writes)
+        XCTAssertEqual(content.count, 1024)
+        try content.prefix(512).write(to: writes)
+
+        XCTAssertThrowsError(try FileDiskStore(base: baseURL, writes: writes)) { error in
+            XCTAssertEqual(error as? FileDiskStore.Failure, .overlayIsTruncated)
         }
     }
 

@@ -103,7 +103,8 @@ int wisq_vm_attach_disk(WisqVM *vm, const uint8_t *image, size_t len);
  *
  * Returns 0, or -1 for a null argument, -2 when the base cannot be opened,
  * -3 when it is smaller than a sector, -4 when the overlay cannot be opened,
- * -5 when the overlay belongs to another disk.
+ * -5 when the overlay belongs to another disk, -6 when the overlay is
+ * truncated.
  */
 int wisq_vm_attach_disk_file(WisqVM *vm, const char *base, const char *writes);
 

@@ -57,10 +57,17 @@ break APIs.
   above it (the 5.8 GiB installer image someone actually brought), and the
   screen text explaining both. The device now reads through a `DiskStore`:
   the imported file is opened read-only and read in place, sector by sector,
-  and every sector the guest writes goes to a sparse `writes` file plus a
-  one-bit-per-sector `writes.map`, both written **before the device answers
+  and every sector the guest writes goes to a `writes` file plus a
+  `writes.map` that names its slot, both written **before the device answers
   the guest** — so an app killed without notice loses nothing already written,
-  and the imported file never changes. Suspension adds an `fsync`. The
+  and the imported file never changes. The overlay is **packed**: the n-th
+  sector touched takes the n-th 512-byte slot, whatever its number on the
+  disk, so it costs 512 bytes per sector written and nothing for the rest.
+  It was sparse at first — one offset per sector, trusting the filesystem to
+  leave holes — and the Apple runner measured what that really costs on APFS:
+  2,052,096 bytes for a single sector written two mebibytes in. APFS is the
+  iPhone's filesystem too, so a six-gigabyte image whose guest touched its
+  last sector would have filled the phone. Suspension adds an `fsync`. The
   snapshot no longer carries the image for such a disk: it carries a
   "content lives elsewhere" mark, and the restore puts the store the app
   re-opened back under the restored registers; a snapshot with the image

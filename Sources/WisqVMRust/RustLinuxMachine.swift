@@ -148,6 +148,7 @@ public final class RustLinuxMachine: @unchecked Sendable {
         case -2: throw FileDiskStore.Failure.cannotOpenBase
         case -3: throw FileDiskStore.Failure.notADisk
         case -5: throw FileDiskStore.Failure.overlayBelongsToAnotherDisk
+        case -6: throw FileDiskStore.Failure.overlayIsTruncated
         default: throw FileDiskStore.Failure.cannotOpenOverlay
         }
     }

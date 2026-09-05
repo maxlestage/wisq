@@ -90,7 +90,7 @@ export const docsEn: Doc = {
     {
       kind: "p",
       text:
-        "About the disk: wisq emulates the device, and cannot add a block driver to the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch it — so the device counts its requests, and wisq tells you at the end of the session rather than leaving you with a disk that is silent for a reason you cannot see. The image is read in place, whatever its size — there is no ceiling any more. What the guest writes goes into a layer beside it (a sparse file plus a one-bit-per-sector map), written as it happens, so it survives suspension and restarts; the file you imported never changes.",
+        "About the disk: wisq emulates the device, and cannot add a block driver to the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch it — so the device counts its requests, and wisq tells you at the end of the session rather than leaving you with a disk that is silent for a reason you cannot see. The image is read in place, whatever its size — there is no ceiling any more. What the guest writes goes into a layer beside it — the touched sectors packed back to back, 512 bytes each, and a map naming them — written as it happens, so it survives suspension and restarts; the file you imported never changes.",
     },
 
     { kind: "h2", text: "When something does not work" },
@@ -217,7 +217,7 @@ export const docsFr: Doc = {
     {
       kind: "p",
       text:
-        "À propos du disque : wisq émule le périphérique, et ne peut pas ajouter un pilote bloc au noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas n'y touchera jamais — alors le périphérique compte ses requêtes, et wisq vous le dit à la fin de la session plutôt que de vous laisser devant un disque muet pour une raison invisible. L'image est lue sur place, quelle que soit sa taille — il n'y a plus de plafond. Ce que l'invité écrit va dans une couche à côté (un fichier épars et une carte d'un bit par secteur), posée au fil des écritures, donc elle survit aux suspensions et aux redémarrages ; le fichier importé ne change jamais.",
+        "À propos du disque : wisq émule le périphérique, et ne peut pas ajouter un pilote bloc au noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas n'y touchera jamais — alors le périphérique compte ses requêtes, et wisq vous le dit à la fin de la session plutôt que de vous laisser devant un disque muet pour une raison invisible. L'image est lue sur place, quelle que soit sa taille — il n'y a plus de plafond. Ce que l'invité écrit va dans une couche à côté — les secteurs touchés rangés les uns derrière les autres, 512 octets chacun, et une carte qui les nomme —, posée au fil des écritures, donc elle survit aux suspensions et aux redémarrages ; le fichier importé ne change jamais.",
     },
 
     { kind: "h2", text: "Quand quelque chose ne marche pas" },

@@ -82,19 +82,32 @@ public final class MemoryDiskStore: DiskStore, @unchecked Sendable {
 /// gigaoctets. Rien n'en est copié en mémoire ; chaque lecture est un `pread`
 /// à l'endroit demandé.
 ///
-/// **La couche est faite de deux fichiers.** `writes` est un fichier épars
-/// de la taille de la base, où chaque secteur écrit est rangé à son propre
-/// décalage — il n'occupe sur le disque que ce qui a été écrit, et un
-/// secteur sur quatre mille coûte un secteur. `writes.map` fait un bit par
-/// secteur et dit lesquels lire dans la couche plutôt que dans la base.
+/// **La couche est faite de deux fichiers, et elle est tassée.** `writes`
+/// range les secteurs écrits **les uns derrière les autres, dans l'ordre où
+/// ils ont été écrits** : le n-ième secteur touché occupe le n-ième
+/// emplacement, quel que soit son numéro sur le disque. `writes.map` dit quel
+/// secteur occupe quel emplacement — un en-tête, puis un numéro de secteur de
+/// huit octets par emplacement.
+///
+/// **Le premier jet rangeait chaque secteur à son propre décalage**, dans un
+/// fichier épars de la taille de la base, en comptant sur le système de
+/// fichiers pour ne rien allouer entre les trous. **Sur APFS il alloue.**
+/// Mesuré sur macOS : un seul secteur écrit à deux mébioctets du début coûte
+/// 2 052 096 octets. APFS est aussi le système de fichiers de l'iPhone, donc
+/// la seule mesure qui compte disait que l'idée ne tenait pas : une image de
+/// six gigaoctets dont l'invité écrit le dernier secteur aurait rempli le
+/// téléphone. La couche tassée coûte 512 octets par secteur touché, sur
+/// n'importe quel système de fichiers, parce qu'elle ne demande plus rien à
+/// personne.
 ///
 /// **Chaque écriture est durable au moment où elle est faite.** Le secteur
-/// part dans `writes`, et le bit dans `.map`, avant que le périphérique ne
-/// réponde à l'invité. Ce sont deux petits `pwrite` par secteur — trois fois
-/// rien pour un invité qui tourne à la vitesse d'un interpréteur — et c'est
-/// ce qui fait qu'une application tuée sans préavis ne perd pas le fichier
-/// qu'on venait de sauver. `flush` ajoute `fsync`, pour le passage en
-/// arrière-plan.
+/// part dans `writes`, puis son numéro dans `writes.map`, avant que le
+/// périphérique ne réponde à l'invité. **Dans cet ordre**, et l'ordre est ce
+/// qui rend une mort brutale inoffensive : un emplacement écrit mais pas
+/// encore nommé n'appartient à personne, il est ignoré à la réouverture et le
+/// prochain secteur le reprend. L'inverse rendrait un secteur nommé dont le
+/// contenu n'existe pas — le disque rendrait des zéros pour des octets qu'il
+/// prétend avoir. `flush` ajoute `fsync`, pour le passage en arrière-plan.
 ///
 /// **Le même format des deux côtés.** Le cœur Rust écrit exactement ces deux
 /// fichiers ; un test différentiel les compare octet pour octet.
@@ -106,9 +119,14 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         case notADisk
         /// La couche n'a pas pu être créée ou ouverte.
         case cannotOpenOverlay
-        /// La carte n'a pas la taille de cette base : cette couche vient d'un
-        /// autre disque, et la lire donnerait les secteurs d'un autre fichier.
+        /// L'en-tête de la carte ne décrit pas cette base : cette couche vient
+        /// d'un autre disque, et la lire donnerait les secteurs d'un autre
+        /// fichier.
         case overlayBelongsToAnotherDisk
+        /// La carte nomme des emplacements que le fichier des écritures n'a
+        /// pas : il a été tronqué, et les octets que l'invité croit avoir
+        /// écrits ne sont plus là.
+        case overlayIsTruncated
 
         public var errorDescription: String? {
             switch self {
@@ -118,20 +136,29 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
                 return "la couche d'écriture du disque n'a pas pu être créée."
             case .overlayBelongsToAnotherDisk:
                 return "la couche d'écriture trouvée appartient à un autre disque."
+            case .overlayIsTruncated:
+                return "la couche d'écriture du disque est incomplète."
             }
         }
     }
 
     public static let sectorSize = 512
+    /// Huit octets qui disent à quoi sert ce fichier, suivis du nombre de
+    /// secteurs de la base : c'est **lui** qui rattache une couche à son
+    /// disque. La taille ne le pouvait plus une fois la couche tassée, et
+    /// s'en remettre à la taille aurait laissé passer deux disques du même
+    /// nombre de secteurs.
+    static let magic = Array("wisqdisk".utf8)
+    static let headerSize = 16
 
     public let sectors: UInt64
     private let base: Int32
     private let writes: Int32
     private let map: Int32
-    /// Un bit par secteur, en mémoire ; chaque octet modifié repart aussitôt
-    /// dans le fichier de carte.
-    private var bitmap: [UInt8]
-    private var writtenSectors: Int
+    /// Quel emplacement porte quel secteur. En mémoire seulement : la carte
+    /// sur le disque est la liste des secteurs, dans l'ordre des emplacements.
+    private var slots: [UInt64: Int]
+    private var used: Int
 
     public init(base baseURL: URL, writes writesURL: URL) throws {
         let baseFD = open(baseURL.path, O_RDONLY)
@@ -141,42 +168,85 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         let size = UInt64(info.st_size)
         guard size >= UInt64(Self.sectorSize) else { close(baseFD); throw Failure.notADisk }
         let sectors = size / UInt64(Self.sectorSize)
-        let mapBytes = Int((sectors + 7) / 8)
 
         let writesFD = open(writesURL.path, O_RDWR | O_CREAT, 0o600)
         guard writesFD >= 0 else { close(baseFD); throw Failure.cannotOpenOverlay }
         let mapFD = open(writesURL.path + ".map", O_RDWR | O_CREAT, 0o600)
         guard mapFD >= 0 else { close(baseFD); close(writesFD); throw Failure.cannotOpenOverlay }
 
+        func giveUp(_ failure: Failure) -> Failure {
+            close(baseFD); close(writesFD); close(mapFD)
+            return failure
+        }
+
         var mapInfo = stat()
-        guard fstat(mapFD, &mapInfo) == 0 else {
-            close(baseFD); close(writesFD); close(mapFD)
-            throw Failure.cannotOpenOverlay
-        }
-        var bitmap = [UInt8](repeating: 0, count: mapBytes)
+        guard fstat(mapFD, &mapInfo) == 0 else { throw giveUp(.cannotOpenOverlay) }
+        var writesInfo = stat()
+        guard fstat(writesFD, &writesInfo) == 0 else { throw giveUp(.cannotOpenOverlay) }
+
+        var table: [UInt64] = []
         if mapInfo.st_size == 0 {
-            // Une carte neuve : tout vient de la base. Écrite en entier tout
-            // de suite, pour que sa taille dise à quel disque elle appartient.
-            guard Self.writeAll(mapFD, bitmap, at: 0) else {
-                close(baseFD); close(writesFD); close(mapFD)
-                throw Failure.cannotOpenOverlay
-            }
-        } else if Int(mapInfo.st_size) != mapBytes {
-            close(baseFD); close(writesFD); close(mapFD)
-            throw Failure.overlayBelongsToAnotherDisk
+            var header = Self.magic
+            var count = sectors.littleEndian
+            withUnsafeBytes(of: &count) { header.append(contentsOf: $0) }
+            guard Self.writeAll(mapFD, header, at: 0) else { throw giveUp(.cannotOpenOverlay) }
         } else {
-            guard Self.readAll(mapFD, into: &bitmap, at: 0) else {
-                close(baseFD); close(writesFD); close(mapFD)
-                throw Failure.cannotOpenOverlay
+            guard Int(mapInfo.st_size) >= Self.headerSize else {
+                throw giveUp(.overlayBelongsToAnotherDisk)
+            }
+            var header = [UInt8](repeating: 0, count: Self.headerSize)
+            guard Self.readAll(mapFD, into: &header, at: 0) else {
+                throw giveUp(.cannotOpenOverlay)
+            }
+            guard Array(header[0..<8]) == Self.magic else {
+                throw giveUp(.overlayBelongsToAnotherDisk)
+            }
+            var declared: UInt64 = 0
+            for index in 0..<8 { declared |= UInt64(header[8 + index]) << (8 * UInt64(index)) }
+            guard declared == sectors else { throw giveUp(.overlayBelongsToAnotherDisk) }
+
+            // **Les deux fichiers ne peuvent se désaccorder que dans un
+            // sens.** Le contenu part avant le nom, donc il peut y avoir un
+            // emplacement de plus que de noms : c'est l'application tuée entre
+            // les deux, et cet emplacement-là n'appartient à personne — on
+            // l'ignore, et le prochain secteur le reprend.
+            //
+            // L'inverse est impossible à produire honnêtement : un nom dont le
+            // contenu manque veut dire que le fichier des écritures a été
+            // tronqué sous nos pieds. On refuse la couche plutôt que de
+            // choisir entre deux mauvaises réponses — rendre le secteur de la
+            // base, c'est-à-dire un contenu périmé sans le dire, ou une erreur
+            // d'entrée-sortie à chaque lecture de ce secteur.
+            let named = (Int(mapInfo.st_size) - Self.headerSize) / 8
+            let stored = Int(writesInfo.st_size) / Self.sectorSize
+            guard named <= stored else { throw giveUp(.overlayIsTruncated) }
+            let count = named
+            if count > 0 {
+                var bytes = [UInt8](repeating: 0, count: count * 8)
+                guard Self.readAll(mapFD, into: &bytes, at: off_t(Self.headerSize)) else {
+                    throw giveUp(.cannotOpenOverlay)
+                }
+                table.reserveCapacity(count)
+                for slot in 0..<count {
+                    var sector: UInt64 = 0
+                    for index in 0..<8 {
+                        sector |= UInt64(bytes[slot * 8 + index]) << (8 * UInt64(index))
+                    }
+                    table.append(sector)
+                }
             }
         }
+
+        var slots: [UInt64: Int] = [:]
+        slots.reserveCapacity(table.count)
+        for (slot, sector) in table.enumerated() { slots[sector] = slot }
 
         self.base = baseFD
         self.writes = writesFD
         self.map = mapFD
         self.sectors = sectors
-        self.bitmap = bitmap
-        self.writtenSectors = bitmap.reduce(0) { $0 + $1.nonzeroBitCount }
+        self.slots = slots
+        self.used = table.count
     }
 
     deinit {
@@ -185,11 +255,7 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         close(map)
     }
 
-    public var bytesWritten: Int { writtenSectors * Self.sectorSize }
-
-    private func isWritten(_ sector: UInt64) -> Bool {
-        bitmap[Int(sector >> 3)] & (1 << UInt8(sector & 7)) != 0
-    }
+    public var bytesWritten: Int { used * Self.sectorSize }
 
     private func inRange(_ offset: UInt64, _ count: Int) -> Bool {
         count >= 0 && offset <= sectors * UInt64(Self.sectorSize)
@@ -201,14 +267,22 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         var out = [UInt8](repeating: 0, count: count)
         var done = 0
         var at = offset
-        // Secteur par secteur, parce que la source peut changer à chacun.
+        // Secteur par secteur, parce que la source change à chacun.
         while done < count {
             let sector = at / UInt64(Self.sectorSize)
             let within = Int(at % UInt64(Self.sectorSize))
             let take = min(count - done, Self.sectorSize - within)
-            let source = isWritten(sector) ? writes : base
             var piece = [UInt8](repeating: 0, count: take)
-            guard Self.readAll(source, into: &piece, at: off_t(at)) else { return nil }
+            let source: Int32
+            let from: off_t
+            if let slot = slots[sector] {
+                source = writes
+                from = off_t(slot * Self.sectorSize + within)
+            } else {
+                source = base
+                from = off_t(at)
+            }
+            guard Self.readAll(source, into: &piece, at: from) else { return nil }
             out.replaceSubrange(done..<(done + take), with: piece)
             done += take
             at += UInt64(take)
@@ -224,26 +298,36 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
             let sector = at / UInt64(Self.sectorSize)
             let within = Int(at % UInt64(Self.sectorSize))
             let take = min(bytes.count - done, Self.sectorSize - within)
-            let sectorStart = off_t(sector * UInt64(Self.sectorSize))
+            let existing = slots[sector]
+            let slot = existing ?? used
 
-            // Un secteur entier à chaque fois. Le premier passage sur un
-            // secteur recopie la base, sinon les octets non écrits liraient
-            // le zéro du fichier épars là où la base avait quelque chose.
+            // Un emplacement entier à chaque fois. Le premier passage recopie
+            // ce que le secteur valait — la base, ou l'emplacement qu'il avait
+            // déjà — sinon les octets non écrits liraient le zéro d'un
+            // emplacement neuf là où il y avait quelque chose.
             var whole = [UInt8](repeating: 0, count: Self.sectorSize)
             if take < Self.sectorSize {
-                let source = isWritten(sector) ? writes : base
-                guard Self.readAll(source, into: &whole, at: sectorStart) else { return false }
+                let source = existing.map { (writes, off_t($0 * Self.sectorSize)) }
+                    ?? (base, off_t(sector * UInt64(Self.sectorSize)))
+                guard Self.readAll(source.0, into: &whole, at: source.1) else { return false }
             }
             whole.replaceSubrange(within..<(within + take), with: bytes[done..<(done + take)])
-            guard Self.writeAll(writes, whole, at: sectorStart) else { return false }
+            guard Self.writeAll(writes, whole, at: off_t(slot * Self.sectorSize)) else {
+                return false
+            }
 
-            if !isWritten(sector) {
-                let index = Int(sector >> 3)
-                bitmap[index] |= 1 << UInt8(sector & 7)
-                writtenSectors += 1
-                // Le bit part tout de suite : c'est lui qui rend le secteur
-                // visible à la prochaine ouverture.
-                guard Self.writeAll(map, [bitmap[index]], at: off_t(index)) else { return false }
+            if existing == nil {
+                // Le contenu d'abord, le nom ensuite : un emplacement nommé
+                // dont le contenu manque rendrait des zéros pour des octets
+                // qu'il prétend avoir.
+                var name = sector.littleEndian
+                var named = [UInt8]()
+                withUnsafeBytes(of: &name) { named.append(contentsOf: $0) }
+                guard Self.writeAll(map, named, at: off_t(Self.headerSize + slot * 8)) else {
+                    return false
+                }
+                slots[sector] = slot
+                used += 1
             }
             done += take
             at += UInt64(take)

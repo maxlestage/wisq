@@ -178,10 +178,16 @@ final class DifferentialDiskTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: swiftWrites.path + ".map")),
                        try Data(contentsOf: URL(fileURLWithPath: rustWrites.path + ".map")),
                        "et la carte")
-        XCTAssertEqual(swiftOverlay.count, 2 * 512,
-                       "jusqu'à la fin du secteur écrit, et pas plus loin : le fichier est épars")
-        XCTAssertEqual(Array(swiftOverlay[512..<516]), [0x57, 0x57, 0x57, 0x57],
-                       "le secteur 1 porte ce que l'invité a écrit")
+        XCTAssertEqual(swiftOverlay.count, 512,
+                       "un secteur touché, un emplacement : la couche est tassée")
+        XCTAssertEqual(Array(swiftOverlay[0..<4]), [0x57, 0x57, 0x57, 0x57],
+                       "et l'emplacement porte ce que l'invité a écrit")
+        // La carte nomme cet emplacement : l'en-tête, puis le numéro du
+        // secteur — un, celui que le programme invité écrit.
+        let swiftMap = try Data(contentsOf: URL(fileURLWithPath: swiftWrites.path + ".map"))
+        XCTAssertEqual(swiftMap.count, 16 + 8)
+        XCTAssertEqual(Array(swiftMap[0..<8]), Array("wisqdisk".utf8))
+        XCTAssertEqual(Array(swiftMap[16..<24]), [1, 0, 0, 0, 0, 0, 0, 0])
         XCTAssertEqual(try Data(contentsOf: base), before, "et la base n'a pas bougé")
     }
 

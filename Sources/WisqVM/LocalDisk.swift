@@ -127,10 +127,15 @@ public enum LocalDisk {
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + ".map"))
     }
 
-    /// Ce que la couche d'un disque occupe **réellement** : les blocs
-    /// alloués, pas la taille apparente. Le fichier des écritures est épars
-    /// et de la taille de la base ; sa taille dirait « six gigaoctets » pour
-    /// trois secteurs écrits.
+    /// Ce que la couche d'un disque occupe.
+    ///
+    /// **La taille des deux fichiers, tout simplement** — parce que la couche
+    /// est tassée : 512 octets par secteur que l'invité a touché, et rien pour
+    /// les autres. Le premier jet la rangeait éparse, à un décalage par
+    /// secteur, et comptait les blocs alloués pour ne pas lire « six
+    /// gigaoctets » là où trois secteurs étaient écrits. APFS n'alloue pas
+    /// épars : la mesure a fait changer le format, et la question a disparu
+    /// avec lui.
     public static func overlayBytes(for disk: String, in directory: URL? = nil) -> Int {
         guard let folder = try? writesDirectory(in: directory) else { return 0 }
         return overlayBytes(for: disk, inWritesDirectory: folder)
@@ -140,13 +145,13 @@ public enum LocalDisk {
     /// de stockage a sous la main.
     public static func overlayBytes(for disk: String, inWritesDirectory folder: URL) -> Int {
         let path = folder.appendingPathComponent(disk + ".writes").path
-        return allocatedBytes(atPath: path) + allocatedBytes(atPath: path + ".map")
+        return fileBytes(atPath: path) + fileBytes(atPath: path + ".map")
     }
 
-    static func allocatedBytes(atPath path: String) -> Int {
+    static func fileBytes(atPath path: String) -> Int {
         var info = stat()
         guard stat(path, &info) == 0 else { return 0 }
-        return Int(info.st_blocks) * 512
+        return Int(info.st_size)
     }
 
     // MARK: - Ce que le disque a vu

@@ -126,7 +126,8 @@ pub unsafe extern "C" fn wisq_vm_attach_disk(
 ///
 /// Returns 0, or -1 for a null argument, -2 when the base cannot be opened,
 /// -3 when it is smaller than a sector, -4 when the overlay cannot be opened,
-/// -5 when the overlay belongs to another disk.
+/// -5 when the overlay belongs to another disk, -6 when the overlay is
+/// truncated.
 ///
 /// # Safety
 /// `vm` must come from `wisq_vm_new`; `base` and `writes` must be
@@ -154,6 +155,7 @@ pub unsafe extern "C" fn wisq_vm_attach_disk_file(
         Err(StoreError::NotADisk) => -3,
         Err(StoreError::CannotOpenOverlay) => -4,
         Err(StoreError::OverlayBelongsToAnotherDisk) => -5,
+        Err(StoreError::OverlayIsTruncated) => -6,
     }
 }
 

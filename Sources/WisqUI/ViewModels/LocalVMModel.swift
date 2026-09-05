@@ -286,6 +286,10 @@ public final class LocalVMModel {
             kernel: kernelURL.lastPathComponent,
             among: KernelLibrary.list(), in: storage)
 
+        // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
+        // appartient à `self`, qui n'y est capturé que faiblement.
+        let storageFolder = storage
+
         let thread = Thread { [weak self] in
             defer { finished.signal() }
             let outcome: GuestOutcome
@@ -303,7 +307,8 @@ public final class LocalVMModel {
                 if let diskURL {
                     try machine.attachDisk(
                         fileAt: diskURL,
-                        writes: LocalDisk.writesURL(for: diskURL.lastPathComponent, in: storage))
+                        writes: LocalDisk.writesURL(
+                            for: diskURL.lastPathComponent, in: storageFolder))
                 }
                 // A saved machine is resumed in place of booting. If the file
                 // is not a snapshot — an older format, a truncated write — the

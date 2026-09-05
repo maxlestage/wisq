@@ -9,18 +9,38 @@
 //! `pread` at the asked offset, and nothing of it is copied into memory —
 //! which is what lets a multi-gigabyte installer image be attached at all.
 //!
-//! **The overlay is two files.** `writes` is a sparse file the size of the
-//! base, where every written sector sits at its own offset; `writes.map` is
-//! one bit per sector saying which sectors to read from the overlay instead
-//! of the base. Both are written on every guest write, before the device
-//! answers: an app killed without notice loses nothing the guest had already
-//! written. `flush` adds `fsync` for the trip to the background.
+//! **The overlay is two files, and it is packed.** `writes` holds the written
+//! sectors back to back **in the order they were written**: the n-th sector
+//! touched takes the n-th slot, whatever its number on the disk.
+//! `writes.map` says which sector is in which slot — a header, then one
+//! eight-byte sector number per slot.
+//!
+//! **The first attempt put each sector at its own offset** in a sparse file
+//! the size of the base, trusting the filesystem to allocate nothing between
+//! the holes. **APFS allocates.** Measured on macOS: one sector written two
+//! mebibytes in cost 2,052,096 bytes. APFS is also the iPhone's filesystem,
+//! so the only measurement that counted said the idea did not hold. Packed,
+//! the overlay costs 512 bytes per sector touched, on any filesystem, because
+//! it no longer asks anything of anyone.
+//!
+//! **Every write is durable when it is made.** The sector goes into `writes`,
+//! then its number into `writes.map`, before the device answers the guest.
+//! **In that order**, and the order is what makes a sudden death harmless: a
+//! slot written but not yet named belongs to nobody, is ignored at the next
+//! opening, and the next sector takes its place. The other way round would
+//! leave a named slot whose content does not exist. `flush` adds `fsync`.
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 pub const SECTOR: u64 = 512;
+/// Eight bytes saying what this file is for, then the base's sector count:
+/// **that** is what ties an overlay to its disk. Size could not do it once the
+/// overlay was packed, and trusting size would have let two disks of the same
+/// sector count pass for each other.
+const MAGIC: &[u8; 8] = b"wisqdisk";
+const HEADER: u64 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
@@ -30,9 +50,12 @@ pub enum StoreError {
     NotADisk,
     /// The overlay could not be created or opened.
     CannotOpenOverlay,
-    /// The map is not the size of this base: this overlay belongs to another
-    /// disk, and reading it would hand out another file's sectors.
+    /// The map's header does not describe this base: this overlay belongs to
+    /// another disk, and reading it would hand out another file's sectors.
     OverlayBelongsToAnotherDisk,
+    /// The map names slots the writes file does not have: it was truncated,
+    /// and the bytes the guest believes it wrote are gone.
+    OverlayIsTruncated,
 }
 
 pub enum Store {
@@ -96,7 +119,7 @@ impl Store {
     pub fn bytes_written(&self) -> u64 {
         match self {
             Store::Memory(image) => image.len() as u64,
-            Store::File(file) => file.written_sectors * SECTOR,
+            Store::File(file) => file.used * SECTOR,
         }
     }
 
@@ -113,10 +136,10 @@ pub struct FileStore {
     writes: File,
     map: File,
     pub sectors: u64,
-    /// One bit per sector, in memory; every changed byte goes straight back
-    /// to the map file.
-    bitmap: Vec<u8>,
-    written_sectors: u64,
+    /// Which slot holds which sector. In memory only: the map on disk is the
+    /// list of sectors, in slot order.
+    slots: std::collections::HashMap<u64, u64>,
+    used: u64,
 }
 
 impl FileStore {
@@ -130,7 +153,6 @@ impl FileStore {
             return Err(StoreError::NotADisk);
         }
         let sectors = size / SECTOR;
-        let map_bytes = usize::try_from(sectors.div_ceil(8)).map_err(|_| StoreError::NotADisk)?;
 
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -152,32 +174,69 @@ impl FileStore {
             .metadata()
             .map_err(|_| StoreError::CannotOpenOverlay)?
             .len();
-        let mut bitmap = vec![0u8; map_bytes];
+        let writes_size = writes
+            .metadata()
+            .map_err(|_| StoreError::CannotOpenOverlay)?
+            .len();
+
+        let mut slots = std::collections::HashMap::new();
+        let mut used = 0u64;
         if map_size == 0 {
-            // A new map: everything comes from the base. Written whole at once,
-            // so that its size says which disk it belongs to.
-            map.write_all_at(&bitmap, 0)
+            let mut header = [0u8; HEADER as usize];
+            header[..8].copy_from_slice(MAGIC);
+            header[8..].copy_from_slice(&sectors.to_le_bytes());
+            map.write_all_at(&header, 0)
                 .map_err(|_| StoreError::CannotOpenOverlay)?;
-        } else if map_size != map_bytes as u64 {
-            return Err(StoreError::OverlayBelongsToAnotherDisk);
         } else {
-            map.read_exact_at(&mut bitmap, 0)
+            if map_size < HEADER {
+                return Err(StoreError::OverlayBelongsToAnotherDisk);
+            }
+            let mut header = [0u8; HEADER as usize];
+            map.read_exact_at(&mut header, 0)
                 .map_err(|_| StoreError::CannotOpenOverlay)?;
+            if &header[..8] != MAGIC {
+                return Err(StoreError::OverlayBelongsToAnotherDisk);
+            }
+            let declared = u64::from_le_bytes(header[8..].try_into().expect("huit octets"));
+            if declared != sectors {
+                return Err(StoreError::OverlayBelongsToAnotherDisk);
+            }
+            // **The two files can only disagree one way.** The content goes
+            // before the name, so there can be one more slot than names: that
+            // is the app killed between the two, and that slot belongs to
+            // nobody — it is ignored, and the next sector takes its place.
+            //
+            // The other way cannot be produced honestly: a name whose content
+            // is missing means the writes file was truncated under us. Refuse
+            // the overlay rather than choose between two wrong answers.
+            let named = (map_size - HEADER) / 8;
+            let stored = writes_size / SECTOR;
+            if named > stored {
+                return Err(StoreError::OverlayIsTruncated);
+            }
+            let count = named;
+            if count > 0 {
+                let mut bytes = vec![0u8; (count * 8) as usize];
+                map.read_exact_at(&mut bytes, HEADER)
+                    .map_err(|_| StoreError::CannotOpenOverlay)?;
+                for slot in 0..count {
+                    let at = (slot * 8) as usize;
+                    let sector =
+                        u64::from_le_bytes(bytes[at..at + 8].try_into().expect("huit octets"));
+                    slots.insert(sector, slot);
+                }
+                used = count;
+            }
         }
-        let written_sectors = bitmap.iter().map(|byte| u64::from(byte.count_ones())).sum();
 
         Ok(FileStore {
             base,
             writes,
             map,
             sectors,
-            bitmap,
-            written_sectors,
+            slots,
+            used,
         })
-    }
-
-    fn is_written(&self, sector: u64) -> bool {
-        self.bitmap[(sector >> 3) as usize] & (1 << (sector & 7)) != 0
     }
 
     fn in_range(&self, offset: u64, count: usize) -> bool {
@@ -192,17 +251,18 @@ impl FileStore {
         let mut out = vec![0u8; count];
         let mut done = 0usize;
         let mut at = offset;
-        // Sector by sector, because the source can change at each one.
+        // Sector by sector, because the source changes at each one.
         while done < count {
             let sector = at / SECTOR;
-            let within = (at % SECTOR) as usize;
-            let take = (count - done).min(SECTOR as usize - within);
-            let source = if self.is_written(sector) {
-                &self.writes
-            } else {
-                &self.base
+            let within = at % SECTOR;
+            let take = (count - done).min((SECTOR - within) as usize);
+            let (source, from) = match self.slots.get(&sector) {
+                Some(slot) => (&self.writes, slot * SECTOR + within),
+                None => (&self.base, at),
             };
-            source.read_exact_at(&mut out[done..done + take], at).ok()?;
+            source
+                .read_exact_at(&mut out[done..done + take], from)
+                .ok()?;
             done += take;
             at += take as u64;
         }
@@ -219,40 +279,40 @@ impl FileStore {
             let sector = at / SECTOR;
             let within = (at % SECTOR) as usize;
             let take = (bytes.len() - done).min(SECTOR as usize - within);
-            let sector_start = sector * SECTOR;
+            let existing = self.slots.get(&sector).copied();
+            let slot = existing.unwrap_or(self.used);
 
-            // A whole sector every time. The first pass over a sector copies
-            // the base, otherwise the bytes not written would read the sparse
-            // file's zero where the base had something.
+            // A whole slot every time. The first pass copies what the sector
+            // was worth — the base, or the slot it already had — otherwise the
+            // bytes not written would read a fresh slot's zero.
             let mut whole = [0u8; SECTOR as usize];
             if take < SECTOR as usize {
-                let source = if self.is_written(sector) {
-                    &self.writes
-                } else {
-                    &self.base
+                let (source, from) = match existing {
+                    Some(slot) => (&self.writes, slot * SECTOR),
+                    None => (&self.base, sector * SECTOR),
                 };
-                if source.read_exact_at(&mut whole, sector_start).is_err() {
+                if source.read_exact_at(&mut whole, from).is_err() {
                     return false;
                 }
             }
             whole[within..within + take].copy_from_slice(&bytes[done..done + take]);
-            if self.writes.write_all_at(&whole, sector_start).is_err() {
+            if self.writes.write_all_at(&whole, slot * SECTOR).is_err() {
                 return false;
             }
 
-            if !self.is_written(sector) {
-                let index = (sector >> 3) as usize;
-                self.bitmap[index] |= 1 << (sector & 7);
-                self.written_sectors += 1;
-                // The bit goes straight away: it is what makes the sector
-                // visible at the next opening.
+            if existing.is_none() {
+                // The content first, the name second: a named slot whose
+                // content is missing would hand out zeroes for bytes it claims
+                // to have.
                 if self
                     .map
-                    .write_all_at(&self.bitmap[index..=index], index as u64)
+                    .write_all_at(&sector.to_le_bytes(), HEADER + slot * 8)
                     .is_err()
                 {
                     return false;
                 }
+                self.slots.insert(sector, slot);
+                self.used += 1;
             }
             done += take;
             at += take as u64;
@@ -379,18 +439,64 @@ mod tests {
         assert_eq!(store.read(4 * 512 - 1, 1).unwrap(), [4]);
     }
 
+    /// The overlay is packed, and the file's own size says so — not what the
+    /// filesystem chose to allocate. The sparse-file version of this cost two
+    /// mebibytes on APFS for the same single sector.
     #[test]
-    fn the_overlay_is_sparse_and_the_map_is_one_bit_per_sector() {
-        let folder = Folder::new("sparse");
+    fn the_overlay_is_packed_not_spread() {
+        let folder = Folder::new("packed");
         let mut store = open(&folder.base(4000, "base.img"), &folder.writes());
         assert!(store.write(3999 * 512, &[1; 512]));
         store.flush();
+        assert_eq!(std::fs::metadata(folder.writes()).unwrap().len(), 512);
         let mut map_path = folder.writes().into_os_string();
         map_path.push(".map");
-        let map = std::fs::read(map_path).unwrap();
-        assert_eq!(map.len(), 500);
-        assert_eq!(map[499], 0x80);
+        let map = std::fs::read(&map_path).unwrap();
+        assert_eq!(map.len(), 16 + 8);
+        assert_eq!(&map[..8], b"wisqdisk");
         assert_eq!(store.bytes_written(), 512);
+
+        assert!(store.write(0, &[7, 7, 7]));
+        assert!(store.write(3999 * 512, &[2; 512]));
+        store.flush();
+        assert_eq!(
+            std::fs::metadata(folder.writes()).unwrap().len(),
+            1024,
+            "deux emplacements, pas trois"
+        );
+        assert_eq!(store.read(3999 * 512, 2).unwrap(), [2, 2]);
+        assert_eq!(store.read(0, 4).unwrap(), [7, 7, 7, 1]);
+    }
+
+    /// A slot written but not yet named belongs to nobody: the app killed
+    /// between the two `pwrite`s leaves the map one entry behind, and the next
+    /// sector takes the orphan's place.
+    #[test]
+    fn a_slot_written_but_not_yet_named_is_ignored() {
+        let folder = Folder::new("orphan");
+        let base = folder.base(8, "base.img");
+        {
+            let mut store = open(&base, &folder.writes());
+            assert!(store.write(512, &[0xAB; 512]));
+            assert!(store.write(1024, &[0xCD; 512]));
+            store.flush();
+        }
+        let mut map_path = folder.writes().into_os_string();
+        map_path.push(".map");
+        let map = std::fs::read(&map_path).unwrap();
+        std::fs::write(&map_path, &map[..16 + 8]).unwrap();
+
+        let mut reopened = open(&base, &folder.writes());
+        assert_eq!(reopened.read(512, 2).unwrap(), [0xAB, 0xAB]);
+        assert_eq!(
+            reopened.read(1024, 2).unwrap(),
+            [3, 3],
+            "revient de la base"
+        );
+        assert_eq!(reopened.bytes_written(), 512);
+        assert!(reopened.write(2048, &[0xEE; 512]));
+        assert_eq!(std::fs::metadata(folder.writes()).unwrap().len(), 1024);
+        assert_eq!(reopened.read(2048, 2).unwrap(), [0xEE, 0xEE]);
     }
 
     #[test]
@@ -400,6 +506,14 @@ mod tests {
         let other = folder.base(16, "other.img");
         assert_eq!(
             FileStore::open(&other, &folder.writes()).err(),
+            Some(StoreError::OverlayBelongsToAnotherDisk)
+        );
+        let bogus = folder.0.join("bogus.writes");
+        let mut bogus_map = bogus.clone().into_os_string();
+        bogus_map.push(".map");
+        std::fs::write(&bogus_map, b"pas une carte du tout").unwrap();
+        assert_eq!(
+            FileStore::open(&folder.base(8, "b.img"), &bogus).err(),
             Some(StoreError::OverlayBelongsToAnotherDisk)
         );
     }
@@ -412,6 +526,27 @@ mod tests {
         assert_eq!(
             FileStore::open(&tiny, &folder.writes()).err(),
             Some(StoreError::NotADisk)
+        );
+    }
+
+    /// A truncated overlay is refused, not guessed: a name whose slot is gone
+    /// would otherwise serve the base's stale sector without saying so.
+    #[test]
+    fn a_truncated_overlay_is_refused_rather_than_guessed() {
+        let folder = Folder::new("truncated");
+        let base = folder.base(8, "base.img");
+        {
+            let mut store = open(&base, &folder.writes());
+            assert!(store.write(512, &[0xAB; 512]));
+            assert!(store.write(1024, &[0xCD; 512]));
+            store.flush();
+        }
+        let content = std::fs::read(folder.writes()).unwrap();
+        assert_eq!(content.len(), 1024);
+        std::fs::write(folder.writes(), &content[..512]).unwrap();
+        assert_eq!(
+            FileStore::open(&base, &folder.writes()).err(),
+            Some(StoreError::OverlayIsTruncated)
         );
     }
 
