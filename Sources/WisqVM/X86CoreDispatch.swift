@@ -780,10 +780,21 @@ extension X86Core {
             } else if byte & 0x08 != 0 {
                 devices.primary.readsService = byte & 0x01 != 0
             } else if byte & 0x20 != 0 {
-                // Fin d'interruption : la ligne la plus prioritaire en service
-                // cesse de l'être.
-                let service = devices.primary.service
-                if service != 0 { devices.primary.service &= ~(1 << service.trailingZeroBitCount) }
+                // Fin d'interruption. **Deux formes, et Linux envoie la
+                // seconde** : `mask_and_ack_8259A` écrit `0x60 + irq`, qui
+                // nomme la ligne à retirer du service. Prendre la plus
+                // prioritaire à sa place laisserait la ligne nommée en service
+                // pour toujours, et tout ce qui lui est inférieur n'entrerait
+                // plus jamais — sur un PC, « inférieur au port série »
+                // comprend le disque.
+                if byte & 0x40 != 0 {
+                    devices.primary.service &= ~(1 << (byte & 0x07))
+                } else {
+                    let service = devices.primary.service
+                    if service != 0 {
+                        devices.primary.service &= ~(1 << service.trailingZeroBitCount)
+                    }
+                }
             }
         case 0x21:
             switch devices.primary.initialisationStep {

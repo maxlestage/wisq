@@ -149,6 +149,34 @@ final class X86LegacyDevicesTests: XCTestCase {
         XCTAssertEqual(core.rip, Self.handler, "et elle entre")
     }
 
+    /// **La fin d'interruption « spécifique », celle que Linux envoie.**
+    /// `mask_and_ack_8259A` écrit `0x60 + irq`, et non le 0x20 générique : elle
+    /// nomme la ligne à retirer du service. Prendre la plus prioritaire à la
+    /// place se voit dès que deux lignes sont en service — la ligne nommée
+    /// resterait en service pour toujours, et tout ce qui est moins
+    /// prioritaire qu'elle n'entrerait plus jamais. Sur un PC, « moins
+    /// prioritaire que le port série » comprend le disque.
+    func testASpecificEndOfInterruptClearsTheLineItNames() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        core.devices.primary.service = 0x11  // les lignes zéro et quatre
+        core.portWrite(0x20, 1, 0x64)        // fin d'interruption pour la quatre
+        XCTAssertEqual(core.devices.primary.service, 0x01,
+                       "la quatre part, la zéro reste")
+        core.portWrite(0x20, 1, 0x60)        // et pour la zéro
+        XCTAssertEqual(core.devices.primary.service, 0)
+    }
+
+    /// La forme générique, elle, retire la plus prioritaire — c'est sa
+    /// définition, et les deux formes ne doivent pas être confondues.
+    func testANonSpecificEndOfInterruptClearsTheMostUrgentOne() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xEB, 0xFE])
+        core.devices.primary.service = 0x11
+        core.portWrite(0x20, 1, 0x20)
+        XCTAssertEqual(core.devices.primary.service, 0x10, "la zéro part la première")
+    }
+
     /// Une ligne masquée n'est **pas** livrée, et sa demande **reste**. C'est
     /// ce qui permet au noyau de la trouver quand il démasque : la perdre
     /// ferait rater un battement à chaque fois qu'il ferme la porte.
