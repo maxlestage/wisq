@@ -41,40 +41,30 @@ final class RV32CoreTests: XCTestCase {
         _ = core.step(elapsedMicroseconds: 0, count: count)
     }
 
-    // MARK: - Encoders (the assembler we do not have)
+    // MARK: - Encoders
+
+    // Ils vivaient ici, en privé. Un second fichier en a eu besoin — l'invité
+    // qui conduit le disque virtio depuis l'intérieur de la machine —, et deux
+    // descriptions du même format binaire divergent à la première correction.
+    // Les noms restent, les appels sont conservés : c'est le corps qui a
+    // déménagé dans `RV32Asm`.
 
     private func addi(_ rd: Int, _ rs1: Int, _ imm: Int32) -> UInt32 {
-        (UInt32(bitPattern: imm) << 20) | (UInt32(rs1) << 15) | (0 << 12) | (UInt32(rd) << 7) | 0x13
+        RV32Asm.addi(rd, rs1, imm)
     }
-    private func lui(_ rd: Int, _ imm20: UInt32) -> UInt32 {
-        (imm20 << 12) | (UInt32(rd) << 7) | 0x37
-    }
-    private func add(_ rd: Int, _ rs1: Int, _ rs2: Int) -> UInt32 {
-        (UInt32(rs2) << 20) | (UInt32(rs1) << 15) | (UInt32(rd) << 7) | 0x33
-    }
-    private func mul(_ rd: Int, _ rs1: Int, _ rs2: Int) -> UInt32 {
-        (1 << 25) | (UInt32(rs2) << 20) | (UInt32(rs1) << 15) | (UInt32(rd) << 7) | 0x33
-    }
+    private func lui(_ rd: Int, _ imm20: UInt32) -> UInt32 { RV32Asm.lui(rd, imm20) }
+    private func add(_ rd: Int, _ rs1: Int, _ rs2: Int) -> UInt32 { RV32Asm.add(rd, rs1, rs2) }
+    private func mul(_ rd: Int, _ rs1: Int, _ rs2: Int) -> UInt32 { RV32Asm.mul(rd, rs1, rs2) }
     private func sw(_ rs2: Int, _ offset: Int32, _ rs1: Int) -> UInt32 {
-        let imm = UInt32(bitPattern: offset)
-        return ((imm >> 5) << 25) | (UInt32(rs2) << 20) | (UInt32(rs1) << 15)
-            | (2 << 12) | ((imm & 0x1F) << 7) | 0x23
+        RV32Asm.sw(rs2, offset, rs1)
     }
     private func lw(_ rd: Int, _ offset: Int32, _ rs1: Int) -> UInt32 {
-        (UInt32(bitPattern: offset) << 20) | (UInt32(rs1) << 15) | (2 << 12) | (UInt32(rd) << 7) | 0x03
+        RV32Asm.lw(rd, offset, rs1)
     }
     private func beq(_ rs1: Int, _ rs2: Int, _ offset: Int32) -> UInt32 {
-        let imm = UInt32(bitPattern: offset)
-        return ((imm >> 12) & 1) << 31 | ((imm >> 5) & 0x3F) << 25
-            | UInt32(rs2) << 20 | UInt32(rs1) << 15
-            | ((imm >> 1) & 0xF) << 8 | ((imm >> 11) & 1) << 7 | 0x63
+        RV32Asm.beq(rs1, rs2, offset)
     }
-    private func jal(_ rd: Int, _ offset: Int32) -> UInt32 {
-        let imm = UInt32(bitPattern: offset)
-        return ((imm >> 20) & 1) << 31 | ((imm >> 1) & 0x3FF) << 21
-            | ((imm >> 11) & 1) << 20 | ((imm >> 12) & 0xFF) << 12
-            | UInt32(rd) << 7 | 0x6F
-    }
+    private func jal(_ rd: Int, _ offset: Int32) -> UInt32 { RV32Asm.jal(rd, offset) }
 
     // MARK: - Tests
 
