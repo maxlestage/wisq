@@ -547,7 +547,11 @@ public enum KernelLibrary {
             // copié dans la RAM de l'invité : il vit à côté d'elle, et sa
             // limite est donc celle de `LocalDisk` et non celle d'un noyau.
             if LocalDisk.isDiskImage(kind) {
-                if let refusal = LocalDisk.refusal(size: size, name: source.lastPathComponent) {
+                // Le refus dit d'abord ce que le fichier est. Un ISO de 5,8
+                // Gio n'est pas un disque trop gros : c'est une image
+                // d'installation, et le plafond n'est que la seconde raison.
+                if let refusal = LocalDisk.refusal(
+                    size: size, name: source.lastPathComponent, kind: kind) {
                     throw KernelImportError.refused(refusal)
                 }
             } else if size > KernelMemory.maximumImportableImageBytes() {

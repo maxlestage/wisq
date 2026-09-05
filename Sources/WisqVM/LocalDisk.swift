@@ -52,10 +52,38 @@ public enum LocalDisk {
     /// de téléphone.
     public static func refusal(size: Int, name: String,
                                ceiling limit: UInt32 = KernelMemory.ceiling) -> String? {
+        refusal(size: size, subject: name, ceiling: limit)
+    }
+
+    /// Le même refus, précédé de **ce que le fichier est**.
+    ///
+    /// C'est l'ordre qui compte, et il a été payé une fois déjà : une image
+    /// d'installation de 5,8 Gio a été refusée avec un chiffre et une phrase
+    /// sur la mémoire de l'appareil. Les deux étaient exacts. Le lecteur y
+    /// apprenait qu'il lui manque de la place, alors qu'il lui manque un
+    /// noyau — et il est reparti chercher un réglage qui n'existe pas.
+    ///
+    /// Un fichier que rien n'a reconnu garde le refus qu'il avait : composer
+    /// avec une identité qu'on n'a pas reviendrait à mettre une phrase vide
+    /// devant la seule qui dit quelque chose.
+    public static func refusal(size: Int, name: String, kind: KernelImageKind,
+                               ceiling limit: UInt32 = KernelMemory.ceiling) -> String? {
+        guard let identity = KernelImageKind.whatItIs(kind, name: name) else {
+            return refusal(size: size, name: name, ceiling: limit)
+        }
+        // « Elle », parce que les deux genres que `whatItIs` nomme sont des
+        // images : reprendre le nom du fichier une seconde fois se lit comme
+        // deux refus collés plutôt que comme un seul.
+        guard let why = refusal(size: size, subject: "Elle", ceiling: limit) else { return nil }
+        return identity + "\n\n" + why
+    }
+
+    private static func refusal(size: Int, subject: String,
+                                ceiling limit: UInt32) -> String? {
         if size < minimumBytes {
             return """
-                \(name) fait \(size) octet\(size == 1 ? "" : "s") — moins d'un \
-                secteur.
+                \(subject) fait \(size) octet\(size == 1 ? "" : "s") — moins \
+                d'un secteur.
 
                 Un disque se lit par blocs de 512 octets ; celui-ci n'en \
                 contient pas un seul, et l'invité verrait un disque vide.
@@ -64,9 +92,9 @@ public enum LocalDisk {
         let maximum = maximumBytes(ceiling: limit)
         guard size > maximum else { return nil }
         return """
-            \(name) fait \(LocalStorage.describe(bytes: size)), et wisq ne peut \
-            pas en brancher plus de \(LocalStorage.describe(bytes: maximum)) sur \
-            ce téléphone en ce moment.
+            \(subject) fait \(LocalStorage.describe(bytes: size)), et wisq ne \
+            peut pas en brancher plus de \(LocalStorage.describe(bytes: maximum)) \
+            sur ce téléphone en ce moment.
 
             Le disque est tenu **en mémoire**, entier : c'est ce qui permet à \
             l'invité d'écrire dedans et à ces écritures de survivre à une \
@@ -81,7 +109,9 @@ public enum LocalDisk {
             atPath: url.path)[.size] as? Int else {
             return "\(url.lastPathComponent) n'a pas pu être lu."
         }
-        return refusal(size: size, name: url.lastPathComponent, ceiling: limit)
+        // Le fichier est là : on peut lire ce qu'il est, donc on le dit.
+        return refusal(size: size, name: url.lastPathComponent,
+                       kind: KernelImageKind.identify(fileAt: url), ceiling: limit)
     }
 
     // MARK: - Ce qu'on peut proposer

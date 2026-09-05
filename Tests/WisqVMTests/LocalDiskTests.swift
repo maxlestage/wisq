@@ -140,6 +140,80 @@ final class LocalDiskTests: XCTestCase {
                         "moins d'un secteur n'en est pas un")
     }
 
+    // MARK: - Ce que c'est, avant ce que ça pèse
+
+    /// **Un ISO d'installation trop gros s'entend dire ce qu'il est.**
+    ///
+    /// C'est le refus qu'un vrai import a produit sur un téléphone : une image
+    /// d'Arch de 5,8 Gio, refusée avec un chiffre et une phrase sur la
+    /// mémoire. Le nombre était juste et la réponse inutile — la personne
+    /// n'avait pas apporté un disque trop gros, elle avait apporté une image
+    /// d'installation, et aucun plafond de mémoire ne la fera démarrer.
+    ///
+    /// C'est la leçon de l'ISO refusé pour sa taille, reprise par l'autre
+    /// bout : pointer un nombre envoie le lecteur au réglage de mémoire, où
+    /// il n'y a rien à trouver.
+    func testAnOversizedDiscImageIsToldWhatItIsBeforeWhatItWeighs() throws {
+        let refusal = try XCTUnwrap(LocalDisk.refusal(
+            size: 5_800 << 20, name: "omarchy-4.0.2.iso",
+            kind: .discImage("ISO 9660"), ceiling: 2048 << 20))
+        let what = try XCTUnwrap(refusal.range(of: "ISO 9660"))
+        let weight = try XCTUnwrap(refusal.range(of: "Gio"))
+        XCTAssertLessThan(what.lowerBound, weight.lowerBound,
+                          "ce que c'est passe avant ce que ça pèse")
+        XCTAssertTrue(refusal.contains("/boot"),
+                      "et le noyau qu'elle cherche est dedans, à cet endroit-là")
+        // Et surtout : pas le conseil de la garder comme disque. Il est vrai
+        // pour une image qui tient, et c'est exactement celui-là qui ne l'est
+        // pas ici — l'offrir serait renvoyer quelqu'un vers la porte qu'on
+        // vient de lui fermer.
+        XCTAssertFalse(refusal.contains("garder comme"),
+                       "on ne propose pas ce qu'on vient de refuser")
+    }
+
+    /// La même composition pour un système de fichiers, et le pronom qui suit.
+    func testAnOversizedFilesystemImageNamesItselfThenItsSize() throws {
+        let refusal = try XCTUnwrap(LocalDisk.refusal(
+            size: 4 << 30, name: "racine.img",
+            kind: .filesystemImage("ext4"), ceiling: 2048 << 20))
+        XCTAssertTrue(refusal.contains("ext4"))
+        XCTAssertTrue(refusal.contains("Elle fait"),
+                      "la seconde phrase reprend l'image, sans réciter le nom")
+        XCTAssertEqual(refusal.components(separatedBy: "racine.img").count - 1, 1,
+                       "le nom du fichier est dit une fois")
+    }
+
+    /// **Ce qui tient n'est pas refusé**, quel que soit ce que c'est.
+    ///
+    /// Sans ça, la composition pourrait devenir un refus permanent des images
+    /// de disque, ce qui fermerait le réglage entier.
+    func testADiscImageThatFitsIsNotRefusedAtAll() {
+        XCTAssertNil(LocalDisk.refusal(size: 200 << 20, name: "petit.iso",
+                                       kind: .discImage("ISO 9660"),
+                                       ceiling: 2048 << 20))
+    }
+
+    /// Un fichier que personne n'a reconnu garde le refus qu'il avait.
+    ///
+    /// C'est le refus écrit le jour où l'application a disparu sans un mot
+    /// devant une image de deux gigaoctets ; le composer avec une identité
+    /// qu'on n'a pas serait le remplacer par du vide.
+    func testAnUnrecognisedFileKeepsThePlainRefusal() {
+        let ceiling: UInt32 = 1024 << 20
+        let size = LocalDisk.maximumBytes(ceiling: ceiling) + 1
+        XCTAssertEqual(
+            LocalDisk.refusal(size: size, name: "x.bin", kind: .unknown, ceiling: ceiling),
+            LocalDisk.refusal(size: size, name: "x.bin", ceiling: ceiling))
+    }
+
+    /// Ce que `whatItIs` dit, et ce qu'il se garde de dire.
+    func testWhatItIsNamesTheTwoDiskKindsAndNothingElse() {
+        XCTAssertNotNil(KernelImageKind.whatItIs(.discImage("ISO 9660"), name: "a.iso"))
+        XCTAssertNotNil(KernelImageKind.whatItIs(.filesystemImage("ext4"), name: "a.img"))
+        XCTAssertNil(KernelImageKind.whatItIs(.unknown, name: "a"))
+        XCTAssertNil(KernelImageKind.whatItIs(.compressedKernel("gzip"), name: "a.gz"))
+    }
+
     // MARK: - Ce qu'on peut proposer
 
     /// Ce qui peut être un disque, et ce qui n'en sera jamais un.

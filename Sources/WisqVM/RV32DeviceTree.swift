@@ -42,7 +42,12 @@ public enum RV32DeviceTree {
     /// La ligne de commande n'a plus de plafond : elle est écrite comme une
     /// propriété, et l'arbre grandit avec elle. Le seul plafond qui reste est
     /// celui de la mémoire de l'invité, que `LinuxMachine` vérifie.
-    public static func tree(ramSize: Int, commandLine: String? = nil) -> DeviceTree {
+    /// - Parameter disk: vrai quand la machine porte un disque. Le nœud n'est
+    ///   **pas** déclaré sans lui : un noyau qui sonde une fenêtre vide lit un
+    ///   nombre magique nul et passe son chemin, mais il l'aura sondée, et une
+    ///   carte qui annonce un périphérique absent est une carte qui ment.
+    public static func tree(ramSize: Int, commandLine: String? = nil,
+                            disk: Bool = false) -> DeviceTree {
         let declared = UInt32(max(0, ramSize - memoryTopReserve))
         return DeviceTree(root: DeviceTree.Node(
             "",
@@ -64,8 +69,30 @@ public enum RV32DeviceTree {
                     ("reg", .cells([0, 0x8000_0000, 0, declared])),
                 ]),
                 cpus,
-                soc,
+                soc(disk: disk),
             ]))
+    }
+
+    /// Le nœud du disque.
+    ///
+    /// **Sans PLIC.** `interrupt-parent` désigne directement le contrôleur du
+    /// hart et `interrupts` porte le numéro du bit de `mip` — onze, l'externe
+    /// machine. C'est la forme que le CLINT emploie déjà dans cet arbre, à
+    /// deux détails près : lui écrit les paires dans `interrupts-extended`,
+    /// parce qu'il vise deux lignes ; celui-ci n'en vise qu'une, et les deux
+    /// propriétés séparées sont la façon habituelle de le dire.
+    ///
+    /// Écrire un PLIC pour ce seul périphérique aurait été un contrôleur de
+    /// plus à tenir, sur une carte qui n'en a jamais eu.
+    static func virtio(_ placement: VirtioBlock.Placement) -> DeviceTree.Node {
+        DeviceTree.Node(
+            "virtio_mmio@\(String(placement.base, radix: 16))",
+            properties: [
+                ("compatible", .string("virtio,mmio")),
+                ("reg", .cells([0, UInt32(placement.base), 0, UInt32(placement.span)])),
+                ("interrupt-parent", .cells([hartInterruptController])),
+                ("interrupts", .cells([UInt32(placement.interruptLine)])),
+            ])
     }
 
     static let cpus = DeviceTree.Node(
@@ -108,7 +135,13 @@ public enum RV32DeviceTree {
             ]),
         ])
 
-    static let soc = DeviceTree.Node(
+    static func soc(disk: Bool) -> DeviceTree.Node {
+        var node = socWithoutDevices
+        if disk { node.children.append(virtio(VirtioBlock.riscv)) }
+        return node
+    }
+
+    static let socWithoutDevices = DeviceTree.Node(
         "soc",
         properties: [
             ("#address-cells", .cells([2])),
