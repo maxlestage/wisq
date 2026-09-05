@@ -3443,7 +3443,7 @@ curseur qui fabrique un disque, mais une image qu'on apporte et qu'on branche.
 
 ## Un disque pour la machine x86-64 (fait)
 
-`X86VirtioBlock` existait depuis le lot 7, et **rien dans l'application ne
+`VirtioBlock` existait depuis le lot 7, et **rien dans l'application ne
 l'appelait**. Le périphérique fonctionnait — mesuré dans ce conteneur, contre
 un vrai noyau Alpine : il énumère `[1af4:1001]`, charge `virtio_blk`, annonce
 « [vda] 32768 512-byte logical blocks », et une écriture de 256 Kio à
@@ -3586,7 +3586,7 @@ Les tranches, dans l'ordre où elles se tiennent :
    symptôme d'un DTB mal aligné est le silence. La taille totale est arrondie à
    huit depuis, et deux tests le tiennent.
 3. **Le périphérique.** Celui du lot 7 parle virtio-mmio v2 et s'appelle
-   `X86VirtioBlock` par accident d'histoire ; il devient commun aux deux
+   `VirtioBlock` par accident d'histoire ; il devient commun aux deux
    machines plutôt qu'écrit deux fois.
 4. **La preuve.** Un invité rv32 écrit à la main qui pilote la file et relit ce
    qu'il a écrit, sur le vrai interpréteur — comme `TinyGuestTests`. C'est la

@@ -12,7 +12,7 @@ import XCTest
 /// anneau de descripteurs, un anneau de disponibles, un anneau de servies.
 /// Les tests posent ces anneaux à la main, exactement comme le pilote, et
 /// demandent des secteurs.
-final class X86VirtioBlockTests: XCTestCase {
+final class VirtioBlockTests: XCTestCase {
     /// Là où l'on pose la file dans la mémoire de l'invité.
     static let descriptors: UInt64 = 0x1000
     static let available: UInt64 = 0x2000
@@ -30,15 +30,15 @@ final class X86VirtioBlockTests: XCTestCase {
     }
 
     /// La poignée de main du pilote, dans son ordre.
-    static func started() -> (X86VirtioBlock, X86Memory) {
-        let device = X86VirtioBlock(image: disk())
+    static func started() -> (VirtioBlock, X86Memory) {
+        let device = VirtioBlock(image: disk())
         let memory = X86Memory(size: 0x10000, base: 0)
         start(device, memory)
         return (device, memory)
     }
 
     /// La même poignée de main, sur une mémoire qu'on fournit.
-    static func start(_ device: X86VirtioBlock, _ memory: X86Memory) {
+    static func start(_ device: VirtioBlock, _ memory: X86Memory) {
         device.write(0x070, 4, 0, memory)      // remise à zéro
         device.write(0x070, 4, 1, memory)      // ACKNOWLEDGE
         device.write(0x070, 4, 3, memory)      // | DRIVER
@@ -101,7 +101,7 @@ final class X86VirtioBlockTests: XCTestCase {
 
     /// Les quatre premiers registres : sans eux, le pilote ne va pas plus loin.
     func testTheDeviceIntroducesItself() {
-        let device = X86VirtioBlock(image: Self.disk())
+        let device = VirtioBlock(image: Self.disk())
         XCTAssertEqual(device.read(0x000, 4), 0x7472_6976, "« virt »")
         XCTAssertEqual(device.read(0x004, 4), 2, "la version moderne du transport")
         XCTAssertEqual(device.read(0x008, 4), 2, "un périphérique de bloc")
@@ -113,7 +113,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// moitié des bits, celle que le pilote demande en écrivant 1 dans le
     /// sélecteur.
     func testOnlyVersionOneIsOffered() {
-        let device = X86VirtioBlock(image: Self.disk())
+        let device = VirtioBlock(image: Self.disk())
         let memory = X86Memory(size: 0x1000, base: 0)
         device.write(0x014, 4, 0, memory)
         XCTAssertEqual(device.read(0x010, 4), 0, "aucun bit dans la première moitié")
@@ -125,7 +125,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// configuration. C'est ce que le noyau imprime : « [vda] 8 512-byte
     /// logical blocks ».
     func testTheCapacityIsTheDiskInSectors() {
-        let device = X86VirtioBlock(image: Self.disk())
+        let device = VirtioBlock(image: Self.disk())
         XCTAssertEqual(device.read(0x100, 8), 4)
         XCTAssertEqual(device.read(0x100, 4), 4, "lue en deux fois, elle dit la même chose")
         XCTAssertEqual(device.read(0x104, 4), 0)
@@ -247,11 +247,11 @@ final class X86VirtioBlockTests: XCTestCase {
     /// branche sans rien coûter aux adresses ordinaires.
     func testTheDeviceAnswersThroughMemory() throws {
         let memory = X86Memory(size: 0x10000, base: 0)
-        XCTAssertThrowsError(try memory.read(X86VirtioBlock.base, 4),
+        XCTAssertThrowsError(try memory.read(VirtioBlock.pc.base, 4),
                              "sans disque, c'est hors mémoire")
-        memory.storage = X86VirtioBlock(image: Self.disk())
-        XCTAssertEqual(try memory.read(X86VirtioBlock.base, 4), 0x7472_6976)
-        XCTAssertThrowsError(try memory.read(X86VirtioBlock.base + X86VirtioBlock.span, 4),
+        memory.storage = VirtioBlock(image: Self.disk())
+        XCTAssertEqual(try memory.read(VirtioBlock.pc.base, 4), 0x7472_6976)
+        XCTAssertThrowsError(try memory.read(VirtioBlock.pc.base + VirtioBlock.pc.span, 4),
                              "et une adresse au-delà de la fenêtre reste hors mémoire")
     }
 
@@ -259,7 +259,7 @@ final class X86VirtioBlockTests: XCTestCase {
     /// adresse que la mémoire couvre.
     func testMemoryKeepsItsOwnAddresses() throws {
         let memory = X86Memory(size: 0x10000, base: 0)
-        memory.storage = X86VirtioBlock(image: Self.disk())
+        memory.storage = VirtioBlock(image: Self.disk())
         try memory.write(0x1234, 4, 0xDEAD)
         XCTAssertEqual(try memory.read(0x1234, 4), 0xDEAD)
     }
@@ -281,7 +281,7 @@ final class X86VirtioBlockTests: XCTestCase {
         core.devices.primary.vectorBase = 0x30
         core.flags |= X86Core.Flag.interrupt
 
-        let device = X86VirtioBlock(image: Self.disk())
+        let device = VirtioBlock(image: Self.disk())
         ram.storage = device
         try core.run(budget: 3)
         XCTAssertTrue(core.halted, "rien ne s'est encore passé")

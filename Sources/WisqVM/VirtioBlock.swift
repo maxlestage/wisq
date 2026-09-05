@@ -11,6 +11,13 @@ import Foundation
 /// ensuite. C'est une centaine de lignes contre un millier, pour le même
 /// disque.
 ///
+/// **Il ne s'appelait pas comme ça.** C'était `X86VirtioBlock`, par accident
+/// d'histoire : il a été écrit pour la machine PC et rien d'autre n'en avait
+/// besoin. Le transport MMIO n'a pourtant rien de propre au x86 — c'est la
+/// machine qui choisit où poser la fenêtre et par quelle ligne prévenir, et
+/// `Placement` porte ce choix. La machine rv32 emploie exactement ce
+/// périphérique-ci.
+///
 /// **Ce qui est implémenté, et ce qui ne l'est pas.** La version 2 du
 /// transport (« moderne ») : le pilote annonce `VIRTIO_F_VERSION_1` et rien
 /// d'autre, donc pas de descripteurs indirects, pas d'index d'événement, pas
@@ -18,13 +25,65 @@ import Foundation
 /// notification et dans l'ordre. C'est ce qu'il faut pour qu'un noyau Linux
 /// voie `/dev/vda` et le lise ; le reste viendra quand quelque chose le
 /// demandera.
-public final class X86VirtioBlock: @unchecked Sendable {
-    /// Là où le noyau ira le chercher, et par quelle ligne il sera prévenu.
-    /// Ces trois nombres sont **la ligne de commande** : les changer ici sans
-    /// la changer là ferait chercher le pilote dans le vide.
-    public static let base: UInt64 = 0xD000_0000
-    public static let span: UInt64 = 0x200
-    public static let interruptLine: UInt8 = 5
+/// La mémoire de l'invité, vue par un périphérique.
+///
+/// **Le strict nécessaire, et c'est ce qui rend le périphérique partageable.**
+/// Un disque virtio ne fait que deux choses avec la mémoire : y lire les
+/// descripteurs que le pilote a posés, et y écrire les secteurs demandés. Il
+/// n'a besoin ni de pagination, ni de fenêtres d'entrée-sortie, ni de savoir
+/// à quelle machine il appartient. `VirtioBlock` prenait un `X86Memory` en
+/// paramètre, ce qui le clouait à une seule des deux machines pour une raison
+/// qui n'existait pas.
+///
+/// Les adresses sont **physiques et absolues** : celles que le pilote a
+/// écrites dans ses descripteurs. C'est à la machine de savoir où sa RAM
+/// commence — la machine rv32 la place à 0x8000_0000, le PC à zéro.
+public protocol GuestMemory: AnyObject {
+    func read(_ address: UInt64, _ width: Int) throws -> UInt64
+    func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws
+}
+
+extension X86Memory: GuestMemory {}
+
+public final class VirtioBlock: @unchecked Sendable {
+    /// Où une machine pose ce périphérique, et par quelle ligne elle prévient.
+    ///
+    /// **C'est la machine qui décide, pas le périphérique.** Les deux machines
+    /// de wisq le placent ailleurs et le signalent autrement : le PC par une
+    /// ligne du 8259, la machine rv32 par le bit 11 de `mip`, faute de PLIC.
+    /// Le transport, lui, est le même octet pour octet.
+    public struct Placement: Equatable, Sendable {
+        public let base: UInt64
+        public let span: UInt64
+        /// Le numéro que la machine emploie pour signaler : une ligne d'IRQ
+        /// sur le PC, un bit de `mip` sur la machine rv32.
+        public let interruptLine: UInt8
+
+        public init(base: UInt64, span: UInt64, interruptLine: UInt8) {
+            self.base = base
+            self.span = span
+            self.interruptLine = interruptLine
+        }
+
+        public func contains(_ address: UInt64) -> Bool {
+            address >= base && address < base + span
+        }
+    }
+
+    /// La fenêtre de la machine PC. Ces trois nombres sont **sa ligne de
+    /// commande** : les changer ici sans la changer là ferait chercher le
+    /// pilote dans le vide.
+    public static let pc = Placement(base: 0xD000_0000, span: 0x200, interruptLine: 5)
+
+    /// Celle de la machine rv32.
+    ///
+    /// Posée juste après l'UART, à 0x1000_1000, là où la carte `virt` de QEMU
+    /// met ses propres périphériques virtio — un noyau construit pour elle
+    /// tombe donc sur une adresse qui ne le surprend pas. La « ligne » est le
+    /// bit 11 de `mip`, l'interruption externe machine : cette carte n'a pas
+    /// de PLIC, et le nœud de l'arbre désigne directement le contrôleur du
+    /// hart, comme le CLINT le fait déjà.
+    public static let riscv = Placement(base: 0x1000_1000, span: 0x200, interruptLine: 11)
 
     /// Le contenu du disque, secteur par secteur de 512 octets.
     public var image: [UInt8]
@@ -110,7 +169,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
         }
     }
 
-    public func writePort(_ offset: UInt16, _ width: Int, _ value: UInt64, _ memory: X86Memory) {
+    public func writePort(_ offset: UInt16, _ width: Int, _ value: UInt64, _ memory: GuestMemory) {
         switch offset {
         case 0x04: driverFeatures = value
         case 0x08:
@@ -164,7 +223,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
         }
     }
 
-    public func write(_ offset: UInt64, _ width: Int, _ value: UInt64, _ memory: X86Memory) {
+    public func write(_ offset: UInt64, _ width: Int, _ value: UInt64, _ memory: GuestMemory) {
         let word = UInt32(truncatingIfNeeded: value)
         switch offset {
         case 0x014: deviceFeaturesSelect = word
@@ -218,7 +277,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
         var chained: Bool { flags & 1 != 0 }
     }
 
-    func descriptor(_ index: UInt16, _ memory: X86Memory) throws -> Descriptor {
+    func descriptor(_ index: UInt16, _ memory: GuestMemory) throws -> Descriptor {
         let at = descriptorTable &+ UInt64(index) &* 16
         return Descriptor(address: try memory.read(at, 8),
                           length: UInt32(truncatingIfNeeded: try memory.read(at &+ 8, 4)),
@@ -232,7 +291,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
     /// disque ou un type de requête inconnu se répondent par un **statut**
     /// d'erreur dans le tampon prévu pour ça, jamais en ne répondant rien —
     /// un pilote qui n'a pas de réponse attend pour toujours.
-    func serve(_ memory: X86Memory) {
+    func serve(_ memory: GuestMemory) {
         guard queueSize > 0, descriptorTable != 0, availableRing != 0, usedRing != 0 else { return }
         guard let head = try? memory.read(availableRing &+ 2, 2) else { return }
         let target = UInt16(truncatingIfNeeded: head)
@@ -244,7 +303,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
         }
     }
 
-    private func serveOne(_ head: UInt16, _ memory: X86Memory) {
+    private func serveOne(_ head: UInt16, _ memory: GuestMemory) {
         var written: UInt32 = 0
         var statusByte: UInt8 = 1  // erreur d'entrée-sortie, sauf preuve du contraire
 
@@ -324,7 +383,7 @@ public final class X86VirtioBlock: @unchecked Sendable {
     /// Poser le statut, ranger la requête dans l'anneau des servies, et lever
     /// l'interruption.
     private func complete(_ head: UInt16, _ written: UInt32, _ statusByte: UInt8,
-                          _ last: Descriptor?, _ memory: X86Memory) {
+                          _ last: Descriptor?, _ memory: GuestMemory) {
         if let last, last.writable, last.length >= 1 {
             try? memory.write(last.address &+ UInt64(last.length) &- 1, 1, UInt64(statusByte))
         }
@@ -377,8 +436,8 @@ public final class X86VirtioBlock: @unchecked Sendable {
     /// une reprise qui échoue en chemin ne doit pas laisser derrière elle un
     /// disque à moitié rangé, et la machine ne prend celui-ci qu'une fois
     /// toutes les lectures faites.
-    static func restored(from reader: inout Snapshot.Reader) throws -> X86VirtioBlock {
-        let device = X86VirtioBlock(image: [])
+    static func restored(from reader: inout Snapshot.Reader) throws -> VirtioBlock {
+        let device = VirtioBlock(image: [])
         device.deviceFeaturesSelect = try reader.u32()
         device.driverFeaturesSelect = try reader.u32()
         device.driverFeatures = try reader.u64()
