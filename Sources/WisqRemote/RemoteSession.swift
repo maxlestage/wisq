@@ -143,7 +143,9 @@ public enum SessionFactory {
                 SPICESession(configuration: configuration, framebuffer: framebuffer)
             }
         case .rdp:
-            throw WisqError.unsupportedProtocol(.rdp)
+            return ReconnectingSession { framebuffer in
+                RDPSession(configuration: configuration, framebuffer: framebuffer)
+            }
         }
     }
 }

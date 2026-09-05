@@ -54,8 +54,7 @@ public enum RemoteProtocol: String, Codable, CaseIterable, Sendable {
     /// announced late — or early.
     public var isImplemented: Bool {
         switch self {
-        case .vnc, .spice: return true
-        case .rdp: return false
+        case .vnc, .spice, .rdp: return true
         }
     }
 

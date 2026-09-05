@@ -48,9 +48,13 @@ final class ImplementedProtocolsTests: XCTestCase {
     /// that a change to *both* sides at once still has to be deliberate: a
     /// refactor that made `isImplemented` return `false` everywhere would pass
     /// the test above and fail this one.
-    func testSpiceAndVNCOpenAndRDPDoesNot() {
+    func testAllThreeProtocolsOpen() {
         XCTAssertTrue(RemoteProtocol.vnc.isImplemented)
         XCTAssertTrue(RemoteProtocol.spice.isImplemented, "SPICE est fait depuis le lot 5")
-        XCTAssertFalse(RemoteProtocol.rdp.isImplemented, "RDP attend une machine Apple")
+        // **RDP n'attend plus une machine Apple.** La feuille de route disait
+        // qu'on ne pouvait pas le mesurer d'ici ; un vrai serveur et un vrai
+        // client de référence s'installent dans ce conteneur, et le lot 3 a
+        // été écrit contre eux plutôt que derrière une passerelle C.
+        XCTAssertTrue(RemoteProtocol.rdp.isImplemented, "le lot 3 est fait, et mesuré")
     }
 }

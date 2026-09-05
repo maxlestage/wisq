@@ -269,10 +269,11 @@ parce qu'un serveur a envoyé un JPEG.
 
 ## Ce qui n'est pas là
 
-`RDPSession` existe, se conforme à `RemoteSession` et échoue proprement avec
-`unsupportedProtocol`. Ce n'est pas de l'ornement : cela fige la surface que
-l'implémentation devra respecter, et cela permet à l'éditeur de machine de déjà
-modéliser les trois protocoles.
+Côté RDP, ce qui manque est nommé dans `docs/ROADMAP.md` : NLA/CredSSP — donc
+les Windows modernes, qui l'exigent par défaut —, les canaux virtuels et avec
+eux le presse-papiers, le curseur distant, la renégociation de taille en cours
+de session, et les codecs RemoteFX et H.264. La sécurité employée aujourd'hui
+n'authentifie pas le serveur, et l'application le dit plutôt que de le taire.
 
 Côté SPICE, le canal display est complet — LZ, QUIC, GLZ, LZ4, JPEG, les
 formes à palette, tous les messages de dessin — et l'agent du canal principal
