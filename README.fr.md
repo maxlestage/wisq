@@ -82,10 +82,11 @@ modernes, qui l'exigent par défaut (voir `docs/ROADMAP.md`).
 | Machine locale suspendue et reprise par instantané — le shell revient où il était | fait |
 | Cœur Rust par défaut, comparé instruction par instruction au cœur Swift en CI | fait |
 | Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
+| Un disque pour le PC local : on apporte une image, l'invité la voit sur `/dev/vda` | fait |
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2002 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2027 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -115,7 +116,7 @@ Sources/WisqCore     modèle de domaine, persistance, trousseau (Foundation seul
 Sources/WisqNet      transport octets : TCP/TLS, plus un flux mémoire pour les tests
 Sources/WisqRemote   protocoles distants : RFB/VNC, SPICE, RDP, agent hôte
 Sources/WisqUI       SwiftUI, pensé téléphone d'abord
-Sources/WisqVM       Linux local : cœur rv32ima interprété, machine 64 Mo, UART
+Sources/WisqVM       Linux local : cœurs rv32ima et x86-64, UART, virtio-blk
 crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo
 crates/wisq-vm       interpréteur rv32ima (Rust) avec une ABI C pour l'application
 site/                le site du projet : React 19 sur Bun, pré-rendu, PWA installable

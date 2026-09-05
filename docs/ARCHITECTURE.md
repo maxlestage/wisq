@@ -216,6 +216,41 @@ Deux détails qui ont mordu :
   l'a remplacée, et elle sert les deux cœurs, Swift comme Rust — seul le CPU
   change.
 
+### Deux architectures, et trois sortes de fichiers
+
+Depuis le lot 7 la machine locale n'est plus seulement rv32 : un fichier peut
+demander un cœur x86-64. Ce n'est pas un réglage — `KernelImageKind` lit les
+premiers quarante kibioctets et `GuestArchitecture.core` en déduit le cœur.
+
+Ce qui suit de là est que la bibliothèque contient **trois sortes de fichiers**
+au lieu d'une, et qu'aucune règle sur les octets ne les sépare complètement :
+
+| ce que la personne apporte | ce que wisq en fait | qui décide |
+| --- | --- | --- |
+| un noyau | il démarre | les octets (`KernelImageKind`) |
+| un initramfs | déballé par le noyau | le nom, puis la personne (`BootMedia`) |
+| un disque | branché sur `/dev/vda` | la personne (`LocalDisk`) |
+
+Un noyau compressé et un initramfs compressé sont l'un et l'autre un flux
+gzip : c'est un fait sur les octets, pas une paresse, et il commande la forme
+de tout le reste. `BootMedia` apparie sur les noms et ne refuse que ce qui
+n'est sûrement pas un initramfs ; `LocalDisk` ne devine pas du tout — le
+disque est un choix, retenu sous le nom du noyau dans `kernel-disk.json`, à
+côté du réglage de mémoire.
+
+**Le disque est tenu en mémoire, entier**, et c'est le fait qui commande son
+plafond : `X86VirtioBlock` garde son image dans un tableau d'octets parce que
+l'invité écrit dedans et que l'instantané emporte ces écritures. Un disque de
+deux cents mébioctets coûte donc deux cents mébioctets, à côté de la RAM de
+l'invité — d'où un plafond qui est « ce que le téléphone laisse, moins la plus
+petite machine PC », et un changement de disque qui oublie les machines
+sauvegardées de ce noyau.
+
+La machine rv32, elle, **refuse** un disque et un initramfs, nommément
+(`GuestMachineRefusal`) : son noyau nommu n'a aucun pilote bloc, et accepter
+en silence donnerait un démarrage qui échoue quatre milliards d'instructions
+plus loin, sans rapport visible avec la cause.
+
 ## SPICE : une connexion par canal
 
 C'est la forme qui sépare SPICE du RFB d'à côté, et elle traverse tout le

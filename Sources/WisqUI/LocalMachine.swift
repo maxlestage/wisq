@@ -65,6 +65,12 @@ extension RustLinuxMachine: GuestMachine {
         try load(kernelImage: kernelImage, commandLine: commandLine)
     }
 
+    /// Et le même refus pour le disque, pour la même raison : ce noyau-là n'a
+    /// aucun pilote bloc, donc aucun contrôleur à qui parler.
+    public func attachDisk(_ image: Data) throws {
+        throw GuestMachineRefusal.noDiskHere(architecture: "RISC-V 32 bits")
+    }
+
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {
