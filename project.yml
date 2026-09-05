@@ -93,7 +93,7 @@ targets:
     scheme:
       testTargets:
         - WisqUITests
-        - WisqWebKitTests
+        - WisqHostedTests
 
   # The app layer used to be the part nothing checked: `WisqUI` is `#if
   # os(iOS)`, so the Linux runner never compiles it, let alone runs it. It
@@ -137,11 +137,16 @@ targets:
   # séparé qu'iOS ne démarre pas pour un `xctest` nu, et les deux tests ont été
   # sautés après une minute d'attente — un job vert qui ne répondait rien.
   # `TEST_HOST` coûte un lancement d'application ; ici il est la question.
-  WisqWebKitTests:
+  #
+  # Il s'appelait `WisqWebKitTests` et porte maintenant le nom de ce qu'il est,
+  # parce qu'une deuxième sonde y est entrée : ces tests demandent ce que la
+  # vraie pile d'Apple fait, sous une vraie application, et ce n'est pas un
+  # nom de bibliothèque qui les réunit.
+  WisqHostedTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: Tests/WisqWebKitTests
+      - path: Tests/WisqHostedTests
     dependencies:
       - target: Wisq
     settings:

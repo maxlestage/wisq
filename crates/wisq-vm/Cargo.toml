@@ -20,3 +20,7 @@ crate-type = ["rlib", "staticlib"]
 [[bin]]
 name = "wisq-bench-rs"
 path = "src/bin/bench.rs"
+
+[[bin]]
+name = "wisq-x86-bench"
+path = "src/bin/x86-bench.rs"

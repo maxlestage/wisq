@@ -45,7 +45,7 @@ import XCTest
 /// application. Le vert du tour 581 ne disait donc rien — et c'est exactement
 /// la question posée ici qui l'exigeait : « un `WKWebView` **hébergé par une
 /// application** compile-t-il ? » ne se demande pas depuis un paquet qui n'en a
-/// pas. D'où `Tests/WisqWebKitTests`, avec `Wisq` pour hôte, et la vue posée
+/// pas. D'où `Tests/WisqHostedTests`, avec `Wisq` pour hôte, et la vue posée
 /// dans une vraie fenêtre.
 ///
 /// **Une vue qui ne démarre pas reste un saut, pas un échec** : c'est une panne
