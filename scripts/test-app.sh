@@ -51,14 +51,20 @@ trap 'rm -f "$sortie"' EXIT
 # fin : `xcodebuild` écrit ensuite des milliers de lignes de compilation, et
 # ce qui est au milieu d'un log de cette taille est introuvable en pratique.
 mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
+# **Un fichier, pas un tube.** `xcodebuild | tee` ne se termine pas : les
+# démons du simulateur héritent du bout écrivain du tube et le gardent ouvert
+# après la fin des tests, donc `tee` attend une fin de fichier qui ne vient
+# jamais et le script pend. Mesuré : un pas de quatre minutes qui en a duré
+# plus de vingt. Une redirection vers un fichier n'attend personne.
 set +e
 xcodebuild test \
   -project Wisq.xcodeproj \
   -scheme Wisq \
   -destination "id=${udid%% *}" \
-  CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$sortie"
-issue=${PIPESTATUS[0]}
+  CODE_SIGNING_ALLOWED=NO > "$sortie" 2>&1
+issue=$?
 set -e
+cat "$sortie"
 
 # Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
 # sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
