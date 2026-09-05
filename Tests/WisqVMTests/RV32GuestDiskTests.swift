@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 
 @testable import WisqVM
+import WisqVMTestKit
 
 /// **Un invité rv32 qui conduit le disque depuis l'intérieur de la machine.**
 ///

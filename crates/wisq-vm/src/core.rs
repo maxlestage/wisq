@@ -14,6 +14,14 @@
 
 pub const RAM_BASE: u32 = 0x8000_0000;
 
+/// The machine external interrupt bit in `mip` and `mie`.
+///
+/// Named rather than written out at the four places that read it. This is the
+/// line a disk pulls to say "your request is served"; the Swift core grew it
+/// first, and the two must agree bit for bit or the differential tests are
+/// comparing two machines instead of two interpreters.
+pub const EXTERNAL_BIT: u32 = 1 << 11;
+
 /// Memory-mapped I/O the core does not implement itself.
 pub trait Bus {
     fn mmio_load(&mut self, address: u32) -> u32;
@@ -142,12 +150,27 @@ impl Core {
     ) -> StepResult {
         let ram_size = ram.len() as u32;
 
+        // What a device can be asking for, right now. Computed once, here,
+        // because three decisions below depend on it: the jump through time,
+        // waking from a `wfi`, and which trap wins.
+        let external_pending = (self.mip & EXTERNAL_BIT) != 0
+            && (self.mie & EXTERNAL_BIT) != 0
+            && (self.mstatus & 0x8) != 0;
+
         // A hart in WFI retires nothing until an interrupt arrives, and the
-        // only interrupt this machine raises is the timer — whose firing moment
-        // is already written in mtimecmp. Creeping toward it in small hops
-        // costs real CPU, and on a phone real battery, to reach an instant we
-        // can already name.
-        if self.extraflags & 4 != 0 && (self.timermatchh != 0 || self.timermatchl != 0) {
+        // timer's firing moment is already written in mtimecmp. Creeping
+        // toward it in small hops costs real CPU, and on a phone real battery,
+        // to reach an instant we can already name.
+        //
+        // Except when a device is already waiting. This machine had only the
+        // timer, so the jump was always right; it is not any more. Jumping to
+        // mtimecmp with a served request pending would age the guest by whole
+        // seconds for a disk that has already answered — and the clock it read
+        // next would not be its own.
+        if self.extraflags & 4 != 0
+            && !external_pending
+            && (self.timermatchh != 0 || self.timermatchl != 0)
+        {
             let now = ((self.timerh as u64) << 32) | self.timerl as u64;
             let match_at = ((self.timermatchh as u64) << 32) | self.timermatchl as u64;
             if now < match_at {
@@ -173,6 +196,14 @@ impl Core {
             self.mip &= !(1 << 7);
         }
 
+        // And a device wakes the hart too. A guest that issued a request waits
+        // in a `wfi`; without this, the answer falls into the void and the
+        // machine only restarts on the next clock tick — or never, if none is
+        // armed.
+        if external_pending {
+            self.extraflags &= !4;
+        }
+
         if self.extraflags & 4 != 0 {
             return StepResult::Waiting;
         }
@@ -182,7 +213,16 @@ impl Core {
         let mut pc = self.pc;
         let mut cycle = self.cyclel;
 
-        if (self.mip & (1 << 7)) != 0 && (self.mie & (1 << 7)) != 0 && (self.mstatus & 0x8) != 0 {
+        // The external line outranks the timer, as the privileged manual
+        // orders. Both pending at once is the ordinary case for a busy guest:
+        // taking the timer first would leave the disk queued behind a clock.
+        if external_pending {
+            trap = 0x8000_000B;
+            pc = pc.wrapping_sub(4);
+        } else if (self.mip & (1 << 7)) != 0
+            && (self.mie & (1 << 7)) != 0
+            && (self.mstatus & 0x8) != 0
+        {
             // Timer interrupt fires between instructions.
             trap = 0x8000_0007;
             pc = pc.wrapping_sub(4);
@@ -641,5 +681,136 @@ fn write_u32(ram: &mut [u8], offset: u32, value: u32) {
             .add(offset as usize)
             .cast::<u32>()
             .write_unaligned(value.to_le());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bus that answers nothing and remembers nothing.
+    ///
+    /// These tests are about the interrupt line, not about devices: the line
+    /// is raised by writing `mip` from the outside, which is exactly what a
+    /// device does through `poll_devices`.
+    struct NullBus;
+
+    impl Bus for NullBus {
+        fn mmio_load(&mut self, _address: u32) -> u32 {
+            0
+        }
+        fn mmio_store(&mut self, _address: u32, _value: u32) -> Option<u32> {
+            None
+        }
+        fn set_time(&mut self, _low: u32, _high: u32) {}
+    }
+
+    /// `wfi` then a spin, so a hart that is woken has somewhere to go.
+    const PARKS_THEN_SPINS: [u32; 2] = [0x1050_0073, 0x0000_0063];
+
+    fn machine(program: &[u32]) -> (Vec<u8>, Core) {
+        let mut ram = vec![0u8; 1 << 20];
+        for (index, word) in program.iter().enumerate() {
+            ram[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let mut core = Core::new();
+        core.extraflags |= 3; // machine mode
+        (ram, core)
+    }
+
+    /// The line only fires when all three say so: pending, enabled, and the
+    /// global gate open. Any one of them missing and the hart runs on.
+    #[test]
+    fn the_external_line_needs_pending_enabled_and_the_gate() {
+        for (mip, mie, mstatus, expected) in [
+            (EXTERNAL_BIT, EXTERNAL_BIT, 0x8, true),
+            (0, EXTERNAL_BIT, 0x8, false),
+            (EXTERNAL_BIT, 0, 0x8, false),
+            (EXTERNAL_BIT, EXTERNAL_BIT, 0, false),
+        ] {
+            let (mut ram, mut core) = machine(&[0x0000_0013, 0x0000_0013]);
+            core.mtvec = RAM_BASE + 0x100;
+            core.mip = mip;
+            core.mie = mie;
+            core.mstatus = mstatus;
+            core.step(&mut ram, &mut NullBus, 0, 1);
+            assert_eq!(
+                core.pc == core.mtvec,
+                expected,
+                "mip={mip:#x} mie={mie:#x} mstatus={mstatus:#x}"
+            );
+        }
+    }
+
+    /// The cause the guest reads, and the instruction it comes back to.
+    #[test]
+    fn the_cause_is_machine_external_and_mepc_points_at_the_next_instruction() {
+        let (mut ram, mut core) = machine(&[0x0000_0013, 0x0000_0013]);
+        core.mtvec = RAM_BASE + 0x100;
+        core.mip = EXTERNAL_BIT;
+        core.mie = EXTERNAL_BIT;
+        core.mstatus = 0x8;
+        core.step(&mut ram, &mut NullBus, 0, 1);
+        assert_eq!(core.mcause, 0x8000_000B);
+        assert_eq!(core.mepc, RAM_BASE, "the instruction that had not run yet");
+    }
+
+    /// Both pending at once is the ordinary case for a busy guest, and the
+    /// external one goes first — the privileged manual's order.
+    #[test]
+    fn the_external_line_outranks_the_timer() {
+        let (mut ram, mut core) = machine(&[0x0000_0013, 0x0000_0013]);
+        core.mtvec = RAM_BASE + 0x100;
+        core.mip = EXTERNAL_BIT | (1 << 7);
+        core.mie = EXTERNAL_BIT | (1 << 7);
+        core.mstatus = 0x8;
+        core.timermatchl = 1;
+        core.step(&mut ram, &mut NullBus, 0, 1);
+        assert_eq!(core.mcause, 0x8000_000B, "the timer must not win");
+    }
+
+    /// A parked hart is woken by a device, not only by the clock.
+    ///
+    /// Without this, a guest that issued a request and waited would sleep
+    /// until the next tick — or for ever, with no timer armed.
+    #[test]
+    fn a_device_wakes_a_parked_hart() {
+        let (mut ram, mut core) = machine(&PARKS_THEN_SPINS);
+        core.mtvec = RAM_BASE + 0x100;
+        core.mie = EXTERNAL_BIT;
+        core.mstatus = 0x8;
+        assert_eq!(
+            core.step(&mut ram, &mut NullBus, 0, 4),
+            StepResult::Waiting,
+            "the hart parks with nothing armed"
+        );
+        core.mip |= EXTERNAL_BIT;
+        let result = core.step(&mut ram, &mut NullBus, 0, 4);
+        assert_ne!(result, StepResult::Waiting, "and the device wakes it");
+        assert_eq!(core.pc, core.mtvec);
+    }
+
+    /// And the jump through time stands down while a device is waiting.
+    ///
+    /// The jump exists because a parked hart's next event is already written
+    /// in mtimecmp. That stopped being the whole truth the moment a second
+    /// interrupt source existed: jumping would age the guest by the whole idle
+    /// period for a disk that has already answered.
+    #[test]
+    fn a_waiting_device_stops_the_jump_through_time() {
+        let (mut ram, mut core) = machine(&PARKS_THEN_SPINS);
+        core.mtvec = RAM_BASE + 0x100;
+        core.mie = EXTERNAL_BIT;
+        core.mstatus = 0x8;
+        core.timermatchh = 1; // a very long way off
+        core.step(&mut ram, &mut NullBus, 0, 4);
+        assert_eq!(core.timerh, 0, "parked, but the clock has not moved yet");
+
+        core.mip |= EXTERNAL_BIT;
+        core.step(&mut ram, &mut NullBus, 0, 4);
+        assert_eq!(
+            core.timerh, 0,
+            "the guest's clock must not leap to mtimecmp for a device that already answered"
+        );
     }
 }
