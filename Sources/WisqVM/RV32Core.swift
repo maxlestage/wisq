@@ -69,6 +69,9 @@ public final class RV32Core {
     public var mtvec: UInt32 = 0
     public var mie: UInt32 = 0
     public var mip: UInt32 = 0
+    /// Le bit d'interruption externe machine dans `mip` et `mie`, nommé plutôt
+    /// qu'écrit en clair à quatre endroits.
+    public static let externalBit: UInt32 = 1 << 11
     public var mepc: UInt32 = 0
     public var mtval: UInt32 = 0
     public var mcause: UInt32 = 0
@@ -156,12 +159,25 @@ public final class RV32Core {
     /// the behaviour looks odd (the `pc - 4` dance around traps, mepc pointing
     /// at the faulting instruction), it is what the kernel expects.
     public func step(elapsedMicroseconds: UInt32, count: Int) -> RV32StepResult {
+        // **Ce qu'un périphérique peut demander, tout de suite.** Bit 11 de
+        // `mip` est l'interruption externe machine ; c'est par là qu'un disque
+        // dit « votre requête est servie ». Elle est calculée une fois, ici,
+        // parce que trois décisions plus bas en dépendent : le saut dans le
+        // temps, le réveil d'un `WFI`, et la priorité du piège.
+        let externalPending = (mip & Self.externalBit) != 0
+            && (mie & Self.externalBit) != 0 && (mstatus & 0x8) != 0
+
         // A hart in WFI retires nothing until an interrupt arrives, and the
-        // only interrupt this machine can raise is the timer — whose firing
-        // moment is already written in mtimecmp. Creeping toward it in 64 µs
-        // hops costs real CPU, and on a phone real battery, to reach an instant
-        // we can already name. Jump to it.
-        if extraflags & 4 != 0, timermatchh != 0 || timermatchl != 0 {
+        // timer's firing moment is already written in mtimecmp. Creeping
+        // toward it in 64 µs hops costs real CPU, and on a phone real battery,
+        // to reach an instant we can already name. Jump to it.
+        //
+        // **Sauf quand un périphérique attend déjà.** Cette machine n'avait
+        // que le timer, et le saut était donc toujours juste ; il ne l'est
+        // plus. Sauter à `mtimecmp` avec une requête servie en attente ferait
+        // vieillir l'invité de plusieurs secondes pour un disque qui a déjà
+        // répondu — et l'horloge qu'il lirait ensuite ne serait pas la sienne.
+        if extraflags & 4 != 0, !externalPending, timermatchh != 0 || timermatchl != 0 {
             let now = (UInt64(timerh) << 32) | UInt64(timerl)
             let match = (UInt64(timermatchh) << 32) | UInt64(timermatchl)
             if now < match {
@@ -182,6 +198,12 @@ public final class RV32Core {
             mip &= ~(1 << 7)
         }
 
+        // **Et un périphérique réveille aussi.** Un invité qui a lancé une
+        // requête attend dans un `WFI` ; sans ce réveil-ci, la réponse tombe
+        // dans le vide et la machine ne repart qu'au prochain tic d'horloge —
+        // ou jamais, s'il n'y en a pas.
+        if externalPending { extraflags &= ~4 }
+
         if extraflags & 4 != 0 { return .waiting }
 
         var trap: UInt32 = 0
@@ -189,7 +211,14 @@ public final class RV32Core {
         var pc = self.pc
         var cycle = cyclel
 
-        if (mip & (1 << 7)) != 0, (mie & (1 << 7)) != 0, (mstatus & 0x8) != 0 {
+        // **L'externe passe devant le timer**, comme le manuel privilégié
+        // l'ordonne. Les deux en attente en même temps est le cas courant d'un
+        // invité occupé : prendre le timer d'abord ferait attendre le disque
+        // derrière une horloge.
+        if externalPending {
+            trap = 0x8000_000B
+            pc &-= 4
+        } else if (mip & (1 << 7)) != 0, (mie & (1 << 7)) != 0, (mstatus & 0x8) != 0 {
             // Timer interrupt fires between instructions.
             trap = 0x8000_0007
             pc &-= 4

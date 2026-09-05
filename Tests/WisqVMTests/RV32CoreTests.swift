@@ -192,4 +192,104 @@ final class RV32CoreTests: XCTestCase {
         XCTAssertEqual(core.regs[3], 0, "SC après LR sur la même adresse doit réussir")
         XCTAssertEqual(ram.load(fromByteOffset: 0x1000, as: UInt32.self), 77)
     }
+    // MARK: - L'interruption externe
+
+    /// **Un périphérique peut interrompre cette machine.**
+    ///
+    /// Elle n'avait qu'une source d'interruption, le timer, et le commentaire
+    /// de `step` le disait en toutes lettres. C'est ce fait-là qui rendait un
+    /// disque impossible ici : un virtio-blk parfait n'aurait eu aucun moyen
+    /// de dire à l'invité qu'une requête est servie, et l'invité aucun moyen
+    /// de l'apprendre autrement qu'en sondant.
+    func testAnExternalInterruptFiresWhenEnabled() {
+        core.mtvec = RV32Core.ramBase + 0x300
+        core.mie = 1 << 11
+        core.mstatus = 0x8
+        core.mip = 1 << 11
+        write([addi(1, 0, 1), addi(1, 1, 1)])
+
+        _ = core.step(elapsedMicroseconds: 1, count: 2)
+        XCTAssertEqual(core.mcause, 0x8000_000B, "cause 11 : interruption externe machine")
+        XCTAssertEqual(core.pc, RV32Core.ramBase + 0x300)
+        XCTAssertEqual(core.regs[1], 0, "elle tombe **entre** deux instructions, pas après")
+        // `mepc` désigne l'instruction à **reprendre**, pas la suivante : le
+        // `pc - 4` du piège existe pour ça, et sans lui le retour sauterait
+        // silencieusement une instruction de l'invité.
+        XCTAssertEqual(core.mepc, RV32Core.ramBase)
+    }
+
+    /// Les deux verrous, séparément. `mie` est le masque de l'invité et le bit
+    /// 3 de `mstatus` son interrupteur général ; en couper un suffit.
+    func testAnExternalInterruptStaysSilentWhenTheGuestMaskedIt() {
+        core.mtvec = RV32Core.ramBase + 0x300
+        core.mip = 1 << 11
+        write([addi(1, 0, 1), addi(1, 1, 1)])
+
+        core.mie = 0
+        core.mstatus = 0x8
+        _ = core.step(elapsedMicroseconds: 1, count: 2)
+        XCTAssertEqual(core.regs[1], 2, "masquée par mie : les instructions passent")
+
+        core.regs[1] = 0
+        core.pc = RV32Core.ramBase
+        core.mie = 1 << 11
+        core.mstatus = 0
+        _ = core.step(elapsedMicroseconds: 1, count: 2)
+        XCTAssertEqual(core.regs[1], 2, "masquée par mstatus.MIE : les instructions passent")
+    }
+
+    /// **L'externe passe devant le timer**, comme le privilégié l'exige. Les
+    /// deux en attente en même temps est le cas courant d'un invité occupé,
+    /// pas un cas tordu : servir le timer d'abord ferait attendre le disque
+    /// derrière une horloge.
+    func testTheExternalInterruptOutranksTheTimer() {
+        core.mtvec = RV32Core.ramBase + 0x300
+        core.mie = (1 << 11) | (1 << 7)
+        core.mstatus = 0x8
+        core.timermatchl = 10
+        core.mip = 1 << 11
+        write([addi(1, 0, 1)])
+
+        _ = core.step(elapsedMicroseconds: 100, count: 1)   // le timer est déjà passé
+        XCTAssertEqual(core.mcause, 0x8000_000B, "l'externe d'abord")
+    }
+
+    /// **Et elle réveille un `WFI`.**
+    ///
+    /// C'est la moitié qui manque le plus facilement : un invité qui a lancé
+    /// une requête et qui attend dort dans un `WFI`. Sans ce réveil, le
+    /// périphérique répond dans le vide et la machine ne reprend qu'au
+    /// prochain tic d'horloge — ou jamais, s'il n'y en a pas.
+    func testAnExternalInterruptWakesAWaitingHart() {
+        core.mtvec = RV32Core.ramBase + 0x300
+        core.mie = 1 << 11
+        core.mstatus = 0x8
+        core.extraflags |= 4                     // en WFI
+        XCTAssertEqual(core.step(elapsedMicroseconds: 1, count: 1), .waiting)
+
+        core.mip = 1 << 11
+        let outcome = core.step(elapsedMicroseconds: 1, count: 1)
+        XCTAssertNotEqual(outcome, .waiting, "le hart doit se réveiller")
+        XCTAssertEqual(core.mcause, 0x8000_000B)
+        XCTAssertEqual(core.pc, RV32Core.ramBase + 0x300)
+    }
+
+    /// **Un `WFI` avec une interruption externe en attente ne saute pas dans le
+    /// temps.**
+    ///
+    /// L'optimisation d'attente avance l'horloge d'un coup jusqu'à
+    /// `mtimecmp` : elle est juste tant que le timer est la seule chose qui
+    /// puisse réveiller le hart, et elle cesse de l'être ici. Avec un disque,
+    /// sauter à un instant nommé d'avance ferait vieillir la machine de
+    /// plusieurs secondes pour une requête servie tout de suite.
+    func testWaitingDoesNotSkipAheadWhileADeviceIsPending() {
+        core.mie = 1 << 11
+        core.mstatus = 0x8
+        core.extraflags |= 4
+        core.timermatchh = 1                     // très loin dans le futur
+        core.mip = 1 << 11
+
+        _ = core.step(elapsedMicroseconds: 1, count: 1)
+        XCTAssertEqual(core.timerh, 0, "l'horloge n'a pas sauté")
+    }
 }
