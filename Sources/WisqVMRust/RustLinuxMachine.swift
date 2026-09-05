@@ -79,16 +79,40 @@ public final class RustLinuxMachine: @unchecked Sendable {
     /// Loads a kernel image and prepares the hart the way the reference firmware
     /// would. Same layout, same registers, same command-line patching as the
     /// Swift core — the two agree on the machine before the first instruction.
-    public func load(kernelImage: Data, commandLine: String? = nil) throws {
+    /// Charge un noyau, avec **l'arbre de périphériques fourni par
+    /// l'appelant**.
+    ///
+    /// **Pourquoi l'appelant peut posséder l'arbre.** L'arbre n'est pas du
+    /// comportement d'interprète : c'est ce que le micrologiciel raconte au
+    /// noyau sur la carte, et wisq fait tourner deux interprètes sur la
+    /// **même** carte. Chacun construisant le sien à partir de sa propre copie
+    /// du blob de référence est précisément la façon dont les deux finissent
+    /// par décrire des machines différentes sans que personne s'en aperçoive —
+    /// et c'est ce qui empêchait l'un ou l'autre de déclarer un périphérique
+    /// que le second ne connaîtrait pas.
+    ///
+    /// **Ce module ne construit rien**, et c'est voulu : il ne dépend que de la
+    /// caisse Rust, ce qui est justement ce qui en fait un témoin utilisable.
+    /// Il prend des octets ; c'est `WisqUI` qui sait d'où ils viennent.
+    ///
+    /// **Et c'est le seul chargement offert ici.** Il y en avait un second,
+    /// `load(kernelImage:commandLine:)`, qui laissait la caisse Rust bâtir son
+    /// arbre depuis sa propre copie du blob de référence. Deux fonctions du
+    /// même nom sur deux cartes différentes est un piège, pas une commodité :
+    /// le retirer fait dire au compilateur ce qu'un commentaire n'aurait pas
+    /// tenu. La caisse garde le sien pour qui l'emploie sans Swift.
+    public func load(kernelImage: Data, deviceTree: [UInt8]) throws {
         let code: Int32 = kernelImage.withUnsafeBytes { bytes in
-            let base = bytes.bindMemory(to: UInt8.self).baseAddress
-            if let commandLine {
-                return commandLine.withCString { line in
-                    wisq_vm_load(vm, base, bytes.count, line)
-                }
+            deviceTree.withUnsafeBufferPointer { tree in
+                wisq_vm_load_with_tree(
+                    vm, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count,
+                    tree.baseAddress, tree.count)
             }
-            return wisq_vm_load(vm, base, bytes.count, nil)
         }
+        try check(code)
+    }
+
+    private func check(_ code: Int32) throws {
         switch code {
         case WISQ_VM_LOAD_OK: return
         case WISQ_VM_LOAD_IMAGE_EMPTY, WISQ_VM_LOAD_IMAGE_TOO_LARGE:

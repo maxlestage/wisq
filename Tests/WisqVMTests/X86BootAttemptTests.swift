@@ -122,7 +122,7 @@ final class X86BootAttemptTests: XCTestCase {
         // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
         if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
            let image = FileManager.default.contents(atPath: path) {
-            let disk = X86VirtioBlock(image: [UInt8](image))
+            let disk = VirtioBlock(image: [UInt8](image))
             // **Deux portes vers le même disque.** Le transport MMIO répond
             // aux adresses, le bus PCI aux ports ; ce noyau-ci ne sait passer
             // que par le second — son `virtio_mmio` est compilé sans les

@@ -93,20 +93,38 @@ final class LinuxBootTests: XCTestCase {
         XCTAssertEqual(outcome, .stopped, "le budget doit expirer, pas la machine planter")
     }
 
-    func testCommandLinePatchingIsBounded() {
+    /// **La ligne de commande n'est plus plafonnée, et l'invité la lit.**
+    ///
+    /// Elle l'était à cinquante-quatre caractères, et ce n'était pas une règle
+    /// de la machine : c'était la place que le blob de référence se trouvait
+    /// avoir entre deux propriétés. L'arbre est construit depuis, la ligne est
+    /// une propriété comme une autre, et le refus n'avait plus rien à défendre.
+    ///
+    /// Le test **relit l'arbre posé en mémoire** plutôt que de se contenter du
+    /// silence de `load` : « ça n'a pas levé d'erreur » ne dit pas que le noyau
+    /// verra quoi que ce soit.
+    func testALongCommandLineIsAcceptedAndReachesTheGuest() throws {
         let machine = LinuxMachine { _ in }
-        XCTAssertThrowsError(
-            try machine.load(
-                kernelImage: Data([0x13, 0x00, 0x00, 0x00]),
-                commandLine: String(repeating: "x", count: 100)
-            )
-        )
-        XCTAssertNoThrow(
-            try machine.load(
-                kernelImage: Data([0x13, 0x00, 0x00, 0x00]),
-                commandLine: "console=ttyS0"
-            )
-        )
+        let long = String(repeating: "console=ttyS0 ", count: 40)
+        XCTAssertGreaterThan(long.count, 54, "plus long que ce que le blob permettait")
+        try machine.load(kernelImage: Data([0x13, 0x00, 0x00, 0x00]), commandLine: long)
+
+        let tree = try DeviceTree.read(machine.deviceTreeHandedToTheGuest)
+        XCTAssertEqual(tree.root.child("chosen")?.property("bootargs"), .string(long))
+    }
+
+    /// Et l'arbre remis tombe sur huit octets, à toutes les longueurs.
+    ///
+    /// C'est le défaut que ce remplacement a fait vivre : un arbre de 1507
+    /// octets a donné une adresse impaire, et le noyau n'a rien dit du tout —
+    /// pas de bannière, pas de panique, une sortie vide. Le seul symptôme d'un
+    /// DTB mal aligné est le silence, donc c'est l'alignement qu'on mesure.
+    func testTheTreeHandedToTheGuestIsEightByteAligned() throws {
+        for line in ["console=ttyS0", "a", "ab", "abc", "abcd", "abcde"] {
+            let machine = LinuxMachine { _ in }
+            try machine.load(kernelImage: Data([0x13, 0x00, 0x00, 0x00]), commandLine: line)
+            XCTAssertEqual(machine.deviceTreeAddress % 8, 0, "ligne « \(line) »")
+        }
     }
 
     func testStopInterruptsARunningMachine() throws {

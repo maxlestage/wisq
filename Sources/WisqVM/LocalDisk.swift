@@ -19,7 +19,7 @@ import Foundation
 /// même raison : le chemin de démarrage doit savoir quel disque prendre
 /// **avant** de lire l'image, et l'empreinte n'existe qu'après.
 ///
-/// **Et le disque est en mémoire, entier.** `X86VirtioBlock` tient son image
+/// **Et le disque est en mémoire, entier.** `VirtioBlock` tient son image
 /// dans un `[UInt8]`, parce que l'invité écrit dedans et que ces écritures
 /// doivent survivre à une suspension — l'instantané les emporte avec lui. Ce
 /// n'est donc pas un fichier qu'on lit par morceaux : brancher un disque de
@@ -40,7 +40,7 @@ public enum LocalDisk {
 
     /// Le plus petit qui ait un sens : un secteur.
     ///
-    /// `X86VirtioBlock.sectors` divise par 512 ; en dessous, le noyau voit un
+    /// `VirtioBlock.sectors` divise par 512 ; en dessous, le noyau voit un
     /// disque de zéro secteur, ce qui n'est pas un disque mais un piège.
     public static let minimumBytes = 512
 

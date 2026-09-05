@@ -294,7 +294,7 @@ extension X86Core {
         // configuration PCI, pas celle qu'on avait prévue : c'est lui qui
         // décide, et un périphérique qui frapperait ailleurs frapperait dans
         // le vide.
-        let disk: UInt8 = 1 << (memory?.bus?.interruptLine ?? X86VirtioBlock.interruptLine)
+        let disk: UInt8 = 1 << (memory?.bus?.interruptLine ?? VirtioBlock.pc.interruptLine)
         if memory?.storage?.interrupting == true {
             devices.primary.request |= disk
         } else {

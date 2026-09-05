@@ -65,7 +65,20 @@ public final class LinuxMachine: @unchecked Sendable {
     /// The same bound for a machine that does not exist yet — what the import
     /// screen needs, since it judges a file before any machine is built.
     public static func maximumKernelImageBytes(forRAMSize ramSize: UInt32) -> Int {
-        Int(ramSize) - DefaultDTB.bytes.count - Int(stateReserve)
+        Int(ramSize) - treeBytes(forRAMSize: ramSize) - Int(stateReserve)
+    }
+
+    /// Ce que l'arbre occupe pour cette machine, avec la ligne de commande par
+    /// défaut.
+    ///
+    /// **C'est une estimation, et elle n'a besoin que de l'être.** Une ligne de
+    /// commande plus longue fait un arbre plus gros ; `load` recalcule alors la
+    /// place réellement prise et refuse une image qui ne rentre pas. Ce
+    /// nombre-ci sert à l'écran d'import, qui juge un fichier avant qu'aucune
+    /// machine n'existe et donc avant qu'aucune ligne de commande n'ait été
+    /// demandée.
+    static func treeBytes(forRAMSize ramSize: UInt32) -> Int {
+        RV32DeviceTree.tree(ramSize: Int(ramSize)).flatten().count
     }
 
     /// Why a file is refused, in the terms of the machine that refuses it.
@@ -154,20 +167,16 @@ public final class LinuxMachine: @unchecked Sendable {
     /// firmware would: image at the base of RAM, DTB near the top, a0 = hart id,
     /// a1 = DTB address, machine mode, PC at the image's first instruction.
     public func load(kernelImage: Data, commandLine: String? = nil) throws {
-        // The tree states this machine's memory, not the reference's. Without
-        // it, a machine allocated with more RAM would run a kernel that never
-        // learns about it.
-        var dtb = DefaultDTB.bytes(forRAMSize: Int(ramSize))
-        if let commandLine {
-            let bytes = Array(commandLine.utf8)
-            guard bytes.count < DefaultDTB.commandLineCapacity else {
-                throw LinuxMachineError.commandLineTooLong
-            }
-            for (index, byte) in bytes.enumerated() {
-                dtb[DefaultDTB.commandLineOffset + index] = byte
-            }
-            dtb[DefaultDTB.commandLineOffset + bytes.count] = 0
-        }
+        // **L'arbre est construit, plus recopié.** Il dit la mémoire de cette
+        // machine-ci et porte la ligne de commande demandée — deux choses qui
+        // s'écrivaient à des décalages trouvés à la main dans un blob, la
+        // seconde plafonnée à cinquante-quatre caractères par la place qu'elle
+        // s'y trouvait avoir. Le blob de référence n'a pas disparu : il est
+        // devenu le témoin contre lequel `DeviceTreeAgainstTheReferenceTests`
+        // juge celui-ci.
+        let dtb = RV32DeviceTree.tree(
+            ramSize: Int(ramSize), commandLine: commandLine).flatten()
+        handedTreeBytes = dtb.count
 
         let dtbPointer = ramSize - UInt32(dtb.count) - Self.stateReserve
         // Compared in `Int`, deliberately. `UInt32(kernelImage.count)` traps on
@@ -207,17 +216,29 @@ public final class LinuxMachine: @unchecked Sendable {
     /// Internal, and only tests use it. A sabotage put `DefaultDTB.bytes` back
     /// verbatim in `load` — the whole resize undone — and every test that did
     /// not boot a real kernel still passed, because they all questioned
-    /// `bytes(forRAMSize:)` and none questioned what `load` handed over.
+    /// the tree-building function and none questioned what `load` handed over.
     /// Answering that needs to look where the kernel looks.
     ///
     /// Empty when a1 points outside RAM, so a wild pointer fails a test
     /// instead of reading past the mapping.
     var deviceTreeHandedToTheGuest: [UInt8] {
         let offset = Int(core.regs[11] &- RV32Core.ramBase)
-        let count = DefaultDTB.bytes.count
-        guard offset >= 0, offset + count <= Int(ramSize) else { return [] }
+        let count = handedTreeBytes
+        guard count > 0, offset >= 0, offset + count <= Int(ramSize) else { return [] }
         return Array(UnsafeRawBufferPointer(start: ram + offset, count: count))
     }
+
+    /// Combien d'octets d'arbre le dernier `load` a posés. Zéro avant le
+    /// premier : rien n'a été remis, et il n'y a rien à relire.
+    private var handedTreeBytes = 0
+
+    /// Où l'arbre a été posé, dans l'espace d'adressage de l'invité.
+    ///
+    /// **Ce que ça sert à mesurer, c'est l'alignement.** Le noyau reçoit cette
+    /// adresse dans `a1` et son analyseur exige qu'elle tombe sur huit ; un
+    /// arbre dont la taille ne tombe pas sur huit la décale, et le seul
+    /// symptôme est une sortie parfaitement vide.
+    var deviceTreeAddress: UInt32 { core.regs[11] }
 
     // MARK: - Running
 
@@ -408,7 +429,11 @@ public final class LinuxMachine: @unchecked Sendable {
 
 public enum LinuxMachineError: Error, Sendable {
     case imageTooLarge
-    case commandLineTooLong
+    // **`commandLineTooLong` a disparu**, et ce n'est pas un oubli : la ligne
+    // de commande était écrite dans un trou de cinquante-quatre octets ménagé
+    // par le blob de référence, et ce plafond n'existait qu'à cause de lui.
+    // Elle est maintenant une propriété de l'arbre, qui grandit avec elle ;
+    // il ne reste que le plafond de la mémoire, qui est `imageTooLarge`.
     /// More memory than a thirty-two-bit hart can address. See
     /// `LinuxMachine.maximumRAMSize`.
     case ramSizeUnsupported
