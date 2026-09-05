@@ -93,6 +93,7 @@ targets:
     scheme:
       testTargets:
         - WisqUITests
+        - WisqWebKitTests
 
   # The app layer used to be the part nothing checked: `WisqUI` is `#if
   # os(iOS)`, so the Linux runner never compiles it, let alone runs it. It
@@ -128,3 +129,25 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         GENERATE_INFOPLIST_FILE: YES
+
+  # **Le seul paquet hébergé par l'application, et il l'est pour une raison.**
+  # La sonde WebKit demande si un `WKWebView` **qu'une application héberge**
+  # compile le WebAssembly qu'on lui donne. Posée depuis `WisqUITests`, qui n'a
+  # pas d'hôte, la question n'avait pas de sens : WebKit rend dans un processus
+  # séparé qu'iOS ne démarre pas pour un `xctest` nu, et les deux tests ont été
+  # sautés après une minute d'attente — un job vert qui ne répondait rien.
+  # `TEST_HOST` coûte un lancement d'application ; ici il est la question.
+  WisqWebKitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/WisqWebKitTests
+    dependencies:
+      - target: Wisq
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq"
+        BUNDLE_LOADER: "$(TEST_HOST)"

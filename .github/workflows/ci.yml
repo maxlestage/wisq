@@ -245,6 +245,13 @@ jobs:
         # booting Linux is covered elsewhere, and what is under test is the
         # wiring around the machine, not the machine.
         run: scripts/test-app.sh
+      # **Les mesures, remises sous les yeux.** `xcodebuild` écrit des dizaines
+      # de milliers de lignes après elles ; une mesure qu'on ne retrouve pas est
+      # une mesure qu'on refait, et celles-ci disent si la sonde WebKit a
+      # vraiment répondu ou seulement été sautée.
+      - name: Ce que l'iPhone simulé a mesuré
+        if: always()
+        run: cat "${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt" 2>/dev/null || echo "aucune mesure relevée"
       - name: Build for simulator
         # A generic destination avoids pinning a simulator model that the runner
         # image may drop from one release to the next.
