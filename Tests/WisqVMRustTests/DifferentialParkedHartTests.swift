@@ -45,7 +45,7 @@ final class DifferentialParkedHartTests: XCTestCase {
         let swiftMachine = LinuxMachine { _ in }
         let rustMachine = RustLinuxMachine { _ in }
         try swiftMachine.load(kernelImage: bytes)
-        try rustMachine.load(kernelImage: bytes)
+        try rustMachine.loadOnTheSameBoard(kernelImage: bytes)
 
         let finished = expectation(description: "les deux rendent la main")
         finished.expectedFulfillmentCount = 2

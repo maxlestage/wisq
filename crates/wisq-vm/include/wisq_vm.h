@@ -72,6 +72,17 @@ WisqVM *wisq_vm_new(size_t ram_size, wisq_vm_output_callback on_output, void *co
 int wisq_vm_load(WisqVM *vm, const uint8_t *image, size_t len, const char *command_line);
 
 /*
+ * The same, with the device tree supplied by the caller.
+ *
+ * The tree is what the firmware tells the kernel about the board, and wisq
+ * runs two interpreters on the same board: one producer keeps them describing
+ * the same machine, and lets the app declare a device without teaching two
+ * codebases about it. wisq_vm_load stays for a caller with no tree of its own.
+ */
+int wisq_vm_load_with_tree(WisqVM *vm, const uint8_t *image, size_t len,
+                           const uint8_t *tree, size_t tree_len);
+
+/*
  * Runs until shutdown, reboot, stop, or the instruction budget is spent.
  * Returns one of WISQ_VM_POWER_OFF / REBOOT / STOPPED. Blocks the calling
  * thread — that is the point; the caller owns a thread for it.

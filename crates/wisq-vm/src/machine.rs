@@ -143,7 +143,23 @@ impl Machine {
                 .copy_from_slice(bytes);
             tree[dtb::COMMAND_LINE_OFFSET + bytes.len()] = 0;
         }
+        self.load_with_tree(image, &tree)
+    }
 
+    /// The same, with the device tree handed in rather than built here.
+    ///
+    /// **Why the caller may own the tree.** The tree is not interpreter
+    /// behaviour: it is what the firmware tells the kernel about the board,
+    /// and wisq runs two interpreters on the *same* board. Each building its
+    /// own tree from its own copy of the reference blob is how the two quietly
+    /// end up describing different machines — and it is what stopped either of
+    /// them from ever declaring a device the other did not know about. The app
+    /// therefore builds one tree and hands it to whichever core it is running.
+    ///
+    /// `load` above stays for a caller that has no tree of its own: this crate
+    /// is meant to be usable without the Swift side, and it should still boot
+    /// a kernel on its own.
+    pub fn load_with_tree(&mut self, image: &[u8], tree: &[u8]) -> Result<(), LoadError> {
         if self.ram.len() > MAXIMUM_RAM_SIZE {
             return Err(LoadError::RamSizeUnsupported);
         }
@@ -156,7 +172,7 @@ impl Machine {
         }
 
         self.ram[..image.len()].copy_from_slice(image);
-        self.ram[dtb_pointer..dtb_pointer + tree.len()].copy_from_slice(&tree);
+        self.ram[dtb_pointer..dtb_pointer + tree.len()].copy_from_slice(tree);
 
         self.core.pc = RAM_BASE;
         self.core.x[10] = 0; // a0: hart id
