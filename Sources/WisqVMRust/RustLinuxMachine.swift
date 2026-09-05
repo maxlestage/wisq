@@ -112,6 +112,39 @@ public final class RustLinuxMachine: @unchecked Sendable {
         try check(code)
     }
 
+    // MARK: - Le disque
+
+    /// Donne un disque à la machine, **avant** `load`.
+    ///
+    /// Avant, parce que c'est l'arbre qui rend le périphérique trouvable, et
+    /// que l'arbre arrive du dehors : un arbre sans le nœud décrit une machine
+    /// sans disque, et l'invité ne sondera jamais la fenêtre. C'est donc à
+    /// `WisqUI` de demander le nœud, exactement comme il choisit la taille de
+    /// la mémoire.
+    ///
+    /// L'image est **copiée** de l'autre côté. Le périphérique la tient
+    /// entière et écrit dedans — c'est ce qui permet aux écritures de l'invité
+    /// de survivre à une suspension —, donc il ne peut pas emprunter le tampon
+    /// de l'appelant.
+    public func attach(disk image: [UInt8]) {
+        image.withUnsafeBufferPointer { bytes in
+            _ = wisq_vm_attach_disk(vm, bytes.baseAddress, bytes.count)
+        }
+    }
+
+    /// Le retire, et fait retomber la ligne avec lui.
+    public func detachDisk() { _ = wisq_vm_detach_disk(vm) }
+
+    /// Combien de requêtes le disque a servies, et combien il a refusées.
+    ///
+    /// Un périphérique qui refuse tout et un périphérique que personne
+    /// n'appelle se lisent pareil sans les deux nombres — et c'est justement
+    /// ce qu'il faut pour dire à quelqu'un que son noyau n'a pas de pilote
+    /// bloc.
+    public var diskServed: UInt64 { wisq_vm_disk_served(vm) }
+    public var diskRefused: UInt64 { wisq_vm_disk_refused(vm) }
+    public var hasDisk: Bool { wisq_vm_has_disk(vm) != 0 }
+
     private func check(_ code: Int32) throws {
         switch code {
         case WISQ_VM_LOAD_OK: return
