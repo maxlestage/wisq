@@ -64,3 +64,49 @@ final class RDPLiveHandshakeTests: XCTestCase {
     }
 }
 #endif
+
+/// Le domaine MCS, contre un **vrai serveur**.
+///
+/// **C'est la tranche entière qui se juge ici.** Trois encodages empilés — BER,
+/// PER, des blocs à champs fixes — et rien d'autre qu'un serveur ne peut dire
+/// si on les a empilés dans le bon ordre : un Connect Initial mal formé ne
+/// donne pas d'erreur, il donne une socket qui se ferme.
+final class RDPLiveMCSTests: XCTestCase {
+    func testARealServerOpensItsDomainAndJoinsEveryChannel() async throws {
+        let target = try RDPLiveHandshakeTests.target()
+        let stream = try PosixByteStream(host: target.host, port: target.port)
+        defer { Task { await stream.close() } }
+
+        // La négociation, puis la conférence.
+        try await stream.write(RDPWire.connectionRequest(user: "essai", requesting: .standard))
+        _ = try await RDPWire.readConnectionConfirm(RDPLiveHandshakeTests.readPDU(stream))
+
+        let client = RDPConnect.ClientDescription(
+            width: 1024, height: 768, name: "wisq",
+            channels: [RDPConnect.Channel(name: "cliprdr", options: 0xC0A0_0000)])
+        try await stream.write(RDPConnect.connectInitial(client))
+        let response = try await RDPLiveHandshakeTests.readPDU(stream)
+        let server = try RDPConnect.readConnectResponse(response)
+
+        // Le serveur a nommé son canal d'entrée-sortie et le nôtre.
+        XCTAssertGreaterThanOrEqual(server.ioChannel, RDPMCS.userChannelBase)
+        XCTAssertEqual(server.channels.count, client.channels.count,
+                       "un identifiant par canal demandé")
+
+        // Le domaine, puis l'utilisateur.
+        try await stream.write(RDPMCS.erectDomainRequest())
+        try await stream.write(RDPMCS.attachUserRequest())
+        let user = try RDPMCS.readAttachUserConfirm(
+            try await RDPLiveHandshakeTests.readPDU(stream))
+        XCTAssertGreaterThanOrEqual(user, RDPMCS.userChannelBase)
+
+        // **Et chaque canal se joint, celui de l'utilisateur compris.** C'est
+        // la preuve que les identifiants lus dans la réponse sont les bons :
+        // un serveur refuse net un canal qu'il n'a pas annoncé.
+        for channel in [user, server.ioChannel] + server.channels {
+            try await stream.write(RDPMCS.channelJoinRequest(user: user, channel: channel))
+            let confirm = try await RDPLiveHandshakeTests.readPDU(stream)
+            try RDPMCS.readChannelJoinConfirm(confirm, expecting: channel)
+        }
+    }
+}
