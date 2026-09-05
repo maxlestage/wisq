@@ -165,6 +165,31 @@ func measureX86() {
     let seconds = Date().timeIntervalSince(start)
     let mips = seconds > 0 ? Double(executed) / seconds / 1_000_000 : 0
 
+    // **Où part le temps.** Le décodage tourne à chaque instruction exécutée :
+    // les préfixes, le ModRM, le SIB, le déplacement et l'immédiat sont relus
+    // et réanalysés à chaque tour de boucle, alors que les octets n'ont pas
+    // bougé. Cette mesure-ci décode exactement les mêmes instructions, le même
+    // nombre de fois, et ne fait rien d'autre : la différence avec la ligne
+    // au-dessus est ce qu'un cache de décodage peut rendre.
+    let offsets = [0, 3, 6, 10, 13, 15, 18, 21]
+    var lengths = 0
+    let decodeStart = Date()
+    program.withUnsafeBufferPointer { buffer in
+        guard let base = buffer.baseAddress else { return }
+        var done: UInt64 = 0
+        while done < executed {
+            for offset in offsets where done < executed {
+                if let one = try? X86Decoder.decode(base + offset,
+                                                    available: buffer.count - offset) {
+                    lengths &+= Int(one.length)
+                }
+                done &+= 1
+            }
+        }
+    }
+    let decodeSeconds = Date().timeIntervalSince(decodeStart)
+    if lengths == 0 { print("  (décodage sans résultat)") }
+
     print("")
     print("x86-64 (lot 7, tranche 3b)")
     print("  ce cœur-ci est en Swift ; les 161 MIPS ci-dessus sont ceux du cœur")
@@ -173,6 +198,8 @@ func measureX86() {
     print(String(format: "  instructions : %.1f M retirées", Double(executed) / 1_000_000))
     print(String(format: "  durée        : %.3f s", seconds))
     print(String(format: "  débit        : %.1f MIPS", mips))
+    print(String(format: "  dont décodage : %.3f s (%.0f %% du total)",
+                 decodeSeconds, seconds > 0 ? decodeSeconds / seconds * 100 : 0))
     // Ce qu'un démarrage complet coûterait à ce débit, si l'on retient les
     // ordres de grandeur habituels. C'est une division, pas une mesure : le
     // dire autrement serait refaire l'erreur que cette tranche corrige.

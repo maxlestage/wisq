@@ -12,6 +12,7 @@
 use crate::machine::{Handle, Machine, Outcome};
 use crate::snapshot::SnapshotError;
 use std::os::raw::{c_char, c_int, c_void};
+use std::os::unix::ffi::OsStrExt;
 
 /// Opaque to C: a machine plus the handle other threads use to reach it.
 pub struct WisqVM {
@@ -114,6 +115,70 @@ pub unsafe extern "C" fn wisq_vm_attach_disk(
     vm.machine
         .attach_disk(std::slice::from_raw_parts(image, len));
     0
+}
+
+/// Gives the machine a disk read from a file, with a durable write overlay.
+///
+/// `base` is opened read-only and never changes; `writes` and `writes.map`
+/// are created beside it if absent and hold every sector the guest writes,
+/// durably, as it writes them. Nothing of the base is copied — this is the
+/// door for an installer image of several gigabytes.
+///
+/// Returns 0, or -1 for a null argument, -2 when the base cannot be opened,
+/// -3 when it is smaller than a sector, -4 when the overlay cannot be opened,
+/// -5 when the overlay belongs to another disk, -6 when the overlay is
+/// truncated.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`; `base` and `writes` must be
+/// NUL-terminated paths.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_attach_disk_file(
+    vm: *mut WisqVM,
+    base: *const c_char,
+    writes: *const c_char,
+) -> c_int {
+    let Some(vm) = vm.as_mut() else { return -1 };
+    if base.is_null() || writes.is_null() {
+        return -1;
+    }
+    let base = std::path::Path::new(std::ffi::OsStr::from_bytes(
+        std::ffi::CStr::from_ptr(base).to_bytes(),
+    ));
+    let writes = std::path::Path::new(std::ffi::OsStr::from_bytes(
+        std::ffi::CStr::from_ptr(writes).to_bytes(),
+    ));
+    use crate::store::StoreError;
+    match vm.machine.attach_disk_file(base, writes) {
+        Ok(()) => 0,
+        Err(StoreError::CannotOpenBase) => -2,
+        Err(StoreError::NotADisk) => -3,
+        Err(StoreError::CannotOpenOverlay) => -4,
+        Err(StoreError::OverlayBelongsToAnotherDisk) => -5,
+        Err(StoreError::OverlayIsTruncated) => -6,
+    }
+}
+
+/// Pushes what the guest wrote to its disk down to durable storage. For the
+/// trip to the background; every write is already on disk before this.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_flush_disk(vm: *const WisqVM) -> c_int {
+    let Some(vm) = vm.as_ref() else { return -1 };
+    vm.machine.flush_disk();
+    0
+}
+
+/// How many bytes of disk the guest has changed: the overlay's size for a
+/// file-backed disk, the whole image for a memory one.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new`, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_disk_bytes_written(vm: *const WisqVM) -> u64 {
+    vm.as_ref().map_or(0, |vm| vm.machine.disk_bytes_written())
 }
 
 /// Takes the disk away, and drops the interrupt line with it.

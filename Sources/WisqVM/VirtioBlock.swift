@@ -85,14 +85,31 @@ public final class VirtioBlock: @unchecked Sendable {
     /// hart, comme le CLINT le fait déjà.
     public static let riscv = Placement(base: 0x1000_1000, span: 0x200, interruptLine: 11)
 
-    /// Le contenu du disque, secteur par secteur de 512 octets.
-    public var image: [UInt8]
+    /// Là où vivent les octets : en mémoire, ou dans un fichier avec sa
+    /// couche d'écriture. Le périphérique ne sait pas lequel, et n'a pas à le
+    /// savoir : il lit et écrit des morceaux, c'est tout.
+    public private(set) var store: DiskStore
 
-    public init(image: [UInt8]) {
-        self.image = image
+    public init(store: DiskStore) {
+        self.store = store
     }
 
-    public var sectors: UInt64 { UInt64(image.count / 512) }
+    /// La forme d'avant, et celle des tests : l'image entière en mémoire.
+    public convenience init(image: [UInt8]) {
+        self.init(store: MemoryDiskStore(image: image))
+    }
+
+    /// Le contenu du disque, secteur par secteur de 512 octets — relu depuis
+    /// le store, quel qu'il soit. Pour les tests et les mesures ; un disque de
+    /// six gigaoctets ne se demande pas comme ça.
+    public var image: [UInt8] {
+        store.read(at: 0, count: Int(store.sectors) * 512) ?? []
+    }
+
+    public var sectors: UInt64 { store.sectors }
+
+    /// Pousser ce que l'invité a écrit jusqu'au stockage durable.
+    public func flush() { store.flush() }
 
     // MARK: - Les registres du transport
 
@@ -335,15 +352,19 @@ public final class VirtioBlock: @unchecked Sendable {
         // d'apprendre qu'il a demandé trop loin.
         let span = payload.reduce(UInt64(0)) { $0 + UInt64($1.length) }
         let beyond = (kind == 0 || kind == 1)
-            && sector &* 512 &+ span > UInt64(image.count)
+            && sector &* 512 &+ span > sectors &* 512
         guard !beyond else { refused &+= 1; return }
         switch kind {
         case 0:  // lecture
             var at = sector &* 512
             for buffer in payload {
-                guard buffer.writable else { refused &+= 1; return }
-                for byte in 0..<UInt64(buffer.length) {
-                    try? memory.write(buffer.address &+ byte, 1, UInt64(image[Int(at &+ byte)]))
+                guard buffer.writable,
+                      let bytes = store.read(at: at, count: Int(buffer.length)) else {
+                    refused &+= 1
+                    return
+                }
+                for (index, value) in bytes.enumerated() {
+                    try? memory.write(buffer.address &+ UInt64(index), 1, UInt64(value))
                 }
                 written &+= buffer.length
                 at &+= UInt64(buffer.length)
@@ -354,11 +375,13 @@ public final class VirtioBlock: @unchecked Sendable {
             var at = sector &* 512
             for buffer in payload {
                 guard !buffer.writable else { refused &+= 1; return }
-                for byte in 0..<UInt64(buffer.length) {
-                    if let value = try? memory.read(buffer.address &+ byte, 1) {
-                        image[Int(at &+ byte)] = UInt8(truncatingIfNeeded: value)
+                var bytes = [UInt8](repeating: 0, count: Int(buffer.length))
+                for index in 0..<bytes.count {
+                    if let value = try? memory.read(buffer.address &+ UInt64(index), 1) {
+                        bytes[index] = UInt8(truncatingIfNeeded: value)
                     }
                 }
+                guard store.write(at: at, bytes) else { refused &+= 1; return }
                 at &+= UInt64(buffer.length)
             }
             statusByte = 0
@@ -428,15 +451,36 @@ public final class VirtioBlock: @unchecked Sendable {
         // quatre-vingt-seize pour une ext4 de seize mébioctets — et la coder
         // telle quelle rendrait l'instantané trop lourd pour être pris à
         // chaque passage en arrière-plan, qui est le seul moment où on peut.
-        writer.u64(UInt64(image.count))
-        image.withUnsafeBytes { writer.ram($0) }
+        //
+        // **Sauf quand le contenu vit ailleurs.** Un disque sur fichier ne
+        // s'embarque pas : sa couche d'écriture est déjà durable, et
+        // l'instantané d'une machine avec six gigaoctets de disque ferait six
+        // gigaoctets. Une longueur impossible marque « ailleurs » ; la reprise
+        // rebranche le store que l'application lui tend.
+        if let memory = store as? MemoryDiskStore {
+            writer.u64(UInt64(memory.image.count))
+            memory.image.withUnsafeBytes { writer.ram($0) }
+        } else {
+            writer.u64(Self.contentLivesElsewhere)
+        }
     }
+
+    /// La marque, à la place de la longueur de l'image : aucune image n'a
+    /// cette taille.
+    static let contentLivesElsewhere = UInt64.max
 
     /// Le périphérique tel qu'il était. Construit plutôt que rempli sur place :
     /// une reprise qui échoue en chemin ne doit pas laisser derrière elle un
     /// disque à moitié rangé, et la machine ne prend celui-ci qu'une fois
     /// toutes les lectures faites.
-    static func restored(from reader: inout Snapshot.Reader) throws -> VirtioBlock {
+    ///
+    /// `keeping` est le store à rebrancher quand l'instantané porte la marque
+    /// « ailleurs » : celui que la machine avait déjà, ouvert par
+    /// l'application sur le même fichier. Sans lui, le disque revient vide —
+    /// zéro secteur, des erreurs d'entrée-sortie — plutôt qu'un plantage :
+    /// c'est le cas du fichier supprimé entre deux sessions.
+    static func restored(from reader: inout Snapshot.Reader,
+                         keeping kept: DiskStore? = nil) throws -> VirtioBlock {
         let device = VirtioBlock(image: [])
         device.deviceFeaturesSelect = try reader.u32()
         device.driverFeaturesSelect = try reader.u32()
@@ -454,11 +498,15 @@ public final class VirtioBlock: @unchecked Sendable {
         device.nextUsed = UInt16(truncatingIfNeeded: try reader.u32())
         device.served = try reader.u64()
         device.refused = try reader.u64()
-        let count = try Int(exactly: reader.u64()) ?? -1
-        guard count >= 0 else { throw Snapshot.Failure.corrupt }
-        var image = [UInt8](repeating: 0, count: count)
-        try image.withUnsafeMutableBytes { try reader.ram($0) }
-        device.image = image
+        let length = try reader.u64()
+        if length == Self.contentLivesElsewhere {
+            if let kept { device.store = kept }
+        } else {
+            guard let count = Int(exactly: length) else { throw Snapshot.Failure.corrupt }
+            var image = [UInt8](repeating: 0, count: count)
+            try image.withUnsafeMutableBytes { try reader.ram($0) }
+            device.store = MemoryDiskStore(image: image)
+        }
         return device
     }
 }

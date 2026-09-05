@@ -286,6 +286,10 @@ public final class LocalVMModel {
             kernel: kernelURL.lastPathComponent,
             among: KernelLibrary.list(), in: storage)
 
+        // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
+        // appartient à `self`, qui n'y est capturé que faiblement.
+        let storageFolder = storage
+
         let thread = Thread { [weak self] in
             defer { finished.signal() }
             let outcome: GuestOutcome
@@ -294,14 +298,17 @@ public final class LocalVMModel {
             // Swift 6 a raison de la refuser.
             let activity: (served: UInt64, refused: UInt64)?
             do {
-                // Le disque avant tout le reste : une machine reprise depuis
-                // un instantané porte le sien **dedans** — les octets que
-                // l'invité a écrits, pas ceux du fichier — et `restore` le
-                // remet donc à sa place, en écrasant celui-ci. C'est voulu, et
-                // c'est ce qui rend le changement de disque destructif pour la
-                // machine sauvegardée : la vue l'oublie au moment du choix.
+                // Le disque avant tout le reste, **lu sur place** : rien du
+                // fichier n'est copié, et ce que l'invité y écrit va dans une
+                // couche à côté, durable à chaque écriture. Une machine reprise
+                // depuis un instantané retrouve ce même disque : l'instantané
+                // ne porte plus les octets, il porte « le contenu vit
+                // ailleurs », et `restore` rebranche celui-ci.
                 if let diskURL {
-                    try machine.attachDisk(Data(contentsOf: diskURL))
+                    try machine.attachDisk(
+                        fileAt: diskURL,
+                        writes: LocalDisk.writesURL(
+                            for: diskURL.lastPathComponent, in: storageFolder))
                 }
                 // A saved machine is resumed in place of booting. If the file
                 // is not a snapshot — an older format, a truncated write — the
@@ -423,6 +430,9 @@ public final class LocalVMModel {
             if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
             return
         }
+        // Le disque d'abord : ses écritures sont déjà sur le stockage, ceci
+        // les y scelle avant que l'instantané ne prétende les connaître.
+        machine.flushDisk()
         do {
             try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
         } catch {
@@ -568,13 +578,13 @@ public enum KernelLibrary {
         }
         if let size = try? FileManager.default.attributesOfItem(
             atPath: source.path)[.size] as? Int {
-            // **Deux plafonds, parce que deux usages.** Un disque n'est pas
-            // copié dans la RAM de l'invité : il vit à côté d'elle, et sa
-            // limite est donc celle de `LocalDisk` et non celle d'un noyau.
+            // **Un plafond pour les noyaux, aucun pour les disques.** Un noyau
+            // est copié dans la RAM de l'invité ; un disque est lu depuis son
+            // fichier, secteur par secteur, et sa taille ne coûte rien.
             if LocalDisk.isDiskImage(kind) {
-                // Le refus dit d'abord ce que le fichier est. Un ISO de 5,8
-                // Gio n'est pas un disque trop gros : c'est une image
-                // d'installation, et le plafond n'est que la seconde raison.
+                // Plus de plafond pour un disque : il est lu sur place. Le seul
+                // refus qui reste est le plancher — moins d'un secteur —, et il
+                // dit d'abord ce que le fichier est.
                 if let refusal = LocalDisk.refusal(
                     size: size, name: source.lastPathComponent, kind: kind) {
                     throw KernelImportError.refused(refusal)
@@ -605,7 +615,8 @@ public enum KernelLibrary {
         guard let kernels = try? directory(),
               let machines = try? SuspendedMachine.directory()
         else { return .empty }
-        return LocalStorage.report(kernels: kernels, machines: machines)
+        return LocalStorage.report(
+            kernels: kernels, machines: machines, writes: try? LocalDisk.writesDirectory())
     }
 
     /// Takes back the space held by machines saved from kernels that are no
@@ -636,6 +647,9 @@ public enum KernelLibrary {
         KernelMemory.forget(kernel: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
+        // La couche d'écriture part avec sa base : sans elle, ses secteurs ne
+        // veulent plus rien dire.
+        LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
     }
 }

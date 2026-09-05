@@ -13,6 +13,7 @@
 //! that serves four routes.
 
 mod backend;
+mod domain;
 mod http;
 mod pairing;
 mod service;
@@ -36,7 +37,18 @@ fn main() {
     let mut demo_delay = Duration::from_secs(2);
     let mut use_tls = true;
 
-    let mut arguments = std::env::args().skip(1);
+    let all: Vec<String> = std::env::args().skip(1).collect();
+
+    // **Une sous-commande, et elle passe avant tout le reste.** `bureau` ne sert
+    // pas le protocole : elle construit une machine à partir d'une image et
+    // rend la main. Elle vit dans le même binaire parce qu'elle écrit le même
+    // domaine que la route de création, et deux générateurs de XML libvirt
+    // divergeraient à la première correction.
+    if all.first().map(String::as_str) == Some("bureau") {
+        desktop_command(all[1..].to_vec());
+    }
+
+    let mut arguments = all.into_iter();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--port" => match arguments.next().and_then(|v| v.parse().ok()) {
@@ -134,6 +146,229 @@ fn main() {
         None => http::Transport::Plain,
     };
     server.serve(transport, move |request| service.handle(request));
+}
+
+/// `wisq-agent bureau` : d'une image à un bureau, en une commande.
+///
+/// **Ce que cette commande résout.** wisq affiche un bureau distant depuis
+/// longtemps ; ce qui manquait, c'était la machine à afficher. Écrire un domaine
+/// libvirt à la main demande de connaître le modèle de carte graphique qui va
+/// avec son compositeur, l'ordre d'amorçage, le canal de l'agent invité et le
+/// mot de passe SPICE. Quatre occasions de se tromper, dont trois donnent un
+/// écran noir sans message.
+fn desktop_command(arguments: Vec<String>) -> ! {
+    let mut image: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut memory_mib: u32 = 4096;
+    let mut cpus: u32 = 4;
+    let mut disk_gib: u32 = 64;
+    let mut video = domain::Video::Virtio;
+    let mut listen = "0.0.0.0".to_string();
+    let mut virsh = "/usr/bin/virsh".to_string();
+    let mut folder: Option<String> = None;
+    let mut show_only = false;
+
+    let mut rest = arguments.into_iter();
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "--image" => image = rest.next(),
+            "--nom" => name = rest.next(),
+            "--memoire" => match rest.next().and_then(|v| v.parse().ok()) {
+                Some(value) => memory_mib = value,
+                None => fail("--memoire attend un nombre de mébioctets"),
+            },
+            "--processeurs" => match rest.next().and_then(|v| v.parse().ok()) {
+                Some(value) => cpus = value,
+                None => fail("--processeurs attend un nombre"),
+            },
+            "--disque" => match rest.next().and_then(|v| v.parse().ok()) {
+                Some(value) => disk_gib = value,
+                None => fail("--disque attend un nombre de gibioctets"),
+            },
+            "--video" => match rest.next().as_deref().and_then(domain::Video::parse) {
+                Some(value) => video = value,
+                None => fail("--video attend virtio ou qxl"),
+            },
+            "--ecoute" => {
+                if let Some(value) = rest.next() {
+                    listen = value;
+                }
+            }
+            "--virsh" => {
+                if let Some(value) = rest.next() {
+                    virsh = value;
+                }
+            }
+            "--dossier" => folder = rest.next(),
+            "--montrer" => show_only = true,
+            "--help" | "-h" => {
+                println!(
+                    "wisq-agent bureau --image CHEMIN [--nom N] [--memoire MiB] [--processeurs N]\n\
+                     \x20                  [--disque GiB] [--video virtio|qxl] [--ecoute ADRESSE]\n\
+                     \x20                  [--dossier DIR] [--virsh CHEMIN] [--montrer]\n\n\
+                     Construit une machine autour d'une image d'installation et la démarre :\n\
+                     un disque qcow2, l'image amorcée en premier, un bureau SPICE avec mot de\n\
+                     passe, la tablette, le son et le canal de l'agent invité. Affiche ensuite\n\
+                     ce qu'il faut taper dans wisq.\n\n\
+                     --montrer écrit le domaine sur la sortie standard sans rien créer.\n\
+                     --video virtio pour un bureau Wayland (Hyprland, GNOME, KDE), qxl pour X11.\n\
+                     --ecoute 0.0.0.0 rend le bureau visible depuis le téléphone ; le mot de\n\
+                     passe engendré est ce qui le garde."
+                );
+                std::process::exit(0);
+            }
+            other => fail(&format!("argument inconnu : {other}")),
+        }
+    }
+
+    let Some(image) = image else {
+        fail("wisq-agent bureau --image CHEMIN (--help pour le reste)")
+    };
+    if let Err(message) = domain::check_image(&image) {
+        fail(&message);
+    }
+    // Le nom vient du fichier quand personne n'en donne : « omarchy-4.0.2.iso »
+    // devient « omarchy-4.0.2 », ce qui est ce que quelqu'un aurait tapé.
+    let name = name.unwrap_or_else(|| {
+        let stem = std::path::Path::new(&image)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "bureau".to_string());
+        stem.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    });
+    if !service::is_plausible_domain_name(&name) {
+        fail(&format!(
+            "nom de machine refusé : {name} — lettres, chiffres, point, tiret et souligné"
+        ));
+    }
+
+    let folder = folder.unwrap_or_else(|| match std::env::var_os("HOME") {
+        Some(home) => std::path::Path::new(&home)
+            .join("wisq-disques")
+            .to_string_lossy()
+            .to_string(),
+        None => "wisq-disques".to_string(),
+    });
+    let disk = std::path::Path::new(&folder).join(format!("{name}.qcow2"));
+    let disk_path = disk.to_string_lossy().to_string();
+
+    let password = domain::generate_password().unwrap_or_else(|error| fail(&error));
+    let accelerator = if show_only {
+        // Rien n'est sondé en mode « montrer » : la commande doit pouvoir
+        // écrire un domaine sur une machine qui n'a pas libvirt du tout.
+        domain::Accelerator::Kvm
+    } else {
+        capabilities(&virsh)
+    };
+
+    let desktop = domain::Desktop {
+        name: name.clone(),
+        image: image.clone(),
+        disk: disk_path.clone(),
+        memory_mib,
+        cpus,
+        video,
+        listen: listen.clone(),
+        password: password.clone(),
+        accelerator,
+    };
+
+    if show_only {
+        print!("{}", desktop.xml());
+        std::process::exit(0);
+    }
+
+    if let Some(warning) = accelerator.warning() {
+        emit(&format!("attention : {warning}"));
+    }
+
+    // Le disque, s'il n'existe pas déjà : réutiliser celui d'une installation
+    // précédente est ce qu'on veut quand on redéfinit une machine, et l'écraser
+    // effacerait un système installé sans le dire.
+    if disk.exists() {
+        emit(&format!("disque existant réutilisé : {disk_path}"));
+    } else {
+        if let Err(error) = std::fs::create_dir_all(&folder) {
+            fail(&format!("dossier des disques ({folder}) : {error}"));
+        }
+        let created = std::process::Command::new("qemu-img")
+            .args(["create", "-f", "qcow2", &disk_path, &format!("{disk_gib}G")])
+            .output();
+        match created {
+            Ok(output) if output.status.success() => emit(&format!(
+                "disque créé : {disk_path} ({disk_gib} Gio, épars)"
+            )),
+            Ok(output) => fail(&format!(
+                "qemu-img a refusé : {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => fail(&format!("qemu-img introuvable : {error}")),
+        }
+    }
+
+    // Le domaine passe par un fichier plutôt que par l'entrée standard : c'est
+    // ce que `virsh define` prend, et le fichier reste là pour être relu.
+    let xml_path = std::path::Path::new(&folder).join(format!("{name}.xml"));
+    if let Err(error) = std::fs::write(&xml_path, desktop.xml()) {
+        fail(&format!("écriture du domaine : {error}"));
+    }
+    run_virsh(&virsh, &["define", &xml_path.to_string_lossy()]);
+    run_virsh(&virsh, &["start", &name]);
+
+    emit("");
+    emit(&format!("La machine « {name} » tourne."));
+    emit("");
+    emit("Dans wisq, ajoutez une machine :");
+    emit(&format!(
+        "  hôte      {}",
+        host_name()
+            .map(|n| format!("{n}.local"))
+            .unwrap_or_else(|| "l'adresse de cet ordinateur".to_string())
+    ));
+    emit("  protocole SPICE");
+    emit("  port      celui que l'agent annonce pour cette machine");
+    emit(&format!("  mot de passe  {password}"));
+    emit("");
+    emit("Le mot de passe n'est écrit nulle part ailleurs : notez-le maintenant.");
+    std::process::exit(0)
+}
+
+/// Ce que l'hôte sait accélérer, demandé à libvirt plutôt que deviné.
+fn capabilities(virsh: &str) -> domain::Accelerator {
+    match std::process::Command::new(virsh)
+        .arg("capabilities")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            domain::Accelerator::from_capabilities(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => domain::Accelerator::None,
+    }
+}
+
+fn run_virsh(virsh: &str, arguments: &[&str]) {
+    match std::process::Command::new(virsh).args(arguments).output() {
+        Ok(output) if output.status.success() => {
+            let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !line.is_empty() {
+                emit(&line);
+            }
+        }
+        Ok(output) => fail(&format!(
+            "virsh {} a échoué : {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Err(error) => fail(&format!("virsh introuvable ({virsh}) : {error}")),
+    }
 }
 
 fn emit(line: &str) {

@@ -20,16 +20,20 @@ final class RefusalTextTests: XCTestCase {
     /// Le refus est celui d'un vrai fichier plutôt qu'une chaîne inventée :
     /// c'est celui-là qui doit sortir propre.
     func testTheMarkupIsGoneAndTheWordsStay() throws {
+        // Un refus qui existe encore, et qui porte du balisage : l'identité de
+        // l'image d'installation, suivie du plancher d'un secteur. Le plafond
+        // de mémoire, lui, n'existe plus — le disque n'est plus tenu en
+        // mémoire.
         let refusal = try XCTUnwrap(LocalDisk.refusal(
-            size: 4 << 30, name: "racine.img",
-            kind: .filesystemImage("ext4"), ceiling: 2048 << 20))
+            size: 100, name: "omarchy-4.0.2.iso", kind: .discImage("ISO 9660")))
         XCTAssertTrue(refusal.contains("**"), "le refus est bien écrit en markdown")
+        XCTAssertTrue(refusal.contains("`"), "et il porte un chemin")
         let plain = String(RefusalText.rendered(refusal).characters)
         XCTAssertFalse(plain.contains("**"), "les étoiles ne vont pas à l'écran")
         XCTAssertFalse(plain.contains("`"), "les accents graves non plus")
-        XCTAssertTrue(plain.contains("en mémoire"),
+        XCTAssertTrue(plain.contains("dedans"),
                       "le mot reste : c'est sa mise en avant qui change, pas le texte")
-        XCTAssertTrue(plain.contains("/dev/vda"), "et le chemin reste lisible")
+        XCTAssertTrue(plain.contains("/boot"), "et le chemin reste lisible")
     }
 
     /// Et l'accent est **porté**, pas seulement retiré.
@@ -53,8 +57,7 @@ final class RefusalTextTests: XCTestCase {
     /// coulée ; c'est pour ça que l'analyse est inline et préserve les blancs.
     func testTheBlankLineBetweenParagraphsSurvives() throws {
         let refusal = try XCTUnwrap(LocalDisk.refusal(
-            size: 5_800 << 20, name: "omarchy-4.0.2.iso",
-            kind: .discImage("ISO 9660"), ceiling: 2048 << 20))
+            size: 100, name: "omarchy-4.0.2.iso", kind: .discImage("ISO 9660")))
         let plain = String(RefusalText.rendered(refusal).characters)
         XCTAssertEqual(plain.components(separatedBy: "\n\n").count, 3,
                        "trois paragraphes : ce que c'est, la taille, et pourquoi")
