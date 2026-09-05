@@ -97,19 +97,19 @@ extension X86Core {
 
     /// Lire dix octets de mémoire comme un étendu.
     mutating func readExtended(_ address: UInt64) throws -> X86Extended {
-        guard let memory else { throw Fault.unsupported("un x87 sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("un x87 sans mémoire") }
         var bytes = [UInt8]()
         for offset in 0..<10 {
             bytes.append(UInt8(truncatingIfNeeded:
-                try memory.read(try translate(address &+ UInt64(offset)), 1)))
+                try readMemory(address &+ UInt64(offset), 1)))
         }
         return X86Extended(bytes: bytes)
     }
 
     mutating func writeExtended(_ address: UInt64, _ value: X86Extended) throws {
-        guard let memory else { throw Fault.unsupported("un x87 sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("un x87 sans mémoire") }
         for (offset, byte) in value.bytes.enumerated() {
-            try memory.write(try translate(address &+ UInt64(offset), .write), 1, UInt64(byte))
+            try writeMemory(address &+ UInt64(offset), 1, UInt64(byte))
         }
     }
 

@@ -96,8 +96,8 @@ extension X86Core {
         guard fields.mod != 0b11 else {
             return read(fields.rm, size, highByte: fields.rmIsHighByte)
         }
-        guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
-        return try memory.read(try translate(lastAddress), size)
+        guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
+        return try readMemory(lastAddress, size)
     }
 
     /// **Vérifier l'écriture avant de calculer quoi que ce soit.**
@@ -123,7 +123,7 @@ extension X86Core {
         let watched = watchedAddress
         watchedAddress = nil
         defer { watchedAddress = watched }
-        _ = try translate(lastAddress, .write)
+        try probeWrite(lastAddress, size)
     }
 
     mutating func writeRM(_ fields: Fields, _ size: Int, _ value: UInt64) throws {
@@ -131,8 +131,8 @@ extension X86Core {
             write(fields.rm, size, highByte: fields.rmIsHighByte, value)
             return
         }
-        guard let memory else { throw Fault.unsupported("un opérande en mémoire") }
-        try memory.write(try translate(lastAddress, .write), size, value)
+        guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
+        try writeMemory(lastAddress, size, value)
     }
 
     // MARK: - La pile
@@ -154,17 +154,17 @@ extension X86Core {
     /// tout ce qui peut lever une faute a lieu avant que quoi que ce soit
     /// d'observable ne change.
     mutating func push(_ value: UInt64, _ size: Int) throws {
-        guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
         let lowered = registers[4] &- UInt64(size)
-        try memory.write(try translate(lowered, .write), size, value)
+        try writeMemory(lowered, size, value)
         registers[4] = lowered
     }
 
     /// Le `pop` a toujours eu le bon ordre — il lit avant de remonter — et le
     /// garder tel quel est un choix, pas un oubli.
     mutating func pop(_ size: Int) throws -> UInt64 {
-        guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
-        let value = try memory.read(try translate(registers[4]), size)
+        guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
+        let value = try readMemory(registers[4], size)
         registers[4] = registers[4] &+ UInt64(size)
         return value
     }

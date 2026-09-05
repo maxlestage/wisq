@@ -70,15 +70,15 @@ extension X86Core {
     }
 
     mutating func saveFloatingPointState() throws {
-        guard let memory else { throw Fault.unsupported("FXSAVE sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("FXSAVE sans mémoire") }
         let base = lastAddress
         // Les octets réservés doivent partir à zéro : un noyau qui relit la
         // zone avec `XRSTOR` refuse un état qu'il ne reconnaît pas.
         for offset in stride(from: 0, to: FloatingPointArea.written, by: 8) {
-            try memory.write(try translate(base &+ UInt64(offset), .write), 8, 0)
+            try writeMemory(base &+ UInt64(offset), 8, 0)
         }
         func put(_ offset: Int, _ width: Int, _ value: UInt64) throws {
-            try memory.write(try translate(base &+ UInt64(offset), .write), width, value)
+            try writeMemory(base &+ UInt64(offset), width, value)
         }
         // Le sommet de pile vit dans les bits 11 à 13 du mot d'état : l'écrire
         // tel quel suffit à le porter.
@@ -104,10 +104,10 @@ extension X86Core {
     }
 
     mutating func restoreFloatingPointState() throws {
-        guard let memory else { throw Fault.unsupported("FXRSTOR sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("FXRSTOR sans mémoire") }
         let base = lastAddress
         func get(_ offset: Int, _ width: Int) throws -> UInt64 {
-            try memory.read(try translate(base &+ UInt64(offset)), width)
+            try readMemory(base &+ UInt64(offset), width)
         }
         // **Le bit 6 du mot de contrôle revient toujours levé.** Le manuel le
         // dit « réservé » et n'en promet rien ; le processeur, lui, le force,
