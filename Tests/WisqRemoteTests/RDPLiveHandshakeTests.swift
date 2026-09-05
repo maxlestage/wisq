@@ -110,3 +110,66 @@ final class RDPLiveMCSTests: XCTestCase {
         }
     }
 }
+
+/// **L'échange de clés, contre un vrai serveur.**
+///
+/// C'est la mesure la plus dure de tout le lot. Si le module RSA est lu à
+/// l'envers, si les clés sont dérivées d'une moitié d'aléa de trop, ou si la
+/// signature porte sur le chiffré au lieu du clair, le serveur ne dit rien :
+/// il ferme. Le seul verdict est qu'il continue à parler.
+final class RDPLiveSecurityTests: XCTestCase {
+    func testARealServerAcceptsOurKeysAndAnswersTheLogin() async throws {
+        let target = try RDPLiveHandshakeTests.target()
+        let stream = try PosixByteStream(host: target.host, port: target.port)
+        defer { Task { await stream.close() } }
+        func pdu() async throws -> Data { try await RDPLiveHandshakeTests.readPDU(stream) }
+
+        try await stream.write(RDPWire.connectionRequest(user: "essai", requesting: .standard))
+        guard try RDPWire.readConnectionConfirm(await pdu()) == .standardSecurity else {
+            throw XCTSkip("ce serveur ne parle pas la sécurité historique")
+        }
+
+        let client = RDPConnect.ClientDescription(width: 1024, height: 768, name: "wisq")
+        try await stream.write(RDPConnect.connectInitial(client))
+        let server = try RDPConnect.readConnectResponse(await pdu())
+        XCTAssertFalse(server.certificate.isEmpty, "un serveur en sécurité historique a un certificat")
+
+        try await stream.write(RDPMCS.erectDomainRequest())
+        try await stream.write(RDPMCS.attachUserRequest())
+        let user = try RDPMCS.readAttachUserConfirm(await pdu())
+        for channel in [user, server.ioChannel] {
+            try await stream.write(RDPMCS.channelJoinRequest(user: user, channel: channel))
+            try RDPMCS.readChannelJoinConfirm(await pdu(), expecting: channel)
+        }
+
+        // L'échange de clés. L'aléa est tiré une fois et ne ressort jamais.
+        let key = try RDPStandardSecurity.publicKey(
+            fromCertificate: [UInt8](server.certificate))
+        XCTAssertEqual(key.usefulBytes * 8, 2048, "xrdp emploie une clé de 2048 bits")
+        let clientRandom = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let exchange = try RDPStandardSecurity.securityExchange(clientRandom: clientRandom, key: key)
+        try await stream.write(RDPMCS.sendData(user: user, channel: server.ioChannel, exchange))
+
+        var security = RDPStandardSecurity(keys: try RDPStandardSecurity.deriveKeys(
+            clientRandom: clientRandom, serverRandom: [UInt8](server.serverRandom),
+            method: server.encryptionMethod))
+
+        // **Et le premier message signé.** Un mot de passe faux est très bien :
+        // ce qu'on mesure est que le serveur *comprend* le paquet, pas qu'il
+        // ouvre une session.
+        let info = RDPClientInfo.packet(user: "essai", password: "mauvais",
+                                        flags: RDPClientInfo.defaultFlags.union(.forceEncryptedCSPDU))
+        let sealed = security.seal(info, flags: [.info])
+        try await stream.write(RDPMCS.sendData(user: user, channel: server.ioChannel, sealed))
+
+        // Le serveur répond la licence — c'est la preuve qu'il a lu le paquet.
+        // S'il n'avait pas su le déchiffrer, il aurait fermé sans un mot.
+        guard case .data(let indication) = try RDPMCS.readIncoming(await pdu()) else {
+            return XCTFail("le serveur a raccroché : la cryptographie ne va pas")
+        }
+        XCTAssertEqual(indication.channel, server.ioChannel)
+        let flags = UInt16(indication.payload[0]) | UInt16(indication.payload[1]) << 8
+        XCTAssertNotEqual(flags & 0x0080, 0,
+                          "attendu un message de licence, drapeaux 0x\(String(flags, radix: 16))")
+    }
+}
