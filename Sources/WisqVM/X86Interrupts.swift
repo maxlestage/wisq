@@ -302,6 +302,17 @@ extension X86Core {
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
         let line = UInt8(pending.trailingZeroBitCount)
+        // **Une ligne en service bloque ses égales et ses inférieures.** C'est
+        // la règle du 8259, et elle n'est pas décorative : un gestionnaire
+        // rouvre les interruptions avant d'avoir fini — Linux traite ses
+        // « softirq » ainsi —, et sans cette règle la même ligne le
+        // réinterromprait aussitôt, sur sa propre pile, aussi longtemps que la
+        // condition dure. Une pile de noyau fait seize kilo-octets ; ce qui
+        // est dessous ne lui appartient pas.
+        if devices.primary.service != 0,
+           line >= UInt8(devices.primary.service.trailingZeroBitCount) {
+            return
+        }
         let vector = devices.primary.vectorBase &+ line
         guard try enter(vector, errorCode: 0) else { return }
         // La demande n'est retirée **que** si elle a été livrée : sinon elle
