@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 
 @testable import WisqCore
@@ -136,4 +135,3 @@ final class RDPSessionContractTests: XCTestCase {
         await session.stop()
     }
 }
-#endif

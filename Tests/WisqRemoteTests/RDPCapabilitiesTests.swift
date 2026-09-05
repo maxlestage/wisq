@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 import WisqCore
 
@@ -265,4 +264,3 @@ final class RDPCapabilitiesTests: XCTestCase {
         XCTAssertEqual(declared, confirm.count - 20)
     }
 }
-#endif

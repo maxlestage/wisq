@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import Foundation
 
 @testable import WisqRemote
@@ -578,4 +577,3 @@ enum RDPBitmapVectors {
             digest: "7b7c497deda6ab5adaec93632e1f98b531fb3b9b"),
     ]
 }
-#endif

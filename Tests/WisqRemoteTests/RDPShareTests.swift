@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 import WisqCore
 
@@ -222,4 +221,3 @@ final class RDPShareTests: XCTestCase {
         XCTAssertEqual(RDPStandardSecurity.le32(written, 6), 0x0001_03EA)
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 import WisqCore
 
@@ -149,4 +148,3 @@ final class RDPLicensingTests: XCTestCase {
         XCTAssertEqual(Int(blob[2]) | Int(blob[3]) << 8, 3)
     }
 }
-#endif

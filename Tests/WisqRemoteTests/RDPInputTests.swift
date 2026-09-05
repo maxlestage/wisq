@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 import WisqCore
 
@@ -190,4 +189,3 @@ final class RDPInputTests: XCTestCase {
         XCTAssertEqual(UInt16(body[10]) | UInt16(body[11]) << 8, 0)
     }
 }
-#endif

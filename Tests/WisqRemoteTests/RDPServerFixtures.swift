@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import Foundation
 
 /// Ce qu'un **vrai serveur** a envoyé, octet pour octet.
@@ -201,4 +200,3 @@ enum RDPServerFixtures {
         "ffffff0660b8ffffff91fefefefffffffffefefefffefefefffcfdfdf7fcfaf6" +
         "fbfcf9fbfdfafcfcfdfefdfffefffefefefefefefffffffefefeffffff0081")
 }
-#endif

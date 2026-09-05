@@ -1,4 +1,3 @@
-#if canImport(Glibc)
 import XCTest
 import WisqCore
 
@@ -254,4 +253,3 @@ final class RDPInterleavedRLETests: XCTestCase {
         }
     }
 }
-#endif
