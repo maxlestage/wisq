@@ -3500,3 +3500,69 @@ fichiers voulu, et c'est le fichier de la personne, pas le nôtre.
 commande n'ajoute pas de `root=`. L'invité voit `/dev/vda` et c'est son
 initramfs qui décide quoi en faire — forcer une racine casserait le cas
 courant pour servir un cas qu'on ne connaît pas.
+
+## Un disque pour la machine rv32 : rendre possible ce que le site disait impossible (en cours)
+
+Maxime, en lisant la page de la feuille de route : « **Il faut que tu le rendes
+possible.** »
+
+Le paragraphe visé disait ceci, et il faut le lire attentivement parce qu'il a
+raison sur les faits et tort sur la conclusion :
+
+> C'était le plan, et c'était le mauvais. Les noyaux rv32 nommu que cet
+> émulateur fait tourner ont le transport virtio-mmio mais aucun pilote bloc
+> […] Un virtio-blk parfait n'aurait eu personne à qui parler, et comme vous
+> apportez votre propre noyau, le fait qu'un disque marche dépendrait d'un
+> build que nous ne contrôlons pas.
+
+**Ce qui bloquait n'était pas le noyau des gens.** Mesuré plutôt que supposé,
+en démontant l'arbre de périphériques que la machine tend à l'invité et en
+relisant le cœur :
+
+| ce que la machine offre | ce qu'elle déclare |
+| --- | --- |
+| un UART 8250 | `uart@10000000` |
+| un CLINT | `clint@11000000` |
+| un syscon | `syscon@11100000` |
+| le contrôleur d'interruptions du hart | `riscv,cpu-intc`, phandle 2 |
+| **rien d'autre** | **pas de PLIC, pas de virtio** |
+
+Et `RV32Core` ne connaissait **qu'une seule source d'interruption** — le timer,
+bit 7 de `mip`. Son propre commentaire le disait : « the only interrupt this
+machine can raise is the timer ». Un noyau rv32 compilé avec
+`CONFIG_VIRTIO_MMIO` et `CONFIG_VIRTIO_BLK` — ça existe et ça se compile — ne
+pouvait donc rien trouver ici, non pas parce qu'il en était incapable, mais
+parce que **wisq n'offrait rien à trouver**.
+
+Les tranches, dans l'ordre où elles se tiennent :
+
+1. **La ligne d'interruption externe** (fait). `mip` bit 11, cause
+   `0x8000000B`, prioritaire sur le timer comme le manuel privilégié l'ordonne.
+   Deux moitiés qu'on oublie facilement viennent avec : elle **réveille un
+   `WFI`** — un invité qui a lancé une requête dort —, et elle **interdit le
+   saut dans le temps** que l'attente s'autorisait. Ce saut avançait l'horloge
+   d'un coup jusqu'à `mtimecmp` ; c'était juste tant que le timer était seul, et
+   ça ferait vieillir la machine de plusieurs secondes pour un disque qui a déjà
+   répondu.
+2. **L'arbre construit au lieu d'être recopié.** Le blob vient tel quel de
+   mini-rv32ima, et on y écrit aujourd'hui la taille mémoire et la ligne de
+   commande à des offsets trouvés à la main — avec un plafond de 54 octets pour
+   la seconde. Il faut pouvoir y **déclarer** un nœud ; le nœud pointera
+   directement le contrôleur du hart, comme le CLINT le fait déjà, ce qui évite
+   d'écrire un PLIC dont rien d'autre n'a besoin.
+3. **Le périphérique.** Celui du lot 7 parle virtio-mmio v2 et s'appelle
+   `X86VirtioBlock` par accident d'histoire ; il devient commun aux deux
+   machines plutôt qu'écrit deux fois.
+4. **La preuve.** Un invité rv32 écrit à la main qui pilote la file et relit ce
+   qu'il a écrit, sur le vrai interpréteur — comme `TinyGuestTests`. C'est la
+   seule chose qui distingue « le périphérique existe » de « le périphérique
+   marche ».
+5. **Le cœur Rust**, sinon l'application n'en voit rien : c'est lui qu'elle
+   embarque.
+6. **L'application et le site.**
+
+**Ce que wisq ne pourra pas faire, et qu'il faut dire au lieu de le taire :
+mettre le pilote dans le noyau de la personne.** Ce qui remplace le silence :
+si l'invité ne touche jamais le périphérique, la machine le sait — le
+périphérique compte ses requêtes — et peut le dire, au lieu de laisser un
+disque muet passer pour un disque cassé.
