@@ -67,16 +67,20 @@ extension RustLinuxMachine: GuestMachine {
         // donc le seul où « la même carte » peut être autre chose qu'une
         // intention : `RV32DeviceTree` dit la machine, `WisqVMRust` la reçoit
         // en octets sans savoir qui l'a écrite, et le cœur Swift lit la même.
+        //
+        // **Et c'est ici que le disque devient trouvable.** Le cœur Swift
+        // bâtit son propre arbre et décide donc seul ; celui-ci reçoit le
+        // sien, et il faut lui demander le nœud. `hasDisk` traverse le FFI
+        // pour ça : un arbre sans le nœud décrit une machine sans disque, et
+        // l'invité ne sonderait jamais la fenêtre.
         try load(kernelImage: kernelImage,
                  deviceTree: RV32DeviceTree.tree(
-                    ramSize: Int(ramSize), commandLine: commandLine).flatten())
+                    ramSize: Int(ramSize), commandLine: commandLine,
+                    disk: hasDisk).flatten())
     }
 
-    /// Et le même refus pour le disque, pour la même raison : ce noyau-là n'a
-    /// aucun pilote bloc, donc aucun contrôleur à qui parler.
-    public func attachDisk(_ image: Data) throws {
-        throw GuestMachineRefusal.noDiskHere(architecture: "RISC-V 32 bits")
-    }
+    /// Le disque, avant `load` — voir `attach(disk:)`.
+    public func attachDisk(_ image: Data) throws { attach(disk: [UInt8](image)) }
 
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {

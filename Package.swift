@@ -107,7 +107,8 @@ let rustCoreTargets: [Target] = rustCoreEnabled ? [
     ),
 
     // Both cores, driven through the same script and compared.
-    .testTarget(name: "WisqVMRustTests", dependencies: ["WisqVMRust", "WisqVM"]),
+    .testTarget(name: "WisqVMRustTests",
+                dependencies: ["WisqVMRust", "WisqVM", "WisqVMTestKit"]),
 ] : []
 
 let rustCoreProducts: [Product] = rustCoreEnabled
@@ -180,7 +181,14 @@ let package = Package(
 
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet", "WisqCore"]),
-        .testTarget(name: "WisqVMTests", dependencies: ["WisqVM"]),
+        // Test scaffolding the two VM test targets share. Not a product, and
+        // not built for the app: an assembler for hand-written rv32 programs
+        // lives here because both the Swift core's tests and the differential
+        // ones need it, and SwiftPM will not let one file belong to two test
+        // targets.
+        .target(name: "WisqVMTestKit", path: "Tests/WisqVMTestKit"),
+
+        .testTarget(name: "WisqVMTests", dependencies: ["WisqVM", "WisqVMTestKit"]),
         .testTarget(name: "WisqRemoteTests", dependencies: ["WisqRemote", "WisqNet"]),
     ] + uiTargets + agentTargets + rustCoreTargets
 )

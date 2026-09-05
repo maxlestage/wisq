@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Instruction-level checks with hand-encoded RISC-V, run on a tiny bus.
 final class RV32CoreTests: XCTestCase {
