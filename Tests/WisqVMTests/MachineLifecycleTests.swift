@@ -98,7 +98,7 @@ final class MachineLifecycleTests: XCTestCase {
         _ = suspended.steppedAway()
         XCTAssertFalse(suspended.reportsGuestExit)
 
-        var fresh = MachineLifecycle()
+        let fresh = MachineLifecycle()
         XCTAssertFalse(fresh.reportsGuestExit, "rien n'a tourné : rien à conclure")
     }
 
