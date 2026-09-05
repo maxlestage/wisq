@@ -315,7 +315,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wisq-agent"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rcgen",
  "ring",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "wisq-vm"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "yasna"

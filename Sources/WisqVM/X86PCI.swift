@@ -44,19 +44,19 @@ public final class X86PCIHost: @unchecked Sendable {
     public private(set) var address: UInt32 = 0
     /// Le disque, ou rien. Sans lui le bus existe mais reste vide, ce qui est
     /// une réponse honnête : le noyau énumère, ne trouve rien, et continue.
-    public var storage: X86VirtioBlock?
+    public var storage: VirtioBlock?
 
     /// Ce que le noyau a activé — bit 0 les ports, bit 2 la maîtrise du bus.
     public private(set) var command: UInt16 = 0
     /// Où le noyau a placé la fenêtre de ports du périphérique.
     public private(set) var window: UInt32 = 0
     /// La ligne d'interruption, telle que le noyau la lit **et l'écrit**.
-    public private(set) var interruptLine: UInt8 = X86VirtioBlock.interruptLine
+    public private(set) var interruptLine: UInt8 = VirtioBlock.pc.interruptLine
     /// Vrai entre l'écriture de tous les uns dans le registre de fenêtre et la
     /// lecture qui suit : c'est ainsi qu'un noyau demande la **taille**.
     var sizing = false
 
-    public init(storage: X86VirtioBlock? = nil) {
+    public init(storage: VirtioBlock? = nil) {
         self.storage = storage
     }
 

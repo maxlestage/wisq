@@ -191,9 +191,13 @@ final class KernelMemoryTests: XCTestCase {
             XCTAssertNoThrow(
                 try machine.load(kernelImage: Data([0x13, 0x00, 0x00, 0x00])),
                 "\(size >> 20) Mo : une machine offerte doit accepter un noyau")
+            // Relu comme le noyau le lit — en démontant l'arbre — plutôt qu'à
+            // un décalage d'octet. Le décalage marchait tant que l'arbre était
+            // un blob figé ; il ne veut plus rien dire depuis qu'il est bâti.
+            let tree = try DeviceTree.read(machine.deviceTreeHandedToTheGuest)
             XCTAssertEqual(
-                Int(DefaultDTB.declaredMemory(in: machine.deviceTreeHandedToTheGuest)),
-                Int(size) - DefaultDTB.memoryTopReserve,
+                tree.root.child("memory@80000000")?.property("reg"),
+                .cells([0, 0x8000_0000, 0, size - UInt32(RV32DeviceTree.memoryTopReserve)]),
                 "\(size >> 20) Mo : l'invité doit apprendre la taille choisie")
         }
     }

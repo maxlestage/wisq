@@ -3443,7 +3443,7 @@ curseur qui fabrique un disque, mais une image qu'on apporte et qu'on branche.
 
 ## Un disque pour la machine x86-64 (fait)
 
-`X86VirtioBlock` existait depuis le lot 7, et **rien dans l'application ne
+`VirtioBlock` existait depuis le lot 7, et **rien dans l'application ne
 l'appelait**. Le périphérique fonctionnait — mesuré dans ce conteneur, contre
 un vrai noyau Alpine : il énumère `[1af4:1001]`, charge `virtio_blk`, annonce
 « [vda] 32768 512-byte logical blocks », et une écriture de 256 Kio à
@@ -3487,13 +3487,30 @@ Ce que cette tranche ajoute, du bas vers le haut :
   dure : l'instantané porte les octets du disque tels que l'invité les a
   laissés.
 
-**Ce qui n'est pas fait, et qui se mesure.** Monter un vrai système de
-fichiers depuis l'invité échoue — non pas chez wisq, mais chez Alpine :
-`modprobe ext4` répond « Module ext4 not found in directory
-/lib/modules/6.6.134-0-lts ». L'initramfs d'une distribution ne porte que ses
-modules de démarrage ; le reste vit dans le `modloop`, qui n'est pas là. Le
-bloc, lui, est bon jusqu'au dernier octet — c'est ce que la mesure ci-dessus
-établit. Il faut donc un initramfs qui contienne le pilote du système de
+**Et un vrai système de fichiers se monte** — mesuré depuis, et c'est la
+mesure qui manquait à cette tranche.
+
+Le premier essai échouait : `modprobe ext4` répondait « Module ext4 not found
+in directory /lib/modules/6.6.134-0-lts ». L'initramfs d'une distribution ne
+porte que ses modules de démarrage ; `ext4.ko` vit dans le `modloop`, qui n'est
+pas donné à la machine. Ce n'était donc pas un défaut de wisq, et il fallait le
+prouver plutôt que l'affirmer : `ext4.ko`, `jbd2.ko`, `mbcache.ko` et
+`crc16.ko` sortis du `modloop` de l'ISO, empaquetés en cpio, **placés avant**
+l'archive compressée — l'ordre compte, le noyau ne déballe pas une archive nue
+posée après un flux gzip — et le même démarrage donne :
+
+    mods=0
+    EXT4-fs (vda): mounted filesystem … r/w with ordered data mode
+    /dev/vda on /essai type ext4 (rw,relatime)
+    cat /essai/marque.txt  →  wisq-disque-vivant
+    umount=0, puis remontage
+    cat /essai/ecrit       →  bonjour-wisq
+
+Un fichier écrit sur l'hôte se lit dans l'invité ; un fichier écrit dans
+l'invité survit à un démontage et à un remontage. Le disque n'est pas un bloc
+qu'on lit : c'est un système de fichiers qui vit.
+
+Ce qui reste vrai : il faut un initramfs qui contienne le pilote du système de
 fichiers voulu, et c'est le fichier de la personne, pas le nôtre.
 
 **Ce que wisq ne fait pas non plus : décider de la racine.** La ligne de
@@ -3544,14 +3561,32 @@ Les tranches, dans l'ordre où elles se tiennent :
    d'un coup jusqu'à `mtimecmp` ; c'était juste tant que le timer était seul, et
    ça ferait vieillir la machine de plusieurs secondes pour un disque qui a déjà
    répondu.
-2. **L'arbre construit au lieu d'être recopié.** Le blob vient tel quel de
-   mini-rv32ima, et on y écrit aujourd'hui la taille mémoire et la ligne de
-   commande à des offsets trouvés à la main — avec un plafond de 54 octets pour
-   la seconde. Il faut pouvoir y **déclarer** un nœud ; le nœud pointera
-   directement le contrôleur du hart, comme le CLINT le fait déjà, ce qui évite
-   d'écrire un PLIC dont rien d'autre n'a besoin.
+2. **L'arbre construit au lieu d'être recopié** (fait). `DeviceTree` aplatit
+   et relit un arbre au format v17 ; `RV32DeviceTree` écrit celui de cette
+   machine en clair. Le blob n'a pas disparu : il est devenu le **témoin**, et
+   un test démonte les deux pour exiger qu'ils disent la même chose, nœud par
+   nœud. Les deux rustines d'offsets sont parties avec, et le plafond de 54
+   caractères sur la ligne de commande avec elles — il n'était pas une règle de
+   la machine, seulement la place que le blob se trouvait avoir.
+
+   **Un seul producteur, pour les deux cœurs.** Chacun bâtissait le sien depuis
+   sa propre copie du blob ; c'est exactement ainsi que deux interprètes censés
+   décrire la même carte finissent par en décrire deux. `RustLinuxMachine`
+   n'accepte plus que des octets — sa commodité `load(kernelImage:commandLine:)`
+   a été **retirée**, parce que deux fonctions du même nom sur deux cartes
+   différentes sont un piège et non un service — et c'est `WisqUI`, le seul
+   endroit qui connaît les deux côtés, qui construit l'arbre.
+
+   **Ce que le remplacement a fait vivre, et qu'aucun raisonnement n'aurait
+   donné :** le premier arbre construit faisait 1507 octets là où le blob en
+   faisait 1536. Le chargeur pose l'arbre à « fin de la RAM moins sa taille
+   moins la réserve », donc c'est la taille qui décide de l'alignement de
+   l'adresse — et l'analyseur du noyau exige huit. Le noyau n'a **rien dit** :
+   pas de bannière, pas de panique, une sortie parfaitement vide. Le seul
+   symptôme d'un DTB mal aligné est le silence. La taille totale est arrondie à
+   huit depuis, et deux tests le tiennent.
 3. **Le périphérique.** Celui du lot 7 parle virtio-mmio v2 et s'appelle
-   `X86VirtioBlock` par accident d'histoire ; il devient commun aux deux
+   `VirtioBlock` par accident d'histoire ; il devient commun aux deux
    machines plutôt qu'écrit deux fois.
 4. **La preuve.** Un invité rv32 écrit à la main qui pilote la file et relit ce
    qu'il a écrit, sur le vrai interpréteur — comme `TinyGuestTests`. C'est la
