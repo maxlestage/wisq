@@ -54,6 +54,30 @@ break APIs.
   440FX bridge QEMU presents. Measured after: « PCI: Using configuration type
   1 », « pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000 », and the
   kernel assigning our device its I/O window at 0x1000.
+- **A disk for the rv32 machine, and the two things that were missing before
+  it could exist.** This was written off on the roadmap, and the reasoning was
+  right on the facts and wrong on the conclusion: rv32 nommu kernels do often
+  lack a block driver, but wisq was offering nothing to find. The machine had
+  no interrupt line a device could pull — `RV32Core` knew only the timer, bit 7
+  of `mip` — and its device tree was a frozen blob patched at two byte offsets,
+  where no node could grow. Both are gone: the machine external line is bit 11
+  with cause `0x8000000B`, outranking the timer, waking a parked hart and
+  standing the clock-jump down while a device waits; and `DeviceTree` builds
+  the tree in the open, with the reference blob kept as the witness a test
+  compares against node by node. The 54-character cap on the kernel command
+  line went with the blob — it was never a rule of the machine, only the room
+  the blob happened to have.
+
+  The device is the one the PC machine already had, made common to both rather
+  than written twice, at `0x1000_1000` — the address QEMU's `virt` board uses.
+  Both cores have it, and their snapshots are compared byte for byte, the disk
+  and the bytes the guest wrote into it included.
+
+  What wisq still cannot do is put the block driver into a kernel someone
+  brings. The device counts its requests, so when nothing has touched it by the
+  end of a session the machine says so, instead of leaving a silent disk that
+  looks exactly like a broken one.
+
 - **A disk for the x86-64 machine: virtio over MMIO.** A PCI disk would have
   needed a PCI bus first — configuration space through ports 0xCF8/0xCFC, BARs
   to place, an interrupt table — all before the first sector. The MMIO

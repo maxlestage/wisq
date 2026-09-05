@@ -114,6 +114,30 @@ public enum LocalDisk {
                        kind: KernelImageKind.identify(fileAt: url), ceiling: limit)
     }
 
+    // MARK: - Ce que le disque a vu
+
+    /// Ce qu'il y a à dire quand un disque était branché et que l'invité ne
+    /// l'a jamais touché — ou `nil` quand il n'y a rien à dire.
+    ///
+    /// **C'est la seule limite qui ne bougera pas.** wisq peut émuler le
+    /// périphérique ; il ne peut pas mettre le pilote bloc dans le noyau que
+    /// quelqu'un apporte. Un noyau qui n'en a pas ne sonde jamais la fenêtre,
+    /// et le symptôme est alors un disque parfaitement muet — indiscernable
+    /// d'un disque cassé, ou d'un réglage qui n'aurait pas pris.
+    ///
+    /// Le périphérique compte ses requêtes, donc on peut le dire au lieu de
+    /// laisser chercher. Une seule requête, même refusée, prouve que le pilote
+    /// est là et que le silence vient d'ailleurs : la phrase se tait alors.
+    public static func silenceNote(activity: (served: UInt64, refused: UInt64)?,
+                                   disk name: String) -> String? {
+        guard let activity, activity.served == 0, activity.refused == 0 else { return nil }
+        return """
+            L'invité n'a jamais touché \(name) : son noyau n'a pas de pilote \
+            bloc, ou ne l'a pas chargé. Le disque était là, sur /dev/vda, et \
+            personne n'est venu.
+            """
+    }
+
     // MARK: - Ce qu'on peut proposer
 
     /// Ce fichier peut-il être un disque ?
