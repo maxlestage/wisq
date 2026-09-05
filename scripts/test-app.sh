@@ -68,7 +68,7 @@ cat "$sortie"
 
 # Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
 # sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
-mesures=$(grep -E "^(WebKit|pont) :|Executed [0-9]+ tests" "$sortie" | tail -20 || true)
+mesures=$(grep -E "^(WebKit|pont|Metal) [^:]*: |Executed [0-9]+ tests" "$sortie" | tail -30 || true)
 if [ -n "$mesures" ]; then
   echo "==> Mesures"
   echo "$mesures"

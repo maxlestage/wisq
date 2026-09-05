@@ -1878,7 +1878,7 @@ entrées-sorties, et la détection du code qui se modifie. L'attente honnête es
 « quelques centaines de MIPS », pas 831. À trois cents, un bureau complet
 démarre en moins de trois minutes et devient utilisable.
 
-**Et ce que la pile d'Apple a répondu.** `Tests/WisqWebKitTests` pose les deux
+**Et ce que la pile d'Apple a répondu.** `Tests/WisqHostedTests` pose les deux
 questions qu'aucune mesure sous Bun ne tranche, dans un `WKWebView` **hébergé
 par l'application**, sur un iPhone simulé du coureur Apple :
 
@@ -1904,6 +1904,38 @@ Ce qui est acquis malgré cette réserve : le module est correct, un `WKWebView`
 hébergé le compile et l'exécute, et le pont coûte un demi-millième de seconde.
 Le premier point de la tranche 1 — « mesurer le pont avant d'écrire le cœur,
 c'est lui qui peut tout gâcher » — est réglé, et il ne gâche rien.
+
+**Et Metal, la question de Maxime.** « Utilise Metal pour faire le bureau sur
+mobile, ça ira peut-être plus vite. » Elle est fondée sur un fait exact :
+`MTLDevice.makeLibrary(source:)` **est** un compilateur à l'exécution qu'Apple
+autorise dans une application de l'App Store. On lui donne du texte, il rend du
+code machine GPU — structurellement le même tour que le WebAssembly rendu à
+WebKit.
+
+`MetalCompilerProbeTests` pose les trois questions qui décident, et aucune ne
+se devine :
+
+1. **Ce que coûte une compilation.** Un cœur qui traduit bloc par bloc en
+   compile des milliers.
+2. **Ce que coûte un lancement.** Un bloc de base fait une dizaine
+   d'instructions ; si l'aller-retour coûte davantage, il faut regrouper — et
+   regrouper des blocs dont on ne connaît pas la suite avant de les avoir
+   exécutés est justement ce qu'un émulateur ne peut pas faire.
+3. **Ce qu'un seul fil GPU rend sur une chaîne dépendante, registres en
+   mémoire.** C'est le point dur, et il est structurel : un GPU cache la
+   latence de sa mémoire en tenant des milliers de fils prêts, et un cœur x86
+   émulé n'en a **qu'un**, chaque instruction attendant la précédente.
+
+La boucle est celle du banc x86 et du module WebAssembly, à l'identique, et le
+même calcul tourne en Swift natif sur le même coureur pour que le chiffre du
+GPU se compare à quelque chose. L'oracle est refait avant tout chronomètre.
+
+**Ce qui est déjà sûr sans mesure, et qui ne dépend pas de la réponse** : Metal
+est le bon outil pour l'**écran** de la tranche 3 — porter le tampon de
+l'invité à la dalle, mettre à l'échelle, convertir les couleurs à soixante
+images par seconde. Ça, c'est du travail parallèle sur des pixels
+indépendants, exactement ce pour quoi un GPU est fait. La question ouverte
+porte sur le **cœur**, pas sur l'affichage.
 
 **Les tranches, si on y va.**
 
