@@ -289,7 +289,10 @@ public final class LocalVMModel {
         let thread = Thread { [weak self] in
             defer { finished.signal() }
             let outcome: GuestOutcome
-            var activity: (served: UInt64, refused: UInt64)?
+            // `let`, assigné une seule fois : une variable mutable capturée
+            // par la fermeture du main actor plus bas serait une course, et
+            // Swift 6 a raison de la refuser.
+            let activity: (served: UInt64, refused: UInt64)?
             do {
                 // Le disque avant tout le reste : une machine reprise depuis
                 // un instantané porte le sien **dedans** — les octets que
@@ -343,21 +346,25 @@ public final class LocalVMModel {
                 // il émule le périphérique, il ne met pas le pilote dans le
                 // noyau de la personne. Sans cette phrase, le symptôme est un
                 // disque muet, indiscernable d'un réglage qui n'a pas pris.
+                //
+                // Un suffixe plutôt qu'une fonction imbriquée : une `func`
+                // déclarée dans cette fermeture est synchrone et non isolée,
+                // donc elle ne peut pas appeler `finish` qui vit sur le main
+                // actor. Le compilateur d'iOS le dit ; celui de Linux ne voit
+                // jamais ce fichier.
                 let silence = diskURL.flatMap {
                     LocalDisk.silenceNote(activity: activity, disk: $0.lastPathComponent)
-                }
-                func report(_ message: String) {
-                    self.finish(with: silence.map { "\(message)\n\n\($0)" } ?? message)
-                }
+                }.map { "\n\n\($0)" } ?? ""
                 switch outcome {
-                case .powerOff: report("La machine s'est éteinte.")
-                case .reboot: report("La machine a redémarré ; relancez-la.")
-                case .stopped: report("Arrêtée.")
+                case .powerOff: self.finish(with: "La machine s'est éteinte." + silence)
+                case .reboot:
+                    self.finish(with: "La machine a redémarré ; relancez-la." + silence)
+                case .stopped: self.finish(with: "Arrêtée." + silence)
                 // Un refus du cœur est **nommé**. « Arrêtée » à sa place
                 // enverrait chercher partout ; l'instruction qui a manqué est
                 // ce qui permet de savoir quoi écrire ensuite.
                 case .faulted(let reason):
-                    report("La machine s'est arrêtée : \(reason)")
+                    self.finish(with: "La machine s'est arrêtée : \(reason)" + silence)
                 }
             }
         }
