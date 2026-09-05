@@ -37,10 +37,10 @@ final class X86SerialPortTests: XCTestCase {
     /// l'un des deux ne revient pas, « there's nothing here ».
     func testTheInterruptEnableRegisterReadsBackWhatWasWritten() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 1, 0)
-        XCTAssertEqual(core.portRead(Self.base &+ 1) & 0x0F, 0)
-        core.portWrite(Self.base &+ 1, 0x0F)
-        XCTAssertEqual(core.portRead(Self.base &+ 1) & 0x0F, 0x0F)
+        core.portWrite(Self.base &+ 1, 1, 0)
+        XCTAssertEqual(core.portRead(Self.base &+ 1, 1) & 0x0F, 0)
+        core.portWrite(Self.base &+ 1, 1, 0x0F)
+        XCTAssertEqual(core.portRead(Self.base &+ 1, 1) & 0x0F, 0x0F)
     }
 
     /// Le second : en mode boucle, les sorties du registre de commande du
@@ -49,29 +49,29 @@ final class X86SerialPortTests: XCTestCase {
     /// quatre bits hauts.
     func testLoopbackReflectsModemControlIntoModemStatus() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 4, 0x1A)
-        XCTAssertEqual(core.portRead(Self.base &+ 6) & 0xF0, 0x90)
+        core.portWrite(Self.base &+ 4, 1, 0x1A)
+        XCTAssertEqual(core.portRead(Self.base &+ 6, 1) & 0xF0, 0x90)
         // Et chaque ligne trouve la sienne : DTR → DSR, OUT1 → RI.
-        core.portWrite(Self.base &+ 4, 0x15)
-        XCTAssertEqual(core.portRead(Self.base &+ 6) & 0xF0, 0x60)
+        core.portWrite(Self.base &+ 4, 1, 0x15)
+        XCTAssertEqual(core.portRead(Self.base &+ 6, 1) & 0xF0, 0x60)
     }
 
     /// Hors boucle, un câble branché : porteuse, prêt, libre d'émettre. Un
     /// terminal ouvert sans `CLOCAL` attendrait la porteuse indéfiniment.
     func testOutsideLoopbackTheModemLinesReadAsAConnectedCable() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 4, 0x0B)
-        XCTAssertEqual(core.portRead(Self.base &+ 6) & 0xF0, 0xB0)
+        core.portWrite(Self.base &+ 4, 1, 0x0B)
+        XCTAssertEqual(core.portRead(Self.base &+ 6, 1) & 0xF0, 0xB0)
     }
 
     /// Le registre de brouillon distingue un 16450 d'un 8250 : il n'a pas
     /// d'autre rôle que de garder ce qu'on y met.
     func testTheScratchRegisterHolds() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 7, 0xA5)
-        XCTAssertEqual(core.portRead(Self.base &+ 7), 0xA5)
-        core.portWrite(Self.base &+ 7, 0x5A)
-        XCTAssertEqual(core.portRead(Self.base &+ 7), 0x5A)
+        core.portWrite(Self.base &+ 7, 1, 0xA5)
+        XCTAssertEqual(core.portRead(Self.base &+ 7, 1), 0xA5)
+        core.portWrite(Self.base &+ 7, 1, 0x5A)
+        XCTAssertEqual(core.portRead(Self.base &+ 7, 1), 0x5A)
     }
 
     /// FIFO activée, les deux bits hauts du registre d'identification disent
@@ -79,9 +79,9 @@ final class X86SerialPortTests: XCTestCase {
     /// autre question quand les variantes ne sont pas compilées.
     func testAnEnabledFIFOReadsAsA16550A() {
         var core = Self.core()
-        XCTAssertEqual(core.portRead(Self.base &+ 2) >> 6, 0, "sans FIFO : un 8250")
-        core.portWrite(Self.base &+ 2, 0x01)
-        XCTAssertEqual(core.portRead(Self.base &+ 2) >> 6, 3)
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) >> 6, 0, "sans FIFO : un 8250")
+        core.portWrite(Self.base &+ 2, 1, 0x01)
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) >> 6, 3)
     }
 
     /// Le diviseur se lit et s'écrit derrière `DLAB`, et **ne touche pas** au
@@ -89,15 +89,15 @@ final class X86SerialPortTests: XCTestCase {
     /// adresses.
     func testTheDivisorLatchHidesBehindDLAB() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 1, 0x05)  // IER
-        core.portWrite(Self.base &+ 3, 0x80)  // DLAB
-        core.portWrite(Self.base, 0x0C)
-        core.portWrite(Self.base &+ 1, 0x00)
-        XCTAssertEqual(core.portRead(Self.base), 0x0C)
-        XCTAssertEqual(core.portRead(Self.base &+ 1), 0x00)
+        core.portWrite(Self.base &+ 1, 1, 0x05)  // IER
+        core.portWrite(Self.base &+ 3, 1, 0x80)  // DLAB
+        core.portWrite(Self.base, 1, 0x0C)
+        core.portWrite(Self.base &+ 1, 1, 0x00)
+        XCTAssertEqual(core.portRead(Self.base, 1), 0x0C)
+        XCTAssertEqual(core.portRead(Self.base &+ 1, 1), 0x00)
         XCTAssertEqual(core.devices.serial.divisor, 0x000C, "115 200 bauds")
-        core.portWrite(Self.base &+ 3, 0x03)  // DLAB retombé
-        XCTAssertEqual(core.portRead(Self.base &+ 1) & 0x0F, 0x05, "l'IER est intact")
+        core.portWrite(Self.base &+ 3, 1, 0x03)  // DLAB retombé
+        XCTAssertEqual(core.portRead(Self.base &+ 1, 1) & 0x0F, 0x05, "l'IER est intact")
         XCTAssertTrue(core.serialOutput.isEmpty, "rien n'est sorti sur la ligne")
     }
 
@@ -109,15 +109,15 @@ final class X86SerialPortTests: XCTestCase {
     /// minuteur de secours au lieu de compter sur elle.
     func testEnablingTheTransmitInterruptRaisesItAndReadingIIRClearsIt() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 1, 0x02)
+        core.portWrite(Self.base &+ 1, 1, 0x02)
         XCTAssertTrue(core.serialInterrupting)
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x02, "émetteur vide")
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x02, "émetteur vide")
         XCTAssertFalse(core.serialInterrupting, "lire l'identification l'acquitte")
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x01, "plus rien en attente")
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x01, "plus rien en attente")
 
-        core.portWrite(Self.base &+ 1, 0x00)
-        core.portWrite(Self.base &+ 1, 0x02)
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x02, "et la réautoriser la relève")
+        core.portWrite(Self.base &+ 1, 1, 0x00)
+        core.portWrite(Self.base &+ 1, 1, 0x02)
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x02, "et la réautoriser la relève")
     }
 
     /// Chaque octet écrit vide de nouveau le transmetteur, donc relève
@@ -125,10 +125,10 @@ final class X86SerialPortTests: XCTestCase {
     /// par seize sans jamais interroger le port.
     func testWritingAByteRaisesTheTransmitInterruptAgain() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 1, 0x02)
-        _ = core.portRead(Self.base &+ 2)
+        core.portWrite(Self.base &+ 1, 1, 0x02)
+        _ = core.portRead(Self.base &+ 2, 1)
         XCTAssertFalse(core.serialInterrupting)
-        core.portWrite(Self.base, 0x41)
+        core.portWrite(Self.base, 1, 0x41)
         XCTAssertEqual(core.serialOutput, [0x41])
         XCTAssertTrue(core.serialInterrupting)
     }
@@ -136,21 +136,21 @@ final class X86SerialPortTests: XCTestCase {
     /// Interruption non autorisée : rien ne demande, quoi qu'on écrive.
     func testNothingInterruptsWhenNothingIsEnabled() {
         var core = Self.core()
-        core.portWrite(Self.base, 0x41)
+        core.portWrite(Self.base, 1, 0x41)
         core.serialInput = [0x42]
         XCTAssertFalse(core.serialInterrupting)
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x01)
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x01)
     }
 
     /// Un octet reçu, interruption de réception autorisée : elle passe
     /// **avant** l'émission dans l'identification, comme sur la puce.
     func testReceivedDataInterruptsAndOutranksTransmit() {
         var core = Self.core()
-        core.portWrite(Self.base &+ 1, 0x03)
+        core.portWrite(Self.base &+ 1, 1, 0x03)
         core.serialInput = [0x42]
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x04)
-        XCTAssertEqual(core.portRead(Self.base), 0x42, "l'octet est lu")
-        XCTAssertEqual(core.portRead(Self.base &+ 2) & 0x0F, 0x02, "reste l'émission")
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x04)
+        XCTAssertEqual(core.portRead(Self.base, 1), 0x42, "l'octet est lu")
+        XCTAssertEqual(core.portRead(Self.base &+ 2, 1) & 0x0F, 0x02, "reste l'émission")
     }
 
     // MARK: - Jusqu'au processeur

@@ -97,6 +97,59 @@ final class X86ReplayableInstructionTests: XCTestCase {
         XCTAssertEqual(core.registers[4], top + 8)
     }
 
+    /// **Les drapeaux aussi sont un état, et `ADC` les relit.** L'addition
+    /// posait la nouvelle retenue *avant* d'écrire la mémoire ; quand
+    /// l'écriture fautait, la reprise lisait la retenue qu'elle venait
+    /// d'écrire au lieu de celle qu'elle avait reçue. Ici : 0x10 + 1 + 1 vaut
+    /// 0x12, et une reprise qui a perdu la retenue rend 0x11.
+    func testADCReplayedAfterAWriteFaultKeepsTheCarryItWasGiven() throws {
+        // `f9` stc ; `83 13 01` adcl $1,(%rbx)
+        var core = try Self.core([0xF9, 0x83, 0x13, 0x01])
+        try core.memory?.write(Self.data, 4, 0x10)
+        XCTAssertThrowsError(try core.run(budget: 2))
+        XCTAssertNotEqual(core.flags & X86Core.Flag.carry, 0,
+                          "la retenue d'entrée doit survivre à la faute")
+        try Self.makeWritable(core)
+        try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(Self.data, 4), 0x12)
+    }
+
+    /// `SBB` de même, dans l'autre sens : 0x10 − 1 − 1 vaut 0x0E, et une
+    /// reprise sans emprunt rend 0x0F.
+    func testSBBReplayedAfterAWriteFaultKeepsTheBorrowItWasGiven() throws {
+        // `f9` stc ; `83 1b 01` sbbl $1,(%rbx)
+        var core = try Self.core([0xF9, 0x83, 0x1B, 0x01])
+        try core.memory?.write(Self.data, 4, 0x10)
+        XCTAssertThrowsError(try core.run(budget: 2))
+        try Self.makeWritable(core)
+        try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(Self.data, 4), 0x0E)
+    }
+
+    /// `RCL` fait entrer la retenue dans le tour : sans elle, le bit du bas
+    /// est zéro au lieu de un.
+    func testRCLReplayedAfterAWriteFaultKeepsTheCarryItWasGiven() throws {
+        // `f9` stc ; `d1 13` rcll (%rbx)
+        var core = try Self.core([0xF9, 0xD1, 0x13])
+        try core.memory?.write(Self.data, 4, 0x10)
+        XCTAssertThrowsError(try core.run(budget: 2))
+        try Self.makeWritable(core)
+        try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(Self.data, 4), 0x21)
+    }
+
+    /// Et une instruction qui faute ne laisse **aucun** drapeau derrière elle :
+    /// le zéro et le signe non plus, parce que le cadre que le noyau empile
+    /// porte les drapeaux d'avant, et que son `IRETQ` les rendra.
+    func testAFaultingReadModifyWriteLeavesNoFlagBehind() throws {
+        // `83 03 01` addl $1,(%rbx) — sur 0xFFFFFFFF, ça poserait la retenue.
+        var core = try Self.core([0x83, 0x03, 0x01])
+        try core.memory?.write(Self.data, 4, 0xFFFF_FFFF)
+        let before = core.flags
+        XCTAssertThrowsError(try core.run(budget: 1))
+        XCTAssertEqual(core.flags, before, "rien de la faute ne doit se voir")
+    }
+
     /// `cmpxchg` réussi : les drapeaux et la mémoire, pas l'accumulateur —
     /// et le rejeu l'écrit une fois.
     func testCMPXCHGReplayedAfterAWriteFaultStoresExactlyOnce() throws {

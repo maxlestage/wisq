@@ -90,6 +90,25 @@ final class X86WaitingBudgetTests: XCTestCase {
                              "l'horloge a battu, et quelqu'un l'a lue")
     }
 
+    /// **Chaque course a sa propre patience.** Le drapeau était posé une fois
+    /// pour toutes : une machine qu'on relance après lui avoir donné de quoi
+    /// travailler — une frappe au clavier, par exemple — rendait encore
+    /// « attente épuisée » alors qu'elle venait de travailler tout son budget.
+    /// Sans ça, on ne peut pas tenir une conversation avec l'invité : le
+    /// premier silence rend tous les suivants illisibles.
+    func testEachRunReportsItsOwnPatience() throws {
+        var core = try Self.sleeping()
+        _ = try core.run(budget: 1_000_000, waiting: 10)
+        XCTAssertTrue(core.outOfPatience)
+
+        // De quoi travailler : la machine se réveille et consomme son budget.
+        core.halted = false
+        try core.memory?.load([0x90, 0xEB, 0xFD], at: 0)  // nop ; jmp -3
+        core.rip = 0
+        _ = try core.run(budget: 100, waiting: 10)
+        XCTAssertFalse(core.outOfPatience, "cette course-ci n'a pas attendu")
+    }
+
     /// Une machine qui ne peut **pas** être réveillée s'arrête tout de suite,
     /// allocation ou pas : sans horloge, l'attente serait éternelle.
     func testAMachineThatCannotBeWokenStopsAtOnce() throws {

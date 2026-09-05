@@ -100,6 +100,32 @@ extension X86Core {
         return try memory.read(try translate(lastAddress), size)
     }
 
+    /// **Vérifier l'écriture avant de calculer quoi que ce soit.**
+    ///
+    /// Une instruction qui lit une case, calcule et la réécrit touche la
+    /// mémoire deux fois, et le processeur vérifie **les deux accès** avant de
+    /// rien changer : si la case n'est pas inscriptible, la faute part sans
+    /// que rien n'ait bougé, et la reprise après que le noyau a ouvert la page
+    /// repart des mêmes entrées.
+    ///
+    /// Sans cette vérification, les drapeaux étaient déjà posés quand
+    /// l'écriture fautait — et pour `ADC`, `SBB`, `RCL` et `RCR`, la retenue
+    /// est une **entrée** : la reprise relisait celle qu'elle venait
+    /// d'écrire. C'est la même faute de famille que `XADD` qui écrivait son
+    /// registre avant sa mémoire, et que le `push` qui descendait RSP avant
+    /// de traduire. Une page partagée par `fork()` suffit à la déclencher.
+    ///
+    /// Le témoin d'adresse s'éteint pendant la vérification : sans ça, chaque
+    /// écriture surveillée serait comptée deux fois.
+    mutating func probeWrite(_ fields: Fields, _ size: Int) throws {
+        guard fields.mod != 0b11 else { return }
+        guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
+        let watched = watchedAddress
+        watchedAddress = nil
+        defer { watchedAddress = watched }
+        _ = try translate(lastAddress, .write)
+    }
+
     mutating func writeRM(_ fields: Fields, _ size: Int, _ value: UInt64) throws {
         guard fields.mod != 0b11 else {
             write(fields.rm, size, highByte: fields.rmIsHighByte, value)
