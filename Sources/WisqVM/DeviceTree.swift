@@ -302,10 +302,22 @@ public struct DeviceTree {
             }
         }
         if raw.count % 4 == 0 {
-            return .cells(stride(from: 0, to: raw.count, by: 4).map {
-                UInt32(raw[$0]) << 24 | UInt32(raw[$0 + 1]) << 16
-                    | UInt32(raw[$0 + 2]) << 8 | UInt32(raw[$0 + 3])
-            })
+            // **Écrit en boucle, pas en une expression.** Le compilateur
+            // d'Apple abandonne sur la version compacte — « unable to
+            // type-check this expression in reasonable time » — là où celui de
+            // Linux l'avale : quatre conversions, trois décalages et trois
+            // « ou » dans une fermeture de `map`, et l'inférence explose. Même
+            // famille que les jeux de capacités RDP.
+            var words: [UInt32] = []
+            words.reserveCapacity(raw.count / 4)
+            for at in stride(from: 0, to: raw.count, by: 4) {
+                var word = UInt32(raw[at]) << 24
+                word |= UInt32(raw[at + 1]) << 16
+                word |= UInt32(raw[at + 2]) << 8
+                word |= UInt32(raw[at + 3])
+                words.append(word)
+            }
+            return .cells(words)
         }
         return .string(String(decoding: raw, as: UTF8.self))
     }
