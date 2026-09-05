@@ -13,12 +13,14 @@ import XCTest
 /// Les tests posent ces anneaux à la main, exactement comme le pilote, et
 /// demandent des secteurs.
 final class VirtioBlockTests: XCTestCase {
-    /// Là où l'on pose la file dans la mémoire de l'invité.
-    static let descriptors: UInt64 = 0x1000
-    static let available: UInt64 = 0x2000
-    static let used: UInt64 = 0x3000
-    static let scratch: UInt64 = 0x4000
+    /// Là où l'on pose la file dans la mémoire de l'invité, comptée depuis le
+    /// début de sa RAM. La machine PC la place à zéro, la machine rv32 à
+    /// 0x8000_0000 — d'où `VirtioQueue`, qui ajoute la base.
     static let queue: UInt32 = 8
+    static var descriptors: UInt64 { VirtioQueue(base: 0).descriptors }
+    static var available: UInt64 { VirtioQueue(base: 0).available }
+    static var used: UInt64 { VirtioQueue(base: 0).used }
+    static var scratch: UInt64 { VirtioQueue(base: 0).scratch }
 
     /// Un disque de quatre secteurs, chacun rempli de son propre numéro.
     static func disk() -> [UInt8] {
@@ -37,64 +39,24 @@ final class VirtioBlockTests: XCTestCase {
         return (device, memory)
     }
 
-    /// La même poignée de main, sur une mémoire qu'on fournit.
-    static func start(_ device: VirtioBlock, _ memory: X86Memory) {
-        device.write(0x070, 4, 0, memory)      // remise à zéro
-        device.write(0x070, 4, 1, memory)      // ACKNOWLEDGE
-        device.write(0x070, 4, 3, memory)      // | DRIVER
-        device.write(0x014, 4, 1, memory)      // les bits 32 à 63…
-        device.write(0x024, 4, 1, memory)
-        device.write(0x020, 4, device.read(0x010, 4), memory)
-        device.write(0x070, 4, 11, memory)     // | FEATURES_OK
-        device.write(0x030, 4, 0, memory)      // la file zéro
-        device.write(0x038, 4, UInt64(queue), memory)
-        device.write(0x080, 4, descriptors, memory)
-        device.write(0x084, 4, 0, memory)
-        device.write(0x090, 4, available, memory)
-        device.write(0x094, 4, 0, memory)
-        device.write(0x0A0, 4, used, memory)
-        device.write(0x0A4, 4, 0, memory)
-        device.write(0x044, 4, 1, memory)      // la file est prête
-        device.write(0x070, 4, 15, memory)     // | DRIVER_OK
+    static func start(_ device: VirtioBlock, _ memory: GuestMemory) {
+        VirtioQueue(base: 0).start(device, memory)
     }
 
-    /// Un morceau de la mémoire de l'invité, tel qu'un descripteur le décrit :
-    /// où il commence, combien il fait, et si c'est le périphérique qui y écrit.
-    /// Les trois voyagent ensemble parce qu'ils ne veulent rien dire séparément.
-    struct Span {
-        var at: UInt64
-        var length: UInt32
-        var writable: Bool
-    }
+    typealias Span = VirtioQueue.Span
 
-    /// Poser un descripteur.
-    static func describe(_ memory: X86Memory, _ index: UInt64,
+    static func describe(_ memory: GuestMemory, _ index: UInt64,
                          _ span: Span, next: UInt16?) throws {
-        let base = descriptors + index * 16
-        try memory.write(base, 8, span.at)
-        try memory.write(base + 8, 4, UInt64(span.length))
-        try memory.write(base + 12, 2, (span.writable ? 2 : 0) | (next != nil ? 1 : 0))
-        try memory.write(base + 14, 2, UInt64(next ?? 0))
+        try VirtioQueue(base: 0).describe(memory, index, span, next: next)
     }
 
-    /// Une requête complète : l'en-tête, un tampon, l'octet de statut.
-    static func request(_ memory: X86Memory, kind: UInt32, sector: UInt64,
+    static func request(_ memory: GuestMemory, kind: UInt32, sector: UInt64,
                         buffer: Span) throws {
-        let header = scratch
-        try memory.write(header, 4, UInt64(kind))
-        try memory.write(header + 4, 4, 0)
-        try memory.write(header + 8, 8, sector)
-        try describe(memory, 0, .init(at: header, length: 16, writable: false), next: 1)
-        try describe(memory, 1, buffer, next: 2)
-        try describe(memory, 2, .init(at: scratch + 0x800, length: 1, writable: true), next: nil)
-        try memory.write(scratch + 0x800, 1, 0xFF)  // ni réussite ni échec
-        // L'anneau des disponibles : l'entrée, puis l'index qui la publie.
-        try memory.write(available + 4, 2, 0)
-        try memory.write(available + 2, 2, 1)
+        try VirtioQueue(base: 0).request(memory, kind: kind, sector: sector, buffer: buffer)
     }
 
-    static func status(_ memory: X86Memory) throws -> UInt64 {
-        try memory.read(scratch + 0x800, 1)
+    static func status(_ memory: GuestMemory) throws -> UInt64 {
+        try VirtioQueue(base: 0).status(memory)
     }
 
     // MARK: - La découverte

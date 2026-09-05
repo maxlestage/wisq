@@ -3588,10 +3588,12 @@ Les tranches, dans l'ordre où elles se tiennent :
 3. **Le périphérique.** Celui du lot 7 parle virtio-mmio v2 et s'appelle
    `VirtioBlock` par accident d'histoire ; il devient commun aux deux
    machines plutôt qu'écrit deux fois.
-4. **La preuve.** Un invité rv32 écrit à la main qui pilote la file et relit ce
-   qu'il a écrit, sur le vrai interpréteur — comme `TinyGuestTests`. C'est la
-   seule chose qui distingue « le périphérique existe » de « le périphérique
-   marche ».
+4. **Un invité rv32 écrit à la main** qui pilote la file depuis du code que
+   l'interpréteur exécute, plutôt que depuis Swift — comme `TinyGuestTests`.
+   Ce que la tranche 3 mesure est le périphérique et son interruption ; ce qui
+   manque encore est qu'un programme **dans** la machine s'en serve, ce qui
+   exercerait le chemin entier : instruction, MMIO, file, interruption,
+   gestionnaire.
 5. **Le cœur Rust**, sinon l'application n'en voit rien : c'est lui qu'elle
    embarque.
 6. **L'application et le site.**
