@@ -44,10 +44,10 @@ extension X86Core {
     /// garde ; la lecture, elle, rend ce qui est là.
     mutating func readVectorRM(_ fields: Fields, _ width: Int) throws -> (UInt64, UInt64) {
         guard fields.mod != 0b11 else { return vector(fields.rm) }
-        guard let memory else { throw Fault.unsupported("un opérande vectoriel en mémoire") }
-        let low = try memory.read(try translate(lastAddress), 8)
+        guard memory != nil else { throw Fault.unsupported("un opérande vectoriel en mémoire") }
+        let low = try readMemory(lastAddress, 8)
         guard width == 16 else { return (low, 0) }
-        return (low, try memory.read(try translate(lastAddress &+ 8), 8))
+        return (low, try readMemory(lastAddress &+ 8, 8))
     }
 
     /// Et l'écriture correspondante, pour la même raison : vers un registre
@@ -61,10 +61,10 @@ extension X86Core {
             setVector(fields.rm, value.low, value.high)
             return
         }
-        guard let memory else { throw Fault.unsupported("un opérande vectoriel en mémoire") }
-        try memory.write(try translate(lastAddress, .write), 8, value.low)
+        guard memory != nil else { throw Fault.unsupported("un opérande vectoriel en mémoire") }
+        try writeMemory(lastAddress, 8, value.low)
         if width == 16 {
-            try memory.write(try translate(lastAddress &+ 8, .write), 8, value.high)
+            try writeMemory(lastAddress &+ 8, 8, value.high)
         }
     }
 
@@ -166,10 +166,10 @@ extension X86Core {
                 let low = (vector(fields.reg).low & ~mask) | (source.low & mask)
                 setVector(fields.reg, low, vector(fields.reg).high)
             } else {
-                guard let memory else {
+                guard memory != nil else {
                     throw Fault.unsupported("un opérande vectoriel en mémoire")
                 }
-                setVector(fields.reg, try memory.read(try translate(lastAddress), width), 0)
+                setVector(fields.reg, try readMemory(lastAddress, width), 0)
             }
 
         case 0x11 where repeatFE || repeatFD:  // depuis le registre
@@ -181,10 +181,10 @@ extension X86Core {
                 let low = (vector(fields.rm).low & ~mask) | (value.low & mask)
                 setVector(fields.rm, low, vector(fields.rm).high)
             } else {
-                guard let memory else {
+                guard memory != nil else {
                     throw Fault.unsupported("un opérande vectoriel en mémoire")
                 }
-                try memory.write(try translate(lastAddress, .write), width, value.low)
+                try writeMemory(lastAddress, width, value.low)
             }
 
         // Les entrelacements. Chacun prend des morceaux de la même taille

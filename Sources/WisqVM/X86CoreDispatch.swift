@@ -61,10 +61,10 @@ extension X86Core {
             // — une page qu'un `fork()` vient de rendre lisible seulement —,
             // et le noyau rejoue l'instruction après avoir copié la page. Si
             // RSP avait déjà avancé, le rejeu dépilerait la case suivante.
-            guard let memory else { throw Fault.unsupported("une pile sans mémoire") }
+            guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
             let fields = try decodeFields(instruction)
             let size = Self.stackSize(instruction)
-            let value = try memory.read(try translate(registers[4]), size)
+            let value = try readMemory(registers[4], size)
             try writeRM(fields, size, value)
             registers[4] = registers[4] &+ UInt64(size)
 
@@ -384,12 +384,12 @@ extension X86Core {
                 // jamais la mémoire d'où il vient ; noter l'adresse à la place
                 // marchait tant que rien ne s'en servait, et la livraison
                 // d'exception s'en sert.
-                descriptorLimits[Int(which) - 2] = try memory.read(try translate(operand), 2)
-                descriptorBases[Int(which) - 2] = try memory.read(try translate(operand &+ 2), 8)
+                descriptorLimits[Int(which) - 2] = try readMemory(operand, 2)
+                descriptorBases[Int(which) - 2] = try readMemory(operand &+ 2, 8)
             case let which where which == 0 || which == 1:
                 // SGDT et SIDT : rendre le pseudo-descripteur, dans la même
                 // forme.
-                try memory.write(try translate(operand, .write), 2, descriptorLimits[Int(which)])
+                try writeMemory(operand, 2, descriptorLimits[Int(which)])
                 try memory.write(
                     try translate(operand &+ 2, .write), 8, descriptorBases[Int(which)])
             default:
@@ -455,7 +455,7 @@ extension X86Core {
                 return
             }
             let fields = try decodeFields(instruction)
-            guard let memory else { throw Fault.unsupported("0F AE sans mémoire") }
+            guard memory != nil else { throw Fault.unsupported("0F AE sans mémoire") }
             switch extension_ {
             case 0: try saveFloatingPointState()
             case 1: try restoreFloatingPointState()
@@ -684,7 +684,7 @@ extension X86Core {
     /// Un noyau s'en sert pour effacer sa propre section BSS avant tout le
     /// reste ; sans elles il n'arrive pas à sa première ligne de C.
     mutating func stringOperation(_ instruction: X86Instruction, _ opcode: UInt8) throws {
-        guard let memory else { throw Fault.unsupported("une chaîne sans mémoire") }
+        guard memory != nil else { throw Fault.unsupported("une chaîne sans mémoire") }
         let byteForm = opcode & 1 == 0
         let size = Self.operandSize(instruction, byteForm: byteForm)
         let step = UInt64(bitPattern: flags & Flag.direction != 0 ? -Int64(size) : Int64(size))
@@ -695,26 +695,24 @@ extension X86Core {
         while count > 0 {
             switch opcode {
             case 0xA4, 0xA5:  // MOVS : de RSI vers RDI
-                let value = try memory.read(try translate(registers[6]), size)
-                try memory.write(try translate(registers[7], .write), size, value)
+                let value = try readMemory(registers[6], size)
+                try writeMemory(registers[7], size, value)
                 registers[6] = registers[6] &+ step
                 registers[7] = registers[7] &+ step
             case 0xA6, 0xA7:  // CMPS
-                let left = try memory.read(try translate(registers[6]), size)
-                let right = try memory.read(try translate(registers[7]), size)
+                let left = try readMemory(registers[6], size)
+                let right = try readMemory(registers[7], size)
                 _ = subtract(left, right, size)
                 registers[6] = registers[6] &+ step
                 registers[7] = registers[7] &+ step
             case 0xAA, 0xAB:  // STOS : l'accumulateur vers RDI
-                try memory.write(try translate(registers[7], .write), size,
-                                 read(0, size, highByte: false))
+                try writeMemory(registers[7], size, read(0, size, highByte: false))
                 registers[7] = registers[7] &+ step
             case 0xAC, 0xAD:  // LODS : de RSI vers l'accumulateur
-                write(0, size, highByte: false,
-                      try memory.read(try translate(registers[6]), size))
+                write(0, size, highByte: false, try readMemory(registers[6], size))
                 registers[6] = registers[6] &+ step
             default:  // SCAS : comparer l'accumulateur à ce qui est en RDI
-                let value = try memory.read(try translate(registers[7]), size)
+                let value = try readMemory(registers[7], size)
                 _ = subtract(read(0, size, highByte: false), value, size)
                 registers[7] = registers[7] &+ step
             }
