@@ -187,10 +187,17 @@ describe("the formatting floor accepts what it must not refuse", () => {
   /// And this repository, through the default root, with no argument — the
   /// only case that holds the path resolution, since every other test passes
   /// a root explicitly.
+  /// **Vingt secondes, et non les cinq par défaut.** Ce cas-ci lance la garde
+  /// sur les trois cent soixante-dix fichiers Swift du dépôt, ce qui fait
+  /// quelques milliers de sous-processus : il tenait en trois secondes et
+  /// demie, une règle de plus l'a porté à quatre et quart, et il est tombé sur
+  /// son propre délai. Un contrôle qui échoue parce qu'il est lent n'apprend
+  /// rien à personne — et le laisser à un quart de seconde de la limite, c'est
+  /// promettre le même échec à la première machine plus lente.
   test("this repository, with no root given, is clean", () => {
     const result = Bun.spawnSync({ cmd: ["bash", guard] });
     const output =
       new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
     expect(result.exitCode, output).toBe(0);
-  });
+  }, 20_000);
 });

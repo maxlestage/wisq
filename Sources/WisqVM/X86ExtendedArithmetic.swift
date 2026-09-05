@@ -65,8 +65,24 @@ extension X86Extended {
             value.low <<= 1
             power -= 1
         }
+        // **Sous-débordement graduel : on décale avant d'arrondir.**
+        //
+        // L'ordre est tout. Le premier jet arrondissait à soixante-quatre bits
+        // comme si le résultat était normal, découvrait ensuite qu'il ne
+        // l'était pas, décalait à droite — et arrondissait une seconde fois.
+        // Deux arrondis successifs ne valent pas un arrondi : `2 ÷ max` sort à
+        // un quart d'unité au-dessus du dénormal exact, ce qui arrondit vers le
+        // bas ; en deux temps, le premier arrondi le pousse à trois quarts et
+        // le second monte. Le vrai processeur rend `0x4000…000`, wisq rendait
+        // `0x4000…001`. IEEE arrondit **une fois**, à la précision de
+        // destination, et c'est ce que fait maintenant ce décalage placé avant.
+        let subnormal = power <= 0
+        if subnormal { value.shift(right: 1 - power) }
+
         // Arrondir sur ce que la moitié basse retient.
-        if value.low != 0 { report.note(Report.inexact) }
+        if value.low != 0 {
+            report.note(subnormal ? Report.underflow | Report.inexact : Report.inexact)
+        }
         if roundsUp(rest: value.low, even: value.high & 1 == 0,
                     negative: negative, rounding: rounding) {
             report.roundedUp = true
@@ -77,38 +93,41 @@ extension X86Extended {
                 power += 1
             }
         }
+        guard !subnormal else {
+            // L'arrondi peut faire remonter au plus petit normal, et le bit de
+            // tête est le seul à le dire.
+            let exponent: UInt16 = value.high & 0x8000_0000_0000_0000 != 0 ? 1 : 0
+            return (X86Extended(significand: value.high,
+                                signExponent: exponent | (negative ? 0x8000 : 0)), report)
+        }
         guard power < special else {
             // Débordement : l'infini, sauf si l'arrondi le refuse.
             report.note(Report.overflow | Report.inexact)
             report.roundedUp = true
-            switch rounding {
-            case .towardZero, .down where !negative, .up where negative:
+            // **Trois modes sur quatre refusent l'infini** et rendent le plus
+            // grand fini à la place : la troncature toujours, l'arrondi vers
+            // −∞ quand le résultat est positif, vers +∞ quand il est négatif.
+            // Chacun rend le nombre représentable le plus proche *du côté où
+            // il arrondit*, et l'infini n'est pas de ce côté-là.
+            //
+            // Mesuré, pas déduit : `max × 2` rend `+∞` au plus près et vers
+            // +∞, le plus grand fini vers −∞ et vers zéro ; `-max × 2` fait
+            // l'inverse. Voir `X86X87RoundingOracleTests`.
+            //
+            // Écrit en trois conditions plutôt qu'en `case … where …` : la
+            // forme groupée faisait avertir le compilateur que le `where` ne
+            // portait que sur le dernier motif — ce qui était faux, chaque
+            // `where` portait bien sur le sien, mais un avertissement qu'on
+            // apprend à ignorer est un avertissement perdu.
+            let refusesInfinity = rounding == .towardZero
+                || (rounding == .down && !negative)
+                || (rounding == .up && negative)
+            guard !refusesInfinity else {
                 return (X86Extended(significand: 0xFFFF_FFFF_FFFF_FFFF,
                                     signExponent: UInt16(special - 1)
                                         | (negative ? 0x8000 : 0)), report)
-            default: return (infinity(negative), report)
             }
-        }
-        guard power > 0 else {
-            // **Sous-débordement graduel.** Le premier jet rendait zéro et
-            // documentait ce choix comme sûr, au motif que la plage
-            // d'exposants de quatre-vingts bits était trop large pour qu'on y
-            // descende. Le corpus l'a démenti en une exécution : additionner
-            // deux dénormaux rend un dénormal, pas zéro. La mantisse glisse
-            // vers la droite jusqu'à ce que l'exposant atteigne son plancher,
-            // et ce qui sort par le bas décide encore de l'arrondi.
-            var narrowed = value
-            narrowed.shift(right: 1 - power)
-            if narrowed.low != 0 { report.note(Report.underflow | Report.inexact) }
-            if roundsUp(rest: narrowed.low, even: narrowed.high & 1 == 0,
-                        negative: negative, rounding: rounding) {
-                narrowed.high &+= 1
-                report.roundedUp = true
-            }
-            // L'arrondi peut faire remonter au plus petit normal.
-            let exponent: UInt16 = narrowed.high & 0x8000_0000_0000_0000 != 0 ? 1 : 0
-            return (X86Extended(significand: narrowed.high,
-                                signExponent: exponent | (negative ? 0x8000 : 0)), report)
+            return (infinity(negative), report)
         }
         return (X86Extended(significand: value.high,
                             signExponent: UInt16(power) | (negative ? 0x8000 : 0)), report)
