@@ -127,9 +127,9 @@ final class SPICELiveDesktopTests: XCTestCase {
                 }
                 return nil
             }
-            let first = await group.next() ?? nil
+            let outcome = await group.next()
             group.cancelAll()
-            return first
+            return outcome.flatMap { $0 }
         }
     }
 
