@@ -58,12 +58,6 @@ struct VirtioQueue {
         var at: UInt64
         var length: UInt32
         var writable: Bool
-
-        init(at: UInt64, length: UInt32, writable: Bool) {
-            self.at = at
-            self.length = length
-            self.writable = writable
-        }
     }
 
     /// Poser un descripteur.
