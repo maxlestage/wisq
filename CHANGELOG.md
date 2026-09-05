@@ -7,6 +7,55 @@ break APIs.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-05
+
+### Added
+- **Le lot 8 a ses deux chiffres, rendus par la pile d'Apple.** Un module
+  WebAssembly engendré tourne à **1103 MIPS** dans un `WKWebView` hébergé par
+  l'application, contre 10,6 pour l'interpréteur x86, et un aller-retour vers
+  la vue coûte **0,479 ms** — trente-cinq par image à soixante par seconde,
+  donc le pont ne mange pas l'image. L'oracle du module est refait dans la vue
+  avant tout chronomètre. **Ce que ces chiffres ne prouvent pas** : le
+  simulateur tourne sur un Mac, où macOS ne restreint pas le JIT. Que le
+  processus de contenu de WebKit garde le droit de compiler sur un vrai iPhone
+  est la conception documentée d'iOS, pas une mesure de ce dépôt.
+- **Metal, mesuré puis écarté pour le cœur.** `MTLDevice.makeLibrary(source:)`
+  est bien un compilateur à l'exécution qu'Apple autorise, donc la question
+  tenait debout. Le GPU répond non : **1839,7 ms** pour compiler un noyau,
+  **1,153 ms** par lancement, et **100 MIPS** sur un fil contre **1142** pour
+  la même boucle en Swift natif sur la même machine. Onze fois plus lent. Un
+  GPU cache la latence de sa mémoire en tenant des milliers de fils prêts ; un
+  cœur émulé n'en a qu'un — ce n'est pas un réglage, c'est l'architecture.
+  Metal reste le bon outil pour l'écran, où les pixels sont indépendants.
+- **Un cœur x86-64 en Rust, sans JIT, derrière l'API C.** Il ne rattrapera pas
+  un JIT sur le débit et ne le prétend pas ; il est meilleur là où ça décide :
+  il ne demande **aucune permission**, aucun `WKWebView`, aucun pont. Les
+  drapeaux paresseux — garder l'opération et ses opérandes au lieu du résultat,
+  et ne calculer un drapeau qu'à la lecture — sont mesurés contre un terme de
+  comparaison écrit exprès : **109 MIPS** en calculant tout de suite, **162** en
+  paresseux jamais lu, **135** en paresseux toujours lu. Réel et modeste, pas le
+  facteur trois du folklore. Le chiffre est un **plafond** : ni branchements ni
+  mémoire, instructions pré-décodées. Le juge est extérieur — **2520 cas** de
+  `x86-oracle.tsv`, passés sur un vrai processeur, avec le masque des drapeaux
+  que l'architecture définit ; 284 instructions sont refusées plutôt que
+  devinées, comptées et affichées.
+
+### Fixed
+- **Deux sondes sautées sur un job vert.** `WisqUITests` n'a pas d'application
+  hôte, et iOS ne démarre pas le processus de contenu de WebKit pour un
+  `xctest` nu : les deux mesures du lot 8 étaient sautées après une minute
+  d'attente, et le job passait. Plus qu'une panne d'outillage — la question
+  posée est « un `WKWebView` **hébergé par une application** compile-t-il ? »,
+  et elle ne se pose pas depuis un paquet qui n'en a pas. D'où
+  `Tests/WisqHostedTests` et son `TEST_HOST`.
+- **`xcodebuild | tee` fait attendre le pas de test.** Un tube ne se termine que
+  lorsque tous les détenteurs de son bout écrivain l'ont fermé, et les démons du
+  simulateur en tiennent un après la fin des tests. Mesuré de quatre à plus de
+  dix-sept minutes. Une redirection vers un fichier n'attend personne — et une
+  laisse de vingt-cinq minutes transforme désormais un blocage en rouge lisible
+  plutôt qu'en job qui pend jusqu'au délai du service.
+
+
 ### Added
 - **`WebKitJITProbeTests` : la question qui décide du lot 8, posée à la pile
   d'Apple.** iOS n'accorde à aucune application de l'App Store une page à la
@@ -193,7 +242,6 @@ break APIs.
   replaces the lines (separated by `;;`) for measurements that need to ask
   the guest something.
 
-## [0.4.0] — 2026-09-04
 
 ### Added
 - **A second local architecture: an x86-64 core that runs a stock Alpine
