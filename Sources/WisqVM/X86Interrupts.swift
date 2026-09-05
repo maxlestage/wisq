@@ -286,10 +286,33 @@ extension X86Core {
         // après que le pilote a tout acquitté serait livrée pour rien, et le
         // pilote lirait « rien en attente » dans l'identification.
         if serialInterrupting { devices.primary.request |= 0x10 } else { devices.primary.request &= ~0x10 }
+        // La ligne du disque, à niveau elle aussi : le pilote l'acquitte en
+        // écrivant dans le registre du périphérique, pas en la retirant ici.
+        // La ligne du disque est celle que le noyau a écrite dans l'espace de
+        // configuration PCI, pas celle qu'on avait prévue : c'est lui qui
+        // décide, et un périphérique qui frapperait ailleurs frapperait dans
+        // le vide.
+        let disk: UInt8 = 1 << (memory?.bus?.interruptLine ?? X86VirtioBlock.interruptLine)
+        if memory?.storage?.interrupting == true {
+            devices.primary.request |= disk
+        } else {
+            devices.primary.request &= ~disk
+        }
         guard flags & Flag.interrupt != 0 else { return }
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
         let line = UInt8(pending.trailingZeroBitCount)
+        // **Une ligne en service bloque ses égales et ses inférieures.** C'est
+        // la règle du 8259, et elle n'est pas décorative : un gestionnaire
+        // rouvre les interruptions avant d'avoir fini — Linux traite ses
+        // « softirq » ainsi —, et sans cette règle la même ligne le
+        // réinterromprait aussitôt, sur sa propre pile, aussi longtemps que la
+        // condition dure. Une pile de noyau fait seize kilo-octets ; ce qui
+        // est dessous ne lui appartient pas.
+        if devices.primary.service != 0,
+           line >= UInt8(devices.primary.service.trailingZeroBitCount) {
+            return
+        }
         let vector = devices.primary.vectorBase &+ line
         guard try enter(vector, errorCode: 0) else { return }
         // La demande n'est retirée **que** si elle a été livrée : sinon elle
@@ -301,5 +324,8 @@ extension X86Core {
     /// Vrai quand quelque chose peut arriver : une horloge armée, ou un port
     /// série dont on a autorisé la réception ou l'émission. Tant que non,
     /// rien ne viendra et la boucle n'a pas à regarder.
-    var devicesArmed: Bool { devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0 }
+    var devicesArmed: Bool {
+        devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0
+            || memory?.storage?.interrupting == true
+    }
 }

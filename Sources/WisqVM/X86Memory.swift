@@ -35,8 +35,30 @@ public final class X86Memory: @unchecked Sendable {
         return Int(index)
     }
 
+    /// Le disque, quand il y en a un. **Il vit derrière la mémoire, pas
+    /// dedans** : ses registres répondent à des adresses qu'aucune RAM ne
+    /// couvre, et c'est exactement le chemin qui levait « hors mémoire »
+    /// jusqu'ici. Le brancher là ne coûte donc rien au chemin chaud — une
+    /// adresse ordinaire ne le rencontre jamais.
+    public var storage: X86VirtioBlock?
+
+    /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
+    /// objet que le cœur et les ports ont tous les deux sous la main.
+    public var bus: X86PCIHost?
+
+    /// Vrai quand l'adresse tombe dans la fenêtre du périphérique.
+    @inline(__always)
+    func storageOffset(_ address: UInt64) -> UInt64? {
+        guard storage != nil, address >= X86VirtioBlock.base,
+              address &- X86VirtioBlock.base < X86VirtioBlock.span else { return nil }
+        return address &- X86VirtioBlock.base
+    }
+
     public func read(_ address: UInt64, _ width: Int) throws -> UInt64 {
         guard let start = offset(address, width) else {
+            if let device = storage, let at = storageOffset(address) {
+                return device.read(at, width)
+            }
             throw X86Core.Fault.outsideMemory(address)
         }
         var value: UInt64 = 0
@@ -46,6 +68,10 @@ public final class X86Memory: @unchecked Sendable {
 
     public func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
         guard let start = offset(address, width) else {
+            if let device = storage, let at = storageOffset(address) {
+                device.write(at, width, value, self)
+                return
+            }
             throw X86Core.Fault.outsideMemory(address)
         }
         for byte in 0..<width { bytes[start + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }

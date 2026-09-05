@@ -109,7 +109,12 @@ extension X86Core {
         case 0x51 where single || doubleWide: try squareRoot(instruction, single)
 
         // Les comparaisons, seules de tout le vectoriel à écrire des drapeaux.
-        case 0x2E, 0x2F where !single && !doubleWide:
+        //
+        // **La condition est écrite deux fois, et il le faut.** En Swift, un
+        // `where` posé après une liste de motifs ne garde que le dernier :
+        // `case 0x2E, 0x2F where …` laissait passer `f3 0f 2e`, qui n'est pas
+        // une instruction, et le faisait comparer au lieu de le refuser.
+        case 0x2E where !single && !doubleWide, 0x2F where !single && !doubleWide:
             try compare(instruction, !operandSize)
 
         case 0x5A where single || doubleWide:  // CVTSS2SD / CVTSD2SS
@@ -161,7 +166,9 @@ extension X86Core {
 
         // Vers l'entier. `CVTT…` tronque vers zéro ; `CVT…` suit le mode
         // d'arrondi, qui est « au plus proche, pair en cas d'égalité ».
-        case 0x2C, 0x2D where single || doubleWide:
+        // Ici la garde est **dans le corps** — elle couvre donc les deux
+        // motifs, ce qu'un `where` sur la liste ne ferait pas.
+        case 0x2C, 0x2D:
             guard single || doubleWide else { return false }
             let fields = try decodeFields(instruction)
             let source = try readVectorRM(fields, single ? 4 : 8)
