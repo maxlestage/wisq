@@ -55,141 +55,141 @@ final class RV32GuestDiskTests: XCTestCase {
     private static let stat = 11, flag = 13, got = 14, byte = 15
 
     private static func program() -> [UInt32] {
-        typealias A = RV32Asm
+        typealias Asm = RV32Asm
         var code: [UInt32] = [
-            A.lui(dev, device >> 12),
-            A.lui(tty, uart >> 12),
+            Asm.lui(dev, device >> 12),
+            Asm.lui(tty, uart >> 12),
 
             // Le vecteur de trappe, en mode direct : les deux bits du bas à
             // zéro veulent dire « toutes les causes au même endroit ».
-            A.lui(tmp, 0x80000),
-            A.addi(tmp, tmp, Int32(handlerOffset)),
-            A.csrw(A.mtvec, tmp),
+            Asm.lui(tmp, 0x80000),
+            Asm.addi(tmp, tmp, Int32(handlerOffset)),
+            Asm.csrw(Asm.mtvec, tmp),
 
             // N'autoriser que l'externe. Le timer partage le même
             // gestionnaire, et le laisser passer ferait entrer le programme
             // dedans avant que ses registres soient prêts.
-            A.addi(tmp, 0, 1),
-            A.slli(tmp, tmp, 11),
-            A.csrw(A.mie, tmp),
-            A.addi(tmp, 0, 8),
-            A.csrw(A.mstatus, tmp),
+            Asm.addi(tmp, 0, 1),
+            Asm.slli(tmp, tmp, 11),
+            Asm.csrw(Asm.mie, tmp),
+            Asm.addi(tmp, 0, 8),
+            Asm.csrw(Asm.mstatus, tmp),
 
             // La poignée de main, dans son ordre. Se tromper d'une écriture
             // fait dire au vrai noyau « does not support VIRTIO_F_VERSION_1 »
             // et le disque n'existe jamais.
-            A.sw(0, 0x070, dev),                 // remise à zéro
-            A.addi(tmp, 0, 1),
-            A.sw(tmp, 0x070, dev),               // ACKNOWLEDGE
-            A.addi(tmp, 0, 3),
-            A.sw(tmp, 0x070, dev),               // | DRIVER
-            A.addi(tmp, 0, 1),
-            A.sw(tmp, 0x014, dev),               // les bits 32 à 63…
-            A.sw(tmp, 0x024, dev),
-            A.lw(feat, 0x010, dev),
-            A.sw(feat, 0x020, dev),
-            A.addi(tmp, 0, 11),
-            A.sw(tmp, 0x070, dev),               // | FEATURES_OK
-            A.sw(0, 0x030, dev),                 // la file zéro
-            A.addi(tmp, 0, 8),
-            A.sw(tmp, 0x038, dev),
-            A.lui(feat, descriptors >> 12),
-            A.sw(feat, 0x080, dev),
-            A.sw(0, 0x084, dev),
-            A.lui(feat, available >> 12),
-            A.sw(feat, 0x090, dev),
-            A.sw(0, 0x094, dev),
-            A.lui(feat, used >> 12),
-            A.sw(feat, 0x0A0, dev),
-            A.sw(0, 0x0A4, dev),
-            A.addi(tmp, 0, 1),
-            A.sw(tmp, 0x044, dev),               // la file est prête
-            A.addi(tmp, 0, 15),
-            A.sw(tmp, 0x070, dev),               // | DRIVER_OK
+            Asm.sw(0, 0x070, dev),                 // remise à zéro
+            Asm.addi(tmp, 0, 1),
+            Asm.sw(tmp, 0x070, dev),               // ACKNOWLEDGE
+            Asm.addi(tmp, 0, 3),
+            Asm.sw(tmp, 0x070, dev),               // | DRIVER
+            Asm.addi(tmp, 0, 1),
+            Asm.sw(tmp, 0x014, dev),               // les bits 32 à 63…
+            Asm.sw(tmp, 0x024, dev),
+            Asm.lw(feat, 0x010, dev),
+            Asm.sw(feat, 0x020, dev),
+            Asm.addi(tmp, 0, 11),
+            Asm.sw(tmp, 0x070, dev),               // | FEATURES_OK
+            Asm.sw(0, 0x030, dev),                 // la file zéro
+            Asm.addi(tmp, 0, 8),
+            Asm.sw(tmp, 0x038, dev),
+            Asm.lui(feat, descriptors >> 12),
+            Asm.sw(feat, 0x080, dev),
+            Asm.sw(0, 0x084, dev),
+            Asm.lui(feat, available >> 12),
+            Asm.sw(feat, 0x090, dev),
+            Asm.sw(0, 0x094, dev),
+            Asm.lui(feat, used >> 12),
+            Asm.sw(feat, 0x0A0, dev),
+            Asm.sw(0, 0x0A4, dev),
+            Asm.addi(tmp, 0, 1),
+            Asm.sw(tmp, 0x044, dev),               // la file est prête
+            Asm.addi(tmp, 0, 15),
+            Asm.sw(tmp, 0x070, dev),               // | DRIVER_OK
 
             // L'en-tête : lire, secteur 1.
-            A.lui(hdr, header >> 12),
-            A.sw(0, 0, hdr),
-            A.sw(0, 4, hdr),
-            A.addi(tmp, 0, 1),
-            A.sw(tmp, 8, hdr),
-            A.sw(0, 12, hdr),
+            Asm.lui(hdr, header >> 12),
+            Asm.sw(0, 0, hdr),
+            Asm.sw(0, 4, hdr),
+            Asm.addi(tmp, 0, 1),
+            Asm.sw(tmp, 8, hdr),
+            Asm.sw(0, 12, hdr),
 
             // L'octet de statut, mis à une valeur qui n'est ni réussite ni
             // échec : sans ça, « zéro » pourrait vouloir dire « jamais écrit ».
-            A.lui(stat, statusByte >> 12),
-            A.addi(tmp, 0, -1),
-            A.sb(tmp, 0, stat),
+            Asm.lui(stat, statusByte >> 12),
+            Asm.addi(tmp, 0, -1),
+            Asm.sb(tmp, 0, stat),
 
             // Les trois descripteurs. `flags` et `next` sont deux demi-mots
             // voisins, écrits d'un seul `sw` : `next` en haut, `flags` en bas.
-            A.lui(desc, descriptors >> 12),
-            A.sw(hdr, 0, desc),
-            A.sw(0, 4, desc),
-            A.addi(tmp, 0, 16),
-            A.sw(tmp, 8, desc),
-            A.lui(tmp, 0x10),                    // next = 1
-            A.addi(tmp, tmp, 1),                 // flags = NEXT
-            A.sw(tmp, 12, desc),
+            Asm.lui(desc, descriptors >> 12),
+            Asm.sw(hdr, 0, desc),
+            Asm.sw(0, 4, desc),
+            Asm.addi(tmp, 0, 16),
+            Asm.sw(tmp, 8, desc),
+            Asm.lui(tmp, 0x10),                    // next = 1
+            Asm.addi(tmp, tmp, 1),                 // flags = NEXT
+            Asm.sw(tmp, 12, desc),
 
-            A.lui(buf, buffer >> 12),
-            A.sw(buf, 16, desc),
-            A.sw(0, 20, desc),
-            A.addi(tmp, 0, 512),
-            A.sw(tmp, 24, desc),
-            A.lui(tmp, 0x20),                    // next = 2
-            A.addi(tmp, tmp, 3),                 // flags = NEXT | WRITE
-            A.sw(tmp, 28, desc),
+            Asm.lui(buf, buffer >> 12),
+            Asm.sw(buf, 16, desc),
+            Asm.sw(0, 20, desc),
+            Asm.addi(tmp, 0, 512),
+            Asm.sw(tmp, 24, desc),
+            Asm.lui(tmp, 0x20),                    // next = 2
+            Asm.addi(tmp, tmp, 3),                 // flags = NEXT | WRITE
+            Asm.sw(tmp, 28, desc),
 
-            A.sw(stat, 32, desc),
-            A.sw(0, 36, desc),
-            A.addi(tmp, 0, 1),
-            A.sw(tmp, 40, desc),
-            A.addi(tmp, 0, 2),                   // flags = WRITE, pas de suite
-            A.sw(tmp, 44, desc),
+            Asm.sw(stat, 32, desc),
+            Asm.sw(0, 36, desc),
+            Asm.addi(tmp, 0, 1),
+            Asm.sw(tmp, 40, desc),
+            Asm.addi(tmp, 0, 2),                   // flags = WRITE, pas de suite
+            Asm.sw(tmp, 44, desc),
 
             // L'anneau des disponibles : l'entrée d'abord, puis l'index qui la
             // publie. L'inverse offrirait au périphérique une entrée qui n'est
             // pas encore écrite.
-            A.lui(ring, available >> 12),
-            A.sw(0, 4, ring),
-            A.lui(tmp, 0x10),                    // idx = 1, flags = 0
-            A.sw(tmp, 0, ring),
+            Asm.lui(ring, available >> 12),
+            Asm.sw(0, 4, ring),
+            Asm.lui(tmp, 0x10),                    // idx = 1, flags = 0
+            Asm.sw(tmp, 0, ring),
 
-            A.lui(flag, seen >> 12),
-            A.sw(0, 0, flag),
+            Asm.lui(flag, seen >> 12),
+            Asm.sw(0, 0, flag),
 
             // On sonne. Le périphérique sert, et lève la ligne.
-            A.sw(0, 0x050, dev),
+            Asm.sw(0, 0x050, dev),
 
             // Et on attend le gestionnaire. **C'est ici que le test tient** :
             // sans interruption livrée, le programme ne sort jamais de ces
             // deux instructions et la console reste vide.
-            A.lw(got, 0, flag),
-            A.beq(got, 0, -4),
+            Asm.lw(got, 0, flag),
+            Asm.beq(got, 0, -4),
 
             // Ce que le disque a donné, et ce que le périphérique en a dit.
-            A.lbu(byte, 0, buf),
-            A.sb(byte, 0, tty),
-            A.lbu(byte, 0, stat),
-            A.addi(byte, byte, 0x4B),            // 'K' — et seulement si zéro
-            A.sb(byte, 0, tty),
-            A.addi(byte, 0, 10),
-            A.sb(byte, 0, tty),                  // le saut de ligne vide la console
-            A.beq(0, 0, 0),                      // et on s'arrête là, sans parler
+            Asm.lbu(byte, 0, buf),
+            Asm.sb(byte, 0, tty),
+            Asm.lbu(byte, 0, stat),
+            Asm.addi(byte, byte, 0x4B),            // 'K' — et seulement si zéro
+            Asm.sb(byte, 0, tty),
+            Asm.addi(byte, 0, 10),
+            Asm.sb(byte, 0, tty),                  // le saut de ligne vide la console
+            Asm.beq(0, 0, 0),                      // et on s'arrête là, sans parler
         ]
         XCTAssertLessThan(code.count * 4, handlerOffset,
                           "le programme principal déborde sur le gestionnaire")
-        while code.count * 4 < handlerOffset { code.append(A.addi(0, 0, 0)) }
+        while code.count * 4 < handlerOffset { code.append(Asm.addi(0, 0, 0)) }
         code += [
             // Le gestionnaire. Lire le statut d'interruption puis l'acquitter
             // est ce qui fait retomber la ligne ; poser le drapeau est ce qui
             // laisse le programme principal repartir.
-            A.lw(got, 0x060, dev),
-            A.sw(got, 0x064, dev),
-            A.addi(got, 0, 1),
-            A.sw(got, 0, flag),
-            A.mret,
+            Asm.lw(got, 0x060, dev),
+            Asm.sw(got, 0x064, dev),
+            Asm.addi(got, 0, 1),
+            Asm.sw(got, 0, flag),
+            Asm.mret,
         ]
         return code
     }
