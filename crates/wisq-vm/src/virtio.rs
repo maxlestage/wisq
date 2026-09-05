@@ -180,7 +180,11 @@ impl VirtioBlock {
         match offset {
             0x014 => self.device_features_select = word,
             0x020 => {
-                let shift = if self.driver_features_select == 1 { 32 } else { 0 };
+                let shift = if self.driver_features_select == 1 {
+                    32
+                } else {
+                    0
+                };
                 self.driver_features |= u64::from(word) << shift;
             }
             0x024 => self.driver_features_select = word,
@@ -200,9 +204,12 @@ impl VirtioBlock {
                     self.reset();
                 }
             }
-            0x080 => self.descriptor_table = (self.descriptor_table & !0xFFFF_FFFF) | u64::from(word),
+            0x080 => {
+                self.descriptor_table = (self.descriptor_table & !0xFFFF_FFFF) | u64::from(word)
+            }
             0x084 => {
-                self.descriptor_table = (self.descriptor_table & 0xFFFF_FFFF) | (u64::from(word) << 32)
+                self.descriptor_table =
+                    (self.descriptor_table & 0xFFFF_FFFF) | (u64::from(word) << 32)
             }
             0x090 => self.available_ring = (self.available_ring & !0xFFFF_FFFF) | u64::from(word),
             0x094 => {
@@ -227,7 +234,9 @@ impl VirtioBlock {
     }
 
     fn descriptor(&self, index: u16, guest: &Guest<'_>) -> Option<Descriptor> {
-        let at = self.descriptor_table.wrapping_add(u64::from(index).wrapping_mul(16));
+        let at = self
+            .descriptor_table
+            .wrapping_add(u64::from(index).wrapping_mul(16));
         Some(Descriptor {
             address: guest.read(at, 8)?,
             length: guest.read(at.wrapping_add(8), 4)? as u32,
@@ -331,10 +340,7 @@ impl VirtioBlock {
         // would read an empty superblock instead of learning it asked too far.
         let span: u64 = payload.iter().map(|one| u64::from(one.length)).sum();
         if (kind == 0 || kind == 1)
-            && sector
-                .wrapping_mul(512)
-                .wrapping_add(span)
-                > self.image.len() as u64
+            && sector.wrapping_mul(512).wrapping_add(span) > self.image.len() as u64
         {
             return Err(Refusal::Malformed);
         }
@@ -414,12 +420,16 @@ impl VirtioBlock {
         }
         let slot = u64::from(self.next_used % self.queue_size as u16);
         guest.write(
-            self.used_ring.wrapping_add(4).wrapping_add(slot.wrapping_mul(8)),
+            self.used_ring
+                .wrapping_add(4)
+                .wrapping_add(slot.wrapping_mul(8)),
             4,
             u64::from(head),
         );
         guest.write(
-            self.used_ring.wrapping_add(8).wrapping_add(slot.wrapping_mul(8)),
+            self.used_ring
+                .wrapping_add(8)
+                .wrapping_add(slot.wrapping_mul(8)),
             4,
             u64::from(written),
         );

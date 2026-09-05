@@ -111,7 +111,8 @@ pub unsafe extern "C" fn wisq_vm_attach_disk(
     if image.is_null() {
         return -1;
     }
-    vm.machine.attach_disk(std::slice::from_raw_parts(image, len));
+    vm.machine
+        .attach_disk(std::slice::from_raw_parts(image, len));
     0
 }
 
