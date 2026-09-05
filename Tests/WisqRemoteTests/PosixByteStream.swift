@@ -14,9 +14,17 @@ import WisqNet
 /// compilée que par les tests, sur Linux, et aucun chemin de l'application ne
 /// la voit.
 actor PosixByteStream: ByteStream {
+    /// Ce que lève une lecture qui a atteint son délai sans rien recevoir. Le
+    /// serveur est là, il n'a simplement plus rien à dire.
+    struct Quiet: Error {}
+
     private var descriptor: Int32 = -1
 
-    init(host: String, port: Int) throws {
+    /// `readTimeout` est en secondes. Cinq par défaut, parce qu'un test qui
+    /// attend un message que le serveur n'enverra jamais bloque la suite
+    /// entière ; plus court quand le test veut au contraire *constater* que
+    /// plus rien n'arrive.
+    init(host: String, port: Int, readTimeout: Int = 5) throws {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
@@ -37,7 +45,7 @@ actor PosixByteStream: ByteStream {
                     // pendre.** Un test qui attend un message que le serveur
                     // n'enverra jamais bloque la suite entière, et rien
                     // n'indique lequel.
-                    var limit = timeval(tv_sec: 5, tv_usec: 0)
+                    var limit = timeval(tv_sec: readTimeout, tv_usec: 0)
                     setsockopt(socketDescriptor, SOL_SOCKET, SO_RCVTIMEO,
                                &limit, socklen_t(MemoryLayout<timeval>.size))
                     descriptor = socketDescriptor
@@ -55,9 +63,19 @@ actor PosixByteStream: ByteStream {
         var out = [UInt8](repeating: 0, count: count)
         var filled = 0
         while filled < count {
+            var failure: Int32 = 0
             let got = out.withUnsafeMutableBytes { buffer -> Int in
                 guard let base = buffer.baseAddress else { return -1 }
-                return recv(descriptor, base + filled, count - filled, 0)
+                let result = recv(descriptor, base + filled, count - filled, 0)
+                if result < 0 { failure = errno }
+                return result
+            }
+            // **Un délai dépassé n'est pas une connexion fermée**, et les
+            // confondre fait prendre un serveur qui n'a rien à dire pour un
+            // serveur qui a raccroché — ce qui est précisément la différence
+            // que mesurent les tests d'entrées.
+            if got < 0, failure == EAGAIN || failure == EWOULDBLOCK {
+                throw PosixByteStream.Quiet()
             }
             guard got > 0 else { throw WisqError.connectionClosed }
             filled += got

@@ -117,4 +117,189 @@ final class RDPLiveActivationTests: XCTestCase {
         XCTAssertTrue(seen.contains(.pointer), "aucun curseur : \(seen)")
     }
 }
+
+/// Une session établie qu'un test peut piloter : envoyer, et lire jusqu'au
+/// silence. Écrite ici plutôt que recopiée dans chaque test, parce que la
+/// séquence d'installation fait vingt lignes et que les recopier est la façon
+/// dont deux tests finissent par mesurer deux choses différentes.
+final class LiveRDPSession {
+    let stream: PosixByteStream
+    var session: RDPLiveHandshakeTests.Established
+    private(set) var offer: RDPCapabilities.ServerOffer?
+    /// Vrai dès que le serveur a raccroché ou démonté le partage.
+    private(set) var ended = false
+    /// Combien de PDU on lit avant de conclure au silence.
+    static let rounds = 40
+
+    init(host: String, port: Int, readTimeout: Int = 2) async throws {
+        stream = try PosixByteStream(host: host, port: port, readTimeout: readTimeout)
+        session = try await RDPLiveHandshakeTests.establish(stream)
+    }
+
+    func send(_ payload: Data, flags: RDPStandardSecurity.Flags = []) async throws {
+        try await stream.write(RDPMCS.sendData(
+            user: session.user, channel: session.server.ioChannel,
+            session.security.seal(payload, flags: flags)))
+    }
+
+    /// Lire jusqu'à ce que le serveur se taise, en répondant à ce qui demande
+    /// une réponse, et rendre les rectangles peints entre-temps.
+    @discardableResult
+    func drain() async -> [RDPBitmapUpdate.Rectangle] {
+        var painted: [RDPBitmapUpdate.Rectangle] = []
+        for _ in 0..<Self.rounds {
+            var frame = Data()
+            do {
+                frame = try await RDPLiveHandshakeTests.readPDU(stream)
+            } catch is PosixByteStream.Quiet {
+                return painted                       // le serveur s'est tu, il est vivant
+            } catch {
+                ended = true
+                return painted
+            }
+            guard let incoming = try? RDPMCS.readIncoming(frame) else { return painted }
+            guard case .data(let indication) = incoming else {
+                ended = true
+                return painted
+            }
+            guard let clear = try? session.security.open(indication.payload) else { return painted }
+            let flags = UInt16(indication.payload[0]) | UInt16(indication.payload[1]) << 8
+            if flags & 0x0080 != 0 {
+                if (try? RDPLicensing.read(clear)) == .wantsRequest {
+                    try? await send(RDPLicensing.newLicenseRequest(user: "essai", machine: "wisq"),
+                                    flags: [.licence])
+                }
+                continue
+            }
+            guard let received = try? RDPShare.read(clear) else { return painted }
+            if received.kind == .deactivateAll { ended = true }
+            if received.kind == .demandActive,
+               let offered = try? RDPCapabilities.readDemandActive(received.body,
+                                                                   source: received.source) {
+                offer = offered
+                try? await send(RDPCapabilities.confirmActive(
+                    offer: offered, source: session.user,
+                    width: offered.width, height: offered.height, depth: offered.colourDepth))
+                for message in [
+                    RDPShare.synchronise(share: offered.shareId, source: session.user,
+                                         target: offered.source),
+                    RDPShare.controlCooperate(share: offered.shareId, source: session.user),
+                    RDPShare.controlRequest(share: offered.shareId, source: session.user),
+                    RDPShare.fontList(share: offered.shareId, source: session.user)
+                ] {
+                    try? await send(message)
+                }
+            }
+            if received.dataKind == .update,
+               (try? RDPBitmapUpdate.kind(of: received.body)) == .bitmap,
+               let rectangles = try? RDPBitmapUpdate.rectangles(received.body) {
+                painted += rectangles
+            }
+        }
+        return painted
+    }
+}
+
+/// **Ce que le serveur fait de ce qu'on lui envoie**, contre un vrai xrdp.
+///
+/// Les tests hors ligne d'`RDPInputTests` disent que les octets ont la forme
+/// que la spécification décrit. Ils ne disent pas qu'un serveur en fait quelque
+/// chose — et **un PDU d'entrées mal formé ne provoque aucune plainte** : le
+/// serveur le lit de travers, ou l'ignore, et rien ne le signale. Sabotés tour
+/// à tour, un compte d'événements faux et un ordre de champs mélangé laissent
+/// xrdp parfaitement calme. « La session n'est pas morte » ne mesure donc rien.
+///
+/// La seule mesure qui décide ici est donc un **effet visible** : une demande
+/// de rafraîchissement oblige le serveur à repeindre une zone qu'il n'avait
+/// aucune raison de repeindre. Sabotée — un mauvais type de PDU, un octet de
+/// garniture en moins — elle fait échouer le test.
+///
+/// **Ce qui reste sans mesure, et qu'il faut dire.** Les événements de touche
+/// et de souris eux-mêmes ne sont tenus par rien de vivant. Un clic sur le
+/// bouton « Cancel » de la fenêtre d'ouverture de session fait bien raccrocher
+/// xrdp — c'est vérifié — mais le bouton n'est trouvé qu'à une coordonnée
+/// relevée à la main sur un écran de 1024×768, et un test qui en dépend casse
+/// au premier changement de thème ou de version. Il vaut mieux une lacune
+/// annoncée qu'un test qui échouera un jour pour une raison qui n'est pas la
+/// bonne. La forme des octets, elle, est tenue hors ligne par `RDPInputTests`.
+final class RDPLiveInputTests: XCTestCase {
+    /// **Le serveur repeint ce qu'on lui demande de repeindre.**
+    func testARealServerRepaintsWhatWeAskItTo() async throws {
+        let target = try RDPLiveHandshakeTests.target()
+        let live = try await LiveRDPSession(host: target.host, port: target.port)
+        // L'acteur de socket se ferme tout seul ; on capture lui, et pas la
+        // session, qui n'est pas partageable entre tâches.
+        let socket = live.stream
+        defer { Task { await socket.close() } }
+
+        await live.drain()
+        let offer = try XCTUnwrap(live.offer, "le serveur n'a jamais envoyé son Demand Active")
+
+        // Les entrées d'abord, pour vérifier au moins qu'elles ne cassent rien.
+        try await live.send(try RDPInput.events([
+            .synchronise([]),
+            .pointer([.move], offer.width / 2, offer.height / 2),
+            .key(0x1E, []), .key(0x1E, .release),
+            RDPInput.wheel(-1, at: (offer.width / 2, offer.height / 2))
+        ], share: offer.shareId, source: live.session.user))
+        await live.drain()
+        XCTAssertFalse(live.ended, "les entrées ne doivent pas démonter la session")
+
+        // Puis la mesure : une zone que rien n'a modifiée.
+        let area = (left: 0, top: 0, right: offer.width - 1, bottom: offer.height - 1)
+        try await live.send(try RDPInput.refreshRect([area], share: offer.shareId,
+                                                     source: live.session.user))
+        let painted = await live.drain()
+
+        XCTAssertFalse(painted.isEmpty,
+                       "le serveur n'a rien repeint : la demande n'a pas été comprise")
+        let covered = painted.reduce(0) {
+            $0 + ($1.right - $1.left + 1) * ($1.bottom - $1.top + 1)
+        }
+        XCTAssertGreaterThan(covered, offer.width * offer.height / 4,
+                             "seulement \(covered) pixels repeints sur un écran de "
+                                + "\(offer.width * offer.height)")
+    }
+
+    /// **Mesuré : xrdp 0.9 ignore l'ordre d'arrêter de peindre.**
+    ///
+    /// La demande de suppression est le moyen prévu pour qu'un téléphone dont
+    /// l'écran s'éteint cesse de recevoir des images qu'il ne montre pas. Elle
+    /// a été essayée ici, peinture coupée puis rafraîchissement de tout
+    /// l'écran : **cent quatre-vingt-neuf rectangles sont arrivés quand même**.
+    /// Ce serveur-là ne l'applique pas.
+    ///
+    /// Le test n'affirme donc pas qu'elle marche — ce serait affirmer le
+    /// contraire de ce qu'on a mesuré — ni qu'elle ne marche pas, ce qui
+    /// figerait le défaut d'un serveur dans la suite de tests de wisq. Il tient
+    /// ce qui est vrai des deux côtés : les deux PDU sont assez bien formés
+    /// pour que la session leur survive et continue de peindre. **L'économie de
+    /// batterie qu'ils promettent n'est pas acquise**, et l'application ne doit
+    /// pas compter dessus tant qu'un serveur qui l'honore n'a pas été trouvé.
+    func testTheSuppressRequestsLeaveTheSessionWorking() async throws {
+        let target = try RDPLiveHandshakeTests.target()
+        let live = try await LiveRDPSession(host: target.host, port: target.port)
+        let socket = live.stream
+        defer { Task { await socket.close() } }
+        await live.drain()
+        let offer = try XCTUnwrap(live.offer)
+        let whole = (left: 0, top: 0, right: offer.width - 1, bottom: offer.height - 1)
+
+        for painting in [false, true] {
+            try await live.send(RDPInput.suppressOutput(painting, width: offer.width,
+                                                        height: offer.height,
+                                                        share: offer.shareId,
+                                                        source: live.session.user))
+            await live.drain()
+            XCTAssertFalse(live.ended,
+                           "la demande de suppression (\(painting)) a démonté la session")
+        }
+
+        // Et après les deux, le serveur peint toujours ce qu'on lui demande.
+        try await live.send(try RDPInput.refreshRect([whole], share: offer.shareId,
+                                                     source: live.session.user))
+        let painted = await live.drain()
+        XCTAssertFalse(painted.isEmpty, "plus rien ne se peint")
+    }
+}
 #endif
