@@ -92,6 +92,10 @@ struct Oracle {
     /// de RSP. Lues dans le fichier, jamais devinées — même leçon que les
     /// registres fixes, et elle a coûté 144 cas la première fois.
     windows: Vec<(u64, Vec<u8>)>,
+    /// **La base du segment GS**, telle que le pilote l'a posée. Elle vaut la
+    /// fenêtre de données, exprès : c'est ce qui rend `%gs:0x10` lisible avec
+    /// le même motif que `0x10(%rsi)`.
+    gs_base: u64,
 }
 
 /// La mémoire que ces fenêtres décrivent : une étendue contiguë qui les couvre
@@ -127,6 +131,7 @@ fn read_oracle() -> Oracle {
     let mut fixed = [0u64; 16];
     let mut seeded = 0usize;
     let mut windows: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut gs_base: Option<u64> = None;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -145,6 +150,11 @@ fn read_oracle() -> Oracle {
                 );
             }
             "fenêtre" => windows.push((hex(field[1]), bytes(field[2]))),
+            // **La base du segment GS**, que le pilote pose par `arch_prctl`.
+            // Elle n'apparaît dans aucun registre : sans cette ligne, le
+            // harnais partirait de zéro et lirait la page zéro là où le
+            // silicium lisait la fenêtre de données.
+            "segment" if field[1] == "gs" => gs_base = Some(hex(field[2])),
             "instr" => {
                 instructions.insert(
                     field[1].to_string(),
@@ -193,12 +203,20 @@ fn read_oracle() -> Oracle {
         2,
         "l'oracle doit déclarer les deux fenêtres — les données et la pile"
     );
+    // **Un enregistrement inconnu est ignoré en silence** — c'est ce que le
+    // `_ => {}` plus haut fait, et c'est voulu, pour qu'un corpus plus riche
+    // n'exige pas un harnais plus neuf. Mais cette tolérance rendrait une base
+    // de segment mal orthographiée invisible : le harnais partirait de zéro et
+    // tomberait juste tant qu'aucun cas ne porte le préfixe. Elle est donc
+    // exigée ici, comme les treize registres fixes.
+    let gs_base = gs_base.expect("l'oracle doit déclarer la base du segment GS");
     Oracle {
         states,
         instructions,
         cases,
         fixed,
         windows,
+        gs_base,
     }
 }
 
@@ -283,6 +301,7 @@ fn every_accepted_instruction_matches_the_silicon() {
         cases,
         fixed,
         windows,
+        gs_base,
     } = read_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<&str> = Vec::new();
@@ -305,6 +324,7 @@ fn every_accepted_instruction_matches_the_silicon() {
         let mut cpu = Cpu {
             regs: fixed,
             memory: span(&windows),
+            gs_base,
             ..Default::default()
         };
         cpu.regs[0] = state.rax;
@@ -426,7 +446,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 12060,
+        checked > 12660,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne

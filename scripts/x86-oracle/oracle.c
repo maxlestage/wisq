@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 void wisq_x86_run(uint64_t *state, void *code);
 // L'adresse du retour, prise directement sur le symbole : le créneau que le
@@ -58,6 +60,17 @@ extern char wisq_return[];
 // colonne ajoutée en queue les laisse à l'octet près, une colonne insérée les
 // décalerait toutes.
 #define STACKWIN 64
+// **La base du segment GS.** Un noyau x86-64 range ses variables par cœur
+// derrière ce préfixe : `%gs:0x1234` n'est pas une adresse absolue, c'est un
+// déplacement compté depuis une base que le noyau a posée lui-même. Ici elle
+// pointe la fenêtre de données, pour qu'un accès segmenté tombe exactement là
+// où le corpus sait lire.
+//
+// **FS n'est pas touché, et ne le sera pas.** C'est le segment que la glibc
+// utilise pour ses variables de fil — le canari de pile vit à `%fs:0x28`.
+// Changer sa base ferait planter le pilote lui-même avant qu'il ait jugé quoi
+// que ce soit. Les deux cœurs refusent donc le préfixe FS, faute d'oracle.
+#define ARCH_SET_GS 0x1001
 #define BELOW    (STACK - STACKWIN)
 
 int main(void) {
@@ -67,6 +80,11 @@ int main(void) {
     unsigned char *arena = mmap((void *)ARENA, page * 4, PROT_READ | PROT_WRITE | PROT_EXEC,
                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     if (arena == MAP_FAILED) { perror("mmap"); return 1; }
+    // Posée une fois pour toutes : le harnais ne la recharge pas entre les cas,
+    // et aucun cas ne l'écrit.
+    if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)DATA) != 0) {
+        perror("arch_prctl"); return 1;
+    }
     unsigned char *code = (unsigned char *)CODE;
     unsigned char *data = (unsigned char *)DATA;
 

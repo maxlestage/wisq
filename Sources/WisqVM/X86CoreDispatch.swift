@@ -207,7 +207,13 @@ extension X86Core {
         case 0x8D:  // LEA : calcule une adresse et ne la lit pas.
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
-            writeReg(fields, size, try effectiveAddress(instruction, fields) & Self.mask(size))
+            // **Et qui ne traverse donc pas l'unité de segmentation.** `leaq
+            // %gs:0x10, %rax` rend 0x10, pas la base du segment plus 0x10 :
+            // rien n'est lu en mémoire, donc aucun segment n'intervient.
+            // L'assembleur le dit — il avertit que le préfixe est
+            // « ineffectual » — et le corpus matériel le vérifie.
+            let address = try effectiveAddress(instruction, fields, segmented: false)
+            writeReg(fields, size, address & Self.mask(size))
 
         case 0x90...0x97:  // XCHG rAX, r — dont 0x90, qui est NOP.
             let size = Self.operandSize(instruction, byteForm: false)
@@ -936,13 +942,18 @@ extension X86Core {
 
     /// L'adresse qu'un ModRM désigne. `LEA` la calcule sans la lire ; tout le
     /// reste la lit ou l'écrit.
-    func effectiveAddress(_ instruction: X86Instruction, _ fields: Fields) throws -> UInt64 {
+    /// `segmented` dit si la base du segment entre dans le calcul. Elle y
+    /// entre partout **sauf** pour `LEA`, qui ne lit rien en mémoire et ne
+    /// traverse donc pas l'unité de segmentation.
+    func effectiveAddress(
+        _ instruction: X86Instruction, _ fields: Fields, segmented: Bool = true
+    ) throws -> UInt64 {
         guard let modrm = instruction.modrm, fields.mod != 0b11 else {
             throw Fault.unsupported("une adresse calculée depuis un registre")
         }
         let rex = instruction.rex ?? 0
         let displacement = UInt64(bitPattern: instruction.displacement)
-        let segment = segmentBase(instruction)
+        let segment = segmented ? segmentBase(instruction) : 0
         if modrm & 0x07 == 0b100, let sib = instruction.sib {
             let index = Int((rex & 0x02) << 2 | ((sib >> 3) & 0x07))
             let base = Int((rex & 0x01) << 3 | (sib & 0x07))

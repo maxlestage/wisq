@@ -46,7 +46,15 @@ pub const RFLAGS_SLOT: usize = 16;
 /// quand le budget est épuisé. Sans cette globale, l'hôte saurait qu'elle s'est
 /// arrêtée mais pas où reprendre.
 pub const RIP_SLOT: usize = RFLAGS_SLOT + 1;
-pub const SCRATCH_SLOT: usize = RIP_SLOT + 1;
+/// **La base du segment GS**, que l'hôte pose et que le module lit.
+///
+/// Elle est une globale importée comme les registres, et pour la même raison :
+/// le module ne peut pas la connaître à la compilation. Un noyau l'installe une
+/// fois par cœur, très tôt, puis n'y touche plus — mais « très tôt » est déjà
+/// après que la première région a été traduite, et une constante figée dans le
+/// code rendrait cette région fausse dès l'installation suivante.
+pub const GS_SLOT: usize = RIP_SLOT + 1;
+pub const SCRATCH_SLOT: usize = GS_SLOT + 1;
 pub const SCRATCH_COUNT: usize = 10;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
@@ -208,6 +216,12 @@ impl Body {
     /// Pousser l'adresse effective, en `i32`, prête pour un accès mémoire.
     fn address(&mut self, address: &Address) -> &mut Self {
         self.constant(address.displacement as u64);
+        // **La base du segment, lue à l'exécution.** Elle ne peut pas être
+        // repliée dans le déplacement : la région est compilée une fois, et
+        // l'hôte peut poser une autre base entre deux entrées.
+        if address.gs {
+            self.load(GS_SLOT).op(code::I64_ADD);
+        }
         if let Some(base) = address.base {
             self.load(base as usize).op(code::I64_ADD);
         }
@@ -347,6 +361,10 @@ impl Module {
                         scale: 1,
                         displacement: after.wrapping_add(address.displacement as u64) as i64,
                         relative: false,
+                        // **Le segment survit au figeage.** Figer résout le
+                        // déplacement, pas la base : `%gs:x(%rip)` reste une
+                        // adresse à laquelle la base du segment s'ajoutera.
+                        gs: address.gs,
                     }),
                     ..*step
                 }
@@ -2549,6 +2567,10 @@ impl Module {
     /// résultat. L'échelle est une puissance de deux, donc un décalage, et la
     /// somme boucle sur soixante-quatre bits — c'est ainsi que se codent les
     /// index négatifs.
+    /// **Le préfixe de segment n'est pas lu ici, et c'est la conduite du
+    /// silicium** : `lea` ne touche pas la mémoire, donc ne traverse pas
+    /// l'unité de segmentation. Le corpus juge cette absence sur un vrai
+    /// processeur.
     fn lea(step: &Decoded, body: &mut Body) -> Option<()> {
         let address = step.memory?;
         body.store(Body::scratch(2), |b| {

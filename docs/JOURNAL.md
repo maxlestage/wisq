@@ -9161,3 +9161,148 @@ Un rouge rare, à cause connue et écrite ici, vaut mieux qu'une garde émoussé
 La prochaine fois qu'un test du site expire au premier lancement d'un
 conteneur, la réponse est dans ce paragraphe et non dans vingt minutes de
 diagnostic.
+
+## Le préfixe GS : 18 795 refus, et le mode que personne n'écrit
+
+Le corpus disait le jeu d'instructions clos. La mesure sur un vrai noyau Alpine
+disait autre chose, et nommait le premier coupable : **le préfixe de segment
+GS**, 18 795 instructions refusées, le plus gros bloc restant. Un noyau x86-64
+range derrière ce préfixe tout ce qui est propre à un cœur — la tâche courante,
+la pile d'interruption, le compteur de préemption — et il y accède partout.
+
+`%gs:0x1234` n'est pas l'adresse 0x1234 : c'est un déplacement compté depuis une
+base que le noyau a posée lui-même, dans un registre qu'aucune instruction
+ordinaire ne montre. Ignorer le préfixe rendrait un pointeur plausible, dans la
+page zéro, et faux.
+
+### Ce qu'il a fallu, pour pouvoir le juger
+
+L'oracle matériel ne pouvait pas en parler : rien ne posait de base de segment.
+Il la pose maintenant par `arch_prctl(ARCH_SET_GS, …)` sur la fenêtre de
+données, ce qui fait de `%gs:0x10` le même octet que `0x10(%rsi)` — le motif que
+le corpus sait déjà lire.
+
+**FS n'y est pas, et n'y sera pas.** C'est le segment des variables de fil de la
+glibc ; le canari de pile vit à `%fs:0x28`. Déplacer sa base ferait planter le
+pilote avant qu'il ait jugé un seul cas. Les deux cœurs refusent donc ce
+préfixe, faute d'oracle — un préfixe accepté sans oracle serait une conduite
+devinée.
+
+La base est écrite dans le corpus comme les treize registres fixes et les deux
+fenêtres, et les deux harnais **exigent** la ligne au lieu de l'ignorer. Un
+enregistrement inconnu est tu en silence, exprès ; celui-là ne peut pas l'être,
+sans quoi un harnais partirait de zéro et tomberait juste tant qu'aucun cas ne
+porte le préfixe. Troisième fois que cette leçon se paie.
+
+### Deux règles que le silicium a tranchées
+
+**`lea` ignore le préfixe.** Elle ne touche pas la mémoire, donc ne traverse pas
+l'unité de segmentation : `leaq %gs:0x10, %rax` rend 0x10. L'assembleur le dit à
+sa façon — « segment override on `lea' is ineffectual » — et le corpus le grave.
+Un émetteur qui ajouterait la base rendrait une adresse décalée de 0x1000.
+
+**`%gs:x(%rip)` existe, et les deux cœurs allaient diverger dessus.** Personne
+n'écrit cette forme ; c'est un sabotage qui l'a désignée — faire perdre le
+segment au figeage de l'adresse relative ne faisait tomber aucun test. En
+regardant pourquoi : l'interpréteur sortait sur le bras relatif **avant**
+d'ajouter la base, l'émetteur l'ajoutait. La première occurrence aurait donné
+deux résultats différents sans que rien ne s'en plaigne. Le corpus en porte
+maintenant un cas, avec un déplacement calculé pour retomber dans la fenêtre, et
+les deux cœurs sont d'accord parce que le processeur a dit lequel avait raison.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 068 | **12 428** |
+| instructions du noyau décodées | 97,5 % | **98,1 %** |
+| régions de 4 Kio acceptées | 58,0 % | **63,3 %** |
+
+Douze sabotages, douze attrapés. Le prochain bloc que la mesure désigne est le
+NOP multi-octets — `66`, `2e` et `0f 1f`, que le noyau sème par milliers pour
+aligner ses branches.
+
+## Les quatre segments que le mode long a vidés, et le NOP qui coupait tout
+
+Après GS, la mesure désignait `66` (16 095 refus) et `2e` (9 220). J'ai cru
+devoir écrire le NOP multi-octets. **Il était déjà là** — `0f 1f` avec son ModRM
+entier, depuis la tranche du décodeur. Ce qui bloquait était l'octet d'avant.
+
+Le noyau n'écrit pas `0f 1f 84 00 …` tout nu. Il écrit
+`66 2e 0f 1f 84 00 00 00 00 00`, et cette forme apparaît **18 066 fois** dans le
+noyau Alpine que je mesure. Le `2e` — le préfixe du segment CS — n'était pas
+reconnu, donc l'instruction était refusée, donc la région de 4 Kio était coupée
+en deux à chaque alignement de fonction. Le décodeur savait lire le NOP et ne le
+voyait jamais.
+
+En mode 64 bits, CS, SS, DS et ES ont une base **forcée à zéro**. Le préfixe se
+lit, compte dans la longueur de l'instruction, et ne change rien d'autre. Ce
+n'est pas une supposition commode : le corpus le met devant des instructions
+dont il connaît déjà la réponse nue, et le silicium rend la même chose.
+
+Ils ne posent donc pas de segment sur l'adresse, à la différence de `65`.
+Prétendre le contraire demanderait une base que rien n'a, et zéro s'ajoute déjà
+tout seul. Un sabotage tient cette distinction : faire passer un segment vidé
+pour GS est attrapé.
+
+### Une leçon d'outillage, petite mais coûteuse
+
+L'assembleur n'accepte qu'une syntaxe par segment, et pas la même pour tous.
+`%ss:` et `%es:` s'écrivent devant l'opérande — la forme préfixe seule est
+refusée en 64 bits. `%ds:` est effacé, l'assembleur le tenant pour le segment
+par défaut, et ne s'obtient qu'en écrivant `ds` devant l'instruction. Écrire les
+quatre de la même façon échouait sur deux d'entre elles ; le corpus n'aurait
+porté que la moitié de la règle, et rien ne l'aurait dit.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 428 | **12 668** |
+| instructions du noyau décodées | 98,1 % | **98,9 %** |
+| régions de 4 Kio acceptées | 63,3 % | **66,0 %** |
+
+Quinze sabotages, quinze attrapés. `66` et `2e` ont entièrement disparu de la
+liste des refus. Ce qui reste, dans l'ordre : `0f` (SSE, 6 742), `ff` (le groupe
+5 en mémoire, 5 927), `cc` (l'`int3` de bourrage entre fonctions, 3 970).
+
+### Il y a trois cœurs, et j'en comptais deux
+
+La CI a rougi sur `Cœur (Linux)` et `Cœur (Apple)` : **336 désaccords sur
+12 740**. Le cœur Swift lit le même oracle matériel que les deux autres, et je
+ne l'avais pas dans la tête en écrivant la tranche. « Les deux cœurs sont
+d'accord » était vrai et incomplet.
+
+Le compte dit exactement ce qui manquait. 336 = 14 × 24, et le corpus porte
+quinze instructions préfixées par `%gs:`. La quinzième est `leaq %gs:0x10, %rax`
+— elle tombait juste **par accident**, parce que le harnais Swift ne posait
+aucune base et que `lea` doit justement en ignorer une. La corriger sans
+corriger l'autre aurait cassé ce cas-là.
+
+Deux choses, donc :
+
+1. Le cœur Swift avait déjà la base du segment, et mieux que le cœur Rust ne
+   l'avait : un vrai MSR, `fsBase` et `gsBase`, comme le noyau les écrit. C'est
+   son **harnais** qui ne lisait pas la nouvelle ligne du corpus. Il la lit, et
+   `XCTUnwrap` en fait une faute nommée plutôt qu'un zéro silencieux — la même
+   garde que dans les deux harnais Rust.
+2. Son `lea` traversait l'unité de segmentation, exactement comme celui du cœur
+   Rust avant cette tranche. Le même défaut, dans le même mois, écrit deux fois
+   par deux chemins différents. `effectiveAddress` prend maintenant un
+   `segmented`, et `LEA` est le seul appelant à le mettre à `false`.
+
+**Ces deux corrections ne sont vérifiables que par la CI.** Il n'y a pas de
+chaîne Swift dans ce conteneur : `swift` et `swiftc` sont absents. Je ne les ai
+donc pas exécutées, et je ne prétends pas le contraire — c'est le job
+`Cœur (Linux)` qui tranche.
+
+### Une asymétrie qui reste, et qui est écrite ici pour ne pas être oubliée
+
+Le cœur Swift **accepte** le préfixe FS et lui applique son MSR ; les deux cœurs
+Rust le **refusent**, faute d'oracle. Pour le cœur Swift c'est juste : il fait
+tourner un vrai noyau, dont l'espace utilisateur atteint ses variables de fil
+par `%fs:`. Pour les cœurs Rust c'est un trou, pas un choix — mais un trou qu'on
+ne peut pas combler sans un oracle, et l'oracle ne peut pas poser FS sans se
+détruire. Le combler demandera un pilote qui ne dépend pas de la glibc pour son
+canari de pile. C'est une tranche à part entière, pas un ajout de dernière
+minute.

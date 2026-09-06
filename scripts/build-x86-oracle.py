@@ -457,6 +457,83 @@ def snippets():
     yield "movsbl 1(%rsi), %eax"
     yield "movzwq 2(%rsi), %rax"
     yield "movslq 8(%rsi), %rax"
+    # **Le préfixe de segment GS**, par où un noyau x86-64 atteint tout ce qui
+    # est propre à un cœur : la tâche courante, la pile d'interruption, le
+    # compteur de préemption. La forme est toujours la même — pas de base, pas
+    # d'index, un déplacement — parce que c'est un décalage dans une structure
+    # dont la base est dans un registre caché.
+    #
+    # L'oracle pose cette base sur la fenêtre de données par `arch_prctl`, donc
+    # `%gs:0x10` désigne le même octet que `0x10(%rsi)`. Ce n'est pas une
+    # coïncidence commode : c'est ce qui permet de juger le préfixe avec la
+    # fenêtre que le corpus sait déjà lire.
+    #
+    # **FS n'est pas là**, et ne peut pas y être : c'est le segment des
+    # variables de fil de la glibc, le canari de pile vit à `%fs:0x28`, et
+    # déplacer sa base ferait planter le pilote avant qu'il ait jugé un seul
+    # cas. Les deux cœurs refusent donc ce préfixe.
+    yield "movq %gs:0x10, %rax"
+    yield "movl %gs:0x8, %eax"
+    yield "movb %gs:0x3, %al"
+    yield "movq %rax, %gs:0x18"
+    yield "movl %eax, %gs:0x20"
+    yield "addq %gs:0x0, %rax"
+    yield "subl %gs:0x4, %eax"
+    yield "cmpq %gs:0x10, %rax"
+    yield "addq %rax, %gs:0x28"
+    yield "incq %gs:0x30"
+    yield "andl $0x0F0F0F0F, %gs:0x8"
+    yield "movzbl %gs:0x2, %eax"
+    yield "movslq %gs:0x8, %rax"
+    # **Les quatre segments que le mode 64 bits a vidés.** CS, SS, DS et ES ont
+    # une base forcée à zéro : le préfixe se lit, se compte dans la longueur, et
+    # ne change rien. Ce n'est pas une supposition confortable — c'est ce que le
+    # silicium rend, et le corpus le grave en mettant le préfixe devant des
+    # instructions dont il connaît déjà la réponse nue.
+    #
+    # Les refuser rejetait le NOP d'alignement du noyau : `66 2e 0f 1f 84 00 …`
+    # apparaît dix-huit mille fois dans un noyau Alpine, et chaque occurrence
+    # coupait une région en deux.
+    #
+    # **Deux syntaxes, parce que l'assembleur n'en accepte qu'une par
+    # segment.** `%ss:` et `%es:` s'écrivent devant l'opérande — la forme
+    # préfixe seule est refusée en 64 bits — tandis que `%ds:` est effacé par
+    # l'assembleur, qui le tient pour le segment par défaut, et ne s'obtient
+    # qu'en écrivant `ds` devant l'instruction.
+    yield "movq %cs:8(%rsi), %rax"
+    yield "movl %ss:4(%rsi), %eax"
+    yield "ds addq (%rsi), %rax"
+    yield "movb %es:3(%rsi), %al"
+    yield "addq $1, %cs:(%rsi)"
+    yield "ds incq (%rsi)"
+    # Un préfixe de segment sur une instruction **sans** opérande mémoire : il
+    # est légal, et le processeur ne s'en plaint pas.
+    yield "cs addq %rcx, %rax"
+    # **Le NOP d'alignement du noyau, dans les formes qu'il prend.** Le ModRM
+    # entier compte dans la longueur ; un octet mal consommé décale tout ce qui
+    # suit, et le corpus le voit parce que le programme continue après.
+    yield "nopw %cs:0x0(%rax,%rax,1)"
+    yield "nopl 0x0(%rax)"
+    yield "nopw 0x0(%rax,%rax,1)"
+    # **Le segment ET le pointeur d'instruction, ensemble.** Personne n'écrit
+    # ça — un noyau atteint ses variables par cœur par un déplacement absolu —
+    # mais les deux mécanismes se rencontrent dans le code des deux cœurs, et
+    # sans ce cas rien ne dit lequel gagne. Un sabotage l'a montré : faire
+    # perdre le segment au figeage de l'adresse relative ne faisait tomber
+    # aucun test, et l'interpréteur, lui, sortait **avant** d'ajouter la base.
+    # Les deux cœurs auraient divergé en silence sur la première occurrence.
+    #
+    # Le déplacement est calculé pour retomber dans la fenêtre : le processeur
+    # ajoute la base du segment à une adresse déjà relative, donc l'adresse
+    # nue vaut deux fois l'arène. Huit octets, c'est la longueur de
+    # `65 48 8b 05 <disp32>`, mesurée sur l'assembleur et pas devinée.
+    yield f"movq %gs:{0x10 - (CODE + 8)}(%rip), %rax"
+    # **`lea` ignore le préfixe** : elle ne touche pas la mémoire, donc ne
+    # traverse pas l'unité de segmentation. L'assembleur avertit que le préfixe
+    # est sans effet ; le silicium le confirme, et c'est ce qu'on grave ici. Un
+    # émetteur qui ajouterait la base rendrait une adresse décalée de 0x1000 —
+    # plausible, et fausse.
+    yield "leaq %gs:0x10, %rax"
     # Pas d'index à échelle ici : RCX et RDX prennent des valeurs qui sortent
     # de la fenêtre, et le corpus ne juge pas ce qu'il fait planter. Une base
     # et un déplacement suffisent à éprouver le chemin d'accès ; l'échelle est
@@ -514,6 +591,7 @@ def exchange_state(size, matching):
 
 # Les adresses fixes du harnais. Fixes exprès : une adresse rendue par mmap
 # changerait à chaque exécution, et le fichier ne se reproduirait pas.
+CODE = 0x30000000
 DATA = 0x30001000
 STACK = 0x30003000
 WINDOW = 64
@@ -851,6 +929,12 @@ def main():
                       % (register, start[register], REGISTERS[register]))
         out.write("fenêtre\t%x\t%s\n" % (DATA, PRISTINE))
         out.write("fenêtre\t%x\t%s\n" % (STACK_WINDOW, STACK_PRISTINE))
+        # **La base du segment GS**, que le pilote pose par `arch_prctl` avant
+        # le premier cas. Elle n'est dans aucun registre visible : un harnais
+        # qui la devinerait comparerait son résultat à celui d'un processeur
+        # parti d'ailleurs — la même leçon que « fixe » et « fenêtre », pour la
+        # troisième fois.
+        out.write("segment\tgs\t%x\n" % DATA)
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))
