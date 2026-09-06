@@ -160,6 +160,15 @@ NO_FLAGS = (
     # instruction qui n'y touche pas : le programme « un tableau de bits »
     # finit sur `setc`, et ce qu'il définit vient du `btq` d'avant, où seule la
     # retenue est définie.
+    # **Les instructions de chaîne, et le sens qui les oriente.** Elles ne
+    # touchent à aucun drapeau arithmétique : `cld` et `std` n'écrivent que DF,
+    # qui n'en fait pas partie, et `movs`/`stos` n'en écrivent aucun. Sans cette
+    # ligne, `rep stosq` retombait sur la règle par défaut — les six drapeaux
+    # comparés — et le programme se voyait reprocher la retenue auxiliaire d'un
+    # `and` que le manuel déclare indéfinie. Le premier mot d'un `rep …` est
+    # « rep », donc c'est lui qu'il faut nommer.
+    "cld", "std", "rep",
+    "movsb", "movsw", "movsq", "stosb", "stosw", "stosl", "stosq",
     "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl",
     "setle", "setne", "setno", "setnp", "setns", "seto", "setp", "sets",
     "setc", "setnc", "setz", "setnz",
@@ -749,6 +758,40 @@ PROGRAMS = [
     ("un tableau de bits en trente-deux bits", [
         "andl $0xff, %ecx", "btsl %ecx, (%rsi)", "btcl %ecx, 4(%rsi)",
         "btl %ecx, (%rsi)", "setc %dl"]),
+    # **Les instructions de chaîne : le `memcpy` et le `memset` d'un noyau.**
+    #
+    # RDI doit être posé dans la fenêtre — sa valeur fixe est hors d'atteinte —
+    # et le compte **borné**, sinon le processeur écrirait au-delà de l'arène et
+    # le pilote de l'oracle mourrait avec. `andl $3, %ecx` le tient à trois au
+    # plus, ce qui suffit : ce qui se vérifie ici est le sens, le pas et le
+    # compte, pas l'endurance.
+    ("remplir la mémoire par répétition", [
+        "cld", "andl $3, %ecx", "leaq 16(%rsi), %rdi", "rep stosq %rax, (%rdi)"]),
+    ("remplir la mémoire octet par octet", [
+        "cld", "andl $7, %ecx", "leaq 8(%rsi), %rdi", "rep stosb %al, (%rdi)"]),
+    # **Le même remplissage, à l'envers.** Sans `std`, le sens serait deviné :
+    # un cœur qui avance toujours rend le même résultat sur tous les cas où
+    # DF est nul, c'est-à-dire sur tous les autres programmes.
+    ("remplir la mémoire à reculons", [
+        "std", "andl $3, %ecx", "leaq 40(%rsi), %rdi", "rep stosq %rax, (%rdi)",
+        "cld"]),
+    # **Copier d'une moitié de la fenêtre à l'autre.** RSI avance aussi, et il
+    # est relevé dans le cas — un cœur qui l'oublierait passerait sur `stos`.
+    ("copier la mémoire par répétition", [
+        "cld", "andl $3, %ecx", "leaq 32(%rsi), %rdi", "rep movsq (%rsi), (%rdi)"]),
+    ("copier la mémoire octet par octet", [
+        "cld", "andl $7, %ecx", "leaq 32(%rsi), %rdi", "rep movsb (%rsi), (%rdi)"]),
+    # **Sans `rep` : un seul élément, et les pointeurs avancent quand même.**
+    # C'est ce qui distingue « la boucle ne tourne pas » de « l'instruction ne
+    # fait rien », et un compte nul ne doit toucher ni l'un ni l'autre.
+    ("un seul élément de chaîne, sans répétition", [
+        "cld", "leaq 24(%rsi), %rdi", "movsq (%rsi), (%rdi)", "stosq %rax, (%rdi)"]),
+    # **Le compte nul ne fait rien du tout**, pas même une itération. Tester
+    # après coup au lieu d'avant copierait un élément de trop — et sur un
+    # compte de quatre, ça ne se voit pas.
+    ("une répétition dont le compte est nul", [
+        "cld", "xorl %ecx, %ecx", "leaq 16(%rsi), %rdi", "rep stosq %rax, (%rdi)",
+        "incq %rdx"]),
     ("une boucle qui parcourt la mémoire", [
         "movl $4, %ecx", "xorq %rdx, %rdx",
         "1: addq (%rsi), %rdx", "addq $8, %rsi", "decl %ecx", "jnz 1b"]),
@@ -971,7 +1014,7 @@ def main():
         out.write("# instr\t<indice>\t<octets>\t<masque>\t<mnémonique>  — une instruction,\n")
         out.write("#   et le masque des drapeaux que l'architecture définit pour elle\n")
         out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>"
-                  "\t<pile>\t<rsp>\t<rbp>\t<rsi>\n")
+                  "\t<pile>\t<rsp>\t<rbp>\t<rsi>\t<rdi>\n")
         out.write("#   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;\n")
         out.write("#   la pile de l'invité descend depuis 0x30003000\n")
         out.write("# fixe\t<registre>\t<valeur>\t<nom>  — ce que le silicium avait dans les\n")
@@ -1029,12 +1072,12 @@ def main():
             # colonnes plus loin. Les laisser dehors était un trou : un
             # `leave` qui reprend RBP dans le désordre laisse RAX, RCX, RDX et
             # les deux fenêtres exactement justes, et rien ne le voyait.
-            for register in [3, 7] + list(range(8, 16)):
+            for register in [3] + list(range(8, 16)):
                 if after[register] != state[register]:
                     raise SystemExit(
                         f"{texts[instruction]} a écrit dans {REGISTERS[register]} : "
                         f"{state[register]:x} devenu {after[register]:x}")
-            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%s\t%s\t%x\t%x\t%x\n"
+            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%s\t%s\t%x\t%x\t%x\t%x\n"
                       % (instruction, index,
                          after[0], after[1], after[2], after[16] & ARITHMETIC_FLAGS,
                          # « - » quand la fenêtre est restée telle qu'on l'avait
@@ -1057,7 +1100,14 @@ def main():
                          # parcourt la mémoire a écrit dans rsi ». C'est vrai,
                          # et c'est ce qu'elle prouve — donc on la relève au
                          # lieu de l'exclure.
-                         after[4], after[5], after[6]))
+                         # **Et RDI**, pour la même raison, à partir du jour où
+                         # les instructions de chaîne sont entrées : `rep stos`
+                         # l'avance d'autant d'octets qu'il en écrit. Il était
+                         # dans la liste des registres qui ne doivent pas
+                         # bouger ; l'y laisser aurait obligé à écarter les
+                         # programmes de chaîne, c'est-à-dire à ne pas les
+                         # juger. Relevé plutôt qu'exclu.
+                         after[4], after[5], after[6], after[7]))
 
     print(f"{len(texts)} instructions, {len(cases)} cas", file=sys.stderr)
     return 0
