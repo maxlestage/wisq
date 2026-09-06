@@ -9641,3 +9641,50 @@ en avance, et il n'y a rien à y porter.
 `0f 18` (`prefetch`) × 14, `0f 31` (`rdtsc`) × 11, `0f 30` (`wrmsr`) × 10,
 `0f ae` × 9, `0f 01` × 8, puis des unités. La prochaine tranche ne se choisira
 plus par la taille d'un tas.
+
+## Le chiffre qui manquait : ×5, mesuré
+
+Tout le travail de couverture repose sur une idée — que faire compiler le code
+par WebKit vaut mieux que l'interpréter — et cette idée n'avait **jamais été
+chiffrée**. L'en-tête du cœur citait bien trois débits, mais aucun des trois ne
+mesurait ce que ce dépôt produit : 10,6 MIPS pour l'interpréteur x86 **en
+Swift**, 157 pour le cœur rv32, 1103 pour un module WebAssembly **écrit à la
+main**. Ni l'interpréteur x86 en Rust, ni le module que l'émetteur engendre.
+
+`cargo run -p wisq-vm --release --example speed`, sur une boucle de cinq
+instructions — la taille moyenne d'un bloc de base relevée sur le noyau Alpine,
+choisie pour ça : une boucle d'une seule instruction mesurerait le coût du saut,
+pas celui du calcul.
+
+| | débit | temps |
+|---|---|---|
+| interpréteur Rust | **49,3 MIPS** | 0,203 s |
+| émetteur, sous JavaScriptCore | **247 MIPS** | 0,040 s |
+| | **×5,0** | |
+
+Quatre exécutions : 49,3 à 49,9 d'un côté, 229 à 253 de l'autre, rapport 4,6 à
+5,1. Le débit absolu appartient à cette machine ; le rapport est ce qui se
+transporte.
+
+### Ce que le chiffre dit, et ce qu'il ne dit pas
+
+**Il dit que la peine en valait la peine** — cinq fois, sur du code que
+l'émetteur engendre lui-même, sous le moteur exact de `WKWebView`.
+
+**Il dit aussi que l'interpréteur en Rust rend 4,6 fois celui en Swift**, sans
+WebView, sans pont, sans permission à négocier. Ce chemin-là n'était pas le
+sujet, et il s'avère être le meilleur rapport bénéfice/contrainte du dépôt.
+
+**Et il dit que 247 n'est pas 1103.** L'écart avec le module écrit à la main est
+celui entre du code engendré et du code pensé : l'émetteur matérialise des
+drapeaux qu'un humain aurait élidés, et passe par la boucle de répartition à
+chaque bloc. C'est là qu'un travail d'optimisation aurait maintenant du sens —
+et c'est mesurable, ce qui est la seule raison de le dire.
+
+### Deux gardes, parce qu'un débit faux est pire que pas de débit
+
+Les deux côtés comptent avant de chronométrer : l'interpréteur vérifie qu'il a
+exécuté exactement les instructions annoncées, le module que RSI est revenu à
+zéro. Une boucle sortie trop tôt rendrait un débit magnifique et faux. Et le
+module tourne **une fois à vide avant d'être chronométré** : JavaScriptCore
+compile par paliers, et mesurer le premier passage mesurerait son démarrage.

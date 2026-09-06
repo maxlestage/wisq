@@ -1,10 +1,28 @@
 //! **Un cœur x86-64 sans JIT — et pourquoi « sans JIT » n'est pas « lent ».**
 //!
-//! Ce qu'on sait, mesuré : l'interpréteur x86 en Swift rend **10,6 MIPS**, le
-//! cœur rv32 en Rust en rend **157**, et un module WebAssembly compilé par
-//! WebKit en rend **1103**. Rien sans JIT ne rattrapera 1103. Mais 10,6 n'est
-//! pas la limite de ce qu'on peut faire sans JIT, et ce fichier va chercher ce
-//! qui manque entre les deux.
+//! Ce qu'on savait, mesuré : l'interpréteur x86 en Swift rend **10,6 MIPS**, le
+//! cœur rv32 en Rust en rend **157**, et un module WebAssembly **écrit à la
+//! main** et compilé par WebKit en rend **1103**. Rien sans JIT ne rattrapera
+//! 1103. Mais 10,6 n'est pas la limite de ce qu'on peut faire sans JIT, et ce
+//! fichier va chercher ce qui manque entre les deux.
+//!
+//! **Ce qu'on sait maintenant**, et qu'aucun de ces trois chiffres ne disait —
+//! `cargo run -p wisq-vm --release --example speed`, sur une boucle de cinq
+//! instructions, la taille moyenne d'un bloc de base relevée sur le noyau
+//! Alpine :
+//!
+//! | | débit |
+//! |---|---|
+//! | ce cœur-ci, en Rust | **49 MIPS** |
+//! | ce que l'émetteur engendre, sous JavaScriptCore | **247 MIPS** |
+//!
+//! Cinq fois, et c'est la première fois que le rapport est chiffré plutôt que
+//! supposé. Deux choses s'y lisent. La première : l'interpréteur en Rust rend
+//! déjà **4,6 fois** celui en Swift, sans WebView ni permission. La seconde :
+//! 247 n'est pas 1103, et l'écart est celui entre du code engendré et du code
+//! écrit à la main — le module de l'émetteur matérialise des drapeaux et passe
+//! par une boucle de répartition à chaque bloc, ce que le module écrit à la
+//! main n'avait pas à faire.
 //!
 //! Ce que ce cœur a de mieux qu'un JIT, et qui ne se voit pas dans un débit :
 //! il ne demande **aucune permission**. Pas de `WKWebView`, pas de pont, pas
