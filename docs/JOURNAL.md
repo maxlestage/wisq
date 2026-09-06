@@ -9306,3 +9306,70 @@ ne peut pas combler sans un oracle, et l'oracle ne peut pas poser FS sans se
 détruire. Le combler demandera un pilote qui ne dépend pas de la glibc pour son
 canari de pile. C'est une tranche à part entière, pas un ajout de dernière
 minute.
+
+## Le groupe 5 par la mémoire : ce qu'un noyau fait de ses pointeurs
+
+Le décodeur ne connaissait du groupe 5 que `inc`, `dec`, et `jmp *%reg`. Son
+commentaire était franc : « une cible en mémoire demanderait une lecture que ce
+bras ne fait pas ». Or c'est la forme dominante. Balayage linéaire du noyau
+Alpine :
+
+| forme | occurrences |
+|---|---|
+| `call *mémoire` | 146 113 |
+| `jmp *mémoire` | 14 108 |
+| `jmp *registre` | 6 185 (déjà là) |
+| `call *registre` | 5 498 |
+
+Les chiffres bruts sont gonflés — un balayage linéaire prend des données pour du
+code — mais le classement tient : ce sont les appels par pointeur de fonction
+qui pèsent, c'est-à-dire tout ce qu'un noyau appelle indirectement.
+
+Trois choses à tenir, qu'un cas de programme confondrait :
+
+1. La cible est **lue en mémoire**, pas prise dans un registre.
+2. `call` empile l'adresse de **l'instruction suivante**, longueur comprise.
+3. En mode 64 bits ces trois formes sont **toujours** sur huit octets, sans REX.
+   Les traiter en trente-deux bits tronquerait chaque pointeur de noyau à sa
+   moitié basse — ce qui donne une adresse dans la page zéro plutôt qu'une faute
+   franche.
+
+### Deux sabotages ont survécu, et ils avaient raison
+
+**« L'appel indirect lit sa cible après avoir bougé la pile ».** Mon commentaire
+affirmait que l'ordre comptait ; rien ne le prouvait. Il compte : `call *-8(%rsp)`
+lit son opérande, puis empile l'adresse de retour **exactement là**. Lire après
+avoir descendu RSP rendrait l'adresse de retour au lieu de la cible — un cœur qui
+fait ça saute une instruction plus loin et paraît juste sur tous les autres cas.
+Le corpus porte maintenant ce programme.
+
+**« La cible indirecte relative n'est pas figée ».** Aucun cas ne portait
+`jmp *0x1234(%rip)`, qui est pourtant la forme exacte d'une table de sauts de
+noyau. Le déplacement du cas ajouté est **calculé** et non deviné : le `leaq`
+fait sept octets, le `movq` trois, le `jmp` six, donc l'octet qui suit le saut
+est à `CODE + 0x10` et la cible vise `DATA`. Les trois longueurs sont relevées
+sur l'assembleur.
+
+### Ce que l'émetteur fait, et ce qu'il ne fait pas
+
+Il traduit `push` depuis la mémoire, et il pose la cible d'un appel ou d'un saut
+indirect dans le pointeur d'instruction — puis **rend la main**, parce que
+`discover` ne peut pas savoir où cette cible tombe. C'est la conduite juste, pas
+un renoncement : l'hôte recompile depuis l'adresse rendue. Le compte le dit —
+12 668 cas comparés plus 168 rendus font 12 836, exactement le compte de
+l'interpréteur.
+
+Le cœur Swift, lui, avait déjà le groupe 5 complet. Rien à y porter cette fois ;
+c'est la CI qui le jugera contre les cas neufs, puisqu'ils n'existaient pas.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 668 | **12 836** |
+| instructions du noyau décodées | 98,9 % | **99,1 %** |
+| régions de 4 Kio acceptées | 66,0 % | **67,6 %** |
+
+Vingt-et-un sabotages, vingt-et-un attrapés. `ff` tombe de 5 927 refus à 2 497 —
+ce qui reste est `/3` et `/5`, l'appel et le saut lointains, qu'aucun noyau 64
+bits n'exécute et qui sont presque sûrement des données lues comme du code.
