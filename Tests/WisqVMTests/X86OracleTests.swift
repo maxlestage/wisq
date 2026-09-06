@@ -40,6 +40,18 @@ final class X86OracleTests: XCTestCase {
         let after: State
         /// La fenêtre de mémoire après coup, ou nil quand elle n'a pas bougé.
         let memory: [UInt8]?
+        /// **RSP, RBP, RSI et RDI.** Les quatre seuls registres que le corpus
+        /// autorise à bouger — le générateur vérifie que les autres ne bougent
+        /// pas — et donc les quatre seuls qu'il relève.
+        ///
+        /// Ce harnais ne les comparait pas, alors que les deux harnais Rust le
+        /// font depuis longtemps. C'était une asymétrie réelle : un `leave` qui
+        /// dépile avant de reprendre RBP, ou une chaîne qui n'avance pas RDI,
+        /// laisse RAX, RCX, RDX, les drapeaux et la fenêtre de données
+        /// exactement justes. Le cœur Swift était donc jugé moins sévèrement
+        /// que les deux autres sur les registres qu'il est le plus facile de
+        /// bouger de travers.
+        let pointers: (UInt64, UInt64, UInt64, UInt64)
     }
 
     /// Les adresses du harnais, fixes pour que le fichier se reproduise.
@@ -48,6 +60,20 @@ final class X86OracleTests: XCTestCase {
     static let windowSize = 64
     /// Le motif dont la fenêtre part.
     static var pristine: [UInt8] { (0..<windowSize).map { UInt8(0x10 + $0) } }
+    /// **La fenêtre de pile, et son motif à deux moitiés.** Soixante-quatre
+    /// octets sous RSP — ce qu'un `push` écrit — puis soixante-quatre au-dessus
+    /// — ce qu'un `pop` relit. Les deux moitiés portent des motifs différents
+    /// pour qu'on voie du premier coup de quel côté d'une pile un octet vient.
+    ///
+    /// Ce harnais ne la posait pas : la pile partait de zéros là où le
+    /// processeur, lui, voyait ce motif. Aucun cas ne s'en plaignait parce
+    /// qu'aucun ne lit la pile sans l'avoir écrite d'abord — mais c'est une
+    /// coïncidence, pas une garantie, et la première instruction qui lirait
+    /// au-dessus de RSP comparerait son résultat à celui d'un processeur parti
+    /// d'ailleurs.
+    static var stackPristine: [UInt8] {
+        (0..<windowSize).map { UInt8(0xB0 + $0) } + (0..<windowSize).map { UInt8(0x40 + $0) }
+    }
 
     struct Fixture {
         var states: [Int: State] = [:]
@@ -94,7 +120,7 @@ final class X86OracleTests: XCTestCase {
                     bytes, number(3), String(field[4]))
             case "segment" where field.count >= 3 && field[1] == "gs":
                 fixture.gsBase = number(2)
-            case "cas" where field.count >= 8:
+            case "cas" where field.count >= 13:
                 var window: [UInt8]?
                 if field[7] != "-" {
                     let hex = field[7]
@@ -111,7 +137,8 @@ final class X86OracleTests: XCTestCase {
                     instruction: Int(field[1]) ?? -1, state: Int(field[2]) ?? -1,
                     after: State(rax: number(3), rcx: number(4),
                                  rdx: number(5), flags: number(6)),
-                    memory: window))
+                    memory: window,
+                    pointers: (number(9), number(10), number(11), number(12))))
             default:
                 continue
             }
@@ -156,6 +183,7 @@ final class X86OracleTests: XCTestCase {
             let memory = X86Memory(size: 0x4000, base: 0x3000_0000)
             try? memory.load(program.bytes, at: 0x3000_0000)
             try? memory.load(Self.pristine, at: Self.dataAddress)
+            try? memory.load(Self.stackPristine, at: Self.stackTop - UInt64(Self.windowSize))
             var core = X86Core(
                 registers: registers, flags: before.flags | X86Core.Flag.reserved,
                 rip: 0x3000_0000, memory: memory)
@@ -187,11 +215,16 @@ final class X86OracleTests: XCTestCase {
             let after = State(
                 rax: core.registers[0], rcx: core.registers[1], rdx: core.registers[2],
                 flags: core.flags & X86Core.Flag.arithmetic)
-            // RBP et RSP sont exclus : les programmes qui posent un cadre de
-            // pile s'en servent, et c'est justement ce qu'ils prouvent.
+            // RSP, RBP, RSI et RDI sont exclus de ce témoin-là : les
+            // programmes qui posent un cadre de pile ou parcourent la mémoire
+            // s'en servent, et c'est justement ce qu'ils prouvent. Ils sont
+            // comparés juste en dessous, à ce que le processeur a rendu.
             let untouched = ([3] + Array(8...15)).allSatisfy {
                 core.registers[$0] == Self.witness()[$0]
             }
+            let pointers = (
+                core.registers[4], core.registers[5], core.registers[6], core.registers[7])
+            let samePointers = pointers == item.pointers
             // Seuls les drapeaux que l'architecture définit pour cette
             // instruction sont comparés ; le reste, le manuel le dit indéfini,
             // et un autre processeur aurait le droit d'y répondre autrement.
@@ -201,7 +234,7 @@ final class X86OracleTests: XCTestCase {
                 && after.rdx == item.after.rdx
             let window = memory.dump(Self.dataAddress, Self.windowSize)
             let sameMemory = window == (item.memory ?? Self.pristine)
-            if sameFlags && sameRegisters && sameMemory && untouched {
+            if sameFlags && sameRegisters && sameMemory && untouched && samePointers {
                 agreed += 1
             } else {
                 byInstruction[program.text, default: 0] += 1
@@ -216,7 +249,15 @@ final class X86OracleTests: XCTestCase {
                         + "      wisq       : rax \(hex(after.rax)) rcx \(hex(after.rcx)) "
                         + "rdx \(hex(after.rdx)) drapeaux \(hex(after.flags))"
                         + (untouched ? "" : "\n      et il a écrit dans un registre témoin")
-                        + (sameMemory ? "" : "\n      et la mémoire diffère"))
+                        + (sameMemory ? "" : "\n      et la mémoire diffère")
+                        + (samePointers
+                            ? ""
+                            : "\n      processeur : rsp \(hex(item.pointers.0)) "
+                                + "rbp \(hex(item.pointers.1)) rsi \(hex(item.pointers.2)) "
+                                + "rdi \(hex(item.pointers.3))\n"
+                                + "      wisq       : rsp \(hex(pointers.0)) "
+                                + "rbp \(hex(pointers.1)) rsi \(hex(pointers.2)) "
+                                + "rdi \(hex(pointers.3))"))
             }
         }
         let summary = byInstruction.sorted { $0.value > $1.value }
