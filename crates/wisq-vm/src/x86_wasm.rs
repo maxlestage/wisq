@@ -217,29 +217,43 @@ impl Module {
         body.store(Body::scratch(2), |b| {
             match step.op {
                 Op::Add => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_ADD);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_ADD);
                 }
                 Op::Sub | Op::Cmp => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_SUB);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_SUB);
                 }
                 Op::Adc => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_ADD);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_ADD);
                     b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
                     b.op(code::I64_ADD);
                 }
                 Op::Sbb => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_SUB);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_SUB);
                     b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
                     b.op(code::I64_SUB);
                 }
                 Op::And | Op::Test => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_AND);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_AND);
                 }
                 Op::Or => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_OR);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_OR);
                 }
                 Op::Xor => {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_XOR);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_XOR);
                 }
                 Op::Inc => {
                     b.load(Body::scratch(0)).constant(1).op(code::I64_ADD);
@@ -251,11 +265,44 @@ impl Module {
                     b.constant(0).load(Body::scratch(0)).op(code::I64_SUB);
                 }
                 Op::Not => {
-                    b.load(Body::scratch(0)).constant(u64::MAX).op(code::I64_XOR);
+                    b.load(Body::scratch(0))
+                        .constant(u64::MAX)
+                        .op(code::I64_XOR);
                 }
             }
             b.constant(mask).op(code::I64_AND);
         });
+
+        // **Les opérandes des drapeaux ne sont pas toujours ceux du décodeur**,
+        // et c'est le piège qui a coûté 339 cas au premier passage.
+        //
+        // `inc` n'a pas d'opérande source : son champ `src` reste à zéro, donc
+        // « droite » désignait le registre 0. La demi-retenue, qui vaut
+        // `(gauche ^ droite ^ résultat) & 0x10`, lisait alors `rax` au lieu de
+        // **1**, et se trompait chaque fois que les deux différaient sur ce
+        // bit. Le silicium l'a dit ; rien d'autre ne l'aurait dit.
+        //
+        // `neg` a le même défaut sous une autre forme : c'est `0 - opérande`,
+        // donc ses opérandes de drapeaux sont zéro et l'original, pas ceux que
+        // le décodeur a rendus.
+        match step.op {
+            Op::Inc | Op::Dec => {
+                body.store(Body::scratch(1), |b| {
+                    b.constant(1);
+                });
+            }
+            Op::Neg => {
+                // L'ordre compte : l'original doit être recopié **avant** que
+                // sa case ne soit écrasée par zéro.
+                body.store(Body::scratch(1), |b| {
+                    b.load(Body::scratch(0));
+                });
+                body.store(Body::scratch(0), |b| {
+                    b.constant(0);
+                });
+            }
+            _ => {}
+        }
 
         // **`not` ne touche à aucun drapeau.** C'est la seule du groupe, et
         // l'oublier donnerait un cœur qui écrase des drapeaux que le vrai
@@ -284,25 +331,32 @@ impl Module {
 
             // ZF
             b.load(Body::scratch(2)).op(code::I64_EQZ);
-            b.op(code::I64_EXTEND_I32_U).constant(ZF.trailing_zeros() as u64);
+            b.op(code::I64_EXTEND_I32_U)
+                .constant(ZF.trailing_zeros() as u64);
             b.op(code::I64_SHL).op(code::I64_OR);
 
             // SF
             b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
             b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
             b.constant(1).op(code::I64_XOR);
-            b.constant(SF.trailing_zeros() as u64).op(code::I64_SHL).op(code::I64_OR);
+            b.constant(SF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
 
             // PF : la parité de l'octet de poids faible, un legs du 8080 que le
             // vrai processeur applique toujours.
             b.load(Body::scratch(2)).constant(0xff).op(code::I64_AND);
             b.op(code::I64_POPCNT).constant(1).op(code::I64_AND);
             b.constant(1).op(code::I64_XOR);
-            b.constant(PF.trailing_zeros() as u64).op(code::I64_SHL).op(code::I64_OR);
+            b.constant(PF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
 
             // AF : la même identité pour l'addition et la soustraction, parce
             // que a - b, c'est a + (-b).
-            b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_XOR);
+            b.load(Body::scratch(0))
+                .load(Body::scratch(1))
+                .op(code::I64_XOR);
             b.load(Body::scratch(2)).op(code::I64_XOR);
             b.constant(0x10).op(code::I64_AND);
             b.constant(AF.trailing_zeros() as u64 - 4).op(code::I64_SHL);
@@ -318,11 +372,15 @@ impl Module {
             Op::And | Op::Or | Op::Xor | Op::Test => {}
             Op::Add | Op::Adc => {
                 // CF : le résultat est passé sous l'opérande de gauche.
-                b.load(Body::scratch(2)).load(Body::scratch(0)).op(code::I64_LT_U);
+                b.load(Body::scratch(2))
+                    .load(Body::scratch(0))
+                    .op(code::I64_LT_U);
                 b.op(code::I64_EXTEND_I32_U);
                 // `adc` avec une retenue entrante : l'égalité compte aussi.
                 if step.op == Op::Adc {
-                    b.load(Body::scratch(2)).load(Body::scratch(0)).op(code::I64_SUB);
+                    b.load(Body::scratch(2))
+                        .load(Body::scratch(0))
+                        .op(code::I64_SUB);
                     b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
                     b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
                     b.op(code::I64_AND).op(code::I64_OR);
@@ -330,33 +388,47 @@ impl Module {
                 }
                 b.constant(shift_to(CF)).op(code::I64_SHL).op(code::I64_OR);
                 // OF
-                b.load(Body::scratch(0)).load(Body::scratch(2)).op(code::I64_XOR);
-                b.load(Body::scratch(1)).load(Body::scratch(2)).op(code::I64_XOR);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(2))
+                    .op(code::I64_XOR);
+                b.load(Body::scratch(1))
+                    .load(Body::scratch(2))
+                    .op(code::I64_XOR);
                 b.op(code::I64_AND).constant(sign).op(code::I64_AND);
                 b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
                 b.constant(1).op(code::I64_XOR);
                 b.constant(shift_to(OF)).op(code::I64_SHL).op(code::I64_OR);
             }
             Op::Sub | Op::Cmp | Op::Sbb | Op::Neg => {
-                b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_LT_U);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(1))
+                    .op(code::I64_LT_U);
                 b.op(code::I64_EXTEND_I32_U);
                 if step.op == Op::Sbb {
-                    b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_SUB);
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_SUB);
                     b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
                     b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
                     b.op(code::I64_AND).op(code::I64_OR);
                     b.constant(1).op(code::I64_AND);
                 }
                 b.constant(shift_to(CF)).op(code::I64_SHL).op(code::I64_OR);
-                b.load(Body::scratch(0)).load(Body::scratch(1)).op(code::I64_XOR);
-                b.load(Body::scratch(0)).load(Body::scratch(2)).op(code::I64_XOR);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(1))
+                    .op(code::I64_XOR);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(2))
+                    .op(code::I64_XOR);
                 b.op(code::I64_AND).constant(sign).op(code::I64_AND);
                 b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
                 b.constant(1).op(code::I64_XOR);
                 b.constant(shift_to(OF)).op(code::I64_SHL).op(code::I64_OR);
             }
             Op::Inc => {
-                b.load(Body::scratch(0)).load(Body::scratch(2)).op(code::I64_XOR);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(2))
+                    .op(code::I64_XOR);
                 b.constant(1).load(Body::scratch(2)).op(code::I64_XOR);
                 b.op(code::I64_AND).constant(sign).op(code::I64_AND);
                 b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
@@ -365,7 +437,9 @@ impl Module {
             }
             Op::Dec => {
                 b.load(Body::scratch(0)).constant(1).op(code::I64_XOR);
-                b.load(Body::scratch(0)).load(Body::scratch(2)).op(code::I64_XOR);
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(2))
+                    .op(code::I64_XOR);
                 b.op(code::I64_AND).constant(sign).op(code::I64_AND);
                 b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
                 b.constant(1).op(code::I64_XOR);
