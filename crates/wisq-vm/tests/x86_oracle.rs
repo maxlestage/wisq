@@ -426,7 +426,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 11880,
+        checked > 12060,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
@@ -435,8 +435,8 @@ fn every_accepted_instruction_matches_the_silicon() {
     // SIB sans base faisait refuser les deux formes concernées, et le test
     // restait vert. Ce nombre-là ne doit donc jamais monter.
     assert!(
-        refused.len() <= 4,
-        "le décodeur refuse maintenant {} instructions au lieu de 4 : \
+        refused.len() <= 3,
+        "le décodeur refuse maintenant {} instructions au lieu de 3 : \
          quelque chose qu'il savait lire ne se décode plus\n{}",
         refused.len(),
         refused.join("\n")
