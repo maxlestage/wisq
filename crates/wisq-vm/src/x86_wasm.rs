@@ -318,13 +318,41 @@ impl Module {
                 ) {
                     continue;
                 }
-                Self::translate(step, here, &mut body)?;
+                Self::translate(&Self::pin(step, here), here, &mut body)?;
             }
             Self::terminate(steps.last(), base, at, &index, &starts, &mut body);
             body.op(code::END);
             bodies.push(body.bytes);
         }
         Some(Self::assemble(bodies))
+    }
+
+    /// **Une adresse relative au pointeur d'instruction est une constante** —
+    /// dès qu'on sait où l'instruction est posée, et l'émetteur le sait.
+    ///
+    /// C'est ce que fait un vrai compilateur à la volée : le déplacement se
+    /// compte depuis l'octet qui **suit** l'instruction, cette adresse est
+    /// connue à la compilation, donc le calcul disparaît. C'est le seul mode
+    /// d'adressage qui ne coûte rien à l'exécution — et le seul dont l'erreur
+    /// d'un octet ne se voit nulle part ailleurs qu'en la comparant au
+    /// silicium.
+    fn pin(step: &Decoded, here: u64) -> Decoded {
+        match step.memory {
+            Some(address) if address.relative => {
+                let after = here.wrapping_add(step.length as u64);
+                Decoded {
+                    memory: Some(Address {
+                        base: None,
+                        index: None,
+                        scale: 1,
+                        displacement: after.wrapping_add(address.displacement as u64) as i64,
+                        relative: false,
+                    }),
+                    ..*step
+                }
+            }
+            _ => *step,
+        }
     }
 
     /// **Le parcours du graphe**, et pourquoi ce n'est pas une boucle sur les
