@@ -2025,10 +2025,32 @@ qui tourne, et il n'existe pas encore. C'est lui, et pas le débit brut, qui
 décidera.
 
 La piste que la mesure désigne : une **table importée et partagée**, où chaque
-nouvelle région pose ses blocs, et un `call_indirect` qui reste *dans* le module
-— la répartition interne était mesurée à 2,05 ns par bloc. La boucle hôte ne
-servirait plus qu'aux cibles jamais traduites. Rien de cela n'est mesuré ; c'est
-la prochaine question, pas une conclusion.
+nouvelle région pose ses blocs, et un `call_indirect` qui reste *dans* le module.
+La boucle hôte ne servirait plus qu'aux cibles jamais traduites.
+
+**Et cette piste a été sondée avant d'être suivie**, `bun scripts/wasm-table-probe.ts` :
+
+| Soixante-quatre cibles, en rotation | Coût |
+| --- | --- |
+| `call_indirect` sur une table partagée, vers un **autre module** | **7,2 ns** |
+| Les mêmes, appelées depuis JavaScript | 54,1 ns |
+| Une seule, appelée depuis JavaScript en boucle (le cas facile) | 3,1 ns |
+
+Rester dans WebAssembly coûte **sept fois moins cher**, et la pénalité du site
+d'appel mégamorphe disparaît : `call_indirect` n'a pas de cache en ligne à
+perdre. Un enchaînement à 7 ns au lieu de 192 sortirait le bureau de sa
+contrainte — 640 MIPS à 4,5 instructions par bloc au lieu de 23.
+
+La sonde mesure **le moteur**, pas wisq : deux modules écrits à la main,
+minuscules, sans rapport avec l'émetteur. C'est voulu — la question portait sur
+ce que JavaScriptCore sait faire.
+
+**Ce qu'elle ne dit pas, et c'est le vrai travail** : comment une région
+retrouve l'indice, dans la table, d'une adresse qu'elle n'a pas compilée.
+Aujourd'hui `resolve` compare l'adresse aux blocs de sa propre région, connus à
+la traduction. Avec une table partagée il faudrait une correspondance
+adresse → indice que le module lit à l'exécution — une petite table de hachage
+dans la mémoire invitée, tenue par l'hôte. Rien de cela n'est écrit.
 
 L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
 ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un
