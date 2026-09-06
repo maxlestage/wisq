@@ -7,6 +7,34 @@ break APIs.
 
 ## [Unreleased]
 
+### Added
+- **Un écran pour la machine x86-64, et un vrai noyau qui le trouve.** Trois
+  tranches : `screen_info` dans la page zéro dit au noyau où peindre,
+  `X86Framebuffer` tient la mémoire derrière, et `X86Machine.attachDisplay`
+  relie les deux. Le format est XRGB8888, celui que `simpledrm` prend sans
+  conversion côté invité et que Core Graphics et Metal prennent sans
+  conversion côté hôte ; le cadre se pose à 0xE0000000, le trou que les PC
+  réservent aux périphériques. Un compteur de révision dit quand l'image a
+  bougé, pour qu'une vue ne repeigne pas soixante fois par seconde une image
+  identique.
+
+  **Le témoin, et c'est lui qui compte.** Les tests unitaires vérifient que
+  les bons octets sont aux bons décalages ; aucun ne prouve qu'un noyau les
+  lit, et un cadre mal déclaré est ignoré en silence. Un Alpine LTS démarré
+  sous wisq avec `WISQ_PC_DISPLAY=1024x768` a répondu :
+
+  ```
+  [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0
+  simple-framebuffer.0: [drm] fb0: simpledrmdrmfb frame buffer device
+  ```
+
+  Avec, deux lignes plus haut, une confirmation qu'on n'avait pas demandée :
+  « Cannot satisfy [mem 0xe0000000-0xe0200000] with a huge-page mapping » — le
+  noyau mappe exactement l'adresse choisie.
+
+  Personne ne **montre** encore ce cadre : il est déclaré, routé, rempli par
+  l'invité et lisible par l'hôte, et la vue reste à écrire.
+
 ## [0.4.0] — 2026-09-05
 
 ### Added

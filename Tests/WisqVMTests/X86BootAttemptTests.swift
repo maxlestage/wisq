@@ -131,6 +131,18 @@ final class X86BootAttemptTests: XCTestCase {
             memory.storage = disk
             memory.bus = X86PCIHost(storage: disk)
         }
+        // **Ce que le témoin a rendu, le 6 septembre 2026**, avec un vrai
+        // noyau Alpine LTS et `WISQ_PC_DISPLAY=1024x768` :
+        //
+        //     [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0
+        //     simple-framebuffer.0: [drm] fb0: simpledrmdrmfb frame buffer device
+        //
+        // Et, deux lignes plus haut, une confirmation qu'on n'avait pas
+        // demandée : « Cannot satisfy [mem 0xe0000000-0xe0200000] with a
+        // huge-page mapping » — le noyau mappe exactement l'adresse que la
+        // machine a choisie. Les trois tranches de l'écran disent donc vrai,
+        // et c'est le noyau qui le dit, pas une assertion sur la page zéro.
+        //
         // **Un écran, quand on en demande un.** `WISQ_PC_DISPLAY=1024x768`
         // arme le cadre linéaire. C'est le témoin de la tranche : on ne
         // vérifie pas des pixels, on lit ce que le noyau **dit** de l'écran
