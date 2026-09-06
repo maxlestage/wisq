@@ -428,6 +428,21 @@ def snippets():
     yield "negl 8(%rsi)"
     yield "incb 3(%rsi)"
     yield "decw 6(%rsi)"
+    # **Le préfixe de verrouillage**, qu'un noyau met sur tout compteur
+    # partagé. Il n'y a qu'un fil ici, donc il ne change rien à ce que
+    # l'instruction calcule — mais le refuser rejetait chaque verrou du noyau,
+    # et rien ne tenait le fait qu'il soit bien consommé. Un sabotage l'a
+    # montré : ne pas avancer d'un octet après lui ne faisait tomber aucun cas.
+    yield "lock incq (%rsi)"
+    yield "lock addq %rax, 8(%rsi)"
+    yield "lock xaddq %rcx, 16(%rsi)"
+    yield "lock cmpxchgq %rcx, 24(%rsi)"
+    # **`endbr64`.** La cible de branchement indirect que le processeur exige
+    # quand la protection de flot est armée. Elle ne fait rien — et un noyau
+    # moderne en pose une en tête de chaque fonction. Sans ce cas, rien ne
+    # tenait sa longueur : un sabotage qui lui faisait manger un octet de trop
+    # passait.
+    yield "endbr64"
     # Un immédiat vers la mémoire, les deux formes du groupe 1.
     yield "addq $1, (%rsi)"
     yield "andl $0x12345678, 8(%rsi)"
@@ -541,6 +556,16 @@ PROGRAMS = [
         "cmpq %rax, %rax", "jne 1f", "movq $7, %rdx", ".fill 200, 1, 0x90", "1: incq %rdx"]),
     ("un saut conditionnel long", [
         "cmpq %rcx, %rax", "jne 1f", "movq $7, %rdx", ".fill 200, 1, 0x90", "1: incq %rdx"]),
+    # **Une fonction telle qu'un noyau les écrit.** `endbr64` en tête, et le
+    # reste derrière. Seule dans un extrait, elle ne peut rien prouver : ne rien
+    # faire sur quatre octets ou sur cinq laisse le même état, et le harnais
+    # s'arrête au bout du tampon dans les deux cas. Il faut quelque chose
+    # **après** elle pour que sa longueur compte — un sabotage l'a montré, qui
+    # lui faisait manger un octet de trop sans faire tomber aucun cas. Avec ce
+    # programme, l'octet de trop décale le `incq` d'après et le transforme en un
+    # `inc` de trente-deux bits, qui efface la moitié haute de RDX.
+    ("une fonction qui commence comme celles d'un noyau", [
+        "endbr64", "incq %rdx", "endbr64", "addq %rax, %rdx"]),
     ("un appel et son retour", [
         "call 1f", "jmp 2f", "1: movq $0x42, %rdx", "ret", "2: incq %rdx"]),
     ("empiler puis dépiler dans l'autre ordre", [
