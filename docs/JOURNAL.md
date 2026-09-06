@@ -9265,3 +9265,44 @@ porté que la moitié de la règle, et rien ne l'aurait dit.
 Quinze sabotages, quinze attrapés. `66` et `2e` ont entièrement disparu de la
 liste des refus. Ce qui reste, dans l'ordre : `0f` (SSE, 6 742), `ff` (le groupe
 5 en mémoire, 5 927), `cc` (l'`int3` de bourrage entre fonctions, 3 970).
+
+### Il y a trois cœurs, et j'en comptais deux
+
+La CI a rougi sur `Cœur (Linux)` et `Cœur (Apple)` : **336 désaccords sur
+12 740**. Le cœur Swift lit le même oracle matériel que les deux autres, et je
+ne l'avais pas dans la tête en écrivant la tranche. « Les deux cœurs sont
+d'accord » était vrai et incomplet.
+
+Le compte dit exactement ce qui manquait. 336 = 14 × 24, et le corpus porte
+quinze instructions préfixées par `%gs:`. La quinzième est `leaq %gs:0x10, %rax`
+— elle tombait juste **par accident**, parce que le harnais Swift ne posait
+aucune base et que `lea` doit justement en ignorer une. La corriger sans
+corriger l'autre aurait cassé ce cas-là.
+
+Deux choses, donc :
+
+1. Le cœur Swift avait déjà la base du segment, et mieux que le cœur Rust ne
+   l'avait : un vrai MSR, `fsBase` et `gsBase`, comme le noyau les écrit. C'est
+   son **harnais** qui ne lisait pas la nouvelle ligne du corpus. Il la lit, et
+   `XCTUnwrap` en fait une faute nommée plutôt qu'un zéro silencieux — la même
+   garde que dans les deux harnais Rust.
+2. Son `lea` traversait l'unité de segmentation, exactement comme celui du cœur
+   Rust avant cette tranche. Le même défaut, dans le même mois, écrit deux fois
+   par deux chemins différents. `effectiveAddress` prend maintenant un
+   `segmented`, et `LEA` est le seul appelant à le mettre à `false`.
+
+**Ces deux corrections ne sont vérifiables que par la CI.** Il n'y a pas de
+chaîne Swift dans ce conteneur : `swift` et `swiftc` sont absents. Je ne les ai
+donc pas exécutées, et je ne prétends pas le contraire — c'est le job
+`Cœur (Linux)` qui tranche.
+
+### Une asymétrie qui reste, et qui est écrite ici pour ne pas être oubliée
+
+Le cœur Swift **accepte** le préfixe FS et lui applique son MSR ; les deux cœurs
+Rust le **refusent**, faute d'oracle. Pour le cœur Swift c'est juste : il fait
+tourner un vrai noyau, dont l'espace utilisateur atteint ses variables de fil
+par `%fs:`. Pour les cœurs Rust c'est un trou, pas un choix — mais un trou qu'on
+ne peut pas combler sans un oracle, et l'oracle ne peut pas poser FS sans se
+détruire. Le combler demandera un pilote qui ne dépend pas de la glibc pour son
+canari de pile. C'est une tranche à part entière, pas un ajout de dernière
+minute.
