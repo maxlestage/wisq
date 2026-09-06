@@ -1838,6 +1838,7 @@ interpréteur. Mesuré, sur ce dépôt :
 | --- | --- |
 | rv32ima, en Rust | 157 MIPS |
 | x86-64, en Swift | 10,6 MIPS |
+| x86-64, en Rust — mesuré depuis | **49,3 MIPS** |
 
 À 10,6 MIPS, un noyau seul demande trois minutes, et un bureau complet — de
 l'ordre de cinquante milliards d'instructions — **plus d'une heure**. C'est ce
@@ -1850,6 +1851,10 @@ des drapeaux, les accès mémoire et la répartition. Une réécriture soignée,
 un portage en Rust comme le cœur rv32, viserait ×5 à ×15 : le bureau passerait
 d'une heure à cinq ou dix minutes de démarrage. Mieux, et toujours pas un
 bureau.
+
+*Mesuré depuis : le cœur x86 en Rust rend ×4,6, tout juste sous la fourchette
+basse. Il n'est branché sur rien — l'application construit toujours le cœur
+Swift pour un invité x86, et le FFI n'expose que le rv32.*
 
 **Le contournement, et il est réel.** WebKit est la seule chose sur iOS qui ait
 le droit de compiler, et une application peut héberger un `WKWebView`. Un cœur
@@ -1872,11 +1877,41 @@ recompilateur paie. Un oracle en clair vérifie que le bloc recompilé calcule
 bien la même chose que le modèle ; un sabotage du drapeau zéro le fait tomber.
 
 **Ce que ce chiffre ne dit pas.** Une seule boucle de huit instructions, très
-prévisible. Un vrai cœur paie en plus la diversité des blocs, la traduction
-d'adresse par table de pages plutôt que par masque, les interruptions, les
-entrées-sorties, et la détection du code qui se modifie. L'attente honnête est
-« quelques centaines de MIPS », pas 831. À trois cents, un bureau complet
-démarre en moins de trois minutes et devient utilisable.
+prévisible, et **recompilée à la main**. Un vrai cœur paie en plus la diversité
+des blocs, la traduction d'adresse par table de pages plutôt que par masque, les
+interruptions, les entrées-sorties, et la détection du code qui se modifie.
+L'attente honnête est « quelques centaines de MIPS », pas 831. À trois cents, un
+bureau complet démarre en moins de trois minutes et devient utilisable.
+
+### Et ce que le vrai émetteur rend, mesuré
+
+Les trois lignes ci-dessus datent d'avant l'émetteur. Il existe maintenant, et
+`cargo run -p wisq-vm --release --example speed` le chronomètre sur une boucle
+de cinq instructions — la taille moyenne d'un bloc de base relevée en
+désassemblant le noyau Alpine, choisie pour ça :
+
+| Forme | Débit | Rapport |
+| --- | --- | --- |
+| Interpréteur Swift (chiffre du dépôt, non remesuré) | 10,6 MIPS | ×1 |
+| **Interpréteur x86 en Rust** | **49,3 MIPS** | **×4,6** |
+| **Ce que l'émetteur engendre, sous JavaScriptCore** | **247 MIPS** | **×23** |
+| WebAssembly écrit à la main | 831 MIPS | ×78 |
+
+**La prédiction était juste.** « Quelques centaines de MIPS, pas 831 » : 247. Et
+« un portage en Rust viserait ×5 à ×15 » : ×4,6, un cheveu sous la fourchette
+basse. Les deux paris ont été tenus par la mesure plutôt que par la mémoire, et
+c'est la raison de les avoir écrits.
+
+**Ce que ces 247 ne disent pas.** La boucle est synthétique, et le rapport
+compare l'émetteur à l'interpréteur **Rust**, pas à celui que l'application fait
+tourner. Ce que l'application gagnerait n'est pas mesuré — et ne peut pas
+l'être tant que l'émetteur n'est pas branché sur `X86Machine`.
+
+L'écart entre 247 et 831 est celui entre du code engendré et du code pensé :
+l'émetteur matérialise des drapeaux qu'un humain aurait élidés, et repasse par
+la boucle de répartition à chaque bloc. C'est là qu'une optimisation aurait
+maintenant du sens — et elle serait mesurable, ce qui est la seule raison de le
+dire.
 
 **Et ce que la pile d'Apple a répondu.** `Tests/WisqHostedTests` pose les deux
 questions qu'aucune mesure sous Bun ne tranche, dans un `WKWebView` **hébergé
