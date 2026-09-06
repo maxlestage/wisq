@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # **Bun, parce qu'il embarque JavaScriptCore.** Le test de l'émetteur
+      # x86 → WebAssembly juge ses modules sous le moteur exact de
+      # `WKWebView`, et il **refuse de passer en silence** quand ce moteur est
+      # absent : un compilateur que rien n'exécute n'est pas un compilateur
+      # vérifié. Sans cette étape, le job est rouge — mesuré.
+      - uses: oven-sh/setup-bun@v2
       - name: Toolchain
         run: |
           rustup component add rustfmt clippy
