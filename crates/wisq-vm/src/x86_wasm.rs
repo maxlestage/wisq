@@ -724,6 +724,14 @@ impl Module {
         if step.op == Op::Call || step.op == Op::Return {
             return None;
         }
+        if let Op::RotateThroughCarry { left } = step.op {
+            Self::rotate_through_carry(step, left, body);
+            return Some(());
+        }
+        if let Op::DoubleShift { left } = step.op {
+            Self::double_shift(step, left, body);
+            return Some(());
+        }
         if matches!(
             step.op,
             Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange
@@ -899,6 +907,9 @@ impl Module {
                 }
                 Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
                     unreachable!("les échanges sortent avant")
+                }
+                Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
+                    unreachable!("les rotations à travers la retenue sortent avant")
                 }
             }
             b.constant(mask).op(code::I64_AND);
@@ -1295,7 +1306,9 @@ impl Module {
             | Op::CarryFlag(_)
             | Op::Exchange
             | Op::ExchangeAndAdd
-            | Op::CompareAndExchange => {}
+            | Op::CompareAndExchange
+            | Op::RotateThroughCarry { .. }
+            | Op::DoubleShift { .. } => {}
         }
     }
 
@@ -1496,6 +1509,282 @@ impl Module {
             });
         }
         body.load(high);
+    }
+
+    /// **La rotation à travers la retenue**, et pourquoi elle n'est pas une
+    /// variante de `rol`.
+    ///
+    /// Le registre tourné fait la largeur **plus un bit** : la retenue en est
+    /// le bit de tête. Pour huit, seize et trente-deux bits ça tient encore
+    /// dans un `i64` et la formule ordinaire s'applique à la largeur élargie.
+    /// Pour soixante-quatre, le registre tourné en fait **soixante-cinq** —
+    /// WebAssembly n'a rien de tel, et le bit qui dépasse se traite à la main.
+    ///
+    /// Ce qui sauve ce cas : le compte est masqué à six bits, donc il ne
+    /// dépasse jamais soixante-trois, donc le tour n'est jamais complet. Un
+    /// tour de soixante-cinq crans, qu'il faudrait traiter à part, est
+    /// inatteignable.
+    fn rotate_through_carry(step: &Decoded, to_the_left: bool, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let sign = width.sign();
+        let bits = width.bits();
+        let span = bits + 1;
+        let count_mask: u64 = if width == Width::Qword { 63 } else { 31 };
+        let (value, count, turn) = (Body::scratch(0), Body::scratch(1), Body::scratch(5));
+        let (carry_in, wide) = (Body::scratch(6), Body::scratch(7));
+
+        body.store(value, |b| {
+            Self::left(step, b);
+        });
+        body.store(count, |b| {
+            if step.count_is_cl {
+                b.load(Self::slot(1));
+            } else {
+                b.constant(step.imm);
+            }
+            b.constant(count_mask).op(code::I64_AND);
+        });
+        body.store(turn, |b| {
+            b.load(count).constant(span).op(code::I64_REM_U);
+        });
+        body.store(carry_in, |b| {
+            b.load(RFLAGS_SLOT).constant(CF).op(code::I64_AND);
+        });
+
+        if bits < 64 {
+            body.store(wide, |b| {
+                b.load(carry_in).constant(bits).op(code::I64_SHL);
+                b.load(value).op(code::I64_OR);
+            });
+            body.store(Body::scratch(8), |b| {
+                let (first, second) = if to_the_left {
+                    (code::I64_SHL, code::I64_SHR_U)
+                } else {
+                    (code::I64_SHR_U, code::I64_SHL)
+                };
+                b.load(wide).load(turn).op(first);
+                b.load(wide);
+                b.constant(span).load(turn).op(code::I64_SUB);
+                b.op(second);
+                b.op(code::I64_OR);
+                b.constant((1u64 << span) - 1).op(code::I64_AND);
+            });
+            body.store(Body::scratch(2), |b| {
+                b.load(Body::scratch(8)).constant(mask).op(code::I64_AND);
+            });
+            body.store(Body::scratch(3), |b| {
+                b.load(Body::scratch(8))
+                    .constant(bits)
+                    .op(code::I64_SHR_U)
+                    .constant(1)
+                    .op(code::I64_AND);
+            });
+        } else {
+            // **Le bit qui dépasse.** Les termes sont écrits pour que le compte
+            // de décalage reste sous soixante-quatre : un décalage de
+            // soixante-quatre est ramené à zéro par WebAssembly, ce qui rendrait
+            // l'opérande là où il faut zéro.
+            body.store(Body::scratch(8), |b| {
+                if to_the_left {
+                    b.load(value).load(turn).op(code::I64_SHL);
+                    b.load(carry_in)
+                        .load(turn)
+                        .constant(1)
+                        .op(code::I64_SUB)
+                        .op(code::I64_SHL);
+                    b.op(code::I64_OR);
+                    b.load(value);
+                    b.constant(64).load(turn).op(code::I64_SUB);
+                    b.op(code::I64_SHR_U).constant(1).op(code::I64_SHR_U);
+                    b.op(code::I64_OR);
+                } else {
+                    b.load(value).load(turn).op(code::I64_SHR_U);
+                    b.load(carry_in);
+                    b.constant(64).load(turn).op(code::I64_SUB);
+                    b.op(code::I64_SHL);
+                    b.op(code::I64_OR);
+                    b.load(value);
+                    b.constant(64).load(turn).op(code::I64_SUB);
+                    b.op(code::I64_SHL).constant(1).op(code::I64_SHL);
+                    b.op(code::I64_OR);
+                }
+                // Un tour nul ne tourne rien, et les termes ci-dessus n'ont
+                // alors aucun sens : c'est ici qu'on les écarte.
+                b.load(value);
+                b.load(turn).constant(0).op(code::I64_NE);
+                b.op(code::SELECT);
+            });
+            body.store(Body::scratch(2), |b| {
+                b.load(Body::scratch(8));
+            });
+            body.store(Body::scratch(3), |b| {
+                if to_the_left {
+                    b.load(value);
+                    b.constant(64).load(turn).op(code::I64_SUB);
+                    b.op(code::I64_SHR_U);
+                } else {
+                    b.load(value)
+                        .load(turn)
+                        .constant(1)
+                        .op(code::I64_SUB)
+                        .op(code::I64_SHR_U);
+                }
+                b.constant(1).op(code::I64_AND);
+                b.load(carry_in);
+                b.load(turn).constant(0).op(code::I64_NE);
+                b.op(code::SELECT);
+            });
+        }
+
+        // Le débordement, défini pour un cran seulement — même lecture que
+        // pour `rol` et `ror`.
+        body.store(Body::scratch(4), |b| {
+            b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+            if to_the_left {
+                b.load(Body::scratch(3));
+            } else {
+                b.load(Body::scratch(2))
+                    .constant(bits - 2)
+                    .op(code::I64_SHR_U);
+                b.constant(1).op(code::I64_AND);
+            }
+            b.op(code::I64_XOR);
+        });
+
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!(CF | OF)).op(code::I64_AND);
+            b.load(Body::scratch(3))
+                .constant(CF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+            b.load(Body::scratch(4)).constant(1).op(code::I64_AND);
+            b.constant(OF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+            b.load(RFLAGS_SLOT);
+            b.load(count).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        if !step.discards {
+            Self::write_back(step, mask, body);
+        }
+    }
+
+    /// **Le décalage double** : les bits qui entrent viennent d'un second
+    /// registre au lieu d'être des zéros ou des copies du signe.
+    fn double_shift(step: &Decoded, to_the_left: bool, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let sign = width.sign();
+        let bits = width.bits();
+        let count_mask: u64 = if width == Width::Qword { 63 } else { 31 };
+        let (value, count, from) = (Body::scratch(0), Body::scratch(1), Body::scratch(5));
+
+        body.store(value, |b| {
+            Self::left(step, b);
+        });
+        body.store(count, |b| {
+            if step.count_is_cl {
+                b.load(Self::slot(1));
+            } else {
+                b.constant(step.imm);
+            }
+            b.constant(count_mask).op(code::I64_AND);
+        });
+        body.store(from, |b| {
+            b.load(Self::slot(step.src))
+                .constant(mask)
+                .op(code::I64_AND);
+        });
+
+        body.store(Body::scratch(2), |b| {
+            if to_the_left {
+                b.load(value).load(count).op(code::I64_SHL);
+                b.load(from);
+                b.constant(bits).load(count).op(code::I64_SUB);
+                b.op(code::I64_SHR_U);
+            } else {
+                b.load(value).load(count).op(code::I64_SHR_U);
+                b.load(from);
+                b.constant(bits).load(count).op(code::I64_SUB);
+                b.op(code::I64_SHL);
+            }
+            b.op(code::I64_OR).constant(mask).op(code::I64_AND);
+            // Un compte nul ne décale rien, et le terme complémentaire vaudrait
+            // un décalage de la largeur entière — que WebAssembly ramène à zéro.
+            b.load(value);
+            b.load(count).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        // La retenue : le **dernier bit sorti** de la destination.
+        body.store(Body::scratch(3), |b| {
+            if to_the_left {
+                b.load(value);
+                b.constant(bits).load(count).op(code::I64_SUB);
+                b.op(code::I64_SHR_U);
+            } else {
+                b.load(value)
+                    .load(count)
+                    .constant(1)
+                    .op(code::I64_SUB)
+                    .op(code::I64_SHR_U);
+            }
+            b.constant(1).op(code::I64_AND);
+        });
+
+        // Le débordement : le changement de signe, défini pour un cran.
+        body.store(Body::scratch(4), |b| {
+            b.load(value)
+                .load(Body::scratch(2))
+                .op(code::I64_XOR)
+                .constant(sign)
+                .op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+        });
+
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT)
+                .constant(!(CF | PF | AF | ZF | SF | OF))
+                .op(code::I64_AND);
+
+            b.load(Body::scratch(2)).op(code::I64_EQZ);
+            b.op(code::I64_EXTEND_I32_U)
+                .constant(ZF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+
+            b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+            b.constant(SF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(Body::scratch(2)).constant(0xff).op(code::I64_AND);
+            b.op(code::I64_POPCNT).constant(1).op(code::I64_AND);
+            b.constant(1).op(code::I64_XOR);
+            b.constant(PF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(Body::scratch(3))
+                .constant(CF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+            b.load(Body::scratch(4)).constant(1).op(code::I64_AND);
+            b.constant(OF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(RFLAGS_SLOT);
+            b.load(count).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        Self::write_back(step, mask, body);
     }
 
     /// **Les trois échanges.** Ce qui les réunit : elles écrivent **deux**
