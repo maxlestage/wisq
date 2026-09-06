@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::Width;
-use wisq_vm::x86_wasm::{Module, RFLAGS_SLOT, RIP_SLOT};
+use wisq_vm::x86::{Cpu, Step, Width};
+use wisq_vm::x86_wasm::{Module, GLOBAL_COUNT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -56,6 +56,19 @@ const windows = job.windows.map(w => ({
   at: w.at,
   bytes: Uint8Array.from(w.pristine.match(/../g).map(pair => parseInt(pair, 16))),
 }));
+// **L'hôte possède la machine.** Une seule RAM, un seul fichier de registres,
+// et autant de modules qu'il en faut : c'est ce que les imports permettent, et
+// c'est ce que fera l'application. Avant, chaque module portait sa propre RAM
+// de 768 Mio — deux régions ne partageaient rien, et passer de l'une à l'autre
+// aurait demandé de tout recopier.
+const memory = new WebAssembly.Memory({ initial: job.pages });
+const slots = [];
+for (let slot = 0; slot < job.globals; slot++) {
+  slots.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
+}
+const imports = { env: { mem: memory } };
+slots.forEach((global, slot) => { imports.env["g" + slot] = global; });
+const guest = new Uint8Array(memory.buffer);
 // L'étendue telle qu'elle est au départ de chaque cas. Elle sert de référence :
 // la rendre pour les onze mille cas qui n'y touchent pas ferait deux cents
 // mégaoctets de JSON, et le harnais passait plus de temps à les relire qu'à
@@ -69,14 +82,7 @@ const same = (a, b) => {
 };
 for (const unit of job.jobs) {
   const bytes = fs.readFileSync(unit.module);
-  const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
-  // Les registres sont des globales exportées, pas des cases mémoire : la
-  // mémoire linéaire du module est la RAM de l'invité, adresse pour adresse.
-  const slots = [];
-  for (let slot = 0; instance.exports["g" + slot]; slot++) {
-    slots.push(instance.exports["g" + slot]);
-  }
-  const guest = new Uint8Array(instance.exports.mem.buffer);
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
   const base = 0x30000000, end = base + unit.length;
   for (const test of unit.cases) {
     // Remettre à zéro : un résidu du cas précédent ferait lire à une
@@ -303,7 +309,11 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         }
     }
 
-    let mut jobs = String::from("{\"ripSlot\":");
+    let mut jobs = String::from("{\"pages\":");
+    jobs.push_str(&GUEST_PAGES.to_string());
+    jobs.push_str(",\"globals\":");
+    jobs.push_str(&GLOBAL_COUNT.to_string());
+    jobs.push_str(",\"ripSlot\":");
     jobs.push_str(&RIP_SLOT.to_string());
     jobs.push_str(",\"flagsSlot\":");
     jobs.push_str(&flags_slot.to_string());
@@ -648,18 +658,27 @@ fn a_return_out_of_the_region_hands_control_back() {
             r#"
 const fs = require("fs");
 const bytes = fs.readFileSync({:?});
-const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
-instance.exports.g0.value = 0x40001000n;   // rax : hors de la région
-instance.exports.g2.value = 0n;            // rdx : le compteur de tours
-instance.exports.g4.value = 0x30003000n;   // rsp
+const memory = new WebAssembly.Memory({{ initial: {} }});
+const slots = [];
+for (let slot = 0; slot < {}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const imports = {{ env: {{ mem: memory }} }};
+slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+slots[0].value = 0x40001000n;   // rax : hors de la région
+slots[2].value = 0n;            // rdx : le compteur de tours
+slots[4].value = 0x30003000n;   // rsp
 instance.exports.run(64n);
 console.log(JSON.stringify({{
-  rdx: instance.exports.g2.value.toString(),
-  rip: BigInt.asUintN(64, instance.exports.g{}.value).toString(16),
-  rsp: BigInt.asUintN(64, instance.exports.g4.value).toString(16),
+  rdx: slots[2].value.toString(),
+  rip: BigInt.asUintN(64, slots[{}].value).toString(16),
+  rsp: BigInt.asUintN(64, slots[4].value).toString(16),
 }}));
 "#,
             path.to_string_lossy(),
+            GUEST_PAGES,
+            GLOBAL_COUNT,
             RIP_SLOT
         ),
     )
@@ -774,19 +793,28 @@ const cases = [
 ];
 const out = [];
 for (const test of cases) {{
-  const instance = new WebAssembly.Instance(new WebAssembly.Module(modules[test.of]));
-  instance.exports.g0.value = test.rax;
-  instance.exports.g1.value = test.rcx;
-  instance.exports.g2.value = test.rdx;
-  instance.exports.g4.value = 0x30003000n;
+  // Une machine neuve par cas : l'hôte la possède, le module l'emprunte.
+  const memory = new WebAssembly.Memory({{ initial: {} }});
+  const slots = [];
+  for (let slot = 0; slot < {}; slot++) {{
+    slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  }}
+  const imports = {{ env: {{ mem: memory }} }};
+  slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+  const instance = new WebAssembly.Instance(
+    new WebAssembly.Module(modules[test.of]), imports);
+  slots[0].value = test.rax;
+  slots[1].value = test.rcx;
+  slots[2].value = test.rdx;
+  slots[4].value = 0x30003000n;
   let threw = "";
   try {{ instance.exports.run(64n); }} catch (error) {{ threw = error.message; }}
   out.push({{
     name: test.name,
     threw,
-    rax: BigInt.asUintN(64, instance.exports.g0.value).toString(16),
-    rdx: BigInt.asUintN(64, instance.exports.g2.value).toString(16),
-    rip: BigInt.asUintN(64, instance.exports.g{}.value).toString(16),
+    rax: BigInt.asUintN(64, slots[0].value).toString(16),
+    rdx: BigInt.asUintN(64, slots[2].value).toString(16),
+    rip: BigInt.asUintN(64, slots[{}].value).toString(16),
     want: test.rip || "",
     wantRax: test.rax_after || "",
     wantRdx: test.rdx_after || "",
@@ -794,7 +822,7 @@ for (const test of cases) {{
 }}
 console.log(JSON.stringify(out, null, 1));
 "#,
-            paths[0], paths[1], paths[2], paths[3], RIP_SLOT
+            paths[0], paths[1], paths[2], paths[3], GUEST_PAGES, GLOBAL_COUNT, RIP_SLOT
         ),
     )
     .expect("le pilote");
@@ -853,4 +881,144 @@ fn serde_free_objects(text: &str) -> Option<Vec<HashMap<String, String>>> {
         rest = &rest[close + 1..];
     }
     Some(objects)
+}
+
+/// **Deux régions, une seule machine.**
+///
+/// C'est l'hôte au complet, en petit. Un saut indirect vers un bloc que la
+/// première région n'a pas découvert : elle rend la main en disant où reprendre,
+/// l'hôte compile la région qui commence là, et l'exécution continue — **sans
+/// rien recopier**, parce que la mémoire et les registres appartiennent à
+/// l'hôte et que les deux modules les empruntent.
+///
+/// Avant les imports, ce test aurait été impossible autrement qu'en recopiant
+/// tout l'état entre deux machines de sept cent soixante-huit mébioctets.
+///
+/// Le juge n'est pas une valeur écrite à la main : c'est l'interpréteur, qui
+/// est lui-même jugé par le silicium sur douze mille cas.
+#[test]
+fn two_regions_share_one_machine_and_the_switch_continues() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // leaq 1f(%rip), %rdx ; jmp *%rdx ; movq $0, %rax ; 1: incq %rdx
+    let bytes: [u8; 19] = [
+        0x48, 0x8d, 0x15, 0x09, 0x00, 0x00, 0x00, // 0  : lea, sept octets
+        0xff, 0xe2, // 7  : jmp *%rdx
+        0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00, // 9  : que personne n'atteint
+        0x48, 0xff, 0xc2, // 16 : incq %rdx, la cible
+    ];
+
+    // Ce que l'interpréteur — vérifié contre le silicium — en fait.
+    let mut cpu = Cpu {
+        rip: CODE,
+        ..Default::default()
+    };
+    let mut steps = 0;
+    while (cpu.rip.wrapping_sub(CODE) as usize) < bytes.len() && steps < 16 {
+        steps += 1;
+        let at = cpu.rip.wrapping_sub(CODE) as usize;
+        assert_ne!(cpu.step(&bytes[at..]), Step::Unknown, "à l'adresse {at}");
+    }
+    let expected = cpu.regs[2];
+    assert_eq!(
+        expected,
+        CODE + 17,
+        "l'interpréteur doit poser RDX sur 1: + 1"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // La première région part de l'entrée ; la seconde de l'adresse que la
+    // première a rendue. C'est exactement ce que l'hôte fera.
+    let mut paths = Vec::new();
+    for (name, entry) in [("first", 0usize), ("second", 16usize)] {
+        let module = Module::region(&bytes, CODE, entry).expect("la région doit se compiler");
+        let path = scratch.join(format!("{name}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        paths.push(path.to_string_lossy().to_string());
+    }
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+// **Une seule machine**, empruntée par les deux régions.
+const memory = new WebAssembly.Memory({{ initial: {} }});
+const slots = [];
+for (let slot = 0; slot < {}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const imports = {{ env: {{ mem: memory }} }};
+slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+const load = path =>
+  new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), imports);
+
+// **Le module dit de quoi il a besoin.** Un import déclare un *minimum* de
+// pages ; un hôte qui en offrirait moins doit être refusé ici, à
+// l'instanciation, et non plus tard par une trappe au premier accès invité.
+let refused = "";
+try {{
+  new WebAssembly.Instance(
+    new WebAssembly.Module(fs.readFileSync({:?})),
+    {{ env: {{ ...imports.env, mem: new WebAssembly.Memory({{ initial: 1 }}) }} }});
+}} catch (error) {{ refused = error.constructor.name; }}
+
+slots[4].value = 0x30003000n;               // rsp
+const first = load({:?});
+first.exports.run(64n);
+const handed = BigInt.asUintN(64, slots[{}].value);
+const between = BigInt.asUintN(64, slots[2].value);
+
+// L'hôte reprend là où la première région s'est arrêtée.
+const second = load({:?});
+second.exports.run(64n);
+
+console.log(JSON.stringify({{
+  refused,
+  handed: handed.toString(16),
+  between: between.toString(16),
+  rdx: BigInt.asUintN(64, slots[2].value).toString(16),
+}}));
+"#,
+            GUEST_PAGES, GLOBAL_COUNT, paths[0], paths[0], RIP_SLOT, paths[1]
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé un module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Une machine trop petite est refusée au moment de la lier, pas au premier
+    // accès : c'est la déclaration d'import qui le tient.
+    assert!(
+        text.contains("\"refused\":\"LinkError\""),
+        "une mémoire d'une page devait être refusée à l'instanciation — {text}"
+    );
+    // La première rend la main sur la cible du saut, pas ailleurs.
+    assert!(
+        text.contains(&format!("\"handed\":\"{:x}\"", CODE + 16)),
+        "la première région devait rendre la main sur 1: — {text}"
+    );
+    // Et elle a bien posé RDX au passage : ce qu'elle a fait avant de rendre la
+    // main compte, et la seconde région le retrouve.
+    assert!(
+        text.contains(&format!("\"between\":\"{:x}\"", CODE + 16)),
+        "le `lea` de la première région doit survivre à la bascule — {text}"
+    );
+    assert!(
+        text.contains(&format!("\"rdx\":\"{expected:x}\"")),
+        "après la bascule, les deux cœurs doivent dire la même chose — {text}"
+    );
 }
