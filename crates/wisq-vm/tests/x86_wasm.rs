@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86::{decode, Decoded, Width};
-use wisq_vm::x86_wasm::{Module, REGISTER_BYTES, RFLAGS_OFFSET};
+use wisq_vm::x86_wasm::{Module, RFLAGS_SLOT};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -53,16 +53,25 @@ const out = {};
 for (const unit of job.jobs) {
   const bytes = fs.readFileSync(unit.module);
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
-  const memory = new BigUint64Array(instance.exports.mem.buffer);
+  // Les registres sont des globales exportées, pas des cases mémoire : la
+  // mémoire linéaire du module est la RAM de l'invité, adresse pour adresse.
+  const slots = [];
+  for (let slot = 0; instance.exports["g" + slot]; slot++) {
+    slots.push(instance.exports["g" + slot]);
+  }
   for (const test of unit.cases) {
     // Remettre à zéro : un résidu du cas précédent ferait lire à une
     // instruction un registre que l'oracle n'a pas posé.
-    for (let slot = 0; slot < 24; slot++) { memory[slot] = 0n; }
+    for (const global of slots) { global.value = 0n; }
     for (const [slot, value] of Object.entries(test.regs)) {
-      memory[Number(slot)] = BigInt("0x" + value);
+      slots[Number(slot)].value = BigInt("0x" + value);
     }
     instance.exports.run();
-    out[test.id] = [0, 1, 2, job.flagsSlot].map(s => memory[s].toString(16));
+    // **Une globale i64 se lit en BigInt signé.** `BigUint64Array` masquait
+    // ce détail : ici, un registre à tous les bits à un rend -1n, qui s'écrit
+    // « -1 » en hexadécimal et n'est plus un nombre pour personne.
+    out[test.id] = [0, 1, 2, job.flagsSlot]
+      .map(s => BigInt.asUintN(64, slots[s].value).toString(16));
   }
 }
 fs.writeFileSync(process.argv[3], JSON.stringify(out));
@@ -185,7 +194,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     let driver = scratch.join("driver.js");
     std::fs::write(&driver, DRIVER).expect("le pilote");
 
-    let flags_slot = RFLAGS_OFFSET / REGISTER_BYTES;
+    let flags_slot = RFLAGS_SLOT;
     // Regrouper les cas par instruction : un module par instruction, instancié
     // une seule fois pour tous ses états.
     let mut by_instruction: Vec<(String, Vec<&Case>)> = Vec::new();

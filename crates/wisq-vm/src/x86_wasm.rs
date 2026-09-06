@@ -19,16 +19,30 @@
 //! ses opérandes en mémoire, et c'est une tranche à part — mesurée avant
 //! d'être écrite, comme le reste.
 
+//! **Le fichier de registres est en variables globales, pas en mémoire.**
+//!
+//! Il vivait au début de la mémoire linéaire, aux octets 0 à 136. Ça marchait
+//! tant que le module n'avait pas de mémoire invitée — mais la mémoire linéaire
+//! **est** la RAM de l'invité, adresse pour adresse, et un noyau qui écrit à
+//! l'adresse 8 écrasait alors RCX. Les registres sont donc sortis de là.
+//!
+//! Ce n'est pas qu'un déménagement : une globale n'est pas une case mémoire,
+//! le moteur peut la garder dans un registre machine, et l'hôte y accède par un
+//! nom exporté au lieu d'un décalage que les deux côtés doivent s'accorder à
+//! calculer.
+
 use crate::x86::{Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
 
-/// Huit octets par registre, seize registres, puis RFLAGS.
-pub const REGISTER_BYTES: usize = 8;
-pub const RFLAGS_OFFSET: usize = 16 * REGISTER_BYTES;
-/// Les emplacements de travail après RFLAGS : la traduction s'en sert au lieu
-/// de variables locales, pour que la disposition mémoire soit la seule
-/// interface entre l'hôte et le module. Il y en a six — le sixième porte le
-/// compte d'une rotation ramené dans la largeur.
-pub const SCRATCH_OFFSET: usize = RFLAGS_OFFSET + REGISTER_BYTES;
+/// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
+/// celui de la globale exportée.
+pub const RFLAGS_SLOT: usize = 16;
+/// Les emplacements de travail : la traduction s'en sert au lieu de variables
+/// locales. Il y en a six — le sixième porte le compte d'une rotation ramené
+/// dans la largeur.
+pub const SCRATCH_SLOT: usize = RFLAGS_SLOT + 1;
+pub const SCRATCH_COUNT: usize = 6;
+/// Le nombre de globales que le module déclare et exporte.
+pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 
 /// L'entier non signé à longueur variable de WebAssembly.
 fn unsigned(value: u64, out: &mut Vec<u8>) {
@@ -71,9 +85,8 @@ fn section(id: u8, body: Vec<u8>, out: &mut Vec<u8>) {
 /// Les opcodes dont la traduction a besoin.
 mod code {
     pub const END: u8 = 0x0b;
-    pub const I64_LOAD: u8 = 0x29;
-    pub const I64_STORE: u8 = 0x37;
-    pub const I32_CONST: u8 = 0x41;
+    pub const GLOBAL_GET: u8 = 0x23;
+    pub const GLOBAL_SET: u8 = 0x24;
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
@@ -117,36 +130,25 @@ impl Body {
         self
     }
 
-    /// L'adresse d'où lire ou où écrire. Toutes les adresses sont connues à la
-    /// compilation, donc l'index est une constante et le décalage est nul.
-    fn address(&mut self, at: usize) -> &mut Self {
-        self.bytes.push(code::I32_CONST);
-        signed(at as i64, &mut self.bytes);
+    /// Lire une globale : un registre invité, RFLAGS, ou un emplacement de
+    /// travail.
+    fn load(&mut self, slot: usize) -> &mut Self {
+        self.bytes.push(code::GLOBAL_GET);
+        unsigned(slot as u64, &mut self.bytes);
         self
     }
 
-    fn load(&mut self, at: usize) -> &mut Self {
-        self.address(at);
-        self.bytes.push(code::I64_LOAD);
-        self.bytes.push(3); // alignement : 2^3 = huit octets
-        self.bytes.push(0);
-        self
-    }
-
-    /// Écrit la valeur en sommet de pile. L'adresse doit être poussée **avant**
-    /// la valeur : c'est l'ordre de WebAssembly, et l'inverser produit un
-    /// module que le moteur refuse.
-    fn store(&mut self, at: usize, value: impl FnOnce(&mut Body)) -> &mut Self {
-        self.address(at);
+    /// Écrire une globale. Contrairement à un `i64.store`, il n'y a pas
+    /// d'adresse à pousser d'abord : la valeur seule, puis l'indice.
+    fn store(&mut self, slot: usize, value: impl FnOnce(&mut Body)) -> &mut Self {
         value(self);
-        self.bytes.push(code::I64_STORE);
-        self.bytes.push(3);
-        self.bytes.push(0);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(slot as u64, &mut self.bytes);
         self
     }
 
     fn scratch(index: usize) -> usize {
-        SCRATCH_OFFSET + index * REGISTER_BYTES
+        SCRATCH_SLOT + index
     }
 }
 
@@ -171,12 +173,34 @@ impl Module {
         section(1, vec![0x01, 0x60, 0x00, 0x00], &mut module);
         // Fonction : une, du type zéro.
         section(3, vec![0x01, 0x00], &mut module);
-        // Mémoire : une page suffit à seize registres et leurs voisins.
-        section(5, vec![0x01, 0x00, 0x01], &mut module);
-        // Exports : la fonction et la mémoire, que l'hôte lit et écrit.
-        let mut exports = vec![0x02];
+
+        // Globales : le fichier de registres, RFLAGS, les emplacements de
+        // travail. Toutes `i64`, toutes **mutables**, toutes à zéro au départ —
+        // c'est l'hôte qui pose l'état avant chaque cas.
+        let mut globals = Vec::new();
+        unsigned(GLOBAL_COUNT as u64, &mut globals);
+        for _ in 0..GLOBAL_COUNT {
+            globals.push(0x7e); // i64
+            globals.push(0x01); // mutable
+            globals.push(code::I64_CONST);
+            signed(0, &mut globals);
+            globals.push(code::END);
+        }
+        section(6, globals, &mut module);
+
+        // Exports : la fonction, puis chaque globale sous son numéro. L'hôte
+        // les lit par leur nom au lieu d'un décalage que les deux côtés
+        // devraient calculer pareil.
+        let mut exports = Vec::new();
+        unsigned(1 + GLOBAL_COUNT as u64, &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00, 0x00]);
-        exports.extend_from_slice(&[0x03, b'm', b'e', b'm', 0x02, 0x00]);
+        for slot in 0..GLOBAL_COUNT {
+            let name = format!("g{slot}");
+            unsigned(name.len() as u64, &mut exports);
+            exports.extend_from_slice(name.as_bytes());
+            exports.push(0x03); // une globale
+            unsigned(slot as u64, &mut exports);
+        }
         section(7, exports, &mut module);
 
         // Code : un corps, sans variable locale.
@@ -191,7 +215,7 @@ impl Module {
     }
 
     fn slot(register: u8) -> usize {
-        register as usize * REGISTER_BYTES
+        register as usize
     }
 
     /// Pousser l'opérande de gauche, masqué à la largeur.
@@ -270,14 +294,14 @@ impl Module {
                     b.load(Body::scratch(0))
                         .load(Body::scratch(1))
                         .op(code::I64_ADD);
-                    b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
+                    b.load(RFLAGS_SLOT).constant(CF).op(code::I64_AND);
                     b.op(code::I64_ADD);
                 }
                 Op::Sbb => {
                     b.load(Body::scratch(0))
                         .load(Body::scratch(1))
                         .op(code::I64_SUB);
-                    b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
+                    b.load(RFLAGS_SLOT).constant(CF).op(code::I64_AND);
                     b.op(code::I64_SUB);
                 }
                 Op::And | Op::Test => {
@@ -488,9 +512,9 @@ impl Module {
         });
 
         // Les drapeaux, puis le choix.
-        body.store(RFLAGS_OFFSET, |b| {
+        body.store(RFLAGS_SLOT, |b| {
             // Le nouvel état.
-            b.load(RFLAGS_OFFSET)
+            b.load(RFLAGS_SLOT)
                 .constant(!(CF | PF | AF | ZF | SF | OF))
                 .op(code::I64_AND);
 
@@ -522,7 +546,7 @@ impl Module {
                 .op(code::I64_OR);
 
             // L'ancien, et le choix : **un compte nul ne touche à rien**.
-            b.load(RFLAGS_OFFSET);
+            b.load(RFLAGS_SLOT);
             b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
             b.op(code::SELECT);
         });
@@ -570,8 +594,8 @@ impl Module {
             !(CF | PF | AF | ZF | SF | OF)
         };
 
-        body.store(RFLAGS_OFFSET, |b| {
-            b.load(RFLAGS_OFFSET).constant(preserved).op(code::I64_AND);
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(preserved).op(code::I64_AND);
 
             // ZF
             b.load(Body::scratch(2)).op(code::I64_EQZ);
@@ -626,7 +650,7 @@ impl Module {
                         .load(Body::scratch(0))
                         .op(code::I64_SUB);
                     b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
-                    b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
+                    b.load(RFLAGS_SLOT).constant(CF).op(code::I64_AND);
                     b.op(code::I64_AND).op(code::I64_OR);
                     b.constant(1).op(code::I64_AND);
                 }
@@ -653,7 +677,7 @@ impl Module {
                         .load(Body::scratch(1))
                         .op(code::I64_SUB);
                     b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
-                    b.load(RFLAGS_OFFSET).constant(CF).op(code::I64_AND);
+                    b.load(RFLAGS_SLOT).constant(CF).op(code::I64_AND);
                     b.op(code::I64_AND).op(code::I64_OR);
                     b.constant(1).op(code::I64_AND);
                 }
@@ -807,8 +831,8 @@ impl Module {
         });
 
         // Les drapeaux : **CF et OF seulement**, et rien si le compte est nul.
-        body.store(RFLAGS_OFFSET, |b| {
-            b.load(RFLAGS_OFFSET).constant(!(CF | OF)).op(code::I64_AND);
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!(CF | OF)).op(code::I64_AND);
             b.load(Body::scratch(3))
                 .constant(CF.trailing_zeros() as u64);
             b.op(code::I64_SHL).op(code::I64_OR);
@@ -817,7 +841,7 @@ impl Module {
                 .op(code::I64_SHL)
                 .op(code::I64_OR);
 
-            b.load(RFLAGS_OFFSET);
+            b.load(RFLAGS_SLOT);
             b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
             b.op(code::SELECT);
         });
