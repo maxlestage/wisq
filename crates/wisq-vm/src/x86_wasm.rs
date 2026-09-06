@@ -31,7 +31,7 @@
 //! nom exporté au lieu d'un décalage que les deux côtés doivent s'accorder à
 //! calculer.
 
-use crate::x86::{Address, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
+use crate::x86::{Address, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
 /// celui de la globale exportée.
@@ -360,6 +360,27 @@ impl Module {
         if step.op == Op::Lea {
             return Self::lea(step, body);
         }
+        // Les conditions : elles lisent les drapeaux et n'en écrivent aucun.
+        if let Op::Set(condition) = step.op {
+            body.store(Body::scratch(2), |b| Self::condition(condition, b));
+            Self::write_back(step, step.width.mask(), body);
+            return Some(());
+        }
+        if let Op::CondMove(condition) = step.op {
+            body.store(Body::scratch(2), |b| {
+                Self::right(step, b);
+                Self::left(step, b);
+                Self::condition(condition, b);
+                // `select` prend la première valeur quand la condition tient :
+                // la source si elle tient, la destination sinon. Et l'écriture
+                // a lieu **dans les deux cas** — c'est ce qui fait qu'un
+                // `cmov` de 32 bits efface la moitié haute même quand il ne
+                // déplace rien.
+                b.op(code::I32_WRAP_I64).op(code::SELECT);
+            });
+            Self::write_back(step, step.width.mask(), body);
+            return Some(());
+        }
 
         // **Les transferts ont deux largeurs et zéro drapeau.** Les faire
         // passer plus bas lirait la source à la largeur de la destination —
@@ -439,6 +460,7 @@ impl Module {
                 Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
                 Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
                 Op::Lea => unreachable!("lea sort avant"),
+                Op::Set(_) | Op::CondMove(_) => unreachable!("les conditions sortent avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -803,7 +825,55 @@ impl Module {
             Op::Not => {}
             // Traités par `shift` et `transfer`, qui sortent avant d'arriver
             // ici. Les transferts, eux, ne posent **aucun** drapeau.
-            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx | Op::Rol | Op::Ror | Op::Lea => {}
+            Op::Shl
+            | Op::Shr
+            | Op::Sar
+            | Op::Mov
+            | Op::Movsx
+            | Op::Rol
+            | Op::Ror
+            | Op::Lea
+            | Op::Set(_)
+            | Op::CondMove(_) => {}
+        }
+    }
+
+    /// **Une condition, poussée en zéro ou un.**
+    ///
+    /// Les seize conditions de x86 sont huit prédicats et leur négation, et le
+    /// bit de poids faible de l'opcode dit lequel des deux. On traduit donc
+    /// huit fois, plus un ou exclusif — pas seize fois.
+    fn condition(condition: Condition, b: &mut Body) {
+        let bit = |b: &mut Body, flag: u64| {
+            b.load(RFLAGS_SLOT).constant(flag).op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+        };
+        match condition.base() {
+            0 => bit(b, OF),
+            1 => bit(b, CF),
+            2 => bit(b, ZF),
+            3 => {
+                bit(b, CF);
+                bit(b, ZF);
+                b.op(code::I64_OR);
+            }
+            4 => bit(b, SF),
+            5 => bit(b, PF),
+            6 => {
+                bit(b, SF);
+                bit(b, OF);
+                b.op(code::I64_XOR);
+            }
+            _ => {
+                bit(b, ZF);
+                bit(b, SF);
+                bit(b, OF);
+                b.op(code::I64_XOR).op(code::I64_OR);
+            }
+        }
+        if condition.negated() {
+            b.constant(1).op(code::I64_XOR);
         }
     }
 

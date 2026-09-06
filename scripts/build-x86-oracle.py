@@ -331,6 +331,19 @@ def snippets():
         yield f"set{condition} %al"
         yield f"cmov{condition}q %rcx, %rax"
 
+    # **Les largeurs de `cmov`, et la règle qui ne se voit qu'à trente-deux.**
+    #
+    # En soixante-quatre bits, « ne pas écrire » et « réécrire l'ancienne
+    # valeur » rendent la même chose : rien ne les distingue, et un sabotage
+    # l'a montré — un cœur qui sortait sans écrire passait tous les cas. En
+    # trente-deux bits, l'écriture a lieu **même quand le déplacement n'a pas
+    # lieu**, et elle efface la moitié haute ; en seize, elle a lieu aussi et
+    # ne l'efface pas. Deux conditions suffisent, à condition d'en prendre une
+    # qui tient et une qui ne tient pas dans les mêmes états.
+    for condition in ["e", "ne"]:
+        yield f"cmov{condition}l %ecx, %eax"
+        yield f"cmov{condition}w %cx, %ax"
+
     # Bits : lus, posés, effacés, inversés, et cherchés.
     for op in ["bt", "bts", "btr", "btc"]:
         yield f"{op}q $7, %rax"

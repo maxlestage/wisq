@@ -343,6 +343,50 @@ pub enum Op {
     /// calcul d'adresse — base, index, échelle, déplacement — contre le
     /// silicium sans avoir encore de mémoire à comparer.
     Lea,
+    /// `setcc` : écrire **un octet**, zéro ou un, selon les drapeaux.
+    Set(Condition),
+    /// `cmovcc` : écrire la source, ou laisser la destination telle quelle.
+    CondMove(Condition),
+}
+
+/// **Une condition, telle que l'opcode la porte.**
+///
+/// C'est le quartet bas de l'opcode, et il n'est pas arbitraire : son bit de
+/// poids faible dit « ou le contraire ». Les seize conditions sont donc huit
+/// prédicats et leur négation, et c'est comme ça qu'on les traduit — une fois
+/// chacun, plus un ou exclusif.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Condition(pub u8);
+
+impl Condition {
+    /// Le prédicat, hors négation : huit et pas seize.
+    pub fn base(self) -> u8 {
+        (self.0 >> 1) & 0b111
+    }
+
+    pub fn negated(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// La condition tient-elle, pour cet état de RFLAGS ?
+    pub fn holds(self, flags: u64) -> bool {
+        let bit = |flag: u64| flags & flag != 0;
+        let held = match self.base() {
+            0 => bit(OF),
+            1 => bit(CF),
+            2 => bit(ZF),
+            // « au-dessous ou égal » : la retenue **ou** le zéro.
+            3 => bit(CF) || bit(ZF),
+            4 => bit(SF),
+            5 => bit(PF),
+            // « plus petit », au sens signé : le signe et le débordement en
+            // désaccord. Confondre avec le seul bit de signe donne un cœur qui
+            // compare juste jusqu'au premier débordement.
+            6 => bit(SF) != bit(OF),
+            _ => bit(ZF) || (bit(SF) != bit(OF)),
+        };
+        held != self.negated()
+    }
 }
 
 /// **Une adresse effective, telle que le ModRM et le SIB la décrivent.**
@@ -712,6 +756,31 @@ impl Cpu {
             return;
         }
 
+        // **`setcc` et `cmovcc` lisent les drapeaux et n'en écrivent aucun.**
+        // Ils sortent avant la machinerie à deux opérandes, qui en pose à
+        // chaque passage.
+        if let Op::Set(condition) = instruction.op {
+            let value = u64::from(condition.holds(self.flags.read()));
+            self.faulted |= self.write_destination(instruction, value).is_none();
+            return;
+        }
+        if let Op::CondMove(condition) = instruction.op {
+            let (Some(source), Some(current)) = (
+                self.read_source(instruction, width),
+                self.read_destination(instruction),
+            ) else {
+                self.faulted = true;
+                return;
+            };
+            let value = if condition.holds(self.flags.read()) {
+                source
+            } else {
+                current
+            };
+            self.faulted |= self.write_destination(instruction, value).is_none();
+            return;
+        }
+
         // **Lire les deux opérandes avant de rien changer.** Un accès qui
         // échoue doit laisser la machine intacte : une instruction à moitié
         // exécutée rend un état que rien ne distingue d'un état juste.
@@ -787,6 +856,7 @@ impl Cpu {
             Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
             Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
             Op::Lea => unreachable!("lea sort avant"),
+            Op::Set(_) | Op::CondMove(_) => unreachable!("les conditions sortent avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -947,6 +1017,53 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         let second = *bytes.get(at)?;
         at += 1;
         return match second {
+            // `cmovcc` : la source est lue, la destination écrite seulement si
+            // la condition tient. Sans elle, la destination garde sa valeur —
+            // mais elle est quand même **écrite**, donc la règle de largeur
+            // s'applique et une destination de 32 bits efface sa moitié haute.
+            0x40..=0x4f => {
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: Op::CondMove(Condition(second & 0x0f)),
+                    width,
+                    dst: field.reg,
+                    src: field.register,
+                    imm: 0,
+                    immediate: false,
+                    discards: false,
+                    length: at,
+                    dst_high: false,
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: width,
+                    memory: field.memory,
+                    memory_is_source: true,
+                })
+            }
+            // `setcc` : **un octet**, quelle que soit la largeur des préfixes.
+            // Un REX.W ne l'élargit pas ; il ne fait que changer le sens des
+            // numéros de registre 4 à 7.
+            0x90..=0x9f => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                let rm = field.register;
+                Some(Decoded {
+                    op: Op::Set(Condition(second & 0x0f)),
+                    width: Width::Byte,
+                    dst: prefixes.normalise_high(rm, Width::Byte),
+                    src: 0,
+                    imm: 0,
+                    immediate: false,
+                    discards: false,
+                    length: at,
+                    dst_high: field.memory.is_none() && prefixes.high_byte(rm, Width::Byte),
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: Width::Byte,
+                    memory: field.memory,
+                    memory_is_source: false,
+                })
+            }
             // `movzx` et `movsx` : la source est un octet (B6/BE) ou un mot
             // (B7/BF), la destination a la largeur que les préfixes donnent.
             0xb6 | 0xb7 | 0xbe | 0xbf => {
