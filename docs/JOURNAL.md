@@ -9688,3 +9688,44 @@ exécuté exactement les instructions annoncées, le module que RSI est revenu �
 zéro. Une boucle sortie trop tôt rendrait un débit magnifique et faux. Et le
 module tourne **une fois à vide avant d'être chronométré** : JavaScriptCore
 compile par paliers, et mesurer le premier passage mesurerait son démarrage.
+
+## Le harnais Swift jugeait moins sévèrement que les deux autres
+
+Trois cœurs lisent le même corpus matériel. Les deux harnais Rust comparent
+RSP, RBP, RSI et RDI à ce que le processeur a rendu. **Le harnais Swift n'en
+comparait aucun.** Sa garde « registres intouchés » ne couvre que RBX et
+R8–R15 ; les quatre pointeurs étaient exclus de ce témoin — à juste titre,
+puisqu'ils bougent — mais rien ne prenait le relais.
+
+C'est une asymétrie réelle, et elle porte exactement sur les registres qu'il
+est le plus facile de bouger de travers : un `leave` qui dépile avant de
+reprendre RBP, une chaîne qui n'avance pas RDI, un `push` qui écrit au mauvais
+endroit — tout ça laisse RAX, RCX, RDX, les drapeaux et la fenêtre de données
+exactement justes. Les deux harnais Rust l'ont appris par un sabotage ; le
+troisième ne l'avait jamais appris.
+
+### Et une seconde différence, trouvée en la corrigeant
+
+Le harnais Swift ne posait **pas la fenêtre de pile**. La pile partait de zéros
+là où le processeur voyait le motif à deux moitiés du pilote — 0xB0… en dessous
+de RSP, 0x40… au-dessus. Aucun cas ne s'en plaignait, parce qu'aucun programme
+ne lit la pile sans l'avoir écrite d'abord. Mais c'est une **coïncidence, pas
+une garantie** : la première instruction qui lirait au-dessus de RSP comparerait
+son résultat à celui d'un processeur parti d'ailleurs. Elle est posée
+maintenant.
+
+Il reste une troisième différence, notée et pas corrigée : ce harnais **code en
+dur** le motif de la fenêtre de données au lieu de le lire dans le fichier,
+là où les deux harnais Rust le lisent — précisément parce que le deviner a
+coûté 144 cas la première fois.
+
+### Ce que je ne peux pas dire
+
+**Cette tranche n'est pas vérifiée depuis ce conteneur.** Il n'y a pas de chaîne
+Swift ici — `swift` et `swiftc` sont absents — et les jobs `Cœur (Linux)` et
+`Cœur (Apple)` sont les seuls à compiler et exécuter ce harnais. Si le cœur
+Swift diverge sur un de ces quatre registres, c'est la CI qui le dira, et ce
+sera une découverte, pas une régression : le désaccord existait déjà, invisible.
+
+Le message de désaccord imprime maintenant les quatre pointeurs des deux côtés,
+pour que le log brut suffise à diagnostiquer sans avoir la machine sous la main.
