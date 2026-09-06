@@ -334,6 +334,7 @@ impl Module {
                         | Op::Call
                         | Op::CallIndirect
                         | Op::Return
+                        | Op::Undefined
                 ) {
                     continue;
                 }
@@ -409,6 +410,7 @@ impl Module {
                         | Op::Call
                         | Op::CallIndirect
                         | Op::Return
+                        | Op::Undefined
                 );
                 let displacement = step.imm as i64;
                 // **Ce qui suit un `call` est atteignable, et par une seule
@@ -417,8 +419,12 @@ impl Module {
                 // rendait la main au lieu de continuer. `jmp` est le seul à
                 // n'avoir pas de suite ; `ret`, lui, n'a pas de cible connue
                 // d'avance, et sa suite n'est atteignable que par ailleurs.
-                let falls = !matches!(step.op, Op::Jump(None) | Op::Return);
-                let jumps = !matches!(step.op, Op::Return);
+                // **Rien ne suit un `ud2`.** L'exécution n'en revient pas, donc
+                // les octets d'après ne sont pas atteignables par cette route ;
+                // les mettre dans la file ferait décoder, et refuser, ce qu'un
+                // noyau range là — souvent des données de sa table de bogues.
+                let falls = !matches!(step.op, Op::Jump(None) | Op::Return | Op::Undefined);
+                let jumps = !matches!(step.op, Op::Return | Op::Undefined);
                 steps.push(step);
                 if !ends {
                     continue;
@@ -524,6 +530,17 @@ impl Module {
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::I64_EXTEND_I32_U);
                 });
+            }
+            Op::Undefined => {
+                // **Rendre la main sur elle, pas après.** Le processeur laisse
+                // le pointeur d'instruction sur le `ud2` en levant son
+                // exception ; l'hôte doit voir la même chose, sans quoi il
+                // reprendrait à l'octet suivant, qui n'est pas du code.
+                body.store(RIP_SLOT, |b| {
+                    b.constant(here);
+                });
+                body.bytes.push(code::I32_CONST);
+                signed(-1, &mut body.bytes);
             }
             Op::JumpIndirect => {
                 body.store(RIP_SLOT, reach);
@@ -798,7 +815,7 @@ impl Module {
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
         if matches!(
             step.op,
-            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::CallIndirect
+            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::CallIndirect | Op::Undefined
         ) {
             return None;
         }
@@ -989,6 +1006,7 @@ impl Module {
                     unreachable!("les sauts sortent avant")
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
+                Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
                 Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                     unreachable!("la pile sort avant")
                 }
@@ -1388,6 +1406,7 @@ impl Module {
             | Op::LoopWhile
             | Op::JumpIndirect
             | Op::Nop
+            | Op::Undefined
             | Op::Push
             | Op::Pop
             | Op::Call
