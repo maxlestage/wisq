@@ -377,6 +377,13 @@ pub enum Op {
     /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
     /// à quel bloc elle correspond : il rend la main.
     JumpIndirect,
+    /// **`ud2` : l'instruction indéfinie, que Linux exécute exprès.**
+    ///
+    /// `BUG()` et `WARN()` se compilent en `0f 0b`, et un noyau en sème par
+    /// milliers — un à chaque chemin d'erreur. La décoder est indispensable
+    /// pour que la région qui la contient se compile ; l'exécuter est une
+    /// faute, et c'est tout son propos.
+    Undefined,
     /// **`call *r/m`** : la cible est une valeur, pas un déplacement. C'est
     /// l'appel par pointeur de fonction, dont un noyau est fait. Distinguée de
     /// `Call` parce que les deux n'ont rien en commun côté émetteur : l'un a
@@ -1447,6 +1454,14 @@ impl Cpu {
         // lecture des opérandes : elle porte une adresse mémoire que personne
         // ne doit déréférencer. La lire comme un opérande la faisait échouer
         // sur toute adresse hors de la fenêtre — c'est-à-dire sur toutes.
+        // **L'instruction indéfinie, avant tout le reste.** Elle ne calcule
+        // rien, n'écrit rien, et n'avance pas : le processeur lève une
+        // exception, et ce cœur pose une faute que l'hôte lira.
+        if instruction.op == Op::Undefined {
+            self.faulted = true;
+            self.jumped = true;
+            return;
+        }
         if instruction.op == Op::Lea {
             if let Some(address) = instruction.memory {
                 let after = self.after(instruction);
@@ -1698,6 +1713,7 @@ impl Cpu {
                 unreachable!("les sauts sortent avant")
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
+            Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
             Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                 unreachable!("la pile sort avant")
             }
@@ -2048,6 +2064,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     memory_is_source: false,
                 })
             }
+            // **`ud2`.** Deux octets, aucun opérande. Refuser de la décoder
+            // coupait une région à chaque `BUG()` d'un noyau — 4 077 dans
+            // l'image Alpine mesurée, le plus gros refus restant.
+            0x0b => Some(Decoded {
+                op: Op::Undefined,
+                length: at,
+                ..Decoded::nothing(Width::Byte)
+            }),
             // `nop` à plusieurs octets. L'assembleur s'en sert pour aligner
             // sans perdre de cycles : un seul `nop` long coûte moins que huit
             // courts. Il porte un ModRM entier, qu'il faut consommer.
@@ -3395,6 +3419,56 @@ mod tests {
         assert_eq!(
             cpu.memory.read(cpu.regs[4], Width::Qword),
             Some(0x3000_0002)
+        );
+    }
+
+    /// **`ud2` : l'instruction que Linux exécute exprès.**
+    ///
+    /// `BUG()` et `WARN()` se compilent en `0f 0b`, et le noyau en sème 4 077
+    /// dans son image — le plus gros refus restant, tous octets confondus.
+    /// Chaque chemin d'erreur en pose un, donc refuser `ud2` coupait une région
+    /// de 4 Kio à chaque `if (unlikely(...)) BUG();`.
+    ///
+    /// **La décoder n'est pas l'exécuter.** Elle lève une exception
+    /// d'instruction indéfinie — c'est tout son propos. Le cœur pose donc une
+    /// faute et n'avance pas : avancer par-dessus ferait exécuter l'octet
+    /// suivant, qui n'est pas du code que quiconque a voulu atteindre.
+    #[test]
+    fn the_instruction_linux_runs_on_purpose_decodes_but_faults() {
+        let step = decode(&[0x0f, 0x0b]).expect("0f 0b se lit");
+        assert_eq!(step.op, Op::Undefined);
+        assert_eq!(step.length, 2, "deux octets, et rien derrière");
+
+        // **Par `step`, pas par `execute`.** C'est `step` qui avance le
+        // pointeur d'instruction, et c'est justement ce qu'il ne doit pas
+        // faire ici. Un test qui n'appelle qu'`execute` laisse passer un cœur
+        // qui repart à l'octet suivant — un sabotage l'a montré.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x0b]);
+        assert!(cpu.faulted, "l'instruction indéfinie est une faute");
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "le pointeur d'instruction reste sur elle : ce qui suit n'est pas \
+             du code qu'on a voulu atteindre"
+        );
+    }
+
+    /// **Ce qui suit un `ud2` n'est pas du code.**
+    ///
+    /// L'exécution n'en revient pas, donc les octets d'après ne sont
+    /// atteignables que par ailleurs. Le noyau range volontiers sa table de
+    /// bogues juste derrière ; les mettre dans la file du découvreur ferait
+    /// refuser la région pour des données que personne n'exécute.
+    #[test]
+    fn nothing_follows_an_undefined_instruction() {
+        // `incq %rdx`, `ud2`, puis deux octets qui ne se décodent pas.
+        let bytes = [0x48, 0xff, 0xc2, 0x0f, 0x0b, 0x62, 0xd5];
+        assert!(
+            crate::x86_wasm::Module::region(&bytes, 0x3000_0000, 0).is_some(),
+            "la région doit se compiler : ce qui suit le `ud2` n'est pas atteint"
         );
     }
 

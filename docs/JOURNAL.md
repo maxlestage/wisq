@@ -9373,3 +9373,69 @@ c'est la CI qui le jugera contre les cas neufs, puisqu'ils n'existaient pas.
 Vingt-et-un sabotages, vingt-et-un attrapés. `ff` tombe de 5 927 refus à 2 497 —
 ce qui reste est `/3` et `/5`, l'appel et le saut lointains, qu'aucun noyau 64
 bits n'exécute et qui sont presque sûrement des données lues comme du code.
+
+## `ud2` : l'instruction que Linux exécute exprès
+
+Avant de la traiter, deux mesures — parce que la fois d'avant, ce que je croyais
+savoir était faux.
+
+**`cc` n'est pas une tranche.** Accepter `int3` fait passer les régions de
+67,6 % à 67,7 % : vingt-et-une régions sur seize mille. Les 3 970 refus sont du
+bourrage entre fonctions que personne n'atteint. Mesuré par un décodage jetable,
+révoqué aussitôt. La liste des refus les compte parce qu'elle balaie
+linéairement ; la couverture des régions, elle, ne les voit pas.
+
+**`0f` n'est pas du SSE.** Je l'avais annoncé ; ventilé par second octet :
+`0f 0b` × 4 077 (`ud2`), `0f a3` × 1 091 (`bt`), `0f ba` × 454 (le groupe 8),
+`0f 18` × 313 (`prefetch`), `0f ab` × 217 (`bts`), `0f b3` × 162 (`btr`). Aucune
+instruction vectorielle dans les six premiers.
+
+### Ce qu'elle est
+
+`BUG()` et `WARN()` se compilent en `0f 0b`. Un noyau en pose un à chaque chemin
+d'erreur, donc la refuser coupait une région de 4 Kio à chaque
+`if (unlikely(...)) BUG();` — c'est-à-dire à peu près partout.
+
+La décoder n'est pas l'exécuter. Elle lève une exception d'instruction
+indéfinie, c'est tout son propos : le cœur pose une faute et **n'avance pas**.
+Avancer ferait exécuter l'octet suivant, que personne n'a voulu atteindre. Pour
+la même raison, rien ne suit un `ud2` dans le graphe du découvreur : le noyau
+range volontiers sa table de bogues juste derrière, et la mettre dans la file
+ferait refuser la région pour des données.
+
+### Le corpus ne peut pas la juger, alors autre chose la tient
+
+L'exécuter tuerait le pilote de l'oracle. Mais ce qu'il faut tenir d'elle est sa
+**longueur** et le fait que la région qui la contient se compile — pas un
+calcul. Le programme du corpus la place donc derrière une condition qui n'est
+jamais vraie : `cmpq %rax, %rax` pose ZF, `jne` n'est pas prise, le processeur
+passe à côté — et le graphe de décodage, lui, suit les deux issues et **doit**
+la lire. Un `ud2` mesuré à un octet décalerait le bloc d'après, qui est atteint
+par le saut.
+
+Le reste est tenu par trois tests directs, dont un sous JavaScriptCore : le
+module doit rendre la main **sur** le `ud2`, à son adresse, et non après lui.
+
+### Deux sabotages ont encore corrigé un test
+
+Le premier disait que mon test n'appelait qu'`execute`, où le pointeur
+d'instruction n'avance jamais — c'est `step` qui l'avance. Un cœur qui repart à
+l'octet suivant passait. Le test appelle maintenant `step`.
+
+Le second disait que rien ne tenait « rien ne suit un `ud2` ». C'est vrai
+maintenant : une région faite d'un `incq`, d'un `ud2` et de deux octets qui ne
+se décodent pas doit quand même se compiler.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 836 | **12 860** |
+| instructions du noyau décodées | 99,1 % | **99,4 %** |
+| régions de 4 Kio acceptées | 67,6 % | **73,0 %** |
+
+Cinq points et demi de régions pour une instruction de deux octets qui ne
+calcule rien : le meilleur rapport de la série. Vingt-six sabotages, vingt-six
+attrapés.
+
+Le cœur Swift levait déjà une faute sur `ud2` — rien à y porter.
