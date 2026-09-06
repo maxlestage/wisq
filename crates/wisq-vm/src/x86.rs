@@ -518,6 +518,12 @@ pub struct Address {
     /// Le déplacement, **étendu en signe**. Il est négatif plus souvent qu'on
     /// ne croit : un cadre de pile est fait de `-8(%rbp)`.
     pub displacement: i64,
+    /// **Relatif au pointeur d'instruction.** Le déplacement se compte alors
+    /// depuis l'octet qui **suit** l'instruction — pas depuis son début, et
+    /// c'est l'erreur d'un octet la plus facile à écrire. Un noyau moderne en
+    /// est fait : toute variable globale s'atteint comme ça, et tout appel
+    /// indirect passe par une table adressée comme ça.
+    pub relative: bool,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -735,7 +741,8 @@ impl Cpu {
     fn read_destination(&mut self, instruction: &Decoded) -> Option<u64> {
         match instruction.memory {
             Some(address) if !instruction.memory_is_source => {
-                let at = self.effective_address(&address);
+                let at = self.after(instruction);
+                let at = self.effective_address(&address, at);
                 self.memory.read(at, instruction.width)
             }
             _ => Some(self.get(instruction.dst, instruction.width, instruction.dst_high)),
@@ -745,7 +752,8 @@ impl Cpu {
     fn read_source(&mut self, instruction: &Decoded, width: Width) -> Option<u64> {
         match instruction.memory {
             Some(address) if instruction.memory_is_source => {
-                let at = self.effective_address(&address);
+                let at = self.after(instruction);
+                let at = self.effective_address(&address, at);
                 self.memory.read(at, width)
             }
             _ => Some(self.get(instruction.src, width, instruction.src_high)),
@@ -756,7 +764,8 @@ impl Cpu {
     fn write_destination(&mut self, instruction: &Decoded, value: u64) -> Option<()> {
         match instruction.memory {
             Some(address) if !instruction.memory_is_source => {
-                let at = self.effective_address(&address);
+                let at = self.after(instruction);
+                let at = self.effective_address(&address, at);
                 self.memory.write(at, instruction.width, value)
             }
             _ => {
@@ -774,8 +783,17 @@ impl Cpu {
     /// Base + index × échelle + déplacement, sur soixante-quatre bits qui
     /// bouclent. Le débordement n'est pas une erreur : c'est ainsi que se
     /// codent les index négatifs.
-    fn effective_address(&self, address: &Address) -> u64 {
+    /// L'adresse de l'octet qui **suit** l'instruction — celle depuis laquelle
+    /// un déplacement relatif au pointeur d'instruction se compte.
+    fn after(&self, instruction: &Decoded) -> u64 {
+        self.rip.wrapping_add(instruction.length as u64)
+    }
+
+    fn effective_address(&self, address: &Address, after: u64) -> u64 {
         let mut value = address.displacement as u64;
+        if address.relative {
+            return value.wrapping_add(after);
+        }
         if let Some(base) = address.base {
             value = value.wrapping_add(self.regs[base as usize]);
         }
@@ -1372,7 +1390,8 @@ impl Cpu {
         // sur toute adresse hors de la fenêtre — c'est-à-dire sur toutes.
         if instruction.op == Op::Lea {
             if let Some(address) = instruction.memory {
-                let value = self.effective_address(&address);
+                let after = self.after(instruction);
+                let value = self.effective_address(&address, after);
                 self.set(instruction.dst, width, false, value);
             }
             return;
@@ -1769,6 +1788,16 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 prefixes.rex = None;
                 at += 1;
             }
+            // **Le préfixe de verrouillage.** Il rend l'accès mémoire atomique
+            // vis-à-vis des autres cœurs. Il n'y en a qu'un ici, donc il ne
+            // change rien à ce que l'instruction calcule — mais le refuser
+            // rejetait tout compteur atomique d'un noyau, et un noyau en est
+            // plein. Le jour où wisq aura plusieurs fils d'exécution invités,
+            // ce bras devra porter une vraie sémantique.
+            0xf0 => {
+                prefixes.rex = None;
+                at += 1;
+            }
             rex @ 0x40..=0x4f => {
                 prefixes.rex = Some(rex);
                 at += 1;
@@ -1980,6 +2009,19 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_width: Width::Byte,
                     memory: field.memory,
                     memory_is_source: false,
+                })
+            }
+            // **`endbr64`.** La cible de branchement indirect que le
+            // processeur exige quand la protection de flot est armée. Elle ne
+            // fait rien d'autre que marquer l'endroit — et un noyau moderne en
+            // pose une **en tête de chaque fonction**. Vingt mille dans le
+            // noyau Alpine mesuré : la refuser fermait une région sur deux.
+            0x1e => {
+                read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: Op::Nop,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
                 })
             }
             // **`shld` et `shrd`** : le décalage dont les bits entrants
@@ -2756,10 +2798,13 @@ fn read_address(bytes: &[u8], at: &mut usize, prefixes: Prefixes, modrm: u8) -> 
             address.base = Some(base | prefixes.rm_extension());
         }
     } else if mode == 0 && rm == 0b101 {
-        // Relatif à RIP. Reconnu pour être refusé : le décodeur ne sait pas
-        // encore où l'instruction se trouve, et rendre une base RBP à la place
-        // donnerait une adresse absolue minuscule au lieu d'une erreur.
-        return None;
+        // **Relatif au pointeur d'instruction.** Le décodeur ne peut pas
+        // résoudre l'adresse ici : la longueur de l'instruction n'est pas
+        // encore connue — un immédiat peut suivre le déplacement — et c'est
+        // depuis sa **fin** que le déplacement se compte. Le mode est donc
+        // porté jusqu'à l'exécution, où RIP et la longueur sont là.
+        address.relative = true;
+        address.displacement = i64::from(read_i32(bytes, at)?);
     } else {
         address.base = Some(rm | prefixes.rm_extension());
     }
@@ -2885,18 +2930,6 @@ impl Cpu {
 mod tests {
     use super::*;
 
-    /// **Ce que le corpus matériel ne peut pas juger, et pourquoi.**
-    ///
-    /// Le mode « relatif au pointeur d'instruction » est reconnu par le
-    /// décodeur puis refusé, faute de savoir où l'instruction se trouve. Aucun
-    /// cas de `x86-oracle.tsv` ne l'exerce seul, et un sabotage l'a montré :
-    /// accepter ce codage comme une base RBP ne faisait tomber aucun cas.
-    ///
-    /// Ce test n'est donc pas du silicium — c'est une lecture du codage, et il
-    /// vaut ce que vaut cette lecture. Il tient une chose et une seule : que le
-    /// refus soit un refus, et pas une adresse plausible calculée depuis le
-    /// mauvais registre. Le jour où les sauts arriveront, RIP sera connu et ce
-    /// test devra changer de sens.
     /// **La division qui lève, et ce que le corpus ne peut pas en dire.**
     ///
     /// `division_state`, dans le constructeur du corpus, écarte d'avance tout
@@ -3024,17 +3057,46 @@ mod tests {
         }
     }
 
+    /// **Le déplacement relatif au pointeur d'instruction se compte depuis la
+    /// fin de l'instruction, pas depuis son début.**
+    ///
+    /// Ce test remplace celui qui tenait le **refus** de ce mode, et qui
+    /// disait de lui-même : « le jour où les sauts arriveront, RIP sera connu
+    /// et ce test devra changer de sens ». Ce jour est venu — l'émetteur
+    /// connaît l'adresse de chaque instruction, donc il peut figer l'adresse à
+    /// la compilation.
+    ///
+    /// Le corpus juge ce mode sur un programme entier ; ce test-ci fixe les
+    /// deux confusions qu'un cas de programme ne distinguerait pas : l'erreur
+    /// d'un octet, et le codage `mod=00, rm=101` pris pour une base RBP.
     #[test]
-    fn a_displacement_relative_to_the_instruction_pointer_is_refused() {
-        // 48 8d 05 <disp32> — `leaq disp(%rip), %rax`. Le champ `rm` vaut 101
-        // avec un `mod` nul : le même codage qui, ailleurs, désigne RBP.
-        assert_eq!(decode(&[0x48, 0x8d, 0x05, 0x10, 0x00, 0x00, 0x00]), None);
-        // Et la preuve que c'est bien le `mod` qui décide : avec un
-        // déplacement d'un octet, 101 redevient RBP et l'instruction se lit.
+    fn a_displacement_relative_to_the_instruction_pointer_counts_from_the_end() {
+        // 48 8d 05 <disp32> — `leaq disp(%rip), %rax`, sept octets.
+        let step = decode(&[0x48, 0x8d, 0x05, 0x10, 0x00, 0x00, 0x00]).expect("8d 05 se lit");
+        let address = step.memory.expect("un opérande mémoire");
+        assert!(address.relative, "le mode doit être reconnu comme relatif");
+        assert_eq!(address.base, None, "aucune base : ce n'est pas RBP");
+        assert_eq!(address.displacement, 0x10);
+        assert_eq!(step.length, 7);
+
+        // Et le calcul, sur une machine dont RIP est posé.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.execute(&step);
+        assert_eq!(
+            cpu.regs[0],
+            0x3000_0000 + 7 + 0x10,
+            "l'adresse se compte depuis l'octet qui suit l'instruction"
+        );
+
+        // **Et la preuve que c'est bien le `mod` qui décide** : avec un
+        // déplacement d'un octet, 101 redevient RBP et l'adresse n'a plus rien
+        // de relatif.
         let step = decode(&[0x48, 0x8d, 0x45, 0x10]).expect("8d 45 est lisible");
         let address = step.memory.expect("un opérande mémoire");
+        assert!(!address.relative);
         assert_eq!(address.base, Some(5));
-        assert_eq!(address.index, None);
-        assert_eq!(address.displacement, 0x10);
     }
 }
