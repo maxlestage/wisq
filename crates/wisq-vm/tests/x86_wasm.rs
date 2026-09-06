@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86::{Cpu, Step, Width};
-use wisq_vm::x86_wasm::{Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT};
+use wisq_vm::x86_wasm::{
+    Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT,
+};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1382,5 +1384,159 @@ console.log(JSON.stringify({{ taken, lost, rdx: u(2).toString(16), rip: u({rip})
     assert!(
         text.contains(&format!("\"rip\":\"{:x}\"", address(steps % LINKS))),
         "RIP ne désigne pas le maillon attendu — {text}"
+    );
+}
+
+/// **La forme liée : les blocs vivent dans la table de l'hôte.**
+///
+/// C'est la première moitié de ce que la mesure a désigné. Un module lié
+/// n'a plus sa propre table : il importe celle de l'hôte et y pose ses blocs à
+/// l'emplacement qu'on lui donne. Deux régions liées à la même table pourront
+/// alors s'appeler sans repasser par JavaScript — 7,2 ns contre 192.
+///
+/// **Cette tranche ne prend pas le gain, elle le prépare**, et c'est
+/// exactement ce que ce test doit établir : le module lié se lie, il tourne, et
+/// il calcule **la même chose** que la forme historique. Un émetteur qui
+/// changerait de résultat en changeant de forme de table serait un émetteur à
+/// deux vérités.
+#[test]
+fn a_linked_region_lives_in_the_hosts_table_and_computes_the_same() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la forme liée ne serait vérifiée par rien.");
+    };
+    // addq %rax, %rdx ; xorq %rcx, %rbx ; addq %rdx, %rax ; subq $1, %rsi ; jnz
+    let code = wisq_vm::x86_wasm::BENCH_LOOP;
+    // Pas zéro : un décalage nul cacherait une addition oubliée.
+    const SLOT: u32 = 5;
+    let plain = Module::region(&code, CODE, 0).expect("la forme historique");
+    let linked = Module::linked(&code, CODE, 0, SLOT).expect("la forme liée");
+    assert_ne!(
+        plain, linked,
+        "les deux formes ne peuvent pas être le même module"
+    );
+
+    // **L'import est là, et il demande la place qu'il faut.** Le minimum couvre
+    // l'emplacement plus les blocs : une table plus petite doit refuser.
+    let entry: Vec<u8> = [3u8]
+        .iter()
+        .copied()
+        .chain(b"env".iter().copied())
+        .chain([TABLE_IMPORT.len() as u8])
+        .chain(TABLE_IMPORT.bytes())
+        .chain([0x01, 0x70, 0x00])
+        .collect();
+    assert!(
+        linked.windows(entry.len()).any(|window| window == entry),
+        "le module lié doit importer env.{TABLE_IMPORT}"
+    );
+    assert!(
+        !plain.windows(entry.len()).any(|window| window == entry),
+        "et la forme historique ne doit pas"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-linked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("linked.wasm");
+    std::fs::write(&path, &linked).expect("le module");
+    let driver = scratch.join("d.js");
+    let turns = 1000u64;
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const bytes = fs.readFileSync({path:?});
+const memory = new WebAssembly.Memory({{ initial: {pages} }});
+const slots = [];
+const imports = {{ env: {{ mem: memory }} }};
+for (let slot = 0; slot < {globals}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  imports.env["g" + slot] = slots[slot];
+}}
+const u = slot => BigInt.asUintN(64, slots[slot].value);
+const out = {{}};
+
+// **Une table trop petite doit refuser.** Le module en demande {slot} + ses
+// blocs ; une table de {slot} entrées n'a de place pour aucun.
+try {{
+  imports.env.{table} = new WebAssembly.Table({{ element: "anyfunc", initial: {slot} }});
+  new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+  out.small = "acceptée";
+}} catch (why) {{ out.small = why.constructor.name; }}
+
+imports.env.{table} = new WebAssembly.Table({{ element: "anyfunc", initial: 64 }});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+// Les blocs sont bien posés à l'emplacement, pas au début.
+out.before = imports.env.{table}.get({slot} - 1) === null ? "vide" : "occupée";
+out.at = imports.env.{table}.get({slot}) === null ? "vide" : "occupée";
+
+slots[0].value = 1n;                    // rax
+slots[1].value = 0x0123456789abcdefn;   // rcx
+slots[6].value = {turns}n;              // rsi
+instance.exports.run({turns}n + 8n);
+out.rax = u(0).toString(16);
+out.rbx = u(3).toString(16);
+out.rdx = u(2).toString(16);
+out.rsi = u(6).toString(16);
+out.rip = u({rip}).toString(16);
+console.log(JSON.stringify(out));
+"#,
+            path = path.to_string_lossy(),
+            pages = GUEST_PAGES,
+            globals = GLOBAL_COUNT,
+            table = TABLE_IMPORT,
+            slot = SLOT,
+            turns = turns,
+            rip = RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module lié :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"small\":\"LinkError\""),
+        "une table trop petite devait refuser la liaison — {text}"
+    );
+    assert!(
+        text.contains("\"before\":\"vide\"") && text.contains("\"at\":\"occupée\""),
+        "les blocs doivent être posés à l'emplacement, pas avant — {text}"
+    );
+
+    // **Et le résultat est celui de l'interpréteur**, qui est celui du
+    // silicium : la forme de la table ne change pas ce que la région calcule.
+    let mut cpu = Cpu {
+        rip: CODE,
+        ..Default::default()
+    };
+    cpu.regs[0] = 1;
+    cpu.regs[1] = 0x0123_4567_89ab_cdef;
+    cpu.regs[6] = turns;
+    while (cpu.rip.wrapping_sub(CODE) as usize) < code.len() {
+        let at = cpu.rip.wrapping_sub(CODE) as usize;
+        if cpu.step(&code[at..]) == Step::Unknown {
+            break;
+        }
+    }
+    for (slot, name) in [(0usize, "rax"), (3, "rbx"), (2, "rdx"), (6, "rsi")] {
+        assert!(
+            text.contains(&format!("\"{name}\":\"{:x}\"", cpu.regs[slot])),
+            "{name} : le module lié ne calcule pas comme l'interpréteur — {text}"
+        );
+    }
+    assert!(
+        text.contains(&format!("\"rip\":\"{:x}\"", CODE + code.len() as u64)),
+        "et il rend la main à la sortie de la boucle — {text}"
     );
 }

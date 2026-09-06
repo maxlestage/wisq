@@ -60,6 +60,11 @@ pub const SCRATCH_COUNT: usize = 10;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 
+/// **Le nom sous lequel un module lié importe la table de l'hôte.** Les blocs
+/// de toutes les régions y vivent ensemble, ce qui est la condition pour qu'un
+/// `call_indirect` passe d'une région à l'autre sans repasser par l'hôte.
+pub const TABLE_IMPORT: &str = "blocks";
+
 /// Le nombre de pages de RAM invitée que le module déclare. Assez pour couvrir
 /// la fenêtre de données du corpus matériel, qui vit à 0x30001000.
 pub const GUEST_PAGES: u32 = 0x3001;
@@ -408,6 +413,33 @@ impl Module {
     /// relit. Compiler la région comme si elle vivait à zéro empilerait un
     /// nombre que rien, dans la mémoire de l'invité, ne désigne.
     pub fn region(bytes: &[u8], base: u64, entry: usize) -> Option<Vec<u8>> {
+        Self::build(bytes, base, entry, None)
+    }
+
+    /// **La même région, mais posée dans la table de l'hôte.**
+    ///
+    /// Le module n'a plus sa table : il **importe** `env.blocks` et y place ses
+    /// blocs à partir de `slot`. Deux régions liées à la même table peuvent
+    /// alors s'appeler par `call_indirect` sans repasser par l'hôte — et c'est
+    /// tout l'enjeu, mesuré avant d'être écrit : un enchaînement par la boucle
+    /// hôte coûte **192 ns**, un `call_indirect` vers un autre module **7,2**.
+    /// Les deux chiffres viennent de `--example chain` et de
+    /// `scripts/wasm-table-probe.ts`.
+    ///
+    /// **Cette tranche ne prend pas encore le gain.** `resolve` compare toujours
+    /// l'adresse aux blocs de sa propre région et rend la main pour tout le
+    /// reste ; la table est importée, remplie, et utilisée par la boucle de
+    /// répartition interne, rien de plus. Ce qui manque est la correspondance
+    /// adresse → indice, que le module devra lire à l'exécution.
+    ///
+    /// L'hôte doit fournir une table d'au moins `slot + blocs` entrées. Un
+    /// module qui en demande plus qu'elle n'en a ne démarre pas — la même
+    /// protection que pour la mémoire, et pour la même raison.
+    pub fn linked(bytes: &[u8], base: u64, entry: usize, slot: u32) -> Option<Vec<u8>> {
+        Self::build(bytes, base, entry, Some(slot))
+    }
+
+    fn build(bytes: &[u8], base: u64, entry: usize, shared: Option<u32>) -> Option<Vec<u8>> {
         let blocks = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
@@ -446,7 +478,7 @@ impl Module {
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Some(Self::assemble(bodies))
+        Some(Self::assemble(bodies, shared))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -783,7 +815,7 @@ impl Module {
     }
 
     /// **Le module : une fonction par bloc, plus la boucle qui les enchaîne.**
-    fn assemble(bodies: Vec<Vec<u8>>) -> Vec<u8> {
+    fn assemble(bodies: Vec<Vec<u8>>, shared: Option<u32>) -> Vec<u8> {
         let count = bodies.len();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -807,7 +839,10 @@ impl Module {
         // C'est ce qui rend l'interpréteur utilisable comme filet plutôt que
         // comme abandon, et c'est l'architecture de l'application.
         let mut imports = Vec::new();
-        unsigned(1 + GLOBAL_COUNT as u64, &mut imports);
+        unsigned(
+            1 + u64::from(shared.is_some()) + GLOBAL_COUNT as u64,
+            &mut imports,
+        );
         let module_name = |bytes: &mut Vec<u8>| {
             unsigned(3, bytes);
             bytes.extend_from_slice(b"env");
@@ -818,6 +853,18 @@ impl Module {
         imports.push(0x02);
         imports.push(0x00);
         unsigned(u64::from(GUEST_PAGES), &mut imports);
+        // **La table de l'hôte**, quand la région est liée. Le minimum déclaré
+        // couvre l'emplacement de cette région et ses blocs : une table plus
+        // petite refuse l'instanciation, exactement comme une mémoire trop
+        // petite. C'est ce qui transforme un décalage mal calculé en une erreur
+        // de liaison plutôt qu'en un appel vers l'entrée d'à côté.
+        if let Some(slot) = shared {
+            module_name(&mut imports);
+            unsigned(TABLE_IMPORT.len() as u64, &mut imports);
+            imports.extend_from_slice(TABLE_IMPORT.as_bytes());
+            imports.extend_from_slice(&[0x01, 0x70, 0x00]);
+            unsigned(u64::from(slot) + count as u64, &mut imports);
+        }
         for slot in 0..GLOBAL_COUNT {
             module_name(&mut imports);
             let name = format!("g{slot}");
@@ -837,9 +884,18 @@ impl Module {
         section(3, functions, &mut module);
 
         // Table : les blocs, pour le `call_indirect` de la boucle.
-        let mut table = vec![0x01, 0x70, 0x00];
-        unsigned(count as u64, &mut table);
-        section(4, table, &mut module);
+        // **Sa propre table, ou celle de l'hôte.** La forme historique définit
+        // la sienne : chaque module a la sienne, et un `call_indirect` ne peut
+        // désigner qu'un bloc de sa propre région — passer à la suivante coûte
+        // alors un retour de main, mesuré à 192 ns. La forme liée **importe** la
+        // table et y pose ses blocs à l'emplacement que l'hôte lui donne, ce qui
+        // ouvre la porte à un enchaînement qui ne sort jamais de WebAssembly :
+        // 7,2 ns relevés par `scripts/wasm-table-probe.ts`.
+        if shared.is_none() {
+            let mut table = vec![0x01, 0x70, 0x00];
+            unsigned(count as u64, &mut table);
+            section(4, table, &mut module);
+        }
 
         let mut exports = Vec::new();
         unsigned(1, &mut exports);
@@ -847,8 +903,11 @@ impl Module {
         unsigned(count as u64, &mut exports);
         section(7, exports, &mut module);
 
-        // Éléments : la table pointe les blocs dans l'ordre.
-        let mut elements = vec![0x01, 0x00, code::I32_CONST, 0x00, code::END];
+        // Éléments : la table pointe les blocs dans l'ordre, à partir de
+        // l'emplacement de la région.
+        let mut elements = vec![0x01, 0x00, code::I32_CONST];
+        signed(i64::from(shared.unwrap_or(0)), &mut elements);
+        elements.push(code::END);
         unsigned(count as u64, &mut elements);
         for block in 0..count {
             unsigned(block as u64, &mut elements);
@@ -865,7 +924,7 @@ impl Module {
         }
         // La boucle : tant qu'il reste du budget, appeler le bloc courant et
         // prendre l'indice qu'il rend. Un indice négatif rend la main.
-        let dispatch: Vec<u8> = vec![
+        let mut dispatch: Vec<u8> = vec![
             0x01,
             0x01,
             0x7f, // une locale i32 : le bloc courant
@@ -886,7 +945,19 @@ impl Module {
             0x21,
             0x00,
             0x20,
-            0x01,
+            0x01, //   le bloc, numéroté depuis zéro dans la région
+        ];
+        // **L'emplacement s'ajoute ici, et nulle part ailleurs.** Les blocs se
+        // numérotent depuis zéro partout — dans `place`, dans `resolve`, dans
+        // ce qu'un bloc rend — et c'est ce qui garde la traduction indépendante
+        // de l'endroit où l'hôte pose la région. Seul l'appel a besoin de
+        // l'indice absolu, et il est le seul à le calculer.
+        if let Some(slot) = shared {
+            dispatch.push(code::I32_CONST);
+            signed(i64::from(slot), &mut dispatch);
+            dispatch.push(0x6a); // i32.add
+        }
+        dispatch.extend_from_slice(&[
             0x11,
             0x00,
             0x00,
@@ -904,7 +975,7 @@ impl Module {
             code::END, //   fin de la boucle
             code::END, // fin du bloc
             code::END, // fin de la fonction
-        ];
+        ]);
         unsigned(dispatch.len() as u64, &mut code_section);
         code_section.extend_from_slice(&dispatch);
         section(10, code_section, &mut module);
