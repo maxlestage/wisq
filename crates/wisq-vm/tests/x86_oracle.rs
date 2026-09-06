@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use wisq_vm::x86::{decode, Cpu, Decoded, Flags, GuestMemory};
+use wisq_vm::x86::{decode, Cpu, Flags, GuestMemory, Op, Step};
 
 fn oracle_path() -> PathBuf {
     // CARGO_MANIFEST_DIR est crates/wisq-vm.
@@ -171,21 +171,64 @@ fn read_oracle() -> Oracle {
     }
 }
 
-/// Décoder une séquence entière, ou rien. Un décodage partiel n'est pas une
-/// couverture partielle : c'est un état faux.
-fn decode_all(bytes: &[u8]) -> Option<Vec<Decoded>> {
-    let mut program = Vec::new();
-    let mut at = 0usize;
-    while at < bytes.len() {
-        let step = decode(&bytes[at..])?;
-        at += step.length;
-        program.push(step);
+/// **Tout ce que ces octets peuvent atteindre se décode-t-il ?**
+///
+/// Avant les sauts, la question était simple : décoder linéairement du début à
+/// la fin. Elle ne l'est plus. Un `jmp` en arrière fait repasser sur des octets
+/// déjà lus, un `jcc` crée deux suites, et l'octet qui suit un saut
+/// inconditionnel peut n'être atteint par personne — le décoder comme du code
+/// refuserait des entrées parfaitement exécutables.
+///
+/// On parcourt donc le **graphe** : depuis l'entrée, chaque bloc jusqu'à son
+/// instruction de contrôle, puis ses suites. Une cible hors des octets connus
+/// n'est pas un refus : c'est la sortie de la région.
+fn decodes_everywhere(bytes: &[u8]) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = vec![0usize];
+    let mut any = false;
+    while let Some(mut at) = queue.pop() {
+        loop {
+            if at >= bytes.len() || !seen.insert(at) {
+                break;
+            }
+            let Some(step) = decode(&bytes[at..]) else {
+                return false;
+            };
+            any = true;
+            let after = at + step.length;
+            match step.op {
+                Op::Jump(condition) => {
+                    let target = after as i64 + step.imm as i64;
+                    if (0..bytes.len() as i64).contains(&target) {
+                        queue.push(target as usize);
+                    }
+                    if condition.is_none() {
+                        break;
+                    }
+                    at = after;
+                }
+                Op::LoopWhile => {
+                    let target = after as i64 + step.imm as i64;
+                    if (0..bytes.len() as i64).contains(&target) {
+                        queue.push(target as usize);
+                    }
+                    at = after;
+                }
+                // Une cible en registre n'est pas connue à la lecture : le
+                // parcours s'arrête là, et l'exécution le dira.
+                Op::JumpIndirect => break,
+                _ => at = after,
+            }
+        }
     }
-    if program.is_empty() {
-        return None;
-    }
-    Some(program)
+    any
 }
+
+/// **Combien de pas au plus.** Les programmes du corpus sont courts — le plus
+/// long boucle dix fois — et un cœur qui partirait en rond doit être arrêté
+/// plutôt qu'attendu. Dépasser ce budget compte comme un refus, pas comme un
+/// écart : on ne compare pas un état qu'on a interrompu.
+const BUDGET: usize = 10_000;
 
 /// **Chaque cas que ce cœur prétend connaître doit tomber juste.**
 ///
@@ -214,12 +257,12 @@ fn every_accepted_instruction_matches_the_silicon() {
         // portent une boucle entière. Si un seul octet échappe au décodeur,
         // l'entrée entière est refusée : exécuter la moitié d'une séquence
         // rendrait un état faux qu'on comparerait sérieusement.
-        let Some(program) = decode_all(&instruction.bytes) else {
+        if !decodes_everywhere(&instruction.bytes) {
             if !refused.contains(&instruction.mnemonic.as_str()) {
                 refused.push(&instruction.mnemonic);
             }
             continue;
-        };
+        }
 
         let mut cpu = Cpu {
             regs: fixed,
@@ -236,8 +279,27 @@ fn every_accepted_instruction_matches_the_silicon() {
         flags.write(state.flags);
         cpu.flags = flags;
 
-        for step in &program {
-            cpu.execute(step);
+        // **Exécuter depuis l'entrée, en suivant le pointeur d'instruction.**
+        // Dérouler les instructions dans l'ordre du fichier reviendrait à
+        // ignorer les sauts tout en prétendant les exécuter.
+        let mut steps = 0usize;
+        let mut ran_out = false;
+        while (cpu.rip as usize) < instruction.bytes.len() {
+            if steps == BUDGET {
+                ran_out = true;
+                break;
+            }
+            steps += 1;
+            if cpu.step(&instruction.bytes[cpu.rip as usize..]) == Step::Unknown {
+                ran_out = true;
+                break;
+            }
+        }
+        if ran_out {
+            if !refused.contains(&instruction.mnemonic.as_str()) {
+                refused.push(&instruction.mnemonic);
+            }
+            continue;
         }
         checked += 1;
 
@@ -308,7 +370,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 8900,
+        checked > 9050,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
@@ -317,8 +379,8 @@ fn every_accepted_instruction_matches_the_silicon() {
     // SIB sans base faisait refuser les deux formes concernées, et le test
     // restait vert. Ce nombre-là ne doit donc jamais monter.
     assert!(
-        refused.len() <= 92,
-        "le décodeur refuse maintenant {} instructions au lieu de 92 : \
+        refused.len() <= 88,
+        "le décodeur refuse maintenant {} instructions au lieu de 88 : \
          quelque chose qu'il savait lire ne se décode plus\n{}",
         refused.len(),
         refused.join("\n")
