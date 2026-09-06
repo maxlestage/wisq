@@ -251,6 +251,12 @@ pub struct Cpu {
     /// exécutée, elle rendrait un état que rien ne distingue d'un état juste —
     /// et ce témoin le dit.
     pub faulted: bool,
+    /// **La base du segment GS.** Le processeur la tient dans un registre
+    /// caché qu'aucune instruction ordinaire ne montre ; ici elle est un champ,
+    /// posé par l'hôte comme le noyau la poserait par `wrmsr`. Zéro par défaut,
+    /// ce qui rend `%gs:x` équivalent à `x` — la conduite d'un noyau qui n'a
+    /// pas encore installé ses variables par cœur.
+    pub gs_base: u64,
 }
 
 /// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre
@@ -524,6 +530,18 @@ pub struct Address {
     /// est fait : toute variable globale s'atteint comme ça, et tout appel
     /// indirect passe par une table adressée comme ça.
     pub relative: bool,
+    /// **Le préfixe de segment GS.** L'adresse calculée n'est alors pas
+    /// l'adresse finale : la base du segment s'y ajoute. Un noyau x86-64 range
+    /// derrière ce préfixe tout ce qui est propre à un cœur — la tâche
+    /// courante, la pile d'interruption, le compteur de préemption — et il y
+    /// accède des dizaines de milliers de fois. Ignorer le préfixe rendrait
+    /// une adresse plausible et fausse ; le refuser rejetait, à la mesure sur
+    /// un vrai noyau Alpine, 18 795 instructions.
+    ///
+    /// **FS n'a pas d'équivalent ici**, et le décodeur le refuse : l'oracle
+    /// matériel ne peut pas poser sa base sans se détruire lui-même, donc
+    /// aucune conduite ne serait vérifiée.
+    pub gs: bool,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -791,6 +809,19 @@ impl Cpu {
 
     fn effective_address(&self, address: &Address, after: u64) -> u64 {
         let mut value = address.displacement as u64;
+        // **La base du segment s'ajoute au tout, pas à la base du ModRM.** Elle
+        // vient avant le calcul plutôt qu'après pour la même raison que
+        // l'adressage boucle sur soixante-quatre bits : l'ordre ne change rien
+        // au résultat, et le dire ici évite d'avoir à le redire à chaque bras.
+        //
+        // **Elle s'ajoute aussi au mode relatif**, et c'est le seul endroit où
+        // le placer le garantit. Le bras relatif sortait avant, et les deux
+        // cœurs auraient divergé sur `%gs:x(%rip)` — l'émetteur ajoutait la
+        // base, l'interpréteur non. Personne n'écrit cette forme ; le corpus
+        // en porte un cas exprès, parce que « personne » n'est pas « jamais ».
+        if address.gs {
+            value = value.wrapping_add(self.gs_base);
+        }
         if address.relative {
             return value.wrapping_add(after);
         }
@@ -1391,6 +1422,16 @@ impl Cpu {
         if instruction.op == Op::Lea {
             if let Some(address) = instruction.memory {
                 let after = self.after(instruction);
+                // **`lea` ignore le préfixe de segment.** L'instruction ne
+                // touche pas la mémoire, donc elle ne traverse pas l'unité de
+                // segmentation : `leaq %gs:0x10, %rax` rend 0x10, pas
+                // `gs_base + 0x10`. L'assembleur le dit à sa façon — il
+                // avertit que le préfixe est « ineffectual » — et le corpus le
+                // vérifie sur le silicium.
+                let address = Address {
+                    gs: false,
+                    ..address
+                };
                 let value = self.effective_address(&address, after);
                 self.set(instruction.dst, width, false, value);
             }
@@ -1715,6 +1756,10 @@ struct Prefixes {
     operand_size: bool,
     repeat: bool,
     rex: Option<u8>,
+    /// Le préfixe 0x65 a été lu. Il ne concerne que l'opérande mémoire, s'il y
+    /// en a un : sur une instruction sans accès mémoire il est légal et sans
+    /// effet, et le processeur ne s'en plaint pas.
+    segment_gs: bool,
 }
 
 impl Prefixes {
@@ -1785,6 +1830,15 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // faux — le premier bit à un au lieu de leur compte.
             0xf3 => {
                 prefixes.repeat = true;
+                prefixes.rex = None;
+                at += 1;
+            }
+            // **Le préfixe de segment GS.** Comme les autres préfixes hérités,
+            // il annule un REX déjà lu : le processeur veut REX collé à
+            // l'opcode, et `65 48 8b …` est la seule forme qu'un assembleur
+            // produit. Le sens du préfixe est porté par l'adresse, pas ici.
+            0x65 => {
+                prefixes.segment_gs = true;
                 prefixes.rex = None;
                 at += 1;
             }
@@ -2779,6 +2833,7 @@ fn read_address(bytes: &[u8], at: &mut usize, prefixes: Prefixes, modrm: u8) -> 
 
     let mut address = Address {
         scale: 1,
+        gs: prefixes.segment_gs,
         ..Address::default()
     };
 
@@ -3098,5 +3153,55 @@ mod tests {
         let address = step.memory.expect("un opérande mémoire");
         assert!(!address.relative);
         assert_eq!(address.base, Some(5));
+    }
+
+    /// **`%gs:` n'est pas une adresse absolue.**
+    ///
+    /// C'est un déplacement compté depuis une base que le noyau a posée
+    /// lui-même, et c'est comme ça qu'il atteint ses variables par cœur. La
+    /// confusion à écarter est exactement celle-là : lire `%gs:0x10` comme
+    /// l'adresse 0x10 rend un pointeur plausible, tombe dans la page zéro, et
+    /// ne ressemble à rien de ce que le processeur a fait.
+    #[test]
+    fn the_gs_prefix_adds_a_base_the_encoding_does_not_carry() {
+        // 65 48 8b 04 25 10 00 00 00 — `movq %gs:0x10, %rax`.
+        let step = decode(&[0x65, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00])
+            .expect("le préfixe GS se lit");
+        let address = step.memory.expect("un opérande mémoire");
+        assert!(address.gs, "le segment doit être porté jusqu'à l'exécution");
+        assert_eq!(address.base, None);
+        assert_eq!(address.index, None);
+        assert_eq!(address.displacement, 0x10);
+        assert_eq!(step.length, 9);
+
+        let mut cpu = Cpu {
+            gs_base: 0x3000_1000,
+            memory: GuestMemory {
+                base: 0x3000_1000,
+                bytes: (0..64u8).map(|byte| 0x10 + byte).collect(),
+            },
+            ..Default::default()
+        };
+        cpu.execute(&step);
+        assert!(!cpu.faulted, "l'accès tombe dans la fenêtre");
+        assert_eq!(
+            cpu.regs[0], 0x2726_2524_2322_2120,
+            "l'octet lu est celui de gs_base + 0x10, pas celui de 0x10"
+        );
+
+        // **Le même encodage sans le préfixe ne doit rien ajouter.** Sinon la
+        // base s'appliquerait partout, ce qu'aucun cas mémoire du corpus ne
+        // verrait tant que la base vaut la fenêtre.
+        let plain =
+            decode(&[0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]).expect("sans préfixe");
+        assert!(!plain.memory.expect("mémoire").gs);
+    }
+
+    /// **FS est refusé, et c'est délibéré.** L'oracle ne peut pas le poser : sa
+    /// base est celle des variables de fil de la glibc, et le canari de pile
+    /// vit derrière. Un préfixe sans oracle serait une conduite devinée.
+    #[test]
+    fn the_fs_prefix_is_refused_for_want_of_an_oracle() {
+        assert!(decode(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]).is_none());
     }
 }

@@ -457,6 +457,53 @@ def snippets():
     yield "movsbl 1(%rsi), %eax"
     yield "movzwq 2(%rsi), %rax"
     yield "movslq 8(%rsi), %rax"
+    # **Le préfixe de segment GS**, par où un noyau x86-64 atteint tout ce qui
+    # est propre à un cœur : la tâche courante, la pile d'interruption, le
+    # compteur de préemption. La forme est toujours la même — pas de base, pas
+    # d'index, un déplacement — parce que c'est un décalage dans une structure
+    # dont la base est dans un registre caché.
+    #
+    # L'oracle pose cette base sur la fenêtre de données par `arch_prctl`, donc
+    # `%gs:0x10` désigne le même octet que `0x10(%rsi)`. Ce n'est pas une
+    # coïncidence commode : c'est ce qui permet de juger le préfixe avec la
+    # fenêtre que le corpus sait déjà lire.
+    #
+    # **FS n'est pas là**, et ne peut pas y être : c'est le segment des
+    # variables de fil de la glibc, le canari de pile vit à `%fs:0x28`, et
+    # déplacer sa base ferait planter le pilote avant qu'il ait jugé un seul
+    # cas. Les deux cœurs refusent donc ce préfixe.
+    yield "movq %gs:0x10, %rax"
+    yield "movl %gs:0x8, %eax"
+    yield "movb %gs:0x3, %al"
+    yield "movq %rax, %gs:0x18"
+    yield "movl %eax, %gs:0x20"
+    yield "addq %gs:0x0, %rax"
+    yield "subl %gs:0x4, %eax"
+    yield "cmpq %gs:0x10, %rax"
+    yield "addq %rax, %gs:0x28"
+    yield "incq %gs:0x30"
+    yield "andl $0x0F0F0F0F, %gs:0x8"
+    yield "movzbl %gs:0x2, %eax"
+    yield "movslq %gs:0x8, %rax"
+    # **Le segment ET le pointeur d'instruction, ensemble.** Personne n'écrit
+    # ça — un noyau atteint ses variables par cœur par un déplacement absolu —
+    # mais les deux mécanismes se rencontrent dans le code des deux cœurs, et
+    # sans ce cas rien ne dit lequel gagne. Un sabotage l'a montré : faire
+    # perdre le segment au figeage de l'adresse relative ne faisait tomber
+    # aucun test, et l'interpréteur, lui, sortait **avant** d'ajouter la base.
+    # Les deux cœurs auraient divergé en silence sur la première occurrence.
+    #
+    # Le déplacement est calculé pour retomber dans la fenêtre : le processeur
+    # ajoute la base du segment à une adresse déjà relative, donc l'adresse
+    # nue vaut deux fois l'arène. Huit octets, c'est la longueur de
+    # `65 48 8b 05 <disp32>`, mesurée sur l'assembleur et pas devinée.
+    yield f"movq %gs:{0x10 - (CODE + 8)}(%rip), %rax"
+    # **`lea` ignore le préfixe** : elle ne touche pas la mémoire, donc ne
+    # traverse pas l'unité de segmentation. L'assembleur avertit que le préfixe
+    # est sans effet ; le silicium le confirme, et c'est ce qu'on grave ici. Un
+    # émetteur qui ajouterait la base rendrait une adresse décalée de 0x1000 —
+    # plausible, et fausse.
+    yield "leaq %gs:0x10, %rax"
     # Pas d'index à échelle ici : RCX et RDX prennent des valeurs qui sortent
     # de la fenêtre, et le corpus ne juge pas ce qu'il fait planter. Une base
     # et un déplacement suffisent à éprouver le chemin d'accès ; l'échelle est
@@ -514,6 +561,7 @@ def exchange_state(size, matching):
 
 # Les adresses fixes du harnais. Fixes exprès : une adresse rendue par mmap
 # changerait à chaque exécution, et le fichier ne se reproduirait pas.
+CODE = 0x30000000
 DATA = 0x30001000
 STACK = 0x30003000
 WINDOW = 64
@@ -851,6 +899,12 @@ def main():
                       % (register, start[register], REGISTERS[register]))
         out.write("fenêtre\t%x\t%s\n" % (DATA, PRISTINE))
         out.write("fenêtre\t%x\t%s\n" % (STACK_WINDOW, STACK_PRISTINE))
+        # **La base du segment GS**, que le pilote pose par `arch_prctl` avant
+        # le premier cas. Elle n'est dans aucun registre visible : un harnais
+        # qui la devinerait comparerait son résultat à celui d'un processeur
+        # parti d'ailleurs — la même leçon que « fixe » et « fenêtre », pour la
+        # troisième fois.
+        out.write("segment\tgs\t%x\n" % DATA)
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))

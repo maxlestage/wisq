@@ -9161,3 +9161,63 @@ Un rouge rare, à cause connue et écrite ici, vaut mieux qu'une garde émoussé
 La prochaine fois qu'un test du site expire au premier lancement d'un
 conteneur, la réponse est dans ce paragraphe et non dans vingt minutes de
 diagnostic.
+
+## Le préfixe GS : 18 795 refus, et le mode que personne n'écrit
+
+Le corpus disait le jeu d'instructions clos. La mesure sur un vrai noyau Alpine
+disait autre chose, et nommait le premier coupable : **le préfixe de segment
+GS**, 18 795 instructions refusées, le plus gros bloc restant. Un noyau x86-64
+range derrière ce préfixe tout ce qui est propre à un cœur — la tâche courante,
+la pile d'interruption, le compteur de préemption — et il y accède partout.
+
+`%gs:0x1234` n'est pas l'adresse 0x1234 : c'est un déplacement compté depuis une
+base que le noyau a posée lui-même, dans un registre qu'aucune instruction
+ordinaire ne montre. Ignorer le préfixe rendrait un pointeur plausible, dans la
+page zéro, et faux.
+
+### Ce qu'il a fallu, pour pouvoir le juger
+
+L'oracle matériel ne pouvait pas en parler : rien ne posait de base de segment.
+Il la pose maintenant par `arch_prctl(ARCH_SET_GS, …)` sur la fenêtre de
+données, ce qui fait de `%gs:0x10` le même octet que `0x10(%rsi)` — le motif que
+le corpus sait déjà lire.
+
+**FS n'y est pas, et n'y sera pas.** C'est le segment des variables de fil de la
+glibc ; le canari de pile vit à `%fs:0x28`. Déplacer sa base ferait planter le
+pilote avant qu'il ait jugé un seul cas. Les deux cœurs refusent donc ce
+préfixe, faute d'oracle — un préfixe accepté sans oracle serait une conduite
+devinée.
+
+La base est écrite dans le corpus comme les treize registres fixes et les deux
+fenêtres, et les deux harnais **exigent** la ligne au lieu de l'ignorer. Un
+enregistrement inconnu est tu en silence, exprès ; celui-là ne peut pas l'être,
+sans quoi un harnais partirait de zéro et tomberait juste tant qu'aucun cas ne
+porte le préfixe. Troisième fois que cette leçon se paie.
+
+### Deux règles que le silicium a tranchées
+
+**`lea` ignore le préfixe.** Elle ne touche pas la mémoire, donc ne traverse pas
+l'unité de segmentation : `leaq %gs:0x10, %rax` rend 0x10. L'assembleur le dit à
+sa façon — « segment override on `lea' is ineffectual » — et le corpus le grave.
+Un émetteur qui ajouterait la base rendrait une adresse décalée de 0x1000.
+
+**`%gs:x(%rip)` existe, et les deux cœurs allaient diverger dessus.** Personne
+n'écrit cette forme ; c'est un sabotage qui l'a désignée — faire perdre le
+segment au figeage de l'adresse relative ne faisait tomber aucun test. En
+regardant pourquoi : l'interpréteur sortait sur le bras relatif **avant**
+d'ajouter la base, l'émetteur l'ajoutait. La première occurrence aurait donné
+deux résultats différents sans que rien ne s'en plaigne. Le corpus en porte
+maintenant un cas, avec un déplacement calculé pour retomber dans la fenêtre, et
+les deux cœurs sont d'accord parce que le processeur a dit lequel avait raison.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 068 | **12 428** |
+| instructions du noyau décodées | 97,5 % | **98,1 %** |
+| régions de 4 Kio acceptées | 58,0 % | **63,3 %** |
+
+Douze sabotages, douze attrapés. Le prochain bloc que la mesure désigne est le
+NOP multi-octets — `66`, `2e` et `0f 1f`, que le noyau sème par milliers pour
+aligner ses branches.
