@@ -120,9 +120,13 @@ def defined_flags(text):
     # reste sont prouvés — ce qui est tout ce qui compte.
     if root in ("div", "idiv"):
         return 0
-    # Les bits : seule la retenue, qui porte le bit lu.
+    # Les bits : la retenue porte le bit lu, et le **zéro n'est pas touché**.
+    # Le manuel le dit explicitement, contrairement aux quatre autres qu'il
+    # laisse indéfinis — et depuis que les états d'entrée portent ZF à un, cette
+    # préservation-là se vérifie. Elle ne se vérifiait pas avant, et un sabotage
+    # qui écrasait les cinq autres drapeaux ne faisait donc tomber aucun cas.
     if root in ("bt", "bts", "btr", "btc"):
-        return CF
+        return CF | ZF
     # ET, OU, OU exclusif : la retenue auxiliaire est indéfinie.
     if root in ("and", "or", "xor", "test"):
         return ARITHMETIC_FLAGS & ~AF

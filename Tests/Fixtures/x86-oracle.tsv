@@ -1272,14 +1272,14 @@ instr	339	0f44c1	8d5	cmovel %ecx, %eax
 instr	340	660f44c1	8d5	cmovew %cx, %ax
 instr	341	0f45c1	8d5	cmovnel %ecx, %eax
 instr	342	660f45c1	8d5	cmovnew %cx, %ax
-instr	343	480fbae007	1	btq $7, %rax
-instr	344	480fa3c8	1	btq %rcx, %rax
-instr	345	480fbae807	1	btsq $7, %rax
-instr	346	480fabc8	1	btsq %rcx, %rax
-instr	347	480fbaf007	1	btrq $7, %rax
-instr	348	480fb3c8	1	btrq %rcx, %rax
-instr	349	480fbaf807	1	btcq $7, %rax
-instr	350	480fbbc8	1	btcq %rcx, %rax
+instr	343	480fbae007	41	btq $7, %rax
+instr	344	480fa3c8	41	btq %rcx, %rax
+instr	345	480fbae807	41	btsq $7, %rax
+instr	346	480fabc8	41	btsq %rcx, %rax
+instr	347	480fbaf007	41	btrq $7, %rax
+instr	348	480fb3c8	41	btrq %rcx, %rax
+instr	349	480fbaf807	41	btcq $7, %rax
+instr	350	480fbbc8	41	btcq %rcx, %rax
 instr	351	480fbcc1	40	bsfq %rcx, %rax
 instr	352	480fbdc1	40	bsrq %rcx, %rax
 instr	353	0fbcc1	40	bsfl %ecx, %eax
@@ -1389,9 +1389,9 @@ instr	456	554889e54883ec10488945f8488b55f8c9	8d5	un cadre de pile complet
 instr	457	4883e103488904ce488d148e	8c5	une adresse à échelle
 instr	458	48010648314e0848ff4610	8d5	lire, modifier, réécrire au même endroit
 instr	459	488d1509000000ffe248c7c00000000048ffc2	8d5	un saut indirect par registre
-instr	460	81e1ff010000480fab0e4889ca4883c24081e2ff010000480fb316480fa30e0f92c0	1	un tableau de bits, au-delà du premier mot
-instr	461	81e1ff00000081e9800000004863c9488d4620480fab08480fa3080f92c2	1	un tableau de bits, avec un numéro négatif
-instr	462	81e1ff0000000fab0e0fbb4e040fa30e0f92c2	1	un tableau de bits en trente-deux bits
+instr	460	81e1ff010000480fab0e4889ca4883c24081e2ff010000480fb316480fa30e0f92c0	41	un tableau de bits, au-delà du premier mot
+instr	461	81e1ff00000081e9800000004863c9488d4620480fab08480fa3080f92c2	41	un tableau de bits, avec un numéro négatif
+instr	462	81e1ff0000000fab0e0fbb4e040fa30e0f92c2	41	un tableau de bits en trente-deux bits
 instr	463	b9040000004831d24803164883c608ffc975f5	8d5	une boucle qui parcourt la mémoire
 cas	0	0	f0	f0f0f0f0f0f0f0f0	f0f0f0f0f0f0f0f0	84	-
 cas	0	1	f0	123456789abcdef	123456789abcdef	94	-

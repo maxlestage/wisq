@@ -347,6 +347,27 @@ pub enum Op {
     Set(Condition),
     /// `cmovcc` : écrire la source, ou laisser la destination telle quelle.
     CondMove(Condition),
+    /// `bt`, `bts`, `btr`, `btc` : lire un bit dans la retenue, et
+    /// éventuellement le changer. Seule la retenue est définie.
+    Bit(BitAction),
+    /// `bsf` et `bsr` : trouver le premier bit à un, par le bas ou par le haut.
+    BitScan {
+        from_the_top: bool,
+    },
+    /// `popcnt` : compter les bits à un.
+    Popcount,
+    /// `bswap` : renverser l'ordre des octets.
+    ByteSwap,
+}
+
+/// Ce qu'une instruction de bit fait au bit qu'elle vient de lire.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BitAction {
+    /// `bt` : rien. Elle le lit et s'arrête.
+    Test,
+    Set,
+    Reset,
+    Complement,
 }
 
 /// **Une condition, telle que l'opcode la porte.**
@@ -718,6 +739,73 @@ impl Cpu {
         }
     }
 
+    /// **Un bit, lu dans la retenue et parfois changé.**
+    ///
+    /// Le numéro est réduit modulo la largeur — et c'est vrai **parce que
+    /// l'opérande est un registre**. En mémoire ce serait faux : le numéro y
+    /// est signé et désigne un bit qui peut être très loin. Le décodeur refuse
+    /// cette forme-là plutôt que de la traiter comme celle-ci.
+    ///
+    /// Seule la retenue est définie ; les cinq autres drapeaux ne sont pas
+    /// touchés, ce que le masque du corpus ne compare pas mais qui est ce que
+    /// fait le processeur.
+    fn bit(&mut self, instruction: &Decoded, action: BitAction) {
+        let width = instruction.width;
+        let bits = width.bits();
+        let number = if instruction.immediate {
+            instruction.imm
+        } else {
+            self.regs[instruction.src as usize]
+        } % bits;
+        let value = self.get(instruction.dst, width, false);
+        let carry = (value >> number) & 1;
+
+        let mut flags = self.flags.read() & !CF;
+        flags |= carry * CF;
+        self.flags.write(flags);
+
+        if action == BitAction::Test {
+            return;
+        }
+        let mask = 1u64 << number;
+        let changed = match action {
+            BitAction::Set => value | mask,
+            BitAction::Reset => value & !mask,
+            _ => value ^ mask,
+        };
+        self.set(instruction.dst, width, false, changed);
+    }
+
+    /// **Chercher le premier bit à un, par le bas ou par le haut.**
+    ///
+    /// Quand la source est nulle, le manuel déclare la destination
+    /// **indéfinie**. Les deux fondeurs la laissent inchangée, et c'est ce que
+    /// le corpus a relevé sur la machine qui l'a produit — ce test ne peut
+    /// donc pas prouver plus que « comme cette machine-là ».
+    fn scan(&mut self, instruction: &Decoded, from_the_top: bool) {
+        let width = instruction.width;
+        let Some(source) = self.read_source(instruction, width) else {
+            self.faulted = true;
+            return;
+        };
+        let source = source & width.mask();
+
+        let without_zero = self.flags.read() & !ZF;
+        if source == 0 {
+            // La destination ne bouge pas : le manuel la dit indéfinie, les
+            // deux fondeurs la laissent telle quelle.
+            self.flags.write(without_zero | ZF);
+            return;
+        }
+        self.flags.write(without_zero);
+        let index = if from_the_top {
+            63 - u64::from(source.leading_zeros())
+        } else {
+            u64::from(source.trailing_zeros())
+        };
+        self.faulted |= self.write_destination(instruction, index).is_none();
+    }
+
     /// **Un transfert, avec ou sans extension de signe.**
     ///
     /// Ce qui distingue cette famille du reste : elle a deux largeurs. La
@@ -778,6 +866,46 @@ impl Cpu {
                 current
             };
             self.faulted |= self.write_destination(instruction, value).is_none();
+            return;
+        }
+
+        // **Les bits, le balayage, le compte, et le renversement.** Chacun a
+        // ses propres drapeaux — de la seule retenue à aucun — et aucun ne
+        // rentre dans la machinerie à deux opérandes.
+        if let Op::Bit(action) = instruction.op {
+            self.bit(instruction, action);
+            return;
+        }
+        if let Op::BitScan { from_the_top } = instruction.op {
+            self.scan(instruction, from_the_top);
+            return;
+        }
+        if instruction.op == Op::Popcount {
+            let Some(source) = self.read_source(instruction, width) else {
+                self.faulted = true;
+                return;
+            };
+            let count = u64::from((source & width.mask()).count_ones());
+            // **Tous les drapeaux sont définis, et cinq valent zéro.**
+            //
+            // Le manuel énonce le zéro sur la **source**. Le lire sur le
+            // résultat donnerait exactement le même bit — le compte est nul si
+            // et seulement si la source l'est — et un sabotage l'a confirmé en
+            // ne faisant tomber aucun cas. On garde la formulation du manuel
+            // parce que c'est elle qui est vraie par définition ; l'autre ne
+            // l'est que par coïncidence arithmétique.
+            let mut flags = self.flags.read() & !(CF | PF | AF | ZF | SF | OF);
+            if source & width.mask() == 0 {
+                flags |= ZF;
+            }
+            self.flags.write(flags);
+            self.faulted |= self.write_destination(instruction, count).is_none();
+            return;
+        }
+        if instruction.op == Op::ByteSwap {
+            let value = self.get(instruction.dst, width, false);
+            let swapped = value.swap_bytes() >> (64 - width.bits());
+            self.set(instruction.dst, width, false, swapped);
             return;
         }
 
@@ -857,6 +985,9 @@ impl Cpu {
             Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
             Op::Lea => unreachable!("lea sort avant"),
             Op::Set(_) | Op::CondMove(_) => unreachable!("les conditions sortent avant"),
+            Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
+                unreachable!("les bits sortent avant")
+            }
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -932,6 +1063,7 @@ const GRID: [Op; 8] = [
 #[derive(Clone, Copy, Default)]
 struct Prefixes {
     operand_size: bool,
+    repeat: bool,
     rex: Option<u8>,
 }
 
@@ -997,6 +1129,15 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 prefixes.rex = None;
                 at += 1;
             }
+            // 0xF3 est le préfixe de répétition, mais il sert aussi à
+            // distinguer des opcodes entiers : `popcnt` est `bsf` avec 0xF3
+            // devant. Le confondre avec `bsf` rendrait un nombre plausible et
+            // faux — le premier bit à un au lieu de leur compte.
+            0xf3 => {
+                prefixes.repeat = true;
+                prefixes.rex = None;
+                at += 1;
+            }
             rex @ 0x40..=0x4f => {
                 prefixes.rex = Some(rex);
                 at += 1;
@@ -1017,6 +1158,130 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         let second = *bytes.get(at)?;
         at += 1;
         return match second {
+            // **Les bits.** Le numéro vient d'un registre (`reg`) ou d'un
+            // immédiat, et l'opérande est le `rm`. Quand cet opérande est en
+            // **mémoire**, la règle change du tout au tout : le numéro n'est
+            // plus réduit modulo la largeur, il est signé, et le processeur va
+            // chercher le mot qui contient ce bit-là, aussi loin soit-il. Ce
+            // n'est pas une variante, c'est une autre instruction — refusée
+            // ici plutôt que traduite comme sa jumelle à registre.
+            0xa3 | 0xab | 0xb3 | 0xbb => {
+                let action = match second {
+                    0xa3 => BitAction::Test,
+                    0xab => BitAction::Set,
+                    0xb3 => BitAction::Reset,
+                    _ => BitAction::Complement,
+                };
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                if field.memory.is_some() {
+                    return None;
+                }
+                Some(Decoded {
+                    op: Op::Bit(action),
+                    width,
+                    dst: field.register,
+                    src: field.reg,
+                    imm: 0,
+                    immediate: false,
+                    discards: action == BitAction::Test,
+                    length: at,
+                    dst_high: false,
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: width,
+                    memory: None,
+                    memory_is_source: false,
+                })
+            }
+            // Le même groupe, numéro en immédiat. Le champ `reg` porte alors
+            // l'opération, pas un registre.
+            0xba => {
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                if field.memory.is_some() {
+                    return None;
+                }
+                let action = match field.reg & 0b111 {
+                    4 => BitAction::Test,
+                    5 => BitAction::Set,
+                    6 => BitAction::Reset,
+                    7 => BitAction::Complement,
+                    _ => return None,
+                };
+                let number = *bytes.get(at)?;
+                at += 1;
+                Some(Decoded {
+                    op: Op::Bit(action),
+                    width,
+                    dst: field.register,
+                    src: 0,
+                    // **Un numéro de bit s'étend par zéro**, comme un compte de
+                    // décalage : il n'est jamais négatif.
+                    imm: u64::from(number),
+                    immediate: true,
+                    discards: action == BitAction::Test,
+                    length: at,
+                    dst_high: false,
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: width,
+                    memory: None,
+                    memory_is_source: false,
+                })
+            }
+            // `bsf`, `bsr`, et `popcnt` qui partage l'un de leurs opcodes.
+            0xbc | 0xbd | 0xb8 => {
+                if second == 0xb8 && !prefixes.repeat {
+                    // Sans 0xF3, 0x0F 0xB8 n'est pas `popcnt` : c'est un opcode
+                    // que cette tranche ne connaît pas.
+                    return None;
+                }
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: match second {
+                        0xb8 => Op::Popcount,
+                        0xbc => Op::BitScan {
+                            from_the_top: false,
+                        },
+                        _ => Op::BitScan { from_the_top: true },
+                    },
+                    width,
+                    dst: field.reg,
+                    src: field.register,
+                    imm: 0,
+                    immediate: false,
+                    discards: false,
+                    length: at,
+                    dst_high: false,
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: width,
+                    memory: field.memory,
+                    memory_is_source: true,
+                })
+            }
+            // `bswap` : le registre est dans les trois bits bas de l'opcode.
+            0xc8..=0xcf => {
+                let width = prefixes.width(false);
+                Some(Decoded {
+                    op: Op::ByteSwap,
+                    width,
+                    dst: (second & 0b111) | prefixes.rm_extension(),
+                    src: 0,
+                    imm: 0,
+                    immediate: false,
+                    discards: false,
+                    length: at,
+                    dst_high: false,
+                    src_high: false,
+                    count_is_cl: false,
+                    src_width: width,
+                    memory: None,
+                    memory_is_source: false,
+                })
+            }
             // `cmovcc` : la source est lue, la destination écrite seulement si
             // la condition tient. Sans elle, la destination garde sa valeur —
             // mais elle est quand même **écrite**, donc la règle de largeur

@@ -417,7 +417,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // transferts, les rotations simples et `lea`, la mémoire a ajouté
     // cinquante-trois instructions et quatre programmes entiers.
     assert!(
-        checked > 8400,
+        checked > 8900,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }

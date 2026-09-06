@@ -31,7 +31,7 @@
 //! nom exporté au lieu d'un décalage que les deux côtés doivent s'accorder à
 //! calculer.
 
-use crate::x86::{Address, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
+use crate::x86::{Address, BitAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
 /// celui de la globale exportée.
@@ -119,6 +119,8 @@ mod code {
     pub const I64_SHL: u8 = 0x86;
     pub const I64_SHR_U: u8 = 0x88;
     pub const I64_POPCNT: u8 = 0x7b;
+    pub const I64_CLZ: u8 = 0x79;
+    pub const I64_CTZ: u8 = 0x7a;
     pub const I64_EXTEND_I32_U: u8 = 0xad;
     pub const I64_SHR_S: u8 = 0x87;
     pub const I64_NE: u8 = 0x52;
@@ -360,6 +362,23 @@ impl Module {
         if step.op == Op::Lea {
             return Self::lea(step, body);
         }
+        // Les bits : chacun ses drapeaux, de la seule retenue à aucun.
+        if let Op::Bit(action) = step.op {
+            Self::bit(step, action, body);
+            return Some(());
+        }
+        if let Op::BitScan { from_the_top } = step.op {
+            Self::scan(step, from_the_top, body);
+            return Some(());
+        }
+        if step.op == Op::Popcount {
+            Self::popcount(step, body);
+            return Some(());
+        }
+        if step.op == Op::ByteSwap {
+            Self::byte_swap(step, body);
+            return Some(());
+        }
         // Les conditions : elles lisent les drapeaux et n'en écrivent aucun.
         if let Op::Set(condition) = step.op {
             body.store(Body::scratch(2), |b| Self::condition(condition, b));
@@ -461,6 +480,9 @@ impl Module {
                 Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
                 Op::Lea => unreachable!("lea sort avant"),
                 Op::Set(_) | Op::CondMove(_) => unreachable!("les conditions sortent avant"),
+                Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
+                    unreachable!("les bits sortent avant")
+                }
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -834,7 +856,11 @@ impl Module {
             | Op::Ror
             | Op::Lea
             | Op::Set(_)
-            | Op::CondMove(_) => {}
+            | Op::CondMove(_)
+            | Op::Bit(_)
+            | Op::BitScan { .. }
+            | Op::Popcount
+            | Op::ByteSwap => {}
         }
     }
 
@@ -875,6 +901,162 @@ impl Module {
         if condition.negated() {
             b.constant(1).op(code::I64_XOR);
         }
+    }
+
+    /// **Un bit, lu dans la retenue et parfois changé.**
+    fn bit(step: &Decoded, action: BitAction, body: &mut Body) {
+        let width = step.width;
+        let bits = width.bits();
+        // scratch 0 : l'opérande. scratch 1 : le numéro, réduit dans la largeur.
+        body.store(Body::scratch(0), |b| {
+            b.load(Self::slot(step.dst))
+                .constant(width.mask())
+                .op(code::I64_AND);
+        });
+        body.store(Body::scratch(1), |b| {
+            if step.immediate {
+                b.constant(step.imm % bits);
+            } else {
+                b.load(Self::slot(step.src))
+                    .constant(bits)
+                    .op(code::I64_REM_U);
+            }
+        });
+        // La retenue, et elle seule.
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!CF).op(code::I64_AND);
+            b.load(Body::scratch(0))
+                .load(Body::scratch(1))
+                .op(code::I64_SHR_U);
+            b.constant(1).op(code::I64_AND);
+            b.constant(CF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+        });
+        if action == BitAction::Test {
+            return;
+        }
+        // scratch 2 : l'opérande avec son bit changé, puis l'écriture commune.
+        body.store(Body::scratch(2), |b| {
+            b.load(Body::scratch(0));
+            b.constant(1).load(Body::scratch(1)).op(code::I64_SHL);
+            match action {
+                BitAction::Set => {
+                    b.op(code::I64_OR);
+                }
+                BitAction::Reset => {
+                    // Pas de « et non » en WebAssembly : on inverse le masque.
+                    b.constant(u64::MAX).op(code::I64_XOR).op(code::I64_AND);
+                }
+                _ => {
+                    b.op(code::I64_XOR);
+                }
+            }
+            b.constant(width.mask()).op(code::I64_AND);
+        });
+        Self::write_back(step, width.mask(), body);
+    }
+
+    /// **Chercher le premier bit à un.** Quand la source est nulle, la
+    /// destination ne bouge pas — le manuel la dit indéfinie, et le corpus a
+    /// relevé ce que fait la machine qui l'a produit.
+    fn scan(step: &Decoded, from_the_top: bool, body: &mut Body) {
+        let width = step.width;
+        body.store(Body::scratch(0), |b| {
+            Self::right(step, b);
+        });
+        // Le zéro parle de la **source**.
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!ZF).op(code::I64_AND);
+            b.load(Body::scratch(0)).op(code::I64_EQZ);
+            b.op(code::I64_EXTEND_I32_U)
+                .constant(ZF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+        });
+        body.store(Body::scratch(2), |b| {
+            if from_the_top {
+                // L'opérande est déjà masqué, donc les zéros de tête comptent
+                // depuis soixante-quatre : l'indice est leur complément.
+                b.constant(63);
+                b.load(Body::scratch(0)).op(code::I64_CLZ);
+                b.op(code::I64_SUB);
+            } else {
+                b.load(Body::scratch(0)).op(code::I64_CTZ);
+            }
+        });
+        // **Source nulle : rien n'est écrit du tout.** Pas « l'ancienne valeur
+        // réécrite » — *rien*. La nuance se voit en trente-deux bits, où toute
+        // écriture efface la moitié haute : le silicium a rendu `%rax` entier
+        // là où j'écrivais un `%eax` étendu par zéro. Un seul cas sur 8 928,
+        // et il énonce une vraie règle.
+        //
+        // Le choix porte donc sur le **registre entier**, après la règle de
+        // largeur, et pas sur la valeur avant.
+        let slot = Self::slot(step.dst);
+        let mask = width.mask();
+        body.store(slot, |b| {
+            match width {
+                Width::Qword | Width::Dword => {
+                    b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                }
+                _ => {
+                    b.load(slot).constant(!mask).op(code::I64_AND);
+                    b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                    b.op(code::I64_OR);
+                }
+            }
+            b.load(slot);
+            // `i64.ne` rend **déjà** un `i32` : c'est ce que `select` attend,
+            // et le tronquer une seconde fois donne un module que le moteur
+            // refuse. Ailleurs — dans `cmov` — le prédicat est un `i64` et la
+            // troncature est nécessaire ; les deux ne se ressemblent qu'en
+            // surface.
+            b.load(Body::scratch(0)).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+    }
+
+    /// **Compter les bits à un.** Les six drapeaux sont définis, cinq à zéro.
+    fn popcount(step: &Decoded, body: &mut Body) {
+        body.store(Body::scratch(0), |b| {
+            Self::right(step, b);
+        });
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT)
+                .constant(!(CF | PF | AF | ZF | SF | OF))
+                .op(code::I64_AND);
+            b.load(Body::scratch(0)).op(code::I64_EQZ);
+            b.op(code::I64_EXTEND_I32_U)
+                .constant(ZF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+        });
+        body.store(Body::scratch(2), |b| {
+            b.load(Body::scratch(0)).op(code::I64_POPCNT);
+        });
+        Self::write_back(step, step.width.mask(), body);
+    }
+
+    /// **Renverser les octets.** WebAssembly n'a pas d'opérateur pour ça : on
+    /// l'écrit octet par octet, ce qui reste du code droit sans branchement.
+    fn byte_swap(step: &Decoded, body: &mut Body) {
+        let count = step.width as u64;
+        body.store(Body::scratch(2), |b| {
+            for rank in 0..count {
+                b.load(Self::slot(step.dst));
+                if rank != 0 {
+                    b.constant(rank * 8).op(code::I64_SHR_U);
+                }
+                b.constant(0xff).op(code::I64_AND);
+                let to = (count - 1 - rank) * 8;
+                if to != 0 {
+                    b.constant(to).op(code::I64_SHL);
+                }
+                if rank != 0 {
+                    b.op(code::I64_OR);
+                }
+            }
+        });
+        Self::write_back(step, step.width.mask(), body);
     }
 
     /// **`lea`, c'est-à-dire une addition qui a l'air d'un accès mémoire.**
