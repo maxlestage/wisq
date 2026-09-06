@@ -261,6 +261,13 @@ pub enum Op {
     Neg,
     Inc,
     Dec,
+    /// Décalage à gauche. `sal` est le même opcode : l'architecture ne les
+    /// distingue pas, seul l'assembleur donne deux noms.
+    Shl,
+    /// Décalage à droite **logique** : des zéros entrent par le haut.
+    Shr,
+    /// Décalage à droite **arithmétique** : le bit de signe se recopie.
+    Sar,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -288,6 +295,11 @@ pub struct Decoded {
     /// que sans préfixe REX et qui désignent l'octet 8-15 du registre.
     pub dst_high: bool,
     pub src_high: bool,
+    /// **Le compte d'un décalage vient de `%cl`**, l'octet bas de `rcx`, et
+    /// pas de la largeur de l'opération. Le confondre décalerait d'un nombre
+    /// tiré des octets hauts de `rcx` — juste tant que `rcx` est petit, faux
+    /// dès qu'il ne l'est plus.
+    pub count_is_cl: bool,
 }
 
 impl Cpu {
@@ -319,6 +331,108 @@ impl Cpu {
         }
     }
 
+    /// **Un décalage, avec les quatre règles que l'architecture impose.**
+    ///
+    /// 1. Le compte est masqué : cinq bits, six en soixante-quatre. Une
+    ///    machine qui décalerait de 32 un mot de 32 bits rendrait zéro ; le
+    ///    vrai processeur rend l'opérande inchangé, parce que 32 & 31 vaut 0.
+    /// 2. **Un compte nul ne touche à rien** — pas même un drapeau. C'est la
+    ///    règle qu'on oublie, et elle se voit quand un `shr %cl` avec `cl` à
+    ///    zéro efface une retenue que le code suivant attendait.
+    /// 3. La retenue est le **dernier bit sorti**, pas un bit du résultat.
+    /// 4. Le débordement n'est défini que pour un décalage de un ; ailleurs le
+    ///    processeur y met ce qu'il veut, et le masque de l'oracle l'ignore.
+    fn shift(&mut self, instruction: &Decoded, left: u64) {
+        let width = instruction.width;
+        let mask = width.mask();
+        let bits = if width == Width::Qword {
+            64
+        } else {
+            (width as u32) * 8
+        };
+        // Le compte vient de `%cl` ou d'un immédiat. Pas de masque à 0xff :
+        // celui à 31 ou 63 juste en dessous le subsume.
+        let raw = if instruction.count_is_cl {
+            self.regs[1]
+        } else {
+            instruction.imm
+        };
+        let count = raw & if width == Width::Qword { 63 } else { 31 };
+        let value = left & mask;
+        if count == 0 {
+            // **Aucun drapeau ne bouge — mais la destination est écrite.** Un
+            // `shll %cl, %eax` avec `cl` à zéro laisse `eax` tel quel *et*
+            // efface les trente-deux bits de poids fort, parce que c'est ce
+            // que fait toute écriture 32 bits. Sortir sans écrire préserverait
+            // une moitié haute que le processeur, lui, met à zéro.
+            if !instruction.discards {
+                self.set(instruction.dst, width, instruction.dst_high, value);
+            }
+            return;
+        }
+
+        let (result, carry, overflow) = match instruction.op {
+            Op::Shl => {
+                let result = (value << count.min(63)) & mask;
+                // Le dernier bit sorti par le haut. Au-delà de la largeur il
+                // n'y a plus rien à sortir, et l'architecture ne définit plus
+                // la retenue.
+                let carry = if count <= u64::from(bits) {
+                    (value >> (u64::from(bits) - count)) & 1
+                } else {
+                    0
+                };
+                let sign = u64::from(result & width.sign() != 0);
+                (result, carry, sign ^ carry)
+            }
+            Op::Shr => {
+                let result = value >> count.min(63);
+                let carry = if count <= u64::from(bits) {
+                    (value >> (count - 1)) & 1
+                } else {
+                    0
+                };
+                // Pour un décalage de un, le débordement est le bit de signe
+                // **d'origine** : c'est lui qui disparaît.
+                (result, carry, u64::from(value & width.sign() != 0))
+            }
+            _ => {
+                // Arithmétique : le signe se recopie, donc on étend d'abord à
+                // soixante-quatre bits avant de décaler.
+                let shift_up = 64 - bits;
+                let extended = ((value << shift_up) as i64) >> shift_up;
+                let result = ((extended >> count.min(63)) as u64) & mask;
+                let carry = if count < u64::from(bits) {
+                    (value >> (count - 1)) & 1
+                } else {
+                    u64::from(extended < 0)
+                };
+                (result, carry, 0)
+            }
+        };
+
+        let mut flags = self.flags.read() & !(CF | PF | AF | ZF | SF | OF);
+        if result & mask == 0 {
+            flags |= ZF;
+        }
+        if result & width.sign() != 0 {
+            flags |= SF;
+        }
+        if (result as u8).count_ones() % 2 == 0 {
+            flags |= PF;
+        }
+        flags |= carry * CF;
+        flags |= overflow * OF;
+        // La demi-retenue est **indéfinie** après un décalage. On la laisse à
+        // zéro et l'oracle ne la compare pas ; prétendre une valeur serait
+        // inventer une règle que le processeur n'a pas.
+        self.flags.write(flags);
+
+        if !instruction.discards {
+            self.set(instruction.dst, width, instruction.dst_high, result);
+        }
+    }
+
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
     /// ne sont pas calculés : on garde l'opération et ses opérandes, rien de
     /// plus.
@@ -330,6 +444,16 @@ impl Cpu {
         } else {
             self.get(instruction.src, width, instruction.src_high)
         };
+
+        // **Les décalages ne rentrent pas dans le moule.** Leur retenue vient
+        // du dernier bit sorti, leur débordement n'est défini que pour un
+        // décalage de un, et un compte nul ne touche à **rien** — ni au
+        // résultat, ni à un seul drapeau. Les faire passer par la machinerie
+        // des opérations à deux opérandes donnerait quatre règles fausses.
+        if matches!(instruction.op, Op::Shl | Op::Shr | Op::Sar) {
+            self.shift(instruction, left);
+            return;
+        }
 
         let (result, op) = match instruction.op {
             Op::Add => (left.wrapping_add(right), FlagOp::Add),
@@ -355,6 +479,9 @@ impl Cpu {
             Op::Dec => (left.wrapping_sub(1), FlagOp::Dec),
             // `neg` est `0 - src`, drapeaux compris : rien à traiter à part.
             Op::Neg => (0u64.wrapping_sub(left), FlagOp::Sub),
+            // Traités plus haut : leur retenue et leur débordement ne suivent
+            // aucune des règles de ce tableau.
+            Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -521,6 +648,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: false,
                 src_high: false,
+                count_is_cl: false,
             });
         }
 
@@ -538,6 +666,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             dst_high: prefixes.high_byte(dst, width),
             src_high: prefixes.high_byte(src, width),
+            count_is_cl: false,
         });
     }
 
@@ -560,6 +689,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
+                count_is_cl: false,
             })
         }
         // `test` entre deux registres.
@@ -577,6 +707,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: prefixes.high_byte(reg, width),
+                count_is_cl: false,
             })
         }
         // `test` sur l'accumulateur.
@@ -594,6 +725,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: false,
                 src_high: false,
+                count_is_cl: false,
             })
         }
         // Groupe 3 : `test`, `not`, `neg` — et les multiplications et
@@ -624,6 +756,55 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
+                count_is_cl: false,
+            })
+        }
+        // **Groupe 2 : les décalages.** Trois sources pour le compte, et c'est
+        // la seule famille où le compte n'est pas un opérande comme un autre :
+        // 0xC0/0xC1 le portent en immédiat, 0xD0/0xD1 valent toujours un, et
+        // 0xD2/0xD3 le lisent dans `%cl` — l'octet **bas** de `rcx`, pas un
+        // opérande de la largeur de l'opération.
+        0xc0 | 0xc1 | 0xd0 | 0xd1 | 0xd2 | 0xd3 => {
+            let byte_form = opcode & 1 == 0;
+            let width = prefixes.width(byte_form);
+            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let op = match reg & 0b111 {
+                // 4 et 6 sont le même décalage à gauche : l'architecture ne
+                // distingue pas `shl` de `sal`.
+                4 | 6 => Op::Shl,
+                5 => Op::Shr,
+                7 => Op::Sar,
+                // Les rotations partagent l'opcode et pas la sémantique :
+                // elles ne touchent que la retenue et le débordement, et
+                // `rcl`/`rcr` tournent **à travers** la retenue. Les traduire
+                // comme un décalage serait faux en silence.
+                _ => return None,
+            };
+            let (imm, immediate, count_is_cl) = match opcode {
+                0xc0 | 0xc1 => {
+                    // **Un compte s'étend par zéro**, pas par signe : c'est un
+                    // nombre de bits, jamais négatif. Passer par le lecteur
+                    // d'immédiats signés donnerait 0xFF pour un décalage de
+                    // 255, masqué ensuite en 31 — juste par accident.
+                    let byte = *bytes.get(at)?;
+                    at += 1;
+                    (u64::from(byte), true, false)
+                }
+                0xd0 | 0xd1 => (1, true, false),
+                _ => (0, false, true),
+            };
+            Some(Decoded {
+                op,
+                width,
+                dst: prefixes.normalise_high(rm, width),
+                src: 1, // `%cl` vit dans `rcx`
+                imm,
+                immediate,
+                discards: false,
+                length: at,
+                dst_high: prefixes.high_byte(rm, width),
+                src_high: false,
+                count_is_cl,
             })
         }
         // Groupes 4 et 5 : `inc` et `dec`.
@@ -646,6 +827,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
+                count_is_cl: false,
             })
         }
         _ => None,

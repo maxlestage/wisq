@@ -85,6 +85,13 @@ mod code {
     pub const I64_SHR_U: u8 = 0x88;
     pub const I64_POPCNT: u8 = 0x7b;
     pub const I64_EXTEND_I32_U: u8 = 0xad;
+    pub const I64_SHR_S: u8 = 0x87;
+    pub const I64_NE: u8 = 0x52;
+    pub const I64_LE_U: u8 = 0x58;
+    /// `select` prend deux valeurs et une condition, et rend la première quand
+    /// la condition est vraie. C'est ce qui permet de traduire « un compte nul
+    /// ne change rien » **sans branchement** : on calcule tout, puis on choisit.
+    pub const SELECT: u8 = 0x1b;
 }
 
 /// Un corps de fonction en cours d'écriture.
@@ -204,6 +211,15 @@ impl Module {
     }
 
     fn translate(step: &Decoded, body: &mut Body) -> Option<()> {
+        // **Les décalages ont leurs propres règles**, et les faire passer par
+        // la machinerie à deux opérandes en donnerait quatre fausses. Ils
+        // sortent ici, exactement comme dans l'interpréteur — deux cœurs qui
+        // divergent de forme finissent par diverger de fond.
+        if matches!(step.op, Op::Shl | Op::Shr | Op::Sar) {
+            Self::shift(step, body);
+            return Some(());
+        }
+
         let mask = step.width.mask();
         let sign = step.width.sign();
 
@@ -269,6 +285,7 @@ impl Module {
                         .constant(u64::MAX)
                         .op(code::I64_XOR);
                 }
+                Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -315,6 +332,208 @@ impl Module {
             Self::write_back(step, mask, body);
         }
         Some(())
+    }
+
+    /// **Un décalage, traduit sans un seul branchement.**
+    ///
+    /// La règle « un compte nul ne touche à rien » demanderait un `if` ; elle
+    /// est rendue par `select`, qui choisit entre l'ancien état et le nouveau
+    /// après avoir calculé les deux. C'est plus de code émis et moins de code
+    /// **exécuté** : un saut mal prédit coûte plus cher que quelques opérations
+    /// arithmétiques, et un cœur qui décale en décale beaucoup.
+    fn shift(step: &Decoded, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let sign = width.sign();
+        let bits: u64 = if width == Width::Qword {
+            64
+        } else {
+            (width as u64) * 8
+        };
+        let count_mask: u64 = if width == Width::Qword { 63 } else { 31 };
+        let slot = Self::slot(step.dst);
+
+        // scratch 0 : l'opérande. scratch 1 : le compte, déjà masqué.
+        body.store(Body::scratch(0), |b| {
+            Self::left(step, b);
+        });
+        body.store(Body::scratch(1), |b| {
+            if step.count_is_cl {
+                // **Le compte vient de `%cl`**, l'octet bas de `rcx`. Le
+                // masque à 0xff serait redondant : celui à 31 ou 63 ci-dessous
+                // le subsume, puisque 63 tient déjà dans un octet. Un sabotage
+                // l'a montré — il ne faisait tomber aucun cas — et du code que
+                // rien ne peut tenir n'a pas sa place ici.
+                b.load(Self::slot(1));
+            } else {
+                b.constant(step.imm);
+            }
+            b.constant(count_mask).op(code::I64_AND);
+        });
+
+        // scratch 2 : le résultat, calculé sans se soucier du compte nul.
+        body.store(Body::scratch(2), |b| {
+            match step.op {
+                Op::Shl => {
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_SHL);
+                }
+                Op::Shr => {
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_SHR_U);
+                }
+                _ => {
+                    // Arithmétique : étendre le signe à soixante-quatre bits
+                    // avant de décaler, sinon les bits recopiés seraient ceux
+                    // du mot entier et pas ceux de l'opérande.
+                    b.load(Body::scratch(0))
+                        .constant(64 - bits)
+                        .op(code::I64_SHL);
+                    b.constant(64 - bits).op(code::I64_SHR_S);
+                    b.load(Body::scratch(1)).op(code::I64_SHR_S);
+                }
+            }
+            b.constant(mask).op(code::I64_AND);
+        });
+
+        // scratch 3 : la retenue, le **dernier bit sorti**.
+        body.store(Body::scratch(3), |b| {
+            match step.op {
+                Op::Shl => {
+                    // **L'ordre de la pile compte** : `shr_u` prend la valeur
+                    // puis le compte. Les inverser produit un module valide
+                    // qui décale le compte par la valeur — faux en silence.
+                    b.load(Body::scratch(0));
+                    b.constant(bits).load(Body::scratch(1)).op(code::I64_SUB);
+                    b.op(code::I64_SHR_U);
+                    b.constant(1).op(code::I64_AND);
+                    // Au-delà de la largeur il n'y a plus rien à sortir, et
+                    // l'architecture ne définit plus la retenue.
+                    b.constant(0);
+                    b.load(Body::scratch(1)).constant(bits).op(code::I64_LE_U);
+                    b.op(code::SELECT);
+                }
+                Op::Shr => {
+                    b.load(Body::scratch(0));
+                    b.load(Body::scratch(1)).constant(1).op(code::I64_SUB);
+                    b.op(code::I64_SHR_U).constant(1).op(code::I64_AND);
+                }
+                _ => {
+                    // **`sar` sature, et sa retenue avec lui.** Décaler un
+                    // octet de trente et un bits ne laisse que des bits de
+                    // signe, et le dernier sorti **est** le bit de signe.
+                    // Partager la formule de `shr` donnerait zéro — mesuré :
+                    // cinquante cas, tous sur `sar`, tous sur ce bit.
+                    b.load(Body::scratch(0));
+                    b.load(Body::scratch(1)).constant(1).op(code::I64_SUB);
+                    b.op(code::I64_SHR_U).constant(1).op(code::I64_AND);
+                    b.load(Body::scratch(0))
+                        .constant(bits - 1)
+                        .op(code::I64_SHR_U);
+                    b.constant(1).op(code::I64_AND);
+                    b.load(Body::scratch(1)).constant(bits).op(code::I64_LT_U);
+                    b.op(code::SELECT);
+                }
+            }
+        });
+
+        // scratch 4 : le débordement. Défini pour un décalage de un seulement ;
+        // ailleurs le masque de l'oracle l'ignore, et inventer une valeur
+        // serait inventer une règle.
+        body.store(Body::scratch(4), |b| match step.op {
+            Op::Shl => {
+                b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+                b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+                b.constant(1).op(code::I64_XOR);
+                b.load(Body::scratch(3)).op(code::I64_XOR);
+            }
+            Op::Shr => {
+                // Le bit de signe **d'origine** : c'est lui qui disparaît.
+                b.load(Body::scratch(0)).constant(sign).op(code::I64_AND);
+                b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+                b.constant(1).op(code::I64_XOR);
+            }
+            _ => {
+                b.constant(0);
+            }
+        });
+
+        // Les drapeaux, puis le choix.
+        body.store(RFLAGS_OFFSET, |b| {
+            // Le nouvel état.
+            b.load(RFLAGS_OFFSET)
+                .constant(!(CF | PF | AF | ZF | SF | OF))
+                .op(code::I64_AND);
+
+            b.load(Body::scratch(2)).op(code::I64_EQZ);
+            b.op(code::I64_EXTEND_I32_U)
+                .constant(ZF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+
+            b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+            b.constant(SF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(Body::scratch(2)).constant(0xff).op(code::I64_AND);
+            b.op(code::I64_POPCNT).constant(1).op(code::I64_AND);
+            b.constant(1).op(code::I64_XOR);
+            b.constant(PF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(Body::scratch(3))
+                .constant(CF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+            b.load(Body::scratch(4)).constant(1).op(code::I64_AND);
+            b.constant(OF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            // L'ancien, et le choix : **un compte nul ne touche à rien**.
+            b.load(RFLAGS_OFFSET);
+            b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        // **Un compte nul ne change aucun drapeau — mais il écrit quand même.**
+        // C'est la règle qui manquait aux deux cœurs : `shll %cl, %eax` avec
+        // `cl` à zéro laisse `eax` tel quel *et* efface les trente-deux bits
+        // de poids fort, parce que toute écriture 32 bits les efface. Le choix
+        // se fait donc sur la valeur, **avant** la règle de largeur, et pas sur
+        // le registre entier après coup.
+        body.store(Body::scratch(2), |b| {
+            b.load(Body::scratch(2));
+            b.load(Body::scratch(0));
+            b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        if !step.discards {
+            body.store(slot, |b| {
+                // Le nouveau contenu du registre, règle de largeur comprise.
+                if step.dst_high {
+                    b.load(slot).constant(!0xff00u64).op(code::I64_AND);
+                    b.load(Body::scratch(2)).constant(0xff).op(code::I64_AND);
+                    b.constant(8).op(code::I64_SHL).op(code::I64_OR);
+                } else {
+                    match width {
+                        Width::Qword | Width::Dword => {
+                            b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                        }
+                        _ => {
+                            b.load(slot).constant(!mask).op(code::I64_AND);
+                            b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                            b.op(code::I64_OR);
+                        }
+                    }
+                }
+            });
+        }
     }
 
     fn flags(step: &Decoded, mask: u64, sign: u64, body: &mut Body) {
@@ -446,6 +665,8 @@ impl Module {
                 b.constant(shift_to(OF)).op(code::I64_SHL).op(code::I64_OR);
             }
             Op::Not => {}
+            // Traités par `shift`, qui sort avant d'arriver ici.
+            Op::Shl | Op::Shr | Op::Sar => {}
         }
     }
 
