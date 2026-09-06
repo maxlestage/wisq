@@ -410,6 +410,18 @@ pub enum Op {
     /// `clc`, `stc`, `cmc` : la retenue posée à la main, les cinq autres
     /// drapeaux intacts.
     CarryFlag(CarryAction),
+    /// **`rcl` et `rcr`** : la rotation passe **à travers** la retenue. Le
+    /// registre tourné fait donc la largeur **plus un bit** — soixante-cinq
+    /// pour un quadruple mot — et c'est ce qui les sépare de `rol` et `ror`.
+    RotateThroughCarry {
+        left: bool,
+    },
+    /// **`shld` et `shrd`** : un décalage dont les bits entrants viennent d'un
+    /// **second** opérande au lieu d'être des zéros ou des copies du signe.
+    /// C'est ce qui déplace un champ à cheval sur deux mots.
+    DoubleShift {
+        left: bool,
+    },
     /// **`xchg`** : les deux opérandes échangent leur contenu, et aucun drapeau
     /// ne bouge. En mémoire elle est implicitement verrouillée — ce qui ne
     /// change rien ici, où il n'y a qu'un fil.
@@ -807,6 +819,43 @@ impl Cpu {
             return;
         }
 
+        // **La rotation à travers la retenue tourne sur un bit de plus.** Le
+        // registre effectif fait `bits + 1` — soixante-cinq pour un quadruple
+        // mot — et c'est pour ça qu'elle passe par cent vingt-huit bits ici :
+        // rien de plus étroit ne peut la porter.
+        if let Op::RotateThroughCarry { left: to_the_left } = instruction.op {
+            let span = bits + 1;
+            let turn = count % span;
+            let carry_in = u128::from(self.flags.read() & CF);
+            let wide = (carry_in << bits) | u128::from(value);
+            let rotated = if turn == 0 {
+                wide
+            } else if to_the_left {
+                ((wide << turn) | (wide >> (span - turn))) & ((1u128 << span) - 1)
+            } else {
+                ((wide >> turn) | (wide << (span - turn))) & ((1u128 << span) - 1)
+            };
+            let result = (rotated as u64) & mask;
+            let carry = (rotated >> bits) as u64 & 1;
+            // Le débordement n'est défini que pour un tour de un, et il se lit
+            // sur les **deux bits de tête du résultat élargi** : la retenue
+            // sortante et le bit de signe.
+            let top = u64::from(result & width.sign() != 0);
+            let overflow = if to_the_left {
+                carry ^ top
+            } else {
+                top ^ ((result >> (bits - 2)) & 1)
+            };
+            let mut flags = self.flags.read() & !(CF | OF);
+            flags |= carry * CF;
+            flags |= overflow * OF;
+            self.flags.write(flags);
+            if !instruction.discards {
+                self.faulted |= self.write_destination(instruction, result).is_none();
+            }
+            return;
+        }
+
         let turn = count % bits;
         let result = match (turn, instruction.op) {
             // Un tour complet : les bits sont revenus à leur place. Le
@@ -836,6 +885,79 @@ impl Cpu {
         if !instruction.discards {
             self.faulted |= self.write_destination(instruction, result).is_none();
         }
+    }
+
+    /// **Le décalage double.** Ce qui le distingue d'un décalage ordinaire :
+    /// les bits qui entrent ne sont ni des zéros ni des copies du signe, mais
+    /// les bits de tête — ou de queue — d'un **second** registre. C'est
+    /// l'instruction qui déplace un champ à cheval sur deux mots, et un noyau
+    /// s'en sert pour tout ce qui est bitmap ou décalage de grand entier.
+    fn double_shift(&mut self, instruction: &Decoded, value: u64, to_the_left: bool) {
+        let width = instruction.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        let raw = if instruction.count_is_cl {
+            self.regs[1]
+        } else {
+            instruction.imm
+        };
+        let count = raw & if width == Width::Qword { 63 } else { 31 };
+        let value = value & mask;
+        // Comme partout dans cette famille : un compte nul ne touche à aucun
+        // drapeau — mais il **écrit** la destination, et une écriture de
+        // trente-deux bits efface la moitié haute. Le silicium l'a dit sur
+        // deux états, ceux où `%cl` vaut zéro une fois masqué.
+        if count == 0 {
+            self.faulted |= self.write_destination(instruction, value).is_none();
+            return;
+        }
+        let Some(source) = self.read_source(instruction, width) else {
+            self.faulted = true;
+            return;
+        };
+        let source = source & mask;
+        // **Le compte peut dépasser la largeur, et l'architecture ne dit alors
+        // rien.** En seize bits le masque du compte vaut trente et un : un
+        // `shldw %cl` avec vingt dans `%cl` demande un décalage que le manuel
+        // déclare indéfini. Il ne peut donc pas se vérifier contre le silicium
+        // — un processeur a le droit de rendre autre chose — mais les deux
+        // cœurs doivent quand même **s'accorder entre eux**, sans quoi une
+        // divergence serait imputée à l'émetteur alors qu'elle vient d'ici. Le
+        // décalage enveloppant est ce que WebAssembly fait de son côté ; c'est
+        // donc lui qu'on prend, et le corpus n'exerce aucun de ces cas.
+        let back = bits.wrapping_sub(count);
+        let (result, carry) = if to_the_left {
+            let out = (value.wrapping_shr(back as u32)) & 1;
+            (
+                (value.wrapping_shl(count as u32) | source.wrapping_shr(back as u32)) & mask,
+                out,
+            )
+        } else {
+            let out = value.wrapping_shr(count.wrapping_sub(1) as u32) & 1;
+            (
+                (value.wrapping_shr(count as u32) | source.wrapping_shl(back as u32)) & mask,
+                out,
+            )
+        };
+        // Le débordement n'est défini que pour un compte de un : c'est le
+        // changement de signe.
+        let sign = width.sign();
+        let overflow = u64::from((value ^ result) & sign != 0);
+        self.flags = Flags {
+            op: FlagOp::Known,
+            left: 0,
+            right: 0,
+            result,
+            width,
+            carry_in: 0,
+            arithmetic: (carry * CF)
+                | (overflow * OF)
+                | (u64::from(result == 0) * ZF)
+                | (u64::from(result & sign != 0) * SF)
+                | (u64::from((result as u8).count_ones() % 2 == 0) * PF),
+            other: self.flags.other,
+        };
+        self.faulted |= self.write_destination(instruction, result).is_none();
     }
 
     /// **La pile, et le seul registre qui la porte.**
@@ -1430,8 +1552,15 @@ impl Cpu {
         // ordre : le zéro, le signe et la parité de l'un ne disent rien de
         // l'autre, et l'architecture les déclare donc **non affectés**. Les
         // recalculer les écraserait avec des valeurs plausibles et fausses.
-        if matches!(instruction.op, Op::Rol | Op::Ror) {
+        if matches!(
+            instruction.op,
+            Op::Rol | Op::Ror | Op::RotateThroughCarry { .. }
+        ) {
             self.rotate(instruction, left);
+            return;
+        }
+        if let Op::DoubleShift { left: to_the_left } = instruction.op {
+            self.double_shift(instruction, left, to_the_left);
             return;
         }
 
@@ -1486,6 +1615,9 @@ impl Cpu {
             }
             Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
                 unreachable!("les échanges sortent avant")
+            }
+            Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
+                unreachable!("les rotations et décalages doubles sortent avant")
             }
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
@@ -1848,6 +1980,39 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_width: Width::Byte,
                     memory: field.memory,
                     memory_is_source: false,
+                })
+            }
+            // **`shld` et `shrd`** : le décalage dont les bits entrants
+            // viennent d'un second registre. Le compte est un immédiat (A4,
+            // AC) ou `%cl` (A5, AD) — et contrairement au groupe 2, la
+            // largeur n'a pas de forme d'octet : un décalage double d'un octet
+            // n'existe pas.
+            0xa4 | 0xa5 | 0xac | 0xad => {
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                let (reg, rm) = (field.reg, field.register);
+                let count_is_cl = second == 0xa5 || second == 0xad;
+                let imm = if count_is_cl {
+                    0
+                } else {
+                    let byte = *bytes.get(at)?;
+                    at += 1;
+                    u64::from(byte)
+                };
+                Some(Decoded {
+                    op: Op::DoubleShift {
+                        left: second < 0xac,
+                    },
+                    width,
+                    dst: rm,
+                    src: reg,
+                    imm,
+                    immediate: !count_is_cl,
+                    length: at,
+                    count_is_cl,
+                    src_width: width,
+                    memory: field.memory,
+                    ..Decoded::nothing(width)
                 })
             }
             // **Les deux échanges qui font les verrous.** `cmpxchg` compare
@@ -2465,11 +2630,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 1 => Op::Ror,
                 // `rcl` et `rcr` tournent **à travers** la retenue : leur
                 // rotation porte sur la largeur **plus un bit**, soixante-cinq
-                // pour un quadruple mot, ce qui ne tient pas dans un registre
-                // de la machine hôte. C'est une tranche à part, pas une
-                // variante — les traduire comme une rotation simple serait
-                // faux en silence.
-                _ => return None,
+                // pour un quadruple mot. Ça ne tient pas dans un registre de la
+                // machine hôte, et les traduire comme une rotation simple
+                // serait faux en silence — donc elles ont leur propre bras.
+                2 => Op::RotateThroughCarry { left: true },
+                _ => Op::RotateThroughCarry { left: false },
             };
             let (imm, immediate, count_is_cl) = match opcode {
                 0xc0 | 0xc1 => {
