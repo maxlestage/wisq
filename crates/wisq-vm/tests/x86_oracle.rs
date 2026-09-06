@@ -53,6 +53,15 @@ struct Case {
     /// bougé — le corpus écrit « - » dans ce cas, et la plupart des
     /// instructions ne la touchent pas.
     memory: Option<Vec<u8>>,
+    /// Et la pile. Un `push` à la mauvaise adresse laisse tous les registres
+    /// justes ; sans cette colonne, rien ne le verrait.
+    stack: Option<Vec<u8>>,
+    /// **RSP, RBP et RSI.** Les trois seuls registres que le corpus autorise à
+    /// bouger — le script vérifie que les treize autres ne bougent pas — et
+    /// donc les trois seuls qu'il doit relever. Un sabotage l'a montré :
+    /// `leave` qui dépile **avant** de reprendre RBP laisse RAX, RCX, RDX, les
+    /// drapeaux et les deux fenêtres exactement justes, et passait.
+    pointers: (u64, u64, u64),
 }
 
 /// Des octets, pour un message d'écart lisible.
@@ -78,11 +87,32 @@ struct Oracle {
     instructions: HashMap<String, Instruction>,
     cases: Vec<Case>,
     fixed: [u64; 16],
-    /// L'adresse de la fenêtre de données, et le motif dont elle part à chaque
-    /// cas. Lus dans le fichier, jamais devinés — même leçon que les registres
-    /// fixes, et elle a coûté 144 cas la première fois.
-    window: u64,
-    pristine: Vec<u8>,
+    /// **Les fenêtres de mémoire**, et le motif dont chacune part à chaque cas.
+    /// Il y en a deux : les données, où pointe RSI, et la pile, des deux côtés
+    /// de RSP. Lues dans le fichier, jamais devinées — même leçon que les
+    /// registres fixes, et elle a coûté 144 cas la première fois.
+    windows: Vec<(u64, Vec<u8>)>,
+}
+
+/// La mémoire que ces fenêtres décrivent : une étendue contiguë qui les couvre
+/// toutes, le creux entre elles à zéro. L'invité n'y touche pas — mais s'il le
+/// faisait, mieux vaut un zéro franc qu'un octet d'une autre fenêtre.
+fn span(windows: &[(u64, Vec<u8>)]) -> GuestMemory {
+    let base = windows.iter().map(|(at, _)| *at).min().unwrap_or(0);
+    let end = windows
+        .iter()
+        .map(|(at, bytes)| at + bytes.len() as u64)
+        .max()
+        .unwrap_or(0);
+    let mut memory = GuestMemory {
+        base,
+        bytes: vec![0; (end - base) as usize],
+    };
+    for (at, pristine) in windows {
+        let start = (at - base) as usize;
+        memory.bytes[start..start + pristine.len()].copy_from_slice(pristine);
+    }
+    memory
 }
 
 fn read_oracle() -> Oracle {
@@ -96,8 +126,7 @@ fn read_oracle() -> Oracle {
     // parti d'ailleurs.
     let mut fixed = [0u64; 16];
     let mut seeded = 0usize;
-    let mut window = 0u64;
-    let mut pristine: Vec<u8> = Vec::new();
+    let mut windows: Vec<(u64, Vec<u8>)> = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -115,10 +144,7 @@ fn read_oracle() -> Oracle {
                     },
                 );
             }
-            "fenêtre" => {
-                window = hex(field[1]);
-                pristine = bytes(field[2]);
-            }
+            "fenêtre" => windows.push((hex(field[1]), bytes(field[2]))),
             "instr" => {
                 instructions.insert(
                     field[1].to_string(),
@@ -145,6 +171,11 @@ fn read_oracle() -> Oracle {
                     Some(&"-") | None => None,
                     Some(text) => Some(bytes(text)),
                 },
+                stack: match field.get(8) {
+                    Some(&"-") | None => None,
+                    Some(text) => Some(bytes(text)),
+                },
+                pointers: (hex(field[9]), hex(field[10]), hex(field[11])),
             }),
             _ => {}
         }
@@ -157,17 +188,17 @@ fn read_oracle() -> Oracle {
         seeded, 13,
         "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
     );
-    assert!(
-        !pristine.is_empty(),
-        "l'oracle doit déclarer la fenêtre de données et son motif"
+    assert_eq!(
+        windows.len(),
+        2,
+        "l'oracle doit déclarer les deux fenêtres — les données et la pile"
     );
     Oracle {
         states,
         instructions,
         cases,
         fixed,
-        window,
-        pristine,
+        windows,
     }
 }
 
@@ -230,6 +261,14 @@ fn decodes_everywhere(bytes: &[u8]) -> bool {
 /// écart : on ne compare pas un état qu'on a interrompu.
 const BUDGET: usize = 10_000;
 
+/// **L'adresse à laquelle le code de l'invité est chargé.** C'est celle que
+/// `oracle.c` donne à son arène — `ARENA + 0x0000` — et elle n'est pas un
+/// détail de mise en page : un `call` empile l'adresse de retour, et cette
+/// adresse dépend de l'endroit où le programme est posé. Faire tourner le
+/// décodeur depuis zéro empilerait `0x0000000d` là où le processeur a empilé
+/// `0x3000000d`, et les registres, eux, seraient tous justes.
+const CODE: u64 = 0x3000_0000;
+
 /// **Chaque cas que ce cœur prétend connaître doit tomber juste.**
 ///
 /// Le test ne demande pas que tout soit couvert — la tranche annonce le groupe
@@ -243,8 +282,7 @@ fn every_accepted_instruction_matches_the_silicon() {
         instructions,
         cases,
         fixed,
-        window,
-        pristine,
+        windows,
     } = read_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<&str> = Vec::new();
@@ -266,10 +304,7 @@ fn every_accepted_instruction_matches_the_silicon() {
 
         let mut cpu = Cpu {
             regs: fixed,
-            memory: GuestMemory {
-                base: window,
-                bytes: pristine.clone(),
-            },
+            memory: span(&windows),
             ..Default::default()
         };
         cpu.regs[0] = state.rax;
@@ -284,13 +319,15 @@ fn every_accepted_instruction_matches_the_silicon() {
         // ignorer les sauts tout en prétendant les exécuter.
         let mut steps = 0usize;
         let mut ran_out = false;
-        while (cpu.rip as usize) < instruction.bytes.len() {
+        cpu.rip = CODE;
+        while (cpu.rip.wrapping_sub(CODE) as usize) < instruction.bytes.len() {
             if steps == BUDGET {
                 ran_out = true;
                 break;
             }
             steps += 1;
-            if cpu.step(&instruction.bytes[cpu.rip as usize..]) == Step::Unknown {
+            let at = cpu.rip.wrapping_sub(CODE) as usize;
+            if cpu.step(&instruction.bytes[at..]) == Step::Unknown {
                 ran_out = true;
                 break;
             }
@@ -309,17 +346,30 @@ fn every_accepted_instruction_matches_the_silicon() {
         // **La fenêtre compte autant que les registres.** Une écriture au
         // mauvais endroit laisse les trois registres justes, et c'est
         // exactement le genre de faute qu'un cœur peut porter longtemps.
-        let expected_memory = case.memory.as_ref().unwrap_or(&pristine);
+        let expected = span(&[
+            (
+                windows[0].0,
+                case.memory.clone().unwrap_or_else(|| windows[0].1.clone()),
+            ),
+            (
+                windows[1].0,
+                case.stack.clone().unwrap_or_else(|| windows[1].1.clone()),
+            ),
+        ]);
+        let expected_memory = &expected.bytes;
+        let pointers = (cpu.regs[4], cpu.regs[5], cpu.regs[6]);
         if cpu.faulted
             || &cpu.memory.bytes != expected_memory
             || got.0 != want.0
             || got.1 != want.1
             || got.2 != want.2
+            || pointers != case.pointers
             || (got.3 & mask) != (want.3 & mask)
         {
             if wrong.len() < 12 {
                 wrong.push(format!(
                     "{} état {} : rax {:x}≠{:x} rcx {:x}≠{:x} rdx {:x}≠{:x} \
+                     rsp {:x}≠{:x} rbp {:x}≠{:x} rsi {:x}≠{:x} \
                      drapeaux {:x}≠{:x} (masque {:x}){}{}",
                     instruction.mnemonic,
                     case.state,
@@ -329,6 +379,12 @@ fn every_accepted_instruction_matches_the_silicon() {
                     want.1,
                     got.2,
                     want.2,
+                    pointers.0,
+                    case.pointers.0,
+                    pointers.1,
+                    case.pointers.1,
+                    pointers.2,
+                    case.pointers.2,
                     got.3 & mask,
                     want.3 & mask,
                     mask,
@@ -370,7 +426,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 9050,
+        checked > 9150,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
@@ -379,8 +435,8 @@ fn every_accepted_instruction_matches_the_silicon() {
     // SIB sans base faisait refuser les deux formes concernées, et le test
     // restait vert. Ce nombre-là ne doit donc jamais monter.
     assert!(
-        refused.len() <= 88,
-        "le décodeur refuse maintenant {} instructions au lieu de 88 : \
+        refused.len() <= 85,
+        "le décodeur refuse maintenant {} instructions au lieu de 85 : \
          quelque chose qu'il savait lire ne se décode plus\n{}",
         refused.len(),
         refused.join("\n")

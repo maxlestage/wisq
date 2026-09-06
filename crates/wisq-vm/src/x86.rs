@@ -371,6 +371,17 @@ pub enum Op {
     /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
     /// à quel bloc elle correspond : il rend la main.
     JumpIndirect,
+    /// `push` : descendre la pile de huit octets, puis y écrire.
+    Push,
+    /// `pop` : lire au sommet, puis remonter la pile.
+    Pop,
+    /// `call` relatif : empiler l'adresse de retour, puis sauter.
+    Call,
+    /// `ret` : dépiler l'adresse de retour et y aller.
+    Return,
+    /// `leave` : défaire le cadre de pile — RSP reprend RBP, puis RBP se
+    /// dépile. Deux instructions en une, et c'est ce qui la rend commode.
+    Leave,
     /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
@@ -780,6 +791,71 @@ impl Cpu {
         }
     }
 
+    /// **La pile, et le seul registre qui la porte.**
+    ///
+    /// Rien ici ne touche aux drapeaux — pas même `call` ni `ret`. Et chaque
+    /// opération écrit **deux** choses : RSP et la mémoire, ou RSP et un
+    /// registre. C'est ce qui les sort de la machinerie à une destination.
+    ///
+    /// L'ordre compte : `push` descend RSP **puis** écrit, et `pop` lit
+    /// **puis** remonte. L'inverser écrirait huit octets au-dessus du sommet,
+    /// là où une interruption a le droit de passer.
+    fn stack(&mut self, instruction: &Decoded) {
+        let after = self.rip.wrapping_add(instruction.length as u64);
+        match instruction.op {
+            Op::Push => {
+                let value = if instruction.immediate {
+                    instruction.imm
+                } else {
+                    // `push %rsp` empile la valeur **d'avant** la descente.
+                    self.regs[instruction.dst as usize]
+                };
+                self.push(value);
+            }
+            Op::Pop => {
+                let Some(value) = self.pop() else { return };
+                self.regs[instruction.dst as usize] = value;
+            }
+            Op::Call => {
+                self.push(after);
+                if self.faulted {
+                    return;
+                }
+                self.rip = after.wrapping_add(instruction.imm);
+                self.jumped = true;
+            }
+            Op::Return => {
+                let Some(value) = self.pop() else { return };
+                self.rip = value;
+                self.jumped = true;
+            }
+            _ => {
+                // `leave` : RSP reprend RBP, puis RBP se dépile.
+                self.regs[4] = self.regs[5];
+                let Some(value) = self.pop() else { return };
+                self.regs[5] = value;
+            }
+        }
+    }
+
+    fn push(&mut self, value: u64) {
+        let top = self.regs[4].wrapping_sub(8);
+        if self.memory.write(top, Width::Qword, value).is_none() {
+            self.faulted = true;
+            return;
+        }
+        self.regs[4] = top;
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        let Some(value) = self.memory.read(self.regs[4], Width::Qword) else {
+            self.faulted = true;
+            return None;
+        };
+        self.regs[4] = self.regs[4].wrapping_add(8);
+        Some(value)
+    }
+
     /// **Un bit, lu dans la retenue et parfois changé.**
     ///
     /// Le numéro est réduit modulo la largeur — et c'est vrai **parce que
@@ -925,6 +1001,13 @@ impl Cpu {
         // par `loop`, qui décrémente RCX sans rien poser, ce qui le distingue
         // d'un `dec` suivi d'un `jnz`.
         if instruction.op == Op::Nop {
+            return;
+        }
+        if matches!(
+            instruction.op,
+            Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave
+        ) {
+            self.stack(instruction);
             return;
         }
 
@@ -1082,6 +1165,9 @@ impl Cpu {
                 unreachable!("les sauts sortent avant")
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
+            Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
+                unreachable!("la pile sort avant")
+            }
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -1569,6 +1655,58 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 memory_is_source: to_register,
             })
         }
+        // **La pile.** En mode long, `push` et `pop` d'un registre font
+        // toujours huit octets : il n'y a pas de forme de quatre, et le
+        // préfixe 0x66 en ferait deux — que le corpus n'exerce pas et que le
+        // décodeur refuse donc.
+        0x50..=0x57 if !prefixes.operand_size => Some(Decoded {
+            op: Op::Push,
+            dst: (opcode & 0b111) | prefixes.rm_extension(),
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        0x58..=0x5f if !prefixes.operand_size => Some(Decoded {
+            op: Op::Pop,
+            dst: (opcode & 0b111) | prefixes.rm_extension(),
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // `push` d'un immédiat, étendu en signe sur huit octets.
+        0x68 | 0x6a => {
+            let value = if opcode == 0x6a {
+                let byte = *bytes.get(at)?;
+                at += 1;
+                i64::from(byte as i8)
+            } else {
+                i64::from(read_i32(bytes, &mut at)?)
+            };
+            Some(Decoded {
+                op: Op::Push,
+                imm: value as u64,
+                immediate: true,
+                length: at,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
+        0xe8 => {
+            let displacement = i64::from(read_i32(bytes, &mut at)?);
+            Some(Decoded {
+                op: Op::Call,
+                imm: displacement as u64,
+                length: at,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
+        0xc3 => Some(Decoded {
+            op: Op::Return,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        0xc9 => Some(Decoded {
+            op: Op::Leave,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
         // `nop`, la forme courte. Avec un bit B de REX ce n'est plus un `nop`
         // mais `xchg %r8, %rax` — le même octet, deux instructions, et les
         // confondre échangerait deux registres au lieu de ne rien faire.
