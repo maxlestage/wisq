@@ -77,9 +77,19 @@ VALUES = [
     0xF0F0F0F0F0F0F0F0,
 ]
 
-# Les drapeaux d'entrée : rien, puis la retenue seule — ADC, SBB, RCL et RCR en
-# dépendent, et un cœur qui l'ignorerait passerait tous les autres cas.
-IN_FLAGS = [0x002, 0x003]
+# Les drapeaux d'entrée. Les deux premiers : rien, puis la retenue seule — ADC,
+# SBB, RCL et RCR en dépendent, et un cœur qui l'ignorerait passerait tous les
+# autres cas.
+#
+# **Les deux suivants existent parce que les deux premiers ne pouvaient pas
+# juger une préservation.** PF, AF, ZF et SF valaient zéro à l'entrée de chaque
+# cas du corpus. Or `not`, `mov`, `movzx`, `movsx` et les rotations déclarent
+# les préserver, et un décalage de compte nul aussi : un cœur qui les remettait
+# tous à zéro rendait exactement la même chose qu'un cœur qui les gardait. Un
+# sabotage l'a montré — écraser les quatre ne faisait tomber aucun cas.
+# Maintenant ils entrent à un, avec et sans retenue, et la préservation se
+# vérifie comme le reste : contre le silicium.
+IN_FLAGS = [0x002, 0x003, 0x8D6, 0x8D7]
 
 # Les six drapeaux de l'arithmétique : CF, PF, AF, ZF, SF, OF.
 CF, PF, AF, ZF, SF, OF = 0x001, 0x004, 0x010, 0x040, 0x080, 0x800
@@ -110,9 +120,13 @@ def defined_flags(text):
     # reste sont prouvés — ce qui est tout ce qui compte.
     if root in ("div", "idiv"):
         return 0
-    # Les bits : seule la retenue, qui porte le bit lu.
+    # Les bits : la retenue porte le bit lu, et le **zéro n'est pas touché**.
+    # Le manuel le dit explicitement, contrairement aux quatre autres qu'il
+    # laisse indéfinis — et depuis que les états d'entrée portent ZF à un, cette
+    # préservation-là se vérifie. Elle ne se vérifiait pas avant, et un sabotage
+    # qui écrasait les cinq autres drapeaux ne faisait donc tomber aucun cas.
     if root in ("bt", "bts", "btr", "btc"):
-        return CF
+        return CF | ZF
     # ET, OU, OU exclusif : la retenue auxiliaire est indéfinie.
     if root in ("and", "or", "xor", "test"):
         return ARITHMETIC_FLAGS & ~AF
@@ -129,6 +143,61 @@ def defined_flags(text):
         kept = ARITHMETIC_FLAGS
         return kept if (" $1," in text or "," not in text) else kept & ~OF
     return ARITHMETIC_FLAGS
+
+
+# Les instructions qui ne touchent à **aucun** drapeau arithmétique. Elles ne
+# comptent donc pas pour dire ce qu'un programme définit en sortie.
+NO_FLAGS = (
+    "mov", "movb", "movw", "movl", "movq",
+    "movzbl", "movzbq", "movzwq", "movswq", "movslq", "movsbl", "movsbq",
+    "lea", "leab", "leaw", "leal", "leaq",
+    "push", "pushq", "pop", "popq", "leave", "nop",
+    "jmp", "call", "ret", "loop",
+    "je", "jne", "jz", "jnz", "jg", "jge", "jl", "jle", "ja", "jae", "jb",
+    "jbe", "js", "jns", "jo", "jno", "jp", "jnp",
+    # `setcc` et `cmovcc` **lisent** les drapeaux et n'en écrivent aucun. Le
+    # dire ici évite de reprocher plus tard à un cœur les drapeaux d'une
+    # instruction qui n'y touche pas : le programme « un tableau de bits »
+    # finit sur `setc`, et ce qu'il définit vient du `btq` d'avant, où seule la
+    # retenue est définie.
+    "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl",
+    "setle", "setne", "setno", "setnp", "setns", "seto", "setp", "sets",
+    "setc", "setnc", "setz", "setnz",
+    "cmova", "cmovae", "cmovb", "cmovbe", "cmove", "cmovg", "cmovge",
+    "cmovl", "cmovle", "cmovne", "cmovno", "cmovnp", "cmovns", "cmovo",
+    "cmovp", "cmovs",
+    "cmovaq", "cmovaeq", "cmovbq", "cmovbeq", "cmoveq", "cmovgq", "cmovgeq",
+    "cmovlq", "cmovleq", "cmovneq", "cmovnoq", "cmovnpq", "cmovnsq",
+    "cmovoq", "cmovpq", "cmovsq",
+    "bswap", "bswapl", "bswapq", "xchg", "xchgl", "xchgq",
+)
+
+
+def program_defined_flags(lines):
+    """Ce qu'un **programme** définit en sortie : ce que définit sa dernière
+    instruction à drapeaux.
+
+    Sans ça le masque tombait dans le cas par défaut — « les six » — parce que
+    le premier mot d'un nom français n'est aucun mnémonique connu. Le programme
+    « une adresse à échelle » finit sur un `andq`, qui laisse la demi-retenue
+    **indéfinie** : le corpus la comparait quand même, et le premier cœur à
+    savoir décoder ces instructions se faisait reprocher un bit que le manuel
+    n'accorde à personne. Ça ne s'était pas vu parce que tous les programmes
+    étaient refusés, faute d'opérande mémoire."""
+    for line in reversed(lines):
+        text = line.strip()
+        # Une étiquette locale colle à l'instruction : « 1: incq %rdx ».
+        if ":" in text.split(" ")[0]:
+            text = text.split(":", 1)[1].strip()
+        if not text or text.startswith("."):
+            continue
+        if text.split()[0] in NO_FLAGS:
+            continue
+        return defined_flags(text)
+    # Aucune instruction à drapeaux : ils traversent le programme intacts, et
+    # les six se comparent donc légitimement.
+    return ARITHMETIC_FLAGS
+
 
 # Les instructions à l'essai. Deux registres suffisent à couvrir la sémantique :
 # l'identité du registre ne change rien à ce que l'opération calcule, et les
@@ -214,8 +283,43 @@ def snippets():
 
     yield "xchgq %rcx, %rax"
     yield "xchgl %ecx, %eax"
+    # **`lea` est le banc d'essai du calcul d'adresse**, et le seul possible
+    # sans mémoire : elle rend l'adresse au lieu d'y toucher. Deux formes n'en
+    # éprouvaient qu'une fraction — un déplacement positif d'un octet et une
+    # échelle de quatre. Les suivantes couvrent le reste du codage : les quatre
+    # échelles, un déplacement négatif, un déplacement de quatre octets, le SIB
+    # sans base, un index qui demande REX.X, et une destination de 32 bits qui
+    # doit effacer la moitié haute.
     yield "leaq 8(%rcx), %rax"
     yield "leaq (%rcx,%rdx,4), %rax"
+    yield "leaq -8(%rcx), %rax"
+    yield "leaq -1(%rdx), %rax"
+    yield "leaq 0x12345678(%rcx), %rax"
+    yield "leaq -0x12345678(%rdx), %rax"
+    yield "leaq (%rcx,%rdx,1), %rax"
+    yield "leaq (%rcx,%rdx,2), %rax"
+    yield "leaq (%rcx,%rdx,8), %rax"
+    yield "leaq 16(%rcx,%rdx,8), %rax"
+    yield "leaq -16(%rdx,%rcx,2), %rax"
+    # Pas de base : le SIB le dit par « base 101 » avec mod nul, et un
+    # déplacement de quatre octets suit obligatoirement.
+    yield "leaq (,%rcx,8), %rax"
+    yield "leaq 32(,%rdx,4), %rax"
+    # Un index au-delà du huitième registre : c'est REX.X qui le dit, et c'est
+    # le même champ qui, à quatre et sans REX.X, veut dire « aucun index ».
+    yield "leaq (%rcx,%r12,8), %rax"
+    yield "leaq (%r13,%rdx,2), %rax"
+    # Une base qui est justement le registre dont le numéro annonce un SIB.
+    yield "leaq 8(%rsp), %rax"
+    yield "leaq 8(%rbp), %rax"
+    # Destination de 32 bits : l'adresse est calculée sur soixante-quatre bits
+    # puis **tronquée**, et l'écriture efface la moitié haute.
+    yield "leal 8(%rcx), %eax"
+    yield "leal (%rcx,%rdx,4), %eax"
+    # Et la largeur de mot, qui n'est pas une curiosité : c'est la seule où
+    # l'écriture **fusionne** au lieu d'effacer, et un sabotage a montré que
+    # rien ne la tenait.
+    yield "leaw 8(%rcx), %ax"
 
     # L'extension du signe dans DX, qui ne ressemble à rien d'autre.
     yield "cwtl"
@@ -230,6 +334,19 @@ def snippets():
     for condition in conditions:
         yield f"set{condition} %al"
         yield f"cmov{condition}q %rcx, %rax"
+
+    # **Les largeurs de `cmov`, et la règle qui ne se voit qu'à trente-deux.**
+    #
+    # En soixante-quatre bits, « ne pas écrire » et « réécrire l'ancienne
+    # valeur » rendent la même chose : rien ne les distingue, et un sabotage
+    # l'a montré — un cœur qui sortait sans écrire passait tous les cas. En
+    # trente-deux bits, l'écriture a lieu **même quand le déplacement n'a pas
+    # lieu**, et elle efface la moitié haute ; en seize, elle a lieu aussi et
+    # ne l'efface pas. Deux conditions suffisent, à condition d'en prendre une
+    # qui tient et une qui ne tient pas dans les mêmes états.
+    for condition in ["e", "ne"]:
+        yield f"cmov{condition}l %ecx, %eax"
+        yield f"cmov{condition}w %cx, %ax"
 
     # Bits : lus, posés, effacés, inversés, et cherchés.
     for op in ["bt", "bts", "btr", "btc"]:
@@ -267,6 +384,54 @@ def snippets():
         for destination in ["eax", "ecx", "edx"]:
             yield f"movzbl %{source}, %{destination}"
             yield f"movsbl %{source}, %{destination}"
+
+    # **La mémoire, une instruction à la fois.** RSI pointe la fenêtre de
+    # soixante-quatre octets, dont le motif — 0x10, 0x11, 0x12… — est
+    # reconnaissable : une lecture au mauvais décalage se voit à l'œil nu.
+    # Tous les déplacements restent dans la fenêtre, largeur comprise.
+    #
+    # Jusqu'ici le décodeur refusait **tout** opérande mémoire, et le corpus ne
+    # le lui reprochait pas : aucune instruction isolée n'en portait. Les
+    # quinze programmes en portent, mais ils demandent aussi des sauts, donc
+    # leur refus avait une autre cause et couvrait celle-ci.
+    for suffix, source, destination in [
+            ("b", "%al", "%al"), ("w", "%ax", "%ax"),
+            ("l", "%eax", "%eax"), ("q", "%rax", "%rax")]:
+        yield f"mov{suffix} (%rsi), {destination}"
+        yield f"mov{suffix} {source}, (%rsi)"
+        yield f"mov{suffix} 8(%rsi), {destination}"
+        yield f"mov{suffix} {source}, 8(%rsi)"
+        # Lire et écrire au même endroit, avec les drapeaux au passage.
+        yield f"add{suffix} (%rsi), {destination}"
+        yield f"add{suffix} {source}, (%rsi)"
+        yield f"sub{suffix} 4(%rsi), {destination}"
+        yield f"xor{suffix} {source}, 4(%rsi)"
+        yield f"cmp{suffix} (%rsi), {destination}"
+    # Un opérande mémoire **seul** : le groupe 3 et les incréments.
+    yield "notq (%rsi)"
+    yield "negl 8(%rsi)"
+    yield "incb 3(%rsi)"
+    yield "decw 6(%rsi)"
+    # Un immédiat vers la mémoire, les deux formes du groupe 1.
+    yield "addq $1, (%rsi)"
+    yield "andl $0x12345678, 8(%rsi)"
+    yield "orb $0x42, 2(%rsi)"
+    yield "testq $0x12345678, (%rsi)"
+    # Un décalage et une rotation dont la destination est en mémoire.
+    yield "shlq $3, (%rsi)"
+    yield "sarl %cl, 8(%rsi)"
+    yield "rolw $7, 4(%rsi)"
+    # Une extension depuis la mémoire : deux largeurs, dont une seule est lue.
+    yield "movzbl (%rsi), %eax"
+    yield "movsbl 1(%rsi), %eax"
+    yield "movzwq 2(%rsi), %rax"
+    yield "movslq 8(%rsi), %rax"
+    # Pas d'index à échelle ici : RCX et RDX prennent des valeurs qui sortent
+    # de la fenêtre, et le corpus ne juge pas ce qu'il fait planter. Une base
+    # et un déplacement suffisent à éprouver le chemin d'accès ; l'échelle est
+    # déjà tenue par `lea`, qui la calcule sans y toucher.
+    yield "movq 16(%rsi), %rax"
+    yield "movq %rax, 16(%rsi)"
 
     # Les drapeaux eux-mêmes.
     yield "clc"
@@ -402,8 +567,17 @@ def assemble(texts):
             for text in texts:
                 out.write(f"    {text}\n")
         subprocess.run(["as", "--64", "-o", str(obj), str(source)], check=True)
+        # **`--insn-width` n'est pas du confort d'affichage.** Sans lui objdump
+        # renvoie à la ligne au-delà de sept octets, et la continuation ne
+        # porte pas de mnémonique : la regex ci-dessous ne la voit pas, et
+        # l'instruction est **tronquée en silence**. Le compte d'instructions
+        # reste juste, donc rien ne le signale. `leaq (,%rcx,8), %rax` fait
+        # huit octets et arrivait sur sept — un ModRM suivi de trois octets de
+        # déplacement au lieu de quatre, que le processeur a exécuté comme il
+        # a pu, jusqu'à la faute de segmentation.
         listing = subprocess.run(
-            ["objdump", "-d", str(obj)], capture_output=True, text=True, check=True).stdout
+            ["objdump", "-d", "--insn-width=16", str(obj)],
+            capture_output=True, text=True, check=True).stdout
 
     line = re.compile(r"^\s*[0-9a-f]+:\t([0-9a-f]{2}(?: [0-9a-f]{2})*) *\t(.*)$")
     encoded = []
@@ -413,7 +587,25 @@ def assemble(texts):
             encoded.append("".join(match.group(1).split()))
     if len(encoded) != len(texts):
         raise SystemExit(f"{len(texts)} instructions demandées, {len(encoded)} relues")
+    # Et la garde qui manquait : la somme des longueurs doit faire la taille de
+    # la section. Une instruction tronquée passe le compte mais pas celle-ci.
+    total = sum(len(item) // 2 for item in encoded)
+    size = obj_size(listing)
+    if size is not None and total != size:
+        raise SystemExit(
+            f"{total} octets relus pour une section de {size} : une "
+            f"instruction a été tronquée à la relecture")
     return encoded
+
+
+def obj_size(listing):
+    """La fin de la dernière instruction, lue dans le désassemblage."""
+    last = None
+    for row in listing.splitlines():
+        match = re.match(r"^\s*([0-9a-f]+):\t([0-9a-f]{2}(?: [0-9a-f]{2})*)", row)
+        if match:
+            last = int(match.group(1), 16) + len(match.group(2).split())
+    return last
 
 
 def assemble_program(lines):
@@ -490,9 +682,11 @@ def main():
     encoded = encoded + divisionEncoded
 
     # Les programmes : mêmes états que le reste, mais plusieurs instructions.
+    program_masks = {}
     for name, lines in PROGRAMS:
         hexadecimal = assemble_program(lines)
         instruction = len(texts)
+        program_masks[name] = program_defined_flags(lines)
         texts.append(name)
         encoded.append(hexadecimal)
         for index, state in enumerate(chosen[:24]):
@@ -514,15 +708,44 @@ def main():
         out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>\n")
         out.write("#   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;\n")
         out.write("#   la pile de l'invité descend depuis 0x30003000\n")
+        out.write("# fixe\t<registre>\t<valeur>\t<nom>  — ce que le silicium avait dans les\n")
+        out.write("#   treize registres que « état » ne porte pas. Le fichier n'en gardait que\n")
+        out.write("#   trois parce qu'aucune instruction relevée n'en écrivait d'autres ; ça ne\n")
+        out.write("#   dit rien de ce qu'elles **lisent**, et `movzbl %bh, %eax` lit RBX. Un\n")
+        out.write("#   harnais qui part de zéro compare alors son résultat à celui d'un\n")
+        out.write("#   processeur qui, lui, partait d'ici.\n")
+        out.write("# fenêtre\t<adresse>\t<motif>  — la fenêtre de données, et le motif\n")
+        out.write("#   dont elle part à chaque cas. RSI pointe dessus. Même leçon que\n")
+        out.write("#   « fixe » : un harnais qui devine ce motif au lieu de le lire compare\n")
+        out.write("#   son résultat à celui d'un processeur parti d'ailleurs.\n")
+        # **Les registres que « état » ne porte pas.** La vérification plus bas
+        # prouve qu'ils ne *bougent* pas ; elle ne dit rien de leur valeur de
+        # départ, et une instruction qui les lit a besoin de celle-là.
+        # RSP ne vient pas de `states()` : c'est `oracle.c` qui le pose sur la
+        # pile de l'invité, juste avant de lancer le code.
+        start = list(next(states()))
+        start[4] = STACK
+        for register in range(3, 16):
+            out.write("fixe\t%d\t%x\t%s\n"
+                      % (register, start[register], REGISTERS[register]))
+        out.write("fenêtre\t%x\t%s\n" % (DATA, PRISTINE))
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))
         for index, (hexadecimal, text) in enumerate(zip(encoded, texts)):
-            out.write("instr\t%d\t%s\t%x\t%s\n"
-                      % (index, hexadecimal, defined_flags(text), text))
+            mask = program_masks.get(text)
+            if mask is None:
+                mask = defined_flags(text)
+            out.write("instr\t%d\t%s\t%x\t%s\n" % (index, hexadecimal, mask, text))
         for (instruction, _, index, state), verdict in zip(cases, answer):
             fields = verdict.split("\t")
-            after = [int(value, 16) for value in fields[18:]]
+            # **Dix-sept colonnes, pas « tout le reste ».** Après l'état de
+            # sortie viennent les deux fenêtres de mémoire et l'image x87, qui
+            # ne sont pas des nombres hexadécimaux simples. Les avaler avec le
+            # reste faisait échouer le script contre son propre binaire —
+            # « invalid literal for int() » sur une liste séparée par des
+            # virgules — et le corpus n'était plus régénérable du tout.
+            after = [int(value, 16) for value in fields[18:35]]
             # Ce qui n'était pas censé bouger n'a pas bougé : la vérification
             # qui autorise à ne garder que trois registres dans le fichier.
             # RBP et RSP sont exclus : les programmes qui posent un cadre de

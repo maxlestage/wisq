@@ -12,6 +12,9 @@ public struct MachineListView: View {
     let onImportFromAgent: () -> Void
     let onOpenConnectionFile: () -> Void
     let onLocalVMs: () -> Void
+    /// Ouvre la mesure qui décide du bureau local. Elle n'a pas sa place dans
+    /// un réglage : c'est une question ouverte, pas une préférence.
+    let onBench: () -> Void
 
     @State private var search = ""
     @State private var power: PowerFlow?
@@ -106,6 +109,10 @@ public struct MachineListView: View {
                     }
                     Button(action: onLocalVMs) {
                         Label("Linux local (sur ce téléphone)", systemImage: "terminal")
+                    }
+                    Button(action: onBench) {
+                        Label("Le bureau est-il possible ?",
+                              systemImage: "gauge.with.dots.needle.67percent")
                     }
                 } label: {
                     Label("Ajouter", systemImage: "plus")
