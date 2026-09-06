@@ -736,6 +736,16 @@ PROGRAMS = [
     ("un tableau de bits, avec un numéro négatif", [
         "andl $0xff, %ecx", "subl $128, %ecx", "movslq %ecx, %rcx",
         "leaq 32(%rsi), %rax", "btsq %rcx, (%rax)", "btq %rcx, (%rax)", "setc %dl"]),
+    # **Le même groupe, mais avec un numéro immédiat.** Ce n'est PAS une chaîne
+    # de bits : le manuel borne l'immédiat à la largeur, donc l'opérande est
+    # celui que l'adresse nomme, et rien ne va chercher un autre mot. Un cœur
+    # qui traiterait les deux formes pareil irait lire ailleurs — un sabotage
+    # l'a montré, et rien ne le voyait.
+    ("un bit en mémoire, désigné par un immédiat", [
+        "btsq $7, (%rsi)", "btrq $40, 8(%rsi)", "btcq $63, (%rsi)",
+        "btq $7, (%rsi)", "setc %dl"]),
+    ("un bit en mémoire, en trente-deux bits, par un immédiat", [
+        "btsl $3, (%rsi)", "btcl $31, 4(%rsi)", "btl $3, (%rsi)", "setc %al"]),
     ("un tableau de bits en trente-deux bits", [
         "andl $0xff, %ecx", "btsl %ecx, (%rsi)", "btcl %ecx, 4(%rsi)",
         "btl %ecx, (%rsi)", "setc %dl"]),

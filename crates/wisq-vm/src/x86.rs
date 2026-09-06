@@ -1350,10 +1350,23 @@ impl Cpu {
 
     /// **Un bit, lu dans la retenue et parfois changé.**
     ///
-    /// Le numéro est réduit modulo la largeur — et c'est vrai **parce que
-    /// l'opérande est un registre**. En mémoire ce serait faux : le numéro y
-    /// est signé et désigne un bit qui peut être très loin. Le décodeur refuse
-    /// cette forme-là plutôt que de la traiter comme celle-ci.
+    /// Trois formes, et la troisième n'est pas une variante des deux autres :
+    ///
+    /// 1. **Destination registre.** Le numéro est réduit modulo la largeur.
+    /// 2. **Destination mémoire, numéro immédiat.** Le numéro tient déjà dans
+    ///    la largeur — le manuel le borne à 0..31 ou 0..63 — donc l'opérande
+    ///    est celui que l'adresse nomme.
+    /// 3. **Destination mémoire, numéro dans un registre : la chaîne de
+    ///    bits.** Le numéro est **signé** et n'est pas replié. Le processeur
+    ///    va chercher le mot qui contient ce bit-là, aussi loin soit-il, en
+    ///    avant comme en arrière.
+    ///
+    /// La troisième forme n'est pas une curiosité de manuel : le noyau de
+    /// Linux tient ses vecteurs d'interruption réservés dans un tableau de
+    /// 256 bits qu'il lit comme ça. Un cœur qui replie tous les numéros dans
+    /// le premier mot lui fait croire que l'horloge est déjà prise — ce défaut
+    /// a coûté un démarrage entier, du côté Swift, et le commentaire y est
+    /// encore.
     ///
     /// Seule la retenue est définie ; les cinq autres drapeaux ne sont pas
     /// touchés, ce que le masque du corpus ne compare pas mais qui est ce que
@@ -1361,12 +1374,48 @@ impl Cpu {
     fn bit(&mut self, instruction: &Decoded, action: BitAction) {
         let width = instruction.width;
         let bits = width.bits();
-        let number = if instruction.immediate {
-            instruction.imm
-        } else {
-            self.regs[instruction.src as usize]
-        } % bits;
-        let value = self.get(instruction.dst, width, false);
+        // **Le mot visé, quand ce n'est pas celui que l'adresse nomme.**
+        // La division est arrondie **vers le bas** et non vers zéro : un numéro
+        // négatif doit descendre d'un mot, pas remonter au mot zéro.
+        // `div_euclid` et `rem_euclid` le disent exactement, et le reste rendu
+        // est positif — ce qui est bien le rang du bit dans son mot.
+        let (place, number) = match instruction.memory {
+            Some(address) if !instruction.immediate => {
+                let raw = self.regs[instruction.src as usize] as i64;
+                let span = bits as i64;
+                let after = self.after(instruction);
+                let start = self.effective_address(&address, after);
+                let word = raw.div_euclid(span).wrapping_mul(width as i64);
+                (
+                    Some(start.wrapping_add(word as u64)),
+                    raw.rem_euclid(span) as u64,
+                )
+            }
+            _ => {
+                let raw = if instruction.immediate {
+                    instruction.imm
+                } else {
+                    self.regs[instruction.src as usize]
+                };
+                (None, raw % bits)
+            }
+        };
+        let value = match place {
+            Some(at) => match self.memory.read(at, width) {
+                Some(value) => value,
+                None => {
+                    self.faulted = true;
+                    return;
+                }
+            },
+            None => match self.read_destination(instruction) {
+                Some(value) => value,
+                None => {
+                    self.faulted = true;
+                    return;
+                }
+            },
+        };
         let carry = (value >> number) & 1;
 
         let mut flags = self.flags.read() & !CF;
@@ -1382,7 +1431,14 @@ impl Cpu {
             BitAction::Reset => value & !mask,
             _ => value ^ mask,
         };
-        self.set(instruction.dst, width, false, changed);
+        match place {
+            Some(at) => {
+                self.faulted |= self.memory.write(at, width, changed).is_none();
+            }
+            None => {
+                self.faulted |= self.write_destination(instruction, changed).is_none();
+            }
+        }
     }
 
     /// **Chercher le premier bit à un, par le bas ou par le haut.**
@@ -1956,9 +2012,6 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 };
                 let width = prefixes.width(false);
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                if field.memory.is_some() {
-                    return None;
-                }
                 Some(Decoded {
                     op: Op::Bit(action),
                     width,
@@ -1972,7 +2025,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_high: false,
                     count_is_cl: false,
                     src_width: width,
-                    memory: None,
+                    memory: field.memory,
                     memory_is_source: false,
                 })
             }
@@ -1981,9 +2034,6 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             0xba => {
                 let width = prefixes.width(false);
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                if field.memory.is_some() {
-                    return None;
-                }
                 let action = match field.reg & 0b111 {
                     4 => BitAction::Test,
                     5 => BitAction::Set,
@@ -2008,7 +2058,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_high: false,
                     count_is_cl: false,
                     src_width: width,
-                    memory: None,
+                    memory: field.memory,
                     memory_is_source: false,
                 })
             }

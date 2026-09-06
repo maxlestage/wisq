@@ -446,17 +446,22 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 12855,
+        checked > 12975,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
     // voit pas une instruction qui passe de « juste » à « refusée » : elle
     // sort du compte au lieu d'y échouer. Un sabotage l'a montré — casser le
     // SIB sans base faisait refuser les deux formes concernées, et le test
-    // restait vert. Ce nombre-là ne doit donc jamais monter.
+    // restait vert.
+    //
+    // **Il n'y en a plus aucune.** Ce cliquet a valu 85, puis 3 — les trois
+    // formes de chaîne de bits — et vaut maintenant zéro : le décodeur lit tout
+    // ce que le corpus matériel contient. C'est la borne la plus dure qu'il
+    // puisse porter, et elle ne peut plus que se relâcher.
     assert!(
-        refused.len() <= 3,
-        "le décodeur refuse maintenant {} instructions au lieu de 3 : \
+        refused.is_empty(),
+        "le décodeur refuse maintenant {} instructions au lieu d'aucune : \
          quelque chose qu'il savait lire ne se décode plus\n{}",
         refused.len(),
         refused.join("\n")
