@@ -1147,3 +1147,61 @@ console.log(JSON.stringify({{
         "après la bascule, les deux cœurs doivent dire la même chose — {text}"
     );
 }
+
+/// **Ce qu'une région coûtera à l'hôte, compté avant de l'exécuter.**
+///
+/// `survey` sert à une mesure qui décide de l'architecture du bureau local :
+/// ce qui reprend après un retour de main doit pouvoir lire la RAM invitée, et
+/// la RAM invitée est la mémoire linéaire du module. Un compte faux ferait
+/// conclure de travers, donc il est tenu instruction par instruction.
+#[test]
+fn a_survey_counts_where_a_region_will_hand_back() {
+    // Quatre calculs et un saut : rien ne rend la main.
+    let plain = Module::survey(&wisq_vm::x86_wasm::BENCH_LOOP, 0).expect("la boucle du banc");
+    assert_eq!(plain.blocks, 1);
+    assert_eq!(plain.instructions, 5);
+    assert_eq!(plain.always, 0, "aucune de ces cinq ne rend la main");
+    assert_eq!(plain.perhaps, 0);
+
+    // `rep movsq` rend la main à chaque fois, et c'est un choix documenté.
+    // `f3 48 a5` = rep movsq ; `c3` = ret.
+    let repeated = Module::survey(&[0xf3, 0x48, 0xa5, 0xc3], 0).expect("rep movsq puis ret");
+    assert_eq!(repeated.always, 1, "le `rep` rend la main à coup sûr");
+    assert_eq!(repeated.repeats, 1, "et c'est un `rep`, pas un `ud2`");
+    assert_eq!(
+        repeated.perhaps, 1,
+        "le `ret` peut rendre la main, pas plus"
+    );
+
+    // `ud2` aussi, mais ce n'est pas un `rep` : une boucle émise n'y changerait
+    // rien, la faute appartient à l'hôte.
+    let faulting = Module::survey(&[0x0f, 0x0b], 0).expect("ud2");
+    assert_eq!(faulting.always, 1);
+    assert_eq!(faulting.repeats, 0, "un `ud2` n'est pas une copie");
+
+    // **Et les blocs se comptent.** Un saut conditionnel en ouvre deux de plus :
+    // la cible et la suite. Sans ce cas, toutes les régions du test tiendraient
+    // en un bloc et le compte pourrait dire n'importe quoi.
+    //   cmpq $1, %rax ; jne +2 ; incq %rax ; ret
+    let branching = Module::survey(
+        &[0x48, 0x83, 0xf8, 0x01, 0x75, 0x03, 0x48, 0xff, 0xc0, 0xc3],
+        0,
+    )
+    .expect("une comparaison, un saut, deux suites");
+    assert!(
+        branching.blocks >= 2,
+        "un saut conditionnel ouvre plus d'un bloc, {} relevé",
+        branching.blocks
+    );
+    assert!(
+        branching.instructions >= 4,
+        "et les quatre instructions sont comptées, {} relevées",
+        branching.instructions
+    );
+
+    // Une copie **sans** `rep` reste dans le module : c'est le préfixe qui
+    // décide, pas l'instruction.
+    let once = Module::survey(&[0x48, 0xa5, 0xc3], 0).expect("movsq puis ret");
+    assert_eq!(once.always, 0, "un `movsq` seul ne rend pas la main");
+    assert_eq!(once.repeats, 0);
+}
