@@ -20,6 +20,11 @@
 // la question porte sur ce que JavaScriptCore sait faire, pas sur ce que le
 // dépôt produit.
 //
+// **Et la seconde moitié de la question**, plus bas dans ce fichier : une région
+// ne connaît pas l'indice, dans la table, d'une adresse qu'elle n'a pas
+// compilée. Il lui faudrait une correspondance adresse → indice lue à
+// l'exécution. Combien coûte-t-elle, et le module sait-il la faire seul ?
+//
 //     bun scripts/wasm-table-probe.ts
 
 const LINKS = 64;
@@ -113,8 +118,122 @@ console.log(
   "et les 192 ns du retour de main ne seraient plus payés qu'aux cibles jamais traduites.",
 );
 console.log(
-  "Ce que ça ne dit pas : comment une région retrouve l'indice d'une adresse qu'elle",
+  "Reste la question de l'indice : une région ne connaît pas celui d'une adresse qu'elle",
+);
+console.log("n'a pas compilée. C'est la seconde moitié, mesurée juste en dessous.");
+
+// ---------------------------------------------------------------------------
+// **La seconde moitié : retrouver l'indice d'une adresse.**
+//
+// `call_indirect` demande un indice, et une région ne connaît pas celui d'une
+// adresse qu'elle n'a pas compilée. Il faut donc une correspondance
+// adresse → indice que le module lit lui-même, dans la mémoire invitée, sans
+// repasser par l'hôte — sinon on retombe sur les 192 ns qu'on cherche à éviter.
+//
+// Le module de sonde fait le cas le plus simple : une table à correspondance
+// directe, sans sondage.
+//
+//     place = tronqué(((adresse × K) & (EMPLACEMENTS-1)) × 16)
+//     mem[place] == adresse ? mem[place+8] : -1
+//
+// **Vérifiée avant d'être chronométrée**, et ce n'est pas une formalité : la
+// première version de cette sonde rendait zéro pour tout, et son chiffre — 5,6
+// ns — ne mesurait qu'une recherche qui ne cherchait rien.
+
+const SLOTS = 8192n;
+const KNUTH = 0x9e3779b1n;
+const PAGES = 32;
+
+function signed(value: bigint): number[] {
+  const out: number[] = [];
+  let more = true;
+  while (more) {
+    let byte = Number(value & 0x7fn);
+    value >>= 7n;
+    if ((value === 0n && (byte & 0x40) === 0) || (value === -1n && (byte & 0x40) !== 0)) {
+      more = false;
+    } else {
+      byte |= 0x80;
+    }
+    out.push(byte);
+  }
+  return out;
+}
+
+const lookup = Uint8Array.from([
+  ...HEADER,
+  ...section(1, vector([[0x60, 0x01, 0x7e, 0x01, 0x7f]])),
+  ...section(2, vector([[...name("env"), ...name("mem"), 0x02, 0x00, ...uleb(PAGES)]])),
+  ...section(3, vector([[0x00]])),
+  ...section(7, vector([[...name("run"), 0x00, 0x00]])),
+  ...section(10, vector([codeEntry([
+    0x01, 0x01, 0x7f,                          // une locale i32 : l'emplacement
+    0x20, 0x00, 0x42, ...signed(KNUTH), 0x7e,  // adresse × K
+    0x42, ...signed(SLOTS - 1n), 0x83,         // & (EMPLACEMENTS-1)
+    0x42, 0x10, 0x7e,                          // × 16
+    0xa7, 0x21, 0x01,                          // tronqué → place
+    0x20, 0x01, 0x29, 0x03, 0x08,              // la valeur, mem[place+8]
+    0x42, 0x7f,                                // -1
+    0x20, 0x01, 0x29, 0x03, 0x00,              // la clé, mem[place]
+    0x20, 0x00, 0x51,                          // clé == adresse ?
+    0x1b,                                      // select
+    0xa7, 0x0b,
+  ])])),
+]);
+
+const memory = new WebAssembly.Memory({ initial: PAGES });
+const find = new WebAssembly.Instance(new WebAssembly.Module(lookup), { env: { mem: memory } })
+  .exports.run as (address: bigint) => number;
+
+const cells = new BigUint64Array(memory.buffer);
+const GUEST = 0x30000000n;
+const placed: bigint[] = [];
+const taken = new Set<number>();
+for (let step = 0; placed.length < 4096 && step < 4096 * 4; step++) {
+  const address = GUEST + BigInt(step) * 16n;
+  const at = Number(((address * KNUTH) & (SLOTS - 1n)) * 16n);
+  if (taken.has(at)) continue; // pas de sondage : on ne garde que les libres
+  taken.add(at);
+  cells[at / 8] = address;
+  cells[at / 8 + 1] = BigInt(placed.length);
+  placed.push(address);
+}
+let missed = 0;
+for (let index = 0; index < placed.length; index++) {
+  if (find(placed[index]) !== index) missed++;
+}
+const absent = find(GUEST + 7n);
+console.log();
+console.log(`${placed.length} adresses posées, ${missed} mal retrouvées, une absente rend ${absent}`);
+if (missed !== 0 || absent !== -1) {
+  console.log("La sonde est fausse : rien à chronométrer, et surtout rien à conclure.");
+  process.exit(1);
+}
+const found = measure("adresse → indice, lue par le module", rounds => {
+  let sum = 0, at = 0;
+  for (let round = 0; round < rounds; round++) {
+    sum += find(placed[at]);
+    at = at + 1 < placed.length ? at + 1 : 0;
+  }
+  return sum;
+});
+
+console.log();
+console.log(
+  `La recherche coûte ${found.toFixed(1)} ns **vue depuis JavaScript**, dont environ trois pour`,
 );
 console.log(
-  "n'a pas compilée. C'est le vrai travail, et il n'est pas fait.",
+  "l'appel lui-même (la ligne « un seul, en boucle » ci-dessus). Dans la vraie forme elle",
 );
+console.log("vivrait dans le module, sans appel du tout : deux chargements et un produit.");
+console.log();
+console.log(
+  `**Et la sonde a trouvé autre chose** : sur 16384 adresses espacées de seize octets, seules`,
+);
+console.log(
+  `${placed.length} ont trouvé un emplacement libre. Un produit de Knuth garde les bits bas, et les`,
+);
+console.log(
+  "bits bas d'une adresse alignée ne portent rien. La fonction de hachage devra les mélanger",
+);
+console.log("— un décalage avant le produit — sinon la table se remplit d'un côté.");

@@ -2045,12 +2045,34 @@ La sonde mesure **le moteur**, pas wisq : deux modules écrits à la main,
 minuscules, sans rapport avec l'émetteur. C'est voulu — la question portait sur
 ce que JavaScriptCore sait faire.
 
-**Ce qu'elle ne dit pas, et c'est le vrai travail** : comment une région
-retrouve l'indice, dans la table, d'une adresse qu'elle n'a pas compilée.
-Aujourd'hui `resolve` compare l'adresse aux blocs de sa propre région, connus à
-la traduction. Avec une table partagée il faudrait une correspondance
-adresse → indice que le module lit à l'exécution — une petite table de hachage
-dans la mémoire invitée, tenue par l'hôte. Rien de cela n'est écrit.
+**La seconde moitié de la question**, dans la même sonde : `call_indirect`
+demande un *indice*, et une région ne connaît pas celui d'une adresse qu'elle
+n'a pas compilée. Aujourd'hui `resolve` compare l'adresse aux blocs de sa propre
+région, connus à la traduction ; avec une table partagée il faudrait une
+correspondance adresse → indice que le module lit lui-même, sans repasser par
+l'hôte — sinon on retombe sur les 192 ns qu'on cherche à éviter.
+
+Un module de sonde le fait, à correspondance directe et sans sondage :
+**5,2 ns vus depuis JavaScript**, dont environ trois pour l'appel lui-même. Dans
+la vraie forme elle vivrait *dans* le module, sans appel du tout : deux
+chargements et un produit. Rien n'interdit donc la table partagée.
+
+**Vérifiée avant d'être chronométrée, et ce n'est pas une formalité.** La
+première version de cette sonde rendait zéro pour tout : son chiffre — 5,6 ns —
+ne mesurait qu'une recherche qui ne cherchait rien. Elle compte maintenant ce
+qu'elle a posé, vérifie que chaque adresse se retrouve et qu'une absente rend
+bien −1, et refuse de chronométrer sinon.
+
+**Et elle a trouvé autre chose.** Sur 16 384 adresses espacées de seize octets,
+seules **512** ont trouvé un emplacement libre : un produit de Knuth garde les
+bits bas, et les bits bas d'une adresse alignée ne portent rien. La fonction de
+hachage devra les mélanger — un décalage avant le produit — sinon la table se
+remplit d'un côté. Ce n'est pas un détail d'implémentation : c'est le genre de
+choix qui, mal fait, se voit comme une lenteur inexplicable six mois plus tard.
+
+Ce qui reste à écrire : l'émetteur qui importe la table et pose ses blocs
+dedans, `resolve` qui passe par la recherche au lieu de la chaîne de
+comparaisons, et l'hôte qui tient la correspondance. Rien de cela n'est fait.
 
 L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
 ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un
