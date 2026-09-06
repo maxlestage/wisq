@@ -574,6 +574,40 @@ impl Module {
             &mut module,
         );
 
+        // **La mémoire et les registres viennent de l'hôte.**
+        //
+        // Un module qui les définit lui-même est une machine à lui tout seul :
+        // deux régions compilées séparément ne partagent alors rien, et la
+        // seule façon de passer de l'une à l'autre serait de recopier tout
+        // l'état — huit cent mégaoctets de RAM invitée comprise. En les
+        // **important**, l'hôte n'a plus qu'une RAM et qu'un fichier de
+        // registres, et autant de régions qu'il en faut : quand un module rend
+        // la main, la région suivante reprend exactement où il s'est arrêté.
+        //
+        // C'est ce qui rend l'interpréteur utilisable comme filet plutôt que
+        // comme abandon, et c'est l'architecture de l'application.
+        let mut imports = Vec::new();
+        unsigned(1 + GLOBAL_COUNT as u64, &mut imports);
+        let module_name = |bytes: &mut Vec<u8>| {
+            unsigned(3, bytes);
+            bytes.extend_from_slice(b"env");
+        };
+        module_name(&mut imports);
+        unsigned(3, &mut imports);
+        imports.extend_from_slice(b"mem");
+        imports.push(0x02);
+        imports.push(0x00);
+        unsigned(u64::from(GUEST_PAGES), &mut imports);
+        for slot in 0..GLOBAL_COUNT {
+            module_name(&mut imports);
+            let name = format!("g{slot}");
+            unsigned(name.len() as u64, &mut imports);
+            imports.extend_from_slice(name.as_bytes());
+            // Une globale `i64`, **mutable** : le module y écrit.
+            imports.extend_from_slice(&[0x03, 0x7e, 0x01]);
+        }
+        section(2, imports, &mut module);
+
         let mut functions = Vec::new();
         unsigned(count as u64 + 1, &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; la
@@ -587,41 +621,10 @@ impl Module {
         unsigned(count as u64, &mut table);
         section(4, table, &mut module);
 
-        // Mémoire : **la RAM de l'invité**, adresse pour adresse. Elle vient
-        // avant les globales, et pas par goût : les sections d'un module ont
-        // un ordre imposé, et le moteur refuse le module s'il est inversé.
-        // JavaScriptCore ne la réserve pas vraiment — mesuré : vingt mémoires
-        // de 768 Mio en dix millisecondes.
-        let mut memory = vec![0x01, 0x00];
-        unsigned(u64::from(GUEST_PAGES), &mut memory);
-        section(5, memory, &mut module);
-
-        // Globales : le fichier de registres, RFLAGS, le pointeur
-        // d'instruction, les emplacements de travail. Toutes `i64`, toutes
-        // mutables, toutes à zéro — c'est l'hôte qui pose l'état.
-        let mut globals = Vec::new();
-        unsigned(GLOBAL_COUNT as u64, &mut globals);
-        for _ in 0..GLOBAL_COUNT {
-            globals.push(0x7e);
-            globals.push(0x01);
-            globals.push(code::I64_CONST);
-            signed(0, &mut globals);
-            globals.push(code::END);
-        }
-        section(6, globals, &mut module);
-
         let mut exports = Vec::new();
-        unsigned(2 + GLOBAL_COUNT as u64, &mut exports);
+        unsigned(1, &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
         unsigned(count as u64, &mut exports);
-        exports.extend_from_slice(&[0x03, b'm', b'e', b'm', 0x02, 0x00]);
-        for slot in 0..GLOBAL_COUNT {
-            let name = format!("g{slot}");
-            unsigned(name.len() as u64, &mut exports);
-            exports.extend_from_slice(name.as_bytes());
-            exports.push(0x03);
-            unsigned(slot as u64, &mut exports);
-        }
         section(7, exports, &mut module);
 
         // Éléments : la table pointe les blocs dans l'ordre.
