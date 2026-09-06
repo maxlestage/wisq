@@ -10,6 +10,7 @@ public struct RootView: View {
     @State private var connecting: Machine?
     @State private var importingFromAgent = false
     @State private var showingLocalVMs = false
+    @State private var showingBench = false
     @State private var pairingPrefill: AgentPairing.Payload?
     @State private var choosingConnectionFile = false
     @State private var importFailure: String?
@@ -25,7 +26,8 @@ public struct RootView: View {
                 onNew: { editing = MachineDraft() },
                 onImportFromAgent: { importingFromAgent = true },
                 onOpenConnectionFile: { choosingConnectionFile = true },
-                onLocalVMs: { showingLocalVMs = true }
+                onLocalVMs: { showingLocalVMs = true },
+                onBench: { showingBench = true }
             )
         }
         // Every content type, rather than `.vv` and `.rdp` declared as types.
@@ -47,6 +49,9 @@ public struct RootView: View {
             Button("Fermer", role: .cancel) { importFailure = nil }
         } message: {
             Text(importFailure ?? "")
+        }
+        .sheet(isPresented: $showingBench) {
+            NavigationStack { WebKitBenchView() }
         }
         .sheet(isPresented: $showingLocalVMs) {
             NavigationStack {
