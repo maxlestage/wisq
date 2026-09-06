@@ -125,8 +125,8 @@ for (const unit of job.jobs) {
     const rip = BigInt.asUintN(64, slots[job.ripSlot].value);
     out[test.id] = {
       unfinished: rip >= BigInt(base) && rip < BigInt(end),
-      // Quatre valeurs, puis les trois pointeurs : RSP, RBP, RSI.
-      regs: [0, 1, 2, job.flagsSlot, 4, 5, 6]
+      // Quatre valeurs, puis les quatre pointeurs : RSP, RBP, RSI, RDI.
+      regs: [0, 1, 2, job.flagsSlot, 4, 5, 6, 7]
         .map(s => BigInt.asUintN(64, slots[s].value).toString(16)),
       // « - » veut dire « la mémoire est telle qu'elle était », comme dans le
       // corpus. Rendre le motif entier dirait la même chose en cent fois plus.
@@ -153,11 +153,12 @@ struct Case {
     memory: Option<Vec<u8>>,
     /// La fenêtre de pile, à la même enseigne.
     stack: Option<Vec<u8>>,
-    /// **RSP, RBP et RSI** — les trois seuls registres que le corpus autorise
-    /// à bouger, et donc les trois seuls qu'il relève. Sans eux, un `leave`
-    /// qui dépile avant de reprendre RBP passe : RAX, RCX, RDX, les drapeaux
-    /// et les deux fenêtres restent exactement justes.
-    pointers: (u64, u64, u64),
+    /// **RSP, RBP, RSI et RDI** — les quatre seuls registres que le corpus
+    /// autorise à bouger, et donc les quatre seuls qu'il relève. Sans eux, un
+    /// `leave` qui dépile avant de reprendre RBP passe : RAX, RCX, RDX, les
+    /// drapeaux et les deux fenêtres restent exactement justes. RDI est arrivé
+    /// avec les instructions de chaîne, qui l'avancent.
+    pointers: (u64, u64, u64, u64),
 }
 
 struct Oracle {
@@ -270,7 +271,7 @@ fn read_oracle() -> Oracle {
                     Some(&"-") | None => None,
                     Some(text) => Some(bytes(text)),
                 },
-                pointers: (hex(f[9]), hex(f[10]), hex(f[11])),
+                pointers: (hex(f[9]), hex(f[10]), hex(f[11]), hex(f[12])),
             }),
             _ => {}
         }
@@ -366,7 +367,16 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     let mut emitted = 0usize;
     let mut refused = 0usize;
     #[allow(clippy::type_complexity)]
-    type Wanted = (u64, u64, u64, u64, u64, String, Vec<u8>, (u64, u64, u64));
+    type Wanted = (
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        String,
+        Vec<u8>,
+        (u64, u64, u64, u64),
+    );
     let mut expected: HashMap<String, Wanted> = HashMap::new();
 
     for (index, (instruction, cases)) in by_instruction.iter().enumerate() {
@@ -517,7 +527,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
                 wrong.push(format!(
                     "{mnemonic} [{id}] : rax {:x}≠{want_rax:x} rcx {:x}≠{want_rcx:x} \
                      rdx {:x}≠{want_rdx:x} rsp {:x}≠{:x} rbp {:x}≠{:x} rsi {:x}≠{:x} \
-                     drapeaux {:x}≠{:x} (masque {mask:x}){}",
+                     rdi {:x}≠{:x} drapeaux {:x}≠{:x} (masque {mask:x}){}",
                     got.0,
                     got.1,
                     got.2,
@@ -527,6 +537,8 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
                     want_pointers.1,
                     pointers.2,
                     want_pointers.2,
+                    pointers.3,
+                    want_pointers.3,
                     got.3 & mask,
                     want_flags & mask,
                     if &got.4 != want_memory {
@@ -576,7 +588,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
     // qui a déjà servi une fois — un écart entre les deux cœurs.
     assert!(
-        checked + handed_back > 12975,
+        checked + handed_back > 13140,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
@@ -589,7 +601,15 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 /// recherche est devenue quadratique — le test tournait plus de dix minutes
 /// sans rien vérifier de plus.
 #[allow(clippy::type_complexity)]
-type Produced = (u64, u64, u64, u64, (u64, u64, u64), Option<Vec<u8>>, bool);
+type Produced = (
+    u64,
+    u64,
+    u64,
+    u64,
+    (u64, u64, u64, u64),
+    Option<Vec<u8>>,
+    bool,
+);
 
 fn results(text: &str) -> HashMap<String, Produced> {
     let mut out = HashMap::new();
@@ -624,7 +644,7 @@ fn results(text: &str) -> HashMap<String, Produced> {
             "-" => None,
             hexadecimal => Some(bytes(hexadecimal)),
         };
-        if values.len() == 7 {
+        if values.len() == 8 {
             out.insert(
                 id,
                 (
@@ -632,7 +652,7 @@ fn results(text: &str) -> HashMap<String, Produced> {
                     values[1],
                     values[2],
                     values[3],
-                    (values[4], values[5], values[6]),
+                    (values[4], values[5], values[6], values[7]),
                     memory,
                     unfinished,
                 ),

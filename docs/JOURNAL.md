@@ -9570,3 +9570,74 @@ bourrage.
 L'ancienne mesure est gardée à côté de la nouvelle, pas remplacée : toute la
 série l'a citée, et un repère qu'on efface est un repère qu'on ne peut plus
 comparer.
+
+## Les instructions de chaîne : le `memcpy` et le `memset` du noyau
+
+La nouvelle sonde avait désigné une seule famille : `f3 48 …`, 949 des 1 092
+régions encore refusées depuis un vrai point d'entrée. C'est `rep movsq` et
+`rep stosq`.
+
+Quatre choses les distinguent de tout le reste :
+
+1. **Le sens vient du drapeau de direction**, pas de l'instruction. `std` fait
+   reculer les deux pointeurs — c'est ce qui permet à un `memmove` de copier
+   vers l'arrière quand les zones se recouvrent. DF n'est dans aucun des six
+   drapeaux arithmétiques ; `Flags` le gardait déjà dans `other`, avec tout ce
+   que l'arithmétique ne touche pas, donc il survivait sans qu'on l'ait voulu.
+2. **Le pas est la largeur**, pas un octet.
+3. **Avec `rep`, un compte nul ne fait rien du tout** — pas même une itération.
+   Tester après coup copierait un élément de trop, et sur un compte de quatre
+   ça ne se voit pas. Le corpus porte donc un programme dont le compte est nul,
+   exprès.
+4. **Un accès hors de la fenêtre arrête la boucle.** Sans ça, un compte absurde
+   tournerait jusqu'à épuiser RCX.
+
+### Le corpus a dû s'élargir pour pouvoir les juger
+
+**RDI est devenu une colonne.** Il était dans la liste des registres que le
+script vérifie comme n'ayant pas bougé — et `rep stos` l'avance d'autant
+d'octets qu'il écrit. L'y laisser aurait obligé à écarter ces programmes-là,
+c'est-à-dire à ne pas les juger. Relevé plutôt qu'exclu, comme RSP, RBP et RSI
+l'ont été avant lui, chacun le jour où un programme a eu besoin d'y toucher.
+
+**Et le masque des drapeaux mentait sur ces programmes.** `rep stosq` ne touche
+à aucun drapeau, mais le premier mot de son texte est « rep », que
+`defined_flags` ne connaissait pas : le programme retombait sur la règle par
+défaut — les six drapeaux comparés — et se voyait reprocher la retenue
+auxiliaire d'un `and` que le manuel déclare **indéfinie**. Soixante-cinq cas
+rouges pour une règle absente, pas pour un défaut de cœur. `cld`, `std`, `rep`
+et les mnémoniques de chaîne sont maintenant dans la liste des instructions qui
+n'écrivent aucun drapeau arithmétique.
+
+### L'émetteur rend la main sur la forme répétée, et c'est un choix
+
+La forme simple est de la ligne droite, et elle est traduite. La forme répétée
+est une boucle, et WebAssembly sait en écrire une — mais **rendre la main coûte
+une rentrée dans l'hôte par `memcpy`, pas une par octet** : l'interpréteur
+exécute la répétition entière en un seul pas, en Rust natif, et le module
+reprend après. Une boucle émise paierait à chaque octet copié, en globales lues
+et réécrites, contre une seule rentrée. Le jour où une mesure montrera que cette
+rentrée pèse, la boucle s'écrira — et pas avant.
+
+Ce que ça change pour le compte de couverture, et qu'il faut dire : la région
+**compile**, et c'est ce que la mesure relève. Elle ne dit pas que tout y court
+compilé. C'est vrai aussi des appels indirects, qui rendent la main depuis la
+tranche du groupe 5.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 980 | **13 148** |
+| régions depuis les cibles de `call` | 89,2 % | **97,9 %** |
+| régions tous les 512 octets | 74,9 % | **79,6 %** |
+| instructions du noyau décodées | 99,6 % | **99,8 %** |
+
+Trente-huit sabotages, trente-huit attrapés. Le cœur Swift avait déjà les
+chaînes et le drapeau de direction — c'est la deuxième fois d'affilée qu'il est
+en avance, et il n'y a rien à y porter.
+
+**209 régions sur 10 123 restent refusées**, et plus rien n'y domine : `48` × 33,
+`0f 18` (`prefetch`) × 14, `0f 31` (`rdtsc`) × 11, `0f 30` (`wrmsr`) × 10,
+`0f ae` × 9, `0f 01` × 8, puis des unités. La prochaine tranche ne se choisira
+plus par la taille d'un tas.

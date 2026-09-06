@@ -56,12 +56,17 @@ struct Case {
     /// Et la pile. Un `push` à la mauvaise adresse laisse tous les registres
     /// justes ; sans cette colonne, rien ne le verrait.
     stack: Option<Vec<u8>>,
-    /// **RSP, RBP et RSI.** Les trois seuls registres que le corpus autorise à
-    /// bouger — le script vérifie que les treize autres ne bougent pas — et
-    /// donc les trois seuls qu'il doit relever. Un sabotage l'a montré :
+    /// **RSP, RBP, RSI et RDI.** Les quatre seuls registres que le corpus
+    /// autorise à bouger — le script vérifie que les autres ne bougent pas — et
+    /// donc les quatre seuls qu'il doit relever. Un sabotage l'a montré :
     /// `leave` qui dépile **avant** de reprendre RBP laisse RAX, RCX, RDX, les
     /// drapeaux et les deux fenêtres exactement justes, et passait.
-    pointers: (u64, u64, u64),
+    ///
+    /// RDI est le dernier arrivé, avec les instructions de chaîne : `rep stos`
+    /// l'avance d'autant d'octets qu'il en écrit. Il était dans la liste des
+    /// registres qui ne doivent pas bouger ; l'y laisser aurait obligé à
+    /// écarter ces programmes-là, c'est-à-dire à ne pas les juger.
+    pointers: (u64, u64, u64, u64),
 }
 
 /// Des octets, pour un message d'écart lisible.
@@ -185,7 +190,12 @@ fn read_oracle() -> Oracle {
                     Some(&"-") | None => None,
                     Some(text) => Some(bytes(text)),
                 },
-                pointers: (hex(field[9]), hex(field[10]), hex(field[11])),
+                pointers: (
+                    hex(field[9]),
+                    hex(field[10]),
+                    hex(field[11]),
+                    hex(field[12]),
+                ),
             }),
             _ => {}
         }
@@ -377,7 +387,7 @@ fn every_accepted_instruction_matches_the_silicon() {
             ),
         ]);
         let expected_memory = &expected.bytes;
-        let pointers = (cpu.regs[4], cpu.regs[5], cpu.regs[6]);
+        let pointers = (cpu.regs[4], cpu.regs[5], cpu.regs[6], cpu.regs[7]);
         if cpu.faulted
             || &cpu.memory.bytes != expected_memory
             || got.0 != want.0
@@ -389,7 +399,7 @@ fn every_accepted_instruction_matches_the_silicon() {
             if wrong.len() < 12 {
                 wrong.push(format!(
                     "{} état {} : rax {:x}≠{:x} rcx {:x}≠{:x} rdx {:x}≠{:x} \
-                     rsp {:x}≠{:x} rbp {:x}≠{:x} rsi {:x}≠{:x} \
+                     rsp {:x}≠{:x} rbp {:x}≠{:x} rsi {:x}≠{:x} rdi {:x}≠{:x} \
                      drapeaux {:x}≠{:x} (masque {:x}){}{}",
                     instruction.mnemonic,
                     case.state,
@@ -405,6 +415,8 @@ fn every_accepted_instruction_matches_the_silicon() {
                     case.pointers.1,
                     pointers.2,
                     case.pointers.2,
+                    pointers.3,
+                    case.pointers.3,
                     got.3 & mask,
                     want.3 & mask,
                     mask,
@@ -446,7 +458,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 12975,
+        checked > 13140,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
