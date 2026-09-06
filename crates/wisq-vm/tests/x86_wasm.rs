@@ -507,7 +507,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // harnais et celui du silicium comptent 9168 cas, pas l'un 9168 et
     // l'autre 9144.
     assert!(
-        checked > 10500,
+        checked > 10760,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }

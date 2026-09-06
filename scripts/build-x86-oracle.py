@@ -453,6 +453,34 @@ DIVIDENDS = [0, 1, 7, 0x7F, 0x80, 0xFF, 0x1234, 0x7FFF_FFFF,
              0x8000_0000, 0x0123_4567_89AB_CDEF, 0xFFFF_FFFF_FFFF_FFFF]
 DIVISORS = [1, 2, 3, 7, 0x10, 0x7F, 0x80, 0xFF, 0xFFFF, 0xFFFF_FFFF]
 
+# **Les échanges, avec des états choisis.** `cmpxchg` a deux issues, et la
+# différence entre les deux ne se voit qu'à une condition précise : que
+# l'égalité tienne **et** que l'accumulateur porte des bits hors de la largeur.
+# Le manuel dit qu'en cas de succès l'accumulateur n'est pas écrit ; le réécrire
+# avec sa propre valeur serait indiscernable en huit et seize bits — qui
+# préservent le reste du registre — et visible en trente-deux, qui l'effacent.
+# Les états ordinaires ne mettent jamais RAX et RDX d'accord sur leur moitié
+# basse, donc aucun d'eux ne pose la question. Un sabotage l'a montré : faire
+# écrire l'accumulateur en cas de succès ne faisait tomber aucun cas.
+EXCHANGES = [
+    ("cmpxchgb %cl, %dl", 1), ("cmpxchgw %cx, %dx", 2),
+    ("cmpxchgl %ecx, %edx", 4), ("cmpxchgq %rcx, %rdx", 8),
+]
+
+
+def exchange_state(size, matching):
+    """L'état d'un `cmpxchg` : l'accumulateur et la destination égaux sur la
+    largeur ou non, et RAX toujours porteur de bits au-delà."""
+    mask = (1 << (8 * size)) - 1
+    fixed = [0xAAAAAAAAAAAAAAAA + i for i in range(16)]
+    fixed[6] = DATA
+    low = 0xF0F0F0F0F0F0F0F0 & mask
+    fixed[0] = 0x1234567890ABCDEF & ~mask | low
+    fixed[2] = low if matching else (low ^ 1)
+    fixed[1] = 0x0F0F0F0F0F0F0F0F
+    return fixed + [0x002]
+
+
 # Les adresses fixes du harnais. Fixes exprès : une adresse rendue par mmap
 # changerait à chaque exécution, et le fichier ne se reproduirait pas.
 DATA = 0x30001000
@@ -713,6 +741,21 @@ def main():
                 cases.append((instruction, hexadecimal, index, state))
     texts = texts + divisionTexts
     encoded = encoded + divisionEncoded
+
+    # Les échanges, avec leurs deux issues et un accumulateur qui déborde de la
+    # largeur — la seule façon de voir qu'un succès n'écrit pas l'accumulateur.
+    exchangeTexts = [text for text, _ in EXCHANGES]
+    exchangeEncoded = assemble(exchangeTexts)
+    for offset, ((text, size), hexadecimal) in enumerate(
+            zip(EXCHANGES, exchangeEncoded)):
+        instruction = len(texts) + offset
+        for matching in (True, False):
+            state = exchange_state(size, matching)
+            index = len(chosen)
+            chosen.append(state)
+            cases.append((instruction, hexadecimal, index, state))
+    texts = texts + exchangeTexts
+    encoded = encoded + exchangeEncoded
 
     # Les programmes : mêmes états que le reste, mais plusieurs instructions.
     program_masks = {}

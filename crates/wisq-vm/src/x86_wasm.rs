@@ -157,6 +157,15 @@ mod code {
     pub const SELECT: u8 = 0x1b;
 }
 
+/// Un `cmpxchg` vu comme la comparaison qu'il porte : c'est sous cette forme
+/// que la routine des drapeaux sait le lire.
+fn as_compare(step: &Decoded) -> Decoded {
+    Decoded {
+        op: Op::Cmp,
+        ..*step
+    }
+}
+
 /// Un corps de fonction en cours d'écriture.
 #[derive(Default)]
 struct Body {
@@ -717,6 +726,13 @@ impl Module {
         }
         if matches!(
             step.op,
+            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange
+        ) {
+            Self::exchange(step, body);
+            return Some(());
+        }
+        if matches!(
+            step.op,
             Op::WideMultiply { .. }
                 | Op::Multiply
                 | Op::Divide { .. }
@@ -880,6 +896,9 @@ impl Module {
                 | Op::SignIntoData
                 | Op::CarryFlag(_) => {
                     unreachable!("les deux registres sortent avant")
+                }
+                Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
+                    unreachable!("les échanges sortent avant")
                 }
             }
             b.constant(mask).op(code::I64_AND);
@@ -1273,7 +1292,10 @@ impl Module {
             | Op::Divide { .. }
             | Op::WidenAccumulator
             | Op::SignIntoData
-            | Op::CarryFlag(_) => {}
+            | Op::CarryFlag(_)
+            | Op::Exchange
+            | Op::ExchangeAndAdd
+            | Op::CompareAndExchange => {}
         }
     }
 
@@ -1345,21 +1367,45 @@ impl Module {
     /// `write_back` — qui passe par `step.dst` — ne peut pas servir.
     fn put(register: u8, width: Width, body: &mut Body, value: impl FnOnce(&mut Body)) {
         let slot = Self::slot(register);
-        body.store(slot, |b| match width {
-            Width::Qword => value(b),
+        body.store(slot, |b| Self::merged(slot, width, false, b, value));
+    }
+
+    /// **La valeur entière du registre après une écriture de cette largeur,
+    /// sans l'écrire.** C'est ce qu'il faut pour choisir entre écrire et ne pas
+    /// écrire *sans branchement* : les deux moitiés du choix doivent être des
+    /// valeurs de soixante-quatre bits, pas deux chemins d'exécution.
+    fn merged(
+        slot: usize,
+        width: Width,
+        high: bool,
+        body: &mut Body,
+        value: impl FnOnce(&mut Body),
+    ) {
+        if high {
+            body.load(slot).constant(!0xff00).op(code::I64_AND);
+            value(body);
+            body.constant(0xff)
+                .op(code::I64_AND)
+                .constant(8)
+                .op(code::I64_SHL);
+            body.op(code::I64_OR);
+            return;
+        }
+        match width {
+            Width::Qword => value(body),
             // Une écriture de 32 bits efface la moitié haute.
             Width::Dword => {
-                value(b);
-                b.constant(0xffff_ffff).op(code::I64_AND);
+                value(body);
+                body.constant(0xffff_ffff).op(code::I64_AND);
             }
             _ => {
                 let mask = width.mask();
-                b.load(slot).constant(!mask).op(code::I64_AND);
-                value(b);
-                b.constant(mask).op(code::I64_AND);
-                b.op(code::I64_OR);
+                body.load(slot).constant(!mask).op(code::I64_AND);
+                value(body);
+                body.constant(mask).op(code::I64_AND);
+                body.op(code::I64_OR);
             }
-        });
+        }
     }
 
     /// Écrire `%ah` — l'octet **haut** de RAX, où `mulb` range son produit et
@@ -1367,15 +1413,7 @@ impl Module {
     /// atterrit ailleurs que dans un registre entier.
     fn put_high_byte(body: &mut Body, value: impl FnOnce(&mut Body)) {
         let slot = Self::slot(0);
-        body.store(slot, |b| {
-            b.load(slot).constant(!0xff00).op(code::I64_AND);
-            value(b);
-            b.constant(0xff)
-                .op(code::I64_AND)
-                .constant(8)
-                .op(code::I64_SHL);
-            b.op(code::I64_OR);
-        });
+        body.store(slot, |b| Self::merged(slot, Width::Byte, true, b, value));
     }
 
     /// Étendre au signe depuis une largeur, sur la valeur au sommet de la pile.
@@ -1458,6 +1496,132 @@ impl Module {
             });
         }
         body.load(high);
+    }
+
+    /// **Les trois échanges.** Ce qui les réunit : elles écrivent **deux**
+    /// endroits, et il faut avoir lu les deux avant d'écrire le premier.
+    fn exchange(step: &Decoded, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let sign = width.sign();
+        let (old, from) = (Body::scratch(5), Body::scratch(6));
+        body.store(old, |b| Self::left(step, b));
+        body.store(from, |b| Self::right(step, b));
+        // La source est toujours un registre : c'est le champ `reg` du ModRM,
+        // ou l'accumulateur pour la forme courte. Seule la destination peut
+        // être en mémoire.
+        let into_source = |body: &mut Body, value: usize| {
+            let slot = Self::slot(step.src);
+            body.store(slot, |b| {
+                Self::merged(slot, width, step.src_high, b, |x| {
+                    x.load(value);
+                });
+            });
+        };
+        match step.op {
+            Op::Exchange => {
+                body.store(Body::scratch(2), |b| {
+                    b.load(from);
+                });
+                Self::write_back(step, mask, body);
+                into_source(body, old);
+            }
+            Op::ExchangeAndAdd => {
+                // Les drapeaux sont ceux d'un `add`, et la routine qui les pose
+                // lit l'opérande gauche, le droit et le résultat dans les trois
+                // premiers emplacements de travail.
+                body.store(Body::scratch(0), |b| {
+                    b.load(old);
+                });
+                body.store(Body::scratch(1), |b| {
+                    b.load(from);
+                });
+                body.store(Body::scratch(2), |b| {
+                    b.load(old)
+                        .load(from)
+                        .op(code::I64_ADD)
+                        .constant(mask)
+                        .op(code::I64_AND);
+                });
+                let as_add = Decoded {
+                    op: Op::Add,
+                    ..*step
+                };
+                Self::flags(&as_add, mask, sign, body);
+                Self::write_back(step, mask, body);
+                into_source(body, old);
+            }
+            _ => {
+                // **`cmpxchg` compare l'accumulateur à la destination**, pas la
+                // source à la destination.
+                let accumulator = Body::scratch(7);
+                body.store(accumulator, |b| {
+                    b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+                });
+                body.store(Body::scratch(0), |b| {
+                    b.load(accumulator);
+                });
+                body.store(Body::scratch(1), |b| {
+                    b.load(old);
+                });
+                body.store(Body::scratch(2), |b| {
+                    b.load(accumulator)
+                        .load(old)
+                        .op(code::I64_SUB)
+                        .constant(mask)
+                        .op(code::I64_AND);
+                });
+                Self::flags(&as_compare(step), mask, sign, body);
+                // Le verdict, gardé à part : les trois emplacements que la
+                // routine des drapeaux vient d'employer vont resservir.
+                let equal = Body::scratch(8);
+                body.store(equal, |b| {
+                    b.load(accumulator)
+                        .load(old)
+                        .op(code::I64_EQ)
+                        .op(code::I64_EXTEND_I32_U);
+                });
+                // **Quand l'égalité ne tient pas, la destination n'est pas
+                // écrite du tout.** Pas même réécrite avec sa propre valeur :
+                // une écriture de trente-deux bits, même de la même valeur,
+                // effacerait la moitié haute du registre. Le silicium a
+                // tranché — sept cas sur vingt-quatre pour `cmpxchgl`.
+                match step.memory {
+                    // En mémoire la distinction ne s'observe pas : réécrire les
+                    // mêmes octets ne se voit pas, et c'est ce que fait la forme
+                    // verrouillée.
+                    Some(_) => {
+                        body.store(Body::scratch(2), |b| {
+                            b.load(from).load(old).load(equal).op(code::I32_WRAP_I64);
+                            b.op(code::SELECT);
+                        });
+                        Self::write_back(step, mask, body);
+                    }
+                    None => {
+                        let slot = Self::slot(step.dst);
+                        body.store(slot, |b| {
+                            Self::merged(slot, width, step.dst_high, b, |x| {
+                                x.load(from);
+                            });
+                            b.load(slot);
+                            b.load(equal).op(code::I32_WRAP_I64);
+                            b.op(code::SELECT);
+                        });
+                    }
+                }
+                // Et l'accumulateur, à l'inverse : écrit **seulement** quand
+                // l'égalité ne tient pas.
+                let slot = Self::slot(0);
+                body.store(slot, |b| {
+                    b.load(slot);
+                    Self::merged(slot, width, false, b, |x| {
+                        x.load(old);
+                    });
+                    b.load(equal).op(code::I32_WRAP_I64);
+                    b.op(code::SELECT);
+                });
+            }
+        }
     }
 
     /// **Les multiplications, les divisions, les extensions de signe, et la

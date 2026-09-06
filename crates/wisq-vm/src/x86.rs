@@ -410,6 +410,17 @@ pub enum Op {
     /// `clc`, `stc`, `cmc` : la retenue posée à la main, les cinq autres
     /// drapeaux intacts.
     CarryFlag(CarryAction),
+    /// **`xchg`** : les deux opérandes échangent leur contenu, et aucun drapeau
+    /// ne bouge. En mémoire elle est implicitement verrouillée — ce qui ne
+    /// change rien ici, où il n'y a qu'un fil.
+    Exchange,
+    /// **`xadd`** : la somme va dans la destination, et l'**ancienne**
+    /// destination dans la source. Les drapeaux sont ceux d'un `add`.
+    ExchangeAndAdd,
+    /// **`cmpxchg`** : comparer l'accumulateur à la destination, puis écrire
+    /// l'un ou l'autre selon le verdict. C'est sur elle que reposent tous les
+    /// verrous d'un noyau.
+    CompareAndExchange,
     /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
@@ -874,6 +885,72 @@ impl Cpu {
         }
     }
 
+    /// **Les trois échanges.** Ce qui les réunit : elles écrivent **deux**
+    /// endroits, et l'ordre compte. Lire la destination après avoir écrit la
+    /// source rendrait la valeur qu'on vient d'y mettre.
+    fn exchange(&mut self, instruction: &Decoded) {
+        let width = instruction.width;
+        let (Some(destination), Some(source)) = (
+            self.read_destination(instruction),
+            self.read_source(instruction, width),
+        ) else {
+            self.faulted = true;
+            return;
+        };
+        match instruction.op {
+            Op::Exchange => {
+                // Aucun drapeau. C'est la seule des trois dans ce cas, et
+                // l'oublier écraserait ce que le processeur préserve.
+                self.faulted |= self.write_destination(instruction, source).is_none();
+                self.set(instruction.src, width, instruction.src_high, destination);
+            }
+            Op::ExchangeAndAdd => {
+                let sum = destination.wrapping_add(source);
+                self.faulted |= self.write_destination(instruction, sum).is_none();
+                self.set(instruction.src, width, instruction.src_high, destination);
+                self.flags = Flags {
+                    op: FlagOp::Add,
+                    left: destination,
+                    right: source,
+                    result: sum,
+                    width,
+                    carry_in: 0,
+                    arithmetic: 0,
+                    other: self.flags.other,
+                };
+            }
+            _ => {
+                // **`cmpxchg` compare l'accumulateur à la destination**, et
+                // les drapeaux sont ceux de cette comparaison — pas ceux d'une
+                // comparaison entre la destination et la source.
+                let accumulator = self.get(0, width, false);
+                let difference = accumulator.wrapping_sub(destination);
+                let equal = difference & width.mask() == 0;
+                // **Quand l'égalité ne tient pas, la destination n'est pas
+                // écrite du tout.** Pas même réécrite avec sa propre valeur :
+                // le silicium l'a dit. `cmpxchgl %ecx, %edx` qui échoue laisse
+                // RDX entier, alors qu'une écriture de trente-deux bits — même
+                // de la même valeur — en effacerait la moitié haute. Sept cas
+                // sur les vingt-quatre, tous sur ce seul bit de conduite.
+                if equal {
+                    self.faulted |= self.write_destination(instruction, source).is_none();
+                } else {
+                    self.set(0, width, false, destination);
+                }
+                self.flags = Flags {
+                    op: FlagOp::Sub,
+                    left: accumulator,
+                    right: destination,
+                    result: difference,
+                    width,
+                    carry_in: 0,
+                    arithmetic: 0,
+                    other: self.flags.other,
+                };
+            }
+        }
+    }
+
     /// **Les multiplications, les divisions, les extensions de signe, et la
     /// retenue posée à la main.**
     ///
@@ -1219,6 +1296,13 @@ impl Cpu {
             self.stack(instruction);
             return;
         }
+        if matches!(
+            instruction.op,
+            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange
+        ) {
+            self.exchange(instruction);
+            return;
+        }
         // **Les six qui n'ont pas une destination mais deux, ou aucune.** La
         // machinerie à deux opérandes range un résultat là où elle a lu ; ces
         // instructions-là rangent RDX **et** RAX, ou ne rangent qu'un drapeau.
@@ -1399,6 +1483,9 @@ impl Cpu {
             | Op::SignIntoData
             | Op::CarryFlag(_) => {
                 unreachable!("les deux registres sortent avant")
+            }
+            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
+                unreachable!("les échanges sortent avant")
             }
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
@@ -1763,6 +1850,31 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     memory_is_source: false,
                 })
             }
+            // **Les deux échanges qui font les verrous.** `cmpxchg` compare
+            // l'accumulateur à la destination et n'écrit que si l'égalité
+            // tient ; `xadd` additionne et rend l'ancienne valeur. Ce sont les
+            // deux briques de tout compteur atomique d'un noyau.
+            0xb0 | 0xb1 | 0xc0 | 0xc1 => {
+                let width = prefixes.width(second == 0xb0 || second == 0xc0);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                let (reg, rm) = (field.reg, field.register);
+                Some(Decoded {
+                    op: if second < 0xc0 {
+                        Op::CompareAndExchange
+                    } else {
+                        Op::ExchangeAndAdd
+                    },
+                    width,
+                    dst: prefixes.normalise_high(rm, width),
+                    src: prefixes.normalise_high(reg, width),
+                    length: at,
+                    dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
+                    src_high: prefixes.high_byte(reg, width),
+                    src_width: width,
+                    memory: field.memory,
+                    ..Decoded::nothing(width)
+                })
+            }
             // **`imul` à deux opérandes** : `reg` fois `rm`, tronqué, rangé
             // dans `reg`. Contrairement à la forme à un opérande, elle n'écrit
             // qu'un registre — c'est celle que tout code émet quand il sait que
@@ -2025,6 +2137,45 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`xchg rAX, r` — l'échange dont le registre tient dans l'opcode.**
+        // Il vaut la peine d'être distingué de `0x87` : c'est un octet contre
+        // deux, et un compilateur le choisit chaque fois qu'il le peut.
+        //
+        // Et il n'est **pas** un `nop` déguisé quand il désigne RAX : `0x90`
+        // sans REX.B ne remet pas les trente-deux bits hauts à zéro, là où
+        // `xchg %eax, %eax` écrit et les efface. C'est pourquoi la garde
+        // ci-dessus le sort d'ici.
+        0x90..=0x97 => {
+            let width = prefixes.width(false);
+            let register = (opcode - 0x90) | prefixes.rm_extension();
+            Some(Decoded {
+                op: Op::Exchange,
+                width,
+                dst: register,
+                src: 0,
+                length: at,
+                src_width: width,
+                ..Decoded::nothing(width)
+            })
+        }
+        // `xchg r/m, r` sous sa forme longue.
+        0x86 | 0x87 => {
+            let width = prefixes.width(opcode == 0x86);
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
+            Some(Decoded {
+                op: Op::Exchange,
+                width,
+                dst: prefixes.normalise_high(rm, width),
+                src: prefixes.normalise_high(reg, width),
+                length: at,
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
+                src_high: prefixes.high_byte(reg, width),
+                src_width: width,
+                memory: field.memory,
+                ..Decoded::nothing(width)
+            })
+        }
         // **Les sauts relatifs.** Le déplacement porte sur l'instruction
         // **suivante** : c'est `rip + longueur + déplacement`, et oublier la
         // longueur décale toutes les cibles de deux à six octets — un saut qui
