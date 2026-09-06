@@ -32,7 +32,8 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF,
+    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Width, AF, CF, DF, OF, PF, SF,
+    ZF,
 };
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
@@ -863,6 +864,20 @@ impl Module {
         if step.op == Op::Nop {
             return Some(());
         }
+        // **Le drapeau de direction : un bit, posé en clair.**
+        if let Op::DirectionFlag(set) = step.op {
+            body.store(RFLAGS_SLOT, |b| {
+                if set {
+                    b.load(RFLAGS_SLOT).constant(DF).op(code::I64_OR);
+                } else {
+                    b.load(RFLAGS_SLOT).constant(!DF).op(code::I64_AND);
+                }
+            });
+            return Some(());
+        }
+        if matches!(step.op, Op::StringMove { .. } | Op::StringStore { .. }) {
+            return Self::string(step, address, body);
+        }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
         if matches!(step.op, Op::Push | Op::Pop | Op::Leave) {
@@ -1047,6 +1062,9 @@ impl Module {
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
                 Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
+                Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
+                    unreachable!("la direction et les chaînes sortent avant")
+                }
                 Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                     unreachable!("la pile sort avant")
                 }
@@ -1447,6 +1465,9 @@ impl Module {
             | Op::JumpIndirect
             | Op::Nop
             | Op::Undefined
+            | Op::DirectionFlag(_)
+            | Op::StringMove { .. }
+            | Op::StringStore { .. }
             | Op::Push
             | Op::Pop
             | Op::Call
@@ -2447,6 +2468,82 @@ impl Module {
                 b.load(remainder);
             });
         }
+    }
+
+    /// **Les instructions de chaîne, et pourquoi la forme répétée rend la
+    /// main.**
+    ///
+    /// La forme simple est de la ligne droite : lire, écrire, avancer les deux
+    /// pointeurs du pas que le drapeau de direction choisit. Elle est traduite
+    /// ici.
+    ///
+    /// **La forme répétée, non — et c'est un choix, pas un oubli.** Un
+    /// `rep movsq` est une boucle, et WebAssembly sait en écrire une. Mais
+    /// rendre la main coûte **une** rentrée dans l'hôte par `memcpy`, pas une
+    /// par octet : l'interpréteur exécute la répétition entière en un seul
+    /// pas, en Rust natif, et le module reprend après. Le coût d'une boucle
+    /// émise se paierait à chaque octet copié, en globales lues et réécrites,
+    /// contre une seule rentrée. Le jour où une mesure montrera que cette
+    /// rentrée pèse, la boucle s'écrira — et pas avant.
+    ///
+    /// Ce que ça change pour le compte de couverture : la région **compile**,
+    /// et c'est ce que la mesure relève. Elle ne dit pas que tout y court
+    /// compilé, et c'est vrai aussi des appels indirects.
+    fn string(step: &Decoded, address: u64, body: &mut Body) -> Option<()> {
+        let repeat = matches!(
+            step.op,
+            Op::StringMove { repeat: true } | Op::StringStore { repeat: true }
+        );
+        if repeat {
+            Self::hand_back(address, body);
+            return Some(());
+        }
+        let width = step.width;
+        let size = width as u64;
+        // scratch 0 : le pas, négatif quand le drapeau de direction est posé.
+        body.store(Body::scratch(0), |b| {
+            b.constant(size.wrapping_neg());
+            b.constant(size);
+            b.load(RFLAGS_SLOT).constant(DF).op(code::I64_AND);
+            b.constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+        // scratch 1 : la valeur — lue en mémoire pour `movs`, prise dans
+        // l'accumulateur pour `stos`.
+        let moves = matches!(step.op, Op::StringMove { .. });
+        body.store(Body::scratch(1), |b| {
+            if moves {
+                b.load(Self::slot(6)).op(code::I32_WRAP_I64);
+                b.op(match width {
+                    Width::Byte => code::I64_LOAD8_U,
+                    Width::Word => code::I64_LOAD16_U,
+                    Width::Dword => code::I64_LOAD32_U,
+                    Width::Qword => code::I64_LOAD,
+                });
+                b.bytes.push(0);
+                b.bytes.push(0);
+            } else {
+                b.load(Self::slot(0))
+                    .constant(width.mask())
+                    .op(code::I64_AND);
+            }
+        });
+        body.store_at(Self::slot(7), width, |b| {
+            b.load(Body::scratch(1));
+        });
+        if moves {
+            body.store(Self::slot(6), |b| {
+                b.load(Self::slot(6))
+                    .load(Body::scratch(0))
+                    .op(code::I64_ADD);
+            });
+        }
+        body.store(Self::slot(7), |b| {
+            b.load(Self::slot(7))
+                .load(Body::scratch(0))
+                .op(code::I64_ADD);
+        });
+        Some(())
     }
 
     /// **La pile.** L'ordre est le sujet : `push` descend RSP **puis** écrit,

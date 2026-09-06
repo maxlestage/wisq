@@ -9512,3 +9512,179 @@ manquantes mais pour ce qu'un balayage linéaire prend pour du code. La prochain
 question n'est plus « quelle instruction ajouter » : c'est de mesurer la
 couverture depuis les vrais points d'entrée du noyau plutôt que tous les 512
 octets.
+
+## La sonde mesurait la mauvaise chose : 74,9 % était 89,2 %
+
+Le jeu d'instructions étant clos, la question « quelle instruction ajouter »
+n'avait plus de réponse. Restait un nombre qui n'avançait plus : 74,9 % des
+régions de 4 Kio acceptées. Avant de chercher quoi ajouter pour le monter, il
+fallait savoir ce qu'il comptait.
+
+La sonde essayait une région **tous les 512 octets depuis l'octet zéro du
+fichier**. C'est simple, et c'est pour ça qu'elle a servi toute la série — mais
+un processeur n'entre pas comme ça. Elle tombe au milieu des instructions, dans
+les tables de données, dans le bourrage entre fonctions. Le taux qu'elle rend
+mélange donc deux choses qui ne se corrigent pas de la même façon : « le
+compilateur ne sait pas » et « ce n'est pas du code ».
+
+La seconde sonde part de là où l'exécution entre vraiment. Les cibles des `call`
+à déplacement fixe sont des débuts de fonction — c'est la définition d'un
+appel — et elles se relèvent au passage du décodage linéaire, sans rien de plus
+qu'un ensemble.
+
+| | régions acceptées |
+|---|---|
+| tous les 512 octets | 74,9 % |
+| **depuis les cibles de `call`** | **89,2 %** (10 123 entrées distinctes) |
+
+Quatorze points d'écart, et pas une ligne de compilateur n'a changé. Le plafond
+n'était pas où la sonde le montrait.
+
+**Ce que cette sonde-là ne peut pas faire, c'est flatter.** Une adresse d'entrée
+mal calculée tombe au milieu d'une instruction, et la région est refusée : la
+faute rend un taux plus bas, jamais plus haut. C'est la propriété qui permet de
+la croire sans qu'un test la tienne — et la formule qu'elle emploie est celle
+que le corpus vérifie déjà sur ses programmes d'appel.
+
+### Et elle dit maintenant quoi faire
+
+Elle ne compte plus seulement les refus : elle les **impute**. Un refus a deux
+causes, et les confondre ferait chercher une instruction manquante là où c'est
+la traduction qui manque. Sur les 1 092 régions encore refusées depuis un vrai
+point d'entrée :
+
+| | |
+|---|---|
+| `f3 48 …` | **949** |
+| `48` | 17 |
+| `0f 18` (`prefetch`) | 12 |
+| `0f 30`, `0f ae`, `0f 01`, `0f 32` | 28 au total |
+| `f3 a4`, `f3 aa` | 16 |
+
+**`f3 48` est le préfixe de répétition suivi de REX.W** : `rep movsq` et
+`rep stosq`, c'est-à-dire le `memcpy` et le `memset` du noyau. Une seule famille
+d'instructions pèse **87 %** de tout ce qui reste. C'est la prochaine tranche, et
+elle n'aurait jamais été désignée par l'ancienne sonde, qui la noyait sous du
+bourrage.
+
+L'ancienne mesure est gardée à côté de la nouvelle, pas remplacée : toute la
+série l'a citée, et un repère qu'on efface est un repère qu'on ne peut plus
+comparer.
+
+## Les instructions de chaîne : le `memcpy` et le `memset` du noyau
+
+La nouvelle sonde avait désigné une seule famille : `f3 48 …`, 949 des 1 092
+régions encore refusées depuis un vrai point d'entrée. C'est `rep movsq` et
+`rep stosq`.
+
+Quatre choses les distinguent de tout le reste :
+
+1. **Le sens vient du drapeau de direction**, pas de l'instruction. `std` fait
+   reculer les deux pointeurs — c'est ce qui permet à un `memmove` de copier
+   vers l'arrière quand les zones se recouvrent. DF n'est dans aucun des six
+   drapeaux arithmétiques ; `Flags` le gardait déjà dans `other`, avec tout ce
+   que l'arithmétique ne touche pas, donc il survivait sans qu'on l'ait voulu.
+2. **Le pas est la largeur**, pas un octet.
+3. **Avec `rep`, un compte nul ne fait rien du tout** — pas même une itération.
+   Tester après coup copierait un élément de trop, et sur un compte de quatre
+   ça ne se voit pas. Le corpus porte donc un programme dont le compte est nul,
+   exprès.
+4. **Un accès hors de la fenêtre arrête la boucle.** Sans ça, un compte absurde
+   tournerait jusqu'à épuiser RCX.
+
+### Le corpus a dû s'élargir pour pouvoir les juger
+
+**RDI est devenu une colonne.** Il était dans la liste des registres que le
+script vérifie comme n'ayant pas bougé — et `rep stos` l'avance d'autant
+d'octets qu'il écrit. L'y laisser aurait obligé à écarter ces programmes-là,
+c'est-à-dire à ne pas les juger. Relevé plutôt qu'exclu, comme RSP, RBP et RSI
+l'ont été avant lui, chacun le jour où un programme a eu besoin d'y toucher.
+
+**Et le masque des drapeaux mentait sur ces programmes.** `rep stosq` ne touche
+à aucun drapeau, mais le premier mot de son texte est « rep », que
+`defined_flags` ne connaissait pas : le programme retombait sur la règle par
+défaut — les six drapeaux comparés — et se voyait reprocher la retenue
+auxiliaire d'un `and` que le manuel déclare **indéfinie**. Soixante-cinq cas
+rouges pour une règle absente, pas pour un défaut de cœur. `cld`, `std`, `rep`
+et les mnémoniques de chaîne sont maintenant dans la liste des instructions qui
+n'écrivent aucun drapeau arithmétique.
+
+### L'émetteur rend la main sur la forme répétée, et c'est un choix
+
+La forme simple est de la ligne droite, et elle est traduite. La forme répétée
+est une boucle, et WebAssembly sait en écrire une — mais **rendre la main coûte
+une rentrée dans l'hôte par `memcpy`, pas une par octet** : l'interpréteur
+exécute la répétition entière en un seul pas, en Rust natif, et le module
+reprend après. Une boucle émise paierait à chaque octet copié, en globales lues
+et réécrites, contre une seule rentrée. Le jour où une mesure montrera que cette
+rentrée pèse, la boucle s'écrira — et pas avant.
+
+Ce que ça change pour le compte de couverture, et qu'il faut dire : la région
+**compile**, et c'est ce que la mesure relève. Elle ne dit pas que tout y court
+compilé. C'est vrai aussi des appels indirects, qui rendent la main depuis la
+tranche du groupe 5.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 980 | **13 148** |
+| régions depuis les cibles de `call` | 89,2 % | **97,9 %** |
+| régions tous les 512 octets | 74,9 % | **79,6 %** |
+| instructions du noyau décodées | 99,6 % | **99,8 %** |
+
+Trente-huit sabotages, trente-huit attrapés. Le cœur Swift avait déjà les
+chaînes et le drapeau de direction — c'est la deuxième fois d'affilée qu'il est
+en avance, et il n'y a rien à y porter.
+
+**209 régions sur 10 123 restent refusées**, et plus rien n'y domine : `48` × 33,
+`0f 18` (`prefetch`) × 14, `0f 31` (`rdtsc`) × 11, `0f 30` (`wrmsr`) × 10,
+`0f ae` × 9, `0f 01` × 8, puis des unités. La prochaine tranche ne se choisira
+plus par la taille d'un tas.
+
+## Le chiffre qui manquait : ×5, mesuré
+
+Tout le travail de couverture repose sur une idée — que faire compiler le code
+par WebKit vaut mieux que l'interpréter — et cette idée n'avait **jamais été
+chiffrée**. L'en-tête du cœur citait bien trois débits, mais aucun des trois ne
+mesurait ce que ce dépôt produit : 10,6 MIPS pour l'interpréteur x86 **en
+Swift**, 157 pour le cœur rv32, 1103 pour un module WebAssembly **écrit à la
+main**. Ni l'interpréteur x86 en Rust, ni le module que l'émetteur engendre.
+
+`cargo run -p wisq-vm --release --example speed`, sur une boucle de cinq
+instructions — la taille moyenne d'un bloc de base relevée sur le noyau Alpine,
+choisie pour ça : une boucle d'une seule instruction mesurerait le coût du saut,
+pas celui du calcul.
+
+| | débit | temps |
+|---|---|---|
+| interpréteur Rust | **49,3 MIPS** | 0,203 s |
+| émetteur, sous JavaScriptCore | **247 MIPS** | 0,040 s |
+| | **×5,0** | |
+
+Quatre exécutions : 49,3 à 49,9 d'un côté, 229 à 253 de l'autre, rapport 4,6 à
+5,1. Le débit absolu appartient à cette machine ; le rapport est ce qui se
+transporte.
+
+### Ce que le chiffre dit, et ce qu'il ne dit pas
+
+**Il dit que la peine en valait la peine** — cinq fois, sur du code que
+l'émetteur engendre lui-même, sous le moteur exact de `WKWebView`.
+
+**Il dit aussi que l'interpréteur en Rust rend 4,6 fois celui en Swift**, sans
+WebView, sans pont, sans permission à négocier. Ce chemin-là n'était pas le
+sujet, et il s'avère être le meilleur rapport bénéfice/contrainte du dépôt.
+
+**Et il dit que 247 n'est pas 1103.** L'écart avec le module écrit à la main est
+celui entre du code engendré et du code pensé : l'émetteur matérialise des
+drapeaux qu'un humain aurait élidés, et passe par la boucle de répartition à
+chaque bloc. C'est là qu'un travail d'optimisation aurait maintenant du sens —
+et c'est mesurable, ce qui est la seule raison de le dire.
+
+### Deux gardes, parce qu'un débit faux est pire que pas de débit
+
+Les deux côtés comptent avant de chronométrer : l'interpréteur vérifie qu'il a
+exécuté exactement les instructions annoncées, le module que RSI est revenu à
+zéro. Une boucle sortie trop tôt rendrait un débit magnifique et faux. Et le
+module tourne **une fois à vide avant d'être chronométré** : JavaScriptCore
+compile par paliers, et mesurer le premier passage mesurerait son démarrage.
