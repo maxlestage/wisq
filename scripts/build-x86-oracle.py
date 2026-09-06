@@ -661,6 +661,21 @@ PROGRAMS = [
         "andq $3, %rcx", "movq %rax, (%rsi,%rcx,8)", "leaq (%rsi,%rcx,4), %rdx"]),
     ("lire, modifier, réécrire au même endroit", [
         "addq %rax, (%rsi)", "xorq %rcx, 8(%rsi)", "incq 16(%rsi)"]),
+    # **`ud2`, décodée mais jamais exécutée.**
+    #
+    # Le corpus ne peut pas l'exécuter : elle lève une exception d'instruction
+    # indéfinie, et le pilote de l'oracle mourrait avec. Mais ce qu'il faut
+    # tenir d'elle est sa **longueur** et le fait que la région qui la contient
+    # se compile — pas un calcul. Le programme la place donc derrière une
+    # condition qui n'est jamais vraie : `cmpq %rax, %rax` pose ZF, `jne` n'est
+    # pas prise, et le processeur passe à côté. Le graphe de décodage, lui,
+    # suit les deux issues et **doit** la lire.
+    #
+    # Un `ud2` mal mesuré — un octet au lieu de deux — décalerait le bloc
+    # d'après, et le corpus le verrait puisque ce bloc est atteint par le saut.
+    ("une instruction indéfinie que le graphe lit sans que le processeur y aille", [
+        "cmpq %rax, %rax", "jne 3f", "incq %rdx", "jmp 4f",
+        "3: ud2", "4: addq %rax, %rdx"]),
     ("un saut indirect par registre", [
         "leaq 1f(%rip), %rdx", "jmp *%rdx", "movq $0, %rax", "1: incq %rdx"]),
     # **Le groupe 5 par la mémoire : ce qu'un noyau fait de ses pointeurs.**

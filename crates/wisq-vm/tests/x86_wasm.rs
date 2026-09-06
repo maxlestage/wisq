@@ -576,7 +576,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
     // qui a déjà servi une fois — un écart entre les deux cœurs.
     assert!(
-        checked + handed_back > 12830,
+        checked + handed_back > 12855,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
@@ -734,6 +734,84 @@ console.log(JSON.stringify({{
     assert!(
         text.contains("\"rsp\":\"30003000\""),
         "le `ret` devait remonter RSP là où il était, il a rendu {text}"
+    );
+}
+
+/// **`ud2` : rendre la main **sur** elle, pas après.**
+///
+/// Le corpus ne peut pas juger cette instruction — elle lève une exception, et
+/// le pilote de l'oracle mourrait avec. Ce qu'il faut tenir est donc ici :
+/// l'adresse à laquelle le module rend la main est celle du `ud2` lui-même.
+/// Reprendre un octet plus loin ferait exécuter à l'interpréteur ce que le
+/// noyau range derrière son `BUG()`, qui n'est pas du code.
+///
+/// Le `incq` d'avant est le témoin : rendre la main n'annule pas ce qui a déjà
+/// eu lieu dans le bloc.
+#[test]
+fn an_undefined_instruction_hands_back_its_own_address() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // `incq %rdx` (trois octets) puis `ud2` (deux).
+    let bytes = [0x48, 0xff, 0xc2, 0x0f, 0x0b];
+    let module = Module::region(&bytes, CODE, 0).expect("la région doit se compiler");
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-ud2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const bytes = fs.readFileSync({:?});
+const memory = new WebAssembly.Memory({{ initial: {} }});
+const slots = [];
+for (let slot = 0; slot < {}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const imports = {{ env: {{ mem: memory }} }};
+slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+slots[2].value = 0n;            // rdx : le témoin
+slots[4].value = 0x30003000n;   // rsp
+instance.exports.run(64n);
+console.log(JSON.stringify({{
+  rdx: slots[2].value.toString(),
+  rip: BigInt.asUintN(64, slots[{}].value).toString(16),
+}}));
+"#,
+            path.to_string_lossy(),
+            GUEST_PAGES,
+            GLOBAL_COUNT,
+            RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"rdx\":\"1\""),
+        "l'instruction d'avant devait avoir eu lieu, il a rendu {text}"
+    );
+    assert!(
+        text.contains("\"rip\":\"30000003\""),
+        "le module devait rendre la main **sur** le `ud2`, à 0x30000003, \
+         et non après lui : il a rendu {text}"
     );
 }
 
