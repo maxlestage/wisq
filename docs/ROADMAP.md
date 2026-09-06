@@ -1941,6 +1941,30 @@ copies ne peuvent plus diverger. Un envoi TestFlight rendra donc, sur un vrai
 iPhone, le chiffre de **ce que wisq engendrerait** — celui qui se compare aux
 247 MIPS de Bun, pas aux 1300 du plafond.
 
+**Et Swift peut maintenant atteindre l'émetteur.** C'était le blocage, énoncé
+plusieurs fois sans être levé : `X86Machine` construit le cœur Swift pour un
+invité x86, et le FFI n'exposait que le rv32. `wisq_x86_emit_region` traverse
+désormais l'ABI C, avec `wisq_x86_free_module` et les quatre nombres que l'hôte
+doit fournir pour instancier le module — pages de RAM invitée, nombre de
+globales, emplacement de RIP, emplacement de la base de GS.
+
+Ce n'est **pas** un FFI de machine, et la distinction est écrite au-dessus des
+fonctions : `crates/wisq-vm/src/x86.rs` est un processeur et un décodeur — pas
+de pagination, pas de périphériques, pas de chargeur de noyau. Exposer une
+« machine x86 » donnerait à l'application un processeur incapable de démarrer
+quoi que ce soit. Ce qui traverse est une fonction pure d'octets vers octets,
+plus quatre entiers : aucun type nouveau, aucune durée de vie, aucun pointeur
+opaque.
+
+L'en-tête `include/wisq_vm.h` est écrit à la main, donc un programme C le
+compile et l'exécute à chaque commit — sur Linux, sans image de noyau, parce
+qu'un traducteur n'a aucune raison d'être sauté avec la machine.
+
+Ce qui manque encore pour le bureau : la boucle hôte côté Swift — créer la
+mémoire et les globales, appeler `run`, relire RIP, retraduire depuis là, et
+retomber sur l'interpréteur quand le module rend la main. **Rien de cette
+partie ne se vérifie depuis Linux.**
+
 Deux réserves écrites avec, parce qu'elles ne se verront pas sur l'écran de
 l'appareil. La sonde crée les **768 Mio** de RAM invitée que le module importe ;
 si un `WKWebView` les refuse, c'est une réponse sur l'architecture, pas une

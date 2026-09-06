@@ -1,16 +1,21 @@
 //! C ABI for the iPhone and Mac apps.
 //!
 //! Swift owns the interface and the platform integration; this owns the
-//! interpreter. The boundary is deliberately tiny — six functions and one
-//! opaque pointer — because every type that crosses it is a type two languages
-//! have to agree about forever.
+//! interpreter. The boundary stays deliberately small, because every type that
+//! crosses it is a type two languages have to agree about forever: the machine
+//! side is one opaque pointer, and the translator below it is none.
 //!
 //! Threading contract, which the Swift side already satisfies: `run` blocks and
 //! must be called from one thread at a time on a given machine. `send` and
 //! `stop` take a separate handle and are safe from any thread.
+//!
+//! At the bottom sits the x86-to-WebAssembly translator, which adds no type at
+//! all: bytes in, bytes out, and four numbers. It is not a machine, and the
+//! comment above it says why that distinction matters.
 
 use crate::machine::{Handle, Machine, Outcome};
 use crate::snapshot::SnapshotError;
+use crate::x86_wasm::{Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RIP_SLOT};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 
@@ -381,4 +386,127 @@ pub unsafe extern "C" fn wisq_vm_free(vm: *mut WisqVM) {
     if !vm.is_null() {
         drop(Box::from_raw(vm));
     }
+}
+
+// ---------------------------------------------------------------------------
+// The x86-64 to WebAssembly translator.
+//
+// **Why this crosses the boundary, when so little else does.** iOS gives an
+// App Store app no page that is both writable and executable, so the app's x86
+// core interprets — 10,6 MIPS, and more than an hour to boot a desktop. WebKit
+// is the one exception: a `WKWebView` may compile WebAssembly, which is data
+// rather than code. The emitter that turns a region of guest instructions into
+// such a module lives in Rust, beside the interpreter it was differentially
+// tested against; the machine that would use it — paging, devices, the boot
+// loader, the framebuffer — lives in Swift. Without these functions Swift
+// cannot reach the emitter at all, and the whole of lot 8 stops here.
+//
+// **What this is not.** It is not a machine. `crate::x86` is a processor and a
+// decoder: no paging, no devices, no kernel loader. Handing C an "x86 VM"
+// would hand it something that cannot boot anything. What crosses here is a
+// pure function from bytes to bytes, plus four integers describing what the
+// resulting module imports. No new type, no lifetime, no opaque pointer — the
+// cheapest thing that can cross a boundary two languages must agree about
+// forever.
+
+/// Translates a region of x86-64 code into a WebAssembly module.
+///
+/// `base` is the **guest** address the region is loaded at, and it is not
+/// decorative: `call` pushes a return address and `ret` reads it back, so a
+/// region compiled as if it lived at zero would push a number nothing in guest
+/// memory designates. `entry` is the offset within `code` where translation
+/// starts.
+///
+/// **Read that order twice.** `base` and `entry` are both 64 bits wide, so a
+/// caller that swaps them compiles, links and runs — and no conformance test
+/// can see it, because C keeps no parameter names at link time. It is the one
+/// mistake at this boundary that review has to catch rather than a program.
+///
+/// Returns 0 and a freshly allocated module, or -1 when the emitter refuses
+/// the region — which is a normal outcome, not a defect: the caller then
+/// interprets. The buffer is released by `wisq_x86_free_module`, and by
+/// nothing else.
+///
+/// # Safety
+/// `code` must be valid for reading `len` bytes, and `out_bytes` and `out_len`
+/// must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_x86_emit_region(
+    code: *const u8,
+    len: usize,
+    base: u64,
+    entry: usize,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if code.is_null() || out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let region = std::slice::from_raw_parts(code, len);
+    let Some(module) = Module::region(region, base, entry) else {
+        return -1;
+    };
+    let mut module = module.into_boxed_slice();
+    let (pointer, len) = (module.as_mut_ptr(), module.len());
+    std::mem::forget(module);
+    *out_bytes = pointer;
+    *out_len = len;
+    0
+}
+
+/// Releases a module from `wisq_x86_emit_region`.
+///
+/// The null check is deliberate and **no test in this repository can observe
+/// it**: `Box::from_raw` on a null pointer is undefined behaviour even for a
+/// zero-length slice, but nothing crashes, so removing the guard leaves every
+/// test green. It stays for the same reason `wisq_vm_free_snapshot` has one —
+/// a caller that cannot tell whether the emitter refused should be able to
+/// free unconditionally.
+///
+/// # Safety
+/// `bytes` and `len` must be exactly what `wisq_x86_emit_region` produced, and
+/// the buffer must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_x86_free_module(bytes: *mut u8, len: usize) {
+    if !bytes.is_null() {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            bytes, len,
+        )));
+    }
+}
+
+/// Pages of guest RAM the module imports. The host creates the memory.
+///
+/// These four are functions rather than constants in the header for one
+/// reason: a header carries no arithmetic, so a literal there would be a
+/// second declaration of a number the emitter already owns — and a module that
+/// imports twenty-nine globals, instantiated with twenty-eight, does not run
+/// at all.
+#[no_mangle]
+pub extern "C" fn wisq_x86_guest_pages() -> u32 {
+    GUEST_PAGES
+}
+
+/// Mutable `i64` globals the module imports, named `g0`..`g<count-1>` in the
+/// `env` namespace: the sixteen registers, RFLAGS, RIP, the GS base, then the
+/// translator's scratch.
+#[no_mangle]
+pub extern "C" fn wisq_x86_global_count() -> usize {
+    GLOBAL_COUNT
+}
+
+/// Where execution stopped. A region does not run to the end of the program:
+/// it hands back when a jump leaves what it knows, or when the budget is
+/// spent. Without this the host would know it stopped but not where to resume.
+#[no_mangle]
+pub extern "C" fn wisq_x86_rip_slot() -> usize {
+    RIP_SLOT
+}
+
+/// The GS segment base, which the host sets and the module reads. A kernel
+/// installs it once per core, very early — but "very early" is already after
+/// the first region was translated, so it cannot be frozen into the code.
+#[no_mangle]
+pub extern "C" fn wisq_x86_gs_slot() -> usize {
+    GS_SLOT
 }

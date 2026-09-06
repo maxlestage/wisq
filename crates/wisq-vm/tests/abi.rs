@@ -135,3 +135,49 @@ fn the_c_header_matches_the_library_it_describes() {
          probablement pas l'exécution\n{stdout}"
     );
 }
+
+/// **Le traducteur x86, à travers le même en-tête écrit à la main.**
+///
+/// Séparé du test de la machine, et sans image de noyau : celui-ci se saute
+/// quand l'image manque, et il n'y a aucune raison que le traducteur se saute
+/// avec lui — il ne démarre rien, il traduit des octets.
+#[test]
+fn the_c_header_matches_the_x86_translator() {
+    let root = workspace_root();
+    let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    if Command::new(&compiler).arg("--version").output().is_err() {
+        eprintln!("aucun compilateur C ({compiler}) : conformité du traducteur ignorée");
+        return;
+    }
+    let Some(library) = static_library(&root) else {
+        eprintln!("libwisq_vm.a introuvable : conformité du traducteur ignorée");
+        return;
+    };
+
+    let out = std::env::temp_dir().join(format!("wisq-abi-x86-{}", std::process::id()));
+    let compiled = Command::new(&compiler)
+        .args(["-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(root.join("crates/wisq-vm/include"))
+        .arg(root.join("crates/wisq-vm/tests/abi/x86.c"))
+        .arg("-L")
+        .arg(library.parent().expect("dossier de la bibliothèque"))
+        .args(["-lwisq_vm", "-lpthread", "-ldl", "-lm", "-o"])
+        .arg(&out)
+        .output()
+        .expect("compilation du programme d'ABI du traducteur");
+    assert!(
+        compiled.status.success(),
+        "l'en-tête ne décrit pas le traducteur qu'il déclare :\n{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let ran = Command::new(&out).output().expect("exécution");
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        ran.status.success(),
+        "le traducteur ne se comporte pas comme l'en-tête le promet :\n{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+}

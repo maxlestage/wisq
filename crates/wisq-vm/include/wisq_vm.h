@@ -2,9 +2,10 @@
  * wisq-vm: an interpreted rv32ima machine, as C sees it.
  *
  * Swift owns the interface and the platform integration; this owns the
- * interpreter. The boundary is seven functions and one opaque pointer,
- * because every type crossing it is a type two languages have to agree
- * about forever.
+ * interpreter. The boundary stays small on purpose, because every type
+ * crossing it is a type two languages have to agree about forever. The
+ * machine side is one opaque pointer; the x86 translator at the bottom adds
+ * no type at all — bytes in, bytes out, and four numbers.
  *
  * This header is hand-written rather than generated, and that is a
  * liability unless something checks it: `tests/abi.c` compiles against
@@ -178,6 +179,57 @@ int wisq_vm_restore(WisqVM *vm, const uint8_t *bytes, size_t len);
 
 /* Frees a machine. Must not be called while wisq_vm_run is in progress. */
 void wisq_vm_free(WisqVM *vm);
+
+/*
+ * The x86-64 to WebAssembly translator.
+ *
+ * iOS gives an App Store app no page that is both writable and executable,
+ * so the app's x86 core interprets — 10,6 MIPS, more than an hour to boot a
+ * desktop. WebKit is the one exception: a WKWebView may compile
+ * WebAssembly, which is data rather than code. These five functions are how
+ * Swift reaches the emitter that produces it.
+ *
+ * They are not a machine. wisq-vm's x86 side is a processor and a decoder:
+ * no paging, no devices, no kernel loader. What crosses here is a pure
+ * function from bytes to bytes, plus four numbers describing what the
+ * resulting module imports. The machine stays in Swift.
+ */
+
+/*
+ * Translates a region of x86-64 code into a WebAssembly module.
+ *
+ * `base` is the guest address the region is loaded at, and it is not
+ * decorative: `call` pushes a return address and `ret` reads it back.
+ * `entry` is the offset within `code` where translation starts.
+ *
+ * Returns 0 and a freshly allocated module, or -1 when the emitter refuses
+ * the region. A refusal is a normal outcome, not a defect — the caller then
+ * interprets. Release the buffer with wisq_x86_free_module and nothing else.
+ */
+int wisq_x86_emit_region(const uint8_t *code, size_t len, uint64_t base, size_t entry,
+                         uint8_t **out_bytes, size_t *out_len);
+
+/* Releases a module from wisq_x86_emit_region. */
+void wisq_x86_free_module(uint8_t *bytes, size_t len);
+
+/*
+ * What the host must provide to instantiate a module: a memory of this many
+ * 64 KiB pages, imported as env.mem, and this many mutable i64 globals named
+ * env.g0 .. env.g<count-1>.
+ *
+ * Functions rather than constants, because a header carries no arithmetic: a
+ * literal here would be a second declaration of a number the emitter owns,
+ * and a module importing twenty-nine globals instantiated with twenty-eight
+ * does not run at all.
+ */
+uint32_t wisq_x86_guest_pages(void);
+size_t wisq_x86_global_count(void);
+
+/* Where execution stopped, so the host knows where to resume. */
+size_t wisq_x86_rip_slot(void);
+
+/* The GS segment base, which the host sets and the module reads. */
+size_t wisq_x86_gs_slot(void);
 
 #ifdef __cplusplus
 }
