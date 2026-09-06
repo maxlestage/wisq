@@ -122,3 +122,49 @@ fn the_probe_declares_what_the_module_imports() {
     assert_eq!(number(&text, "benchBase"), BENCH_BASE);
     assert_eq!(number(&text, "instructionsPerTurn"), BENCH_PER_TURN);
 }
+
+/// **Ce qui traverse l'ABI est exactement ce que l'émetteur produit.**
+///
+/// Le programme C d'à côté vérifie la forme du module ; celui-ci vérifie qu'il
+/// n'a pas changé en chemin. Une copie, une troncature ou un octet perdu entre
+/// `Module::region` et le pointeur rendu à Swift ne donnerait pas un module
+/// invalide — WebAssembly a des tailles de section — mais un module qui calcule
+/// autre chose, et personne ne le verrait avant l'appareil.
+#[test]
+fn the_abi_hands_back_exactly_what_the_emitter_produced() {
+    let wanted =
+        Module::region(&BENCH_LOOP, BENCH_BASE, 0).expect("l'émetteur traduit la boucle du banc");
+
+    let mut bytes: *mut u8 = std::ptr::null_mut();
+    let mut len: usize = 0;
+    // SAFETY: la région est valide pour `BENCH_LOOP.len()` octets, et les deux
+    // sorties sont des locales adressables.
+    let code = unsafe {
+        let outcome = wisq_vm::ffi::wisq_x86_emit_region(
+            BENCH_LOOP.as_ptr(),
+            BENCH_LOOP.len(),
+            BENCH_BASE,
+            0,
+            &mut bytes,
+            &mut len,
+        );
+        assert_eq!(outcome, 0, "l'ABI accepte ce que l'émetteur accepte");
+        assert!(!bytes.is_null());
+        std::slice::from_raw_parts(bytes, len).to_vec()
+    };
+    // SAFETY: `bytes` et `len` sont exactement ce que l'appel vient de rendre.
+    unsafe { wisq_vm::ffi::wisq_x86_free_module(bytes, len) };
+
+    assert_eq!(code, wanted, "l'ABI ne rend pas les octets de l'émetteur");
+}
+
+/// Les quatre nombres que l'ABI exporte sont ceux de l'émetteur. Un hôte qui
+/// crée vingt-huit globales pour un module qui en importe vingt-neuf n'obtient
+/// pas un mauvais chiffre : il n'obtient rien.
+#[test]
+fn the_abi_describes_what_the_module_imports() {
+    assert_eq!(wisq_vm::ffi::wisq_x86_guest_pages(), GUEST_PAGES);
+    assert_eq!(wisq_vm::ffi::wisq_x86_global_count(), GLOBAL_COUNT);
+    assert_eq!(wisq_vm::ffi::wisq_x86_rip_slot(), RIP_SLOT);
+    assert_eq!(wisq_vm::ffi::wisq_x86_gs_slot(), wisq_vm::x86_wasm::GS_SLOT);
+}
