@@ -1,6 +1,6 @@
 // Combien du vrai noyau le compilateur accepte-t-il ?
 use std::fs;
-use wisq_vm::x86::decode;
+use wisq_vm::x86::{decode, Op};
 use wisq_vm::x86_wasm::Module;
 
 fn main() {
@@ -42,6 +42,15 @@ fn main() {
     println!();
 
     // Et la vraie question : combien de **régions** se compilent entièrement ?
+    //
+    // **Deux sondes, et elles ne mesurent pas la même chose.** La première part
+    // tous les 512 octets depuis le début du fichier. C'est simple, et c'est
+    // pour ça qu'elle a servi longtemps — mais un processeur n'entre pas comme
+    // ça : elle tombe au milieu des instructions, dans les tables de données,
+    // dans le bourrage entre fonctions. Le taux qu'elle rend mélange donc « le
+    // compilateur ne sait pas » et « ce n'est pas du code », et les deux ne se
+    // corrigent pas de la même façon. Elle est gardée comme repère, parce que
+    // toute la série l'a citée.
     let (mut ok, mut no) = (0usize, 0usize);
     let mut cursor = 0usize;
     let mut tried = 0usize;
@@ -55,7 +64,79 @@ fn main() {
         cursor += 512;
     }
     println!(
-        "régions de 4 Kio : {ok} compilées, {no} refusées ({:.1} %)",
+        "régions tous les 512 octets : {ok} compilées, {no} refusées ({:.1} %)",
         100.0 * ok as f64 / (ok + no) as f64
     );
+
+    // **La seconde part de là où l'exécution entre vraiment.** Les cibles des
+    // `call` à déplacement fixe sont des débuts de fonction — c'est la
+    // définition d'un appel — et elles se relèvent au passage du décodage
+    // linéaire, sans rien de plus qu'un ensemble.
+    let mut entries: std::collections::BTreeSet<usize> = Default::default();
+    let mut at = 0usize;
+    while at < limit {
+        match decode(&bytes[at..]) {
+            Some(step) => {
+                if step.op == Op::Call {
+                    let target = at as i64 + step.length as i64 + step.imm as i64;
+                    if target >= 0 && (target as usize) < limit {
+                        entries.insert(target as usize);
+                    }
+                }
+                at += step.length.max(1);
+            }
+            None => at += 1,
+        }
+    }
+    // **Et pourquoi les autres sont refusées.** Un refus a deux causes possibles
+    // et elles ne se corrigent pas pareil : un octet que le décodeur ne lit pas,
+    // ou une instruction que l'émetteur ne sait pas traduire. Les confondre
+    // ferait chercher une instruction manquante là où c'est la traduction qui
+    // manque.
+    let (mut hit, mut refused) = (0usize, 0usize);
+    let mut blame: std::collections::BTreeMap<String, usize> = Default::default();
+    for entry in entries.iter().take(20000) {
+        let end = limit.min(entry + 4096);
+        if Module::region(&bytes[*entry..end], 0x30000000, 0).is_some() {
+            hit += 1;
+            continue;
+        }
+        refused += 1;
+        let mut walk = *entry;
+        let mut culprit = None;
+        while walk < end {
+            match decode(&bytes[walk..end]) {
+                Some(step) => walk += step.length.max(1),
+                None => {
+                    // Un préfixe ne dit rien tout seul : c'est l'octet d'après
+                    // qui nomme l'instruction refusée.
+                    culprit = Some(match bytes[walk] {
+                        0xf3 | 0x0f | 0x66 => format!(
+                            "{:02x}-{:02x}",
+                            bytes[walk],
+                            bytes.get(walk + 1).copied().unwrap_or(0)
+                        ),
+                        other => format!("{other:02x}"),
+                    });
+                    break;
+                }
+            }
+        }
+        *blame
+            .entry(culprit.unwrap_or_else(|| "l'émetteur refuse".into()))
+            .or_default() += 1;
+    }
+    println!(
+        "régions depuis les cibles de `call` : {hit} compilées, {refused} refusées ({:.1} %) \
+         — {} entrées distinctes",
+        100.0 * hit as f64 / (hit + refused).max(1) as f64,
+        entries.len()
+    );
+    let mut worst: Vec<_> = blame.into_iter().collect();
+    worst.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    print!("  ce qui les refuse :");
+    for (why, n) in worst.iter().take(10) {
+        print!(" {why}×{n}");
+    }
+    println!();
 }

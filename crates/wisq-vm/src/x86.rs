@@ -1,10 +1,28 @@
 //! **Un cœur x86-64 sans JIT — et pourquoi « sans JIT » n'est pas « lent ».**
 //!
-//! Ce qu'on sait, mesuré : l'interpréteur x86 en Swift rend **10,6 MIPS**, le
-//! cœur rv32 en Rust en rend **157**, et un module WebAssembly compilé par
-//! WebKit en rend **1103**. Rien sans JIT ne rattrapera 1103. Mais 10,6 n'est
-//! pas la limite de ce qu'on peut faire sans JIT, et ce fichier va chercher ce
-//! qui manque entre les deux.
+//! Ce qu'on savait, mesuré : l'interpréteur x86 en Swift rend **10,6 MIPS**, le
+//! cœur rv32 en Rust en rend **157**, et un module WebAssembly **écrit à la
+//! main** et compilé par WebKit en rend **1103**. Rien sans JIT ne rattrapera
+//! 1103. Mais 10,6 n'est pas la limite de ce qu'on peut faire sans JIT, et ce
+//! fichier va chercher ce qui manque entre les deux.
+//!
+//! **Ce qu'on sait maintenant**, et qu'aucun de ces trois chiffres ne disait —
+//! `cargo run -p wisq-vm --release --example speed`, sur une boucle de cinq
+//! instructions, la taille moyenne d'un bloc de base relevée sur le noyau
+//! Alpine :
+//!
+//! | | débit |
+//! |---|---|
+//! | ce cœur-ci, en Rust | **49 MIPS** |
+//! | ce que l'émetteur engendre, sous JavaScriptCore | **247 MIPS** |
+//!
+//! Cinq fois, et c'est la première fois que le rapport est chiffré plutôt que
+//! supposé. Deux choses s'y lisent. La première : l'interpréteur en Rust rend
+//! déjà **4,6 fois** celui en Swift, sans WebView ni permission. La seconde :
+//! 247 n'est pas 1103, et l'écart est celui entre du code engendré et du code
+//! écrit à la main — le module de l'émetteur matérialise des drapeaux et passe
+//! par une boucle de répartition à chaque bloc, ce que le module écrit à la
+//! main n'avait pas à faire.
 //!
 //! Ce que ce cœur a de mieux qu'un JIT, et qui ne se voit pas dans un débit :
 //! il ne demande **aucune permission**. Pas de `WKWebView`, pas de pont, pas
@@ -71,6 +89,11 @@ pub const AF: u64 = 1 << 4;
 pub const ZF: u64 = 1 << 6;
 pub const SF: u64 = 1 << 7;
 pub const OF: u64 = 1 << 11;
+/// **Le drapeau de direction.** Il ne fait pas partie de l'arithmétique — rien
+/// ne le touche sauf `cld` et `std` — et il décide du sens dans lequel les
+/// instructions de chaîne avancent. `Flags` le garde dans `other`, avec tout ce
+/// que l'arithmétique ne concerne pas, donc il survit à chaque opération.
+pub const DF: u64 = 1 << 10;
 
 /// Les six que l'arithmétique définit. Tout le reste — DF, IF, TF… — survit à
 /// une opération arithmétique et vit ailleurs.
@@ -428,6 +451,19 @@ pub enum Op {
     /// `clc`, `stc`, `cmc` : la retenue posée à la main, les cinq autres
     /// drapeaux intacts.
     CarryFlag(CarryAction),
+    /// **`cld` et `std`.** Le seul moyen de changer le sens des instructions de
+    /// chaîne, et donc le seul moyen de le vérifier.
+    DirectionFlag(bool),
+    /// **`movs` : de la mémoire vers la mémoire, RSI vers RDI.** Avec `repeat`,
+    /// c'est le `memcpy` d'un noyau — 949 des 1 092 régions que le compilateur
+    /// refusait encore depuis un vrai point d'entrée en portaient un.
+    StringMove {
+        repeat: bool,
+    },
+    /// **`stos` : l'accumulateur vers RDI.** Avec `repeat`, c'est `memset`.
+    StringStore {
+        repeat: bool,
+    },
     /// **`rcl` et `rcr`** : la rotation passe **à travers** la retenue. Le
     /// registre tourné fait donc la largeur **plus un bit** — soixante-cinq
     /// pour un quadruple mot — et c'est ce qui les sépare de `rol` et `ror`.
@@ -1348,6 +1384,67 @@ impl Cpu {
         Some(value)
     }
 
+    /// **Les instructions de chaîne : `movs` et `stos`.**
+    ///
+    /// C'est le `memcpy` et le `memset` d'un noyau, et c'est ce que la mesure
+    /// désignait sans ambiguïté : 949 des 1 092 régions encore refusées depuis
+    /// un vrai point d'entrée commençaient par `f3 48 a5` ou `f3 48 ab`.
+    ///
+    /// Quatre choses les distinguent de tout le reste :
+    ///
+    /// 1. **Le sens vient du drapeau de direction**, pas de l'instruction.
+    ///    `std` fait reculer les deux pointeurs — c'est ce qui permet à un
+    ///    `memmove` de copier vers l'arrière quand les zones se recouvrent.
+    /// 2. **Le pas est la largeur**, pas un octet : `movsq` avance de huit.
+    /// 3. **Avec `rep`, un compte nul ne fait rien du tout** — pas même une
+    ///    itération. Tester après coup copierait un élément de trop, et c'est
+    ///    exactement le défaut qu'on ne voit pas sur un compte de quatre.
+    /// 4. **Un accès qui sort de la fenêtre arrête la boucle.** Sans ça, un
+    ///    compte absurde tournerait jusqu'à ce que RCX s'épuise, ce qui n'est
+    ///    pas une durée acceptable pour un cœur.
+    fn string(&mut self, instruction: &Decoded) {
+        let width = instruction.width;
+        let size = width as u64;
+        let step = if self.flags.read() & DF != 0 {
+            size.wrapping_neg()
+        } else {
+            size
+        };
+        let (moves, repeat) = match instruction.op {
+            Op::StringMove { repeat } => (true, repeat),
+            Op::StringStore { repeat } => (false, repeat),
+            _ => unreachable!("seules les deux chaînes arrivent ici"),
+        };
+        loop {
+            if repeat && self.regs[1] == 0 {
+                return;
+            }
+            let value = if moves {
+                match self.memory.read(self.regs[6], width) {
+                    Some(value) => value,
+                    None => {
+                        self.faulted = true;
+                        return;
+                    }
+                }
+            } else {
+                self.get(0, width, false)
+            };
+            if self.memory.write(self.regs[7], width, value).is_none() {
+                self.faulted = true;
+                return;
+            }
+            if moves {
+                self.regs[6] = self.regs[6].wrapping_add(step);
+            }
+            self.regs[7] = self.regs[7].wrapping_add(step);
+            if !repeat {
+                return;
+            }
+            self.regs[1] = self.regs[1].wrapping_sub(1);
+        }
+    }
+
     /// **Un bit, lu dans la retenue et parfois changé.**
     ///
     /// Trois formes, et la troisième n'est pas une variante des deux autres :
@@ -1510,6 +1607,22 @@ impl Cpu {
         // lecture des opérandes : elle porte une adresse mémoire que personne
         // ne doit déréférencer. La lire comme un opérande la faisait échouer
         // sur toute adresse hors de la fenêtre — c'est-à-dire sur toutes.
+        // **Le drapeau de direction, et les chaînes qu'il oriente.** Ni l'un ni
+        // les autres ne passent par la machinerie à une destination : `cld` ne
+        // touche qu'un bit, et une chaîne écrit la mémoire, RDI, parfois RSI et
+        // RCX — quatre endroits, dont aucun n'est `dst`.
+        if let Op::DirectionFlag(set) = instruction.op {
+            let now = self.flags.read();
+            self.flags.write(if set { now | DF } else { now & !DF });
+            return;
+        }
+        if matches!(
+            instruction.op,
+            Op::StringMove { .. } | Op::StringStore { .. }
+        ) {
+            self.string(instruction);
+            return;
+        }
         // **L'instruction indéfinie, avant tout le reste.** Elle ne calcule
         // rien, n'écrit rien, et n'avance pas : le processeur lève une
         // exception, et ce cœur pose une faute que l'hôte lira.
@@ -1770,6 +1883,9 @@ impl Cpu {
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
             Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
+            Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
+                unreachable!("la direction et les chaînes sortent avant")
+            }
             Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                 unreachable!("la pile sort avant")
             }
@@ -2473,6 +2589,31 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 },
                 length: at,
                 src_width: if opcode == 0x98 { half } else { width },
+                ..Decoded::nothing(width)
+            })
+        }
+        // **Le drapeau de direction.** Deux opcodes d'un octet, et le seul
+        // moyen de changer le sens des instructions de chaîne — donc le seul
+        // moyen de le vérifier contre le silicium.
+        0xfc | 0xfd => Some(Decoded {
+            op: Op::DirectionFlag(opcode == 0xfd),
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // **Les chaînes.** `a4`/`a5` déplacent, `aa`/`ab` remplissent ; le bit
+        // bas de l'opcode dit l'octet contre la largeur des préfixes. Le
+        // préfixe 0xF3 en fait la forme répétée, et c'est celle-là que le
+        // noyau met partout.
+        0xa4 | 0xa5 | 0xaa | 0xab => {
+            let width = prefixes.width(opcode & 1 == 0);
+            let repeat = prefixes.repeat;
+            Some(Decoded {
+                op: if opcode < 0xaa {
+                    Op::StringMove { repeat }
+                } else {
+                    Op::StringStore { repeat }
+                },
+                length: at,
                 ..Decoded::nothing(width)
             })
         }
