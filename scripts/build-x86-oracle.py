@@ -663,6 +663,51 @@ PROGRAMS = [
         "addq %rax, (%rsi)", "xorq %rcx, 8(%rsi)", "incq 16(%rsi)"]),
     ("un saut indirect par registre", [
         "leaq 1f(%rip), %rdx", "jmp *%rdx", "movq $0, %rax", "1: incq %rdx"]),
+    # **Le groupe 5 par la mémoire : ce qu'un noyau fait de ses pointeurs.**
+    #
+    # La cible est écrite dans la fenêtre de données, puis atteinte en la
+    # relisant — c'est exactement une table de fonctions. Le `movq $0, %rax`
+    # qu'on saute est le témoin : s'il s'exécute, le saut n'a pas eu lieu.
+    ("un saut indirect par la mémoire", [
+        "leaq 1f(%rip), %rdx", "movq %rdx, (%rsi)", "jmp *(%rsi)",
+        "movq $0, %rax", "1: incq %rdx"]),
+    ("un saut indirect par une table déplacée", [
+        "leaq 1f(%rip), %rdx", "movq %rdx, 8(%rsi)", "jmp *8(%rsi)",
+        "movq $0, %rax", "1: incq %rdx"]),
+    # **L'appel indirect, et son retour.** Le `ret` ne retombe juste que si
+    # l'adresse empilée est celle qui suit l'appel, longueur comprise : c'est la
+    # forme la plus dure à tenir, et celle qu'un noyau exécute le plus souvent.
+    ("un appel indirect par la mémoire, et son retour", [
+        "leaq 1f(%rip), %rdx", "movq %rdx, (%rsi)", "call *(%rsi)", "jmp 2f",
+        "1: movq $0x42, %rdx", "ret", "2: incq %rdx"]),
+    # **La cible d'un saut indirect, atteinte relativement au pointeur
+    # d'instruction.** C'est la forme exacte d'une table de sauts de noyau —
+    # `jmp *0x1234(%rip)` — et sans elle rien ne tenait le figeage de cette
+    # adresse à la compilation : un sabotage qui le supprimait passait.
+    #
+    # Le déplacement est calculé, pas deviné : le `leaq` fait sept octets, le
+    # `movq` trois, et le `jmp` six, donc l'octet qui suit le saut est à
+    # CODE + 0x10 et la fenêtre de données est à DATA. Les trois longueurs sont
+    # relevées sur l'assembleur, pas supposées.
+    ("un saut indirect relatif au pointeur d'instruction", [
+        "leaq 1f(%rip), %rdx", "movq %rdx, (%rsi)",
+        "jmp *%d(%%rip)" % (DATA - (CODE + 0x10)),
+        "movq $0, %rax", "1: incq %rdx"]),
+    # **La cible prise sur la pile, que l'appel va justement écraser.**
+    # `call *-8(%rsp)` lit son opérande, puis empile l'adresse de retour
+    # exactement là. Lire après avoir descendu RSP rendrait l'adresse de retour
+    # au lieu de la cible — un cœur qui fait ça saute une instruction plus loin
+    # et paraît juste sur tous les autres cas. Un sabotage l'a montré.
+    ("un appel indirect dont la cible est sur la pile", [
+        "leaq 1f(%rip), %rdx", "movq %rdx, -8(%rsp)", "call *-8(%rsp)",
+        "jmp 2f", "1: movq $0x42, %rdx", "ret", "2: incq %rdx"]),
+    ("un appel indirect par registre, et son retour", [
+        "leaq 1f(%rip), %rdx", "call *%rdx", "jmp 2f",
+        "1: movq $0x42, %rdx", "ret", "2: incq %rdx"]),
+    # **Empiler huit octets pris en mémoire**, puis les reprendre : si la
+    # largeur était de trente-deux bits, la moitié haute reviendrait à zéro.
+    ("empiler ce que la mémoire contient", [
+        "pushq (%rsi)", "pushq 8(%rsi)", "popq %rdx", "popq %rcx"]),
     # Les chaînes de bits. C'est la forme que le manuel appelle « bit string » :
     # quand la destination est en mémoire, le numéro n'est **pas** réduit au
     # modulo, il est signé, et le processeur va chercher le mot qui contient ce

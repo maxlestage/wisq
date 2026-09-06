@@ -328,7 +328,12 @@ impl Module {
                 // autres blocs.
                 if matches!(
                     step.op,
-                    Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::Call | Op::Return
+                    Op::Jump(_)
+                        | Op::LoopWhile
+                        | Op::JumpIndirect
+                        | Op::Call
+                        | Op::CallIndirect
+                        | Op::Return
                 ) {
                     continue;
                 }
@@ -398,7 +403,12 @@ impl Module {
                 at += step.length;
                 let ends = matches!(
                     step.op,
-                    Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::Call | Op::Return
+                    Op::Jump(_)
+                        | Op::LoopWhile
+                        | Op::JumpIndirect
+                        | Op::Call
+                        | Op::CallIndirect
+                        | Op::Return
                 );
                 let displacement = step.imm as i64;
                 // **Ce qui suit un `call` est atteignable, et par une seule
@@ -466,6 +476,22 @@ impl Module {
             return;
         };
         let target = after as i64 + step.imm as i64;
+        // **L'opérande d'une forme indirecte, poussé sur la pile WebAssembly.**
+        // Un registre, ou huit octets de mémoire — et cette mémoire peut être
+        // relative au pointeur d'instruction, ce dont un noyau est fait : une
+        // table de sauts s'atteint comme ça. `pin` résout ce déplacement depuis
+        // l'adresse de **cette** instruction, qui est celle d'après moins sa
+        // longueur.
+        let here = base.wrapping_add(after.wrapping_sub(step.length) as u64);
+        let pinned = Self::pin(step, here);
+        let reach = move |b: &mut Body| match pinned.memory {
+            Some(address) => {
+                b.load_memory(&address, Width::Qword);
+            }
+            None => {
+                b.load(Self::slot(pinned.dst));
+            }
+        };
         match step.op {
             Op::Jump(None) => place(body, target),
             Op::Jump(Some(condition)) => {
@@ -500,8 +526,25 @@ impl Module {
                 });
             }
             Op::JumpIndirect => {
+                body.store(RIP_SLOT, reach);
+                Self::resolve(starts, body);
+            }
+            Op::CallIndirect => {
+                // **La cible est lue avant que la pile ne bouge.** L'ordre
+                // inverse marcherait tant que la cible n'est pas prise sur la
+                // pile elle-même — et `call *-8(%rsp)` est écrivable.
+                body.store(Body::scratch(0), reach);
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+                });
+                Self::at_top(body, |b| {
+                    b.constant(base.wrapping_add(after as u64));
+                });
+                // La cible n'est pas connue à la compilation : si elle tombe
+                // sur un bloc de la région, la boucle de répartition y va ;
+                // sinon le module rend la main, et l'interpréteur reprend là.
                 body.store(RIP_SLOT, |b| {
-                    b.load(Self::slot(step.dst));
+                    b.load(Body::scratch(0));
                 });
                 Self::resolve(starts, body);
             }
@@ -753,7 +796,10 @@ impl Module {
         // **Un saut n'est pas une instruction comme une autre** : il change le
         // bloc, pas l'état. Il est traité par le compilateur de région, qui
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
-        if matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect) {
+        if matches!(
+            step.op,
+            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::CallIndirect
+        ) {
             return None;
         }
         // Ne rien faire n'émet rien.
@@ -943,7 +989,7 @@ impl Module {
                     unreachable!("les sauts sortent avant")
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
-                Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
+                Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                     unreachable!("la pile sort avant")
                 }
                 Op::WideMultiply { .. }
@@ -1345,6 +1391,7 @@ impl Module {
             | Op::Push
             | Op::Pop
             | Op::Call
+            | Op::CallIndirect
             | Op::Return
             | Op::Leave
             | Op::WideMultiply { .. }
@@ -2354,6 +2401,12 @@ impl Module {
                 body.store(Body::scratch(0), |b| {
                     if step.immediate {
                         b.constant(step.imm);
+                    } else if let Some(address) = step.memory {
+                        // `pushq (%rsi)` : huit octets pris en mémoire. Toujours
+                        // huit — en mode 64 bits le groupe 5 n'a pas d'autre
+                        // largeur, et en prendre quatre empilerait la moitié
+                        // basse d'un pointeur.
+                        b.load_memory(&address, Width::Qword);
                     } else {
                         b.load(Self::slot(step.dst));
                     }
