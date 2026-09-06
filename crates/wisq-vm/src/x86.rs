@@ -240,6 +240,10 @@ pub struct Cpu {
     pub rip: u64,
     pub flags: Flags,
     pub memory: GuestMemory,
+    /// **L'instruction a-t-elle écrit le pointeur d'instruction elle-même ?**
+    /// Sans ce témoin, `step` avancerait par-dessus le saut qu'il vient de
+    /// prendre, et le cœur exécuterait l'instruction d'après la cible.
+    pub jumped: bool,
     /// **Un accès hors de la mémoire attachée.** Le cœur définitif aura la RAM
     /// entière et n'aura rien à refuser ; ici la mémoire est une fenêtre, et un
     /// accès qui en sort est une faute du harnais ou du corpus, pas de
@@ -358,6 +362,19 @@ pub enum Op {
     Popcount,
     /// `bswap` : renverser l'ordre des octets.
     ByteSwap,
+    /// Un saut relatif, conditionnel ou non. Le déplacement est dans `imm`,
+    /// **relatif à l'instruction suivante** — pas à celle-ci.
+    Jump(Option<Condition>),
+    /// `loop` : décrémenter RCX et sauter tant qu'il n'est pas nul. Il ne
+    /// touche à aucun drapeau, ce qui le distingue d'un `dec` suivi d'un `jnz`.
+    LoopWhile,
+    /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
+    /// à quel bloc elle correspond : il rend la main.
+    JumpIndirect,
+    /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
+    /// saut sur des frontières de cache, et ce qui reste quand une correction
+    /// à chaud efface une instruction.
+    Nop,
 }
 
 /// Ce qu'une instruction de bit fait au bit qu'elle vient de lire.
@@ -481,6 +498,30 @@ pub struct Decoded {
     /// Sans objet quand `memory` est absente, et pour `lea`, dont l'adresse
     /// **est** le résultat.
     pub memory_is_source: bool,
+}
+
+impl Decoded {
+    /// Le squelette d'une instruction qui ne porte ni opérande ni mémoire —
+    /// un saut, essentiellement. Écrit une fois plutôt que quinze, pour que
+    /// l'ajout d'un champ ne se rate pas à la quinzième.
+    fn nothing(width: Width) -> Self {
+        Decoded {
+            op: Op::Not,
+            width,
+            dst: 0,
+            src: 0,
+            imm: 0,
+            immediate: false,
+            discards: false,
+            length: 0,
+            dst_high: false,
+            src_high: false,
+            count_is_cl: false,
+            src_width: width,
+            memory: None,
+            memory_is_source: false,
+        }
+    }
 }
 
 impl Cpu {
@@ -814,11 +855,20 @@ impl Cpu {
     /// `movsx`. La règle d'écriture ne change pas — une destination de 32 bits
     /// efface toujours la moitié haute du registre.
     fn transfer(&mut self, instruction: &Decoded) {
-        // La source se lit à **sa** largeur, qui n'est pas celle de l'écriture,
-        // et l'accès mémoire éventuel doit donc porter la même.
-        let Some(source) = self.read_source(instruction, instruction.src_width) else {
-            self.faulted = true;
-            return;
+        // **La source peut être un immédiat**, et ce n'était pas vrai jusqu'à
+        // ce que `mov $1, %rdx` arrive : toutes les formes précédentes lisaient
+        // un registre ou la mémoire. L'oublier lisait le registre zéro, ce qui
+        // rend une valeur plausible à chaque fois — celle de RAX.
+        let source = if instruction.immediate {
+            instruction.imm & instruction.src_width.mask()
+        } else {
+            // La source se lit à **sa** largeur, qui n'est pas celle de
+            // l'écriture, et l'accès mémoire éventuel doit porter la même.
+            let Some(value) = self.read_source(instruction, instruction.src_width) else {
+                self.faulted = true;
+                return;
+            };
+            value
         };
         let value = match instruction.op {
             Op::Movsx => sign_extend(source, instruction.src_width),
@@ -867,6 +917,46 @@ impl Cpu {
             };
             self.faulted |= self.write_destination(instruction, value).is_none();
             return;
+        }
+
+        // **Les sauts écrivent le pointeur d'instruction eux-mêmes.** Le
+        // déplacement porte sur l'instruction **suivante**, donc la cible est
+        // `rip + longueur + déplacement`. Aucun drapeau n'est touché — pas même
+        // par `loop`, qui décrémente RCX sans rien poser, ce qui le distingue
+        // d'un `dec` suivi d'un `jnz`.
+        if instruction.op == Op::Nop {
+            return;
+        }
+
+        let after = self.rip.wrapping_add(instruction.length as u64);
+        match instruction.op {
+            Op::Jump(condition) => {
+                let taken = condition.is_none_or(|c| c.holds(self.flags.read()));
+                self.rip = if taken {
+                    after.wrapping_add(instruction.imm)
+                } else {
+                    after
+                };
+                self.jumped = true;
+                return;
+            }
+            Op::LoopWhile => {
+                let count = self.regs[1].wrapping_sub(1);
+                self.regs[1] = count;
+                self.rip = if count != 0 {
+                    after.wrapping_add(instruction.imm)
+                } else {
+                    after
+                };
+                self.jumped = true;
+                return;
+            }
+            Op::JumpIndirect => {
+                self.rip = self.regs[instruction.dst as usize];
+                self.jumped = true;
+                return;
+            }
+            _ => {}
         }
 
         // **Les bits, le balayage, le compte, et le renversement.** Chacun a
@@ -988,6 +1078,10 @@ impl Cpu {
             Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
                 unreachable!("les bits sortent avant")
             }
+            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
+                unreachable!("les sauts sortent avant")
+            }
+            Op::Nop => unreachable!("ne rien faire sort avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -1282,6 +1376,28 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     memory_is_source: false,
                 })
             }
+            // `nop` à plusieurs octets. L'assembleur s'en sert pour aligner
+            // sans perdre de cycles : un seul `nop` long coûte moins que huit
+            // courts. Il porte un ModRM entier, qu'il faut consommer.
+            0x1f => {
+                read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: Op::Nop,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
+            // Les sauts conditionnels à déplacement long, dont le noyau se
+            // sert dès qu'une fonction dépasse cent vingt-sept octets.
+            0x80..=0x8f => {
+                let displacement = i64::from(read_i32(bytes, &mut at)?);
+                Some(Decoded {
+                    op: Op::Jump(Some(Condition(second & 0x0f))),
+                    imm: displacement as u64,
+                    length: at,
+                    ..Decoded::nothing(prefixes.width(false))
+                })
+            }
             // `cmovcc` : la source est lue, la destination écrite seulement si
             // la condition tient. Sans elle, la destination garde sa valeur —
             // mais elle est quand même **écrite**, donc la règle de largeur
@@ -1453,6 +1569,59 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 memory_is_source: to_register,
             })
         }
+        // `nop`, la forme courte. Avec un bit B de REX ce n'est plus un `nop`
+        // mais `xchg %r8, %rax` — le même octet, deux instructions, et les
+        // confondre échangerait deux registres au lieu de ne rien faire.
+        0x90 if prefixes.rm_extension() == 0 => Some(Decoded {
+            op: Op::Nop,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // **Les sauts relatifs.** Le déplacement porte sur l'instruction
+        // **suivante** : c'est `rip + longueur + déplacement`, et oublier la
+        // longueur décale toutes les cibles de deux à six octets — un saut qui
+        // atterrit dans le milieu d'une instruction.
+        0xeb => {
+            let displacement = i64::from(*bytes.get(at)? as i8);
+            at += 1;
+            Some(Decoded {
+                op: Op::Jump(None),
+                imm: displacement as u64,
+                length: at,
+                ..Decoded::nothing(prefixes.width(false))
+            })
+        }
+        0xe9 => {
+            let displacement = i64::from(read_i32(bytes, &mut at)?);
+            Some(Decoded {
+                op: Op::Jump(None),
+                imm: displacement as u64,
+                length: at,
+                ..Decoded::nothing(prefixes.width(false))
+            })
+        }
+        0x70..=0x7f => {
+            let displacement = i64::from(*bytes.get(at)? as i8);
+            at += 1;
+            Some(Decoded {
+                op: Op::Jump(Some(Condition(opcode & 0x0f))),
+                imm: displacement as u64,
+                length: at,
+                ..Decoded::nothing(prefixes.width(false))
+            })
+        }
+        // `loop` : le compte est **toujours** RCX entier, quelle que soit la
+        // largeur des préfixes, et il ne pose aucun drapeau.
+        0xe2 => {
+            let displacement = i64::from(*bytes.get(at)? as i8);
+            at += 1;
+            Some(Decoded {
+                op: Op::LoopWhile,
+                imm: displacement as u64,
+                length: at,
+                ..Decoded::nothing(prefixes.width(false))
+            })
+        }
         // `lea` : le seul opérande mémoire de cette tranche, et le seul qui ne
         // lise rien. Le mode registre est **invalide** pour cette instruction —
         // il n'y a pas d'adresse d'un registre — et l'assembleur ne le produit
@@ -1481,6 +1650,68 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_width: width,
                 memory: Some(memory),
                 memory_is_source: false,
+            })
+        }
+        // **`mov` avec un immédiat**, sous ses trois formes. C'est l'une des
+        // instructions les plus fréquentes d'un noyau, et elle manquait.
+        //
+        // La forme longue vers un registre est la seule de tout le jeu à porter
+        // un immédiat de **huit** octets, et seulement avec REX.W : c'est
+        // `movabs`. Les autres immédiats font au plus quatre octets étendus en
+        // signe, et traiter celui-ci comme eux tronquerait toute adresse au
+        // delà de quatre gigaoctets — c'est-à-dire toutes celles d'un noyau.
+        0xb0..=0xbf => {
+            let byte_form = opcode < 0xb8;
+            let width = prefixes.width(byte_form);
+            let register = (opcode & 0b111) | prefixes.rm_extension();
+            let imm = if width == Width::Qword {
+                let slice = bytes.get(at..at + 8)?;
+                at += 8;
+                u64::from_le_bytes(slice.try_into().ok()?)
+            } else {
+                // Ici l'immédiat n'est **pas** étendu en signe : il remplit
+                // exactement la largeur, et le reste vient de la règle
+                // d'écriture.
+                let size = width as usize;
+                let slice = bytes.get(at..at + size)?;
+                at += size;
+                let mut value = 0u64;
+                for (rank, byte) in slice.iter().enumerate() {
+                    value |= u64::from(*byte) << (rank * 8);
+                }
+                value
+            };
+            Some(Decoded {
+                op: Op::Mov,
+                width,
+                dst: prefixes.normalise_high(register, width),
+                imm,
+                immediate: true,
+                length: at,
+                dst_high: prefixes.high_byte(register, width),
+                ..Decoded::nothing(width)
+            })
+        }
+        // Groupe 11 : `mov` d'un immédiat vers un registre **ou la mémoire**.
+        // Le champ `reg` du ModRM doit valoir zéro ; les autres valeurs sont
+        // des encodages que cette tranche ne connaît pas.
+        0xc6 | 0xc7 => {
+            let width = prefixes.width(opcode == 0xc6);
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            if field.reg & 0b111 != 0 {
+                return None;
+            }
+            let imm = read_immediate(bytes, &mut at, width, false)?;
+            Some(Decoded {
+                op: Op::Mov,
+                width,
+                dst: prefixes.normalise_high(field.register, width),
+                imm,
+                immediate: true,
+                length: at,
+                dst_high: field.memory.is_none() && prefixes.high_byte(field.register, width),
+                memory: field.memory,
+                ..Decoded::nothing(width)
             })
         }
         // `movsxd` : quatre octets lus, étendus en signe vers la destination.
@@ -1674,6 +1905,16 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             let op = match reg & 0b111 {
                 0 => Op::Inc,
                 1 => Op::Dec,
+                // `jmp *%reg`, seulement en mode registre : une cible en
+                // mémoire demanderait une lecture que ce bras ne fait pas.
+                4 if opcode == 0xff && field.memory.is_none() => {
+                    return Some(Decoded {
+                        op: Op::JumpIndirect,
+                        dst: rm,
+                        length: at,
+                        ..Decoded::nothing(Width::Qword)
+                    })
+                }
                 _ => return None,
             };
             Some(Decoded {
@@ -1854,8 +2095,14 @@ impl Cpu {
     pub fn step(&mut self, bytes: &[u8]) -> Step {
         match decode(bytes) {
             Some(instruction) => {
+                self.jumped = false;
                 self.execute(&instruction);
-                self.rip = self.rip.wrapping_add(instruction.length as u64);
+                // **Ne pas avancer par-dessus un saut qu'on vient de prendre.**
+                // Sans ce témoin, le cœur exécuterait l'instruction d'après la
+                // cible au lieu de la cible.
+                if !self.jumped {
+                    self.rip = self.rip.wrapping_add(instruction.length as u64);
+                }
                 Step::Ran {
                     length: instruction.length,
                 }

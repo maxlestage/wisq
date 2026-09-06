@@ -471,6 +471,24 @@ PROGRAMS = [
         "1: addq %rcx, %rax", "loop 1b"]),
     ("un saut conditionnel court, pris", [
         "movq $1, %rdx", "cmpq %rcx, %rax", "jne 1f", "movq $2, %rdx", "1: incq %rdx"]),
+    # **Les `nop` d'alignement, les deux formes.** Le remplissage des programmes
+    # ci-dessous n'émet que la forme d'un octet ; celle à plusieurs octets — que
+    # tout compilateur produit pour aligner une cible de saut sans perdre de
+    # cycles — n'était exercée par rien. Un sabotage l'a montré : lui faire
+    # consommer un octet de trop ne faisait tomber aucun cas.
+    ("des nop d'alignement, courts et longs", [
+        "incq %rdx", "nop", "nopl (%rax)", "nopw 0(%rax,%rax,1)",
+        "nopl 0x12345678(%rax)", "incq %rdx"]),
+    # **La branche que le corpus n'éprouvait pas.** Les états ne mettent jamais
+    # RAX égal à RCX, donc le `jne` du programme précédent est *toujours* pris —
+    # son nom le dit. Un sabotage l'a montré : oublier la suite d'un saut
+    # conditionnel dans la découverte des blocs ne faisait tomber aucun cas,
+    # parce que cette suite n'était jamais atteinte. `cmpq %rax, %rax` force
+    # l'égalité, et l'autre branche existe enfin.
+    ("un saut conditionnel court, non pris", [
+        "movq $1, %rdx", "cmpq %rax, %rax", "jne 1f", "movq $2, %rdx", "1: incq %rdx"]),
+    ("un saut conditionnel long, non pris", [
+        "cmpq %rax, %rax", "jne 1f", "movq $7, %rdx", ".fill 200, 1, 0x90", "1: incq %rdx"]),
     ("un saut conditionnel long", [
         "cmpq %rcx, %rax", "jne 1f", "movq $7, %rdx", ".fill 200, 1, 0x90", "1: incq %rdx"]),
     ("un appel et son retour", [

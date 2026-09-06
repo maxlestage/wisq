@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::{decode, Decoded, Width};
+use wisq_vm::x86::Width;
 use wisq_vm::x86_wasm::{Module, RFLAGS_SLOT};
 
 fn workspace_root() -> PathBuf {
@@ -73,7 +73,10 @@ for (const unit of job.jobs) {
       slots[Number(slot)].value = BigInt("0x" + value);
     }
     try {
-      instance.exports.run();
+      // Le budget : un cœur qui partirait en rond doit être arrêté plutôt
+      // qu'attendu. Les programmes du corpus sont courts ; le plus long boucle
+      // dix fois.
+      instance.exports.run(10000n);
     } catch (error) {
       // **Dire lequel.** Sans le nom du cas, « Out of bounds memory access »
       // ne désigne rien : il y a des centaines de modules dans un tour.
@@ -202,20 +205,6 @@ fn read_oracle() -> Oracle {
 /// **Chaque instruction que l'émetteur accepte doit, une fois compilée par
 /// JavaScriptCore, rendre exactement ce que le silicium a rendu.**
 /// Décoder une séquence entière, ou rien. Un décodage partiel n'est pas une
-/// couverture partielle : c'est un état faux.
-fn decode_all(bytes: &[u8]) -> Option<Vec<Decoded>> {
-    let mut program = Vec::new();
-    let mut at = 0usize;
-    while at < bytes.len() {
-        let step = decode(&bytes[at..])?;
-        at += step.length;
-        program.push(step);
-    }
-    if program.is_empty() {
-        return None;
-    }
-    Some(program)
-}
 
 #[test]
 fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
@@ -277,11 +266,10 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         // rien ne distingue d'un état juste — c'est ce qui a produit les faux
         // écarts portant « une boucle qui additionne » ou « un saut
         // conditionnel long » dans leur nom.
-        let Some(program) = decode_all(bytes) else {
-            refused += cases.len();
-            continue;
-        };
-        let Some(module) = Module::block(&program) else {
+        // **Une région, pas une suite d'instructions.** Le compilateur découvre
+        // lui-même les blocs atteignables : linéariser les octets reviendrait à
+        // ignorer les sauts tout en prétendant les traduire.
+        let Some(module) = Module::region(bytes, 0) else {
             refused += cases.len();
             continue;
         };
@@ -417,7 +405,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // transferts, les rotations simples et `lea`, la mémoire a ajouté
     // cinquante-trois instructions et quatre programmes entiers.
     assert!(
-        checked > 8900,
+        checked > 9050,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
