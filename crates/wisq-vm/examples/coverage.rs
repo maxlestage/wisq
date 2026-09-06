@@ -149,9 +149,10 @@ fn main() {
     // pouvoir la lire. Un interpréteur qui vit dans l'application ne le peut
     // pas.
     //
-    // `rep` porte en plus une promesse écrite dans l'émetteur : « le jour où
-    // une mesure montrera que cette rentrée pèse, la boucle s'écrira ». Voici
-    // la mesure.
+    // Le `rep` a quitté cette liste : sa boucle est émise, parce que ce qui
+    // reprend après un retour de main doit lire la RAM invitée et qu'un hôte
+    // hors de la vue ne le peut pas. Il reste compté à part, parce que sa
+    // densité dit ce que la boucle a rapatrié.
     let mut total = Survey::default();
     let mut regions = 0usize;
     let mut with_repeat = 0usize;
@@ -176,12 +177,16 @@ fn main() {
         total.instructions as f64 / total.blocks.max(1) as f64
     );
     println!(
-        "  rendent la main à coup sûr : {} ({:.2} % des instructions, une toutes les {:.0}) \
-         — dont {} `rep`",
+        "  rendent la main à coup sûr (`ud2`) : {} ({:.2} % des instructions, \
+         une toutes les {:.0})",
         total.always,
         100.0 * total.always as f64 / total.instructions.max(1) as f64,
-        total.instructions as f64 / total.always.max(1) as f64,
-        total.repeats
+        total.instructions as f64 / total.always.max(1) as f64
+    );
+    println!(
+        "  chaînes répétées, désormais dans le module : {} ({:.2} % des instructions)",
+        total.repeats,
+        100.0 * total.repeats as f64 / total.instructions.max(1) as f64
     );
     println!(
         "  régions contenant au moins un `rep` : {with_repeat} sur {regions} ({:.1} %)",

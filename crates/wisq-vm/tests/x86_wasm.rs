@@ -477,6 +477,14 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 
     let mut checked = 0usize;
     let mut handed_back = 0usize;
+    // **Quelles instructions rendent la main, et pas seulement combien.** Le
+    // compte seul laisserait `rep` sortir du champ de la comparaison sans que
+    // rien ne le dise : un cas rendu n'est pas un cas faux, il est un cas non
+    // jugé, et la différence ne se voit pas dans un total.
+    // La clé est **l'identifiant** de l'instruction, pas son nom : c'est lui
+    // qui retrouve les octets dans le corpus, et les octets sont ce qui dit si
+    // un programme porte un `rep`.
+    let mut gave_up: std::collections::BTreeSet<(String, String)> = Default::default();
     let mut wrong: Vec<String> = Vec::new();
     let produced = results(&text);
     let (_, pristine_span) = span(&oracle.windows);
@@ -503,6 +511,10 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         // poursuivre, comme le fera l'application.
         if raw.6 {
             handed_back += 1;
+            // L'identifiant d'un cas est « instruction|état » ; c'est la
+            // première moitié qui retrouve les octets dans le corpus.
+            let instruction = id.split('|').next().unwrap_or(id).to_string();
+            gave_up.insert((instruction, mnemonic.clone()));
             continue;
         }
         let got = (
@@ -590,6 +602,48 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     assert!(
         checked + handed_back > 13140,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
+    );
+    // **Et un plancher sur les cas réellement jugés, pas seulement sur la
+    // somme.** La somme seule laisserait une famille repasser de « comparée »
+    // à « rendue » sans que rien ne tombe : le total ne bouge pas, et pourtant
+    // le silicium ne juge plus rien de cette famille. La boucle du `rep` a fait
+    // monter ce compte de 12836 à 12980 ; c'est lui qui ne doit pas redescendre.
+    assert!(
+        checked > 12900,
+        "seuls {checked} cas sont jugés contre le silicium : une famille est \
+         repassée derrière un retour de main"
+    );
+
+    // **`rep` ne peut plus rendre la main, et ce n'est pas une question de
+    // vitesse.** Ce qui reprend après un retour de main doit lire la RAM de
+    // l'invité, qui est la mémoire linéaire du module, dans le processus de
+    // contenu de WebKit. Un secours qui vit ailleurs ne le peut pas — et
+    // « ailleurs » comprend l'application. Les deux seules issues étaient un
+    // quatrième cœur écrit en JavaScript, ou la boucle dans le module ; c'est
+    // la boucle.
+    // **Le filtre porte sur les octets, pas sur le nom.** Un programme du corpus
+    // s'appelle « remplir la mémoire par répétition » : chercher « rep » dedans
+    // ne trouve rien, et le test aurait passé sans rien vérifier. C'est le
+    // préfixe `f3` devant une instruction de chaîne qui dit `rep`, et lui seul.
+    let repeats: Vec<&String> = gave_up
+        .iter()
+        .filter(|(id, _)| {
+            oracle.instructions.get(id).is_some_and(|(code, _, _)| {
+                code.windows(2)
+                    .any(|pair| pair[0] == 0xf3 && matches!(pair[1], 0xa4 | 0xa5 | 0xaa | 0xab))
+                    || code.windows(3).any(|three| {
+                        three[0] == 0xf3
+                            && three[1] == 0x48
+                            && matches!(three[2], 0xa4 | 0xa5 | 0xaa | 0xab)
+                    })
+            })
+        })
+        .map(|(_, name)| name)
+        .collect();
+    assert!(
+        repeats.is_empty(),
+        "ces programmes rendent encore la main, donc rien ne les juge contre le \
+         silicium : {repeats:?}"
     );
 }
 
@@ -1163,11 +1217,11 @@ fn a_survey_counts_where_a_region_will_hand_back() {
     assert_eq!(plain.always, 0, "aucune de ces cinq ne rend la main");
     assert_eq!(plain.perhaps, 0);
 
-    // `rep movsq` rend la main à chaque fois, et c'est un choix documenté.
-    // `f3 48 a5` = rep movsq ; `c3` = ret.
+    // **`rep movsq` ne rend plus la main** : sa boucle est émise, parce que
+    // l'hôte n'a nulle part où l'exécuter. `f3 48 a5` = rep movsq ; `c3` = ret.
     let repeated = Module::survey(&[0xf3, 0x48, 0xa5, 0xc3], 0).expect("rep movsq puis ret");
-    assert_eq!(repeated.always, 1, "le `rep` rend la main à coup sûr");
-    assert_eq!(repeated.repeats, 1, "et c'est un `rep`, pas un `ud2`");
+    assert_eq!(repeated.always, 0, "le `rep` reste dans le module");
+    assert_eq!(repeated.repeats, 1, "et il est compté comme chaîne répétée");
     assert_eq!(
         repeated.perhaps, 1,
         "le `ret` peut rendre la main, pas plus"

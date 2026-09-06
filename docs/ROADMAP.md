@@ -1992,8 +1992,8 @@ régions compilées depuis de vraies cibles de `call` du noyau Alpine :
 | --- | --- |
 | Blocs, instructions | 249 339 blocs, 1 128 217 instructions |
 | Taille moyenne d'un bloc | **4,5 instructions** |
-| Rendent la main à coup sûr (`rep`, `ud2`) | 5048, soit **0,45 %** — une toutes les 223 |
-| dont des `rep` | **1533** |
+| Rendent la main à coup sûr (`ud2` seul, depuis la boucle) | 3515, soit **0,31 %** — une toutes les 321 |
+| Chaînes répétées, désormais **dans** le module | 1533, soit 0,14 % |
 | Régions contenant au moins un `rep` | 883 sur 9914, soit **8,9 %** |
 | Peuvent rendre la main (`ret`, `jmp *`, `call *`) | 1986, soit 0,18 % |
 
@@ -2026,9 +2026,26 @@ donc vivre dans la vue. Il n'y a que deux façons :
 
 La seconde retire un cœur au lieu d'en ajouter un. La raison d'écrire la boucle
 n'est donc pas que la rentrée pèse — ça reste à mesurer — mais qu'elle **n'a
-nulle part où atterrir**. C'est la tranche suivante, et elle se vérifie
-entièrement d'ici : l'oracle matériel a déjà des programmes `rep`, les trois
-cœurs les comparent, et l'émetteur cesserait de rendre la main dessus.
+nulle part où atterrir**.
+
+**C'est fait.** `Module::string` émet maintenant un `block`/`loop`/`br_if` au
+lieu de rendre la main, et le silicium le juge : les six programmes de chaînes
+du corpus sont passés de « rendus à l'hôte » à « comparés », **144 cas
+matériels de plus**, 144 retours de main de moins, la somme inchangée — et
+aucun désaccord. Le compte des cas jugés monte de 12 836 à 12 980, et un
+second cliquet le tient : la somme seule laisserait une famille repasser
+derrière un retour de main sans que rien ne tombe.
+
+Trois choses que le silicium impose et que la boucle respecte : le pas vient de
+DF et se calcule **une fois**, hors de la boucle ; sa taille est celle de
+l'opérande ; et **un compte nul ne fait rien du tout**, pas même une itération.
+Le corpus a un programme pour chacune, et sept sabotages sur sept tombent.
+
+Ce que la boucle **ne** borne **pas** : un invité qui pose RCX à un milliard
+fait tourner le module aussi longtemps qu'il ferait tourner l'interpréteur. Les
+deux cœurs se conduisent pareil, ce qui est la propriété qui compte ; borner
+demanderait de rendre la main à mi-course, RIP sur le `rep` — l'architecture le
+permet, rien ne le réclame encore.
 
 Reste `ud2`, qui rendra toujours la main — et c'est juste : une faute appartient
 à l'hôte, l'état est dans les globales, et rien n'a besoin de reprendre à

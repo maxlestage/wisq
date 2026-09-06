@@ -108,10 +108,13 @@ pub struct Survey {
     pub blocks: usize,
     /// Instructions traduites, tous blocs confondus.
     pub instructions: usize,
-    /// Instructions qui rendent la main **à chaque fois** : `rep` et `ud2`.
+    /// Instructions qui rendent la main **à chaque fois**. Il n'en reste
+    /// qu'une sorte : `ud2`. Le `rep` en faisait partie jusqu'à ce que sa
+    /// boucle soit émise ; le compte est donc tombé, et c'était le but.
     pub always: usize,
-    /// Parmi celles-là, les `rep` — les seules qu'une boucle émise pourrait
-    /// garder dans le module.
+    /// Les instructions de chaîne répétées. **Elles ne rendent plus la main** —
+    /// elles restent comptées parce que ce sont les `memcpy` et les `memset`
+    /// d'un noyau, et que leur densité dit ce que la boucle a rapatrié.
     pub repeats: usize,
     /// Instructions qui **peuvent** rendre la main : la cible n'est connue
     /// qu'à l'exécution, et le module ne sort que si elle lui est étrangère.
@@ -211,7 +214,11 @@ mod code {
     /// `if` sans résultat, et `return`. Ce sont les deux qui permettent à un
     /// bloc de **rendre la main au milieu** — ce dont la division a besoin
     /// quand elle refuse de diviser.
+    pub const BLOCK: u8 = 0x02;
+    pub const LOOP: u8 = 0x03;
     pub const IF: u8 = 0x04;
+    pub const BRANCH: u8 = 0x0c;
+    pub const BRANCH_IF: u8 = 0x0d;
     pub const VOID: u8 = 0x40;
     pub const RETURN: u8 = 0x0f;
     /// `select` prend deux valeurs et une condition, et rend la première quand
@@ -485,10 +492,10 @@ impl Module {
     /// Un module ne va pas jusqu'au bout du programme : il rend la main. Deux
     /// façons, et elles ne pèsent pas pareil.
     ///
-    /// - **Toujours** : `rep` et `ud2`. Le premier est un choix documenté —
-    ///   l'interpréteur copie plus vite qu'une boucle émise, et une seule
-    ///   rentrée coûte moins que le compte relu à chaque octet. Le second est
-    ///   une faute, qui appartient à l'hôte de toute façon.
+    /// - **Toujours** : `ud2`, et lui seul depuis que la boucle du `rep` est
+    ///   émise. C'est une faute, qui appartient à l'hôte de toute façon :
+    ///   l'état est dans les globales et rien n'a besoin de reprendre à
+    ///   l'intérieur du module.
     /// - **Peut-être** : `ret`, `jmp *` et `call *`. La cible n'est connue
     ///   qu'à l'exécution ; le module la cherche parmi ses propres blocs et ne
     ///   rend la main que si elle n'en est pas.
@@ -509,7 +516,6 @@ impl Module {
             for step in steps {
                 match step.op {
                     Op::StringMove { repeat: true } | Op::StringStore { repeat: true } => {
-                        survey.always += 1;
                         survey.repeats += 1;
                     }
                     Op::Undefined => survey.always += 1,
@@ -971,7 +977,7 @@ impl Module {
             return Some(());
         }
         if matches!(step.op, Op::StringMove { .. } | Op::StringStore { .. }) {
-            return Self::string(step, address, body);
+            return Self::string(step, body);
         }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
@@ -2565,37 +2571,46 @@ impl Module {
         }
     }
 
-    /// **Les instructions de chaîne, et pourquoi la forme répétée rend la
-    /// main.**
+    /// **Les instructions de chaîne, la forme simple et la forme répétée.**
     ///
     /// La forme simple est de la ligne droite : lire, écrire, avancer les deux
-    /// pointeurs du pas que le drapeau de direction choisit. Elle est traduite
-    /// ici.
+    /// pointeurs du pas que le drapeau de direction choisit.
     ///
-    /// **La forme répétée, non — et c'est un choix, pas un oubli.** Un
-    /// `rep movsq` est une boucle, et WebAssembly sait en écrire une. Mais
-    /// rendre la main coûte **une** rentrée dans l'hôte par `memcpy`, pas une
-    /// par octet : l'interpréteur exécute la répétition entière en un seul
-    /// pas, en Rust natif, et le module reprend après. Le coût d'une boucle
-    /// émise se paierait à chaque octet copié, en globales lues et réécrites,
-    /// contre une seule rentrée. Le jour où une mesure montrera que cette
-    /// rentrée pèse, la boucle s'écrira — et pas avant.
+    /// **La forme répétée est une boucle, et elle est ici — la raison n'est pas
+    /// la vitesse.** Ce chemin rendait la main : l'interpréteur exécutait la
+    /// répétition entière en un pas, en Rust natif, ce qui coûte une rentrée
+    /// par `memcpy` au lieu d'une boucle payée à chaque octet. L'argument était
+    /// bon tant que l'hôte pouvait exécuter ce qu'on lui rendait.
     ///
-    /// Ce que ça change pour le compte de couverture : la région **compile**,
-    /// et c'est ce que la mesure relève. Elle ne dit pas que tout y court
-    /// compilé, et c'est vrai aussi des appels indirects.
-    fn string(step: &Decoded, address: u64, body: &mut Body) -> Option<()> {
+    /// Il ne le peut pas. La RAM invitée **est** la mémoire linéaire du module,
+    /// et cette mémoire vit dans le processus de contenu de WebKit ; ce qui
+    /// reprend après un retour de main doit la lire. Un interpréteur qui vit
+    /// dans l'application ne le peut pas. Les deux seules issues étaient un
+    /// **quatrième** cœur écrit en JavaScript — à côté de l'interpréteur Rust,
+    /// de cet émetteur et du cœur Swift — ou la boucle ici. La boucle retire un
+    /// cœur au lieu d'en ajouter un.
+    ///
+    /// Trois choses que le silicium impose et que la boucle respecte :
+    /// le pas vient de DF et se calcule **une fois**, hors de la boucle, parce
+    /// que rien dedans ne touche au drapeau ; sa taille est celle de
+    /// l'opérande ; et **un compte nul ne fait rien du tout**, pas même une
+    /// itération — d'où le test avant le corps et non après.
+    ///
+    /// Ce qu'elle ne borne pas : un invité qui pose RCX à un milliard fait
+    /// tourner le module aussi longtemps qu'il ferait tourner l'interpréteur.
+    /// Les deux cœurs se conduisent pareil, ce qui est la propriété qui compte
+    /// ici ; borner la boucle demanderait de rendre la main à mi-course, avec
+    /// RIP sur le `rep` — l'architecture le permet, rien ne le réclame encore.
+    fn string(step: &Decoded, body: &mut Body) -> Option<()> {
         let repeat = matches!(
             step.op,
             Op::StringMove { repeat: true } | Op::StringStore { repeat: true }
         );
-        if repeat {
-            Self::hand_back(address, body);
-            return Some(());
-        }
         let width = step.width;
         let size = width as u64;
         // scratch 0 : le pas, négatif quand le drapeau de direction est posé.
+        // **Hors de la boucle** : rien dedans ne touche à DF, et le relire à
+        // chaque tour coûterait une globale par élément copié.
         body.store(Body::scratch(0), |b| {
             b.constant(size.wrapping_neg());
             b.constant(size);
@@ -2603,6 +2618,20 @@ impl Module {
             b.constant(0).op(code::I64_NE);
             b.op(code::SELECT);
         });
+        if repeat {
+            body.op(code::BLOCK).op(code::VOID);
+            body.op(code::LOOP).op(code::VOID);
+            // **Le compte nul ne fait rien du tout.** Tester après le corps
+            // copierait un élément de trop, et sur un compte de quatre ça ne
+            // se verrait pas.
+            body.load(Self::slot(1)).op(code::I64_EQZ);
+            // **Vers le `block`, pas vers la `loop`.** Une profondeur de zéro
+            // désigne la boucle elle-même : le compte nul reboucherait alors
+            // sans fin au lieu de sortir. Le sabotage l'a montré en tournant
+            // sans jamais rendre la main.
+            body.op(code::BRANCH_IF);
+            unsigned(1, &mut body.bytes);
+        }
         // scratch 1 : la valeur — lue en mémoire pour `movs`, prise dans
         // l'accumulateur pour `stos`.
         let moves = matches!(step.op, Op::StringMove { .. });
@@ -2638,6 +2667,17 @@ impl Module {
                 .load(Body::scratch(0))
                 .op(code::I64_ADD);
         });
+        if repeat {
+            // RCX décroît **après** le corps, et le tour suivant retestera à
+            // zéro avant de recommencer.
+            body.store(Self::slot(1), |b| {
+                b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
+            });
+            body.op(code::BRANCH);
+            unsigned(0, &mut body.bytes);
+            body.op(code::END); // loop
+            body.op(code::END); // block
+        }
         Some(())
     }
 
