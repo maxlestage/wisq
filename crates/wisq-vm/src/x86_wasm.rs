@@ -32,7 +32,7 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF,
+    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF,
 };
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
@@ -47,7 +47,7 @@ pub const RFLAGS_SLOT: usize = 16;
 /// arrêtée mais pas où reprendre.
 pub const RIP_SLOT: usize = RFLAGS_SLOT + 1;
 pub const SCRATCH_SLOT: usize = RIP_SLOT + 1;
-pub const SCRATCH_COUNT: usize = 6;
+pub const SCRATCH_COUNT: usize = 10;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 
@@ -137,6 +137,20 @@ mod code {
     /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
     /// revient à le tourner d'un.
     pub const I64_REM_U: u8 = 0x82;
+    pub const I64_EQ: u8 = 0x51;
+    pub const I64_LT_S: u8 = 0x53;
+    pub const I64_GT_S: u8 = 0x55;
+    pub const I64_GT_U: u8 = 0x56;
+    pub const I64_MUL: u8 = 0x7e;
+    pub const I64_DIV_S: u8 = 0x7f;
+    pub const I64_DIV_U: u8 = 0x80;
+    pub const I64_REM_S: u8 = 0x81;
+    /// `if` sans résultat, et `return`. Ce sont les deux qui permettent à un
+    /// bloc de **rendre la main au milieu** — ce dont la division a besoin
+    /// quand elle refuse de diviser.
+    pub const IF: u8 = 0x04;
+    pub const VOID: u8 = 0x40;
+    pub const RETURN: u8 = 0x0f;
     /// `select` prend deux valeurs et une condition, et rend la première quand
     /// la condition est vraie. C'est ce qui permet de traduire « un compte nul
     /// ne change rien » **sans branchement** : on calcule tout, puis on choisit.
@@ -281,6 +295,9 @@ impl Module {
             let mut body = Body::default();
             let mut at = *start;
             for step in steps {
+                // **L'adresse de l'instruction elle-même**, pas celle de la
+                // suivante : une division qui refuse doit y renvoyer l'hôte.
+                let here = base.wrapping_add(at as u64);
                 at += step.length;
                 // **Le saut final n'est pas traduit comme les autres.** Il ne
                 // change pas l'état de la machine mais le bloc courant, et
@@ -292,7 +309,7 @@ impl Module {
                 ) {
                     continue;
                 }
-                Self::translate(step, &mut body)?;
+                Self::translate(step, here, &mut body)?;
             }
             Self::terminate(steps.last(), base, at, &index, &starts, &mut body);
             body.op(code::END);
@@ -674,7 +691,7 @@ impl Module {
         body.constant(step.width.mask()).op(code::I64_AND);
     }
 
-    fn translate(step: &Decoded, body: &mut Body) -> Option<()> {
+    fn translate(step: &Decoded, address: u64, body: &mut Body) -> Option<()> {
         // **Un saut n'est pas une instruction comme une autre** : il change le
         // bloc, pas l'état. Il est traité par le compilateur de région, qui
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
@@ -697,6 +714,18 @@ impl Module {
         // refusée plutôt que traduite à moitié.
         if step.op == Op::Call || step.op == Op::Return {
             return None;
+        }
+        if matches!(
+            step.op,
+            Op::WideMultiply { .. }
+                | Op::Multiply
+                | Op::Divide { .. }
+                | Op::WidenAccumulator
+                | Op::SignIntoData
+                | Op::CarryFlag(_)
+        ) {
+            Self::two_registers(step, address, body);
+            return Some(());
         }
         // **Les décalages ont leurs propres règles**, et les faire passer par
         // la machinerie à deux opérandes en donnerait quatre fausses. Ils
@@ -843,6 +872,14 @@ impl Module {
                 Op::Nop => unreachable!("ne rien faire sort avant"),
                 Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
                     unreachable!("la pile sort avant")
+                }
+                Op::WideMultiply { .. }
+                | Op::Multiply
+                | Op::Divide { .. }
+                | Op::WidenAccumulator
+                | Op::SignIntoData
+                | Op::CarryFlag(_) => {
+                    unreachable!("les deux registres sortent avant")
                 }
             }
             b.constant(mask).op(code::I64_AND);
@@ -1230,7 +1267,13 @@ impl Module {
             | Op::Pop
             | Op::Call
             | Op::Return
-            | Op::Leave => {}
+            | Op::Leave
+            | Op::WideMultiply { .. }
+            | Op::Multiply
+            | Op::Divide { .. }
+            | Op::WidenAccumulator
+            | Op::SignIntoData
+            | Op::CarryFlag(_) => {}
         }
     }
 
@@ -1270,6 +1313,531 @@ impl Module {
         }
         if condition.negated() {
             b.constant(1).op(code::I64_XOR);
+        }
+    }
+
+    /// **Rendre la main au milieu d'un bloc.**
+    ///
+    /// C'est ce que fait le module quand il refuse une instruction : il pose
+    /// RIP sur **cette** instruction — pas sur la suivante — et rend -1. L'hôte
+    /// reprend là, avec l'interpréteur, qui sait exécuter depuis n'importe
+    /// quelle adresse et sait lever une faute. Les instructions d'avant dans le
+    /// même bloc ont déjà tourné, et c'est exact : elles ont vraiment eu lieu.
+    fn hand_back(address: u64, body: &mut Body) {
+        body.store(RIP_SLOT, |b| {
+            b.constant(address);
+        });
+        body.bytes.push(code::I32_CONST);
+        signed(-1, &mut body.bytes);
+        body.op(code::RETURN);
+    }
+
+    /// Rendre la main **si** la condition tient. La condition laisse un `i32`.
+    fn refuse_when(address: u64, body: &mut Body, condition: impl FnOnce(&mut Body)) {
+        condition(body);
+        body.op(code::IF).op(code::VOID);
+        Self::hand_back(address, body);
+        body.op(code::END);
+    }
+
+    /// Écrire un registre **nommé**, avec la règle de largeur. `mul` en écrit
+    /// deux et aucun des deux n'est la destination de l'instruction, donc
+    /// `write_back` — qui passe par `step.dst` — ne peut pas servir.
+    fn put(register: u8, width: Width, body: &mut Body, value: impl FnOnce(&mut Body)) {
+        let slot = Self::slot(register);
+        body.store(slot, |b| match width {
+            Width::Qword => value(b),
+            // Une écriture de 32 bits efface la moitié haute.
+            Width::Dword => {
+                value(b);
+                b.constant(0xffff_ffff).op(code::I64_AND);
+            }
+            _ => {
+                let mask = width.mask();
+                b.load(slot).constant(!mask).op(code::I64_AND);
+                value(b);
+                b.constant(mask).op(code::I64_AND);
+                b.op(code::I64_OR);
+            }
+        });
+    }
+
+    /// Écrire `%ah` — l'octet **haut** de RAX, où `mulb` range son produit et
+    /// `divb` son reste. C'est le seul endroit du jeu où une moitié de résultat
+    /// atterrit ailleurs que dans un registre entier.
+    fn put_high_byte(body: &mut Body, value: impl FnOnce(&mut Body)) {
+        let slot = Self::slot(0);
+        body.store(slot, |b| {
+            b.load(slot).constant(!0xff00).op(code::I64_AND);
+            value(b);
+            b.constant(0xff)
+                .op(code::I64_AND)
+                .constant(8)
+                .op(code::I64_SHL);
+            b.op(code::I64_OR);
+        });
+    }
+
+    /// Étendre au signe depuis une largeur, sur la valeur au sommet de la pile.
+    fn widen(width: Width, body: &mut Body) {
+        let spare = 64 - width.bits();
+        if spare != 0 {
+            body.constant(spare).op(code::I64_SHL);
+            body.constant(spare).op(code::I64_SHR_S);
+        }
+    }
+
+    /// **Les soixante-quatre bits de poids fort d'un produit de soixante-quatre
+    /// bits.** WebAssembly n'a pas d'instruction pour ça — `i64.mul` rend la
+    /// moitié basse et jette l'autre — donc il faut la reconstruire à partir de
+    /// quatre produits de trente-deux bits, qui eux tiennent.
+    ///
+    /// Les largeurs plus étroites n'en ont pas besoin : deux facteurs de
+    /// trente-deux bits font un produit de soixante-quatre, et `i64.mul` le
+    /// rend entier. L'émetteur connaît la largeur à la compilation, donc il
+    /// n'émet ce calcul que là où il sert.
+    fn high_product(signed_product: bool, body: &mut Body) {
+        // scratch 0 et 1 portent les deux facteurs à l'entrée.
+        let (a, b) = (Body::scratch(0), Body::scratch(1));
+        let (t, w1, w2, high) = (
+            Body::scratch(4),
+            Body::scratch(5),
+            Body::scratch(6),
+            Body::scratch(7),
+        );
+        let low32 = |b: &mut Body, slot: usize| {
+            b.load(slot).constant(0xffff_ffff).op(code::I64_AND);
+        };
+        let high32 = |b: &mut Body, slot: usize| {
+            b.load(slot).constant(32).op(code::I64_SHR_U);
+        };
+        // t = a0 × b0 ; seule sa moitié haute compte pour la suite.
+        body.store(t, |x| {
+            low32(x, a);
+            low32(x, b);
+            x.op(code::I64_MUL).constant(32).op(code::I64_SHR_U);
+        });
+        // t = a1 × b0 + retenue
+        body.store(t, |x| {
+            high32(x, a);
+            low32(x, b);
+            x.op(code::I64_MUL).load(t).op(code::I64_ADD);
+        });
+        body.store(w1, |x| {
+            x.load(t).constant(0xffff_ffff).op(code::I64_AND);
+        });
+        body.store(w2, |x| {
+            x.load(t).constant(32).op(code::I64_SHR_U);
+        });
+        // t = a0 × b1 + w1
+        body.store(t, |x| {
+            low32(x, a);
+            high32(x, b);
+            x.op(code::I64_MUL).load(w1).op(code::I64_ADD);
+        });
+        body.store(high, |x| {
+            high32(x, a);
+            high32(x, b);
+            x.op(code::I64_MUL)
+                .load(w2)
+                .op(code::I64_ADD)
+                .load(t)
+                .constant(32)
+                .op(code::I64_SHR_U)
+                .op(code::I64_ADD);
+        });
+        // **Du produit non signé au produit signé.** La correction est exacte :
+        // retrancher l'autre facteur une fois par facteur négatif.
+        if signed_product {
+            body.store(high, |x| {
+                x.load(high);
+                x.load(a).constant(63).op(code::I64_SHR_S).load(b);
+                x.op(code::I64_AND).op(code::I64_SUB);
+                x.load(b).constant(63).op(code::I64_SHR_S).load(a);
+                x.op(code::I64_AND).op(code::I64_SUB);
+            });
+        }
+        body.load(high);
+    }
+
+    /// **Les multiplications, les divisions, les extensions de signe, et la
+    /// retenue posée à la main.**
+    ///
+    /// Elles partagent ce qui les sort de la machinerie ordinaire : leur
+    /// destination n'est pas l'opérande qu'elles lisent. `mul` et `div`
+    /// écrivent RDX **et** RAX ; `cqto` écrit RDX en lisant RAX ; `clc` n'écrit
+    /// qu'un bit de RFLAGS.
+    fn two_registers(step: &Decoded, address: u64, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        match step.op {
+            Op::CarryFlag(action) => {
+                body.store(RFLAGS_SLOT, |b| {
+                    b.load(RFLAGS_SLOT);
+                    match action {
+                        CarryAction::Clear => b.constant(!1u64).op(code::I64_AND),
+                        CarryAction::Set => b.constant(1).op(code::I64_OR),
+                        CarryAction::Complement => b.constant(1).op(code::I64_XOR),
+                    };
+                });
+            }
+            // La source fait la **demi**-largeur : c'est tout ce qui distingue
+            // `cbtw` de `cltq`.
+            Op::WidenAccumulator => {
+                let half = step.src_width;
+                Self::put(0, width, body, |b| {
+                    b.load(Self::slot(0))
+                        .constant(half.mask())
+                        .op(code::I64_AND);
+                    Self::widen(half, b);
+                });
+            }
+            // RDX ne reçoit pas *le* signe mais **tous les bits** du signe :
+            // un décalage arithmétique de soixante-trois crans.
+            Op::SignIntoData => {
+                Self::put(2, width, body, |b| {
+                    b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+                    Self::widen(width, b);
+                    b.constant(63).op(code::I64_SHR_S);
+                });
+            }
+            Op::WideMultiply { signed: is_signed } => {
+                // scratch 0 : l'accumulateur. scratch 1 : l'opérande.
+                body.store(Body::scratch(0), |b| {
+                    b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+                    if is_signed {
+                        Self::widen(width, b);
+                    }
+                });
+                body.store(Body::scratch(1), |b| {
+                    Self::operand(step, b);
+                    b.constant(mask).op(code::I64_AND);
+                    if is_signed {
+                        Self::widen(width, b);
+                    }
+                });
+                // scratch 2 : la moitié basse. scratch 3 : la moitié haute.
+                body.store(Body::scratch(2), |b| {
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_MUL);
+                });
+                body.store(Body::scratch(3), |b| {
+                    if bits == 64 {
+                        Self::high_product(is_signed, b);
+                    } else {
+                        b.load(Body::scratch(2));
+                        b.constant(bits)
+                            .op(if is_signed {
+                                code::I64_SHR_S
+                            } else {
+                                code::I64_SHR_U
+                            })
+                            .constant(mask)
+                            .op(code::I64_AND);
+                    }
+                });
+                // **Le débordement d'un produit signé n'est pas « le haut est
+                // non nul ».** Un produit négatif a un haut plein de uns et
+                // tient pourtant : ce qui compte est que le haut ne soit que la
+                // recopie du signe du bas.
+                body.store(Body::scratch(4), |b| {
+                    if is_signed {
+                        b.load(Body::scratch(3));
+                        b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                        Self::widen(width, b);
+                        b.constant(63)
+                            .op(code::I64_SHR_S)
+                            .constant(mask)
+                            .op(code::I64_AND);
+                        b.op(code::I64_NE).op(code::I64_EXTEND_I32_U);
+                    } else {
+                        b.load(Body::scratch(3))
+                            .op(code::I64_EQZ)
+                            .op(code::I64_EXTEND_I32_U);
+                        b.constant(1).op(code::I64_XOR);
+                    }
+                });
+                if width == Width::Byte {
+                    Self::put(0, Width::Byte, body, |b| {
+                        b.load(Body::scratch(2));
+                    });
+                    Self::put_high_byte(body, |b| {
+                        b.load(Body::scratch(3));
+                    });
+                } else {
+                    Self::put(0, width, body, |b| {
+                        b.load(Body::scratch(2));
+                    });
+                    Self::put(2, width, body, |b| {
+                        b.load(Body::scratch(3));
+                    });
+                }
+                Self::carry_and_overflow_together(body);
+            }
+            Op::Multiply => {
+                // À trois opérandes les deux facteurs sont `rm` et l'immédiat ;
+                // à deux, c'est la destination et `rm`.
+                body.store(Body::scratch(0), |b| {
+                    if step.immediate {
+                        Self::operand(step, b);
+                    } else {
+                        b.load(Self::slot(step.dst));
+                    }
+                    b.constant(mask).op(code::I64_AND);
+                    Self::widen(width, b);
+                });
+                body.store(Body::scratch(1), |b| {
+                    if step.immediate {
+                        b.constant(step.imm);
+                    } else {
+                        Self::operand(step, b);
+                    }
+                    b.constant(mask).op(code::I64_AND);
+                    Self::widen(width, b);
+                });
+                body.store(Body::scratch(2), |b| {
+                    b.load(Body::scratch(0))
+                        .load(Body::scratch(1))
+                        .op(code::I64_MUL);
+                });
+                body.store(Body::scratch(3), |b| {
+                    if bits == 64 {
+                        Self::high_product(true, b);
+                    } else {
+                        b.load(Body::scratch(2)).constant(bits).op(code::I64_SHR_S);
+                    }
+                });
+                body.store(Body::scratch(4), |b| {
+                    b.load(Body::scratch(3))
+                        .constant(if bits == 64 { u64::MAX } else { mask })
+                        .op(code::I64_AND);
+                    b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                    Self::widen(width, b);
+                    b.constant(63).op(code::I64_SHR_S);
+                    b.constant(if bits == 64 { u64::MAX } else { mask })
+                        .op(code::I64_AND);
+                    b.op(code::I64_NE).op(code::I64_EXTEND_I32_U);
+                });
+                Self::put(step.dst, width, body, |b| {
+                    b.load(Body::scratch(2));
+                });
+                Self::carry_and_overflow_together(body);
+            }
+            _ => Self::divide(step, address, body),
+        }
+    }
+
+    /// CF et OF disent la même chose pour une multiplication — « le résultat
+    /// ne tenait pas » — et scratch 4 la porte. Les quatre autres drapeaux sont
+    /// indéfinis : le manuel les abandonne, donc on les laisse tels quels
+    /// plutôt que de les écraser avec des valeurs plausibles et fausses.
+    fn carry_and_overflow_together(body: &mut Body) {
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!(CF | OF)).op(code::I64_AND);
+            b.load(Body::scratch(4))
+                .op(code::I64_EQZ)
+                .op(code::I64_EXTEND_I32_U)
+                .constant(1)
+                .op(code::I64_XOR);
+            b.constant(CF | OF).op(code::I64_MUL);
+            b.op(code::I64_OR);
+        });
+    }
+
+    /// L'opérande que le ModRM désigne — registre, octet haut, ou mémoire.
+    fn operand(step: &Decoded, body: &mut Body) {
+        match step.memory {
+            Some(address) => {
+                body.load_memory(
+                    &address,
+                    if step.memory_is_source {
+                        step.src_width
+                    } else {
+                        step.width
+                    },
+                );
+            }
+            None => {
+                let register = if step.op == Op::Multiply {
+                    step.src
+                } else {
+                    step.dst
+                };
+                let high = if step.op == Op::Multiply {
+                    step.src_high
+                } else {
+                    step.dst_high
+                };
+                body.load(Self::slot(register));
+                if high {
+                    body.constant(8).op(code::I64_SHR_U);
+                }
+            }
+        }
+    }
+
+    /// **La seule instruction qui peut refuser de s'exécuter.**
+    ///
+    /// Trois raisons de refuser, et le module les traite de la même façon :
+    /// il rend la main sans rien écrire, RIP sur la division elle-même.
+    ///
+    /// 1. **Un diviseur nul.** Le processeur lève `#DE` ; le module ne peut pas
+    ///    lever, et une division par zéro en WebAssembly est une *trappe* qui
+    ///    tue le module entier. Rendre la main laisse l'interpréteur lever.
+    /// 2. **Un quotient qui ne tient pas** dans la largeur — `0x8000 / -1` en
+    ///    seize bits. Même chose : c'est un `#DE`.
+    /// 3. **Un dividende de cent vingt-huit bits véritable**, en soixante-quatre
+    ///    bits de large, dont la moitié haute n'est pas la banale. WebAssembly
+    ///    ne divise pas sur cent vingt-huit bits, et écrire la division longue
+    ///    ici serait beaucoup de code pour un cas qu'aucun cas du corpus
+    ///    n'exerce. L'interpréteur, lui, sait le faire — et il est vérifié
+    ///    contre le silicium. C'est le filet, et c'est son emploi.
+    fn divide(step: &Decoded, address: u64, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        let signed = matches!(step.op, Op::Divide { signed: true });
+        let (divisor, low, high, quotient) = (
+            Body::scratch(0),
+            Body::scratch(1),
+            Body::scratch(2),
+            Body::scratch(3),
+        );
+        body.store(divisor, |b| {
+            Self::operand(step, b);
+            b.constant(mask).op(code::I64_AND);
+        });
+        Self::refuse_when(address, body, |b| {
+            b.load(divisor).op(code::I64_EQZ);
+        });
+        // En octet le dividende est AX tout entier : sa moitié haute est AH,
+        // elle vit dans RAX et pas dans RDX.
+        body.store(low, |b| {
+            b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+        });
+        body.store(high, |b| {
+            if width == Width::Byte {
+                b.load(Self::slot(0)).constant(8).op(code::I64_SHR_U);
+            } else {
+                b.load(Self::slot(2));
+            }
+            b.constant(mask).op(code::I64_AND);
+        });
+        if signed {
+            body.store(divisor, |b| {
+                b.load(divisor);
+                Self::widen(width, b);
+            });
+        }
+        if bits == 64 {
+            // La moitié haute doit être la banale — zéro, ou le signe du bas.
+            Self::refuse_when(address, body, |b| {
+                b.load(high);
+                if signed {
+                    b.load(low).constant(63).op(code::I64_SHR_S);
+                } else {
+                    b.constant(0);
+                }
+                b.op(code::I64_NE);
+            });
+            // Et le seul quotient qui déborde encore : le minimum divisé par -1.
+            if signed {
+                Self::refuse_when(address, body, |b| {
+                    b.load(low).constant(1u64 << 63).op(code::I64_EQ);
+                    b.load(divisor).constant(u64::MAX).op(code::I64_EQ);
+                    b.op(0x71); // i32.and
+                });
+            }
+            body.store(quotient, |b| {
+                b.load(low);
+                if signed {
+                    Self::widen(width, b);
+                }
+                b.load(divisor).op(if signed {
+                    code::I64_DIV_S
+                } else {
+                    code::I64_DIV_U
+                });
+            });
+            let remainder = Body::scratch(4);
+            body.store(remainder, |b| {
+                b.load(low);
+                if signed {
+                    Self::widen(width, b);
+                }
+                b.load(divisor).op(if signed {
+                    code::I64_REM_S
+                } else {
+                    code::I64_REM_U
+                });
+            });
+            Self::put(0, width, body, |b| {
+                b.load(quotient);
+            });
+            Self::put(2, width, body, |b| {
+                b.load(remainder);
+            });
+            return;
+        }
+        // Largeurs étroites : le dividende double tient dans soixante-quatre
+        // bits, donc la division ordinaire suffit.
+        let dividend = Body::scratch(5);
+        body.store(dividend, |b| {
+            b.load(high).constant(bits).op(code::I64_SHL);
+            b.load(low).op(code::I64_OR);
+            if signed {
+                let spare = 64 - bits * 2;
+                if spare != 0 {
+                    b.constant(spare).op(code::I64_SHL);
+                    b.constant(spare).op(code::I64_SHR_S);
+                }
+            }
+        });
+        body.store(quotient, |b| {
+            b.load(dividend).load(divisor).op(if signed {
+                code::I64_DIV_S
+            } else {
+                code::I64_DIV_U
+            });
+        });
+        Self::refuse_when(address, body, |b| {
+            if signed {
+                let limit = 1u64 << (bits - 1);
+                b.load(quotient)
+                    .constant(limit.wrapping_neg())
+                    .op(code::I64_LT_S);
+                b.load(quotient)
+                    .constant(limit.wrapping_sub(1))
+                    .op(code::I64_GT_S);
+                b.op(0x72); // i32.or
+            } else {
+                b.load(quotient).constant(mask).op(code::I64_GT_U);
+            }
+        });
+        let remainder = Body::scratch(6);
+        body.store(remainder, |b| {
+            b.load(dividend).load(divisor).op(if signed {
+                code::I64_REM_S
+            } else {
+                code::I64_REM_U
+            });
+        });
+        if width == Width::Byte {
+            Self::put(0, Width::Byte, body, |b| {
+                b.load(quotient);
+            });
+            Self::put_high_byte(body, |b| {
+                b.load(remainder);
+            });
+        } else {
+            Self::put(0, width, body, |b| {
+                b.load(quotient);
+            });
+            Self::put(2, width, body, |b| {
+                b.load(remainder);
+            });
         }
     }
 

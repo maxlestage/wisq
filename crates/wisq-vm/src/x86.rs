@@ -382,10 +382,46 @@ pub enum Op {
     /// `leave` : défaire le cadre de pile — RSP reprend RBP, puis RBP se
     /// dépile. Deux instructions en une, et c'est ce qui la rend commode.
     Leave,
+    /// **La multiplication à un opérande.** Le produit fait **deux fois** la
+    /// largeur, et il sort en deux morceaux : RDX:RAX, ou AX seul quand
+    /// l'opérande est un octet. Rien d'autre dans le jeu n'écrit deux
+    /// registres à la fois, et c'est ce qui l'empêche de passer par la
+    /// machinerie à une destination.
+    WideMultiply {
+        signed: bool,
+    },
+    /// **La multiplication à deux ou trois opérandes.** Le produit est tronqué
+    /// à la largeur, et la retenue et le débordement disent — ensemble, ils ne
+    /// disent jamais autre chose — que le résultat ne tenait pas.
+    Multiply,
+    /// **La division.** RDX:RAX par l'opérande ; quotient dans RAX, reste dans
+    /// RDX. C'est la seule instruction arithmétique du jeu qui peut **lever** :
+    /// diviseur nul, ou quotient qui ne tient pas dans la largeur.
+    Divide {
+        signed: bool,
+    },
+    /// `cbw`, `cwde`, `cdqe` : l'accumulateur s'étend dans lui-même, de la
+    /// demi-largeur à la largeur.
+    WidenAccumulator,
+    /// `cwd`, `cdq`, `cqo` : le signe de l'accumulateur remplit RDX. Tout
+    /// compilateur l'émet juste avant `idiv` — sans lui, le dividende n'a pas
+    /// de moitié haute.
+    SignIntoData,
+    /// `clc`, `stc`, `cmc` : la retenue posée à la main, les cinq autres
+    /// drapeaux intacts.
+    CarryFlag(CarryAction),
     /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
     Nop,
+}
+
+/// Ce que `clc`, `stc` et `cmc` font de la retenue.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CarryAction {
+    Clear,
+    Set,
+    Complement,
 }
 
 /// Ce qu'une instruction de bit fait au bit qu'elle vient de lire.
@@ -838,6 +874,179 @@ impl Cpu {
         }
     }
 
+    /// **Les multiplications, les divisions, les extensions de signe, et la
+    /// retenue posée à la main.**
+    ///
+    /// Elles sont ensemble parce qu'elles partagent ce qui les sort de la
+    /// machinerie ordinaire : leur destination n'est pas l'opérande qu'elles
+    /// lisent. `mul` et `div` écrivent RDX **et** RAX ; `cqto` écrit RDX en
+    /// lisant RAX ; `clc` n'écrit qu'un bit de RFLAGS.
+    fn arithmetic_in_two_registers(&mut self, instruction: &Decoded) {
+        let width = instruction.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        match instruction.op {
+            Op::CarryFlag(action) => {
+                let now = self.flags.read();
+                let carry = match action {
+                    CarryAction::Clear => 0,
+                    CarryAction::Set => CF,
+                    CarryAction::Complement => (now & CF) ^ CF,
+                };
+                self.flags.write((now & !CF) | carry);
+            }
+            // La source fait la demi-largeur, et c'est tout ce qui distingue
+            // `cbtw` de `cltq` : le même opcode, trois tailles.
+            Op::WidenAccumulator => {
+                let half = instruction.src_width;
+                let value = sign_extend(self.regs[0] & half.mask(), half);
+                self.set(0, width, false, value);
+            }
+            // RDX ne reçoit pas le signe : il reçoit **tous les bits** du
+            // signe. Y mettre 0 ou 1 rendrait un dividende faux de tout sauf
+            // du bit de poids faible.
+            Op::SignIntoData => {
+                let negative = sign_extend(self.regs[0] & mask, width) >> 63 != 0;
+                self.set(2, width, false, if negative { u64::MAX } else { 0 });
+            }
+            Op::WideMultiply { signed } => {
+                let Some(operand) = self.read_destination(instruction) else {
+                    self.faulted = true;
+                    return;
+                };
+                let accumulator = self.get(0, width, false);
+                let (low, high, overflowed) = if signed {
+                    let left = sign_extend(accumulator, width) as i64 as i128;
+                    let right = sign_extend(operand, width) as i64 as i128;
+                    let product = left * right;
+                    let low = product as u64 & mask;
+                    // **Le débordement d'un produit signé n'est pas « le haut
+                    // est non nul ».** Un produit négatif a un haut plein de
+                    // uns et tient pourtant. Ce qui compte, c'est que le haut
+                    // ne soit que la recopie du signe du bas.
+                    let fits = sign_extend(low, width) as i64 as i128 == product;
+                    (low, (product >> bits) as u64 & mask, !fits)
+                } else {
+                    let product = u128::from(accumulator) * u128::from(operand);
+                    let high = (product >> bits) as u64 & mask;
+                    (product as u64 & mask, high, high != 0)
+                };
+                // En octet le produit ne va pas dans RDX : il tient dans AX,
+                // moitié basse dans AL et moitié haute dans **AH**.
+                if width == Width::Byte {
+                    self.set(0, Width::Byte, false, low);
+                    self.set(0, Width::Byte, true, high);
+                } else {
+                    self.set(0, width, false, low);
+                    self.set(2, width, false, high);
+                }
+                let now = self.flags.read();
+                let raised = if overflowed { CF | OF } else { 0 };
+                self.flags.write((now & !(CF | OF)) | raised);
+            }
+            Op::Multiply => {
+                let Some(source) = self.read_source(instruction, width) else {
+                    self.faulted = true;
+                    return;
+                };
+                // À trois opérandes les deux facteurs sont `rm` et l'immédiat ;
+                // à deux, c'est la destination et `rm`. La destination ne se
+                // lit donc que dans le second cas.
+                let (left, right) = if instruction.immediate {
+                    (source, instruction.imm)
+                } else {
+                    (self.get(instruction.dst, width, false), source)
+                };
+                let product = sign_extend(left, width) as i64 as i128
+                    * sign_extend(right, width) as i64 as i128;
+                let low = product as u64 & mask;
+                let fits = sign_extend(low, width) as i64 as i128 == product;
+                self.set(instruction.dst, width, false, low);
+                let now = self.flags.read();
+                let raised = if fits { 0 } else { CF | OF };
+                self.flags.write((now & !(CF | OF)) | raised);
+            }
+            _ => self.divide(
+                instruction,
+                matches!(instruction.op, Op::Divide { signed: true }),
+            ),
+        }
+    }
+
+    /// **La seule instruction arithmétique qui peut lever.**
+    ///
+    /// Deux façons : un diviseur nul, et un quotient qui ne tient pas dans la
+    /// largeur — `0x8000 / -1` en seize bits, par exemple. Le processeur lève
+    /// `#DE` dans les deux cas, et n'écrit **rien**. Les six drapeaux sont
+    /// laissés indéfinis par le manuel, donc le corpus ne les compare pas ;
+    /// seuls le quotient et le reste sont prouvés, ce qui est tout ce qui
+    /// compte.
+    fn divide(&mut self, instruction: &Decoded, signed: bool) {
+        let width = instruction.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        let Some(divisor) = self.read_destination(instruction) else {
+            self.faulted = true;
+            return;
+        };
+        if divisor & mask == 0 {
+            self.faulted = true;
+            return;
+        }
+        // En octet le dividende est AX tout entier : sa moitié haute est AH,
+        // elle vit dans RAX et pas dans RDX.
+        let (low, high) = if width == Width::Byte {
+            (self.regs[0] & 0xff, (self.regs[0] >> 8) & 0xff)
+        } else {
+            (self.get(0, width, false), self.get(2, width, false))
+        };
+        let whole = (u128::from(high) << bits) | u128::from(low);
+        let (quotient, remainder) = if signed {
+            // Le dividende fait **deux fois** la largeur, et c'est de là qu'il
+            // faut étendre son signe : le prendre pour un nombre de la largeur
+            // simple rendrait un quotient faux dès qu'il est négatif.
+            let double = bits * 2;
+            let dividend = if double == 128 {
+                whole as i128
+            } else {
+                let sign = 1u128 << (double - 1);
+                if whole & sign != 0 {
+                    (whole | !(sign.wrapping_sub(1) | sign)) as i128
+                } else {
+                    whole as i128
+                }
+            };
+            let by = sign_extend(divisor, width) as i64 as i128;
+            let (Some(quotient), Some(remainder)) =
+                (dividend.checked_div(by), dividend.checked_rem(by))
+            else {
+                self.faulted = true;
+                return;
+            };
+            let limit = 1i128 << (bits - 1);
+            if quotient < -limit || quotient >= limit {
+                self.faulted = true;
+                return;
+            }
+            (quotient as u64 & mask, remainder as u64 & mask)
+        } else {
+            let by = u128::from(divisor & mask);
+            let quotient = whole / by;
+            if quotient > u128::from(mask) {
+                self.faulted = true;
+                return;
+            }
+            (quotient as u64, (whole % by) as u64)
+        };
+        if width == Width::Byte {
+            self.set(0, Width::Byte, false, quotient);
+            self.set(0, Width::Byte, true, remainder);
+        } else {
+            self.set(0, width, false, quotient);
+            self.set(2, width, false, remainder);
+        }
+    }
+
     fn push(&mut self, value: u64) {
         let top = self.regs[4].wrapping_sub(8);
         if self.memory.write(top, Width::Qword, value).is_none() {
@@ -1010,6 +1219,21 @@ impl Cpu {
             self.stack(instruction);
             return;
         }
+        // **Les six qui n'ont pas une destination mais deux, ou aucune.** La
+        // machinerie à deux opérandes range un résultat là où elle a lu ; ces
+        // instructions-là rangent RDX **et** RAX, ou ne rangent qu'un drapeau.
+        if matches!(
+            instruction.op,
+            Op::WideMultiply { .. }
+                | Op::Multiply
+                | Op::Divide { .. }
+                | Op::WidenAccumulator
+                | Op::SignIntoData
+                | Op::CarryFlag(_)
+        ) {
+            self.arithmetic_in_two_registers(instruction);
+            return;
+        }
 
         let after = self.rip.wrapping_add(instruction.length as u64);
         match instruction.op {
@@ -1167,6 +1391,14 @@ impl Cpu {
             Op::Nop => unreachable!("ne rien faire sort avant"),
             Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
                 unreachable!("la pile sort avant")
+            }
+            Op::WideMultiply { .. }
+            | Op::Multiply
+            | Op::Divide { .. }
+            | Op::WidenAccumulator
+            | Op::SignIntoData
+            | Op::CarryFlag(_) => {
+                unreachable!("les deux registres sortent avant")
             }
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
@@ -1531,6 +1763,25 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     memory_is_source: false,
                 })
             }
+            // **`imul` à deux opérandes** : `reg` fois `rm`, tronqué, rangé
+            // dans `reg`. Contrairement à la forme à un opérande, elle n'écrit
+            // qu'un registre — c'est celle que tout code émet quand il sait que
+            // le produit tient.
+            0xaf => {
+                let width = prefixes.width(false);
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: Op::Multiply,
+                    width,
+                    dst: field.reg,
+                    src: field.register,
+                    length: at,
+                    src_width: width,
+                    memory: field.memory,
+                    memory_is_source: true,
+                    ..Decoded::nothing(width)
+                })
+            }
             // `movzx` et `movsx` : la source est un octet (B6/BE) ou un mot
             // (B7/BF), la destination a la largeur que les préfixes donnent.
             0xb6 | 0xb7 | 0xbe | 0xbf => {
@@ -1702,6 +1953,65 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **Les deux extensions de signe, et la moitié qu'elles lisent.**
+        // `0x98` étend l'accumulateur dans lui-même — AL dans AX, AX dans EAX,
+        // EAX dans RAX — donc la source fait la **demi-largeur**. `0x99` étend
+        // le signe de l'accumulateur dans RDX, et là les deux largeurs sont la
+        // même. Sans la seconde, `idivq` n'a pas de moitié haute : tout
+        // compilateur émet `cqto` juste avant.
+        0x98 | 0x99 => {
+            let width = prefixes.width(false);
+            let half = match width {
+                Width::Qword => Width::Dword,
+                Width::Dword => Width::Word,
+                _ => Width::Byte,
+            };
+            Some(Decoded {
+                op: if opcode == 0x98 {
+                    Op::WidenAccumulator
+                } else {
+                    Op::SignIntoData
+                },
+                length: at,
+                src_width: if opcode == 0x98 { half } else { width },
+                ..Decoded::nothing(width)
+            })
+        }
+        // La retenue, posée à la main. Les cinq autres drapeaux ne bougent pas,
+        // et c'est vérifiable : les états d'entrée du corpus en portent.
+        0xf5 | 0xf8 | 0xf9 => Some(Decoded {
+            op: Op::CarryFlag(match opcode {
+                0xf5 => CarryAction::Complement,
+                0xf8 => CarryAction::Clear,
+                _ => CarryAction::Set,
+            }),
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // **`imul` à trois opérandes** : le produit de `rm` par un immédiat,
+        // rangé dans `reg`. C'est la seule multiplication dont les deux
+        // facteurs sont ailleurs que dans la destination — `0x6b` porte
+        // l'immédiat sur un octet étendu au signe, `0x69` sur quatre.
+        0x69 | 0x6b => {
+            let width = prefixes.width(false);
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            // `0x6b` porte un octet, `0x69` la forme longue — quatre octets,
+            // deux seulement en seize bits. Les deux sont étendus au signe.
+            let imm = read_immediate(bytes, &mut at, width, opcode == 0x6b)?;
+            Some(Decoded {
+                op: Op::Multiply,
+                width,
+                dst: field.reg,
+                src: field.register,
+                imm,
+                immediate: true,
+                length: at,
+                src_width: width,
+                memory: field.memory,
+                memory_is_source: true,
+                ..Decoded::nothing(width)
+            })
+        }
         0xc9 => Some(Decoded {
             op: Op::Leave,
             length: at,
@@ -1944,8 +2254,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 memory_is_source: false,
             })
         }
-        // Groupe 3 : `test`, `not`, `neg` — et les multiplications et
-        // divisions, que cette tranche ne prétend pas connaître.
+        // Groupe 3 : `test`, `not`, `neg`, et les multiplications et divisions
+        // à un opérande — les quatre seules instructions du jeu qui écrivent
+        // **deux** registres.
         0xf6 | 0xf7 => {
             let width = prefixes.width(opcode == 0xf6);
             let field = read_modrm(bytes, &mut at, prefixes)?;
@@ -1954,6 +2265,10 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 0 | 1 => Op::Test,
                 2 => Op::Not,
                 3 => Op::Neg,
+                4 => Op::WideMultiply { signed: false },
+                5 => Op::WideMultiply { signed: true },
+                6 => Op::Divide { signed: false },
+                7 => Op::Divide { signed: true },
                 _ => return None,
             };
             let immediate = op == Op::Test;
@@ -2266,6 +2581,133 @@ mod tests {
     /// refus soit un refus, et pas une adresse plausible calculée depuis le
     /// mauvais registre. Le jour où les sauts arriveront, RIP sera connu et ce
     /// test devra changer de sens.
+    /// **La division qui lève, et ce que le corpus ne peut pas en dire.**
+    ///
+    /// `division_state`, dans le constructeur du corpus, écarte d'avance tout
+    /// état où le processeur lèverait `#DE` — il le doit, sinon le binaire
+    /// oracle mourrait au lieu de rendre un verdict. Les deux fautes de la
+    /// division ne sont donc éprouvées par aucun des 10 524 cas, et un sabotage
+    /// l'a montré : retirer la garde du diviseur nul faisait paniquer
+    /// l'interpréteur en débogage et rendre n'importe quoi en production, sans
+    /// qu'aucun cas ne tombe.
+    ///
+    /// Ce que le processeur fait d'un `#DE` : il n'écrit **rien**. Ni quotient,
+    /// ni reste, ni drapeau.
+    #[test]
+    fn a_division_that_would_raise_writes_nothing() {
+        // `divq %rcx`
+        let divide = decode(&[0x48, 0xf7, 0xf1]).expect("divq %rcx se décode");
+        for (name, rax, rdx, rcx) in [
+            ("un diviseur nul", 100u64, 0u64, 0u64),
+            // 2^64 divisé par un : le quotient ne tient pas dans la largeur.
+            ("un quotient qui déborde", 0, 1, 1),
+        ] {
+            let mut cpu = Cpu::default();
+            cpu.regs[0] = rax;
+            cpu.regs[1] = rcx;
+            cpu.regs[2] = rdx;
+            cpu.execute(&divide);
+            assert!(cpu.faulted, "{name} devait lever");
+            assert_eq!(cpu.regs[0], rax, "{name} : RAX ne devait pas bouger");
+            assert_eq!(cpu.regs[2], rdx, "{name} : RDX ne devait pas bouger");
+        }
+        // **Et le débordement signé, qui n'est pas le même que le non signé.**
+        // Un sabotage l'a montré : ne garder que la garde non signée laissait
+        // passer `idivw` sur un quotient de 32 768 — un de trop pour seize bits
+        // signés, et pourtant très en dessous du plafond non signé.
+        let narrow = decode(&[0x66, 0xf7, 0xf9]).expect("idivw %cx se décode");
+        for (name, ax, dx, cx) in [
+            ("un quotient signé d'un de trop", 0u64, 1u64, 2u64),
+            // Et le minimum divisé par -1, le seul débordement que la division
+            // elle-même refuserait de calculer.
+            ("le minimum divisé par -1", 0, 0xffff, 0xffff),
+        ] {
+            let mut cpu = Cpu::default();
+            cpu.regs[0] = ax;
+            cpu.regs[1] = cx;
+            cpu.regs[2] = dx;
+            cpu.execute(&narrow);
+            assert!(cpu.faulted, "{name} devait lever");
+            assert_eq!(cpu.regs[0], ax, "{name} : RAX ne devait pas bouger");
+            assert_eq!(cpu.regs[2], dx, "{name} : RDX ne devait pas bouger");
+        }
+
+        // Et le témoin : une division ordinaire écrit, elle.
+        let mut cpu = Cpu::default();
+        cpu.regs[0] = 100;
+        cpu.regs[1] = 7;
+        cpu.execute(&divide);
+        assert!(!cpu.faulted, "100 / 7 ne lève pas");
+        assert_eq!((cpu.regs[0], cpu.regs[2]), (14, 2));
+    }
+
+    /// **Un vrai dividende de deux registres**, que le corpus ne produit jamais.
+    ///
+    /// `division_state` met toujours la moitié haute à la banale — zéro, ou le
+    /// signe du bas — pour que le quotient tienne à coup sûr. Le dividende y
+    /// vaut donc toujours ce que la moitié basse dit toute seule, et un
+    /// sabotage l'a montré : étendre le signe depuis la largeur simple au lieu
+    /// de la double ne faisait tomber aucun cas, parce que les deux calculs
+    /// tombent d'accord sur ces états-là.
+    ///
+    /// C'est pourtant la forme qu'un noyau emploie le plus : `do_div` divise
+    /// soixante-quatre bits par trente-deux, et la moitié haute y porte de
+    /// l'information.
+    #[test]
+    fn a_dividend_that_really_spans_two_registers() {
+        let unsigned = decode(&[0xf7, 0xf1]).expect("divl %ecx se décode");
+        let signed = decode(&[0xf7, 0xf9]).expect("idivl %ecx se décode");
+        // 2^32 divisé par trois. La moitié basse seule dirait « zéro ».
+        let mut cpu = Cpu::default();
+        cpu.regs[2] = 1;
+        cpu.regs[0] = 0;
+        cpu.regs[1] = 3;
+        cpu.execute(&unsigned);
+        assert!(!cpu.faulted);
+        assert_eq!((cpu.regs[0], cpu.regs[2]), (0x5555_5555, 1));
+        // Et le même, signé et négatif : -2^32 divisé par trois fait
+        // -1 431 655 765, reste -1. Le quotient tronque **vers zéro**.
+        let mut cpu = Cpu::default();
+        cpu.regs[2] = 0xffff_ffff;
+        cpu.regs[0] = 0;
+        cpu.regs[1] = 3;
+        cpu.execute(&signed);
+        assert!(!cpu.faulted);
+        assert_eq!(
+            (cpu.regs[0] as u32 as i32, cpu.regs[2] as u32 as i32),
+            (-1_431_655_765, -1)
+        );
+    }
+
+    /// **Le produit signé de deux nombres de soixante-quatre bits**, dont la
+    /// moitié haute demande une reconstruction que WebAssembly n'offre pas.
+    /// Le corpus l'éprouve, mais seulement sur les valeurs qu'il porte ; ce
+    /// test-ci fixe les deux bords que l'algorithme des quatre produits de
+    /// trente-deux bits rate le plus facilement.
+    #[test]
+    fn the_high_half_of_a_wide_product_is_the_one_the_manual_describes() {
+        // `imulq %rcx` — un opérande, produit dans RDX:RAX.
+        let multiply = decode(&[0x48, 0xf7, 0xe9]).expect("imulq %rcx se décode");
+        for (left, right, high, low) in [
+            // -1 × -1 : le produit tient, et le haut est **zéro**, pas -1.
+            (u64::MAX, u64::MAX, 0u64, 1u64),
+            // -1 × 2 : le produit tient, et le haut est plein de uns.
+            (u64::MAX, 2, u64::MAX, 2u64.wrapping_neg()),
+            // Le carré du minimum : 2^126, qui ne tient pas.
+            (1 << 63, 1 << 63, 1 << 62, 0),
+        ] {
+            let mut cpu = Cpu::default();
+            cpu.regs[0] = left;
+            cpu.regs[1] = right;
+            cpu.execute(&multiply);
+            assert_eq!(
+                (cpu.regs[0], cpu.regs[2]),
+                (low, high),
+                "{left:x} × {right:x}"
+            );
+        }
+    }
+
     #[test]
     fn a_displacement_relative_to_the_instruction_pointer_is_refused() {
         // 48 8d 05 <disp32> — `leaq disp(%rip), %rax`. Le champ `rm` vaut 101
