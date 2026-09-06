@@ -9512,3 +9512,61 @@ manquantes mais pour ce qu'un balayage linéaire prend pour du code. La prochain
 question n'est plus « quelle instruction ajouter » : c'est de mesurer la
 couverture depuis les vrais points d'entrée du noyau plutôt que tous les 512
 octets.
+
+## La sonde mesurait la mauvaise chose : 74,9 % était 89,2 %
+
+Le jeu d'instructions étant clos, la question « quelle instruction ajouter »
+n'avait plus de réponse. Restait un nombre qui n'avançait plus : 74,9 % des
+régions de 4 Kio acceptées. Avant de chercher quoi ajouter pour le monter, il
+fallait savoir ce qu'il comptait.
+
+La sonde essayait une région **tous les 512 octets depuis l'octet zéro du
+fichier**. C'est simple, et c'est pour ça qu'elle a servi toute la série — mais
+un processeur n'entre pas comme ça. Elle tombe au milieu des instructions, dans
+les tables de données, dans le bourrage entre fonctions. Le taux qu'elle rend
+mélange donc deux choses qui ne se corrigent pas de la même façon : « le
+compilateur ne sait pas » et « ce n'est pas du code ».
+
+La seconde sonde part de là où l'exécution entre vraiment. Les cibles des `call`
+à déplacement fixe sont des débuts de fonction — c'est la définition d'un
+appel — et elles se relèvent au passage du décodage linéaire, sans rien de plus
+qu'un ensemble.
+
+| | régions acceptées |
+|---|---|
+| tous les 512 octets | 74,9 % |
+| **depuis les cibles de `call`** | **89,2 %** (10 123 entrées distinctes) |
+
+Quatorze points d'écart, et pas une ligne de compilateur n'a changé. Le plafond
+n'était pas où la sonde le montrait.
+
+**Ce que cette sonde-là ne peut pas faire, c'est flatter.** Une adresse d'entrée
+mal calculée tombe au milieu d'une instruction, et la région est refusée : la
+faute rend un taux plus bas, jamais plus haut. C'est la propriété qui permet de
+la croire sans qu'un test la tienne — et la formule qu'elle emploie est celle
+que le corpus vérifie déjà sur ses programmes d'appel.
+
+### Et elle dit maintenant quoi faire
+
+Elle ne compte plus seulement les refus : elle les **impute**. Un refus a deux
+causes, et les confondre ferait chercher une instruction manquante là où c'est
+la traduction qui manque. Sur les 1 092 régions encore refusées depuis un vrai
+point d'entrée :
+
+| | |
+|---|---|
+| `f3 48 …` | **949** |
+| `48` | 17 |
+| `0f 18` (`prefetch`) | 12 |
+| `0f 30`, `0f ae`, `0f 01`, `0f 32` | 28 au total |
+| `f3 a4`, `f3 aa` | 16 |
+
+**`f3 48` est le préfixe de répétition suivi de REX.W** : `rep movsq` et
+`rep stosq`, c'est-à-dire le `memcpy` et le `memset` du noyau. Une seule famille
+d'instructions pèse **87 %** de tout ce qui reste. C'est la prochaine tranche, et
+elle n'aurait jamais été désignée par l'ancienne sonde, qui la noyait sous du
+bourrage.
+
+L'ancienne mesure est gardée à côté de la nouvelle, pas remplacée : toute la
+série l'a citée, et un repère qu'on efface est un repère qu'on ne peut plus
+comparer.
