@@ -42,6 +42,10 @@ public final class X86Memory: @unchecked Sendable {
     /// adresse ordinaire ne le rencontre jamais.
     public var storage: VirtioBlock?
 
+    /// L'écran, quand il y en a un. Même logement que le disque, et pour la
+    /// même raison : ses adresses ne sont pas de la RAM.
+    public var screen: X86Framebuffer?
+
     /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
     /// objet que le cœur et les ports ont tous les deux sous la main.
     public var bus: X86PCIHost?
@@ -58,6 +62,9 @@ public final class X86Memory: @unchecked Sendable {
             if let device = storage, let at = storageOffset(address) {
                 return device.read(at, width)
             }
+            if let frame = screen, let at = frame.offset(address, width) {
+                return frame.read(at, width)
+            }
             throw X86Core.Fault.outsideMemory(address)
         }
         var value: UInt64 = 0
@@ -69,6 +76,10 @@ public final class X86Memory: @unchecked Sendable {
         guard let start = offset(address, width) else {
             if let device = storage, let at = storageOffset(address) {
                 device.write(at, width, value, self)
+                return
+            }
+            if let frame = screen, let at = frame.offset(address, width) {
+                frame.write(at, width, value)
                 return
             }
             throw X86Core.Fault.outsideMemory(address)
