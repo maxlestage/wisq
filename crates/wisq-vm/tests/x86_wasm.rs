@@ -1259,3 +1259,128 @@ fn a_survey_counts_where_a_region_will_hand_back() {
     assert_eq!(once.always, 0, "un `movsq` seul ne rend pas la main");
     assert_eq!(once.repeats, 0);
 }
+
+/// **La boucle hôte, et pas seulement une bascule.**
+///
+/// Le test voisin montre *une* région qui rend la main et *une* qui reprend.
+/// Celui-ci enchaîne : huit régions en anneau, chacune sautant indirectement à
+/// la suivante, l'hôte cherchant à chaque tour laquelle commence à RIP. C'est
+/// la conduite du bureau local en petit, et rien ne la tenait — `--example
+/// chain` la chronomètre, ce qui ne dit pas qu'elle calcule juste.
+///
+/// Ce qui est vérifié : la chaîne ne se perd pas, chaque maillon a bien tourné,
+/// et l'accumulateur porte à la fin ce qu'un modèle écrit en clair calcule. Un
+/// anneau qui sauterait un maillon rendrait un total plus petit, et un anneau
+/// qui recompterait le même rendrait un total plus grand.
+#[test]
+fn the_host_loop_chains_regions_and_keeps_the_machine() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const LINKS: u64 = 8;
+    const STRIDE: u64 = 64;
+    let address = |index: u64| CODE + index * STRIDE;
+
+    // movabs $suivant, %rax ; addq %rax, %rdx ; jmp *%rax
+    let link = |next: u64| {
+        let mut code = vec![0x48u8, 0xb8];
+        code.extend_from_slice(&next.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x01, 0xc2, 0xff, 0xe0]);
+        code
+    };
+
+    let scratch = std::env::temp_dir().join(format!("wisq-chain-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut listing = String::new();
+    for index in 0..LINKS {
+        let module = Module::region(&link(address((index + 1) % LINKS)), address(index), 0)
+            .expect("l'émetteur traduit un maillon");
+        let path = scratch.join(format!("m{index}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        listing.push_str(&format!(
+            "[{}n,{:?}],",
+            address(index),
+            path.to_string_lossy()
+        ));
+    }
+
+    // **Le modèle, écrit en clair.** RDX accumule l'adresse de chaque maillon
+    // suivant, dans l'ordre où l'anneau les visite.
+    let steps = 8 * LINKS + 3;
+    let mut rdx = 0u64;
+    let mut at = 0u64;
+    for _ in 0..steps {
+        rdx = rdx.wrapping_add(address((at + 1) % LINKS));
+        at = (at + 1) % LINKS;
+    }
+
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const memory = new WebAssembly.Memory({{ initial: {pages} }});
+const slots = [];
+const imports = {{ env: {{ mem: memory }} }};
+for (let slot = 0; slot < {globals}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  imports.env["g" + slot] = slots[slot];
+}}
+const cache = new Map();
+for (const [base, path] of [{listing}]) {{
+  const bytes = fs.readFileSync(path);
+  cache.set(base, new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports.run);
+}}
+const u = slot => BigInt.asUintN(64, slots[slot].value);
+slots[{rip}].value = {entry}n;
+let taken = 0, lost = "";
+for (let step = 0; step < {steps}; step++) {{
+  const run = cache.get(u({rip}));
+  if (run === undefined) {{ lost = u({rip}).toString(16); break; }}
+  run(16n);
+  taken++;
+}}
+console.log(JSON.stringify({{ taken, lost, rdx: u(2).toString(16), rip: u({rip}).toString(16) }}));
+"#,
+            pages = GUEST_PAGES,
+            globals = GLOBAL_COUNT,
+            listing = listing,
+            rip = RIP_SLOT,
+            entry = CODE,
+            steps = steps
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé la chaîne :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"lost\":\"\""),
+        "la chaîne s'est perdue en route — {text}"
+    );
+    assert!(
+        text.contains(&format!("\"taken\":{steps}")),
+        "les {steps} maillons devaient tous tourner — {text}"
+    );
+    assert!(
+        text.contains(&format!("\"rdx\":\"{rdx:x}\"")),
+        "l'anneau ne calcule pas ce que le modèle calcule — {text}"
+    );
+    // Et il s'est arrêté là où l'anneau l'a mené, pas ailleurs.
+    assert!(
+        text.contains(&format!("\"rip\":\"{:x}\"", address(steps % LINKS))),
+        "RIP ne désigne pas le maillon attendu — {text}"
+    );
+}
