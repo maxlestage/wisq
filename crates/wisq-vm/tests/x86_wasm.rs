@@ -507,7 +507,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // harnais et celui du silicium comptent 9168 cas, pas l'un 9168 et
     // l'autre 9144.
     assert!(
-        checked > 9150,
+        checked > 10500,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
@@ -651,4 +651,168 @@ console.log(JSON.stringify({{
         text.contains("\"rsp\":\"30003000\""),
         "le `ret` devait remonter RSP là où il était, il a rendu {text}"
     );
+}
+
+/// **Ce que le module fait d'une division qu'il refuse.**
+///
+/// Trois raisons de refuser, et le corpus n'en exerce aucune : `division_state`
+/// écarte d'avance tout état où le processeur lèverait, et ses dividendes
+/// tiennent tous dans la largeur simple. Un sabotage l'a montré — supprimer la
+/// garde du diviseur nul ne faisait tomber aucun des 10 524 cas, et le module
+/// se faisait tuer par une **trappe** WebAssembly au lieu de rendre la main.
+///
+/// Le refus n'est pas un échec : c'est le filet. Le module pose RIP sur la
+/// division elle-même et rend -1 ; l'hôte reprend là avec l'interpréteur, qui
+/// sait lever une faute et sait diviser sur cent vingt-huit bits.
+#[test]
+fn a_division_the_module_refuses_hands_the_instruction_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // `incq %rdx` puis `divq %rcx`. Le `incq` d'abord, exprès : rendre la main
+    // n'annule pas ce qui a déjà eu lieu dans le bloc, et RDX doit le montrer.
+    let wide = [0x48, 0xff, 0xc2, 0x48, 0xf7, 0xf1];
+    // `divw %cx` seule. Le débordement de quotient ne se voit qu'en largeur
+    // étroite : en soixante-quatre bits, la moitié haute non banale est
+    // refusée avant qu'on arrive à diviser.
+    let narrow = [0x66, 0xf7, 0xf1];
+    // `divl %ecx` : trente-deux bits de large, donc le dividende double tient
+    // dans soixante-quatre et le module n'a **pas** à refuser. C'est la forme
+    // qu'un noyau emploie le plus, et le corpus ne la produit jamais avec une
+    // moitié haute qui porte de l'information.
+    let real = [0xf7, 0xf1];
+    // `idivl %ecx` : le même, **signé**. Un sabotage a montré que l'étendue du
+    // dividende double n'était tenue par rien du côté signé — les deux calculs
+    // tombent d'accord sur tous les états du corpus, et divergent dès que la
+    // moitié haute porte de l'information.
+    let real_signed = [0xf7, 0xf9];
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-div-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut paths = Vec::new();
+    for (name, bytes) in [
+        ("wide", &wide[..]),
+        ("narrow", &narrow[..]),
+        ("real", &real[..]),
+        ("realSigned", &real_signed[..]),
+    ] {
+        let module = Module::region(bytes, CODE, 0).expect("la région doit se compiler");
+        let path = scratch.join(format!("{name}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        paths.push(path.to_string_lossy().to_string());
+    }
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const modules = {{
+  wide: fs.readFileSync({:?}),
+  narrow: fs.readFileSync({:?}),
+  real: fs.readFileSync({:?}),
+  realSigned: fs.readFileSync({:?}),
+}};
+// -1 dans RDX puis `incq` le remet à zéro : c'est comme ça qu'on obtient une
+// moitié haute banale **après** l'instruction qui précède la division.
+const ZERO_AFTER_INC = (1n << 64n) - 1n;
+const cases = [
+  {{name: "diviseur nul", of: "wide", rax: 100n, rdx: ZERO_AFTER_INC, rcx: 0n, rip: "30000003"}},
+  {{name: "dividende de 128 bits", of: "wide", rax: 1n, rdx: 7n, rcx: 3n, rip: "30000003"}},
+  {{name: "quotient qui deborde", of: "narrow", rax: 0n, rdx: 1n, rcx: 1n, rip: "30000000"}},
+  // Et celui qui **doit** passer, pour que le refus ne soit pas un refus de
+  // tout : 100 / 7 fait 14, reste 2.
+  {{name: "une division ordinaire", of: "wide", rax: 100n, rdx: ZERO_AFTER_INC, rcx: 7n,
+    rax_after: "e", rdx_after: "2"}},
+  // 2^32 divisé par trois, en trente-deux bits : la moitié basse seule dirait
+  // « zéro ». Le module doit calculer, pas refuser.
+  {{name: "un dividende sur deux registres", of: "real", rax: 0n, rdx: 1n, rcx: 3n,
+    rax_after: "55555555", rdx_after: "1"}},
+  // -2^32 divisé par trois : le quotient tronque **vers zéro**, donc
+  // -1 431 655 765, reste -1. Une écriture de 32 bits étend par zéro.
+  {{name: "un dividende signé sur deux registres", of: "realSigned",
+    rax: 0n, rdx: 0xffffffffn, rcx: 3n, rax_after: "aaaaaaab", rdx_after: "ffffffff"}},
+];
+const out = [];
+for (const test of cases) {{
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(modules[test.of]));
+  instance.exports.g0.value = test.rax;
+  instance.exports.g1.value = test.rcx;
+  instance.exports.g2.value = test.rdx;
+  instance.exports.g4.value = 0x30003000n;
+  let threw = "";
+  try {{ instance.exports.run(64n); }} catch (error) {{ threw = error.message; }}
+  out.push({{
+    name: test.name,
+    threw,
+    rax: BigInt.asUintN(64, instance.exports.g0.value).toString(16),
+    rdx: BigInt.asUintN(64, instance.exports.g2.value).toString(16),
+    rip: BigInt.asUintN(64, instance.exports.g{}.value).toString(16),
+    want: test.rip || "",
+    wantRax: test.rax_after || "",
+    wantRdx: test.rdx_after || "",
+  }});
+}}
+console.log(JSON.stringify(out, null, 1));
+"#,
+            paths[0], paths[1], paths[2], paths[3], RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let produced: Vec<HashMap<String, String>> =
+        serde_free_objects(&text).expect("le pilote doit rendre du JSON lisible");
+    assert_eq!(produced.len(), 6, "six cas attendus : {text}");
+    for case in &produced {
+        let name = &case["name"];
+        // **Aucune trappe, dans aucun cas.** Une trappe tue le module entier,
+        // et l'hôte n'a plus de machine à reprendre.
+        assert_eq!(case["threw"], "", "{name} a piégé le module : {text}");
+        if !case["want"].is_empty() {
+            assert_eq!(
+                case["rip"], case["want"],
+                "{name} : le module devait poser RIP sur la division elle-même"
+            );
+        }
+        if !case["wantRax"].is_empty() {
+            assert_eq!(case["rax"], case["wantRax"], "{name} : le quotient");
+            assert_eq!(case["rdx"], case["wantRdx"], "{name} : le reste");
+        }
+    }
+}
+
+/// Lire la liste d'objets plats que le pilote rend. Le dépôt n'a pas de
+/// dépendance JSON, et en ajouter une pour quatre objets à cinq champs coûterait
+/// plus cher que de les lire.
+fn serde_free_objects(text: &str) -> Option<Vec<HashMap<String, String>>> {
+    let mut objects = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        let mut fields = HashMap::new();
+        for pair in rest[open + 1..close].split(',') {
+            let (key, value) = pair.split_once(':')?;
+            fields.insert(
+                key.trim().trim_matches('"').to_string(),
+                value.trim().trim_matches('"').to_string(),
+            );
+        }
+        objects.push(fields);
+        rest = &rest[close + 1..];
+    }
+    Some(objects)
 }
