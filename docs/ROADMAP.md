@@ -2070,9 +2070,38 @@ hachage devra les mélanger — un décalage avant le produit — sinon la table
 remplit d'un côté. Ce n'est pas un détail d'implémentation : c'est le genre de
 choix qui, mal fait, se voit comme une lenteur inexplicable six mois plus tard.
 
-Ce qui reste à écrire : l'émetteur qui importe la table et pose ses blocs
-dedans, `resolve` qui passe par la recherche au lieu de la chaîne de
-comparaisons, et l'hôte qui tient la correspondance. Rien de cela n'est fait.
+### La forme liée : les blocs dans la table de l'hôte
+
+`Module::linked(octets, base, entrée, emplacement)` existe. Le module n'a plus
+sa table : il importe `env.blocks` et y pose ses blocs à partir de
+l'emplacement que l'hôte lui donne.
+
+Le changement s'est révélé plus petit que prévu, et c'est le genre de chose à
+écrire. **Les blocs restent numérotés depuis zéro partout** — dans `place`, dans
+`resolve`, dans ce qu'un bloc rend — et seule la boucle de répartition ajoute
+l'emplacement avant l'appel indirect. Un seul endroit calcule l'indice absolu,
+et la traduction reste indépendante de l'endroit où l'hôte pose la région.
+
+Le minimum déclaré par l'import couvre l'emplacement **plus** les blocs, ce qui
+transforme un décalage mal calculé en une erreur de liaison plutôt qu'en un
+appel vers l'entrée d'à côté. C'est la même protection que pour la mémoire, et
+elle est tenue par un test.
+
+**`Module::region` n'a pas bougé, et c'est délibéré.** La forme historique est
+ce que la sonde de l'iPhone embarque, ce que le programme C de conformité
+vérifie et ce que cinq harnais JavaScript instancient. Migrer tout ce monde
+avant d'avoir *pris* le gain aurait été le payer peut-être pour rien. Les deux
+formes coexistent jusqu'à ce que la mesure tranche.
+
+Six sabotages sur sept. Le survivant est inerte en effet : une région liée qui
+définirait *aussi* sa propre table porterait une table morte — les éléments et
+le `call_indirect` visent tous deux la table zéro, l'importée. Rien
+d'observable, donc rien à tenir.
+
+Ce qui reste : la correspondance adresse → indice, tenue par l'hôte dans la
+mémoire invitée avec un hachage qui mélange les bits bas, et `resolve` qui passe
+par elle au lieu de la chaîne de comparaisons. C'est là que le gain arrive, et
+c'est là que `--example chain` doit retomber de 192 ns à une dizaine.
 
 L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
 ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un
