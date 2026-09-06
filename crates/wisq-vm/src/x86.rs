@@ -377,6 +377,11 @@ pub enum Op {
     /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
     /// à quel bloc elle correspond : il rend la main.
     JumpIndirect,
+    /// **`call *r/m`** : la cible est une valeur, pas un déplacement. C'est
+    /// l'appel par pointeur de fonction, dont un noyau est fait. Distinguée de
+    /// `Call` parce que les deux n'ont rien en commun côté émetteur : l'un a
+    /// une cible connue à la compilation, l'autre pas.
+    CallIndirect,
     /// `push` : descendre la pile de huit octets, puis y écrire.
     Push,
     /// `pop` : lire au sommet, puis remonter la pile.
@@ -1025,8 +1030,15 @@ impl Cpu {
                 let value = if instruction.immediate {
                     instruction.imm
                 } else {
-                    // `push %rsp` empile la valeur **d'avant** la descente.
-                    self.regs[instruction.dst as usize]
+                    // Un registre, ou huit octets de mémoire — `read_destination`
+                    // fait les deux. Et dans les deux cas la valeur est lue
+                    // **avant** que RSP ne bouge : `push %rsp` empile la valeur
+                    // d'avant la descente.
+                    let Some(value) = self.read_destination(instruction) else {
+                        self.faulted = true;
+                        return;
+                    };
+                    value
                 };
                 self.push(value);
             }
@@ -1040,6 +1052,22 @@ impl Cpu {
                     return;
                 }
                 self.rip = after.wrapping_add(instruction.imm);
+                self.jumped = true;
+            }
+            Op::CallIndirect => {
+                // **La cible se lit avant que la pile ne bouge.** L'inverse
+                // marcherait tant que la cible n'est pas `-8(%rsp)` — et un
+                // noyau qui appelle par un pointeur pris sur sa propre pile
+                // existe.
+                let Some(target) = self.read_destination(instruction) else {
+                    self.faulted = true;
+                    return;
+                };
+                self.push(after);
+                if self.faulted {
+                    return;
+                }
+                self.rip = target;
                 self.jumped = true;
             }
             Op::Return => {
@@ -1473,7 +1501,7 @@ impl Cpu {
         }
         if matches!(
             instruction.op,
-            Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave
+            Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave
         ) {
             self.stack(instruction);
             return;
@@ -1525,7 +1553,15 @@ impl Cpu {
                 return;
             }
             Op::JumpIndirect => {
-                self.rip = self.regs[instruction.dst as usize];
+                // La cible se lit là où l'opérande se trouve : un registre, ou
+                // huit octets de mémoire. `read_destination` fait les deux, et
+                // rend `None` quand l'accès sort de la fenêtre — auquel cas le
+                // saut n'a pas lieu, plutôt que d'aller à zéro.
+                let Some(target) = self.read_destination(instruction) else {
+                    self.faulted = true;
+                    return;
+                };
+                self.rip = target;
                 self.jumped = true;
                 return;
             }
@@ -1662,7 +1698,7 @@ impl Cpu {
                 unreachable!("les sauts sortent avant")
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
-            Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
+            Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
                 unreachable!("la pile sort avant")
             }
             Op::WideMultiply { .. }
@@ -2786,13 +2822,27 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             let op = match reg & 0b111 {
                 0 => Op::Inc,
                 1 => Op::Dec,
-                // `jmp *%reg`, seulement en mode registre : une cible en
-                // mémoire demanderait une lecture que ce bras ne fait pas.
-                4 if opcode == 0xff && field.memory.is_none() => {
+                // **Le groupe 5 par une valeur, et non par un déplacement.**
+                // `/2` appelle, `/4` saute, `/6` empile — et la valeur vient
+                // d'un registre ou de la mémoire, indifféremment. C'est ainsi
+                // qu'un noyau appelle par pointeur de fonction et saute par
+                // table, ce qui en fait la forme dominante et non l'exception.
+                //
+                // **Huit octets, toujours, et sans REX.** En mode 64 bits ces
+                // trois formes ont une taille d'opérande forcée : les traiter
+                // en trente-deux bits tronquerait chaque pointeur à sa moitié
+                // basse, ce qui donne une adresse dans la page zéro plutôt
+                // qu'une faute franche.
+                2 | 4 | 6 if opcode == 0xff => {
                     return Some(Decoded {
-                        op: Op::JumpIndirect,
+                        op: match reg & 0b111 {
+                            2 => Op::CallIndirect,
+                            4 => Op::JumpIndirect,
+                            _ => Op::Push,
+                        },
                         dst: rm,
                         length: at,
+                        memory: field.memory,
                         ..Decoded::nothing(Width::Qword)
                     })
                 }
@@ -3245,6 +3295,107 @@ mod tests {
             .expect("le NOP long du noyau se lit");
         assert_eq!(step.op, Op::Nop);
         assert_eq!(step.length, 10, "dix octets, tous consommés");
+    }
+
+    /// **Le groupe 5 par la mémoire : ce qu'un noyau appelle par pointeur.**
+    ///
+    /// Le décodeur ne connaissait que `jmp *%reg`, et son commentaire le disait
+    /// franchement : « une cible en mémoire demanderait une lecture que ce bras
+    /// ne fait pas ». Or c'est la forme dominante — un noyau appelle par table
+    /// de fonctions, pas par registre chargé à la main.
+    ///
+    /// Trois choses à tenir, qu'un cas de programme confondrait :
+    /// 1. La cible est **lue en mémoire**, pas prise dans un registre.
+    /// 2. `call` empile l'adresse de **l'instruction suivante**, longueur
+    ///    comprise — la même erreur d'un octet que partout ailleurs.
+    /// 3. En mode 64 bits ces trois formes sont **toujours** sur huit octets,
+    ///    sans REX. Les traiter en trente-deux bits tronquerait chaque
+    ///    pointeur de noyau à sa moitié basse.
+    #[test]
+    fn group_five_reaches_its_target_through_memory() {
+        let window = || GuestMemory {
+            base: 0x3000_1000,
+            // Un pointeur reconnaissable à l'octet 0, un autre à l'octet 8.
+            bytes: (0..64u8)
+                .map(|byte| match byte {
+                    0..=7 => [0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0][byte as usize],
+                    8..=15 => [0x88, 0x77, 0x66, 0x55, 0, 0, 0, 0][byte as usize - 8],
+                    _ => 0xEE,
+                })
+                .collect(),
+        };
+        let machine = || Cpu {
+            rip: 0x3000_0000,
+            regs: {
+                let mut regs = [0u64; 16];
+                regs[4] = 0x3000_3000; // RSP, dans la fenêtre
+                regs[6] = 0x3000_1000; // RSI pointe la fenêtre
+                regs
+            },
+            memory: GuestMemory {
+                base: 0x3000_0000,
+                bytes: vec![0; 0x4000],
+            },
+            ..Default::default()
+        };
+        let load = |cpu: &mut Cpu| {
+            let window = window();
+            for (rank, byte) in window.bytes.iter().enumerate() {
+                cpu.memory.bytes[0x1000 + rank] = *byte;
+            }
+        };
+
+        // `ff 16` — `callq *(%rsi)`. Deux octets, donc l'adresse empilée est
+        // celle de l'octet numéro deux.
+        let step = decode(&[0xff, 0x16]).expect("ff /2 en mémoire se lit");
+        assert_eq!(step.length, 2);
+        let mut cpu = machine();
+        load(&mut cpu);
+        cpu.execute(&step);
+        assert!(!cpu.faulted);
+        assert_eq!(cpu.rip, 0x1122_3344, "la cible vient de la mémoire");
+        assert!(cpu.jumped);
+        assert_eq!(cpu.regs[4], 0x3000_3000 - 8, "la pile a descendu de huit");
+        assert_eq!(
+            cpu.memory.read(cpu.regs[4], Width::Qword),
+            Some(0x3000_0002),
+            "l'adresse empilée est celle qui suit l'instruction"
+        );
+
+        // `ff 66 08` — `jmpq *8(%rsi)`. Aucune écriture, aucune pile.
+        let step = decode(&[0xff, 0x66, 0x08]).expect("ff /4 en mémoire se lit");
+        assert_eq!(step.length, 3);
+        let mut cpu = machine();
+        load(&mut cpu);
+        cpu.execute(&step);
+        assert!(!cpu.faulted);
+        assert_eq!(cpu.rip, 0x5566_7788);
+        assert_eq!(cpu.regs[4], 0x3000_3000, "un saut ne touche pas la pile");
+
+        // `ff 36` — `pushq (%rsi)`. Huit octets pris en mémoire, posés sur la
+        // pile ; le pointeur d'instruction avance normalement.
+        let step = decode(&[0xff, 0x36]).expect("ff /6 en mémoire se lit");
+        let mut cpu = machine();
+        load(&mut cpu);
+        cpu.execute(&step);
+        assert!(!cpu.faulted);
+        assert!(!cpu.jumped);
+        assert_eq!(cpu.regs[4], 0x3000_3000 - 8);
+        assert_eq!(
+            cpu.memory.read(cpu.regs[4], Width::Qword),
+            Some(0x1122_3344)
+        );
+
+        // `ff d0` — `callq *%rax`, la même chose par un registre.
+        let step = decode(&[0xff, 0xd0]).expect("ff /2 en registre se lit");
+        let mut cpu = machine();
+        cpu.regs[0] = 0x3000_0800;
+        cpu.execute(&step);
+        assert_eq!(cpu.rip, 0x3000_0800);
+        assert_eq!(
+            cpu.memory.read(cpu.regs[4], Width::Qword),
+            Some(0x3000_0002)
+        );
     }
 
     /// **FS est refusé, et c'est délibéré.** L'oracle ne peut pas le poser : sa

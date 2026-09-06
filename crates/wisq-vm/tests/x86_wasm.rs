@@ -576,7 +576,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
     // qui a déjà servi une fois — un écart entre les deux cœurs.
     assert!(
-        checked + handed_back > 12660,
+        checked + handed_back > 12830,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
