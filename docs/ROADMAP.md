@@ -2013,6 +2013,29 @@ ce que ce dépôt n'a pas encore de ce côté. Ce qui est acquis : les `rep` son
 dans 8,9 % des fonctions du noyau, ce sont les `memcpy` et les `memset`, et
 l'argument pour écrire la boucle est sérieux. Il n'est pas démontré.
 
+**Mais les deux constats de cette tranche, mis ensemble, en donnent un autre —
+et celui-là ne parle pas de vitesse.** Si le module rend la main sur `rep`, il
+faut que quelqu'un exécute ce `rep`, et ce quelqu'un doit lire la RAM invitée,
+donc vivre dans la vue. Il n'y a que deux façons :
+
+1. **écrire un exécuteur x86 en JavaScript** — un *quatrième* cœur, à côté de
+   l'interpréteur Rust, de l'émetteur et du cœur Swift. Ce dépôt a déjà payé
+   pour avoir oublié qu'il en avait trois : une tranche rouge, 336 désaccords ;
+2. **émettre la boucle du `rep` dans le module**, et n'avoir plus rien à
+   exécuter dehors.
+
+La seconde retire un cœur au lieu d'en ajouter un. La raison d'écrire la boucle
+n'est donc pas que la rentrée pèse — ça reste à mesurer — mais qu'elle **n'a
+nulle part où atterrir**. C'est la tranche suivante, et elle se vérifie
+entièrement d'ici : l'oracle matériel a déjà des programmes `rep`, les trois
+cœurs les comparent, et l'émetteur cesserait de rendre la main dessus.
+
+Reste `ud2`, qui rendra toujours la main — et c'est juste : une faute appartient
+à l'hôte, l'état est dans les globales, et rien n'a besoin de reprendre à
+l'intérieur. Restent `ret` et les sauts indirects vers l'inconnu, qui demandent
+une **traduction** de plus, pas une exécution : l'application traduit et renvoie
+le module. Aucun des deux n'exige un exécuteur dans la vue.
+
 Le 4,5 instructions par bloc ne contredit pas les 5,3 citées plus haut : celles-ci
 viennent d'un désassemblage linéaire, celui-là de graphes de blocs coupés à une
 fenêtre de 4 Kio, ce qui tronque les blocs du bord vers le bas. Deux mesures,
