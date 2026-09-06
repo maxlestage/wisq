@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86::{Cpu, Step, Width};
-use wisq_vm::x86_wasm::{Module, GLOBAL_COUNT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT};
+use wisq_vm::x86_wasm::{Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -88,6 +88,12 @@ for (const unit of job.jobs) {
     // Remettre à zéro : un résidu du cas précédent ferait lire à une
     // instruction un registre que l'oracle n'a pas posé.
     for (const global of slots) { global.value = 0n; }
+    // **La base du segment GS, reposée à chaque cas.** Elle appartient à
+    // l'hôte, pas au module : c'est lui qui la pose, comme le noyau la poserait
+    // par `wrmsr`, et la remise à zéro ci-dessus vient de l'effacer. Sans cette
+    // ligne, chaque accès `%gs:` lirait la page zéro là où le silicium lisait
+    // la fenêtre de données.
+    slots[job.gsSlot].value = BigInt("0x" + job.gsBase);
     // Et remettre les fenêtres dans leur motif d'origine, pour la même raison :
     // le silicium les reçoit propres à chaque cas. L'intervalle entre les deux
     // est remis à zéro plutôt que laissé : ce qu'un cas y aurait écrit
@@ -165,6 +171,11 @@ struct Oracle {
     fixed: [u64; 16],
     /// **Les fenêtres de mémoire**, et le motif dont chacune part à chaque cas.
     windows: Vec<(u64, Vec<u8>)>,
+    /// **La base du segment GS**, posée par le pilote et invisible dans les
+    /// registres. Même leçon que `fixed` et `windows`, pour la troisième fois :
+    /// devinée, elle ferait comparer ce résultat à celui d'un processeur parti
+    /// d'ailleurs.
+    gs_base: u64,
 }
 
 /// L'étendue contiguë qui couvre les fenêtres : l'adresse de départ et les
@@ -211,7 +222,9 @@ fn read_oracle() -> Oracle {
         cases: Vec::new(),
         fixed: [0; 16],
         windows: Vec::new(),
+        gs_base: 0,
     };
+    let mut segment = false;
     let mut seeded = 0usize;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
@@ -225,6 +238,10 @@ fn read_oracle() -> Oracle {
                     .insert(f[1].into(), (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])));
             }
             "fenêtre" => oracle.windows.push((hex(f[1]), bytes(f[2]))),
+            "segment" if f[1] == "gs" => {
+                oracle.gs_base = hex(f[2]);
+                segment = true;
+            }
             "fixe" => {
                 let register: usize = f[1].parse().expect("un numéro de registre");
                 oracle.fixed[register] = hex(f[2]);
@@ -267,6 +284,10 @@ fn read_oracle() -> Oracle {
         seeded, 13,
         "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
     );
+    // Un enregistrement inconnu est ignoré en silence, exprès ; celui-ci ne
+    // doit pas l'être, sans quoi le harnais lirait la page zéro sans se
+    // plaindre dès qu'un cas porte le préfixe.
+    assert!(segment, "l'oracle doit déclarer la base du segment GS");
     oracle
 }
 
@@ -317,6 +338,12 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     jobs.push_str(&RIP_SLOT.to_string());
     jobs.push_str(",\"flagsSlot\":");
     jobs.push_str(&flags_slot.to_string());
+    // **La base du segment, lue dans le corpus.** Le pilote la pose par
+    // `arch_prctl` avant le premier cas ; le module la reçoit par une globale
+    // importée, exactement comme il reçoit les registres.
+    jobs.push_str(",\"gsSlot\":");
+    jobs.push_str(&GS_SLOT.to_string());
+    jobs.push_str(&format!(",\"gsBase\":\"{:x}\"", oracle.gs_base));
     // La fenêtre de données et son motif viennent du fichier, jamais du code :
     // un harnais qui les devine compare son résultat à celui d'un processeur
     // parti d'ailleurs.
@@ -549,7 +576,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
     // qui a déjà servi une fois — un écart entre les deux cœurs.
     assert!(
-        checked + handed_back > 12060,
+        checked + handed_back > 12660,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
