@@ -230,6 +230,10 @@ impl Module {
             Self::rotate(step, body);
             return Some(());
         }
+        // `lea` : une somme, un décalage, et aucun drapeau.
+        if step.op == Op::Lea {
+            return Self::lea(step, body);
+        }
 
         // **Les transferts ont deux largeurs et zéro drapeau.** Les faire
         // passer plus bas lirait la source à la largeur de la destination —
@@ -308,6 +312,7 @@ impl Module {
                 Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
                 Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
                 Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
+                Op::Lea => unreachable!("lea sort avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -687,8 +692,33 @@ impl Module {
             Op::Not => {}
             // Traités par `shift` et `transfer`, qui sortent avant d'arriver
             // ici. Les transferts, eux, ne posent **aucun** drapeau.
-            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx | Op::Rol | Op::Ror => {}
+            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx | Op::Rol | Op::Ror | Op::Lea => {}
         }
+    }
+
+    /// **`lea`, c'est-à-dire une addition qui a l'air d'un accès mémoire.**
+    ///
+    /// Rien n'est lu ni écrit en mémoire invitée : l'adresse elle-même est le
+    /// résultat. L'échelle est une puissance de deux, donc un décalage, et la
+    /// somme boucle sur soixante-quatre bits — c'est ainsi que se codent les
+    /// index négatifs.
+    fn lea(step: &Decoded, body: &mut Body) -> Option<()> {
+        let address = step.memory?;
+        body.store(Body::scratch(2), |b| {
+            b.constant(address.displacement as u64);
+            if let Some(base) = address.base {
+                b.load(Self::slot(base)).op(code::I64_ADD);
+            }
+            if let Some(index) = address.index {
+                b.load(Self::slot(index));
+                b.constant(u64::from(address.scale.trailing_zeros()))
+                    .op(code::I64_SHL);
+                b.op(code::I64_ADD);
+            }
+            b.constant(step.width.mask()).op(code::I64_AND);
+        });
+        Self::write_back(step, step.width.mask(), body);
+        Some(())
     }
 
     /// **Une rotation, traduite sans branchement.**

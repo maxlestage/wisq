@@ -224,8 +224,43 @@ def snippets():
 
     yield "xchgq %rcx, %rax"
     yield "xchgl %ecx, %eax"
+    # **`lea` est le banc d'essai du calcul d'adresse**, et le seul possible
+    # sans mémoire : elle rend l'adresse au lieu d'y toucher. Deux formes n'en
+    # éprouvaient qu'une fraction — un déplacement positif d'un octet et une
+    # échelle de quatre. Les suivantes couvrent le reste du codage : les quatre
+    # échelles, un déplacement négatif, un déplacement de quatre octets, le SIB
+    # sans base, un index qui demande REX.X, et une destination de 32 bits qui
+    # doit effacer la moitié haute.
     yield "leaq 8(%rcx), %rax"
     yield "leaq (%rcx,%rdx,4), %rax"
+    yield "leaq -8(%rcx), %rax"
+    yield "leaq -1(%rdx), %rax"
+    yield "leaq 0x12345678(%rcx), %rax"
+    yield "leaq -0x12345678(%rdx), %rax"
+    yield "leaq (%rcx,%rdx,1), %rax"
+    yield "leaq (%rcx,%rdx,2), %rax"
+    yield "leaq (%rcx,%rdx,8), %rax"
+    yield "leaq 16(%rcx,%rdx,8), %rax"
+    yield "leaq -16(%rdx,%rcx,2), %rax"
+    # Pas de base : le SIB le dit par « base 101 » avec mod nul, et un
+    # déplacement de quatre octets suit obligatoirement.
+    yield "leaq (,%rcx,8), %rax"
+    yield "leaq 32(,%rdx,4), %rax"
+    # Un index au-delà du huitième registre : c'est REX.X qui le dit, et c'est
+    # le même champ qui, à quatre et sans REX.X, veut dire « aucun index ».
+    yield "leaq (%rcx,%r12,8), %rax"
+    yield "leaq (%r13,%rdx,2), %rax"
+    # Une base qui est justement le registre dont le numéro annonce un SIB.
+    yield "leaq 8(%rsp), %rax"
+    yield "leaq 8(%rbp), %rax"
+    # Destination de 32 bits : l'adresse est calculée sur soixante-quatre bits
+    # puis **tronquée**, et l'écriture efface la moitié haute.
+    yield "leal 8(%rcx), %eax"
+    yield "leal (%rcx,%rdx,4), %eax"
+    # Et la largeur de mot, qui n'est pas une curiosité : c'est la seule où
+    # l'écriture **fusionne** au lieu d'effacer, et un sabotage a montré que
+    # rien ne la tenait.
+    yield "leaw 8(%rcx), %ax"
 
     # L'extension du signe dans DX, qui ne ressemble à rien d'autre.
     yield "cwtl"
@@ -412,8 +447,17 @@ def assemble(texts):
             for text in texts:
                 out.write(f"    {text}\n")
         subprocess.run(["as", "--64", "-o", str(obj), str(source)], check=True)
+        # **`--insn-width` n'est pas du confort d'affichage.** Sans lui objdump
+        # renvoie à la ligne au-delà de sept octets, et la continuation ne
+        # porte pas de mnémonique : la regex ci-dessous ne la voit pas, et
+        # l'instruction est **tronquée en silence**. Le compte d'instructions
+        # reste juste, donc rien ne le signale. `leaq (,%rcx,8), %rax` fait
+        # huit octets et arrivait sur sept — un ModRM suivi de trois octets de
+        # déplacement au lieu de quatre, que le processeur a exécuté comme il
+        # a pu, jusqu'à la faute de segmentation.
         listing = subprocess.run(
-            ["objdump", "-d", str(obj)], capture_output=True, text=True, check=True).stdout
+            ["objdump", "-d", "--insn-width=16", str(obj)],
+            capture_output=True, text=True, check=True).stdout
 
     line = re.compile(r"^\s*[0-9a-f]+:\t([0-9a-f]{2}(?: [0-9a-f]{2})*) *\t(.*)$")
     encoded = []
@@ -423,7 +467,25 @@ def assemble(texts):
             encoded.append("".join(match.group(1).split()))
     if len(encoded) != len(texts):
         raise SystemExit(f"{len(texts)} instructions demandées, {len(encoded)} relues")
+    # Et la garde qui manquait : la somme des longueurs doit faire la taille de
+    # la section. Une instruction tronquée passe le compte mais pas celle-ci.
+    total = sum(len(item) // 2 for item in encoded)
+    size = obj_size(listing)
+    if size is not None and total != size:
+        raise SystemExit(
+            f"{total} octets relus pour une section de {size} : une "
+            f"instruction a été tronquée à la relecture")
     return encoded
+
+
+def obj_size(listing):
+    """La fin de la dernière instruction, lue dans le désassemblage."""
+    last = None
+    for row in listing.splitlines():
+        match = re.match(r"^\s*([0-9a-f]+):\t([0-9a-f]{2}(?: [0-9a-f]{2})*)", row)
+        if match:
+            last = int(match.group(1), 16) + len(match.group(2).split())
+    return last
 
 
 def assemble_program(lines):

@@ -285,6 +285,35 @@ pub enum Op {
     Rol,
     /// Rotation à droite.
     Ror,
+    /// **Calculer une adresse sans y toucher.** `lea` est la seule instruction
+    /// qui porte un opérande mémoire et ne lit pas la mémoire : elle écrit
+    /// l'adresse elle-même. C'est aussi la seule façon d'éprouver tout le
+    /// calcul d'adresse — base, index, échelle, déplacement — contre le
+    /// silicium sans avoir encore de mémoire à comparer.
+    Lea,
+}
+
+/// **Une adresse effective, telle que le ModRM et le SIB la décrivent.**
+///
+/// C'est la forme complète que x86-64 permet : une base, un index mis à
+/// l'échelle, un déplacement, et le cas particulier du déplacement relatif au
+/// pointeur d'instruction. Ni la base ni l'index ne sont optionnels par
+/// confort — le codage les rend indépendamment absents, et confondre « base
+/// zéro » avec « pas de base » désignerait le registre RAX à la place de rien.
+///
+/// Le mode **relatif à RIP** n'est pas ici : il est reconnu par le décodeur et
+/// **refusé**. Aucun cas du corpus ne l'exerce, et un champ que rien ne peut
+/// tenir finit par mentir.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Address {
+    pub base: Option<u8>,
+    pub index: Option<u8>,
+    /// Un, deux, quatre ou huit. Jamais zéro : l'échelle du SIB est une
+    /// puissance de deux, et l'absence d'index se dit par `index`.
+    pub scale: u8,
+    /// Le déplacement, **étendu en signe**. Il est négatif plus souvent qu'on
+    /// ne croit : un cadre de pile est fait de `-8(%rbp)`.
+    pub displacement: i64,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -325,6 +354,10 @@ pub struct Decoded {
     /// rendrait `movzbq` identique à `movq` — juste tant que le registre
     /// source tient sur un octet, faux dès qu'il déborde.
     pub src_width: Width,
+    /// L'adresse effective, quand l'opérande n'est pas un registre. `lea` est
+    /// la seule instruction de cette tranche à en porter une : elle **calcule**
+    /// l'adresse et l'écrit, sans jamais lire ce qu'il y a dedans.
+    pub memory: Option<Address>,
 }
 
 impl Cpu {
@@ -461,6 +494,21 @@ impl Cpu {
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
     /// ne sont pas calculés : on garde l'opération et ses opérandes, rien de
     /// plus.
+    /// Base + index × échelle + déplacement, sur soixante-quatre bits qui
+    /// bouclent. Le débordement n'est pas une erreur : c'est ainsi que se
+    /// codent les index négatifs.
+    fn effective_address(&self, address: &Address) -> u64 {
+        let mut value = address.displacement as u64;
+        if let Some(base) = address.base {
+            value = value.wrapping_add(self.regs[base as usize]);
+        }
+        if let Some(index) = address.index {
+            value = value
+                .wrapping_add(self.regs[index as usize].wrapping_mul(u64::from(address.scale)));
+        }
+        value
+    }
+
     /// **Une rotation, et les deux seuls drapeaux qu'elle touche.**
     ///
     /// 1. Le compte est masqué comme celui d'un décalage — cinq bits, six en
@@ -587,6 +635,16 @@ impl Cpu {
             return;
         }
 
+        // **`lea` calcule et n'accède à rien.** Elle ne touche aucun drapeau,
+        // et sa « source » n'est pas un opérande mais une adresse.
+        if instruction.op == Op::Lea {
+            if let Some(address) = instruction.memory {
+                let value = self.effective_address(&address);
+                self.set(instruction.dst, width, false, value);
+            }
+            return;
+        }
+
         let (result, op) = match instruction.op {
             Op::Add => (left.wrapping_add(right), FlagOp::Add),
             Op::Sub | Op::Cmp => (left.wrapping_sub(right), FlagOp::Sub),
@@ -616,6 +674,7 @@ impl Cpu {
             Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
             Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
             Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
+            Op::Lea => unreachable!("lea sort avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -713,6 +772,13 @@ impl Prefixes {
         self.rex.map_or(0, |rex| (rex & 0b0100) << 1)
     }
 
+    /// Le bit X, qui donne son quatrième bit à l'index du SIB. Il n'a pas
+    /// d'autre usage, et c'est lui qui fait la différence entre « pas d'index »
+    /// et « index R12 ».
+    fn index_extension(self) -> u8 {
+        self.rex.map_or(0, |rex| (rex & 0b0010) << 2)
+    }
+
     /// Le bit B, qui fait la même chose pour `rm`.
     fn rm_extension(self) -> u8 {
         self.rex.map_or(0, |rex| (rex & 0b0001) << 3)
@@ -799,6 +865,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_high: prefixes.high_byte(rm, src_width),
                     count_is_cl: false,
                     src_width,
+                    memory: None,
                 })
             }
             _ => None,
@@ -828,6 +895,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             });
         }
 
@@ -847,6 +915,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             src_high: prefixes.high_byte(src, width),
             count_is_cl: false,
             src_width: width,
+            memory: None,
         });
     }
 
@@ -872,6 +941,36 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: prefixes.high_byte(reg, width),
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
+            })
+        }
+        // `lea` : le seul opérande mémoire de cette tranche, et le seul qui ne
+        // lise rien. Le mode registre est **invalide** pour cette instruction —
+        // il n'y a pas d'adresse d'un registre — et l'assembleur ne le produit
+        // pas ; le décodeur le refuse plutôt que d'inventer.
+        0x8d => {
+            let width = prefixes.width(false);
+            let modrm = *bytes.get(at)?;
+            at += 1;
+            if modrm >> 6 == 0b11 {
+                return None;
+            }
+            let reg = ((modrm >> 3) & 0b111) | prefixes.reg_extension();
+            let memory = read_address(bytes, &mut at, prefixes, modrm)?;
+            Some(Decoded {
+                op: Op::Lea,
+                width,
+                dst: reg,
+                src: 0,
+                imm: 0,
+                immediate: false,
+                discards: false,
+                length: at,
+                dst_high: false,
+                src_high: false,
+                count_is_cl: false,
+                src_width: width,
+                memory: Some(memory),
             })
         }
         // `movsxd` : quatre octets lus, étendus en signe vers la destination.
@@ -893,6 +992,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: Width::Dword,
+                memory: None,
             })
         }
         // Groupe 1 : l'opération est dans le champ `reg` du ModRM.
@@ -915,6 +1015,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             })
         }
         // `test` entre deux registres.
@@ -934,6 +1035,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: prefixes.high_byte(reg, width),
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             })
         }
         // `test` sur l'accumulateur.
@@ -953,6 +1055,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             })
         }
         // Groupe 3 : `test`, `not`, `neg` — et les multiplications et
@@ -985,6 +1088,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             })
         }
         // **Groupe 2 : les décalages.** Trois sources pour le compte, et c'est
@@ -1038,6 +1142,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl,
                 src_width: width,
+                memory: None,
             })
         }
         // Groupes 4 et 5 : `inc` et `dec`.
@@ -1062,6 +1167,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
+                memory: None,
             })
         }
         _ => None,
@@ -1079,6 +1185,68 @@ fn sign_extend(value: u64, width: Width) -> u64 {
         return value;
     }
     value | !width.mask()
+}
+
+/// **L'adresse effective d'un ModRM qui n'est pas en mode registre.**
+///
+/// Trois pièges y sont codés, et chacun se traduit par une adresse plausible
+/// quand on l'oublie :
+///
+/// 1. `rm == 100` n'est pas le registre RSP : c'est l'annonce d'un octet SIB.
+/// 2. Dans ce SIB, `index == 100` **sans REX.X** veut dire « pas d'index ».
+///    Avec REX.X il désigne R12, qui est un index parfaitement valable — le
+///    même champ dit deux choses selon un bit qui est ailleurs.
+/// 3. `mod == 00` avec `base == 101` ne veut pas dire « base RBP » mais
+///    « pas de base, un déplacement de quatre octets suit ».
+fn read_address(bytes: &[u8], at: &mut usize, prefixes: Prefixes, modrm: u8) -> Option<Address> {
+    let mode = modrm >> 6;
+    let rm = modrm & 0b111;
+
+    let mut address = Address {
+        scale: 1,
+        ..Address::default()
+    };
+
+    if rm == 0b100 {
+        let sib = *bytes.get(*at)?;
+        *at += 1;
+        let index = ((sib >> 3) & 0b111) | prefixes.index_extension();
+        // Le quatre nu, et lui seul, dit « aucun index ».
+        if index != 0b100 {
+            address.index = Some(index);
+            address.scale = 1 << (sib >> 6);
+        }
+        let base = sib & 0b111;
+        if mode == 0 && base == 0b101 {
+            address.displacement = i64::from(read_i32(bytes, at)?);
+        } else {
+            address.base = Some(base | prefixes.rm_extension());
+        }
+    } else if mode == 0 && rm == 0b101 {
+        // Relatif à RIP. Reconnu pour être refusé : le décodeur ne sait pas
+        // encore où l'instruction se trouve, et rendre une base RBP à la place
+        // donnerait une adresse absolue minuscule au lieu d'une erreur.
+        return None;
+    } else {
+        address.base = Some(rm | prefixes.rm_extension());
+    }
+
+    match mode {
+        1 => address.displacement = i64::from(*bytes.get(*at)? as i8),
+        2 => address.displacement = i64::from(read_i32(bytes, at)?),
+        _ => {}
+    }
+    if mode == 1 {
+        *at += 1;
+    }
+    Some(address)
+}
+
+/// Quatre octets, en petit-boutiste, **signés**.
+fn read_i32(bytes: &[u8], at: &mut usize) -> Option<i32> {
+    let slice = bytes.get(*at..*at + 4)?;
+    *at += 4;
+    Some(i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 /// Le ModRM, **mode registre seulement**. Une adresse mémoire est refusée
@@ -1152,5 +1320,36 @@ impl Cpu {
             }
             None => Step::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Ce que le corpus matériel ne peut pas juger, et pourquoi.**
+    ///
+    /// Le mode « relatif au pointeur d'instruction » est reconnu par le
+    /// décodeur puis refusé, faute de savoir où l'instruction se trouve. Aucun
+    /// cas de `x86-oracle.tsv` ne l'exerce seul, et un sabotage l'a montré :
+    /// accepter ce codage comme une base RBP ne faisait tomber aucun cas.
+    ///
+    /// Ce test n'est donc pas du silicium — c'est une lecture du codage, et il
+    /// vaut ce que vaut cette lecture. Il tient une chose et une seule : que le
+    /// refus soit un refus, et pas une adresse plausible calculée depuis le
+    /// mauvais registre. Le jour où les sauts arriveront, RIP sera connu et ce
+    /// test devra changer de sens.
+    #[test]
+    fn a_displacement_relative_to_the_instruction_pointer_is_refused() {
+        // 48 8d 05 <disp32> — `leaq disp(%rip), %rax`. Le champ `rm` vaut 101
+        // avec un `mod` nul : le même codage qui, ailleurs, désigne RBP.
+        assert_eq!(decode(&[0x48, 0x8d, 0x05, 0x10, 0x00, 0x00, 0x00]), None);
+        // Et la preuve que c'est bien le `mod` qui décide : avec un
+        // déplacement d'un octet, 101 redevient RBP et l'instruction se lit.
+        let step = decode(&[0x48, 0x8d, 0x45, 0x10]).expect("8d 45 est lisible");
+        let address = step.memory.expect("un opérande mémoire");
+        assert_eq!(address.base, Some(5));
+        assert_eq!(address.index, None);
+        assert_eq!(address.displacement, 0x10);
     }
 }

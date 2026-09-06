@@ -337,7 +337,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // soixante instructions au groupe arithmétique, les transferts trente-six,
     // les rotations simples quarante — neuf cent soixante cas de plus.
     assert!(
-        checked > 5700,
+        checked > 6200,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
