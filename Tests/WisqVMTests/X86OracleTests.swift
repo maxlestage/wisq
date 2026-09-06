@@ -53,6 +53,13 @@ final class X86OracleTests: XCTestCase {
         var states: [Int: State] = [:]
         var instructions: [Int: (bytes: [UInt8], mask: UInt64, text: String)] = [:]
         var cases: [Case] = []
+        /// **La base du segment GS**, que le pilote de l'oracle pose par
+        /// `arch_prctl` et qu'aucun registre ne montre. Optionnelle ici pour
+        /// que son absence soit une faute nommée plus bas, et non un zéro
+        /// silencieux : un cœur qui part de zéro lit la page zéro là où le
+        /// silicium lisait la fenêtre de données, et tombe juste tant qu'aucun
+        /// cas ne porte le préfixe.
+        var gsBase: UInt64?
     }
 
     static var path: String {
@@ -85,6 +92,8 @@ final class X86OracleTests: XCTestCase {
                 }
                 fixture.instructions[Int(field[1]) ?? -1] = (
                     bytes, number(3), String(field[4]))
+            case "segment" where field.count >= 3 && field[1] == "gs":
+                fixture.gsBase = number(2)
             case "cas" where field.count >= 8:
                 var window: [UInt8]?
                 if field[7] != "-" {
@@ -121,6 +130,10 @@ final class X86OracleTests: XCTestCase {
         let fixture = try Self.read(Self.path)
         XCTAssertGreaterThan(fixture.cases.count, 5000, "l'oracle doit couvrir, pas illustrer")
         XCTAssertGreaterThan(fixture.instructions.count, 200)
+        // Un enregistrement que ce lecteur ne connaît pas est ignoré en
+        // silence, exprès ; celui-ci ne doit pas l'être.
+        let gsBase = try XCTUnwrap(
+            fixture.gsBase, "l'oracle doit déclarer la base du segment GS")
 
         var disagreements: [String] = []
         var byInstruction: [String: Int] = [:]
@@ -146,6 +159,10 @@ final class X86OracleTests: XCTestCase {
             var core = X86Core(
                 registers: registers, flags: before.flags | X86Core.Flag.reserved,
                 rip: 0x3000_0000, memory: memory)
+            // La base du segment appartient à la machine, pas à l'instruction :
+            // le pilote la pose une fois pour toutes avant le premier cas, et
+            // ici elle se pose de même, sur le MSR que le noyau écrirait.
+            core.system.modelSpecific[X86SystemState.gsBase] = gsBase
             do {
                 // Le harnais exécute tout ce qu'on lui a donné : un programme
                 // entier, pas seulement sa première instruction. Le budget est
