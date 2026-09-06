@@ -1983,6 +1983,58 @@ il tiendrait même à un retour par seconde. Le bureau local n'est donc pas
 « l'application qui pilote un module » mais **la machine qui vit dans la vue**,
 l'application fournissant l'image du noyau et recevant les pixels.
 
+### Ce qu'un retour de main coûte vraiment, et pourquoi
+
+`cargo run -p wisq-vm --release --example chain` fait ce que fera le bureau :
+une mémoire et vingt-neuf globales créées une fois, un cache de modules par
+adresse, et une boucle qui appelle la région commençant à RIP, relit RIP,
+recommence. Soixante-quatre maillons en anneau, chacun sautant **indirectement**
+au suivant — l'indirection est le sujet, une cible connue à la compilation
+resterait dans la région.
+
+| Relevé, sous le JavaScriptCore de Bun | Valeur |
+| --- | --- |
+| Un retour de main, boucle hôte complète | **192 ns** |
+| Appeler **une** fonction WebAssembly, en boucle | 25 ns |
+| Appeler **soixante-quatre** fonctions en rotation | 99 ns |
+
+**Le poste principal n'est pas WebAssembly, c'est le site d'appel.** Un `run`
+appelé en boucle coûte 25 ns ; soixante-quatre `run` différents depuis le même
+site en coûtent 99 — ×4. JavaScriptCore y perd son cache en ligne, et c'est
+inhérent à une boucle hôte qui répartit par adresse depuis JavaScript. Le reste
+est la lecture de RIP en `BigInt` et la recherche dans la table.
+
+**La conclusion n'est pas un plafond, c'est une contrainte.** Le coût est par
+*retour de main*, pas par instruction :
+
+| Instructions par retour de main | Débit |
+| --- | --- |
+| 4,5 — un bloc de base du noyau Alpine | 23 MIPS |
+| 6 — la chaîne du banc, le pire cas construit exprès | 31 MIPS |
+| 113,8 — ce qu'une région du noyau **contient** | 592 MIPS |
+| 1000 | 5202 MIPS |
+
+Le bureau tient si les régions sont grandes, et pas autrement. C'est ce que
+disait déjà le module de l'émetteur — « un module par bloc de base : 85 MIPS de
+plafond, tout l'intérêt s'évapore » — et l'hôte à état partagé n'y a rien
+changé : il a supprimé la recopie, pas le coût du site d'appel.
+
+**Les 113,8 sont un compte statique**, combien une région contient et non
+combien elle exécute avant de sortir. Le chiffre dynamique demande une machine
+qui tourne, et il n'existe pas encore. C'est lui, et pas le débit brut, qui
+décidera.
+
+La piste que la mesure désigne : une **table importée et partagée**, où chaque
+nouvelle région pose ses blocs, et un `call_indirect` qui reste *dans* le module
+— la répartition interne était mesurée à 2,05 ns par bloc. La boucle hôte ne
+servirait plus qu'aux cibles jamais traduites. Rien de cela n'est mesuré ; c'est
+la prochaine question, pas une conclusion.
+
+L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
+ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un
+modèle écrit en clair calcule. Le chronométrer sans vérifier qu'il calcule juste
+aurait été mesurer une machine fausse.
+
 ### Ce que le vrai noyau dit du coût, et ce qu'il n'en dit pas
 
 `cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9914
