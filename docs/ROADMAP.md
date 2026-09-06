@@ -1919,12 +1919,35 @@ par l'application**, sur un iPhone simulé du coureur Apple :
 
 | Question | Mesure |
 | --- | --- |
-| Le module engendré, exécuté dans la vue | **1300 MIPS** sur 160 M instructions |
+| Le module **écrit à la main**, exécuté dans la vue | **1300 MIPS** sur 160 M instructions |
 | Un aller-retour vers la vue | **0,479 ms** |
 
 L'oracle est refait dans la vue avant le chronomètre : le module calcule bien
 ce que le modèle calcule. Le pont laisse trente-cinq allers-retours par image à
 soixante par seconde — il ne mange pas l'image.
+
+**« Écrit à la main », et le mot compte.** Ce tableau a d'abord dit « le module
+engendré », ce qui était faux : `Tests/WisqHostedTests` porte le module
+recompilé à la main de `scripts/wasm-jit-probe.ts`, écrit avant l'émetteur. Les
+1300 MIPS mesurent donc le **plafond** sur la pile d'Apple, pas ce que wisq
+produit. C'est un chiffre utile — il dit ce que JavaScriptCore sait faire — à
+condition de ne pas le lire comme une mesure du cœur.
+
+**La sonde de l'application, elle, porte maintenant la sortie de l'émetteur.**
+`WebKitBench.moduleBase64` est ce que `Module::region` engendre pour la même
+boucle de cinq instructions, et `bench_module_matches_the_probe` refait le
+module à chaque commit pour le comparer à la chaîne, octet pour octet : les deux
+copies ne peuvent plus diverger. Un envoi TestFlight rendra donc, sur un vrai
+iPhone, le chiffre de **ce que wisq engendrerait** — celui qui se compare aux
+247 MIPS de Bun, pas aux 1300 du plafond.
+
+Deux réserves écrites avec, parce qu'elles ne se verront pas sur l'écran de
+l'appareil. La sonde crée les **768 Mio** de RAM invitée que le module importe ;
+si un `WKWebView` les refuse, c'est une réponse sur l'architecture, pas une
+panne de sonde, et le verdict le dit maintenant séparément. Et l'échauffement
+qui précède la mesure n'est tenu par rien : le supprimer ne fait baisser le
+débit que de moins de dix pour cent sous Bun, trop peu pour qu'un seuil le
+distingue d'un téléphone occupé.
 
 **Ce que ces deux chiffres ne prouvent pas, et il faut le dire.** Le simulateur
 tourne sur le Mac Apple Silicon du coureur, et **macOS ne restreint pas le

@@ -64,6 +64,42 @@ pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 /// la fenêtre de données du corpus matériel, qui vit à 0x30001000.
 pub const GUEST_PAGES: u32 = 0x3001;
 
+/// **La boucle que les bancs mesurent, écrite une seule fois.**
+///
+/// ```text
+/// 1: addq %rax, %rdx
+///    xorq %rcx, %rbx
+///    addq %rdx, %rax
+///    subq $1, %rsi
+///    jnz 1b
+/// ```
+///
+/// Cinq instructions, parce que c'est la taille moyenne d'un bloc de base
+/// relevée en désassemblant le noyau Alpine : une boucle d'une seule
+/// instruction mesurerait le coût du saut, pas celui du calcul. Les quatre
+/// premières posent des drapeaux que personne ne lit, sauf la dernière — le cas
+/// où les drapeaux paresseux de l'interpréteur rapportent, et où le module doit
+/// les calculer.
+///
+/// **Elle vit ici, et pas dans le banc, parce que trois programmes la
+/// mesurent** : l'exemple `speed`, la sonde WebKit de l'application, et le test
+/// qui épingle l'une sur l'autre. Trois copies dériveraient, et l'iPhone
+/// rendrait alors un chiffre qu'on croirait comparable à celui de la CI.
+pub const BENCH_LOOP: [u8; 15] = [
+    0x48, 0x01, 0xc2, // addq %rax, %rdx
+    0x48, 0x31, 0xcb, // xorq %rcx, %rbx
+    0x48, 0x01, 0xd0, // addq %rdx, %rax
+    0x48, 0x83, 0xee, 0x01, // subq $1, %rsi
+    0x75, 0xf1, // jnz 1b
+];
+
+/// L'adresse invitée où le banc charge la boucle. Elle n'est pas décorative :
+/// l'émetteur y fige les adresses de retour et les sauts.
+pub const BENCH_BASE: u64 = 0x3000_0000;
+
+/// Combien d'instructions un tour de la boucle exécute.
+pub const BENCH_PER_TURN: u64 = 5;
+
 /// L'entier non signé à longueur variable de WebAssembly.
 fn unsigned(value: u64, out: &mut Vec<u8>) {
     let mut rest = value;
