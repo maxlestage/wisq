@@ -31,7 +31,9 @@
 //! nom exporté au lieu d'un décalage que les deux côtés doivent s'accorder à
 //! calculer.
 
-use crate::x86::{Address, BitAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
+use crate::x86::{
+    decode, Address, BitAction, Condition, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF,
+};
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
 /// celui de la globale exportée.
@@ -39,7 +41,12 @@ pub const RFLAGS_SLOT: usize = 16;
 /// Les emplacements de travail : la traduction s'en sert au lieu de variables
 /// locales. Il y en a six — le sixième porte le compte d'une rotation ramené
 /// dans la largeur.
-pub const SCRATCH_SLOT: usize = RFLAGS_SLOT + 1;
+/// **Où l'exécution s'est arrêtée.** Une région ne va pas jusqu'au bout du
+/// programme : elle rend la main quand un saut sort de ce qu'elle connaît, ou
+/// quand le budget est épuisé. Sans cette globale, l'hôte saurait qu'elle s'est
+/// arrêtée mais pas où reprendre.
+pub const RIP_SLOT: usize = RFLAGS_SLOT + 1;
+pub const SCRATCH_SLOT: usize = RIP_SLOT + 1;
 pub const SCRATCH_COUNT: usize = 6;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
@@ -95,6 +102,7 @@ mod code {
     /// adresse**. Les variantes courtes étendent par zéro ; l'extension de
     /// signe, quand une instruction la demande, se fait après coup, parce que
     /// x86 la demande depuis la largeur de la source et pas depuis huit octets.
+    pub const I32_CONST: u8 = 0x41;
     pub const I64_LOAD: u8 = 0x29;
     pub const I64_LOAD8_U: u8 = 0x31;
     pub const I64_LOAD16_U: u8 = 0x33;
@@ -238,70 +246,322 @@ impl Module {
     /// n'est pas traduisible. **Refuser plutôt que produire du code faux** :
     /// un bloc à moitié traduit rendrait un état que rien ne distingue d'un
     /// état juste.
-    pub fn block(steps: &[Decoded]) -> Option<Vec<u8>> {
-        let mut body = Body::default();
-        for step in steps {
-            Self::translate(step, &mut body)?;
-        }
-        body.op(code::END);
+    /// **Compiler une région : tous les blocs atteignables depuis le début.**
+    ///
+    /// Un module WebAssembly n'a pas de saut arbitraire. Deux conceptions s'y
+    /// prêtent, et le choix a été **mesuré** plutôt que débattu :
+    ///
+    /// - un module par bloc de base, l'hôte enchaînant : 62,6 ns par bloc sous
+    ///   JavaScriptCore, dans sa meilleure forme (globale `i32`, tableau
+    ///   dense). À 5,3 instructions par bloc — la moyenne relevée en
+    ///   désassemblant le vrai noyau Alpine — c'est **85 MIPS de plafond**,
+    ///   avant d'exécuter la moindre instruction. Moins que l'interpréteur
+    ///   Rust. Tout l'intérêt de passer par WebKit s'évapore.
+    /// - une fonction par bloc **dans le même module**, et la boucle de
+    ///   répartition à l'intérieur : **2,05 ns par bloc**. Trente fois moins.
+    ///
+    /// C'est donc la seconde. Chaque bloc est une fonction qui rend l'indice du
+    /// bloc suivant, ou -1 pour rendre la main ; `run` les enchaîne par un
+    /// `call_indirect` dans une table, sous un budget de pas.
+    pub fn region(bytes: &[u8], entry: usize) -> Option<Vec<u8>> {
+        let blocks = Self::discover(bytes, entry)?;
+        let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
 
+        let mut bodies: Vec<Vec<u8>> = Vec::new();
+        for (start, steps) in &blocks {
+            let mut body = Body::default();
+            let mut at = *start;
+            for step in steps {
+                at += step.length;
+                // **Le saut final n'est pas traduit comme les autres.** Il ne
+                // change pas l'état de la machine mais le bloc courant, et
+                // c'est `terminate` qui sait le dire — lui seul connaît les
+                // autres blocs.
+                if matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect) {
+                    continue;
+                }
+                Self::translate(step, &mut body)?;
+            }
+            Self::terminate(steps.last(), at, &index, &mut body);
+            body.op(code::END);
+            bodies.push(body.bytes);
+        }
+        Some(Self::assemble(bodies))
+    }
+
+    /// **Le parcours du graphe**, et pourquoi ce n'est pas une boucle sur les
+    /// octets. Un `jmp` en arrière repasse sur du code déjà lu, un `jcc` ouvre
+    /// deux suites, et l'octet qui suit un saut inconditionnel peut n'être
+    /// atteint par personne — le décoder comme du code refuserait une région
+    /// parfaitement exécutable.
+    #[allow(clippy::type_complexity)]
+    fn discover(bytes: &[u8], entry: usize) -> Option<Vec<(usize, Vec<Decoded>)>> {
+        let mut starts = std::collections::BTreeSet::new();
+        let mut queue = vec![entry];
+        let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
+            std::collections::BTreeMap::new();
+        while let Some(start) = queue.pop() {
+            if start >= bytes.len() || !starts.insert(start) {
+                continue;
+            }
+            let mut steps = Vec::new();
+            let mut at = start;
+            loop {
+                if at >= bytes.len() {
+                    break;
+                }
+                let step = decode(&bytes[at..])?;
+                at += step.length;
+                let ends = matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect);
+                let displacement = step.imm as i64;
+                let conditional = !matches!(step.op, Op::Jump(None));
+                steps.push(step);
+                if !ends {
+                    continue;
+                }
+                let target = at as i64 + displacement;
+                if (0..bytes.len() as i64).contains(&target) {
+                    queue.push(target as usize);
+                }
+                if conditional && at < bytes.len() {
+                    queue.push(at);
+                }
+                break;
+            }
+            if steps.is_empty() {
+                continue;
+            }
+            blocks.insert(start, steps);
+        }
+        if blocks.is_empty() {
+            return None;
+        }
+        Some(blocks.into_iter().collect())
+    }
+
+    /// **Ce qu'un bloc fait à la fin : dire où aller.**
+    ///
+    /// Il pose l'indice du bloc suivant — ou -1 pour rendre la main — et, dans
+    /// tous les cas, l'endroit où l'exécution en est. Rendre la main sans dire
+    /// où reprendre laisserait l'hôte avec une machine dont il ne sait plus
+    /// quoi faire.
+    fn terminate(
+        last: Option<&Decoded>,
+        after: usize,
+        index: &impl Fn(usize) -> Option<usize>,
+        body: &mut Body,
+    ) {
+        // Deux valeurs à poser : l'adresse d'arrivée et l'indice du bloc.
+        // `sortie` vaut -1 quand la cible n'est pas dans la région.
+        let place = |body: &mut Body, offset: i64| {
+            body.store(RIP_SLOT, |b| {
+                b.constant(offset as u64);
+            });
+            let next = match usize::try_from(offset).ok().and_then(&index) {
+                Some(block) => block as i64,
+                None => -1,
+            };
+            body.bytes.push(code::I32_CONST);
+            signed(next, &mut body.bytes);
+        };
+
+        let Some(step) = last else {
+            place(body, after as i64);
+            return;
+        };
+        let target = after as i64 + step.imm as i64;
+        match step.op {
+            Op::Jump(None) => place(body, target),
+            Op::Jump(Some(condition)) => {
+                // Les deux issues sont calculées, puis choisies. L'adresse
+                // aussi : elle diffère selon la branche prise.
+                body.store(RIP_SLOT, |b| {
+                    b.constant(target as u64);
+                    b.constant(after as u64);
+                    Self::condition(condition, b);
+                    b.op(code::I32_WRAP_I64).op(code::SELECT);
+                });
+                Self::choose(body, target, after as i64, index, |b| {
+                    Self::condition(condition, b);
+                });
+            }
+            Op::LoopWhile => {
+                // `loop` décrémente RCX **sans poser de drapeau**, et saute
+                // tant qu'il n'est pas nul. Le confondre avec `dec` puis `jnz`
+                // écraserait cinq drapeaux que le processeur préserve.
+                body.store(Self::slot(1), |b| {
+                    b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
+                });
+                body.store(RIP_SLOT, |b| {
+                    b.constant(target as u64);
+                    b.constant(after as u64);
+                    b.load(Self::slot(1)).constant(0).op(code::I64_NE);
+                    b.op(code::SELECT);
+                });
+                Self::choose(body, target, after as i64, index, |b| {
+                    b.load(Self::slot(1)).constant(0).op(code::I64_NE);
+                    b.op(code::I64_EXTEND_I32_U);
+                });
+            }
+            Op::JumpIndirect => {
+                // La cible est dans un registre : le module ne peut pas savoir
+                // à quel bloc elle correspond. Il rend la main, et l'hôte
+                // compilera la région qui commence là.
+                body.store(RIP_SLOT, |b| {
+                    b.load(Self::slot(step.dst));
+                });
+                body.bytes.push(code::I32_CONST);
+                signed(-1, &mut body.bytes);
+            }
+            _ => place(body, after as i64),
+        }
+    }
+
+    /// Choisir entre deux indices de bloc selon un prédicat `i64`.
+    fn choose(
+        body: &mut Body,
+        taken: i64,
+        fallen: i64,
+        index: &impl Fn(usize) -> Option<usize>,
+        condition: impl FnOnce(&mut Body),
+    ) {
+        let resolve = |offset: i64| match usize::try_from(offset).ok().and_then(index) {
+            Some(block) => block as i64,
+            None => -1,
+        };
+        body.bytes.push(code::I32_CONST);
+        signed(resolve(taken), &mut body.bytes);
+        body.bytes.push(code::I32_CONST);
+        signed(resolve(fallen), &mut body.bytes);
+        condition(body);
+        body.op(code::I32_WRAP_I64).op(code::SELECT);
+    }
+
+    /// **Le module : une fonction par bloc, plus la boucle qui les enchaîne.**
+    fn assemble(bodies: Vec<Vec<u8>>) -> Vec<u8> {
+        let count = bodies.len();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-        // Type : une fonction sans paramètre ni résultat.
-        section(1, vec![0x01, 0x60, 0x00, 0x00], &mut module);
-        // Fonction : une, du type zéro.
-        section(3, vec![0x01, 0x00], &mut module);
+        // Types : un bloc rend l'indice du suivant ; `run` prend un budget.
+        section(
+            1,
+            vec![0x02, 0x60, 0x00, 0x01, 0x7f, 0x60, 0x01, 0x7e, 0x00],
+            &mut module,
+        );
+
+        let mut functions = Vec::new();
+        unsigned(count as u64 + 1, &mut functions);
+        // Les `count` premières fonctions sont les blocs, du type zéro ; la
+        // dernière est la boucle de répartition, du type un.
+        functions.resize(functions.len() + count, 0x00);
+        functions.push(0x01);
+        section(3, functions, &mut module);
+
+        // Table : les blocs, pour le `call_indirect` de la boucle.
+        let mut table = vec![0x01, 0x70, 0x00];
+        unsigned(count as u64, &mut table);
+        section(4, table, &mut module);
 
         // Mémoire : **la RAM de l'invité**, adresse pour adresse. Elle vient
-        // avant les globales, et pas par goût : les sections d'un module ont un
-        // ordre imposé, et le moteur refuse le module s'il est inversé. Le nombre de
-        // pages couvre ici la fenêtre du corpus matériel, qui vit haut dans
-        // l'espace d'adressage ; le système réel la dimensionnera sur la RAM
-        // que la machine annonce. JavaScriptCore ne la réserve pas vraiment —
-        // mesuré : vingt mémoires de 768 Mio en dix millisecondes.
+        // avant les globales, et pas par goût : les sections d'un module ont
+        // un ordre imposé, et le moteur refuse le module s'il est inversé.
+        // JavaScriptCore ne la réserve pas vraiment — mesuré : vingt mémoires
+        // de 768 Mio en dix millisecondes.
         let mut memory = vec![0x01, 0x00];
         unsigned(u64::from(GUEST_PAGES), &mut memory);
         section(5, memory, &mut module);
 
-        // Globales : le fichier de registres, RFLAGS, les emplacements de
-        // travail. Toutes `i64`, toutes **mutables**, toutes à zéro au départ —
-        // c'est l'hôte qui pose l'état avant chaque cas.
+        // Globales : le fichier de registres, RFLAGS, le pointeur
+        // d'instruction, les emplacements de travail. Toutes `i64`, toutes
+        // mutables, toutes à zéro — c'est l'hôte qui pose l'état.
         let mut globals = Vec::new();
         unsigned(GLOBAL_COUNT as u64, &mut globals);
         for _ in 0..GLOBAL_COUNT {
-            globals.push(0x7e); // i64
-            globals.push(0x01); // mutable
+            globals.push(0x7e);
+            globals.push(0x01);
             globals.push(code::I64_CONST);
             signed(0, &mut globals);
             globals.push(code::END);
         }
         section(6, globals, &mut module);
 
-        // Exports : la fonction, puis chaque globale sous son numéro. L'hôte
-        // les lit par leur nom au lieu d'un décalage que les deux côtés
-        // devraient calculer pareil.
         let mut exports = Vec::new();
         unsigned(2 + GLOBAL_COUNT as u64, &mut exports);
-        exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00, 0x00]);
+        exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
+        unsigned(count as u64, &mut exports);
         exports.extend_from_slice(&[0x03, b'm', b'e', b'm', 0x02, 0x00]);
         for slot in 0..GLOBAL_COUNT {
             let name = format!("g{slot}");
             unsigned(name.len() as u64, &mut exports);
             exports.extend_from_slice(name.as_bytes());
-            exports.push(0x03); // une globale
+            exports.push(0x03);
             unsigned(slot as u64, &mut exports);
         }
         section(7, exports, &mut module);
 
-        // Code : un corps, sans variable locale.
-        let mut entry = vec![0x00];
-        entry.extend_from_slice(&body.bytes);
-        let mut code_section = vec![0x01];
-        unsigned(entry.len() as u64, &mut code_section);
-        code_section.extend_from_slice(&entry);
+        // Éléments : la table pointe les blocs dans l'ordre.
+        let mut elements = vec![0x01, 0x00, code::I32_CONST, 0x00, code::END];
+        unsigned(count as u64, &mut elements);
+        for block in 0..count {
+            unsigned(block as u64, &mut elements);
+        }
+        section(9, elements, &mut module);
+
+        let mut code_section = Vec::new();
+        unsigned(count as u64 + 1, &mut code_section);
+        for body in &bodies {
+            let mut entry = vec![0x00];
+            entry.extend_from_slice(body);
+            unsigned(entry.len() as u64, &mut code_section);
+            code_section.extend_from_slice(&entry);
+        }
+        // La boucle : tant qu'il reste du budget, appeler le bloc courant et
+        // prendre l'indice qu'il rend. Un indice négatif rend la main.
+        let dispatch: Vec<u8> = vec![
+            0x01,
+            0x01,
+            0x7f, // une locale i32 : le bloc courant
+            0x02,
+            0x40, // block
+            0x03,
+            0x40, //   loop
+            0x20,
+            0x00,
+            code::I64_EQZ,
+            0x0d,
+            0x01, //     budget nul : sortir
+            0x20,
+            0x00,
+            code::I64_CONST,
+            0x01,
+            code::I64_SUB,
+            0x21,
+            0x00,
+            0x20,
+            0x01,
+            0x11,
+            0x00,
+            0x00,
+            0x21,
+            0x01, //   bloc = call_indirect(bloc)
+            0x20,
+            0x01,
+            0x41,
+            0x00,
+            0x48,
+            0x0d,
+            0x01, //   négatif : rendre la main
+            0x0c,
+            0x00,      //     recommencer
+            code::END, //   fin de la boucle
+            code::END, // fin du bloc
+            code::END, // fin de la fonction
+        ];
+        unsigned(dispatch.len() as u64, &mut code_section);
+        code_section.extend_from_slice(&dispatch);
         section(10, code_section, &mut module);
 
-        Some(module)
+        module
     }
 
     fn slot(register: u8) -> usize {
@@ -344,6 +604,16 @@ impl Module {
     }
 
     fn translate(step: &Decoded, body: &mut Body) -> Option<()> {
+        // **Un saut n'est pas une instruction comme une autre** : il change le
+        // bloc, pas l'état. Il est traité par le compilateur de région, qui
+        // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
+        if matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect) {
+            return None;
+        }
+        // Ne rien faire n'émet rien.
+        if step.op == Op::Nop {
+            return Some(());
+        }
         // **Les décalages ont leurs propres règles**, et les faire passer par
         // la machinerie à deux opérandes en donnerait quatre fausses. Ils
         // sortent ici, exactement comme dans l'interpréteur — deux cœurs qui
@@ -483,6 +753,10 @@ impl Module {
                 Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
                     unreachable!("les bits sortent avant")
                 }
+                Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
+                    unreachable!("les sauts sortent avant")
+                }
+                Op::Nop => unreachable!("ne rien faire sort avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -860,7 +1134,11 @@ impl Module {
             | Op::Bit(_)
             | Op::BitScan { .. }
             | Op::Popcount
-            | Op::ByteSwap => {}
+            | Op::ByteSwap
+            | Op::Jump(_)
+            | Op::LoopWhile
+            | Op::JumpIndirect
+            | Op::Nop => {}
         }
     }
 
@@ -1204,6 +1482,9 @@ impl Module {
     fn transfer(step: &Decoded, body: &mut Body) {
         body.store(Body::scratch(2), |b| {
             match step.memory {
+                _ if step.immediate => {
+                    b.constant(step.imm & step.src_width.mask());
+                }
                 Some(address) if step.memory_is_source => {
                     b.load_memory(&address, step.src_width);
                 }
