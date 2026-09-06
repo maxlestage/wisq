@@ -565,6 +565,15 @@ def division_state(dividend, divisor, size, signed):
         if low // (divisor & mask) > mask:
             return None
     fixed = [0xAAAAAAAAAAAAAAAA + i for i in range(16)]
+    # **RSI pointe la fenêtre de données, ici comme partout ailleurs.** Le
+    # fichier ne porte que RAX, RCX et RDX par état, et affirme, par ses
+    # enregistrements « fixe », que les treize autres valent la même chose pour
+    # tous les cas. Les états de division l'ignoraient : ils laissaient RSI à
+    # 0xAAAA…B0 pendant que les autres le mettaient à 0x30001000. Ça n'a jamais
+    # compté tant que les divisions étaient refusées ; le premier cœur à savoir
+    # les décoder s'est fait reprocher un RSI qu'il avait posé comme le fichier
+    # le lui disait.
+    fixed[6] = DATA
     # Pour une division d'un octet, le haut du dividende est AH : il vit dans
     # RAX, pas dans RDX.
     if size == 1:
