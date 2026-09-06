@@ -1833,6 +1833,22 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 prefixes.rex = None;
                 at += 1;
             }
+            // **Les quatre préfixes de segment que le mode 64 bits a vidés.**
+            // CS, SS, DS et ES ont une base forcée à zéro : le processeur les
+            // lit, les compte dans la longueur de l'instruction, et n'en fait
+            // rien d'autre. Les refuser rejetait le NOP d'alignement du noyau
+            // — `66 2e 0f 1f 84 00 …`, dix-huit mille occurrences dans un
+            // noyau Alpine — et chaque branche marquée « pas prise ».
+            //
+            // Ils ne posent donc **pas** de segment sur l'adresse, à la
+            // différence de 0x65 : porter « segment CS » jusqu'à l'exécution
+            // demanderait une base que rien n'a, et zéro s'ajoute déjà tout
+            // seul. La différence est vérifiée sur le silicium — les quatre
+            // rendent exactement ce que l'instruction nue rend.
+            0x2e | 0x36 | 0x3e | 0x26 => {
+                prefixes.rex = None;
+                at += 1;
+            }
             // **Le préfixe de segment GS.** Comme les autres préfixes hérités,
             // il annule un REX déjà lu : le processeur veut REX collé à
             // l'opcode, et `65 48 8b …` est la seule forme qu'un assembleur
@@ -3195,6 +3211,40 @@ mod tests {
         let plain =
             decode(&[0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]).expect("sans préfixe");
         assert!(!plain.memory.expect("mémoire").gs);
+    }
+
+    /// **Les quatre segments que le mode 64 bits a vidés.**
+    ///
+    /// CS, SS, DS et ES ont une base forcée à zéro : les préfixes qui les
+    /// désignent n'ont plus d'effet sur une adresse. Les refuser rejetait le
+    /// NOP d'alignement du noyau — `66 2e 0f 1f 84 00 …`, dix-huit mille fois
+    /// dans un noyau Alpine — et chaque branche dont le compilateur veut dire
+    /// qu'elle n'est pas prise.
+    ///
+    /// Ce qu'un test doit tenir ici est la **longueur** : le préfixe compte
+    /// dans l'instruction, et l'oublier décalerait tout ce qui suit.
+    #[test]
+    fn the_four_segments_the_long_mode_emptied_are_prefixes_and_nothing_more() {
+        for (prefix, name) in [(0x2eu8, "cs"), (0x36, "ss"), (0x3e, "ds"), (0x26, "es")] {
+            // <préfixe> 48 8b 46 08 — `movq 8(%rsi), %rax`, cinq octets.
+            let step =
+                decode(&[prefix, 0x48, 0x8b, 0x46, 0x08]).unwrap_or_else(|| panic!("{name}"));
+            let address = step.memory.unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(
+                step.length, 5,
+                "{name} : le préfixe compte dans la longueur"
+            );
+            assert_eq!(address.base, Some(6), "{name}");
+            assert_eq!(address.displacement, 8, "{name}");
+            assert!(!address.gs, "{name} : ce n'est pas GS");
+        }
+
+        // **Et le NOP d'alignement que le noyau sème par milliers**, avec son
+        // préfixe CS et son ModRM entier : `66 2e 0f 1f 84 00 00 00 00 00`.
+        let step = decode(&[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00])
+            .expect("le NOP long du noyau se lit");
+        assert_eq!(step.op, Op::Nop);
+        assert_eq!(step.length, 10, "dix octets, tous consommés");
     }
 
     /// **FS est refusé, et c'est délibéré.** L'oracle ne peut pas le poser : sa

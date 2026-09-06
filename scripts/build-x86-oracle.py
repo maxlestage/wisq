@@ -485,6 +485,36 @@ def snippets():
     yield "andl $0x0F0F0F0F, %gs:0x8"
     yield "movzbl %gs:0x2, %eax"
     yield "movslq %gs:0x8, %rax"
+    # **Les quatre segments que le mode 64 bits a vidés.** CS, SS, DS et ES ont
+    # une base forcée à zéro : le préfixe se lit, se compte dans la longueur, et
+    # ne change rien. Ce n'est pas une supposition confortable — c'est ce que le
+    # silicium rend, et le corpus le grave en mettant le préfixe devant des
+    # instructions dont il connaît déjà la réponse nue.
+    #
+    # Les refuser rejetait le NOP d'alignement du noyau : `66 2e 0f 1f 84 00 …`
+    # apparaît dix-huit mille fois dans un noyau Alpine, et chaque occurrence
+    # coupait une région en deux.
+    #
+    # **Deux syntaxes, parce que l'assembleur n'en accepte qu'une par
+    # segment.** `%ss:` et `%es:` s'écrivent devant l'opérande — la forme
+    # préfixe seule est refusée en 64 bits — tandis que `%ds:` est effacé par
+    # l'assembleur, qui le tient pour le segment par défaut, et ne s'obtient
+    # qu'en écrivant `ds` devant l'instruction.
+    yield "movq %cs:8(%rsi), %rax"
+    yield "movl %ss:4(%rsi), %eax"
+    yield "ds addq (%rsi), %rax"
+    yield "movb %es:3(%rsi), %al"
+    yield "addq $1, %cs:(%rsi)"
+    yield "ds incq (%rsi)"
+    # Un préfixe de segment sur une instruction **sans** opérande mémoire : il
+    # est légal, et le processeur ne s'en plaint pas.
+    yield "cs addq %rcx, %rax"
+    # **Le NOP d'alignement du noyau, dans les formes qu'il prend.** Le ModRM
+    # entier compte dans la longueur ; un octet mal consommé décale tout ce qui
+    # suit, et le corpus le voit parce que le programme continue après.
+    yield "nopw %cs:0x0(%rax,%rax,1)"
+    yield "nopl 0x0(%rax)"
+    yield "nopw 0x0(%rax,%rax,1)"
     # **Le segment ET le pointeur d'instruction, ensemble.** Personne n'écrit
     # ça — un noyau atteint ses variables par cœur par un déplacement absolu —
     # mais les deux mécanismes se rencontrent dans le code des deux cœurs, et

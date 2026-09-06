@@ -9221,3 +9221,47 @@ les deux cœurs sont d'accord parce que le processeur a dit lequel avait raison.
 Douze sabotages, douze attrapés. Le prochain bloc que la mesure désigne est le
 NOP multi-octets — `66`, `2e` et `0f 1f`, que le noyau sème par milliers pour
 aligner ses branches.
+
+## Les quatre segments que le mode long a vidés, et le NOP qui coupait tout
+
+Après GS, la mesure désignait `66` (16 095 refus) et `2e` (9 220). J'ai cru
+devoir écrire le NOP multi-octets. **Il était déjà là** — `0f 1f` avec son ModRM
+entier, depuis la tranche du décodeur. Ce qui bloquait était l'octet d'avant.
+
+Le noyau n'écrit pas `0f 1f 84 00 …` tout nu. Il écrit
+`66 2e 0f 1f 84 00 00 00 00 00`, et cette forme apparaît **18 066 fois** dans le
+noyau Alpine que je mesure. Le `2e` — le préfixe du segment CS — n'était pas
+reconnu, donc l'instruction était refusée, donc la région de 4 Kio était coupée
+en deux à chaque alignement de fonction. Le décodeur savait lire le NOP et ne le
+voyait jamais.
+
+En mode 64 bits, CS, SS, DS et ES ont une base **forcée à zéro**. Le préfixe se
+lit, compte dans la longueur de l'instruction, et ne change rien d'autre. Ce
+n'est pas une supposition commode : le corpus le met devant des instructions
+dont il connaît déjà la réponse nue, et le silicium rend la même chose.
+
+Ils ne posent donc pas de segment sur l'adresse, à la différence de `65`.
+Prétendre le contraire demanderait une base que rien n'a, et zéro s'ajoute déjà
+tout seul. Un sabotage tient cette distinction : faire passer un segment vidé
+pour GS est attrapé.
+
+### Une leçon d'outillage, petite mais coûteuse
+
+L'assembleur n'accepte qu'une syntaxe par segment, et pas la même pour tous.
+`%ss:` et `%es:` s'écrivent devant l'opérande — la forme préfixe seule est
+refusée en 64 bits. `%ds:` est effacé, l'assembleur le tenant pour le segment
+par défaut, et ne s'obtient qu'en écrivant `ds` devant l'instruction. Écrire les
+quatre de la même façon échouait sur deux d'entre elles ; le corpus n'aurait
+porté que la moitié de la règle, et rien ne l'aurait dit.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 428 | **12 668** |
+| instructions du noyau décodées | 98,1 % | **98,9 %** |
+| régions de 4 Kio acceptées | 63,3 % | **66,0 %** |
+
+Quinze sabotages, quinze attrapés. `66` et `2e` ont entièrement disparu de la
+liste des refus. Ce qui reste, dans l'ordre : `0f` (SSE, 6 742), `ff` (le groupe
+5 en mémoire, 5 927), `cc` (l'`int3` de bourrage entre fonctions, 3 970).
