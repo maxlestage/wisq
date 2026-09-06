@@ -80,13 +80,71 @@ final class WebKitBenchTests: XCTestCase {
                        "et ne doit surtout pas conclure à la place de la mesure")
     }
 
-    /// **Le module est celui de la sonde, à l'octet près.** Deux copies
-    /// divergeraient, et l'application mesurerait alors autre chose que ce que
-    /// la CI mesure — deux chiffres qu'on croirait comparables.
-    func testTheModuleIsRealAndWellFormed() {
+    /// **L'appareil peut refuser le module, et c'est une réponse.** Le module
+    /// de l'émetteur importe 768 Mio de RAM invitée ; le module écrit à la main
+    /// qu'il remplace en déclarait deux pages et ne pouvait rien refuser. Ranger
+    /// ce mur dans « indisponible » ferait lire un fait sur ce que wisq engendre
+    /// comme un contretemps de la sonde.
+    func testARefusedModuleIsNotFiledAsAToolingHiccup() {
+        let sentence = WebKitBench.sentence(for: .refused("Memory import env:mem is too large"))
+        XCTAssertTrue(sentence.contains("refus"),
+                      "un refus doit se nommer comme tel : \(sentence)")
+        XCTAssertTrue(sentence.contains("\(WebKitBench.guestPages)"),
+                      "et dire ce qui a été demandé : \(sentence)")
+        XCTAssertFalse(sentence.contains("outillage"),
+                       "ce n'est pas de l'outillage, c'est une réponse")
+    }
+
+    /// **Le module est celui de l'émetteur, et les constantes sont les
+    /// siennes.** L'égalité octet pour octet est tenue côté Rust, par
+    /// `bench_module_matches_the_probe`, qui refait le module et le compare à
+    /// cette chaîne. Ce test-ci tient l'autre moitié, celle que le Rust ne voit
+    /// pas : que `globalCount` décrive **ce module-là**. Instancier vingt-huit
+    /// globales pour un module qui en importe vingt-neuf ne rend pas un mauvais
+    /// chiffre, il ne rend rien — et la sonde dirait « refusé » là où c'est une
+    /// constante fausse.
+    func testTheModuleIsTheEmittersAndTheConstantsDescribeIt() {
         let module = Data(base64Encoded: WebKitBench.moduleBase64) ?? Data()
         XCTAssertEqual(Array(module.prefix(4)), [0x00, 0x61, 0x73, 0x6D],
                        "l'en-tête WebAssembly, « \\0asm »")
         XCTAssertGreaterThan(module.count, 300, "et un module, pas un fragment")
+
+        // L'entrée d'import d'une globale : « env », son nom, puis le type
+        // `i64` mutable. La chercher telle quelle évite d'écrire un analyseur
+        // de WebAssembly dans un test.
+        func importEntry(_ slot: Int) -> Data {
+            var bytes: [UInt8] = [0x03]
+            bytes.append(contentsOf: Array("env".utf8))
+            let name = Array("g\(slot)".utf8)
+            bytes.append(UInt8(name.count))
+            bytes.append(contentsOf: name)
+            bytes.append(contentsOf: [0x03, 0x7E, 0x01])
+            return Data(bytes)
+        }
+        XCTAssertNotNil(module.range(of: importEntry(WebKitBench.globalCount - 1)),
+                        "la dernière globale annoncée doit être importée par le module")
+        XCTAssertNil(module.range(of: importEntry(WebKitBench.globalCount)),
+                     "et il ne doit pas en importer une de plus que ce qui est annoncé")
+        // La mémoire importée, et sa taille minimale en pages : « env », « mem »,
+        // le type mémoire, puis l'entier à longueur variable de WebAssembly.
+        var memoryEntry: [UInt8] = [0x03]
+        memoryEntry.append(contentsOf: Array("env".utf8))
+        memoryEntry.append(0x03)
+        memoryEntry.append(contentsOf: Array("mem".utf8))
+        memoryEntry.append(contentsOf: [0x02, 0x00])
+        var pages = WebKitBench.guestPages
+        while true {
+            var byte = UInt8(pages & 0x7F)
+            pages >>= 7
+            if pages != 0 { byte |= 0x80 }
+            memoryEntry.append(byte)
+            if pages == 0 { break }
+        }
+        XCTAssertNotNil(module.range(of: Data(memoryEntry)),
+                        "le module doit importer exactement les \(WebKitBench.guestPages) "
+                            + "pages que la sonde crée")
+
+        XCTAssertNotNil(module.range(of: Data("run".utf8)),
+                        "le module exporte « run », c'est ce que la sonde appelle")
     }
 }

@@ -90,7 +90,8 @@ private final class BenchHost {
     /// Le nombre d'instructions que le module doit avoir exécuté. Le vérifier
     /// est ce qui distingue une mesure d'un chiffre : une boucle sortie trop
     /// tôt rendrait un débit magnifique et faux.
-    private static let expected: Double = 160_000_000
+    private static let expected =
+        Double(WebKitBench.benchTurns * WebKitBench.instructionsPerTurn)
 
     func run() async -> WebKitBench.Verdict {
         let web: WKWebView
@@ -130,6 +131,11 @@ private final class BenchHost {
         guard let fields = result as? [String: Any] else {
             return .unavailable("la vue n'a rien rendu d'exploitable")
         }
+        // **Un refus n'est pas une absence de mesure.** Le module importe
+        // 768 Mio de RAM invitée ; un appareil qui les refuse répond quelque
+        // chose sur ce que wisq engendre, et le ranger dans « indisponible »
+        // ferait passer un mur pour un contretemps.
+        if let refusal = fields["refused"] as? String { return .refused(refusal) }
         if fields["error"] != nil { return .wrongResult }
         guard let mips = fields["mips"] as? Double,
               let instructions = fields["instructions"] as? Double
@@ -144,37 +150,114 @@ private final class BenchHost {
     /// **L'oracle avant le chronomètre.** Le module est refait contre un modèle
     /// écrit en clair ; un module abîmé en route rendrait un débit magnifique
     /// et faux, et personne ne le verrait.
+    ///
+    /// **Ce que l'hôte fournit.** Le module de l'émetteur n'est pas autonome :
+    /// il **importe** la RAM de l'invité et les vingt-neuf globales qui
+    /// portent les registres. C'est ce qui permet à deux régions compilées
+    /// séparément de se passer la main sans recopier huit cents mégaoctets —
+    /// l'architecture du bureau local, pas un détail de banc. La sonde doit
+    /// donc les créer, exactement comme le fera `X86Machine`.
     private static let script = """
         (() => {
-          const bytes = Uint8Array.from(atob("\(WebKitBench.moduleBase64)"), c => c.charCodeAt(0));
-          const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
-          const drive = instance.exports.drive;
-          const memory = new BigUint64Array(instance.exports.mem.buffer);
-          const RAX = 0, RDX = 1, RCX = 2;
-
+          const RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSI = 6;
+          const RIP = \(WebKitBench.ripSlot);
+          const BASE = \(WebKitBench.benchBase)n;
+          const TURNS = \(WebKitBench.benchTurns)n;
           const wrap = v => BigInt.asUintN(64, v);
-          let rax = 0n, rdx = 0n, rcx = 1000n;
-          for (;;) {
-            rax = wrap(rax + rcx);
-            if (wrap(rax - rdx) === 0n) rdx = wrap(rdx + 1n);
-            rcx = wrap(rcx - 1n);
-            if (rcx === 0n) break;
+          // **Une globale `i64` se lit signée.** L'ancien module gardait les
+          // registres en mémoire, lue par un `BigUint64Array` ; celui-ci les
+          // garde en globales, et JavaScript en rend le complément à deux.
+          // Comparer sans repasser en non signé faisait échouer l'oracle sur
+          // des valeurs pourtant exactes.
+          const u = slot => BigInt.asUintN(64, globals[slot].value);
+
+          let instance, globals;
+          try {
+            const bytes = Uint8Array.from(atob("\(WebKitBench.moduleBase64)"), c => c.charCodeAt(0));
+            const memory = new WebAssembly.Memory({ initial: \(WebKitBench.guestPages) });
+            globals = [];
+            const env = { mem: memory };
+            for (let slot = 0; slot < \(WebKitBench.globalCount); slot++) {
+              globals.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
+              env["g" + slot] = globals[slot];
+            }
+            instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env });
+          } catch (why) {
+            return { refused: String(why && why.message ? why.message : why) };
           }
-          memory[RAX] = 0n; memory[RDX] = 0n; memory[RCX] = 1000n;
-          drive(1000000n);
-          if (memory[RAX] !== rax || memory[RDX] !== rdx || memory[RCX] !== rcx) {
+          const run = instance.exports.run;
+
+          // **Chaque passage repart du même état.** RAX et RCX partent non
+          // nuls : à zéro, la boucle additionnerait et ouexclusiverait des
+          // zéros, et l'oracle ne prouverait rien.
+          const seed = () => {
+            for (const global of globals) { global.value = 0n; }
+            globals[RAX].value = 1n;
+            globals[RCX].value = 0x0123456789abcdefn;
+          };
+
+          // **Le modèle, écrit en clair.** Cinq instructions, la boucle du
+          // banc : addq %rax,%rdx ; xorq %rcx,%rbx ; addq %rdx,%rax ;
+          // subq $1,%rsi ; jnz.
+          const model = turns => {
+            let rax = 1n, rbx = 0n, rcx = 0x0123456789abcdefn, rdx = 0n, rsi = turns;
+            for (;;) {
+              rdx = wrap(rdx + rax);
+              rbx = rbx ^ rcx;
+              rax = wrap(rax + rdx);
+              rsi = wrap(rsi - 1n);
+              if (rsi === 0n) break;
+            }
+            return { rax, rbx, rdx };
+          };
+
+          // **L'échauffement d'abord, l'oracle ensuite.** JavaScriptCore
+          // compile par paliers : le premier passage paie son interpréteur puis
+          // ses compilateurs. Juger avant l'échauffement vérifierait le palier
+          // qu'on ne chronomètre pas — c'est le code optimisé qui doit calculer
+          // juste, et c'est celui-là qu'on veut voir se tromper.
+          //
+          // **Rien ne tient l'échauffement lui-même, et rien ne le peut.** Le
+          // supprimer ne fait pas échouer la sonde : le débit baisse de moins
+          // de dix pour cent, mesuré sous Bun. Un seuil assez serré pour
+          // attraper ça refuserait de répondre sur un téléphone occupé. La
+          // mesure est donc juste, l'échauffement la rend seulement fidèle.
+          seed();
+          globals[RSI].value = 1000000n;
+          run(1000008n);
+
+          // **Mille et un tours, pas mille.** Le `xor` rend RBX à sa valeur de
+          // départ après un nombre pair de tours : avec mille, l'oracle
+          // laisserait passer un module qui ne fait pas le `xor` du tout.
+          const oracle = model(1001n);
+          seed();
+          globals[RSI].value = 1001n;
+          run(1009n);
+          if (u(RAX) !== oracle.rax || u(RBX) !== oracle.rbx
+              || u(RDX) !== oracle.rdx || u(RSI) !== 0n) {
             return { error: "le module ne calcule pas comme le modele" };
           }
+          // Et la boucle doit avoir rendu la main **après** sa dernière
+          // instruction, pas au milieu : sinon le compte est faux.
+          if (u(RIP) !== BASE + 15n) {
+            return { error: "le module n'a pas rendu la main a la sortie de la boucle" };
+          }
 
-          // Un tour a blanc : JavaScriptCore compile par paliers.
-          memory[RAX] = 0n; memory[RDX] = 0n; memory[RCX] = 4000000n;
-          drive(32000000n);
-
-          memory[RAX] = 0n; memory[RDX] = 0n; memory[RCX] = 20000000n;
+          seed();
+          globals[RSI].value = TURNS;
+          // **Le compte se lit sur la machine, il ne se déduit pas d'une
+          // constante.** RSI porte les tours restants ; le nombre exécuté est
+          // la différence entre ce qui a été semé et ce qui reste. Écrire
+          // `TURNS * 5` rendrait le débit insensible à une boucle semée trop
+          // court — un chiffre deux fois trop beau, et rien pour le dire.
+          const seeded = u(RSI);
           const began = performance.now();
-          const left = drive(160000000n);
+          run(TURNS + 8n);
           const ms = performance.now() - began;
-          const done = Number(160000000n - left);
+          if (u(RSI) !== 0n) {
+            return { error: "la boucle chronometree n'est pas allee jusqu'au bout" };
+          }
+          const done = Number(seeded - u(RSI)) * \(WebKitBench.instructionsPerTurn);
           return { mips: done / (ms / 1000) / 1000000, instructions: done };
         })()
         """
