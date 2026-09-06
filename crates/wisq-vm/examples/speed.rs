@@ -14,34 +14,19 @@
 // le reste plutôt que de deviner.
 use std::time::Instant;
 use wisq_vm::x86::{Cpu, Step};
-use wisq_vm::x86_wasm::{Module, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT};
+use wisq_vm::x86_wasm::{
+    Module, BENCH_BASE, BENCH_LOOP, BENCH_PER_TURN, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
+};
 
 /// L'adresse où la région est chargée, la même que partout ailleurs.
-const CODE: u64 = 0x3000_0000;
+const CODE: u64 = BENCH_BASE;
 
-/// **Une boucle de cinq instructions**, dont quatre calculent et une saute.
-///
-/// Cinq, parce que c'est la taille moyenne d'un bloc de base relevée en
-/// désassemblant le noyau Alpine : une boucle d'une seule instruction
-/// mesurerait le coût du saut, pas celui du calcul.
-///
-///     1: addq %rax, %rdx
-///        xorq %rcx, %rbx
-///        addq %rdx, %rax
-///        subq $1, %rsi
-///        jnz 1b
-///
-/// Les quatre premières posent des drapeaux que personne ne lit, sauf la
-/// dernière — c'est exactement le cas où les drapeaux paresseux de
-/// l'interpréteur rapportent, et le cas où le module doit les calculer.
-const LOOP: [u8; 15] = [
-    0x48, 0x01, 0xc2, // addq %rax, %rdx
-    0x48, 0x31, 0xcb, // xorq %rcx, %rbx
-    0x48, 0x01, 0xd0, // addq %rdx, %rax
-    0x48, 0x83, 0xee, 0x01, // subq $1, %rsi
-    0x75, 0xf1, // jnz 1b
-];
-const PER_TURN: u64 = 5;
+/// La boucle du banc vit dans la bibliothèque, pas ici : la sonde WebKit de
+/// l'application la mesure aussi, et un test épingle l'une sur l'autre. Trois
+/// copies dériveraient, et l'iPhone rendrait alors un chiffre qu'on croirait
+/// comparable à celui-ci.
+const LOOP: [u8; 15] = BENCH_LOOP;
+const PER_TURN: u64 = BENCH_PER_TURN;
 
 fn main() {
     let turns: u64 = std::env::args()

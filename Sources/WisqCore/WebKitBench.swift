@@ -15,22 +15,56 @@ import Foundation
 /// transforme cette inconnue en un chiffre que n'importe quel appareil rend en
 /// quelques secondes.
 public enum WebKitBench {
-    /// Le module engendré par `scripts/wasm-jit-probe.ts`, **le même octet pour
-    /// octet** que celui de la sonde de test. Deux copies divergeraient, et
-    /// l'application mesurerait alors autre chose que la CI — deux chiffres
-    /// qu'on croirait comparables.
+    /// **Le module que l'émetteur produit**, pour la boucle de cinq
+    /// instructions du banc — pas un module écrit à la main.
+    ///
+    /// La distinction est tout l'intérêt de la sonde. Le module précédent était
+    /// recompilé à la main : il mesurait le **plafond** de l'idée, ce qu'un
+    /// émetteur parfait atteindrait. Celui-ci sort de `Module::region`, la
+    /// fonction que le bureau local appellera, drapeaux matérialisés et boucle
+    /// de répartition comprises. L'appareil chronomètre donc ce que wisq
+    /// engendrerait, et le chiffre se compare aux 247 MIPS relevés sous Bun.
+    ///
+    /// **Écrit par `cargo run -p wisq-vm --release --example bench-module`**, et
+    /// tenu par `bench_module_matches_the_probe` : le test refait le module et
+    /// le compare à cette chaîne, octet pour octet. Deux copies ne peuvent plus
+    /// diverger en silence — c'est ce que l'ancien commentaire affirmait sans
+    /// que rien ne le tienne.
     public static let moduleBase64 =
-        "AGFzbQEAAAABCgJgAX4BfmAAAX8DBAMBAQAEBAFwAAIFAwEAAgcPAgVkcml2ZQACA21lbQIA" +
-        "CQgBAEEACwIAAQrxAwPCAwEGfkIApykDACEAQginKQMAIQFCEKcpAwAhAkIYpykDACEDIAAg" +
-        "AXwhBEKAAacgBFCtNwMAQpgBpyAEQj+INwMAQogBpyAEIABUrTcDAEKQAacgACAEhSABIASF" +
-        "g0I/iDcDACAEIQAgA0L//wODQoAgfKcpAwAhBSAAIAWFIQRCgAGnIARQrTcDAEKYAacgBEI/" +
-        "iDcDAEKIAadCADcDAEKQAadCADcDACAEIQAgA0L//wODQoggfKcgADcDACAAIAJ9IQRCgAGn" +
-        "IARQrTcDAEKYAacgBEI/iDcDAEKIAacgBCAAVK03AwBCkAGnIAAgBIUgAiAEhYNCP4g3AwBC" +
-        "gAGnKQMAUEUEQCACQgF8IQRCgAGnIARQrTcDAEKYAacgBEI/iDcDAEKIAacgBCACVK03AwBC" +
-        "kAGnIAIgBIUgAiAEhYNCP4g3AwAgBCECCyABQgF9IQRCgAGnIARQrTcDAEKYAacgBEI/iDcD" +
-        "AEKIAacgBCABVK03AwBCkAGnIAEgBIUgASAEhYNCP4g3AwAgBCEBQgCnIAA3AwBCCKcgATcD" +
-        "AEIQpyACNwMAQhinIAM3AwBCgAGnKQMAUAR/QQAFQQELCwQAQQELJgEBf0EAIQEDQCABEQEA" +
-        "IQEgAEIIfSEAIAFFIABCAFZxDQALIAAL"
+        "AGFzbQEAAAABCQJgAAF/YAF+AALCAh4DZW52A21lbQIAgWADZW52AmcwA34BA2VudgJnMQN+AQNlbnYCZzIDfgEDZW52AmczA34BA2VudgJnNAN+"
+        + "AQNlbnYCZzUDfgEDZW52Amc2A34BA2VudgJnNwN+AQNlbnYCZzgDfgEDZW52Amc5A34BA2VudgNnMTADfgEDZW52A2cxMQN+AQNlbnYDZzEyA34B"
+        + "A2VudgNnMTMDfgEDZW52A2cxNAN+AQNlbnYDZzE1A34BA2VudgNnMTYDfgEDZW52A2cxNwN+AQNlbnYDZzE4A34BA2VudgNnMTkDfgEDZW52A2cy"
+        + "MAN+AQNlbnYDZzIxA34BA2VudgNnMjIDfgEDZW52A2cyMwN+AQNlbnYDZzI0A34BA2VudgNnMjUDfgEDZW52A2cyNgN+AQNlbnYDZzI3A34BA2Vu"
+        + "dgNnMjgDfgEDAwIAAQQEAXAAAQcHAQNydW4AAQkHAQBBAAsBAArxBALHBAAjAkJ/gyQTIwBCf4MkFCMTIxR8Qn+DJBUjEEKqboMjFVCtQgaGhCMV"
+        + "QoCAgICAgICAgH+DUK1CAYVCB4aEIxVC/wGDe0IBg0IBhUIChoQjEyMUhSMVhUIQg0IAhoQjFSMTVK1CAIaEIxMjFYUjFCMVhYNCgICAgICAgICA"
+        + "f4NQrUIBhUILhoQkECMVQn+DJAIjA0J/gyQTIwFCf4MkFCMTIxSFQn+DJBUjEEKqboMjFVCtQgaGhCMVQoCAgICAgICAgH+DUK1CAYVCB4aEIxVC"
+        + "/wGDe0IBg0IBhUIChoQjEyMUhSMVhUIQg0IAhoQkECMVQn+DJAMjAEJ/gyQTIwJCf4MkFCMTIxR8Qn+DJBUjEEKqboMjFVCtQgaGhCMVQoCAgICA"
+        + "gICAgH+DUK1CAYVCB4aEIxVC/wGDe0IBg0IBhUIChoQjEyMUhSMVhUIQg0IAhoQjFSMTVK1CAIaEIxMjFYUjFCMVhYNCgICAgICAgICAf4NQrUIB"
+        + "hUILhoQkECMVQn+DJAAjBkJ/gyQTQgEkFCMTIxR9Qn+DJBUjEEKqboMjFVCtQgaGhCMVQoCAgICAgICAgH+DUK1CAYVCB4aEIxVC/wGDe0IBg0IB"
+        + "hUIChoQjEyMUhSMVhUIQg0IAhoQjEyMUVK1CAIaEIxMjFIUjEyMVhYNCgICAgICAgICAf4NQrUIBhUILhoQkECMVQn+DJAZCgICAgANCj4CAgAMj"
+        + "EELAAINQrUIBhUIBhacbJBFBAEF/IxBCwACDUK1CAYVCAYWnGwsmAQF/AkADQCAAUA0BIABCAX0hACABEQAAIQEgAUEASA0BDAALCws="
+
+    /// **Ce que l'hôte doit fournir au module.** Ces quatre nombres sont ceux
+    /// de `crates/wisq-vm/src/x86_wasm.rs`, et le même test les y compare : un
+    /// module qui importe vingt-neuf globales et qu'on instancie avec vingt-huit
+    /// ne démarre pas, et la sonde rendrait « indisponible » là où c'est une
+    /// dérive entre deux fichiers.
+    ///
+    /// Les 12289 pages font **768 Mio** : la mémoire linéaire *est* la RAM de
+    /// l'invité, adresse pour adresse, et la région du banc vit à 0x30000000.
+    /// C'est beaucoup à demander à un WKWebView, et c'est précisément une chose
+    /// que la sonde doit découvrir plutôt que supposer.
+    public static let guestPages = 12289
+    public static let globalCount = 29
+    public static let ripSlot = 17
+    public static let benchBase: UInt64 = 0x3000_0000
+
+    /// La boucle exécute cinq instructions par tour, et la sonde en fait huit
+    /// millions — quarante millions d'instructions, assez pour que le palier
+    /// final de JavaScriptCore soit celui qu'on mesure, assez peu pour qu'un
+    /// interpréteur ne fasse pas attendre une minute.
+    public static let instructionsPerTurn = 5
+    public static let benchTurns = 8_000_000
 
     /// Ce que la sonde a relevé.
     public struct Reading: Equatable, Sendable {
@@ -56,6 +90,12 @@ public enum WebKitBench {
         case interpretsOnly(Reading)
         /// Le module n'a pas tout exécuté : le débit ne veut rien dire.
         case wrongResult
+        /// **L'appareil a refusé le module lui-même** — la mémoire trop grande,
+        /// ou le module rejeté à la compilation. C'est une réponse, et une
+        /// réponse importante : elle porte sur ce que wisq engendre, pas sur la
+        /// sonde. La confondre avec `unavailable` ferait passer un mur pour un
+        /// contretemps.
+        case refused(String)
         /// La vue n'a pas démarré. **Outillage, pas réponse.**
         case unavailable(String)
     }
@@ -96,6 +136,10 @@ public enum WebKitBench {
         case .unavailable(let why):
             return "Pas de réponse : \(why). C'est de l'outillage, pas un verdict — "
                 + "l'appareil n'a rien refusé, la sonde n'a pas pu tourner."
+        case .refused(let why):
+            return "L'appareil a refusé le module : \(why). Ce n'est pas une mesure "
+                + "manquante, c'est un refus — et il porte sur ce que wisq engendre, "
+                + "\(guestPages) pages de RAM invitée comprises."
         case .wrongResult:
             return "Le module n'a pas rendu le bon résultat, donc son débit ne veut rien "
                 + "dire. Un chiffre ici serait faux, et un faux chiffre est pire qu'aucun."
