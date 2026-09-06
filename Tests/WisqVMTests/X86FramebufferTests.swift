@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import WisqVM
@@ -79,4 +80,63 @@ final class X86FramebufferTests: XCTestCase {
         try memory.write(0x1000, 4, 0xDEAD_BEEF)
         XCTAssertEqual(screen.snapshot(), Array(repeating: 0, count: screen.byteCount))
     }
+
+    // MARK: - Branché à la machine
+
+    /// **Une machine avec écran doit le déclarer au noyau et le router.**
+    ///
+    /// Les deux moitiés existaient séparément : `screen_info` disait où
+    /// peindre, `X86Framebuffer` tenait l'endroit. Rien ne les reliait, donc un
+    /// vrai noyau aurait encore peint sur une faute.
+    func testAMachineWithADisplayDeclaresItAndRoutesIt() throws {
+        let machine = X86Machine(ramSize: X86Machine.minimumRAMSize) { _ in }
+        try machine.attachDisplay(width: 640, height: 480)
+        let screen = try XCTUnwrap(machine.display, "la machine doit rendre son cadre")
+        XCTAssertEqual(screen.width, 640)
+        XCTAssertEqual(screen.height, 480)
+
+        // Le noyau synthétique suffit : ce qu'on vérifie, c'est que le
+        // chargeur a reçu l'écran, pas qu'un vrai Linux démarre.
+        try machine.load(kernelImage: Data(X86BootLoaderTests.syntheticKernel()))
+        let page = machine.bootParameters()
+        XCTAssertEqual(page[0x0F], X86BootLoader.videoTypeLinearFramebuffer,
+                       "la page zéro doit annoncer le cadre")
+        let base = (0..<4).reduce(UInt32(0)) { $0 | (UInt32(page[0x18 + $1]) << (8 * UInt32($1))) }
+        XCTAssertEqual(UInt64(base), screen.base, "et à l'adresse que la machine a choisie")
+
+        // **Et l'annonce doit être vraie.** Déclarer une adresse sans y router
+        // la mémoire donnerait un noyau qui peint sur une faute — ce que la
+        // page zéro seule ne dit pas. Mesuré : sans cette assertion, retirer
+        // le routage ne faisait tomber aucun test.
+        try machine.memory.write(screen.base, 4, 0x00_AB_CD_EF)
+        XCTAssertEqual(Array(screen.snapshot()[0..<4]), [0xEF, 0xCD, 0xAB, 0x00],
+                       "une écriture invitée à l'adresse annoncée doit atteindre le cadre")
+    }
+
+    /// **Sans écran demandé, rien ne change.** Une machine en console série ne
+    /// doit pas voir un cadre imaginaire.
+    func testAMachineWithoutADisplayHasNone() throws {
+        let machine = X86Machine(ramSize: X86Machine.minimumRAMSize) { _ in }
+        XCTAssertNil(machine.display)
+        try machine.load(kernelImage: Data(X86BootLoaderTests.syntheticKernel()))
+        XCTAssertEqual(machine.bootParameters()[0x0F], 0)
+    }
+
+    /// **Un cadre qui recouvrirait la RAM est refusé, pas décalé en silence.**
+    ///
+    /// La fenêtre est à 0xE0000000. Une machine dotée de plus de mémoire que ça
+    /// verrait ses deux régions se superposer, et l'écriture d'un pixel
+    /// écraserait une page du noyau. Refuser est la seule réponse honnête :
+    /// déplacer le cadre demanderait `ext_lfb_base`, que cette tranche
+    /// n'implémente pas.
+    func testADisplayThatWouldOverlapRAMIsRefused() {
+        let machine = X86Machine(ramSize: 4 << 30) { _ in }
+        XCTAssertThrowsError(try machine.attachDisplay(width: 640, height: 480)) { error in
+            guard case X86Machine.DisplayRefusal.wouldOverlapMemory = error else {
+                return XCTFail("le refus doit dire pourquoi : \(error)")
+            }
+        }
+        XCTAssertNil(machine.display, "et rien ne doit rester accroché")
+    }
+
 }

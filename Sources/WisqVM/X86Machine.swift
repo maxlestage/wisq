@@ -47,7 +47,10 @@ public final class X86Machine: @unchecked Sendable {
     public static let minimumRAMSize = 128 << 20
 
     public let ramSize: Int
-    private let memory: X86Memory
+    /// Interne plutôt que privée : un test doit pouvoir vérifier qu'une
+    /// écriture invitée atteint bien l'écran, et sans ça la garde de routage
+    /// ne serait tenue par rien — mesuré, un sabotage passait.
+    let memory: X86Memory
     /// L'état du cœur.
     ///
     /// Visible dans le module plutôt que privé, pour que les tests puissent
@@ -100,6 +103,48 @@ public final class X86Machine: @unchecked Sendable {
     private var inputQueue: [UInt8] = []
     private var pendingOutput: [UInt8] = []
 
+    /// **Où l'écran se pose, et pourquoi là.**
+    ///
+    /// 0xE0000000 : le trou que les PC réservent depuis toujours aux
+    /// périphériques, sous les quatre gibioctets. Le choisir évite d'inventer
+    /// une carte mémoire qui ne ressemblerait à aucune machine réelle — un
+    /// noyau qui voit un cadre là n'est pas surpris.
+    public static let displayBase: UInt64 = 0xE000_0000
+
+    /// Ce qu'une machine refuse quand on lui demande un écran impossible.
+    public enum DisplayRefusal: Error, Equatable {
+        /// La RAM monte jusqu'à la fenêtre du cadre, ou plus haut. Les deux se
+        /// recouvriraient, et l'écriture d'un pixel écraserait une page du
+        /// noyau. **Refuser plutôt que déplacer en silence** : mettre le cadre
+        /// au-dessus des quatre gibioctets demande `ext_lfb_base`, un champ
+        /// que le chargeur n'écrit pas encore.
+        case wouldOverlapMemory
+    }
+
+    /// L'écran de cette machine, quand elle en a un. C'est par là que l'hôte
+    /// lit les pixels.
+    public private(set) var display: X86Framebuffer?
+
+    /// **Donner un écran à la machine.** À appeler avant `load` : c'est le
+    /// chargeur qui l'annonce au noyau, et il ne le fait qu'une fois.
+    public func attachDisplay(width: Int, height: Int) throws {
+        guard UInt64(ramSize) <= Self.displayBase else {
+            throw DisplayRefusal.wouldOverlapMemory
+        }
+        let screen = X86Framebuffer(base: Self.displayBase, width: width, height: height)
+        memory.screen = screen
+        display = screen
+    }
+
+    /// La page zéro telle qu'elle a été posée. Pour un test, et pour dire ce
+    /// que le noyau va lire.
+    public func bootParameters() -> [UInt8] {
+        guard let at = bootParametersAddress else { return [] }
+        return memory.dump(at, X86BootLoader.bootParametersSize)
+    }
+
+    private var bootParametersAddress: UInt64?
+
     public init(ramSize: Int = X86Machine.defaultRAMSize,
                 onOutput: @escaping @Sendable (Data) -> Void) {
         self.ramSize = max(ramSize, Self.minimumRAMSize)
@@ -126,7 +171,11 @@ public final class X86Machine: @unchecked Sendable {
         let placement = try X86BootLoader.load(
             kernel: [UInt8](kernelImage), into: memory,
             commandLine: commandLine ?? X86BootLoader.defaultCommandLine,
-            initialRamdisk: initialRamdisk.map { [UInt8]($0) })
+            initialRamdisk: initialRamdisk.map { [UInt8]($0) },
+            framebuffer: display.map {
+                X86BootLoader.Framebuffer(base: $0.base, width: $0.width, height: $0.height)
+            })
+        bootParametersAddress = placement.bootParametersAddress
 
         // Quatre entrées de un gibioctet suffisent à couvrir les quatre
         // premiers, là où des pages de quatre kibioctets en demanderaient un
