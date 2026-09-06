@@ -9439,3 +9439,76 @@ calcule rien : le meilleur rapport de la série. Vingt-six sabotages, vingt-six
 attrapés.
 
 Le cœur Swift levait déjà une faute sur `ud2` — rien à y porter.
+
+## La chaîne de bits : le jeu d'instructions est clos
+
+Trois programmes attendaient dans le corpus depuis des semaines, refusés par le
+décodeur : « un tableau de bits, au-delà du premier mot », « avec un numéro
+négatif », « en trente-deux bits ». Le test était donc écrit bien avant le
+correctif — il ne restait qu'à le faire passer.
+
+Quand la destination d'un `bt`/`bts`/`btr`/`btc` est en mémoire **et** que le
+numéro vient d'un registre, ce numéro est **signé** et n'est pas replié dans la
+largeur. Le processeur va chercher le mot qui contient ce bit-là, en avant comme
+en arrière. Ce n'est pas une curiosité de manuel : le noyau de Linux tient ses
+vecteurs d'interruption réservés dans un tableau de 256 bits qu'il lit comme ça,
+et un cœur qui replie tous les numéros dans le premier mot lui fait croire que
+l'horloge est déjà prise. Ce défaut-là a coûté un démarrage entier du côté
+Swift, et son commentaire est encore dans `X86CoreDispatch.swift`.
+
+La division est arrondie **vers le bas**, pas vers zéro : un numéro négatif doit
+descendre d'un mot, pas remonter au mot zéro. `div_euclid` et `rem_euclid` le
+disent exactement, et le reste rendu est positif — ce qui est bien le rang du
+bit dans son mot.
+
+### Deux sabotages ont survécu, et cette fois ils avaient tort
+
+Mettre un décalage logique à la place de l'arithmétique dans l'émetteur, ou
+tronquer l'adresse à trente-deux bits avant d'y ajouter le mot, rend **exactement
+le même résultat**. Ce n'est pas un trou dans les tests : la mémoire WebAssembly
+s'adresse sur trente-deux bits, et l'écart entre les deux décalages vaut 2⁶¹
+quelle que soit la largeur — donc zéro une fois tronqué. Vérifié sur les trois
+largeurs et sur des numéros des deux signes.
+
+Aucun test ne peut les distinguer, et il ne faut pas en tordre un pour essayer.
+Les deux mutations sont retirées du harnais, et la raison est écrite là où
+quelqu'un la cherchera : dans le code, à côté du décalage. Ce qui y est écrit est
+ce qu'on veut dire, et ce qui resterait juste si la mémoire s'adressait un jour
+plus loin.
+
+### Le troisième était un vrai trou
+
+Le numéro **immédiat** en mémoire n'est pas une chaîne de bits : le manuel le
+borne à la largeur, donc l'opérande est celui que l'adresse nomme. Traiter les
+deux formes pareil ferait lire ailleurs — et aucun cas ne le voyait, faute de
+`btq $7, (%rsi)` dans le corpus. Deux programmes l'ont ajouté.
+
+### Ce que ça donne
+
+| | avant | après |
+|---|---|---|
+| cas matériels vérifiés | 12 860 | **12 980** |
+| **instructions refusées par le décodeur** | 3 | **0** |
+| **cas refusés par l'émetteur** | 72 | **0** |
+| instructions du noyau décodées | 99,4 % | **99,6 %** |
+| régions de 4 Kio acceptées | 73,0 % | **74,9 %** |
+
+**Les deux cœurs Rust n'ont plus rien à refuser** dans tout ce que le corpus
+matériel contient. Trente-et-un sabotages, trente-et-un attrapés.
+
+Le cœur Swift avait déjà la chaîne de bits, floor division comprise — rien à y
+porter. C'est la seule fois de la journée où il était en avance sur les deux
+autres, et c'est parce qu'il avait déjà payé le bogue.
+
+### Où va la mesure maintenant
+
+Ce qui reste dans les refus du balayage linéaire est en grande partie du bruit :
+`cc` × 3 944 est du bourrage entre fonctions (mesuré : vingt-et-une régions),
+`f3`, `48`, `ab`, `41` sont des préfixes sur des octets qui ne sont pas du code.
+Le vrai reste est `0f` × 727, tombé de 6 739 — ce qui en fait, enfin, du SSE.
+
+Les 4 119 régions encore refusées ne le sont donc plus pour des instructions
+manquantes mais pour ce qu'un balayage linéaire prend pour du code. La prochaine
+question n'est plus « quelle instruction ajouter » : c'est de mesurer la
+couverture depuis les vrais points d'entrée du noyau plutôt que tous les 512
+octets.

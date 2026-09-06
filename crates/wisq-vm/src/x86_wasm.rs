@@ -215,6 +215,15 @@ impl Body {
 
     /// Pousser l'adresse effective, en `i32`, prête pour un accès mémoire.
     fn address(&mut self, address: &Address) -> &mut Self {
+        self.wide_address(address);
+        self.op(code::I32_WRAP_I64)
+    }
+
+    /// **La même adresse, laissée en `i64`.** La chaîne de bits en a besoin
+    /// entière : elle lui ajoute un déplacement de mot **signé**, calculé à
+    /// l'exécution, et tronquer avant cette addition la ferait déborder dans
+    /// les trente-deux bits bas.
+    fn wide_address(&mut self, address: &Address) -> &mut Self {
         self.constant(address.displacement as u64);
         // **La base du segment, lue à l'exécution.** Elle ne peut pas être
         // repliée dans le déplacement : la région est compilée une fois, et
@@ -231,7 +240,38 @@ impl Body {
                 .op(code::I64_SHL);
             self.op(code::I64_ADD);
         }
-        self.op(code::I32_WRAP_I64)
+        self
+    }
+
+    /// **Lire la mémoire à une adresse déjà calculée**, gardée dans une
+    /// globale de travail. La chaîne de bits ne peut pas passer par `Address` :
+    /// son adresse dépend d'un registre lu à l'exécution.
+    fn load_at(&mut self, slot: usize, width: Width) -> &mut Self {
+        self.load(slot).op(code::I32_WRAP_I64);
+        self.op(match width {
+            Width::Byte => code::I64_LOAD8_U,
+            Width::Word => code::I64_LOAD16_U,
+            Width::Dword => code::I64_LOAD32_U,
+            Width::Qword => code::I64_LOAD,
+        });
+        self.bytes.push(0);
+        self.bytes.push(0);
+        self
+    }
+
+    /// Et l'écriture qui lui répond.
+    fn store_at(&mut self, slot: usize, width: Width, value: impl FnOnce(&mut Body)) -> &mut Self {
+        self.load(slot).op(code::I32_WRAP_I64);
+        value(self);
+        self.op(match width {
+            Width::Byte => code::I64_STORE8,
+            Width::Word => code::I64_STORE16,
+            Width::Dword => code::I64_STORE32,
+            Width::Qword => code::I64_STORE,
+        });
+        self.bytes.push(0);
+        self.bytes.push(0);
+        self
     }
 
     /// Lire la mémoire invitée à cette adresse, à cette largeur, **étendue par
@@ -2481,15 +2521,61 @@ impl Module {
     fn bit(step: &Decoded, action: BitAction, body: &mut Body) {
         let width = step.width;
         let bits = width.bits();
+        // **La chaîne de bits : une adresse que seule l'exécution connaît.**
+        //
+        // Quand la destination est en mémoire et que le numéro vient d'un
+        // registre, ce numéro est **signé** et n'est pas replié : le processeur
+        // va chercher le mot qui le contient, en avant comme en arrière. Le
+        // mot visé est donc `adresse + (numéro ÷ bits) × octets`, la division
+        // arrondie **vers le bas**.
+        //
+        // Les deux opérations sont des décalages, et c'est exact plutôt que
+        // commode : la largeur est une puissance de deux, donc `>>` arithmétique
+        // **est** la division arrondie vers le bas — y compris pour les
+        // négatifs, là où `i64.div_s`, qui tronque vers zéro, remonterait d'un
+        // mot. Et le reste positif est simplement les bits bas.
+        //
+        // **Deux sabotages y ont survécu, et ils avaient tort.** Mettre un
+        // décalage logique à la place de l'arithmétique, ou tronquer l'adresse
+        // à trente-deux bits avant d'y ajouter le mot, rend ici *exactement* le
+        // même résultat. Ce n'est pas un trou dans les tests : la mémoire
+        // WebAssembly s'adresse sur trente-deux bits, et l'écart entre les deux
+        // décalages vaut 2⁶¹ quelle que soit la largeur — donc zéro une fois
+        // tronqué. Aucun test ne peut les distinguer, et il ne faut pas en
+        // tordre un pour essayer. Ce qui est écrit ici est ce qu'on veut dire,
+        // et ce qui resterait juste si la mémoire s'adressait un jour plus
+        // loin.
+        let string = step.memory.is_some() && !step.immediate;
+        if let (true, Some(address)) = (string, step.memory) {
+            body.store(Body::scratch(3), |b| {
+                b.wide_address(&address);
+                b.load(Self::slot(step.src))
+                    .constant(u64::from(bits.trailing_zeros()))
+                    .op(code::I64_SHR_S)
+                    .constant(u64::from((width as u64).trailing_zeros()))
+                    .op(code::I64_SHL)
+                    .op(code::I64_ADD);
+            });
+        }
         // scratch 0 : l'opérande. scratch 1 : le numéro, réduit dans la largeur.
         body.store(Body::scratch(0), |b| {
-            b.load(Self::slot(step.dst))
-                .constant(width.mask())
-                .op(code::I64_AND);
+            if string {
+                b.load_at(Body::scratch(3), width);
+            } else if let Some(address) = step.memory {
+                b.load_memory(&address, width);
+            } else {
+                b.load(Self::slot(step.dst))
+                    .constant(width.mask())
+                    .op(code::I64_AND);
+            }
         });
         body.store(Body::scratch(1), |b| {
             if step.immediate {
                 b.constant(step.imm % bits);
+            } else if string {
+                b.load(Self::slot(step.src))
+                    .constant(bits - 1)
+                    .op(code::I64_AND);
             } else {
                 b.load(Self::slot(step.src))
                     .constant(bits)
@@ -2528,6 +2614,12 @@ impl Module {
             }
             b.constant(width.mask()).op(code::I64_AND);
         });
+        if string {
+            body.store_at(Body::scratch(3), width, |b| {
+                b.load(Body::scratch(2));
+            });
+            return;
+        }
         Self::write_back(step, width.mask(), body);
     }
 
