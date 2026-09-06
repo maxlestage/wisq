@@ -252,6 +252,22 @@ def snippets():
     yield "shldq $7, %rcx, %rax"
     yield "shrdq $7, %rcx, %rax"
     yield "shldl %cl, %ecx, %eax"
+    # **La forme que le corpus n'avait pas : le compte variable en soixante-
+    # quatre bits.** C'est celle qu'un noyau emploie, et c'est la seule où la
+    # règle « un compte nul ne décale rien » s'observe. En trente-deux bits le
+    # terme complémentaire vaut un décalage de trente-deux, que la source
+    # masquée rend nul de toute façon ; en soixante-quatre il vaut soixante-
+    # quatre, que WebAssembly ramène à zéro — et le résultat serait la source
+    # ajoutée à la destination. Un sabotage l'a montré : retirer la garde du
+    # compte nul ne faisait tomber aucun cas.
+    yield "shldq %cl, %rcx, %rax"
+    yield "shrdq %cl, %rcx, %rax"
+    yield "shrdl %cl, %ecx, %eax"
+    # Pas de forme à compte variable en seize bits : le compte y est masqué à
+    # trente et un, donc il peut dépasser la largeur, et le manuel déclare le
+    # résultat **indéfini** dans ce cas. Le relever le figerait sur ce
+    # processeur-ci.
+    yield "shrdw $3, %cx, %ax"
 
     # Mouvements et extensions. Le zéro-remplissage d'une écriture 32 bits est
     # la règle que tout le monde oublie, et elle se voit ici.
