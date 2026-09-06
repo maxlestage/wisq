@@ -460,6 +460,12 @@ STACK = 0x30003000
 WINDOW = 64
 # Le motif dont la fenêtre part : 0x10, 0x11, 0x12… Reconnaissable exprès.
 PRISTINE = "".join("%02x" % (0x10 + i) for i in range(WINDOW))
+# La pile, des deux côtés du sommet : soixante-quatre octets **sous** le
+# pointeur — là où un `push` écrit — et soixante-quatre au-dessus. Motifs
+# distincts pour que l'un ne puisse pas passer pour l'autre.
+STACK_WINDOW = STACK - WINDOW
+STACK_PRISTINE = ("".join("%02x" % (0xB0 + i) for i in range(WINDOW))
+                  + "".join("%02x" % (0x40 + i) for i in range(WINDOW)))
 
 # Des **programmes**, pas des instructions isolées. Un branchement, une pile,
 # un appel ne se prouvent pas sur une instruction seule : il faut plusieurs
@@ -723,7 +729,8 @@ def main():
         out.write("# état\t<indice>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>   — un état d'entrée\n")
         out.write("# instr\t<indice>\t<octets>\t<masque>\t<mnémonique>  — une instruction,\n")
         out.write("#   et le masque des drapeaux que l'architecture définit pour elle\n")
-        out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>\n")
+        out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>"
+                  "\t<pile>\t<rsp>\t<rbp>\t<rsi>\n")
         out.write("#   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;\n")
         out.write("#   la pile de l'invité descend depuis 0x30003000\n")
         out.write("# fixe\t<registre>\t<valeur>\t<nom>  — ce que le silicium avait dans les\n")
@@ -732,6 +739,9 @@ def main():
         out.write("#   dit rien de ce qu'elles **lisent**, et `movzbl %bh, %eax` lit RBX. Un\n")
         out.write("#   harnais qui part de zéro compare alors son résultat à celui d'un\n")
         out.write("#   processeur qui, lui, partait d'ici.\n")
+        out.write("#   Il y a deux fenêtres : les données, où pointe RSI, et la\n")
+        out.write("#   pile, des deux côtés de RSP. Le cas porte les deux, dans\n")
+        out.write("#   cet ordre, et « - » veut dire « inchangée ».\n")
         out.write("# fenêtre\t<adresse>\t<motif>  — la fenêtre de données, et le motif\n")
         out.write("#   dont elle part à chaque cas. RSI pointe dessus. Même leçon que\n")
         out.write("#   « fixe » : un harnais qui devine ce motif au lieu de le lire compare\n")
@@ -747,6 +757,7 @@ def main():
             out.write("fixe\t%d\t%x\t%s\n"
                       % (register, start[register], REGISTERS[register]))
         out.write("fenêtre\t%x\t%s\n" % (DATA, PRISTINE))
+        out.write("fenêtre\t%x\t%s\n" % (STACK_WINDOW, STACK_PRISTINE))
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))
@@ -766,21 +777,40 @@ def main():
             after = [int(value, 16) for value in fields[18:35]]
             # Ce qui n'était pas censé bouger n'a pas bougé : la vérification
             # qui autorise à ne garder que trois registres dans le fichier.
-            # RBP et RSP sont exclus : les programmes qui posent un cadre de
-            # pile s'en servent, et c'est justement ce qu'ils prouvent.
-            for register in [3] + list(range(8, 16)):
+            # RBP et RSP sont exclus — les programmes qui posent un cadre de
+            # pile s'en servent — mais ils sont **écrits dans le cas**, deux
+            # colonnes plus loin. Les laisser dehors était un trou : un
+            # `leave` qui reprend RBP dans le désordre laisse RAX, RCX, RDX et
+            # les deux fenêtres exactement justes, et rien ne le voyait.
+            for register in [3, 7] + list(range(8, 16)):
                 if after[register] != state[register]:
                     raise SystemExit(
                         f"{texts[instruction]} a écrit dans {REGISTERS[register]} : "
                         f"{state[register]:x} devenu {after[register]:x}")
-            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%s\n"
+            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%s\t%s\t%x\t%x\t%x\n"
                       % (instruction, index,
                          after[0], after[1], after[2], after[16] & ARITHMETIC_FLAGS,
                          # « - » quand la fenêtre est restée telle qu'on l'avait
                          # posée : la plupart des instructions ne touchent pas à
                          # la mémoire, et écrire cent vingt-huit caractères pour
                          # dire « rien » quadruplerait le fichier.
-                         "-" if fields[35] == PRISTINE else fields[35]))
+                         "-" if fields[35] == PRISTINE else fields[35],
+                         # **Et la pile.** Un `push` qui écrit à la mauvaise
+                         # adresse laisse tous les registres justes ; sans cette
+                         # colonne, rien ne le verrait.
+                         "-" if fields[36] == STACK_PRISTINE else fields[36],
+                         # **Le pointeur de pile et le pointeur de cadre.** Ce
+                         # sont les deux seuls registres qu'on autorise à
+                         # bouger sans les relever, et c'est précisément là que
+                         # la pile se prouve : un `pop` qui remonte RSP de huit
+                         # de trop ne se voit nulle part ailleurs.
+                         # …et RSI, que les programmes qui parcourent la
+                         # mémoire avancent. La vérification l'a refusé dès
+                         # qu'on a voulu l'y soumettre : « une boucle qui
+                         # parcourt la mémoire a écrit dans rsi ». C'est vrai,
+                         # et c'est ce qu'elle prouve — donc on la relève au
+                         # lieu de l'exclure.
+                         after[4], after[5], after[6]))
 
     print(f"{len(texts)} instructions, {len(cases)} cas", file=sys.stderr)
     return 0
