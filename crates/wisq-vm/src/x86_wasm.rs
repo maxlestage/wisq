@@ -263,9 +263,18 @@ impl Module {
     /// C'est donc la seconde. Chaque bloc est une fonction qui rend l'indice du
     /// bloc suivant, ou -1 pour rendre la main ; `run` les enchaîne par un
     /// `call_indirect` dans une table, sous un budget de pas.
-    pub fn region(bytes: &[u8], entry: usize) -> Option<Vec<u8>> {
+    ///
+    /// `base` est l'adresse **de l'invité** où cette région est chargée. Elle
+    /// n'est pas décorative : `call` empile une adresse de retour, et `ret` la
+    /// relit. Compiler la région comme si elle vivait à zéro empilerait un
+    /// nombre que rien, dans la mémoire de l'invité, ne désigne.
+    pub fn region(bytes: &[u8], base: u64, entry: usize) -> Option<Vec<u8>> {
         let blocks = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
+        let starts: Vec<u64> = blocks
+            .iter()
+            .map(|(start, _)| base.wrapping_add(*start as u64))
+            .collect();
 
         let mut bodies: Vec<Vec<u8>> = Vec::new();
         for (start, steps) in &blocks {
@@ -277,12 +286,15 @@ impl Module {
                 // change pas l'état de la machine mais le bloc courant, et
                 // c'est `terminate` qui sait le dire — lui seul connaît les
                 // autres blocs.
-                if matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect) {
+                if matches!(
+                    step.op,
+                    Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::Call | Op::Return
+                ) {
                     continue;
                 }
                 Self::translate(step, &mut body)?;
             }
-            Self::terminate(steps.last(), at, &index, &mut body);
+            Self::terminate(steps.last(), base, at, &index, &starts, &mut body);
             body.op(code::END);
             bodies.push(body.bytes);
         }
@@ -312,18 +324,28 @@ impl Module {
                 }
                 let step = decode(&bytes[at..])?;
                 at += step.length;
-                let ends = matches!(step.op, Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect);
+                let ends = matches!(
+                    step.op,
+                    Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::Call | Op::Return
+                );
                 let displacement = step.imm as i64;
-                let conditional = !matches!(step.op, Op::Jump(None));
+                // **Ce qui suit un `call` est atteignable, et par une seule
+                // route : le `ret` qui lui répond.** Ne pas le mettre dans la
+                // file laissait l'appelé sans retour possible — le module
+                // rendait la main au lieu de continuer. `jmp` est le seul à
+                // n'avoir pas de suite ; `ret`, lui, n'a pas de cible connue
+                // d'avance, et sa suite n'est atteignable que par ailleurs.
+                let falls = !matches!(step.op, Op::Jump(None) | Op::Return);
+                let jumps = !matches!(step.op, Op::Return);
                 steps.push(step);
                 if !ends {
                     continue;
                 }
                 let target = at as i64 + displacement;
-                if (0..bytes.len() as i64).contains(&target) {
+                if jumps && (0..bytes.len() as i64).contains(&target) {
                     queue.push(target as usize);
                 }
-                if conditional && at < bytes.len() {
+                if falls && at < bytes.len() {
                     queue.push(at);
                 }
                 break;
@@ -347,15 +369,17 @@ impl Module {
     /// quoi faire.
     fn terminate(
         last: Option<&Decoded>,
+        base: u64,
         after: usize,
         index: &impl Fn(usize) -> Option<usize>,
+        starts: &[u64],
         body: &mut Body,
     ) {
         // Deux valeurs à poser : l'adresse d'arrivée et l'indice du bloc.
         // `sortie` vaut -1 quand la cible n'est pas dans la région.
         let place = |body: &mut Body, offset: i64| {
             body.store(RIP_SLOT, |b| {
-                b.constant(offset as u64);
+                b.constant(base.wrapping_add(offset as u64));
             });
             let next = match usize::try_from(offset).ok().and_then(&index) {
                 Some(block) => block as i64,
@@ -376,8 +400,8 @@ impl Module {
                 // Les deux issues sont calculées, puis choisies. L'adresse
                 // aussi : elle diffère selon la branche prise.
                 body.store(RIP_SLOT, |b| {
-                    b.constant(target as u64);
-                    b.constant(after as u64);
+                    b.constant(base.wrapping_add(target as u64));
+                    b.constant(base.wrapping_add(after as u64));
                     Self::condition(condition, b);
                     b.op(code::I32_WRAP_I64).op(code::SELECT);
                 });
@@ -393,8 +417,8 @@ impl Module {
                     b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
                 });
                 body.store(RIP_SLOT, |b| {
-                    b.constant(target as u64);
-                    b.constant(after as u64);
+                    b.constant(base.wrapping_add(target as u64));
+                    b.constant(base.wrapping_add(after as u64));
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::SELECT);
                 });
@@ -404,16 +428,63 @@ impl Module {
                 });
             }
             Op::JumpIndirect => {
-                // La cible est dans un registre : le module ne peut pas savoir
-                // à quel bloc elle correspond. Il rend la main, et l'hôte
-                // compilera la région qui commence là.
                 body.store(RIP_SLOT, |b| {
                     b.load(Self::slot(step.dst));
                 });
-                body.bytes.push(code::I32_CONST);
-                signed(-1, &mut body.bytes);
+                Self::resolve(starts, body);
+            }
+            Op::Call => {
+                // L'adresse de retour est empilée ici — c'est la seule partie
+                // de `call` qui touche l'état — puis le bloc change.
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+                });
+                Self::at_top(body, |b| {
+                    b.constant(base.wrapping_add(after as u64));
+                });
+                place(body, target);
+            }
+            Op::Return => {
+                // La cible sort de la pile : elle n'est connue qu'à
+                // l'exécution. Le module la cherche parmi ses propres blocs, et
+                // rend la main si elle n'en est pas un.
+                body.store(RIP_SLOT, |b| {
+                    b.load(Self::slot(4));
+                    b.op(code::I32_WRAP_I64);
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                });
+                Self::resolve(starts, body);
             }
             _ => place(body, after as i64),
+        }
+    }
+
+    /// **Retrouver un bloc depuis une adresse connue seulement à l'exécution.**
+    ///
+    /// C'est ce dont `ret` et `jmp *%reg` ont besoin. Les adresses des blocs
+    /// sont connues à la compilation, donc la recherche est une suite de
+    /// comparaisons : la cible est-elle le bloc zéro, sinon le bloc un… et -1
+    /// si elle n'est aucun d'eux, auquel cas le module rend la main et l'hôte
+    /// compilera la région qui commence là.
+    ///
+    /// Linéaire, et c'est assez : une région a quelques blocs, pas mille. Le
+    /// jour où elle en aura mille, ce sera une table de hachage — mais le dire
+    /// avant de l'avoir mesuré serait deviner.
+    fn resolve(starts: &[u64], body: &mut Body) {
+        body.bytes.push(code::I32_CONST);
+        signed(-1, &mut body.bytes);
+        for (block, start) in starts.iter().enumerate() {
+            body.bytes.push(code::I32_CONST);
+            signed(block as i64, &mut body.bytes);
+            // Échanger les deux : `select` rend la première quand la condition
+            // tient, donc l'indice trouvé doit être poussé en dernier.
+            body.load(RIP_SLOT).constant(*start).op(code::I64_NE);
+            body.op(code::SELECT);
         }
     }
 
@@ -614,6 +685,19 @@ impl Module {
         if step.op == Op::Nop {
             return Some(());
         }
+        // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
+        // registre — et sort donc de la machinerie à une destination.
+        if matches!(step.op, Op::Push | Op::Pop | Op::Leave) {
+            Self::stack(step, body);
+            return Some(());
+        }
+        // `call` et `ret` ne passent jamais par ici : `region` les laisse à
+        // `terminate`, qui seul connaît les autres blocs. Les refuser garde ce
+        // contrat vérifiable — si un jour l'un d'eux arrive ici, la région est
+        // refusée plutôt que traduite à moitié.
+        if step.op == Op::Call || step.op == Op::Return {
+            return None;
+        }
         // **Les décalages ont leurs propres règles**, et les faire passer par
         // la machinerie à deux opérandes en donnerait quatre fausses. Ils
         // sortent ici, exactement comme dans l'interpréteur — deux cœurs qui
@@ -757,6 +841,9 @@ impl Module {
                     unreachable!("les sauts sortent avant")
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
+                Op::Push | Op::Pop | Op::Call | Op::Return | Op::Leave => {
+                    unreachable!("la pile sort avant")
+                }
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -1138,7 +1225,12 @@ impl Module {
             | Op::Jump(_)
             | Op::LoopWhile
             | Op::JumpIndirect
-            | Op::Nop => {}
+            | Op::Nop
+            | Op::Push
+            | Op::Pop
+            | Op::Call
+            | Op::Return
+            | Op::Leave => {}
         }
     }
 
@@ -1179,6 +1271,68 @@ impl Module {
         if condition.negated() {
             b.constant(1).op(code::I64_XOR);
         }
+    }
+
+    /// **La pile.** L'ordre est le sujet : `push` descend RSP **puis** écrit,
+    /// `pop` lit **puis** remonte. L'inverser écrirait huit octets au-dessus
+    /// du sommet, là où une interruption a le droit de passer.
+    fn stack(step: &Decoded, body: &mut Body) {
+        match step.op {
+            Op::Push => {
+                // scratch 0 : la valeur, lue **avant** que RSP ne bouge —
+                // `push %rsp` empile la valeur d'avant la descente.
+                body.store(Body::scratch(0), |b| {
+                    if step.immediate {
+                        b.constant(step.imm);
+                    } else {
+                        b.load(Self::slot(step.dst));
+                    }
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+                });
+                Self::at_top(body, |b| {
+                    b.load(Body::scratch(0));
+                });
+            }
+            Op::Pop => {
+                body.store(Self::slot(step.dst), |b| {
+                    b.load(Self::slot(4));
+                    b.op(code::I32_WRAP_I64);
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                });
+            }
+            _ => {
+                // `leave` : RSP reprend RBP, puis RBP se dépile.
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(5));
+                });
+                body.store(Self::slot(5), |b| {
+                    b.load(Self::slot(4));
+                    b.op(code::I32_WRAP_I64);
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                });
+            }
+        }
+    }
+
+    /// Écrire huit octets au sommet de la pile, RSP étant déjà à sa place.
+    fn at_top(body: &mut Body, value: impl FnOnce(&mut Body)) {
+        body.load(Self::slot(4)).op(code::I32_WRAP_I64);
+        value(body);
+        body.op(code::I64_STORE);
+        body.bytes.push(0);
+        body.bytes.push(0);
     }
 
     /// **Un bit, lu dans la retenue et parfois changé.**

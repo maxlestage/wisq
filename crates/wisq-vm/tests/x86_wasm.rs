@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86::Width;
-use wisq_vm::x86_wasm::{Module, RFLAGS_SLOT};
+use wisq_vm::x86_wasm::{Module, RFLAGS_SLOT, RIP_SLOT};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,8 +50,23 @@ const DRIVER: &str = r#"
 const fs = require("fs");
 const job = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const out = {};
-const pristine = Uint8Array.from(
-  job.pristine.match(/../g).map(pair => parseInt(pair, 16)));
+// **Deux fenêtres, pas une.** Les données d'un côté, la pile de l'autre : un
+// `push` qui écrit à la mauvaise adresse laisse la fenêtre de données intacte.
+const windows = job.windows.map(w => ({
+  at: w.at,
+  bytes: Uint8Array.from(w.pristine.match(/../g).map(pair => parseInt(pair, 16))),
+}));
+// L'étendue telle qu'elle est au départ de chaque cas. Elle sert de référence :
+// la rendre pour les onze mille cas qui n'y touchent pas ferait deux cents
+// mégaoctets de JSON, et le harnais passait plus de temps à les relire qu'à
+// vérifier quoi que ce soit.
+const reference = new Uint8Array(job.span.length);
+for (const window of windows) { reference.set(window.bytes, window.at - job.span.at); }
+const same = (a, b) => {
+  if (a.length !== b.length) { return false; }
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
+  return true;
+};
 for (const unit of job.jobs) {
   const bytes = fs.readFileSync(unit.module);
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
@@ -66,9 +81,12 @@ for (const unit of job.jobs) {
     // Remettre à zéro : un résidu du cas précédent ferait lire à une
     // instruction un registre que l'oracle n'a pas posé.
     for (const global of slots) { global.value = 0n; }
-    // Et remettre la fenêtre de données dans son motif d'origine, pour la même
-    // raison : le silicium la reçoit propre à chaque cas.
-    guest.set(pristine, job.window);
+    // Et remettre les fenêtres dans leur motif d'origine, pour la même raison :
+    // le silicium les reçoit propres à chaque cas. L'intervalle entre les deux
+    // est remis à zéro plutôt que laissé : ce qu'un cas y aurait écrit
+    // deviendrait, au cas suivant, un écart qu'on attribuerait à l'instruction.
+    guest.fill(0, job.span.at, job.span.at + job.span.length);
+    for (const window of windows) { guest.set(window.bytes, window.at); }
     for (const [slot, value] of Object.entries(test.regs)) {
       slots[Number(slot)].value = BigInt("0x" + value);
     }
@@ -85,11 +103,15 @@ for (const unit of job.jobs) {
     // **Une globale i64 se lit en BigInt signé.** `BigUint64Array` masquait
     // ce détail : ici, un registre à tous les bits à un rend -1n, qui s'écrit
     // « -1 » en hexadécimal et n'est plus un nombre pour personne.
+    const seen = guest.subarray(job.span.at, job.span.at + job.span.length);
     out[test.id] = {
-      regs: [0, 1, 2, job.flagsSlot]
+      // Quatre valeurs, puis les trois pointeurs : RSP, RBP, RSI.
+      regs: [0, 1, 2, job.flagsSlot, 4, 5, 6]
         .map(s => BigInt.asUintN(64, slots[s].value).toString(16)),
-      memory: [...guest.subarray(job.window, job.window + pristine.length)]
-        .map(b => b.toString(16).padStart(2, "0")).join(""),
+      // « - » veut dire « la mémoire est telle qu'elle était », comme dans le
+      // corpus. Rendre le motif entier dirait la même chose en cent fois plus.
+      memory: same(seen, reference) ? "-"
+        : [...seen].map(b => b.toString(16).padStart(2, "0")).join(""),
     };
   }
 }
@@ -109,6 +131,13 @@ struct Case {
     /// La fenêtre de données après l'instruction, ou rien quand elle n'a pas
     /// bougé — le corpus écrit « - » dans ce cas.
     memory: Option<Vec<u8>>,
+    /// La fenêtre de pile, à la même enseigne.
+    stack: Option<Vec<u8>>,
+    /// **RSP, RBP et RSI** — les trois seuls registres que le corpus autorise
+    /// à bouger, et donc les trois seuls qu'il relève. Sans eux, un `leave`
+    /// qui dépile avant de reprendre RBP passe : RAX, RCX, RDX, les drapeaux
+    /// et les deux fenêtres restent exactement justes.
+    pointers: (u64, u64, u64),
 }
 
 struct Oracle {
@@ -120,10 +149,33 @@ struct Oracle {
     /// tombait juste tant qu'aucune instruction traduite n'en lisait un, et
     /// `movzbl %bh, %eax` lit RBX.
     fixed: [u64; 16],
-    /// L'adresse de la fenêtre de données, et le motif dont elle part.
-    window: u64,
-    pristine: Vec<u8>,
+    /// **Les fenêtres de mémoire**, et le motif dont chacune part à chaque cas.
+    windows: Vec<(u64, Vec<u8>)>,
 }
+
+/// L'étendue contiguë qui couvre les fenêtres : l'adresse de départ et les
+/// octets, l'intervalle entre deux fenêtres mis à zéro. C'est sous cette forme
+/// que le pilote rend la mémoire, donc c'est sous cette forme qu'on la compare.
+fn span(windows: &[(u64, Vec<u8>)]) -> (u64, Vec<u8>) {
+    let base = windows.iter().map(|(at, _)| *at).min().unwrap_or(0);
+    let end = windows
+        .iter()
+        .map(|(at, pattern)| *at + pattern.len() as u64)
+        .max()
+        .unwrap_or(0);
+    let mut bytes = vec![0u8; (end - base) as usize];
+    for (at, pattern) in windows {
+        let start = (*at - base) as usize;
+        bytes[start..start + pattern.len()].copy_from_slice(pattern);
+    }
+    (base, bytes)
+}
+
+/// **L'adresse à laquelle le code de l'invité est chargé**, la même que celle
+/// de `oracle.c`. Un `call` empile une adresse de retour, et cette adresse
+/// dépend de l'endroit où le programme est posé : compiler la région comme si
+/// elle vivait à zéro laisserait les registres justes et la pile fausse.
+const CODE: u64 = 0x3000_0000;
 
 /// Une suite d'octets en hexadécimal.
 fn bytes(text: &str) -> Vec<u8> {
@@ -144,8 +196,7 @@ fn read_oracle() -> Oracle {
         instructions: HashMap::new(),
         cases: Vec::new(),
         fixed: [0; 16],
-        window: 0,
-        pristine: Vec::new(),
+        windows: Vec::new(),
     };
     let mut seeded = 0usize;
     for line in text.lines() {
@@ -159,10 +210,7 @@ fn read_oracle() -> Oracle {
                     .states
                     .insert(f[1].into(), (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])));
             }
-            "fenêtre" => {
-                oracle.window = hex(f[1]);
-                oracle.pristine = bytes(f[2]);
-            }
+            "fenêtre" => oracle.windows.push((hex(f[1]), bytes(f[2]))),
             "fixe" => {
                 let register: usize = f[1].parse().expect("un numéro de registre");
                 oracle.fixed[register] = hex(f[2]);
@@ -187,13 +235,19 @@ fn read_oracle() -> Oracle {
                     Some(&"-") | None => None,
                     Some(text) => Some(bytes(text)),
                 },
+                stack: match f.get(8) {
+                    Some(&"-") | None => None,
+                    Some(text) => Some(bytes(text)),
+                },
+                pointers: (hex(f[9]), hex(f[10]), hex(f[11])),
             }),
             _ => {}
         }
     }
-    assert!(
-        !oracle.pristine.is_empty(),
-        "l'oracle doit déclarer la fenêtre de données et son motif"
+    assert_eq!(
+        oracle.windows.len(),
+        2,
+        "l'oracle doit déclarer la fenêtre de données et celle de pile"
     );
     assert_eq!(
         seeded, 13,
@@ -246,17 +300,27 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // La fenêtre de données et son motif viennent du fichier, jamais du code :
     // un harnais qui les devine compare son résultat à celui d'un processeur
     // parti d'ailleurs.
-    jobs.push_str(",\"window\":");
-    jobs.push_str(&oracle.window.to_string());
-    jobs.push_str(",\"pristine\":\"");
-    for byte in &oracle.pristine {
-        jobs.push_str(&format!("{byte:02x}"));
+    let (span_at, span_bytes) = span(&oracle.windows);
+    jobs.push_str(&format!(
+        ",\"span\":{{\"at\":{span_at},\"length\":{}}},\"windows\":[",
+        span_bytes.len()
+    ));
+    for (index, (at, pattern)) in oracle.windows.iter().enumerate() {
+        if index > 0 {
+            jobs.push(',');
+        }
+        jobs.push_str(&format!("{{\"at\":{at},\"pristine\":\""));
+        for byte in pattern {
+            jobs.push_str(&format!("{byte:02x}"));
+        }
+        jobs.push_str("\"}");
     }
-    jobs.push_str("\",\"jobs\":[");
+    jobs.push_str("],\"jobs\":[");
     let mut emitted = 0usize;
     let mut refused = 0usize;
     #[allow(clippy::type_complexity)]
-    let mut expected: HashMap<String, (u64, u64, u64, u64, u64, String, Vec<u8>)> = HashMap::new();
+    type Wanted = (u64, u64, u64, u64, u64, String, Vec<u8>, (u64, u64, u64));
+    let mut expected: HashMap<String, Wanted> = HashMap::new();
 
     for (index, (instruction, cases)) in by_instruction.iter().enumerate() {
         let (bytes, defined, mnemonic) = &oracle.instructions[instruction];
@@ -269,7 +333,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         // **Une région, pas une suite d'instructions.** Le compilateur découvre
         // lui-même les blocs atteignables : linéariser les octets reviendrait à
         // ignorer les sauts tout en prétendant les traduire.
-        let Some(module) = Module::region(bytes, 0) else {
+        let Some(module) = Module::region(bytes, CODE, 0) else {
             refused += cases.len();
             continue;
         };
@@ -312,9 +376,22 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
                     case.flags,
                     *defined,
                     mnemonic.clone(),
-                    case.memory
-                        .clone()
-                        .unwrap_or_else(|| oracle.pristine.clone()),
+                    span(&[
+                        (
+                            oracle.windows[0].0,
+                            case.memory
+                                .clone()
+                                .unwrap_or_else(|| oracle.windows[0].1.clone()),
+                        ),
+                        (
+                            oracle.windows[1].0,
+                            case.stack
+                                .clone()
+                                .unwrap_or_else(|| oracle.windows[1].1.clone()),
+                        ),
+                    ])
+                    .1,
+                    case.pointers,
                 ),
             );
         }
@@ -342,11 +419,25 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 
     let mut checked = 0usize;
     let mut wrong: Vec<String> = Vec::new();
-    for (id, (want_rax, want_rcx, want_rdx, want_flags, mask, mnemonic, want_memory)) in &expected {
-        let Some(got) = field(&text, id) else {
+    let produced = results(&text);
+    let (_, pristine_span) = span(&oracle.windows);
+    for (
+        id,
+        (want_rax, want_rcx, want_rdx, want_flags, mask, mnemonic, want_memory, want_pointers),
+    ) in &expected
+    {
+        let Some(raw) = produced.get(id) else {
             wrong.push(format!("{mnemonic} : aucun résultat rendu pour {id}"));
             continue;
         };
+        let got = (
+            raw.0,
+            raw.1,
+            raw.2,
+            raw.3,
+            raw.5.clone().unwrap_or_else(|| pristine_span.clone()),
+        );
+        let pointers = raw.4;
         checked += 1;
         // **La fenêtre compte autant que les registres.** Une écriture au
         // mauvais endroit laisse les trois registres justes.
@@ -355,14 +446,22 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             || got.2 != *want_rdx
             || (got.3 & mask) != (want_flags & mask)
             || &got.4 != want_memory
+            || pointers != *want_pointers
         {
             if wrong.len() < 10 {
                 wrong.push(format!(
                     "{mnemonic} [{id}] : rax {:x}≠{want_rax:x} rcx {:x}≠{want_rcx:x} \
-                     rdx {:x}≠{want_rdx:x} drapeaux {:x}≠{:x} (masque {mask:x}){}",
+                     rdx {:x}≠{want_rdx:x} rsp {:x}≠{:x} rbp {:x}≠{:x} rsi {:x}≠{:x} \
+                     drapeaux {:x}≠{:x} (masque {mask:x}){}",
                     got.0,
                     got.1,
                     got.2,
+                    pointers.0,
+                    want_pointers.0,
+                    pointers.1,
+                    want_pointers.1,
+                    pointers.2,
+                    want_pointers.2,
                     got.3 & mask,
                     want_flags & mask,
                     if &got.4 != want_memory {
@@ -403,32 +502,70 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // **Le plancher monte avec chaque famille traduite.** Il ne dit pas
     // « c'est assez » : il dit « ne recule pas ». Après les décalages, les
     // transferts, les rotations simples et `lea`, la mémoire a ajouté
-    // cinquante-trois instructions et quatre programmes entiers.
+    // cinquante-trois instructions et quatre programmes entiers ; la pile en
+    // a ajouté trois, et le même nombre doit tomber des deux côtés — ce
+    // harnais et celui du silicium comptent 9168 cas, pas l'un 9168 et
+    // l'autre 9144.
     assert!(
-        checked > 9050,
+        checked > 9150,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
 
-/// Lire les quatre valeurs rendues pour un cas.
-fn field(text: &str, id: &str) -> Option<(u64, u64, u64, u64, Vec<u8>)> {
-    let key = format!("{id:?}:{{\"regs\":[");
-    let at = text.find(&key)? + key.len();
-    let end = text[at..].find(']')? + at;
-    let values: Vec<u64> = text[at..end]
-        .split(',')
-        .map(|piece| hex(piece.trim().trim_matches('"')))
-        .collect();
-    let memory_key = "\"memory\":\"";
-    let start = text[end..].find(memory_key)? + end + memory_key.len();
-    let stop = text[start..].find('"')? + start;
-    Some((
-        *values.first()?,
-        *values.get(1)?,
-        *values.get(2)?,
-        *values.get(3)?,
-        bytes(&text[start..stop]),
-    ))
+/// **Tout lire d'un coup, et non chercher chaque cas dans le tout.**
+///
+/// La version d'avant faisait un `find` sur le résultat entier par cas. Tant
+/// que la mémoire tenait en soixante-quatre octets ça ne se voyait pas ; avec
+/// deux fenêtres et l'intervalle entre elles, le résultat a grossi et la
+/// recherche est devenue quadratique — le test tournait plus de dix minutes
+/// sans rien vérifier de plus.
+#[allow(clippy::type_complexity)]
+type Produced = (u64, u64, u64, u64, (u64, u64, u64), Option<Vec<u8>>);
+
+fn results(text: &str) -> HashMap<String, Produced> {
+    let mut out = HashMap::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("\":{\"regs\":[") {
+        // La clé est la chaîne JSON qui précède, entre guillemets.
+        let head = &rest[..at];
+        let Some(open) = head.rfind('"') else { break };
+        let id = head[open + 1..].to_string();
+        let body = &rest[at + "\":{\"regs\":[".len()..];
+        let Some(end) = body.find(']') else { break };
+        let values: Vec<u64> = body[..end]
+            .split(',')
+            .map(|piece| hex(piece.trim().trim_matches('"')))
+            .collect();
+        let memory_key = "\"memory\":\"";
+        let Some(start) = body[end..]
+            .find(memory_key)
+            .map(|i| i + end + memory_key.len())
+        else {
+            break;
+        };
+        let Some(stop) = body[start..].find('"').map(|i| i + start) else {
+            break;
+        };
+        let memory = match &body[start..stop] {
+            "-" => None,
+            hexadecimal => Some(bytes(hexadecimal)),
+        };
+        if values.len() == 7 {
+            out.insert(
+                id,
+                (
+                    values[0],
+                    values[1],
+                    values[2],
+                    values[3],
+                    (values[4], values[5], values[6]),
+                    memory,
+                ),
+            );
+        }
+        rest = &body[stop..];
+    }
+    out
 }
 
 /// Un garde-fou sur la largeur : elle vient du décodeur et sert d'index.
@@ -436,4 +573,82 @@ fn field(text: &str, id: &str) -> Option<(u64, u64, u64, u64, Vec<u8>)> {
 fn widths_are_the_ones_the_decoder_speaks() {
     assert_eq!(Width::Qword.mask(), u64::MAX);
     assert_eq!(Width::Byte.mask(), 0xff);
+}
+
+/// **Ce que le module fait d'une adresse qu'il ne connaît pas.**
+///
+/// Un `ret` vers l'extérieur de la région est le cas courant : l'appelé rend la
+/// main à un appelant compilé ailleurs, ou pas encore compilé. Le module doit
+/// alors **s'arrêter** en disant où l'exécution en est, pour que l'hôte
+/// compile la région qui commence là.
+///
+/// Le corpus matériel ne peut pas l'éprouver : ses programmes sont fermés sur
+/// eux-mêmes, chaque `ret` retombe sur un bloc connu. Un sabotage l'a montré —
+/// faire rendre le bloc zéro au lieu de -1 ne faisait tomber aucun des 9168
+/// cas. Ce test-ci sort du corpus exprès.
+#[test]
+fn a_return_out_of_the_region_hands_control_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // `incq %rdx` puis `pushq %rax` puis `ret` : RAX porte une adresse qui
+    // n'est aucun bloc, donc le `ret` doit rendre la main au premier tour.
+    let bytes = [0x48, 0xff, 0xc2, 0x50, 0xc3];
+    let module = Module::region(&bytes, CODE, 0).expect("la région doit se compiler");
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-ret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.js");
+    // Le budget est large exprès : si le module bouclait, RDX les compterait
+    // tous. C'est ce qui distingue « rendu la main » de « reparti au début ».
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const bytes = fs.readFileSync({:?});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
+instance.exports.g0.value = 0x40001000n;   // rax : hors de la région
+instance.exports.g2.value = 0n;            // rdx : le compteur de tours
+instance.exports.g4.value = 0x30003000n;   // rsp
+instance.exports.run(64n);
+console.log(JSON.stringify({{
+  rdx: instance.exports.g2.value.toString(),
+  rip: BigInt.asUintN(64, instance.exports.g{}.value).toString(16),
+  rsp: BigInt.asUintN(64, instance.exports.g4.value).toString(16),
+}}));
+"#,
+            path.to_string_lossy(),
+            RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"rdx\":\"1\""),
+        "le module devait faire un seul tour puis rendre la main, il a rendu {text}"
+    );
+    assert!(
+        text.contains("\"rip\":\"40001000\""),
+        "le module devait dire où reprendre — l'adresse sortie de la pile — il a rendu {text}"
+    );
+    assert!(
+        text.contains("\"rsp\":\"30003000\""),
+        "le `ret` devait remonter RSP là où il était, il a rendu {text}"
+    );
 }
