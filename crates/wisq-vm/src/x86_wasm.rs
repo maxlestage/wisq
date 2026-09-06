@@ -100,6 +100,24 @@ pub const BENCH_BASE: u64 = 0x3000_0000;
 /// Combien d'instructions un tour de la boucle exécute.
 pub const BENCH_PER_TURN: u64 = 5;
 
+/// Ce que `Module::survey` relève d'une région : sa taille, et les endroits
+/// où elle rendra la main.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Survey {
+    /// Blocs de base atteints depuis l'entrée.
+    pub blocks: usize,
+    /// Instructions traduites, tous blocs confondus.
+    pub instructions: usize,
+    /// Instructions qui rendent la main **à chaque fois** : `rep` et `ud2`.
+    pub always: usize,
+    /// Parmi celles-là, les `rep` — les seules qu'une boucle émise pourrait
+    /// garder dans le module.
+    pub repeats: usize,
+    /// Instructions qui **peuvent** rendre la main : la cible n'est connue
+    /// qu'à l'exécution, et le module ne sort que si elle lui est étrangère.
+    pub perhaps: usize,
+}
+
 /// L'entier non signé à longueur variable de WebAssembly.
 fn unsigned(value: u64, out: &mut Vec<u8>) {
     let mut rest = value;
@@ -462,6 +480,47 @@ impl Module {
     /// atteint par personne — le décoder comme du code refuserait une région
     /// parfaitement exécutable.
     #[allow(clippy::type_complexity)]
+    /// **Ce qu'une région coûtera à l'hôte, avant de l'exécuter.**
+    ///
+    /// Un module ne va pas jusqu'au bout du programme : il rend la main. Deux
+    /// façons, et elles ne pèsent pas pareil.
+    ///
+    /// - **Toujours** : `rep` et `ud2`. Le premier est un choix documenté —
+    ///   l'interpréteur copie plus vite qu'une boucle émise, et une seule
+    ///   rentrée coûte moins que le compte relu à chaque octet. Le second est
+    ///   une faute, qui appartient à l'hôte de toute façon.
+    /// - **Peut-être** : `ret`, `jmp *` et `call *`. La cible n'est connue
+    ///   qu'à l'exécution ; le module la cherche parmi ses propres blocs et ne
+    ///   rend la main que si elle n'en est pas.
+    ///
+    /// La distinction décide de l'architecture du bureau local, pas seulement
+    /// d'une optimisation : la RAM invitée **est** la mémoire linéaire du
+    /// module, dans le processus de contenu de WebKit. Ce qui reprend après un
+    /// retour de main doit pouvoir la lire. Un interpréteur qui vit ailleurs ne
+    /// le peut pas — et « ailleurs » comprend l'application elle-même.
+    pub fn survey(bytes: &[u8], entry: usize) -> Option<Survey> {
+        let blocks = Self::discover(bytes, entry)?;
+        let mut survey = Survey {
+            blocks: blocks.len(),
+            ..Default::default()
+        };
+        for (_, steps) in &blocks {
+            survey.instructions += steps.len();
+            for step in steps {
+                match step.op {
+                    Op::StringMove { repeat: true } | Op::StringStore { repeat: true } => {
+                        survey.always += 1;
+                        survey.repeats += 1;
+                    }
+                    Op::Undefined => survey.always += 1,
+                    Op::Return | Op::JumpIndirect | Op::CallIndirect => survey.perhaps += 1,
+                    _ => {}
+                }
+            }
+        }
+        Some(survey)
+    }
+
     fn discover(bytes: &[u8], entry: usize) -> Option<Vec<(usize, Vec<Decoded>)>> {
         let mut starts = std::collections::BTreeSet::new();
         let mut queue = vec![entry];

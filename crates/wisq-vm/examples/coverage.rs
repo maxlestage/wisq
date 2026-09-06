@@ -1,7 +1,7 @@
 // Combien du vrai noyau le compilateur accepte-t-il ?
 use std::fs;
 use wisq_vm::x86::{decode, Op};
-use wisq_vm::x86_wasm::Module;
+use wisq_vm::x86_wasm::{Module, Survey};
 
 fn main() {
     let path = std::env::args().nth(1).expect("le chemin du noyau");
@@ -139,4 +139,57 @@ fn main() {
         print!(" {why}×{n}");
     }
     println!();
+
+    // **Et ce que ces régions coûteront à l'hôte.**
+    //
+    // Le module ne va pas jusqu'au bout : il rend la main. La question n'est
+    // pas cosmétique, elle décide de l'architecture du bureau local — la RAM
+    // invitée **est** la mémoire linéaire du module, dans le processus de
+    // contenu de WebKit, et ce qui reprend après un retour de main doit
+    // pouvoir la lire. Un interpréteur qui vit dans l'application ne le peut
+    // pas.
+    //
+    // `rep` porte en plus une promesse écrite dans l'émetteur : « le jour où
+    // une mesure montrera que cette rentrée pèse, la boucle s'écrira ». Voici
+    // la mesure.
+    let mut total = Survey::default();
+    let mut regions = 0usize;
+    let mut with_repeat = 0usize;
+    for entry in entries.iter().take(20000) {
+        let end = limit.min(entry + 4096);
+        let Some(survey) = Module::survey(&bytes[*entry..end], 0) else {
+            continue;
+        };
+        regions += 1;
+        with_repeat += usize::from(survey.repeats > 0);
+        total.blocks += survey.blocks;
+        total.instructions += survey.instructions;
+        total.always += survey.always;
+        total.repeats += survey.repeats;
+        total.perhaps += survey.perhaps;
+    }
+    println!(
+        "forme des régions : {regions} régions, {} blocs, {} instructions \
+         ({:.1} instructions par bloc)",
+        total.blocks,
+        total.instructions,
+        total.instructions as f64 / total.blocks.max(1) as f64
+    );
+    println!(
+        "  rendent la main à coup sûr : {} ({:.2} % des instructions, une toutes les {:.0}) \
+         — dont {} `rep`",
+        total.always,
+        100.0 * total.always as f64 / total.instructions.max(1) as f64,
+        total.instructions as f64 / total.always.max(1) as f64,
+        total.repeats
+    );
+    println!(
+        "  régions contenant au moins un `rep` : {with_repeat} sur {regions} ({:.1} %)",
+        100.0 * with_repeat as f64 / regions.max(1) as f64
+    );
+    println!(
+        "  peuvent rendre la main (`ret`, `jmp *`, `call *`) : {} ({:.2} % des instructions)",
+        total.perhaps,
+        100.0 * total.perhaps as f64 / total.instructions.max(1) as f64
+    );
 }

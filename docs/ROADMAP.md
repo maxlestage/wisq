@@ -1960,10 +1960,86 @@ L'en-tête `include/wisq_vm.h` est écrit à la main, donc un programme C le
 compile et l'exécute à chaque commit — sur Linux, sans image de noyau, parce
 qu'un traducteur n'a aucune raison d'être sauté avec la machine.
 
-Ce qui manque encore pour le bureau : la boucle hôte côté Swift — créer la
-mémoire et les globales, appeler `run`, relire RIP, retraduire depuis là, et
-retomber sur l'interpréteur quand le module rend la main. **Rien de cette
-partie ne se vérifie depuis Linux.**
+Ce qui manque encore pour le bureau : la boucle hôte — créer la mémoire et les
+globales, appeler `run`, relire RIP, retraduire depuis là, et exécuter ce que
+le module refuse. **Rien de cette partie ne se vérifie depuis Linux.**
+
+### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
+
+La phrase écrite partout jusqu'ici était : « le module rend la main,
+l'interpréteur reprend là ». Elle sous-entend l'interpréteur de wisq, celui de
+`X86Machine`, en Swift. **Il ne peut pas.**
+
+La RAM invitée **est** la mémoire linéaire du module, adresse pour adresse —
+c'est le choix qui permet à deux régions compilées séparément de se passer la
+main sans recopier huit cents mégaoctets. Cette mémoire vit dans le processus
+de contenu de WebKit. Une application ne partage pas de mémoire avec lui : elle
+lui parle par messages. Ce qui reprend après un retour de main doit lire et
+écrire la RAM de l'invité ; un interpréteur qui vit dans l'application ne le
+peut pas, quel que soit le nombre de retours.
+
+**Ce constat ne dépend pas d'une fréquence**, et c'est ce qui le rend décisif :
+il tiendrait même à un retour par seconde. Le bureau local n'est donc pas
+« l'application qui pilote un module » mais **la machine qui vit dans la vue**,
+l'application fournissant l'image du noyau et recevant les pixels.
+
+### Ce que le vrai noyau dit du coût, et ce qu'il n'en dit pas
+
+`cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9914
+régions compilées depuis de vraies cibles de `call` du noyau Alpine :
+
+| Relevé | Valeur |
+| --- | --- |
+| Blocs, instructions | 249 339 blocs, 1 128 217 instructions |
+| Taille moyenne d'un bloc | **4,5 instructions** |
+| Rendent la main à coup sûr (`rep`, `ud2`) | 5048, soit **0,45 %** — une toutes les 223 |
+| dont des `rep` | **1533** |
+| Régions contenant au moins un `rep` | 883 sur 9914, soit **8,9 %** |
+| Peuvent rendre la main (`ret`, `jmp *`, `call *`) | 1986, soit 0,18 % |
+
+**Ce sont des comptes statiques, et il faut le dire avant de les lire.** Ils
+comptent des *emplacements* dans le code, pas des passages à l'exécution, et
+les deux ne se ressemblent pas : les `ud2` — les trois quarts des 5048 — sont
+les pièges de `BUG()` d'un noyau et ne s'exécutent essentiellement jamais,
+tandis qu'un seul `rep movsq` peut copier quatre kilooctets. Un `ret`, lui, ne
+sort de la région que si son appelant n'y est pas ; comme `discover` suit les
+`call` à déplacement fixe, une région enracinée sur une fonction contient son
+arbre d'appels, et seul le retour le plus externe sort.
+
+**La promesse écrite dans l'émetteur n'est donc pas tenue par ceci.** Elle dit :
+« le jour où une mesure montrera que cette rentrée pèse, la boucle s'écrira ».
+Une mesure de *poids* est dynamique, et elle demande une machine qui tourne —
+ce que ce dépôt n'a pas encore de ce côté. Ce qui est acquis : les `rep` sont
+dans 8,9 % des fonctions du noyau, ce sont les `memcpy` et les `memset`, et
+l'argument pour écrire la boucle est sérieux. Il n'est pas démontré.
+
+**Mais les deux constats de cette tranche, mis ensemble, en donnent un autre —
+et celui-là ne parle pas de vitesse.** Si le module rend la main sur `rep`, il
+faut que quelqu'un exécute ce `rep`, et ce quelqu'un doit lire la RAM invitée,
+donc vivre dans la vue. Il n'y a que deux façons :
+
+1. **écrire un exécuteur x86 en JavaScript** — un *quatrième* cœur, à côté de
+   l'interpréteur Rust, de l'émetteur et du cœur Swift. Ce dépôt a déjà payé
+   pour avoir oublié qu'il en avait trois : une tranche rouge, 336 désaccords ;
+2. **émettre la boucle du `rep` dans le module**, et n'avoir plus rien à
+   exécuter dehors.
+
+La seconde retire un cœur au lieu d'en ajouter un. La raison d'écrire la boucle
+n'est donc pas que la rentrée pèse — ça reste à mesurer — mais qu'elle **n'a
+nulle part où atterrir**. C'est la tranche suivante, et elle se vérifie
+entièrement d'ici : l'oracle matériel a déjà des programmes `rep`, les trois
+cœurs les comparent, et l'émetteur cesserait de rendre la main dessus.
+
+Reste `ud2`, qui rendra toujours la main — et c'est juste : une faute appartient
+à l'hôte, l'état est dans les globales, et rien n'a besoin de reprendre à
+l'intérieur. Restent `ret` et les sauts indirects vers l'inconnu, qui demandent
+une **traduction** de plus, pas une exécution : l'application traduit et renvoie
+le module. Aucun des deux n'exige un exécuteur dans la vue.
+
+Le 4,5 instructions par bloc ne contredit pas les 5,3 citées plus haut : celles-ci
+viennent d'un désassemblage linéaire, celui-là de graphes de blocs coupés à une
+fenêtre de 4 Kio, ce qui tronque les blocs du bord vers le bas. Deux mesures,
+deux définitions.
 
 Deux réserves écrites avec, parce qu'elles ne se verront pas sur l'écran de
 l'appareil. La sonde crée les **768 Mio** de RAM invitée que le module importe ;
