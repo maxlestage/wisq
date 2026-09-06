@@ -77,9 +77,19 @@ VALUES = [
     0xF0F0F0F0F0F0F0F0,
 ]
 
-# Les drapeaux d'entrée : rien, puis la retenue seule — ADC, SBB, RCL et RCR en
-# dépendent, et un cœur qui l'ignorerait passerait tous les autres cas.
-IN_FLAGS = [0x002, 0x003]
+# Les drapeaux d'entrée. Les deux premiers : rien, puis la retenue seule — ADC,
+# SBB, RCL et RCR en dépendent, et un cœur qui l'ignorerait passerait tous les
+# autres cas.
+#
+# **Les deux suivants existent parce que les deux premiers ne pouvaient pas
+# juger une préservation.** PF, AF, ZF et SF valaient zéro à l'entrée de chaque
+# cas du corpus. Or `not`, `mov`, `movzx`, `movsx` et les rotations déclarent
+# les préserver, et un décalage de compte nul aussi : un cœur qui les remettait
+# tous à zéro rendait exactement la même chose qu'un cœur qui les gardait. Un
+# sabotage l'a montré — écraser les quatre ne faisait tomber aucun cas.
+# Maintenant ils entrent à un, avec et sans retenue, et la préservation se
+# vérifie comme le reste : contre le silicium.
+IN_FLAGS = [0x002, 0x003, 0x8D6, 0x8D7]
 
 # Les six drapeaux de l'arithmétique : CF, PF, AF, ZF, SF, OF.
 CF, PF, AF, ZF, SF, OF = 0x001, 0x004, 0x010, 0x040, 0x080, 0x800
@@ -538,7 +548,13 @@ def main():
                       % (index, hexadecimal, defined_flags(text), text))
         for (instruction, _, index, state), verdict in zip(cases, answer):
             fields = verdict.split("\t")
-            after = [int(value, 16) for value in fields[18:]]
+            # **Dix-sept colonnes, pas « tout le reste ».** Après l'état de
+            # sortie viennent les deux fenêtres de mémoire et l'image x87, qui
+            # ne sont pas des nombres hexadécimaux simples. Les avaler avec le
+            # reste faisait échouer le script contre son propre binaire —
+            # « invalid literal for int() » sur une liste séparée par des
+            # virgules — et le corpus n'était plus régénérable du tout.
+            after = [int(value, 16) for value in fields[18:35]]
             # Ce qui n'était pas censé bouger n'a pas bougé : la vérification
             # qui autorise à ne garder que trois registres dans le fichier.
             # RBP et RSP sont exclus : les programmes qui posent un cadre de

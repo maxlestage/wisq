@@ -24,9 +24,10 @@ use crate::x86::{Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
 /// Huit octets par registre, seize registres, puis RFLAGS.
 pub const REGISTER_BYTES: usize = 8;
 pub const RFLAGS_OFFSET: usize = 16 * REGISTER_BYTES;
-/// Trois emplacements de travail après RFLAGS : la traduction s'en sert au lieu
+/// Les emplacements de travail après RFLAGS : la traduction s'en sert au lieu
 /// de variables locales, pour que la disposition mémoire soit la seule
-/// interface entre l'hôte et le module.
+/// interface entre l'hôte et le module. Il y en a six — le sixième porte le
+/// compte d'une rotation ramené dans la largeur.
 pub const SCRATCH_OFFSET: usize = RFLAGS_OFFSET + REGISTER_BYTES;
 
 /// L'entier non signé à longueur variable de WebAssembly.
@@ -88,6 +89,10 @@ mod code {
     pub const I64_SHR_S: u8 = 0x87;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LE_U: u8 = 0x58;
+    /// Le reste d'une division non signée. C'est ce qui ramène un compte de
+    /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
+    /// revient à le tourner d'un.
+    pub const I64_REM_U: u8 = 0x82;
     /// `select` prend deux valeurs et une condition, et rend la première quand
     /// la condition est vraie. C'est ce qui permet de traduire « un compte nul
     /// ne change rien » **sans branchement** : on calcule tout, puis on choisit.
@@ -219,6 +224,12 @@ impl Module {
             Self::shift(step, body);
             return Some(());
         }
+        // Les rotations ont leur propre traduction : elles ne posent que deux
+        // drapeaux, et les quatre autres doivent survivre intacts.
+        if matches!(step.op, Op::Rol | Op::Ror) {
+            Self::rotate(step, body);
+            return Some(());
+        }
 
         // **Les transferts ont deux largeurs et zéro drapeau.** Les faire
         // passer plus bas lirait la source à la largeur de la destination —
@@ -296,6 +307,7 @@ impl Module {
                 }
                 Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
                 Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
+                Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -513,16 +525,14 @@ impl Module {
         // **Un compte nul ne change aucun drapeau — mais il écrit quand même.**
         // C'est la règle qui manquait aux deux cœurs : `shll %cl, %eax` avec
         // `cl` à zéro laisse `eax` tel quel *et* efface les trente-deux bits
-        // de poids fort, parce que toute écriture 32 bits les efface. Le choix
-        // se fait donc sur la valeur, **avant** la règle de largeur, et pas sur
-        // le registre entier après coup.
-        body.store(Body::scratch(2), |b| {
-            b.load(Body::scratch(2));
-            b.load(Body::scratch(0));
-            b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
-            b.op(code::SELECT);
-        });
-
+        // de poids fort, parce que toute écriture 32 bits les efface. C'est
+        // l'écriture ci-dessous qui la tient : elle a lieu quel que soit le
+        // compte, avec la règle de largeur.
+        //
+        // Il y avait ici un `select` qui reprenait l'opérande quand le compte
+        // était nul. Un sabotage l'a retiré sans faire tomber un seul cas, et
+        // c'est juste : décaler de zéro un opérande déjà masqué **rend cet
+        // opérande**, pour les trois décalages. Le choix ne choisissait rien.
         if !step.discards {
             body.store(slot, |b| {
                 // Le nouveau contenu du registre, règle de largeur comprise.
@@ -677,7 +687,117 @@ impl Module {
             Op::Not => {}
             // Traités par `shift` et `transfer`, qui sortent avant d'arriver
             // ici. Les transferts, eux, ne posent **aucun** drapeau.
-            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx => {}
+            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx | Op::Rol | Op::Ror => {}
+        }
+    }
+
+    /// **Une rotation, traduite sans branchement.**
+    ///
+    /// Deux règles la séparent d'un décalage. La première : rien ne se perd,
+    /// donc le zéro, le signe et la parité du résultat ne disent rien de plus
+    /// que ceux de l'opérande — l'architecture les déclare **non affectés**, et
+    /// seuls CF et OF sont réécrits. La seconde : la retenue se lit sur le
+    /// **résultat**, pas sur un dernier bit sorti. C'est ce qui rend juste le
+    /// cas où le compte n'est pas nul mais le tour est complet : `rolb $8, %al`
+    /// laisse l'octet tel quel et pose quand même CF sur son bit bas.
+    fn rotate(step: &Decoded, body: &mut Body) {
+        let width = step.width;
+        let mask = width.mask();
+        let sign = width.sign();
+        let bits = width.bits();
+        let count_mask: u64 = if width == Width::Qword { 63 } else { 31 };
+
+        // scratch 0 : l'opérande. scratch 1 : le compte masqué.
+        body.store(Body::scratch(0), |b| {
+            Self::left(step, b);
+        });
+        body.store(Body::scratch(1), |b| {
+            if step.count_is_cl {
+                b.load(Self::slot(1));
+            } else {
+                b.constant(step.imm);
+            }
+            b.constant(count_mask).op(code::I64_AND);
+        });
+        // scratch 5 : le compte ramené dans la largeur.
+        body.store(Body::scratch(5), |b| {
+            b.load(Body::scratch(1)).constant(bits).op(code::I64_REM_U);
+        });
+
+        // scratch 2 : le résultat. Le décalage complémentaire vaut `bits` quand
+        // le tour est complet, et WebAssembly masque tout compte de décalage à
+        // six bits : pour une largeur plus courte que soixante-quatre l'opérande
+        // masqué rend zéro de ce côté, et pour soixante-quatre le masque ramène
+        // à zéro et rend l'opérande. Les deux cas tombent juste sans un test.
+        body.store(Body::scratch(2), |b| {
+            let (first, second) = match step.op {
+                Op::Rol => (code::I64_SHL, code::I64_SHR_U),
+                _ => (code::I64_SHR_U, code::I64_SHL),
+            };
+            b.load(Body::scratch(0)).load(Body::scratch(5)).op(first);
+            b.load(Body::scratch(0));
+            b.constant(bits).load(Body::scratch(5)).op(code::I64_SUB);
+            b.op(second);
+            b.op(code::I64_OR).constant(mask).op(code::I64_AND);
+        });
+
+        // scratch 3 : la retenue, lue **sur le résultat**.
+        body.store(Body::scratch(3), |b| match step.op {
+            Op::Rol => {
+                b.load(Body::scratch(2)).constant(1).op(code::I64_AND);
+            }
+            _ => {
+                b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+                b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+                b.constant(1).op(code::I64_XOR);
+            }
+        });
+
+        // scratch 4 : le débordement. Défini pour un cran seulement ; ailleurs
+        // le masque de l'oracle l'ignore.
+        body.store(Body::scratch(4), |b| {
+            // Le bit de tête du résultat, dans les deux cas.
+            b.load(Body::scratch(2)).constant(sign).op(code::I64_AND);
+            b.op(code::I64_EQZ).op(code::I64_EXTEND_I32_U);
+            b.constant(1).op(code::I64_XOR);
+            match step.op {
+                // À gauche : le désaccord entre ce bit et la retenue.
+                Op::Rol => {
+                    b.load(Body::scratch(3));
+                }
+                // À droite : le désaccord entre les deux bits de tête.
+                _ => {
+                    b.load(Body::scratch(2))
+                        .constant(bits - 2)
+                        .op(code::I64_SHR_U);
+                    b.constant(1).op(code::I64_AND);
+                }
+            }
+            b.op(code::I64_XOR);
+        });
+
+        // Les drapeaux : **CF et OF seulement**, et rien si le compte est nul.
+        body.store(RFLAGS_OFFSET, |b| {
+            b.load(RFLAGS_OFFSET).constant(!(CF | OF)).op(code::I64_AND);
+            b.load(Body::scratch(3))
+                .constant(CF.trailing_zeros() as u64);
+            b.op(code::I64_SHL).op(code::I64_OR);
+            b.load(Body::scratch(4)).constant(1).op(code::I64_AND);
+            b.constant(OF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+
+            b.load(RFLAGS_OFFSET);
+            b.load(Body::scratch(1)).constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+
+        // Un compte nul n'écrit aucun drapeau mais écrit bien la destination,
+        // et c'est l'écriture ci-dessous qui le tient. Pas de `select` sur la
+        // valeur : tourner de zéro rend l'opérande, et tourner d'un tour
+        // complet aussi.
+        if !step.discards {
+            Self::write_back(step, mask, body);
         }
     }
 

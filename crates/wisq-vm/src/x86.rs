@@ -281,6 +281,10 @@ pub enum Op {
     Mov,
     /// Un transfert **avec extension de signe** : `movsx`, et `movsxd`.
     Movsx,
+    /// Rotation à gauche. Rien ne sort : le bit du haut revient par le bas.
+    Rol,
+    /// Rotation à droite.
+    Ror,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -457,6 +461,70 @@ impl Cpu {
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
     /// ne sont pas calculés : on garde l'opération et ses opérandes, rien de
     /// plus.
+    /// **Une rotation, et les deux seuls drapeaux qu'elle touche.**
+    ///
+    /// 1. Le compte est masqué comme celui d'un décalage — cinq bits, six en
+    ///    soixante-quatre — puis **ramené modulo la largeur** : tourner un
+    ///    octet de neuf crans revient à le tourner d'un.
+    /// 2. Un compte masqué nul ne touche à rien, drapeaux compris. Mais un
+    ///    compte **non** nul dont le reste est nul touche quand même la
+    ///    retenue : `rolb $8, %al` rend l'octet inchangé et pose CF sur son
+    ///    bit bas. C'est pour ça que la retenue se lit sur le résultat et pas
+    ///    sur un « dernier bit sorti » qui n'existe pas ici.
+    /// 3. Seuls CF et OF bougent. PF, AF, ZF et SF sont préservés — une
+    ///    rotation ne change aucun bit, seulement leur place.
+    /// 4. Le débordement n'est défini que pour un cran.
+    fn rotate(&mut self, instruction: &Decoded, left: u64) {
+        let width = instruction.width;
+        let mask = width.mask();
+        let bits = width.bits();
+        let raw = if instruction.count_is_cl {
+            self.regs[1]
+        } else {
+            instruction.imm
+        };
+        let count = raw & if width == Width::Qword { 63 } else { 31 };
+        let value = left & mask;
+        if count == 0 {
+            // Comme pour un décalage : aucun drapeau, mais la destination est
+            // écrite, et une écriture 32 bits efface la moitié haute.
+            if !instruction.discards {
+                self.set(instruction.dst, width, instruction.dst_high, value);
+            }
+            return;
+        }
+
+        let turn = count % bits;
+        let result = match (turn, instruction.op) {
+            // Un tour complet : les bits sont revenus à leur place. Le
+            // décalage complémentaire vaudrait `bits`, que Rust refuse.
+            (0, _) => value,
+            (_, Op::Rol) => ((value << turn) | (value >> (bits - turn))) & mask,
+            _ => ((value >> turn) | (value << (bits - turn))) & mask,
+        };
+
+        let top = u64::from(result & width.sign() != 0);
+        let (carry, overflow) = if instruction.op == Op::Rol {
+            // À gauche, le bit sorti par le haut est rentré par le bas.
+            let carry = result & 1;
+            (carry, top ^ carry)
+        } else {
+            // À droite, il est rentré par le haut — et le débordement est le
+            // désaccord des deux bits de tête du résultat.
+            let second = (result >> (bits - 2)) & 1;
+            (top, top ^ second)
+        };
+
+        let mut flags = self.flags.read() & !(CF | OF);
+        flags |= carry * CF;
+        flags |= overflow * OF;
+        self.flags.write(flags);
+
+        if !instruction.discards {
+            self.set(instruction.dst, width, instruction.dst_high, result);
+        }
+    }
+
     /// **Un transfert, avec ou sans extension de signe.**
     ///
     /// Ce qui distingue cette famille du reste : elle a deux largeurs. La
@@ -509,6 +577,16 @@ impl Cpu {
             return;
         }
 
+        // **Une rotation ne perd rien et ne pose que deux drapeaux.** Le
+        // résultat a exactement les mêmes bits que l'opérande, dans un autre
+        // ordre : le zéro, le signe et la parité de l'un ne disent rien de
+        // l'autre, et l'architecture les déclare donc **non affectés**. Les
+        // recalculer les écraserait avec des valeurs plausibles et fausses.
+        if matches!(instruction.op, Op::Rol | Op::Ror) {
+            self.rotate(instruction, left);
+            return;
+        }
+
         let (result, op) = match instruction.op {
             Op::Add => (left.wrapping_add(right), FlagOp::Add),
             Op::Sub | Op::Cmp => (left.wrapping_sub(right), FlagOp::Sub),
@@ -537,6 +615,7 @@ impl Cpu {
             // aucune des règles de ce tableau.
             Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
             Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
+            Op::Rol | Op::Ror => unreachable!("les rotations sortent avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -923,10 +1002,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 4 | 6 => Op::Shl,
                 5 => Op::Shr,
                 7 => Op::Sar,
-                // Les rotations partagent l'opcode et pas la sémantique :
-                // elles ne touchent que la retenue et le débordement, et
-                // `rcl`/`rcr` tournent **à travers** la retenue. Les traduire
-                // comme un décalage serait faux en silence.
+                0 => Op::Rol,
+                1 => Op::Ror,
+                // `rcl` et `rcr` tournent **à travers** la retenue : leur
+                // rotation porte sur la largeur **plus un bit**, soixante-cinq
+                // pour un quadruple mot, ce qui ne tient pas dans un registre
+                // de la machine hôte. C'est une tranche à part, pas une
+                // variante — les traduire comme une rotation simple serait
+                // faux en silence.
                 _ => return None,
             };
             let (imm, immediate, count_is_cl) = match opcode {

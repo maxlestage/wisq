@@ -334,10 +334,10 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     );
     // **Le plancher monte avec chaque famille traduite.** Il ne dit pas
     // « c'est assez » : il dit « ne recule pas ». Les décalages ont ajouté
-    // soixante instructions au groupe arithmétique, les transferts trente-six
-    // de plus — huit cent soixante-quatre cas de silicium.
+    // soixante instructions au groupe arithmétique, les transferts trente-six,
+    // les rotations simples quarante — neuf cent soixante cas de plus.
     assert!(
-        checked > 4700,
+        checked > 5700,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }

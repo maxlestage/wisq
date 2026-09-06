@@ -244,7 +244,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 4700,
+        checked > 5700,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
 }
