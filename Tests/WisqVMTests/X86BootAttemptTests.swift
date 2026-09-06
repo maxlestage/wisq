@@ -131,6 +131,24 @@ final class X86BootAttemptTests: XCTestCase {
             memory.storage = disk
             memory.bus = X86PCIHost(storage: disk)
         }
+        // **Un écran, quand on en demande un.** `WISQ_PC_DISPLAY=1024x768`
+        // arme le cadre linéaire. C'est le témoin de la tranche : on ne
+        // vérifie pas des pixels, on lit ce que le noyau **dit** de l'écran
+        // dans son propre journal. Un cadre correctement déclaré fait parler
+        // `sysfb` ou `simpledrm` ; un cadre mal déclaré est ignoré en silence,
+        // et le silence est justement ce qu'aucune assertion sur la page zéro
+        // ne peut distinguer d'un succès.
+        var screen: X86BootLoader.Framebuffer?
+        if let asked = ProcessInfo.processInfo.environment["WISQ_PC_DISPLAY"] {
+            let parts = asked.lowercased().split(separator: "x")
+            let width = parts.count == 2 ? Int(parts[0]) ?? 1024 : 1024
+            let height = parts.count == 2 ? Int(parts[1]) ?? 768 : 768
+            let frame = X86Framebuffer(base: X86Machine.displayBase, width: width, height: height)
+            memory.screen = frame
+            screen = X86BootLoader.Framebuffer(
+                base: frame.base, width: frame.width, height: frame.height)
+        }
+
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
         // défaut plutôt que de la remplacer : la console série en fait partie,
         // et une mesure qui la perdrait ne dirait plus rien du tout.
@@ -139,7 +157,7 @@ final class X86BootAttemptTests: XCTestCase {
             .compactMap { $0 }.joined(separator: " ")
         let placement = try X86BootLoader.load(
             kernel: [UInt8](data), into: memory, commandLine: commandLine,
-            initialRamdisk: ramdisk)
+            initialRamdisk: ramdisk, framebuffer: screen)
 
         // Les tables, hors du chemin du noyau et de la page zéro.
         let pml4: UInt64 = 0x5_0000
