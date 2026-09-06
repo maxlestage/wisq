@@ -84,6 +84,11 @@ struct Oracle {
     states: HashMap<String, (u64, u64, u64, u64)>,
     instructions: HashMap<String, (Vec<u8>, u64, String)>,
     cases: Vec<Case>,
+    /// **Ce que le silicium avait dans les registres que « état » ne porte
+    /// pas.** Les laisser à zéro rendait ce harnais faux en silence : il
+    /// tombait juste tant qu'aucune instruction traduite n'en lisait un, et
+    /// `movzbl %bh, %eax` lit RBX.
+    fixed: [u64; 16],
 }
 
 fn hex(text: &str) -> u64 {
@@ -97,7 +102,9 @@ fn read_oracle() -> Oracle {
         states: HashMap::new(),
         instructions: HashMap::new(),
         cases: Vec::new(),
+        fixed: [0; 16],
     };
+    let mut seeded = 0usize;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -108,6 +115,11 @@ fn read_oracle() -> Oracle {
                 oracle
                     .states
                     .insert(f[1].into(), (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])));
+            }
+            "fixe" => {
+                let register: usize = f[1].parse().expect("un numéro de registre");
+                oracle.fixed[register] = hex(f[2]);
+                seeded += 1;
             }
             "instr" => {
                 let bytes = (0..f[2].len() / 2)
@@ -128,6 +140,10 @@ fn read_oracle() -> Oracle {
             _ => {}
         }
     }
+    assert_eq!(
+        seeded, 13,
+        "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
+    );
     oracle
 }
 
@@ -224,8 +240,17 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             if position > 0 {
                 jobs.push(',');
             }
+            // Les treize registres fixes sont posés **avant** les trois de
+            // l'état, pour qu'un chevauchement futur soit décidé par l'état
+            // et pas par l'ordre d'écriture d'un objet JSON.
+            let mut regs = String::new();
+            for (slot, value) in oracle.fixed.iter().enumerate() {
+                if *value != 0 {
+                    regs.push_str(&format!("\"{slot}\":\"{value:x}\","));
+                }
+            }
             jobs.push_str(&format!(
-                "{{\"id\":{id:?},\"regs\":{{\"0\":\"{rax:x}\",\"1\":\"{rcx:x}\",\
+                "{{\"id\":{id:?},\"regs\":{{{regs}\"0\":\"{rax:x}\",\"1\":\"{rcx:x}\",\
                  \"2\":\"{rdx:x}\",\"{flags_slot}\":\"{flags:x}\"}}}}"
             ));
             expected.insert(
@@ -308,11 +333,11 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             .join("\n")
     );
     // **Le plancher monte avec chaque famille traduite.** Il ne dit pas
-    // « c'est assez » : il dit « ne recule pas ». Les décalages ajoutent
-    // soixante instructions au groupe arithmétique, soit environ mille quatre
-    // cents cas de silicium de plus.
+    // « c'est assez » : il dit « ne recule pas ». Les décalages ont ajouté
+    // soixante instructions au groupe arithmétique, les transferts trente-six
+    // de plus — huit cent soixante-quatre cas de silicium.
     assert!(
-        checked > 3400,
+        checked > 4700,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }

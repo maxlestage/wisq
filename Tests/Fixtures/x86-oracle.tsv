@@ -5,6 +5,25 @@
 # cas	<instr>	<état>	<rax>	<rcx>	<rdx>	<drapeaux>	<mémoire>
 #   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;
 #   la pile de l'invité descend depuis 0x30003000
+# fixe	<registre>	<valeur>	<nom>  — ce que le silicium avait dans les
+#   treize registres que « état » ne porte pas. Le fichier n'en gardait que
+#   trois parce qu'aucune instruction relevée n'en écrivait d'autres ; ça ne
+#   dit rien de ce qu'elles **lisent**, et `movzbl %bh, %eax` lit RBX. Un
+#   harnais qui part de zéro compare alors son résultat à celui d'un
+#   processeur qui, lui, partait d'ici.
+fixe	3	aaaaaaaaaaaaaaad	rbx
+fixe	4	30003000	rsp
+fixe	5	aaaaaaaaaaaaaaaf	rbp
+fixe	6	30001000	rsi
+fixe	7	aaaaaaaaaaaaaab1	rdi
+fixe	8	aaaaaaaaaaaaaab2	r8
+fixe	9	aaaaaaaaaaaaaab3	r9
+fixe	10	aaaaaaaaaaaaaab4	r10
+fixe	11	aaaaaaaaaaaaaab5	r11
+fixe	12	aaaaaaaaaaaaaab6	r12
+fixe	13	aaaaaaaaaaaaaab7	r13
+fixe	14	aaaaaaaaaaaaaab8	r14
+fixe	15	aaaaaaaaaaaaaab9	r15
 état	0	0	f0f0f0f0f0f0f0f0	f0f0f0f0f0f0f0f0	0
 état	1	1	123456789abcdef	123456789abcdef	1
 état	2	7f	ffffffffffffffff	ffffffffffffffff	0

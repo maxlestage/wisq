@@ -514,6 +514,22 @@ def main():
         out.write("# cas\t<instr>\t<état>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\t<mémoire>\n")
         out.write("#   la mémoire est la fenêtre de 64 octets à 0x30001000, où pointe RSI ;\n")
         out.write("#   la pile de l'invité descend depuis 0x30003000\n")
+        out.write("# fixe\t<registre>\t<valeur>\t<nom>  — ce que le silicium avait dans les\n")
+        out.write("#   treize registres que « état » ne porte pas. Le fichier n'en gardait que\n")
+        out.write("#   trois parce qu'aucune instruction relevée n'en écrivait d'autres ; ça ne\n")
+        out.write("#   dit rien de ce qu'elles **lisent**, et `movzbl %bh, %eax` lit RBX. Un\n")
+        out.write("#   harnais qui part de zéro compare alors son résultat à celui d'un\n")
+        out.write("#   processeur qui, lui, partait d'ici.\n")
+        # **Les registres que « état » ne porte pas.** La vérification plus bas
+        # prouve qu'ils ne *bougent* pas ; elle ne dit rien de leur valeur de
+        # départ, et une instruction qui les lit a besoin de celle-là.
+        # RSP ne vient pas de `states()` : c'est `oracle.c` qui le pose sur la
+        # pile de l'invité, juste avant de lancer le code.
+        start = list(next(states()))
+        start[4] = STACK
+        for register in range(3, 16):
+            out.write("fixe\t%d\t%x\t%s\n"
+                      % (register, start[register], REGISTERS[register]))
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))

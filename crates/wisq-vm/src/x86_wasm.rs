@@ -220,6 +220,15 @@ impl Module {
             return Some(());
         }
 
+        // **Les transferts ont deux largeurs et zéro drapeau.** Les faire
+        // passer plus bas lirait la source à la largeur de la destination —
+        // `movzbq %cl, %rax` rendrait `rcx` entier — et poserait des drapeaux
+        // que le processeur laisse intacts.
+        if matches!(step.op, Op::Mov | Op::Movsx) {
+            Self::transfer(step, body);
+            return Some(());
+        }
+
         let mask = step.width.mask();
         let sign = step.width.sign();
 
@@ -286,6 +295,7 @@ impl Module {
                         .op(code::I64_XOR);
                 }
                 Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
+                Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
             }
             b.constant(mask).op(code::I64_AND);
         });
@@ -665,9 +675,37 @@ impl Module {
                 b.constant(shift_to(OF)).op(code::I64_SHL).op(code::I64_OR);
             }
             Op::Not => {}
-            // Traités par `shift`, qui sort avant d'arriver ici.
-            Op::Shl | Op::Shr | Op::Sar => {}
+            // Traités par `shift` et `transfer`, qui sortent avant d'arriver
+            // ici. Les transferts, eux, ne posent **aucun** drapeau.
+            Op::Shl | Op::Shr | Op::Sar | Op::Mov | Op::Movsx => {}
         }
+    }
+
+    /// **Un transfert : lire à une largeur, écrire à une autre.**
+    ///
+    /// L'extension de signe se fait sans branchement, par le tour classique :
+    /// décaler à gauche pour amener le bit de signe en position 63, puis
+    /// décaler à droite **arithmétiquement**. WebAssembly n'a pas d'opérateur
+    /// « étendre en signe depuis n bits » pour une largeur quelconque, mais il
+    /// a `i64.shr_s`, et deux décalages font le même travail sans test.
+    fn transfer(step: &Decoded, body: &mut Body) {
+        body.store(Body::scratch(2), |b| {
+            b.load(Self::slot(step.src));
+            if step.src_high {
+                b.constant(8).op(code::I64_SHR_U);
+            }
+            b.constant(step.src_width.mask()).op(code::I64_AND);
+            if step.op == Op::Movsx {
+                let spare = 64 - step.src_width.bits();
+                if spare != 0 {
+                    b.constant(spare).op(code::I64_SHL);
+                    b.constant(spare).op(code::I64_SHR_S);
+                }
+            }
+        });
+        // La règle d'écriture est celle de tout le monde : une destination de
+        // 32 bits efface la moitié haute, une de 8 ou 16 préserve le reste.
+        Self::write_back(step, step.width.mask(), body);
     }
 
     /// **La règle que tout le monde oublie** : une écriture 32 bits efface les

@@ -61,15 +61,27 @@ fn bytes(text: &str) -> Vec<u8> {
         .collect()
 }
 
-fn read_oracle() -> (
-    HashMap<String, State>,
-    HashMap<String, Instruction>,
-    Vec<Case>,
-) {
+/// Le fichier, relu. Une structure plutôt qu'un quadruplet : la quatrième
+/// valeur — l'état de départ du silicium — n'est pas devinable depuis sa
+/// position, et un tuple à quatre membres la rendrait facile à intervertir.
+struct Oracle {
+    states: HashMap<String, State>,
+    instructions: HashMap<String, Instruction>,
+    cases: Vec<Case>,
+    fixed: [u64; 16],
+}
+
+fn read_oracle() -> Oracle {
     let text = std::fs::read_to_string(oracle_path()).expect("l'oracle matériel doit être lisible");
     let mut states = HashMap::new();
     let mut instructions = HashMap::new();
     let mut cases = Vec::new();
+    // **Ce que le silicium avait dans les registres que « état » ne porte
+    // pas.** Rien ici ne peut être deviné : le fichier le dit, et s'il ne le
+    // disait pas ce harnais comparerait son résultat à celui d'un processeur
+    // parti d'ailleurs.
+    let mut fixed = [0u64; 16];
+    let mut seeded = 0usize;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -97,6 +109,11 @@ fn read_oracle() -> (
                     },
                 );
             }
+            "fixe" => {
+                let register: usize = field[1].parse().expect("un numéro de registre");
+                fixed[register] = hex(field[2]);
+                seeded += 1;
+            }
             "cas" => cases.push(Case {
                 instruction: field[1].to_string(),
                 state: field[2].to_string(),
@@ -108,7 +125,20 @@ fn read_oracle() -> (
             _ => {}
         }
     }
-    (states, instructions, cases)
+    // **Sans ces lignes, le harnais serait faux en silence** : il partirait de
+    // zéro et tomberait juste tant qu'aucune instruction acceptée ne lit un
+    // de ces treize registres. C'est exactement ce qui s'est passé jusqu'à
+    // `movzbl %bh, %eax`.
+    assert_eq!(
+        seeded, 13,
+        "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
+    );
+    Oracle {
+        states,
+        instructions,
+        cases,
+        fixed,
+    }
 }
 
 /// Décoder une séquence entière, ou rien. Un décodage partiel n'est pas une
@@ -135,7 +165,12 @@ fn decode_all(bytes: &[u8]) -> Option<Vec<Decoded>> {
 /// instruction **acceptée** rende exactement ce que le silicium a rendu.
 #[test]
 fn every_accepted_instruction_matches_the_silicon() {
-    let (states, instructions, cases) = read_oracle();
+    let Oracle {
+        states,
+        instructions,
+        cases,
+        fixed,
+    } = read_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<&str> = Vec::new();
     let mut wrong: Vec<String> = Vec::new();
@@ -154,7 +189,10 @@ fn every_accepted_instruction_matches_the_silicon() {
             continue;
         };
 
-        let mut cpu = Cpu::default();
+        let mut cpu = Cpu {
+            regs: fixed,
+            ..Default::default()
+        };
         cpu.regs[0] = state.rax;
         cpu.regs[1] = state.rcx;
         cpu.regs[2] = state.rdx;
@@ -206,7 +244,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 1500,
+        checked > 4700,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
 }

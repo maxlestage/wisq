@@ -45,6 +45,12 @@ impl Width {
         }
     }
 
+    /// Le nombre de bits. L'énumération porte des octets ; la confusion entre
+    /// les deux donne des décalages huit fois trop courts.
+    pub const fn bits(self) -> u64 {
+        self as u64 * 8
+    }
+
     /// Le bit de signe.
     pub const fn sign(self) -> u64 {
         match self {
@@ -268,6 +274,13 @@ pub enum Op {
     Shr,
     /// Décalage à droite **arithmétique** : le bit de signe se recopie.
     Sar,
+    /// Un transfert **sans extension de signe**. Couvre `mov` et `movzx` d'un
+    /// seul bras, et ce n'est pas un raccourci : étendre par zéro une valeur
+    /// déjà de la largeur de destination ne fait rien, donc `movl %ecx, %eax`
+    /// et `movzbl %cl, %eax` sont la même opération à la largeur source près.
+    Mov,
+    /// Un transfert **avec extension de signe** : `movsx`, et `movsxd`.
+    Movsx,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -300,6 +313,14 @@ pub struct Decoded {
     /// tiré des octets hauts de `rcx` — juste tant que `rcx` est petit, faux
     /// dès qu'il ne l'est plus.
     pub count_is_cl: bool,
+    /// **La largeur de la source, quand elle diffère de la destination.**
+    ///
+    /// Une seule largeur suffit à tout le reste du jeu : `add %cl, %al` lit et
+    /// écrit un octet. `movzbl %cl, %eax` lit un octet et en écrit quatre, et
+    /// c'est toute la raison d'être de l'instruction. Confondre les deux
+    /// rendrait `movzbq` identique à `movq` — juste tant que le registre
+    /// source tient sur un octet, faux dès qu'il déborde.
+    pub src_width: Width,
 }
 
 impl Cpu {
@@ -436,6 +457,29 @@ impl Cpu {
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
     /// ne sont pas calculés : on garde l'opération et ses opérandes, rien de
     /// plus.
+    /// **Un transfert, avec ou sans extension de signe.**
+    ///
+    /// Ce qui distingue cette famille du reste : elle a deux largeurs. La
+    /// source est lue à `src_width`, la destination écrite à `width`, et
+    /// c'est l'écart entre les deux qui fait tout le travail de `movzx` et
+    /// `movsx`. La règle d'écriture ne change pas — une destination de 32 bits
+    /// efface toujours la moitié haute du registre.
+    fn transfer(&mut self, instruction: &Decoded) {
+        let source = self.get(instruction.src, instruction.src_width, instruction.src_high);
+        let value = match instruction.op {
+            Op::Movsx => sign_extend(source, instruction.src_width),
+            // `mov` et `movzx` : la valeur est déjà masquée par la lecture, et
+            // les bits hauts de la destination valent zéro.
+            _ => source,
+        };
+        self.set(
+            instruction.dst,
+            instruction.width,
+            instruction.dst_high,
+            value,
+        );
+    }
+
     pub fn execute(&mut self, instruction: &Decoded) {
         let width = instruction.width;
         let left = self.get(instruction.dst, width, instruction.dst_high);
@@ -452,6 +496,16 @@ impl Cpu {
         // des opérations à deux opérandes donnerait quatre règles fausses.
         if matches!(instruction.op, Op::Shl | Op::Shr | Op::Sar) {
             self.shift(instruction, left);
+            return;
+        }
+
+        // **Un transfert ne touche à aucun drapeau**, et il lit sa source à
+        // une largeur qui n'est pas forcément celle de l'écriture. Les deux
+        // raisons suffisent à le sortir du moule : la machinerie ci-dessous
+        // pose des drapeaux à chaque passage, et lit ses deux opérandes à la
+        // largeur de l'instruction.
+        if matches!(instruction.op, Op::Mov | Op::Movsx) {
+            self.transfer(instruction);
             return;
         }
 
@@ -482,6 +536,7 @@ impl Cpu {
             // Traités plus haut : leur retenue et leur débordement ne suivent
             // aucune des règles de ce tableau.
             Op::Shl | Op::Shr | Op::Sar => unreachable!("les décalages sortent avant"),
+            Op::Mov | Op::Movsx => unreachable!("les transferts sortent avant"),
             // `not` est la seule du groupe qui ne touche à aucun drapeau.
             Op::Not => (!left, FlagOp::Known),
         };
@@ -627,6 +682,50 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     let opcode = *bytes.get(at)?;
     at += 1;
 
+    // **La deuxième page.** 0x0F n'est pas une instruction, c'est une bascule :
+    // l'octet suivant recommence une grille entière. La confondre avec un
+    // opcode ferait décoder l'octet d'après comme un ModRM, et le décodeur
+    // rendrait une instruction plausible et fausse.
+    if opcode == 0x0f {
+        let second = *bytes.get(at)?;
+        at += 1;
+        return match second {
+            // `movzx` et `movsx` : la source est un octet (B6/BE) ou un mot
+            // (B7/BF), la destination a la largeur que les préfixes donnent.
+            0xb6 | 0xb7 | 0xbe | 0xbf => {
+                let src_width = if second & 1 == 0 {
+                    Width::Byte
+                } else {
+                    Width::Word
+                };
+                let width = prefixes.width(false);
+                let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: if second < 0xbe { Op::Mov } else { Op::Movsx },
+                    width,
+                    // La destination est le champ `reg`, la source le `rm` :
+                    // l'inverse de la grille arithmétique en forme 0.
+                    dst: reg,
+                    src: prefixes.normalise_high(rm, src_width),
+                    imm: 0,
+                    immediate: false,
+                    discards: false,
+                    length: at,
+                    // La destination fait au moins deux octets : elle ne peut
+                    // pas être un registre d'octet haut.
+                    dst_high: false,
+                    // **Le registre haut se juge à la largeur de la source**,
+                    // pas à celle de l'instruction. `movzbl %ah, %eax` est une
+                    // opération de 32 bits dont la source est `%ah`.
+                    src_high: prefixes.high_byte(rm, src_width),
+                    count_is_cl: false,
+                    src_width,
+                })
+            }
+            _ => None,
+        };
+    }
+
     // La grille arithmétique : huit opérations, six formes chacune.
     if opcode < 0x40 && (opcode & 0b111) < 6 {
         let op = GRID[(opcode >> 3) as usize];
@@ -649,6 +748,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: false,
                 src_high: false,
                 count_is_cl: false,
+                src_width: width,
             });
         }
 
@@ -667,10 +767,55 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             dst_high: prefixes.high_byte(dst, width),
             src_high: prefixes.high_byte(src, width),
             count_is_cl: false,
+            src_width: width,
         });
     }
 
     match opcode {
+        // `mov` d'un registre vers un autre. Seule la forme « registre vers
+        // r/m » est ici : la forme inverse (0x8A/0x8B) lit une source `rm` qui,
+        // en mode registre, donne exactement les mêmes couples — l'oracle ne la
+        // relève pas, et l'ajouter sans cas pour la juger serait du code que
+        // rien ne tient.
+        0x88 | 0x89 => {
+            let width = prefixes.width(opcode == 0x88);
+            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            Some(Decoded {
+                op: Op::Mov,
+                width,
+                dst: prefixes.normalise_high(rm, width),
+                src: prefixes.normalise_high(reg, width),
+                imm: 0,
+                immediate: false,
+                discards: false,
+                length: at,
+                dst_high: prefixes.high_byte(rm, width),
+                src_high: prefixes.high_byte(reg, width),
+                count_is_cl: false,
+                src_width: width,
+            })
+        }
+        // `movsxd` : quatre octets lus, étendus en signe vers la destination.
+        // Sans REX.W la destination fait aussi 32 bits et l'instruction ne
+        // fait plus rien d'observable ; c'est quand même le même chemin.
+        0x63 => {
+            let width = prefixes.width(false);
+            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            Some(Decoded {
+                op: Op::Movsx,
+                width,
+                dst: reg,
+                src: rm,
+                imm: 0,
+                immediate: false,
+                discards: false,
+                length: at,
+                dst_high: false,
+                src_high: false,
+                count_is_cl: false,
+                src_width: Width::Dword,
+            })
+        }
         // Groupe 1 : l'opération est dans le champ `reg` du ModRM.
         0x80 | 0x81 | 0x83 => {
             let width = prefixes.width(opcode == 0x80);
@@ -690,6 +835,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
+                src_width: width,
             })
         }
         // `test` entre deux registres.
@@ -708,6 +854,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: prefixes.high_byte(reg, width),
                 count_is_cl: false,
+                src_width: width,
             })
         }
         // `test` sur l'accumulateur.
@@ -726,6 +873,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: false,
                 src_high: false,
                 count_is_cl: false,
+                src_width: width,
             })
         }
         // Groupe 3 : `test`, `not`, `neg` — et les multiplications et
@@ -757,6 +905,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
+                src_width: width,
             })
         }
         // **Groupe 2 : les décalages.** Trois sources pour le compte, et c'est
@@ -805,6 +954,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl,
+                src_width: width,
             })
         }
         // Groupes 4 et 5 : `inc` et `dec`.
@@ -828,10 +978,24 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst_high: prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
+                src_width: width,
             })
         }
         _ => None,
     }
+}
+
+/// Étendre en signe une valeur déjà masquée à sa largeur.
+///
+/// La valeur arrive **propre** : `get` l'a masquée. Il ne reste donc qu'à
+/// recopier le bit de signe vers le haut, et pour une source de 64 bits il n'y
+/// a rien à recopier — le masque complémentaire est nul.
+fn sign_extend(value: u64, width: Width) -> u64 {
+    let sign = width.sign();
+    if value & sign == 0 {
+        return value;
+    }
+    value | !width.mask()
 }
 
 /// Le ModRM, **mode registre seulement**. Une adresse mémoire est refusée
