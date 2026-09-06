@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use wisq_vm::x86::{decode, Cpu, Decoded, Flags};
+use wisq_vm::x86::{decode, Cpu, Decoded, Flags, GuestMemory};
 
 fn oracle_path() -> PathBuf {
     // CARGO_MANIFEST_DIR est crates/wisq-vm.
@@ -49,6 +49,15 @@ struct Case {
     rcx: u64,
     rdx: u64,
     flags: u64,
+    /// La fenêtre de données après l'instruction, ou rien quand elle n'a pas
+    /// bougé — le corpus écrit « - » dans ce cas, et la plupart des
+    /// instructions ne la touchent pas.
+    memory: Option<Vec<u8>>,
+}
+
+/// Des octets, pour un message d'écart lisible.
+fn hexadecimal(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn hex(text: &str) -> u64 {
@@ -69,6 +78,11 @@ struct Oracle {
     instructions: HashMap<String, Instruction>,
     cases: Vec<Case>,
     fixed: [u64; 16],
+    /// L'adresse de la fenêtre de données, et le motif dont elle part à chaque
+    /// cas. Lus dans le fichier, jamais devinés — même leçon que les registres
+    /// fixes, et elle a coûté 144 cas la première fois.
+    window: u64,
+    pristine: Vec<u8>,
 }
 
 fn read_oracle() -> Oracle {
@@ -82,6 +96,8 @@ fn read_oracle() -> Oracle {
     // parti d'ailleurs.
     let mut fixed = [0u64; 16];
     let mut seeded = 0usize;
+    let mut window = 0u64;
+    let mut pristine: Vec<u8> = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -98,6 +114,10 @@ fn read_oracle() -> Oracle {
                         flags: hex(field[5]),
                     },
                 );
+            }
+            "fenêtre" => {
+                window = hex(field[1]);
+                pristine = bytes(field[2]);
             }
             "instr" => {
                 instructions.insert(
@@ -121,6 +141,10 @@ fn read_oracle() -> Oracle {
                 rcx: hex(field[4]),
                 rdx: hex(field[5]),
                 flags: hex(field[6]),
+                memory: match field.get(7) {
+                    Some(&"-") | None => None,
+                    Some(text) => Some(bytes(text)),
+                },
             }),
             _ => {}
         }
@@ -133,11 +157,17 @@ fn read_oracle() -> Oracle {
         seeded, 13,
         "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
     );
+    assert!(
+        !pristine.is_empty(),
+        "l'oracle doit déclarer la fenêtre de données et son motif"
+    );
     Oracle {
         states,
         instructions,
         cases,
         fixed,
+        window,
+        pristine,
     }
 }
 
@@ -170,6 +200,8 @@ fn every_accepted_instruction_matches_the_silicon() {
         instructions,
         cases,
         fixed,
+        window,
+        pristine,
     } = read_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<&str> = Vec::new();
@@ -191,6 +223,10 @@ fn every_accepted_instruction_matches_the_silicon() {
 
         let mut cpu = Cpu {
             regs: fixed,
+            memory: GuestMemory {
+                base: window,
+                bytes: pristine.clone(),
+            },
             ..Default::default()
         };
         cpu.regs[0] = state.rax;
@@ -208,18 +244,46 @@ fn every_accepted_instruction_matches_the_silicon() {
         let got = (cpu.regs[0], cpu.regs[1], cpu.regs[2], cpu.flags.read());
         let want = (case.rax, case.rcx, case.rdx, case.flags);
         let mask = instruction.defined;
-        if got.0 != want.0
+        // **La fenêtre compte autant que les registres.** Une écriture au
+        // mauvais endroit laisse les trois registres justes, et c'est
+        // exactement le genre de faute qu'un cœur peut porter longtemps.
+        let expected_memory = case.memory.as_ref().unwrap_or(&pristine);
+        if cpu.faulted
+            || &cpu.memory.bytes != expected_memory
+            || got.0 != want.0
             || got.1 != want.1
             || got.2 != want.2
             || (got.3 & mask) != (want.3 & mask)
         {
             if wrong.len() < 12 {
                 wrong.push(format!(
-                    "{} état {} : rax {:x}≠{:x} rcx {:x}≠{:x} rdx {:x}≠{:x} drapeaux {:x}≠{:x} (masque {:x})",
+                    "{} état {} : rax {:x}≠{:x} rcx {:x}≠{:x} rdx {:x}≠{:x} \
+                     drapeaux {:x}≠{:x} (masque {:x}){}{}",
                     instruction.mnemonic,
                     case.state,
-                    got.0, want.0, got.1, want.1, got.2, want.2,
-                    got.3 & mask, want.3 & mask, mask,
+                    got.0,
+                    want.0,
+                    got.1,
+                    want.1,
+                    got.2,
+                    want.2,
+                    got.3 & mask,
+                    want.3 & mask,
+                    mask,
+                    if cpu.faulted {
+                        " — accès hors de la fenêtre"
+                    } else {
+                        ""
+                    },
+                    if &cpu.memory.bytes != expected_memory {
+                        format!(
+                            "\n  mémoire {}\n       ≠ {}",
+                            hexadecimal(&cpu.memory.bytes),
+                            hexadecimal(expected_memory)
+                        )
+                    } else {
+                        String::new()
+                    },
                 ));
             } else {
                 wrong.push(String::new());
@@ -244,7 +308,7 @@ fn every_accepted_instruction_matches_the_silicon() {
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
     assert!(
-        checked > 6200,
+        checked > 7600,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne
@@ -253,8 +317,8 @@ fn every_accepted_instruction_matches_the_silicon() {
     // SIB sans base faisait refuser les deux formes concernées, et le test
     // restait vert. Ce nombre-là ne doit donc jamais monter.
     assert!(
-        refused.len() <= 146,
-        "le décodeur refuse maintenant {} instructions au lieu de 146 : \
+        refused.len() <= 142,
+        "le décodeur refuse maintenant {} instructions au lieu de 142 : \
          quelque chose qu'il savait lire ne se décode plus\n{}",
         refused.len(),
         refused.join("\n")

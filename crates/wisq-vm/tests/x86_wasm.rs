@@ -50,6 +50,8 @@ const DRIVER: &str = r#"
 const fs = require("fs");
 const job = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const out = {};
+const pristine = Uint8Array.from(
+  job.pristine.match(/../g).map(pair => parseInt(pair, 16)));
 for (const unit of job.jobs) {
   const bytes = fs.readFileSync(unit.module);
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
@@ -59,19 +61,33 @@ for (const unit of job.jobs) {
   for (let slot = 0; instance.exports["g" + slot]; slot++) {
     slots.push(instance.exports["g" + slot]);
   }
+  const guest = new Uint8Array(instance.exports.mem.buffer);
   for (const test of unit.cases) {
     // Remettre à zéro : un résidu du cas précédent ferait lire à une
     // instruction un registre que l'oracle n'a pas posé.
     for (const global of slots) { global.value = 0n; }
+    // Et remettre la fenêtre de données dans son motif d'origine, pour la même
+    // raison : le silicium la reçoit propre à chaque cas.
+    guest.set(pristine, job.window);
     for (const [slot, value] of Object.entries(test.regs)) {
       slots[Number(slot)].value = BigInt("0x" + value);
     }
-    instance.exports.run();
+    try {
+      instance.exports.run();
+    } catch (error) {
+      // **Dire lequel.** Sans le nom du cas, « Out of bounds memory access »
+      // ne désigne rien : il y a des centaines de modules dans un tour.
+      throw new Error(test.id + " (" + unit.module + ") : " + error.message);
+    }
     // **Une globale i64 se lit en BigInt signé.** `BigUint64Array` masquait
     // ce détail : ici, un registre à tous les bits à un rend -1n, qui s'écrit
     // « -1 » en hexadécimal et n'est plus un nombre pour personne.
-    out[test.id] = [0, 1, 2, job.flagsSlot]
-      .map(s => BigInt.asUintN(64, slots[s].value).toString(16));
+    out[test.id] = {
+      regs: [0, 1, 2, job.flagsSlot]
+        .map(s => BigInt.asUintN(64, slots[s].value).toString(16)),
+      memory: [...guest.subarray(job.window, job.window + pristine.length)]
+        .map(b => b.toString(16).padStart(2, "0")).join(""),
+    };
   }
 }
 fs.writeFileSync(process.argv[3], JSON.stringify(out));
@@ -87,6 +103,9 @@ struct Case {
     rcx: u64,
     rdx: u64,
     flags: u64,
+    /// La fenêtre de données après l'instruction, ou rien quand elle n'a pas
+    /// bougé — le corpus écrit « - » dans ce cas.
+    memory: Option<Vec<u8>>,
 }
 
 struct Oracle {
@@ -98,6 +117,16 @@ struct Oracle {
     /// tombait juste tant qu'aucune instruction traduite n'en lisait un, et
     /// `movzbl %bh, %eax` lit RBX.
     fixed: [u64; 16],
+    /// L'adresse de la fenêtre de données, et le motif dont elle part.
+    window: u64,
+    pristine: Vec<u8>,
+}
+
+/// Une suite d'octets en hexadécimal.
+fn bytes(text: &str) -> Vec<u8> {
+    (0..text.len() / 2)
+        .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).expect("un octet"))
+        .collect()
 }
 
 fn hex(text: &str) -> u64 {
@@ -112,6 +141,8 @@ fn read_oracle() -> Oracle {
         instructions: HashMap::new(),
         cases: Vec::new(),
         fixed: [0; 16],
+        window: 0,
+        pristine: Vec::new(),
     };
     let mut seeded = 0usize;
     for line in text.lines() {
@@ -124,6 +155,10 @@ fn read_oracle() -> Oracle {
                 oracle
                     .states
                     .insert(f[1].into(), (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])));
+            }
+            "fenêtre" => {
+                oracle.window = hex(f[1]);
+                oracle.pristine = bytes(f[2]);
             }
             "fixe" => {
                 let register: usize = f[1].parse().expect("un numéro de registre");
@@ -145,10 +180,18 @@ fn read_oracle() -> Oracle {
                 rcx: hex(f[4]),
                 rdx: hex(f[5]),
                 flags: hex(f[6]),
+                memory: match f.get(7) {
+                    Some(&"-") | None => None,
+                    Some(text) => Some(bytes(text)),
+                },
             }),
             _ => {}
         }
     }
+    assert!(
+        !oracle.pristine.is_empty(),
+        "l'oracle doit déclarer la fenêtre de données et son motif"
+    );
     assert_eq!(
         seeded, 13,
         "l'oracle doit déclarer les treize registres fixes, il en déclare {seeded}"
@@ -211,10 +254,20 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 
     let mut jobs = String::from("{\"flagsSlot\":");
     jobs.push_str(&flags_slot.to_string());
-    jobs.push_str(",\"jobs\":[");
+    // La fenêtre de données et son motif viennent du fichier, jamais du code :
+    // un harnais qui les devine compare son résultat à celui d'un processeur
+    // parti d'ailleurs.
+    jobs.push_str(",\"window\":");
+    jobs.push_str(&oracle.window.to_string());
+    jobs.push_str(",\"pristine\":\"");
+    for byte in &oracle.pristine {
+        jobs.push_str(&format!("{byte:02x}"));
+    }
+    jobs.push_str("\",\"jobs\":[");
     let mut emitted = 0usize;
     let mut refused = 0usize;
-    let mut expected: HashMap<String, (u64, u64, u64, u64, u64, String)> = HashMap::new();
+    #[allow(clippy::type_complexity)]
+    let mut expected: HashMap<String, (u64, u64, u64, u64, u64, String, Vec<u8>)> = HashMap::new();
 
     for (index, (instruction, cases)) in by_instruction.iter().enumerate() {
         let (bytes, defined, mnemonic) = &oracle.instructions[instruction];
@@ -271,6 +324,9 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
                     case.flags,
                     *defined,
                     mnemonic.clone(),
+                    case.memory
+                        .clone()
+                        .unwrap_or_else(|| oracle.pristine.clone()),
                 ),
             );
         }
@@ -298,26 +354,41 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 
     let mut checked = 0usize;
     let mut wrong: Vec<String> = Vec::new();
-    for (id, (want_rax, want_rcx, want_rdx, want_flags, mask, mnemonic)) in &expected {
+    for (id, (want_rax, want_rcx, want_rdx, want_flags, mask, mnemonic, want_memory)) in &expected {
         let Some(got) = field(&text, id) else {
             wrong.push(format!("{mnemonic} : aucun résultat rendu pour {id}"));
             continue;
         };
         checked += 1;
+        // **La fenêtre compte autant que les registres.** Une écriture au
+        // mauvais endroit laisse les trois registres justes.
         if got.0 != *want_rax
             || got.1 != *want_rcx
             || got.2 != *want_rdx
             || (got.3 & mask) != (want_flags & mask)
+            || &got.4 != want_memory
         {
             if wrong.len() < 10 {
                 wrong.push(format!(
                     "{mnemonic} [{id}] : rax {:x}≠{want_rax:x} rcx {:x}≠{want_rcx:x} \
-                     rdx {:x}≠{want_rdx:x} drapeaux {:x}≠{:x} (masque {mask:x})",
+                     rdx {:x}≠{want_rdx:x} drapeaux {:x}≠{:x} (masque {mask:x}){}",
                     got.0,
                     got.1,
                     got.2,
                     got.3 & mask,
-                    want_flags & mask
+                    want_flags & mask,
+                    if &got.4 != want_memory {
+                        format!(
+                            "\n  mémoire {}\n       ≠ {}",
+                            got.4.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            want_memory
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        )
+                    } else {
+                        String::new()
+                    }
                 ));
             } else {
                 wrong.push(String::new());
@@ -342,29 +413,33 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             .join("\n")
     );
     // **Le plancher monte avec chaque famille traduite.** Il ne dit pas
-    // « c'est assez » : il dit « ne recule pas ». Les décalages ont ajouté
-    // soixante instructions au groupe arithmétique, les transferts trente-six,
-    // les rotations simples quarante — neuf cent soixante cas de plus.
+    // « c'est assez » : il dit « ne recule pas ». Après les décalages, les
+    // transferts, les rotations simples et `lea`, la mémoire a ajouté
+    // cinquante-trois instructions et quatre programmes entiers.
     assert!(
-        checked > 6200,
+        checked > 7600,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
 }
 
 /// Lire les quatre valeurs rendues pour un cas.
-fn field(text: &str, id: &str) -> Option<(u64, u64, u64, u64)> {
-    let key = format!("{id:?}:[");
+fn field(text: &str, id: &str) -> Option<(u64, u64, u64, u64, Vec<u8>)> {
+    let key = format!("{id:?}:{{\"regs\":[");
     let at = text.find(&key)? + key.len();
     let end = text[at..].find(']')? + at;
     let values: Vec<u64> = text[at..end]
         .split(',')
         .map(|piece| hex(piece.trim().trim_matches('"')))
         .collect();
+    let memory_key = "\"memory\":\"";
+    let start = text[end..].find(memory_key)? + end + memory_key.len();
+    let stop = text[start..].find('"')? + start;
     Some((
         *values.first()?,
         *values.get(1)?,
         *values.get(2)?,
         *values.get(3)?,
+        bytes(&text[start..stop]),
     ))
 }
 

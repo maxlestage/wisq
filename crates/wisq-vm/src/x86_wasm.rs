@@ -31,7 +31,7 @@
 //! nom exporté au lieu d'un décalage que les deux côtés doivent s'accorder à
 //! calculer.
 
-use crate::x86::{Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
+use crate::x86::{Address, Decoded, Op, Width, AF, CF, OF, PF, SF, ZF};
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
 /// celui de la globale exportée.
@@ -43,6 +43,10 @@ pub const SCRATCH_SLOT: usize = RFLAGS_SLOT + 1;
 pub const SCRATCH_COUNT: usize = 6;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
+
+/// Le nombre de pages de RAM invitée que le module déclare. Assez pour couvrir
+/// la fenêtre de données du corpus matériel, qui vit à 0x30001000.
+pub const GUEST_PAGES: u32 = 0x3001;
 
 /// L'entier non signé à longueur variable de WebAssembly.
 fn unsigned(value: u64, out: &mut Vec<u8>) {
@@ -87,6 +91,23 @@ mod code {
     pub const END: u8 = 0x0b;
     pub const GLOBAL_GET: u8 = 0x23;
     pub const GLOBAL_SET: u8 = 0x24;
+    /// Les accès à la mémoire linéaire — **la RAM de l'invité, adresse pour
+    /// adresse**. Les variantes courtes étendent par zéro ; l'extension de
+    /// signe, quand une instruction la demande, se fait après coup, parce que
+    /// x86 la demande depuis la largeur de la source et pas depuis huit octets.
+    pub const I64_LOAD: u8 = 0x29;
+    pub const I64_LOAD8_U: u8 = 0x31;
+    pub const I64_LOAD16_U: u8 = 0x33;
+    pub const I64_LOAD32_U: u8 = 0x35;
+    pub const I64_STORE: u8 = 0x37;
+    pub const I64_STORE8: u8 = 0x3c;
+    pub const I64_STORE16: u8 = 0x3d;
+    pub const I64_STORE32: u8 = 0x3e;
+    /// Une adresse WebAssembly est un `i32`. L'adresse x86 est calculée sur
+    /// soixante-quatre bits, donc elle se tronque — ce qui est juste tant que
+    /// la RAM invitée tient sous quatre gigaoctets, et faux au-delà. La
+    /// tranche qui dépassera cette limite devra passer en mémoire 64 bits.
+    pub const I32_WRAP_I64: u8 = 0xa7;
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
@@ -150,6 +171,61 @@ impl Body {
     fn scratch(index: usize) -> usize {
         SCRATCH_SLOT + index
     }
+
+    /// Pousser l'adresse effective, en `i32`, prête pour un accès mémoire.
+    fn address(&mut self, address: &Address) -> &mut Self {
+        self.constant(address.displacement as u64);
+        if let Some(base) = address.base {
+            self.load(base as usize).op(code::I64_ADD);
+        }
+        if let Some(index) = address.index {
+            self.load(index as usize);
+            self.constant(u64::from(address.scale.trailing_zeros()))
+                .op(code::I64_SHL);
+            self.op(code::I64_ADD);
+        }
+        self.op(code::I32_WRAP_I64)
+    }
+
+    /// Lire la mémoire invitée à cette adresse, à cette largeur, **étendue par
+    /// zéro**. L'extension de signe, quand `movsx` la demande, se fait après.
+    fn load_memory(&mut self, address: &Address, width: Width) -> &mut Self {
+        self.address(address);
+        self.op(match width {
+            Width::Byte => code::I64_LOAD8_U,
+            Width::Word => code::I64_LOAD16_U,
+            Width::Dword => code::I64_LOAD32_U,
+            Width::Qword => code::I64_LOAD,
+        });
+        // Alignement zéro : le module n'exige rien, et un invité aligne ce
+        // qu'il veut. Prétendre un alignement que l'invité ne tient pas ferait
+        // refuser le module par le moteur.
+        self.bytes.push(0);
+        self.bytes.push(0);
+        self
+    }
+
+    /// Écrire la mémoire invitée. **L'adresse d'abord, la valeur ensuite** —
+    /// l'ordre de WebAssembly, et l'inverser produit un module que le moteur
+    /// refuse.
+    fn store_memory(
+        &mut self,
+        address: &Address,
+        width: Width,
+        value: impl FnOnce(&mut Body),
+    ) -> &mut Self {
+        self.address(address);
+        value(self);
+        self.op(match width {
+            Width::Byte => code::I64_STORE8,
+            Width::Word => code::I64_STORE16,
+            Width::Dword => code::I64_STORE32,
+            Width::Qword => code::I64_STORE,
+        });
+        self.bytes.push(0);
+        self.bytes.push(0);
+        self
+    }
 }
 
 /// Le module émis pour un bloc.
@@ -174,6 +250,17 @@ impl Module {
         // Fonction : une, du type zéro.
         section(3, vec![0x01, 0x00], &mut module);
 
+        // Mémoire : **la RAM de l'invité**, adresse pour adresse. Elle vient
+        // avant les globales, et pas par goût : les sections d'un module ont un
+        // ordre imposé, et le moteur refuse le module s'il est inversé. Le nombre de
+        // pages couvre ici la fenêtre du corpus matériel, qui vit haut dans
+        // l'espace d'adressage ; le système réel la dimensionnera sur la RAM
+        // que la machine annonce. JavaScriptCore ne la réserve pas vraiment —
+        // mesuré : vingt mémoires de 768 Mio en dix millisecondes.
+        let mut memory = vec![0x01, 0x00];
+        unsigned(u64::from(GUEST_PAGES), &mut memory);
+        section(5, memory, &mut module);
+
         // Globales : le fichier de registres, RFLAGS, les emplacements de
         // travail. Toutes `i64`, toutes **mutables**, toutes à zéro au départ —
         // c'est l'hôte qui pose l'état avant chaque cas.
@@ -192,8 +279,9 @@ impl Module {
         // les lit par leur nom au lieu d'un décalage que les deux côtés
         // devraient calculer pareil.
         let mut exports = Vec::new();
-        unsigned(1 + GLOBAL_COUNT as u64, &mut exports);
+        unsigned(2 + GLOBAL_COUNT as u64, &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00, 0x00]);
+        exports.extend_from_slice(&[0x03, b'm', b'e', b'm', 0x02, 0x00]);
         for slot in 0..GLOBAL_COUNT {
             let name = format!("g{slot}");
             unsigned(name.len() as u64, &mut exports);
@@ -220,6 +308,13 @@ impl Module {
 
     /// Pousser l'opérande de gauche, masqué à la largeur.
     fn left(step: &Decoded, body: &mut Body) {
+        match step.memory {
+            Some(address) if !step.memory_is_source => {
+                body.load_memory(&address, step.width);
+                return;
+            }
+            _ => {}
+        }
         body.load(Self::slot(step.dst));
         if step.dst_high {
             body.constant(8).op(code::I64_SHR_U);
@@ -231,6 +326,13 @@ impl Module {
         if step.immediate {
             body.constant(step.imm & step.width.mask());
             return;
+        }
+        match step.memory {
+            Some(address) if step.memory_is_source => {
+                body.load_memory(&address, step.width);
+                return;
+            }
+            _ => {}
         }
         body.load(Self::slot(step.src));
         if step.src_high {
@@ -402,7 +504,6 @@ impl Module {
             (width as u64) * 8
         };
         let count_mask: u64 = if width == Width::Qword { 63 } else { 31 };
-        let slot = Self::slot(step.dst);
 
         // scratch 0 : l'opérande. scratch 1 : le compte, déjà masqué.
         body.store(Body::scratch(0), |b| {
@@ -562,26 +663,12 @@ impl Module {
         // était nul. Un sabotage l'a retiré sans faire tomber un seul cas, et
         // c'est juste : décaler de zéro un opérande déjà masqué **rend cet
         // opérande**, pour les trois décalages. Le choix ne choisissait rien.
+        // La même écriture que partout ailleurs — registre ou mémoire, règle de
+        // largeur comprise. Elle était recopiée ici ; la recopie a survécu au
+        // jour où la destination a pu être en mémoire, et elle aurait écrit
+        // dans un registre ce que l'invité attendait dans sa RAM.
         if !step.discards {
-            body.store(slot, |b| {
-                // Le nouveau contenu du registre, règle de largeur comprise.
-                if step.dst_high {
-                    b.load(slot).constant(!0xff00u64).op(code::I64_AND);
-                    b.load(Body::scratch(2)).constant(0xff).op(code::I64_AND);
-                    b.constant(8).op(code::I64_SHL).op(code::I64_OR);
-                } else {
-                    match width {
-                        Width::Qword | Width::Dword => {
-                            b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
-                        }
-                        _ => {
-                            b.load(slot).constant(!mask).op(code::I64_AND);
-                            b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
-                            b.op(code::I64_OR);
-                        }
-                    }
-                }
-            });
+            Self::write_back(step, mask, body);
         }
     }
 
@@ -864,11 +951,18 @@ impl Module {
     /// a `i64.shr_s`, et deux décalages font le même travail sans test.
     fn transfer(step: &Decoded, body: &mut Body) {
         body.store(Body::scratch(2), |b| {
-            b.load(Self::slot(step.src));
-            if step.src_high {
-                b.constant(8).op(code::I64_SHR_U);
+            match step.memory {
+                Some(address) if step.memory_is_source => {
+                    b.load_memory(&address, step.src_width);
+                }
+                _ => {
+                    b.load(Self::slot(step.src));
+                    if step.src_high {
+                        b.constant(8).op(code::I64_SHR_U);
+                    }
+                    b.constant(step.src_width.mask()).op(code::I64_AND);
+                }
             }
-            b.constant(step.src_width.mask()).op(code::I64_AND);
             if step.op == Op::Movsx {
                 let spare = 64 - step.src_width.bits();
                 if spare != 0 {
@@ -886,6 +980,23 @@ impl Module {
     /// trente-deux bits de poids fort, alors qu'une écriture 8 ou 16 bits
     /// préserve le reste du registre.
     fn write_back(step: &Decoded, mask: u64, body: &mut Body) {
+        // **Quand la destination est en mémoire, la règle de largeur ne
+        // s'applique pas.** Elle décrit ce qu'une écriture de registre fait au
+        // reste du registre ; en mémoire, on écrit exactement les octets de la
+        // largeur, et l'octet d'à côté n'est pas concerné.
+        if let Some(address) = step.memory {
+            // **`lea` est l'exception.** Elle porte une adresse et n'écrit pas
+            // dedans : l'adresse **est** son résultat, et sa destination est un
+            // registre. La faire passer par ici l'écrivait à l'adresse — le
+            // moteur l'a dit tout de suite, « Out of bounds memory access »,
+            // parce que la première adresse venue sortait de la RAM déclarée.
+            if !step.memory_is_source && step.op != Op::Lea {
+                body.store_memory(&address, step.width, |b| {
+                    b.load(Body::scratch(2)).constant(mask).op(code::I64_AND);
+                });
+                return;
+            }
+        }
         let slot = Self::slot(step.dst);
         body.store(slot, |b| {
             if step.dst_high {

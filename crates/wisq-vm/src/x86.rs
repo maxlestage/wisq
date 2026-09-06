@@ -239,6 +239,58 @@ pub struct Cpu {
     pub regs: [u64; 16],
     pub rip: u64,
     pub flags: Flags,
+    pub memory: GuestMemory,
+    /// **Un accès hors de la mémoire attachée.** Le cœur définitif aura la RAM
+    /// entière et n'aura rien à refuser ; ici la mémoire est une fenêtre, et un
+    /// accès qui en sort est une faute du harnais ou du corpus, pas de
+    /// l'invité. L'instruction n'est alors **pas** exécutée — à moitié
+    /// exécutée, elle rendrait un état que rien ne distingue d'un état juste —
+    /// et ce témoin le dit.
+    pub faulted: bool,
+}
+
+/// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre
+/// contiguë, parce que c'est tout ce que le corpus matériel expose.
+#[derive(Clone, Default, Debug)]
+pub struct GuestMemory {
+    pub base: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl GuestMemory {
+    /// Le décalage d'un accès, ou rien s'il sort de la fenêtre — bord compris.
+    /// Le calcul se fait en `u64` et vérifie la **fin** de l'accès, pas son
+    /// début : une lecture de huit octets à un octet de la fin tient dans la
+    /// fenêtre par son adresse et pas par sa taille.
+    fn window(&self, address: u64, width: Width) -> Option<std::ops::Range<usize>> {
+        let start = address.checked_sub(self.base)?;
+        let size = width as u64;
+        let end = start.checked_add(size)?;
+        if end > self.bytes.len() as u64 {
+            return None;
+        }
+        Some(start as usize..end as usize)
+    }
+
+    pub fn read(&self, address: u64, width: Width) -> Option<u64> {
+        let window = self.window(address, width)?;
+        let mut value = 0u64;
+        // Petit-boutiste : l'octet de poids faible est à l'adresse la plus
+        // basse. L'inverser rendrait des valeurs plausibles sur les motifs
+        // symétriques et fausses partout ailleurs.
+        for (rank, byte) in self.bytes[window].iter().enumerate() {
+            value |= u64::from(*byte) << (rank * 8);
+        }
+        Some(value)
+    }
+
+    pub fn write(&mut self, address: u64, width: Width, value: u64) -> Option<()> {
+        let window = self.window(address, width)?;
+        for (rank, byte) in self.bytes[window].iter_mut().enumerate() {
+            *byte = (value >> (rank * 8)) as u8;
+        }
+        Some(())
+    }
 }
 
 /// Ce qu'un pas d'exécution a produit.
@@ -354,10 +406,16 @@ pub struct Decoded {
     /// rendrait `movzbq` identique à `movq` — juste tant que le registre
     /// source tient sur un octet, faux dès qu'il déborde.
     pub src_width: Width,
-    /// L'adresse effective, quand l'opérande n'est pas un registre. `lea` est
-    /// la seule instruction de cette tranche à en porter une : elle **calcule**
-    /// l'adresse et l'écrit, sans jamais lire ce qu'il y a dedans.
+    /// L'adresse effective, quand l'opérande `rm` n'est pas un registre.
     pub memory: Option<Address>,
+    /// De quel côté se trouve cet opérande mémoire. Le codage x86 met toujours
+    /// l'accès du côté `rm`, et c'est le bit de direction de l'opcode qui dit
+    /// si `rm` est la destination ou la source — la même adresse est lue puis
+    /// réécrite dans un cas, seulement lue dans l'autre.
+    ///
+    /// Sans objet quand `memory` est absente, et pour `lea`, dont l'adresse
+    /// **est** le résultat.
+    pub memory_is_source: bool,
 }
 
 impl Cpu {
@@ -424,7 +482,7 @@ impl Cpu {
             // que fait toute écriture 32 bits. Sortir sans écrire préserverait
             // une moitié haute que le processeur, lui, met à zéro.
             if !instruction.discards {
-                self.set(instruction.dst, width, instruction.dst_high, value);
+                self.faulted |= self.write_destination(instruction, value).is_none();
             }
             return;
         }
@@ -487,13 +545,56 @@ impl Cpu {
         self.flags.write(flags);
 
         if !instruction.discards {
-            self.set(instruction.dst, width, instruction.dst_high, result);
+            self.faulted |= self.write_destination(instruction, result).is_none();
         }
     }
 
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
     /// ne sont pas calculés : on garde l'opération et ses opérandes, rien de
     /// plus.
+    /// **Lire l'opérande de destination**, en mémoire ou en registre.
+    ///
+    /// C'est le `rm` du ModRM dans le cas mémoire, et le codage garantit qu'il
+    /// n'y en a qu'un : jamais deux accès dans la même instruction.
+    fn read_destination(&mut self, instruction: &Decoded) -> Option<u64> {
+        match instruction.memory {
+            Some(address) if !instruction.memory_is_source => {
+                let at = self.effective_address(&address);
+                self.memory.read(at, instruction.width)
+            }
+            _ => Some(self.get(instruction.dst, instruction.width, instruction.dst_high)),
+        }
+    }
+
+    fn read_source(&mut self, instruction: &Decoded, width: Width) -> Option<u64> {
+        match instruction.memory {
+            Some(address) if instruction.memory_is_source => {
+                let at = self.effective_address(&address);
+                self.memory.read(at, width)
+            }
+            _ => Some(self.get(instruction.src, width, instruction.src_high)),
+        }
+    }
+
+    /// Écrire le résultat là où l'opérande de destination se trouvait.
+    fn write_destination(&mut self, instruction: &Decoded, value: u64) -> Option<()> {
+        match instruction.memory {
+            Some(address) if !instruction.memory_is_source => {
+                let at = self.effective_address(&address);
+                self.memory.write(at, instruction.width, value)
+            }
+            _ => {
+                self.set(
+                    instruction.dst,
+                    instruction.width,
+                    instruction.dst_high,
+                    value,
+                );
+                Some(())
+            }
+        }
+    }
+
     /// Base + index × échelle + déplacement, sur soixante-quatre bits qui
     /// bouclent. Le débordement n'est pas une erreur : c'est ainsi que se
     /// codent les index négatifs.
@@ -537,7 +638,7 @@ impl Cpu {
             // Comme pour un décalage : aucun drapeau, mais la destination est
             // écrite, et une écriture 32 bits efface la moitié haute.
             if !instruction.discards {
-                self.set(instruction.dst, width, instruction.dst_high, value);
+                self.faulted |= self.write_destination(instruction, value).is_none();
             }
             return;
         }
@@ -569,7 +670,7 @@ impl Cpu {
         self.flags.write(flags);
 
         if !instruction.discards {
-            self.set(instruction.dst, width, instruction.dst_high, result);
+            self.faulted |= self.write_destination(instruction, result).is_none();
         }
     }
 
@@ -581,28 +682,49 @@ impl Cpu {
     /// `movsx`. La règle d'écriture ne change pas — une destination de 32 bits
     /// efface toujours la moitié haute du registre.
     fn transfer(&mut self, instruction: &Decoded) {
-        let source = self.get(instruction.src, instruction.src_width, instruction.src_high);
+        // La source se lit à **sa** largeur, qui n'est pas celle de l'écriture,
+        // et l'accès mémoire éventuel doit donc porter la même.
+        let Some(source) = self.read_source(instruction, instruction.src_width) else {
+            self.faulted = true;
+            return;
+        };
         let value = match instruction.op {
             Op::Movsx => sign_extend(source, instruction.src_width),
             // `mov` et `movzx` : la valeur est déjà masquée par la lecture, et
             // les bits hauts de la destination valent zéro.
             _ => source,
         };
-        self.set(
-            instruction.dst,
-            instruction.width,
-            instruction.dst_high,
-            value,
-        );
+        self.faulted |= self.write_destination(instruction, value).is_none();
     }
 
     pub fn execute(&mut self, instruction: &Decoded) {
         let width = instruction.width;
-        let left = self.get(instruction.dst, width, instruction.dst_high);
-        let right = if instruction.immediate {
-            instruction.imm & width.mask()
-        } else {
-            self.get(instruction.src, width, instruction.src_high)
+
+        // **`lea` calcule et n'accède à rien**, et elle sort donc avant même la
+        // lecture des opérandes : elle porte une adresse mémoire que personne
+        // ne doit déréférencer. La lire comme un opérande la faisait échouer
+        // sur toute adresse hors de la fenêtre — c'est-à-dire sur toutes.
+        if instruction.op == Op::Lea {
+            if let Some(address) = instruction.memory {
+                let value = self.effective_address(&address);
+                self.set(instruction.dst, width, false, value);
+            }
+            return;
+        }
+
+        // **Lire les deux opérandes avant de rien changer.** Un accès qui
+        // échoue doit laisser la machine intacte : une instruction à moitié
+        // exécutée rend un état que rien ne distingue d'un état juste.
+        let (Some(left), Some(right)) = (
+            self.read_destination(instruction),
+            if instruction.immediate {
+                Some(instruction.imm & width.mask())
+            } else {
+                self.read_source(instruction, width)
+            },
+        ) else {
+            self.faulted = true;
+            return;
         };
 
         // **Les décalages ne rentrent pas dans le moule.** Leur retenue vient
@@ -632,16 +754,6 @@ impl Cpu {
         // recalculer les écraserait avec des valeurs plausibles et fausses.
         if matches!(instruction.op, Op::Rol | Op::Ror) {
             self.rotate(instruction, left);
-            return;
-        }
-
-        // **`lea` calcule et n'accède à rien.** Elle ne touche aucun drapeau,
-        // et sa « source » n'est pas un opérande mais une adresse.
-        if instruction.op == Op::Lea {
-            if let Some(address) = instruction.memory {
-                let value = self.effective_address(&address);
-                self.set(instruction.dst, width, false, value);
-            }
             return;
         }
 
@@ -727,7 +839,7 @@ impl Cpu {
         }
 
         if !instruction.discards {
-            self.set(instruction.dst, width, instruction.dst_high, result);
+            self.faulted |= self.write_destination(instruction, result).is_none();
         }
     }
 }
@@ -844,7 +956,8 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     Width::Word
                 };
                 let width = prefixes.width(false);
-                let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                let (reg, rm) = (field.reg, field.register);
                 Some(Decoded {
                     op: if second < 0xbe { Op::Mov } else { Op::Movsx },
                     width,
@@ -862,10 +975,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     // **Le registre haut se juge à la largeur de la source**,
                     // pas à celle de l'instruction. `movzbl %ah, %eax` est une
                     // opération de 32 bits dont la source est `%ah`.
-                    src_high: prefixes.high_byte(rm, src_width),
+                    src_high: field.memory.is_none() && prefixes.high_byte(rm, src_width),
                     count_is_cl: false,
                     src_width,
-                    memory: None,
+                    memory: field.memory,
+                    memory_is_source: true,
                 })
             }
             _ => None,
@@ -896,10 +1010,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 count_is_cl: false,
                 src_width: width,
                 memory: None,
+                memory_is_source: false,
             });
         }
 
-        let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+        let field = read_modrm(bytes, &mut at, prefixes)?;
+        let (reg, rm) = (field.reg, field.register);
         let to_register = form == 2 || form == 3;
         let (dst, src) = if to_register { (reg, rm) } else { (rm, reg) };
         return Some(Decoded {
@@ -911,11 +1027,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             immediate: false,
             discards: op == Op::Cmp,
             length: at,
-            dst_high: prefixes.high_byte(dst, width),
-            src_high: prefixes.high_byte(src, width),
+            // Un opérande en mémoire n'est jamais un registre d'octet haut :
+            // le codage `rm` sert alors à l'adresse, pas à un numéro.
+            dst_high: (field.memory.is_none() || to_register) && prefixes.high_byte(dst, width),
+            src_high: (field.memory.is_none() || !to_register) && prefixes.high_byte(src, width),
             count_is_cl: false,
             src_width: width,
-            memory: None,
+            memory: field.memory,
+            memory_is_source: to_register,
         });
     }
 
@@ -925,23 +1044,31 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         // en mode registre, donne exactement les mêmes couples — l'oracle ne la
         // relève pas, et l'ajouter sans cas pour la juger serait du code que
         // rien ne tient.
-        0x88 | 0x89 => {
-            let width = prefixes.width(opcode == 0x88);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+        0x88..=0x8b => {
+            let width = prefixes.width(opcode & 1 == 0);
+            // Le bit 1 de l'opcode est le bit de direction : à zéro, `reg` va
+            // vers `rm` ; à un, l'inverse. C'est lui, et rien d'autre, qui dit
+            // de quel côté se trouve l'accès mémoire.
+            let to_register = opcode & 0b10 != 0;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
+            let (dst, src) = if to_register { (reg, rm) } else { (rm, reg) };
             Some(Decoded {
                 op: Op::Mov,
                 width,
-                dst: prefixes.normalise_high(rm, width),
-                src: prefixes.normalise_high(reg, width),
+                dst: prefixes.normalise_high(dst, width),
+                src: prefixes.normalise_high(src, width),
                 imm: 0,
                 immediate: false,
                 discards: false,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
-                src_high: prefixes.high_byte(reg, width),
+                dst_high: (field.memory.is_none() || to_register) && prefixes.high_byte(dst, width),
+                src_high: (field.memory.is_none() || !to_register)
+                    && prefixes.high_byte(src, width),
                 count_is_cl: false,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: to_register,
             })
         }
         // `lea` : le seul opérande mémoire de cette tranche, et le seul qui ne
@@ -971,6 +1098,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 count_is_cl: false,
                 src_width: width,
                 memory: Some(memory),
+                memory_is_source: false,
             })
         }
         // `movsxd` : quatre octets lus, étendus en signe vers la destination.
@@ -978,7 +1106,8 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         // fait plus rien d'observable ; c'est quand même le même chemin.
         0x63 => {
             let width = prefixes.width(false);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             Some(Decoded {
                 op: Op::Movsx,
                 width,
@@ -992,13 +1121,15 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 src_high: false,
                 count_is_cl: false,
                 src_width: Width::Dword,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: true,
             })
         }
         // Groupe 1 : l'opération est dans le champ `reg` du ModRM.
         0x80 | 0x81 | 0x83 => {
             let width = prefixes.width(opcode == 0x80);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             let op = GRID[(reg & 0b111) as usize];
             // 0x83 porte un immédiat d'un octet, étendu en signe.
             let imm = read_immediate(bytes, &mut at, width, opcode == 0x83)?;
@@ -1011,17 +1142,19 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 immediate: true,
                 discards: op == Op::Cmp,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: false,
             })
         }
         // `test` entre deux registres.
         0x84 | 0x85 => {
             let width = prefixes.width(opcode == 0x84);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             Some(Decoded {
                 op: Op::Test,
                 width,
@@ -1031,11 +1164,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 immediate: false,
                 discards: true,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
                 src_high: prefixes.high_byte(reg, width),
                 count_is_cl: false,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: false,
             })
         }
         // `test` sur l'accumulateur.
@@ -1056,13 +1190,15 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 count_is_cl: false,
                 src_width: width,
                 memory: None,
+                memory_is_source: false,
             })
         }
         // Groupe 3 : `test`, `not`, `neg` — et les multiplications et
         // divisions, que cette tranche ne prétend pas connaître.
         0xf6 | 0xf7 => {
             let width = prefixes.width(opcode == 0xf6);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             let op = match reg & 0b111 {
                 0 | 1 => Op::Test,
                 2 => Op::Not,
@@ -1084,11 +1220,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 immediate,
                 discards: op == Op::Test,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: false,
             })
         }
         // **Groupe 2 : les décalages.** Trois sources pour le compte, et c'est
@@ -1099,7 +1236,8 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         0xc0 | 0xc1 | 0xd0 | 0xd1 | 0xd2 | 0xd3 => {
             let byte_form = opcode & 1 == 0;
             let width = prefixes.width(byte_form);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             let op = match reg & 0b111 {
                 // 4 et 6 sont le même décalage à gauche : l'architecture ne
                 // distingue pas `shl` de `sal`.
@@ -1138,17 +1276,19 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 immediate,
                 discards: false,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: false,
             })
         }
         // Groupes 4 et 5 : `inc` et `dec`.
         0xfe | 0xff => {
             let width = prefixes.width(opcode == 0xfe);
-            let (reg, rm) = read_modrm(bytes, &mut at, prefixes)?;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let (reg, rm) = (field.reg, field.register);
             let op = match reg & 0b111 {
                 0 => Op::Inc,
                 1 => Op::Dec,
@@ -1163,11 +1303,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 immediate: false,
                 discards: false,
                 length: at,
-                dst_high: prefixes.high_byte(rm, width),
+                dst_high: field.memory.is_none() && prefixes.high_byte(rm, width),
                 src_high: false,
                 count_is_cl: false,
                 src_width: width,
-                memory: None,
+                memory: field.memory,
+                memory_is_source: false,
             })
         }
         _ => None,
@@ -1249,18 +1390,37 @@ fn read_i32(bytes: &[u8], at: &mut usize) -> Option<i32> {
     Some(i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
-/// Le ModRM, **mode registre seulement**. Une adresse mémoire est refusée
-/// plutôt que mal calculée : cette tranche n'a pas de mémoire, et l'oracle
-/// qui la juge n'en demande pas.
-fn read_modrm(bytes: &[u8], at: &mut usize, prefixes: Prefixes) -> Option<(u8, u8)> {
+/// Ce qu'un octet ModRM désigne : un champ `reg`, et un `rm` qui est soit un
+/// registre, soit une adresse.
+struct ModRm {
+    reg: u8,
+    /// Le registre `rm`. Sans objet quand `memory` est présente.
+    register: u8,
+    memory: Option<Address>,
+}
+
+/// Le ModRM, registre **ou** mémoire.
+///
+/// Il a longtemps refusé tout ce qui n'était pas le mode registre, et le corpus
+/// ne le lui reprochait pas : aucune instruction isolée n'y portait d'accès
+/// mémoire. Les quinze programmes en portent, mais ils demandent aussi des
+/// sauts — leur refus avait donc une autre cause, qui couvrait celle-ci.
+fn read_modrm(bytes: &[u8], at: &mut usize, prefixes: Prefixes) -> Option<ModRm> {
     let modrm = *bytes.get(*at)?;
     *at += 1;
-    if modrm >> 6 != 0b11 {
-        return None;
-    }
     let reg = ((modrm >> 3) & 0b111) | prefixes.reg_extension();
-    let rm = (modrm & 0b111) | prefixes.rm_extension();
-    Some((reg, rm))
+    if modrm >> 6 == 0b11 {
+        return Some(ModRm {
+            reg,
+            register: (modrm & 0b111) | prefixes.rm_extension(),
+            memory: None,
+        });
+    }
+    Some(ModRm {
+        reg,
+        register: 0,
+        memory: Some(read_address(bytes, at, prefixes, modrm)?),
+    })
 }
 
 /// L'immédiat, **étendu en signe** à la largeur de l'opération. Une extension

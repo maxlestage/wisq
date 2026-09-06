@@ -140,6 +140,61 @@ def defined_flags(text):
         return kept if (" $1," in text or "," not in text) else kept & ~OF
     return ARITHMETIC_FLAGS
 
+
+# Les instructions qui ne touchent à **aucun** drapeau arithmétique. Elles ne
+# comptent donc pas pour dire ce qu'un programme définit en sortie.
+NO_FLAGS = (
+    "mov", "movb", "movw", "movl", "movq",
+    "movzbl", "movzbq", "movzwq", "movswq", "movslq", "movsbl", "movsbq",
+    "lea", "leab", "leaw", "leal", "leaq",
+    "push", "pushq", "pop", "popq", "leave", "nop",
+    "jmp", "call", "ret", "loop",
+    "je", "jne", "jz", "jnz", "jg", "jge", "jl", "jle", "ja", "jae", "jb",
+    "jbe", "js", "jns", "jo", "jno", "jp", "jnp",
+    # `setcc` et `cmovcc` **lisent** les drapeaux et n'en écrivent aucun. Le
+    # dire ici évite de reprocher plus tard à un cœur les drapeaux d'une
+    # instruction qui n'y touche pas : le programme « un tableau de bits »
+    # finit sur `setc`, et ce qu'il définit vient du `btq` d'avant, où seule la
+    # retenue est définie.
+    "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl",
+    "setle", "setne", "setno", "setnp", "setns", "seto", "setp", "sets",
+    "setc", "setnc", "setz", "setnz",
+    "cmova", "cmovae", "cmovb", "cmovbe", "cmove", "cmovg", "cmovge",
+    "cmovl", "cmovle", "cmovne", "cmovno", "cmovnp", "cmovns", "cmovo",
+    "cmovp", "cmovs",
+    "cmovaq", "cmovaeq", "cmovbq", "cmovbeq", "cmoveq", "cmovgq", "cmovgeq",
+    "cmovlq", "cmovleq", "cmovneq", "cmovnoq", "cmovnpq", "cmovnsq",
+    "cmovoq", "cmovpq", "cmovsq",
+    "bswap", "bswapl", "bswapq", "xchg", "xchgl", "xchgq",
+)
+
+
+def program_defined_flags(lines):
+    """Ce qu'un **programme** définit en sortie : ce que définit sa dernière
+    instruction à drapeaux.
+
+    Sans ça le masque tombait dans le cas par défaut — « les six » — parce que
+    le premier mot d'un nom français n'est aucun mnémonique connu. Le programme
+    « une adresse à échelle » finit sur un `andq`, qui laisse la demi-retenue
+    **indéfinie** : le corpus la comparait quand même, et le premier cœur à
+    savoir décoder ces instructions se faisait reprocher un bit que le manuel
+    n'accorde à personne. Ça ne s'était pas vu parce que tous les programmes
+    étaient refusés, faute d'opérande mémoire."""
+    for line in reversed(lines):
+        text = line.strip()
+        # Une étiquette locale colle à l'instruction : « 1: incq %rdx ».
+        if ":" in text.split(" ")[0]:
+            text = text.split(":", 1)[1].strip()
+        if not text or text.startswith("."):
+            continue
+        if text.split()[0] in NO_FLAGS:
+            continue
+        return defined_flags(text)
+    # Aucune instruction à drapeaux : ils traversent le programme intacts, et
+    # les six se comparent donc légitimement.
+    return ARITHMETIC_FLAGS
+
+
 # Les instructions à l'essai. Deux registres suffisent à couvrir la sémantique :
 # l'identité du registre ne change rien à ce que l'opération calcule, et les
 # encodages sont déjà tenus par le différentiel de la tranche 2.
@@ -312,6 +367,54 @@ def snippets():
         for destination in ["eax", "ecx", "edx"]:
             yield f"movzbl %{source}, %{destination}"
             yield f"movsbl %{source}, %{destination}"
+
+    # **La mémoire, une instruction à la fois.** RSI pointe la fenêtre de
+    # soixante-quatre octets, dont le motif — 0x10, 0x11, 0x12… — est
+    # reconnaissable : une lecture au mauvais décalage se voit à l'œil nu.
+    # Tous les déplacements restent dans la fenêtre, largeur comprise.
+    #
+    # Jusqu'ici le décodeur refusait **tout** opérande mémoire, et le corpus ne
+    # le lui reprochait pas : aucune instruction isolée n'en portait. Les
+    # quinze programmes en portent, mais ils demandent aussi des sauts, donc
+    # leur refus avait une autre cause et couvrait celle-ci.
+    for suffix, source, destination in [
+            ("b", "%al", "%al"), ("w", "%ax", "%ax"),
+            ("l", "%eax", "%eax"), ("q", "%rax", "%rax")]:
+        yield f"mov{suffix} (%rsi), {destination}"
+        yield f"mov{suffix} {source}, (%rsi)"
+        yield f"mov{suffix} 8(%rsi), {destination}"
+        yield f"mov{suffix} {source}, 8(%rsi)"
+        # Lire et écrire au même endroit, avec les drapeaux au passage.
+        yield f"add{suffix} (%rsi), {destination}"
+        yield f"add{suffix} {source}, (%rsi)"
+        yield f"sub{suffix} 4(%rsi), {destination}"
+        yield f"xor{suffix} {source}, 4(%rsi)"
+        yield f"cmp{suffix} (%rsi), {destination}"
+    # Un opérande mémoire **seul** : le groupe 3 et les incréments.
+    yield "notq (%rsi)"
+    yield "negl 8(%rsi)"
+    yield "incb 3(%rsi)"
+    yield "decw 6(%rsi)"
+    # Un immédiat vers la mémoire, les deux formes du groupe 1.
+    yield "addq $1, (%rsi)"
+    yield "andl $0x12345678, 8(%rsi)"
+    yield "orb $0x42, 2(%rsi)"
+    yield "testq $0x12345678, (%rsi)"
+    # Un décalage et une rotation dont la destination est en mémoire.
+    yield "shlq $3, (%rsi)"
+    yield "sarl %cl, 8(%rsi)"
+    yield "rolw $7, 4(%rsi)"
+    # Une extension depuis la mémoire : deux largeurs, dont une seule est lue.
+    yield "movzbl (%rsi), %eax"
+    yield "movsbl 1(%rsi), %eax"
+    yield "movzwq 2(%rsi), %rax"
+    yield "movslq 8(%rsi), %rax"
+    # Pas d'index à échelle ici : RCX et RDX prennent des valeurs qui sortent
+    # de la fenêtre, et le corpus ne juge pas ce qu'il fait planter. Une base
+    # et un déplacement suffisent à éprouver le chemin d'accès ; l'échelle est
+    # déjà tenue par `lea`, qui la calcule sans y toucher.
+    yield "movq 16(%rsi), %rax"
+    yield "movq %rax, 16(%rsi)"
 
     # Les drapeaux eux-mêmes.
     yield "clc"
@@ -562,9 +665,11 @@ def main():
     encoded = encoded + divisionEncoded
 
     # Les programmes : mêmes états que le reste, mais plusieurs instructions.
+    program_masks = {}
     for name, lines in PROGRAMS:
         hexadecimal = assemble_program(lines)
         instruction = len(texts)
+        program_masks[name] = program_defined_flags(lines)
         texts.append(name)
         encoded.append(hexadecimal)
         for index, state in enumerate(chosen[:24]):
@@ -592,6 +697,10 @@ def main():
         out.write("#   dit rien de ce qu'elles **lisent**, et `movzbl %bh, %eax` lit RBX. Un\n")
         out.write("#   harnais qui part de zéro compare alors son résultat à celui d'un\n")
         out.write("#   processeur qui, lui, partait d'ici.\n")
+        out.write("# fenêtre\t<adresse>\t<motif>  — la fenêtre de données, et le motif\n")
+        out.write("#   dont elle part à chaque cas. RSI pointe dessus. Même leçon que\n")
+        out.write("#   « fixe » : un harnais qui devine ce motif au lieu de le lire compare\n")
+        out.write("#   son résultat à celui d'un processeur parti d'ailleurs.\n")
         # **Les registres que « état » ne porte pas.** La vérification plus bas
         # prouve qu'ils ne *bougent* pas ; elle ne dit rien de leur valeur de
         # départ, et une instruction qui les lit a besoin de celle-là.
@@ -602,12 +711,15 @@ def main():
         for register in range(3, 16):
             out.write("fixe\t%d\t%x\t%s\n"
                       % (register, start[register], REGISTERS[register]))
+        out.write("fenêtre\t%x\t%s\n" % (DATA, PRISTINE))
         for index, state in enumerate(chosen):
             out.write("état\t%d\t%x\t%x\t%x\t%x\n"
                       % (index, state[0], state[1], state[2], state[16] & ARITHMETIC_FLAGS))
         for index, (hexadecimal, text) in enumerate(zip(encoded, texts)):
-            out.write("instr\t%d\t%s\t%x\t%s\n"
-                      % (index, hexadecimal, defined_flags(text), text))
+            mask = program_masks.get(text)
+            if mask is None:
+                mask = defined_flags(text)
+            out.write("instr\t%d\t%s\t%x\t%s\n" % (index, hexadecimal, mask, text))
         for (instruction, _, index, state), verdict in zip(cases, answer):
             fields = verdict.split("\t")
             # **Dix-sept colonnes, pas « tout le reste ».** Après l'état de
