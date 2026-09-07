@@ -1532,6 +1532,20 @@ impl Module {
         if matches!(step.op, Op::PortIn | Op::PortOut) {
             return Self::port(step, body);
         }
+        // **Les quatre instructions privilégiées : décodées, pas traduisibles.**
+        //
+        // Le décodeur les nomme depuis qu'un noyau s'est arrêté dessus à sa
+        // huitième instruction. Les *exécuter* demande un modèle de registres
+        // spécifiques au modèle, de compteur d'horodatage et de capacités que
+        // rien n'a encore. Le refus est donc franc et nommé — `CannotTranslate`
+        // porte l'adresse — au lieu d'un `CannotDecode` qui ne disait pas
+        // laquelle manquait.
+        if matches!(
+            step.op,
+            Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister
+        ) {
+            return None;
+        }
         // Ne rien faire n'émet rien.
         if step.op == Op::Nop {
             return Some(());
@@ -1676,6 +1690,9 @@ impl Module {
                 Op::PortIn | Op::PortOut => unreachable!(
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
                 ),
+                Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister => {
+                    unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
+                }
                 Op::Sub | Op::Cmp => {
                     b.load(Body::scratch(0))
                         .load(Body::scratch(1))
@@ -2045,6 +2062,11 @@ impl Module {
             Op::PortIn | Op::PortOut => {
                 unreachable!(
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
+                )
+            }
+            Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister => {
+                unreachable!(
+                    "une instruction privilégiée n'est pas un calcul : `translate` la refuse avant"
                 )
             }
             Op::And | Op::Or | Op::Xor | Op::Test => {}
@@ -3995,6 +4017,34 @@ mod port_tests {
             Some(("env", "in", 0x00)),
             "le second import doit être la fonction `env.in` : {imports:?}"
         );
+    }
+
+    /// **Un refus qui nomme ce qui manque, au lieu d'un silence.**
+    ///
+    /// C'est tout le changement observable de cette tranche. Avant, `wrmsr`
+    /// faisait rendre `CannotDecode` : « il y a des octets que je ne sais pas
+    /// lire », sans dire lesquels ni pourquoi. On ne peut ni suivre ça, ni le
+    /// compter, ni savoir si la liste raccourcit.
+    ///
+    /// Maintenant le décodeur la nomme et l'émetteur la refuse franchement.
+    /// L'instruction n'est pas exécutable pour autant — il faudrait un modèle
+    /// de registres spécifiques au modèle — et c'est justement ce que le refus
+    /// dit.
+    #[test]
+    fn a_privileged_instruction_is_refused_by_name_not_by_silence() {
+        for (bytes, what) in [
+            (&[0x0f, 0x31, 0xc3][..], "rdtsc"),
+            (&[0x0f, 0xa2, 0xc3][..], "cpuid"),
+            (&[0x0f, 0x32, 0xc3][..], "rdmsr"),
+            (&[0x0f, 0x30, 0xc3][..], "wrmsr"),
+        ] {
+            match Module::region_or_why(bytes, 0x1000, 0) {
+                Err(Refused::CannotTranslate { at }) => {
+                    assert_eq!(at, 0, "à la première instruction, pour {what}")
+                }
+                other => panic!("{what} doit être refusée en étant nommée, pas {other:?}"),
+            }
+        }
     }
 
     /// **Le piège de cette tranche, et le seul qui casserait tout en silence.**
