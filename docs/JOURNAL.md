@@ -10819,3 +10819,48 @@ s'est vue en le réécrivant ailleurs, la seconde en demandant ce que devient
 chaque valeur portée par le refus.
 
 Nombre de tests : 2234 → 2237.
+
+## Le chemin de l'image : d'abord le relire, ensuite le mesurer
+
+L'image du noyau traverse par `evaluateJavaScript`, en tranches de 48 Kio de
+base64. C'est écrit « assumé et cher » depuis quatre tranches, sans qu'aucun
+nombre ne soit derrière. Le remplacer par un gestionnaire de schéma est la
+suite évidente — et c'est précisément pour ça qu'il fallait d'abord un nombre,
+pas une impression.
+
+### Mesurer une écriture sans pouvoir la relire ne mesure rien
+
+Une `place` qui perdrait une tranche sur deux serait **deux fois plus
+« rapide »**, et se comporterait comme une `place` qui marche jusqu'à ce que la
+machine saute dans le vide, bien plus tard et bien plus loin de la cause. Le
+miroir de `place` manquait donc, et il manquait aussi à l'application, qui ne
+pouvait rien relire de la mémoire de l'invité.
+
+`LocalDesktop.read(_:at:)` porte la même borne que l'écriture — relire au-delà
+de la RAM irait chercher la correspondance, que l'application prendrait pour de
+la mémoire invitée.
+
+### Relire aux bords des tranches, pas au milieu
+
+Le test pose quatre mébioctets, chronomètre, puis relit **aux frontières de
+tranches** : le début, les deux octets de part et d'autre de la première
+frontière, une frontière lointaine, la toute fin. C'est là qu'un décalage
+d'offset se voit ; au milieu d'une tranche, il ne se voit pas.
+
+Et le motif n'est pas fait de zéros : une image de zéros arriverait intacte même
+si la moitié des tranches se perdait, puisque la mémoire est déjà à zéro.
+
+### Deux fautes trouvées en relisant, aucune par le compilateur
+
+`XCTAssertEqual` prend une **autoclosure** : elle accepte `try`, pas `await`.
+L'appel devait être hissé hors de l'assertion, sans quoi rien ne compilait — et
+`LocalDesktopTests` n'est pas typé sous Linux, donc c'est la CI Apple qui
+l'aurait dit, dix minutes plus tard.
+
+Et remplir quatre mébioctets octet par octet dans un `Data` en debug coûte plus
+cher que ce que le test mesure. Par un tableau, puis un `Data` d'un coup.
+
+Le nombre lui-même est dans le journal de « Cœur (Apple) » : il ne peut pas
+venir d'ici, faute de `WKWebView`.
+
+Nombre de tests : 2237 → 2239.

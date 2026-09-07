@@ -2303,6 +2303,23 @@ canvas (une vraie page **tronque en silence**, ce qui est pire) ; et une boucle
 d'affichage qui survit à la machine, qu'une vraie page laisserait repeindre
 soixante fois par seconde sans rien dire.
 
+### Le chemin de l'image, relu avant d'être remplacé
+
+L'image du noyau traverse par `evaluateJavaScript` en tranches de 48 Kio de
+base64. « Assumé et cher » était écrit depuis quatre tranches sans qu'aucun
+nombre ne soit derrière ; le remplacer par un gestionnaire de schéma se
+décidera sur un nombre.
+
+**Mesurer une écriture sans pouvoir la relire ne mesure rien** : une `place`
+qui perdrait une tranche sur deux serait deux fois plus « rapide ».
+`LocalDesktop.read(_:at:)` est donc le miroir de `place`, avec la même borne —
+relire au-delà de la RAM irait chercher la correspondance. Le test pose quatre
+mébioctets, chronomètre, et relit **aux frontières de tranches**, là où un
+décalage d'offset se voit.
+
+Le débit lui-même se lit dans le journal de « Cœur (Apple) » : il ne peut pas
+venir du conteneur, faute de `WKWebView`.
+
 ### Le cadre jusqu'à l'application
 
 `LocalDesktop` prend un cadre, le passe à la page, et expose `paint()` qui rend
