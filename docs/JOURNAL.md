@@ -9970,3 +9970,84 @@ maintenant.
 Une région qui n'a jamais été compilée aussi — l'hôte doit la traduire avant
 qu'elle puisse être dans la table. Ce qui a disparu, c'est le retour de main
 pour une région **déjà connue**, qui était le cas commun.
+
+## La boucle hôte existe, et en tournant elle a trouvé une faute dans du code déjà fusionné
+
+`web/host.js` est le code qui vivra dans le `WKWebView` : il tient la RAM de
+l'invité, les globales, la table des blocs et la correspondance, demande une
+traduction à l'application quand il tombe sur une adresse inconnue, et
+enchaîne. Il se teste ici sous Bun, qui embarque le même JavaScriptCore, avec
+un traducteur **injecté** — un aller-retour par message dans l'application, une
+table d'octets dans le test. Il est asynchrone dès le départ, parce que
+l'écrire synchrone aurait donné du code à jeter.
+
+### La faute : un indice de bloc relatif à la mauvaise région
+
+Un anneau de trois régions ne tournait pas. Il ajoutait 1, puis 2, puis 2, puis
+2 — la deuxième région s'appelait elle-même indéfiniment.
+
+La cause est dans l'émetteur, fusionné deux tranches plus tôt. Un bloc rendait
+son numéro **relatif à sa propre région**, et la boucle de répartition y
+ajoutait l'emplacement. L'invariant tenait tant qu'une région n'appelait que
+ses propres blocs. Dès qu'elle en appelle un d'ailleurs, c'est **la répartition
+d'entrée** qui continue de tourner, avec l'emplacement de la première région,
+pendant que le bloc étranger rend un numéro relatif au sien : les deux ne se
+correspondent plus.
+
+Il faut **deux sauts d'affilée** pour que l'écart se voie, et le test de la
+tranche précédente n'en faisait qu'un. Deux régions ne suffisaient pas ; trois,
+oui.
+
+La correction : un bloc rend un indice **absolu**, et la répartition n'ajoute
+plus rien — elle démarre seulement sur l'emplacement de sa région au lieu de
+zéro. Cinq sabotages sur cinq tombent, dont l'ancienne faute rejouée.
+
+Un de ces cinq a demandé un test de plus : `resolve` ne consulte la
+correspondance qu'après avoir comparé l'adresse aux blocs de sa **propre**
+région, et tous les sauts indirects du dépôt visaient une *autre* région. Une
+région qui saute chez elle, posée à l'emplacement cinq, était le cas manquant.
+
+### Ce que la boucle a appris en tournant
+
+**La correspondance ne rapporte qu'au deuxième passage.** Au premier, la cible
+de chaque saut n'y est pas encore. Ce n'est pas un défaut — c'est le régime
+d'un noyau — mais un test qui ne fait qu'un tour ne mesure rien de ce qui
+compte. Le mien en faisait un ; cinq sabotages y ont survécu, tous liés à la
+correspondance. En deux temps, ils tombent tous.
+
+**RIP inchangé ne veut pas dire bloqué.** Ma détection de sur-place prenait
+tout retour à l'adresse de départ pour une machine arrêtée — y compris un
+anneau dont le budget s'épuise pile sur son point de départ après trois cents
+tours. Ce qui distingue les deux est un bloc de plus : si un seul bloc ne fait
+pas bouger RIP, plus rien ne le fera. Le budget du test est maintenant un
+multiple exact du tour d'anneau, **exprès**, pour que ce cas soit celui qui est
+mesuré.
+
+### Un rapport que j'avais gonflé de moitié
+
+La tranche précédente annonçait « 190 ns contre 29, six fois et demie ». Les
+deux valeurs venaient de deux exécutions séparées d'une heure, et ce banc rend
+de **125 à 190 ns** pour la même forme selon la charge de la machine.
+
+`--example resolved` mesure désormais les deux formes **dans le même
+processus**. Le rapport se tient alors entre 3,7 et 4,3 sur des exécutions
+successives : environ quatre, pas six et demie. Le gain reste franc ; le
+chiffre était faux.
+
+### Deux constantes recopiées, et l'une était fausse
+
+`web/host.js` ne peut rien importer de Rust : rien ne traverse cette frontière
+à part des octets. Il recopie donc l'emplacement de RIP, le nombre de globales,
+la taille de la correspondance et le multiplicateur du hachage. J'avais écrit
+17 pour RIP — c'est 17, mais j'avais recopié 18. Le test qui compare les six
+valeurs aux constantes de la bibliothèque l'a dit à la première exécution.
+
+C'est la même leçon que le multiplicateur deviné de la tranche d'avant : une
+valeur recopiée qu'aucun test ne compare finit par mentir.
+
+### Ce que je ne peux pas dire
+
+La moitié Swift n'existe pas encore et rien d'elle ne se vérifierait d'ici :
+traduire par le C ABI quand la vue le demande, charger `web/host.js` dans un
+`WKWebView`, recevoir les pixels. C'est la tranche suivante, et c'est la CI
+d'Apple qui la jugera.

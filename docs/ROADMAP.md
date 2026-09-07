@@ -1960,9 +1960,34 @@ L'en-tête `include/wisq_vm.h` est écrit à la main, donc un programme C le
 compile et l'exécute à chaque commit — sur Linux, sans image de noyau, parce
 qu'un traducteur n'a aucune raison d'être sauté avec la machine.
 
-Ce qui manque encore pour le bureau : la boucle hôte — créer la mémoire et les
-globales, appeler `run`, relire RIP, retraduire depuis là, et exécuter ce que
-le module refuse. **Rien de cette partie ne se vérifie depuis Linux.**
+Ce qui manquait pour le bureau : la boucle hôte — créer la mémoire et les
+globales, appeler `run`, relire RIP, retraduire depuis là. **Elle existe, et
+elle se vérifie depuis Linux** : `web/host.js` est le code qui vivra dans le
+`WKWebView`, et `crates/wisq-vm/tests/host_loop.rs` le fait tourner sous Bun,
+qui embarque le même JavaScriptCore.
+
+Le traducteur y est **injecté**, et c'est ce qui rend le test possible : dans
+l'application c'est un aller-retour par message vers le processus hôte, où vit
+l'émetteur ; dans le test c'est une table d'octets préparés par le même
+émetteur. La boucle ne voit pas la différence — elle voit une fonction qui rend
+une promesse, parce qu'elle est **asynchrone** dès le départ. L'écrire avec un
+traducteur synchrone aurait donné du code à jeter.
+
+Deux choses que la boucle a apprises en tournant :
+
+1. **La correspondance ne rapporte qu'à partir du deuxième passage.** Au
+   premier, la cible de chaque saut n'y est pas encore : le module rend la
+   main, l'hôte traduit, et ainsi de suite. C'est le régime d'un noyau qui
+   revient sans cesse sur le même code, donc ce n'est pas un défaut — mais un
+   test qui ne fait qu'un tour ne mesure rien de ce qui compte.
+2. **RIP inchangé ne veut pas dire bloqué.** Un anneau dont le budget s'épuise
+   pile sur son point de départ revient à l'adresse d'où il est parti après
+   avoir tourné trois cents fois. Ce qui distingue les deux est un bloc de
+   plus : si un seul bloc ne fait pas bouger RIP, plus rien ne le fera.
+
+**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : traduire par
+le C ABI quand la vue le demande, charger `web/host.js` dans un `WKWebView`,
+et recevoir les pixels. Rien de cette moitié-là ne se vérifie depuis Linux.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
@@ -2155,14 +2180,21 @@ disparaît : le module trouve la région suivante lui-même et y va par
 
 | l'anneau, soixante-quatre maillons de six instructions | par changement de région |
 | --- | --- |
-| enchaîné par l'hôte (`--example chain`) | environ **190 ns** |
-| résolu dans le module (`--example resolved`) | **29 ns** |
+| enchaîné par l'hôte | 125 à 190 ns selon la charge |
+| résolu dans le module | **environ quatre fois moins** |
 
-Le plafond que l'enchaînement impose passe ainsi de trente-deux à **207 MIPS**,
-contre 247 que l'émetteur atteint *dans* une région sans jamais changer. L'écart
-entre ces deux plafonds borne ce que le changement coûte encore : de l'ordre de
-**cinq nanosecondes** — une déduction de deux mesures, pas une mesure, et le
-programme le dit.
+**Le rapport est ce qui tient, et le premier chiffrage était gonflé.** Il
+citait « 190 ns contre 29 », soit six fois et demie — mais les deux valeurs
+venaient de deux exécutions séparées d'une heure, et ce banc rend de 125 à
+190 ns pour la même forme selon la charge de la machine. `--example resolved`
+mesure désormais **les deux formes dans le même processus** : le rapport se
+tient alors entre 3,7 et 4,3 sur des exécutions successives.
+
+Le plafond que l'enchaînement impose passe de quarante à environ **cent
+soixante-dix MIPS**, contre 247 que l'émetteur atteint *dans* une région sans
+jamais changer. L'écart entre ces deux plafonds borne ce que le changement
+coûte encore : une dizaine de nanosecondes — une déduction de deux mesures,
+pas une mesure, et le programme le dit.
 
 **Comment c'est fait, et les trois choix qui comptent.**
 
