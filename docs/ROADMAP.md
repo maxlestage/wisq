@@ -2125,10 +2125,61 @@ adresse qui ne tombe pas dans l'image qu'il a posée, plutôt que de traduire au
 jugé. Un refus arrête la machine proprement ; un module faux la fait sauter
 n'importe où, et un piège WebAssembly est sans retour.
 
-**Ce qui reste vraiment à faire de ce côté** : la fenêtre d'octets ci-dessus,
-puis charger la page dans un `WKWebView`, déclarer le gestionnaire de messages,
-le brancher sur `DesktopBridge` et `DesktopTranslator`, recevoir les pixels.
-Seul le dernier morceau demande un runner Apple.
+### La raison du refus : « coupé » n'est pas « je ne sais pas »
+
+Avant la fenêtre d'octets, il fallait que l'émetteur sache dire **pourquoi** il
+refuse. Un refus a deux causes qui ne se traitent pas pareil : une instruction
+que le décodeur ne connaît pas — redemander n'y changera rien — et une
+instruction *coupée par le bord* des octets fournis, qui se décoderait très
+bien avec la suite. Les confondre coûte dans les deux sens : soit la vue
+abandonne une région traduisible, soit elle redemande pour rien à chaque vrai
+refus.
+
+`Module::region_or_why` et `Module::resolving_or_why` rendent donc un
+`Refused`. Les formes qui rendent un `Option` restent, et **délèguent** à
+celles-ci : deux implémentations finiraient par ne plus refuser les mêmes
+régions, et un test compare les deux sur cinq cas.
+
+**Le seuil de quinze octets est mesuré, pas déduit.** Une instruction x86-64
+fait au plus quinze octets : c'est la borne théorique. Ce qui la rend sûre est
+la distribution réelle — sur les 3673 abandons du noyau Alpine, il n'y en a
+**aucun entre douze et dix-neuf octets du bord** : 316 tout près, 3357 loin. Le
+seuil tombe dans un trou, pas au bord d'un précipice.
+
+**Quelle fenêtre, et pourquoi pas une grande.** Sur 10 116 entrées atteintes
+par un `call` :
+
+| fenêtre | compilées | manque de place au bord | refus francs |
+| --- | --- | --- | --- |
+| 512 o | 8582 (84,8 %) | 1464 | 70 |
+| 2 Kio | 9751 (96,4 %) | 274 | 91 |
+| 4 Kio | 9930 (98,2 %) | 91 | 95 |
+| 8 Kio | 9990 (98,8 %) | 27 | 99 |
+| 16 Kio | 10009 (98,9 %) | 6 | 101 |
+
+Le rendement décroît vite, donc une grande fenêtre fixe paierait des octets
+pour presque rien. Mieux vaut 4 Kio et un second essai sur les 0,9 % qui le
+demandent. Et **les refus francs montent avec la fenêtre**, de 70 à 101 : une
+petite fenêtre cache de vrais refus derrière des coupes, ce qui veut dire qu'un
+décompte de refus ne se lit jamais sans la taille qui va avec — le « 97 » cité
+plus haut est un chiffre de 4 Kio, pas une propriété du décodeur.
+
+**Deux régions ont changé de camp, et c'est l'ancienne lecture qui avait
+tort.** La sonde annonçait 89 coupes et 97 refus ; elle en compte maintenant 91
+et 95. Elle déduisait la cause en **remarchant l'octet fautif linéairement
+depuis l'entrée**, alors que l'émetteur suit le graphe des sauts : pour deux
+régions, la marche linéaire accusait un octet que l'émetteur n'a jamais
+regardé. La sonde lit désormais la raison que l'émetteur donne, et le même
+détour lui sert à mesurer ce que la prudence coûte — **zéro** : les 91 régions
+se décodent bien avec la suite, donc aucun second essai ne sera perdu sur ce
+noyau. Le compteur a été saboté pour vérifier qu'il n'était pas mort : condition
+inversée, il en compte 91.
+
+**Ce qui reste vraiment à faire de ce côté** : la fenêtre d'octets elle-même —
+la vue lit dans sa propre mémoire et envoie —, puis charger la page dans un
+`WKWebView`, déclarer le gestionnaire de messages, le brancher sur
+`DesktopBridge` et `DesktopTranslator`, recevoir les pixels. Seul le dernier
+morceau demande un runner Apple.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
@@ -2498,6 +2549,10 @@ dont 89 coupées par le bord — **97 vraiment refusées** au lieu de 120. Le
 corpus passe de 13 148 à **13 220 cas**, les cas jugés de 12 980 à **13 052**,
 les deux cliquets montent avec.
 
+> Ces deux nombres, 89 et 97, ont été corrigés depuis en **91 et 95** : la
+> sonde les déduisait par une marche linéaire qui n'est pas celle de
+> l'émetteur. Voir « La raison du refus » plus bas.
+
 Ce qui reste refuse pour une raison qui n'est pas le décodage : `rdtsc` (11),
 `wrmsr`/`rdmsr` (16), le groupe 7 (8), `pushf` (7), `mov` depuis un registre de
 segment (11). Chacune demande un **modèle** — le temps, les MSR, la table des
@@ -2509,17 +2564,23 @@ n'ai pas pu l'exécuter : il n'y a pas de chaîne Swift dans ce conteneur
 trois cœurs restent d'accord sur les trois nouveaux programmes, c'est la CI qui
 le dira.
 
-`cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9914
+`cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9930
 régions compilées depuis de vraies cibles de `call` du noyau Alpine :
 
 | Relevé | Valeur |
 | --- | --- |
-| Blocs, instructions | 249 339 blocs, 1 128 217 instructions |
+| Blocs, instructions | 250 861 blocs, 1 131 173 instructions |
 | Taille moyenne d'un bloc | **4,5 instructions** |
-| Rendent la main à coup sûr (`ud2` seul, depuis la boucle) | 3515, soit **0,31 %** — une toutes les 321 |
-| Chaînes répétées, désormais **dans** le module | 1533, soit 0,14 % |
-| Régions contenant au moins un `rep` | 883 sur 9914, soit **8,9 %** |
-| Peuvent rendre la main (`ret`, `jmp *`, `call *`) | 1986, soit 0,18 % |
+| Rendent la main à coup sûr (`ud2` seul, depuis la boucle) | 3537, soit **0,31 %** — une toutes les 320 |
+| Chaînes répétées, désormais **dans** le module | 1544, soit 0,14 % |
+| Régions contenant au moins un `rep` | 888 sur 9930, soit **8,9 %** |
+| Peuvent rendre la main (`ret`, `jmp *`, `call *`) | 2015, soit 0,18 % |
+
+> Ce tableau avait vieilli sans que rien ne le dise : il annonçait 9914
+> régions, 249 339 blocs et 3515 `ud2`, chiffres d'une exécution antérieure à
+> une tranche déjà fusionnée. Rien ne le tenait, contrairement au nombre de
+> tests ou à la version, qui ont chacun leur garde. Un relevé daté n'est pas
+> une valeur tenue, et celui-ci a dérivé pendant au moins une tranche.
 
 **Ce sont des comptes statiques, et il faut le dire avant de les lire.** Ils
 comptent des *emplacements* dans le code, pas des passages à l'exécution, et

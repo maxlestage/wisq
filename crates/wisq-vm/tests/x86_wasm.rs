@@ -20,8 +20,8 @@ use std::process::Command;
 
 use wisq_vm::x86::{Cpu, Step, Width};
 use wisq_vm::x86_wasm::{
-    table_base, table_slot, Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT,
-    TABLE_IMPORT, TABLE_MIX, TABLE_PAGES,
+    table_base, table_slot, Module, Refused, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
+    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TABLE_PAGES,
 };
 
 fn workspace_root() -> PathBuf {
@@ -2014,4 +2014,133 @@ console.log("rdx " + slots[2].value.toString());
         "rdx 1000",
         "le saut doit retomber sur le bloc de sa propre région"
     );
+}
+
+/// **`0f 0b` est `ud2`, `06` n'est rien.** Le second est `push es`, qui
+/// n'existe pas en mode 64 bits : le décodeur le refuse, et c'est un refus
+/// franc — aucune quantité d'octets supplémentaires ne le rendrait lisible.
+const UNKNOWN: u8 = 0x06;
+
+/// **Une région coupée en plein milieu d'une instruction le dit.**
+///
+/// `48 b8` suivi de huit octets charge une constante de soixante-quatre bits
+/// dans RAX. Coupée à cinq octets, elle ne se décode pas — mais elle se
+/// décoderait très bien avec la suite, et c'est toute la différence : la vue
+/// doit redemander, pas abandonner.
+#[test]
+fn a_region_cut_in_the_middle_of_an_instruction_asks_for_more() {
+    let whole = [0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8, 0xc3];
+    assert!(
+        Module::region_or_why(&whole, CODE, 0).is_ok(),
+        "entière, la région se traduit"
+    );
+    assert_eq!(
+        Module::region_or_why(&whole[..5], CODE, 0),
+        Err(Refused::MayBeCut { at: 0 }),
+        "coupée, elle demande davantage d'octets"
+    );
+}
+
+/// **Une instruction que le décodeur ne connaît pas est un refus franc**, et
+/// redemander n'y changerait rien.
+#[test]
+fn an_instruction_the_decoder_does_not_know_is_a_flat_refusal() {
+    let mut bytes = vec![0x90; 4];
+    bytes.push(UNKNOWN);
+    bytes.extend(std::iter::repeat_n(0x90, 40));
+    assert_eq!(
+        Module::region_or_why(&bytes, CODE, 0),
+        Err(Refused::CannotDecode { at: 4 }),
+        "l'octet fautif est nommé, et le refus est franc"
+    );
+}
+
+/// **Le seuil de quinze octets, tenu des deux côtés.**
+///
+/// C'est le test qui compte : le même octet inconnu, à la même place, ne rend
+/// pas la même réponse selon ce qui le suit. Quinze octets après lui, le
+/// décodeur avait toute la place qu'une instruction x86-64 peut demander —
+/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe.
+///
+/// Sans les deux moitiés, un seuil de zéro ou de mille passerait aussi bien.
+#[test]
+fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
+    // `restants` compte à partir de l'octet fautif, celui-ci compris : c'est la
+    // place dont le décodeur disposait pour lire une instruction entière.
+    let region = |restants: usize| {
+        let mut bytes = vec![0x90; 3];
+        bytes.push(UNKNOWN);
+        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
+        assert_eq!(bytes.len() - 3, restants, "le montage du cas lui-même");
+        Module::region_or_why(&bytes, CODE, 0)
+    };
+    assert_eq!(
+        region(14),
+        Err(Refused::MayBeCut { at: 3 }),
+        "quatorze octets restants : le décodeur a pu manquer de place"
+    );
+    assert_eq!(
+        region(15),
+        Err(Refused::CannotDecode { at: 3 }),
+        "quinze restants : il avait toute la place, donc c'est un vrai refus"
+    );
+}
+
+/// La forme du bureau rend les mêmes raisons, plus la sienne : une RAM qui
+/// n'est pas une puissance de deux ne se replie pas par un masque.
+#[test]
+fn the_desktop_form_says_why_too() {
+    let cut = [0x48, 0xb8, 1, 2, 3];
+    assert_eq!(
+        Module::resolving_or_why(&cut, CODE, 0, 0, 16),
+        Err(Refused::MayBeCut { at: 0 })
+    );
+    let loop_ = [0x48, 0x01, 0xc2, 0x75, 0xfb];
+    assert!(Module::resolving_or_why(&loop_, CODE, 0, 0, 16).is_ok());
+    assert_eq!(
+        Module::resolving_or_why(&loop_, CODE, 0, 0, 3),
+        Err(Refused::RamIsNotAPowerOfTwo(3)),
+        "trois pages ne se replient pas par un masque"
+    );
+    assert_eq!(
+        Module::resolving_or_why(&loop_, CODE, 0, 0, 0),
+        Err(Refused::RamIsNotAPowerOfTwo(0))
+    );
+}
+
+/// Une entrée hors des octets fournis ne donne aucun bloc, et le dit plutôt
+/// que de se faire passer pour un refus de décodage.
+#[test]
+fn an_entry_that_reaches_nothing_says_so() {
+    let bytes = [0x90, 0x90, 0xc3];
+    assert_eq!(
+        Module::region_or_why(&bytes, CODE, 9),
+        Err(Refused::NothingAtEntry)
+    );
+}
+
+/// **Les deux formes ne peuvent pas diverger** : celle qui rend un `Option` est
+/// celle qui explique, avec la raison jetée. Deux implémentations séparées
+/// finiraient par ne plus refuser les mêmes régions.
+#[test]
+fn the_short_form_refuses_exactly_what_the_explaining_one_refuses() {
+    let cases: [&[u8]; 5] = [
+        &[0x48, 0x01, 0xc2, 0x75, 0xfb],
+        &[0x48, 0xb8, 1, 2, 3],
+        &[UNKNOWN],
+        &[0x90, 0x90, 0xc3],
+        &[],
+    ];
+    for bytes in cases {
+        assert_eq!(
+            Module::region(bytes, CODE, 0).is_some(),
+            Module::region_or_why(bytes, CODE, 0).is_ok(),
+            "{bytes:02x?}"
+        );
+        assert_eq!(
+            Module::resolving(bytes, CODE, 0, 0, 16).is_some(),
+            Module::resolving_or_why(bytes, CODE, 0, 0, 16).is_ok(),
+            "{bytes:02x?}"
+        );
+    }
 }
