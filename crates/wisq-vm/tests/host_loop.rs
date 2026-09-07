@@ -792,6 +792,31 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
         );
     }
 
+    // **Un cadre dont la surface déborde d'un entier de soixante-quatre bits.**
+    // `largeur × hauteur × 4` sur deux entiers de trente-deux bits vaut jusqu'à
+    // deux puissance soixante-six : en release, la multiplication enroule en
+    // silence et peut retomber sur un petit nombre — c'est-à-dire qu'un cadre
+    // impossible serait **accepté**. Vu en écrivant la même garde en Swift,
+    // pas en relisant celle-ci.
+    for (width, height) in [(u32::MAX, u32::MAX), (1 << 31, 1 << 31), (1 << 20, 1 << 20)] {
+        assert!(
+            matches!(
+                page(
+                    1,
+                    0x1000,
+                    "wisq",
+                    Some(Screen {
+                        base: 0,
+                        width,
+                        height
+                    })
+                ),
+                Err(Refusal::ScreenDoesNotFit { .. })
+            ),
+            "un cadre de {width}×{height} doit être refusé, pas enroulé"
+        );
+    }
+
     // **Le canvas est dans la page, et seulement quand un cadre est déclaré.**
     // Une page qui en porterait un sans cadre montrerait un rectangle vide que
     // rien ne peindrait.
@@ -1639,7 +1664,7 @@ const cadre = new Uint32Array(laVM.memory.buffer, {frame}, {width} * {height});
 cadre.fill(VERT);
 
 // **Phase 1 : peindre sans boucle d'affichage.**
-window.wisqPaint();
+console.log("pixels " + window.wisqPaint());
 console.log("manuelle " + images[images.length - 1]);
 
 // **Phase 2 : peindre pendant que la machine tourne.**
@@ -1718,6 +1743,14 @@ console.log("finale " + images[images.length - 1]);
         seen("manuelle"),
         ["0,255,0,255"; 4].join(","),
         "wisqPaint doit peindre sans qu'aucune image de rendu n'ait été demandée"
+    );
+    // **Et elle rend le compte de pixels.** Une fonction qui ne rend rien ne se
+    // distingue pas d'une fonction qui n'a rien fait, et c'est la seule chose
+    // que l'application pourra lire depuis l'autre côté du pont.
+    assert_eq!(
+        seen("pixels"),
+        (WIDTH * HEIGHT).to_string(),
+        "wisqPaint doit dire combien de pixels elle a peints"
     );
 
     // **Phase 2.** La boucle a bien tourné pendant que la machine tournait.

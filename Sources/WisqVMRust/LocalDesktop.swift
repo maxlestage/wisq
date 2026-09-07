@@ -35,6 +35,10 @@ public final class LocalDesktop {
         /// La machine s'est arrêtée mais n'a pas dit pourquoi : le message
         /// d'arrêt n'est jamais arrivé. C'est un défaut de pont, pas une issue.
         case stopWasNeverAnnounced
+        /// **Peindre sans cadre.** Un bureau construit sans écran n'a rien à
+        /// montrer ; le refus le dit, plutôt que de laisser l'appelant croire
+        /// qu'une image est passée.
+        case noFrameWasDeclared
     }
 
     /// Pourquoi la machine s'est arrêtée, et où. Jamais « rien » : un arrêt
@@ -55,16 +59,58 @@ public final class LocalDesktop {
 
     private let pages: UInt32
     private let entry: UInt64
+    /// Le cadre que la page peindra, ou `nil` pour une machine qu'on juge sur
+    /// ses registres. Un démarrage sans écran est un cas réel.
+    private let screen: DesktopTranslator.Screen?
     private let channel = "wisq"
     private let web: WKWebView
     private let handler: Channel
 
-    public init(pages: UInt32, entry: UInt64) throws {
+    public init(
+        pages: UInt32,
+        entry: UInt64,
+        screen: DesktopTranslator.Screen? = nil
+    ) throws {
         guard pages > 0, pages & (pages - 1) == 0 else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
         }
+        // **Le cadre est jugé ici**, au plus tôt, et pas à la construction de
+        // la page : un bureau dont l'écran ne tient pas ne doit pas exister.
+        // C'est la même frontière que partout — au-dessus de la RAM vit la
+        // correspondance adresse → indice, et un cadre à cheval sur ce bord
+        // afficherait la table des blocs tout en la détruisant.
+        if let screen {
+            let ram = UInt64(pages) * 65536
+            let folded = screen.base & (ram - 1)
+            // **La surface peut déborder de soixante-quatre bits**, et ce
+            // débordement-là *accepterait* au lieu de refuser : deux dimensions
+            // de deux puissance trente et un donnent exactement deux puissance
+            // soixante-quatre. En Swift la multiplication piégerait — un
+            // plantage au lieu d'un refus, ce qui n'est pas mieux.
+            let (pixels, tooWide) = UInt64(screen.width)
+                .multipliedReportingOverflow(by: UInt64(screen.height))
+            let (bytes, tooBig) = pixels.multipliedReportingOverflow(by: 4)
+            // La comparaison est écrite en **soustrayant** plutôt qu'en
+            // additionnant : `folded + bytes` déborderait pour un `bytes`
+            // proche du maximum, et Swift piégerait là aussi.
+            guard screen.width > 0, screen.height > 0, !tooWide, !tooBig,
+                  bytes <= ram, folded <= ram - bytes
+            else {
+                // **`Int(clamping:)` et pas `Int(...)`.** Une surface de deux
+                // puissance soixante-trois ne déborde pas d'un `UInt64` mais
+                // ne tient pas dans un `Int` : la conversion piégerait, et le
+                // refus deviendrait un plantage. Le nombre annoncé est alors
+                // « au moins ça », ce qui suffit pour un refus.
+                throw Failure.imageDoesNotFit(
+                    folded: Int(clamping: folded),
+                    bytes: tooWide || tooBig ? Int.max : Int(clamping: bytes),
+                    ram: Int(clamping: ram)
+                )
+            }
+        }
         self.pages = pages
         self.entry = entry
+        self.screen = screen
         let settings = WKWebViewConfiguration()
         handler = Channel()
         settings.userContentController.add(handler, name: channel)
@@ -77,8 +123,13 @@ public final class LocalDesktop {
 
     /// Charge la page dans la vue et attend qu'elle soit prête.
     public func load(patience: TimeInterval = 20) async throws {
+        // Les trois raisons de refuser une page — la RAM, le nom du canal, le
+        // cadre — sont toutes tenues avant d'arriver ici : les deux premières
+        // par l'initialisation et par une constante, la troisième par la garde
+        // ci-dessous. Ce `guard` ne peut donc plus se déclencher, et c'est dit
+        // plutôt que caché derrière un refus qui nommerait la mauvaise cause.
         guard let page = DesktopTranslator.page(
-            pages: pages, entry: entry, channel: channel
+            pages: pages, entry: entry, channel: channel, screen: screen
         ) else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
         }
@@ -190,6 +241,40 @@ public final class LocalDesktop {
                 throw Failure.script("la globale \(slot) n'est pas revenue lisible")
             }
             return number
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw Failure.script(error.localizedDescription)
+        }
+    }
+
+    /// **Peindre une image, maintenant.**
+    ///
+    /// Rend le nombre de pixels peints. **Une fonction qui ne rend rien ne se
+    /// distingue pas d'une fonction qui n'a rien fait** — et c'est la seule
+    /// chose que l'application puisse lire de l'autre côté du pont.
+    ///
+    /// **Pourquoi ceci existe alors que la page a déjà sa boucle
+    /// d'affichage.** `requestAnimationFrame` ne tourne que dans une vue que le
+    /// système considère comme affichée. Cette vue-ci n'est ajoutée à aucune
+    /// fenêtre : elle pourrait n'en recevoir aucune. Un test qui attendrait une
+    /// image n'aurait alors rien à attendre, et l'application qui montre le
+    /// bureau dans un `WKWebView` posé sur l'écran, elle, en recevra. Les deux
+    /// chemins mènent au même `wisqPaint`.
+    public func paint() async throws -> Int {
+        guard screen != nil else { throw Failure.noFrameWasDeclared }
+        do {
+            // **La valeur revient en texte**, comme celle d'une globale : un
+            // nombre JavaScript traverse le pont en `NSNumber`, et le convertir
+            // suppose une correspondance que rien ici ne vérifie.
+            let value = try await web.callAsyncJavaScript(
+                "return window.wisqPaint().toString()",
+                arguments: [:], in: nil, contentWorld: .page
+            )
+            guard let text = value as? String, let pixels = Int(text) else {
+                throw Failure.script("wisqPaint n'a pas rendu un nombre lisible")
+            }
+            return pixels
         } catch let failure as Failure {
             throw failure
         } catch {
