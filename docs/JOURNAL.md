@@ -10606,3 +10606,48 @@ laissée diverger.
 
 Aucune des deux ne se serait vue à la compilation. Elles se voient en se
 demandant, ligne par ligne, ce qui arrive quand le cas limite tombe.
+
+## Les pixels : la vue peint, et l'écran serait resté noir
+
+Le réflexe aurait été un `LocalDesktop.pixels(…)` qui lit le tampon d'affichage
+dans la mémoire de la vue et le rend à l'application. Le chiffre l'écarte tout
+de suite : 1024×768 en trente-deux bits font **trois mégaoctets par image**,
+soit 180 Mo/s à soixante images par seconde à travers `evaluateJavaScript`.
+Aucun découpage en rectangles sales ne sauve ça, d'autant que l'invité ne dit
+pas ce qu'il a sali.
+
+Le bon dessin découle de la prémisse du lot, écrite partout ailleurs : la RAM de
+l'invité **est** la mémoire linéaire du module. Le cadre y est déjà. La page le
+recopie dans une `ImageData` et la pose sur un `<canvas>` — zéro traversée.
+L'application montre la vue et ne touche jamais un pixel.
+
+La tranche est donc en JavaScript, pas en Swift, et elle se juge sous Bun comme
+le reste de la boucle hôte.
+
+### Ce qu'une recopie naïve aurait donné : rien
+
+Le noyau écrit en **XRGB8888** — les octets en mémoire sont `B, G, R, X` —
+parce que c'est ce que `simpledrm` prend sans conversion. Une `ImageData` veut
+`R, G, B, A`. Passer la mémoire telle quelle aurait donné deux fautes, et la
+seconde est la pire :
+
+- le rouge et le bleu échangés, ce qui se remarque ;
+- **l'alpha à zéro**, c'est-à-dire un écran entièrement transparent. Pas une
+  image aux couleurs bizarres : *rien*. Exactement ce que montre une machine
+  qui n'a pas démarré, donc une panne qui n'aide en rien à se diagnostiquer.
+
+`paint` échange les composantes et **force l'opacité**, un mot de trente-deux
+bits à la fois. Le test l'exige sur deux pixels — rouge pur, bleu pur — et
+l'exige *avec* leur opacité : sans cette moitié-là de l'assertion, la faute qui
+compte passerait.
+
+### Deux refus, contre la même frontière que partout
+
+Un cadre qui déborderait de la RAM invitée est refusé **à la construction** :
+au-dessus vit la correspondance, et le peindre reviendrait à afficher la table
+des blocs à l'écran tout en la détruisant. Et un tampon de destination trop
+petit est refusé plutôt que peint à moitié.
+
+C'est la troisième fois aujourd'hui que la même frontière demande une garde —
+la lecture de la fenêtre, l'écriture de l'image, et maintenant le cadre. Trois
+endroits différents, une seule raison.
