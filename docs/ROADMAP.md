@@ -2067,10 +2067,68 @@ vérifiant qu'un refus ne touche pas aux sorties de l'appelant. La garde Swift
 est là pour le jour où ça changerait de l'autre côté, et c'est écrit dans le
 code plutôt que déguisé en test.
 
-**Ce qui reste vraiment à faire de ce côté** : charger la page dans un
-`WKWebView`, déclarer le gestionnaire de messages, brancher les deux sur
-`DesktopTranslator`, recevoir les pixels. Ça, et seulement ça, demande un
-runner Apple.
+### Le pont, et la question qu'il a fallu poser : d'où viennent les octets ?
+
+`DesktopBridge` est la moitié de l'application qui ne connaît pas la vue : lire
+une demande telle que `WKScriptMessage.body` la livre, rendre le JavaScript de
+réponse. Ni l'un ni l'autre n'a besoin d'un `WKWebView`, donc les deux sont
+jugés sous Linux à chaque commit.
+
+Deux choses s'y tiennent qui, autrement, se découvriraient sur un téléphone.
+**L'adresse arrive en texte et un nombre est refusé** plutôt que tronqué — un
+`Number` JavaScript perd ses bits au-delà de deux puissance cinquante-trois, et
+accepter le nombre ferait traduire une région ailleurs, en silence. Et **un
+vrai module fait l'aller-retour**, relu depuis le JavaScript produit et comparé
+octet pour octet, en exigeant qu'il porte des `0` et des `255` : un module sans
+octet extrême ne prouve rien sur les deux cas qui cassent.
+
+Dix sabotages sur dix, dont un que j'ai resserré parce qu'il passait par
+chance : « l'adresse est lue en hexadécimal » tombait sur une grande adresse,
+mais seulement parce qu'un long nombre décimal déborde en base seize. Seize et
+vingt-deux ne peuvent pas se confondre par accident.
+
+**« Pourquoi pas du base64 ? » a maintenant un chiffre**, `bun
+scripts/wasm-crossing-probe.ts`, et la réponse s'inverse deux fois :
+
+| forme | module du banc (1001 o) | 4 Kio | source |
+| --- | --- | --- | --- |
+| tableau de nombres | 3,1 µs | 6,1 µs | ×3,2 |
+| base64 + boucle | 6,2 µs | 13,1 µs | ×1,35 |
+| base64 + `Uint8Array.fromBase64` | 2,3 µs | 5,4 µs | ×1,35 |
+
+Le tableau écrit une source deux fois et demie plus longue et gagne quand même
+contre la boucle : JavaScriptCore analyse un littéral plus vite qu'une boucle
+de décodage ne tourne. Il reperd contre la méthode native — qui demande iOS
+18.2 quand wisq vise iOS 17, et dont le repli sur ce plancher est justement la
+boucle, la pire des trois. Et l'écart total sur un démarrage entier se compte
+en **dizaines de millisecondes**. Le tableau reste.
+
+### Ce que la demande ne porte pas, et qui n'était écrit nulle part
+
+`translate(address, slot)` ne porte **que l'adresse**. L'application doit donc
+trouver les octets, et la RAM de l'invité vit dans la vue, pas chez elle : elle
+ne peut les trouver que dans l'image qu'elle a chargée.
+
+Pour le noyau, ça suffit. Pour du code que l'invité écrit lui-même — un module
+chargé — l'application lirait ce que son image contient à cette adresse,
+c'est-à-dire **les mauvais octets, sans que rien ne le dise**. C'est la forme de
+défaut que ce dépôt refuse partout ailleurs : pas un refus, une réponse fausse.
+
+La correction est une tranche à elle seule : la vue lit une fenêtre depuis sa
+propre mémoire à l'adresse repliée et la passe à `translate`, le pilote la
+poste, le pont la lit. La taille de la fenêtre se choisira en mesurant —
+l'émetteur a déjà la notion de coupe par le bord, et elle touche 89 régions sur
+9930.
+
+**En attendant**, la règle est écrite dans le type : l'appelant refuse une
+adresse qui ne tombe pas dans l'image qu'il a posée, plutôt que de traduire au
+jugé. Un refus arrête la machine proprement ; un module faux la fait sauter
+n'importe où, et un piège WebAssembly est sans retour.
+
+**Ce qui reste vraiment à faire de ce côté** : la fenêtre d'octets ci-dessus,
+puis charger la page dans un `WKWebView`, déclarer le gestionnaire de messages,
+le brancher sur `DesktopBridge` et `DesktopTranslator`, recevoir les pixels.
+Seul le dernier morceau demande un runner Apple.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
