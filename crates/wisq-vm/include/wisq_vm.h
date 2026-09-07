@@ -209,7 +209,55 @@ void wisq_vm_free(WisqVM *vm);
 int wisq_x86_emit_region(const uint8_t *code, size_t len, uint64_t base, size_t entry,
                          uint8_t **out_bytes, size_t *out_len);
 
-/* Releases a module from wisq_x86_emit_region. */
+/*
+ * The form the local desktop actually needs.
+ *
+ * wisq_x86_emit_region returns the historical shape: a lone region that hands
+ * control back the moment it leaves itself. This one is *linked* — its blocks
+ * sit in the host's shared table from `slot` onwards — and *confined*: guest
+ * addresses are folded into `pages` 64 KiB pages, which puts the address to
+ * block-index correspondence just above them, out of the guest's reach. The
+ * module reads it itself and moves between regions without going back through
+ * the application.
+ *
+ * `pages` must be a power of two: the fold is a mask, and a mask only
+ * describes an interval on a power of two. Otherwise, refusal — as for a
+ * region the emitter cannot translate.
+ *
+ * The host must provide a memory of at least `pages + wisq_desktop_table_pages()`
+ * pages, and a table of at least `slot` plus the region's blocks. A module
+ * given less does not instantiate, which is loud; were it to instantiate, it
+ * would trap on the first jump, and a WebAssembly trap has no return.
+ */
+int wisq_x86_emit_resolving(const uint8_t *code, size_t len, uint64_t base, size_t entry,
+                            uint32_t slot, uint32_t pages,
+                            uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * The page the application loads into its view: the host loop, the bridge to
+ * the application, and the machine's starting state.
+ *
+ * `channel` names the message handler the application declares. It is *pasted
+ * into JavaScript*, so only letters and digits are accepted — the same care as
+ * for a VM identifier pasted into a command line.
+ *
+ * Returns 0 and the page in UTF-8, or -1 when the RAM is not a power of two or
+ * the channel name cannot be pasted safely.
+ */
+int wisq_desktop_page(uint32_t pages, uint64_t entry, const char *channel,
+                      uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * What the correspondence occupies *above* the guest's RAM, in pages. The host
+ * adds it to the size of the memory it creates.
+ */
+uint32_t wisq_desktop_table_pages(void);
+
+/*
+ * Releases a buffer from wisq_x86_emit_region, wisq_x86_emit_resolving or
+ * wisq_desktop_page. A machine snapshot is not one of these: it has its own
+ * wisq_vm_free_snapshot.
+ */
 void wisq_x86_free_module(uint8_t *bytes, size_t len);
 
 /*

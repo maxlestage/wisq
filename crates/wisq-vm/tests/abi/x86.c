@@ -174,6 +174,119 @@ int main(void) {
      * happened, and the machine side already promises this for snapshots. */
     wisq_x86_free_module(NULL, 0);
 
+    /* **La forme que le bureau traduit vraiment.** Liée à un emplacement,
+     * confinée à une RAM en puissance de deux. Elle doit rendre autre chose
+     * que la forme historique — sinon l'un des deux arguments ne sert à
+     * rien — et refuser une RAM qui n'est pas une puissance de deux. */
+    uint8_t *plain = NULL;
+    size_t plain_len = 0;
+    check(wisq_x86_emit_region(LOOP, sizeof LOOP, GUEST_BASE, 0, &plain, &plain_len) == 0,
+          "la forme historique se traduit");
+    uint8_t *bound = NULL;
+    size_t bound_len = 0;
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 3, 1,
+                                  &bound, &bound_len) == 0,
+          "la forme qui résout se traduit");
+    if (plain != NULL && bound != NULL) {
+        check(bound_len != plain_len || memcmp(bound, plain, plain_len) != 0,
+              "et elle n'est pas le même module que la forme historique");
+        wisq_x86_free_module(bound, bound_len);
+    }
+    if (plain != NULL) {
+        wisq_x86_free_module(plain, plain_len);
+    }
+
+    /* **Et l'emplacement demandé doit servir.** Comparer la forme qui résout à
+     * la forme historique ne suffit pas : elles diffèrent de toute façon. Ce
+     * qu'il faut, ce sont deux emplacements différents — un sabotage qui passe
+     * zéro à la place de `slot` a survécu tant que ce couple-là manquait, et
+     * une région posée au mauvais endroit écrase les blocs de sa voisine, en
+     * silence. */
+    uint8_t *here = NULL, *there = NULL;
+    size_t here_len = 0, there_len = 0;
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 1,
+                                  &here, &here_len) == 0,
+          "la forme qui résout se traduit à l'emplacement zéro");
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 7, 1,
+                                  &there, &there_len) == 0,
+          "et à l'emplacement sept");
+    if (here != NULL && there != NULL) {
+        check(here_len != there_len || memcmp(here, there, here_len) != 0,
+              "deux emplacements différents ne donnent pas le même module");
+    }
+    if (here != NULL) {
+        wisq_x86_free_module(here, here_len);
+    }
+    if (there != NULL) {
+        wisq_x86_free_module(there, there_len);
+    }
+
+    /* La RAM confinée aussi : deux tailles différentes replient différemment. */
+    uint8_t *small = NULL, *large = NULL;
+    size_t small_len = 0, large_len = 0;
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 1,
+                                  &small, &small_len) == 0,
+          "une page de RAM");
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 16,
+                                  &large, &large_len) == 0,
+          "seize pages de RAM");
+    if (small != NULL && large != NULL) {
+        check(small_len != large_len || memcmp(small, large, small_len) != 0,
+              "deux RAM différentes ne donnent pas le même module");
+    }
+    if (small != NULL) {
+        wisq_x86_free_module(small, small_len);
+    }
+    if (large != NULL) {
+        wisq_x86_free_module(large, large_len);
+    }
+
+    uint8_t *odd = (uint8_t *)1;
+    size_t odd_len = 1;
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 3,
+                                  &odd, &odd_len) == -1,
+          "trois pages ne donnent pas un masque, donc refus");
+    check(odd == (uint8_t *)1 && odd_len == 1,
+          "et ce refus-là non plus ne touche pas aux sorties");
+
+    /* **La page du bureau.** Elle porte la boucle hôte et le nom du canal ;
+     * elle refuse un nom qu'on ne peut pas recoller dans du JavaScript. */
+    uint8_t *page = NULL;
+    size_t page_len = 0;
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", &page, &page_len) == 0,
+          "la page du bureau se construit");
+    if (page != NULL) {
+        check(page_len > 1000, "et elle porte plus que son squelette");
+        /* Le nom du canal doit s'y trouver : sans lui, la vue posterait dans
+         * le vide et l'application n'entendrait jamais rien. */
+        int found = 0;
+        for (size_t at = 0; at + 4 <= page_len; at++) {
+            if (memcmp(page + at, "wisq", 4) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        check(found, "et le nom du canal y est");
+        wisq_x86_free_module(page, page_len);
+    }
+
+    uint8_t *unsafe_name = (uint8_t *)1;
+    size_t unsafe_len = 1;
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq; alert(1)", &unsafe_name, &unsafe_len) == -1,
+          "un nom de canal qui porte du code est refusé");
+    check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
+          "et le refus laisse les sorties tranquilles");
+    check(wisq_desktop_page(3, GUEST_BASE, "wisq", &unsafe_name, &unsafe_len) == -1,
+          "une RAM qui n'est pas une puissance de deux aussi");
+    check(wisq_desktop_page(1, GUEST_BASE, NULL, &unsafe_name, &unsafe_len) == -1,
+          "un nom nul est refusé plutôt que déréférencé");
+
+    /* La correspondance occupe une place que l'hôte doit ajouter à la RAM.
+     * Zéro voudrait dire qu'il n'a rien à ajouter, et le module piégerait au
+     * premier saut vers une autre région. */
+    check(wisq_desktop_table_pages() > 0,
+          "la correspondance occupe des pages, et l'hôte doit les prévoir");
+
     if (failures == 0) {
         printf("traducteur x86 : l'en-tête décrit la bibliothèque qu'il déclare\n");
         return 0;
