@@ -11374,3 +11374,47 @@ la phrase — devenait fausse dans le nouveau mode, qui suspend *à l'intérieur
 `read`. Les attentes sont servies dans leur ordre d'arrivée, chacune prenant une
 tranche entière ; la propriété est réaffirmée par un test à elle, et ce test
 tombe quand on sert les attentes à l'envers.
+
+### L'invité parle
+
+Première fois que quelque chose sort de cette machine autrement que par des
+pixels. Un programme x86 écrit à la main — `mov $0x3f8, %dx ; mov $'h', %al ;
+out %al, %dx` — traduit par l'émetteur, compilé par JavaScriptCore, lié à
+l'hôte : « hi » arrive par le port série, dans l'ordre, et la machine s'arrête
+exactement sur son `ud2`.
+
+**Deux défauts trouvés en chemin, chacun exposé par un test écrit avant sa
+correction.**
+
+Le premier était dans la moitié que j'avais **déjà commitée**. Mon propre
+commentaire disait « le port est dans DX, et l'exécutant le sait de l'opcode » —
+sauf que `Decoded` ne porte pas l'opcode. `out $0, %al` et `out %al, %dx`
+étaient le même objet, `imm: 0` tous les deux. Un émetteur lisant `imm` aurait
+écrit dans le port zéro à chaque forme DX : la console d'un noyau est en
+`0x3f8`, et l'invité se serait tu sans que rien ne le signale. `immediate`
+portait déjà exactement cette question pour tout le reste du jeu d'instructions.
+
+Le second n'était visible que depuis l'appareil. Tout module émis réclame
+maintenant `env.out` et `env.in`, celui du banc WebKit compris. Sans les deux
+dans son objet d'imports, la sonde aurait échoué sur un vrai iPhone par un
+`LinkError` qu'elle aurait rapporté comme « la sonde est en panne ».
+
+**Le piège de la tranche, et il est silencieux.** Une fonction importée occupe
+le début de l'espace d'indices : avec deux imports, le bloc zéro devient la
+fonction deux. L'oublier ne produit **aucune** erreur de liaison — la table
+pointerait les imports, du bon type, et la boucle appellerait `out` en croyant
+exécuter un bloc. Un test lit les deux endroits où l'indice apparaît (éléments
+et export), sur un module qui ne contient aucune entrée-sortie.
+
+**Ce que les tests Rust ne pouvaient pas prouver.** La caisse n'a aucune
+dépendance, exprès : pas de moteur WebAssembly, donc les tests y lisent des
+octets. Ils disent que `env.out` est déclaré à la bonne place, pas qu'un moteur
+l'appelle avec les bons arguments. Le port, la valeur et la largeur sont trois
+`i64` : poussés dans le mauvais ordre, aucun moteur ne s'en plaindrait. Seule la
+chaîne reçue le dit, et c'est le test de bout en bout sous Bun qui la lit.
+
+**Et une leçon d'outillage.** Sept tests de la boucle hôte sont tombés d'un coup
+dès que l'émetteur a changé de forme — les sept qui instancient de vrais modules
+sous un moteur. C'est le bon signal, arrivé au bon moment : le refus venait du
+moteur lui-même, `import function env:out must be callable`, et il nommait
+exactement ce qui manquait.

@@ -24,6 +24,18 @@ use wisq_vm::x86_wasm::{
     RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TABLE_PAGES,
 };
 
+// **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
+//
+// Aucun de ces tests ne fait d'entrée-sortie : ils comparent du calcul à ce que
+// le vrai processeur en fait. Mais tout module émis les **déclare** depuis que
+// l'invité sait parler, et un module qui déclare un import que l'objet ne porte
+// pas est refusé à l'instanciation — `LinkError: import function env:out must
+// be callable`, et pas une ligne sur le calcul qu'on croyait mesurer.
+//
+// La répétition est assumée plutôt que factorisée : elle est **comparée**, et
+// par le moteur lui-même. Un pilote à qui il manquerait ces deux fonctions ne
+// se tairait pas, il refuserait bruyamment.
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -69,7 +81,7 @@ const slots = [];
 for (let slot = 0; slot < job.globals; slot++) {
   slots.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
 }
-const imports = { env: { mem: memory } };
+const imports = { env: { mem: memory, out: () => undefined, in: () => 0n } };
 slots.forEach((global, slot) => { imports.env["g" + slot] = global; });
 const guest = new Uint8Array(memory.buffer);
 // L'étendue telle qu'elle est au départ de chaque cas. Elle sert de référence :
@@ -769,7 +781,7 @@ const slots = [];
 for (let slot = 0; slot < {}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
 }}
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
 const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
 slots[0].value = 0x40001000n;   // rax : hors de la région
@@ -852,7 +864,7 @@ const slots = [];
 for (let slot = 0; slot < {}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
 }}
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
 const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
 slots[2].value = 0n;            // rdx : le témoin
@@ -983,7 +995,7 @@ for (const test of cases) {{
   for (let slot = 0; slot < {}; slot++) {{
     slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   }}
-  const imports = {{ env: {{ mem: memory }} }};
+  const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
   slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
   const instance = new WebAssembly.Instance(
     new WebAssembly.Module(modules[test.of]), imports);
@@ -1135,7 +1147,7 @@ const slots = [];
 for (let slot = 0; slot < {}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
 }}
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
 const load = path =>
   new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), imports);
@@ -1328,7 +1340,7 @@ fn the_host_loop_chains_regions_and_keeps_the_machine() {
 const fs = require("fs");
 const memory = new WebAssembly.Memory({{ initial: {pages} }});
 const slots = [];
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   imports.env["g" + slot] = slots[slot];
@@ -1452,7 +1464,7 @@ const fs = require("fs");
 const bytes = fs.readFileSync({path:?});
 const memory = new WebAssembly.Memory({{ initial: {pages} }});
 const slots = [];
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   imports.env["g" + slot] = slots[slot];
@@ -1598,7 +1610,7 @@ function run(path, pages) {{
   for (let slot = 0; slot < {}; slot++) {{
     slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   }}
-  const imports = {{ env: {{ mem: memory }} }};
+  const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
   slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
   const instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), imports);
   slots[0].value = MARK;              // rax : ce qu'on écrit
@@ -1754,7 +1766,7 @@ function attempt(fill, pages) {{
   const memory = new WebAssembly.Memory({{ initial: pages }});
   const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
   const slots = [];
-  const imports = {{ env: {{ mem: memory, {tableName}: blocks }} }};
+  const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n, {tableName}: blocks }} }};
   for (let slot = 0; slot < {globals}; slot++) {{
     slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
     imports.env["g" + slot] = slots[slot];
@@ -1974,7 +1986,7 @@ const fs = require("fs");
 const memory = new WebAssembly.Memory({{ initial: {pages} }});
 const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
 const slots = [];
-const imports = {{ env: {{ mem: memory, {table}: blocks }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n, {table}: blocks }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   imports.env["g" + slot] = slots[slot];

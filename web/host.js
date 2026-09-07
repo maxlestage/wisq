@@ -125,7 +125,37 @@ async function answered(ask, patience) {
   });
 }
 
-export function machine({ translate, pages, screen, regions = 4096, patience = 30000 }) {
+/// **Le port série, et le strict nécessaire d'un 16550.**
+///
+/// C'est par là qu'un noyau Linux parle avant d'avoir le moindre pilote : le
+/// tout premier `printk` sort en `0x3f8`, un octet à la fois. Rien d'autre du
+/// composant n'est implémenté, et c'est délibéré — mais deux registres ne
+/// peuvent pas manquer, parce qu'un noyau *attend* sur eux :
+///
+/// - `0x3f8` en écriture est le registre d'émission. L'octet part.
+/// - `0x3fd` en lecture est le registre d'état de ligne. Le noyau y tourne en
+///   boucle jusqu'à voir « l'émetteur est libre » avant chaque caractère. Un
+///   zéro rendu là ne perdrait pas un octet : il pendrait la machine pour
+///   toujours, sur une boucle correcte.
+const SERIAL = 0x3f8;
+const SERIAL_STATUS = SERIAL + 5;
+/// Émetteur vide **et** registre d'émission vide : les deux bits que la boucle
+/// d'attente d'un noyau consulte.
+const TRANSMITTER_IDLE = 0x60;
+/// **Ce que rend un port où il n'y a personne.** Un vrai PC laisse le bus
+/// flotter, et le lecteur voit tous les bits à un. Rendre zéro ferait croire à
+/// un périphérique présent et muet, ce qui est la pire des deux réponses : un
+/// noyau qui sonde `0xff` passe son chemin, un noyau qui sonde `0x00` s'installe.
+const NOBODY_THERE = 0xff;
+
+export function machine({
+  translate,
+  pages,
+  screen,
+  serial,
+  regions = 4096,
+  patience = 30000,
+}) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
@@ -137,6 +167,35 @@ export function machine({ translate, pages, screen, regions = 4096, patience = 3
     globals.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
     env["g" + slot] = globals[slot];
   }
+  // **Les deux fonctions par lesquelles l'invité touche le monde.**
+  //
+  // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un
+  // retour de main coûte environ 190 ns, mesuré, et une console écrit
+  // caractère par caractère. Un appel importé en coûte des dizaines. C'est le
+  // choix de v86.
+  //
+  // Les trois arguments arrivent en `i64`, donc en `BigInt` : le port, la
+  // valeur, et **la largeur en octets**. La largeur est passée plutôt que
+  // devinée — deux octets dont le haut est nul ressemblent à un octet.
+  env.out = (port, value, width) => {
+    const at = Number(port);
+    if (at === SERIAL) {
+      // Un `out %ax, %dx` vers l'émetteur écrit deux caractères sur un vrai
+      // 16550 seulement avec la FIFO ; ici l'octet bas suffit, et le dire est
+      // plus honnête que de faire semblant.
+      if (serial) serial(Number(value & 0xffn));
+      return;
+    }
+    // Tout le reste tombe dans le vide, comme sur une carte mère sans la
+    // carte : une écriture vers un port absent ne fait rien et ne fait pas
+    // planter la machine.
+    void width;
+  };
+  env.in = (port, width) => {
+    void width;
+    if (Number(port) === SERIAL_STATUS) return BigInt(TRANSMITTER_IDLE);
+    return BigInt(NOBODY_THERE);
+  };
   const imports = { env };
   const base = pages * 65536;
   const known = new Map();
