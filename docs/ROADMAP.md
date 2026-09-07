@@ -2263,11 +2263,53 @@ Linux : le compilateur en lit la syntaxe et s'arrête là. Tout le reste de cett
 série a été construit et exécuté ici avant d'être poussé ; ceci non. C'est la
 vraie limite du conteneur, et elle ne tient plus qu'à un framework Apple.
 
-**Ce qui reste** : les pixels. Le tampon d'affichage vit dans la mémoire de
-l'invité, donc dans la vue ; l'application doit le lire et le peindre. Et
-l'image du noyau passe aujourd'hui par `evaluateJavaScript`, par tranches de
-48 Kio — un chemin assumé et cher, qu'un gestionnaire de schéma remplacerait,
-et qui ne se mesure que sur un appareil.
+**Ce qui reste** : l'image du noyau passe aujourd'hui par `evaluateJavaScript`,
+par tranches de 48 Kio — un chemin assumé et cher, qu'un gestionnaire de schéma
+remplacerait, et qui ne se mesure que sur un appareil.
+
+### Les pixels : c'est la vue qui peint
+
+Le réflexe aurait été un `LocalDesktop.pixels(…)` qui lit le cadre dans la
+mémoire de la vue et le rend à l'application. Le chiffre l'écarte : 1024×768 en
+trente-deux bits font **trois mégaoctets par image**, soit 180 Mo/s à soixante
+images par seconde à travers `evaluateJavaScript`. La RAM de l'invité *étant*
+la mémoire linéaire du module, le cadre est déjà dans la vue : `vm.paint` le
+convertit sur place, l'application ne touche jamais un pixel.
+
+**Et ce n'est pas une recopie.** Le noyau écrit en XRGB8888 — octets `B, G, R,
+X`, ce que `simpledrm` prend sans conversion — quand une `ImageData` veut
+`R, G, B, A`. Le rouge et le bleu échangés se remarquent ; **l'alpha à zéro,
+non** : un écran entièrement transparent ressemble exactement à une machine qui
+n'a pas démarré.
+
+### La boucle ne rendait jamais la main
+
+Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
+que sur `translate`. Une fois toutes les régions connues — dès la fin du
+démarrage, pour un noyau — la boucle enchaîne des millions de blocs sans jamais
+repasser par la boucle d'événements. **La page aurait été gelée** : aucun
+repeint, aucun toucher, aucun timer.
+
+Mesuré sous le JavaScriptCore de Bun, un souffle toutes les huit millisecondes
+pendant trois cents :
+
+| forme | souffles | tours de page obtenus |
+| --- | ---: | ---: |
+| `setTimeout(…, 0)` | 32 | **32** |
+| `MessageChannel` | 37 | **0** |
+| `Promise.resolve()` | 37 | **0** |
+
+Le premier dessin passait par un `MessageChannel`, sur l'argument — juste, mais
+hors sujet — qu'un message n'est pas borné à quatre millisecondes comme un
+timer réarmé. Un message est livré **sans laisser passer un timer déjà dû** ; il
+cède aussi peu qu'une micro-tâche, et aurait donné une boucle qui a l'air de
+respirer et une page toujours gelée.
+
+Le prix du timer, au même endroit : **dix-neuf pour cent de débit**. Le souffle
+se règle sur le **temps** et non sur les tours — un tour peut valoir un bloc
+comme un million. Ce que la respiration ne peut pas découper : un
+`region.run(budget)` est indivisible, donc le budget est le vrai plancher du
+gel, et ce qu'il coûte à 2²⁰ blocs ne se mesure que sur un appareil.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 

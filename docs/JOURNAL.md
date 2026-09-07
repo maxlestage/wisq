@@ -10651,3 +10651,68 @@ petit est refusé plutôt que peint à moitié.
 C'est la troisième fois aujourd'hui que la même frontière demande une garde —
 la lecture de la fenêtre, l'écriture de l'image, et maintenant le cadre. Trois
 endroits différents, une seule raison.
+
+## La boucle ne rendait jamais la main, et le canvas serait resté figé
+
+La tranche suivante est le canvas : la page crée un `<canvas>` et appelle
+`vm.paint` à chaque image. En la dessinant, une question a précédé le code —
+**qui appelle « à chaque image » ?** `requestAnimationFrame`, forcément. Or
+`vm.run()` n'attend que sur `translate`. Une fois toutes les régions connues,
+c'est-à-dire dès la fin du démarrage pour un noyau, la boucle enchaîne des
+millions de blocs sans jamais repasser par la boucle d'événements.
+
+La page aurait donc été **gelée** : aucun repeint, aucun toucher, aucun timer.
+Et le canvas aurait montré éternellement sa première image — un écran figé,
+c'est-à-dire exactement ce à quoi ressemble une machine qui a planté.
+
+### Mesuré, pas déduit
+
+Le harnais fait tourner l'anneau de trois régions en régime établi, avec un
+timer qui se réarme à côté, et compte ses tours :
+
+| régime | durée | tours obtenus par la page |
+| --- | ---: | ---: |
+| sans respirer | 291 ms | **0** |
+| en respirant toutes les 8 ms | 329 ms | **32** |
+
+Zéro. Pas « peu » : zéro, sur toute la durée.
+
+### Le premier dessin était faux, et c'est la mesure qui l'a dit
+
+J'ai d'abord écrit la respiration avec un `MessageChannel`, sur un argument qui
+se tient : la spécification HTML borne un timer réarmé à quatre millisecondes
+dès le cinquième niveau d'imbrication, alors qu'un message n'est pas borné.
+C'est d'ailleurs pour ça que l'ordonnanceur de React s'en sert.
+
+Sauf que cet argument porte sur la **granularité**, pas sur ce qu'on cherche
+ici. Mesuré sous le JavaScriptCore de Bun, un souffle toutes les huit
+millisecondes pendant trois cents :
+
+| forme | souffles | tours de page obtenus |
+| --- | ---: | ---: |
+| `setTimeout(…, 0)` | 32 | **32** |
+| `MessageChannel` | 37 | **0** |
+| `Promise.resolve()` | 37 | **0** |
+
+Un message est livré **sans laisser passer un timer déjà dû**. Il cède aussi
+peu qu'une micro-tâche. La version `MessageChannel` aurait donné une boucle qui
+a l'air de respirer et une page toujours gelée — la pire des deux issues,
+parce qu'elle survit à la relecture.
+
+Le prix du timer, mesuré au même endroit : 2 991 417 tours contre 3 679 889
+sans respirer, soit **dix-neuf pour cent de débit** pour une vue qui répond.
+
+### Le souffle se règle sur le temps, pas sur les tours
+
+Un tour peut valoir un bloc comme un million : la boucle sort dès qu'une cible
+manque à la correspondance. Respirer à chaque tour ferait donc payer une tâche
+par bloc dans le pire cas. Le cadran est en millisecondes, et le test le tient
+— avec ce sabotage, le même travail passe de 329 ms à **2038 ms**.
+
+### Ce que la respiration ne peut pas découper
+
+Un `region.run(budget)` est indivisible. Le budget est donc le vrai plancher du
+gel, et à 2²⁰ blocs il vaut bien plus que huit millisecondes. Ce que ça coûte
+vraiment ne se mesure pas ici : il faut un appareil.
+
+Nombre de tests : 2230 → 2231.
