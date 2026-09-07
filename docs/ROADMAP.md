@@ -2244,8 +2244,13 @@ deux fichiers et deux langages, et ne peut plus diverger en silence.
 demandes et fait tourner la machine. Il vit dans `WisqVMRust` derrière
 `#if canImport(WebKit)`, **pas** dans `WisqUI` : une vue SwiftUI serait à sa
 place là-bas, mais ceci est la conduite, et `WisqUI` n'est que *compilé* par la
-CI quand cette cible-ci est **exécutée**. Il ne reste à l'écran que ce qui a
-besoin d'un écran.
+CI. Il ne reste à l'écran que ce qui a besoin d'un écran.
+
+**Correction du 7 septembre : la seconde moitié de cette phrase était fausse.**
+« `WisqVMRust` est exécuté sur macOS comme sur Linux » ne tient pas pour ce
+fichier-ci. Voir « Les tests du bureau local ne tournent nulle part » plus bas :
+`LocalDesktop.swift` est compilé par **App iOS**, et `LocalDesktopTests` n'est
+exécuté par aucun job.
 
 **La fuite que la structure évite.** `add(_:name:)` retient fortement ce qu'on
 lui donne : un bureau qui se déclarerait lui-même gestionnaire fermerait la
@@ -2302,6 +2307,46 @@ contexte a rendue (un vrai navigateur lève) ; une image plus grande que le
 canvas (une vraie page **tronque en silence**, ce qui est pire) ; et une boucle
 d'affichage qui survit à la machine, qu'une vraie page laisserait repeindre
 soixante fois par seconde sans rien dire.
+
+### Le chemin de l'image, relu avant d'être remplacé
+
+L'image du noyau traverse par `evaluateJavaScript` en tranches de 48 Kio de
+base64. « Assumé et cher » était écrit depuis quatre tranches sans qu'aucun
+nombre ne soit derrière ; le remplacer par un gestionnaire de schéma se
+décidera sur un nombre.
+
+**Mesurer une écriture sans pouvoir la relire ne mesure rien** : une `place`
+qui perdrait une tranche sur deux serait deux fois plus « rapide ».
+`LocalDesktop.read(_:at:)` est donc le miroir de `place`, avec la même borne —
+relire au-delà de la RAM irait chercher la correspondance. Le test pose quatre
+mébioctets, chronomètre, et relit **aux frontières de tranches**, là où un
+décalage d'offset se voit.
+
+**Il n'y a pas encore de débit**, et pas parce que le conteneur n'a pas de
+`WKWebView` : parce que **aucun job de la CI n'exécute `LocalDesktopTests`**.
+Voir la section suivante.
+
+### Les tests du bureau local ne tournent nulle part
+
+Vérifié, pas déduit. « Cœur (Apple) » lance `swift test` avec
+`WISQ_SWIFT_CORE: '1'`, ce qui met `rustCoreEnabled = false` dans
+`Package.swift` — et **retire entièrement** la cible `WisqVMRust` et sa cible de
+tests. Le journal du job le confirme : aucune suite `WisqVMRustTests`, aucune
+occurrence de « LocalDesktop », et 1925 tests contre 1992 sous Linux.
+
+| | `LocalDesktop.swift` compilé | `LocalDesktopTests` exécutés |
+| --- | --- | --- |
+| Cœur (Linux) | non — `canImport(WebKit)` est faux | non |
+| Cœur (Apple) | **non** — la cible est retirée | **non** |
+| App iOS | **oui** — via `WisqUI` → `WisqVMRust` | non — c'est une construction |
+
+Le fichier est donc bien typé, mais par **App iOS**. Les tests ne sont exécutés
+nulle part.
+
+C'est la faute que ce dépôt documente ailleurs — une garde qu'on croit tenue et
+que rien ne tient — commise cette fois sur les tests eux-mêmes, et répétée dans
+cinq descriptions de pull request. Le job était vert parce qu'il ne compilait
+pas ce qu'on croyait qu'il jugeait.
 
 ### Le cadre jusqu'à l'application
 
