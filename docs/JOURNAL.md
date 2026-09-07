@@ -11324,3 +11324,53 @@ avec l'ordre qui se défend et pourquoi il se défend.
 La leçon de la journée tient en une ligne : **ce document savait déjà ce que
 j'ai mis trois tours de CI à retrouver, et il savait aussi ce que je n'avais pas
 pensé à demander.**
+
+### Un montage qui se tarit, et deux tests qui perdaient une course sur quatre
+
+`./scripts/verify.sh` est tombé sur un test **sans rapport** avec la tranche en
+cours :
+
+```
+SPICESessionTests.testACursorImageArrivesOnItsOwnConnection : failed
+ - aucun curseur n'est arrivé
+```
+
+Ni « flake » ni « cassé » : relancé seul. Là, un piège que ce dépôt connaît déjà
+a failli clore l'affaire — `swift test --filter testACursorImage…` a répondu
+`Test run with 0 tests in 0 suites passed`, sorti avec 0, et **ne prouvait
+rien** : le filtre ne correspondait à aucun test. Relancé avec
+`WisqRemoteTests.SPICESessionTests/…`, il passe. En suite complète : **deux
+échecs sur cinq tours**, puis un second test du curseur avec lui.
+
+La cause n'est pas dans le curseur. `MemoryByteStream` confondait deux choses
+qu'une vraie socket distingue : *je n'ai plus rien à dire* et *j'ai raccroché*.
+Une lecture qu'il ne pouvait pas satisfaire levait `connectionClosed`. Or une
+session SPICE ouvre l'affichage, lance sa pompe, **et seulement ensuite** ouvre
+le curseur sur une seconde connexion. La pompe atteignait le bout du script en
+quelques microsecondes, y lisait un raccrochage, terminait la session et fermait
+le flux d'événements avant que la tâche curseur ait été ordonnancée.
+
+Le montage portait déjà une queue de **deux cents pings** pour tenir la pompe
+occupée, avec un commentaire qui décrivait exactement la course. Ce n'était pas
+une correction : c'était la même course avec un plus grand nombre, et elle la
+perdait quand même.
+
+`MemoryByteStream(endsWhenDry: false)` donne un flux qui **attend**. Le défaut
+reste pour tout le monde, parce que la plupart des tests de protocole veulent
+que l'autre bout raccroche — c'est ainsi qu'ils s'arrêtent.
+
+Douze tours verts après, là où c'était deux sur cinq.
+
+**Ce que le sabotage a appris.** Trois sabotages, trois tests distincts qui
+tombent. Mais le premier — `close()` qui ne réveille personne — a d'abord fait
+**pendre** la suite quatre cents secondes au lieu d'échouer : le garde-fou à deux
+secondes que j'avais écrit passait par `await task.result`, qui **ignore
+l'annulation**. Un test qui pend ne rapporte rien. Chaque attente de ce fichier
+passe donc par une boîte qu'on interroge avec une échéance, jamais par l'attente
+directe de la tâche.
+
+Et la règle du lecteur unique de `read(exactly:)` — dont un fichier entier garde
+la phrase — devenait fausse dans le nouveau mode, qui suspend *à l'intérieur* de
+`read`. Les attentes sont servies dans leur ordre d'arrivée, chacune prenant une
+tranche entière ; la propriété est réaffirmée par un test à elle, et ce test
+tombe quand on sert les attentes à l'envers.
