@@ -108,5 +108,107 @@ final class LocalDesktopTests: XCTestCase {
         }
         XCTAssertThrowsError(try LocalDesktop(pages: 0, entry: base))
     }
+
+    // MARK: - L'écran
+
+    /// **Le bureau peint, et il le dit.**
+    ///
+    /// C'est le seul chemin d'affichage qu'un test puisse emprunter ici :
+    /// `requestAnimationFrame` ne tourne que dans une vue que le système
+    /// considère comme affichée, et celle-ci n'est ajoutée à aucune fenêtre.
+    /// `wisqPaint` se laisse appeler à la main **précisément pour ça**.
+    ///
+    /// Il peint **après** avoir fait tourner la machine : une image peinte
+    /// avant que quoi que ce soit ne s'exécute ne dirait rien de plus que
+    /// « le canvas existe ».
+    func testTheDesktopPaintsTheFrameOnDemand() async throws {
+        let width: UInt32 = 32
+        let height: UInt32 = 16
+        let desktop = try LocalDesktop(
+            pages: 1,
+            entry: base,
+            screen: .init(base: base + 0x8000, width: width, height: height)
+        )
+        try await desktop.load()
+        try await desktop.place(program(), at: base)
+        let stopped = try await desktop.run()
+        XCTAssertEqual(stopped.why, "sur place")
+
+        let pixels = try await desktop.paint()
+        XCTAssertEqual(
+            pixels, Int(width * height),
+            "peindre doit rendre le compte de pixels, pas rien"
+        )
+    }
+
+    /// **Un bureau sans écran refuse de peindre**, au lieu de laisser croire
+    /// qu'une image est passée. C'est le refus qui distingue « rien à montrer »
+    /// de « rien ne s'est affiché ».
+    func testADesktopWithoutAFrameRefusesToPaint() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        do {
+            _ = try await desktop.paint()
+            XCTFail("un bureau sans cadre doit refuser de peindre")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(failure, .noFrameWasDeclared)
+        }
+    }
+
+    /// **Un cadre qui déborderait de la RAM invitée est refusé à la
+    /// construction**, comme la RAM elle-même — pas au chargement de la page,
+    /// loin de sa cause. La borne est vérifiée des deux côtés : sans le cas qui
+    /// passe, un refus qui refuserait tout aurait l'air d'une garde.
+    func testAFrameThatWouldSpillIntoTheLookupIsRefusedAtTheDoor() throws {
+        // Une page de RAM : 65 536 octets, soit exactement 128×128 pixels.
+        XCTAssertNoThrow(
+            try LocalDesktop(
+                pages: 1, entry: base, screen: .init(base: 0, width: 128, height: 128)
+            )
+        )
+        XCTAssertThrowsError(
+            try LocalDesktop(
+                pages: 1, entry: base, screen: .init(base: 4, width: 128, height: 128)
+            )
+        ) { why in
+            XCTAssertEqual(
+                why as? LocalDesktop.Failure,
+                .imageDoesNotFit(folded: 4, bytes: 65536, ram: 65536)
+            )
+        }
+        XCTAssertThrowsError(
+            try LocalDesktop(
+                pages: 1, entry: base, screen: .init(base: 0, width: 0, height: 128)
+            ),
+            "un cadre sans surface n'est pas un cadre"
+        )
+        // **Et une surface qui déborde de soixante-quatre bits est refusée, pas
+        // enroulée.** Deux dimensions de deux puissance trente et un donnent
+        // exactement deux puissance soixante-quatre : en Swift la
+        // multiplication piégerait, ce qui n'est pas un refus.
+        XCTAssertThrowsError(
+            try LocalDesktop(
+                pages: 1, entry: base,
+                screen: .init(base: 0, width: 1 << 31, height: 1 << 31)
+            )
+        )
+        XCTAssertThrowsError(
+            try LocalDesktop(
+                pages: 1, entry: base,
+                screen: .init(base: 0, width: .max, height: .max)
+            )
+        )
+        // **Et celui-ci ne déborde pas, mais ne tient pas dans un `Int`** :
+        // deux puissance trente et un par deux puissance vingt-neuf font deux
+        // puissance soixante en pixels, deux puissance soixante-deux en octets.
+        // Convertir ça en `Int` pour le porter dans le refus piégerait — le
+        // refus deviendrait un plantage. Vu en relisant, pas en compilant.
+        XCTAssertThrowsError(
+            try LocalDesktop(
+                pages: 1, entry: base,
+                screen: .init(base: 0, width: 1 << 31, height: 1 << 30)
+            )
+        )
+    }
 }
 #endif

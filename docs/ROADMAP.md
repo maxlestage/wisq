@@ -2303,6 +2303,27 @@ canvas (une vraie page **tronque en silence**, ce qui est pire) ; et une boucle
 d'affichage qui survit à la machine, qu'une vraie page laisserait repeindre
 soixante fois par seconde sans rien dire.
 
+### Le cadre jusqu'à l'application
+
+`LocalDesktop` prend un cadre, le passe à la page, et expose `paint()` qui rend
+**le nombre de pixels peints** — une fonction qui ne rend rien ne se distingue
+pas d'une fonction qui n'a rien fait. Il existe alors que la page a déjà sa
+boucle d'affichage parce que `requestAnimationFrame` ne tourne que dans une vue
+que le système considère comme affichée, et celle des tests n'est ajoutée à
+aucune fenêtre.
+
+**Un débordement qui acceptait au lieu de refuser.** `largeur × hauteur × 4` sur
+deux entiers de trente-deux bits vaut jusqu'à 2⁶⁶ ; deux dimensions de 2³¹
+donnent exactement 2⁶⁴, qui enroule à **zéro** en release — le cadre impossible
+passait la garde. Trouvé non pas en relisant le Rust, mais en écrivant la même
+garde une seconde fois en Swift. Corrigé par `saturating_mul` d'un côté,
+`multipliedReportingOverflow` de l'autre ; `host.js` s'en sort seul, ses nombres
+sont des flottants.
+
+Et le même piège une couche plus loin : le refus porte le nombre d'octets, et
+`Int(bytes)` piège pour un `bytes` au-delà de 2⁶³. Le refus serait devenu un
+plantage. `Int(clamping:)`.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
