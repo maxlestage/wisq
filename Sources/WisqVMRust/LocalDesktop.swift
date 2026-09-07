@@ -28,6 +28,13 @@ public final class LocalDesktop {
         case ramIsNotAPowerOfTwo(UInt32)
         case viewNeverFinishedLoading
         case script(String)
+        /// L'image déborderait de la RAM invitée — donc dans la correspondance,
+        /// qui vit juste au-dessus. Un refus vaut mieux qu'une machine qui
+        /// saute n'importe où au premier changement de région.
+        case imageDoesNotFit(folded: Int, bytes: Int, ram: Int)
+        /// La machine s'est arrêtée mais n'a pas dit pourquoi : le message
+        /// d'arrêt n'est jamais arrivé. C'est un défaut de pont, pas une issue.
+        case stopWasNeverAnnounced
     }
 
     /// Pourquoi la machine s'est arrêtée, et où. Jamais « rien » : un arrêt
@@ -96,6 +103,17 @@ public final class LocalDesktop {
     /// chercher elle-même est une tranche à part, et elle ne se mesure que sur
     /// un appareil.
     public func place(_ image: Data, at address: UInt64) async throws {
+        // **La RAM de l'invité s'arrête là, et la correspondance commence
+        // juste après.** Un morceau à cheval sur ce bord n'écrirait pas « un
+        // peu trop loin » : il écrirait dans la table que le module lit pour
+        // trouver ses régions, et la machine sauterait n'importe où. C'est la
+        // même borne que `host.js` pose sur sa lecture, et elle vaut aussi à
+        // l'écriture.
+        let ram = Int(pages) * 65536
+        let folded = Int(address & UInt64(ram - 1))
+        guard folded + image.count <= ram else {
+            throw Failure.imageDoesNotFit(folded: folded, bytes: image.count, ram: ram)
+        }
         let chunk = 48 * 1024
         var written = 0
         while written < image.count {
@@ -103,18 +121,18 @@ public final class LocalDesktop {
                 image.startIndex + written ..< image.startIndex + min(written + chunk, image.count)
             ]
             let script = """
-                (() => {
-                  const brut = atob(octets);
-                  const at = Number((\(address)n + BigInt(\(written))) & \(pages * 65536 - 1)n);
-                  const vue = new Uint8Array(window.wisqMachine.memory.buffer, at, brut.length);
-                  for (let i = 0; i < brut.length; i++) vue[i] = brut.charCodeAt(i);
-                  return brut.length;
-                })()
+                const brut = atob(octets);
+                const vue = new Uint8Array(window.wisqMachine.memory.buffer, at, brut.length);
+                for (let i = 0; i < brut.length; i++) vue[i] = brut.charCodeAt(i);
+                return brut.length;
                 """
             do {
                 _ = try await web.callAsyncJavaScript(
                     script,
-                    arguments: ["octets": piece.base64EncodedString()],
+                    arguments: [
+                        "octets": piece.base64EncodedString(),
+                        "at": folded + written,
+                    ],
                     in: nil,
                     contentWorld: .page
                 )
@@ -126,16 +144,32 @@ public final class LocalDesktop {
     }
 
     /// Fait tourner la machine jusqu'à ce qu'elle s'arrête, et dit pourquoi.
-    public func run() async throws -> Stopped {
+    public func run(patience: TimeInterval = 5) async throws -> Stopped {
+        let returned: Any
         do {
-            _ = try await web.callAsyncJavaScript(
+            returned = try await web.callAsyncJavaScript(
                 "return await window.wisqRun()", arguments: [:], in: nil, contentWorld: .page
             )
         } catch {
             throw Failure.script(error.localizedDescription)
         }
-        guard let stopped = handler.stopped else {
-            throw Failure.script("la machine s'est arrêtée sans le dire")
+        // **Le message d'arrêt n'arrive pas forcément avant le retour.** Une
+        // vue poste, elle n'appelle pas : `wisqRun` a rendu la main, mais le
+        // message peut encore être en route vers l'application. Lire
+        // `handler.stopped` tout de suite serait une course — celle qui rend un
+        // test vert neuf fois sur dix.
+        let deadline = Date().addingTimeInterval(patience)
+        while handler.stopped == nil && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        guard let stopped = handler.stopped else { throw Failure.stopWasNeverAnnounced }
+        // **Les deux chemins doivent dire la même chose.** `wisqRun` rend la
+        // raison, le message la porte aussi : les comparer transforme une
+        // redondance en garde, au lieu de la laisser diverger en silence.
+        if let announced = returned as? String, announced != stopped.why {
+            throw Failure.script(
+                "la machine rend « \(announced) » et poste « \(stopped.why) »"
+            )
         }
         return stopped
     }

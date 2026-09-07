@@ -10582,3 +10582,27 @@ côté.
 C'est la vraie limite du conteneur, et elle est beaucoup plus étroite que celle
 que j'ai répétée cinq tranches durant. Elle ne tient plus qu'à un framework
 Apple, pas à l'absence d'une chaîne Swift.
+
+### Deux défauts trouvés en relisant du code que rien n'a compilé
+
+Puisque rien ne type ce fichier ici, la relecture adverse est la seule garde
+qui reste. Elle a payé deux fois.
+
+**Une fuite d'écriture, exactement celle que j'avais gardée ailleurs.** `place`
+écrivait un morceau de l'image à l'adresse repliée sans borner la fin : un
+morceau à cheval sur le bord de la RAM invitée n'aurait pas écrit « un peu trop
+loin », il aurait écrit **dans la correspondance** — la table que le module lit
+pour trouver ses régions. La machine aurait sauté n'importe où au premier
+changement de région. `host.js` borne sa lecture pour cette raison exacte ;
+j'avais écrit la garde d'un côté et pas de l'autre.
+
+**Une course sur le message d'arrêt.** `run()` lisait la raison aussitôt après
+que `wisqRun()` ait rendu la main. Mais une vue **poste**, elle n'appelle pas :
+le message peut encore être en route quand la promesse est tenue. C'est le
+genre de course qui rend un test vert neuf fois sur dix. `run()` attend
+maintenant le message, avec une échéance, et **compare** ce que la fonction rend
+à ce que le message porte — une redondance transformée en garde plutôt que
+laissée diverger.
+
+Aucune des deux ne se serait vue à la compilation. Elles se voient en se
+demandant, ligne par ligne, ce qui arrive quand le cas limite tombe.

@@ -77,6 +77,29 @@ final class LocalDesktopTests: XCTestCase {
         XCTAssertEqual(desktop.translations, 0)
     }
 
+    /// **Une image qui déborderait de la RAM invitée est refusée.**
+    ///
+    /// Elle n'écrirait pas « un peu trop loin » : la correspondance vit juste
+    /// au-dessus, et la machine sauterait n'importe où au premier changement de
+    /// région. La même borne que `host.js` pose sur sa lecture.
+    func testAnImageThatWouldSpillIntoTheLookupIsRefused() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        // La RAM fait une page ; l'adresse repliée est à 0x1000, donc il reste
+        // 0xF000 octets. Un de plus déborde.
+        let ram = 65536
+        let room = ram - 0x1000
+        try await desktop.place(Data(count: room), at: base)
+        do {
+            try await desktop.place(Data(count: room + 1), at: base)
+            XCTFail("une image qui déborde doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(
+                failure, .imageDoesNotFit(folded: 0x1000, bytes: room + 1, ram: ram)
+            )
+        }
+    }
+
     /// La RAM doit être une puissance de deux ici aussi : le refus doit tomber
     /// à la construction, pas à la première traduction, loin de sa cause.
     func testARAMThatCannotBeConfinedIsRefusedAtTheDoor() {
