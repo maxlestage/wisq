@@ -228,10 +228,25 @@ int wisq_x86_emit_region(const uint8_t *code, size_t len, uint64_t base, size_t 
  * pages, and a table of at least `slot` plus the region's blocks. A module
  * given less does not instantiate, which is loud; were it to instantiate, it
  * would trap on the first jump, and a WebAssembly trap has no return.
+ *
+ * Returns one of the three WISQ_X86_* codes below. Three and not two: a flat
+ * refusal and a lack of bytes are not fixed the same way, and telling them
+ * apart is what lets the view ask again exactly when it helps.
  */
 int wisq_x86_emit_resolving(const uint8_t *code, size_t len, uint64_t base, size_t entry,
                             uint32_t slot, uint32_t pages,
                             uint8_t **out_bytes, size_t *out_len);
+
+/* Ce que wisq_x86_emit_resolving répond. Trois issues et non deux : un refus
+   franc et un manque d'octets ne se corrigent pas pareil. */
+#define WISQ_X86_TRANSLATED   0
+#define WISQ_X86_REFUSED     -1
+/* L'émetteur s'est arrêté à moins de quinze octets du bord de ce qu'on lui a
+   donné : l'instruction qui l'a bloqué a pu être coupée plutôt qu'être
+   inconnue. Redemandez la même région avec une fenêtre plus large, une seule
+   fois. Sur un vrai noyau, 91 régions sur 10 116 tombent là avec quatre
+   kibioctets, et toutes se traduisent au second essai. */
+#define WISQ_X86_NEEDS_MORE  -2
 
 /*
  * The page the application loads into its view: the host loop, the bridge to

@@ -284,6 +284,44 @@ int main(void) {
     /* La correspondance occupe une place que l'hôte doit ajouter à la RAM.
      * Zéro voudrait dire qu'il n'a rien à ajouter, et le module piégerait au
      * premier saut vers une autre région. */
+    /* **Trois issues et non deux.** Une région coupée en plein milieu d'une
+     * instruction n'est pas refusée : elle demande davantage d'octets. Les
+     * confondre ferait abandonner une région traduisible, ou redemander pour
+     * rien à chaque vrai refus.
+     *
+     * `48 b8` suivi de huit octets charge une constante de soixante-quatre
+     * bits ; coupée à cinq octets, elle ne se décode pas — mais elle se
+     * décoderait avec la suite. */
+    static const uint8_t CUT[] = {0x48, 0xb8, 1, 2, 3};
+    uint8_t *nothing = NULL;
+    size_t nothing_len = 0;
+    check(wisq_x86_emit_resolving(CUT, sizeof CUT, GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_NEEDS_MORE,
+          "une instruction coupée demande des octets au lieu d'être refusée");
+    check(nothing == NULL && nothing_len == 0,
+          "et elle ne touche pas aux sorties de l'appelant");
+    /* **Le même octet inconnu, mais avec de la place derrière.** `INVALID` seul
+     * fait un octet : à un octet du bord, l'émetteur ne *peut pas* distinguer
+     * une coupe d'une instruction inconnue, et il demande donc davantage — ce
+     * qui est la bonne réponse. Il faut quinze octets de marge, la longueur
+     * maximale d'une instruction x86-64, pour que le refus soit franc. */
+    static const uint8_t UNKNOWN_WITH_ROOM[] = {
+        0x06, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+    };
+    check(wisq_x86_emit_resolving(UNKNOWN_WITH_ROOM, sizeof UNKNOWN_WITH_ROOM,
+                                  GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_REFUSED,
+          "une instruction inconnue avec de la place derrière est un refus franc");
+    check(wisq_x86_emit_resolving(UNKNOWN_WITH_ROOM, sizeof UNKNOWN_WITH_ROOM - 1,
+                                  GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_NEEDS_MORE,
+          "un octet de moins, et il n'avait plus la place d'en juger");
+    check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_TRANSLATED,
+          "et une région entière se traduit");
+    if (nothing != NULL) wisq_x86_free_module(nothing, nothing_len);
+
     check(wisq_desktop_table_pages() > 0,
           "la correspondance occupe des pages, et l'hôte doit les prévoir");
 

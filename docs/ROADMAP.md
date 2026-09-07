@@ -2212,6 +2212,32 @@ sérialisation de `postMessage`, une chaîne contre quatre mille nombres.
 **Ce second compromis n'est pas mesuré et ne peut pas l'être d'ici** : il
 demande un vrai `WKWebView`. C'est écrit à côté du choix.
 
+### La raison s'arrêtait au bord du C ABI
+
+Un trou trouvé en commençant le `WKWebView` : l'émetteur sait dire pourquoi il
+refuse, `host.js` sait redemander, et **rien ne reliait les deux** —
+`wisq_x86_emit_resolving` rendait toujours 0 ou −1. La moitié d'un mécanisme,
+posée d'un côté, avec l'autre moitié écrite ailleurs.
+
+Ça ne s'est pas vu parce que les deux moitiés ont été éprouvées séparément et
+que chacune tenait. Personne ne vérifiait que l'une pouvait dire à l'autre
+laquelle des deux réponses c'était.
+
+Trois issues traversent maintenant : `WISQ_X86_TRANSLATED`,
+`WISQ_X86_REFUSED`, `WISQ_X86_NEEDS_MORE`. Côté Swift, `resolvingRegion` rend
+un `Translation` à trois cas plutôt qu'un `Data?` — un `Optional` ne peut pas
+porter trois réponses, et le lui faire porter par une valeur sentinelle aurait
+été la même faute sous un autre nom.
+
+**Le programme C avait tort et le code avait raison** : il attendait qu'un
+octet inconnu soit un refus franc, mais `INVALID` fait un seul octet, et à un
+octet du bord l'émetteur ne *peut pas* trancher. Il vérifie maintenant les deux
+côtés du seuil.
+
+Cinq sabotages sur cinq, dont celui qui compte : **changer la constante du
+header sans changer Rust fait tomber le programme C**. Le même nombre vit dans
+deux fichiers et deux langages, et ne peut plus diverger en silence.
+
 **Ce qui reste vraiment à faire de ce côté** : charger la page dans un
 `WKWebView`, déclarer le gestionnaire de messages, le brancher sur
 `DesktopBridge` et `DesktopTranslator`, recevoir les pixels. Ce morceau-là, et

@@ -69,16 +69,37 @@ public enum DesktopTranslator {
     /// `nil` — comme pour une région que l'émetteur ne sait pas traduire.
     public static func resolvingRegion(
         _ code: Data, base: UInt64, entry: Int, slot: UInt32, pages: UInt32
-    ) -> Data? {
-        code.withUnsafeBytes { bytes -> Data? in
+    ) -> Translation {
+        code.withUnsafeBytes { bytes -> Translation in
             var out: UnsafeMutablePointer<UInt8>?
             var length = 0
-            let ok = wisq_x86_emit_resolving(
+            let outcome = wisq_x86_emit_resolving(
                 bytes.bindMemory(to: UInt8.self).baseAddress, code.count,
                 base, entry, slot, pages, &out, &length
             )
-            return claim(ok, out, length)
+            if outcome == WISQ_X86_NEEDS_MORE { return .needsMoreBytes }
+            guard let module = claim(outcome, out, length) else { return .refused }
+            return .module(module)
         }
+    }
+
+    /// **Ce qu'une traduction peut donner, et il y a trois issues.**
+    ///
+    /// Un refus franc et un manque d'octets ne se corrigent pas pareil : le
+    /// premier arrête la machine, le second coûte un aller-retour et donne le
+    /// module. Les confondre ferait abandonner une région traduisible, ou
+    /// redemander pour rien à chaque vrai refus.
+    public enum Translation: Equatable, Sendable {
+        case module(Data)
+        /// L'émetteur ne sait pas traduire cette région, et davantage d'octets
+        /// n'y changerait rien.
+        case refused
+        /// L'émetteur s'est arrêté à moins de quinze octets du bord de ce qu'on
+        /// lui a donné : l'instruction qui l'a bloqué a pu être coupée.
+        /// Redemander la même région avec une fenêtre plus large, **une seule
+        /// fois**. Sur un vrai noyau, 91 régions sur 10 116 tombent là avec
+        /// quatre kibioctets, et toutes se traduisent au second essai.
+        case needsMoreBytes
     }
 
     // MARK: - La page

@@ -16,7 +16,7 @@
 use crate::desktop;
 use crate::machine::{Handle, Machine, Outcome};
 use crate::snapshot::SnapshotError;
-use crate::x86_wasm::{Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RIP_SLOT};
+use crate::x86_wasm::{Module, Refused, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RIP_SLOT};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 
@@ -488,11 +488,18 @@ pub unsafe extern "C" fn wisq_x86_emit_resolving(
         return -1;
     }
     let region = std::slice::from_raw_parts(code, len);
-    let Some(module) = Module::resolving(region, base, entry, slot, pages) else {
-        return -1;
-    };
-    hand_back(module, out_bytes, out_len);
-    0
+    match Module::resolving_or_why(region, base, entry, slot, pages) {
+        Ok(module) => {
+            hand_back(module, out_bytes, out_len);
+            0
+        }
+        // **Le seul refus qui ne soit pas définitif.** L'émetteur s'est arrêté
+        // à moins de quinze octets du bord des octets fournis : l'instruction
+        // qui l'a bloqué a pu être coupée. L'appelant redemande alors la même
+        // région avec une fenêtre plus large, et **une seule fois**.
+        Err(Refused::MayBeCut { .. }) => -2,
+        Err(_) => -1,
+    }
 }
 
 /// **La page que l'application charge dans sa vue.**
