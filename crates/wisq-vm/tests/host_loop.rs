@@ -1025,3 +1025,98 @@ console.log("abandon " + pourquoi.stopped);
         "une région qui manque encore de place à seize kibioctets est refusée"
     );
 }
+
+/// **L'image de l'invité, convertie pour un dessinateur.**
+///
+/// Le noyau écrit en XRGB8888 — les octets en mémoire sont `B, G, R, X` —
+/// parce que c'est ce que `simpledrm` prend sans conversion. Une `ImageData`
+/// veut `R, G, B, A`. Ce test tient les deux choses qu'une recopie naïve
+/// casserait, et la seconde est la pire : **l'opacité**. Un cadre passé tel
+/// quel arriverait avec un alpha à zéro, c'est-à-dire un écran entièrement
+/// transparent — rien à l'écran, et rien qui dise pourquoi.
+#[test]
+fn the_view_paints_the_guests_frame_in_the_order_a_canvas_expects() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    // Un cadre minuscule, posé loin du début de la RAM : deux pixels suffisent
+    // à tenir l'ordre des composantes, et l'adresse non nulle attrape un repli
+    // oublié.
+    const SCREEN: u64 = 0x2000;
+    let scratch = std::env::temp_dir().join(format!("wisq-host-frame-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+const vm = machine({{
+  translate: async () => null,
+  pages: {pages},
+  screen: {{ base: {screen}, width: 2, height: 1 }},
+}});
+
+// Deux pixels écrits comme le noyau les écrit : B, G, R, X.
+// Le premier est rouge pur, le second bleu pur.
+const cadre = new Uint8Array(vm.memory.buffer, {screen}, 8);
+cadre.set([0x00, 0x00, 0xff, 0x00,   0xff, 0x00, 0x00, 0x00]);
+
+const sortie = new Uint8ClampedArray(8);
+vm.paint(sortie);
+console.log("pixels " + Array.from(sortie).join(","));
+
+// Un cadre qui déborderait de la RAM invitée doit être refusé à la
+// construction : au-dessus vit la correspondance.
+let refuse = "non";
+try {{
+  machine({{
+    translate: async () => null,
+    pages: {pages},
+    screen: {{ base: {screen}, width: 1024, height: 1024 }},
+  }});
+}} catch (pourquoi) {{
+  refuse = "oui";
+}}
+console.log("deborde " + refuse);
+
+// Et un tampon trop petit ne se fait pas peindre à moitié.
+let court = "non";
+try {{ vm.paint(new Uint8ClampedArray(4)); }} catch (pourquoi) {{ court = "oui"; }}
+console.log("court " + court);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            screen = SCREEN,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    // Rouge pur puis bleu pur, tous deux **opaques**. Sans l'opacité forcée,
+    // les deux derniers nombres seraient des zéros et l'écran serait vide.
+    assert_eq!(
+        seen("pixels"),
+        "255,0,0,255,0,0,255,255",
+        "les composantes doivent être remises dans l'ordre, et l'opacité forcée"
+    );
+    assert_eq!(seen("deborde"), "oui", "un cadre hors de la RAM est refusé");
+    assert_eq!(seen("court"), "oui", "un tampon trop petit est refusé");
+}
