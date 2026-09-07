@@ -53,7 +53,49 @@ export function tableSlot(address) {
 /// - `pages` est la RAM de l'invité, **en pages de 64 Kio et en puissance de
 ///   deux** : c'est ce qui permet de replier les adresses invitées et de poser
 ///   la correspondance au-dessus, hors de portée.
-export function machine({ translate, pages, regions = 4096 }) {
+/// - `patience` est le temps, en millisecondes, au-delà duquel une traduction
+///   sans réponse est traitée comme une panne. Zéro attend indéfiniment.
+///
+///   **Pourquoi il en faut une.** `translate` rend une promesse, et rien ne
+///   garantit qu'elle soit tenue : l'hôte peut être occupé, avoir planté, ou
+///   avoir perdu le message. Sans garde, `await` ne rend jamais la main et
+///   l'écran reste tel quel **sans un mot** — le pire mode de panne pour
+///   diagnostiquer. Trente secondes est long pour une traduction (elles se
+///   comptent en microsecondes) et court pour un humain qui regarde un écran
+///   figé.
+/// Ce qu'une traduction rend quand elle ne rend rien : l'application n'a pas
+/// répondu, ou elle a levé. Deux objets distincts plutôt qu'un `null` partagé
+/// avec le refus franc de l'émetteur — les trois se corrigent ailleurs.
+const MUTE = Object.freeze({ panne: "sans réponse" });
+const BROKEN = Object.freeze({ panne: "en panne" });
+
+/// **Attendre une traduction, mais pas éternellement.**
+///
+/// Le réveil est **désarmé** dès que la réponse arrive : une machine qui
+/// traduit des milliers de régions laisserait sinon des milliers de minuteries
+/// derrière elle. Et une réponse qui arrive *après* la patience ne compte pas
+/// — la machine a déjà rendu la main, y revenir la ferait repartir d'un état
+/// qu'elle a quitté.
+async function answered(ask, patience) {
+  let attempt;
+  try {
+    attempt = Promise.resolve(ask());
+  } catch (why) {
+    return BROKEN;
+  }
+  const settled = attempt.then(bytes => bytes, () => BROKEN);
+  if (!(patience > 0)) return settled;
+  let alarm;
+  const waited = new Promise(settle => {
+    alarm = setTimeout(() => settle(MUTE), patience);
+  });
+  return Promise.race([settled, waited]).then(outcome => {
+    clearTimeout(alarm);
+    return outcome;
+  });
+}
+
+export function machine({ translate, pages, regions = 4096, patience = 30000 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
@@ -82,7 +124,8 @@ export function machine({ translate, pages, regions = 4096 }) {
   // économe.
   async function install(address) {
     const slot = next;
-    const bytes = await translate(address, slot);
+    const bytes = await answered(() => translate(address, slot), patience);
+    if (bytes === MUTE || bytes === BROKEN) return bytes;
     if (!bytes) return null;
     // **Combien de blocs le module pose, on ne le sait qu'après.** L'émetteur
     // ne l'annonce pas, et l'instanciation est ce qui les met dans la table.
@@ -126,6 +169,16 @@ export function machine({ translate, pages, regions = 4096 }) {
         let region = known.get(here);
         if (region === undefined) {
           region = await install(here);
+          // **Trois pannes, trois noms.** « Ça ne marche pas » n'aide
+          // personne à chercher : une région que l'émetteur refuse, une
+          // application muette et une application qui lève ne se corrigent
+          // pas au même endroit.
+          if (region === MUTE) {
+            return { stopped: "traduction sans réponse", at: here };
+          }
+          if (region === BROKEN) {
+            return { stopped: "traduction en panne", at: here };
+          }
           if (region === null) {
             return { stopped: "refusée", at: here };
           }

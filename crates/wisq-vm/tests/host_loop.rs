@@ -646,3 +646,200 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
         "le refus doit nommer le nombre refusé"
     );
 }
+
+/// **Une application qui ne répond jamais ne doit pas figer la vue en
+/// silence.**
+///
+/// `translate` rend une promesse : dans l'application c'est un aller-retour
+/// par message, et rien ne garantit qu'il revienne — l'hôte peut être occupé,
+/// avoir planté, ou avoir perdu le message. Sans garde, la promesse n'est
+/// jamais tenue, `await` ne rend jamais la main, et l'écran reste tel quel
+/// **sans un mot**. C'est le pire mode de panne pour diagnostiquer : rien à
+/// lire, rien à chercher.
+///
+/// Le trou a été trouvé par accident. Le sabotage « la promesse n'est jamais
+/// tenue » a bien été attrapé — mais par le **délai du harnais**, pas par le
+/// code. Autrement dit, ce qui protégeait était mon outil de test, pas la
+/// boucle hôte.
+#[test]
+fn the_view_gives_up_on_an_application_that_never_answers() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-mute-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+
+// **Trois ponts, trois pannes.** Le muet ne répond jamais ; le cassé lève ;
+// le lent répond, mais après la patience. Les trois doivent être nommés
+// différemment — « ça ne marche pas » n'aide personne à chercher.
+const muet = () => new Promise(() => {{}});
+const casse = () => {{ throw new Error("le pont est rompu"); }};
+const lent = () => new Promise(settle => setTimeout(() => settle(null), 400));
+
+for (const [nom, translate] of [["muet", muet], ["casse", casse], ["lent", lent]]) {{
+  const vm = machine({{ translate, pages: 1, patience: 60 }});
+  vm.globals[17].value = 0x1000n;
+  const began = Date.now();
+  const why = await vm.run();
+  const took = Date.now() - began;
+  console.log(nom + " " + why.stopped + " " + why.at.toString() + " " + (took < 300));
+}}
+
+// **Et la patience se désarme.** Une traduction qui arrive à temps ne doit
+// pas laisser un réveil derrière elle : dans une machine qui traduit des
+// milliers de régions, ça ferait des milliers de minuteries en attente.
+const vm = machine({{ translate: async () => null, pages: 1, patience: 60 }});
+vm.globals[17].value = 0x1000n;
+const why = await vm.run();
+console.log("refus " + why.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    // `true` à la fin veut dire « rendu la main en moins de 300 ms » : sans la
+    // garde, le muet et le lent n'auraient jamais rendu la main du tout, et le
+    // test ne finirait pas.
+    assert_eq!(
+        seen("muet"),
+        "traduction sans réponse 4096 true",
+        "un pont muet doit être nommé, et l'adresse avec"
+    );
+    assert_eq!(
+        seen("casse"),
+        "traduction en panne 4096 true",
+        "un pont qui lève est autre chose qu'un pont muet"
+    );
+    assert_eq!(
+        seen("lent"),
+        "traduction sans réponse 4096 true",
+        "une réponse qui arrive après la patience ne compte pas"
+    );
+    assert_eq!(
+        seen("refus"),
+        "refusée",
+        "et un refus franc reste un refus, pas une attente"
+    );
+}
+
+/// **Une traduction qui arrive à temps ne doit pas laisser un réveil
+/// derrière elle.**
+///
+/// La garde de patience arme une minuterie par traduction. Si elle n'est pas
+/// désarmée quand la réponse arrive, une machine qui traduit des milliers de
+/// régions laisse des milliers de réveils en attente — invisible à l'œil, et
+/// invisible à toutes les assertions de ce fichier : un sabotage qui retire le
+/// désarmement y a survécu.
+///
+/// Ce qui le rend visible est **l'horloge**. Une boucle d'événements ne se
+/// ferme pas tant qu'une minuterie est en attente : le programme sort donc
+/// tout de suite si les réveils sont désarmés, et attend la patience entière
+/// sinon. Le test mesure le temps du processus, pas ce qu'il imprime.
+#[test]
+fn a_translation_that_arrives_leaves_no_alarm_behind() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    /// Assez long pour que l'attente se voie, assez court pour que le test
+    /// n'y passe pas la journée s'il tombe.
+    const PATIENCE: u64 = 4000;
+
+    let scratch = std::env::temp_dir().join(format!("wisq-alarm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    for index in 0..3u64 {
+        let address = BASE + index * 0x100;
+        let next = BASE + ((index + 1) % 3) * 0x100;
+        let mut code = vec![0x48, 0xff, 0xc2, 0x48, 0xb8];
+        code.extend_from_slice(&next.to_le_bytes());
+        code.extend_from_slice(&[0xff, 0xe0]);
+        for slot in 0..4u32 {
+            let module = Module::resolving(&code, address, 0, slot, PAGES).expect("la région");
+            let path = scratch.join(format!("alarm{index}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const catalogue = new Map([{catalogue}]);
+const vm = machine({{
+  translate: async (address, slot) => {{
+    const path = catalogue.get(address + ":" + slot);
+    return path === undefined ? null : readFileSync(path);
+  }},
+  pages: {pages},
+  patience: {patience},
+}});
+vm.globals[{rip}].value = {base}n;
+// Trois tours d'un bloc chacun : trois traductions, donc trois réveils armés
+// puis désarmés.
+await vm.run({{ budget: 1n, rounds: 3 }});
+console.log("regions " + vm.known.size);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            pages = PAGES,
+            patience = PATIENCE,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+
+    let began = std::time::Instant::now();
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let took = began.elapsed();
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(output.status.success(), "le pilote a échoué :\n{text}");
+    assert!(
+        text.contains("regions 3"),
+        "les trois régions doivent avoir été traduites, sinon aucun réveil \
+         n'a jamais été armé et le chronomètre ne prouve rien :\n{text}"
+    );
+    assert!(
+        took < std::time::Duration::from_millis(PATIENCE / 2),
+        "le programme a mis {took:?} à sortir, pour une patience de {PATIENCE} ms : \
+         un réveil n'a pas été désarmé et tient la boucle d'événements ouverte"
+    );
+}

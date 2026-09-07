@@ -10102,3 +10102,53 @@ Si l'application ne répond jamais à une demande de traduction, la vue se fige
 sans rien dire. Le sabotage l'a montré par accident, mais c'est une panne
 plausible en vrai — l'application tuée par le système, une région énorme. Une
 garde de temps sur `translate` mérite sa tranche.
+
+## Une application muette figeait la vue sans un mot
+
+Le sabotage de la tranche précédente avait attrapé « la promesse n'est jamais
+tenue » — mais par le **délai du harnais**, pas par le code. Autrement dit, ce
+qui protégeait était mon outil de test, pas la boucle hôte.
+
+`translate` rend une promesse : dans l'application c'est un aller-retour par
+message, et rien ne garantit qu'il revienne. L'hôte peut être occupé, avoir
+planté, avoir perdu le message. Sans garde, `await` ne rend jamais la main et
+l'écran reste tel quel, **sans rien dire** — le pire mode de panne pour
+diagnostiquer : rien à lire, rien à chercher.
+
+`machine` prend donc une `patience`, trente secondes par défaut : long pour une
+traduction, qui se compte en microsecondes, et court pour quelqu'un qui regarde
+un écran figé.
+
+### Trois pannes, trois noms
+
+« Ça ne marche pas » n'aide personne. Une région que l'émetteur refuse, une
+application muette et une application qui lève ne se corrigent pas au même
+endroit, donc la boucle les nomme séparément : `refusée`, `traduction sans
+réponse`, `traduction en panne`. Le sabotage « muette et en panne portent le
+même nom » tombe.
+
+### Le défaut que seule l'horloge voyait
+
+La garde arme une minuterie par traduction. Si elle n'est pas désarmée quand la
+réponse arrive, une machine qui traduit des milliers de régions laisse des
+milliers de réveils en attente. Aucune assertion de ce fichier ne le voyait :
+le sabotage qui retire le désarmement a survécu au premier tour.
+
+Ce qui le rend visible est le **temps de sortie du processus**. Une boucle
+d'événements ne se ferme pas tant qu'une minuterie est en attente : le
+programme sort tout de suite si les réveils sont désarmés, et attend la
+patience entière sinon. Le test mesure donc la durée du processus, pas ce qu'il
+imprime — et il vérifie d'abord que trois régions ont bien été traduites, sans
+quoi aucun réveil n'aurait jamais été armé et le chronomètre ne prouverait
+rien.
+
+Huit sabotages sur huit après ça.
+
+### Une note de méthode
+
+Le test a été écrit avant la garde, et il **ne finissait pas** : la promesse
+n'étant jamais tenue, le processus attendait indéfiniment. C'est la bonne
+démonstration du défaut, mais c'est aussi la trahison du sabotage numéro
+quatre sous une autre forme — un test qui boucle au lieu de tomber. Le harnais
+a son délai par exécution ; un test qui pend, lui, bloque simplement la suite.
+Il vaut mieux le savoir avant de le lancer que pendant.

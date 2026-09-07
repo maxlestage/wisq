@@ -1984,6 +1984,13 @@ Deux choses que la boucle a apprises en tournant :
    pile sur son point de départ revient à l'adresse d'où il est parti après
    avoir tourné trois cents fois. Ce qui distingue les deux est un bloc de
    plus : si un seul bloc ne fait pas bouger RIP, plus rien ne le fera.
+3. **Une application muette figeait la vue sans un mot.** `translate` rend une
+   promesse, et rien ne garantit qu'elle soit tenue — l'hôte peut être occupé,
+   avoir planté, avoir perdu le message. La boucle a donc une `patience`,
+   trente secondes par défaut, et nomme trois pannes distinctes : `refusée`,
+   `traduction sans réponse`, `traduction en panne`. Le trou avait été trouvé
+   par accident : le sabotage « la promesse n'est jamais tenue » était attrapé
+   par le **délai du harnais**, pas par le code.
 
 **La page, elle, est assemblée en Rust — et c'est un choix de vérifiabilité.**
 `wisq_vm::desktop::page` habille la boucle hôte de ce qu'il faut pour vivre
