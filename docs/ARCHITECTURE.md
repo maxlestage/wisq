@@ -231,6 +231,40 @@ au lieu d'une, et qu'aucune règle sur les octets ne les sépare complètement :
 | un initramfs | déballé par le noyau | le nom, puis la personne (`BootMedia`) |
 | un disque | branché sur `/dev/vda` | la personne (`LocalDisk`) |
 
+### Le côté x86-64 a trois cœurs, et l'application n'en utilise qu'un
+
+Le rv32 en a deux, le Swift et le Rust, et l'application embarque le Rust. Le
+x86-64 en a **trois**, et le compte est le fait le plus utile à connaître avant
+de toucher à ce côté-là :
+
+| cœur | où | ce qu'il fait |
+| --- | --- | --- |
+| `Sources/WisqVM/X86Core*.swift` | Swift | interprète — **et c'est celui que l'application construit pour un invité x86** |
+| `crates/wisq-vm/src/x86.rs` | Rust | interprète, mesuré à 49 MIPS |
+| `crates/wisq-vm/src/x86_wasm.rs` | Rust | **traduit** une région en module WebAssembly |
+
+Les trois lisent le même corpus matériel, `Tests/Fixtures/x86-oracle.tsv` —
+13 148 cas relevés sur un vrai processeur, dont 12 980 jugés contre les trois
+sans un écart. Oublier le troisième a déjà rougi la CI une fois : ce qui touche
+au décodage ou au calcul d'adresse doit être porté partout à la fois.
+
+**Pourquoi un traducteur, alors que l'interprétation est le choix assumé
+au-dessus.** Le paragraphe qui précède reste vrai — iOS n'accorde de mémoire
+exécutable à personne, donc pas de JIT. Mais WebKit, lui, a le droit de
+compiler, et du WebAssembly engendré à l'exécution est une **donnée**, pas du
+code : l'émulateur n'écrit pas d'instructions machine, il écrit un module, et
+c'est WebKit qui le compile. C'est la seule porte, et l'émetteur est ce qui la
+franchit.
+
+**Rien de cela n'est branché.** L'application construit `X86Machine`, qui
+interprète en Swift ; aucun chemin n'appelle l'émetteur. Ce qui existe déjà :
+l'émetteur lui-même, vérifié contre le silicium ; son accès depuis C
+(`wisq_x86_emit_region`, une fonction pure d'octets vers octets — pas une
+machine) ; et une forme qui pose ses blocs dans une table partagée par l'hôte.
+Ce qui manque est écrit, mesuré et chiffré dans `docs/ROADMAP.md`, avec la
+seule inconnue qui reste : ce qu'un vrai iPhone accepte, que seule la sonde de
+l'application dira.
+
 Un noyau compressé et un initramfs compressé sont l'un et l'autre un flux
 gzip : c'est un fait sur les octets, pas une paresse, et il commande la forme
 de tout le reste. `BootMedia` apparie sur les noms et ne refuse que ce qui
