@@ -273,6 +273,7 @@ fn section(id: u8, body: Vec<u8>, out: &mut Vec<u8>) {
 
 /// Les opcodes dont la traduction a besoin.
 mod code {
+    pub const CALL: u8 = 0x10;
     pub const END: u8 = 0x0b;
     pub const GLOBAL_GET: u8 = 0x23;
     pub const GLOBAL_SET: u8 = 0x24;
@@ -368,6 +369,29 @@ struct Shape {
     lookup: bool,
 }
 
+/// **Les deux fonctions que l'hôte prête à chaque région.**
+///
+/// Un invité qui écrit un octet dans un port ne peut pas sortir de la région
+/// pour ça : un retour de main coûte environ 190 ns, mesuré, et une console
+/// écrit caractère par caractère. Un appel importé en coûte des dizaines.
+/// C'est le choix de v86, et c'est celui-ci.
+///
+/// **Leur place décide de tout le reste.** Une fonction importée occupe le
+/// début de l'espace d'indices : avec ces deux-là, le bloc zéro est la
+/// fonction deux. Un oubli ne produirait pas une erreur de liaison — la table
+/// pointerait les imports, du bon type, et la boucle appellerait `out` en
+/// croyant exécuter un bloc.
+const HOST_OUT: u32 = 0;
+const HOST_IN: u32 = 1;
+/// Le décalage que ces imports imposent à tout indice de fonction.
+const HOST_IMPORTS: u32 = 2;
+
+/// Les deux registres que le codage des entrées-sorties impose. La valeur est
+/// toujours dans l'accumulateur ; le port des formes non immédiates est dans
+/// DX. Nommés parce qu'un `2` nu, ici, ne se relit pas.
+const RAX: u8 = 0;
+const RDX: u8 = 2;
+
 #[derive(Default)]
 struct Body {
     bytes: Vec<u8>,
@@ -433,6 +457,14 @@ impl Body {
     fn constant(&mut self, value: u64) -> &mut Self {
         self.bytes.push(code::I64_CONST);
         signed(value as i64, &mut self.bytes);
+        self
+    }
+
+    /// Appeler une fonction par son indice. Les seules qu'un bloc appelle
+    /// directement sont les deux que l'hôte importe : `HOST_OUT` et `HOST_IN`.
+    fn call(&mut self, function: u32) -> &mut Self {
+        self.bytes.push(code::CALL);
+        unsigned(u64::from(function), &mut self.bytes);
         self
     }
 
@@ -1236,10 +1268,19 @@ impl Module {
         let count = bodies.len();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-        // Types : un bloc rend l'indice du suivant ; `run` prend un budget.
+        // Types : un bloc rend l'indice du suivant ; `run` prend un budget ;
+        // puis les deux que l'hôte prête. `out` prend le port, la valeur et la
+        // largeur en octets, et ne rend rien ; `in` prend le port et la
+        // largeur, et rend ce que le périphérique a répondu.
         section(
             1,
-            vec![0x02, 0x60, 0x00, 0x01, 0x7f, 0x60, 0x01, 0x7e, 0x00],
+            vec![
+                0x04, //
+                0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
+                0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
+                0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
+                0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
+            ],
             &mut module,
         );
 
@@ -1257,13 +1298,24 @@ impl Module {
         // comme abandon, et c'est l'architecture de l'application.
         let mut imports = Vec::new();
         unsigned(
-            1 + u64::from(shared.is_some()) + GLOBAL_COUNT as u64,
+            u64::from(HOST_IMPORTS) + 1 + u64::from(shared.is_some()) + GLOBAL_COUNT as u64,
             &mut imports,
         );
         let module_name = |bytes: &mut Vec<u8>| {
             unsigned(3, bytes);
             bytes.extend_from_slice(b"env");
         };
+        // **Les deux fonctions de l'hôte, en premier.** Seules les fonctions
+        // importées consomment des indices de fonction ; la mémoire, la table
+        // et les globales n'en consomment pas. Les mettre ici rend `HOST_OUT`
+        // et `HOST_IN` vrais quelle que soit la forme de la région.
+        for (name, signature) in [("out", 0x02u8), ("in", 0x03)] {
+            module_name(&mut imports);
+            unsigned(name.len() as u64, &mut imports);
+            imports.extend_from_slice(name.as_bytes());
+            imports.push(0x00);
+            imports.push(signature);
+        }
         module_name(&mut imports);
         unsigned(3, &mut imports);
         imports.extend_from_slice(b"mem");
@@ -1328,7 +1380,7 @@ impl Module {
         let mut exports = Vec::new();
         unsigned(1, &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
-        unsigned(count as u64, &mut exports);
+        unsigned(u64::from(HOST_IMPORTS) + count as u64, &mut exports);
         section(7, exports, &mut module);
 
         // Éléments : la table pointe les blocs dans l'ordre, à partir de
@@ -1338,7 +1390,7 @@ impl Module {
         elements.push(code::END);
         unsigned(count as u64, &mut elements);
         for block in 0..count {
-            unsigned(block as u64, &mut elements);
+            unsigned(u64::from(HOST_IMPORTS) + block as u64, &mut elements);
         }
         section(9, elements, &mut module);
 
@@ -1470,6 +1522,15 @@ impl Module {
             Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::CallIndirect | Op::Undefined
         ) {
             return None;
+        }
+        // **Une entrée-sortie n'est pas un calcul, et le dire ici était
+        // nécessaire.** Sans ce détour elles tombaient dans le chemin
+        // arithmétique — mesuré, pas supposé : un test a fait sonner
+        // l'`unreachable!` posé là-bas. Une région qui aurait écrit dans
+        // l'accumulateur au lieu de parler à un périphérique se serait
+        // comportée *presque* bien, ce qui est pire qu'un refus franc.
+        if matches!(step.op, Op::PortIn | Op::PortOut) {
+            return Self::port(step, body);
         }
         // Ne rien faire n'émet rien.
         if step.op == Op::Nop {
@@ -1612,6 +1673,9 @@ impl Module {
                         .load(Body::scratch(1))
                         .op(code::I64_ADD);
                 }
+                Op::PortIn | Op::PortOut => unreachable!(
+                    "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
+                ),
                 Op::Sub | Op::Cmp => {
                     b.load(Body::scratch(0))
                         .load(Body::scratch(1))
@@ -1978,6 +2042,11 @@ impl Module {
     fn carry_and_overflow(step: &Decoded, _mask: u64, sign: u64, b: &mut Body) {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
+            Op::PortIn | Op::PortOut => {
+                unreachable!(
+                    "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
+                )
+            }
             Op::And | Op::Or | Op::Xor | Op::Test => {}
             Op::Add | Op::Adc => {
                 // CF : le résultat est passé sous l'opérande de gauche.
@@ -3646,6 +3715,55 @@ impl Module {
     /// **La règle que tout le monde oublie** : une écriture 32 bits efface les
     /// trente-deux bits de poids fort, alors qu'une écriture 8 ou 16 bits
     /// préserve le reste du registre.
+    /// **Le seul endroit où une région parle à autre chose qu'à sa mémoire.**
+    ///
+    /// Les deux fonctions viennent de l'hôte (voir `HOST_OUT`). La largeur leur
+    /// est passée **en octets** plutôt que déduite : l'hôte doit savoir si un
+    /// `out %ax, %dx` a écrit deux octets ou un, et le lui faire deviner depuis
+    /// la valeur donnerait un octet pour tout ce qui tient sur un octet.
+    ///
+    /// **Le port vient de deux endroits.** L'opcode immédiat le porte ; les
+    /// formes `%dx` le prennent dans les seize bits bas de `rdx`. C'est
+    /// `immediate` qui les sépare — et non `imm != 0`, qui confondrait
+    /// `out $0, %al` avec `out %al, %dx`.
+    ///
+    /// **La valeur, et le registre, sont toujours l'accumulateur.** Le codage
+    /// ne laisse pas le choix : `out` écrit `%al`/`%ax`/`%eax`, `in` les
+    /// remplit. `Decoded::nothing` pose déjà `dst: 0`, donc `write_back`
+    /// applique la règle de largeur x86 sans rien de particulier ici : un `in`
+    /// de quatre octets efface les trente-deux bits hauts, un `in` d'un octet
+    /// laisse le reste de `rax` tel quel.
+    fn port(step: &Decoded, body: &mut Body) -> Option<()> {
+        let mask = step.width.mask();
+        let bytes = step.width as u64;
+        let push_port = |b: &mut Body| {
+            if step.immediate {
+                b.constant(step.imm & 0xffff);
+            } else {
+                b.load(Self::slot(RDX)).constant(0xffff).op(code::I64_AND);
+            }
+        };
+        match step.op {
+            Op::PortOut => {
+                push_port(body);
+                body.load(Self::slot(RAX)).constant(mask).op(code::I64_AND);
+                body.constant(bytes).call(HOST_OUT);
+            }
+            Op::PortIn => {
+                body.store(Body::scratch(2), |b| {
+                    push_port(b);
+                    b.constant(bytes).call(HOST_IN);
+                    // L'hôte peut rendre n'importe quoi ; la largeur est notre
+                    // affaire, pas la sienne.
+                    b.constant(mask).op(code::I64_AND);
+                });
+                Self::write_back(step, mask, body);
+            }
+            _ => unreachable!("`port` ne reçoit que des entrées-sorties"),
+        }
+        Some(())
+    }
+
     fn write_back(step: &Decoded, mask: u64, body: &mut Body) {
         // **Quand la destination est en mémoire, la règle de largeur ne
         // s'applique pas.** Elle décrit ce qu'une écriture de registre fait au
@@ -3683,5 +3801,226 @@ impl Module {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    /// **Deux formes que rien ne distinguait doivent produire deux modules.**
+    ///
+    /// Ce test remplace celui qui tenait le refus de traduire : sa prémisse —
+    /// « l'émetteur ne sait pas encore » — n'est plus vraie, et un test dont la
+    /// prémisse est morte ne garde plus rien. Le danger qu'il nommait, lui, est
+    /// intact et se déplace ici : une entrée-sortie *presque* juste est pire
+    /// qu'un refus franc, et « presque juste » a deux formes précises.
+    ///
+    /// **La largeur.** `out %al, %dx` écrit un octet, `out %ax, %dx` en écrit
+    /// deux. L'hôte ne peut pas le deviner depuis la valeur — deux octets dont
+    /// le haut est nul ressemblent à un octet. S'ils produisaient le même
+    /// module, la largeur ne serait pas passée.
+    ///
+    /// **La provenance du port.** `out $0, %al` parle au port zéro ;
+    /// `out %al, %dx` parle à celui que `rdx` désigne, qui pour une console de
+    /// noyau vaut `0x3f8`. Les deux portent `imm: 0` ; s'ils produisaient le
+    /// même module, l'invité se tairait sans que rien ne le signale.
+    #[test]
+    fn the_width_and_the_ports_provenance_both_reach_the_module() {
+        let module = |bytes: &[u8]| Module::region_or_why(bytes, 0x1000, 0).expect("se traduit");
+
+        // `out %al, %dx` contre `out %ax, %dx` — le préfixe 0x66 fait la
+        // largeur, et `ret` clôt les deux régions.
+        let byte_wide = module(&[0xee, 0xc3]);
+        let word_wide = module(&[0x66, 0xef, 0xc3]);
+        assert_ne!(
+            byte_wide, word_wide,
+            "la largeur ne parvient pas à l'hôte : un octet et deux donnent le même module"
+        );
+
+        // `out $0, %al` contre `out %al, %dx` : même `imm`, deux ports.
+        let port_zero = module(&[0xe6, 0x00, 0xc3]);
+        let port_in_dx = module(&[0xee, 0xc3]);
+        assert_ne!(
+            port_zero, port_in_dx,
+            "le port zéro et « le port est dans DX » produisent le même module"
+        );
+    }
+
+    // MARK: - Lire un module émis plutôt que chercher des octets dedans
+
+    /// Les imports du module, dans l'ordre : module, nom, genre.
+    ///
+    /// Lus en marchant les sections, pas cherchés comme une sous-chaîne. Une
+    /// recherche d'octets dirait « `out` est là » d'un module qui le déclare
+    /// au mauvais genre, à la mauvaise place, ou dans une chaîne de constante —
+    /// et c'est la place qui décide de l'indice de fonction, donc du reste.
+    fn imports_of(module: &[u8]) -> Vec<(String, String, u8)> {
+        let body = section_of(module, 2).expect("un module a une section d'imports");
+        let mut at = 0;
+        let count = uleb(body, &mut at);
+        let mut found = Vec::new();
+        for _ in 0..count {
+            let from = name(body, &mut at);
+            let field = name(body, &mut at);
+            let kind = body[at];
+            at += 1;
+            match kind {
+                // Fonction : un indice de type.
+                0x00 => {
+                    uleb(body, &mut at);
+                }
+                // Table : le type d'élément, puis des limites.
+                0x01 => {
+                    at += 1;
+                    limits(body, &mut at);
+                }
+                // Mémoire : des limites.
+                0x02 => limits(body, &mut at),
+                // Globale : un type de valeur, puis la mutabilité.
+                0x03 => at += 2,
+                other => panic!("genre d'import inconnu : {other:#x}"),
+            }
+            found.push((from, field, kind));
+        }
+        found
+    }
+
+    /// Les indices de fonction que la section des éléments pose dans la table.
+    fn elements_of(module: &[u8]) -> Vec<u64> {
+        let body = section_of(module, 9).expect("un module a une section d'éléments");
+        let mut at = 0;
+        assert_eq!(uleb(body, &mut at), 1, "un seul segment");
+        uleb(body, &mut at); // la table visée
+        while body[at] != code::END {
+            at += 1;
+        }
+        at += 1;
+        let count = uleb(body, &mut at);
+        (0..count).map(|_| uleb(body, &mut at)).collect()
+    }
+
+    /// L'indice de fonction que l'export `run` désigne.
+    fn exported_run(module: &[u8]) -> u64 {
+        let body = section_of(module, 7).expect("un module a une section d'exports");
+        let mut at = 0;
+        let count = uleb(body, &mut at);
+        for _ in 0..count {
+            let field = name(body, &mut at);
+            let kind = body[at];
+            at += 1;
+            let index = uleb(body, &mut at);
+            if field == "run" && kind == 0x00 {
+                return index;
+            }
+        }
+        panic!("aucun export `run`");
+    }
+
+    fn section_of(module: &[u8], want: u8) -> Option<&[u8]> {
+        let mut at = 8; // l'en-tête
+        while at < module.len() {
+            let id = module[at];
+            at += 1;
+            let length = uleb(module, &mut at) as usize;
+            if id == want {
+                return Some(&module[at..at + length]);
+            }
+            at += length;
+        }
+        None
+    }
+
+    fn uleb(bytes: &[u8], at: &mut usize) -> u64 {
+        let mut value = 0u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*at];
+            *at += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+
+    fn name(bytes: &[u8], at: &mut usize) -> String {
+        let length = uleb(bytes, at) as usize;
+        let text = String::from_utf8(bytes[*at..*at + length].to_vec()).expect("un nom UTF-8");
+        *at += length;
+        text
+    }
+
+    fn limits(bytes: &[u8], at: &mut usize) {
+        let flag = bytes[*at];
+        *at += 1;
+        uleb(bytes, at);
+        if flag & 0x01 != 0 {
+            uleb(bytes, at);
+        }
+    }
+
+    // MARK: - Ce qu'un noyau qui parle exige du module
+
+    /// **L'invité peut écrire dans un port**, et l'hôte le reçoit par un appel.
+    ///
+    /// Sortir de la région à chaque octet coûterait un retour de main —
+    /// mesuré à environ 190 ns — pour un caractère de console. Un appel importé
+    /// coûte des dizaines de nanosecondes, et c'est ce que fait v86.
+    #[test]
+    fn a_port_write_becomes_a_call_to_the_host() {
+        // `out %al, $0x80` puis `ret`.
+        let module = Module::region_or_why(&[0xe6, 0x80, 0xc3], 0x1000, 0)
+            .expect("une écriture de port se traduit");
+        let imports = imports_of(&module);
+        assert_eq!(
+            imports
+                .first()
+                .map(|(m, f, k)| (m.as_str(), f.as_str(), *k)),
+            Some(("env", "out", 0x00)),
+            "le premier import doit être la fonction `env.out` : {imports:?}"
+        );
+    }
+
+    /// **Et lire dedans**, ce qui demande un second import, qui rend une valeur.
+    #[test]
+    fn a_port_read_becomes_its_own_call() {
+        // `in $0x80, %al` puis `ret`.
+        let module = Module::region_or_why(&[0xe4, 0x80, 0xc3], 0x1000, 0)
+            .expect("une lecture de port se traduit");
+        let imports = imports_of(&module);
+        assert_eq!(
+            imports.get(1).map(|(m, f, k)| (m.as_str(), f.as_str(), *k)),
+            Some(("env", "in", 0x00)),
+            "le second import doit être la fonction `env.in` : {imports:?}"
+        );
+    }
+
+    /// **Le piège de cette tranche, et le seul qui casserait tout en silence.**
+    ///
+    /// Une fonction *importée* occupe le début de l'espace d'indices : avec deux
+    /// imports, le bloc zéro n'est plus la fonction zéro mais la fonction deux.
+    /// Oublier ce décalage ne produit pas une erreur de liaison — la table
+    /// pointerait les imports eux-mêmes, du bon type, et la boucle appellerait
+    /// `out` en croyant exécuter le premier bloc.
+    ///
+    /// Les deux endroits où l'indice apparaît sont donc lus ici, sur un module
+    /// qui ne contient aucune entrée-sortie : le décalage vaut pour tous.
+    #[test]
+    fn the_two_host_imports_push_every_block_index_along() {
+        // `nop` puis `ret` : deux blocs, aucune entrée-sortie.
+        let module = Module::region_or_why(&[0x90, 0xc3], 0x1000, 0).expect("une région sans port");
+        let blocks = elements_of(&module);
+        assert_eq!(
+            blocks,
+            (2..2 + blocks.len() as u64).collect::<Vec<_>>(),
+            "les blocs commencent après les deux imports"
+        );
+        assert_eq!(
+            exported_run(&module),
+            2 + blocks.len() as u64,
+            "`run` vient après les imports et après les blocs"
+        );
     }
 }

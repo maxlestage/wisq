@@ -324,6 +324,100 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
+/// **Un invité qui parle, et un hôte qui l'entend.**
+///
+/// C'est la première fois que quelque chose sort de la machine autrement que
+/// par des pixels. Le programme est écrit à la main et fait ce que fait la
+/// console d'un noyau au tout début de son démarrage, avant que le moindre
+/// pilote existe : charger le port dans `dx`, l'octet dans `al`, et `out`.
+///
+/// **Ce que ce test prouve et que rien d'autre ne pouvait prouver.** Les tests
+/// Rust de l'émetteur lisent les octets du module : ils disent que `env.out`
+/// est déclaré à la bonne place, pas qu'un moteur l'appelle avec les bons
+/// arguments. Ici le module est compilé par JavaScriptCore, lié à l'hôte, et
+/// exécuté. Si le port, la valeur ou la largeur étaient poussés dans le mauvais
+/// ordre, le moteur ne s'en plaindrait pas — les trois sont des `i64` — et
+/// c'est la chaîne reçue qui ne serait pas « hi ».
+#[test]
+fn a_guest_that_writes_to_the_serial_port_is_heard() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // mov $0x3f8, %dx ; mov $'h', %al ; out %al, %dx
+    //                 ; mov $'i', %al ; out %al, %dx ; ud2
+    let program = [
+        0x66, 0xba, 0xf8, 0x03, // mov $0x3f8, %dx
+        0xb0, b'h', // mov $'h', %al
+        0xee, // out %al, %dx
+        0xb0, b'i', // mov $'i', %al
+        0xee, // out %al, %dx
+        0x0f, 0x0b, // ud2 — la machine s'arrête là, et le dit
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-serial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("hi.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let said = "";
+let asked = 0;
+const vm = machine({{
+  // La région s'arrête sur le `ud2`, et la machine redemande à cette
+  // adresse-là. Reservir le même module l'installerait à un emplacement où il
+  // n'a pas de bloc ; un refus est ce que l'application répondrait vraiment
+  // pour une instruction qu'elle ne sait pas traduire.
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+  serial: byte => {{ said += String.fromCharCode(byte); }},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+console.log("dit " + said);
+console.log("arret " + why.stopped);
+console.log("ou " + why.at.toString(16));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{text}\n{errors}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    assert_eq!(seen("dit"), "hi", "les deux octets, dans l'ordre");
+    // Et la machine s'est arrêtée là où le programme s'arrête : sur le `ud2`,
+    // dix octets après le début. Sans cette ligne, un « hi » dit deux fois par
+    // une machine qui boucle passerait pour un succès.
+    assert_eq!(seen("arret"), "refusée");
+    assert_eq!(seen("ou"), format!("{:x}", BASE + 10), "sur le `ud2`");
+}
+
 /// **Et une machine vraiment bloquée doit être nommée.**
 ///
 /// Une région qui se réduit à `ud2` rend la main sur sa propre adresse, à

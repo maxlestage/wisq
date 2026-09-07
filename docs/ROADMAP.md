@@ -4923,3 +4923,36 @@ table de pages plutôt que par masque, les interruptions, les entrées-sorties, 
 la détection du code qui se modifie ». Aucune de ces cinq choses n'est mesurée.
 Brancher d'abord mettrait quelqu'un devant une machine dont on ne sait pas
 qu'elle démarre.
+
+### Tranche 1 des cinq choses non mesurées : les entrées-sorties — *faite*
+
+La première des cinq est faite, et elle se prouve : **un invité parle**. Un
+programme x86 écrit à la main, traduit par l'émetteur, compilé par
+JavaScriptCore, lié à l'hôte, fait arriver deux octets par le port `0x3f8`.
+
+| ce que la tranche a posé | où |
+| --- | --- |
+| les huit opcodes d'entrée-sortie, décodés | `crates/wisq-vm/src/x86.rs` |
+| `env.out` et `env.in`, importés plutôt qu'un retour de main par octet | `crates/wisq-vm/src/x86_wasm.rs` |
+| le strict nécessaire d'un 16550 : émission en `0x3f8`, état de ligne en `0x3fd` | `web/host.js` |
+| un invité qui dit « hi », sous un vrai moteur | `crates/wisq-vm/tests/host_loop.rs` |
+
+**Ce qui reste des cinq**, dans l'ordre qui se défend toujours :
+
+1. la **diversité des blocs** et la **table de pages** — c'est-à-dire un vrai
+   noyau à travers l'émetteur, qui est la tranche suivante ;
+2. les **interruptions** — un noyau qui attend un timer ne repart pas sans
+   elles, et rien ici n'en produit ;
+3. la **détection du code qui se modifie** — l'émetteur traduit une région une
+   fois et la garde ; un noyau qui réécrit ses propres octets exécuterait
+   l'ancienne traduction.
+
+Le **branchement dans l'application** reste après, pour la raison déjà écrite
+plus haut : brancher d'abord mettrait quelqu'un devant une machine dont on ne
+sait pas qu'elle démarre.
+
+**Ce que le port série ne fait pas, et qu'il faut dire.** Il n'émet que ; rien
+n'arrive *vers* l'invité, parce que rien n'a encore de quoi le lui dire — c'est
+la tranche des interruptions. Les registres autres que l'émission et l'état de
+ligne ne sont pas implémentés, et un port où il n'y a personne rend `0xff`,
+comme un vrai bus qui flotte.
