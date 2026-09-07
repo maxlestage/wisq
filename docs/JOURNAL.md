@@ -10923,3 +10923,300 @@ Bougent : tout ce que `LocalDesktopTests` prétendait tenir. Que la machine
 tourne dans un vrai `WKWebView`, que `place` pose bien ses octets, que `paint`
 rende un compte de pixels, que les refus tombent à la construction. Ces
 comportements sont **écrits et typés, jamais exécutés**.
+
+## Faire tourner ces tests, et une garde qui n'en était pas une
+
+`Cœur (Apple)` gagne deux étapes : construire le cœur Rust — sans lui,
+`Package.swift` retire la cible qui porte le bureau local — puis lancer
+`swift test --filter LocalDesktopTests` **sans** `WISQ_SWIFT_CORE`. C'est le
+seul job qui puisse les exécuter : Linux n'a pas WebKit, et `App iOS` construit
+sans lancer les tests du paquet.
+
+### La garde que j'ai écrite, et qui ne gardait rien
+
+J'avais écrit dans le commentaire : « le filtre est aussi la garde —
+`swift test --filter` échoue quand il ne trouve rien, donc si la cible
+disparaît à nouveau, ce job rougit au lieu de passer en silence ».
+
+Essayé sous Linux, où ces tests n'existent pas :
+
+```
+warning: No matching test cases were run
+Executed 0 tests, with 0 failures
+exit=0
+```
+
+**Il sort avec zéro.** L'étape serait donc passée en silence le jour où la
+cible redisparaîtrait — c'est-à-dire le mode de panne exact qu'elle existe pour
+empêcher. Trente secondes à vérifier, et la garde entière tenait sur une phrase
+que je venais d'inventer.
+
+C'est la deuxième fois en une heure : la première était de croire qu'un job
+vert jugeait ce qu'il ne compilait pas. Le `grep` sur
+« No matching test cases were run » est la vraie garde ; le filtre n'est qu'un
+filtre.
+
+### Ce que ce job ne peut pas encore promettre
+
+Un `WKWebView` dans un `swift test` en ligne de commande sur macOS n'a ni
+`NSApplication` ni bundle d'application. Rien ici ne dit s'il fonctionne dans
+ces conditions. **Si ces tests échouent sur le runner, c'est un résultat à
+écrire, pas à contourner en retirant le test** : ce serait précisément revenir
+à l'état qu'on vient de corriger, mais en connaissance de cause.
+
+## Le chiffre, et la course jumelle qu'il a fait sortir
+
+« Cœur (Apple) » exécute enfin `LocalDesktopTests`. Trois réponses d'un coup.
+
+### Un `WKWebView` fonctionne dans un `swift test` en ligne de commande
+
+C'était l'incertitude annoncée : pas de `NSApplication`, pas de bundle. Elle est
+levée — neuf tests exécutés sur un runner macOS, huit passés du premier coup.
+
+### Le débit, enfin
+
+```
+wisq: image de 4 Mio posée en 0.07 s, 61.2 Mio/s
+```
+
+Un noyau de 35 Mio prend **environ 0,57 seconde** par `evaluateJavaScript` en
+tranches de 48 Kio. « Assumé et cher » était écrit quatre tranches durant sans
+qu'aucun nombre ne soit derrière ; le nombre dit que **ce n'est pas cher**.
+
+Le gestionnaire de schéma est donc abandonné, et c'est le premier travail que ce
+lot écarte sur une mesure plutôt que de le faire. Il gagnerait au mieux une
+demi-seconde, au prix d'un mécanisme qu'aucun test d'ici ne peut juger.
+
+### Et la course, qui était le jumeau d'une course déjà corrigée
+
+Un test a échoué :
+
+```
+LocalDesktopTests.swift:211: InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+`load()` interrogeait `web.isLoading` en boucle. **Juste après
+`loadHTMLString`, ce drapeau est encore faux** : la navigation n'a pas commencé.
+La boucle sortait au premier tour, `load()` rendait la main sur une page
+inexistante, et l'appel suivant partait dans le vide. Quand la vraie navigation
+s'engageait, elle jetait la continuation en attente — d'où une erreur WebKit qui
+ne dit rien de sa cause.
+
+C'est **exactement** la course corrigée dans la tranche « La machine dans la
+vue », où j'avais écrit : « une vue *poste*, elle n'appelle pas ; lire
+`handler.stopped` tout de suite serait une course — celle qui rend un test vert
+neuf fois sur dix ».
+
+Je l'ai réparée sur le message d'arrêt et laissée sur le chargement, **dans la
+même fonction du même fichier, le même jour**. Écrire la leçon ne la fait pas
+chercher ailleurs. Elle attend maintenant `didFinish` par un délégué de
+navigation, et une page qui refuse de charger le dit au lieu d'épuiser la
+patience et de ressembler à une vue lente.
+
+Ce que ça dit du reste : ce défaut n'était visible par rien tant que ces tests
+ne tournaient nulle part. Il est sorti dans les trois minutes qui ont suivi leur
+première exécution.
+
+### La course était réelle, et ce n'était pas la cause
+
+La tranche précédente se terminait sur une explication qui se tenait : la
+course sur `web.isLoading` expliquait `InvalidTransition`, elle était le jumeau
+d'une course déjà corrigée dix lignes plus haut, et la corriger devait rendre le
+test vert.
+
+Elle est corrigée. **Le test échoue à l'identique**, au même endroit :
+
+```
+LocalDesktopTests.swift:211: InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+La course existait — attendre `didFinish` plutôt que sonder un drapeau encore
+faux est juste, et le reste. Mais elle n'était pas ce qui casse. J'ai pris une
+explication vraie pour l'explication, parce qu'elle était élégante et qu'elle
+m'accusait : une erreur que je venais de commettre deux fois faisait un coupable
+trop satisfaisant pour être vérifié.
+
+Et `InvalidTransition` n'est écrit nulle part chez nous — `grep` sur tout
+l'arbre ne le trouve pas. C'est WebKit qui parle, d'un état interne dont le
+message ne nomme ni le fichier ni la ligne de ce qui l'a mis là.
+
+Ce qui reste vrai et qu'aucune relecture ne donne : **des neuf tests, celui-ci
+est le seul dont la page porte un `<canvas>`**. Les huit autres passent, dont un
+`place` de 4 Mio. Je ne sais pas encore si c'est le canvas ; je sais que c'est la
+seule chose qui les sépare.
+
+Alors plutôt que de deviner une deuxième fois, la page dit elle-même ce qui lui
+arrive. Le corps du pilote est enveloppé d'un `try`/`catch` qui pose
+`window.wisqFailure`, `load()` demande à la page son verdict après `didFinish`,
+et le délégué signale `webViewWebContentProcessDidTerminate`. Trois issues
+distinctes, trois refus nommés : `.script`, `.thePageNeverCameUp`,
+`.theViewsProcessDied`.
+
+Le prochain run ne dira plus « InvalidTransition » : il dira lequel des trois
+c'est.
+
+Et parce qu'ajouter du code pour diagnostiquer la CI est précisément le moment
+où l'on écrit ce qu'aucun test ne juge, le `catch` est jugé ici :
+`a_page_that_cannot_install_itself_says_so` fait tourner le vrai pilote avec un
+`document.getElementById` qui rend `null`, et vérifie que la raison nomme le
+canvas et que `wisqRun` reste `undefined`.
+
+### Deux tests identiques, un qui passe et un qui casse
+
+Le passage suivant a nommé la chose autrement que je ne l'attendais : **deux
+échecs au lieu d'un**, et j'en avais causé un.
+
+```
+LocalDesktopTests.swift:227: testADesktopWithoutAFrameRefusesToPaint … InvalidTransition
+LocalDesktopTests.swift:210: testTheDesktopPaintsTheFrameOnDemand   … InvalidTransition
+```
+
+Le premier **passait** au tour d'avant (2,429 s, vérifié dans le log, pas de
+mémoire). Ce qui l'a cassé est la sonde que je venais d'écrire : `load()`
+interrogeait la page sur son état et **refusait** si la réponse n'arrivait pas.
+Un instrument écrit pour observer un échec est devenu la cause d'un autre. Il
+observe maintenant sans casser : si la question elle-même échoue, elle est
+retenue dans `pageVerdict` et le chargement réussit comme avant ; seul un
+verdict lisible et négatif refuse.
+
+Et l'hypothèse du canvas tombe : `testADesktopWithoutAFrameRefusesToPaint`
+n'a **aucun écran**. Elle n'était de toute façon qu'une corrélation, écrite comme
+telle.
+
+Reste un fait que je n'explique pas, et qui vaut mieux que trois hypothèses :
+
+| | construction | verdict |
+| --- | --- | --- |
+| `testTheDesktopRunsAMachineInsideARealWebView` | `LocalDesktop(pages: 1, entry: base)` puis `load()` | passe |
+| `testADesktopWithoutAFrameRefusesToPaint` | `LocalDesktop(pages: 1, entry: base)` puis `load()` | échoue |
+
+**Deux tests écrits à l'identique, l'un passe et l'autre non.** Ce n'est donc pas
+un chemin de code : c'est l'ordre, ou le nombre de vues déjà ouvertes, ou
+quelque chose que le fichier ne montre pas.
+
+### La garde qui n'en était pas une, pour la deuxième fois de la journée
+
+L'autre chose que ce passage établit est plus utile encore. `InvalidTransition`
+est sorti de `load()` **sous son nom d'origine** — or chacun des six appels à la
+vue, dans ce fichier, est déjà enveloppé d'un `do`/`catch` qui traduit en refus
+nommé. Une erreur traduite se serait affichée `script(...)`.
+
+Donc elle ne vient d'aucun de nos appels. Je ne sais pas encore d'où ; ce que je
+sais, c'est que le raisonnement « chaque appel est gardé, donc rien ne sort »
+était faux, et qu'aucune relecture ne l'aurait montré — seule la forme du
+message dans le log l'a montrée.
+
+`load()` est donc enveloppée **en entier**. Si le prochain passage affiche
+encore un `InvalidTransition` nu à la même ligne, c'est la preuve que l'erreur
+n'est pas levée par `load()` du tout, et la question se déplace vers XCTest et
+le démontage des vues — c'est-à-dire vers la cible hébergée par l'application.
+S'il affiche `hors de nos gardes : …`, elle traverse bien cette fonction et je
+saurai laquelle des lignes. Les deux réponses avancent ; c'est ce qui manquait
+aux deux tours précédents.
+
+### Il ne manquait pas une correction, il manquait un hôte
+
+La garde totale a répondu, et sa réponse est celle qui élimine : **le même
+`InvalidTransition` nu, à la même ligne**, avec `load()` enveloppée en entier
+dans un `do`/`catch` qui traduit n'importe quelle erreur en refus nommé. Elle ne
+vient donc d'aucun de nos appels — et `LocalDesktop` n'est plus l'endroit où
+chercher. (La régression, elle, est réparée : un échec, plus deux.)
+
+Et il faut revenir sur ce que j'ai écrit au tour précédent. J'avais enterré
+l'hypothèse du canvas parce qu'un test sans écran échouait aussi — **mais cet
+échec-là était le mien**, causé par la sonde. Une fois ma régression retirée, il
+ne reste qu'un rouge, et c'est de nouveau le seul test dont la page porte un
+`<canvas>`. Je m'étais sur-corrigé : enterrer une hypothèse sur une preuve
+fabriquée par soi n'est pas plus rigoureux que la garder sans preuve.
+
+**La réponse était écrite dans ce dépôt depuis une tranche précédente**, dans le
+commentaire qui justifie l'existence de `WisqHostedTests` :
+
+> WebKit rend dans un processus séparé qu'iOS ne démarre pas pour un `xctest`
+> nu, et les deux tests ont été sautés après une minute d'attente — un job vert
+> qui ne répondait rien.
+
+`swift test` **est** un `xctest` nu. Des neuf tests du bureau, celui qui peint
+est le seul à demander une surface de rendu ; les huit autres n'évaluent que du
+JavaScript. Ce n'est pas une correction qui manquait, c'est un hôte.
+
+Trois tours à chercher une cause écrite noir sur blanc dans `project.yml`. Ce
+que ça dit : j'ai cherché **dans le fichier qui échouait** au lieu de chercher
+ce que ce dépôt savait déjà de WebKit. Le journal et la feuille de route
+existent pour ça, et je ne les ai pas relus.
+
+Le test est donc déplacé dans `Tests/WisqHostedTests/`, hébergé par
+l'application, exécuté à chaque commit dans un iPhone simulé par
+`scripts/test-app.sh` — le même chemin que la sonde WebKit et la sonde Metal.
+**Ni retiré, ni affaibli, ni marqué comme sautable** : posé là où sa question a
+une réponse. Et `LocalDesktopTests` garde, à sa place, le commentaire qui dit où
+il est parti et pourquoi — sans quoi la prochaine lecture y verrait un test
+disparu.
+
+### Deux verdicts opposés sur un code identique
+
+Le passage suivant a démoli ma conclusion précédente, celle-là même que je
+venais d'écrire comme rétablie.
+
+`testADesktopWithoutAFrameRefusesToPaint` — **sans écran, donc sans canvas** —
+échoue, au `load()`, sur le même `InvalidTransition`. Or il **passait** au tour
+d'avant, et rien de ce qu'il touche n'a changé entre les deux : ni
+`LocalDesktop.swift`, ni son propre corps ; seulement `project.yml`, que ce job
+n'utilise pas.
+
+| tour | ce test | le test qui peint |
+| --- | --- | --- |
+| `7106188` | passe — il n'évaluait alors aucun JavaScript | échoue |
+| `c3d550c` | échoue — ma sonde | échoue |
+| `7d4d1e7` | **passe** | échoue |
+| `967a4ab` | **échoue** | déplacé |
+
+**Deux passages, même code, verdicts opposés : c'est non déterministe.** Ce
+n'est donc pas le canvas — c'était la troisième explication, et elle tombe comme
+les deux précédentes. Ce qui est constant, c'est que le test qui échoue est le
+**premier du processus**, celui qui crée le premier `WKWebView` à froid, et
+qu'il est toujours le plus lent (2,4 s, 3,3 s, là où les autres tiennent en un
+dixième).
+
+La conclusion ne change pas de direction, elle s'élargit : `swift test` ne peut
+pas héberger WebKit de façon fiable. Sept tests sur huit passaient parce qu'ils
+héritaient d'un état déjà chaud — **une propriété sur laquelle on ne bâtit pas
+une garde**. Un job vert qui dépend de l'ordre d'exécution est un job qui ment
+un jour sur deux.
+
+Toute la suite part donc dans `WisqHostedTests`, et les deux étapes que j'avais
+ajoutées à « Cœur (Apple) » ce matin sont retirées : elles existaient pour
+exécuter ces tests là où ils ne peuvent pas l'être. « App iOS » les exécute
+désormais, à chaque commit, dans un simulateur — même fréquence, même sévérité,
+avec l'hôte en plus.
+
+Ce que ce tour coûte à admettre : j'ai eu trois explications successives et les
+trois étaient fausses. Ce qui les a démolies n'a jamais été une relecture, mais
+toujours **deux nombres ou deux verdicts qui auraient dû s'accorder** — 1925
+contre 1992, puis passe contre échoue sur le même code. La seule méthode qui a
+marché aujourd'hui est celle-là.
+
+### Un relevé enterré sous ce qu'il devait éclairer
+
+En voulant vérifier que le test déplacé avait bien tourné dans le simulateur,
+je ne l'ai pas pu : « App iOS » était vert, mais son verdict était introuvable.
+
+La raison est bête et mesurable. Le relevé des mesures était publié **juste
+après** les tests, donc avant les deux constructions finales du job — qui
+écrivent des dizaines de milliers de lignes par-dessus. L'API des journaux ne
+sert que la fin d'un job ; au-delà d'un millier de lignes elle refuse. Le
+relevé existait précisément pour dire « si la sonde a vraiment répondu ou
+seulement été sautée », et il était rangé là où on ne peut pas le lire.
+
+Deux corrections, et aucune n'est du confort :
+
+- l'étape passe **en dernier** dans le job, où la queue du journal l'atteint ;
+- le relevé **nomme les suites** au lieu de seulement les compter. « Douze
+  tests exécutés » ne dit pas *lesquels* : une suite entière déplacée ici
+  n'aurait laissé aucune trace distinguant « elle a tourné » de « elle a
+  disparu du bundle ». Un nombre seul se lit aussi bien dans les deux sens —
+  c'est la troisième fois aujourd'hui que ce lot bute là-dessus, après « 1925
+  contre 1992 » et « No matching test cases were run ».
+
+Sans ça, la tranche que je pousse ne serait vérifiable par personne, moi
+compris. Ce n'est pas un élargissement : c'est ce qui rend le reste jugeable.

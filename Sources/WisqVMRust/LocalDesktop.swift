@@ -39,6 +39,16 @@ public final class LocalDesktop {
         /// montrer ; le refus le dit, plutôt que de laisser l'appelant croire
         /// qu'une image est passée.
         case noFrameWasDeclared
+        /// **La page a chargé, mais son script est mort en route.** Un canvas
+        /// absent, un contexte refusé, une RAM que la boucle hôte n'accepte
+        /// pas : la vue finit quand même de charger, et sans ça l'application
+        /// ne l'apprendrait que plusieurs appels plus loin, par le symptôme.
+        case thePageNeverCameUp(String)
+        /// **Le processus de contenu est mort.** Ce n'est ni un refus ni un
+        /// script en panne : c'est WebKit qui a emporté la page. Sans ce cas,
+        /// il se manifeste par une continuation abandonnée et un message qui
+        /// ne nomme pas sa cause.
+        case theViewsProcessDied
     }
 
     /// Pourquoi la machine s'est arrêtée, et où. Jamais « rien » : un arrêt
@@ -65,6 +75,28 @@ public final class LocalDesktop {
     private let channel = "wisq"
     private let web: WKWebView
     private let handler: Channel
+
+    /// **Ce que la page a répondu quand on lui a demandé son état**, ou `nil`
+    /// tant qu'on ne le lui a pas demandé. C'est un instrument, pas une garde :
+    /// les refus le citent, aucun ne naît de lui. Un message de WebKit qui ne
+    /// nomme pas sa cause est moins seul accompagné de ce que la page disait
+    /// d'elle-même au même moment.
+    public private(set) var pageVerdict: String?
+
+    /// **Le refus d'un appel à la vue.** Trois choses au même endroit, parce
+    /// qu'elles étaient recopiées à chaque appel et divergeaient : un processus
+    /// de contenu mort se nomme, la description complète de l'erreur est
+    /// préférée à `localizedDescription` — qui, pour une erreur Swift qui n'est
+    /// pas une `NSError`, rend une phrase générique où le vrai message est
+    /// perdu — et ce que la page avait dit d'elle-même est joint.
+    private func refuse(_ error: any Error) -> Failure {
+        if handler.processDied { return .theViewsProcessDied }
+        var said = String(describing: error)
+        if let verdict = pageVerdict {
+            said += " — la page disait : \(verdict)"
+        }
+        return .script(said)
+    }
 
     public init(
         pages: UInt32,
@@ -122,7 +154,24 @@ public final class LocalDesktop {
     // MARK: - Démarrer
 
     /// Charge la page dans la vue et attend qu'elle soit prête.
+    ///
+    /// **L'enveloppe est totale, et elle l'est pour une raison.** Chaque appel
+    /// à la vue, ici comme ailleurs, est déjà sous garde — et une erreur de
+    /// WebKit qui ne nomme pas sa cause est quand même sortie d'ici, sous son
+    /// nom d'origine. Elle ne vient donc pas de nos appels. Tant qu'on ne sait
+    /// pas d'où, la nommer vaut mieux que la laisser passer : la prochaine
+    /// fois, le message dira au moins qu'elle a traversé cette fonction.
     public func load(patience: TimeInterval = 20) async throws {
+        do {
+            try await settle(patience: patience)
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw Failure.script("hors de nos gardes : \(error)")
+        }
+    }
+
+    private func settle(patience: TimeInterval) async throws {
         // Les trois raisons de refuser une page — la RAM, le nom du canal, le
         // cadre — sont toutes tenues avant d'arriver ici : les deux premières
         // par l'initialisation et par une constante, la troisième par la garde
@@ -133,12 +182,66 @@ public final class LocalDesktop {
         ) else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
         }
+        // **Attendre l'événement, pas un drapeau.** Ce qu'il y avait ici
+        // interrogeait `web.isLoading` en boucle — et juste après
+        // `loadHTMLString`, ce drapeau est **encore faux** : la navigation n'a
+        // pas commencé. La boucle sortait donc au premier tour, `load` rendait
+        // la main sur une page qui n'existait pas encore, et l'appel suivant
+        // partait dans le vide. C'est **exactement** la course déjà corrigée
+        // sur le message d'arrêt : une vue poste et notifie, elle ne renseigne
+        // pas un drapeau à l'instant où on le lit. Je l'avais réparée d'un
+        // côté et laissée de l'autre.
+        //
+        // **Ce qu'elle n'explique pas.** J'ai écrit ici qu'elle causait
+        // `InvalidTransition { phase: idle, targetPhase: failed(deinit) }`.
+        // Elle est corrigée et ce refus tombe à l'identique : le lien était
+        // supposé, pas établi. La course valait d'être réparée pour elle-même ;
+        // elle ne répond pas de l'autre.
+        //
+        // Le délégué est retenu **faiblement** par la vue, mais fortement par
+        // le contrôleur de contenu qui l'a déjà comme gestionnaire de
+        // messages : rien à garder de plus, rien à défaire.
+        handler.loaded = false
+        handler.failure = nil
+        web.navigationDelegate = handler
         web.loadHTMLString(page, baseURL: nil)
         let deadline = Date().addingTimeInterval(patience)
-        while web.isLoading && Date() < deadline {
+        while !handler.loaded && handler.failure == nil && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard !web.isLoading else { throw Failure.viewNeverFinishedLoading }
+        if handler.processDied { throw Failure.theViewsProcessDied }
+        if let why = handler.failure { throw Failure.script(why) }
+        guard handler.loaded else { throw Failure.viewNeverFinishedLoading }
+
+        // **Une page qui a fini de charger n'est pas une page qui s'est
+        // installée.** Le script du module peut avoir levé — et alors la vue
+        // rend quand même `didFinish`. Le pilote retient la raison ; on la lit
+        // ici plutôt que de laisser l'appel suivant partir sur une page à
+        // moitié montée et rapporter une panne qui ne nomme pas sa cause.
+        //
+        // **Et elle observe sans casser.** Écrite comme une garde, elle a fait
+        // échouer un test qui passait : un instrument qui change ce qu'il
+        // mesure ne mesure plus rien. Si la question elle-même échoue, elle
+        // retient l'échec et laisse le chargement réussir comme avant ; seul un
+        // verdict *lisible* et négatif refuse.
+        do {
+            let value = try await web.callAsyncJavaScript(
+                """
+                if (window.wisqFailure) return window.wisqFailure;
+                return typeof window.wisqRun === "function"
+                  ? "prête"
+                  : "le pilote n'a pas fini de s'installer";
+                """,
+                arguments: [:], in: nil, contentWorld: .page
+            )
+            pageVerdict = value as? String ?? "la page n'a pas répondu lisiblement"
+        } catch {
+            pageVerdict = "la page n'a pas pu être interrogée : \(error)"
+            return
+        }
+        if let said = pageVerdict, said != "prête" {
+            throw Failure.thePageNeverCameUp(said)
+        }
     }
 
     /// **Pose l'image dans la RAM de l'invité**, à l'adresse repliée.
@@ -191,7 +294,7 @@ public final class LocalDesktop {
                     contentWorld: .page
                 )
             } catch {
-                throw Failure.script(error.localizedDescription)
+                throw refuse(error)
             }
             written += piece.count
         }
@@ -236,7 +339,7 @@ public final class LocalDesktop {
                 }
                 return btoa(binaire);
                 """
-            let returned: Any
+            let returned: Any?
             do {
                 returned = try await web.callAsyncJavaScript(
                     script,
@@ -245,7 +348,7 @@ public final class LocalDesktop {
                     contentWorld: .page
                 )
             } catch {
-                throw Failure.script(error.localizedDescription)
+                throw refuse(error)
             }
             guard let text = returned as? String,
                   let bytes = Data(base64Encoded: text),
@@ -260,13 +363,13 @@ public final class LocalDesktop {
 
     /// Fait tourner la machine jusqu'à ce qu'elle s'arrête, et dit pourquoi.
     public func run(patience: TimeInterval = 5) async throws -> Stopped {
-        let returned: Any
+        let returned: Any?
         do {
             returned = try await web.callAsyncJavaScript(
                 "return await window.wisqRun()", arguments: [:], in: nil, contentWorld: .page
             )
         } catch {
-            throw Failure.script(error.localizedDescription)
+            throw refuse(error)
         }
         // **Le message d'arrêt n'arrive pas forcément avant le retour.** Une
         // vue poste, elle n'appelle pas : `wisqRun` a rendu la main, mais le
@@ -308,7 +411,7 @@ public final class LocalDesktop {
         } catch let failure as Failure {
             throw failure
         } catch {
-            throw Failure.script(error.localizedDescription)
+            throw refuse(error)
         }
     }
 
@@ -342,7 +445,7 @@ public final class LocalDesktop {
         } catch let failure as Failure {
             throw failure
         } catch {
-            throw Failure.script(error.localizedDescription)
+            throw refuse(error)
         }
     }
 
@@ -405,9 +508,42 @@ public final class LocalDesktop {
     /// s'arrête : plus personne ne retient le bureau depuis la vue, donc le
     /// relâcher relâche tout, et aucun `deinit` n'a à défaire quoi que ce
     /// soit.
-    private final class Channel: NSObject, WKScriptMessageHandler {
+    private final class Channel: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var desktop: LocalDesktop?
         var stopped: Stopped?
+        /// Vrai quand la page a **fini** de charger. Pas « n'est plus en train
+        /// de charger » : ces deux phrases ne veulent pas dire la même chose
+        /// avant que la navigation ait commencé.
+        var loaded = false
+        /// Et une page qui refuse de charger doit le dire, plutôt que
+        /// d'épuiser la patience et de ressembler à une vue lente.
+        var failure: String?
+        /// **Le processus de contenu est mort.** WebKit le dit ; sans ça, la
+        /// seule trace est une continuation abandonnée, et un message qui ne
+        /// nomme pas sa cause.
+        var processDied = false
+
+        func webViewWebContentProcessDidTerminate(_ web: WKWebView) {
+            processDied = true
+        }
+
+        func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) {
+            loaded = true
+        }
+
+        func webView(
+            _ web: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+        ) {
+            failure = error.localizedDescription
+        }
+
+        func webView(
+            _ web: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            failure = error.localizedDescription
+        }
 
         func userContentController(
             _ controller: WKUserContentController, didReceive message: WKScriptMessage

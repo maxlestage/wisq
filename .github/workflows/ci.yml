@@ -164,7 +164,32 @@ jobs:
         env:
           # No Rust core here: this job is for the protocol and platform layers,
           # and the two interpreters are already compared on Linux.
+          #
+          # **Ce que cette variable coûtait, et que personne n'avait vu.**
+          # `WISQ_SWIFT_CORE=1` met `rustCoreEnabled = false` dans
+          # `Package.swift`, ce qui ne se contente pas de choisir un cœur : ça
+          # **retire la cible `WisqVMRust` et sa cible de tests**. Or
+          # `LocalDesktop.swift` vit là, derrière `canImport(WebKit)` — donc
+          # absent sous Linux, et absent ici. Ses tests n'étaient exécutés par
+          # aucun job, pendant que cinq descriptions de pull request
+          # affirmaient que ce job-ci les jugeait. Le vert venait de ce qu'il
+          # ne les compilait pas.
           WISQ_SWIFT_CORE: '1'
+
+      # **Et l'autre moitié, celle que la variable ci-dessus enlève : elle est
+      # jugée ailleurs, et il a fallu deux jours pour savoir où.**
+      #
+      # `LocalDesktopTests` a vécu ici, derrière un `swift test --filter`.
+      # C'était le seul job capable de compiler `LocalDesktop.swift` — mais pas
+      # de l'exécuter de façon fiable : le premier test du processus, celui qui
+      # crée le premier `WKWebView` à froid, a rendu **deux verdicts opposés
+      # sur un code identique**, à deux passages consécutifs. La raison est
+      # écrite dans `project.yml` : « WebKit rend dans un processus séparé
+      # qu'iOS ne démarre pas pour un `xctest` nu ». `swift test` en est un.
+      #
+      # La suite est donc dans `WisqHostedTests`, hébergée par l'application, et
+      # c'est « App iOS » qui l'exécute — à chaque commit, comme ici, mais dans
+      # un simulateur où WebKit a ce qu'il lui faut.
 
   lint:
     name: Lint
@@ -251,13 +276,6 @@ jobs:
         # booting Linux is covered elsewhere, and what is under test is the
         # wiring around the machine, not the machine.
         run: scripts/test-app.sh
-      # **Les mesures, remises sous les yeux.** `xcodebuild` écrit des dizaines
-      # de milliers de lignes après elles ; une mesure qu'on ne retrouve pas est
-      # une mesure qu'on refait, et celles-ci disent si la sonde WebKit a
-      # vraiment répondu ou seulement été sautée.
-      - name: Ce que l'iPhone simulé a mesuré
-        if: always()
-        run: cat "${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt" 2>/dev/null || echo "aucune mesure relevée"
       - name: Build for simulator
         # A generic destination avoids pinning a simulator model that the runner
         # image may drop from one release to the next.
@@ -296,3 +314,18 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+      # **Les mesures, remises sous les yeux — et en tout dernier.**
+      #
+      # Ce relevé était publié juste après les tests, donc **avant** les deux
+      # constructions ci-dessus : elles écrivent des dizaines de milliers de
+      # lignes par-dessus, et l'API des journaux ne sert que la fin d'un job.
+      # Résultat mesuré le 7 septembre : impossible de vérifier depuis ici si
+      # les tests hébergés avaient tourné ou seulement été sautés — la question
+      # même que ce relevé existe pour trancher. Il est donc en dernier, où on
+      # peut le lire.
+      #
+      # `if: always()` parce qu'un job rouge est justement celui dont on veut
+      # savoir ce qui a été exécuté.
+      - name: Ce que l'iPhone simulé a mesuré
+        if: always()
+        run: cat "${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt" 2>/dev/null || echo "aucune mesure relevée"
