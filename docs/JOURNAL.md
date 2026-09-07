@@ -10536,8 +10536,11 @@ de messages, répond aux demandes de traduction et fait tourner la machine.
 **Il ne va pas dans `WisqUI`.** Une vue SwiftUI y serait à sa place, mais ceci
 n'est pas une vue, c'est la conduite. `WisqUI` n'est que *compilé* par la CI ;
 `WisqVMRust` est **exécuté**, sur macOS comme sur Linux. Derrière un
-`#if canImport(WebKit)`, la conduite se fait donc juger à chaque commit par
-« Cœur (Apple) », et il ne reste à l'écran que ce qui a besoin d'un écran.
+`#if canImport(WebKit)`, il ne reste à l'écran que ce qui a besoin d'un écran.
+
+**Correction du 7 septembre** : « la conduite se fait juger à chaque commit par
+Cœur (Apple) » était faux. Ce job retire la cible entière. Voir « Les tests du
+bureau local ne tournent nulle part », plus bas.
 
 ### La fuite que la structure évite
 
@@ -10860,7 +10863,63 @@ l'aurait dit, dix minutes plus tard.
 Et remplir quatre mébioctets octet par octet dans un `Data` en debug coûte plus
 cher que ce que le test mesure. Par un tableau, puis un `Data` d'un coup.
 
-Le nombre lui-même est dans le journal de « Cœur (Apple) » : il ne peut pas
-venir d'ici, faute de `WKWebView`.
+**Il n'y a pas de nombre**, et la raison n'est pas celle que j'ai écrite en
+poussant cette tranche. Voir l'entrée suivante.
 
 Nombre de tests : 2237 → 2239.
+
+## Les tests du bureau local ne tournent nulle part
+
+Le point de contrôle me demandait d'aller lire, dans le journal de
+« Cœur (Apple) », la ligne de débit que la tranche précédente venait d'ajouter.
+Elle n'y était pas. J'ai d'abord cherché plus loin dans le journal ; puis j'ai
+remarqué un chiffre qui n'allait pas : **1925 tests sur Apple contre 1992 sous
+Linux**. Moins, pas plus — alors que le job Apple est censé ajouter tout ce que
+`canImport` cache à Linux.
+
+### Ce que la CI fait vraiment
+
+`Cœur (Apple)` lance `swift test` avec `WISQ_SWIFT_CORE: '1'`. Dans
+`Package.swift`, cette variable met `rustCoreEnabled = false`, et la liste des
+cibles devient vide de `WisqVMRust` **et de `WisqVMRustTests`**. Le job ne
+compile donc pas `LocalDesktop.swift`, et n'exécute aucun de ses tests. Le
+journal le confirme : pas une occurrence de « LocalDesktop », pas une suite
+`WisqVMRustTests`.
+
+| | `LocalDesktop.swift` compilé | `LocalDesktopTests` exécutés |
+| --- | --- | --- |
+| Cœur (Linux) | non — `canImport(WebKit)` est faux | non |
+| Cœur (Apple) | **non** — la cible est retirée | **non** |
+| App iOS | **oui** — via `WisqUI` → `WisqVMRust` | non — c'est une construction |
+
+Le fichier **est** typé : `Compiling LocalDesktop.swift` est dans le journal
+d'`App iOS`, qui construit l'application, donc `WisqUI`, donc `WisqVMRust`, et
+où `canImport(WebKit)` est vrai. Mais les tests ne sont exécutés par personne.
+
+### Ce que j'ai affirmé, et qui était faux
+
+Cinq fois aujourd'hui, dans des descriptions de pull request et dans ces deux
+fichiers : « Cœur (Apple) sera le premier à typer ce fichier », « seul Cœur
+(Apple) les jugera », et — le pire — « Cœur (Apple) est vert : les trois tests
+que Linux n'a pas vus ont bien tourné ».
+
+Le job était vert **parce qu'il ne compilait pas ce que je croyais qu'il
+jugeait**. C'est exactement la faute que ce dépôt documente ailleurs sous
+d'autres formes : une garde qu'on croit tenue et que rien ne tient. Je l'ai
+commise sur mes propres tests, et le vert la rendait invisible.
+
+Ce qui l'a révélée n'est pas une relecture. C'est un **chiffre qui n'allait
+pas** — 1925 contre 1992 — remarqué en cherchant autre chose. La même méthode
+qui a trouvé les trois défauts de la journée : comparer deux mesures qui
+devraient être d'accord.
+
+### Ce que ça ne remet pas en cause, et ce que ça remet en cause
+
+Ne bougent pas : l'émetteur, la boucle hôte, la page, le C ABI, `DesktopBridge`
+et `DesktopTranslator` — tout ça est exécuté par Bun, par le programme C ou par
+`Cœur (Linux)`. Le pilote de la page et son canvas sont jugés sous Bun.
+
+Bougent : tout ce que `LocalDesktopTests` prétendait tenir. Que la machine
+tourne dans un vrai `WKWebView`, que `place` pose bien ses octets, que `paint`
+rende un compte de pixels, que les refus tombent à la construction. Ces
+comportements sont **écrits et typés, jamais exécutés**.
