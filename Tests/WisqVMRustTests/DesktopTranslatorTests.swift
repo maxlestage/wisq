@@ -32,6 +32,13 @@ final class DesktopTranslatorTests: XCTestCase {
 
     private let guestBase: UInt64 = 0x3000_0000
 
+    /// Les octets d'une traduction réussie, ou `nil` — la forme dont la plupart
+    /// de ces tests ont besoin, maintenant que l'issue en compte trois.
+    private func moduleOf(_ translation: DesktopTranslator.Translation) -> Data? {
+        guard case .module(let bytes) = translation else { return nil }
+        return bytes
+    }
+
     // MARK: - Traduire
 
     func testTheEmitterHandsBackSomethingThatIsAWebAssemblyModule() throws {
@@ -44,9 +51,9 @@ final class DesktopTranslatorTests: XCTestCase {
     func testARegionTheEmitterCannotDecodeArrivesAsNothing() {
         XCTAssertNil(DesktopTranslator.region(invalid, base: guestBase, entry: 0))
         XCTAssertNil(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 invalid, base: guestBase, entry: 0, slot: 0, pages: 16
-            )
+            ))
         )
     }
 
@@ -55,9 +62,9 @@ final class DesktopTranslatorTests: XCTestCase {
     func testAnEmptyRegionIsRefusedRatherThanCrashed() {
         XCTAssertNil(DesktopTranslator.region(Data(), base: guestBase, entry: 0))
         XCTAssertNil(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 Data(), base: guestBase, entry: 0, slot: 0, pages: 16
-            )
+            ))
         )
     }
 
@@ -137,9 +144,9 @@ final class DesktopTranslatorTests: XCTestCase {
     func testTheConfinedModuleAsksForTheCorrespondenceOnTopOfTheGuestsRAM() throws {
         for pages: UInt32 in [1, 16, 1024] {
             let module = try XCTUnwrap(
-                DesktopTranslator.resolvingRegion(
+                moduleOf(DesktopTranslator.resolvingRegion(
                     loop, base: guestBase, entry: 0, slot: 0, pages: pages
-                ),
+                )),
                 "\(pages) pages"
             )
             let memory = try XCTUnwrap(Imports(of: module).memory, "\(pages) pages")
@@ -151,9 +158,9 @@ final class DesktopTranslatorTests: XCTestCase {
     /// que le pont en annonce, et une de moins suffit à ce qu'il ne démarre pas.
     func testTheModuleImportsExactlyTheGlobalsTheBridgeAnnounces() throws {
         let module = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: guestBase, entry: 0, slot: 0, pages: 16
-            )
+            ))
         )
         XCTAssertEqual(Imports(of: module).globals, DesktopTranslator.globalCount)
     }
@@ -164,14 +171,14 @@ final class DesktopTranslatorTests: XCTestCase {
     /// faut sept de plus pour que la région tienne.
     func testTheSlotMovesWhereTheRegionsBlocksLandInTheHostsTable() throws {
         let first = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: guestBase, entry: 0, slot: 0, pages: 16
-            )
+            ))
         )
         let second = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: guestBase, entry: 0, slot: 7, pages: 16
-            )
+            ))
         )
         let near = try XCTUnwrap(Imports(of: first).table)
         let far = try XCTUnwrap(Imports(of: second).table)
@@ -183,14 +190,14 @@ final class DesktopTranslatorTests: XCTestCase {
     /// module peut atteindre.
     func testTwoRAMSizesGiveTwoModules() throws {
         let small = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: guestBase, entry: 0, slot: 0, pages: 1
-            )
+            ))
         )
         let large = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: guestBase, entry: 0, slot: 0, pages: 1024
-            )
+            ))
         )
         XCTAssertNotEqual(small, large)
     }
@@ -200,12 +207,58 @@ final class DesktopTranslatorTests: XCTestCase {
     func testARAMThatIsNotAPowerOfTwoIsRefused() {
         for pages: UInt32 in [0, 3, 12289] {
             XCTAssertNil(
-                DesktopTranslator.resolvingRegion(
+                moduleOf(DesktopTranslator.resolvingRegion(
                     loop, base: guestBase, entry: 0, slot: 0, pages: pages
-                ),
+                )),
                 "\(pages) pages"
             )
         }
+    }
+
+    /// **Trois issues, et non deux.**
+    ///
+    /// C'est ce qui permet à la vue de redemander exactement quand ça sert.
+    /// Sans le troisième cas, elle abandonnerait 91 régions sur 10 116 — qui
+    /// se traduisent toutes au second essai — ou paierait un aller-retour de
+    /// plus sur chacun des 95 vrais refus.
+    func testATranslationHasThreeOutcomesAndNotTwo() {
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                Data([0x48, 0xb8, 1, 2, 3]), base: guestBase, entry: 0, slot: 0, pages: 16
+            ),
+            .needsMoreBytes,
+            "une instruction coupée demande des octets"
+        )
+        // Le même octet inconnu, mais avec quinze octets de marge derrière :
+        // l'émetteur avait toute la place qu'une instruction peut demander.
+        var withRoom = Data([0x06])
+        withRoom.append(contentsOf: [UInt8](repeating: 0x90, count: 14))
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                withRoom, base: guestBase, entry: 0, slot: 0, pages: 16
+            ),
+            .refused,
+            "avec la place d'en juger, c'est un refus franc"
+        )
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                withRoom.prefix(14), base: guestBase, entry: 0, slot: 0, pages: 16
+            ),
+            .needsMoreBytes,
+            "un octet de moins, et il n'avait plus la place"
+        )
+        guard case .module = DesktopTranslator.resolvingRegion(
+            loop, base: guestBase, entry: 0, slot: 0, pages: 16
+        ) else {
+            return XCTFail("une région entière doit se traduire")
+        }
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                loop, base: guestBase, entry: 0, slot: 0, pages: 3
+            ),
+            .refused,
+            "une RAM qui n'est pas une puissance de deux est un refus franc"
+        )
     }
 
     // MARK: - La page

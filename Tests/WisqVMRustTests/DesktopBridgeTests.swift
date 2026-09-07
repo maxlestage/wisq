@@ -14,6 +14,12 @@ final class DesktopBridgeTests: XCTestCase {
     /// fort survivent tous.
     private let high: UInt64 = 0x0100_0000_0000_1000
 
+    /// Les octets d'une traduction réussie, ou `nil`.
+    private func moduleOf(_ translation: DesktopTranslator.Translation) -> Data? {
+        guard case .module(let bytes) = translation else { return nil }
+        return bytes
+    }
+
     // MARK: - Lire une demande
 
     func testATranslationRequestIsRead() throws {
@@ -197,9 +203,9 @@ final class DesktopBridgeTests: XCTestCase {
     func testAWholeModuleSurvivesTheCrossing() throws {
         let loop = Data([0x48, 0x01, 0xc2, 0x75, 0xfb])
         let module = try XCTUnwrap(
-            DesktopTranslator.resolvingRegion(
+            moduleOf(DesktopTranslator.resolvingRegion(
                 loop, base: 0x3000_0000, entry: 0, slot: 0, pages: 16
-            )
+            ))
         )
         XCTAssertTrue(module.contains(0), "le module doit porter des zéros")
         XCTAssertTrue(module.contains(0xff), "le module doit porter des 255")
