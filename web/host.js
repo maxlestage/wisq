@@ -226,6 +226,38 @@ export function machine({ translate, pages, screen, regions = 4096, patience = 3
     return region;
   }
 
+  /// **Rendre la main à la page.**
+  ///
+  /// Une machine qui tourne occupe le seul fil de la page. Tant qu'elle ne
+  /// cède pas, **rien d'autre ne peut arriver** : ni un
+  /// `requestAnimationFrame` — donc aucun repeint —, ni un toucher, ni un
+  /// timer. Un `await` ne suffit pas : attendre une promesse déjà tenue ne
+  /// cède qu'aux **micro-tâches**, et un timer n'en est pas une.
+  ///
+  /// **Un timer, et c'est une correction.** Le premier jet passait par un
+  /// `MessageChannel`, sur l'argument que la spécification HTML borne un timer
+  /// réarmé à quatre millisecondes alors qu'un message n'est pas borné. Le
+  /// raisonnement portait sur la *granularité*, pas sur ce qu'on cherche ici.
+  /// Mesuré sous le JavaScriptCore de Bun, à un souffle toutes les huit
+  /// millisecondes pendant trois cents :
+  ///
+  /// | forme                 | souffles | tours de page obtenus |
+  /// | --------------------- | -------: | --------------------: |
+  /// | `setTimeout(…, 0)`    |       32 |                **32** |
+  /// | `MessageChannel`      |       37 |                 **0** |
+  /// | `Promise.resolve()`   |       37 |                 **0** |
+  ///
+  /// Un message est livré **sans laisser passer un timer déjà dû** : il cède
+  /// aussi peu qu'une micro-tâche. Il aurait donné une boucle qui a l'air de
+  /// respirer et une page toujours gelée — la pire des deux issues.
+  ///
+  /// Ce que le timer coûte, mesuré au même endroit : 2 991 417 tours contre
+  /// 3 679 889 sans respirer, soit **dix-neuf pour cent de débit**. C'est le
+  /// prix d'une vue qui répond.
+  function souffler() {
+    return new Promise((settle) => setTimeout(settle, 0));
+  }
+
   // Jusqu'où la table est occupée à partir de `from` : les blocs d'un module
   // s'y posent à l'instanciation, et c'est le seul moyen de savoir combien il
   // en a mis.
@@ -279,8 +311,25 @@ export function machine({ translate, pages, screen, regions = 4096, patience = 3
     /// **Faire tourner la machine.** Rend pourquoi elle s'est arrêtée, jamais
     /// « rien » : un arrêt sans raison est ce qui rend une panne d'émulateur
     /// impossible à diagnostiquer.
-    async run({ budget = 1n << 20n, rounds = 1 << 16 } = {}) {
+    ///
+    /// `breath` est la **respiration**, en millisecondes : au-delà de ce
+    /// temps passé sans rendre la main, la boucle cède un tour à la page.
+    /// C'est le cadran entre débit et réactivité, et il se règle sur le
+    /// **temps** et non sur les tours — une région qui rend la main après un
+    /// seul bloc ferait autrement payer une tâche par bloc. Huit
+    /// millisecondes tiennent dans une image à soixante hertz.
+    ///
+    /// **Ce que la respiration ne peut pas découper** : un `region.run(budget)`
+    /// est indivisible. Le budget est donc le vrai plancher du gel, et à
+    /// 2²⁰ blocs il vaut bien plus que huit millisecondes. Ce que coûte
+    /// vraiment un gros budget ne se mesure que sur un appareil.
+    async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
+      let dernier = performance.now();
       for (let round = 0; round < rounds; round++) {
+        if (performance.now() - dernier >= breath) {
+          await souffler();
+          dernier = performance.now();
+        }
         const here = rip();
         let region = known.get(here);
         if (region === undefined) {
