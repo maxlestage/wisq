@@ -9,11 +9,16 @@
 //!
 //!     cargo run -p wisq-vm --release --example resolved
 //!
-//! **Le même anneau, une seule différence.** Les maillons sont identiques à
-//! ceux de `chain` — un `movabs`, quatre additions, un `jmp *%rax` — pour que
-//! la comparaison porte sur l'enchaînement et rien d'autre. La boucle hôte
-//! disparaît : un seul appel à `run` traverse l'anneau autant de fois que le
-//! budget le permet.
+//! **Les deux formes sont mesurées ici, dans le même processus, et c'est une
+//! correction.** La première version citait le chiffre de `--example chain`
+//! relevé une heure plus tôt et en tirait « six fois moins ». Or ce banc-là
+//! rend entre 125 et 190 ns selon la charge de la machine : comparer deux
+//! instants différents gonflait le rapport de moitié. Mesurés ensemble, les
+//! deux formes tiennent le même bruit, et **le rapport est ce qui reste vrai**.
+//!
+//! Les maillons sont identiques dans les deux cas — un `movabs`, quatre
+//! additions, un `jmp *%rax` — pour que la seule différence soit qui décide de
+//! la région suivante : la boucle hôte, ou le module lui-même.
 //!
 //! Le chiffre demande Bun, qui embarque le JavaScriptCore de `WKWebView`. Sans
 //! lui, le programme dit ce qu'il n'a pas pu faire plutôt que de deviner.
@@ -62,6 +67,7 @@ fn main() {
     }
 
     let mut modules = Vec::new();
+    let mut plain = Vec::new();
     for index in 0..LINKS {
         let code = link(address((index + 1) % LINKS));
         let Some(module) = Module::resolving(&code, address(index), 0, index as u32, PAGES) else {
@@ -69,6 +75,13 @@ fn main() {
             std::process::exit(1);
         };
         modules.push(module);
+        // Le terme de comparaison : la même région, sans correspondance. Elle
+        // rend la main à chaque saut, et c'est l'hôte qui enchaîne.
+        let Some(module) = Module::region(&code, address(index), 0) else {
+            eprintln!("l'émetteur refuse le maillon libre {index}");
+            std::process::exit(1);
+        };
+        plain.push(module);
     }
     println!(
         "{LINKS} maillons de {PER_LINK} instructions, un saut indirect chacun, \
@@ -89,7 +102,13 @@ fn main() {
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let mut listing = String::new();
+    let mut loose = String::new();
     let mut entries = String::new();
+    for (index, module) in plain.iter().enumerate() {
+        let path = scratch.join(format!("p{index}.wasm"));
+        std::fs::write(&path, module).expect("le module libre");
+        loose.push_str(&format!("[{}n,{:?}],", address(index), path.to_string_lossy()));
+    }
     for (index, module) in modules.iter().enumerate() {
         let path = scratch.join(format!("r{index}.wasm"));
         std::fs::write(&path, module).expect("le module");
@@ -164,7 +183,38 @@ const againBegan = process.hrtime.bigint();
 drive({steps});
 const againSeconds = Number(process.hrtime.bigint() - againBegan) / 1e9;
 
-console.log(JSON.stringify({{ broken: false, seconds, againSeconds }}));
+// **Et la même chaîne enchaînée par l'hôte, ici, maintenant.** Une mémoire à
+// part, parce que ces modules-là déclarent la RAM sans confinement.
+const wide = new WebAssembly.Memory({{ initial: {guestPages} }});
+const wideSlots = [];
+const wideImports = {{ env: {{ mem: wide }} }};
+for (let slot = 0; slot < {globals}; slot++) {{
+  wideSlots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  wideImports.env["g" + slot] = wideSlots[slot];
+}}
+const cache = new Map();
+for (const [base, path] of [{loose}]) {{
+  cache.set(base, new WebAssembly.Instance(
+    new WebAssembly.Module(fs.readFileSync(path)), wideImports).exports.run);
+}}
+function host(steps) {{
+  wideSlots[RIP].value = {entry}n;
+  for (let step = 0; step < steps; step++) {{
+    const go = cache.get(BigInt.asUintN(64, wideSlots[RIP].value));
+    if (go === undefined) return false;
+    go(16n);
+  }}
+  return true;
+}}
+if (!host(200000)) {{
+  console.log(JSON.stringify({{ broken: true, rip: "l'anneau hôte s'est perdu" }}));
+  process.exit(0);
+}}
+const hostBegan = process.hrtime.bigint();
+host({steps});
+const hostSeconds = Number(process.hrtime.bigint() - hostBegan) / 1e9;
+
+console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds }}));
 "#,
             pages = PAGES,
             tablePages = TABLE_PAGES,
@@ -177,6 +227,8 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds }}));
             entry = BENCH_BASE,
             steps = steps,
             links = LINKS,
+            loose = loose,
+            guestPages = wisq_vm::x86_wasm::GUEST_PAGES,
         ),
     )
     .expect("le pilote");
@@ -212,19 +264,20 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds }}));
     }
     let ns = number("seconds") * 1e9 / steps as f64;
     let again = number("againSeconds") * 1e9 / steps as f64;
+    let by_host = number("hostSeconds") * 1e9 / steps as f64;
     println!();
-    println!("un changement de région, **résolu dans le module** : {ns:.1} ns");
-    println!("  la même mesure une seconde fois : {again:.1} ns");
-    println!(
-        "  soit {:.1} % d'écart entre deux mesures de la même chose — c'est le \
-         tremblement de l'instrument",
-        (again - ns).abs() / ns * 100.0
-    );
+    println!("un changement de région, enchaîné par l'**hôte**   : {by_host:.0} ns");
+    println!("un changement de région, résolu dans le **module** : {ns:.1} ns");
+    println!("  soit **{:.1} fois moins**", by_host / ns);
     println!();
-    println!("Le terme de comparaison est `--example chain`, qui mesure le même anneau");
-    println!("enchaîné par l'hôte : **environ 190 ns**. Ce qui disparaît n'est pas du");
-    println!("WebAssembly, c'est un aller-retour par un site d'appel JavaScript devenu");
-    println!("mégamorphe.");
+    println!("  la mesure du module, refaite : {again:.1} ns — {:.0} % d'écart, et c'est le", (again - ns).abs() / ns * 100.0);
+    println!("  tremblement de l'instrument. Les valeurs absolues bougent beaucoup avec la");
+    println!("  charge de la machine : ce banc a rendu de 125 à 190 ns pour la forme hôte");
+    println!("  selon les jours. **C'est le rapport qui tient, pas les nanosecondes** — et");
+    println!("  c'est pour ça que les deux sont mesurées dans le même processus.");
+    println!();
+    println!("Ce qui disparaît n'est pas du WebAssembly, c'est un aller-retour par un site");
+    println!("d'appel JavaScript devenu mégamorphe.");
     println!();
     println!(
         "À {PER_LINK} instructions par maillon, {ns:.1} ns par changement de région valent {:.0} \

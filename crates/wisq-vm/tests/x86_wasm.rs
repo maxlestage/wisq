@@ -1935,3 +1935,83 @@ fn the_module_hashes_an_address_the_same_way_the_host_does() {
         );
     }
 }
+
+/// **Un saut indirect qui revient dans sa propre région, posée ailleurs qu'au
+/// début de la table.**
+///
+/// `resolve` compare l'adresse aux blocs de la région avant de consulter la
+/// correspondance, et l'indice qu'il rend doit être **absolu**. Tant qu'une
+/// région vit à l'emplacement zéro, un numéro local et un numéro absolu sont
+/// le même nombre : la faute est invisible. À l'emplacement cinq, elle envoie
+/// la machine dans la région d'à côté.
+///
+/// Ce test existe parce qu'un sabotage a survécu à tout le reste — les autres
+/// sauts indirects du dépôt visent une *autre* région, jamais la leur.
+#[test]
+fn an_indirect_jump_back_into_its_own_region_lands_on_the_right_block() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const SLOT: u32 = 5;
+    // `incq %rdx` ; `movabs $ici, %rax` ; `jmp *%rax` — la cible est l'entrée
+    // de la région elle-même, donc la chaîne de `resolve` doit la trouver.
+    let mut code = vec![0x48, 0xff, 0xc2, 0x48, 0xb8];
+    code.extend_from_slice(&CODE.to_le_bytes());
+    code.extend_from_slice(&[0xff, 0xe0]);
+    let module = Module::linked(&code, CODE, 0, SLOT).expect("la région liée");
+
+    let scratch = std::env::temp_dir().join(format!("wisq-self-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const memory = new WebAssembly.Memory({{ initial: {pages} }});
+const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
+const slots = [];
+const imports = {{ env: {{ mem: memory, {table}: blocks }} }};
+for (let slot = 0; slot < {globals}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  imports.env["g" + slot] = slots[slot];
+}}
+const run = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync({path:?})), imports)
+  .exports.run;
+slots[{rip}].value = {code}n;
+run(1000n);
+console.log("rdx " + slots[2].value.toString());
+"#,
+            pages = GUEST_PAGES,
+            table = TABLE_IMPORT,
+            globals = GLOBAL_COUNT,
+            path = path.to_string_lossy(),
+            rip = RIP_SLOT,
+            code = CODE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    // Mille blocs de budget, un `incq` par bloc : la boucle doit les consommer
+    // tous. Un indice relatif enverrait le premier saut ailleurs, et RDX
+    // s'arrêterait à un.
+    assert_eq!(
+        text.trim(),
+        "rdx 1000",
+        "le saut doit retomber sur le bloc de sa propre région"
+    );
+}
