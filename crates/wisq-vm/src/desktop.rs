@@ -19,6 +19,21 @@
 /// par diverger, et celle qui ment serait celle que personne ne lit.
 pub const HOST_SCRIPT: &str = include_str!("../../../web/host.js");
 
+/// **Le cadre que le chargeur a déclaré au noyau**, tel que la vue doit le
+/// peindre.
+///
+/// Les trois nombres viennent du `screen_info` que l'application remplit avant
+/// de démarrer la machine : c'est elle qui décide où vit le tampon
+/// d'affichage, donc c'est elle qui le dit à la page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Screen {
+    /// L'adresse **invitée** du tampon d'affichage. Elle est repliée dans la
+    /// RAM comme toutes les autres.
+    pub base: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Ce que le bureau refuse de construire, et pourquoi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -30,6 +45,15 @@ pub enum Refusal {
     /// c'est la même faute que l'identifiant de VM recollé dans une ligne de
     /// commande, que ce dépôt a déjà payée une fois.
     ChannelIsNotAName(String),
+    /// **Le cadre déborderait de la RAM de l'invité.** Au-dessus vit la
+    /// correspondance adresse → indice : un cadre à cheval sur ce bord
+    /// afficherait la table des blocs à l'écran, et l'invité la détruirait en
+    /// peignant. C'est la même frontière que la lecture de la fenêtre et
+    /// l'écriture de l'image gardent déjà, refusée ici **avant** que la page
+    /// n'existe.
+    ScreenDoesNotFit { folded: u64, bytes: u64, ram: u64 },
+    /// Un cadre sans surface n'est pas un cadre.
+    ScreenHasNoSurface { width: u32, height: u32 },
 }
 
 impl std::fmt::Display for Refusal {
@@ -43,6 +67,13 @@ impl std::fmt::Display for Refusal {
                 out,
                 "le nom du canal ne peut porter que des lettres et des chiffres : « {name} »"
             ),
+            Self::ScreenDoesNotFit { folded, bytes, ram } => write!(
+                out,
+                "le cadre occupe {bytes} octets à {folded} et déborde d'une RAM de {ram}"
+            ),
+            Self::ScreenHasNoSurface { width, height } => {
+                write!(out, "un cadre de {width}×{height} n'a pas de surface")
+            }
         }
     }
 }
@@ -83,23 +114,121 @@ impl std::error::Error for Refusal {}
 /// sérialisation de `postMessage` — une seule chaîne contre quatre mille
 /// nombres à emballer. **Ce second compromis n'est pas mesuré** : il demande un
 /// vrai `WKWebView`, et rien ici n'en a.
-pub fn page(pages: u32, entry: u64, channel: &str) -> Result<String, Refusal> {
+pub fn page(
+    pages: u32,
+    entry: u64,
+    channel: &str,
+    screen: Option<Screen>,
+) -> Result<String, Refusal> {
     if pages == 0 || !pages.is_power_of_two() {
         return Err(Refusal::RamIsNotAPowerOfTwo(pages));
     }
     if channel.is_empty() || !channel.chars().all(|glyph| glyph.is_ascii_alphanumeric()) {
         return Err(Refusal::ChannelIsNotAName(channel.to_string()));
     }
+    // **Le cadre est jugé ici, avant que la page n'existe.** `host.js` le juge
+    // une seconde fois à la construction de la machine, et ce n'est pas une
+    // redondance inutile : celle-ci refuse en Rust, avec un nom, quand l'autre
+    // ne peut que lever dans une vue que personne ne regarde.
+    let frame = match screen {
+        None => String::new(),
+        Some(screen) => {
+            if screen.width == 0 || screen.height == 0 {
+                return Err(Refusal::ScreenHasNoSurface {
+                    width: screen.width,
+                    height: screen.height,
+                });
+            }
+            let ram = u64::from(pages) * 65536;
+            let folded = screen.base & (ram - 1);
+            let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+            if folded + bytes > ram {
+                return Err(Refusal::ScreenDoesNotFit { folded, bytes, ram });
+            }
+            // **Le canvas est dans le corps de la page, pas fabriqué par le
+            // script.** Ses dimensions sont alors lisibles dans la page
+            // elle-même, et elles sont celles que ce refus vient de valider —
+            // un canvas construit à la volée les tiendrait d'une variable, et
+            // plus rien ne dirait laquelle.
+            format!(
+                "<canvas id=\"wisqEcran\" width=\"{}\" height=\"{}\"></canvas>\n",
+                screen.width, screen.height
+            )
+        }
+    };
     Ok(format!(
         "<!doctype html>\n\
          <meta charset=\"utf-8\">\n\
          <title>wisq</title>\n\
+         {frame}\
          <script type=\"module\">\n\
          {HOST_SCRIPT}\n\
          {}\n\
          </script>\n",
-        driver(pages, entry, channel)
+        driver(pages, entry, channel, screen)
     ))
+}
+
+/// **Ce que la page fait de l'écran de l'invité.**
+///
+/// **Peindre est séparé de la boucle qui peint, et ce n'est pas du confort.**
+/// `requestAnimationFrame` ne tourne que dans une vue que le système considère
+/// comme affichée. Un `WKWebView` construit sans être ajouté à une fenêtre —
+/// exactement ce que fait `LocalDesktopTests` — pourrait n'en voir aucune, et
+/// un test qui attendrait une image n'aurait alors rien à attendre. `wisqPaint`
+/// se laisse donc appeler à la main, et la boucle ne fait que l'appeler.
+///
+/// **Rien ne traverse vers l'application.** Le cadre vit dans la mémoire de la
+/// vue, le canvas aussi : la conversion se fait sur place. C'est la seule
+/// raison pour laquelle un affichage est possible — trois mégaoctets par image
+/// ne passeraient jamais un pont de messages.
+fn painter(screen: Screen) -> String {
+    format!(
+        r#"
+// **L'écran.** Le canvas est dans le corps de la page, à ses dimensions ; le
+// contexte peut être refusé, et un refus muet donnerait un écran noir qu'on
+// mettrait sur le compte de la machine.
+const écran = document.getElementById("wisqEcran");
+if (écran === null) {{
+  throw new Error("la page déclare un cadre mais pas de canvas");
+}}
+const pinceau = écran.getContext("2d");
+if (pinceau === null) {{
+  throw new Error("la vue n'accorde pas de contexte 2d");
+}}
+// **Une seule ImageData, réutilisée.** En construire une par image
+// allouerait {octets} octets soixante fois par seconde ; et `putImageData`
+// n'accepte de toute façon que celle que le contexte a rendue.
+const image = pinceau.createImageData({width}, {height});
+
+// Peindre une image, tout de suite, quel que soit l'état de la machine.
+window.wisqPaint = () => {{
+  vm.paint(image.data);
+  pinceau.putImageData(image, 0, 0);
+}};
+
+let enMarche = false;
+const boucle = () => {{
+  if (!enMarche) return;
+  window.wisqPaint();
+  requestAnimationFrame(boucle);
+}};
+
+window.wisqAfficher = () => {{
+  if (enMarche) return;
+  enMarche = true;
+  requestAnimationFrame(boucle);
+}};
+
+window.wisqCesser = () => {{
+  enMarche = false;
+  window.wisqPaint();
+}};
+"#,
+        width = screen.width,
+        height = screen.height,
+        octets = u64::from(screen.width) * u64::from(screen.height) * 4,
+    )
 }
 
 /// **Le pilote : ce qui relie la boucle hôte au pont de l'application.**
@@ -107,7 +236,33 @@ pub fn page(pages: u32, entry: u64, channel: &str) -> Result<String, Refusal> {
 /// Séparé de la page pour qu'un test puisse l'exécuter sans HTML autour — un
 /// moteur JavaScript en ligne de commande n'a pas de `WKWebView`, mais il sait
 /// très bien bouchonner `window.webkit.messageHandlers`.
-pub fn driver(pages: u32, entry: u64, channel: &str) -> String {
+pub fn driver(pages: u32, entry: u64, channel: &str, screen: Option<Screen>) -> String {
+    // **Ce que la page fait de l'écran, et rien si elle n'en a pas.** Une
+    // machine sans cadre est un cas réel — un démarrage jugé sur ses registres
+    // n'a pas besoin d'être regardé — et un canvas qu'on peindrait pour rien
+    // coûterait une image par rafraîchissement.
+    let (declared, painting) = match screen {
+        // **Deux fonctions vides, et elles disent quelque chose.** Sans cadre
+        // il n'y a rien à montrer, et `wisqRun` a un seul chemin plutôt qu'un
+        // test sur l'existence d'une globale. `wisqPaint`, lui, n'est pas
+        // déclaré : l'appeler doit lever, pas ne rien faire.
+        None => (
+            String::new(),
+            r#"
+// Aucun cadre déclaré : il n'y a rien à peindre.
+window.wisqAfficher = () => {};
+window.wisqCesser = () => {};
+"#
+            .to_string(),
+        ),
+        Some(screen) => (
+            format!(
+                ", screen: {{ base: {}n, width: {}, height: {} }}",
+                screen.base, screen.width, screen.height
+            ),
+            painter(screen),
+        ),
+    };
     format!(
         r#"
 // **Le pont vers l'application.** Une vue ne peut pas appeler l'hôte et
@@ -158,12 +313,17 @@ const translate = (address, slot, code) => new Promise(settle => {{
   }});
 }});
 
-const vm = machine({{ translate, pages: {pages} }});
+const vm = machine({{ translate, pages: {pages}{declared} }});
 vm.globals[SLOTS.rip].value = {entry}n;
 window.wisqMachine = vm;
-
+{painting}
 window.wisqRun = async () => {{
+  window.wisqAfficher();
   const why = await vm.run();
+  // **Cesser peint une dernière fois.** Sans ça, la dernière image montrée
+  // serait celle d'avant l'arrêt : on regarderait un écran qui n'est pas
+  // l'état dans lequel la machine s'est arrêtée.
+  window.wisqCesser();
   bridge.postMessage({{ kind: "arrêt", stopped: why.stopped, at: why.at.toString() }});
   return why.stopped;
 }};
