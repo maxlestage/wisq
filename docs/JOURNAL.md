@@ -11255,3 +11255,42 @@ Ce qu'on garde de tout ça, et qui n'est pas une leçon de style : **comparer de
 choses qui devraient s'accorder est la seule méthode qui ait produit un
 résultat**, et la documentation de ce dépôt savait déjà ce que j'ai mis trois
 tours à retrouver.
+
+### Une assertion qui échouait une fois sur 238 sur un comportement correct
+
+`site/tests/asc.test.ts` affirmait `expect(bytes[0]).not.toBe(0x30)`, avec en
+commentaire « une séquence DER commence par 0x30 ». C'est vrai du DER. Mais le
+premier octet d'une signature JOSE est l'octet de poids fort de `r` — un octet
+**aléatoire**.
+
+Mesuré plutôt qu'estimé, sur cinq mille jetons signés par cinq mille clés :
+
+| | |
+| --- | ---: |
+| signatures commençant par `0x30` | **21** |
+| attendu si l'octet est uniforme | 19,5 |
+| longueurs observées | **64, et rien d'autre** |
+
+Une fois sur deux cent trente-huit, la CI serait devenue rouge sur un
+comportement parfaitement correct — et personne n'aurait su pourquoi, puisque le
+commentaire désignait une cause qui n'existait pas.
+
+**Et elle ne gardait rien.** Les cinq mille font soixante-quatre octets, là où
+une signature DER P-256 en fait soixante-dix à soixante-douze : la ligne
+d'au-dessus, `expect(bytes.length).toBe(64)`, tranchait déjà toute seule.
+
+Ce qui manquait n'était donc pas une assertion de plus sur notre signature mais
+un **témoin** : sans lui, « elle fait soixante-quatre octets » serait vrai d'un
+format qu'on n'a comparé à rien. Le même message est maintenant signé une
+seconde fois en DER, et le test montre ce que la garde refuse — `0x30` en tête,
+et pas soixante-quatre octets.
+
+Le témoin ne garde pas notre code, et c'est écrit tel quel : il garde la
+**prémisse** que la longueur discrimine. Si du DER P-256 faisait un jour
+soixante-quatre octets, la garde cesserait de trancher et c'est lui qui le
+dirait.
+
+Vérifié par sabotage : `dsaEncoding: "der"` dans `scripts/asc.ts` fait tomber la
+garde de longueur **et** la vérification par la clé publique. Fichier restauré,
+et la restauration vérifiée par `diff` — un harnais tué laisse le défaut dans
+l'arbre.
