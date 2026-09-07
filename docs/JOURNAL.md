@@ -11294,3 +11294,33 @@ Vérifié par sabotage : `dsaEncoding: "der"` dans `scripts/asc.ts` fait tomber 
 garde de longueur **et** la vérification par la clé publique. Fichier restauré,
 et la restauration vérifiée par `diff` — un harnais tué laisse le défaut dans
 l'arbre.
+
+### Ce que « le lot 8 est fini » cachait
+
+La routine dit de relire la feuille de route avant d'ouvrir une tranche. En le
+faisant — pour la première fois de la journée au bon moment — deux choses sont
+sorties, et aucune n'a demandé de relire du code :
+
+**Un titre qui mentait sur son propre contenu.** « Un disque pour la machine
+rv32 … (en cours) », alors que ses six tranches disent chacune « (fait) » et que
+la tâche correspondante est close. Un document qui se contredit à une ligne
+d'intervalle.
+
+**Et deux écarts que ce document n'énonçait nulle part**, vérifiés par `grep` :
+
+- rien dans `Sources/WisqUI/` ni `App/` ne nomme `LocalDesktop`,
+  `DesktopBridge` ou `DesktopTranslator`. Le bureau est construit, testé de bout
+  en bout, et **atteignable par personne** ;
+- **aucun vrai noyau n'est jamais passé par ce chemin**. Le test « de la taille
+  d'un noyau » pose `Data(pattern)` — 4 Mio de motif synthétique — et le seul
+  programme exécuté fait deux régions écrites à la main.
+
+Ce n'est un défaut d'aucune tranche : chacune prouve ce qu'elle annonce. C'est
+la distance entre « les pièces s'emboîtent » et « ça démarre un bureau ». La
+taire serait la faute que ce dépôt documente partout ailleurs — une garde qu'on
+croit tenue et que rien ne tient. Elle est donc écrite dans la feuille de route,
+avec l'ordre qui se défend et pourquoi il se défend.
+
+La leçon de la journée tient en une ligne : **ce document savait déjà ce que
+j'ai mis trois tours de CI à retrouver, et il savait aussi ce que je n'avais pas
+pensé à demander.**
