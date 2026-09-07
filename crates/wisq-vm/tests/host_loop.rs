@@ -560,8 +560,8 @@ fn the_pages_driver_talks_to_the_application_and_runs_the_machine() {
 
     // Le pilote tel que la page le porte. Il est extrait plutôt que réécrit :
     // un test qui exécute une copie ne dit rien de l'original.
-    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq");
-    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq").expect("la page");
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None);
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None).expect("la page");
     assert!(
         page.contains(&driver_source),
         "la page doit porter exactement ce pilote"
@@ -704,31 +704,128 @@ console.log("fenetres " + fenêtres.join(","));
 /// déjà payée une fois.
 #[test]
 fn the_page_refuses_what_it_cannot_paste_safely() {
-    use wisq_vm::desktop::{page, Refusal};
+    use wisq_vm::desktop::{page, Refusal, Screen};
     assert_eq!(
-        page(3, 0x1000, "wisq"),
+        page(3, 0x1000, "wisq", None),
         Err(Refusal::RamIsNotAPowerOfTwo(3)),
         "la RAM d'un invité confiné est une puissance de deux"
     );
     assert_eq!(
-        page(0, 0x1000, "wisq"),
+        page(0, 0x1000, "wisq", None),
         Err(Refusal::RamIsNotAPowerOfTwo(0))
     );
     for name in ["", "wisq; alert(1)", "wisq.autre", "wisq-2", "a b", "é"] {
         assert_eq!(
-            page(1, 0x1000, name),
+            page(1, 0x1000, name, None),
             Err(Refusal::ChannelIsNotAName(name.to_string())),
             "« {name} » ne peut pas être recollé dans du JavaScript"
         );
     }
     for name in ["wisq", "w", "canal2"] {
-        assert!(page(1, 0x1000, name).is_ok(), "« {name} » est un nom");
+        assert!(page(1, 0x1000, name, None).is_ok(), "« {name} » est un nom");
     }
+
+    // **Le cadre, contre la même frontière que tout le reste de ce lot.** Une
+    // RAM d'une page fait 65 536 octets, et la correspondance vit juste
+    // au-dessus : un cadre à cheval sur ce bord afficherait la table des blocs
+    // à l'écran tout en la détruisant. La borne est vérifiée **à l'octet
+    // près**, des deux côtés — sans le cas qui passe, un refus qui refuserait
+    // tout aurait l'air d'une garde.
+    let ram = 65536u64;
+    let juste = Screen {
+        base: 0,
+        width: 128,
+        height: 128,
+    };
+    assert_eq!(
+        u64::from(juste.width) * u64::from(juste.height) * 4,
+        ram,
+        "ce cadre doit remplir la RAM exactement, sinon le test ne borde rien"
+    );
+    assert!(
+        page(1, 0x1000, "wisq", Some(juste)).is_ok(),
+        "un cadre qui remplit la RAM au dernier octet tient"
+    );
+    assert_eq!(
+        page(1, 0x1000, "wisq", Some(Screen { base: 4, ..juste })),
+        Err(Refusal::ScreenDoesNotFit {
+            folded: 4,
+            bytes: ram,
+            ram
+        }),
+        "quatre octets plus loin, il déborde"
+    );
+    // Et l'adresse est **repliée**, comme partout ailleurs : un cadre déclaré
+    // très haut dans l'espace invité retombe au même endroit.
+    assert!(
+        page(
+            1,
+            0x1000,
+            "wisq",
+            Some(Screen {
+                base: ram * 7,
+                ..juste
+            })
+        )
+        .is_ok(),
+        "l'adresse du cadre se replie comme celle du code"
+    );
+    for creux in [(0, 64), (64, 0), (0, 0)] {
+        assert_eq!(
+            page(
+                1,
+                0x1000,
+                "wisq",
+                Some(Screen {
+                    base: 0,
+                    width: creux.0,
+                    height: creux.1,
+                })
+            ),
+            Err(Refusal::ScreenHasNoSurface {
+                width: creux.0,
+                height: creux.1
+            }),
+            "un cadre de {}×{} n'a pas de surface",
+            creux.0,
+            creux.1
+        );
+    }
+
+    // **Le canvas est dans la page, et seulement quand un cadre est déclaré.**
+    // Une page qui en porterait un sans cadre montrerait un rectangle vide que
+    // rien ne peindrait.
+    let avec = page(1, 0x1000, "wisq", Some(juste)).expect("la page avec cadre");
+    assert!(
+        avec.contains("<canvas id=\"wisqEcran\" width=\"128\" height=\"128\">"),
+        "le canvas doit porter les dimensions du cadre"
+    );
+    assert!(avec.contains("window.wisqPaint"), "et de quoi le peindre");
+    let sans = page(1, 0x1000, "wisq", None).expect("la page sans cadre");
+    assert!(
+        !sans.contains("<canvas"),
+        "sans cadre, pas de canvas : {sans}"
+    );
+    assert!(
+        !sans.contains("window.wisqPaint ="),
+        "et rien qui prétende peindre"
+    );
+
     // Et le refus se lit : un message qui ne nomme pas ce qu'il refuse envoie
     // chercher la cause ailleurs.
     assert!(
         Refusal::RamIsNotAPowerOfTwo(3).to_string().contains('3'),
         "le refus doit nommer le nombre refusé"
+    );
+    assert!(
+        Refusal::ScreenDoesNotFit {
+            folded: 4,
+            bytes: 65536,
+            ram: 65536
+        }
+        .to_string()
+        .contains("65536"),
+        "et celui du cadre doit nommer la RAM qu'il déborde"
     );
 }
 
@@ -1341,5 +1438,339 @@ console.log("rdx-apnee " + apnée.rdx.toString());
         breathing < holding * 3 + 100,
         "respirer ne doit pas tripler le temps de calcul : {breathing} ms \
          contre {holding} ms en apnée"
+    );
+}
+
+/// **L'écran de la page, et la seule chose qui prouve qu'il vit.**
+///
+/// `vm.paint` était jugé sur un tampon rendu au test. Ici c'est la page
+/// entière qui est jugée : le canvas que `desktop::page` déclare, le contexte
+/// que le pilote demande, l'`ImageData` qu'il réutilise, et la boucle
+/// `requestAnimationFrame` qui appelle `wisqPaint`.
+///
+/// **Trois choses distinctes, et aucune ne prouve les autres.**
+/// 1. `wisqPaint` peint **sans** boucle d'affichage. C'est délibéré : un
+///    `WKWebView` construit sans être ajouté à une fenêtre — exactement ce que
+///    fait `LocalDesktopTests` — pourrait ne recevoir aucune image de rendu, et
+///    un test qui en attendrait une n'aurait rien à attendre.
+/// 2. La boucle peint **pendant** que la machine tourne. C'est ce que la
+///    respiration de `run()` rend possible, et rien d'autre ne le vérifie
+///    bout à bout.
+/// 3. `wisqCesser` peint **une dernière fois**. Sans ça, la dernière image
+///    montrée serait celle d'avant l'arrêt : on regarderait un écran qui n'est
+///    pas l'état dans lequel la machine s'est arrêtée.
+///
+/// **Le faux canvas refuse ce que la vraie page ne pourrait pas faire** : un
+/// `putImageData` avec autre chose que l'`ImageData` que ce contexte a rendue —
+/// un vrai navigateur lève — et une image plus grande que le canvas, où une
+/// vraie page **tronque en silence**, ce qui est pire qu'une erreur.
+#[test]
+fn the_pages_driver_paints_the_screen_while_the_machine_runs() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : l'écran de la page ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 2;
+    const RAM: u64 = PAGES as u64 * 65536;
+    const BASE: u64 = 0x1_0000;
+    // Le cadre vit **en bas** de la RAM, le code au-dessus : sans cette
+    // séparation, l'invité peindrait son propre code et le test mesurerait un
+    // écrasement plutôt qu'un affichage.
+    const FRAME: u64 = 0;
+    const WIDTH: u32 = 2;
+    const HEIGHT: u32 = 2;
+
+    // Chaque maillon écrit une couleur dans le premier pixel, puis saute au
+    // suivant. C'est ce qui distingue « le canvas montre l'invité » de « le
+    // canvas montre ce que le harnais a posé avant de démarrer ».
+    let region = |colour: u32, target: u64| -> Vec<u8> {
+        let mut code = vec![0x48, 0xb8];
+        code.extend_from_slice(&FRAME.to_le_bytes()); // movq $cadre, %rax
+        code.push(0xbb);
+        code.extend_from_slice(&colour.to_le_bytes()); // movl $couleur, %ebx
+        code.extend_from_slice(&[0x89, 0x18]); // movl %ebx, (%rax)
+        code.extend_from_slice(&[0x48, 0xb8]);
+        code.extend_from_slice(&target.to_le_bytes());
+        code.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+        code
+    };
+    // **XRGB8888** : les octets en mémoire sont B, G, R, X, donc un mot de
+    // trente-deux bits en petit-boutien porte le rouge en troisième octet.
+    const ROUGE: u32 = 0x00ff_0000;
+    const BLEU: u32 = 0x0000_00ff;
+    let programs: [(u64, Vec<u8>); 3] = [
+        (BASE, region(ROUGE, BASE + 0x100)),
+        (BASE + 0x100, region(BLEU, BASE)),
+        (BASE + 0x200, vec![0x0f, 0x0b]), // ud2, pour l'arrêt de la phase 3
+    ];
+
+    let scratch = std::env::temp_dir().join(format!("wisq-ecran-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let mut loaded = String::new();
+    for (index, (address, code)) in programs.iter().enumerate() {
+        loaded.push_str(&format!("[\"{address}\",{code:?}],"));
+        for slot in 0..6u32 {
+            let module = Module::resolving(code, *address, 0, slot, PAGES).unwrap_or_else(|| {
+                panic!(
+                    "l'émetteur doit compiler la région {index} — si elle écrit en \
+                     mémoire et qu'il refuse, c'est le programme d'essai qu'il faut \
+                     changer, pas le test"
+                )
+            });
+            let path = scratch.join(format!("ecran{index}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    let driver_source = wisq_vm::desktop::driver(
+        PAGES,
+        BASE,
+        "wisq",
+        Some(wisq_vm::desktop::Screen {
+            base: FRAME,
+            width: WIDTH,
+            height: HEIGHT,
+        }),
+    );
+    let harness = scratch.join("e.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const posé = new Map([{loaded}]);
+
+// **Le faux canvas, et ce qu'il refuse.** Un bouchon complaisant dirait « oui »
+// à tout et laisserait passer précisément ce qu'un navigateur refuse.
+const images = [];
+const sienne = Symbol("ImageData de ce contexte");
+const contexte = {{
+  createImageData(w, h) {{
+    if (w !== {width} || h !== {height}) {{
+      throw new Error(`une ImageData de ${{w}}×${{h}} pour un canvas de {width}×{height}`);
+    }}
+    return {{ [sienne]: true, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }};
+  }},
+  putImageData(image, x, y) {{
+    // Un vrai navigateur lève sur autre chose qu'une ImageData : un objet
+    // `{{ data, width, height }}` fabriqué à la main marcherait ici et nulle
+    // part ailleurs.
+    if (image === null || typeof image !== "object" || image[sienne] !== true) {{
+      throw new Error("putImageData n'accepte qu'une ImageData de ce contexte");
+    }}
+    // Une vraie page **tronque en silence** une image plus grande que son
+    // canvas. Un écran amputé se met sur le compte du noyau ; une erreur, non.
+    if (image.width > {width} || image.height > {height}) {{
+      throw new Error(`une image de ${{image.width}}×${{image.height}} déborde du canvas`);
+    }}
+    if (x !== 0 || y !== 0) throw new Error("le cadre se pose à l'origine");
+    images.push(Array.from(image.data).join(","));
+  }},
+}};
+const toile = {{
+  width: {width},
+  height: {height},
+  getContext: (kind) => (kind === "2d" ? contexte : null),
+}};
+globalThis.window = globalThis;
+globalThis.document = {{
+  // Un vrai document rend `null` pour un identifiant qu'il ne porte pas.
+  getElementById: (id) => (id === "wisqEcran" ? toile : null),
+}};
+// `requestAnimationFrame` n'existe pas sous Bun ; une vraie page en a un. Ce
+// qui compte ici est qu'il soit une **tâche** — comme le vrai —, donc qu'il ne
+// tourne que si la boucle de la machine rend la main.
+// **Et il refuse une boucle emballée.** Une vraie page ne dirait rien d'une
+// boucle d'affichage qui survit à la machine : elle repeindrait le même écran
+// soixante fois par seconde jusqu'à la fermeture, en silence. Ce plafond-là
+// transforme un gaspillage muet — qui, sous ce harnais, ferait tourner Bun
+// sans fin plutôt qu'échouer — en un fait qu'on peut lire.
+let dessins = 0;
+let emballée = 0;
+globalThis.requestAnimationFrame = (fn) => {{
+  if (++dessins > {plafond}) {{ emballée = 1; return 0; }}
+  return setTimeout(fn, 0);
+}};
+
+const stopped = [];
+globalThis.webkit = {{
+  messageHandlers: {{
+    wisq: {{
+      postMessage: note => {{
+        if (note.kind === "arrêt") {{ stopped.push(note.stopped); return; }}
+        const brut = atob(note.octets);
+        const attendu = posé.get(note.address);
+        if (attendu !== undefined) {{
+          for (let at = 0; at < attendu.length; at++) {{
+            if (brut.charCodeAt(at) !== attendu[at]) {{
+              throw new Error("la fenêtre ne porte pas le code de " + note.address);
+            }}
+          }}
+        }}
+        setTimeout(() => {{
+          const path = catalogue.get(note.address + ":" + note.slot);
+          window.wisqTranslated(note.id, path === undefined ? null : [...readFileSync(path)]);
+        }}, 0);
+      }},
+    }},
+  }},
+}};
+
+{driver}
+
+const laVM = window.wisqMachine;
+for (const [adresse, octets] of posé) {{
+  const at = Number(BigInt(adresse) & BigInt({ram} - 1));
+  new Uint8Array(laVM.memory.buffer, at, octets.length).set(octets);
+}}
+
+// Une couleur que l'invité n'écrit jamais, pour distinguer « le canvas montre
+// ce que le harnais a posé » de « le canvas montre l'invité ».
+const VERT = 0x0000ff00;
+const cadre = new Uint32Array(laVM.memory.buffer, {frame}, {width} * {height});
+cadre.fill(VERT);
+
+// **Phase 1 : peindre sans boucle d'affichage.**
+window.wisqPaint();
+console.log("manuelle " + images[images.length - 1]);
+
+// **Phase 2 : peindre pendant que la machine tourne.**
+const avant = images.length;
+window.wisqAfficher();
+await laVM.run({{ budget: {budget}n, rounds: {rounds} }});
+const pendant = images.length - avant;
+// **Cesser doit peindre exactement une fois de plus**, et c'est mesuré ici
+// plutôt que déduit de la couleur finale : la boucle d'affichage peut très
+// bien avoir déjà peint le même état, et une assertion sur la couleur serait
+// alors satisfaite sans que `wisqCesser` ait rien fait. Un sabotage l'a
+// montré.
+const avantCesser = images.length;
+window.wisqCesser();
+console.log("cesser " + (images.length - avantCesser));
+console.log("pendant " + pendant);
+console.log("invite " + images[images.length - 1]);
+// **Et la boucle doit s'être arrêtée.** Une boucle d'affichage qui survit à la
+// machine repeindrait le même écran soixante fois par seconde, pour rien,
+// jusqu'à ce que l'application se ferme.
+const aprèsCesser = images.length;
+await new Promise((fin) => setTimeout(fin, 50));
+console.log("apres " + (images.length - aprèsCesser));
+console.log("emballee " + emballée);
+
+// **Phase 3 : `wisqRun` peint une dernière fois après l'arrêt.**
+const BLANC = 0x00ffffff;
+cadre.fill(BLANC);
+laVM.globals[SLOTS.rip].value = {stop}n;
+const pourquoi = await window.wisqRun();
+console.log("arret " + pourquoi + " " + stopped.join(","));
+console.log("finale " + images[images.length - 1]);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            ram = RAM,
+            frame = FRAME,
+            width = WIDTH,
+            height = HEIGHT,
+            budget = 20_000,
+            rounds = 1_500,
+            // Le régime peint quelques centaines d'images ; ce plafond est
+            // loin au-dessus, et n'est atteint que par une boucle qui ne
+            // s'arrête pas.
+            plafond = 3_000,
+            stop = BASE + 0x200,
+            driver = driver_source,
+        ),
+    )
+    .expect("le harnais");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&harness)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le harnais n'a pas dit « {label} » :\n{text}"))
+    };
+
+    // **Phase 1.** Quatre pixels verts, dans l'ordre qu'un canvas attend :
+    // R, G, B, A — et l'opacité **forcée**, sans quoi l'écran serait
+    // entièrement transparent, c'est-à-dire indistinguable d'une machine qui
+    // n'a pas démarré.
+    assert_eq!(
+        seen("manuelle"),
+        ["0,255,0,255"; 4].join(","),
+        "wisqPaint doit peindre sans qu'aucune image de rendu n'ait été demandée"
+    );
+
+    // **Phase 2.** La boucle a bien tourné pendant que la machine tournait.
+    let during: u32 = seen("pendant").parse().expect("les images peintes");
+    assert!(
+        during >= 2,
+        "la boucle d'affichage doit peindre pendant que la machine tourne, \
+         pas seulement à l'arrêt : {during} images"
+    );
+    // **Et `wisqCesser` peint, lui, exactement une fois.** Mesuré et non déduit
+    // d'une couleur : la boucle peut avoir déjà peint le même état, et une
+    // assertion sur la couleur finale serait alors verte sans que `wisqCesser`
+    // ait rien fait. C'est ce qu'un sabotage a montré.
+    assert_eq!(
+        seen("cesser"),
+        "1",
+        "wisqCesser doit peindre une dernière image, et une seule"
+    );
+    // **Et la boucle s'arrête vraiment.** Une boucle qui survit à la machine
+    // repeindrait le même écran soixante fois par seconde jusqu'à la fermeture
+    // de l'application.
+    assert_eq!(
+        seen("apres"),
+        "0",
+        "plus rien ne doit être peint après l'arrêt de la boucle"
+    );
+    assert_eq!(
+        seen("emballee"),
+        "0",
+        "la boucle d'affichage ne doit jamais s'emballer"
+    );
+    // Et le premier pixel porte une couleur de l'invité, pas celle du harnais.
+    let guest = seen("invite");
+    let first = guest.split(',').take(4).collect::<Vec<_>>().join(",");
+    assert!(
+        first == "255,0,0,255" || first == "0,0,255,255",
+        "le canvas doit montrer ce que l'invité a écrit, pas le vert du \
+         harnais : {first}"
+    );
+    // Les trois autres pixels n'ont pas été touchés par l'invité : ils sont
+    // restés verts. Sans cette ligne, un `paint` qui écraserait tout d'une
+    // seule couleur passerait.
+    assert!(
+        guest.ends_with(&["0,255,0,255"; 3].join(",")),
+        "l'invité n'a écrit qu'un pixel : {guest}"
+    );
+
+    // **Phase 3.** L'arrêt remonte, et l'image d'après l'arrêt est celle de
+    // l'arrêt.
+    assert_eq!(seen("arret"), "sur place sur place", "le `ud2` arrête tout");
+    assert_eq!(
+        seen("finale"),
+        ["255,255,255,255"; 4].join(","),
+        "wisqCesser doit peindre l'état dans lequel la machine s'est arrêtée"
     );
 }

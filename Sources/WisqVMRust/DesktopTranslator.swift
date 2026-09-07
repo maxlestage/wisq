@@ -104,6 +104,23 @@ public enum DesktopTranslator {
 
     // MARK: - La page
 
+    /// **Le cadre que le chargeur a déclaré au noyau**, tel que la vue doit le
+    /// peindre. Les trois nombres sont ceux du `screen_info` que l'application
+    /// remplit avant de démarrer la machine.
+    public struct Screen: Equatable, Sendable {
+        /// L'adresse **invitée** du tampon d'affichage, repliée dans la RAM
+        /// comme toutes les autres.
+        public let base: UInt64
+        public let width: UInt32
+        public let height: UInt32
+
+        public init(base: UInt64, width: UInt32, height: UInt32) {
+            self.base = base
+            self.width = width
+            self.height = height
+        }
+    }
+
     /// **La page que l'application charge dans sa vue** : la boucle hôte, le
     /// pont vers l'application, l'état de départ de la machine.
     ///
@@ -112,13 +129,31 @@ public enum DesktopTranslator {
     /// chiffres sont acceptés — le même soin que pour un identifiant de VM
     /// collé dans une ligne de commande.
     ///
-    /// Rend `nil` quand la RAM n'est pas une puissance de deux, ou quand le nom
-    /// du canal ne peut pas être collé sans risque.
-    public static func page(pages: UInt32, entry: UInt64, channel: String) -> String? {
+    /// **Le cadre est facultatif.** Quand il est donné, la page porte un
+    /// `<canvas>` à ses dimensions et une boucle d'affichage ; sans lui, il n'y
+    /// a rien à montrer — un démarrage jugé sur ses registres est un cas réel.
+    /// Ses trois nombres viennent du `screen_info` que l'application a rempli
+    /// avant de démarrer la machine : c'est elle qui a choisi où vit le tampon
+    /// d'affichage.
+    ///
+    /// Rend `nil` quand la RAM n'est pas une puissance de deux, quand le nom du
+    /// canal ne peut pas être collé sans risque, ou quand le cadre déborderait
+    /// de la RAM de l'invité — au-dessus vit la correspondance, et un cadre à
+    /// cheval sur ce bord afficherait la table des blocs en la détruisant.
+    public static func page(
+        pages: UInt32,
+        entry: UInt64,
+        channel: String,
+        screen: Screen? = nil
+    ) -> String? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
         let ok = channel.withCString { name in
-            wisq_desktop_page(pages, entry, name, &out, &length)
+            wisq_desktop_page(
+                pages, entry, name,
+                screen?.base ?? 0, screen?.width ?? 0, screen?.height ?? 0,
+                &out, &length
+            )
         }
         guard let bytes = claim(ok, out, length) else { return nil }
         // La page est de l'UTF-8 que Rust vient d'écrire ; un String qui échoue

@@ -253,7 +253,7 @@ int main(void) {
      * elle refuse un nom qu'on ne peut pas recoller dans du JavaScript. */
     uint8_t *page = NULL;
     size_t page_len = 0;
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq", &page, &page_len) == 0,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", 0, 0, 0, &page, &page_len) == 0,
           "la page du bureau se construit");
     if (page != NULL) {
         check(page_len > 1000, "et elle porte plus que son squelette");
@@ -272,14 +272,48 @@ int main(void) {
 
     uint8_t *unsafe_name = (uint8_t *)1;
     size_t unsafe_len = 1;
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq; alert(1)", &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq; alert(1)", 0, 0, 0,
+                            &unsafe_name, &unsafe_len) == -1,
           "un nom de canal qui porte du code est refusé");
     check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
           "et le refus laisse les sorties tranquilles");
-    check(wisq_desktop_page(3, GUEST_BASE, "wisq", &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_page(3, GUEST_BASE, "wisq", 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "une RAM qui n'est pas une puissance de deux aussi");
-    check(wisq_desktop_page(1, GUEST_BASE, NULL, &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_page(1, GUEST_BASE, NULL, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "un nom nul est refusé plutôt que déréférencé");
+
+    /* **Le cadre traverse le C ABI, et son refus aussi.** Une RAM d'une page
+     * fait 65536 octets ; un cadre de 64x64 en occupe 16384 et tient, un de
+     * 128x128 en occupe 65536 et ne laisse pas la place de commencer ailleurs
+     * qu'à zéro. Au-dessus de la RAM vit la correspondance : un cadre à cheval
+     * sur ce bord afficherait la table des blocs tout en la détruisant. */
+    uint8_t *framed = NULL;
+    size_t framed_len = 0;
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 64, 64,
+                            &framed, &framed_len) == 0,
+          "un cadre qui tient dans la RAM donne une page");
+    if (framed != NULL) {
+        /* Le canvas doit y être, à ses dimensions : sans lui la page
+         * déclarerait un écran que rien ne montrerait. */
+        int canvas = 0;
+        for (size_t at = 0; at + 6 <= framed_len; at++) {
+            if (memcmp(framed + at, "canvas", 6) == 0) {
+                canvas = 1;
+                break;
+            }
+        }
+        check(canvas, "et elle porte le canvas");
+        check(framed_len > page_len, "et elle est plus longue que celle sans cadre");
+        wisq_x86_free_module(framed, framed_len);
+    }
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE + 4096, 128, 128,
+                            &unsafe_name, &unsafe_len) == -1,
+          "un cadre qui déborderait sur la correspondance est refusé");
+    check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
+          "et ce refus-là non plus ne touche pas aux sorties");
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 0, 64,
+                            &unsafe_name, &unsafe_len) == -1,
+          "un cadre sans largeur n'est pas un cadre");
 
     /* La correspondance occupe une place que l'hôte doit ajouter à la RAM.
      * Zéro voudrait dire qu'il n'a rien à ajouter, et le module piégerait au

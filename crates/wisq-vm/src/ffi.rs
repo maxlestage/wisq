@@ -510,10 +510,17 @@ pub unsafe extern "C" fn wisq_x86_emit_resolving(
 /// les lettres et les chiffres sont acceptés — la même précaution que pour un
 /// identifiant de VM recollé dans une ligne de commande.
 ///
-/// Rend 0 et la page en UTF-8, ou -1 si la RAM n'est pas une puissance de deux
-/// ou si le nom du canal ne peut pas être recollé sans danger. Le tampon se
-/// libère par `wisq_x86_free_module`, comme un module : c'est la même
-/// allocation, et une seconde fonction identique ne serait que du bruit.
+/// **Le cadre est facultatif, et `screen_width == 0` le dit.** Une machine sans
+/// écran est un cas réel — un démarrage jugé sur ses registres n'a rien à
+/// montrer — et un cadre qui déborderait de la RAM de l'invité est refusé ici,
+/// parce qu'au-dessus vit la correspondance : il afficherait la table des blocs
+/// tout en la détruisant.
+///
+/// Rend 0 et la page en UTF-8, ou -1 si la RAM n'est pas une puissance de deux,
+/// si le nom du canal ne peut pas être recollé sans danger, ou si le cadre ne
+/// tient pas. Le tampon se libère par `wisq_x86_free_module`, comme un module :
+/// c'est la même allocation, et une seconde fonction identique ne serait que du
+/// bruit.
 ///
 /// # Safety
 /// `channel` must be a NUL-terminated C string, and `out_bytes` and `out_len`
@@ -523,6 +530,9 @@ pub unsafe extern "C" fn wisq_desktop_page(
     pages: u32,
     entry: u64,
     channel: *const c_char,
+    screen_base: u64,
+    screen_width: u32,
+    screen_height: u32,
     out_bytes: *mut *mut u8,
     out_len: *mut usize,
 ) -> c_int {
@@ -532,7 +542,16 @@ pub unsafe extern "C" fn wisq_desktop_page(
     let Ok(name) = std::ffi::CStr::from_ptr(channel).to_str() else {
         return -1;
     };
-    let Ok(page) = desktop::page(pages, entry, name) else {
+    let screen = if screen_width == 0 && screen_height == 0 {
+        None
+    } else {
+        Some(desktop::Screen {
+            base: screen_base,
+            width: screen_width,
+            height: screen_height,
+        })
+    };
+    let Ok(page) = desktop::page(pages, entry, name, screen) else {
         return -1;
     };
     hand_back(page.into_bytes(), out_bytes, out_len);

@@ -2282,6 +2282,27 @@ X`, ce que `simpledrm` prend sans conversion — quand une `ImageData` veut
 non** : un écran entièrement transparent ressemble exactement à une machine qui
 n'a pas démarré.
 
+### L'écran de la page
+
+`desktop::page` porte un **cadre facultatif** — base, largeur, hauteur, ceux du
+`screen_info` que l'application a rempli. Quand il est donné, la page porte un
+`<canvas>` à ces dimensions et le pilote peint dedans ; le cadre traverse le
+C ABI (`screen_width == 0` veut dire « pas d'écran ») et
+`DesktopTranslator.page`.
+
+**Peindre est séparé de la boucle qui peint.** `requestAnimationFrame` ne tourne
+que dans une vue que le système considère comme affichée, et un `WKWebView`
+construit sans être ajouté à une fenêtre pourrait n'en voir aucune. Ce n'est pas
+vérifiable d'ici : `window.wisqPaint()` se laisse donc appeler à la main, et le
+dessin est fait pour que la réponse n'ait pas d'importance.
+
+**Ce que le faux canvas du harnais refuse**, parce qu'un bouchon complaisant
+dirait oui à tout : un `putImageData` avec autre chose que l'`ImageData` que ce
+contexte a rendue (un vrai navigateur lève) ; une image plus grande que le
+canvas (une vraie page **tronque en silence**, ce qui est pire) ; et une boucle
+d'affichage qui survit à la machine, qu'une vraie page laisserait repeindre
+soixante fois par seconde sans rien dire.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
