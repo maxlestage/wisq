@@ -1120,3 +1120,226 @@ console.log("court " + court);
     assert_eq!(seen("deborde"), "oui", "un cadre hors de la RAM est refusé");
     assert_eq!(seen("court"), "oui", "un tampon trop petit est refusé");
 }
+
+/// **La boucle rend-elle jamais la main ?**
+///
+/// La question est venue en dessinant le canvas, pas en relisant du code.
+/// Peindre demande que quelque chose d'autre que la machine puisse tourner :
+/// un `requestAnimationFrame`, un toucher, un timer. Or `run()` n'attend que
+/// sur `translate`. Une fois toutes les régions connues — c'est-à-dire dès la
+/// fin du démarrage, pour un noyau — la boucle enchaîne les tours sans jamais
+/// repasser par la boucle d'événements. **La vue serait gelée**, et le canvas
+/// afficherait éternellement sa première image.
+///
+/// Ce test mesure exactement ça : un timer armé pendant que la machine tourne
+/// a-t-il eu son tour avant que `run()` ne rende la main ? La réponse était
+/// non, et rien ne l'aurait dit avant un appareil.
+///
+/// **Un `await` ne suffit pas.** Attendre une promesse déjà tenue ne cède
+/// qu'aux micro-tâches ; les timers et `requestAnimationFrame` sont des
+/// *tâches*, et n'y passent pas. C'est pourquoi le harnais compte des timers
+/// et pas des `Promise.resolve()`.
+#[test]
+fn the_machine_lets_the_page_breathe_while_it_runs() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la respiration de la boucle ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const STRIDE: u64 = 0x100;
+    const LINKS: u64 = 3;
+
+    // Le même anneau de trois maillons que la découverte : chacun saute
+    // indirectement au suivant, donc les trois sont des régions distinctes, et
+    // une fois traduites l'anneau tourne **sans plus rien demander**. C'est le
+    // régime établi, celui où la famine se produit.
+    let region = |index: u64| -> Vec<u8> {
+        let mut code = vec![0x48, 0xc7, 0xc0];
+        code.extend_from_slice(&(index as u32 + 1).to_le_bytes()); // movq $n, %rax
+        code.extend_from_slice(&[0x48, 0x01, 0xc2]); // addq %rax, %rdx
+        code.extend_from_slice(&[0x48, 0xb8]);
+        code.extend_from_slice(&(BASE + ((index + 1) % LINKS) * STRIDE).to_le_bytes());
+        code.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+        code
+    };
+
+    let scratch = std::env::temp_dir().join(format!("wisq-souffle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let mut loaded = String::new();
+    for index in 0..LINKS {
+        let address = BASE + index * STRIDE;
+        let code = region(index);
+        let raw = scratch.join(format!("souffle{index}.bin"));
+        std::fs::write(&raw, &code).expect("le code de la région");
+        loaded.push_str(&format!(
+            "[{},{:?}],",
+            address & u64::from(PAGES * 65536 - 1),
+            raw.to_string_lossy()
+        ));
+        for slot in 0..4u32 {
+            let module = Module::resolving(&code, address, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {index}"));
+            let path = scratch.join(format!("souffle{index}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    let driver = scratch.join("s.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const posé = new Map(
+  [{loaded}].map(([at, path]) => [at, new Uint8Array(readFileSync(path))]),
+);
+const translate = async (address, slot, code) => {{
+  if (!(code instanceof Uint8Array) || code.length === 0) {{
+    throw new Error("la demande ne porte pas d'octets");
+  }}
+  const path = catalogue.get(address + ":" + slot);
+  return path === undefined ? null : readFileSync(path);
+}};
+
+const vm = machine({{ translate, pages: {pages} }});
+for (const [at, octets] of posé) {{
+  new Uint8Array(vm.memory.buffer, at, octets.length).set(octets);
+}}
+vm.globals[{rip}].value = {base}n;
+
+// **Découverte d'abord.** Les trois traductions passent par l'application, et
+// chacune rend la main : ce n'est pas là que la famine se produit.
+await vm.run({{ budget: 1000n, rounds: {links} }});
+if (vm.known.size !== {links}) throw new Error("les trois régions doivent être connues");
+
+// **Régime établi.** Plus rien à traduire ; à partir d'ici, tout ce que la
+// boucle rend à la page, elle le rend de son plein gré.
+//
+// Le même travail est fait **deux fois** : une fois avec la respiration par
+// défaut, une fois avec `breath: Infinity`, c'est-à-dire jamais. Le second
+// tour est le sabotage inscrit dans le test : sans lui, un compteur de
+// battements qui monterait tout seul aurait l'air d'une garde.
+async function régime(souffle) {{
+  vm.globals[{rip}].value = {base}n;
+  vm.globals[2].value = 0n;
+  let battements = 0;
+  // Un timer qui se réarme : c'est le plus fidèle tenant-lieu de « la page
+  // peut faire quoi que ce soit » — `requestAnimationFrame`, un toucher, un
+  // timer sont tous des tâches, et ils passent ou ne passent pas ensemble.
+  let vivant = true;
+  const battre = () => {{ if (!vivant) return; battements++; setTimeout(battre, 0); }};
+  setTimeout(battre, 0);
+  const départ = performance.now();
+  const fin = await vm.run({{ budget: {budget}n, rounds: {rounds}, breath: souffle }});
+  const durée = performance.now() - départ;
+  vivant = false;
+  return {{ battements, durée, stopped: fin.stopped, rdx: vm.globals[2].value }};
+}}
+
+const respiré = await régime(8);
+const apnée = await régime(Infinity);
+console.log("arret " + respiré.stopped);
+console.log("battements " + respiré.battements);
+console.log("duree " + Math.round(respiré.durée));
+console.log("apnee " + apnée.battements);
+console.log("duree-apnee " + Math.round(apnée.durée));
+console.log("rdx " + respiré.rdx.toString());
+console.log("rdx-apnee " + apnée.rdx.toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            links = LINKS,
+            // **Le travail est découpé en tours larges, exprès.** Sept
+            // millions et demi de blocs sont nécessaires pour que le régime
+            // dure assez longtemps qu'un timer ait sa chance ; les découper en
+            // sept millions et demi de tours rendrait le sabotage « respirer à
+            // chaque tour » indiscernable d'un blocage — vingt-huit minutes au
+            // lieu d'une assertion. En mille cinq cents tours, il échoue en
+            // deux secondes, et il le dit.
+            budget = 20_000,
+            rounds = 1_500,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    let breathing: u64 = seen("duree").parse().expect("la durée en millisecondes");
+    let holding: u64 = seen("duree-apnee").parse().expect("la durée en apnée");
+    let beats: u64 = seen("battements").parse().expect("les battements");
+    let held: u64 = seen("apnee").parse().expect("les battements en apnée");
+
+    // **Le même travail des deux côtés.** Sans cette ligne, une respiration
+    // qui écourterait la boucle passerait pour un gain de réactivité.
+    assert_eq!(
+        seen("rdx"),
+        seen("rdx-apnee"),
+        "les deux régimes doivent avoir fait exactement le même travail"
+    );
+    assert_eq!(
+        seen("arret"),
+        "tours épuisés",
+        "l'anneau tourne jusqu'au bout"
+    );
+
+    // **Le test ne veut rien dire si le travail est court.** Cent
+    // millisecondes valent douze respirations : en dessous, un zéro
+    // n'accuserait personne.
+    assert!(
+        breathing >= 100,
+        "le régime doit durer assez pour qu'un timer ait sa chance : {breathing} ms"
+    );
+
+    // **La famine, mesurée.** En apnée, la page n'a pas eu un seul tour de
+    // toute la durée du régime. C'est l'état dans lequel la boucle était, et
+    // il aurait gelé le canvas dès la fin du démarrage.
+    assert_eq!(
+        held, 0,
+        "en apnée, la page ne doit avoir aucun tour — sinon ce test ne mesure \
+         pas ce qu'il croit ({holding} ms)"
+    );
+    assert!(
+        beats >= 1,
+        "en respirant, la page doit avoir eu son tour : {beats} battements en \
+         {breathing} ms"
+    );
+
+    // **Et la respiration ne doit pas coûter le débit.** Elle se règle sur le
+    // temps et non sur les tours : à un souffle par tour, ce régime en
+    // paierait un million et demi au lieu d'une trentaine. La comparaison est
+    // un rapport et non un seuil, parce qu'un runner lent reste un runner
+    // honnête.
+    assert!(
+        breathing < holding * 3 + 100,
+        "respirer ne doit pas tripler le temps de calcul : {breathing} ms \
+         contre {holding} ms en apnée"
+    );
+}
