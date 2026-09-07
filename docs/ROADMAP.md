@@ -2012,10 +2012,19 @@ bits au-delà de deux puissance cinquante-trois, et un noyau x86-64 vit
 couramment plus haut. Le test emploie une adresse de ce genre exprès : avec une
 petite, un sabotage qui remplace le texte par un nombre survit.
 
-**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : appeler
-`page`, charger le résultat dans un `WKWebView`, répondre aux demandes de
-traduction par le C ABI, et recevoir les pixels. Rien de cette moitié-là ne se
-vérifie depuis Linux.
+**Le C ABI est prêt**, et il a fallu deux fonctions là où on en attendait une.
+`wisq_desktop_page` rend la page que la vue charge ; `wisq_x86_emit_resolving`
+rend la forme **liée et confinée**, celle que le bureau traduit vraiment —
+`wisq_x86_emit_region`, qui existait déjà, ne rend que la forme historique, et
+s'en contenter aurait fait traduire la mauvaise chose jusqu'à ce qu'un
+téléphone le dise. Une troisième, `wisq_desktop_table_pages`, dit la place que
+l'hôte doit ajouter à sa mémoire pour la correspondance. Un programme C les
+éprouve à chaque commit, sur Linux, sans image de noyau.
+
+**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : charger la
+page dans un `WKWebView`, déclarer le gestionnaire de messages, répondre aux
+demandes de traduction, recevoir les pixels. Rien de cette moitié-là ne se
+vérifie depuis Linux — et tout ce qui pouvait l'être l'est maintenant.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
