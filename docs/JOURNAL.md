@@ -9814,3 +9814,81 @@ Le cœur Swift n'a besoin d'aucun changement, mais je ne l'ai pas exécuté : il
 n'y a pas de chaîne Swift dans ce conteneur — `swift` et `swiftc` sont absents
 — et `WisqUI` est exclu sous Linux. Que les trois cœurs restent d'accord sur
 les trois nouveaux programmes, c'est la CI qui le dira.
+
+## La seconde mémoire n'était pas nécessaire, et la première mesure disait le contraire
+
+La feuille de route tenait la correspondance adresse → indice pour **bloquée**
+jusqu'à un envoi TestFlight : elle devait vivre dans une seconde mémoire
+WebAssembly, hors de portée de l'invité, et rien ne prouvait qu'un vrai
+`WKWebView` accepte la multi-mémoire.
+
+Le besoin était juste, le moyen trop pressé. Ce qu'il faut, c'est **que
+l'invité ne puisse pas l'atteindre** — et un `et` sur la taille de sa RAM y
+suffit. L'hôte fournit alors une mémoire plus grande que ce que le module
+déclare, et le module ne peut pas dépasser. Aucun moteur ne peut refuser un
+`i32.and`.
+
+### La mesure a failli faire abandonner la piste
+
+`bun scripts/wasm-mask-probe.ts`, deux formes de boucle :
+
+| forme | sans masque | avec masque | écart |
+| --- | --- | --- | --- |
+| l'adresse est un compteur | 0,94 ns | 1,25 ns | **+32 %** |
+| l'adresse vient d'une globale | 1,79 ns | 1,76 ns | **−2 à −3 %** |
+
+La première forme est celle qu'on écrit d'instinct, et c'est la mauvaise. Le
+moteur y réduit `i << 3` à un pointeur qui avance ; le masque l'en empêche, et
+ça se paie. **L'émetteur ne produit jamais cette forme** : une adresse invitée
+se recalcule depuis un registre — donc depuis une globale — à chaque
+instruction, y compris dans la boucle du `rep`.
+
+Sur la forme qui le concerne, le masque est **reproductiblement plus rapide**
+que son absence. L'explication est offerte et non prouvée, faute d'avoir lu le
+code machine engendré : le `et` prouve au moteur que l'adresse tient dans le
+minimum déclaré, qui peut alors retirer *sa* vérification de borne. Le masque
+ne s'ajoute pas au contrôle, il le remplace.
+
+### Ce que la sonde disait avant d'être honnête
+
+Trois versions, et les deux premières mentaient.
+
+La première **n'avait rien lu** : l'écriture d'un tour écrasait la valeur que le
+tour suivant allait lire, l'accumulateur restait à zéro, et les deux formes
+« s'accordaient » sur rien. C'est la même faute qu'une sonde précédente de ce
+lot, qui avait rendu 5,6 ns pour une recherche qui ne cherchait rien. Le remède
+est le même : **calculer une valeur qu'un modèle écrit en clair prédit**, et
+refuser de chronométrer si elle ne tombe pas.
+
+La seconde annonçait « +0,6 % » puis, à l'appel suivant, « −2,7 % » — en
+affirmant trembler de 0,1 %. Elle mesurait le bruit **à l'intérieur** d'une
+construction, pas celui **entre** deux constructions, qui est plus grand. Elle
+construit maintenant trois modules de chaque et donne les deux étendues ; quand
+elles se chevauchent, elle dit qu'il n'y a pas d'écart au lieu d'en inventer un.
+
+### Le point de passage unique, et la preuve qu'il ne manque rien
+
+Huit endroits de l'émetteur transformaient une adresse invitée en adresse de
+mémoire linéaire, chacun avec son propre `i32.wrap_i64`. Ils passent tous par
+`Body::guest` désormais — un seul endroit à masquer, et aucun accès qui puisse
+l'oublier.
+
+Comment savoir que ce sont bien les huit, et rien d'autre ? En comparant
+l'**empreinte des 526 modules du corpus** avant et après : identique à l'octet
+près, `cbfd321d6d65aa88`. Un `i32.wrap_i64` de trop attrapé au passage aurait
+changé un module ; il n'y en avait pas. Les six autres occurrences sont des
+conditions de `select`, vérifiées une par une.
+
+### Un second effet, qui n'est pas un détail
+
+Sans masque, une adresse hors de la RAM fait *piéger* le module, et un piège
+WebAssembly est sans retour : l'émulateur entier s'arrête. Avec le masque elle
+se replie. Ni l'un ni l'autre n'est ce que fait le silicium, qui faute — mais un
+repli laisse l'hôte vivant, et un piège non.
+
+### Une contrainte qui remonte jusqu'au réglage de l'application
+
+La RAM d'un invité confiné doit être une **puissance de deux** : `pages − 1` ne
+décrit un intervalle qu'à cette condition. Avec trois pages le masque vaudrait
+0x2FFFF, qui laisse passer 0x2FFFF et coupe 0x20000 — une écriture au hasard
+dans la RAM, qu'aucun test de conformité ne verrait. `confined` refuse.
