@@ -2098,10 +2098,41 @@ définirait *aussi* sa propre table porterait une table morte — les éléments
 le `call_indirect` visent tous deux la table zéro, l'importée. Rien
 d'observable, donc rien à tenir.
 
-Ce qui reste : la correspondance adresse → indice, tenue par l'hôte dans la
-mémoire invitée avec un hachage qui mélange les bits bas, et `resolve` qui passe
-par elle au lieu de la chaîne de comparaisons. C'est là que le gain arrive, et
-c'est là que `--example chain` doit retomber de 192 ns à une dizaine.
+### La prémisse qu'il a fallu jeter, et ce qui la remplace
+
+Il était écrit ici, deux fois, que la correspondance adresse → indice vivrait
+dans « une petite table de hachage **dans la mémoire invitée**, tenue par
+l'hôte ». **C'est faux**, et pour une raison que ce dépôt a déjà apprise une
+fois. L'en-tête de l'émetteur la garde écrite :
+
+> la mémoire linéaire **est** la RAM de l'invité, adresse pour adresse, et un
+> noyau qui écrit à l'adresse 8 écrasait alors RCX. Les registres sont donc
+> sortis de là.
+
+Une table de correspondance posée dans cette mémoire est exactement le même
+défaut : un noyau qui écrit au mauvais endroit la détruit, et le module saute
+alors n'importe où. Il lui faut un endroit que l'invité ne peut pas adresser.
+
+**Ce qui la remplace, sondé** : `bun scripts/wasm-table-probe.ts` demande à
+JavaScriptCore deux mémoires importées dans le même module. Il les **accepte**,
+et la lecture depuis la seconde rend bien ce qu'on y a mis. La correspondance
+vivra donc dans une seconde mémoire, hors de portée de l'invité — pas dans la
+sienne.
+
+Une erreur d'encodage rencontrée au passage, gardée en commentaire parce qu'elle
+est silencieuse : après l'octet d'alignement marqué du bit 6 vient **l'indice de
+mémoire**, puis le décalage. Les intervertir fait lire la première mémoire à un
+décalage de un, ce qui rend une valeur assez plausible pour être crue.
+
+**Réserve, la même que pour tout le lot 8** : ceci mesure le JavaScriptCore
+qu'embarque Bun, sur Linux. Que le `WKWebView` d'un vrai iPhone accepte la
+multi-mémoire n'est **pas** établi ; la sonde de l'application est le seul
+endroit qui le dira, et c'est à vérifier avant de bâtir dessus.
+
+Ce qui reste : la correspondance elle-même, avec un hachage qui mélange les bits
+bas, et `resolve` qui passe par elle au lieu de la chaîne de comparaisons. C'est
+là que le gain arrive, et c'est là que `--example chain` doit retomber de 192 ns
+à une dizaine.
 
 L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
 ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un
