@@ -9,6 +9,7 @@
 //! a normal crate, and the benchmark measures the same code all of them run.
 
 pub mod core;
+pub mod desktop;
 pub mod dtb;
 pub mod ffi;
 pub mod machine;

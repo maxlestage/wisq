@@ -1985,9 +1985,30 @@ Deux choses que la boucle a apprises en tournant :
    avoir tourné trois cents fois. Ce qui distingue les deux est un bloc de
    plus : si un seul bloc ne fait pas bouger RIP, plus rien ne le fera.
 
-**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : traduire par
-le C ABI quand la vue le demande, charger `web/host.js` dans un `WKWebView`,
-et recevoir les pixels. Rien de cette moitié-là ne se vérifie depuis Linux.
+**La page, elle, est assemblée en Rust — et c'est un choix de vérifiabilité.**
+`wisq_vm::desktop::page` habille la boucle hôte de ce qu'il faut pour vivre
+dans un `WKWebView` : un pont vers l'application, l'état de départ, de quoi
+lancer la machine. Écrit en Swift, ce code ne serait exécuté par rien avant un
+envoi TestFlight ; écrit ici, son pilote tourne sous Bun avec
+`window.webkit.messageHandlers` bouchonné, et on sait qu'il tient. Le côté
+Swift n'aura plus qu'à l'appeler.
+
+Le contrat que l'application devra tenir, et rien d'autre :
+
+| ce que la vue envoie | ce que l'application doit faire |
+| --- | --- |
+| `{ kind: "traduire", id, address, slot }` | traduire la région et rappeler `wisqTranslated(id, octets)`, ou `null` si l'émetteur refuse |
+| `{ kind: "arrêt", stopped, at }` | la machine s'est arrêtée, et pourquoi |
+
+**L'adresse traverse en texte, pas en nombre.** Un `Number` JavaScript perd des
+bits au-delà de deux puissance cinquante-trois, et un noyau x86-64 vit
+couramment plus haut. Le test emploie une adresse de ce genre exprès : avec une
+petite, un sabotage qui remplace le texte par un nombre survit.
+
+**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : appeler
+`page`, charger le résultat dans un `WKWebView`, répondre aux demandes de
+traduction par le C ABI, et recevoir les pixels. Rien de cette moitié-là ne se
+vérifie depuis Linux.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
