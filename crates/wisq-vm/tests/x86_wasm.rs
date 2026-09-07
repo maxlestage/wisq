@@ -20,7 +20,8 @@ use std::process::Command;
 
 use wisq_vm::x86::{Cpu, Step, Width};
 use wisq_vm::x86_wasm::{
-    Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT,
+    table_base, table_slot, Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT,
+    TABLE_IMPORT, TABLE_MIX, TABLE_PAGES,
 };
 
 fn workspace_root() -> PathBuf {
@@ -1692,6 +1693,245 @@ fn a_confinement_that_is_not_a_power_of_two_is_refused() {
         assert!(
             Module::confined(&bytes, CODE, 0, pages).is_some(),
             "{pages} pages en donnent un"
+        );
+    }
+}
+
+/// **Une région saute dans une autre sans repasser par l'hôte.**
+///
+/// C'est le but de tout ce qui précède. Jusqu'ici, un saut vers une adresse
+/// que la région ne contient pas rendait la main : environ 190 ns, dont
+/// l'essentiel n'est pas WebAssembly mais le site d'appel JavaScript qui perd
+/// son cache en ligne. Avec la correspondance, le module trouve l'indice
+/// lui-même et y va par `call_indirect`, mesuré à 7,2 ns.
+///
+/// Le test se juge sur **le nombre de tours de la boucle hôte** : un seul
+/// appel à `run` doit exécuter les deux régions. Et il se juge dans les deux
+/// sens — la même paire, avec la correspondance laissée vide, doit rendre la
+/// main. Sans cette seconde moitié, un module qui exécuterait tout par hasard
+/// passerait pour un module qui cherche.
+#[test]
+fn a_region_finds_another_region_through_the_correspondence() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // Une page de RAM invitée suffit : ce qui compte est ce qu'il y a
+    // au-dessus.
+    const PAGES: u32 = 1;
+    const HERE: u32 = 1; // l'emplacement de la première région
+    const THERE: u32 = 4; // celui de la seconde, ni zéro ni voisin
+    const AWAY: u64 = CODE + 0x2000;
+
+    // `incq %rdx` puis `jmp *%rax` : la cible ne se connaît qu'à l'exécution,
+    // donc c'est bien `resolve` qui décide, et pas un indice compilé.
+    let leaves = [0x48, 0xff, 0xc2, 0xff, 0xe0];
+    // `incq %rdx` deux fois, puis la fin de la région : elle rend la main, ce
+    // qui distingue « la seconde région a tourné » de « la boucle est partie
+    // en rond ».
+    let arrives = [0x48, 0xff, 0xc2, 0x48, 0xff, 0xc2];
+
+    let first = Module::resolving(&leaves, CODE, 0, HERE, PAGES).expect("la première région");
+    let second = Module::resolving(&arrives, AWAY, 0, THERE, PAGES).expect("la seconde");
+
+    let scratch = std::env::temp_dir().join(format!("wisq-corresp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let one = scratch.join("first.wasm");
+    let two = scratch.join("second.wasm");
+    std::fs::write(&one, &first).expect("la première");
+    std::fs::write(&two, &second).expect("la seconde");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+
+// `fill` : 0 rien, 1 la bonne adresse, 2 une **autre** adresse dans la même
+// case. Le troisième cas est celui qui compte le plus : sans la comparaison,
+// le module sauterait dans un bloc qui n'a rien à voir.
+function attempt(fill, pages) {{
+  const memory = new WebAssembly.Memory({{ initial: pages }});
+  const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
+  const slots = [];
+  const imports = {{ env: {{ mem: memory, {tableName}: blocks }} }};
+  for (let slot = 0; slot < {globals}; slot++) {{
+    slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+    imports.env["g" + slot] = slots[slot];
+  }}
+  const here = new WebAssembly.Instance(
+    new WebAssembly.Module(fs.readFileSync({one:?})), imports);
+  new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync({two:?})), imports);
+
+  // **L'hôte remplit la correspondance avec le même calcul que le module.**
+  // Les deux nombres viennent de `table_base` et `table_slot`, côté Rust.
+  if (fill) {{
+    const at = {base} + {slot} * 16;
+    new BigUint64Array(memory.buffer, at, 1)[0] = fill === 1 ? {away}n : {away}n + 1n;
+    new Int32Array(memory.buffer, at + 8, 1)[0] = {there};
+  }}
+
+  slots[0].value = {away}n;   // rax : la cible du saut indirect
+  slots[2].value = 0n;        // rdx : le compteur
+  here.exports.run(16n);
+  return slots[2].value.toString();
+}}
+
+console.log("remplie " + attempt(1, {pages} + {table}));
+console.log("vide " + attempt(0, {pages} + {table}));
+console.log("etrangere " + attempt(2, {pages} + {table}));
+
+// **Et une mémoire sans place pour la correspondance ne doit pas démarrer.**
+// Le module la lirait au-delà de ce qui existe, ce qui *piège* — et un piège
+// WebAssembly est sans retour. Le refus au démarrage est bruyant ; le piège
+// ne l'est pas.
+try {{
+  attempt(1, {pages});
+  console.log("courte acceptee");
+}} catch (why) {{
+  console.log("courte " + why.constructor.name);
+}}
+"#,
+            one = one.to_string_lossy(),
+            two = two.to_string_lossy(),
+            pages = PAGES,
+            table = TABLE_PAGES,
+            tableName = TABLE_IMPORT,
+            globals = GLOBAL_COUNT,
+            base = table_base(PAGES),
+            slot = table_slot(AWAY),
+            away = AWAY,
+            there = THERE,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    // Un `incq` dans la première région, deux dans la seconde : trois en un
+    // seul appel à `run` veut dire que le saut n'est pas repassé par l'hôte.
+    assert_eq!(
+        seen("remplie"),
+        "3",
+        "avec la correspondance, les deux régions doivent tourner en un appel"
+    );
+    // Et sans elle, la première seule : c'est la moitié qui empêche ce test
+    // de passer sur un module qui exécuterait tout par hasard.
+    assert_eq!(
+        seen("vide"),
+        "1",
+        "sans la correspondance, le saut doit rendre la main comme avant"
+    );
+    // **La case occupée par quelqu'un d'autre.** C'est le défaut le plus grave
+    // que cette tranche puisse porter : sans la comparaison d'adresse, le
+    // module saute dans un bloc au hasard, et rien de ce qui précède ne s'en
+    // plaindrait — le sabotage l'a montré en survivant aux deux premières
+    // moitiés.
+    assert_eq!(
+        seen("etrangere"),
+        "1",
+        "une case qui range une autre adresse ne doit pas faire sauter le module"
+    );
+    // Et une mémoire trop courte doit refuser au démarrage plutôt que piéger
+    // au premier saut.
+    assert_eq!(
+        seen("courte"),
+        "LinkError",
+        "une mémoire sans place pour la correspondance doit être refusée"
+    );
+}
+
+/// **L'hôte et le module doivent tomber sur la même case, et rien dans le
+/// module ne le dit à haute voix.**
+///
+/// `table_slot` est écrite deux fois : en Rust, pour que l'hôte range ; et en
+/// octets WebAssembly, pour que le module relise. Si les deux divergent, rien
+/// n'est jamais trouvé — le module rend la main comme avant, tous les tests de
+/// conformité restent verts, et la seule chose perdue est la vitesse. Un
+/// défaut muet, donc, et c'est pourquoi il faut un test qui regarde les octets.
+#[test]
+fn the_module_hashes_an_address_the_same_way_the_host_does() {
+    const PAGES: u32 = 1;
+    let module = Module::resolving(&[0x48, 0xff, 0xc2, 0xff, 0xe0], CODE, 0, 1, PAGES)
+        .expect("la région cherchante");
+
+    // Le multiplicateur, en octets, tel que `i64.const` l'écrit. L'encodage se
+    // **recalcule ici** plutôt que de s'écrire en dur : mon premier jet l'avait
+    // deviné, et quatre de ses dix octets étaient faux. Une constante devinée
+    // qui passe pour vérifiée est pire que pas de test du tout.
+    let mix = {
+        let mut value = TABLE_MIX as i64;
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
+            out.push(if done { byte } else { byte | 0x80 });
+            if done {
+                break out;
+            }
+        }
+    };
+    assert!(
+        module.windows(mix.len()).any(|window| window == mix),
+        "le module doit porter le multiplicateur du hachage"
+    );
+    // Et une forme qui ne cherche pas ne doit pas le porter : sinon
+    // l'assertion du dessus tiendrait pour une raison sans rapport.
+    let plain = Module::region(&[0x48, 0xff, 0xc2, 0xff, 0xe0], CODE, 0).expect("la forme simple");
+    assert!(
+        !plain.windows(mix.len()).any(|window| window == mix),
+        "et la forme qui ne cherche pas ne doit pas le porter"
+    );
+
+    // Le calcul lui-même, sur des adresses réelles : chaque case doit tenir
+    // dans la table, et deux adresses voisines ne doivent pas s'entasser.
+    let mut seen = std::collections::HashSet::new();
+    for step in 0..1024u64 {
+        let slot = table_slot(CODE + step * 16);
+        assert!(
+            slot < wisq_vm::x86_wasm::TABLE_SLOTS,
+            "la case doit tenir dans la table"
+        );
+        seen.insert(slot);
+    }
+    // Le produit prend les bits **hauts**, précisément pour que des adresses
+    // alignées ne se disputent pas les mêmes cases. Les bits bas d'un produit
+    // de Knuth, eux, n'auraient rien mélangé — la sonde de table l'a montré.
+    assert!(
+        seen.len() > 1000,
+        "1024 adresses alignées doivent trouver plus de 1000 cases distinctes, \
+         pas {} : le hachage ne mélange pas",
+        seen.len()
+    );
+    assert_eq!(
+        table_base(PAGES),
+        65536,
+        "la correspondance vit juste au-dessus de la RAM confinée"
+    );
+
+    // Une région cherchante hérite de la contrainte du confinement : sans une
+    // puissance de deux, le masque ne décrit pas un intervalle, et la
+    // correspondance se retrouverait *dans* ce que l'invité peut écrire.
+    for pages in [0u32, 3, 5, 0x3001] {
+        assert!(
+            Module::resolving(&[0x48, 0xff, 0xc2, 0xff, 0xe0], CODE, 0, 1, pages).is_none(),
+            "{pages} pages ne donnent pas un masque"
         );
     }
 }
