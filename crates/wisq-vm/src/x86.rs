@@ -2821,6 +2821,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     Op::PortOut
                 },
                 imm: port,
+                // **`immediate` dit d'où vient le numéro de port.** Sans lui,
+                // `out $0, %al` et `out %al, %dx` sont le même `Decoded` : tous
+                // deux `imm: 0`. Un émetteur qui lit `imm` écrirait alors dans
+                // le port zéro à chaque forme DX — la console d'un noyau est en
+                // `0x3f8`, et l'invité se tairait sans rien signaler.
+                immediate: true,
                 length: at,
                 ..Decoded::nothing(port_width(opcode, prefixes))
             })
@@ -2831,8 +2837,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             } else {
                 Op::PortOut
             },
-            // Le port est dans DX, et l'exécutant le sait de l'opcode : rien à
-            // porter ici. Zéro est donc « pas d'immédiat », pas « port zéro ».
+            // Le port est dans DX : il n'y a pas d'immédiat, et c'est
+            // `immediate` — laissé faux par `nothing` — qui le dit. Ce zéro
+            // n'est pas un numéro de port, et rien ne doit le lire comme tel.
             imm: 0,
             length: at,
             ..Decoded::nothing(port_width(opcode, prefixes))
@@ -3555,6 +3562,39 @@ mod tests {
             "le préfixe 0x66 fait seize bits, pas trente-deux"
         );
         assert_eq!(step.length, 2);
+    }
+
+    /// **Port zéro et « le port est dans DX » ne doivent pas se ressembler.**
+    ///
+    /// `out $0, %al` et `out %al, %dx` rendaient tous deux `imm: 0`, et le
+    /// commentaire du décodeur affirmait que « l'exécutant le sait de
+    /// l'opcode » — sauf que `Decoded` ne porte pas l'opcode. Un émetteur qui
+    /// lit `imm` écrirait donc dans le port zéro à chaque `out %al, %dx`, ce
+    /// qui est le comportement *presque* juste que ce fichier refuse partout
+    /// ailleurs : la console d'un noyau est en `0x3f8`, jamais en zéro, et
+    /// l'invité se tairait sans rien signaler.
+    ///
+    /// `immediate` porte déjà exactement cette question pour tout le reste du
+    /// jeu d'instructions ; il la porte maintenant pour les entrées-sorties.
+    #[test]
+    fn port_zero_is_not_the_same_shape_as_the_port_in_dx() {
+        let immediate = decode(&[0xe6, 0x00]).expect("out $0, %al se décode");
+        assert_eq!(immediate.op, Op::PortOut);
+        assert_eq!(immediate.imm, 0);
+        assert!(immediate.immediate, "le numéro de port est l'immédiat");
+
+        let from_dx = decode(&[0xee]).expect("out %al, %dx se décode");
+        assert_eq!(from_dx.op, Op::PortOut);
+        assert!(
+            !from_dx.immediate,
+            "le numéro de port est dans DX, pas dans l'immédiat"
+        );
+
+        // Et la même distinction du côté lecture.
+        let read_immediate = decode(&[0xe4, 0x00]).expect("in $0, %al se décode");
+        assert!(read_immediate.immediate);
+        let read_from_dx = decode(&[0xec]).expect("in %al, %dx se décode");
+        assert!(!read_from_dx.immediate);
     }
 
     /// **Le produit signé de deux nombres de soixante-quatre bits**, dont la

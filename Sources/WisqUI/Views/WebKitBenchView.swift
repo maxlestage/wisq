@@ -179,7 +179,13 @@ private final class BenchHost {
             const bytes = Uint8Array.from(atob("\(WebKitBench.moduleBase64)"), c => c.charCodeAt(0));
             const memory = new WebAssembly.Memory({ initial: \(WebKitBench.guestPages) });
             globals = [];
-            const env = { mem: memory };
+            // **Les deux fonctions que tout module émis réclame maintenant.**
+            // Ce banc ne fait aucune entrée-sortie — la boucle qu'il mesure ne
+            // parle à personne — mais un module qui *déclare* un import que
+            // l'objet ne porte pas est refusé à l'instanciation, et le refus
+            // s'appellerait ici « la sonde est en panne » plutôt que « il
+            // manque `env.out` ».
+            const env = { mem: memory, out: () => {}, in: () => 0n };
             for (let slot = 0; slot < \(WebKitBench.globalCount); slot++) {
               globals.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
               env["g" + slot] = globals[slot];
