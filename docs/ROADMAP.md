@@ -4956,3 +4956,35 @@ n'arrive *vers* l'invité, parce que rien n'a encore de quoi le lui dire — c'e
 la tranche des interruptions. Les registres autres que l'émission et l'état de
 ligne ne sont pas implémentés, et un port où il n'y a personne rend `0xff`,
 comme un vrai bus qui flotte.
+
+#### Ce que le point d'entrée d'un noyau réclame, mesuré
+
+La couverture n'était pas le problème : **98,2 %** des 10 116 entrées de fonction
+d'un noyau Linux 6.6 x86-64 se compilent déjà. Le problème est plus étroit et
+plus net — le point d'entrée s'arrêtait après **sept** instructions, sur `wrmsr`,
+que le décodeur ne connaissait pas.
+
+Quatre formes sans opérande sont décodées : `rdtsc`, `cpuid`, `rdmsr`, `wrmsr`.
+Le point d'entrée va maintenant jusqu'à **douze** instructions.
+
+**Ce qui reste, par fréquence dans les huit mégaoctets de texte** — et c'est une
+liste de travail, pas une estimation :
+
+| forme | occurrences | ce que c'est |
+| --- | --- | --- |
+| `8c` / `8e` | 124 | les registres de segment |
+| `0f 01` | 64 | `lgdt`, `lidt`, `swapgs` — un groupe, à démêler par son ModRM |
+| `0f 22` / `0f 20` | 44 | les registres de contrôle, dont CR3 : la table de pages |
+| `0f ae` | 28 | les barrières, `fxsave` |
+| `48 cb` | — | `lretq`, sur laquelle le point d'entrée s'arrête maintenant |
+
+**Ce que décoder ne donne pas.** Aucune de ces instructions n'est *exécutable*
+pour autant : il faudrait un modèle de registres spécifiques au modèle, de
+descripteurs, de compteur d'horodatage. Ce que le décodage change est qu'un refus
+porte un nom — et qu'une liste de manques nommés se suit, se compte, et se voit
+raccourcir.
+
+**Les deux outils qui l'ont établi** restent dans le dépôt, parce que la question
+se reposera à chaque tranche : `first-region` dit où le point d'entrée s'arrête
+et après combien d'instructions ; `unknown-opcodes` nomme les formes que le
+décodeur ne lit pas, par leur opcode complet plutôt que par leur premier octet.

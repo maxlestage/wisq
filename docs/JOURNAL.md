@@ -11462,3 +11462,45 @@ un test tient exactement cette distinction — sans l'ancre, il rendrait
 Et la charge utile retenue est **la plus proche**, pas la première de
 l'énumération : un noyau xz contient souvent des octets `BZh` plus loin, et
 l'ordre du code déciderait sinon du résultat.
+
+### Sept instructions, puis `wrmsr`
+
+La couverture moyenne ne dit pas si un noyau démarre. Un noyau n'exécute pas une
+fonction moyenne : il exécute la **première**. La question posée à l'outil a donc
+changé — non plus « quelle fraction se compile », mais « jusqu'où va le point
+d'entrée ».
+
+**Sept instructions.** `mov %rsi,%r15`, la pile, l'adresse de retour, le numéro
+de MSR dans ECX, deux `lea`, un décalage — puis `0f 30`, `wrmsr`, à la huitième.
+
+Et ce n'était **pas l'émetteur** qui refusait : le décodeur ne connaissait pas
+l'instruction du tout. `Refused::CannotDecode` — « il y a là des octets que je ne
+sais pas lire », sans dire lesquels. Un refus qu'on ne peut ni suivre, ni
+compter, ni voir raccourcir. J'ai d'abord annoncé le contraire, en parlant d'un
+émetteur qui « refuse les instructions privilégiées » ; la distinction compte,
+parce qu'un décodage manquant se répare bien plus facilement qu'une sémantique
+manquante.
+
+**Ce que le noyau réclame, compté sur ses huit mégaoctets de texte** :
+`0f 01` (les tables de descripteurs) 64 fois, `wrmsr` 34, `rdmsr` 34, `rdtsc` 28,
+les barrières 28, `cpuid` 27, les registres de contrôle 44, les registres de
+segment 124. Deux pièges de lecture dans ces chiffres, écrits dans l'outil : un
+opcode de deux octets est compté deux fois — l'échec sur `0f`, puis sur le second
+octet — et les 3945 `cc` en tête sont du bourrage `int3`, jamais exécuté.
+
+**Cette tranche en décode quatre**, celles qui n'ont aucun opérande : `rdtsc`,
+`cpuid`, `rdmsr`, `wrmsr`. Les décoder ne les exécute pas — l'interpréteur faute,
+l'émetteur refuse — mais le refus porte désormais un nom. Le point d'entrée passe
+de **sept à douze** instructions, et s'arrête maintenant sur `48 cb`, `lretq`,
+qui est nommé lui aussi.
+
+**Ce que le compilateur a fait à ma place.** Ajouter quatre variantes à `Op` a
+produit trois erreurs de non-exhaustivité, désignant exactement les trois
+endroits qui devaient décider : la faute de l'interpréteur et les deux
+`unreachable!` du chemin arithmétique. Aucun n'a pu être oublié.
+
+**Et un piège que je me suis tendu à moi-même.** `cargo test --lib
+"privileged\|by_name"` a répondu « 0 passed; 59 filtered out » — le filtre est
+une sous-chaîne, pas une expression régulière, et sans correspondance il annonce
+un succès. C'est le piège que ce fichier documente déjà pour `swift test`, et il
+vaut pour `cargo` aussi.
