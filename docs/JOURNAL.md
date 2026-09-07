@@ -11418,3 +11418,47 @@ dès que l'émetteur a changé de forme — les sept qui instancient de vrais mo
 sous un moteur. C'est le bon signal, arrivé au bon moment : le refus venait du
 moteur lui-même, `import function env:out must be callable`, et il nommait
 exactement ce qui manquait.
+
+### Deux nombres qui devaient s'accorder, et l'archive lue comme du code
+
+Première mesure de la tranche 2 : passer un vrai noyau x86-64 dans l'émetteur.
+Alpine `vmlinuz-lts`, Linux 6.6.134, tel qu'il se télécharge. Le résultat :
+
+```
+régions depuis les cibles de `call` : 7 compilées, 99 refusées (6.6 %) — 106 entrées
+```
+
+La feuille de route en cite **10 116 et 98,2 %**. Un écart de quinze fois, sur
+un outil que personne n'avait touché.
+
+**Rien n'avait régressé.** Un `vmlinuz` de distribution est un **bzImage** : un
+talon d'amorçage en mode réel, puis le noyau **compressé**. L'outil décodait du
+gzip comme si c'était du x86 — et le x86 est assez dense pour que presque
+n'importe quels octets s'y décodent. Sur la charge utile extraite du **même**
+fichier :
+
+```
+régions depuis les cibles de `call` : 9934 compilées, 182 refusées (98.2 %) — 10116 entrées
+```
+
+Les deux chiffres de la feuille de route, à l'octet près. La mesure d'origine
+venait donc d'un noyau décompressé, et rien ne le disait.
+
+**Un nombre faux qui ressemble à un nombre est pire qu'un refus.** C'est la
+faute que ce dépôt documente partout ailleurs, et elle vient d'être payée sur
+son propre outil de mesure. `crates/wisq-vm/src/kernel_image.rs` pose donc la
+question **avant** de mesurer : ELF, bzImage compressé (et où, et comment), ou
+autre chose. `coverage.rs` refuse maintenant un bzImage en disant où est la
+charge utile et par quelle commande l'extraire — commande vérifiée, elle produit
+un fichier identique à l'extraction faite à la main.
+
+**Ce que l'ancre empêche.** Chercher un nombre magique de compression dans un
+fichier quelconque trouve n'importe quoi : trois octets `1f 8b 08` apparaissent
+par hasard tous les seize mégaoctets environ. La recherche est donc ancrée sur
+`HdrS` à l'offset `0x202`, le champ d'en-tête du protocole d'amorçage Linux, et
+un test tient exactement cette distinction — sans l'ancre, il rendrait
+« compressé » sur du bruit.
+
+Et la charge utile retenue est **la plus proche**, pas la première de
+l'énumération : un noyau xz contient souvent des octets `BZh` plus loin, et
+l'ordre du code déciderait sinon du résultat.
