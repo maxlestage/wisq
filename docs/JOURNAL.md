@@ -9729,3 +9729,88 @@ sera une découverte, pas une régression : le désaccord existait déjà, invis
 
 Le message de désaccord imprime maintenant les quatre pointeurs des deux côtés,
 pour que le log brut suffise à diagnostiquer sans avoir la machine sous la main.
+
+## Les conseils au cache et les barrières mémoire : deux familles de moins
+
+La mesure de couverture corrigée désignait trois familles comme des
+**non-opérations exactes** pour cette machine — `prefetch`, les barrières
+mémoire, `pushf`. Deux sont traduites. `pushf` est laissé de côté : il ouvre la
+question du modèle de RFLAGS et de IF, qui n'est pas une tranche de décodage.
+
+| relevé | avant | après |
+| --- | --- | --- |
+| instructions du corpus | 523 | **526** |
+| cas matériels | 13 148 | **13 220** |
+| cas jugés contre l'émetteur | 12 980 | **13 052** |
+| régions compilées (cibles de `call`) | 9914 | **9930** |
+| régions vraiment refusées | 120 | **97** |
+
+### Le corpus d'abord, et il se régénère à l'octet près
+
+Avant d'y toucher : `cc -O1 -no-pie -o scripts/x86-oracle/oracle
+scripts/x86-oracle/oracle.c scripts/x86-oracle/harness.S`, puis
+`python3 scripts/build-x86-oracle.py Tests/Fixtures/x86-oracle.tsv`, puis `cmp`
+avec la version du dépôt — identique. Les trois programmes ajoutés sont donc la
+seule différence, et pas le bruit d'un processeur différent.
+
+Les trois : quatre `prefetch` encadrés d'additions, les trois barrières
+encadrées de même, et un `prefetch` sur une adresse à 4096 octets de la fenêtre
+— celui-là isole la distinction qui compte, un cœur qui *lirait* vraiment
+l'adresse rendrait autre chose.
+
+Le test tombe alors pour la bonne raison, avant la correction : « le décodeur
+refuse maintenant 3 instructions au lieu d'aucune ».
+
+### Trois cœurs, et deux d'entre eux n'ont rien eu à apprendre
+
+L'émetteur traduisait déjà `Op::Nop`. Le cœur Swift connaissait les deux
+familles depuis le début — `case 0x0D, 0x18...0x1D, 0x1E` et le groupe `0F AE`
+avec son test de `mod`. Seul le décodeur Rust manquait, et c'est **lui** qui a
+dû s'aligner sur les deux autres, pas l'inverse.
+
+Cet alignement a tranché une décision. Le premier jet du bras n'acceptait que
+les quatre `prefetch` nommés par l'architecture et refusait les `nop` réservés
+d'à côté, au motif que le corpus n'en juge aucun — la discipline habituelle,
+n'affirmer que ce qui est mesuré. Mais elle produisait ici un décodeur **plus
+sévère que son jumeau Swift**, c'est-à-dire une quatrième divergence entre les
+cœurs, de la même forme que l'asymétrie du préfixe FS déjà notée. Entre les
+deux disciplines, celle des trois cœurs l'emporte : le bras accepte toute la
+plage `0f 0d`, `0f 18`–`0f 1d`, et le commentaire dit pourquoi.
+
+### `0f ae` demandait l'inverse, et le corpus ne pouvait pas le tenir
+
+Sous le même numéro de `reg`, `0f ae` porte deux instructions différentes selon
+`mod` : en registre une barrière, en mémoire `fxsave`, `fxrstor`, `ldmxcsr`,
+`stmxcsr`, `xsave`, `xrstor`, `clflush`. Se tromper de côté ne perd pas un
+octet — ça exécute silencieusement le contraire de ce que le noyau a écrit.
+
+Et **un corpus ne peut pas tenir un refus**. Une instruction acceptée à tort ne
+figure dans aucun programme, donc rien ne tombe. Le sabotage l'a établi
+plutôt que je le suppose : sur sept mutations, deux ont survécu, dont « la
+barrière accepte aussi la forme mémoire » — le corpus entier reste vert pendant
+que `fxsave` se lit comme un `nop`.
+
+La réponse est un test de décodage, pas un programme de plus : il énumère les
+sept formes mémoire et les deux numéros de registre qui ne nomment aucune
+barrière, et vérifie qu'aucune ne se décode. Seconde passe : 3 sur 3.
+
+### La seconde survivante n'en était pas une
+
+« Le conseil au cache porte son adresse » a survécu au premier tour. Ce n'était
+pas un trou du corpus : `Op::Nop` sort de `execute` à la première ligne, donc
+un champ `memory` attaché ne se lit jamais. La mutation ne changeait aucun
+comportement — elle est **inerte**, pas rescapée. Le nouveau test l'attrape
+quand même, en vérifiant que `memory` est vide : ça tient la propriété au
+niveau du décodage, là où elle est vraie, plutôt qu'au niveau de l'exécution,
+où elle dépend d'un `return` qu'un jour quelqu'un déplacera.
+
+C'est la huitième leçon du sabotage, et elle complète la liste : une mutation
+peut survivre parce que le test est faible, parce qu'elle n'a jamais été
+appliquée — ou parce qu'elle ne fait rien.
+
+### Ce que je ne peux pas dire
+
+Le cœur Swift n'a besoin d'aucun changement, mais je ne l'ai pas exécuté : il
+n'y a pas de chaîne Swift dans ce conteneur — `swift` et `swiftc` sont absents
+— et `WisqUI` est exclu sous Linux. Que les trois cœurs restent d'accord sur
+les trois nouveaux programmes, c'est la CI qui le dira.

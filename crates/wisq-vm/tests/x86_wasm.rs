@@ -602,16 +602,18 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
     // qui a déjà servi une fois — un écart entre les deux cœurs.
     assert!(
-        checked + handed_back > 13140,
+        checked + handed_back > 13210,
         "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
     );
     // **Et un plancher sur les cas réellement jugés, pas seulement sur la
     // somme.** La somme seule laisserait une famille repasser de « comparée »
     // à « rendue » sans que rien ne tombe : le total ne bouge pas, et pourtant
     // le silicium ne juge plus rien de cette famille. La boucle du `rep` a fait
-    // monter ce compte de 12836 à 12980 ; c'est lui qui ne doit pas redescendre.
+    // monter ce compte de 12836 à 12980, puis les conseils au cache et les
+    // barrières mémoire de 12980 à 13052 ; c'est lui qui ne doit pas
+    // redescendre.
     assert!(
-        checked > 12900,
+        checked > 13040,
         "seuls {checked} cas sont jugés contre le silicium : une famille est \
          repassée derrière un retour de main"
     );

@@ -2191,6 +2191,55 @@ Le taux de 97,9 % ne change pas — les régions coupées par le bord restent de
 régions que la sonde n'a pas compilées. Ce qui change est **ce que le chiffre
 désigne**, et donc où regarder ensuite.
 
+### Deux des trois non-opérations sont traduites : 97 refus au lieu de 120
+
+Le tableau du dessus désignait trois familles comme des **non-opérations
+exactes** : `prefetch` (14), `0f ae` (9), `pushf` (7). Les deux premières sont
+faites. `pushf` est laissé de côté volontairement — il ouvre la question du
+modèle de RFLAGS et de IF, qui n'est pas une tranche de décodage.
+
+Ce qu'il a fallu, et c'est le point : **trois cœurs**, pas un.
+
+| cœur | ce qu'il a fallu y faire |
+| --- | --- |
+| corpus matériel | trois programmes de plus, mesurés sur un vrai processeur |
+| décodeur Rust | deux bras : `0f 0d`, `0f 18`–`0f 1d`, et `0f ae` restreint au mode registre |
+| émetteur | **rien** — `Op::Nop` se traduisait déjà |
+| cœur Swift | **rien non plus** — il les connaissait depuis le début |
+
+Le cœur Swift les acceptait déjà, et c'est ce qui a tranché une décision. Le
+premier jet du bras Rust n'acceptait que les quatre `prefetch` que
+l'architecture nomme, et refusait les `nop` réservés d'à côté, au motif que le
+corpus n'en juge aucun. Mais un décodeur plus sévère que son jumeau est une
+**divergence entre les trois cœurs** — la même forme que l'asymétrie du préfixe
+FS, déjà notée et pas encore réglée. Le bras accepte donc toute la plage, comme
+le Swift, et le commentaire dit pourquoi.
+
+`0f ae` demandait l'inverse : de la **sévérité**. Le même numéro de `reg` y
+nomme deux instructions différentes selon `mod` — en registre une barrière,
+en mémoire `fxsave`, `ldmxcsr`, `xrstor`. Se tromper de côté ne perd pas un
+octet, ça exécute silencieusement le contraire de ce que le noyau a écrit.
+Et **le corpus ne peut pas tenir ce refus** : une instruction acceptée à tort
+ne figure dans aucun programme, donc rien ne tombe. Le sabotage l'a montré —
+la mutation « la barrière accepte aussi la forme mémoire » a survécu au corpus
+entier. Un test de décodage la rattrape, et il énumère les sept.
+
+Le relevé, sur le même noyau Alpine : **9930 régions compilées, 186 refusées**,
+dont 89 coupées par le bord — **97 vraiment refusées** au lieu de 120. Le
+corpus passe de 13 148 à **13 220 cas**, les cas jugés de 12 980 à **13 052**,
+les deux cliquets montent avec.
+
+Ce qui reste refuse pour une raison qui n'est pas le décodage : `rdtsc` (11),
+`wrmsr`/`rdmsr` (16), le groupe 7 (8), `pushf` (7), `mov` depuis un registre de
+segment (11). Chacune demande un **modèle** — le temps, les MSR, la table des
+descripteurs — pas un bras de plus.
+
+**Ce que je ne peux pas dire d'ici.** Le cœur Swift n'a besoin de rien, mais je
+n'ai pas pu l'exécuter : il n'y a pas de chaîne Swift dans ce conteneur
+(`swift` et `swiftc` sont absents), et `WisqUI` est exclu sous Linux. Que les
+trois cœurs restent d'accord sur les trois nouveaux programmes, c'est la CI qui
+le dira.
+
 `cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9914
 régions compilées depuis de vraies cibles de `call` du noyau Alpine :
 
