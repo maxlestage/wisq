@@ -10716,3 +10716,63 @@ gel, et à 2²⁰ blocs il vaut bien plus que huit millisecondes. Ce que ça co�
 vraiment ne se mesure pas ici : il faut un appareil.
 
 Nombre de tests : 2230 → 2231.
+
+## L'écran de la page : le canvas, et ce que le faux canvas doit refuser
+
+Le cadre vit dans la mémoire de la vue et `vm.paint` sait le convertir. Restait
+à ce que quelque chose l'appelle, et à ce que le résultat aille quelque part.
+
+`desktop::page` porte maintenant un **cadre facultatif** — base, largeur,
+hauteur, ceux du `screen_info` que l'application a rempli. Quand il est donné,
+la page porte un `<canvas>` à ces dimensions et le pilote peint dedans. Le
+cadre traverse le C ABI (`screen_width == 0` veut dire « pas d'écran ») et
+`DesktopTranslator.page`.
+
+### Peindre est séparé de la boucle qui peint
+
+`requestAnimationFrame` ne tourne que dans une vue que le système considère
+comme affichée. Un `WKWebView` construit sans être ajouté à une fenêtre —
+exactement ce que fait `LocalDesktopTests` — pourrait n'en voir aucune, et un
+test qui attendrait une image n'aurait rien à attendre.
+
+`window.wisqPaint()` se laisse donc appeler à la main ; la boucle ne fait que
+l'appeler. Je ne peux pas vérifier d'ici ce que fait rAF dans une vue
+détachée : le dessin est fait pour que la réponse n'ait pas d'importance.
+
+### Le faux canvas refuse deux choses
+
+Un bouchon complaisant dirait oui à tout. Celui-ci refuse :
+
+- **un `putImageData` avec autre chose que l'`ImageData` que ce contexte a
+  rendue.** Un objet `{ data, width, height }` fabriqué à la main marcherait
+  sous un bouchon naïf ; un vrai navigateur lève. Sabotage vérifié.
+- **une image plus grande que le canvas.** Une vraie page la **tronque en
+  silence**, ce qui est pire qu'une erreur : un écran amputé se met sur le
+  compte du noyau.
+- **une boucle emballée.** Une vraie page ne dirait rien d'une boucle
+  d'affichage qui survit à la machine — elle repeindrait le même écran soixante
+  fois par seconde jusqu'à la fermeture. Le faux `requestAnimationFrame` plafonne
+  et le signale.
+
+### Une assertion qui avait l'air d'une garde
+
+Le test vérifiait que `wisqCesser` peint une dernière image en regardant la
+**couleur** de la dernière image. Sabotage : retirer la peinture de
+`wisqCesser`. Le test est resté vert — la boucle d'affichage avait déjà peint le
+même état, et l'assertion sur la couleur était satisfaite sans que `wisqCesser`
+ait rien fait.
+
+Elle compte maintenant les images de part et d'autre de l'appel, et exige
+**exactement une**. C'est la troisième fois de ce lot qu'une assertion sur un
+résultat se révèle satisfiable par un autre chemin que celui qu'elle prétend
+mesurer.
+
+### Le sabotage qui bloquait au lieu d'échouer
+
+Faire survivre la boucle à l'arrêt ne faisait pas échouer le test : il faisait
+tourner Bun sans fin. C'est la preuve que le défaut compte, mais un blocage
+n'est pas une assertion — sur un runner, ça ressemble à une panne
+d'infrastructure. Le plafond du faux `requestAnimationFrame` le transforme en
+« 44 images peintes après l'arrêt », ce qui se lit.
+
+Nombre de tests : 2231 → 2234.

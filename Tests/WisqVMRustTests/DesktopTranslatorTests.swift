@@ -289,6 +289,62 @@ final class DesktopTranslatorTests: XCTestCase {
     func testTheCorrespondenceCostsPagesAboveTheGuestsRAM() {
         XCTAssertGreaterThan(DesktopTranslator.tablePages, 0)
     }
+
+    // MARK: - Le cadre
+
+    /// **Le cadre traverse le pont, et la page le porte.** Sans cadre, pas de
+    /// canvas : une page qui en porterait un sans rien pour le peindre
+    /// montrerait un rectangle vide.
+    func testAPageWithAFrameCarriesItsCanvas() throws {
+        let framed = try XCTUnwrap(
+            DesktopTranslator.page(
+                pages: 16,
+                entry: guestBase,
+                channel: "wisq",
+                screen: .init(base: guestBase, width: 320, height: 240)
+            )
+        )
+        XCTAssertTrue(
+            framed.contains("<canvas id=\"wisqEcran\" width=\"320\" height=\"240\">"),
+            "le canvas doit porter les dimensions du cadre"
+        )
+        XCTAssertTrue(framed.contains("window.wisqPaint"), "et de quoi le peindre")
+
+        let bare = try XCTUnwrap(
+            DesktopTranslator.page(pages: 16, entry: guestBase, channel: "wisq")
+        )
+        XCTAssertFalse(bare.contains("<canvas"), "sans cadre, pas de canvas")
+    }
+
+    /// **Un cadre qui déborderait de la RAM invitée est refusé.** Au-dessus vit
+    /// la correspondance adresse → indice : un tel cadre afficherait la table
+    /// des blocs à l'écran tout en la détruisant. La borne est vérifiée à
+    /// l'octet près, des deux côtés — sans le cas qui passe, un refus qui
+    /// refuserait tout aurait l'air d'une garde.
+    func testAFrameThatWouldOverflowTheGuestsRAMIsRefused() {
+        // Une page de RAM : 65 536 octets, soit exactement 128×128 pixels.
+        XCTAssertNotNil(
+            DesktopTranslator.page(
+                pages: 1, entry: guestBase, channel: "wisq",
+                screen: .init(base: 0, width: 128, height: 128)
+            ),
+            "un cadre qui remplit la RAM au dernier octet tient"
+        )
+        XCTAssertNil(
+            DesktopTranslator.page(
+                pages: 1, entry: guestBase, channel: "wisq",
+                screen: .init(base: 4, width: 128, height: 128)
+            ),
+            "quatre octets plus loin, il déborde"
+        )
+        XCTAssertNil(
+            DesktopTranslator.page(
+                pages: 1, entry: guestBase, channel: "wisq",
+                screen: .init(base: 0, width: 0, height: 128)
+            ),
+            "un cadre sans largeur n'est pas un cadre"
+        )
+    }
 }
 
 /// **La section des imports d'un module, lue octet par octet.**

@@ -256,11 +256,18 @@ int wisq_x86_emit_resolving(const uint8_t *code, size_t len, uint64_t base, size
  * into JavaScript*, so only letters and digits are accepted — the same care as
  * for a VM identifier pasted into a command line.
  *
- * Returns 0 and the page in UTF-8, or -1 when the RAM is not a power of two or
- * the channel name cannot be pasted safely.
+ * The frame is optional, and `screen_width == 0 && screen_height == 0` says so:
+ * a machine judged on its registers has nothing to show. A frame that would
+ * overflow the guest's RAM is refused — the correspondence lives just above it,
+ * so such a frame would display the block table while destroying it.
+ *
+ * Returns 0 and the page in UTF-8, or -1 when the RAM is not a power of two,
+ * the channel name cannot be pasted safely, or the frame does not fit.
  */
 int wisq_desktop_page(uint32_t pages, uint64_t entry, const char *channel,
-                      uint8_t **out_bytes, size_t *out_len);
+                      uint64_t screen_base, uint32_t screen_width,
+                      uint32_t screen_height, uint8_t **out_bytes,
+                      size_t *out_len);
 
 /*
  * What the correspondence occupies *above* the guest's RAM, in pages. The host
