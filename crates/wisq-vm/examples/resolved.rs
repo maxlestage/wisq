@@ -107,7 +107,11 @@ fn main() {
     for (index, module) in plain.iter().enumerate() {
         let path = scratch.join(format!("p{index}.wasm"));
         std::fs::write(&path, module).expect("le module libre");
-        loose.push_str(&format!("[{}n,{:?}],", address(index), path.to_string_lossy()));
+        loose.push_str(&format!(
+            "[{}n,{:?}],",
+            address(index),
+            path.to_string_lossy()
+        ));
     }
     for (index, module) in modules.iter().enumerate() {
         let path = scratch.join(format!("r{index}.wasm"));
@@ -270,7 +274,10 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
     println!("un changement de région, résolu dans le **module** : {ns:.1} ns");
     println!("  soit **{:.1} fois moins**", by_host / ns);
     println!();
-    println!("  la mesure du module, refaite : {again:.1} ns — {:.0} % d'écart, et c'est le", (again - ns).abs() / ns * 100.0);
+    println!(
+        "  la mesure du module, refaite : {again:.1} ns — {:.0} % d'écart, et c'est le",
+        (again - ns).abs() / ns * 100.0
+    );
     println!("  tremblement de l'instrument. Les valeurs absolues bougent beaucoup avec la");
     println!("  charge de la machine : ce banc a rendu de 125 à 190 ns pour la forme hôte");
     println!("  selon les jours. **C'est le rapport qui tient, pas les nanosecondes** — et");
