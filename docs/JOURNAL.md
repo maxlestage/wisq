@@ -10487,3 +10487,43 @@ une chaîne contre quatre mille nombres à emballer.
 **Ce second compromis n'est pas mesuré**, et ne peut pas l'être d'ici : il
 demande un vrai `WKWebView`. C'est écrit comme tel dans le code, à côté du
 choix, pour que personne ne le prenne pour un chiffre.
+
+## La raison s'arrêtait au bord du C ABI
+
+Un trou dans ce que je venais de construire, trouvé en commençant le
+`WKWebView` : la tranche d'avant a donné une raison à l'émetteur —
+`MayBeCut`, `CannotDecode` — mais `wisq_x86_emit_resolving` rend toujours 0 ou
+−1. L'application ne pouvait donc pas apprendre « il m'en faut plus », et la
+vue n'aurait jamais redemandé. J'avais posé la moitié d'un mécanisme et écrit
+l'autre moitié dans `host.js` sans que rien ne les relie.
+
+Ça ne s'est pas vu parce que les deux moitiés ont été éprouvées séparément et
+que chacune tenait : le test Rust vérifie que l'émetteur distingue les deux
+refus, le test JavaScript vérifie que la vue sait redemander. Personne ne
+vérifiait que l'un pouvait dire à l'autre lequel des deux c'était.
+
+**Trois issues traversent maintenant** : `WISQ_X86_TRANSLATED`,
+`WISQ_X86_REFUSED`, `WISQ_X86_NEEDS_MORE`. Côté Swift, `resolvingRegion` ne
+rend plus un `Data?` mais un `Translation` à trois cas — un `Optional` ne peut
+pas porter trois réponses, et le faire porter par une valeur sentinelle aurait
+été la même faute sous un autre nom.
+
+### Le test C avait tort, et c'est le code qui avait raison
+
+Le programme C attendait qu'un octet inconnu soit un refus franc. Il a échoué :
+`INVALID` fait **un seul octet**, et à un octet du bord, l'émetteur ne *peut
+pas* distinguer une coupe d'une instruction inconnue — il demande donc
+davantage, ce qui est la bonne réponse.
+
+C'est la deuxième fois de la journée que j'écris une attente fausse sur ce
+seuil, après le décalage d'un du test unitaire. Les deux fois, le test l'a dit.
+Le programme C vérifie maintenant les deux côtés : le même octet inconnu avec
+quinze octets de marge est un refus franc, et un octet de moins redevient une
+demande.
+
+### Ce que le sabotage a établi
+
+Cinq sur cinq, dont celui qui compte vraiment : **changer la constante du
+header sans changer Rust fait tomber le programme C**. Le même nombre est
+déclaré dans deux fichiers et deux langages, et il ne peut plus diverger en
+silence — c'est exactement la faute que ce dépôt a déjà payée ailleurs.
