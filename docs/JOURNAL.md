@@ -10923,3 +10923,43 @@ Bougent : tout ce que `LocalDesktopTests` prétendait tenir. Que la machine
 tourne dans un vrai `WKWebView`, que `place` pose bien ses octets, que `paint`
 rende un compte de pixels, que les refus tombent à la construction. Ces
 comportements sont **écrits et typés, jamais exécutés**.
+
+## Faire tourner ces tests, et une garde qui n'en était pas une
+
+`Cœur (Apple)` gagne deux étapes : construire le cœur Rust — sans lui,
+`Package.swift` retire la cible qui porte le bureau local — puis lancer
+`swift test --filter LocalDesktopTests` **sans** `WISQ_SWIFT_CORE`. C'est le
+seul job qui puisse les exécuter : Linux n'a pas WebKit, et `App iOS` construit
+sans lancer les tests du paquet.
+
+### La garde que j'ai écrite, et qui ne gardait rien
+
+J'avais écrit dans le commentaire : « le filtre est aussi la garde —
+`swift test --filter` échoue quand il ne trouve rien, donc si la cible
+disparaît à nouveau, ce job rougit au lieu de passer en silence ».
+
+Essayé sous Linux, où ces tests n'existent pas :
+
+```
+warning: No matching test cases were run
+Executed 0 tests, with 0 failures
+exit=0
+```
+
+**Il sort avec zéro.** L'étape serait donc passée en silence le jour où la
+cible redisparaîtrait — c'est-à-dire le mode de panne exact qu'elle existe pour
+empêcher. Trente secondes à vérifier, et la garde entière tenait sur une phrase
+que je venais d'inventer.
+
+C'est la deuxième fois en une heure : la première était de croire qu'un job
+vert jugeait ce qu'il ne compilait pas. Le `grep` sur
+« No matching test cases were run » est la vraie garde ; le filtre n'est qu'un
+filtre.
+
+### Ce que ce job ne peut pas encore promettre
+
+Un `WKWebView` dans un `swift test` en ligne de commande sur macOS n'a ni
+`NSApplication` ni bundle d'application. Rien ici ne dit s'il fonctionne dans
+ces conditions. **Si ces tests échouent sur le runner, c'est un résultat à
+écrire, pas à contourner en retirant le test** : ce serait précisément revenir
+à l'état qu'on vient de corriger, mais en connaissance de cause.

@@ -164,7 +164,47 @@ jobs:
         env:
           # No Rust core here: this job is for the protocol and platform layers,
           # and the two interpreters are already compared on Linux.
+          #
+          # **Ce que cette variable coûtait, et que personne n'avait vu.**
+          # `WISQ_SWIFT_CORE=1` met `rustCoreEnabled = false` dans
+          # `Package.swift`, ce qui ne se contente pas de choisir un cœur : ça
+          # **retire la cible `WisqVMRust` et sa cible de tests**. Or
+          # `LocalDesktop.swift` vit là, derrière `canImport(WebKit)` — donc
+          # absent sous Linux, et absent ici. Ses tests n'étaient exécutés par
+          # aucun job, pendant que cinq descriptions de pull request
+          # affirmaient que ce job-ci les jugeait. Le vert venait de ce qu'il
+          # ne les compilait pas.
           WISQ_SWIFT_CORE: '1'
+
+      # **Et l'autre moitié, celle que la variable ci-dessus enlève.**
+      #
+      # Le cœur Rust d'abord : `Package.swift` cherche `libwisq_vm.a` dans
+      # `target/release`, et s'arrête avec des instructions s'il ne l'y trouve
+      # pas. Ce n'est pas le cœur qu'on veut éprouver ici — il l'est déjà sous
+      # Linux — c'est ce qu'il faut pour que la cible qui porte le bureau local
+      # existe.
+      - name: Le cœur Rust, parce que sans lui la cible du bureau n'existe pas
+        run: cargo build --release -p wisq-vm
+
+      # **Le seul job qui puisse exécuter ça.** `LocalDesktopTests` fait tourner
+      # un vrai `WKWebView` : Linux n'a pas WebKit, et l'`App iOS` construit
+      # sans lancer les tests du paquet.
+      #
+      # **Le filtre seul ne garde rien, et c'est vérifié plutôt que supposé.**
+      # J'avais d'abord écrit ici que `swift test --filter` échoue quand il ne
+      # trouve rien. Essayé sous Linux, où ces tests n'existent pas : il
+      # imprime « warning: No matching test cases were run », exécute zéro test
+      # et **sort avec 0**. Cette étape serait donc passée en silence le jour
+      # où la cible redisparaîtrait — le mode de panne même qu'elle existe pour
+      # empêcher. D'où le `grep` : c'est lui la garde, pas le filtre.
+      - name: Le bureau local, dans un vrai WKWebView
+        run: |
+          set -o pipefail
+          swift test --filter LocalDesktopTests 2>&1 | tee "$RUNNER_TEMP/bureau.log"
+          if grep -q "No matching test cases were run" "$RUNNER_TEMP/bureau.log"; then
+            echo "::error::LocalDesktopTests introuvable : la cible a disparu, et swift test sort quand même avec 0."
+            exit 1
+          fi
 
   lint:
     name: Lint
