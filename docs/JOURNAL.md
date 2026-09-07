@@ -10152,3 +10152,58 @@ démonstration du défaut, mais c'est aussi la trahison du sabotage numéro
 quatre sous une autre forme — un test qui boucle au lieu de tomber. Le harnais
 a son délai par exécution ; un test qui pend, lui, bloque simplement la suite.
 Il vaut mieux le savoir avant de le lancer que pendant.
+
+## Le C ABI du bureau : deux fonctions, pas une
+
+L'application appellera l'émetteur par le C ABI. Il manquait deux choses, et la
+seconde ne s'est vue qu'en la cherchant.
+
+**`wisq_desktop_page`** rend la page que la vue charge : la boucle hôte, le
+pont vers l'application, l'état de départ. Attendue.
+
+**`wisq_x86_emit_resolving`** ne l'était pas. `wisq_x86_emit_region` existe
+depuis des semaines, mais elle rend la forme *historique* — une région seule,
+qui rend la main dès qu'elle sort d'elle-même. Le bureau a besoin de la forme
+**liée et confinée** : blocs dans la table commune à partir d'un emplacement,
+adresses repliées dans une RAM en puissance de deux, correspondance juste
+au-dessus. Sans elle, l'application aurait traduit la mauvaise chose et
+l'aurait découvert sur un téléphone.
+
+Une troisième, minuscule : `wisq_desktop_table_pages`, parce que l'hôte doit
+ajouter la place de la correspondance à la mémoire qu'il crée. Zéro ferait
+piéger le module au premier saut vers une autre région, et un piège
+WebAssembly est sans retour.
+
+### Ce que le sabotage a corrigé dans le test, pas dans le code
+
+Le programme C vérifiait que la forme qui résout **diffère de la forme
+historique**. Ça paraît suffisant et ça ne l'est pas : les deux diffèrent de
+toute façon, quels que soient l'emplacement et la RAM demandés. Le sabotage
+« l'emplacement demandé est ignoré » — passer zéro à la place de `slot` — y a
+survécu.
+
+Ce qu'il fallait est un **couple** : deux emplacements différents doivent
+donner deux modules différents ; deux tailles de RAM aussi. Une région posée au
+mauvais endroit écrase les blocs de sa voisine, en silence, et c'est
+exactement le genre de faute que la tranche de la correspondance a déjà payée
+une fois.
+
+Huit sabotages sur huit après ça.
+
+### Une seule cession de tampon
+
+Les trois fonctions qui rendent des octets passent maintenant par le même
+`hand_back`, et se libèrent toutes par `wisq_x86_free_module` : c'est la même
+allocation, et trois copies de la même cession finiraient par ne plus se
+ressembler. L'instantané de machine garde la sienne — il se libère par
+`wisq_vm_free_snapshot`, et deux durées de vie qui partagent un chemin sont une
+invitation à se tromper de fonction de libération.
+
+### Ce qui reste, et c'est tout ce qui reste
+
+Le Swift : charger la page dans un `WKWebView`, déclarer le gestionnaire de
+messages, répondre aux demandes de traduction, recevoir les pixels. **Rien de
+ça ne se vérifie depuis ce conteneur** — `swift` et `swiftc` sont absents,
+`WisqUI` est exclu sous Linux. Tout ce qui pouvait être éprouvé ici l'est
+maintenant : l'émetteur contre le silicium, la boucle hôte sous JavaScriptCore,
+la page et son pilote sous un pont bouchonné, et le C ABI par un programme C.

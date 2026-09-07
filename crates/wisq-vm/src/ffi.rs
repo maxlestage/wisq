@@ -13,6 +13,7 @@
 //! all: bytes in, bytes out, and four numbers. It is not a machine, and the
 //! comment above it says why that distinction matters.
 
+use crate::desktop;
 use crate::machine::{Handle, Machine, Outcome};
 use crate::snapshot::SnapshotError;
 use crate::x86_wasm::{Module, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RIP_SLOT};
@@ -446,12 +447,115 @@ pub unsafe extern "C" fn wisq_x86_emit_region(
     let Some(module) = Module::region(region, base, entry) else {
         return -1;
     };
-    let mut module = module.into_boxed_slice();
-    let (pointer, len) = (module.as_mut_ptr(), module.len());
-    std::mem::forget(module);
+    hand_back(module, out_bytes, out_len);
+    0
+}
+
+/// **La forme que le bureau local a vraiment besoin de traduire.**
+///
+/// `wisq_x86_emit_region` rend la forme historique : une région seule, qui
+/// rend la main dès qu'elle sort d'elle-même. Celle-ci est **liée** — ses blocs
+/// se posent dans la table commune de l'hôte, à partir de `slot` — et
+/// **confinée** : les adresses de l'invité sont repliées dans `pages` pages de
+/// 64 Kio, ce qui met la correspondance adresse → indice juste au-dessus, hors
+/// de sa portée. Le module la lit lui-même, et passe d'une région à l'autre
+/// sans repasser par l'application.
+///
+/// `pages` doit être une **puissance de deux** : le repli se fait par un
+/// masque, qui ne décrit un intervalle qu'à cette condition. Sinon, refus —
+/// comme pour une région que l'émetteur ne sait pas traduire.
+///
+/// L'hôte doit fournir une mémoire d'au moins `pages + wisq_desktop_table_pages()`
+/// pages, et une table d'au moins `slot` plus les blocs de la région. Un module
+/// à qui il en manque **ne démarre pas**, ce qui est bruyant ; s'il démarrait,
+/// il piégerait au premier saut, et un piège WebAssembly est sans retour.
+///
+/// # Safety
+/// `code` must be valid for reading `len` bytes, and `out_bytes` and `out_len`
+/// must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_x86_emit_resolving(
+    code: *const u8,
+    len: usize,
+    base: u64,
+    entry: usize,
+    slot: u32,
+    pages: u32,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if code.is_null() || out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let region = std::slice::from_raw_parts(code, len);
+    let Some(module) = Module::resolving(region, base, entry, slot, pages) else {
+        return -1;
+    };
+    hand_back(module, out_bytes, out_len);
+    0
+}
+
+/// **La page que l'application charge dans sa vue.**
+///
+/// Elle porte la boucle hôte, le pont vers l'application et l'état de départ
+/// de la machine. `channel` nomme le gestionnaire de messages que
+/// l'application déclare ; il est **recollé dans du JavaScript**, donc seules
+/// les lettres et les chiffres sont acceptés — la même précaution que pour un
+/// identifiant de VM recollé dans une ligne de commande.
+///
+/// Rend 0 et la page en UTF-8, ou -1 si la RAM n'est pas une puissance de deux
+/// ou si le nom du canal ne peut pas être recollé sans danger. Le tampon se
+/// libère par `wisq_x86_free_module`, comme un module : c'est la même
+/// allocation, et une seconde fonction identique ne serait que du bruit.
+///
+/// # Safety
+/// `channel` must be a NUL-terminated C string, and `out_bytes` and `out_len`
+/// must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_desktop_page(
+    pages: u32,
+    entry: u64,
+    channel: *const c_char,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if channel.is_null() || out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let Ok(name) = std::ffi::CStr::from_ptr(channel).to_str() else {
+        return -1;
+    };
+    let Ok(page) = desktop::page(pages, entry, name) else {
+        return -1;
+    };
+    hand_back(page.into_bytes(), out_bytes, out_len);
+    0
+}
+
+/// Ce que la correspondance occupe **au-dessus** de la RAM de l'invité, en
+/// pages. L'hôte doit l'ajouter à la taille de la mémoire qu'il crée.
+#[no_mangle]
+pub extern "C" fn wisq_desktop_table_pages() -> u32 {
+    crate::x86_wasm::TABLE_PAGES
+}
+
+/// Céder un tampon à l'appelant, à charge pour lui de le rendre par
+/// `wisq_x86_free_module`. Les trois fonctions qui rendent des octets au
+/// traducteur passent par ici — trois copies de la même cession finiraient par
+/// ne plus se ressembler.
+///
+/// L'instantané de machine, lui, garde la sienne : il se libère par
+/// `wisq_vm_free_snapshot`, et deux durées de vie différentes qui partagent un
+/// chemin sont une invitation à se tromper de fonction de libération.
+///
+/// # Safety
+/// `out_bytes` and `out_len` must be valid for writing.
+unsafe fn hand_back(bytes: Vec<u8>, out_bytes: *mut *mut u8, out_len: *mut usize) {
+    let mut bytes = bytes.into_boxed_slice();
+    let (pointer, len) = (bytes.as_mut_ptr(), bytes.len());
+    std::mem::forget(bytes);
     *out_bytes = pointer;
     *out_len = len;
-    0
 }
 
 /// Releases a module from `wisq_x86_emit_region`.
