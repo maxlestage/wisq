@@ -80,6 +80,43 @@ final class WebKitBenchTests: XCTestCase {
                        "et ne doit surtout pas conclure à la place de la mesure")
     }
 
+    /// **La question des deux mémoires est portée à côté du débit, pas dedans.**
+    ///
+    /// Elle ne parle pas de vitesse : elle décide de *où* peut vivre la table
+    /// qui rendrait l'enchaînement rapide. La correspondance adresse → indice
+    /// ne peut pas tenir dans la mémoire de l'invité — un noyau qui écrit au
+    /// mauvais endroit la détruirait, exactement comme il écrasait RCX avant
+    /// que les registres n'en sortent. Il lui faut une seconde mémoire.
+    ///
+    /// Un « non » n'arrête pas le bureau, et la phrase doit le dire : il ferme
+    /// un chemin et en laisse un autre, plus lourd.
+    func testTheTwoMemoriesQuestionIsCarriedBesideTheThroughputNotInsideIt() {
+        let accepted = WebKitBench.judge(
+            mips: 400, bridgeMilliseconds: 0.5,
+            instructions: 160_000_000, expected: 160_000_000, multiMemory: true)
+        guard case .compiles(let reading) = accepted else {
+            return XCTFail("400 MIPS compile : \(accepted)")
+        }
+        XCTAssertTrue(reading.multiMemory, "la réponse doit survivre au jugement")
+
+        let refused = WebKitBench.judge(
+            mips: 400, bridgeMilliseconds: 0.5,
+            instructions: 160_000_000, expected: 160_000_000, multiMemory: false)
+        guard case .compiles(let without) = refused else {
+            return XCTFail("le débit ne dépend pas des mémoires : \(refused)")
+        }
+        XCTAssertFalse(without.multiMemory)
+        XCTAssertEqual(reading.mips, without.mips,
+                       "et elle ne doit pas changer le débit d'un iota")
+
+        XCTAssertTrue(WebKitBench.multiMemorySentence(true).contains("hors de portée"),
+                      "un oui dit ce qu'il ouvre")
+        let no = WebKitBench.multiMemorySentence(false)
+        XCTAssertTrue(no.contains("pas un mur"), "un non ne doit pas se lire comme une fin : \(no)")
+        XCTAssertTrue(no.contains("trois cœurs"),
+                      "et doit nommer ce que l'autre chemin coûte : \(no)")
+    }
+
     /// **L'appareil peut refuser le module, et c'est une réponse.** Le module
     /// de l'émetteur importe 768 Mio de RAM invitée ; le module écrit à la main
     /// qu'il remplace en déclarait deux pages et ne pouvait rien refuser. Ranger
