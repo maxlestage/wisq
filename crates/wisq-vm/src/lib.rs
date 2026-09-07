@@ -12,6 +12,7 @@ pub mod core;
 pub mod desktop;
 pub mod dtb;
 pub mod ffi;
+pub mod kernel_image;
 pub mod machine;
 pub mod snapshot;
 pub mod store;

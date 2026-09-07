@@ -1,11 +1,47 @@
 // Combien du vrai noyau le compilateur accepte-t-il ?
 use std::fs;
+use wisq_vm::kernel_image::{recognise, KernelImage};
 use wisq_vm::x86::{decode, Op};
 use wisq_vm::x86_wasm::{Module, Refused, Survey};
 
 fn main() {
     let path = std::env::args().nth(1).expect("le chemin du noyau");
     let bytes = fs::read(&path).expect("le noyau");
+
+    // **Un nombre faux qui ressemble à un nombre est pire qu'un refus.**
+    //
+    // Lancé sur le `vmlinuz-lts` d'Alpine tel qu'il se télécharge, cet outil a
+    // rendu 106 entrées de fonction et 6,6 % de régions compilées — contre
+    // 10 116 et 98,2 % sur la charge utile décompressée du **même** fichier.
+    // Rien n'avait régressé : il décodait du gzip comme si c'était du x86. Un
+    // `vmlinuz` de distribution est un bzImage, et les octets qui suivent son
+    // talon d'amorçage sont des données.
+    match recognise(&bytes) {
+        KernelImage::Compressed { how, at } => {
+            eprintln!(
+                "{path} est un bzImage : le noyau y est compressé en {}, à partir de l'octet {at}.",
+                how.name()
+            );
+            eprintln!("Mesurer ces octets décoderait une archive comme du code, et rendrait un chiffre qui n'en est pas un.");
+            eprintln!();
+            eprintln!("Extraire la charge utile d'abord, par exemple :");
+            eprintln!(
+                "  python3 -c 'import zlib,sys; d=open(sys.argv[1],\"rb\").read()[{at}:]; \\"
+            );
+            eprintln!("    open(sys.argv[2],\"wb\").write(zlib.decompressobj(16+zlib.MAX_WBITS).decompress(d))' \\");
+            eprintln!("    {path} vmlinux.bin");
+            std::process::exit(2);
+        }
+        KernelImage::CompressedUnknown => {
+            eprintln!("{path} est un bzImage dont la compression n'est pas reconnue.");
+            eprintln!("Ses octets ne sont pas du code : les mesurer ne dirait rien.");
+            std::process::exit(2);
+        }
+        // Un ELF porte son code tel quel. « Autre chose » est laissé passer :
+        // cet outil sert aussi à mesurer des fragments extraits à la main, qui
+        // n'ont ni en-tête ELF ni talon d'amorçage.
+        KernelImage::Elf | KernelImage::Unknown => {}
+    }
     // Le texte du noyau : on part du début et on désassemble linéairement pour
     // compter, puis on compile des régions depuis chaque début de bloc.
     let mut at = 0usize;
