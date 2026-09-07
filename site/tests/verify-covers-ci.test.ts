@@ -156,6 +156,17 @@ const GATES: Record<string, Verdict> = {
       "c'est le même `swift test`, sur macOS, pour le code derrière `canImport` — " +
       "ImageIO et Security n'existent pas sur Linux, donc rien à lancer ici",
   },
+  "core-apple › Le cœur Rust, parce que sans lui la cible du bureau n'existe pas": {
+    verify: /cargo build --release/,
+  },
+  "core-apple › Le bureau local, dans un vrai WKWebView": {
+    absent:
+      "`LocalDesktopTests` fait tourner un vrai WKWebView, qui n'existe pas sous " +
+      "Linux : `canImport(WebKit)` y est faux, et ces tests n'y sont même pas " +
+      "compilés. C'est la seule étape de toute la CI que rien ne peut reproduire " +
+      "ici, et c'est aussi la seule qui les exécute — elles ne l'étaient nulle part " +
+      "jusqu'au 7 septembre",
+  },
 
   // --- ci.yml, job « lint » ---------------------------------------------------
   "lint › Install SwiftLint": { absent: "installe l'outil ; verify.sh dit comment l'obtenir" },
