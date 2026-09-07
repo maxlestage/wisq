@@ -835,6 +835,7 @@ impl Module {
                         | Op::Call
                         | Op::CallIndirect
                         | Op::Return
+                        | Op::FarReturn
                         | Op::Undefined
                 ) {
                     continue;
@@ -922,7 +923,9 @@ impl Module {
                         survey.repeats += 1;
                     }
                     Op::Undefined => survey.always += 1,
-                    Op::Return | Op::JumpIndirect | Op::CallIndirect => survey.perhaps += 1,
+                    Op::Return | Op::FarReturn | Op::JumpIndirect | Op::CallIndirect => {
+                        survey.perhaps += 1
+                    }
                     _ => {}
                 }
             }
@@ -964,6 +967,7 @@ impl Module {
                         | Op::Call
                         | Op::CallIndirect
                         | Op::Return
+                        | Op::FarReturn
                         | Op::Undefined
                 );
                 let displacement = step.imm as i64;
@@ -977,8 +981,11 @@ impl Module {
                 // les octets d'après ne sont pas atteignables par cette route ;
                 // les mettre dans la file ferait décoder, et refuser, ce qu'un
                 // noyau range là — souvent des données de sa table de bogues.
-                let falls = !matches!(step.op, Op::Jump(None) | Op::Return | Op::Undefined);
-                let jumps = !matches!(step.op, Op::Return | Op::Undefined);
+                let falls = !matches!(
+                    step.op,
+                    Op::Jump(None) | Op::Return | Op::FarReturn | Op::Undefined
+                );
+                let jumps = !matches!(step.op, Op::Return | Op::FarReturn | Op::Undefined);
                 steps.push(step);
                 if !ends {
                     continue;
@@ -1519,7 +1526,12 @@ impl Module {
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
         if matches!(
             step.op,
-            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect | Op::CallIndirect | Op::Undefined
+            Op::Jump(_)
+                | Op::LoopWhile
+                | Op::JumpIndirect
+                | Op::CallIndirect
+                | Op::FarReturn
+                | Op::Undefined
         ) {
             return None;
         }
@@ -1690,7 +1702,11 @@ impl Module {
                 Op::PortIn | Op::PortOut => unreachable!(
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
                 ),
-                Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister => {
+                Op::ReadTimestamp
+                | Op::CpuId
+                | Op::ReadModelRegister
+                | Op::WriteModelRegister
+                | Op::FarReturn => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -2059,6 +2075,9 @@ impl Module {
     fn carry_and_overflow(step: &Decoded, _mask: u64, sign: u64, b: &mut Body) {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
+            Op::FarReturn => {
+                unreachable!("un retour lointain change le bloc : `translate` le rend au compilateur de région")
+            }
             Op::PortIn | Op::PortOut => {
                 unreachable!(
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
@@ -4044,6 +4063,88 @@ mod port_tests {
                 }
                 other => panic!("{what} doit être refusée en étant nommée, pas {other:?}"),
             }
+        }
+    }
+
+    /// **Un retour lointain termine son bloc, et proprement.**
+    ///
+    /// Ce test existe parce que le précédent ne pouvait pas l'attraper : dans la
+    /// suite d'entrée du noyau, `wrmsr` refuse à l'octet 35 et **masque** tout
+    /// ce qui vient après. Une assertion qui ne peut pas voir le défaut qu'elle
+    /// prétend garder n'est pas une garde — un sabotage l'a montré, en
+    /// survivant.
+    ///
+    /// La suite est donc minuscule et sans rien d'intraduisible avant le
+    /// `lretq`. Elle tient les deux moitiés :
+    ///
+    /// - le retour lointain n'est **pas envoyé au traducteur d'instructions** —
+    ///   il changerait le bloc, pas l'état, et le traducteur refuserait ;
+    /// - il **termine** son bloc — l'octet indécodable qui le suit n'est pas
+    ///   atteignable par cette route, et le lire ferait refuser une région
+    ///   parfaitement bonne. Un noyau range souvent des données juste après.
+    #[test]
+    fn a_far_return_ends_its_block_without_reaching_the_instruction_translator() {
+        let after_a_far_return: &[u8] = &[
+            0x48, 0x89, 0xc3, // mov %rax,%rbx
+            0x48, 0xcb, // lretq
+            0x62, // un octet que le décodeur ne lit pas — et n'a pas à lire
+        ];
+        assert!(
+            Module::region_or_why(after_a_far_return, 0x1000, 0).is_ok(),
+            "la région s'arrête au retour lointain, sans toucher à ce qui suit"
+        );
+    }
+
+    /// **Les treize instructions du point d'entrée se lisent toutes — et ce qui
+    /// reste n'est plus de la lecture.**
+    ///
+    /// Alpine 6.6.134, jusqu'à son `lretq` compris. Avant, le retour lointain
+    /// n'était pas lisible du tout et l'octet 52 était le bout du monde.
+    ///
+    /// **Ce que ce test refuse de laisser confondre.** Ce qui arrête maintenant
+    /// la région est `wrmsr`, à l'octet 35 : le décodeur le **lit**, l'émetteur
+    /// ne sait pas le **produire**. `CannotDecode` et `CannotTranslate` ne
+    /// demandent pas le même travail — l'un est une table à compléter, l'autre
+    /// une sémantique à écrire — et les confondre ferait croire qu'il reste des
+    /// octets illisibles là où il reste une décision à prendre.
+    ///
+    /// Vérifiable sans l'image de 34 Mio, qui ne peut pas vivre dans le dépôt.
+    #[test]
+    fn the_kernels_entry_reads_whole_and_stops_on_a_semantics_not_a_byte() {
+        let entry: &[u8] = &[
+            0x49, 0x89, 0xf7, // mov %rsi,%r15
+            0x48, 0x8d, 0x25, 0xbe, 0x3e, 0x40, 0x01, // lea …,%rsp
+            0x48, 0x8d, 0x3d, 0x5f, 0xff, 0xff, 0xff, // lea …,%rdi
+            0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx
+            0x48, 0x8d, 0x15, 0x53, 0x9f, 0x9e, 0x01, // lea …,%rdx
+            0x89, 0xd0, // mov %edx,%eax
+            0x48, 0xc1, 0xea, 0x20, // shr $0x20,%rdx
+            0x0f, 0x30, // wrmsr
+            0xe8, 0xa6, 0x05, 0x00, 0x00, // call …
+            0x6a, 0x10, // push $0x10
+            0x48, 0x8d, 0x05, 0x03, 0x00, 0x00, 0x00, // lea 3(%rip),%rax
+            0x50, // push %rax
+            0x48, 0xcb, // lretq
+        ];
+        assert_eq!(entry.len(), 54, "les treize instructions du point d'entrée");
+        // Les treize se lisent, sans trou.
+        let (mut at, mut read) = (0usize, 0usize);
+        while at < entry.len() {
+            let step = crate::x86::decode(&entry[at..])
+                .unwrap_or_else(|| panic!("l'octet {at} ne se décode pas"));
+            at += step.length.max(1);
+            read += 1;
+        }
+        assert_eq!(read, 13, "treize instructions");
+        assert_eq!(at, entry.len(), "et pas un octet de reste");
+
+        // Et ce qui reste est une sémantique, pas un octet.
+        match Module::region_or_why(entry, 0x1000090, 0) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(
+                at, 35,
+                "`wrmsr` : lu par le décodeur, pas produit par l'émetteur"
+            ),
+            other => panic!("le refus attendu est une traduction, pas {other:?}"),
         }
     }
 
