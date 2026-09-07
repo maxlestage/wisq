@@ -10051,3 +10051,54 @@ La moitié Swift n'existe pas encore et rien d'elle ne se vérifierait d'ici :
 traduire par le C ABI quand la vue le demande, charger `web/host.js` dans un
 `WKWebView`, recevoir les pixels. C'est la tranche suivante, et c'est la CI
 d'Apple qui la jugera.
+
+## La page du bureau s'assemble en Rust, pour qu'un moteur JavaScript puisse la juger
+
+`wisq_vm::desktop::page` habille la boucle hôte de ce qu'il faut pour vivre
+dans un `WKWebView` : un pont vers l'application, l'état de départ de la
+machine, et de quoi la lancer.
+
+**Pourquoi en Rust plutôt qu'en Swift.** Ce sont des chaînes de caractères,
+donc ça se teste — et ça ne se teste que là où il y a un moteur JavaScript.
+Écrit en Swift, ce code n'aurait été exécuté par rien avant un envoi
+TestFlight. Écrit ici, son pilote tourne sous Bun avec
+`window.webkit.messageHandlers` bouchonné, et le test fait tourner **la chaîne
+que l'application chargera**, pas une imitation : elle est extraite de la même
+fonction et comparée à ce que `page` produit.
+
+Le contrat tient en deux messages : la vue demande `{ kind: "traduire", id,
+address, slot }` et l'application rappelle `wisqTranslated(id, octets)` ; la
+vue signale `{ kind: "arrêt", stopped, at }` quand la machine s'arrête. Le
+bouchon répond avec un `setTimeout` de zéro, délibérément : dans l'application
+la réponse ne peut pas arriver dans le même tour de boucle, et un pilote qui en
+dépendrait marcherait ici et nulle part ailleurs.
+
+### Ce que le sabotage a coûté, et ce qu'il a appris
+
+Neuf mutations, et il a fallu deux passages.
+
+**Le survivant du premier tour** : « l'adresse traverse le pont en nombre, pas
+en texte ». Mes adresses de test valaient 0x10000 — un `Number` JavaScript les
+rend exactement. Au-dessus de deux puissance cinquante-trois il perd des bits,
+et un noyau x86-64 vit couramment plus haut. La constante du test est montée à
+0x0100_0000_0000_1000, et la mutation tombe.
+
+**Deux mutations font boucler le pilote au lieu de le faire échouer** : quand
+la promesse de traduction n'est jamais tenue, `await vm.run()` n'aboutit
+jamais. C'est la quatrième trahison connue du sabotage, et le délai par
+exécution l'attrape — mais à 600 secondes chacune, le harnais tournait une
+demi-heure. À 90 secondes il en met cinq.
+
+**Et une trahison de plus, la neuvième** : arrêter le harnais par un signal
+restaure bien le fichier — les huit signatures étaient revenues, vérifiées une
+par une — mais laissait tourner le `cargo test` détaché et son `bun` bloqué.
+`start_new_session=True` protège le harnais des signaux du terminal ; il faut
+donc tuer le groupe **aussi** dans le gestionnaire de signal, pas seulement
+dans le délai.
+
+### Ce que ça désigne dans le produit, et qui n'est pas fait
+
+Si l'application ne répond jamais à une demande de traduction, la vue se fige
+sans rien dire. Le sabotage l'a montré par accident, mais c'est une panne
+plausible en vrai — l'application tuée par le système, une région énorme. Une
+garde de temps sur `translate` mérite sa tranche.

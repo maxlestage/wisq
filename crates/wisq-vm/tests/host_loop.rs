@@ -456,3 +456,193 @@ console.log([{listing}].map(tableSlot).join(","));
         "la vue et l'émetteur doivent tomber sur les mêmes cases"
     );
 }
+
+/// **La page du bureau, et son pilote exécuté pour de vrai.**
+///
+/// `wisq_vm::desktop::page` habille la boucle hôte de ce qu'il faut pour vivre
+/// dans un `WKWebView` : un pont vers l'application, l'état de départ, et de
+/// quoi lancer la machine. Rien de tout ça ne serait exécuté par quoi que ce
+/// soit avant un envoi TestFlight — sauf ici : un moteur JavaScript en ligne
+/// de commande n'a pas de `WKWebView`, mais il sait parfaitement bouchonner
+/// `window.webkit.messageHandlers`.
+///
+/// Ce que le test fait tourner est **le pilote que l'application chargera**,
+/// pas une imitation : la même chaîne, extraite de la même fonction.
+#[test]
+fn the_pages_driver_talks_to_the_application_and_runs_the_machine() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    // **Une adresse au-dessus de deux puissance cinquante-trois**, et c'est
+    // délibéré : un `Number` JavaScript perd des bits au-delà, alors qu'un
+    // noyau x86-64 vit couramment dans le haut de l'espace d'adressage. Le
+    // pont fait donc traverser l'adresse **en texte**. Avec une adresse
+    // petite, écrire `Number(address)` à la place marcherait aussi bien — un
+    // sabotage y a survécu avant que cette constante ne monte.
+    const BASE: u64 = 0x0100_0000_0000_1000;
+
+    // Deux régions : la première saute dans la seconde, la seconde s'arrête
+    // sur un `ud2`. L'application devra donc répondre trois fois — la
+    // troisième pour l'adresse du `ud2` lui-même.
+    let scratch = std::env::temp_dir().join(format!("wisq-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let programs: [(u64, Vec<u8>); 3] = [
+        (BASE, {
+            let mut code = vec![0x48, 0xff, 0xc2, 0x48, 0xb8];
+            code.extend_from_slice(&(BASE + 0x100).to_le_bytes());
+            code.extend_from_slice(&[0xff, 0xe0]);
+            code
+        }),
+        (BASE + 0x100, vec![0x48, 0xff, 0xc2, 0x0f, 0x0b]),
+        (BASE + 0x103, vec![0x0f, 0x0b]),
+    ];
+    for (index, (address, code)) in programs.iter().enumerate() {
+        for slot in 0..6u32 {
+            let module = Module::resolving(code, *address, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {index}"));
+            let path = scratch.join(format!("page{index}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    // Le pilote tel que la page le porte. Il est extrait plutôt que réécrit :
+    // un test qui exécute une copie ne dit rien de l'original.
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq");
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq").expect("la page");
+    assert!(
+        page.contains(&driver_source),
+        "la page doit porter exactement ce pilote"
+    );
+    assert!(
+        page.contains(wisq_vm::desktop::HOST_SCRIPT),
+        "et la boucle hôte, mot pour mot"
+    );
+
+    let harness = scratch.join("d.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const asked = [];
+// **Le pont bouchonné.** Il fait ce que fera l'application : recevoir un
+// message, traduire, et rappeler la vue. Le décalage est volontaire — un
+// `setTimeout` de zéro — parce que dans l'application la réponse ne peut pas
+// arriver dans le même tour de boucle, et un pilote qui en dépendrait
+// marcherait ici et nulle part ailleurs.
+const stopped = [];
+globalThis.window = globalThis;
+globalThis.webkit = {{
+  messageHandlers: {{
+    wisq: {{
+      postMessage: note => {{
+        if (note.kind === "arrêt") {{ stopped.push(note.stopped + " " + note.at); return; }}
+        asked.push(note.address + ":" + note.slot);
+        setTimeout(() => {{
+          const path = catalogue.get(note.address + ":" + note.slot);
+          const octets = path === undefined ? null : [...readFileSync(path)];
+          window.wisqTranslated(note.id, octets);
+        }}, 0);
+      }},
+    }},
+  }},
+}};
+
+{driver}
+
+const why = await window.wisqRun();
+console.log("arret " + why);
+console.log("demandes " + asked.length);
+console.log("vues " + asked.join(","));
+console.log("rdx " + window.wisqMachine.globals[2].value.toString());
+console.log("postes " + stopped.join("|"));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            driver = driver_source,
+        ),
+    )
+    .expect("le harnais");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&harness)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le harnais n'a pas dit « {label} » :\n{text}"))
+    };
+    // Trois adresses demandées, chacune avec l'emplacement que la vue a
+    // choisi : c'est le contrat que l'application devra tenir.
+    assert_eq!(seen("demandes"), "3", "une traduction par adresse atteinte");
+    assert_eq!(
+        seen("vues"),
+        format!("{}:0,{}:1,{}:2", BASE, BASE + 0x100, BASE + 0x103),
+        "l'adresse **et** l'emplacement traversent le pont"
+    );
+    // Deux `incq %rdx` : les deux régions ont tourné, pas seulement été
+    // traduites.
+    assert_eq!(seen("rdx"), "2", "les deux régions ont calculé");
+    assert_eq!(seen("arret"), "sur place", "le `ud2` arrête la machine");
+    assert_eq!(
+        seen("postes"),
+        format!("sur place {}", BASE + 0x103),
+        "et l'arrêt remonte à l'application par le pont, l'adresse en décimal \
+         comme celle d'une demande de traduction"
+    );
+}
+
+/// **Ce que la page refuse de construire.**
+///
+/// Le nom du canal est recollé dans du JavaScript. Tout ce qui n'est pas une
+/// lettre ou un chiffre pourrait en sortir et devenir du code — la même faute
+/// que l'identifiant de VM recollé dans une ligne de commande, que ce dépôt a
+/// déjà payée une fois.
+#[test]
+fn the_page_refuses_what_it_cannot_paste_safely() {
+    use wisq_vm::desktop::{page, Refusal};
+    assert_eq!(
+        page(3, 0x1000, "wisq"),
+        Err(Refusal::RamIsNotAPowerOfTwo(3)),
+        "la RAM d'un invité confiné est une puissance de deux"
+    );
+    assert_eq!(
+        page(0, 0x1000, "wisq"),
+        Err(Refusal::RamIsNotAPowerOfTwo(0))
+    );
+    for name in ["", "wisq; alert(1)", "wisq.autre", "wisq-2", "a b", "é"] {
+        assert_eq!(
+            page(1, 0x1000, name),
+            Err(Refusal::ChannelIsNotAName(name.to_string())),
+            "« {name} » ne peut pas être recollé dans du JavaScript"
+        );
+    }
+    for name in ["wisq", "w", "canal2"] {
+        assert!(page(1, 0x1000, name).is_ok(), "« {name} » est un nom");
+    }
+    // Et le refus se lit : un message qui ne nomme pas ce qu'il refuse envoie
+    // chercher la cause ailleurs.
+    assert!(
+        Refusal::RamIsNotAPowerOfTwo(3).to_string().contains('3'),
+        "le refus doit nommer le nombre refusé"
+    );
+}
