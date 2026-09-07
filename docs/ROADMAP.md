@@ -2065,7 +2065,7 @@ demande un *indice*, et une région ne connaît pas celui d'une adresse qu'elle
 n'a pas compilée. Aujourd'hui `resolve` compare l'adresse aux blocs de sa propre
 région, connus à la traduction ; avec une table partagée il faudrait une
 correspondance adresse → indice que le module lit lui-même, sans repasser par
-l'hôte — sinon on retombe sur les 192 ns qu'on cherche à éviter.
+l'hôte — sinon on retombe sur les quelque 190 ns qu'on cherche à éviter.
 
 Un module de sonde le fait, à correspondance directe et sans sondage :
 **5,2 ns vus depuis JavaScript**, dont environ trois pour l'appel lui-même. Dans
@@ -2146,8 +2146,58 @@ endroit qui le dira, et c'est à vérifier avant de bâtir dessus.
 
 Ce qui reste : la correspondance elle-même, avec un hachage qui mélange les bits
 bas, et `resolve` qui passe par elle au lieu de la chaîne de comparaisons. C'est
-là que le gain arrive, et c'est là que `--example chain` doit retomber de 192 ns
-à une dizaine.
+là que le gain arrive, et c'est là que `--example chain` doit retomber d'environ
+190 ns à une dizaine.
+
+#### Et la seconde mémoire n'est finalement pas nécessaire
+
+La phrase du dessus — « la correspondance vivra donc dans une seconde mémoire »
+— était juste sur le besoin et trop pressée sur le moyen. Le besoin est **que
+l'invité ne puisse pas l'atteindre**. Une seconde mémoire y répond, au prix
+d'une extension du langage dont rien ne prouve qu'un vrai `WKWebView` l'accepte.
+
+Il y a une porte qui n'a besoin d'aucune extension : **replier chaque adresse
+invitée** par un `et` sur la taille de sa RAM. L'hôte fournit alors une mémoire
+plus grande que ce que le module déclare, et le module ne peut pas dépasser.
+`Module::confined` le fait, un test le montre dans les deux sens sur le même
+programme — la forme libre atteint la page du dessus, la forme confinée retombe
+dedans — et sept sabotages sur sept tombent.
+
+**Ce que ça coûte, et la mesure a failli faire abandonner la piste.**
+`bun scripts/wasm-mask-probe.ts` chronomètre deux formes :
+
+| forme | sans masque | avec masque | écart |
+| --- | --- | --- | --- |
+| l'adresse est un compteur | 0,94 ns | 1,25 ns | **+32 %** |
+| l'adresse vient d'une globale | 1,79 ns | 1,76 ns | **−2 à −3 %** |
+
+Une seule forme mesurée, et c'était la mauvaise : le compteur, que le moteur
+réduit à un pointeur qui avance et que le masque en empêche. **L'émetteur ne
+produit jamais cette forme** — une adresse invitée se recalcule depuis un
+registre, donc depuis une globale, à chaque instruction, y compris dans la
+boucle du `rep`.
+
+Sur la forme qui le concerne, le masque est **reproductiblement plus rapide**
+que son absence, sur trois constructions de chaque et sans chevauchement des
+étendues. L'explication est offerte et non prouvée, faute d'avoir lu le code
+machine engendré : un `et` prouve au moteur que l'adresse tient dans le minimum
+déclaré de la mémoire, qui peut alors retirer *sa* vérification de borne. Le
+masque ne s'ajoute pas au contrôle, il le remplace.
+
+**Un second effet, qui n'est pas un détail.** Sans masque, une adresse hors de
+la RAM fait *piéger* le module, et un piège WebAssembly est sans retour :
+l'émulateur entier s'arrête. Avec le masque elle se replie. Ni l'un ni l'autre
+n'est ce que fait le silicium, qui faute — mais un repli laisse l'hôte vivant.
+
+**Ce que la sonde de l'appareil garde à demander malgré tout.** La question des
+deux mémoires reste posée pour ce qu'elle apprend du moteur d'un vrai iPhone ;
+elle n'est simplement plus sur le chemin critique. Le confinement, lui, ne
+dépend d'aucune extension : aucun moteur ne peut refuser un `i32.and`.
+
+Une contrainte à écrire, parce qu'elle remonte jusqu'au réglage de mémoire de
+l'application : **la RAM d'un invité confiné doit être une puissance de deux**.
+`pages − 1` ne décrit un intervalle qu'à cette condition, et `confined` refuse
+le reste plutôt que de replier de travers.
 
 L'enchaînement est aussi **tenu par un test** : huit régions en anneau, la chaîne
 ne se perd pas, chaque maillon tourne, et l'accumulateur porte à la fin ce qu'un

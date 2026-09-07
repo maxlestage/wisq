@@ -187,6 +187,8 @@ mod code {
     /// la RAM invitée tient sous quatre gigaoctets, et faux au-delà. La
     /// tranche qui dépassera cette limite devra passer en mémoire 64 bits.
     pub const I32_WRAP_I64: u8 = 0xa7;
+    /// Le `et` de trente-deux bits, qui replie une adresse invitée dans sa RAM.
+    pub const I32_AND: u8 = 0x71;
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
@@ -245,9 +247,34 @@ fn as_compare(step: &Decoded) -> Decoded {
 #[derive(Default)]
 struct Body {
     bytes: Vec<u8>,
+    /// **Le masque qui enferme l'invité dans sa RAM**, ou `None` s'il n'y en a
+    /// pas. Voir `Body::guest`.
+    confine: Option<u32>,
 }
 
 impl Body {
+    /// **Le seul chemin par lequel une adresse invitée devient une adresse de
+    /// mémoire linéaire.** Tout accès à la RAM de l'invité passe ici, et c'est
+    /// ce qui rend le confinement possible : un seul endroit à changer, et
+    /// aucun accès qui l'oublie.
+    ///
+    /// L'adresse arrive en `i64` — un registre invité, plus un déplacement.
+    /// `i32.wrap_i64` la ramène aux trente-deux bits que WebAssembly adresse.
+    /// Quand un masque est posé, un `i32.and` la replie dans la RAM : au-delà,
+    /// l'invité retombe dedans au lieu d'atteindre ce qui vit au-dessus.
+    ///
+    /// **Ce que ça coûte, mesuré** : rien, et même un peu moins que rien —
+    /// voir `Module::confined`, qui porte les chiffres.
+    fn guest(&mut self) -> &mut Self {
+        self.op(code::I32_WRAP_I64);
+        if let Some(mask) = self.confine {
+            self.bytes.push(code::I32_CONST);
+            signed(i64::from(mask), &mut self.bytes);
+            self.bytes.push(code::I32_AND);
+        }
+        self
+    }
+
     fn op(&mut self, opcode: u8) -> &mut Self {
         self.bytes.push(opcode);
         self
@@ -283,7 +310,7 @@ impl Body {
     /// Pousser l'adresse effective, en `i32`, prête pour un accès mémoire.
     fn address(&mut self, address: &Address) -> &mut Self {
         self.wide_address(address);
-        self.op(code::I32_WRAP_I64)
+        self.guest()
     }
 
     /// **La même adresse, laissée en `i64`.** La chaîne de bits en a besoin
@@ -314,7 +341,7 @@ impl Body {
     /// globale de travail. La chaîne de bits ne peut pas passer par `Address` :
     /// son adresse dépend d'un registre lu à l'exécution.
     fn load_at(&mut self, slot: usize, width: Width) -> &mut Self {
-        self.load(slot).op(code::I32_WRAP_I64);
+        self.load(slot).guest();
         self.op(match width {
             Width::Byte => code::I64_LOAD8_U,
             Width::Word => code::I64_LOAD16_U,
@@ -328,7 +355,7 @@ impl Body {
 
     /// Et l'écriture qui lui répond.
     fn store_at(&mut self, slot: usize, width: Width, value: impl FnOnce(&mut Body)) -> &mut Self {
-        self.load(slot).op(code::I32_WRAP_I64);
+        self.load(slot).guest();
         value(self);
         self.op(match width {
             Width::Byte => code::I64_STORE8,
@@ -413,7 +440,48 @@ impl Module {
     /// relit. Compiler la région comme si elle vivait à zéro empilerait un
     /// nombre que rien, dans la mémoire de l'invité, ne désigne.
     pub fn region(bytes: &[u8], base: u64, entry: usize) -> Option<Vec<u8>> {
-        Self::build(bytes, base, entry, None)
+        Self::build(bytes, base, entry, None, None)
+    }
+
+    /// **La même région, mais l'invité ne peut plus sortir de sa RAM.**
+    ///
+    /// Chaque adresse invitée est repliée par un `et` sur `pages × 64 Kio − 1`
+    /// avant d'atteindre la mémoire linéaire. `pages` doit être une puissance
+    /// de deux, sans quoi le masque ne décrirait pas un intervalle et la
+    /// fonction rend `None` plutôt qu'un module qui replie de travers.
+    ///
+    /// **À quoi ça sert.** L'hôte peut alors fournir une mémoire *plus grande*
+    /// que ce que le module déclare, et ce qui vit au-dessus est hors de
+    /// portée de l'invité — c'est là que la correspondance adresse → indice
+    /// ira vivre. La feuille de route disait qu'il faudrait une **seconde
+    /// mémoire** pour ça, et que rien ne prouvait qu'un vrai iPhone l'accepte ;
+    /// un masque n'a besoin d'aucune extension du langage.
+    ///
+    /// **Ce que ça coûte, mesuré** : `bun scripts/wasm-mask-probe.ts`. Sur la
+    /// forme que cet émetteur produit — l'adresse vient d'une globale, parce
+    /// qu'elle se recalcule depuis un registre invité à chaque instruction —
+    /// le masque est **deux à trois pour cent plus rapide** que son absence,
+    /// reproductiblement, sur trois constructions de chaque. L'explication
+    /// est offerte et non prouvée : un `et` prouve au moteur que l'adresse
+    /// tient dans le minimum déclaré, qui peut alors retirer *sa* propre
+    /// vérification de borne.
+    ///
+    /// Sur une boucle dont l'adresse est un simple compteur, la même sonde
+    /// rend **+32 %** — le masque empêche le moteur d'en faire un pointeur qui
+    /// avance. Cette forme-là ne sort jamais d'ici, mais elle est mesurée
+    /// quand même : c'est le chiffre qu'on aurait cru si on n'avait mesuré
+    /// qu'une forme, et il aurait fait abandonner la piste.
+    ///
+    /// **Un second effet, qui n'est pas un détail.** Sans masque, une adresse
+    /// hors de la RAM fait *piéger* le module, et un piège WebAssembly est
+    /// sans retour — l'émulateur entier s'arrête. Avec le masque elle se
+    /// replie. Ni l'un ni l'autre n'est ce que fait le silicium, qui faute ;
+    /// mais un repli laisse l'hôte vivant, et un piège non.
+    pub fn confined(bytes: &[u8], base: u64, entry: usize, pages: u32) -> Option<Vec<u8>> {
+        if pages == 0 || !pages.is_power_of_two() {
+            return None;
+        }
+        Self::build(bytes, base, entry, None, Some(pages))
     }
 
     /// **La même région, mais posée dans la table de l'hôte.**
@@ -422,7 +490,7 @@ impl Module {
     /// blocs à partir de `slot`. Deux régions liées à la même table peuvent
     /// alors s'appeler par `call_indirect` sans repasser par l'hôte — et c'est
     /// tout l'enjeu, mesuré avant d'être écrit : un enchaînement par la boucle
-    /// hôte coûte **192 ns**, un `call_indirect` vers un autre module **7,2**.
+    /// hôte coûte **environ 190 ns**, un `call_indirect` vers un autre module **7,2**.
     /// Les deux chiffres viennent de `--example chain` et de
     /// `scripts/wasm-table-probe.ts`.
     ///
@@ -436,10 +504,19 @@ impl Module {
     /// module qui en demande plus qu'elle n'en a ne démarre pas — la même
     /// protection que pour la mémoire, et pour la même raison.
     pub fn linked(bytes: &[u8], base: u64, entry: usize, slot: u32) -> Option<Vec<u8>> {
-        Self::build(bytes, base, entry, Some(slot))
+        Self::build(bytes, base, entry, Some(slot), None)
     }
 
-    fn build(bytes: &[u8], base: u64, entry: usize, shared: Option<u32>) -> Option<Vec<u8>> {
+    fn build(
+        bytes: &[u8],
+        base: u64,
+        entry: usize,
+        shared: Option<u32>,
+        confine: Option<u32>,
+    ) -> Option<Vec<u8>> {
+        // Le masque se dérive du nombre de pages, une fois : `confined` a déjà
+        // vérifié que c'est une puissance de deux.
+        let mask = confine.map(|pages| pages * 65536 - 1);
         let blocks = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
@@ -449,7 +526,10 @@ impl Module {
 
         let mut bodies: Vec<Vec<u8>> = Vec::new();
         for (start, steps) in &blocks {
-            let mut body = Body::default();
+            let mut body = Body {
+                confine: mask,
+                ..Body::default()
+            };
             let mut at = *start;
             for step in steps {
                 // **L'adresse de l'instruction elle-même**, pas celle de la
@@ -478,7 +558,7 @@ impl Module {
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Some(Self::assemble(bodies, shared))
+        Some(Self::assemble(bodies, shared, confine))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -756,7 +836,7 @@ impl Module {
                 // rend la main si elle n'en est pas un.
                 body.store(RIP_SLOT, |b| {
                     b.load(Self::slot(4));
-                    b.op(code::I32_WRAP_I64);
+                    b.guest();
                     b.op(code::I64_LOAD);
                     b.bytes.push(0);
                     b.bytes.push(0);
@@ -815,7 +895,7 @@ impl Module {
     }
 
     /// **Le module : une fonction par bloc, plus la boucle qui les enchaîne.**
-    fn assemble(bodies: Vec<Vec<u8>>, shared: Option<u32>) -> Vec<u8> {
+    fn assemble(bodies: Vec<Vec<u8>>, shared: Option<u32>, confine: Option<u32>) -> Vec<u8> {
         let count = bodies.len();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -852,7 +932,13 @@ impl Module {
         imports.extend_from_slice(b"mem");
         imports.push(0x02);
         imports.push(0x00);
-        unsigned(u64::from(GUEST_PAGES), &mut imports);
+        // **Le minimum déclaré, et pourquoi il suit le confinement.** Sans
+        // masque le module adresse toute la RAM que le corpus attend, donc
+        // `GUEST_PAGES`. Avec masque il ne peut plus dépasser `pages`, et
+        // déclarer davantage mentirait sur ce qu'il touche. L'hôte, lui, reste
+        // libre d'en fournir **plus** : c'est là que vivra ce que l'invité ne
+        // doit pas pouvoir atteindre.
+        unsigned(u64::from(confine.unwrap_or(GUEST_PAGES)), &mut imports);
         // **La table de l'hôte**, quand la région est liée. Le minimum déclaré
         // couvre l'emplacement de cette région et ses blocs : une table plus
         // petite refuse l'instanciation, exactement comme une mémoire trop
@@ -887,7 +973,7 @@ impl Module {
         // **Sa propre table, ou celle de l'hôte.** La forme historique définit
         // la sienne : chaque module a la sienne, et un `call_indirect` ne peut
         // désigner qu'un bloc de sa propre région — passer à la suivante coûte
-        // alors un retour de main, mesuré à 192 ns. La forme liée **importe** la
+        // alors un retour de main, mesuré à environ 190 ns. La forme liée **importe** la
         // table et y pose ses blocs à l'emplacement que l'hôte lui donne, ce qui
         // ouvre la porte à un enchaînement qui ne sort jamais de WebAssembly :
         // 7,2 ns relevés par `scripts/wasm-table-probe.ts`.
@@ -2708,7 +2794,7 @@ impl Module {
         let moves = matches!(step.op, Op::StringMove { .. });
         body.store(Body::scratch(1), |b| {
             if moves {
-                b.load(Self::slot(6)).op(code::I32_WRAP_I64);
+                b.load(Self::slot(6)).guest();
                 b.op(match width {
                     Width::Byte => code::I64_LOAD8_U,
                     Width::Word => code::I64_LOAD16_U,
@@ -2783,7 +2869,7 @@ impl Module {
             Op::Pop => {
                 body.store(Self::slot(step.dst), |b| {
                     b.load(Self::slot(4));
-                    b.op(code::I32_WRAP_I64);
+                    b.guest();
                     b.op(code::I64_LOAD);
                     b.bytes.push(0);
                     b.bytes.push(0);
@@ -2799,7 +2885,7 @@ impl Module {
                 });
                 body.store(Self::slot(5), |b| {
                     b.load(Self::slot(4));
-                    b.op(code::I32_WRAP_I64);
+                    b.guest();
                     b.op(code::I64_LOAD);
                     b.bytes.push(0);
                     b.bytes.push(0);
@@ -2813,7 +2899,7 @@ impl Module {
 
     /// Écrire huit octets au sommet de la pile, RSP étant déjà à sa place.
     fn at_top(body: &mut Body, value: impl FnOnce(&mut Body)) {
-        body.load(Self::slot(4)).op(code::I32_WRAP_I64);
+        body.load(Self::slot(4)).guest();
         value(body);
         body.op(code::I64_STORE);
         body.bytes.push(0);

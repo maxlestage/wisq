@@ -1542,3 +1542,156 @@ console.log(JSON.stringify(out));
         "et il rend la main à la sortie de la boucle — {text}"
     );
 }
+
+/// **L'invité ne peut pas sortir de sa RAM — et la preuve est une écriture qui
+/// n'arrive pas là où elle visait.**
+///
+/// La feuille de route disait qu'il faudrait une **seconde mémoire** pour
+/// mettre la correspondance adresse → indice hors de portée de l'invité, et
+/// que rien ne prouvait qu'un vrai iPhone l'accepte. Un masque n'a besoin
+/// d'aucune extension : l'hôte fournit une mémoire plus grande que ce que le
+/// module déclare, et le module ne peut pas l'atteindre.
+///
+/// Ce test le montre dans les deux sens sur le **même programme**, parce qu'un
+/// seul sens ne prouve rien : une écriture absente peut venir d'un module qui
+/// n'écrit nulle part. La forme libre doit atteindre la page haute, la forme
+/// confinée doit retomber dans la basse.
+#[test]
+fn a_confined_region_cannot_reach_past_the_ram_it_was_given() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // `movq %rax, (%rsi)` : une écriture, à une adresse qui vient d'un
+    // registre — la seule forme que l'émetteur produise.
+    let bytes = [0x48, 0x89, 0x06];
+    // Une seule page de RAM : le masque vaut 0xFFFF, et l'hôte en donnera deux.
+    let confined = Module::confined(&bytes, CODE, 0, 1).expect("la forme confinée");
+    let free = Module::region(&bytes, CODE, 0).expect("la forme libre");
+    assert_ne!(
+        confined, free,
+        "le masque doit se voir dans les octets, sinon il n'a pas été posé"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-confine-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let held = scratch.join("confined.wasm");
+    let loose = scratch.join("free.wasm");
+    std::fs::write(&held, &confined).expect("le module confiné");
+    std::fs::write(&loose, &free).expect("le module libre");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+// L'adresse visée est dans la **seconde** page, que le masque d'une page ne
+// peut pas atteindre : 0x10008 se replie sur 0x0008.
+const TARGET = 0x10008;
+const FOLDED = 0x00008;
+const MARK = 0xc0ffeen;
+
+function run(path, pages) {{
+  const memory = new WebAssembly.Memory({{ initial: pages }});
+  const slots = [];
+  for (let slot = 0; slot < {}; slot++) {{
+    slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  }}
+  const imports = {{ env: {{ mem: memory }} }};
+  slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), imports);
+  slots[0].value = MARK;              // rax : ce qu'on écrit
+  slots[6].value = BigInt(TARGET);    // rsi : où on croit l'écrire
+  slots[4].value = 0x30003000n;       // rsp
+  instance.exports.run(4n);
+  const words = new BigUint64Array(memory.buffer);
+  return [words[TARGET / 8].toString(), words[FOLDED / 8].toString()];
+}}
+
+// Quatre lignes plates plutôt que du JSON : ce harnais n'a pas de lecteur de
+// JSON, et en ajouter un pour quatre nombres serait une dépendance de plus.
+const held = run({:?}, 2);
+const loose = run({:?}, {});
+console.log("confinée.visée " + held[0]);
+console.log("confinée.repliée " + held[1]);
+console.log("libre.visée " + loose[0]);
+console.log("libre.repliée " + loose[1]);
+"#,
+            GLOBAL_COUNT,
+            held.to_string_lossy(),
+            loose.to_string_lossy(),
+            GUEST_PAGES,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    let mark = 0xc0ffee_u64.to_string();
+    let nothing = "0";
+
+    // La forme libre atteint la seconde page : c'est ce que le confinement
+    // interdit, et sans cette moitié le test passerait sur un module muet.
+    assert_eq!(
+        seen("libre.visée"),
+        mark,
+        "sans masque, l'écriture doit atteindre l'adresse visée"
+    );
+    assert_eq!(
+        seen("libre.repliée"),
+        nothing,
+        "sans masque, rien ne doit tomber à l'adresse repliée"
+    );
+
+    // Et la forme confinée fait exactement l'inverse.
+    assert_eq!(
+        seen("confinée.repliée"),
+        mark,
+        "avec masque, l'écriture doit retomber dans la RAM déclarée"
+    );
+    assert_eq!(
+        seen("confinée.visée"),
+        nothing,
+        "avec masque, la page au-dessus de la RAM doit rester intacte — \
+         c'est là que vivra la correspondance adresse → indice"
+    );
+}
+
+/// **Un masque qui ne décrit pas un intervalle n'en est pas un.**
+///
+/// `pages − 1` ne vaut comme masque que si `pages` est une puissance de deux :
+/// avec trois pages il vaudrait 0x2FFFF, qui laisse passer 0x2FFFF mais coupe
+/// 0x20000. Un module qui replie de travers écrit au hasard dans la RAM de
+/// l'invité, ce qu'aucun test de conformité ne verrait — l'émetteur refuse
+/// plutôt que d'y consentir.
+#[test]
+fn a_confinement_that_is_not_a_power_of_two_is_refused() {
+    let bytes = [0x48, 0x89, 0x06];
+    for pages in [0u32, 3, 5, 0x3001] {
+        assert!(
+            Module::confined(&bytes, CODE, 0, pages).is_none(),
+            "{pages} pages ne donnent pas un masque"
+        );
+    }
+    for pages in [1u32, 2, 4, 0x4000] {
+        assert!(
+            Module::confined(&bytes, CODE, 0, pages).is_some(),
+            "{pages} pages en donnent un"
+        );
+    }
+}
