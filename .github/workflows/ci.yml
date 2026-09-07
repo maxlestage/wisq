@@ -176,35 +176,20 @@ jobs:
           # ne les compilait pas.
           WISQ_SWIFT_CORE: '1'
 
-      # **Et l'autre moitié, celle que la variable ci-dessus enlève.**
+      # **Et l'autre moitié, celle que la variable ci-dessus enlève : elle est
+      # jugée ailleurs, et il a fallu deux jours pour savoir où.**
       #
-      # Le cœur Rust d'abord : `Package.swift` cherche `libwisq_vm.a` dans
-      # `target/release`, et s'arrête avec des instructions s'il ne l'y trouve
-      # pas. Ce n'est pas le cœur qu'on veut éprouver ici — il l'est déjà sous
-      # Linux — c'est ce qu'il faut pour que la cible qui porte le bureau local
-      # existe.
-      - name: Le cœur Rust, parce que sans lui la cible du bureau n'existe pas
-        run: cargo build --release -p wisq-vm
-
-      # **Le seul job qui puisse exécuter ça.** `LocalDesktopTests` fait tourner
-      # un vrai `WKWebView` : Linux n'a pas WebKit, et l'`App iOS` construit
-      # sans lancer les tests du paquet.
+      # `LocalDesktopTests` a vécu ici, derrière un `swift test --filter`.
+      # C'était le seul job capable de compiler `LocalDesktop.swift` — mais pas
+      # de l'exécuter de façon fiable : le premier test du processus, celui qui
+      # crée le premier `WKWebView` à froid, a rendu **deux verdicts opposés
+      # sur un code identique**, à deux passages consécutifs. La raison est
+      # écrite dans `project.yml` : « WebKit rend dans un processus séparé
+      # qu'iOS ne démarre pas pour un `xctest` nu ». `swift test` en est un.
       #
-      # **Le filtre seul ne garde rien, et c'est vérifié plutôt que supposé.**
-      # J'avais d'abord écrit ici que `swift test --filter` échoue quand il ne
-      # trouve rien. Essayé sous Linux, où ces tests n'existent pas : il
-      # imprime « warning: No matching test cases were run », exécute zéro test
-      # et **sort avec 0**. Cette étape serait donc passée en silence le jour
-      # où la cible redisparaîtrait — le mode de panne même qu'elle existe pour
-      # empêcher. D'où le `grep` : c'est lui la garde, pas le filtre.
-      - name: Le bureau local, dans un vrai WKWebView
-        run: |
-          set -o pipefail
-          swift test --filter LocalDesktopTests 2>&1 | tee "$RUNNER_TEMP/bureau.log"
-          if grep -q "No matching test cases were run" "$RUNNER_TEMP/bureau.log"; then
-            echo "::error::LocalDesktopTests introuvable : la cible a disparu, et swift test sort quand même avec 0."
-            exit 1
-          fi
+      # La suite est donc dans `WisqHostedTests`, hébergée par l'application, et
+      # c'est « App iOS » qui l'exécute — à chaque commit, comme ici, mais dans
+      # un simulateur où WebKit a ce qu'il lui faut.
 
   lint:
     name: Lint
@@ -291,13 +276,6 @@ jobs:
         # booting Linux is covered elsewhere, and what is under test is the
         # wiring around the machine, not the machine.
         run: scripts/test-app.sh
-      # **Les mesures, remises sous les yeux.** `xcodebuild` écrit des dizaines
-      # de milliers de lignes après elles ; une mesure qu'on ne retrouve pas est
-      # une mesure qu'on refait, et celles-ci disent si la sonde WebKit a
-      # vraiment répondu ou seulement été sautée.
-      - name: Ce que l'iPhone simulé a mesuré
-        if: always()
-        run: cat "${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt" 2>/dev/null || echo "aucune mesure relevée"
       - name: Build for simulator
         # A generic destination avoids pinning a simulator model that the runner
         # image may drop from one release to the next.
@@ -336,3 +314,18 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+      # **Les mesures, remises sous les yeux — et en tout dernier.**
+      #
+      # Ce relevé était publié juste après les tests, donc **avant** les deux
+      # constructions ci-dessus : elles écrivent des dizaines de milliers de
+      # lignes par-dessus, et l'API des journaux ne sert que la fin d'un job.
+      # Résultat mesuré le 7 septembre : impossible de vérifier depuis ici si
+      # les tests hébergés avaient tourné ou seulement été sautés — la question
+      # même que ce relevé existe pour trancher. Il est donc en dernier, où on
+      # peut le lire.
+      #
+      # `if: always()` parce qu'un job rouge est justement celui dont on veut
+      # savoir ce qui a été exécuté.
+      - name: Ce que l'iPhone simulé a mesuré
+        if: always()
+        run: cat "${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt" 2>/dev/null || echo "aucune mesure relevée"

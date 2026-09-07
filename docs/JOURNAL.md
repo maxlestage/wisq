@@ -11152,3 +11152,71 @@ l'application, exécuté à chaque commit dans un iPhone simulé par
 une réponse. Et `LocalDesktopTests` garde, à sa place, le commentaire qui dit où
 il est parti et pourquoi — sans quoi la prochaine lecture y verrait un test
 disparu.
+
+### Deux verdicts opposés sur un code identique
+
+Le passage suivant a démoli ma conclusion précédente, celle-là même que je
+venais d'écrire comme rétablie.
+
+`testADesktopWithoutAFrameRefusesToPaint` — **sans écran, donc sans canvas** —
+échoue, au `load()`, sur le même `InvalidTransition`. Or il **passait** au tour
+d'avant, et rien de ce qu'il touche n'a changé entre les deux : ni
+`LocalDesktop.swift`, ni son propre corps ; seulement `project.yml`, que ce job
+n'utilise pas.
+
+| tour | ce test | le test qui peint |
+| --- | --- | --- |
+| `7106188` | passe — il n'évaluait alors aucun JavaScript | échoue |
+| `c3d550c` | échoue — ma sonde | échoue |
+| `7d4d1e7` | **passe** | échoue |
+| `967a4ab` | **échoue** | déplacé |
+
+**Deux passages, même code, verdicts opposés : c'est non déterministe.** Ce
+n'est donc pas le canvas — c'était la troisième explication, et elle tombe comme
+les deux précédentes. Ce qui est constant, c'est que le test qui échoue est le
+**premier du processus**, celui qui crée le premier `WKWebView` à froid, et
+qu'il est toujours le plus lent (2,4 s, 3,3 s, là où les autres tiennent en un
+dixième).
+
+La conclusion ne change pas de direction, elle s'élargit : `swift test` ne peut
+pas héberger WebKit de façon fiable. Sept tests sur huit passaient parce qu'ils
+héritaient d'un état déjà chaud — **une propriété sur laquelle on ne bâtit pas
+une garde**. Un job vert qui dépend de l'ordre d'exécution est un job qui ment
+un jour sur deux.
+
+Toute la suite part donc dans `WisqHostedTests`, et les deux étapes que j'avais
+ajoutées à « Cœur (Apple) » ce matin sont retirées : elles existaient pour
+exécuter ces tests là où ils ne peuvent pas l'être. « App iOS » les exécute
+désormais, à chaque commit, dans un simulateur — même fréquence, même sévérité,
+avec l'hôte en plus.
+
+Ce que ce tour coûte à admettre : j'ai eu trois explications successives et les
+trois étaient fausses. Ce qui les a démolies n'a jamais été une relecture, mais
+toujours **deux nombres ou deux verdicts qui auraient dû s'accorder** — 1925
+contre 1992, puis passe contre échoue sur le même code. La seule méthode qui a
+marché aujourd'hui est celle-là.
+
+### Un relevé enterré sous ce qu'il devait éclairer
+
+En voulant vérifier que le test déplacé avait bien tourné dans le simulateur,
+je ne l'ai pas pu : « App iOS » était vert, mais son verdict était introuvable.
+
+La raison est bête et mesurable. Le relevé des mesures était publié **juste
+après** les tests, donc avant les deux constructions finales du job — qui
+écrivent des dizaines de milliers de lignes par-dessus. L'API des journaux ne
+sert que la fin d'un job ; au-delà d'un millier de lignes elle refuse. Le
+relevé existait précisément pour dire « si la sonde a vraiment répondu ou
+seulement été sautée », et il était rangé là où on ne peut pas le lire.
+
+Deux corrections, et aucune n'est du confort :
+
+- l'étape passe **en dernier** dans le job, où la queue du journal l'atteint ;
+- le relevé **nomme les suites** au lieu de seulement les compter. « Douze
+  tests exécutés » ne dit pas *lesquels* : une suite entière déplacée ici
+  n'aurait laissé aucune trace distinguant « elle a tourné » de « elle a
+  disparu du bundle ». Un nombre seul se lit aussi bien dans les deux sens —
+  c'est la troisième fois aujourd'hui que ce lot bute là-dessus, après « 1925
+  contre 1992 » et « No matching test cases were run ».
+
+Sans ça, la tranche que je pousse ne serait vérifiable par personne, moi
+compris. Ce n'est pas un élargissement : c'est ce qui rend le reste jugeable.

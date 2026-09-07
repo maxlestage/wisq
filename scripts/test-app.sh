@@ -89,7 +89,13 @@ fi
 
 # Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
 # sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
-mesures=$(grep -E "^(WebKit|pont|Metal) [^:]*: |Executed [0-9]+ tests" "$sortie" | tail -30 || true)
+#
+# **Les suites sont nommées, pas seulement comptées.** Un relevé qui dit
+# « 12 tests exécutés » ne dit pas *lesquels* : le 7 septembre, une suite
+# entière a été déplacée ici et rien dans ce relevé n'aurait permis de vérifier
+# qu'elle avait bien tourné plutôt que d'avoir disparu du bundle. Un nombre
+# seul se lit aussi bien comme une réussite que comme une absence.
+mesures=$(grep -E "^(WebKit|pont|Metal) [^:]*: |Executed [0-9]+ tests|Test Suite '[A-Za-z]+' (passed|failed)" "$sortie" | tail -40 || true)
 if [ -n "$mesures" ]; then
   echo "==> Mesures"
   echo "$mesures"

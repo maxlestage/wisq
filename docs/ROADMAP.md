@@ -2463,6 +2463,28 @@ Ce que ça coûte à savoir : trois tours, pour une réponse que ce dépôt avai
 écrite. J'ai cherché dans le fichier qui échouait plutôt que dans ce qui était
 connu de WebKit ici.
 
+### Et le canvas non plus n'était pas la cause : c'est l'ordre
+
+Le passage suivant a fait échouer `testADesktopWithoutAFrameRefusesToPaint`,
+**sans écran**, qui **passait au tour d'avant sur un code identique**. Deux
+verdicts opposés, rien de changé entre les deux : c'est non déterministe, et le
+canvas tombe comme les deux explications précédentes.
+
+Ce qui est constant : le test qui échoue est le **premier du processus**, celui
+qui crée le premier `WKWebView` à froid, et toujours le plus lent — 2,4 s puis
+3,3 s là où les autres tiennent en un dixième de seconde.
+
+La conclusion ne change pas de direction, elle s'élargit : **aucun** de ces
+tests ne peut vivre sous `swift test`. Sept sur huit passaient en héritant d'un
+état déjà chaud, ce qui n'est pas une garde. La suite entière est donc hébergée
+par l'application, et les deux étapes ajoutées à « Cœur (Apple) » sont retirées
+— elles existaient pour exécuter ces tests là où ils ne peuvent pas l'être.
+
+**Ne pas rouvrir** : la course sur `web.isLoading` (réelle, corrigée, sans
+effet) ; « l'erreur vient d'un de nos appels » (réfutée par une enveloppe
+totale) ; le canvas (réfuté par un test sans écran qui échoue et un passage qui
+réussit sur le même code).
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend

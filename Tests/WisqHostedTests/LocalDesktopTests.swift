@@ -11,10 +11,29 @@ import XCTest
 /// le premier à les faire tenir ensemble dans le moteur qui les portera —
 /// celui de WebKit, avec un vrai gestionnaire de messages entre les deux.
 ///
-/// **Ce qu'il ne dit pas.** Un runner macOS n'est pas un iPhone : ce qui est
+/// **Ce qu'il ne dit pas.** Un simulateur n'est pas un iPhone : ce qui est
 /// vérifié ici est que les moitiés s'emboîtent, pas que WebKit garde le droit
 /// de compiler sur un appareil. Cette question-là n'a qu'une réponse, la sonde
 /// de l'application sur un vrai téléphone.
+///
+/// **Pourquoi cette suite est hébergée par l'application, et pas sous
+/// `swift test`.** Elle y a été, et elle y était non déterministe. Le premier
+/// test du processus — celui qui crée le premier `WKWebView`, à froid — a rendu
+/// deux verdicts opposés sur **un code identique**, à deux passages
+/// consécutifs de la CI, sur `InvalidTransition { phase: idle, targetPhase:
+/// failed(deinit) }`. Et ce message sortait d'un `load()` enveloppé **en
+/// entier** dans un `do`/`catch` qui traduit n'importe quelle erreur : il ne
+/// venait donc d'aucun de nos appels.
+///
+/// La raison était déjà écrite dans `project.yml`, à la cible qui héberge ce
+/// fichier : « WebKit rend dans un processus séparé qu'iOS ne démarre pas pour
+/// un `xctest` nu ». `swift test` en est un. Sept des huit tests passaient
+/// parce qu'ils héritaient d'un état déjà chaud — ce n'est pas une propriété
+/// sur laquelle bâtir une garde.
+///
+/// Rien n'est retiré ni affaibli : la suite est posée là où WebKit a ce qu'il
+/// lui faut, et « App iOS » l'exécute à chaque commit, comme « Cœur (Apple) »
+/// le faisait.
 @MainActor
 final class LocalDesktopTests: XCTestCase {
     /// Une RAM d'une page, et une adresse au-dessus de deux puissance
@@ -189,26 +208,35 @@ final class LocalDesktopTests: XCTestCase {
 
     // MARK: - L'écran
 
-    // **Le test qui peint vit ailleurs, et c'est le sujet.**
-    //
-    // `testTheDesktopPaintsTheFrameOnDemand` est dans
-    // `Tests/WisqHostedTests/LocalDesktopPaintTests.swift`, hébergé par
-    // l'application et exécuté dans un iPhone simulé. Il a échoué trois fois
-    // ici sur `InvalidTransition { phase: idle, targetPhase: failed(deinit) }`,
-    // un message qui ne nomme rien — et deux explications successives sont
-    // tombées : une course sur `web.isLoading` (réelle, corrigée, sans effet)
-    // puis le canvas (l'échec qui semblait l'accuser était une régression de la
-    // sonde de diagnostic elle-même).
-    //
-    // Ce qui l'a séparé des huit autres n'était pas dans son code : `load()`
-    // enveloppée **en entier** n'a rien attrapé, donc l'erreur ne venait
-    // d'aucun de nos appels. La raison est écrite dans `project.yml`, à la
-    // cible où il vit maintenant : « WebKit rend dans un processus séparé
-    // qu'iOS ne démarre pas pour un `xctest` nu ». `swift test` en est un. Des
-    // neuf tests du bureau, c'était le seul à demander une **surface de
-    // rendu** ; les autres n'évaluent que du JavaScript.
-    //
-    // Il n'est ni retiré ni affaibli. Il est là où sa question a une réponse.
+    /// **Le bureau peint, et il le dit.**
+    ///
+    /// C'est le seul chemin d'affichage qu'un test puisse emprunter ici :
+    /// `requestAnimationFrame` ne tourne que dans une vue que le système
+    /// considère comme affichée, et celle-ci n'est ajoutée à aucune fenêtre.
+    /// `wisqPaint` se laisse appeler à la main **précisément pour ça**.
+    ///
+    /// Il peint **après** avoir fait tourner la machine : une image peinte
+    /// avant que quoi que ce soit ne s'exécute ne dirait rien de plus que
+    /// « le canvas existe ».
+    func testTheDesktopPaintsTheFrameOnDemand() async throws {
+        let width: UInt32 = 32
+        let height: UInt32 = 16
+        let desktop = try LocalDesktop(
+            pages: 1,
+            entry: base,
+            screen: .init(base: base + 0x8000, width: width, height: height)
+        )
+        try await desktop.load()
+        try await desktop.place(program(), at: base)
+        let stopped = try await desktop.run()
+        XCTAssertEqual(stopped.why, "sur place")
+
+        let pixels = try await desktop.paint()
+        XCTAssertEqual(
+            pixels, Int(width * height),
+            "peindre doit rendre le compte de pixels, pas rien"
+        )
+    }
 
     /// **Un bureau sans écran refuse de peindre**, au lieu de laisser croire
     /// qu'une image est passée. C'est le refus qui distingue « rien à montrer »
