@@ -10277,3 +10277,73 @@ découvre sinon dans un job macOS, vingt minutes plus tard.
 Et SwiftLint, lancé en `--strict` avec la bibliothèque sourcekit de la chaîne
 fraîchement installée, a refusé deux lignes vides consécutives. C'est le job
 qui a déjà mis cette branche au rouge une fois.
+
+## Le pont, et la question que le brouillon esquivait
+
+`DesktopBridge` est la moitié de l'application qui ne connaît pas la vue : lire
+une demande, rendre le JavaScript de réponse. Dix sabotages sur dix, huit tests,
+et pourtant la tranche a surtout servi à poser une question que le code
+n'avait pas.
+
+### Ce que le sabotage a resserré
+
+Le dixième passage était vert du premier coup, ce qui est suspect en soi. En
+regardant *pourquoi* chaque mutation tombait, une l'était par chance :
+« l'adresse est lue en hexadécimal » échouait sur l'adresse haute du test —
+mais seulement parce qu'un nombre décimal de dix-sept chiffres déborde en base
+seize. Rien n'aurait attrapé la même faute sur une petite adresse.
+
+Un test de plus, avec seize contre vingt-deux, et la lecture en base dix est
+tenue pour la bonne raison. **Un sabotage qui tombe ne dit pas encore pourquoi
+il tombe**, et la différence compte : la première version aurait laissé passer
+la faute exactement là où elle serait arrivée.
+
+### « Pourquoi pas du base64 ? », mesuré, et la réponse s'inverse deux fois
+
+Je pensais que le tableau de nombres était le mauvais choix : trois fois plus
+de texte à traverser. Chronométré sous Bun — le même JavaScriptCore que le
+`WKWebView` — il **gagne** contre un décodage base64 en boucle, parce que le
+moteur analyse un littéral plus vite qu'une boucle JavaScript ne tourne.
+
+Puis il reperd contre `Uint8Array.fromBase64`, qui décode en natif. Sauf que
+cette méthode demande iOS 18.2 et que wisq vise iOS 17 : sur le plancher, le
+repli est la boucle, c'est-à-dire la pire des trois. Et l'écart total, sur un
+démarrage qui traduit quelques milliers de régions, se compte en dizaines de
+millisecondes.
+
+Le tableau reste, et `scripts/wasm-crossing-probe.ts` est dans le dépôt pour
+que la question ait un chiffre la prochaine fois qu'elle se posera. Deux
+suppositions fausses d'affilée sur la même question : la première m'aurait fait
+changer le contrat des deux moitiés, la seconde aussi, et dans l'autre sens.
+
+### La vraie trouvaille, et elle n'est dans aucun fichier
+
+En écrivant la documentation du type, une question s'est posée à laquelle rien
+ne répondait : **d'où viennent les octets de la région ?**
+
+`translate(address, slot)` ne porte que l'adresse. L'application doit donc les
+chercher — et la RAM de l'invité **est** la mémoire linéaire du module, qui vit
+dans le processus de contenu de WebKit. L'application ne l'a pas. Elle ne peut
+lire que l'image qu'elle a chargée.
+
+Pour le noyau, ça marche. Pour un module que l'invité charge lui-même,
+l'application lirait ce que son image contient à cette adresse — c'est-à-dire
+**les mauvais octets, en silence**. Pas un refus : une réponse fausse, qui
+compile en un module valide et saute n'importe où.
+
+C'est exactement la forme de défaut contre laquelle tout le reste de ce dépôt
+est construit, et elle était dans le contrat depuis la tranche de la page, sans
+que rien ne l'écrive. Elle ne s'est pas vue plus tôt parce que le test de la
+boucle hôte **injecte** le traducteur : une table d'octets préparée par le
+test, qui a toujours la bonne réponse. Le bouchon avait la propriété que la
+vraie application n'a pas.
+
+La correction — la vue lit une fenêtre dans sa propre mémoire et l'envoie — est
+une tranche à elle seule, et la taille de la fenêtre se mesurera. En attendant,
+la règle est écrite dans le type plutôt que supposée : refuser une adresse hors
+de l'image, parce qu'un refus arrête la machine proprement.
+
+**Ce que j'en retiens** : le sabotage éprouve le code qui existe, pas le contrat
+qu'il honore. Ces dix mutations sur dix ne disaient rien de la question, et
+c'est écrire la documentation — obligé de dire d'où viennent les octets — qui
+l'a fait apparaître.
