@@ -1994,9 +1994,24 @@ resterait dans la région.
 
 | Relevé, sous le JavaScriptCore de Bun | Valeur |
 | --- | --- |
-| Un retour de main, boucle hôte complète | **192 ns** |
+| Un retour de main, boucle hôte complète | **≈190 ns** |
 | Appeler **une** fonction WebAssembly, en boucle | 25 ns |
-| Appeler **soixante-quatre** fonctions en rotation | 99 ns |
+| Appeler **soixante-quatre** fonctions en rotation | ≈100 ns |
+| La forme **liée**, même chaîne | ≈195 ns |
+
+**Les « ≈ » sont là parce que l'instrument tremble, et il le dit lui-même.** Le
+programme mesure la *même* forme deux fois : l'écart entre ces deux-là monte à
+onze pour cent d'une exécution à l'autre. Écrire « 192 ns » donnait une
+précision que la mesure n'a pas. Ce qui est solide est l'ordre de grandeur — une
+petite centaine de nanosecondes — et le **rapport** entre les postes, qui lui ne
+bouge pas.
+
+**Et la forme liée ne coûte rien de mesurable** : son écart tient dans ce
+tremblement. C'est le résultat attendu, et le vérifier était le sujet — ses
+blocs vivent dans la table de l'hôte, mais `resolve` ne nomme toujours que les
+blocs de sa propre région, donc la boucle hôte reste le seul chemin d'une région
+à l'autre. Si les deux chiffres avaient divergé, la table aurait coûté quelque
+chose, et il aurait fallu savoir quoi avant d'aller plus loin.
 
 **Le poste principal n'est pas WebAssembly, c'est le site d'appel.** Un `run`
 appelé en boucle coûte 25 ns ; soixante-quatre `run` différents depuis le même
@@ -2009,9 +2024,9 @@ est la lecture de RIP en `BigInt` et la recherche dans la table.
 
 | Instructions par retour de main | Débit |
 | --- | --- |
-| 4,5 — un bloc de base du noyau Alpine | 23 MIPS |
+| 4,5 — un bloc de base du noyau Alpine | ≈23 MIPS |
 | 6 — la chaîne du banc, le pire cas construit exprès | 31 MIPS |
-| 113,8 — ce qu'une région du noyau **contient** | 592 MIPS |
+| 113,8 — ce qu'une région du noyau **contient** | ≈590 MIPS |
 | 1000 | 5202 MIPS |
 
 Le bureau tient si les régions sont grandes, et pas autrement. C'est ce que

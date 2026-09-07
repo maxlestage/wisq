@@ -23,7 +23,7 @@
 //! seul ferait conclure que le bureau plafonne à vingt MIPS ; le troisième dit
 //! que ça dépend entièrement de la taille des régions, ce qui est la vraie
 //! réponse.
-use wisq_vm::x86_wasm::{Module, BENCH_BASE, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT};
+use wisq_vm::x86_wasm::{Module, BENCH_BASE, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT, TABLE_IMPORT};
 
 /// Chaque maillon fait le même travail, puis saute **indirectement** au
 /// suivant. L'indirection est le sujet : une cible connue à la compilation
@@ -56,6 +56,7 @@ fn link(next: u64) -> Vec<u8> {
 fn main() {
     let address = |index: usize| BENCH_BASE + index as u64 * STRIDE;
     let mut modules = Vec::new();
+    let mut bound = Vec::new();
     for index in 0..LINKS {
         let code = link(address((index + 1) % LINKS));
         let Some(module) = Module::region(&code, address(index), 0) else {
@@ -63,6 +64,15 @@ fn main() {
             std::process::exit(1);
         };
         modules.push((address(index), module));
+        // **La même chaîne, en forme liée.** Chaque maillon pose son unique
+        // bloc dans la table de l'hôte, à son propre emplacement. Ce qu'on
+        // cherche à savoir : est-ce que la forme liée coûte quelque chose de
+        // plus, tant que rien ne s'enchaîne par la table ?
+        let Some(module) = Module::linked(&code, address(index), 0, index as u32) else {
+            eprintln!("l'émetteur refuse le maillon lié {index}");
+            std::process::exit(1);
+        };
+        bound.push((address(index), module));
     }
     println!(
         "{LINKS} maillons de {PER_LINK} instructions, un saut indirect chacun \
@@ -91,6 +101,12 @@ fn main() {
         std::fs::write(&path, module).expect("le module");
         listing.push_str(&format!("[{base}n,{:?}],", path.to_string_lossy()));
     }
+    let mut bound_listing = String::new();
+    for (index, (base, module)) in bound.iter().enumerate() {
+        let path = scratch.join(format!("b{index}.wasm"));
+        std::fs::write(&path, module).expect("le module lié");
+        bound_listing.push_str(&format!("[{base}n,{:?}],", path.to_string_lossy()));
+    }
 
     // **Le cache est chaud avant le chronomètre.** Un noyau repasse par le même
     // code des millions de fois ; ce qui l'intéresse est le régime établi, pas
@@ -115,21 +131,35 @@ for (const [base, path] of [{listing}]) {{
   const bytes = fs.readFileSync(path);
   cache.set(base, new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports.run);
 }}
+// La même chaîne en forme liée : une table partagée, un emplacement par maillon.
+const table = new WebAssembly.Table({{ element: "anyfunc", initial: {links} }});
+const linkedImports = {{ env: {{ ...imports.env, {table}: table }} }};
+const linked = new Map();
+{{
+  let slot = 0;
+  for (const [base, path] of [{bound}]) {{
+    const bytes = fs.readFileSync(path);
+    linked.set(base,
+      new WebAssembly.Instance(new WebAssembly.Module(bytes), linkedImports).exports.run);
+    slot++;
+  }}
+}}
 const RIP = {rip};
 const u = slot => BigInt.asUintN(64, slots[slot].value);
 
 // La boucle hôte : appeler la région qui commence à RIP, relire RIP, recommencer.
-function drive(steps) {{
+function driveWith(which, steps) {{
   let taken = 0;
   slots[RIP].value = {entry}n;
   for (let step = 0; step < steps; step++) {{
-    const run = cache.get(u(RIP));
+    const run = which.get(u(RIP));
     if (run === undefined) return {{ taken, lost: u(RIP).toString(16) }};
     run(16n);
     taken++;
   }}
   return {{ taken, lost: null }};
 }}
+const drive = steps => driveWith(cache, steps);
 
 drive(100000);                       // échauffement, non chronométré
 const began = process.hrtime.bigint();
@@ -150,7 +180,25 @@ const bench = fn => {{
 }};
 const one = bench(n => {{ for (let i = 0; i < n; i++) flat[0](BUDGET); }});
 const many = bench(n => {{ let j = 0; for (let i = 0; i < n; i++) {{ flat[j](BUDGET); j = (j + 1) & {mask}; }} }});
-console.log(JSON.stringify({{ seconds, taken: out.taken, lost: out.lost, one, many }}));
+// La forme liée, chronométrée exactement pareil.
+driveWith(linked, 100000);
+const boundBegan = process.hrtime.bigint();
+const boundOut = driveWith(linked, {steps});
+const boundSeconds = Number(process.hrtime.bigint() - boundBegan) / 1e9;
+
+// **Et la première forme une seconde fois.** Sans ça, un écart de trois pour
+// cent entre les deux formes se lirait comme un coût, alors que c'est peut-être
+// la variation de la mesure elle-même. L'instrument doit dire de combien il
+// tremble avant qu'on lise un écart.
+const againBegan = process.hrtime.bigint();
+const againOut = drive({steps});
+const againSeconds = Number(process.hrtime.bigint() - againBegan) / 1e9;
+
+console.log(JSON.stringify({{
+  seconds, taken: out.taken, lost: out.lost, one, many,
+  boundSeconds, boundTaken: boundOut.taken, boundLost: boundOut.lost,
+  againSeconds, againTaken: againOut.taken,
+}}));
 "#,
             pages = GUEST_PAGES,
             globals = GLOBAL_COUNT,
@@ -158,7 +206,10 @@ console.log(JSON.stringify({{ seconds, taken: out.taken, lost: out.lost, one, ma
             rip = RIP_SLOT,
             entry = BENCH_BASE,
             steps = steps,
-            mask = LINKS - 1
+            mask = LINKS - 1,
+            links = LINKS,
+            table = TABLE_IMPORT,
+            bound = bound_listing
         ),
     )
     .expect("le pilote");
@@ -179,7 +230,7 @@ console.log(JSON.stringify({{ seconds, taken: out.taken, lost: out.lost, one, ma
     }
     // **Le compte d'abord.** Une chaîne qui se perd rendrait un débit
     // magnifique et faux ; le croire serait pire que ne rien mesurer.
-    if !text.contains("\"lost\":null") {
+    if !text.contains("\"lost\":null") || !text.contains("\"boundLost\":null") {
         println!("la chaîne s'est perdue : {text}");
         return;
     }
@@ -235,6 +286,46 @@ console.log(JSON.stringify({{ seconds, taken: out.taken, lost: out.lost, one, ma
             instructions / (per_step / 1e9) / 1e6
         );
     }
+    // **Et la forme liée, qui ne change encore rien — c'est le résultat
+    // attendu, et le vérifier est le sujet.** Ses blocs vivent dans la table de
+    // l'hôte, mais `resolve` ne nomme toujours que les blocs de sa propre
+    // région : la boucle hôte reste le seul chemin d'une région à l'autre. Si
+    // ces deux chiffres divergeaient, la forme liée coûterait quelque chose,
+    // et il faudrait savoir quoi avant d'aller plus loin.
+    if let (Some(bound_seconds), Some(bound_taken)) =
+        (number("\"boundSeconds\":"), number("\"boundTaken\":"))
+    {
+        let bound_step = bound_seconds / bound_taken * 1e9;
+        let gap = (bound_step / per_step - 1.0) * 100.0;
+        println!("  la même chaîne en **forme liée** : {bound_step:.0} ns ({gap:+.0} %)");
+        // **De combien l'instrument tremble.** La première forme, mesurée deux
+        // fois : l'écart entre ces deux-là est le bruit, et il faut le connaître
+        // avant de lire l'écart entre les deux formes.
+        if let (Some(again_seconds), Some(again_taken)) =
+            (number("\"againSeconds\":"), number("\"againTaken\":"))
+        {
+            let again_step = again_seconds / again_taken * 1e9;
+            let noise = (again_step / per_step - 1.0) * 100.0;
+            println!(
+                "  la **même** forme, remesurée : {again_step:.0} ns ({noise:+.0} %) — c'est \
+                 le tremblement de l'instrument"
+            );
+            if gap.abs() <= noise.abs().max(3.0) {
+                println!(
+                    "  l'écart entre les deux formes tient dans ce tremblement : **la table \
+                     partagée ne coûte rien de mesurable**, tant que rien ne s'enchaîne par \
+                     elle — et rien ne s'y enchaîne encore, `resolve` ne nommant que les \
+                     blocs de sa propre région."
+                );
+            } else {
+                println!(
+                    "  l'écart dépasse le tremblement : la forme liée coûte quelque chose, \
+                     et il faut savoir quoi avant d'aller plus loin."
+                );
+            }
+        }
+    }
+
     println!(
         "  **La conclusion n'est pas un plafond, c'est une contrainte** : le bureau tient si les \
          régions sont grandes, et pas autrement.\n  Les 113,8 sont un compte *statique* — \
