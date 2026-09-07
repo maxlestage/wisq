@@ -237,3 +237,76 @@ console.log(
   "bits bas d'une adresse alignée ne portent rien. La fonction de hachage devra les mélanger",
 );
 console.log("— un décalage avant le produit — sinon la table se remplit d'un côté.");
+
+// ---------------------------------------------------------------------------
+// **Où la correspondance peut vivre — et la prémisse qu'il a fallu jeter.**
+//
+// La feuille de route disait : « une petite table de hachage dans la mémoire
+// invitée, tenue par l'hôte ». C'est faux, et pour une raison que ce dépôt a
+// déjà apprise une fois. L'en-tête de l'émetteur la garde écrite :
+//
+//     la mémoire linéaire **est** la RAM de l'invité, adresse pour adresse, et
+//     un noyau qui écrit à l'adresse 8 écrasait alors RCX. Les registres sont
+//     donc sortis de là.
+//
+// Une table de correspondance posée dans cette mémoire est exactement le même
+// défaut : un noyau qui écrit à la mauvaise adresse la détruit, et le module
+// saute alors n'importe où. Il lui faut un endroit que l'invité ne peut pas
+// adresser.
+//
+// D'où cette troisième sonde : **JavaScriptCore accepte-t-il deux mémoires
+// importées ?** Si oui, la correspondance vit dans la seconde, hors de portée.
+
+const guest = new WebAssembly.Memory({ initial: 1 });
+const side = new WebAssembly.Memory({ initial: 1 });
+new Uint32Array(side.buffer)[0] = 0xc0ffee;
+new Uint32Array(guest.buffer)[0] = 0xdead;
+
+// run() -> i32 : charge l'entier de la **seconde** mémoire.
+//
+// L'ordre du champ mémoire compte, et une erreur y est silencieuse : après
+// l'octet d'alignement marqué du bit 6 vient **l'indice de mémoire**, puis le
+// décalage. Ma première version les avait intervertis, et la sonde a rendu
+// 0xde — la première mémoire lue au décalage un, une valeur assez plausible
+// pour être crue.
+const twoMemories = Uint8Array.from([
+  ...HEADER,
+  ...section(1, vector([[0x60, 0x00, 0x01, 0x7f]])),
+  ...section(2, vector([
+    [...name("env"), ...name("guest"), 0x02, 0x00, ...uleb(1)],
+    [...name("env"), ...name("side"), 0x02, 0x00, ...uleb(1)],
+  ])),
+  ...section(3, vector([[0x00]])),
+  ...section(7, vector([[...name("run"), 0x00, 0x00]])),
+  ...section(10, vector([codeEntry([
+    0x00, 0x41, 0x00, 0x28, 0x42, 0x01, 0x00, 0x0b,
+  ])])),
+]);
+
+console.log();
+try {
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(twoMemories), {
+    env: { guest, side },
+  });
+  const got = (instance.exports.run as () => number)() >>> 0;
+  if (got === 0xc0ffee) {
+    console.log("Deux mémoires importées : acceptées, et la seconde est bien lue.");
+    console.log(
+      "La correspondance adresse → indice peut donc vivre hors de portée de l'invité.",
+    );
+  } else {
+    console.log(`Deux mémoires acceptées, mais la lecture rend 0x${got.toString(16)} :`);
+    console.log("l'encodage est faux, et le chiffre ne veut rien dire.");
+  }
+} catch (why) {
+  console.log("Deux mémoires importées : refusées —", (why as Error).message.slice(0, 160));
+  console.log("Il faudra un autre endroit pour la correspondance.");
+}
+console.log();
+console.log(
+  "**Réserve, et elle est la même que pour tout le lot 8** : ceci mesure le JavaScriptCore",
+);
+console.log(
+  "qu'embarque Bun, sur Linux. Que le WKWebView d'un vrai iPhone accepte la multi-mémoire",
+);
+console.log("n'est pas établi ici — la sonde de l'application est le seul endroit qui le dira.");
