@@ -168,6 +168,13 @@ NO_FLAGS = (
     # `and` que le manuel déclare indéfinie. Le premier mot d'un `rep …` est
     # « rep », donc c'est lui qu'il faut nommer.
     "cld", "std", "rep",
+    # **Les conseils et les barrières n'écrivent rien du tout.** `prefetch` est
+    # un conseil au cache, sans effet architectural ; `mfence`, `lfence` et
+    # `sfence` ordonnent des accès et ne touchent à aucun drapeau. Sans cette
+    # ligne, ils retomberaient sur la règle par défaut — les six drapeaux — et
+    # se verraient reprocher ce que l'instruction d'à côté a laissé indéfini.
+    "prefetcht0", "prefetcht1", "prefetcht2", "prefetchnta", "prefetchw",
+    "mfence", "lfence", "sfence",
     "movsb", "movsw", "movsq", "stosb", "stosw", "stosl", "stosq",
     "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl",
     "setle", "setne", "setno", "setnp", "setns", "seto", "setp", "sets",
@@ -792,6 +799,26 @@ PROGRAMS = [
     ("une répétition dont le compte est nul", [
         "cld", "xorl %ecx, %ecx", "leaq 16(%rsi), %rdi", "rep stosq %rax, (%rdi)",
         "incq %rdx"]),
+    # **Les conseils au cache : la seule instruction dont on attend qu'elle ne
+    # fasse *rien*.** `prefetch` n'a aucun effet architectural — le manuel le
+    # dit, et c'est le silicium qui le confirme ici. Le programme l'encadre
+    # d'additions pour que le cas ne soit pas vide : si un cœur traitait
+    # `prefetch` comme un chargement, ou décalait RIP de travers, l'addition
+    # d'après tomberait ailleurs et le résultat le dirait.
+    ("un conseil au cache ne fait rien", [
+        "addq %rcx, %rax", "prefetcht0 (%rsi)", "prefetchnta 8(%rsi)",
+        "prefetcht1 16(%rsi)", "prefetcht2 (%rsi,%rcx,8)", "addq %rax, %rdx"]),
+    # **Les barrières, même raison.** Sur un cœur unique sans modèle de cache
+    # elles n'ont rien à ordonner ; ce qui se vérifie est qu'elles n'abîment
+    # rien et que RIP avance des trois octets qu'elles occupent.
+    ("les barrières mémoire ne font rien non plus", [
+        "addq %rcx, %rax", "mfence", "lfence", "sfence", "addq %rax, %rdx"]),
+    # **Un conseil sur une adresse que rien ne peuple.** Un cœur qui lirait la
+    # mémoire pour de vrai fauterait ou rendrait autre chose ; le silicium,
+    # lui, ignore l'adresse. C'est la distinction que ce programme isole.
+    ("un conseil au cache sur une adresse lointaine", [
+        "leaq 4096(%rsi), %rdi", "prefetcht0 (%rdi)", "prefetchnta (%rdi)",
+        "addq %rcx, %rax"]),
     ("une boucle qui parcourt la mémoire", [
         "movl $4, %ecx", "xorq %rdx, %rdx",
         "1: addq (%rsi), %rdx", "addq $8, %rsi", "decl %ecx", "jnz 1b"]),

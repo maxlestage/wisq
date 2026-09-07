@@ -244,7 +244,7 @@ de toucher à ce côté-là :
 | `crates/wisq-vm/src/x86_wasm.rs` | Rust | **traduit** une région en module WebAssembly |
 
 Les trois lisent le même corpus matériel, `Tests/Fixtures/x86-oracle.tsv` —
-13 148 cas relevés sur un vrai processeur, dont 12 980 jugés contre les trois
+13 220 cas relevés sur un vrai processeur, dont 13 052 jugés contre les trois
 sans un écart. Oublier le troisième a déjà rougi la CI une fois : ce qui touche
 au décodage ou au calcul d'adresse doit être porté partout à la fois.
 
