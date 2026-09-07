@@ -59,6 +59,11 @@ export function tableSlot(address) {
 ///   les blocs d'une région se posent dans la table commune à partir de là, et
 ///   c'est la vue qui sait où il reste de la place. Une région compilée pour
 ///   un autre emplacement écraserait les blocs de sa voisine, en silence.
+/// - `screen`, s'il est donné, décrit le tampon d'affichage que le chargeur a
+///   déclaré au noyau : `{ base, width, height }`. Il doit tenir **entièrement
+///   dans la RAM de l'invité** — la correspondance vit juste au-dessus, et un
+///   cadre qui déborderait dessus peindrait la table des blocs à l'écran tout
+///   en la détruisant.
 /// - `pages` est la RAM de l'invité, **en pages de 64 Kio et en puissance de
 ///   deux** : c'est ce qui permet de replier les adresses invitées et de poser
 ///   la correspondance au-dessus, hors de portée.
@@ -120,7 +125,7 @@ async function answered(ask, patience) {
   });
 }
 
-export function machine({ translate, pages, regions = 4096, patience = 30000 }) {
+export function machine({ translate, pages, screen, regions = 4096, patience = 30000 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
@@ -136,6 +141,19 @@ export function machine({ translate, pages, regions = 4096, patience = 30000 }) 
   const base = pages * 65536;
   const known = new Map();
   let next = 0;
+
+  // **Le cadre doit tenir dans la RAM invitée.** Sinon il chevaucherait la
+  // correspondance : l'invité peindrait la table des blocs à l'écran, et la
+  // détruirait du même geste. Refuser ici plutôt qu'à la première image.
+  if (screen !== undefined) {
+    const at = Number(BigInt(screen.base) & BigInt(base - 1));
+    const octets = screen.width * screen.height * 4;
+    if (!(screen.width > 0) || !(screen.height > 0) || at + octets > base) {
+      throw new Error(
+        `le cadre ${screen.width}×${screen.height} à ${at} déborde de la RAM invitée`,
+      );
+    }
+  }
 
   const rip = () => BigInt.asUintN(64, globals[SLOTS.rip].value);
 
@@ -225,6 +243,39 @@ export function machine({ translate, pages, regions = 4096, patience = 30000 }) 
     globals,
     blocks,
     known,
+    /// **Peindre l'image de l'invité dans un tampon que le dessinateur accepte.**
+    ///
+    /// **Ce n'est pas une recopie, c'est une conversion**, et c'est tout
+    /// l'intérêt de cette fonction. Le noyau écrit en **XRGB8888** — les octets
+    /// en mémoire sont `B, G, R, X` — parce que c'est ce que `simpledrm` prend
+    /// sans rien convertir. Une `ImageData` veut `R, G, B, A`. Passer la
+    /// mémoire telle quelle donnerait le rouge et le bleu échangés, et surtout
+    /// **un alpha à zéro** : un écran entièrement transparent, c'est-à-dire
+    /// rien. La pire panne à diagnostiquer, parce qu'elle ressemble à une
+    /// machine qui n'a pas démarré.
+    ///
+    /// L'opacité est donc **forcée**, et les deux composantes échangées, un mot
+    /// de trente-deux bits à la fois plutôt qu'octet par octet.
+    ///
+    /// **Rien ne traverse vers l'application** : le cadre vit dans cette
+    /// mémoire-ci, le dessinateur aussi. C'est ce qui rend l'affichage possible
+    /// — trois mégaoctets par image ne passeraient jamais un pont de messages.
+    paint(into) {
+      if (screen === undefined) throw new Error("aucun cadre n'a été déclaré");
+      const at = Number(BigInt(screen.base) & BigInt(base - 1));
+      const pixels = screen.width * screen.height;
+      if (into.length < pixels * 4) {
+        throw new Error(`le tampon reçoit ${into.length} octets pour ${pixels * 4}`);
+      }
+      const source = new Uint32Array(memory.buffer, at, pixels);
+      const cible = new Uint32Array(into.buffer, into.byteOffset, pixels);
+      for (let index = 0; index < pixels; index++) {
+        const pixel = source[index];
+        cible[index] =
+          0xff000000 | ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
+      }
+      return pixels;
+    },
     /// **Faire tourner la machine.** Rend pourquoi elle s'est arrêtée, jamais
     /// « rien » : un arrêt sans raison est ce qui rend une panne d'émulateur
     /// impossible à diagnostiquer.
