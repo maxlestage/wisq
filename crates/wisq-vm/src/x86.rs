@@ -2249,6 +2249,55 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     ..Decoded::nothing(Width::Qword)
                 })
             }
+            // **Les conseils au cache, et les `nop` réservés qui les
+            // entourent.** `prefetchnta`, `prefetcht0`, `t1` et `t2`
+            // désignent une adresse et n'en font rien : le manuel leur
+            // interdit tout effet architectural, y compris la faute. Le
+            // ModRM entier — SIB, déplacement, forme relative à RIP — se
+            // consomme quand même, sinon RIP avancerait de trop peu et
+            // l'instruction suivante se lirait au milieu d'une adresse.
+            //
+            // Le corpus matériel n'en juge que quatre formes, celles que
+            // l'architecture nomme. Le reste de la plage — `0f 0d`, et
+            // `0f 19` à `0f 1d` — est le `nop` réservé, que le manuel
+            // décrit comme sans effet et dont les assembleurs se servent
+            // pour aligner. Les accepter n'est pas une extrapolation
+            // gratuite : **le cœur Swift les accepte déjà**, et un décodeur
+            // plus sévère que son jumeau est une divergence entre les trois
+            // cœurs, exactement le genre que la CI a déjà fait payer.
+            0x0d | 0x18..=0x1d => {
+                read_modrm(bytes, &mut at, prefixes)?;
+                Some(Decoded {
+                    op: Op::Nop,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
+            // **Les barrières mémoire**, trois formes d'un groupe qui en
+            // compte huit. `lfence` (5), `mfence` (6) et `sfence` (7)
+            // ordonnent des accès entre cœurs ; sur un cœur unique elles
+            // n'ont rien à ordonner et se réduisent à trois octets qui ne
+            // font rien.
+            //
+            // La distinction tient au mode, pas au numéro : `0f ae` avec un
+            // opérande mémoire est `fxsave`, `fxrstor`, `ldmxcsr`,
+            // `stmxcsr`, `clflush`, `xsave` ou `xrstor` selon `reg` — sept
+            // instructions qui touchent l'état vectoriel, que ce cœur-ci ne
+            // porte pas (il n'a ni XMM ni MXCSR ; c'est le cœur Swift qui
+            // les tient). Avec un opérande registre, le même numéro de
+            // `reg` veut dire une barrière. C'est `mod` qui tranche, et
+            // tout ce qui n'est pas une des trois barrières se refuse.
+            0xae => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                if field.memory.is_some() || !(5..=7).contains(&(field.reg & 0b111)) {
+                    return None;
+                }
+                Some(Decoded {
+                    op: Op::Nop,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
             // Les sauts conditionnels à déplacement long, dont le noyau se
             // sert dès qu'une fonction dépasse cent vingt-sept octets.
             0x80..=0x8f => {
@@ -3510,6 +3559,73 @@ mod tests {
             .expect("le NOP long du noyau se lit");
         assert_eq!(step.op, Op::Nop);
         assert_eq!(step.length, 10, "dix octets, tous consommés");
+    }
+
+    /// **Les conseils au cache et les barrières : ce qui passe, et ce que
+    /// `0f ae` ne doit surtout pas laisser passer.**
+    ///
+    /// Le corpus matériel juge déjà les quatre `prefetch` nommés et les trois
+    /// barrières — il les fait tourner et compare les registres au silicium.
+    /// Ce qu'il ne peut pas juger, c'est un **refus** : une instruction que le
+    /// décodeur accepte à tort ne figure dans aucun programme, donc rien ne
+    /// tombe. C'est exactement le trou qu'une mutation a traversé : accepter
+    /// la forme mémoire de `0f ae` fait lire `fxsave` comme un `nop`, et le
+    /// corpus reste vert parce qu'il n'en contient pas.
+    ///
+    /// `0f ae` porte deux instructions différentes sous le même numéro de
+    /// `reg` ; c'est `mod` qui tranche. Se tromper de côté ne perd pas un
+    /// octet : ça exécute silencieusement le contraire de ce que le noyau a
+    /// écrit.
+    #[test]
+    fn the_hints_are_read_and_the_state_savers_are_refused() {
+        // Les quatre formes nommées, avec leurs adressages : registre de
+        // base, base plus déplacement, base plus index mis à l'échelle.
+        for (bytes, length, name) in [
+            (&[0x0f, 0x18, 0x0e][..], 3, "prefetcht0 (%rsi)"),
+            (&[0x0f, 0x18, 0x46, 0x08][..], 4, "prefetchnta 8(%rsi)"),
+            (&[0x0f, 0x18, 0x56, 0x10][..], 4, "prefetcht1 16(%rsi)"),
+            (&[0x0f, 0x18, 0x1c, 0xce][..], 4, "prefetcht2 (%rsi,%rcx,8)"),
+            (&[0x0f, 0xae, 0xe8][..], 3, "lfence"),
+            (&[0x0f, 0xae, 0xf0][..], 3, "mfence"),
+            (&[0x0f, 0xae, 0xf8][..], 3, "sfence"),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{name} se lit"));
+            assert_eq!(step.op, Op::Nop, "{name}");
+            assert_eq!(step.length, length, "{name} : la longueur consommée");
+            // **Un conseil ne désigne rien à lire.** S'il portait son adresse,
+            // un cœur qui traite `memory` comme une source la lirait — et le
+            // manuel interdit à `prefetch` la moindre faute d'accès.
+            assert!(step.memory.is_none(), "{name} : rien à lire");
+        }
+
+        // Et les sept que la forme mémoire cache derrière les mêmes numéros.
+        // Aucune n'est un `nop` : `fxsave` écrit 512 octets, `ldmxcsr` change
+        // l'arrondi de toute la virgule flottante vectorielle. Ce cœur-ci ne
+        // porte ni XMM ni MXCSR, donc il refuse — et ce refus est ce que le
+        // test tient.
+        for (modrm, name) in [
+            (0x00u8, "fxsave (%rax)"),
+            (0x08, "fxrstor (%rax)"),
+            (0x10, "ldmxcsr (%rax)"),
+            (0x18, "stmxcsr (%rax)"),
+            (0x20, "xsave (%rax)"),
+            (0x28, "xrstor (%rax)"),
+            (0x38, "clflush (%rax)"),
+        ] {
+            assert!(
+                decode(&[0x0f, 0xae, modrm]).is_none(),
+                "{name} n'est pas une barrière : la lire comme un nop \
+                 exécuterait le contraire de ce que le noyau a écrit"
+            );
+        }
+
+        // Les deux numéros de registre qui ne nomment aucune barrière.
+        for (modrm, name) in [
+            (0xc0u8, "0f ae /0 en registre"),
+            (0xe0, "0f ae /4 en registre"),
+        ] {
+            assert!(decode(&[0x0f, 0xae, modrm]).is_none(), "{name}");
+        }
     }
 
     /// **Le groupe 5 par la mémoire : ce qu'un noyau appelle par pointeur.**
