@@ -11,10 +11,29 @@ import XCTest
 /// le premier à les faire tenir ensemble dans le moteur qui les portera —
 /// celui de WebKit, avec un vrai gestionnaire de messages entre les deux.
 ///
-/// **Ce qu'il ne dit pas.** Un runner macOS n'est pas un iPhone : ce qui est
+/// **Ce qu'il ne dit pas.** Un simulateur n'est pas un iPhone : ce qui est
 /// vérifié ici est que les moitiés s'emboîtent, pas que WebKit garde le droit
 /// de compiler sur un appareil. Cette question-là n'a qu'une réponse, la sonde
 /// de l'application sur un vrai téléphone.
+///
+/// **Pourquoi cette suite est hébergée par l'application, et pas sous
+/// `swift test`.** Elle y a été, et elle y était non déterministe. Le premier
+/// test du processus — celui qui crée le premier `WKWebView`, à froid — a rendu
+/// deux verdicts opposés sur **un code identique**, à deux passages
+/// consécutifs de la CI, sur `InvalidTransition { phase: idle, targetPhase:
+/// failed(deinit) }`. Et ce message sortait d'un `load()` enveloppé **en
+/// entier** dans un `do`/`catch` qui traduit n'importe quelle erreur : il ne
+/// venait donc d'aucun de nos appels.
+///
+/// La raison était déjà écrite dans `project.yml`, à la cible qui héberge ce
+/// fichier : « WebKit rend dans un processus séparé qu'iOS ne démarre pas pour
+/// un `xctest` nu ». `swift test` en est un. Sept des huit tests passaient
+/// parce qu'ils héritaient d'un état déjà chaud — ce n'est pas une propriété
+/// sur laquelle bâtir une garde.
+///
+/// Rien n'est retiré ni affaibli : la suite est posée là où WebKit a ce qu'il
+/// lui faut, et « App iOS » l'exécute à chaque commit, comme « Cœur (Apple) »
+/// le faisait.
 @MainActor
 final class LocalDesktopTests: XCTestCase {
     /// Une RAM d'une page, et une adresse au-dessus de deux puissance

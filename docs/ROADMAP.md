@@ -2322,9 +2322,20 @@ relire au-delà de la RAM irait chercher la correspondance. Le test pose quatre
 mébioctets, chronomètre, et relit **aux frontières de tranches**, là où un
 décalage d'offset se voit.
 
-**Il n'y a pas encore de débit**, et pas parce que le conteneur n'a pas de
-`WKWebView` : parce que **aucun job de la CI n'exécute `LocalDesktopTests`**.
-Voir la section suivante.
+**Le débit, mesuré le 7 septembre** dès que « Cœur (Apple) » a enfin exécuté ces
+tests : quatre mébioctets posés en 0,07 s, soit **61,2 Mio/s**. Un noyau de
+35 Mio prend donc **environ 0,57 seconde**.
+
+**Et ça règle la question du gestionnaire de schéma : on ne le fait pas.**
+« Assumé et cher » était écrit quatre tranches durant sans qu'aucun nombre ne
+soit derrière. Le nombre dit que ce n'est pas cher. Un `WKURLSchemeHandler`
+gagnerait au mieux une demi-seconde sur un démarrage, au prix d'un mécanisme
+qu'aucun test de ce dépôt ne peut juger — la page devrait être servie par le
+schéma pour que la requête soit de même origine, ce qui change comment la vue
+charge. Le rapport est mauvais, et le dire vaut mieux que réécrire par principe.
+
+La mesure vient d'un runner macOS, pas d'un iPhone. Ce qu'elle établit est
+l'ordre de grandeur ; un appareil sera plus lent, pas mille fois.
 
 ### Les tests du bureau local ne tournent nulle part
 
@@ -2368,6 +2379,111 @@ sont des flottants.
 Et le même piège une couche plus loin : le refus porte le nombre d'octets, et
 `Int(bytes)` piège pour un `bytes` au-delà de 2⁶³. Le refus serait devenu un
 plantage. `Int(clamping:)`.
+
+### Le seul test dont la page porte un canvas, et ce que j'ai cru savoir
+
+`testTheDesktopPaintsTheFrameOnDemand` échoue sur le runner Apple :
+
+```
+InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+J'ai attribué ça à une course sur `web.isLoading` — un drapeau encore faux
+juste après `loadHTMLString`, donc une boucle qui sort au premier tour. Le
+diagnostic était plausible, il désignait une faute réelle, et c'était le jumeau
+d'une course corrigée dix lignes plus haut le même jour. **Il était faux.** La
+course est corrigée, le test échoue à l'identique.
+
+Ce qui reste et qu'aucune relecture n'a donné : **des neuf tests, c'est le seul
+dont la page porte un `<canvas>`** — les huit autres passent, dont un `place`
+de 4 Mio. Ce n'est pas une cause, c'est la seule chose qui les sépare.
+`InvalidTransition` n'apparaît nulle part dans l'arbre : c'est WebKit qui parle
+d'un état interne, sans nommer ce qui l'y a mis.
+
+Plutôt que de deviner une deuxième fois, **la page dit ce qui lui arrive** : le
+corps du pilote est enveloppé d'un `try`/`catch` qui pose `window.wisqFailure`,
+`load()` lit ce verdict après `didFinish`, et le délégué signale
+`webViewWebContentProcessDidTerminate`. Trois refus nommés — `.script`,
+`.thePageNeverCameUp`, `.theViewsProcessDied` — au lieu d'un message opaque.
+
+Le `catch` ajouté pour diagnostiquer la CI est lui-même jugé, parce que c'est
+exactement le moment où l'on écrit du code que rien ne tient :
+`a_page_that_cannot_install_itself_says_so` fait tourner le vrai pilote avec un
+`document.getElementById` qui rend `null`.
+
+Si le prochain run nomme un processus de contenu mort, la suite écrite d'avance
+est une cible de test hébergée par l'application via `scripts/test-app.sh`, qui
+tourne déjà dans un simulateur — **pas** le retrait du test.
+
+### Ce que le passage suivant a répondu, et ce qu'il a démenti
+
+Deux échecs au lieu d'un, et le second était de moi : la sonde refusait quand la
+question échouait, ce qui a cassé `testADesktopWithoutAFrameRefusesToPaint`,
+vert au tour précédent. **Un instrument qui change ce qu'il mesure ne mesure
+plus rien** ; il observe désormais sans casser.
+
+Ce test-là n'a **aucun écran**, donc l'hypothèse du canvas tombe — elle n'était
+qu'une corrélation, et elle est notée comme telle plus haut.
+
+Ce qui reste, et qui vaut mieux que trois hypothèses : deux tests **écrits à
+l'identique** (`LocalDesktop(pages: 1, entry: base)` puis `load()`), l'un passe,
+l'autre échoue. Ce n'est pas un chemin de code.
+
+Et une seconde garde qui n'en était pas une : `InvalidTransition` est sorti de
+`load()` **sous son nom d'origine**, alors que les six appels à la vue de ce
+fichier sont chacun enveloppés d'un `do`/`catch` qui les traduit. Une erreur
+traduite se serait affichée `script(...)`. Donc elle ne vient d'aucun de nos
+appels. `load()` est maintenant enveloppée **en entier**, et les deux réponses
+possibles avancent : un `InvalidTransition` nu prouverait que `load()` ne la
+lève pas, et déplacerait la question vers XCTest et le démontage des vues —
+c'est-à-dire vers la cible hébergée par l'application.
+
+### Et c'est ce qui est arrivé : il manquait un hôte, pas une correction
+
+Le même message nu, à la même ligne, `load()` enveloppée en entier. L'erreur ne
+vient d'aucun de nos appels.
+
+Correction de la tranche précédente : l'hypothèse du canvas n'était pas morte.
+Le test sans écran qui semblait la démentir échouait **à cause de ma sonde** ;
+ma régression retirée, le seul rouge est de nouveau le seul test dont la page
+porte un `<canvas>`. Enterrer une hypothèse sur une preuve qu'on a fabriquée
+soi-même ne vaut pas mieux que la garder sans preuve.
+
+La cause est écrite dans `project.yml`, à la cible `WisqHostedTests` : « WebKit
+rend dans un processus séparé qu'iOS ne démarre pas pour un `xctest` nu ».
+`swift test` en est un, et ce test est le seul des neuf à demander une surface
+de rendu.
+
+Il vit donc dans `Tests/WisqHostedTests/LocalDesktopPaintTests.swift`, hébergé
+par l'application, exécuté à chaque commit dans un iPhone simulé par
+`scripts/test-app.sh` — comme la sonde WebKit et la sonde Metal, pour la même
+raison qu'elles. **Ni retiré, ni affaibli.**
+
+Ce que ça coûte à savoir : trois tours, pour une réponse que ce dépôt avait déjà
+écrite. J'ai cherché dans le fichier qui échouait plutôt que dans ce qui était
+connu de WebKit ici.
+
+### Et le canvas non plus n'était pas la cause : c'est l'ordre
+
+Le passage suivant a fait échouer `testADesktopWithoutAFrameRefusesToPaint`,
+**sans écran**, qui **passait au tour d'avant sur un code identique**. Deux
+verdicts opposés, rien de changé entre les deux : c'est non déterministe, et le
+canvas tombe comme les deux explications précédentes.
+
+Ce qui est constant : le test qui échoue est le **premier du processus**, celui
+qui crée le premier `WKWebView` à froid, et toujours le plus lent — 2,4 s puis
+3,3 s là où les autres tiennent en un dixième de seconde.
+
+La conclusion ne change pas de direction, elle s'élargit : **aucun** de ces
+tests ne peut vivre sous `swift test`. Sept sur huit passaient en héritant d'un
+état déjà chaud, ce qui n'est pas une garde. La suite entière est donc hébergée
+par l'application, et les deux étapes ajoutées à « Cœur (Apple) » sont retirées
+— elles existaient pour exécuter ces tests là où ils ne peuvent pas l'être.
+
+**Ne pas rouvrir** : la course sur `web.isLoading` (réelle, corrigée, sans
+effet) ; « l'erreur vient d'un de nos appels » (réfutée par une enveloppe
+totale) ; le canvas (réfuté par un test sans écran qui échoue et un passage qui
+réussit sur le même code).
 
 ### La boucle ne rendait jamais la main
 

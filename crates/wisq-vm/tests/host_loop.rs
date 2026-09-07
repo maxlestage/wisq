@@ -1807,3 +1807,94 @@ console.log("finale " + images[images.length - 1]);
         "wisqCesser doit peindre l'état dans lequel la machine s'est arrêtée"
     );
 }
+
+/// **Une page qui n'arrive pas à s'installer doit le dire.**
+///
+/// Le script du module peut lever : un canvas absent du corps, un contexte 2d
+/// refusé, une RAM que la boucle hôte n'accepte pas. La vue finit quand même
+/// de charger — `didFinish` ne dit rien de ce que le script a fait — et sans
+/// trace, l'application ne l'apprendrait que plusieurs appels plus loin, par le
+/// symptôme.
+///
+/// Le pilote retient donc sa raison dans `window.wisqFailure`. **Et c'est une
+/// garde que rien ne tenait** : elle a été écrite pour diagnostiquer un échec
+/// de la CI, ce qui est précisément le moment où l'on ajoute du code qu'aucun
+/// test ne juge.
+#[test]
+fn a_page_that_cannot_install_itself_says_so() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : cette garde ne serait vérifiée par rien.");
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-panne-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+
+    // Un cadre déclaré, et **aucun canvas dans le corps**. C'est exactement ce
+    // qui arriverait si la page et le pilote divergeaient.
+    let driver_source = wisq_vm::desktop::driver(
+        1,
+        0x1000,
+        "wisq",
+        Some(wisq_vm::desktop::Screen {
+            base: 0,
+            width: 8,
+            height: 8,
+        }),
+    );
+    let harness = scratch.join("p.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+globalThis.window = globalThis;
+globalThis.webkit = {{ messageHandlers: {{ wisq: {{ postMessage: () => {{}} }} }} }};
+globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+// Le document ne porte pas le canvas que la page déclarerait.
+globalThis.document = {{ getElementById: () => null }};
+
+{driver}
+
+console.log("raison " + window.wisqFailure);
+console.log("run " + typeof window.wisqRun);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            driver = driver_source,
+        ),
+    )
+    .expect("le harnais");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&harness)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    // **Le pilote ne doit pas emporter la page avec lui.** Une exception qui
+    // remonte jusqu'au module laisse la vue sans rien à interroger ; retenue,
+    // elle se lit.
+    assert!(
+        output.status.success(),
+        "le pilote doit retenir sa panne, pas la laisser sortir : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le harnais n'a pas dit « {label} » :\n{text}"))
+    };
+    assert!(
+        seen("raison").contains("canvas"),
+        "la raison doit nommer ce qui manque : « {} »",
+        seen("raison")
+    );
+    // Et `wisqRun` ne doit pas exister : une page à moitié montée qui offrirait
+    // quand même de démarrer est pire qu'une page qui refuse.
+    assert_eq!(
+        seen("run"),
+        "undefined",
+        "une page qui n'a pas fini de s'installer ne doit pas offrir de démarrer"
+    );
+}
