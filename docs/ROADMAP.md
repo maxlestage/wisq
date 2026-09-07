@@ -2415,6 +2415,29 @@ Si le prochain run nomme un processus de contenu mort, la suite écrite d'avance
 est une cible de test hébergée par l'application via `scripts/test-app.sh`, qui
 tourne déjà dans un simulateur — **pas** le retrait du test.
 
+### Ce que le passage suivant a répondu, et ce qu'il a démenti
+
+Deux échecs au lieu d'un, et le second était de moi : la sonde refusait quand la
+question échouait, ce qui a cassé `testADesktopWithoutAFrameRefusesToPaint`,
+vert au tour précédent. **Un instrument qui change ce qu'il mesure ne mesure
+plus rien** ; il observe désormais sans casser.
+
+Ce test-là n'a **aucun écran**, donc l'hypothèse du canvas tombe — elle n'était
+qu'une corrélation, et elle est notée comme telle plus haut.
+
+Ce qui reste, et qui vaut mieux que trois hypothèses : deux tests **écrits à
+l'identique** (`LocalDesktop(pages: 1, entry: base)` puis `load()`), l'un passe,
+l'autre échoue. Ce n'est pas un chemin de code.
+
+Et une seconde garde qui n'en était pas une : `InvalidTransition` est sorti de
+`load()` **sous son nom d'origine**, alors que les six appels à la vue de ce
+fichier sont chacun enveloppés d'un `do`/`catch` qui les traduit. Une erreur
+traduite se serait affichée `script(...)`. Donc elle ne vient d'aucun de nos
+appels. `load()` est maintenant enveloppée **en entier**, et les deux réponses
+possibles avancent : un `InvalidTransition` nu prouverait que `load()` ne la
+lève pas, et déplacerait la question vers XCTest et le démontage des vues —
+c'est-à-dire vers la cible hébergée par l'application.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend

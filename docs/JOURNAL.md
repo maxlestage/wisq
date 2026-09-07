@@ -11060,3 +11060,56 @@ où l'on écrit ce qu'aucun test ne juge, le `catch` est jugé ici :
 `a_page_that_cannot_install_itself_says_so` fait tourner le vrai pilote avec un
 `document.getElementById` qui rend `null`, et vérifie que la raison nomme le
 canvas et que `wisqRun` reste `undefined`.
+
+### Deux tests identiques, un qui passe et un qui casse
+
+Le passage suivant a nommé la chose autrement que je ne l'attendais : **deux
+échecs au lieu d'un**, et j'en avais causé un.
+
+```
+LocalDesktopTests.swift:227: testADesktopWithoutAFrameRefusesToPaint … InvalidTransition
+LocalDesktopTests.swift:210: testTheDesktopPaintsTheFrameOnDemand   … InvalidTransition
+```
+
+Le premier **passait** au tour d'avant (2,429 s, vérifié dans le log, pas de
+mémoire). Ce qui l'a cassé est la sonde que je venais d'écrire : `load()`
+interrogeait la page sur son état et **refusait** si la réponse n'arrivait pas.
+Un instrument écrit pour observer un échec est devenu la cause d'un autre. Il
+observe maintenant sans casser : si la question elle-même échoue, elle est
+retenue dans `pageVerdict` et le chargement réussit comme avant ; seul un
+verdict lisible et négatif refuse.
+
+Et l'hypothèse du canvas tombe : `testADesktopWithoutAFrameRefusesToPaint`
+n'a **aucun écran**. Elle n'était de toute façon qu'une corrélation, écrite comme
+telle.
+
+Reste un fait que je n'explique pas, et qui vaut mieux que trois hypothèses :
+
+| | construction | verdict |
+| --- | --- | --- |
+| `testTheDesktopRunsAMachineInsideARealWebView` | `LocalDesktop(pages: 1, entry: base)` puis `load()` | passe |
+| `testADesktopWithoutAFrameRefusesToPaint` | `LocalDesktop(pages: 1, entry: base)` puis `load()` | échoue |
+
+**Deux tests écrits à l'identique, l'un passe et l'autre non.** Ce n'est donc pas
+un chemin de code : c'est l'ordre, ou le nombre de vues déjà ouvertes, ou
+quelque chose que le fichier ne montre pas.
+
+### La garde qui n'en était pas une, pour la deuxième fois de la journée
+
+L'autre chose que ce passage établit est plus utile encore. `InvalidTransition`
+est sorti de `load()` **sous son nom d'origine** — or chacun des six appels à la
+vue, dans ce fichier, est déjà enveloppé d'un `do`/`catch` qui traduit en refus
+nommé. Une erreur traduite se serait affichée `script(...)`.
+
+Donc elle ne vient d'aucun de nos appels. Je ne sais pas encore d'où ; ce que je
+sais, c'est que le raisonnement « chaque appel est gardé, donc rien ne sort »
+était faux, et qu'aucune relecture ne l'aurait montré — seule la forme du
+message dans le log l'a montrée.
+
+`load()` est donc enveloppée **en entier**. Si le prochain passage affiche
+encore un `InvalidTransition` nu à la même ligne, c'est la preuve que l'erreur
+n'est pas levée par `load()` du tout, et la question se déplace vers XCTest et
+le démontage des vues — c'est-à-dire vers la cible hébergée par l'application.
+S'il affiche `hors de nos gardes : …`, elle traverse bien cette fonction et je
+saurai laquelle des lignes. Les deux réponses avancent ; c'est ce qui manquait
+aux deux tours précédents.
