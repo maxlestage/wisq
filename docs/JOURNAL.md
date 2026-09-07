@@ -10527,3 +10527,58 @@ Cinq sur cinq, dont celui qui compte vraiment : **changer la constante du
 header sans changer Rust fait tomber le programme C**. Le même nombre est
 déclaré dans deux fichiers et deux langages, et il ne peut plus diverger en
 silence — c'est exactement la faute que ce dépôt a déjà payée ailleurs.
+
+## La machine dans la vue, et ce que je n'ai pas pu vérifier
+
+Le dernier morceau : un `WKWebView` qui charge la page, déclare le gestionnaire
+de messages, répond aux demandes de traduction et fait tourner la machine.
+
+**Il ne va pas dans `WisqUI`.** Une vue SwiftUI y serait à sa place, mais ceci
+n'est pas une vue, c'est la conduite. `WisqUI` n'est que *compilé* par la CI ;
+`WisqVMRust` est **exécuté**, sur macOS comme sur Linux. Derrière un
+`#if canImport(WebKit)`, la conduite se fait donc juger à chaque commit par
+« Cœur (Apple) », et il ne reste à l'écran que ce qui a besoin d'un écran.
+
+### La fuite que la structure évite
+
+`add(_:name:)` retient **fortement** ce qu'on lui donne. Si le bureau se
+déclarait lui-même gestionnaire, la boucle serait fermée : le bureau tient la
+vue, la vue tient son contrôleur, le contrôleur tiendrait le bureau. Rien ne se
+libérerait jamais — un processus de contenu web par bureau ouvert, jusqu'à la
+fin de l'application.
+
+Un relais avec une référence **faible** vers le bureau coupe la chaîne, et
+aucun `deinit` n'a alors à défaire quoi que ce soit. J'avais d'abord écrit ce
+`deinit`, avec un `MainActor.assumeIsolated` dedans — c'est-à-dire une
+supposition sur le fil qui libère un objet. Elle était inutile : c'était la
+structure qui devait changer, pas une garde à ajouter.
+
+### Ce que ce test dit, et ce qu'il ne dit pas
+
+Toutes les moitiés avaient été jugées séparément : l'émetteur contre le
+silicium, la boucle hôte sous le JavaScriptCore de Bun, la page sous un pont
+bouchonné, le C ABI par un programme C, le pont Swift sous Linux. Le test
+`LocalDesktopTests` est le premier à les faire tenir **ensemble**, dans le
+moteur qui les portera, avec un vrai gestionnaire de messages entre les deux.
+
+Il vérifie que la machine a tourné, pas seulement qu'elle s'est arrêtée au bon
+endroit : RDX à deux veut dire que les deux régions ont couru. Un arrêt au bon
+endroit se produirait aussi si rien ne s'était exécuté.
+
+Ce qu'il ne dit pas : un runner macOS n'est pas un iPhone. Ce qui est vérifié
+est que les moitiés s'emboîtent, **pas** que WebKit garde le droit de compiler
+sur un appareil. Cette question-là n'a toujours qu'une réponse possible, la
+sonde de l'application sur un vrai téléphone.
+
+### Ce que je ne peux pas vérifier d'ici, et il faut le dire net
+
+**Ce fichier n'a jamais été typé.** `canImport(WebKit)` est faux sous Linux :
+le compilateur en lit la syntaxe et s'arrête là. Le reste de la journée, tout
+ce que j'ai écrit a été construit et exécuté ici avant d'être poussé ; ceci
+non. Les signatures de `callAsyncJavaScript`, l'isolation du gestionnaire de
+messages, la conformité au protocole — rien de tout ça n'est établi de mon
+côté.
+
+C'est la vraie limite du conteneur, et elle est beaucoup plus étroite que celle
+que j'ai répétée cinq tranches durant. Elle ne tient plus qu'à un framework
+Apple, pas à l'absence d'une chaîne Swift.
