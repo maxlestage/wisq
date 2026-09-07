@@ -376,6 +376,20 @@ pub enum Op {
     /// calcul d'adresse — base, index, échelle, déplacement — contre le
     /// silicium sans avoir encore de mémoire à comparer.
     Lea,
+    /// **Lire un port d'entrée-sortie.** Le port vient d'un octet immédiat
+    /// (`E4`, `E5`) ou de DX (`EC`, `ED`) ; la largeur vient de l'opcode pair —
+    /// un octet — ou impair — celle des préfixes. Le résultat va dans
+    /// l'accumulateur, à cette largeur.
+    ///
+    /// **Pourquoi ces deux-là existent maintenant** : un noyau Linux écrit sur
+    /// sa console dans ses premières centaines d'instructions, par `out` sur le
+    /// port 0x3F8. Sans elles le décodeur rendait `None`, l'émetteur refusait
+    /// la région, et un noyau lancé par le bureau s'arrêtait avant d'avoir rien
+    /// dit — un silence indiscernable d'une panne.
+    PortIn,
+    /// **Écrire sur un port d'entrée-sortie.** `E6`, `E7` avec un port
+    /// immédiat ; `EE`, `EF` avec DX. La valeur vient de l'accumulateur.
+    PortOut,
     /// `setcc` : écrire **un octet**, zéro ou un, selon les drapeaux.
     Set(Condition),
     /// `cmovcc` : écrire la source, ou laisser la destination telle quelle.
@@ -1631,6 +1645,21 @@ impl Cpu {
             self.jumped = true;
             return;
         }
+        // **Les entrées-sorties, que ce cœur-ci ne fait pas — et qui le
+        // disent.** Le décodeur les lit depuis cette tranche, parce qu'un
+        // noyau muet est indiscernable d'un noyau en panne. Les *exécuter*
+        // demande des périphériques, et cet interpréteur n'en a pas : il pose
+        // donc une faute, comme pour une instruction indéfinie.
+        //
+        // Ce n'est pas un oubli laissé en silence : sans ce bras, `in` et
+        // `out` tomberaient dans le calcul arithmétique plus bas et
+        // écriraient n'importe quoi dans l'accumulateur. Un refus nommé vaut
+        // mieux qu'un résultat inventé.
+        if matches!(instruction.op, Op::PortIn | Op::PortOut) {
+            self.faulted = true;
+            self.jumped = true;
+            return;
+        }
         if instruction.op == Op::Lea {
             if let Some(address) = instruction.memory {
                 let after = self.after(instruction);
@@ -1883,6 +1912,9 @@ impl Cpu {
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
             Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
+            Op::PortIn | Op::PortOut => {
+                unreachable!("les entrées-sorties sortent avant, avec une faute")
+            }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
                 unreachable!("la direction et les chaînes sortent avant")
             }
@@ -2034,6 +2066,21 @@ impl Prefixes {
 }
 
 /// **Décoder, sans exécuter.** Rendre `None` plutôt que deviner.
+/// **La largeur d'une entrée-sortie, qui ne suit pas tout à fait la règle
+/// générale.** L'opcode pair porte un octet, l'impair la largeur des préfixes
+/// — mais il n'existe pas d'entrée-sortie de soixante-quatre bits, et un
+/// `REX.W` posé devant n'en crée pas une. Sans ce plafond, `48 ef` écrirait
+/// huit octets sur un périphérique qui en attend quatre.
+fn port_width(opcode: u8, prefixes: Prefixes) -> Width {
+    if opcode % 2 == 0 {
+        return Width::Byte;
+    }
+    match prefixes.width(false) {
+        Width::Word => Width::Word,
+        _ => Width::Dword,
+    }
+}
+
 pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     let mut at = 0usize;
     let mut prefixes = Prefixes::default();
@@ -2757,6 +2804,39 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         // **suivante** : c'est `rip + longueur + déplacement`, et oublier la
         // longueur décale toutes les cibles de deux à six octets — un saut qui
         // atterrit dans le milieu d'une instruction.
+        // **Les huit formes par lesquelles un invité parle au monde.**
+        //
+        // La largeur suit une règle simple et vaut d'être écrite plutôt que
+        // relue huit fois : l'opcode **pair** transporte un octet, l'impair la
+        // largeur des préfixes — mais bornée à quatre, parce qu'il n'existe pas
+        // d'entrée-sortie de soixante-quatre bits. Un `REX.W` devant `out` ne
+        // fait pas huit octets ; l'ignorer écrirait quatre octets de trop.
+        0xe4..=0xe7 => {
+            let port = u64::from(*bytes.get(at)?);
+            at += 1;
+            Some(Decoded {
+                op: if opcode < 0xe6 {
+                    Op::PortIn
+                } else {
+                    Op::PortOut
+                },
+                imm: port,
+                length: at,
+                ..Decoded::nothing(port_width(opcode, prefixes))
+            })
+        }
+        0xec..=0xef => Some(Decoded {
+            op: if opcode < 0xee {
+                Op::PortIn
+            } else {
+                Op::PortOut
+            },
+            // Le port est dans DX, et l'exécutant le sait de l'opcode : rien à
+            // porter ici. Zéro est donc « pas d'immédiat », pas « port zéro ».
+            imm: 0,
+            length: at,
+            ..Decoded::nothing(port_width(opcode, prefixes))
+        }),
         0xeb => {
             let displacement = i64::from(*bytes.get(at)? as i8);
             at += 1;
@@ -3411,6 +3491,70 @@ mod tests {
             (cpu.regs[0] as u32 as i32, cpu.regs[2] as u32 as i32),
             (-1_431_655_765, -1)
         );
+    }
+
+    /// **Les huit opcodes par lesquels un noyau parle, et que rien ne décodait.**
+    ///
+    /// Un noyau Linux écrit sur sa console dans ses premières centaines
+    /// d'instructions, et il le fait par `out` sur le port 0x3F8. Le décodeur
+    /// ne connaissait aucune des huit formes : `decode` rendait `None`, donc
+    /// l'émetteur refusait la région, donc un vrai noyau lancé par le bureau
+    /// s'arrêtait **avant d'avoir rien dit** — et le silence est indiscernable
+    /// d'une panne. C'est la leçon que l'arbre de périphériques mal aligné a
+    /// déjà donnée à ce dépôt : le seul symptôme était l'absence de symptôme.
+    ///
+    /// Les huit, avec ce qui les distingue : le port vient d'un octet immédiat
+    /// ou de DX, la largeur vient de l'opcode pair ou impair — un octet pour
+    /// le pair, la largeur des préfixes pour l'impair — et le sens vient de
+    /// `E4/E5/EC/ED` contre `E6/E7/EE/EF`.
+    #[test]
+    fn the_eight_shapes_a_kernel_speaks_through_are_decoded() {
+        for (bytes, op, width, port, length) in [
+            (
+                &[0xe4, 0x60][..],
+                Op::PortIn,
+                Width::Byte,
+                Some(0x60u16),
+                2usize,
+            ),
+            (&[0xe5, 0x60][..], Op::PortIn, Width::Dword, Some(0x60), 2),
+            (&[0xe6, 0x80][..], Op::PortOut, Width::Byte, Some(0x80), 2),
+            (&[0xe7, 0x80][..], Op::PortOut, Width::Dword, Some(0x80), 2),
+            (&[0xec][..], Op::PortIn, Width::Byte, None, 1),
+            (&[0xed][..], Op::PortIn, Width::Dword, None, 1),
+            (&[0xee][..], Op::PortOut, Width::Byte, None, 1),
+            (&[0xef][..], Op::PortOut, Width::Dword, None, 1),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| {
+                panic!("{bytes:02x?} doit se décoder : sans lui un noyau est muet")
+            });
+            assert_eq!(step.op, op, "{bytes:02x?} : le sens");
+            assert_eq!(step.width, width, "{bytes:02x?} : la largeur");
+            assert_eq!(step.length, length, "{bytes:02x?} : la longueur lue");
+            match port {
+                // Le port immédiat voyage dans `imm`, comme tout immédiat.
+                Some(number) => assert_eq!(step.imm, u64::from(number), "{bytes:02x?} : le port"),
+                // Et sans immédiat, c'est DX — que le décodeur ne nomme pas
+                // ici : l'exécutant le sait de l'opcode.
+                None => assert_eq!(step.imm, 0, "{bytes:02x?} : pas d'immédiat"),
+            }
+        }
+    }
+
+    /// **La largeur de seize bits, qui n'est pas un détail.** `out %ax, %dx`
+    /// s'écrit avec le préfixe 0x66, et un noyau s'en sert pour les registres
+    /// de seize bits des contrôleurs. La confondre avec quatre octets écrirait
+    /// deux octets de trop sur un périphérique.
+    #[test]
+    fn the_sixteen_bit_port_width_comes_from_the_prefix() {
+        let step = decode(&[0x66, 0xef]).expect("out %ax, %dx se décode");
+        assert_eq!(step.op, Op::PortOut);
+        assert_eq!(
+            step.width,
+            Width::Word,
+            "le préfixe 0x66 fait seize bits, pas trente-deux"
+        );
+        assert_eq!(step.length, 2);
     }
 
     /// **Le produit signé de deux nombres de soixante-quatre bits**, dont la

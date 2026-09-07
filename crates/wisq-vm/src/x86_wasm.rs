@@ -1471,6 +1471,16 @@ impl Module {
         ) {
             return None;
         }
+        // **Une entrée-sortie n'est pas un calcul, et le dire ici était
+        // nécessaire.** Le décodeur les lit ; l'émetteur ne sait pas encore
+        // les traduire. Sans ce refus elles tombaient dans le chemin
+        // arithmétique — mesuré, pas supposé : le test qui suit ce fichier a
+        // fait sonner l'`unreachable!` posé là-bas. Une région qui aurait
+        // écrit dans l'accumulateur au lieu de parler à un périphérique se
+        // serait comportée *presque* bien, ce qui est pire qu'un refus franc.
+        if matches!(step.op, Op::PortIn | Op::PortOut) {
+            return None;
+        }
         // Ne rien faire n'émet rien.
         if step.op == Op::Nop {
             return Some(());
@@ -1612,6 +1622,9 @@ impl Module {
                         .load(Body::scratch(1))
                         .op(code::I64_ADD);
                 }
+                Op::PortIn | Op::PortOut => unreachable!(
+                    "une entrée-sortie n'est pas un calcul : `translate` la refuse avant"
+                ),
                 Op::Sub | Op::Cmp => {
                     b.load(Body::scratch(0))
                         .load(Body::scratch(1))
@@ -1978,6 +1991,9 @@ impl Module {
     fn carry_and_overflow(step: &Decoded, _mask: u64, sign: u64, b: &mut Body) {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
+            Op::PortIn | Op::PortOut => {
+                unreachable!("une entrée-sortie n'est pas un calcul : `translate` la refuse avant")
+            }
             Op::And | Op::Or | Op::Xor | Op::Test => {}
             Op::Add | Op::Adc => {
                 // CF : le résultat est passé sous l'opérande de gauche.
@@ -3683,5 +3699,30 @@ impl Module {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    /// **Une entrée-sortie se fait refuser, et par le bon refus.**
+    ///
+    /// Le décodeur les lit depuis la tranche qui les a ajoutées ; l'émetteur,
+    /// lui, ne sait pas encore les traduire. Le danger est qu'il produise du
+    /// code **faux** plutôt que rien — une région qui écrirait dans
+    /// l'accumulateur au lieu de parler à un périphérique se comporterait
+    /// presque bien, ce qui est pire qu'un refus franc.
+    ///
+    /// `CannotTranslate` porte la doc « ce cas ne s'est jamais produit » :
+    /// c'est son premier usage réel, et ce test le tient.
+    #[test]
+    fn a_port_access_is_refused_rather_than_mistranslated() {
+        // `out %al, $0x80` puis `ret` : la seconde n'est jamais atteinte.
+        let bytes = [0xe6u8, 0x80, 0xc3];
+        match Module::region_or_why(&bytes, 0x1000, 0) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 0, "à la première instruction"),
+            other => panic!("l'émetteur doit refuser franchement, pas rendre {other:?}"),
+        }
     }
 }
