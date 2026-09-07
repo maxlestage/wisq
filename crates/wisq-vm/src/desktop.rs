@@ -62,11 +62,27 @@ impl std::error::Error for Refusal {}
 ///
 /// **Ce que l'application doit fournir**, et rien d'autre :
 /// - un gestionnaire de messages nommé `channel`, qui reçoit
-///   `{ id, address, slot }` pour une traduction et `{ stopped, at }` quand la
-///   machine s'arrête ;
+///   `{ id, address, slot, octets }` pour une traduction et `{ stopped, at }`
+///   quand la machine s'arrête ;
 /// - un appel à `wisqTranslated(id, octets)` pour répondre, `octets` étant un
-///   tableau de nombres ou `null` si l'émetteur refuse ;
+///   tableau de nombres ou `null` si l'émetteur refuse franchement ;
+/// - un appel à `wisqNeedsMore(id)` quand l'émetteur a manqué d'octets — la vue
+///   redemande alors **une** fois avec une fenêtre plus large ;
 /// - un appel à `wisqRun()` pour lancer la machine.
+///
+/// **La demande porte les octets, et c'est le point qui a manqué le plus
+/// longtemps.** La RAM de l'invité vit dans la vue ; l'application ne l'a pas.
+/// Une demande qui ne porterait que l'adresse obligerait l'application à
+/// chercher le code dans l'image qu'elle a chargée — juste pour le noyau,
+/// **faux en silence** pour un module que l'invité charge lui-même.
+///
+/// **Ils traversent en base64, et le sens inverse pas.** Ce n'est pas une
+/// incohérence : vers la vue, ce qui coûte est l'analyse d'une source
+/// JavaScript, où un littéral de tableau gagne (mesuré,
+/// `scripts/wasm-crossing-probe.ts`). Depuis la vue, ce qui coûte est la
+/// sérialisation de `postMessage` — une seule chaîne contre quatre mille
+/// nombres à emballer. **Ce second compromis n'est pas mesuré** : il demande un
+/// vrai `WKWebView`, et rien ici n'en a.
 pub fn page(pages: u32, entry: u64, channel: &str) -> Result<String, Refusal> {
     if pages == 0 || !pages.is_power_of_two() {
         return Err(Refusal::RamIsNotAPowerOfTwo(pages));
@@ -102,7 +118,7 @@ let ticket = 0;
 const waiting = new Map();
 
 // Appelé par l'application quand la traduction est prête. `octets` est un
-// tableau de nombres, ou `null` si l'émetteur a refusé la région.
+// tableau de nombres, ou `null` si l'émetteur a refusé franchement la région.
 window.wisqTranslated = (id, octets) => {{
   const settle = waiting.get(id);
   if (settle === undefined) return;
@@ -110,12 +126,36 @@ window.wisqTranslated = (id, octets) => {{
   settle(octets === null ? null : Uint8Array.from(octets));
 }};
 
-const translate = (address, slot) => new Promise(settle => {{
+// Appelé quand l'émetteur a manqué d'octets plutôt que refusé : la vue
+// redemande alors une fois, avec une fenêtre plus large.
+window.wisqNeedsMore = id => {{
+  const settle = waiting.get(id);
+  if (settle === undefined) return;
+  waiting.delete(id);
+  settle("encore");
+}};
+
+const translate = (address, slot, code) => new Promise(settle => {{
   const id = ++ticket;
   waiting.set(id, settle);
+  // **Les octets partent en base64.** Une seule chaîne à sérialiser plutôt que
+  // quatre mille nombres à emballer un par un — le compromis inverse de celui
+  // du retour, où c'est l'analyse d'une source JavaScript qui coûte. Concaténé
+  // par tranches : passer seize kibioctets à `String.fromCharCode` en une fois
+  // dépasse la pile d'arguments.
+  let binaire = "";
+  for (let at = 0; at < code.length; at += 4096) {{
+    binaire += String.fromCharCode.apply(null, code.subarray(at, at + 4096));
+  }}
   // L'adresse part en **texte** : un entier de soixante-quatre bits ne
   // traverse pas JSON sans perdre ses bits de poids fort.
-  bridge.postMessage({{ kind: "traduire", id, address: address.toString(), slot }});
+  bridge.postMessage({{
+    kind: "traduire",
+    id,
+    address: address.toString(),
+    slot,
+    octets: btoa(binaire),
+  }});
 }});
 
 const vm = machine({{ translate, pages: {pages} }});

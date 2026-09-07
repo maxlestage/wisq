@@ -10419,3 +10419,71 @@ architectures aussi. Ce relevé n'en a pas, et il n'en aura probablement pas —
 il demande un noyau de trente-cinq mégaoctets que la CI ne télécharge pas. Ce
 qui est faisable est de le dater, et c'est fait : il porte maintenant la trace
 de sa propre péremption.
+
+## La vue envoie les octets, et le bouchon cesse de mentir
+
+La correction du défaut trouvé la tranche d'avant : `translate(address, slot)`
+devient `translate(address, slot, code)`. La vue lit une fenêtre dans **sa
+propre** mémoire, à l'adresse repliée, et l'envoie avec la demande.
+
+Deux précautions dans la lecture, et aucune n'est décorative. La longueur est
+bornée par la fin de la RAM invitée, parce que la correspondance vit juste
+au-dessus : lire plus loin l'enverrait à l'application, qui la prendrait pour
+du code. Et c'est une **copie**, pas une vue — une vue sur `memory.buffer` se
+détache si la mémoire grandit, et l'invité peut la réécrire pendant
+l'aller-retour.
+
+### Le bouchon devait changer avant le code
+
+Le défaut n'était pas visible parce que le test injecte le traducteur, et que
+le bouchon répondait sans regarder les octets. Un bouchon complaisant fait
+passer un contrat impossible pour un contrat tenu.
+
+Les deux bouchons **refusent** maintenant une demande sans octets, et vérifient
+que la fenêtre porte bien le code de la région annoncée. Ça a eu une
+conséquence que je n'avais pas prévue et qui vaut mieux que ce que je visais :
+le test doit désormais **charger le code dans la mémoire de l'invité** avant de
+lancer la machine — exactement ce que fera l'application avec l'image du noyau.
+Il ne le faisait pas du tout ; la mémoire était vide et personne ne s'en
+apercevait.
+
+Vérifié en cassant : faire lire la fenêtre toujours à l'offset zéro fait
+tomber l'anneau. La garde est vivante.
+
+### La réponse aussi devait changer, et je ne l'avais pas vu en concevant
+
+`wisqTranslated(id, octets)` ne sait dire que « voilà » ou « refusé ». Pour que
+la vue redemande, il faut une troisième réponse. J'ai suivi le vocabulaire que
+le fichier avait déjà — deux sentinelles gelées `MUTE` et `BROKEN` pour les
+pannes de l'application — en ajoutant `MORE` et `wisqNeedsMore(id)`, plutôt
+qu'une valeur-sentinelle déguisée en octets.
+
+Un seul second essai, et le test le tient dans les deux sens : deux demandes
+quand la seconde réussit, **deux et pas trois** quand l'application réclame
+encore. Il vérifie aussi que la seconde fenêtre est plus grande que la
+première — sans quoi une vue qui redemanderait la même chose passerait en
+tournant en rond.
+
+### Deux littéraux dans deux langues, que rien ne rapprochait
+
+Swift produit `wisqNeedsMore(5)` ; c'est le pilote, écrit en Rust, qui pose
+`window.wisqNeedsMore`. Aucun compilateur ne rapproche ces deux chaînes :
+renommer d'un côté donnerait une application qui parle dans le vide, et l'écran
+resterait figé **sans un mot** — le pire mode de panne.
+
+Un test Swift lit donc le pilote et vérifie que ce qu'il appelle y est déclaré.
+Même raison que le miroir des constantes de `web/host.js` : une répétition que
+rien ne compare finit toujours par mentir. Saboté pour vérifier : renommer la
+fonction côté Rust fait tomber le test Swift.
+
+### Le sens entrant, et ce que je ne peux pas mesurer
+
+Les octets traversent en **base64** vers l'application, alors que les modules
+reviennent en **tableau de nombres**. Ce n'est pas une incohérence : au retour,
+ce qui coûte est l'analyse d'une source JavaScript, où un littéral gagne, et
+c'est mesuré. À l'aller, ce qui coûte est la sérialisation de `postMessage` —
+une chaîne contre quatre mille nombres à emballer.
+
+**Ce second compromis n'est pas mesuré**, et ne peut pas l'être d'ici : il
+demande un vrai `WKWebView`. C'est écrit comme tel dans le code, à côté du
+choix, pour que personne ne le prenne pour un chiffre.
