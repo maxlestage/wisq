@@ -162,7 +162,10 @@ public final class LocalDesktop {
         // l'écriture.
         let ram = Int(pages) * 65536
         let folded = Int(address & UInt64(ram - 1))
-        guard folded + image.count <= ram else {
+        // Écrit en **soustrayant** : `folded + image.count` déborderait pour une
+        // taille absurde, et Swift piégerait au lieu de refuser. `folded` est
+        // toujours plus petit que `ram`, donc la soustraction est sûre.
+        guard image.count <= ram - folded else {
             throw Failure.imageDoesNotFit(folded: folded, bytes: image.count, ram: ram)
         }
         let chunk = 48 * 1024
@@ -192,6 +195,67 @@ public final class LocalDesktop {
             }
             written += piece.count
         }
+    }
+
+    /// **Relire la mémoire de l'invité**, à l'adresse repliée.
+    ///
+    /// Le miroir de `place`, et il porte la même borne : la correspondance vit
+    /// juste au-dessus de la RAM, et la relire l'enverrait à l'application, qui
+    /// la prendrait pour de la mémoire invitée.
+    ///
+    /// **Pourquoi ça existe.** Une écriture qu'on ne peut pas relire ne se
+    /// vérifie pas : une `place` qui perdrait une tranche sur deux se
+    /// comporterait exactement comme une `place` qui marche, jusqu'à ce que la
+    /// machine saute dans le vide bien plus tard. C'est aussi ce qui permet à
+    /// l'application de tirer un instantané, ou de regarder ce que l'invité a
+    /// écrit quelque part.
+    ///
+    /// **Le chemin est le même que celui de l'écriture, et il coûte autant** :
+    /// du base64 par tranches à travers le pont. Relire un noyau entier serait
+    /// aussi cher que l'écrire.
+    public func read(_ count: Int, at address: UInt64) async throws -> Data {
+        let ram = Int(pages) * 65536
+        let folded = Int(address & UInt64(ram - 1))
+        guard count >= 0, count <= ram - folded else {
+            throw Failure.imageDoesNotFit(folded: folded, bytes: count, ram: ram)
+        }
+        var image = Data()
+        image.reserveCapacity(count)
+        let chunk = 48 * 1024
+        while image.count < count {
+            let piece = min(chunk, count - image.count)
+            let script = """
+                const vue = new Uint8Array(
+                  window.wisqMachine.memory.buffer, at, combien
+                );
+                // Par tranches : passer quarante-huit kibioctets à
+                // `String.fromCharCode` en une fois dépasse la pile d'arguments.
+                let binaire = "";
+                for (let i = 0; i < vue.length; i += 4096) {
+                  binaire += String.fromCharCode.apply(null, vue.subarray(i, i + 4096));
+                }
+                return btoa(binaire);
+                """
+            let returned: Any
+            do {
+                returned = try await web.callAsyncJavaScript(
+                    script,
+                    arguments: ["at": folded + image.count, "combien": piece],
+                    in: nil,
+                    contentWorld: .page
+                )
+            } catch {
+                throw Failure.script(error.localizedDescription)
+            }
+            guard let text = returned as? String,
+                  let bytes = Data(base64Encoded: text),
+                  bytes.count == piece
+            else {
+                throw Failure.script("la vue n'a pas rendu \(piece) octets lisibles")
+            }
+            image.append(bytes)
+        }
+        return image
     }
 
     /// Fait tourner la machine jusqu'à ce qu'elle s'arrête, et dit pourquoi.

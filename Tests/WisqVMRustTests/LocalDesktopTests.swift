@@ -109,6 +109,84 @@ final class LocalDesktopTests: XCTestCase {
         XCTAssertThrowsError(try LocalDesktop(pages: 0, entry: base))
     }
 
+    // MARK: - L'image du noyau
+
+    /// **Ce que coûte vraiment le chemin de l'image, et ce qu'il pose.**
+    ///
+    /// L'image du noyau traverse par `evaluateJavaScript`, en tranches de
+    /// 48 Kio de base64. C'est écrit « assumé et cher » depuis quatre tranches,
+    /// sans qu'aucun nombre ne soit derrière. En voici un — et le remplacer par
+    /// un gestionnaire de schéma se décidera sur ce nombre, pas sur
+    /// l'impression qu'il est gros.
+    ///
+    /// **Mesurer une écriture sans pouvoir la relire mesurerait peut-être
+    /// zéro octet posé.** Une `place` qui perdrait une tranche sur deux serait
+    /// deux fois plus « rapide », et se comporterait comme une `place` qui
+    /// marche jusqu'à ce que la machine saute dans le vide bien plus tard. Le
+    /// test relit donc, et **aux bords des tranches** : c'est là qu'un décalage
+    /// d'offset se voit, pas au milieu.
+    func testPlacingAKernelSizedImageLandsIntactAndSaysWhatItCosts() async throws {
+        let pages: UInt32 = 128 // huit mébioctets de RAM invitée
+        let bytes = 4 * 1024 * 1024
+        let chunk = 48 * 1024
+        let desktop = try LocalDesktop(pages: pages, entry: base)
+        try await desktop.load()
+
+        // **Un motif, pas des zéros.** Une image de zéros arriverait intacte
+        // même si la moitié des tranches se perdait : la mémoire est déjà à
+        // zéro.
+        // Par un tableau plutôt qu'octet par octet dans un `Data` : quatre
+        // millions d'indexations de `Data` en debug coûteraient plus cher que
+        // ce que ce test mesure.
+        var pattern = [UInt8](repeating: 0, count: bytes)
+        for index in 0..<bytes {
+            pattern[index] = UInt8((index &* 31 &+ 7) & 0xff)
+        }
+        let image = Data(pattern)
+
+        let started = Date()
+        try await desktop.place(image, at: base)
+        let seconds = Date().timeIntervalSince(started)
+        let rate = Double(bytes) / seconds / 1_048_576
+        print("wisq: image de \(bytes / 1_048_576) Mio posée en "
+            + String(format: "%.2f", seconds) + " s, "
+            + String(format: "%.1f", rate) + " Mio/s")
+
+        // **Les bords de tranche, là où un décalage se voit.** Le début, la
+        // dernière et la première paire d'octets de part et d'autre de la
+        // première frontière, une frontière lointaine, et la toute fin.
+        for offset in [0, chunk - 128, chunk, chunk * 2 - 1, chunk * 40, bytes - 256] {
+            let count = min(256, bytes - offset)
+            let back = try await desktop.read(count, at: base + UInt64(offset))
+            XCTAssertEqual(
+                back, image[offset..<offset + count],
+                "les octets relus à \(offset) ne sont pas ceux qui ont été posés"
+            )
+        }
+    }
+
+    /// Relire au-delà de la RAM invitée irait chercher la correspondance, que
+    /// l'application prendrait pour de la mémoire invitée. Même borne que
+    /// l'écriture, dans l'autre sens.
+    func testReadingPastTheGuestsRAMIsRefused() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        let ram = 65536
+        let room = ram - 0x1000 // l'adresse repliée est à 0x1000
+        // Hissé hors de l'assertion : `XCTAssertEqual` prend une autoclosure,
+        // qui accepte `try` mais **pas** `await`.
+        let filled = try await desktop.read(room, at: base)
+        XCTAssertEqual(filled.count, room)
+        do {
+            _ = try await desktop.read(room + 1, at: base)
+            XCTFail("une lecture qui déborde doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(
+                failure, .imageDoesNotFit(folded: 0x1000, bytes: room + 1, ram: ram)
+            )
+        }
+    }
+
     // MARK: - L'écran
 
     /// **Le bureau peint, et il le dit.**
