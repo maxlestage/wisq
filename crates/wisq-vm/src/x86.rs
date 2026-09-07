@@ -455,6 +455,11 @@ pub enum Op {
     Call,
     /// `ret` : dépiler l'adresse de retour et y aller.
     Return,
+    /// **Le retour lointain.** Dépile RIP *et* CS, là où `Return` ne dépile que
+    /// RIP. Un noyau s'en sert une fois, au démarrage, pour charger son propre
+    /// sélecteur de code : c'est la treizième instruction du point d'entrée
+    /// d'Alpine, et la première chose qui l'arrêtait après `wrmsr`.
+    FarReturn,
     /// `leave` : défaire le cadre de pile — RSP reprend RBP, puis RBP se
     /// dépile. Deux instructions en une, et c'est ce qui la rend commode.
     Leave,
@@ -1684,6 +1689,7 @@ impl Cpu {
                 | Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
+                | Op::FarReturn
         ) {
             self.faulted = true;
             self.jumped = true;
@@ -1946,7 +1952,8 @@ impl Cpu {
             | Op::ReadTimestamp
             | Op::CpuId
             | Op::ReadModelRegister
-            | Op::WriteModelRegister => {
+            | Op::WriteModelRegister
+            | Op::FarReturn => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
             }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
@@ -2710,6 +2717,13 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         }
         0xc3 => Some(Decoded {
             op: Op::Return,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // **Le retour lointain**, avec ou sans `REX.W`. Le noyau écrit
+        // `48 cb` ; `cb` seul existe aussi, et le décoder coûte cette ligne.
+        0xcb => Some(Decoded {
+            op: Op::FarReturn,
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
@@ -3669,6 +3683,29 @@ mod tests {
             assert_eq!(
                 step.length, 2,
                 "deux octets, pas d'opérande, pour {bytes:02x?}"
+            );
+        }
+    }
+
+    /// **Le retour lointain, par lequel un noyau charge son sélecteur de code.**
+    ///
+    /// `lretq` dépile RIP **et** CS. Un `ret` proche ne dépile que RIP, et les
+    /// confondre laisserait huit octets sur la pile — une pile décalée est un
+    /// défaut qui ne se voit que bien plus tard, dans une fonction sans rapport.
+    ///
+    /// Les deux formes existent : `cb` seul, et `48 cb` avec le préfixe REX.W.
+    /// Le noyau écrit la seconde ; les décoder toutes deux coûte une ligne et
+    /// évite qu'un `cb` isolé passe pour un octet inconnu.
+    #[test]
+    fn a_far_return_is_not_a_near_one() {
+        for bytes in [&[0xcb][..], &[0x48, 0xcb][..]] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{bytes:02x?} se décode"));
+            assert_eq!(step.op, Op::FarReturn, "pour {bytes:02x?}");
+            assert_eq!(step.length, bytes.len(), "pour {bytes:02x?}");
+            assert_ne!(
+                step.op,
+                Op::Return,
+                "un retour lointain n'est pas un proche"
             );
         }
     }

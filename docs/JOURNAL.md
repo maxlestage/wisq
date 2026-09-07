@@ -11504,3 +11504,48 @@ endroits qui devaient décider : la faute de l'interpréteur et les deux
 une sous-chaîne, pas une expression régulière, et sans correspondance il annonce
 un succès. C'est le piège que ce fichier documente déjà pour `swift test`, et il
 vaut pour `cargo` aussi.
+
+### Le retour lointain, et deux sabotages qui ont survécu
+
+Après `wrmsr`, le point d'entrée du noyau s'arrêtait sur `48 cb` — `lretq`, le
+retour lointain par lequel un noyau charge son propre sélecteur de code. Un
+`ret` proche ne dépile que RIP ; celui-ci dépile RIP **et** CS, et les confondre
+laisserait huit octets sur la pile.
+
+Décodé, il déplace la lecture linéaire de **12 à 25 instructions**, et
+l'exploration de la région de l'octet 52 à l'octet 1512. Le prochain arrêt est
+`0f 01 15` : `lgdt`, le noyau chargeant sa table de descripteurs.
+
+**Mais deux sabotages ont survécu, et chacun disait quelque chose.**
+
+Le premier n'en était pas un : `cargo test --lib "far_return\|entry_reads_whole"`
+a rendu « 0 passed; 61 filtered out » — le filtre de cargo est une **sous-chaîne**,
+pas une expression régulière, et sans correspondance il annonce un succès. C'est
+exactement le piège que la tranche précédente venait d'écrire dans ce journal
+pour `swift test`, et j'y suis retombé une tranche plus tard. Le noter ne suffit
+donc pas : ce qu'il faut, c'est ne jamais lire « ok » sans lire aussi le nombre
+de tests exécutés.
+
+Le second était réel et plus utile. Retirer `FarReturn` de la liste « ce qui
+termine un bloc » n'a fait tomber **aucun** des soixante et un tests. Ni le test
+du décodeur, ni celui du point d'entrée. La raison n'est pas que la ligne est
+inutile — elle est porteuse : sans elle, le retour lointain part au traducteur
+d'instructions, qui le refuse, et la région entière est perdue.
+
+La raison est que le test **ne pouvait pas le voir**. Dans la suite d'entrée du
+noyau, `wrmsr` refuse à l'octet 35 et **masque** tout ce qui vient après ; le
+verdict était le même avec ou sans le défaut. Une assertion qui ne peut pas voir
+ce qu'elle prétend garder n'est pas une garde, et seul le sabotage le dit.
+
+Le remplaçant est minuscule — `mov %rax,%rbx`, `lretq`, puis un octet
+indécodable — et il tient les deux moitiés séparément : le retour lointain
+n'atteint pas le traducteur d'instructions, **et** il termine son bloc, de sorte
+que l'octet d'après n'est jamais lu. Les deux sabotages le font tomber, chacun
+de son côté.
+
+**Et l'outil de mesure confondait deux refus.** `first-region` annonçait « arrêtée
+à l'octet 1512 » là où la première chose qui bloquait était à l'octet 35.
+`CannotDecode` — « je ne sais pas lire ces octets » — est une table à compléter ;
+`CannotTranslate` — « je les lis, je ne sais pas les produire » — est une
+sémantique à écrire. L'outil dit maintenant les deux séparément, parce que ce
+ne sont pas le même travail.
