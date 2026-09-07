@@ -2438,6 +2438,31 @@ possibles avancent : un `InvalidTransition` nu prouverait que `load()` ne la
 lève pas, et déplacerait la question vers XCTest et le démontage des vues —
 c'est-à-dire vers la cible hébergée par l'application.
 
+### Et c'est ce qui est arrivé : il manquait un hôte, pas une correction
+
+Le même message nu, à la même ligne, `load()` enveloppée en entier. L'erreur ne
+vient d'aucun de nos appels.
+
+Correction de la tranche précédente : l'hypothèse du canvas n'était pas morte.
+Le test sans écran qui semblait la démentir échouait **à cause de ma sonde** ;
+ma régression retirée, le seul rouge est de nouveau le seul test dont la page
+porte un `<canvas>`. Enterrer une hypothèse sur une preuve qu'on a fabriquée
+soi-même ne vaut pas mieux que la garder sans preuve.
+
+La cause est écrite dans `project.yml`, à la cible `WisqHostedTests` : « WebKit
+rend dans un processus séparé qu'iOS ne démarre pas pour un `xctest` nu ».
+`swift test` en est un, et ce test est le seul des neuf à demander une surface
+de rendu.
+
+Il vit donc dans `Tests/WisqHostedTests/LocalDesktopPaintTests.swift`, hébergé
+par l'application, exécuté à chaque commit dans un iPhone simulé par
+`scripts/test-app.sh` — comme la sonde WebKit et la sonde Metal, pour la même
+raison qu'elles. **Ni retiré, ni affaibli.**
+
+Ce que ça coûte à savoir : trois tours, pour une réponse que ce dépôt avait déjà
+écrite. J'ai cherché dans le fichier qui échouait plutôt que dans ce qui était
+connu de WebKit ici.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend

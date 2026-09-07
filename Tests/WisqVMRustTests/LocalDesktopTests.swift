@@ -189,35 +189,26 @@ final class LocalDesktopTests: XCTestCase {
 
     // MARK: - L'écran
 
-    /// **Le bureau peint, et il le dit.**
-    ///
-    /// C'est le seul chemin d'affichage qu'un test puisse emprunter ici :
-    /// `requestAnimationFrame` ne tourne que dans une vue que le système
-    /// considère comme affichée, et celle-ci n'est ajoutée à aucune fenêtre.
-    /// `wisqPaint` se laisse appeler à la main **précisément pour ça**.
-    ///
-    /// Il peint **après** avoir fait tourner la machine : une image peinte
-    /// avant que quoi que ce soit ne s'exécute ne dirait rien de plus que
-    /// « le canvas existe ».
-    func testTheDesktopPaintsTheFrameOnDemand() async throws {
-        let width: UInt32 = 32
-        let height: UInt32 = 16
-        let desktop = try LocalDesktop(
-            pages: 1,
-            entry: base,
-            screen: .init(base: base + 0x8000, width: width, height: height)
-        )
-        try await desktop.load()
-        try await desktop.place(program(), at: base)
-        let stopped = try await desktop.run()
-        XCTAssertEqual(stopped.why, "sur place")
-
-        let pixels = try await desktop.paint()
-        XCTAssertEqual(
-            pixels, Int(width * height),
-            "peindre doit rendre le compte de pixels, pas rien"
-        )
-    }
+    // **Le test qui peint vit ailleurs, et c'est le sujet.**
+    //
+    // `testTheDesktopPaintsTheFrameOnDemand` est dans
+    // `Tests/WisqHostedTests/LocalDesktopPaintTests.swift`, hébergé par
+    // l'application et exécuté dans un iPhone simulé. Il a échoué trois fois
+    // ici sur `InvalidTransition { phase: idle, targetPhase: failed(deinit) }`,
+    // un message qui ne nomme rien — et deux explications successives sont
+    // tombées : une course sur `web.isLoading` (réelle, corrigée, sans effet)
+    // puis le canvas (l'échec qui semblait l'accuser était une régression de la
+    // sonde de diagnostic elle-même).
+    //
+    // Ce qui l'a séparé des huit autres n'était pas dans son code : `load()`
+    // enveloppée **en entier** n'a rien attrapé, donc l'erreur ne venait
+    // d'aucun de nos appels. La raison est écrite dans `project.yml`, à la
+    // cible où il vit maintenant : « WebKit rend dans un processus séparé
+    // qu'iOS ne démarre pas pour un `xctest` nu ». `swift test` en est un. Des
+    // neuf tests du bureau, c'était le seul à demander une **surface de
+    // rendu** ; les autres n'évaluent que du JavaScript.
+    //
+    // Il n'est ni retiré ni affaibli. Il est là où sa question a une réponse.
 
     /// **Un bureau sans écran refuse de peindre**, au lieu de laisser croire
     /// qu'une image est passée. C'est le refus qui distingue « rien à montrer »

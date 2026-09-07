@@ -11113,3 +11113,42 @@ le démontage des vues — c'est-à-dire vers la cible hébergée par l'applicat
 S'il affiche `hors de nos gardes : …`, elle traverse bien cette fonction et je
 saurai laquelle des lignes. Les deux réponses avancent ; c'est ce qui manquait
 aux deux tours précédents.
+
+### Il ne manquait pas une correction, il manquait un hôte
+
+La garde totale a répondu, et sa réponse est celle qui élimine : **le même
+`InvalidTransition` nu, à la même ligne**, avec `load()` enveloppée en entier
+dans un `do`/`catch` qui traduit n'importe quelle erreur en refus nommé. Elle ne
+vient donc d'aucun de nos appels — et `LocalDesktop` n'est plus l'endroit où
+chercher. (La régression, elle, est réparée : un échec, plus deux.)
+
+Et il faut revenir sur ce que j'ai écrit au tour précédent. J'avais enterré
+l'hypothèse du canvas parce qu'un test sans écran échouait aussi — **mais cet
+échec-là était le mien**, causé par la sonde. Une fois ma régression retirée, il
+ne reste qu'un rouge, et c'est de nouveau le seul test dont la page porte un
+`<canvas>`. Je m'étais sur-corrigé : enterrer une hypothèse sur une preuve
+fabriquée par soi n'est pas plus rigoureux que la garder sans preuve.
+
+**La réponse était écrite dans ce dépôt depuis une tranche précédente**, dans le
+commentaire qui justifie l'existence de `WisqHostedTests` :
+
+> WebKit rend dans un processus séparé qu'iOS ne démarre pas pour un `xctest`
+> nu, et les deux tests ont été sautés après une minute d'attente — un job vert
+> qui ne répondait rien.
+
+`swift test` **est** un `xctest` nu. Des neuf tests du bureau, celui qui peint
+est le seul à demander une surface de rendu ; les huit autres n'évaluent que du
+JavaScript. Ce n'est pas une correction qui manquait, c'est un hôte.
+
+Trois tours à chercher une cause écrite noir sur blanc dans `project.yml`. Ce
+que ça dit : j'ai cherché **dans le fichier qui échouait** au lieu de chercher
+ce que ce dépôt savait déjà de WebKit. Le journal et la feuille de route
+existent pour ça, et je ne les ai pas relus.
+
+Le test est donc déplacé dans `Tests/WisqHostedTests/`, hébergé par
+l'application, exécuté à chaque commit dans un iPhone simulé par
+`scripts/test-app.sh` — le même chemin que la sonde WebKit et la sonde Metal.
+**Ni retiré, ni affaibli, ni marqué comme sautable** : posé là où sa question a
+une réponse. Et `LocalDesktopTests` garde, à sa place, le commentaire qui dit où
+il est parti et pourquoi — sans quoi la prochaine lecture y verrait un test
+disparu.
