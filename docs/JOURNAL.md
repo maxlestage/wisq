@@ -10776,3 +10776,46 @@ d'infrastructure. Le plafond du faux `requestAnimationFrame` le transforme en
 « 44 images peintes après l'arrêt », ce qui se lit.
 
 Nombre de tests : 2231 → 2234.
+
+## Le cadre jusqu'à l'application, et un débordement trouvé en le portant
+
+`LocalDesktop` prend maintenant un cadre, le passe à la page, et expose
+`paint()` qui rend **le nombre de pixels peints** — une fonction qui ne rend
+rien ne se distingue pas d'une fonction qui n'a rien fait, et c'est la seule
+chose que l'application puisse lire de l'autre côté du pont.
+
+`paint()` existe alors que la page a déjà sa boucle d'affichage, et c'est
+délibéré : `requestAnimationFrame` ne tourne que dans une vue que le système
+considère comme affichée, et celle de `LocalDesktopTests` n'est ajoutée à
+aucune fenêtre. Les deux chemins mènent au même `wisqPaint`.
+
+### Le débordement, trouvé en écrivant la garde une seconde fois
+
+En portant en Swift la garde « le cadre tient dans la RAM », j'ai dû écrire
+`largeur × hauteur × 4`. Et là seulement j'ai vu que la version Rust, écrite
+une heure plus tôt, faisait la même multiplication sans protection.
+
+Deux dimensions de 2³¹ donnent exactement **2⁶⁴**, qui enroule à **zéro** en
+release. Le test l'a confirmé avant la correction : un cadre de
+2147483648×2147483648 était **accepté**, et la page aurait déclaré un canvas de
+cette taille. Ce n'est pas un débordement qui refuse à tort, c'est un
+débordement qui *accepte*.
+
+Corrigé par `saturating_mul` en Rust — un nombre au moins aussi grand que le
+vrai suffit pour refuser, et un cadre pareil n'a pas de vrai nombre à annoncer.
+En JavaScript, `host.js` s'en sort seul : ses nombres sont des flottants.
+
+### Et le même piège une couche plus loin
+
+En Swift, `multipliedReportingOverflow` évite le piégeage de la multiplication.
+Mais le refus porte le nombre d'octets, et `Int(bytes)` **piège** pour un
+`bytes` au-delà de 2⁶³ — une surface qui ne déborde pas d'un `UInt64` mais ne
+tient pas dans un `Int`. Le refus serait devenu un plantage. `Int(clamping:)`,
+et un cas de test à 2³¹ × 2²⁹ qui tombe exactement dans cette fenêtre.
+
+Deux fautes, la même forme, deux langages : la conversion d'un nombre qu'on n'a
+pas d'abord borné. Aucune ne se voit à la relecture du code seul — la première
+s'est vue en le réécrivant ailleurs, la seconde en demandant ce que devient
+chaque valeur portée par le refus.
+
+Nombre de tests : 2234 → 2237.
