@@ -17,10 +17,62 @@ final class DesktopBridgeTests: XCTestCase {
     // MARK: - Lire une demande
 
     func testATranslationRequestIsRead() throws {
+        let code = Data([0x48, 0x01, 0xc2, 0x75, 0xfb])
         let request = try DesktopBridge.request(from: [
             "kind": "traduire", "id": 7, "address": "\(high)", "slot": 12,
+            "octets": code.base64EncodedString(),
         ])
-        XCTAssertEqual(request, .translate(id: 7, address: high, slot: 12))
+        XCTAssertEqual(request, .translate(id: 7, address: high, slot: 12, code: code))
+    }
+
+    /// **Une demande sans octets est refusée, pas traduite à vide.**
+    ///
+    /// C'est la garde qui empêche de revenir au contrat d'avant, où
+    /// l'application devait deviner les octets depuis l'image qu'elle avait
+    /// chargée — juste pour le noyau, faux en silence pour un module que
+    /// l'invité charge lui-même.
+    func testATranslationRequestWithoutBytesIsRefused() {
+        let refused: [([String: Any], DesktopBridge.Unreadable)] = [
+            (["kind": "traduire", "id": 1, "address": "16", "slot": 0], .missingField("octets")),
+            (
+                ["kind": "traduire", "id": 1, "address": "16", "slot": 0, "octets": ""],
+                .bytesAreNotBase64
+            ),
+            (
+                ["kind": "traduire", "id": 1, "address": "16", "slot": 0, "octets": "pas du b64 !"],
+                .bytesAreNotBase64
+            ),
+        ]
+        for (body, expected) in refused {
+            XCTAssertThrowsError(try DesktopBridge.request(from: body), "\(body)") { why in
+                XCTAssertEqual(why as? DesktopBridge.Unreadable, expected, "\(body)")
+            }
+        }
+    }
+
+    /// **Une fenêtre entière fait l'aller-retour**, tous les octets compris —
+    /// un base64 tronqué au dernier groupe passerait un test sur cinq octets.
+    func testAWholeWindowSurvivesTheCrossing() throws {
+        var window = Data(count: 4096)
+        for at in 0..<window.count { window[at] = UInt8(truncatingIfNeeded: at &* 31 &+ 7) }
+        XCTAssertTrue(window.contains(0))
+        XCTAssertTrue(window.contains(0xff))
+        let request = try DesktopBridge.request(from: [
+            "kind": "traduire", "id": 1, "address": "16", "slot": 0,
+            "octets": window.base64EncodedString(),
+        ])
+        guard case .translate(_, _, _, let code) = request else {
+            return XCTFail("la demande doit être une traduction")
+        }
+        XCTAssertEqual(code, window)
+    }
+
+    /// **« Il m'en faut plus » est une réponse à part**, que la vue reconnaît.
+    /// Le nom de la fonction est celui que le pilote de la page déclare ; un
+    /// test du côté Rust tient l'autre moitié.
+    func testNeedingMoreIsItsOwnAnswer() {
+        XCTAssertEqual(DesktopBridge.needsMore(id: 5), "wisqNeedsMore(5)")
+        XCTAssertNotEqual(DesktopBridge.needsMore(id: 5), DesktopBridge.translated(id: 5, module: nil))
     }
 
     /// **L'adresse est lue en base dix**, et ce test le tient pour la bonne
@@ -30,9 +82,11 @@ final class DesktopBridgeTests: XCTestCase {
     /// pas se confondre par accident.
     func testTheAddressIsReadInBaseTen() throws {
         let request = try DesktopBridge.request(from: [
-            "kind": "traduire", "id": 1, "address": "16", "slot": 0,
+            "kind": "traduire", "id": 1, "address": "16", "slot": 0, "octets": "AAA=",
         ])
-        XCTAssertEqual(request, .translate(id: 1, address: 16, slot: 0))
+        XCTAssertEqual(
+            request, .translate(id: 1, address: 16, slot: 0, code: Data([0, 0]))
+        )
     }
 
     /// **L'adresse traverse en texte, et un nombre est refusé plutôt que
@@ -42,7 +96,7 @@ final class DesktopBridgeTests: XCTestCase {
     func testAnAddressThatArrivesAsANumberIsRefused() {
         XCTAssertThrowsError(
             try DesktopBridge.request(from: [
-                "kind": "traduire", "id": 1, "address": Int(high), "slot": 0,
+                "kind": "traduire", "id": 1, "address": Int(high), "slot": 0, "octets": "AAA=",
             ])
         ) { why in
             XCTAssertEqual(why as? DesktopBridge.Unreadable, .addressIsNotText)
@@ -52,7 +106,7 @@ final class DesktopBridgeTests: XCTestCase {
     func testAnAddressThatIsNotANumberIsRefused() {
         XCTAssertThrowsError(
             try DesktopBridge.request(from: [
-                "kind": "traduire", "id": 1, "address": "0x1000", "slot": 0,
+                "kind": "traduire", "id": 1, "address": "0x1000", "slot": 0, "octets": "AAA=",
             ])
         ) { why in
             XCTAssertEqual(
@@ -75,15 +129,59 @@ final class DesktopBridgeTests: XCTestCase {
         let refused: [([String: Any], DesktopBridge.Unreadable)] = [
             ([:], .noKind),
             (["kind": "bonjour"], .unknownKind("bonjour")),
-            (["kind": "traduire", "address": "16", "slot": 0], .missingField("id")),
-            (["kind": "traduire", "id": 1, "slot": 0], .missingField("address")),
-            (["kind": "traduire", "id": 1, "address": "16"], .missingField("slot")),
+            (
+                ["kind": "traduire", "address": "16", "slot": 0, "octets": "AAA="],
+                .missingField("id")
+            ),
+            (
+                ["kind": "traduire", "id": 1, "slot": 0, "octets": "AAA="],
+                .missingField("address")
+            ),
+            (
+                ["kind": "traduire", "id": 1, "address": "16", "octets": "AAA="],
+                .missingField("slot")
+            ),
             (["kind": "arrêt", "at": "16"], .missingField("stopped")),
         ]
         for (body, expected) in refused {
             XCTAssertThrowsError(try DesktopBridge.request(from: body), "\(body)") { why in
                 XCTAssertEqual(why as? DesktopBridge.Unreadable, expected, "\(body)")
             }
+        }
+    }
+
+    // MARK: - Les deux moitiés du pont
+
+    /// **Swift appelle des fonctions que la page déclare, et rien ne le tenait.**
+    ///
+    /// `translated` et `needsMore` produisent du JavaScript qui nomme
+    /// `wisqTranslated` et `wisqNeedsMore` ; c'est le pilote, écrit en Rust
+    /// dans `crates/wisq-vm/src/desktop.rs`, qui les pose sur `window`. Deux
+    /// littéraux dans deux langues, qu'aucun compilateur ne rapproche : renommer
+    /// d'un côté donnerait une application qui parle dans le vide, et l'écran
+    /// resterait figé sans un mot.
+    ///
+    /// Le test lit donc le pilote et vérifie que ce que Swift appelle y est
+    /// déclaré. Même raison que le miroir des constantes de `web/host.js` : une
+    /// répétition que rien ne compare finit toujours par mentir.
+    func testTheFunctionsSwiftCallsAreTheOnesThePageDeclares() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let driver = try String(
+            contentsOf: root.appendingPathComponent("crates/wisq-vm/src/desktop.rs"),
+            encoding: .utf8
+        )
+        for produced in [
+            DesktopBridge.translated(id: 1, module: nil),
+            DesktopBridge.needsMore(id: 1),
+        ] {
+            let name = String(produced.prefix(while: { $0 != "(" }))
+            XCTAssertTrue(
+                driver.contains("window.\(name) ="),
+                "le pilote de la page ne déclare pas « \(name) »"
+            )
         }
     }
 

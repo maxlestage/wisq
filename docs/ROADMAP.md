@@ -2175,11 +2175,47 @@ se décodent bien avec la suite, donc aucun second essai ne sera perdu sur ce
 noyau. Le compteur a été saboté pour vérifier qu'il n'était pas mort : condition
 inversée, il en compte 91.
 
-**Ce qui reste vraiment à faire de ce côté** : la fenêtre d'octets elle-même —
-la vue lit dans sa propre mémoire et envoie —, puis charger la page dans un
+### La fenêtre d'octets, et le bouchon qui cessait de mentir
+
+`translate(address, slot)` devient `translate(address, slot, code)` : la vue
+lit une fenêtre de 4 Kio dans **sa propre** mémoire, à l'adresse repliée, et
+l'envoie. La longueur est bornée par la fin de la RAM invitée — la
+correspondance vit juste au-dessus — et c'est une **copie**, parce qu'une vue
+sur `memory.buffer` se détache quand la mémoire grandit et que l'invité peut la
+réécrire pendant l'aller-retour.
+
+**Le bouchon a dû changer avant le code.** Le défaut n'était pas visible parce
+que le test injecte le traducteur, et que le bouchon répondait sans regarder
+les octets. Les deux bouchons refusent maintenant une demande sans octets et
+vérifient que la fenêtre porte le code de la région annoncée — ce qui a forcé
+le test à **charger le code dans la mémoire de l'invité** avant de lancer la
+machine, comme le fera l'application avec l'image du noyau. Il ne le faisait
+pas du tout.
+
+**Une troisième réponse.** `wisqTranslated(id, octets)` ne sait dire que
+« voilà » ou « refusé » ; il fallait « il m'en faut plus ». C'est
+`wisqNeedsMore(id)`, et la vue redemande alors **une** fois avec 16 Kio. Le
+test le tient dans les deux sens : deux demandes quand la seconde réussit, deux
+et pas trois quand l'application réclame encore, et la seconde fenêtre plus
+grande que la première.
+
+**Et un test qui rapproche deux langues.** Swift produit `wisqNeedsMore(5)` ;
+c'est le pilote, en Rust, qui pose `window.wisqNeedsMore`. Aucun compilateur ne
+compare ces deux chaînes : renommer d'un côté donnerait une application qui
+parle dans le vide, et l'écran resterait figé sans un mot. Un test Swift lit le
+pilote et vérifie que ce qu'il appelle y est déclaré.
+
+**Le sens entrant emploie du base64, le sens sortant un tableau de nombres**, et
+ce n'est pas une incohérence : au retour c'est l'analyse d'une source
+JavaScript qui coûte, et le littéral gagne — mesuré. À l'aller c'est la
+sérialisation de `postMessage`, une chaîne contre quatre mille nombres.
+**Ce second compromis n'est pas mesuré et ne peut pas l'être d'ici** : il
+demande un vrai `WKWebView`. C'est écrit à côté du choix.
+
+**Ce qui reste vraiment à faire de ce côté** : charger la page dans un
 `WKWebView`, déclarer le gestionnaire de messages, le brancher sur
-`DesktopBridge` et `DesktopTranslator`, recevoir les pixels. Seul le dernier
-morceau demande un runner Apple.
+`DesktopBridge` et `DesktopTranslator`, recevoir les pixels. Ce morceau-là, et
+lui seul, demande un runner Apple.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
