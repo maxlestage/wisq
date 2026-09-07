@@ -71,11 +71,28 @@ public enum WebKitBench {
         public let mips: Double
         public let bridgeMilliseconds: Double
         public let instructions: Double
+        /// **Cet appareil accepte-t-il deux mémoires importées ?**
+        ///
+        /// Rien à voir avec le débit, et c'est pour ça que c'est un champ à
+        /// part. La question décide de l'architecture du bureau : la
+        /// correspondance adresse → indice dont l'enchaînement rapide a besoin
+        /// ne peut pas vivre dans la mémoire de l'invité — un noyau qui écrit
+        /// au mauvais endroit la détruirait, exactement comme il écrasait RCX
+        /// avant que les registres n'en sortent. Il lui faut une **seconde**
+        /// mémoire, hors de portée.
+        ///
+        /// Le JavaScriptCore de Bun l'accepte, sur Linux. Celui d'un iPhone est
+        /// une autre question, et cette sonde est le seul endroit qui y répond.
+        public let multiMemory: Bool
 
-        public init(mips: Double, bridgeMilliseconds: Double, instructions: Double) {
+        public init(
+            mips: Double, bridgeMilliseconds: Double, instructions: Double,
+            multiMemory: Bool = false
+        ) {
             self.mips = mips
             self.bridgeMilliseconds = bridgeMilliseconds
             self.instructions = instructions
+            self.multiMemory = multiMemory
         }
 
         /// Soixante images par seconde laissent 16,7 ms. Un aller-retour qui
@@ -113,13 +130,29 @@ public enum WebKitBench {
     /// une durée qu'un humain peut juger.
     public static let desktopBootInstructions: Double = 50e9
 
+    /// Ce que le refus de la multi-mémoire coûterait, dit en clair. Un « non »
+    /// n'arrête pas le bureau : il ferme un chemin et en laisse un autre, plus
+    /// lourd — borner les adresses à la taille de la RAM au lieu de les
+    /// tronquer à trente-deux bits, ce que les trois cœurs devraient alors
+    /// apprendre ensemble.
+    public static func multiMemorySentence(_ accepted: Bool) -> String {
+        accepted
+            ? "Deux mémoires importées : acceptées. La table qui fait aller vite peut vivre "
+                + "hors de portée de l'invité."
+            : "Deux mémoires importées : refusées. Ce n'est pas un mur — la table devra vivre "
+                + "au-delà de la RAM adressable, ce qui demande de borner les adresses au lieu "
+                + "de les tronquer, dans les trois cœurs à la fois."
+    }
+
     public static func judge(mips: Double, bridgeMilliseconds: Double,
-                             instructions: Double, expected: Double) -> Verdict {
+                             instructions: Double, expected: Double,
+                             multiMemory: Bool = false) -> Verdict {
         // **Le compte d'abord.** Une boucle sortie trop tôt rendrait un débit
         // magnifique et faux ; le croire serait pire que ne rien mesurer.
         guard abs(instructions - expected) <= max(expected * 1e-6, 8) else { return .wrongResult }
         let reading = Reading(
-            mips: mips, bridgeMilliseconds: bridgeMilliseconds, instructions: instructions)
+            mips: mips, bridgeMilliseconds: bridgeMilliseconds, instructions: instructions,
+            multiMemory: multiMemory)
         return mips > compilingThreshold ? .compiles(reading) : .interpretsOnly(reading)
     }
 

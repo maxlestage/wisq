@@ -66,6 +66,8 @@ struct WebKitBenchView: View {
                     LabeledContent(
                         "Instructions",
                         value: "\(Int(reading.instructions / 1_000_000)) M")
+                    LabeledContent(
+                        "Deux mémoires", value: reading.multiMemory ? "acceptées" : "refusées")
                 }
             }
         }
@@ -144,7 +146,8 @@ private final class BenchHost {
         }
         return WebKitBench.judge(
             mips: mips, bridgeMilliseconds: bridge,
-            instructions: instructions, expected: Self.expected)
+            instructions: instructions, expected: Self.expected,
+            multiMemory: fields["multiMemory"] as? Bool ?? false)
     }
 
     /// **L'oracle avant le chronomètre.** Le module est refait contre un modèle
@@ -258,7 +261,39 @@ private final class BenchHost {
             return { error: "la boucle chronometree n'est pas allee jusqu'au bout" };
           }
           const done = Number(seeded - u(RSI)) * \(WebKitBench.instructionsPerTurn);
-          return { mips: done / (ms / 1000) / 1000000, instructions: done };
+
+          // **Une question à part, posée pendant qu'on est là.** Deux mémoires
+          // importées dans un même module : soixante-huit octets, deux pages,
+          // et `run` qui lit la seconde. Si l'appareil les accepte, la table
+          // qui fait aller vite pourra vivre hors de portée de l'invité ; s'il
+          // refuse, il faudra borner les adresses dans les trois cœurs.
+          //
+          // La valeur attendue compte : un encodage faux fait lire la première
+          // mémoire à un décalage de un, ce qui rend un nombre plausible. On
+          // compare, on ne se contente pas de « ça n'a pas explosé ».
+          let multiMemory = false;
+          try {
+            const bytes = new Uint8Array([
+              0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00,
+              0x01, 0x7f, 0x02, 0x1a, 0x02, 0x03, 0x65, 0x6e, 0x76, 0x05, 0x67, 0x75, 0x65,
+              0x73, 0x74, 0x02, 0x00, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x04, 0x73, 0x69, 0x64,
+              0x65, 0x02, 0x00, 0x01, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72,
+              0x75, 0x6e, 0x00, 0x00, 0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0x00, 0x28, 0x42,
+              0x01, 0x00, 0x0b,
+            ]);
+            const first = new WebAssembly.Memory({ initial: 1 });
+            const second = new WebAssembly.Memory({ initial: 1 });
+            new Uint32Array(second.buffer)[0] = 0xc0ffee;
+            new Uint32Array(first.buffer)[0] = 0xdead;
+            const two = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
+              env: { guest: first, side: second },
+            });
+            multiMemory = (two.exports.run() >>> 0) === 0xc0ffee;
+          } catch (why) {
+            multiMemory = false;
+          }
+
+          return { mips: done / (ms / 1000) / 1000000, instructions: done, multiMemory };
         })()
         """
 }
