@@ -4964,8 +4964,9 @@ d'un noyau Linux 6.6 x86-64 se compilent déjà. Le problème est plus étroit e
 plus net — le point d'entrée s'arrêtait après **sept** instructions, sur `wrmsr`,
 que le décodeur ne connaissait pas.
 
-Quatre formes sans opérande sont décodées : `rdtsc`, `cpuid`, `rdmsr`, `wrmsr`.
-Le point d'entrée va maintenant jusqu'à **douze** instructions.
+Cinq formes sont décodées : `rdtsc`, `cpuid`, `rdmsr`, `wrmsr`, et le retour
+lointain `lretq`. La **lecture** du point d'entrée va maintenant jusqu'à
+**vingt-cinq** instructions, et l'exploration de la région jusqu'à l'octet 1512.
 
 **Ce qui reste, par fréquence dans les huit mégaoctets de texte** — et c'est une
 liste de travail, pas une estimation :
@@ -4976,7 +4977,26 @@ liste de travail, pas une estimation :
 | `0f 01` | 64 | `lgdt`, `lidt`, `swapgs` — un groupe, à démêler par son ModRM |
 | `0f 22` / `0f 20` | 44 | les registres de contrôle, dont CR3 : la table de pages |
 | `0f ae` | 28 | les barrières, `fxsave` |
-| `48 cb` | — | `lretq`, sur laquelle le point d'entrée s'arrête maintenant |
+
+Les deux endroits où ça bute aujourd'hui, et ce ne sont pas les mêmes : la
+**lecture** linéaire s'arrête sur `0f 20 e1` — `mov %cr4,%rcx` — à l'octet 113 ;
+l'**exploration** de la région s'arrête sur `0f 01 15` — `lgdt`, opérande
+mémoire — à l'octet 1512.
+
+**Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
+seul.** `wrmsr` est désormais **lu** et non **produit** : tant que l'émetteur ne
+sait pas quoi en faire, la région d'entrée refusera à l'octet 35, quoi qu'on
+décode après. Deux voies, et elles décident d'une direction :
+
+- **fauter vers l'hôte** à chaque instruction privilégiée. Simple et correct,
+  mais chaque `wrmsr` coûte un retour de main — environ 190 ns, mesuré — et un
+  noyau en exécute beaucoup au démarrage ;
+- **modéliser quelques registres spécifiques au modèle** dans l'émetteur. Plus
+  rapide, mais c'est le début d'un modèle de processeur privilégié dans du
+  WebAssembly, avec tout ce que ça traîne.
+
+Rien ne presse de choisir : les quatre formes du tableau ci-dessus sont du
+décodage, et elles avancent sans que la question soit tranchée.
 
 **Ce que décoder ne donne pas.** Aucune de ces instructions n'est *exécutable*
 pour autant : il faudrait un modèle de registres spécifiques au modèle, de
