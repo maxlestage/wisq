@@ -4778,7 +4778,7 @@ commande n'ajoute pas de `root=`. L'invité voit `/dev/vda` et c'est son
 initramfs qui décide quoi en faire — forcer une racine casserait le cas
 courant pour servir un cas qu'on ne connaît pas.
 
-## Un disque pour la machine rv32 : rendre possible ce que le site disait impossible (en cours)
+## Un disque pour la machine rv32 : rendre possible ce que le site disait impossible (fait)
 
 Maxime, en lisant la page de la feuille de route : « **Il faut que tu le rendes
 possible.** »
@@ -4894,3 +4894,32 @@ mettre le pilote dans le noyau de la personne.** Ce qui remplace le silence :
 si l'invité ne touche jamais le périphérique, la machine le sait — le
 périphérique compte ses requêtes — et peut le dire, au lieu de laisser un
 disque muet passer pour un disque cassé.
+
+## Ce que le bureau local ne fait pas encore, et personne ne l'avait écrit
+
+Le lot 8 n'a plus de rouge, et chacune de ses pièces est tenue par un test :
+l'émetteur, la boucle hôte, la page, le C ABI, `DesktopTranslator`,
+`DesktopBridge`, la fenêtre d'octets, `LocalDesktop`, la respiration, le canvas,
+les pixels. Neuf tests passent dans un iPhone simulé.
+
+**Et il manque deux choses que ce document n'énonçait nulle part.** Vérifiées
+par `grep`, pas déduites :
+
+| ce qu'on croirait | ce qui est |
+| --- | --- |
+| l'application ouvre le bureau local | **rien dans `Sources/WisqUI/` ni `App/` ne nomme `LocalDesktop`, `DesktopBridge` ni `DesktopTranslator`** |
+| un noyau est déjà passé par ce chemin | **non** — `testPlacingAKernelSizedImage…` pose `Data(pattern)`, 4 Mio de motif ; le seul programme exécuté fait deux régions écrites à la main |
+
+Ce n'est pas un défaut des tranches faites : chacune prouve ce qu'elle annonce.
+C'est la distance qui reste entre « les pièces s'emboîtent » et « ça démarre un
+bureau », et la taire serait exactement la faute que ce dépôt documente ailleurs
+— une garde qu'on croit tenue et que rien ne tient.
+
+**L'ordre qui se défend**, et c'est une direction, donc à trancher plutôt qu'à
+engager seul : un vrai noyau à travers l'émetteur **avant** le branchement dans
+l'application. La feuille de route dit elle-même ce que les 247 MIPS ne disent
+pas — « un vrai cœur paie la diversité des blocs, la traduction d'adresse par
+table de pages plutôt que par masque, les interruptions, les entrées-sorties, et
+la détection du code qui se modifie ». Aucune de ces cinq choses n'est mesurée.
+Brancher d'abord mettrait quelqu'un devant une machine dont on ne sait pas
+qu'elle démarre.
