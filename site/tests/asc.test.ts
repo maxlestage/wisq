@@ -8,7 +8,7 @@
 /// sont des signatures valides du même message ; une seule est acceptée.
 
 import { describe, expect, test } from "bun:test";
-import { createVerify, generateKeyPairSync } from "node:crypto";
+import { createSign, createVerify, generateKeyPairSync } from "node:crypto";
 
 import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,10 +60,34 @@ describe("le jeton App Store Connect", () => {
   /// Le cœur : la signature fait exactement soixante-quatre octets — deux
   /// fois trente-deux — et non le DER de longueur variable qu'OpenSSL rend
   /// par défaut.
+  ///
+  /// **Ce qui a été retiré, et pourquoi.** Il y avait ici
+  /// `expect(bytes[0]).not.toBe(0x30)`, commenté « une séquence DER commence
+  /// par 0x30 ». C'est vrai du DER — mais le premier octet d'une signature
+  /// JOSE est l'octet de poids fort de `r`, c'est-à-dire un octet
+  /// **aléatoire**. L'assertion échouait donc sur un comportement
+  /// parfaitement correct. Mesuré plutôt qu'estimé : sur cinq mille
+  /// signatures valides, **vingt et une** commencent par `0x30`, pour
+  /// dix-neuf virgule cinq attendues si l'octet est uniforme.
+  ///
+  /// Et elle n'ajoutait rien : les cinq mille font soixante-quatre octets,
+  /// sans exception, là où une signature DER P-256 en fait soixante-dix à
+  /// soixante-douze. La longueur tranchait déjà.
+  ///
+  /// **Ce qui manquait n'était pas une assertion de plus sur notre signature,
+  /// mais un témoin.** Sans lui, « elle fait soixante-quatre octets » serait
+  /// vrai d'un format qu'on n'a comparé à rien. Le même message signé en DER
+  /// montre ce que la garde refuse : il commence par `0x30`, et il ne fait
+  /// pas soixante-quatre octets.
   test("la signature est au format JOSE, pas en DER", () => {
     const bytes = Buffer.from(signature!.replaceAll("-", "+").replaceAll("_", "/"), "base64");
     expect(bytes.length).toBe(64);
-    expect(bytes[0]).not.toBe(0x30); // une séquence DER commence par 0x30
+
+    const der = createSign("SHA256")
+      .update(`${header}.${payload}`)
+      .sign({ key: privateKey, dsaEncoding: "der" });
+    expect(der[0]).toBe(0x30);
+    expect(der.length).not.toBe(64);
   });
 
   test("et elle se vérifie avec la clé publique", () => {
