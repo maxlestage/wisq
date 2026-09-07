@@ -390,6 +390,27 @@ pub enum Op {
     /// **Écrire sur un port d'entrée-sortie.** `E6`, `E7` avec un port
     /// immédiat ; `EE`, `EF` avec DX. La valeur vient de l'accumulateur.
     PortOut,
+    /// **Les quatre instructions privilégiées qu'un noyau atteint tout de
+    /// suite**, et qu'aucune grille ne connaissait.
+    ///
+    /// Mesuré, pas supposé : le point d'entrée d'un noyau Linux 6.6 x86-64
+    /// exécute **sept** instructions avant d'arriver sur `wrmsr`. Le décodeur
+    /// rendait `None` là, et l'émetteur ne pouvait pas même dire pourquoi — un
+    /// `CannotDecode` ne nomme rien. Sur les huit mégaoctets de texte du même
+    /// noyau : `wrmsr` 34 fois, `rdmsr` 34, `rdtsc` 28, `cpuid` 27.
+    ///
+    /// Elles sont **décodées** ici, et refusées ailleurs : les exécuter demande
+    /// un modèle de MSR, de compteur d'horodatage et de capacités que rien
+    /// n'a encore. Ce qui change est qu'un refus porte maintenant un nom.
+    /// `0F 31` — le compteur d'horodatage, dans EDX:EAX.
+    ReadTimestamp,
+    /// `0F A2` — les capacités du processeur, dans EAX/EBX/ECX/EDX.
+    CpuId,
+    /// `0F 32` — lire le registre spécifique au modèle que ECX désigne.
+    ReadModelRegister,
+    /// `0F 30` — y écrire. C'est l'instruction sur laquelle un noyau s'arrête,
+    /// à sa huitième.
+    WriteModelRegister,
     /// `setcc` : écrire **un octet**, zéro ou un, selon les drapeaux.
     Set(Condition),
     /// `cmovcc` : écrire la source, ou laisser la destination telle quelle.
@@ -1655,7 +1676,15 @@ impl Cpu {
         // `out` tomberaient dans le calcul arithmétique plus bas et
         // écriraient n'importe quoi dans l'accumulateur. Un refus nommé vaut
         // mieux qu'un résultat inventé.
-        if matches!(instruction.op, Op::PortIn | Op::PortOut) {
+        if matches!(
+            instruction.op,
+            Op::PortIn
+                | Op::PortOut
+                | Op::ReadTimestamp
+                | Op::CpuId
+                | Op::ReadModelRegister
+                | Op::WriteModelRegister
+        ) {
             self.faulted = true;
             self.jumped = true;
             return;
@@ -1912,8 +1941,13 @@ impl Cpu {
             }
             Op::Nop => unreachable!("ne rien faire sort avant"),
             Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
-            Op::PortIn | Op::PortOut => {
-                unreachable!("les entrées-sorties sortent avant, avec une faute")
+            Op::PortIn
+            | Op::PortOut
+            | Op::ReadTimestamp
+            | Op::CpuId
+            | Op::ReadModelRegister
+            | Op::WriteModelRegister => {
+                unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
             }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
                 unreachable!("la direction et les chaînes sortent avant")
@@ -2159,6 +2193,21 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         let second = *bytes.get(at)?;
         at += 1;
         return match second {
+            // **Les quatre instructions privilégiées d'un noyau, sans
+            // opérande.** Deux octets, et c'est tout : aucun ModRM, aucun
+            // immédiat. Les décoder ne les exécute pas — l'interpréteur faute
+            // et l'émetteur refuse — mais un refus nommé se suit, là où un
+            // `None` ne dit rien de ce qui manque.
+            0x30 | 0x31 | 0x32 | 0xa2 => Some(Decoded {
+                op: match second {
+                    0x30 => Op::WriteModelRegister,
+                    0x31 => Op::ReadTimestamp,
+                    0x32 => Op::ReadModelRegister,
+                    _ => Op::CpuId,
+                },
+                length: at,
+                ..Decoded::nothing(Width::Dword)
+            }),
             // **Les bits.** Le numéro vient d'un registre (`reg`) ou d'un
             // immédiat, et l'opérande est le `rm`. Quand cet opérande est en
             // **mémoire**, la règle change du tout au tout : le numéro n'est
@@ -3595,6 +3644,70 @@ mod tests {
         assert!(read_immediate.immediate);
         let read_from_dx = decode(&[0xec]).expect("in %al, %dx se décode");
         assert!(!read_from_dx.immediate);
+    }
+
+    /// **Les quatre instructions privilégiées sur lesquelles un noyau bute.**
+    ///
+    /// Mesuré sur un vrai noyau Linux 6.6 x86-64, extrait de son bzImage : le
+    /// point d'entrée en exécute sept, et la huitième est `wrmsr`. Le décodeur
+    /// rendait `None`, donc l'émetteur rendait `CannotDecode` — un refus qui ne
+    /// nomme rien et qu'on ne peut pas suivre.
+    ///
+    /// Aucune des quatre ne porte d'opérande : deux octets, et c'est tout. Ce
+    /// que le test tient est donc la longueur autant que le nom — une forme
+    /// décodée à trois octets décalerait tout ce qui suit.
+    #[test]
+    fn the_four_privileged_instructions_a_kernel_reaches_first_are_decoded() {
+        for (bytes, op) in [
+            (&[0x0f, 0x31][..], Op::ReadTimestamp),
+            (&[0x0f, 0xa2][..], Op::CpuId),
+            (&[0x0f, 0x32][..], Op::ReadModelRegister),
+            (&[0x0f, 0x30][..], Op::WriteModelRegister),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{bytes:02x?} se décode"));
+            assert_eq!(step.op, op, "pour {bytes:02x?}");
+            assert_eq!(
+                step.length, 2,
+                "deux octets, pas d'opérande, pour {bytes:02x?}"
+            );
+        }
+    }
+
+    /// **La huitième instruction du noyau, à sa vraie place.**
+    ///
+    /// Les sept premières du point d'entrée d'Alpine 6.6.134, puis `wrmsr`.
+    /// Sans ce test, « le décodeur connaît `wrmsr` » resterait une phrase :
+    /// celui-ci décode la suite réelle et vérifie qu'on arrive bien dessus, au
+    /// bon décalage.
+    #[test]
+    fn the_kernels_entry_reaches_wrmsr_at_its_eighth_instruction() {
+        // mov %rsi,%r15 ; lea …(%rip),%rsp ; lea …(%rip),%rdi ;
+        // mov $0xc0000101,%ecx ; lea …(%rip),%rdx ; mov %edx,%eax ;
+        // shr $0x20,%rdx ; wrmsr
+        let entry: &[u8] = &[
+            0x49, 0x89, 0xf7, //
+            0x48, 0x8d, 0x25, 0xbe, 0x3e, 0x40, 0x01, //
+            0x48, 0x8d, 0x3d, 0x5f, 0xff, 0xff, 0xff, //
+            0xb9, 0x01, 0x01, 0x00, 0xc0, //
+            0x48, 0x8d, 0x15, 0x53, 0x9f, 0x9e, 0x01, //
+            0x89, 0xd0, //
+            0x48, 0xc1, 0xea, 0x20, //
+            0x0f, 0x30, //
+        ];
+        let mut at = 0usize;
+        let mut seen = Vec::new();
+        while at < entry.len() {
+            let step = decode(&entry[at..])
+                .unwrap_or_else(|| panic!("l'octet {at} ne se décode pas : {:02x?}", &entry[at..]));
+            seen.push(step.op);
+            at += step.length;
+        }
+        assert_eq!(seen.len(), 8, "huit instructions : {seen:?}");
+        assert_eq!(
+            seen[7],
+            Op::WriteModelRegister,
+            "la huitième est `wrmsr` : {seen:?}"
+        );
     }
 
     /// **Le produit signé de deux nombres de soixante-quatre bits**, dont la
