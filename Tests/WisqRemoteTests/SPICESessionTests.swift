@@ -1152,18 +1152,17 @@ final class SPICESessionTests: XCTestCase {
             inbound: linkReply() + Data(SpiceWire.u32(0))
                 + mainInit(sessionID: 9) + channelsList(withCursor: true)
         )
-        // The display socket is given a long tail of pings. Without it, its
-        // pump runs the stream dry, the session ends, and the event stream
-        // closes before the cursor task has read its one message — the cursor
-        // would lose a race it does not lose against a real socket, which
-        // blocks rather than reporting the end of the world.
-        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
-        for serial in 0..<200 {
-            displayInbound += SpiceWire.message(
-                SpiceWire.Message.ping, serial: UInt64(serial), payload: Data([0])
-            )
-        }
-        let displaySocket = MemoryByteStream(inbound: displayInbound)
+        // The display socket waits once its script runs out, the way a real
+        // socket does. A fixture that reports the end of the world instead ends
+        // the session — and the session is what carries the event stream the
+        // cursor arrives on. The cursor task is started after the display pump,
+        // so it would lose that race about one run in four; a tail of two
+        // hundred pings used to stand here, which was the same race with a
+        // bigger number.
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8),
+            endsWhenDry: false
+        )
         let cursorSocket = MemoryByteStream(
             inbound: linkReply() + Data(SpiceWire.u32(0))
                 + SpiceWire.message(
@@ -1248,12 +1247,14 @@ final class SPICESessionTests: XCTestCase {
             inbound: linkReply() + Data(SpiceWire.u32(0))
                 + mainInit(sessionID: 1) + channelsList(withCursor: true)
         )
-        var displayInbound = linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8)
-        for serial in 0..<200 {
-            displayInbound += SpiceWire.message(
-                SpiceWire.Message.ping, serial: UInt64(serial), payload: Data([0])
-            )
-        }
+        // Waits once its script runs out, for the reason spelled out in
+        // `testACursorImageArrivesOnItsOwnConnection`: a display fixture that
+        // ends takes the session, and the event stream, down with it before the
+        // cursor has been read.
+        let displaySocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0)) + surfaceCreate(8, 8),
+            endsWhenDry: false
+        )
         let cursorSocket = MemoryByteStream(
             inbound: linkReply() + Data(SpiceWire.u32(0))
                 + SpiceWire.message(
@@ -1263,9 +1264,7 @@ final class SPICESessionTests: XCTestCase {
                     SpiceCursorWire.Message.set.rawValue, serial: 2, payload: Data(real)
                 )
         )
-        let sockets = Sockets([
-            mainSocket, MemoryByteStream(inbound: displayInbound), cursorSocket,
-        ])
+        let sockets = Sockets([mainSocket, displaySocket, cursorSocket])
 
         let session = SPICESession(
             configuration: SessionConfiguration(host: "h", port: 5900, password: ""),
