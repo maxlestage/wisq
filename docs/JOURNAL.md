@@ -11160,9 +11160,14 @@ venais d'écrire comme rétablie.
 
 `testADesktopWithoutAFrameRefusesToPaint` — **sans écran, donc sans canvas** —
 échoue, au `load()`, sur le même `InvalidTransition`. Or il **passait** au tour
-d'avant, et rien de ce qu'il touche n'a changé entre les deux : ni
-`LocalDesktop.swift`, ni son propre corps ; seulement `project.yml`, que ce job
-n'utilise pas.
+d'avant. Vérifié par `git diff` plutôt qu'affirmé : `LocalDesktop.swift` est
+identique entre les deux commits, et le corps du test aussi.
+
+Le fichier qui le porte, lui, a changé — un test voisin en a été retiré. Mais
+celui-ci passe **le premier** (ordre alphabétique), donc rien de ce qui s'exécute
+avant son échec n'a bougé. La première rédaction de ce paragraphe disait
+« seulement `project.yml` », ce qui était faux et aurait fait passer une
+imprécision pour une preuve.
 
 | tour | ce test | le test qui peint |
 | --- | --- | --- |
@@ -11220,3 +11225,33 @@ Deux corrections, et aucune n'est du confort :
 
 Sans ça, la tranche que je pousse ne serait vérifiable par personne, moi
 compris. Ce n'est pas un élargissement : c'est ce qui rend le reste jugeable.
+
+### Établi : les neuf passent, sous un hôte
+
+Le relevé, désormais lisible parce qu'il est en dernier et qu'il nomme les
+suites :
+
+```
+Test Suite 'LocalDesktopTests' passed at 2026-09-07 17:05:11.248.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 28.085 seconds
+```
+
+Les neuf passent dans un iPhone simulé, celui qui peint compris. Le compte du
+paquet hébergé vérifie : **14 = 9 + 3 (Metal) + 2 (WebKit JIT)**. Ce n'est plus
+une hypothèse — c'est un nom, un verdict et un total qui s'accordent.
+
+Ce que la journée a coûté, sans l'arrondir : quatre passages rouges et **trois
+explications successives, toutes fausses**. La course sur `web.isLoading`,
+« l'erreur vient d'un de nos appels », le canvas. Aucune n'a été démolie par une
+relecture — toujours par deux nombres ou deux verdicts qui auraient dû
+s'accorder. Et la cause était écrite dans `project.yml` depuis une tranche
+antérieure.
+
+Deux fautes sont entièrement à moi : une sonde de diagnostic qui a cassé un test
+qui passait, et une hypothèse enterrée sur une preuve que cette même sonde avait
+fabriquée. La seconde est la pire des deux : elle avait l'air d'une élimination.
+
+Ce qu'on garde de tout ça, et qui n'est pas une leçon de style : **comparer deux
+choses qui devraient s'accorder est la seule méthode qui ait produit un
+résultat**, et la documentation de ce dépôt savait déjà ce que j'ai mis trois
+tours à retrouver.

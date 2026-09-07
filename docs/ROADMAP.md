@@ -2466,9 +2466,12 @@ connu de WebKit ici.
 ### Et le canvas non plus n'était pas la cause : c'est l'ordre
 
 Le passage suivant a fait échouer `testADesktopWithoutAFrameRefusesToPaint`,
-**sans écran**, qui **passait au tour d'avant sur un code identique**. Deux
-verdicts opposés, rien de changé entre les deux : c'est non déterministe, et le
-canvas tombe comme les deux explications précédentes.
+**sans écran**, qui **passait au tour d'avant**. Vérifié par `git diff` :
+`LocalDesktop.swift` et le corps du test sont identiques entre les deux commits.
+Le fichier qui le porte a perdu un test voisin, mais celui-ci s'exécute le
+premier, donc rien de ce qui précède son échec n'a bougé. Deux verdicts opposés
+sur le même chemin : c'est non déterministe, et le canvas tombe comme les deux
+explications précédentes.
 
 Ce qui est constant : le test qui échoue est le **premier du processus**, celui
 qui crée le premier `WKWebView` à froid, et toujours le plus lent — 2,4 s puis
@@ -2484,6 +2487,12 @@ par l'application, et les deux étapes ajoutées à « Cœur (Apple) » sont ret
 effet) ; « l'erreur vient d'un de nos appels » (réfutée par une enveloppe
 totale) ; le canvas (réfuté par un test sans écran qui échoue et un passage qui
 réussit sur le même code).
+
+**Et c'est clos, avec un verdict et pas une hypothèse** : sous un hôte, dans un
+iPhone simulé, `Test Suite 'LocalDesktopTests' passed`, neuf tests, zéro échec,
+28 s. Le paquet hébergé compte 14 = 9 + 3 (Metal) + 2 (WebKit JIT). Le lot 8 n'a
+donc plus de rouge, et le bureau local est jugé de bout en bout à chaque commit
+— pour la première fois.
 
 ### La boucle ne rendait jamais la main
 
