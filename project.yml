@@ -149,6 +149,12 @@ targets:
       - path: Tests/WisqHostedTests
     dependencies:
       - target: Wisq
+      # Le bureau local, par son nom. Il est déjà lié transitivement par
+      # l'application, mais un test qui construit un `LocalDesktop` a besoin du
+      # module, pas seulement du binaire — et c'est la même raison qui a fait
+      # nommer `WisqVM` et `WisqCore` dans la cible d'à côté.
+      - package: Wisq
+        product: WisqVMRust
     settings:
       base:
         SWIFT_VERSION: "6.0"

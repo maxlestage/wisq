@@ -283,6 +283,19 @@ window.wisqCesser = () => {};
 // **Le pont vers l'application.** Une vue ne peut pas appeler l'hôte et
 // attendre : elle poste, et l'hôte rappelle. Chaque demande porte donc un
 // numéro, et sa promesse attend dans `waiting` jusqu'à ce qu'il revienne.
+// **Tout ce qui suit est sous garde, et ça manquait.**
+//
+// Une erreur à l'évaluation de ce module — un canvas absent, un contexte
+// refusé, une RAM que la boucle hôte n'accepte pas — tuait le module en
+// silence. La vue finissait quand même de charger, `load()` rendait la main,
+// et l'appel suivant partait sur une page à moitié installée. L'application
+// n'apprenait la panne que par le symptôme, plusieurs appels plus loin.
+//
+// Ce qui doit sortir d'ici est sur `window` ; le reste n'est vu que d'ici,
+// donc l'enfermer dans un bloc ne coûte rien.
+window.wisqFailure = null;
+try {{
+
 const bridge = window.webkit.messageHandlers.{channel};
 let ticket = 0;
 const waiting = new Map();
@@ -342,6 +355,12 @@ window.wisqRun = async () => {{
   bridge.postMessage({{ kind: "arrêt", stopped: why.stopped, at: why.at.toString() }});
   return why.stopped;
 }};
+
+}} catch (raison) {{
+  // **Retenue plutôt que perdue.** `load()` la lit et refuse, au lieu de
+  // laisser l'application découvrir la panne trois appels plus loin.
+  window.wisqFailure = String(raison && raison.message ? raison.message : raison);
+}}
 "#
     )
 }
