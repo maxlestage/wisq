@@ -2238,10 +2238,36 @@ Cinq sabotages sur cinq, dont celui qui compte : **changer la constante du
 header sans changer Rust fait tomber le programme C**. Le même nombre vit dans
 deux fichiers et deux langages, et ne peut plus diverger en silence.
 
-**Ce qui reste vraiment à faire de ce côté** : charger la page dans un
-`WKWebView`, déclarer le gestionnaire de messages, le brancher sur
-`DesktopBridge` et `DesktopTranslator`, recevoir les pixels. Ce morceau-là, et
-lui seul, demande un runner Apple.
+### La machine dans la vue
+
+`LocalDesktop` charge la page, déclare le gestionnaire de messages, répond aux
+demandes et fait tourner la machine. Il vit dans `WisqVMRust` derrière
+`#if canImport(WebKit)`, **pas** dans `WisqUI` : une vue SwiftUI serait à sa
+place là-bas, mais ceci est la conduite, et `WisqUI` n'est que *compilé* par la
+CI quand cette cible-ci est **exécutée**. Il ne reste à l'écran que ce qui a
+besoin d'un écran.
+
+**La fuite que la structure évite.** `add(_:name:)` retient fortement ce qu'on
+lui donne : un bureau qui se déclarerait lui-même gestionnaire fermerait la
+boucle — bureau → vue → contrôleur → bureau — et rien ne se libérerait, un
+processus de contenu web par bureau ouvert. Un relais à référence faible coupe
+la chaîne, et aucun `deinit` n'a à défaire quoi que ce soit.
+
+`LocalDesktopTests` fait tenir toutes les moitiés **ensemble** pour la première
+fois, dans le moteur qui les portera. Il vérifie que la machine a *tourné* — RDX
+à deux après deux régions — et pas seulement qu'elle s'est arrêtée au bon
+endroit, ce qui arriverait aussi si rien ne s'était exécuté.
+
+**Ce fichier n'a jamais été typé de ce côté.** `canImport(WebKit)` est faux sous
+Linux : le compilateur en lit la syntaxe et s'arrête là. Tout le reste de cette
+série a été construit et exécuté ici avant d'être poussé ; ceci non. C'est la
+vraie limite du conteneur, et elle ne tient plus qu'à un framework Apple.
+
+**Ce qui reste** : les pixels. Le tampon d'affichage vit dans la mémoire de
+l'invité, donc dans la vue ; l'application doit le lire et le peindre. Et
+l'image du noyau passe aujourd'hui par `evaluateJavaScript`, par tranches de
+48 Kio — un chemin assumé et cher, qu'un gestionnaire de schéma remplacerait,
+et qui ne se mesure que sur un appareil.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 
