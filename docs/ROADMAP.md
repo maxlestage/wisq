@@ -2021,10 +2021,56 @@ téléphone le dise. Une troisième, `wisq_desktop_table_pages`, dit la place qu
 l'hôte doit ajouter à sa mémoire pour la correspondance. Un programme C les
 éprouve à chaque commit, sur Linux, sans image de noyau.
 
-**Ce qui reste vraiment à faire de ce côté** est la moitié Swift : charger la
-page dans un `WKWebView`, déclarer le gestionnaire de messages, répondre aux
-demandes de traduction, recevoir les pixels. Rien de cette moitié-là ne se
-vérifie depuis Linux — et tout ce qui pouvait l'être l'est maintenant.
+### Le pont Swift, et une phrase qu'il a fallu retirer
+
+**« Rien de la moitié Swift ne se vérifie depuis Linux » était faux**, et c'est
+la tranche qui l'a établi plutôt qu'une opinion. Le job `Cœur (Linux)` de la CI
+construit `libwisq_vm.a` puis lance `swift test` dans un conteneur `swift:6.3`
+depuis toujours : `WisqVMRust` et ses tests **s'exécutent** sur Linux. Ce qui
+ne s'y vérifie pas est `WisqUI` seul, exclu du paquet sous Linux — c'est-à-dire
+le `WKWebView`, pas le pont qui y mène.
+
+Et depuis ce conteneur non plus : la chaîne Swift 6.3 s'y installe en quelques
+minutes. Les tranches précédentes ont dit « pas de `swift` ici » sans vérifier
+que ça devait le rester.
+
+`DesktopTranslator` est ce pont : `region`, `resolvingRegion`, `page`, et les
+nombres que l'hôte doit connaître. Une seule cession privée recopie le tampon
+que Rust a alloué et le lui rend aussitôt — jamais à `free()`, jamais à
+`wisq_vm_free_snapshot`.
+
+**Les tests lisent la section des imports du module** plutôt que de croire les
+nombres sur parole, parce qu'un module qui demande la mauvaise mémoire ne
+s'instancie pas du tout et que ça ne se verrait autrement que sur un iPhone :
+
+- la mémoire déclarée vaut exactement `pages + tablePages`, pour 1, 16 et 1024
+  pages ;
+- la table déclarée à l'emplacement 7 vaut celle de l'emplacement 0 **plus
+  sept** — la leçon de la tranche précédente appliquée d'avance : « les deux
+  modules diffèrent » ne prouve rien, seule une relation prouve que le nombre
+  arrive quelque part.
+
+**Neuf sabotages, cinq attrapés au premier passage.** Les quatre survivants
+n'étaient pas des détails : l'adresse de chargement ignorée, le décalage
+d'entrée ignoré, et **le tampon jamais rendu à Rust**. Les deux premiers se
+tiennent par une inégalité ; la fuite, elle, ne change aucun octet et
+n'apparaît sur aucune assertion d'égalité — c'est le seul défaut de ce fichier
+qu'un test de forme ne peut pas voir, et c'est celui qui compte, puisqu'un
+bureau traduit des milliers de régions par démarrage. Elle se tient maintenant
+sur le sommet de mémoire résidente : trois cent mille modules de 614 octets
+font 184 Mio si rien n'est rendu, à peu près rien sinon.
+
+Le neuvième survit et **survivra** : retirer la vérification du code de retour
+ne change rien d'observable, parce que côté Rust chaque refus rend `-1` *avant*
+d'écrire dans les sorties. C'est le programme C qui tient cette promesse-là, en
+vérifiant qu'un refus ne touche pas aux sorties de l'appelant. La garde Swift
+est là pour le jour où ça changerait de l'autre côté, et c'est écrit dans le
+code plutôt que déguisé en test.
+
+**Ce qui reste vraiment à faire de ce côté** : charger la page dans un
+`WKWebView`, déclarer le gestionnaire de messages, brancher les deux sur
+`DesktopTranslator`, recevoir les pixels. Ça, et seulement ça, demande un
+runner Apple.
 
 ### Où doit vivre l'interpréteur de secours — et ce n'est pas une question de vitesse
 

@@ -10207,3 +10207,73 @@ messages, répondre aux demandes de traduction, recevoir les pixels. **Rien de
 `WisqUI` est exclu sous Linux. Tout ce qui pouvait être éprouvé ici l'est
 maintenant : l'émetteur contre le silicium, la boucle hôte sous JavaScriptCore,
 la page et son pilote sous un pont bouchonné, et le C ABI par un programme C.
+
+## Le pont Swift, et une contrainte que personne n'avait vérifiée
+
+Cinq tranches d'affilée se terminent par la même phrase : « rien de ça ne se
+vérifie depuis ce conteneur, `swift` et `swiftc` sont absents ». Elle était
+vraie sur le premier point et fausse sur ce qu'elle laissait croire.
+
+**Deux choses n'avaient pas été vérifiées.** La première : le job `Cœur
+(Linux)` de la CI tourne dans un conteneur `swift:6.3`, construit
+`libwisq_vm.a`, puis lance `swift test`. `WisqVMRust` et ses tests s'y
+**exécutent** depuis toujours. Ce qui est exclu sous Linux est `WisqUI` — le
+`WKWebView`, pas le pont qui y mène. J'avais lu « `WisqUI` est exclu sous
+Linux » et j'en avais tiré « le Swift ne se vérifie pas », ce qui ne s'ensuit
+pas.
+
+La seconde : la chaîne Swift **s'installe ici**. Un téléchargement, quelques
+minutes, 3 Gio sur les 11 disponibles. « Absent » décrivait l'état du
+conteneur, pas une limite ; je l'avais traité comme une limite pendant cinq
+tranches.
+
+### Ce que la chaîne a immédiatement rapporté
+
+`DesktopTranslator` — `region`, `resolvingRegion`, `page`, et les nombres que
+l'hôte doit connaître — compile et passe ses quinze tests ici, en deux
+secondes. Puis la passe de sabotage, celle qu'on ne peut pas faire en lisant :
+**cinq sur neuf** au premier tour.
+
+Les quatre survivants n'étaient pas des détails.
+
+- **L'adresse de chargement ignorée.** `call` empile une adresse de retour,
+  `ret` la relit : une région chargée ailleurs est un autre module. Aucun test
+  ne variait la base.
+- **Le décalage d'entrée ignoré.** Même chose, aucun test ne le variait.
+- **Le tampon jamais rendu à Rust.** Celui-là est le vrai. Il ne change aucun
+  octet, ne casse aucune assertion d'égalité, et un bureau traduit des milliers
+  de régions par démarrage. C'est exactement le défaut qu'un test de forme ne
+  peut pas voir, et il aurait traversé une revue humaine aussi bien qu'une
+  suite de tests.
+
+Les deux premiers se tiennent par une inégalité. Le troisième se tient sur le
+sommet de mémoire résidente, `getrusage(RUSAGE_SELF).ru_maxrss` — le seul
+compteur que Linux et Darwin rendent par le même appel. Trois cent mille
+modules de 614 octets font 184 Mio si rien n'est rendu, à peu près rien s'ils
+le sont : le seuil est loin des deux, donc il ne clignote pas.
+
+Huit sur neuf après ça.
+
+### Le neuvième ne sera jamais attrapé, et c'est écrit dans le code
+
+Retirer le `ok == 0` de la cession ne change rien d'observable : côté Rust,
+chaque refus rend `-1` **avant** d'écrire dans les sorties, donc le pointeur
+reste `nil` et le `guard let` seul répond pareil. J'ai vérifié les trois
+fonctions plutôt que de le supposer.
+
+Ce qui tient vraiment cette promesse est le programme C, qui vérifie qu'un
+refus **ne touche pas aux sorties de l'appelant**. La garde Swift est de la
+défense en profondeur contre un changement de l'autre côté. C'est dit dans le
+commentaire de la fonction, avec le fait qu'aucun test d'ici ne peut la tenir —
+un survivant expliqué vaut mieux qu'un test inventé pour faire un score.
+
+### Deux petites choses trouvées en chemin
+
+`RUSAGE_SELF` est un `Int32` sur Darwin et une énumération dans la glibc ; le
+nombre est le même, seul le type diffère. Un `#if canImport(Darwin)` de trois
+lignes, trouvé par le compilateur en dix secondes — le genre de chose qu'on
+découvre sinon dans un job macOS, vingt minutes plus tard.
+
+Et SwiftLint, lancé en `--strict` avec la bibliothèque sourcekit de la chaîne
+fraîchement installée, a refusé deux lignes vides consécutives. C'est le job
+qui a déjà mis cette branche au rouge une fois.
