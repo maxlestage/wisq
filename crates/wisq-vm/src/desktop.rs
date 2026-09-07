@@ -141,8 +141,18 @@ pub fn page(
             }
             let ram = u64::from(pages) * 65536;
             let folded = screen.base & (ram - 1);
-            let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
-            if folded + bytes > ram {
+            // **La surface peut déborder de soixante-quatre bits**, et c'est un
+            // débordement qui *accepterait* au lieu de refuser : deux
+            // dimensions de deux puissance trente et un donnent exactement deux
+            // puissance soixante-quatre, qui enroule à **zéro** en release. Un
+            // cadre impossible passerait alors la garde. `saturating_mul` rend
+            // un nombre au moins aussi grand que le vrai, ce qui suffit pour
+            // refuser — et un cadre de cette taille n'a pas de vrai nombre à
+            // annoncer.
+            let bytes = u64::from(screen.width)
+                .saturating_mul(u64::from(screen.height))
+                .saturating_mul(4);
+            if folded.saturating_add(bytes) > ram {
                 return Err(Refusal::ScreenDoesNotFit { folded, bytes, ram });
             }
             // **Le canvas est dans le corps de la page, pas fabriqué par le
@@ -202,9 +212,14 @@ if (pinceau === null) {{
 const image = pinceau.createImageData({width}, {height});
 
 // Peindre une image, tout de suite, quel que soit l'état de la machine.
+//
+// **Elle rend le nombre de pixels**, et ce n'est pas décoratif : une fonction
+// qui ne rend rien ne se distingue pas d'une fonction qui n'a rien fait. C'est
+// le seul moyen, depuis l'application, de savoir qu'une image est passée.
 window.wisqPaint = () => {{
-  vm.paint(image.data);
+  const pixels = vm.paint(image.data);
   pinceau.putImageData(image, 0, 0);
+  return pixels;
 }};
 
 let enMarche = false;
