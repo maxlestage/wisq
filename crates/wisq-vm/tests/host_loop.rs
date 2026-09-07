@@ -1101,7 +1101,10 @@ console.log("court " + court);
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let complaint = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(output.status.success(), "le pilote a échoué : {complaint}\n{text}");
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
     let seen = |label: &str| -> String {
         text.lines()
             .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
