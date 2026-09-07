@@ -2144,10 +2144,56 @@ qu'embarque Bun, sur Linux. Que le `WKWebView` d'un vrai iPhone accepte la
 multi-mémoire n'est **pas** établi ; la sonde de l'application est le seul
 endroit qui le dira, et c'est à vérifier avant de bâtir dessus.
 
-Ce qui reste : la correspondance elle-même, avec un hachage qui mélange les bits
-bas, et `resolve` qui passe par elle au lieu de la chaîne de comparaisons. C'est
-là que le gain arrive, et c'est là que `--example chain` doit retomber d'environ
-190 ns à une dizaine.
+Ce qui restait : la correspondance elle-même, avec un hachage qui mélange les
+bits bas, et `resolve` qui passe par elle au lieu de la chaîne de comparaisons.
+**C'est fait, et le gain est celui qu'on espérait.**
+
+`cargo run -p wisq-vm --release --example resolved` mesure le même anneau de
+soixante-quatre maillons que `--example chain`, à ceci près que la boucle hôte
+disparaît : le module trouve la région suivante lui-même et y va par
+`call_indirect`.
+
+| l'anneau, soixante-quatre maillons de six instructions | par changement de région |
+| --- | --- |
+| enchaîné par l'hôte (`--example chain`) | environ **190 ns** |
+| résolu dans le module (`--example resolved`) | **29 ns** |
+
+Le plafond que l'enchaînement impose passe ainsi de trente-deux à **207 MIPS**,
+contre 247 que l'émetteur atteint *dans* une région sans jamais changer. L'écart
+entre ces deux plafonds borne ce que le changement coûte encore : de l'ordre de
+**cinq nanosecondes** — une déduction de deux mesures, pas une mesure, et le
+programme le dit.
+
+**Comment c'est fait, et les trois choix qui comptent.**
+
+1. **Aucune structure de contrôle en plus.** La chaîne de `select` qui compare
+   l'adresse aux blocs de la région partait d'un `-1`. Elle part maintenant de
+   ce que la correspondance a rendu. Les blocs de la région gagnent toujours,
+   ce qui est juste — ils sont déjà là.
+2. **Une seule case, sans sondage.** Deux adresses qui tombent au même endroit
+   ne se disputent pas : la seconde n'est pas trouvée et le module rend la
+   main, exactement comme avant. Une collision coûte donc ce que coûtait la
+   situation d'avant, jamais plus — et ça évite une boucle de sondage dans un
+   corps de bloc qui n'a aucune variable locale.
+3. **Les bits hauts d'un produit.** `scripts/wasm-table-probe.ts` avait montré
+   que les bits *bas* d'un produit de Knuth ne mélangent rien, parce que les
+   bits bas d'une adresse alignée ne portent aucune information. Les hauts
+   dépendent de tous les bits de l'entrée.
+
+**Le point d'accord, et pourquoi il est dangereux.** `table_slot` est écrite
+deux fois : en Rust pour que l'hôte range, en octets WebAssembly pour que le
+module relise. Si elles divergent, rien n'est jamais trouvé — le module rend la
+main comme avant, tous les tests de conformité restent verts, et la seule chose
+perdue est la vitesse. Un défaut muet. Deux tests le tiennent : l'un compare le
+multiplicateur gravé dans les octets à celui qu'exporte le module, l'autre fait
+sauter une région dans une autre pour de vrai.
+
+**Et le défaut le plus grave que cette tranche pouvait porter** : sans la
+comparaison de l'adresse rangée, une case vide ou occupée par quelqu'un d'autre
+ferait sauter le module dans un bloc au hasard. Le sabotage a survécu aux deux
+premières moitiés du test — celle qui remplit et celle qui ne remplit pas — et
+il a fallu une troisième, une case occupée par une **autre** adresse, pour
+l'attraper. Huit sur huit ensuite.
 
 #### Et la seconde mémoire n'est finalement pas nécessaire
 

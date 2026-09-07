@@ -9892,3 +9892,81 @@ La RAM d'un invité confiné doit être une **puissance de deux** : `pages − 1
 décrit un intervalle qu'à cette condition. Avec trois pages le masque vaudrait
 0x2FFFF, qui laisse passer 0x2FFFF et coupe 0x20000 — une écriture au hasard
 dans la RAM, qu'aucun test de conformité ne verrait. `confined` refuse.
+
+## Une région saute dans une autre sans repasser par l'hôte : 190 ns deviennent 29
+
+Le dernier morceau du chemin local. Jusqu'ici, un saut vers une adresse que la
+région ne contient pas rendait la main à l'hôte, et `--example chain` avait
+mesuré ce que ça coûte : environ **190 ns**, dont l'essentiel n'est pas
+WebAssembly mais le site d'appel JavaScript qui devient mégamorphe et perd son
+cache en ligne.
+
+| l'anneau de soixante-quatre maillons | par changement de région |
+| --- | --- |
+| enchaîné par l'hôte (`--example chain`) | environ **190 ns** |
+| résolu dans le module (`--example resolved`) | **29 ns** |
+
+Le plafond que l'enchaînement impose passe de trente-deux à **207 MIPS**,
+contre 247 que l'émetteur atteint *dans* une région. L'écart borne ce que le
+changement coûte encore : de l'ordre de cinq nanosecondes — et c'est une
+déduction de deux mesures, pas une mesure ; le programme le dit lui-même.
+
+### Trois choix, et le premier est le seul qui compte vraiment
+
+**La chaîne de `select` avait déjà la place.** Elle comparait l'adresse aux
+blocs de la région en partant d'un `-1`, remplacé dès qu'un bloc correspond. Il
+a suffi que cette valeur de départ soit ce que la correspondance a rendu.
+Aucune structure de contrôle en plus, aucune variable locale — un corps de bloc
+n'en a aucune — et les blocs de la région gagnent toujours, ce qui est juste :
+ils sont déjà là.
+
+**Une seule case, sans sondage.** Deux adresses au même endroit ne se disputent
+pas : la seconde n'est pas trouvée, et le module rend la main comme il le
+faisait pour toutes. Une collision coûte ce que coûtait la situation d'avant,
+jamais plus.
+
+**Les bits hauts d'un produit.** La sonde de table avait montré que les bits
+*bas* d'un produit de Knuth ne mélangent rien — les bits bas d'une adresse
+alignée ne portent aucune information. Sur 16384 adresses espacées de seize
+octets, la plupart se disputaient les mêmes cases. Les bits hauts, eux,
+dépendent de tous les bits de l'entrée.
+
+### Le défaut que deux moitiés de test ne voyaient pas
+
+Le test faisait sauter une région dans une autre avec la correspondance
+remplie, puis vérifiait qu'elle rendait la main quand elle était vide. Deux
+moitiés, l'une confirmant l'autre — et un sabotage est passé au travers : celui
+qui **retire la comparaison de l'adresse rangée**.
+
+La raison est bête et vaut d'être écrite. Une case vide ne range que des zéros ;
+l'indice lu vaut zéro, moins l'emplacement de la région il devient négatif, et
+le module rend la main quand même. La moitié « vide » restait donc verte
+pendant que le module sautait, dans tous les autres cas, dans un bloc au
+hasard — le pire défaut que cette tranche pouvait porter.
+
+Ce qu'il fallait est une **troisième** moitié : une case occupée par une
+*autre* adresse. Là, l'indice lu est valide et le module y va, sauf s'il
+compare. Huit sabotages sur huit après ça, dont deux autres trous que le test
+ne tenait pas non plus : une mémoire trop courte pour la correspondance, et une
+RAM qui n'est pas une puissance de deux.
+
+### Un accord qui ne se voit nulle part
+
+`table_slot` est écrite deux fois : en Rust, pour que l'hôte range ; en octets
+WebAssembly, pour que le module relise. Si elles divergent, rien n'est jamais
+trouvé — le module rend la main comme avant, tous les tests de conformité
+restent verts, et la seule chose perdue est la vitesse. Un défaut entièrement
+muet.
+
+Le test qui le tient compare le multiplicateur gravé dans les octets du module
+à celui que la bibliothèque exporte. **Son premier jet écrivait les dix octets
+en dur, devinés** — et quatre étaient faux. Une constante devinée qui passe
+pour vérifiée est pire que pas de test du tout ; le test les recalcule
+maintenant.
+
+### Ce qui reste
+
+`ud2` rendra toujours la main, et c'est juste : une faute appartient à l'hôte.
+Une région qui n'a jamais été compilée aussi — l'hôte doit la traduire avant
+qu'elle puisse être dans la table. Ce qui a disparu, c'est le retour de main
+pour une région **déjà connue**, qui était le cas commun.
