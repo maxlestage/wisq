@@ -11016,3 +11016,47 @@ patience et de ressembler à une vue lente.
 Ce que ça dit du reste : ce défaut n'était visible par rien tant que ces tests
 ne tournaient nulle part. Il est sorti dans les trois minutes qui ont suivi leur
 première exécution.
+
+### La course était réelle, et ce n'était pas la cause
+
+La tranche précédente se terminait sur une explication qui se tenait : la
+course sur `web.isLoading` expliquait `InvalidTransition`, elle était le jumeau
+d'une course déjà corrigée dix lignes plus haut, et la corriger devait rendre le
+test vert.
+
+Elle est corrigée. **Le test échoue à l'identique**, au même endroit :
+
+```
+LocalDesktopTests.swift:211: InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+La course existait — attendre `didFinish` plutôt que sonder un drapeau encore
+faux est juste, et le reste. Mais elle n'était pas ce qui casse. J'ai pris une
+explication vraie pour l'explication, parce qu'elle était élégante et qu'elle
+m'accusait : une erreur que je venais de commettre deux fois faisait un coupable
+trop satisfaisant pour être vérifié.
+
+Et `InvalidTransition` n'est écrit nulle part chez nous — `grep` sur tout
+l'arbre ne le trouve pas. C'est WebKit qui parle, d'un état interne dont le
+message ne nomme ni le fichier ni la ligne de ce qui l'a mis là.
+
+Ce qui reste vrai et qu'aucune relecture ne donne : **des neuf tests, celui-ci
+est le seul dont la page porte un `<canvas>`**. Les huit autres passent, dont un
+`place` de 4 Mio. Je ne sais pas encore si c'est le canvas ; je sais que c'est la
+seule chose qui les sépare.
+
+Alors plutôt que de deviner une deuxième fois, la page dit elle-même ce qui lui
+arrive. Le corps du pilote est enveloppé d'un `try`/`catch` qui pose
+`window.wisqFailure`, `load()` demande à la page son verdict après `didFinish`,
+et le délégué signale `webViewWebContentProcessDidTerminate`. Trois issues
+distinctes, trois refus nommés : `.script`, `.thePageNeverCameUp`,
+`.theViewsProcessDied`.
+
+Le prochain run ne dira plus « InvalidTransition » : il dira lequel des trois
+c'est.
+
+Et parce qu'ajouter du code pour diagnostiquer la CI est précisément le moment
+où l'on écrit ce qu'aucun test ne juge, le `catch` est jugé ici :
+`a_page_that_cannot_install_itself_says_so` fait tourner le vrai pilote avec un
+`document.getElementById` qui rend `null`, et vérifie que la raison nomme le
+canvas et que `wisqRun` reste `undefined`.

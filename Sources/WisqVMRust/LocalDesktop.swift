@@ -39,6 +39,16 @@ public final class LocalDesktop {
         /// montrer ; le refus le dit, plutôt que de laisser l'appelant croire
         /// qu'une image est passée.
         case noFrameWasDeclared
+        /// **La page a chargé, mais son script est mort en route.** Un canvas
+        /// absent, un contexte refusé, une RAM que la boucle hôte n'accepte
+        /// pas : la vue finit quand même de charger, et sans ça l'application
+        /// ne l'apprendrait que plusieurs appels plus loin, par le symptôme.
+        case thePageNeverCameUp(String)
+        /// **Le processus de contenu est mort.** Ce n'est ni un refus ni un
+        /// script en panne : c'est WebKit qui a emporté la page. Sans ce cas,
+        /// il se manifeste par une continuation abandonnée et un message qui
+        /// ne nomme pas sa cause.
+        case theViewsProcessDied
     }
 
     /// Pourquoi la machine s'est arrêtée, et où. Jamais « rien » : un arrêt
@@ -159,8 +169,35 @@ public final class LocalDesktop {
         while !handler.loaded && handler.failure == nil && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        if handler.processDied { throw Failure.theViewsProcessDied }
         if let why = handler.failure { throw Failure.script(why) }
         guard handler.loaded else { throw Failure.viewNeverFinishedLoading }
+
+        // **Une page qui a fini de charger n'est pas une page qui s'est
+        // installée.** Le script du module peut avoir levé — et alors la vue
+        // rend quand même `didFinish`. Le pilote retient la raison ; on la lit
+        // ici plutôt que de laisser l'appel suivant partir sur une page à
+        // moitié montée et rapporter une panne qui ne nomme pas sa cause.
+        let verdict: Any?
+        do {
+            verdict = try await web.callAsyncJavaScript(
+                """
+                if (window.wisqFailure) return window.wisqFailure;
+                return typeof window.wisqRun === "function"
+                  ? "prête"
+                  : "le pilote n'a pas fini de s'installer";
+                """,
+                arguments: [:], in: nil, contentWorld: .page
+            )
+        } catch {
+            throw handler.processDied
+                ? Failure.theViewsProcessDied
+                : Failure.script(error.localizedDescription)
+        }
+        guard let said = verdict as? String else {
+            throw Failure.thePageNeverCameUp("la page n'a pas répondu lisiblement")
+        }
+        guard said == "prête" else { throw Failure.thePageNeverCameUp(said) }
     }
 
     /// **Pose l'image dans la RAM de l'invité**, à l'adresse repliée.
@@ -213,7 +250,9 @@ public final class LocalDesktop {
                     contentWorld: .page
                 )
             } catch {
-                throw Failure.script(error.localizedDescription)
+                throw handler.processDied
+                    ? Failure.theViewsProcessDied
+                    : Failure.script(error.localizedDescription)
             }
             written += piece.count
         }
@@ -437,6 +476,14 @@ public final class LocalDesktop {
         /// Et une page qui refuse de charger doit le dire, plutôt que
         /// d'épuiser la patience et de ressembler à une vue lente.
         var failure: String?
+        /// **Le processus de contenu est mort.** WebKit le dit ; sans ça, la
+        /// seule trace est une continuation abandonnée, et un message qui ne
+        /// nomme pas sa cause.
+        var processDied = false
+
+        func webViewWebContentProcessDidTerminate(_ web: WKWebView) {
+            processDied = true
+        }
 
         func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) {
             loaded = true

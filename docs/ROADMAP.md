@@ -2380,6 +2380,41 @@ Et le même piège une couche plus loin : le refus porte le nombre d'octets, et
 `Int(bytes)` piège pour un `bytes` au-delà de 2⁶³. Le refus serait devenu un
 plantage. `Int(clamping:)`.
 
+### Le seul test dont la page porte un canvas, et ce que j'ai cru savoir
+
+`testTheDesktopPaintsTheFrameOnDemand` échoue sur le runner Apple :
+
+```
+InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+J'ai attribué ça à une course sur `web.isLoading` — un drapeau encore faux
+juste après `loadHTMLString`, donc une boucle qui sort au premier tour. Le
+diagnostic était plausible, il désignait une faute réelle, et c'était le jumeau
+d'une course corrigée dix lignes plus haut le même jour. **Il était faux.** La
+course est corrigée, le test échoue à l'identique.
+
+Ce qui reste et qu'aucune relecture n'a donné : **des neuf tests, c'est le seul
+dont la page porte un `<canvas>`** — les huit autres passent, dont un `place`
+de 4 Mio. Ce n'est pas une cause, c'est la seule chose qui les sépare.
+`InvalidTransition` n'apparaît nulle part dans l'arbre : c'est WebKit qui parle
+d'un état interne, sans nommer ce qui l'y a mis.
+
+Plutôt que de deviner une deuxième fois, **la page dit ce qui lui arrive** : le
+corps du pilote est enveloppé d'un `try`/`catch` qui pose `window.wisqFailure`,
+`load()` lit ce verdict après `didFinish`, et le délégué signale
+`webViewWebContentProcessDidTerminate`. Trois refus nommés — `.script`,
+`.thePageNeverCameUp`, `.theViewsProcessDied` — au lieu d'un message opaque.
+
+Le `catch` ajouté pour diagnostiquer la CI est lui-même jugé, parce que c'est
+exactement le moment où l'on écrit du code que rien ne tient :
+`a_page_that_cannot_install_itself_says_so` fait tourner le vrai pilote avec un
+`document.getElementById` qui rend `null`.
+
+Si le prochain run nomme un processus de contenu mort, la suite écrite d'avance
+est une cible de test hébergée par l'application via `scripts/test-app.sh`, qui
+tourne déjà dans un simulateur — **pas** le retrait du test.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
