@@ -237,7 +237,6 @@ mod code {
     /// Le `et` de trente-deux bits, qui replie une adresse invitée dans sa RAM.
     pub const I32_AND: u8 = 0x71;
     pub const I32_ADD: u8 = 0x6a;
-    pub const I32_SUB: u8 = 0x6b;
     pub const I32_MUL: u8 = 0x6c;
     pub const I32_LOAD: u8 = 0x28;
     pub const I64_CONST: u8 = 0x42;
@@ -862,12 +861,16 @@ impl Module {
     ) {
         // Deux valeurs à poser : l'adresse d'arrivée et l'indice du bloc.
         // `sortie` vaut -1 quand la cible n'est pas dans la région.
+        // **L'emplacement de la région, ajouté à chaque indice.** Un bloc rend
+        // un indice **absolu** dans la table de l'hôte, pas un numéro local :
+        // voir la répartition, qui n'ajoute plus rien.
+        let at_slot = shape.shared.unwrap_or(0);
         let place = |body: &mut Body, offset: i64| {
             body.store(RIP_SLOT, |b| {
                 b.constant(base.wrapping_add(offset as u64));
             });
             let next = match usize::try_from(offset).ok().and_then(&index) {
-                Some(block) => block as i64,
+                Some(block) => i64::from(block as u32 + at_slot),
                 None => -1,
             };
             body.bytes.push(code::I32_CONST);
@@ -906,7 +909,7 @@ impl Module {
                     Self::condition(condition, b);
                     b.op(code::I32_WRAP_I64).op(code::SELECT);
                 });
-                Self::choose(body, target, after as i64, index, |b| {
+                Self::choose(body, target, after as i64, index, at_slot, |b| {
                     Self::condition(condition, b);
                 });
             }
@@ -923,7 +926,7 @@ impl Module {
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::SELECT);
                 });
-                Self::choose(body, target, after as i64, index, |b| {
+                Self::choose(body, target, after as i64, index, at_slot, |b| {
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::I64_EXTEND_I32_U);
                 });
@@ -1013,15 +1016,16 @@ impl Module {
         // dans la correspondance au lieu d'un `-1` sec. Les blocs de la
         // région gagnent toujours, ce qui est juste — ils sont déjà là.
         match Self::lookup_base(shape) {
-            Some((base, slot)) => Self::lookup(base, slot, body),
+            Some((base, _)) => Self::lookup(base, body),
             None => {
                 body.bytes.push(code::I32_CONST);
                 signed(-1, &mut body.bytes);
             }
         }
+        let at_slot = shape.shared.unwrap_or(0);
         for (block, start) in starts.iter().enumerate() {
             body.bytes.push(code::I32_CONST);
-            signed(block as i64, &mut body.bytes);
+            signed(i64::from(block as u32 + at_slot), &mut body.bytes);
             // Échanger les deux : `select` rend la première quand la condition
             // tient, donc l'indice trouvé doit être poussé en dernier.
             body.load(RIP_SLOT).constant(*start).op(code::I64_NE);
@@ -1055,14 +1059,13 @@ impl Module {
     /// l'emplacement à tout ce qu'un bloc rend — c'est l'invariant qui garde
     /// la traduction indépendante de l'endroit où l'hôte pose la région. Le
     /// retranchement d'ici le respecte au lieu de l'entamer.
-    fn lookup(base: u32, slot: u32, body: &mut Body) {
+    fn lookup(base: u32, body: &mut Body) {
         // L'indice rangé dans la case, ramené au repère de la région.
         body.entry(base);
         body.op(code::I32_LOAD);
         body.bytes.push(2); // alignement : quatre octets
         body.bytes.push(8); // décalage : l'indice suit l'adresse
-        body.constant32(slot).op(code::I32_SUB);
-        // Le repli, si la case ne parle pas de nous.
+                            // Le repli, si la case ne parle pas de nous.
         body.bytes.push(code::I32_CONST);
         signed(-1, &mut body.bytes);
         // Et la question : la case range-t-elle bien l'adresse cherchée ?
@@ -1083,10 +1086,11 @@ impl Module {
         taken: i64,
         fallen: i64,
         index: &impl Fn(usize) -> Option<usize>,
+        at_slot: u32,
         condition: impl FnOnce(&mut Body),
     ) {
         let resolve = |offset: i64| match usize::try_from(offset).ok().and_then(index) {
-            Some(block) => block as i64,
+            Some(block) => i64::from(block as u32 + at_slot),
             None => -1,
         };
         body.bytes.push(code::I32_CONST);
@@ -1222,9 +1226,19 @@ impl Module {
         // La boucle : tant qu'il reste du budget, appeler le bloc courant et
         // prendre l'indice qu'il rend. Un indice négatif rend la main.
         let mut dispatch: Vec<u8> = vec![
-            0x01,
-            0x01,
-            0x7f, // une locale i32 : le bloc courant
+            0x01, 0x01, 0x7f, // une locale i32 : le bloc courant
+        ];
+        // **Le bloc de départ est l'emplacement de la région, pas zéro.** Les
+        // variables locales de WebAssembly naissent à zéro, ce qui tombait
+        // juste tant que la répartition ajoutait l'emplacement. Elle ne
+        // l'ajoute plus — un bloc rend un indice absolu — donc c'est ici qu'il
+        // faut le poser, une fois, avant la boucle.
+        if let Some(slot) = shared {
+            dispatch.push(code::I32_CONST);
+            signed(i64::from(slot), &mut dispatch);
+            dispatch.extend_from_slice(&[0x21, 0x01]); // local.set 1
+        }
+        dispatch.extend_from_slice(&[
             0x02,
             0x40, // block
             0x03,
@@ -1242,18 +1256,19 @@ impl Module {
             0x21,
             0x00,
             0x20,
-            0x01, //   le bloc, numéroté depuis zéro dans la région
-        ];
-        // **L'emplacement s'ajoute ici, et nulle part ailleurs.** Les blocs se
-        // numérotent depuis zéro partout — dans `place`, dans `resolve`, dans
-        // ce qu'un bloc rend — et c'est ce qui garde la traduction indépendante
-        // de l'endroit où l'hôte pose la région. Seul l'appel a besoin de
-        // l'indice absolu, et il est le seul à le calculer.
-        if let Some(slot) = shared {
-            dispatch.push(code::I32_CONST);
-            signed(i64::from(slot), &mut dispatch);
-            dispatch.push(0x6a); // i32.add
-        }
+            0x01, //   le bloc, indice absolu dans la table de l'hôte
+        ]);
+        // **Ce qu'un bloc rend est déjà l'indice absolu**, et c'est une
+        // correction, pas un choix de départ. La répartition ajoutait
+        // l'emplacement ici, au motif que les blocs se numérotaient depuis
+        // zéro partout — vrai tant qu'une région n'appelle que ses propres
+        // blocs. Dès qu'elle en appelle un d'ailleurs, c'est **cette**
+        // répartition-ci qui continue de tourner, avec l'emplacement de la
+        // région d'entrée, et le bloc étranger rend un numéro relatif au
+        // sien : les deux ne se correspondent plus, et la machine part en
+        // rond dans la mauvaise région. Un anneau de trois régions l'a
+        // montré ; deux régions ne suffisaient pas, parce qu'il faut **deux**
+        // sauts d'affilée pour que l'écart se voie.
         dispatch.extend_from_slice(&[
             0x11,
             0x00,
