@@ -94,6 +94,66 @@ pub const TABLE_PAGES: u32 = TABLE_SLOTS * TABLE_ENTRY / 65536;
 /// bien ce nombre-là qui est gravé dans les octets.
 pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// **Pourquoi l'émetteur a refusé une région, et surtout : faut-il redemander ?**
+///
+/// Un refus n'a pas une cause mais deux, et l'hôte ne les traite pas pareil.
+/// Une instruction que le décodeur ne connaît pas est un refus **franc** :
+/// redemander avec plus d'octets ne changera rien. Une instruction *coupée par
+/// le bord* des octets fournis n'en est pas un : elle se décoderait très bien
+/// avec la suite. Les confondre coûte cher dans les deux sens — soit la vue
+/// abandonne une région traduisible, soit elle redemande pour rien à chaque
+/// vrai refus.
+///
+/// Jusqu'ici personne ne les distinguait à l'exécution. `examples/coverage.rs`
+/// le fait, mais **après coup et par un détour** : il rejuge l'octet fautif
+/// avec tout le reste du fichier, ce qu'une vue n'a pas sous la main.
+///
+/// **Le seuil de quinze octets est mesuré, pas déduit.** Une instruction
+/// x86-64 fait au plus quinze octets, donc un échec à quinze octets ou plus du
+/// bord ne peut pas être une coupe : c'est la borne théorique. Ce qui la rend
+/// sûre est la distribution réelle — sur les 3673 abandons du noyau Alpine, il
+/// n'y en a **aucun** entre douze et dix-neuf octets du bord : 316 tout près
+/// (un à onze), 3357 loin (vingt ou plus). Le seuil tombe dans un trou, pas au
+/// bord d'un précipice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// **Le décodage s'est arrêté tout près du bord** : à `at`, il restait
+    /// moins de quinze octets. Ça peut être une coupe. La vue redemande la
+    /// même région avec davantage d'octets, et n'a besoin de le faire que là.
+    ///
+    /// Ça *peut* aussi être une vraie instruction inconnue qui se trouvait par
+    /// hasard près du bord ; elle coûte alors un aller-retour de plus, et se
+    /// fait refuser franchement au second essai.
+    MayBeCut { at: usize },
+
+    /// **Une instruction que le décodeur ne lit pas**, à `at`, avec toute la
+    /// place qu'il lui fallait. Redemander n'apporterait rien.
+    CannotDecode { at: usize },
+
+    /// **Une instruction que le décodeur lit mais que l'émetteur ne sait pas
+    /// traduire**, à `at`. Un refus franc lui aussi.
+    ///
+    /// **Ce cas ne s'est jamais produit** sur le noyau Alpine — zéro sur 3673
+    /// abandons, tous au décodage. Il est ici parce que le chemin existe dans
+    /// le code, pas parce qu'il est fréquent : ce que le décodeur accepte,
+    /// l'émetteur le traduit. Les instructions qui manquent encore — `rdtsc`,
+    /// les MSR, le groupe 7 — manquent au **décodeur**, faute d'oracle, et
+    /// c'est un modèle qu'il leur faut, pas un bras d'émission.
+    CannotTranslate { at: usize },
+
+    /// Rien de traduisible depuis cette entrée : le premier octet ne commence
+    /// aucun bloc.
+    NothingAtEntry,
+
+    /// La RAM demandée n'est pas une puissance de deux, donc le repli ne
+    /// décrirait pas un intervalle.
+    RamIsNotAPowerOfTwo(u32),
+}
+
+/// **Ce qu'une instruction x86-64 peut occuper au plus.** En deçà de ça du
+/// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
+const REACH: usize = 15;
+
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
 /// peut pas la corrompre, et il n'a fallu pour ça aucune seconde mémoire.
@@ -530,6 +590,25 @@ impl Module {
     /// relit. Compiler la région comme si elle vivait à zéro empilerait un
     /// nombre que rien, dans la mémoire de l'invité, ne désigne.
     pub fn region(bytes: &[u8], base: u64, entry: usize) -> Option<Vec<u8>> {
+        Self::region_or_why(bytes, base, entry).ok()
+    }
+
+    /// **La même, mais elle dit pourquoi quand elle refuse.**
+    ///
+    /// Deux formes plutôt qu'une, parce que la plupart des appelants n'ont rien
+    /// à faire de la raison : ils interprètent, et un `Option` se lit mieux
+    /// qu'un `Result` dont on jette la moitié. Celle-ci est pour qui doit
+    /// **décider quoi faire ensuite** — la vue du bureau, qui peut redemander
+    /// la même région avec plus d'octets, et `examples/coverage.rs`, qui
+    /// comptait les coupes par un détour.
+    ///
+    /// **La forme courte délègue à celle-ci**, et aucun test ne peut le tenir :
+    /// lui faire appeler `build` directement ne change rien d'observable
+    /// aujourd'hui — c'est le même appel. La délégation est là pour demain,
+    /// quand cette fonction fera davantage : deux chemins séparés finiraient
+    /// par ne plus refuser les mêmes régions. Un test compare tout de même les
+    /// deux formes sur cinq cas, ce qui attrape la divergence si elle arrive.
+    pub fn region_or_why(bytes: &[u8], base: u64, entry: usize) -> Result<Vec<u8>, Refused> {
         Self::build(bytes, base, entry, Shape::default())
     }
 
@@ -580,6 +659,7 @@ impl Module {
                 ..Shape::default()
             },
         )
+        .ok()
     }
 
     /// **La même région, mais posée dans la table de l'hôte.**
@@ -611,6 +691,7 @@ impl Module {
                 ..Shape::default()
             },
         )
+        .ok()
     }
 
     /// **La forme qui n'a plus besoin de l'hôte pour changer de région.**
@@ -639,8 +720,41 @@ impl Module {
         slot: u32,
         pages: u32,
     ) -> Option<Vec<u8>> {
+        Self::resolving_or_why(bytes, base, entry, slot, pages).ok()
+    }
+
+    /// **La forme du bureau, qui dit pourquoi quand elle refuse.**
+    ///
+    /// C'est celle dont la vue a besoin : sur `Refused::MayBeCut`, elle
+    /// redemande la même région avec davantage d'octets ; sur les autres, elle
+    /// s'arrête proprement. Sans cette distinction elle redemanderait à
+    /// l'aveugle — un aller-retour de plus sur chaque vrai refus — ou
+    /// abandonnerait des régions qu'une fenêtre plus large aurait traduites.
+    ///
+    /// **Ce que ça vaut, mesuré** sur le noyau Alpine, avec des fenêtres de
+    /// tailles différentes et 10 116 entrées atteintes par un `call` :
+    ///
+    /// | fenêtre | compilées | coupées par le bord | refusées franchement |
+    /// | --- | --- | --- | --- |
+    /// | 2 Kio | 9751 (96,4 %) | 274 | 91 |
+    /// | 4 Kio | 9930 (98,2 %) | 89 | 97 |
+    /// | 16 Kio | 10009 (98,9 %) | 6 | 101 |
+    ///
+    /// Deux choses s'y lisent. Le rendement décroît vite, donc une grande
+    /// fenêtre fixe paierait des octets pour presque rien : mieux vaut une
+    /// petite fenêtre et un second essai sur les 0,9 % qui le demandent. Et les
+    /// refus francs **montent** avec la fenêtre, de 91 à 101 — une petite
+    /// fenêtre cache de vrais refus derrière des coupes, ce qui veut dire
+    /// qu'un décompte de refus ne se lit jamais sans la taille qui va avec.
+    pub fn resolving_or_why(
+        bytes: &[u8],
+        base: u64,
+        entry: usize,
+        slot: u32,
+        pages: u32,
+    ) -> Result<Vec<u8>, Refused> {
         if pages == 0 || !pages.is_power_of_two() {
-            return None;
+            return Err(Refused::RamIsNotAPowerOfTwo(pages));
         }
         Self::build(
             bytes,
@@ -654,7 +768,7 @@ impl Module {
         )
     }
 
-    fn build(bytes: &[u8], base: u64, entry: usize, shape: Shape) -> Option<Vec<u8>> {
+    fn build(bytes: &[u8], base: u64, entry: usize, shape: Shape) -> Result<Vec<u8>, Refused> {
         // Le masque se dérive du nombre de pages, une fois : `confined` a déjà
         // vérifié que c'est une puissance de deux.
         let mask = shape.confine.map(|pages| pages * 65536 - 1);
@@ -693,13 +807,17 @@ impl Module {
                 ) {
                     continue;
                 }
-                Self::translate(&Self::pin(step, here), here, &mut body)?;
+                if Self::translate(&Self::pin(step, here), here, &mut body).is_none() {
+                    return Err(Refused::CannotTranslate {
+                        at: at - step.length,
+                    });
+                }
             }
             Self::terminate(steps.last(), base, at, &index, &starts, &mut body, shape);
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Some(Self::assemble(bodies, shape))
+        Ok(Self::assemble(bodies, shape))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -759,7 +877,7 @@ impl Module {
     /// retour de main doit pouvoir la lire. Un interpréteur qui vit ailleurs ne
     /// le peut pas — et « ailleurs » comprend l'application elle-même.
     pub fn survey(bytes: &[u8], entry: usize) -> Option<Survey> {
-        let blocks = Self::discover(bytes, entry)?;
+        let blocks = Self::discover(bytes, entry).ok()?;
         let mut survey = Survey {
             blocks: blocks.len(),
             ..Default::default()
@@ -780,7 +898,7 @@ impl Module {
         Some(survey)
     }
 
-    fn discover(bytes: &[u8], entry: usize) -> Option<Vec<(usize, Vec<Decoded>)>> {
+    fn discover(bytes: &[u8], entry: usize) -> Result<Vec<(usize, Vec<Decoded>)>, Refused> {
         let mut starts = std::collections::BTreeSet::new();
         let mut queue = vec![entry];
         let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
@@ -795,7 +913,16 @@ impl Module {
                 if at >= bytes.len() {
                     break;
                 }
-                let step = decode(&bytes[at..])?;
+                let Some(step) = decode(&bytes[at..]) else {
+                    // **Coupé par le bord, ou vraiment inconnu ?** C'est la
+                    // place restante qui répond, et elle seule : le décodeur
+                    // ne sait pas dire s'il lui manquait des octets.
+                    return Err(if bytes.len() - at < REACH {
+                        Refused::MayBeCut { at }
+                    } else {
+                        Refused::CannotDecode { at }
+                    });
+                };
                 at += step.length;
                 let ends = matches!(
                     step.op,
@@ -839,9 +966,9 @@ impl Module {
             blocks.insert(start, steps);
         }
         if blocks.is_empty() {
-            return None;
+            return Err(Refused::NothingAtEntry);
         }
-        Some(blocks.into_iter().collect())
+        Ok(blocks.into_iter().collect())
     }
 
     /// **Ce qu'un bloc fait à la fin : dire où aller.**

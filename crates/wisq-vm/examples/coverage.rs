@@ -1,7 +1,7 @@
 // Combien du vrai noyau le compilateur accepte-t-il ?
 use std::fs;
 use wisq_vm::x86::{decode, Op};
-use wisq_vm::x86_wasm::{Module, Survey};
+use wisq_vm::x86_wasm::{Module, Refused, Survey};
 
 fn main() {
     let path = std::env::args().nth(1).expect("le chemin du noyau");
@@ -94,6 +94,7 @@ fn main() {
     // ferait chercher une instruction manquante là où c'est la traduction qui
     // manque.
     let (mut hit, mut refused) = (0usize, 0usize);
+    let mut wasted = 0usize;
     let mut blame: std::collections::BTreeMap<String, usize> = Default::default();
     for entry in entries.iter().take(20000) {
         let end = limit.min(entry + 4096);
@@ -102,41 +103,48 @@ fn main() {
             continue;
         }
         refused += 1;
-        let mut walk = *entry;
-        let mut culprit = None;
-        while walk < end {
-            match decode(&bytes[walk..end]) {
-                Some(step) => walk += step.length.max(1),
-                None => {
-                    // **Coupé par la fenêtre, ou vraiment inconnu ?** La région
-                    // s'arrête à quatre kibioctets, et une instruction à cheval
-                    // sur ce bord ne se décode pas — pas parce que le décodeur
-                    // l'ignore, mais parce qu'il lui manque des octets. Compter
-                    // ça comme un manque gonfle le refus et désigne des
-                    // opcodes qui ne sont pas en cause : le relevé accusait
-                    // `48`, `4c` et `0f 85`, qui sont tous décodés depuis
-                    // toujours. On rejuge donc avec le reste du fichier.
-                    if decode(&bytes[walk..limit]).is_some() {
-                        culprit = Some("coupé par la fenêtre".into());
-                        break;
-                    }
-                    // Un préfixe ne dit rien tout seul : c'est l'octet d'après
-                    // qui nomme l'instruction refusée.
-                    culprit = Some(match bytes[walk] {
-                        0xf2 | 0xf3 | 0x0f | 0x66 => format!(
-                            "{:02x}-{:02x}",
-                            bytes[walk],
-                            bytes.get(walk + 1).copied().unwrap_or(0)
-                        ),
-                        other => format!("{other:02x}"),
-                    });
-                    break;
+        // **La raison vient de l'émetteur, plus d'une déduction d'ici.**
+        //
+        // Cette sonde séparait « coupé par la fenêtre » de « vraiment inconnu »
+        // en rejugeant l'octet fautif avec **tout le reste du fichier** — un
+        // détour qu'elle seule pouvait faire, parce qu'elle a le fichier entier
+        // sous la main. La vue du bureau ne l'a pas : elle a la fenêtre qu'elle
+        // a envoyée, et rien d'autre. `region_or_why` répond donc à sa place,
+        // et cette sonde s'en sert maintenant aussi — ce qui la fait vérifier
+        // la réponse à chaque exécution plutôt que la deviner deux fois.
+        let culprit = match Module::region_or_why(&bytes[*entry..end], 0x30000000, 0) {
+            Ok(_) => unreachable!("la région vient d'être refusée"),
+            Err(Refused::MayBeCut { at }) => {
+                // **De combien la prudence dépasse.** `MayBeCut` dit « le
+                // décodeur a manqué de place », pas « la suite l'aurait
+                // sauvé » — il ne peut pas le savoir, et la vue non plus.
+                // Cette sonde, elle, a tout le fichier : elle peut donc
+                // compter les fois où le second essai sera perdu. C'est le
+                // prix exact de la règle, mesuré à chaque exécution plutôt
+                // qu'estimé une fois.
+                if decode(&bytes[*entry + at..limit]).is_none() {
+                    wasted += 1;
+                }
+                "coupé par la fenêtre".to_string()
+            }
+            Err(Refused::NothingAtEntry) => "rien à cette entrée".to_string(),
+            Err(Refused::RamIsNotAPowerOfTwo(pages)) => format!("{pages} pages"),
+            Err(Refused::CannotTranslate { .. }) => "l'émetteur refuse".to_string(),
+            Err(Refused::CannotDecode { at }) => {
+                // Un préfixe ne dit rien tout seul : c'est l'octet d'après qui
+                // nomme l'instruction refusée.
+                let walk = *entry + at;
+                match bytes[walk] {
+                    0xf2 | 0xf3 | 0x0f | 0x66 => format!(
+                        "{:02x}-{:02x}",
+                        bytes[walk],
+                        bytes.get(walk + 1).copied().unwrap_or(0)
+                    ),
+                    other => format!("{other:02x}"),
                 }
             }
-        }
-        *blame
-            .entry(culprit.unwrap_or_else(|| "l'émetteur refuse".into()))
-            .or_default() += 1;
+        };
+        *blame.entry(culprit).or_default() += 1;
     }
     println!(
         "régions depuis les cibles de `call` : {hit} compilées, {refused} refusées ({:.1} %) \
@@ -155,9 +163,20 @@ fn main() {
         .map(|(_, n)| *n)
         .unwrap_or(0);
     println!(
-        "  dont {cut} coupées par le bord de la fenêtre de 4 Kio — pas un manque du décodeur, \
-         {} vraiment refusées",
+        "  dont {cut} où le décodeur a manqué de place au bord des 4 Kio — la vue redemanderait \
+         avec plus d'octets — et {} refusées franchement",
         refused - cut
+    );
+    // **Ce que la prudence coûte, en clair.** La règle des quinze octets ne
+    // peut pas distinguer une coupe d'un refus qui tombe près du bord : elle
+    // choisit de redemander. Ces `wasted` régions sont celles où ce second
+    // essai sera perdu, et les compter est la seule façon de savoir si le
+    // choix reste bon quand le décodeur progresse.
+    println!(
+        "  dont {wasted} qui se feront refuser au second essai — {:.2} % des entrées, \
+         le prix de ne pas abandonner les {} autres",
+        100.0 * wasted as f64 / entries.len().max(1) as f64,
+        cut - wasted
     );
     print!("  ce qui les refuse :");
     for (why, n) in worst

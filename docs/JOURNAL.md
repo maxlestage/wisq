@@ -10347,3 +10347,75 @@ de l'image, parce qu'un refus arrête la machine proprement.
 qu'il honore. Ces dix mutations sur dix ne disaient rien de la question, et
 c'est écrire la documentation — obligé de dire d'où viennent les octets — qui
 l'a fait apparaître.
+
+## « Coupé » n'est pas « je ne sais pas », et la sonde se trompait depuis le début
+
+La vue du bureau devra redemander une région quand la fenêtre d'octets l'a
+coupée, et seulement là. Il fallait donc que l'émetteur sache dire pourquoi il
+refuse. Le point d'abandon est unique — `decode(&bytes[at..])?` dans
+`discover` — et la règle est la place restante : moins de quinze octets, ça
+peut être une coupe ; quinze ou plus, le décodeur avait toute la place qu'une
+instruction x86-64 peut demander.
+
+### Le seuil, mesuré au lieu d'être déduit
+
+Quinze est la borne théorique. Ce qui la rend sûre est autre chose : une sonde
+temporaire sur ce point d'abandon, 3673 échecs sur le noyau Alpine, et la
+distance restante au bord. Un à onze octets : 316 cas. Vingt ou plus : 3357.
+**Rien entre douze et dix-neuf.** Le seuil tombe dans un trou de la
+distribution réelle, pas au bord d'un précipice — c'est ce qui autorise à
+écrire « robuste » plutôt que « ça devrait aller ».
+
+La même sonde a répondu à une question que je m'apprêtais à trancher au jugé :
+combien de refus viennent de l'émetteur plutôt que du décodeur ? **Zéro.** Ce
+que le décodeur accepte, l'émetteur le traduit. Les instructions qui manquent
+encore — `rdtsc`, les MSR, le groupe 7 — manquent au *décodeur*, faute
+d'oracle. Le cas `CannotTranslate` existe parce que le chemin existe dans le
+code, pas parce qu'il arrive.
+
+### Le test que j'avais faux, et qui m'a corrigé
+
+Le test du seuil montait une région avec l'octet inconnu suivi de quatorze
+puis quinze octets de bourrage. Il a échoué : `bytes.len() - at` compte
+**l'octet fautif lui-même**, donc quatorze de bourrage font quinze de place.
+Un décalage d'un que la relecture n'aurait pas attrapé — le test l'a fait, et
+il compte maintenant explicitement « à partir de l'octet fautif, celui-ci
+compris », avec une assertion sur le montage du cas lui-même.
+
+### La vraie trouvaille : la sonde de couverture se trompait
+
+`examples/coverage.rs` séparait déjà « coupé par la fenêtre » de « vraiment
+refusé ». Je m'attendais à retrouver ses 89 et 97 en lui faisant lire la raison
+que l'émetteur donne. J'ai eu **91 et 95**.
+
+Deux régions changent de camp, et ce n'est pas une question de prudence : la
+sonde déduisait la cause en **remarchant l'octet fautif linéairement depuis
+l'entrée**, alors que l'émetteur suit le graphe des sauts. Pour ces deux
+régions, la marche linéaire tombait sur un octet indécodable — souvent des
+données rangées après un `jmp` — que l'émetteur n'a jamais regardé. Elle
+accusait un coupable qui n'était pas au procès.
+
+Ça vaut au-delà de ces deux régions : le tableau des opcodes refusés qu'elle
+imprime était attribué de la même façon. Une sonde qui refait le travail du
+code plutôt que de le lui demander finit par mesurer sa propre imitation.
+
+**Et ce que la nouvelle règle coûte est maintenant compté à chaque exécution.**
+`MayBeCut` dit « le décodeur a manqué de place », pas « la suite l'aurait
+sauvé » : il ne peut pas le savoir. La sonde, elle, a le fichier entier, donc
+elle compte les fois où le second essai sera perdu. C'est **zéro** sur ce
+noyau. J'ai saboté le compteur avant d'y croire — condition inversée, il en
+compte 91 — parce qu'un zéro qui sort d'un compteur mort ressemble exactement
+à un zéro mérité.
+
+### Un tableau qui avait vieilli sans que rien ne le dise
+
+En vérifiant que mes chiffres ne cassaient pas ceux de la feuille de route, le
+relevé de couverture s'est révélé périmé : 9914 régions, 249 339 blocs, 3515
+`ud2`, là où le même programme sur le même noyau en rend 9930, 250 861 et 3537.
+Il avait dérivé pendant au moins une tranche.
+
+Le nombre de tests a une garde, la version en a une, la matrice des
+architectures aussi. Ce relevé n'en a pas, et il n'en aura probablement pas —
+il demande un noyau de trente-cinq mégaoctets que la CI ne télécharge pas. Ce
+qui est faisable est de le dater, et c'est fait : il porte maintenant la trace
+de sa propre péremption.
