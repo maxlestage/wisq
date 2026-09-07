@@ -133,12 +133,34 @@ public final class LocalDesktop {
         ) else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
         }
+        // **Attendre l'événement, pas un drapeau.** Ce qu'il y avait ici
+        // interrogeait `web.isLoading` en boucle — et juste après
+        // `loadHTMLString`, ce drapeau est **encore faux** : la navigation n'a
+        // pas commencé. La boucle sortait donc au premier tour, `load` rendait
+        // la main sur une page qui n'existait pas encore, et l'appel suivant
+        // partait dans le vide. Quand la vraie navigation s'engageait ensuite,
+        // elle jetait la continuation en attente — d'où
+        // `InvalidTransition { phase: idle, targetPhase: failed(deinit) }`,
+        // une erreur WebKit qui ne dit rien de sa cause.
+        //
+        // C'est **exactement** la course déjà corrigée sur le message d'arrêt :
+        // une vue poste et notifie, elle ne renseigne pas un drapeau à
+        // l'instant où on le lit. Je l'avais réparée d'un côté et laissée de
+        // l'autre.
+        //
+        // Le délégué est retenu **faiblement** par la vue, mais fortement par
+        // le contrôleur de contenu qui l'a déjà comme gestionnaire de
+        // messages : rien à garder de plus, rien à défaire.
+        handler.loaded = false
+        handler.failure = nil
+        web.navigationDelegate = handler
         web.loadHTMLString(page, baseURL: nil)
         let deadline = Date().addingTimeInterval(patience)
-        while web.isLoading && Date() < deadline {
+        while !handler.loaded && handler.failure == nil && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard !web.isLoading else { throw Failure.viewNeverFinishedLoading }
+        if let why = handler.failure { throw Failure.script(why) }
+        guard handler.loaded else { throw Failure.viewNeverFinishedLoading }
     }
 
     /// **Pose l'image dans la RAM de l'invité**, à l'adresse repliée.
@@ -236,7 +258,7 @@ public final class LocalDesktop {
                 }
                 return btoa(binaire);
                 """
-            let returned: Any
+            let returned: Any?
             do {
                 returned = try await web.callAsyncJavaScript(
                     script,
@@ -260,7 +282,7 @@ public final class LocalDesktop {
 
     /// Fait tourner la machine jusqu'à ce qu'elle s'arrête, et dit pourquoi.
     public func run(patience: TimeInterval = 5) async throws -> Stopped {
-        let returned: Any
+        let returned: Any?
         do {
             returned = try await web.callAsyncJavaScript(
                 "return await window.wisqRun()", arguments: [:], in: nil, contentWorld: .page
@@ -405,9 +427,34 @@ public final class LocalDesktop {
     /// s'arrête : plus personne ne retient le bureau depuis la vue, donc le
     /// relâcher relâche tout, et aucun `deinit` n'a à défaire quoi que ce
     /// soit.
-    private final class Channel: NSObject, WKScriptMessageHandler {
+    private final class Channel: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var desktop: LocalDesktop?
         var stopped: Stopped?
+        /// Vrai quand la page a **fini** de charger. Pas « n'est plus en train
+        /// de charger » : ces deux phrases ne veulent pas dire la même chose
+        /// avant que la navigation ait commencé.
+        var loaded = false
+        /// Et une page qui refuse de charger doit le dire, plutôt que
+        /// d'épuiser la patience et de ressembler à une vue lente.
+        var failure: String?
+
+        func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) {
+            loaded = true
+        }
+
+        func webView(
+            _ web: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+        ) {
+            failure = error.localizedDescription
+        }
+
+        func webView(
+            _ web: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            failure = error.localizedDescription
+        }
 
         func userContentController(
             _ controller: WKUserContentController, didReceive message: WKScriptMessage

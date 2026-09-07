@@ -10963,3 +10963,56 @@ Un `WKWebView` dans un `swift test` en ligne de commande sur macOS n'a ni
 ces conditions. **Si ces tests échouent sur le runner, c'est un résultat à
 écrire, pas à contourner en retirant le test** : ce serait précisément revenir
 à l'état qu'on vient de corriger, mais en connaissance de cause.
+
+## Le chiffre, et la course jumelle qu'il a fait sortir
+
+« Cœur (Apple) » exécute enfin `LocalDesktopTests`. Trois réponses d'un coup.
+
+### Un `WKWebView` fonctionne dans un `swift test` en ligne de commande
+
+C'était l'incertitude annoncée : pas de `NSApplication`, pas de bundle. Elle est
+levée — neuf tests exécutés sur un runner macOS, huit passés du premier coup.
+
+### Le débit, enfin
+
+```
+wisq: image de 4 Mio posée en 0.07 s, 61.2 Mio/s
+```
+
+Un noyau de 35 Mio prend **environ 0,57 seconde** par `evaluateJavaScript` en
+tranches de 48 Kio. « Assumé et cher » était écrit quatre tranches durant sans
+qu'aucun nombre ne soit derrière ; le nombre dit que **ce n'est pas cher**.
+
+Le gestionnaire de schéma est donc abandonné, et c'est le premier travail que ce
+lot écarte sur une mesure plutôt que de le faire. Il gagnerait au mieux une
+demi-seconde, au prix d'un mécanisme qu'aucun test d'ici ne peut juger.
+
+### Et la course, qui était le jumeau d'une course déjà corrigée
+
+Un test a échoué :
+
+```
+LocalDesktopTests.swift:211: InvalidTransition { phase: idle, targetPhase: failed(deinit) }
+```
+
+`load()` interrogeait `web.isLoading` en boucle. **Juste après
+`loadHTMLString`, ce drapeau est encore faux** : la navigation n'a pas commencé.
+La boucle sortait au premier tour, `load()` rendait la main sur une page
+inexistante, et l'appel suivant partait dans le vide. Quand la vraie navigation
+s'engageait, elle jetait la continuation en attente — d'où une erreur WebKit qui
+ne dit rien de sa cause.
+
+C'est **exactement** la course corrigée dans la tranche « La machine dans la
+vue », où j'avais écrit : « une vue *poste*, elle n'appelle pas ; lire
+`handler.stopped` tout de suite serait une course — celle qui rend un test vert
+neuf fois sur dix ».
+
+Je l'ai réparée sur le message d'arrêt et laissée sur le chargement, **dans la
+même fonction du même fichier, le même jour**. Écrire la leçon ne la fait pas
+chercher ailleurs. Elle attend maintenant `didFinish` par un délégué de
+navigation, et une page qui refuse de charger le dit au lieu d'épuiser la
+patience et de ressembler à une vue lente.
+
+Ce que ça dit du reste : ce défaut n'était visible par rien tant que ces tests
+ne tournaient nulle part. Il est sorti dans les trois minutes qui ont suivi leur
+première exécution.

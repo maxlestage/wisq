@@ -2322,9 +2322,20 @@ relire au-delà de la RAM irait chercher la correspondance. Le test pose quatre
 mébioctets, chronomètre, et relit **aux frontières de tranches**, là où un
 décalage d'offset se voit.
 
-**Il n'y a pas encore de débit**, et pas parce que le conteneur n'a pas de
-`WKWebView` : parce que **aucun job de la CI n'exécute `LocalDesktopTests`**.
-Voir la section suivante.
+**Le débit, mesuré le 7 septembre** dès que « Cœur (Apple) » a enfin exécuté ces
+tests : quatre mébioctets posés en 0,07 s, soit **61,2 Mio/s**. Un noyau de
+35 Mio prend donc **environ 0,57 seconde**.
+
+**Et ça règle la question du gestionnaire de schéma : on ne le fait pas.**
+« Assumé et cher » était écrit quatre tranches durant sans qu'aucun nombre ne
+soit derrière. Le nombre dit que ce n'est pas cher. Un `WKURLSchemeHandler`
+gagnerait au mieux une demi-seconde sur un démarrage, au prix d'un mécanisme
+qu'aucun test de ce dépôt ne peut juger — la page devrait être servie par le
+schéma pour que la requête soit de même origine, ce qui change comment la vue
+charge. Le rapport est mauvais, et le dire vaut mieux que réécrire par principe.
+
+La mesure vient d'un runner macOS, pas d'un iPhone. Ce qu'elle établit est
+l'ordre de grandeur ; un appareil sera plus lent, pas mille fois.
 
 ### Les tests du bureau local ne tournent nulle part
 
