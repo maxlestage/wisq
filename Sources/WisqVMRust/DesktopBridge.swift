@@ -29,9 +29,15 @@ public enum DesktopBridge {
     /// Ce que la vue peut demander. Le contrat est celui de `web/host.js`, et
     /// il n'a que deux entrées.
     public enum Request: Equatable, Sendable {
-        /// « traduis-moi la région à cette adresse, et pose ses blocs à partir
-        /// de cet emplacement ».
-        case translate(id: Int, address: UInt64, slot: UInt32)
+        /// « traduis-moi la région à cette adresse, avec ces octets, et pose
+        /// ses blocs à partir de cet emplacement ».
+        ///
+        /// **`code` est la fenêtre que la vue a lue dans sa propre mémoire.**
+        /// C'est ce qui rend la traduction juste pour du code que l'invité
+        /// écrit lui-même : l'application n'a pas la RAM de l'invité, donc
+        /// chercher les octets dans l'image qu'elle a chargée mentirait en
+        /// silence dès qu'un module y est chargé.
+        case translate(id: Int, address: UInt64, slot: UInt32, code: Data)
         /// « la machine s'est arrêtée, et voilà pourquoi ».
         case stopped(why: String, at: UInt64)
     }
@@ -49,6 +55,10 @@ public enum DesktopBridge {
         /// que traduire une région à deux mégaoctets de là.
         case addressIsNotText
         case addressIsNotANumber(String)
+        /// Les octets de la fenêtre n'étaient pas du base64 lisible, ou étaient
+        /// vides. Traduire une fenêtre vide rendrait un refus là où il y a un
+        /// défaut de pont.
+        case bytesAreNotBase64
     }
 
     /// Lit une demande telle que `WKScriptMessage.body` la livre : un
@@ -59,7 +69,18 @@ public enum DesktopBridge {
         case "traduire":
             guard let id = body["id"] as? Int else { throw Unreadable.missingField("id") }
             guard let slot = body["slot"] as? Int else { throw Unreadable.missingField("slot") }
-            return .translate(id: id, address: try address(body["address"]), slot: UInt32(slot))
+            guard let encoded = body["octets"] as? String else {
+                throw Unreadable.missingField("octets")
+            }
+            guard let code = Data(base64Encoded: encoded), !code.isEmpty else {
+                throw Unreadable.bytesAreNotBase64
+            }
+            return .translate(
+                id: id,
+                address: try address(body["address"]),
+                slot: UInt32(slot),
+                code: code
+            )
         case "arrêt":
             guard let why = body["stopped"] as? String else {
                 throw Unreadable.missingField("stopped")
@@ -88,6 +109,22 @@ public enum DesktopBridge {
     /// Rien de ce qui vient de la vue n'est recollé ici : `id` traverse en
     /// nombre et les octets en nombres. C'est ce qui rend la chaîne sûre par
     /// construction plutôt que par échappement.
+    /// **« Il m'en faut plus. »**
+    ///
+    /// À rendre quand l'émetteur dit `Refused.mayBeCut` : l'instruction qui l'a
+    /// bloqué a pu être coupée par le bord de la fenêtre plutôt qu'être
+    /// inconnue. La vue redemande alors **une** fois avec une fenêtre plus
+    /// large, et abandonne si ça ne suffit toujours pas.
+    ///
+    /// Une réponse à part plutôt qu'un refus déguisé, et le chiffre le
+    /// justifie : sur le noyau Alpine, 91 régions sur 10 116 tombent là avec
+    /// quatre kibioctets, et **toutes** se traduisent au second essai. Les
+    /// confondre avec un refus franc perdrait ces 91 ; redemander à l'aveugle
+    /// coûterait un aller-retour sur les 95 vrais refus.
+    public static func needsMore(id: Int) -> String {
+        "wisqNeedsMore(\(id))"
+    }
+
     public static func translated(id: Int, module: Data?) -> String {
         guard let module else { return "wisqTranslated(\(id), null)" }
         var script = "wisqTranslated(\(id), ["

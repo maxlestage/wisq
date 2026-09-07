@@ -154,9 +154,22 @@ fn the_view_discovers_regions_as_it_reaches_them_and_keeps_the_machine() {
     // est indexé par **adresse et emplacement** — les deux choses que la vue
     // envoie.
     let mut catalogue = String::new();
+    // **Ce que l'application a posé dans la mémoire de la vue.** Le vrai
+    // bureau y charge l'image du noyau ; ce test y pose ses trois maillons, au
+    // même endroit que l'adresse repliée les met. Sans ça la vue lirait des
+    // zéros — et c'est précisément ce que le bouchon d'avant ne pouvait pas
+    // remarquer, puisqu'il ne regardait pas les octets.
+    let mut loaded = String::new();
     for index in 0..LINKS {
         let address = BASE + index * STRIDE;
         let code = region(index);
+        let raw = scratch.join(format!("region{index}.bin"));
+        std::fs::write(&raw, &code).expect("le code de la région");
+        loaded.push_str(&format!(
+            "[{},{:?}],",
+            address & u64::from(PAGES * 65536 - 1),
+            raw.to_string_lossy()
+        ));
         for slot in 0..6u32 {
             let module = Module::resolving(&code, address, 0, slot, PAGES)
                 .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {index}"));
@@ -184,16 +197,41 @@ import {{ machine }} from {host:?};
 import {{ readFileSync }} from "fs";
 
 const catalogue = new Map([{catalogue}]);
+// Ce que l'application a chargé dans la RAM de l'invité, par adresse repliée.
+const posé = new Map(
+  [{loaded}].map(([at, path]) => [at, new Uint8Array(readFileSync(path))]),
+);
 let asked = 0;
 const seen = [];
-const translate = async (address, slot) => {{
+// **Le bouchon refuse ce que la vraie application ne pourrait pas faire.**
+// C'est un bouchon complaisant — qui répondait sans regarder les octets — qui
+// a caché pendant quatre tranches que la demande n'en portait pas. Celui-ci
+// exige la fenêtre, et vérifie qu'elle commence bien par le code de la région
+// : sans quoi il rendrait la bonne réponse à une mauvaise question.
+const translate = async (address, slot, code) => {{
   asked++;
   seen.push(address.toString(16));
+  if (!(code instanceof Uint8Array) || code.length === 0) {{
+    throw new Error(`la demande à ${{address.toString(16)}} ne porte pas d'octets`);
+  }}
+  const expected = posé.get(Number(address & {mask}n));
+  if (expected !== undefined) {{
+    for (let at = 0; at < expected.length; at++) {{
+      if (code[at] !== expected[at]) {{
+        throw new Error(`la fenêtre à ${{address.toString(16)}} ne porte pas le code de la région`);
+      }}
+    }}
+  }}
   const path = catalogue.get(address + ":" + slot);
   return path === undefined ? null : readFileSync(path);
 }};
 
 const vm = machine({{ translate, pages: {pages} }});
+// **L'application pose l'image avant de lancer la machine**, exactement comme
+// elle le fera avec un noyau. La vue lit ensuite ses fenêtres là-dedans.
+for (const [at, octets] of posé) {{
+  new Uint8Array(vm.memory.buffer, at, octets.length).set(octets);
+}}
 vm.globals[{rip}].value = {base}n;
 
 // **Premier temps : la découverte.** Le budget est large ; ce qui ramène à
@@ -222,6 +260,8 @@ console.log("rdx " + vm.globals[2].value.toString());
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             catalogue = catalogue,
+            loaded = loaded,
+            mask = u64::from(PAGES * 65536 - 1),
             pages = PAGES,
             rip = RIP_SLOT,
             base = BASE,
@@ -499,6 +539,12 @@ fn the_pages_driver_talks_to_the_application_and_runs_the_machine() {
         (BASE + 0x100, vec![0x48, 0xff, 0xc2, 0x0f, 0x0b]),
         (BASE + 0x103, vec![0x0f, 0x0b]),
     ];
+    // Ce que l'application aura chargé dans la RAM de la vue, indexé par
+    // l'adresse **en texte** — c'est sous cette forme qu'elle traverse.
+    let mut loaded = String::new();
+    for (address, code) in &programs {
+        loaded.push_str(&format!("[\"{address}\",{code:?}],"));
+    }
     for (index, (address, code)) in programs.iter().enumerate() {
         for slot in 0..6u32 {
             let module = Module::resolving(code, *address, 0, slot, PAGES)
@@ -534,7 +580,10 @@ import {{ machine, SLOTS }} from {host:?};
 import {{ readFileSync }} from "fs";
 
 const catalogue = new Map([{catalogue}]);
+// Ce que l'application a posé dans la RAM de la vue, par adresse en texte.
+const posé = new Map([{loaded}]);
 const asked = [];
+const fenêtres = [];
 // **Le pont bouchonné.** Il fait ce que fera l'application : recevoir un
 // message, traduire, et rappeler la vue. Le décalage est volontaire — un
 // `setTimeout` de zéro — parce que dans l'application la réponse ne peut pas
@@ -547,6 +596,24 @@ globalThis.webkit = {{
     wisq: {{
       postMessage: note => {{
         if (note.kind === "arrêt") {{ stopped.push(note.stopped + " " + note.at); return; }}
+        // **L'application refuse une demande qui ne porte pas les octets.**
+        // C'est le bouchon complaisant — qui répondait sans les regarder — qui
+        // a caché que la demande n'en portait pas. Celui-ci vérifie qu'ils
+        // arrivent en base64, qu'ils font la taille d'une fenêtre, et que la
+        // région commence bien par le code qu'on a posé à cette adresse.
+        if (typeof note.octets !== "string" || note.octets.length === 0) {{
+          throw new Error("la demande ne porte pas d'octets");
+        }}
+        const brut = atob(note.octets);
+        const attendu = posé.get(note.address);
+        if (attendu !== undefined) {{
+          for (let at = 0; at < attendu.length; at++) {{
+            if (brut.charCodeAt(at) !== attendu[at]) {{
+              throw new Error("la fenêtre ne porte pas le code de " + note.address);
+            }}
+          }}
+        }}
+        fenêtres.push(brut.length);
         asked.push(note.address + ":" + note.slot);
         setTimeout(() => {{
           const path = catalogue.get(note.address + ":" + note.slot);
@@ -560,15 +627,25 @@ globalThis.webkit = {{
 
 {driver}
 
+// **L'application pose son image avant de lancer la machine.** Le pilote vient
+// de créer la vue ; c'est le moment où le vrai bureau y écrirait le noyau.
+for (const [adresse, octets] of posé) {{
+  const at = Number(BigInt(adresse) & BigInt({pages} * 65536 - 1));
+  new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
+}}
+
 const why = await window.wisqRun();
 console.log("arret " + why);
 console.log("demandes " + asked.length);
 console.log("vues " + asked.join(","));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
 console.log("postes " + stopped.join("|"));
+console.log("fenetres " + fenêtres.join(","));
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             catalogue = catalogue,
+            loaded = loaded,
+            pages = PAGES,
             driver = driver_source,
         ),
     )
@@ -594,6 +671,14 @@ console.log("postes " + stopped.join("|"));
     // Trois adresses demandées, chacune avec l'emplacement que la vue a
     // choisi : c'est le contrat que l'application devra tenir.
     assert_eq!(seen("demandes"), "3", "une traduction par adresse atteinte");
+    // **Et chaque demande porte une fenêtre pleine.** Sans cette ligne, le
+    // harnais imprimerait les tailles sans que rien ne les lise — une mesure
+    // morte, qui a l'air d'une garde.
+    assert_eq!(
+        seen("fenetres"),
+        "4096,4096,4096",
+        "la vue envoie quatre kibioctets par demande"
+    );
     assert_eq!(
         seen("vues"),
         format!("{}:0,{}:1,{}:2", BASE, BASE + 0x100, BASE + 0x103),
@@ -841,5 +926,102 @@ console.log("regions " + vm.known.size);
         took < std::time::Duration::from_millis(PATIENCE / 2),
         "le programme a mis {took:?} à sortir, pour une patience de {PATIENCE} ms : \
          un réveil n'a pas été désarmé et tient la boucle d'événements ouverte"
+    );
+}
+
+/// **« Il m'en faut plus » : la vue redemande, une seule fois, plus grand.**
+///
+/// C'est le comportement neuf de la fenêtre, et le seul qui ne se voie pas
+/// dans un module produit : il vit entre deux demandes. Le bouchon répond
+/// « encore » au premier appel, puis le module au second — et il **vérifie que
+/// la seconde fenêtre est plus grande que la première**, sans quoi une vue qui
+/// redemanderait la même chose passerait le test en tournant en rond.
+#[test]
+fn the_view_asks_again_with_more_bytes_and_only_once() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let scratch = std::env::temp_dir().join(format!("wisq-host-encore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // `ud2` seul : la machine s'arrête aussitôt, ce qui rend le compte des
+    // demandes lisible sans qu'un anneau ne le brouille.
+    let module = Module::resolving(&[0x0f, 0x0b], BASE, 0, 0, PAGES).expect("un `ud2` seul");
+    let path = scratch.join("ud2.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const tailles = [];
+// Le premier appel réclame des octets, le second se contente de ce qu'il a.
+const traduit = async (_address, _slot, code) => {{
+  tailles.push(code.length);
+  return tailles.length === 1 ? "encore" : readFileSync({path:?});
+}};
+const vm = machine({{ translate: traduit, pages: {pages} }});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 8 }});
+console.log("demandes " + tailles.length);
+console.log("tailles " + tailles.join(","));
+console.log("plus grande " + (tailles[1] > tailles[0]));
+console.log("arret " + why.stopped);
+
+// **Et quand la seconde fenêtre ne suffit toujours pas**, la vue abandonne au
+// lieu de redemander sans fin. Une machine neuve, pour repartir d'un état
+// propre.
+const jamais = [];
+const têtu = async (_address, _slot, code) => {{ jamais.push(code.length); return "encore"; }};
+const deux = machine({{ translate: têtu, pages: {pages} }});
+deux.globals[{rip}].value = {base}n;
+const pourquoi = await deux.run({{ budget: 64n, rounds: 8 }});
+console.log("têtu " + jamais.length);
+console.log("abandon " + pourquoi.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(output.status.success(), "le pilote a échoué :\n{text}");
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    assert_eq!(seen("demandes"), "2", "une demande, puis une seule de plus");
+    assert_eq!(
+        seen("plus grande"),
+        "true",
+        "redemander la même fenêtre ne servirait à rien"
+    );
+    assert_eq!(seen("arret"), "sur place", "le `ud2` arrête la machine");
+    // **Deux et pas trois.** Une vue qui redemanderait tant qu'on lui répond
+    // « encore » tournerait sans fin sur une région vraiment intraduisible.
+    assert_eq!(
+        seen("têtu"),
+        "2",
+        "un seul second essai, même si l'application en réclame encore"
+    );
+    assert_eq!(
+        seen("abandon"),
+        "refusée",
+        "une région qui manque encore de place à seize kibioctets est refusée"
     );
 }
