@@ -65,6 +65,53 @@ pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 /// `call_indirect` passe d'une région à l'autre sans repasser par l'hôte.
 pub const TABLE_IMPORT: &str = "blocks";
 
+/// **Le nombre de cases de la correspondance adresse → indice.** Une puissance
+/// de deux, parce que le hachage prend les bits hauts d'un produit et qu'il
+/// faut pouvoir les tronquer par un décalage.
+pub const TABLE_SLOTS: u32 = 1 << 16;
+
+/// Ce qu'occupe une case : l'adresse rangée (huit octets) puis l'indice absolu
+/// dans la table de blocs (quatre), et quatre de rembourrage pour que la
+/// suivante reste alignée sur huit.
+pub const TABLE_ENTRY: u32 = 16;
+
+/// Ce que la correspondance occupe, en pages. Un module qui la lit le déclare
+/// dans son minimum : ainsi un hôte qui ne l'a pas posée **ne démarre pas**,
+/// au lieu de piéger au premier saut vers une autre région — et un piège
+/// WebAssembly est sans retour.
+pub const TABLE_PAGES: u32 = TABLE_SLOTS * TABLE_ENTRY / 65536;
+
+/// **Le multiplicateur, et pourquoi les bits hauts.** `scripts/wasm-table-probe.ts`
+/// a montré que prendre les bits *bas* d'un produit de Knuth ne mélange rien :
+/// sur 16384 adresses espacées de seize octets, la plupart se disputaient les
+/// mêmes cases, parce que les bits bas d'une adresse alignée ne portent aucune
+/// information. Les bits **hauts** d'un produit par une constante impaire, eux,
+/// dépendent de tous les bits de l'entrée.
+///
+/// Il est **public** parce qu'il fait partie du contrat entre l'hôte et le
+/// module au même titre que `table_slot` : un hôte écrit dans une autre langue
+/// doit pouvoir refaire le calcul, et un test doit pouvoir vérifier que c'est
+/// bien ce nombre-là qui est gravé dans les octets.
+pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
+/// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
+/// peut pas la corrompre, et il n'a fallu pour ça aucune seconde mémoire.
+#[must_use]
+pub fn table_base(pages: u32) -> u32 {
+    pages * 65536
+}
+
+/// **La case d'une adresse, et c'est le point d'accord.** L'hôte remplit la
+/// correspondance avec cette fonction, le module la relit avec le même calcul
+/// gravé dans ses octets. S'ils divergent, rien n'est jamais trouvé et le
+/// module se contente de rendre la main — un défaut silencieux, qui ne coûte
+/// que de la vitesse. C'est pourquoi un test les compare.
+#[must_use]
+pub fn table_slot(address: u64) -> u32 {
+    (address.wrapping_mul(TABLE_MIX) >> (64 - TABLE_SLOTS.trailing_zeros())) as u32
+}
+
 /// Le nombre de pages de RAM invitée que le module déclare. Assez pour couvrir
 /// la fenêtre de données du corpus matériel, qui vit à 0x30001000.
 pub const GUEST_PAGES: u32 = 0x3001;
@@ -189,6 +236,10 @@ mod code {
     pub const I32_WRAP_I64: u8 = 0xa7;
     /// Le `et` de trente-deux bits, qui replie une adresse invitée dans sa RAM.
     pub const I32_AND: u8 = 0x71;
+    pub const I32_ADD: u8 = 0x6a;
+    pub const I32_SUB: u8 = 0x6b;
+    pub const I32_MUL: u8 = 0x6c;
+    pub const I32_LOAD: u8 = 0x28;
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
@@ -244,6 +295,20 @@ fn as_compare(step: &Decoded) -> Decoded {
 }
 
 /// Un corps de fonction en cours d'écriture.
+/// **Ce qui distingue les quatre façons de compiler une région.** Elles se
+/// combinent — une région qui cherche dans la correspondance est forcément
+/// liée *et* confinée — et les passer en trois booléens positionnels rendait
+/// les appels illisibles.
+#[derive(Default, Clone, Copy)]
+struct Shape {
+    /// L'emplacement des blocs dans la table de l'hôte, si elle est partagée.
+    shared: Option<u32>,
+    /// Le nombre de pages de RAM que l'invité peut atteindre, s'il est confiné.
+    confine: Option<u32>,
+    /// Le module cherche-t-il lui-même les adresses qu'il ne connaît pas ?
+    lookup: bool,
+}
+
 #[derive(Default)]
 struct Body {
     bytes: Vec<u8>,
@@ -278,6 +343,32 @@ impl Body {
     fn op(&mut self, opcode: u8) -> &mut Self {
         self.bytes.push(opcode);
         self
+    }
+
+    /// Une constante de trente-deux bits. WebAssembly la lit en LEB **signé**,
+    /// mais une adresse s'y interprète en non signé : réinterpréter le motif
+    /// suffit, et ça couvre les quatre gigaoctets.
+    fn constant32(&mut self, value: u32) -> &mut Self {
+        self.bytes.push(code::I32_CONST);
+        signed(i64::from(value as i32), &mut self.bytes);
+        self
+    }
+
+    /// **L'adresse, en mémoire linéaire, de la case où l'adresse invitée
+    /// courante serait rangée.** Le même calcul que `table_slot`, gravé dans
+    /// les octets du module : c'est là que l'hôte et lui doivent tomber
+    /// d'accord, et un test les compare pour ça.
+    fn entry(&mut self, base: u32) -> &mut Self {
+        self.load(RIP_SLOT)
+            .constant(TABLE_MIX)
+            .op(code::I64_MUL)
+            .constant(u64::from(64 - TABLE_SLOTS.trailing_zeros()))
+            .op(code::I64_SHR_U)
+            .op(code::I32_WRAP_I64)
+            .constant32(TABLE_ENTRY)
+            .op(code::I32_MUL)
+            .constant32(base)
+            .op(code::I32_ADD)
     }
 
     fn constant(&mut self, value: u64) -> &mut Self {
@@ -440,7 +531,7 @@ impl Module {
     /// relit. Compiler la région comme si elle vivait à zéro empilerait un
     /// nombre que rien, dans la mémoire de l'invité, ne désigne.
     pub fn region(bytes: &[u8], base: u64, entry: usize) -> Option<Vec<u8>> {
-        Self::build(bytes, base, entry, None, None)
+        Self::build(bytes, base, entry, Shape::default())
     }
 
     /// **La même région, mais l'invité ne peut plus sortir de sa RAM.**
@@ -481,7 +572,15 @@ impl Module {
         if pages == 0 || !pages.is_power_of_two() {
             return None;
         }
-        Self::build(bytes, base, entry, None, Some(pages))
+        Self::build(
+            bytes,
+            base,
+            entry,
+            Shape {
+                confine: Some(pages),
+                ..Shape::default()
+            },
+        )
     }
 
     /// **La même région, mais posée dans la table de l'hôte.**
@@ -504,19 +603,62 @@ impl Module {
     /// module qui en demande plus qu'elle n'en a ne démarre pas — la même
     /// protection que pour la mémoire, et pour la même raison.
     pub fn linked(bytes: &[u8], base: u64, entry: usize, slot: u32) -> Option<Vec<u8>> {
-        Self::build(bytes, base, entry, Some(slot), None)
+        Self::build(
+            bytes,
+            base,
+            entry,
+            Shape {
+                shared: Some(slot),
+                ..Shape::default()
+            },
+        )
     }
 
-    fn build(
+    /// **La forme qui n'a plus besoin de l'hôte pour changer de région.**
+    ///
+    /// Liée — ses blocs vivent dans la table commune — et confinée, donc
+    /// l'hôte peut poser la correspondance adresse → indice juste au-dessus de
+    /// la RAM invitée, là où l'invité ne peut pas la détruire. Le module la
+    /// lit lui-même : quand la cible n'est aucun de ses blocs, il y cherche
+    /// l'indice au lieu de rendre la main.
+    ///
+    /// **Ce que ça remplace.** Un retour de main coûte environ 190 ns, dont
+    /// l'essentiel n'est pas WebAssembly mais le site d'appel JavaScript qui
+    /// perd son cache en ligne. Un `call_indirect` vers un autre module coûte
+    /// 7,2 ns, et la lecture de la correspondance une poignée d'instructions.
+    /// Les deux chiffres viennent de `--example chain` et de
+    /// `scripts/wasm-table-probe.ts`.
+    ///
+    /// L'hôte doit remplir la correspondance avec `table_base` et
+    /// `table_slot` : ce sont **les mêmes fonctions** que celles gravées dans
+    /// le module, et s'ils divergeaient rien ne serait jamais trouvé — le
+    /// module se contenterait de rendre la main, sans rien dire.
+    pub fn resolving(
         bytes: &[u8],
         base: u64,
         entry: usize,
-        shared: Option<u32>,
-        confine: Option<u32>,
+        slot: u32,
+        pages: u32,
     ) -> Option<Vec<u8>> {
+        if pages == 0 || !pages.is_power_of_two() {
+            return None;
+        }
+        Self::build(
+            bytes,
+            base,
+            entry,
+            Shape {
+                shared: Some(slot),
+                confine: Some(pages),
+                lookup: true,
+            },
+        )
+    }
+
+    fn build(bytes: &[u8], base: u64, entry: usize, shape: Shape) -> Option<Vec<u8>> {
         // Le masque se dérive du nombre de pages, une fois : `confined` a déjà
         // vérifié que c'est une puissance de deux.
-        let mask = confine.map(|pages| pages * 65536 - 1);
+        let mask = shape.confine.map(|pages| pages * 65536 - 1);
         let blocks = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
@@ -554,11 +696,11 @@ impl Module {
                 }
                 Self::translate(&Self::pin(step, here), here, &mut body)?;
             }
-            Self::terminate(steps.last(), base, at, &index, &starts, &mut body);
+            Self::terminate(steps.last(), base, at, &index, &starts, &mut body, shape);
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Some(Self::assemble(bodies, shared, confine))
+        Some(Self::assemble(bodies, shape))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -716,6 +858,7 @@ impl Module {
         index: &impl Fn(usize) -> Option<usize>,
         starts: &[u64],
         body: &mut Body,
+        shape: Shape,
     ) {
         // Deux valeurs à poser : l'adresse d'arrivée et l'indice du bloc.
         // `sortie` vaut -1 quand la cible n'est pas dans la région.
@@ -798,7 +941,7 @@ impl Module {
             }
             Op::JumpIndirect => {
                 body.store(RIP_SLOT, reach);
-                Self::resolve(starts, body);
+                Self::resolve(starts, body, shape);
             }
             Op::CallIndirect => {
                 // **La cible est lue avant que la pile ne bouge.** L'ordre
@@ -817,7 +960,7 @@ impl Module {
                 body.store(RIP_SLOT, |b| {
                     b.load(Body::scratch(0));
                 });
-                Self::resolve(starts, body);
+                Self::resolve(starts, body, shape);
             }
             Op::Call => {
                 // L'adresse de retour est empilée ici — c'est la seule partie
@@ -844,7 +987,7 @@ impl Module {
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
                 });
-                Self::resolve(starts, body);
+                Self::resolve(starts, body, shape);
             }
             _ => place(body, after as i64),
         }
@@ -861,9 +1004,21 @@ impl Module {
     /// Linéaire, et c'est assez : une région a quelques blocs, pas mille. Le
     /// jour où elle en aura mille, ce sera une table de hachage — mais le dire
     /// avant de l'avoir mesuré serait deviner.
-    fn resolve(starts: &[u64], body: &mut Body) {
-        body.bytes.push(code::I32_CONST);
-        signed(-1, &mut body.bytes);
+    fn resolve(starts: &[u64], body: &mut Body, shape: Shape) {
+        // **Le repli de la chaîne, et c'est là que la correspondance
+        // s'insère.** La chaîne de `select` qui suit part d'une valeur et la
+        // remplace dès qu'un bloc de la région correspond. Faire chercher le
+        // module ailleurs ne demande donc aucune structure de contrôle en
+        // plus : il suffit que cette valeur de départ soit ce qu'il a trouvé
+        // dans la correspondance au lieu d'un `-1` sec. Les blocs de la
+        // région gagnent toujours, ce qui est juste — ils sont déjà là.
+        match Self::lookup_base(shape) {
+            Some((base, slot)) => Self::lookup(base, slot, body),
+            None => {
+                body.bytes.push(code::I32_CONST);
+                signed(-1, &mut body.bytes);
+            }
+        }
         for (block, start) in starts.iter().enumerate() {
             body.bytes.push(code::I32_CONST);
             signed(block as i64, &mut body.bytes);
@@ -872,6 +1027,54 @@ impl Module {
             body.load(RIP_SLOT).constant(*start).op(code::I64_NE);
             body.op(code::SELECT);
         }
+    }
+
+    /// **Où vit la correspondance pour cette forme-là**, et l'emplacement qu'il
+    /// faudra retrancher. Elle demande les deux : confiné, sinon l'invité
+    /// pourrait la détruire et le module sauterait n'importe où ; lié, sinon
+    /// les blocs des autres régions ne sont dans aucune table commune.
+    fn lookup_base(shape: Shape) -> Option<(u32, u32)> {
+        if !shape.lookup {
+            return None;
+        }
+        Some((table_base(shape.confine?), shape.shared?))
+    }
+
+    /// **Chercher l'adresse courante dans la correspondance.** Laisse sur la
+    /// pile l'indice du bloc trouvé, ou `-1`.
+    ///
+    /// **Une seule case est consultée, sans sondage.** Deux adresses qui
+    /// tombent au même endroit ne se disputent pas : la seconde n'est
+    /// simplement pas trouvée, et le module rend la main comme il le faisait
+    /// déjà pour toutes. Une collision coûte donc ce que coûtait la situation
+    /// d'avant, jamais plus — et ça évite une boucle de sondage dans un corps
+    /// de bloc qui n'a aucune variable locale.
+    ///
+    /// **L'indice rendu est relatif à l'emplacement de la région.** La table
+    /// range des indices absolus, mais la boucle de répartition ajoute
+    /// l'emplacement à tout ce qu'un bloc rend — c'est l'invariant qui garde
+    /// la traduction indépendante de l'endroit où l'hôte pose la région. Le
+    /// retranchement d'ici le respecte au lieu de l'entamer.
+    fn lookup(base: u32, slot: u32, body: &mut Body) {
+        // L'indice rangé dans la case, ramené au repère de la région.
+        body.entry(base);
+        body.op(code::I32_LOAD);
+        body.bytes.push(2); // alignement : quatre octets
+        body.bytes.push(8); // décalage : l'indice suit l'adresse
+        body.constant32(slot).op(code::I32_SUB);
+        // Le repli, si la case ne parle pas de nous.
+        body.bytes.push(code::I32_CONST);
+        signed(-1, &mut body.bytes);
+        // Et la question : la case range-t-elle bien l'adresse cherchée ?
+        // Sans cette comparaison, une case vide ou occupée par une autre
+        // adresse ferait sauter le module dans un bloc au hasard — le défaut
+        // le plus difficile à voir de toute cette tranche.
+        body.entry(base);
+        body.op(code::I64_LOAD);
+        body.bytes.push(3);
+        body.bytes.push(0);
+        body.load(RIP_SLOT).op(code::I64_EQ);
+        body.op(code::SELECT);
     }
 
     /// Choisir entre deux indices de bloc selon un prédicat `i64`.
@@ -895,7 +1098,10 @@ impl Module {
     }
 
     /// **Le module : une fonction par bloc, plus la boucle qui les enchaîne.**
-    fn assemble(bodies: Vec<Vec<u8>>, shared: Option<u32>, confine: Option<u32>) -> Vec<u8> {
+    fn assemble(bodies: Vec<Vec<u8>>, shape: Shape) -> Vec<u8> {
+        let Shape {
+            shared, confine, ..
+        } = shape;
         let count = bodies.len();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -938,7 +1144,12 @@ impl Module {
         // déclarer davantage mentirait sur ce qu'il touche. L'hôte, lui, reste
         // libre d'en fournir **plus** : c'est là que vivra ce que l'invité ne
         // doit pas pouvoir atteindre.
-        unsigned(u64::from(confine.unwrap_or(GUEST_PAGES)), &mut imports);
+        let least = match (confine, shape.lookup) {
+            (Some(pages), true) => pages + TABLE_PAGES,
+            (Some(pages), false) => pages,
+            (None, _) => GUEST_PAGES,
+        };
+        unsigned(u64::from(least), &mut imports);
         // **La table de l'hôte**, quand la région est liée. Le minimum déclaré
         // couvre l'emplacement de cette région et ses blocs : une table plus
         // petite refuse l'instanciation, exactement comme une mémoire trop
