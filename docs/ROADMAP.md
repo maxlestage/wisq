@@ -2156,6 +2156,41 @@ aurait été mesurer une machine fausse.
 
 ### Ce que le vrai noyau dit du coût, et ce qu'il n'en dit pas
 
+### Les 209 régions refusées n'étaient que 120
+
+Le relevé annonçait « 209 régions refusées » et nommait les coupables :
+`48×33`, `4c×7`, `0f 85×3`… Ces trois-là sont décodés depuis le premier jour.
+C'était le signe que la sonde ne mesurait pas ce qu'elle disait.
+
+La cause : une région s'arrête à **quatre kibioctets**, et une instruction à
+cheval sur ce bord ne se décode pas — non parce que le décodeur l'ignore, mais
+parce qu'il lui manque des octets. La sonde rejuge maintenant avec le reste du
+fichier avant d'accuser quiconque, et sépare les deux dans son relevé.
+
+**Quatre-vingt-neuf des 209 étaient ce bord** — quarante-trois pour cent du
+compte. Il en reste **120**, et la liste devient enfin lisible :
+
+| Ce qui refuse | Combien | Ce que c'est |
+| --- | --- | --- |
+| `0f 18` | 14 | `prefetch` — un **conseil**, sans effet architectural |
+| `0f 31` | 11 | `rdtsc` — le compteur d'horodatage |
+| `0f 30` | 10 | `wrmsr` |
+| `0f ae` | 9 | la famille des barrières mémoire |
+| `0f 01` | 8 | groupe 7 : `lgdt`, `lidt`, les instructions système |
+| `9c` | 7 | `pushf` |
+| `0f 32` | 6 | `rdmsr` |
+| `8c`, `66 8c` | 11 | `mov` depuis un registre de segment |
+
+Trois de ces familles sont des **non-opérations exactes** pour cette machine —
+`prefetch` n'a aucun effet architectural, et une barrière mémoire n'en a aucun
+sur un cœur unique sans modèle de cache. Les traduire n'est pas une
+approximation, c'est la sémantique. Les autres demandent un modèle : le temps
+pour `rdtsc`, les MSR, la table des descripteurs.
+
+Le taux de 97,9 % ne change pas — les régions coupées par le bord restent des
+régions que la sonde n'a pas compilées. Ce qui change est **ce que le chiffre
+désigne**, et donc où regarder ensuite.
+
 `cargo run -p wisq-vm --release --example coverage <noyau>`, sur les 9914
 régions compilées depuis de vraies cibles de `call` du noyau Alpine :
 
