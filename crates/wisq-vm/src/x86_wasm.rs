@@ -2043,7 +2043,9 @@ impl Module {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
             Op::PortIn | Op::PortOut => {
-                unreachable!("une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`")
+                unreachable!(
+                    "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
+                )
             }
             Op::And | Op::Or | Op::Xor | Op::Test => {}
             Op::Add | Op::Adc => {
@@ -3973,7 +3975,9 @@ mod port_tests {
             .expect("une écriture de port se traduit");
         let imports = imports_of(&module);
         assert_eq!(
-            imports.first().map(|(m, f, k)| (m.as_str(), f.as_str(), *k)),
+            imports
+                .first()
+                .map(|(m, f, k)| (m.as_str(), f.as_str(), *k)),
             Some(("env", "out", 0x00)),
             "le premier import doit être la fonction `env.out` : {imports:?}"
         );
@@ -4006,8 +4010,7 @@ mod port_tests {
     #[test]
     fn the_two_host_imports_push_every_block_index_along() {
         // `nop` puis `ret` : deux blocs, aucune entrée-sortie.
-        let module =
-            Module::region_or_why(&[0x90, 0xc3], 0x1000, 0).expect("une région sans port");
+        let module = Module::region_or_why(&[0x90, 0xc3], 0x1000, 0).expect("une région sans port");
         let blocks = elements_of(&module);
         assert_eq!(
             blocks,
