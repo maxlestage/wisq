@@ -108,10 +108,22 @@ fn main() {
             match decode(&bytes[walk..end]) {
                 Some(step) => walk += step.length.max(1),
                 None => {
+                    // **Coupé par la fenêtre, ou vraiment inconnu ?** La région
+                    // s'arrête à quatre kibioctets, et une instruction à cheval
+                    // sur ce bord ne se décode pas — pas parce que le décodeur
+                    // l'ignore, mais parce qu'il lui manque des octets. Compter
+                    // ça comme un manque gonfle le refus et désigne des
+                    // opcodes qui ne sont pas en cause : le relevé accusait
+                    // `48`, `4c` et `0f 85`, qui sont tous décodés depuis
+                    // toujours. On rejuge donc avec le reste du fichier.
+                    if decode(&bytes[walk..limit]).is_some() {
+                        culprit = Some("coupé par la fenêtre".into());
+                        break;
+                    }
                     // Un préfixe ne dit rien tout seul : c'est l'octet d'après
                     // qui nomme l'instruction refusée.
                     culprit = Some(match bytes[walk] {
-                        0xf3 | 0x0f | 0x66 => format!(
+                        0xf2 | 0xf3 | 0x0f | 0x66 => format!(
                             "{:02x}-{:02x}",
                             bytes[walk],
                             bytes.get(walk + 1).copied().unwrap_or(0)
@@ -134,8 +146,25 @@ fn main() {
     );
     let mut worst: Vec<_> = blame.into_iter().collect();
     worst.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    // **Séparer ce qui manque de ce qui a été coupé.** Le second n'est pas un
+    // trou du décodeur : c'est la fenêtre de la sonde, et l'annoncer avec le
+    // reste ferait chercher une instruction là où il n'y a qu'un bord.
+    let cut = worst
+        .iter()
+        .find(|(why, _)| why == "coupé par la fenêtre")
+        .map(|(_, n)| *n)
+        .unwrap_or(0);
+    println!(
+        "  dont {cut} coupées par le bord de la fenêtre de 4 Kio — pas un manque du décodeur, \
+         {} vraiment refusées",
+        refused - cut
+    );
     print!("  ce qui les refuse :");
-    for (why, n) in worst.iter().take(10) {
+    for (why, n) in worst
+        .iter()
+        .filter(|(why, _)| why != "coupé par la fenêtre")
+        .take(10)
+    {
         print!(" {why}×{n}");
     }
     println!();
