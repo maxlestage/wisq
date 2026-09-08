@@ -70,6 +70,20 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         GLOBAL_COUNT.to_string(),
         "le nombre de globales"
     );
+    // **Les sélecteurs de segment, comparés dès leur arrivée.** La tranche
+    // précédente avait laissé `rflags` entrer dans `SLOTS` sans comparaison ;
+    // faire entrer deux constantes de plus sans les tenir répéterait la faute
+    // le temps d'une tranche.
+    assert_eq!(
+        value("segment"),
+        wisq_vm::x86_wasm::SEGMENT_SLOT.to_string(),
+        "le premier sélecteur de segment"
+    );
+    assert_eq!(
+        value("segmentCount"),
+        wisq_vm::x86_wasm::SEGMENT_COUNT.to_string(),
+        "le nombre de sélecteurs"
+    );
     assert_eq!(
         value("tablePages"),
         TABLE_PAGES.to_string(),
@@ -334,6 +348,142 @@ console.log("rdx " + vm.globals[2].value.toString());
         (laps * (1 + 2 + 3)).to_string(),
         "l'anneau doit avoir tourné {laps} fois dans un seul appel"
     );
+}
+
+/// **Les sélecteurs de segment : un aller-retour, et rien de plus.**
+///
+/// En mode 64 bits, CS, SS, DS et ES ont une base **forcée à zéro** — le dépôt
+/// le tient déjà ailleurs, en montrant que leurs préfixes ne changent aucune
+/// adresse. Un sélecteur y est donc un nombre que l'invité range et relit, et
+/// c'est précisément ce qui se modélise honnêtement : ce qu'il écrit, il le
+/// retrouve.
+///
+/// **FS et GS sont l'exception, et restent refusés.** Les charger relit un
+/// descripteur dans la table globale pour en tirer une base — une table qu'on
+/// n'a pas. Les produire ferait croire au noyau qu'on a implémenté des
+/// descripteurs, et la panne arriverait bien plus loin que sa cause.
+///
+/// **La largeur a été mesurée sur un vrai processeur, pas citée de mémoire**,
+/// parce que le décodeur enregistrait la même largeur pour deux formes qui
+/// n'en ont pas la même :
+///
+/// | forme | ce que fait le processeur |
+/// | --- | --- |
+/// | `8c /r` | le sélecteur **zéro-étendu sur 64 bits** |
+/// | `66 8c /r` | seulement les seize bits bas, le reste préservé |
+///
+/// Personne ne l'avait vu : rien ne produisait l'instruction, donc rien ne
+/// pouvait s'en plaindre.
+#[test]
+fn a_segment_selector_makes_a_faithful_round_trip_and_nothing_more() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        // L'aller-retour, avec un bit **au-delà des seize** : un sélecteur en
+        // fait seize, quelle que soit la largeur de l'opérande source, et
+        // ranger les trente-deux ferait relire un nombre qu'aucun processeur
+        // ne rendrait.
+        0xb8, 0x18, 0x00, 0x01, 0x00, // mov $0x10018,%eax
+        0x8e, 0xd8, // mov %ax,%ds
+        0x8c, 0xd9, // mov %ds,%ecx — sans préfixe : zéro-étendu
+        // La zéro-extension : RDX part avec ses bits hauts posés par le pilote,
+        // et la forme sans préfixe doit les effacer.
+        0x8c, 0xda, // mov %ds,%edx
+        // La forme à seize bits : RBX garde ses bits hauts.
+        0x66, 0x8c, 0xdb, // mov %ds,%bx
+        // Un segment que personne n'a chargé.
+        0x8c, 0xc6, // mov %es,%esi
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-segment-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("segment.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+vm.globals[2].value = 0xdeadbeef11112222n;  // RDX
+vm.globals[3].value = 0xdeadbeef11112222n;  // RBX
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("relu " + lire(1));
+console.log("etendu " + lire(2));
+console.log("seize " + lire(3));
+console.log("jamais " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line("relu "),
+        0x18,
+        "ce que l'invité range dans DS il le relit, ramené à seize bits"
+    );
+    assert_eq!(
+        line("etendu "),
+        0x18,
+        "sans préfixe 0x66, le sélecteur est zéro-étendu — les bits hauts partent"
+    );
+    assert_eq!(
+        line("seize "),
+        0xdead_beef_1111_0018,
+        "avec le préfixe 0x66, seuls les seize bits bas changent"
+    );
+    // **Zéro veut dire « aucun chargeur n'est passé ici ».** Il n'y a pas de
+    // table de descripteurs derrière ces nombres, et rien ne prétend le
+    // contraire : la valeur de départ n'est pas une affirmation sur l'état
+    // d'amorçage, c'est l'absence d'affirmation.
+    assert_eq!(
+        line("jamais "),
+        0,
+        "un segment que personne n'a chargé vaut zéro"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 /// **`cpuid`, et la seule règle qui le rend sûr : ne déclarer que ce qu'on
