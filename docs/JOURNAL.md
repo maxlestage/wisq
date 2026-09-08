@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — la frontière C du lecteur d'image
+
+Le lecteur ISO vit en Rust ; l'application, la bibliothèque et le chargeur
+vivent en Swift. Deux fonctions les relient, et **ce qui ne traverse pas est
+le point important** : l'image elle-même. Elle pèse des gibioctets, un
+téléphone n'en a pas. Ce qui passe, ce sont deux chemins et un verdict.
+
+`wisq_iso_recipe` rend **quatre chaînes terminées par un octet nul** plutôt
+qu'un format à séparateur. Une ligne de commande porte des espaces, des égales
+et des virgules ; un chemin porte tout sauf l'octet nul. C'est le seul
+séparateur qu'aucun des deux ne peut contenir, donc le seul qui n'ait pas
+besoin d'échappement — et un échappement, des deux côtés d'une frontière, est
+une convention de plus à tenir pour toujours.
+
+`wisq_iso_extract` écrit **par tranches de 64 Kio** : `read` rend un `Vec`, ce
+qui va pour une recette de deux cents octets et ruine un téléphone sur un
+initramfs de cent mébioctets. Et il refuse **avant** d'écrire quand le membre
+dépasse le plafond — un noyau à moitié extrait se charge et meurt ailleurs.
+
+**Le test C existe parce que l'en-tête est écrit à la main.** Il se compile
+contre lui, se lie à la vraie bibliothèque, et lit une image que le harnais
+Rust vient de graver. Trois mutations sur la frontière, trois chutes : un champ
+retiré de la recette, le plafond ôté, les deux derniers chemins intervertis —
+cette dernière étant précisément l'erreur qu'aucun compilateur ne voit, C ne
+gardant pas les noms de paramètres au lien.
+
+**Une duplication assumée, et dite** : le harnais grave une image minuscule, en
+plus de celle des tests du lecteur. Elle est délibérément plus pauvre — ni
+bourrage, ni entrée de chargeur, ni intrus. Ce n'est pas le lecteur qu'elle
+juge, c'est la frontière, et la fabriquer en C aurait fait un troisième
+constructeur.
+
+`OnDisk` descend de l'exemple vers la bibliothèque : l'exemple et l'ABI en
+avaient chacun une copie, et deux lecteurs de fichier finissent par ne plus
+ouvrir de la même façon.
+
+**Rien ne branche encore ceci côté Swift** : l'application refuse toujours
+l'image. C'est la tranche suivante, et le dépôt a déjà fait ce découpage —
+`DesktopTranslator`, un pont jugé par la CI Linux, puis son branchement.
+
 ## 2026-09-08 — lire l'image plutôt que la refuser
 
 Maxime : « Débrouille toi pour lire l'image ». Le refus disait déjà quoi faire —
