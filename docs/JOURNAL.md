@@ -12469,3 +12469,64 @@ environ deux mille deux cents sous-processus — six par fichier, dont trois
 uniquement pour lire le dernier octet. À **quatre fois** la charge des cœurs
 disponibles, même vingt secondes ne suffisent plus. Rendre le parcours bon
 marché est un travail à part ; le délai large le rend seulement honnête d'ici là.
+
+### L'image apportée démarre, et la décision a déménagé pour être tenue
+
+wisq savait lire une image d'installation depuis deux tranches — la recette, le
+noyau, l'initramfs — et l'application la refusait toujours. Le branchement
+manquant tenait en un site : `LocalVMModel.run`, ligne 133.
+
+Ce qui arrive maintenant : le noyau et l'initramfs sortent de l'image dans un
+dossier de l'application, la ligne de commande vient de la recette **telle
+qu'elle est écrite**, et l'image elle-même devient le disque — lue secteur par
+secteur là où elle est, puisque c'est là que vit la racine que cette ligne de
+commande nomme. Rien de tout ça n'est deviné.
+
+**Mais l'endroit où écrire la décision était le vrai sujet.** `WisqUI` vit
+derrière `#if os(iOS)` : seule la CI d'Apple le compile, aucun test de ce dépôt
+ne l'exécute, et le conteneur de développement ne peut même pas le typer. Une
+décision écrite là est une décision que rien ne tient — c'est exactement la
+forme que ce journal traque depuis des semaines.
+
+Alors elle n'y est pas. `IsoBoot.decide` vit dans `WisqVMRust`, que la CI Linux
+compile et exécute à chaque commit, et le modèle n'en garde qu'une liaison de
+cinq champs. Treize tests jugent la décision ; le modèle n'a plus rien à
+décider.
+
+**Trois gardes, et aucune ne se voit dans le verdict.** Le dossier est vidé
+avant d'écrire — sans ça l'initramfs d'une image chargerait avec le noyau d'une
+autre. Les noms sur le disque sont fixes, jamais pris dans la recette — sinon
+un `../../` bien placé écrirait ailleurs. Un initramfs promis et absent est un
+refus — sinon la machine démarre entièrement et meurt trois cents lignes plus
+loin sur « VFS: Unable to mount root fs ». Dans les trois cas le plan rendu est
+le même ; ce qui change est ce qui reste sur le disque, et c'est cela que les
+tests regardent.
+
+**Un sabotage a survécu, et il avait raison.** Retirer l'effacement du dossier
+quand le noyau ne sort pas ne faisait tomber aucun test — parce que
+`IsoImage.extract` supprime déjà sa propre destination, et que le dossier venait
+d'être refait. Ce n'était pas un test manquant, c'était du code que rien ne
+pouvait tenir. Il est parti ; celui de la branche d'à côté reste, parce que là
+le noyau est déjà écrit et que ce n'est pas `extract` qui l'a nommé.
+
+**Et le harnais de sabotage m'a menti deux fois avant de dire vrai.** D'abord
+six mutations rapportées « ne compile pas » : mon classement cherchait `error:`
+en premier, or une assertion XCTest qui échoue imprime `error:` elle aussi —
+toutes les morts passaient pour des erreurs de compilation. Ensuite un
+« SURVIT » sur une mutation que `perl` n'avait pas appliquée. Le verdict se lit
+sur le compte de tests exécutés, et une mutation doit vérifier qu'elle a bien
+changé le fichier — c'est ce que fait le petit script Python qui a remplacé les
+`perl -0pi`.
+
+**Deux phrases de l'application sont devenues fausses le jour du branchement**,
+et c'est le genre de dette qu'on ne voit qu'en la cherchant. « Montez l'image
+sur un ordinateur et prenez ces deux fichiers-là » envoyait quelqu'un faire à la
+main ce que le bouton d'à côté fait maintenant pour lui ; « wisq ne démarre pas
+dessus » n'est plus vrai du tout. Les deux disent désormais quoi faire :
+choisir l'image comme noyau.
+
+**Ce qui n'est pas montré** : aucune distribution n'a encore démarré depuis une
+image sur un appareil. Ce qui est tenu, c'est que le bon noyau sort avec la
+bonne ligne de commande et le bon disque. La feuille de route garde donc cette
+ligne dans « Ensuite » — la déplacer demanderait un démarrage, pas un
+branchement.

@@ -4,6 +4,12 @@ import Observation
 import SwiftUI
 import WisqVM
 
+// Le lecteur d'image vit du côté Rust. Les imports sont par fichier en Swift :
+// celui de `LocalMachine.swift` ne vaut pas ici.
+#if WISQ_RUST_CORE
+import WisqVMRust
+#endif
+
 /// Drives one local Linux VM: owns the machine, runs it on its own thread, and
 /// mirrors the console into observable state for the terminal view.
 @Observable
@@ -111,7 +117,67 @@ public final class LocalVMModel {
         // et trompeur en entier, parce qu'il désigne un nombre et pousse donc
         // vers le réglage de mémoire. Quarante kibioctets suffisent à savoir
         // qu'aucune mémoire n'y changera rien.
-        let kind = KernelImageKind.identify(fileAt: kernelURL)
+        //
+        // **Et depuis cette tranche-ci, l'image apportée démarre : ce qu'il
+        // faut est dedans.**
+        //
+        // Une image d'installation porte son noyau sous `/boot`, son initramfs
+        // à côté, et la recette du chargeur d'amorçage qui dit avec quels
+        // arguments les démarrer. `IsoBoot` les sort ; l'image, elle, reste où
+        // elle est et devient le disque de la machine — c'est là que vit la
+        // racine que la ligne de commande va nommer.
+        //
+        // **Rien n'est deviné.** La ligne de commande est celle de l'image ;
+        // une ligne fabriquée démarrerait un noyau qui ne trouve pas sa racine,
+        // et la panne tomberait très loin de sa cause.
+        //
+        // **La décision est prise dans `IsoBoot`, et ce qui suit n'en est que
+        // la liaison.** Ce fichier-ci est derrière `#if os(iOS)` : seule la CI
+        // d'Apple le compile, et aucun test d'ici ne l'exécute. `IsoBoot`, lui,
+        // est jugé par la CI Linux à chaque commit — donc tout ce qui peut
+        // décider vit là-bas.
+        //
+        // Le déballage a lieu sur le main actor, comme la lecture du noyau plus
+        // bas : quelques mébioctets recopiés depuis le stockage local, du même
+        // ordre que ce que cette méthode faisait déjà.
+        let kind: KernelImageKind
+        let bootURL: URL
+        let isoDisk: URL?
+        let isoCommandLine: String?
+        let isoRamdisk: URL?
+        #if WISQ_RUST_CORE
+        // Un dossier refait à chaque démarrage : deux images ne doivent jamais
+        // mélanger leurs morceaux.
+        switch IsoBoot.decide(
+            kernelURL,
+            into: storage.appendingPathComponent("iso", isDirectory: true),
+            ceiling: UInt64(roomNow)
+        ) {
+        case .success(let boot):
+            kind = boot.kind
+            bootURL = boot.kernel
+            isoDisk = boot.disk
+            isoCommandLine = boot.commandLine
+            isoRamdisk = boot.initrd
+        case .failure(let refusal):
+            _ = life.guestFinished()
+            finish(with: IsoBoot.explanation(refusal, name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+        #else
+        // **Sans le cœur Rust, il n'y a pas de lecteur d'image** : il vit
+        // là-bas, à côté du reconnaisseur de noyaux. Une image se refuse alors
+        // comme avant, par la phrase qui la nomme — c'est la vérité de cette
+        // construction-là, pas une régression.
+        kind = KernelImageKind.identify(fileAt: kernelURL)
+        bootURL = kernelURL
+        isoDisk = nil
+        isoCommandLine = nil
+        isoRamdisk = nil
+        #endif
+
         // **Un média de démarrage n'est pas un noyau, et le dire passe avant
         // tout le reste.** Depuis que l'import le garde, il apparaît dans la
         // liste ; le toucher rendait le refus d'un noyau compressé, qui envoie
@@ -131,7 +197,7 @@ public final class LocalVMModel {
             return
         }
         if let refusal = KernelImageKind.cannotRunHereExplanation(
-            kind, name: kernelURL.lastPathComponent) {
+            kind, name: bootURL.lastPathComponent) {
             _ = life.guestFinished()
             finish(with: refusal)
             self.machine = nil
@@ -209,7 +275,7 @@ public final class LocalVMModel {
         // refuserait des noyaux parfaitement valables.
         if core == .riscv32,
             let size = try? FileManager.default.attributesOfItem(
-            atPath: kernelURL.path)[.size] as? Int,
+            atPath: bootURL.path)[.size] as? Int,
             size > LinuxMachine.maximumKernelImageBytes(forRAMSize: ramSize) {
             _ = life.guestFinished()
             finish(with: LinuxMachine.tooLargeExplanation(
@@ -221,7 +287,7 @@ public final class LocalVMModel {
 
         let image: Data
         do {
-            image = try Data(contentsOf: kernelURL)
+            image = try Data(contentsOf: bootURL)
         } catch {
             _ = life.guestFinished()
             finish(with: "Démarrage impossible : \(error.localizedDescription)")
@@ -244,7 +310,13 @@ public final class LocalVMModel {
         // supprimé depuis lui coûterait sa session pour une raison qui ne la
         // concerne pas.
         let ramdisk: Data?
-        if core == .x86_64 {
+        if let isoRamdisk {
+            // **Celui de l'image passe avant la bibliothèque.** L'appariement
+            // par le nom sert à deux fichiers importés séparément ; ici la
+            // recette a nommé l'initramfs elle-même, et il n'y a rien à
+            // deviner.
+            ramdisk = try? Data(contentsOf: isoRamdisk)
+        } else if core == .x86_64 {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
             ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media)
                 .url.flatMap { try? Data(contentsOf: $0) }
@@ -282,7 +354,11 @@ public final class LocalVMModel {
         // réglage était réservé aux noyaux de PC parce que l'autre refusait ;
         // il ne refuse plus. Ce qui reste vrai, et que seul un démarrage peut
         // dire, c'est qu'un noyau sans pilote bloc ne le touchera jamais.
-        let diskURL = LocalDisk.attached(
+        // **Quand le noyau vient d'une image, c'est l'image qui est le
+        // disque.** Sa racine y vit — c'est ce que la ligne de commande lue
+        // dans la recette va nommer — et rien de tout ça n'est copié : le
+        // fichier est lu secteur par secteur là où il est.
+        let diskURL = isoDisk ?? LocalDisk.attached(
             kernel: kernelURL.lastPathComponent,
             among: KernelLibrary.list(), in: storage)
 
@@ -318,7 +394,8 @@ public final class LocalVMModel {
                     // nothing else to do: the guest is already mid-life
                 } else {
                     try machine.load(
-                        kernelImage: image, commandLine: nil, initialRamdisk: ramdisk)
+                        kernelImage: image, commandLine: isoCommandLine,
+                        initialRamdisk: ramdisk)
                 }
                 outcome = machine.runGuest(instructionBudget: .max)
                 // Lu sur le fil d'émulation, pendant que la machine est encore
