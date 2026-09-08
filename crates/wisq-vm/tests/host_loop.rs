@@ -593,6 +593,58 @@ console.log([{listing}].map(tableSlot).join(","));
 
 /// **La page du bureau, et son pilote exécuté pour de vrai.**
 ///
+/// **`wisqRun` est la dernière chose que le pilote installe, et c'est un
+/// contrat que le côté Swift lit sans le savoir.**
+///
+/// `LocalDesktop.load()` attend que `window.wisqRun` soit une fonction pour
+/// déclarer la page prête. Cette attente n'a de sens que si `wisqRun` arrive
+/// **après** tout le reste : la machine, l'écran, les fonctions de peinture.
+/// Sinon elle rendrait la main sur un pilote à moitié monté, et l'appel
+/// suivant partirait dans le vide — exactement la panne qu'on a mis trois
+/// tours de CI à nommer.
+///
+/// **Pourquoi ce contrat compte maintenant.** La page charge son pilote dans un
+/// `<script type="module">`, donc évalué après l'analyse du document. Un
+/// `didFinish` peut arriver avant. Interroger la page une seule fois à cet
+/// instant-là est une course, et elle se perd d'autant plus volontiers que le
+/// module a plus à faire — c'est-à-dire quand il y a un canvas.
+///
+/// Le test est écrit sur la forme **avec** écran, celle qui a le plus à
+/// installer, et il vérifie l'ordre plutôt qu'une présence : `contains` seul
+/// serait satisfait par un pilote qui pose `wisqRun` en premier.
+#[test]
+fn the_driver_installs_wisq_run_last_of_all() {
+    for screen in [
+        None,
+        Some(wisq_vm::desktop::Screen {
+            base: 0x8000,
+            width: 32,
+            height: 16,
+        }),
+    ] {
+        let driver = wisq_vm::desktop::driver(1, 0x1000, "wisq", screen);
+        let run = driver
+            .find("window.wisqRun =")
+            .expect("le pilote installe `wisqRun`");
+        for earlier in [
+            "window.wisqMachine =",
+            "window.wisqAfficher =",
+            "window.wisqCesser =",
+            "window.wisqTranslated =",
+            "window.wisqNeedsMore =",
+        ] {
+            let at = driver
+                .find(earlier)
+                .unwrap_or_else(|| panic!("le pilote installe `{earlier}`"));
+            assert!(
+                at < run,
+                "`{earlier}` doit être posé avant `wisqRun` : sa présence est ce qui \
+                 dit que tout le reste est monté"
+            );
+        }
+    }
+}
+
 /// `wisq_vm::desktop::page` habille la boucle hôte de ce qu'il faut pour vivre
 /// dans un `WKWebView` : un pont vers l'application, l'état de départ, et de
 /// quoi lancer la machine. Rien de tout ça ne serait exécuté par quoi que ce
