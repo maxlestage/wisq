@@ -5528,3 +5528,78 @@ raccourcir.
 se reposera à chaque tranche : `first-region` dit où le point d'entrée s'arrête
 et après combien d'instructions ; `unknown-opcodes` nomme les formes que le
 décodeur ne lit pas, par leur opcode complet plutôt que par leur premier octet.
+
+## Pagination P1 : l'interpréteur Rust apprend CR0/CR3 et la marche
+
+L'interpréteur Rust est le juge du test différentiel, et il ne paginait pas :
+les registres de contrôle étaient **refusés** — `self.faulted = true` — et
+`GuestMemory` restait une fenêtre plate avec une base. Tant qu'il ne pagine pas,
+rien ne peut juger la pagination de l'émetteur, qui est la tranche P2.
+
+`crates/wisq-vm/src/x86_paging.rs` pose la marche à quatre niveaux, et
+**les neuf accès mémoire de l'interpréteur passent par elle** — c'est cette
+moitié-là qui décide de tout : une traduction que personne n'emprunte serait du
+code juste et mort. Trois chemins la traversent et sont éprouvés séparément,
+parce qu'ils sont écrits à trois endroits : l'opérande source, la destination
+écrite, la pile.
+
+| ce que la tranche a posé | où |
+| --- | --- |
+| les cinq registres de contrôle, lus et écrits plutôt que refusés | `x86.rs`, `x86_paging.rs` |
+| la marche à quatre niveaux, grandes pages comprises | `x86_paging.rs` |
+| le ET des permissions sur les quatre niveaux, et CR0.WP | `x86_paging.rs` |
+| l'accès à cheval sur deux pages, ses deux traductions | `x86_paging.rs` |
+| le refus qui **nomme l'adresse** et le niveau | `Unmapped`, `Cpu::unmapped` |
+
+**Trois choses qu'elle ne fait pas**, et les taire serait la faute que ce
+document reproche ailleurs :
+
+1. **Aucune faute n'est délivrée à l'invité.** Une entrée absente arrête la
+   machine en nommant l'adresse ; un vrai processeur poserait `#PF` et rendrait
+   la main au noyau. Les interruptions sont le mur suivant, et c'est aussi la
+   question que P2 doit trancher avant d'écrire une ligne — un piège
+   WebAssembly est sans retour.
+2. **Aucun cache de traduction**, à la différence du cœur Swift qui en tient
+   mille vingt-quatre entrées. Ici la marche se refait à chaque accès. C'est un
+   choix : ce cœur est un juge, pas un chemin chaud, et un cache lui ajouterait
+   un état invisible à vider au bon moment — le troisième de ces vidages a déjà
+   coûté une chasse entière côté Swift.
+3. **Pas d'anneau trois**, donc le bit utilisateur d'une entrée n'est jamais
+   consulté, et les bits « accédée » et « salie » ne sont jamais posés.
+
+**Les grandes pages, et pourquoi la marche ne les restreint pas.** Le bit PS est
+lu à tous les niveaux au-dessus de la feuille, ce qui couvre les deux mébioctets
+et le gibioctet des mêmes trois lignes. La restreindre aux deux mébioctets —
+puisque `cpuid` n'annonce ni `pdpe1gb` ni LA57 — aurait coûté du code *en plus*
+et créé un couplage à ne pas oublier. Elle est donc **plus permissive que le
+silicium** sur un point : un processeur sans `pdpe1gb` traite le bit 7 d'une
+entrée de PDPT comme réservé et faute. Aucun invité ne peut y arriver, puisque
+`cpuid` ne l'annonce pas ; c'est écrit ici plutôt que supposé. Cinq niveaux
+restent hors de portée, eux, et pas par tolérance : la boucle part de 39.
+
+**Quatorze sabotages, quatorze tombés.** Chacun sur une règle, avec retour au
+vert après chacun :
+
+| sabotage | tests tombés |
+| --- | --- |
+| les permissions ne sont plus le ET des niveaux | 2 |
+| une grande page n'arrête plus le parcours | 1 |
+| le décalage dans une grande page est perdu | 1 |
+| le pas d'une table passe de huit octets à un | 12 |
+| le bit de présence n'est plus regardé | 3 |
+| les douze bits du bas sont perdus | 3 |
+| un accès à cheval n'est plus reconnu | 3 |
+| l'écriture basse est posée avant que la haute soit sûre | 1 |
+| le refus n'est plus nommé | 1 |
+| écrire CR0 ne change plus rien | 13 |
+| la pagination éteinte parcourt quand même les tables | 3 |
+| un opérande source court-circuite la traduction | 2 |
+| la pile court-circuite la traduction | 1 |
+| CR0.WP est ignoré | 2 |
+
+Le dernier de la liste a **survécu à la première passe**, et c'est la garde
+`holds` : l'écriture à cheval vérifiait ses deux *traductions* avant de poser un
+octet, mais pas ses deux *places*. Une table peut nommer une trame que la RAM
+attachée n'a pas ; les deux traductions réussissent alors, la moitié basse
+s'écrit, et la haute échoue. Deux murs différents pour la même écriture, et le
+test n'en couvrait qu'un.
