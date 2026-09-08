@@ -101,6 +101,16 @@ impl Code {
         uleb(off as u64, &mut self.0);
         self
     }
+    fn gget(&mut self, g: u32) -> &mut Self {
+        self.op(0x23);
+        uleb(g as u64, &mut self.0);
+        self
+    }
+    fn gset(&mut self, g: u32) -> &mut Self {
+        self.op(0x24);
+        uleb(g as u64, &mut self.0);
+        self
+    }
     fn call(&mut self, f: u32) -> &mut Self {
         self.op(0x10);
         uleb(f as u64, &mut self.0);
@@ -128,6 +138,10 @@ const FOLD_MASK: i32 = 0x07ff_ffff; // le repli d'aujourd'hui : 128 Mio
 const PML4: i32 = 0x0900_0000;
 const TLB: i32 = 0x0a00_0000;
 const TLB_SLOTS: i32 = 64;
+/// Les deux globales du module : le témoin de faute, et le pointeur
+/// d'instruction. Elles n'existent que pour les deux formes gardées.
+const FAULT: u32 = 0;
+const RIP: u32 = 1;
 
 // `run(count, stride, wsMask) -> i64`
 const L_ACC: u32 = 3; // i64
@@ -213,6 +227,33 @@ fn main() {
         c.get(L_VA).op(0xa7).i32c(4095).op(0x71).op(0x72);
     };
 
+    // **Ce que coûte le contrôle en ligne d'une faute de page.**
+    //
+    // Une faute n'a pas besoin de piéger : la boucle de répartition de
+    // l'émetteur rend la main dès qu'un bloc rend un indice négatif. Mais le
+    // contrôle doit être **avant** l'accès — sinon l'instruction fautive a déjà
+    // agi — donc une branche par accès, pas par bloc. Elle n'est jamais prise
+    // ici : c'est bien le cas courant qu'on mesure, celui où rien ne faute.
+    let check = |c: &mut Code| {
+        c.gget(FAULT);
+        c.op(0x04).op(0x40); // if (sans résultat)
+        c.i64c(0).op(0x0f); // rendre zéro — `return` est polymorphe de pile
+        c.op(0x0b); // end
+    };
+    let guarded = |c: &mut Code| {
+        tlb(c);
+        check(c);
+    };
+    // **Et la même, RIP tenu à jour.** C'est la moitié cachée du mécanisme :
+    // au moment où l'on rend la main, l'hôte doit savoir sur quelle instruction
+    // la machine s'est arrêtée. L'émetteur ne pose RIP qu'à la terminaison d'un
+    // bloc ; un contrôle en ligne oblige à le poser à chaque accès.
+    let guarded_rip = |c: &mut Code| {
+        c.i64c(0x1000).gset(RIP);
+        tlb(c);
+        check(c);
+    };
+
     // La marche : quatre lectures de huit octets, chacune dépendante de la
     // précédente, puis l'installation. C'est la forme x86, pas une image.
     let mut w = Code::default();
@@ -262,8 +303,8 @@ fn main() {
     section(1, t, &mut m);
 
     let mut f = Vec::new();
-    uleb(4, &mut f);
-    f.extend([0u8, 1, 0, 0]);
+    uleb(6, &mut f);
+    f.extend([0u8, 1, 0, 0, 0, 0]);
     section(3, f, &mut m);
 
     let mut mem = Vec::new();
@@ -273,12 +314,23 @@ fn main() {
     uleb(PAGES as u64, &mut mem);
     section(5, mem, &mut m);
 
+    // Section 6 : deux globales mutables, à zéro. Le témoin reste éteint
+    // pendant toute la mesure — la branche n'est jamais prise, et la somme de
+    // contrôle des formes gardées doit donc égaler celle des autres.
+    let mut g = Vec::new();
+    uleb(2, &mut g);
+    g.extend([0x7f, 0x01, 0x41, 0x00, 0x0b]); // i32 mutable = 0
+    g.extend([0x7e, 0x01, 0x42, 0x00, 0x0b]); // i64 mutable = 0
+    section(6, g, &mut m);
+
     let mut e = Vec::new();
-    uleb(4, &mut e);
+    uleb(6, &mut e);
     for (nom, kind, idx) in [
         ("repli", 0u8, 0u32),
         ("tampon", 0, 2),
         ("marche", 0, 3),
+        ("garde", 0, 4),
+        ("garde_rip", 0, 5),
         ("mem", 2, 0),
     ] {
         uleb(nom.len() as u64, &mut e);
@@ -293,6 +345,8 @@ fn main() {
         (w.0.clone(), WALK_LOCALS),
         (loop_body(&tlb), RUN_LOCALS),
         (loop_body(&walk), RUN_LOCALS),
+        (loop_body(&guarded), RUN_LOCALS),
+        (loop_body(&guarded_rip), RUN_LOCALS),
     ];
     let mut code = Vec::new();
     uleb(bodies.len() as u64, &mut code);
