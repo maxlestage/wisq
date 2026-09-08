@@ -105,6 +105,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         "la base que swapgs échange avec celle de GS"
     );
     assert_eq!(
+        value("control"),
+        wisq_vm::x86_wasm::CONTROL_SLOT.to_string(),
+        "le premier registre de contrôle"
+    );
+    assert_eq!(
+        value("controlCount"),
+        wisq_vm::x86_wasm::CONTROL_COUNT.to_string(),
+        "le nombre de registres de contrôle"
+    );
+    assert_eq!(
         value("tablePages"),
         TABLE_PAGES.to_string(),
         "les pages de la correspondance"
@@ -502,6 +512,129 @@ console.log("haut " + lire(2));
         line("haut "),
         0xdead_0000,
         "et la moitié haute dans EDX — les deux moitiés font l'aller-retour"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Les registres de contrôle : lire se modélise, allumer la pagination non.**
+///
+/// **Ici, contrairement aux MSR, le numéro est dans l'instruction.** Il vit
+/// dans le champ `reg` du ModRM, que le décodeur lit. « Refuser par le
+/// numéro » — infaisable pour un MSR, dont le numéro arrive dans ECX — est
+/// donc ici parfaitement possible, et c'est ce que fait cette tranche.
+///
+/// | | ce qu'on en fait |
+/// | --- | --- |
+/// | lire CR0, CR2, CR3, CR4, CR8 | rangé et rendu |
+/// | écrire CR4, CR8 | accepté : rien ne consulte ces bits |
+/// | **écrire CR0 ou CR3** | **refusé** — c'est allumer la pagination |
+///
+/// **Et refuser ces deux-là ne coûte rien**, ce qui a été mesuré avant d'être
+/// décidé : sur les régions d'entrée du noyau Alpine, les seules écritures qui
+/// bloquent sont des `écrire-cr4`. Aucun `écrire-cr0`, aucun `écrire-cr3`.
+///
+/// **Ce que ces registres ne font pas.** Rien ne lit ces bits : ni la
+/// protection en écriture de CR0, ni le SMEP/SMAP de CR4, ni la table de
+/// pages de CR3. Cette machine ne pagine pas et n'applique aucune protection —
+/// accepter l'écriture de CR4 dit « on la range », pas « on l'applique ».
+#[test]
+fn a_control_register_round_trips_but_paging_stays_refused() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let head: Vec<u8> = vec![
+        0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x22, 0x11, 0x00,
+        0x00, // movabs $0x1122deadbeef,%rax
+        0x0f, 0x22, 0xe0, // mov %rax,%cr4
+        0x0f, 0x20, 0xe6, // mov %cr4,%rsi — l'aller-retour
+        0x0f, 0x20, 0xc7, // mov %cr0,%rdi — jamais écrit
+    ];
+    // L'adresse où la machine doit s'arrêter : celle de l'écriture de CR3, et
+    // **pas** celle du `ud2` qui suit.
+    let stops_at = BASE + head.len() as u64;
+    let mut program = head;
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3 — la pagination
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
+    let scratch = std::env::temp_dir().join(format!("wisq-host-cr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // **Le refus porte sur l'instruction, pas sur la région entière** : ce qui
+    // précède l'écriture de CR3 doit se traduire.
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES);
+    assert!(
+        module.is_none(),
+        "une région qui contient `mov %rax,%cr3` ne se traduit pas"
+    );
+    // Donc on la juge sans lui : la même suite, close par un `ud2`.
+    let mut sans = program[..stops_at as usize - BASE as usize].to_vec();
+    sans.extend_from_slice(&[0x0f, 0x0b]);
+    let module = Module::resolving(&sans, BASE, 0, 0, PAGES).expect("le reste se traduit");
+    let path = scratch.join("cr.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("cr4 " + lire(6));
+console.log("cr0 " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line("cr4 "),
+        0x1122_dead_beef,
+        "CR4 rend les soixante-quatre bits qu'on lui a donnés"
+    );
+    // **Un registre jamais écrit vaut zéro**, et deux registres qui
+    // partageraient un emplacement se trahiraient ici.
+    assert_eq!(
+        line("cr0 "),
+        0,
+        "CR0 n'a jamais été écrit : il ne peut pas porter CR4"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }

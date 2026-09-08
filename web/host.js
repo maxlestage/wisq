@@ -39,7 +39,11 @@ export const SLOTS = {
   /// celle que `swapgs` échange avec GS.
   fsBase: 30,
   kernelGs: 31,
-  globalCount: 42,
+  /// Les cinq registres de contrôle que le décodeur lit : CR0, CR2, CR3, CR4,
+  /// CR8. Rangés et rendus ; écrire CR0 ou CR3 reste refusé.
+  control: 32,
+  controlCount: 5,
+  globalCount: 47,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,

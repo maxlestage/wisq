@@ -8,6 +8,41 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — les registres de contrôle, et la fin des cinq tranches
+
+Dernière tranche du programme. **Ici le numéro est dans l'instruction** — le
+champ `reg` du ModRM — donc « refuser par le numéro », infaisable pour un MSR,
+est une décision de traduction prise sur place. Le contraste avec la tranche
+d'avant est le sujet, et il est écrit dans le code.
+
+Lire les cinq registres se modélise. Écrire CR4 et CR8 est accepté : rien ne
+consulte ces bits. **Écrire CR0 ou CR3 reste refusé** — ce serait allumer la
+pagination, et un noyau qui croit paginer part sur un chemin dont la panne
+n'aura aucun rapport visible avec sa cause.
+
+**Et le refus honnête est gratuit**, ce qui n'était pas garanti : la sonde,
+passée avant d'écrire le code, dit que les seules écritures qui bloquent une
+région d'entrée sont des `écrire-cr4`. Aucun `écrire-cr0`, aucun `écrire-cr3`.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9975 / 10 116 | **9980 / 10 116** |
+| refusées | 141 | **136** |
+| refus nommés | 14 | **9** |
+
+**Une mesure que j'ai jetée avant de la publier.** Pour préparer l'état des
+lieux, j'ai compté `cli`, `hlt`, `popf` et les registres de contrôle par un
+décodage **linéaire** des 35 Mio du noyau — 19 351 `cli`, 11 655 `hlt`. C'est du
+bruit : l'essentiel de ce fichier est de la donnée, pas du code. C'est
+exactement le piège du comptage d'octets `0f 31` que j'avais dû retirer ce matin
+même, et cette fois je l'ai vu **avant** de l'écrire quelque part. Les seuls
+chiffres fiables viennent du parcours par régions.
+
+**Ce que les cinq tranches n'ont pas fait.** 9949 → 9980 régions, 40 → 9 refus
+nommés. Aucune n'approche un noyau qui démarre : ce qui manque n'est plus une
+liste d'instructions, c'est la pagination et les interruptions — deux mécanismes
+entiers, dont l'état des lieux est le travail qui suit.
+
 ## 2026-09-08 — les MSR, le premier vrai modèle, et un relevé qui change de sens
 
 Maxime a redit « fais tout ». Cette tranche est celle des registres spécifiques
