@@ -35,7 +35,11 @@ export const SLOTS = {
   /// Les deux tables de descripteurs, en limite puis base : GDT, puis IDT.
   table: 26,
   tableCount: 4,
-  globalCount: 40,
+  /// Les deux bases que `wrmsr` sait poser en plus de celle de GS : FS, puis
+  /// celle que `swapgs` échange avec GS.
+  fsBase: 30,
+  kernelGs: 31,
+  globalCount: 42,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
