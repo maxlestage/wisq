@@ -32,7 +32,10 @@ export const SLOTS = {
   /// « aucun chargeur n'est passé ici » et non « le segment nul est chargé ».
   segment: 20,
   segmentCount: 6,
-  globalCount: 36,
+  /// Les deux tables de descripteurs, en limite puis base : GDT, puis IDT.
+  table: 26,
+  tableCount: 4,
+  globalCount: 40,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,

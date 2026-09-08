@@ -8,6 +8,39 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — les tables de descripteurs, et une question posée avant d'écrire
+
+**La tranche a commencé par une sonde jetable.** Les deux précédentes avaient
+montré qu'un refus nommé en cache souvent un autre ; `cli` et `sti` restent
+refusés, et s'ils vivaient dans les mêmes régions que `lgdt`, la tranche
+n'aurait rien récupéré. Rendre les quatre instructions vides — faux
+sémantiquement, mais c'est une mesure — a répondu **trois régions, une par
+occurrence**. La crainte était infondée, et je préfère l'avoir su avant d'écrire
+le code que de le découvrir dans le relevé après.
+
+**Ce qui est modélisé** : limite de seize bits, base de soixante-quatre, dans la
+disposition du processeur. **Ce qui ne l'est pas** : rien ne lit ces tables.
+Charger FS ou GS reste refusé, `cli` et `sti` aussi, aucune interruption n'est
+délivrée. Un `lgdt` produit dit « ce registre se relit », pas « les descripteurs
+marchent » — c'est écrit dans le code et dans le test, parce que c'est
+exactement ce qu'on relira dans six mois comme une capacité.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9956 / 10 116 | **9959 / 10 116** |
+| refusées | 160 | **157** |
+| refus nommés | 33 | **30** |
+
+Première famille à sortir **entière** de la liste des refus nommés — et elle
+n'en sort que parce que rien ne la consulte.
+
+**Un sabotage a survécu au premier passage.** Lire la limite sur soixante-quatre
+bits laissait six octets de base dans le registre, que le rangement tronquait :
+l'aller-retour restait juste sur du faux. L'invité ne pouvait pas le voir, un
+instantané l'aurait vu. Le test lit maintenant l'emplacement lui-même — la même
+leçon que `cpuid` deux tranches plus tôt : une assertion sur un résultat qu'un
+autre chemin satisfait aussi bien ne garde rien.
+
 ## 2026-09-08 — les sélecteurs de segment, et une largeur qu'il fallait mesurer
 
 Toujours « fais tout ». Première tranche du paquet qui *demande* un modèle, et
