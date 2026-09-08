@@ -118,6 +118,47 @@ Une version antérieure de la feuille de route en tirait « entre 1 % et 29 % du
 débit » ; le chiffre est retiré jusqu'à ce que ses deux entrées soient
 vérifiables.
 
+### Comment une faute de page remonte, tranché par la sonde
+
+C'était la question à trancher avant d'écrire une ligne de la tranche P2 : un
+piège WebAssembly est **sans retour** — il arrête l'émulateur entier —, alors
+qu'une faute doit rendre la main au noyau invité.
+
+**Il n'y a pas besoin de piéger, et le chemin existait déjà.** La boucle de
+répartition de l'émetteur tient l'indice du bloc courant dans une locale, et
+**un bloc qui rend un indice négatif rend la main à l'hôte** — c'est ce que fait
+déjà chaque fin de région, et `tests/host_loop.rs` l'emprunte à chaque exécution.
+Une faute n'a donc qu'à faire rendre −1.
+
+La vraie question était **où poser le contrôle**, et elle a deux réponses de
+coûts opposés :
+
+- **en ligne**, juste après la traduction et **avant** l'accès — juste, puisque
+  l'instruction fautive n'a alors rien fait, mais une branche par accès, et RIP
+  doit être à jour à chaque accès plutôt qu'à la fin d'un bloc ;
+- **par page piège**, la traduction rendant une adresse au-dessus de la RAM
+  déclarée et le bloc ne contrôlant qu'à sa terminaison — une branche par bloc,
+  mais l'instruction fautive a partiellement agi, ce qui est faux.
+
+La sonde répond, deux formes de plus dans le même module (`garde`,
+`garde_rip`), branche jamais prise, sommes de contrôle égales aux trois autres.
+Trois exécutions à 8 et 12 millions d'accès :
+
+| motif d'accès | surcoût du contrôle | surcoût de RIP à chaque accès |
+| --- | --- | --- |
+| balayage court, 512 pages | −0,17 à +0,07 ns | +0,00 à +0,03 ns |
+| balayage long, 16 384 pages | +0,02 à +0,30 ns | +0,02 à +0,09 ns |
+| une page neuve à chaque accès | +0,75 à +1,61 ns | −0,45 à +0,62 ns |
+
+**Le contrôle en ligne est sous le bruit** sur les deux motifs de balayage — la
+plage inclut zéro, et une des mesures est négative, ce qui dit qu'on mesure
+l'ordonnanceur et non le code. Sur le motif qui casse le tampon il coûte au plus
+une nanoseconde, là où la marche elle-même en coûte trente. Tenir RIP à jour à
+chaque accès n'est pas séparable du bruit.
+
+**Donc : le contrôle en ligne.** La page piège aurait acheté un mécanisme faux
+pour une économie qu'aucune des trois mesures ne voit.
+
 ## Les interruptions
 
 ### Ce qui existe
