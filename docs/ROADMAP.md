@@ -5447,10 +5447,60 @@ moitié haute perdue d'une moitié haute juste. La valeur d'essai porte maintena
 atterrit au même endroit et seule la relecture voit la différence. Le troisième
 était pire : `swapgs` avait été produit **sans aucun test**.
 
+### Les registres de contrôle, et la fin du programme des cinq tranches
+
+**Ici le numéro est dans l'instruction**, dans le champ `reg` du ModRM. C'est la
+différence avec les MSR, et elle change tout : « refuser par le numéro » —
+infaisable pour un MSR dont le numéro arrive dans ECX — est ici une décision de
+**traduction**, prise sur place, sans aiguillage ni retour de main.
+
+| | ce qu'on en fait |
+| --- | --- |
+| lire CR0, CR2, CR3, CR4, CR8 | rangé et rendu |
+| écrire CR4, CR8 | accepté — rien ne consulte ces bits |
+| **écrire CR0 ou CR3** | **refusé** : c'est allumer la pagination |
+
+**Et refuser ces deux-là ne coûte rien** — mesuré avant d'être décidé, par une
+sonde jetable : sur les régions d'entrée du noyau Alpine, les seules écritures
+qui bloquent sont des `écrire-cr4`. Aucun `écrire-cr0`, aucun `écrire-cr3`. Le
+refus honnête et le refus gratuit coïncident, ce qui n'était pas garanti.
+
+**Ce que ces registres ne font pas** : rien ne lit ces bits. Ni la protection en
+écriture de CR0, ni le SMEP/SMAP de CR4, ni la table de pages de CR3. Accepter
+l'écriture de CR4 dit « on la range », pas « on l'applique ».
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9975 / 10 116 | **9980 / 10 116** |
+| régions refusées | 141 | **136** |
+| refus nommés | 14 | **9** |
+
+### Ce que les cinq tranches ont fait, et ce qu'elles n'ont pas fait
+
+| tranche | régions compilées | refus nommés |
+| --- | ---: | ---: |
+| départ | 9949 | 40 |
+| `cpuid` | 9950 | 39 |
+| sélecteurs de segment | 9956 | 33 |
+| tables de descripteurs | 9959 | 30 |
+| MSR | 9975 | 14 |
+| registres de contrôle | **9980** | **9** |
+
+**Les neuf refus nommés qui restent** : six `mov %ax,%fs` — la base viendrait
+d'un descripteur qu'on n'a pas —, deux `popf` et un `hlt`, qui touchent aux
+interruptions qu'on ne délivre pas.
+
+**Ce que ce chiffre ne dit pas, et il faut le lire deux fois.** Il compte des
+régions qui **se traduisent**. Depuis la tranche des MSR, ce n'est plus la même
+chose que des régions qui **s'exécutent** : un numéro de MSR non modélisé
+s'arrête à l'exécution. Et surtout, aucune de ces cinq tranches n'approche un
+noyau qui démarre. Ce qui manque pour cela n'est plus une liste d'instructions :
+c'est la **pagination** et les **interruptions**, deux mécanismes entiers, et
+leur état des lieux est le travail qui suit ces cinq tranches.
+
 **Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
 pour une raison qui demande un modèle : les sélecteurs de segment
-(6), les registres de contrôle (5), `hlt` et
-`popf`.
+(6), `hlt` et `popf`.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
