@@ -96,7 +96,22 @@ pub const TSC_STEP: u64 = 100;
 /// L'ordre est celui de l'énumération du décodeur : ES, CS, SS, DS, FS, GS.
 pub const SEGMENT_SLOT: usize = TSC_SLOT + 1;
 pub const SEGMENT_COUNT: usize = 6;
-pub const SCRATCH_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
+/// **Les deux tables de descripteurs, chacune en limite puis base.**
+///
+/// `lgdt` lit dix octets — une limite de seize bits, une base de soixante-
+/// quatre — et `sgdt` les rend. Le couple est rangé et rendu, et c'est tout ce
+/// qui est modélisé.
+///
+/// **Ce que ça ne dit pas** : aucune table n'est *lue* derrière ces nombres, et
+/// rien dans l'émetteur ne les consulte. Charger FS ou GS reste refusé, `cli`
+/// et `sti` aussi, et aucune interruption n'est délivrée. Un `lgdt` produit dit
+/// « ce registre se relit », pas « les descripteurs marchent ». Le jour où un
+/// chemin lira la table, cette honnêteté-là devra être refaite.
+///
+/// L'ordre : limite de la GDT, base de la GDT, limite de l'IDT, base de l'IDT.
+pub const TABLE_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
+pub const TABLE_COUNT: usize = 4;
+pub const SCRATCH_SLOT: usize = TABLE_SLOT + TABLE_COUNT;
 
 /// **Ce que `cpuid` déclare, et la règle qui le rend sûr.**
 ///
@@ -1552,6 +1567,12 @@ impl Module {
         module
     }
 
+    /// Les deux emplacements d'une table : sa limite, puis sa base.
+    fn table_slots(interrupts: bool) -> (usize, usize) {
+        let at = TABLE_SLOT + if interrupts { 2 } else { 0 };
+        (at, at + 1)
+    }
+
     /// L'emplacement d'un sélecteur, dans l'ordre de l'énumération du
     /// décodeur : ES, CS, SS, DS, FS, GS.
     fn segment_slot(segment: Segment) -> usize {
@@ -1713,6 +1734,38 @@ impl Module {
         // **Ce n'est pas un progrès en soi**, et l'exploration le montre : à
         // chaque famille lue, la frontière avance de quelques octets et
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
+        // **Les tables de descripteurs : dix octets, dans les deux sens.**
+        //
+        // La limite occupe les deux premiers octets, la base les huit suivants.
+        // Le déplacement de deux se pose sur l'adresse déjà figée — `pin` a
+        // résolu ce qui était relatif au pointeur d'instruction avant d'arriver
+        // ici, donc ajouter deux au déplacement est exact dans les deux cas.
+        if let Op::LoadDescriptorTable { interrupts } = step.op {
+            let low = *step.memory.as_ref()?;
+            let mut high = low;
+            high.displacement = high.displacement.wrapping_add(2);
+            let (limit, base) = Self::table_slots(interrupts);
+            body.store(limit, |b| {
+                b.load_memory(&low, Width::Word);
+            });
+            body.store(base, |b| {
+                b.load_memory(&high, Width::Qword);
+            });
+            return Some(());
+        }
+        if let Op::StoreDescriptorTable { interrupts } = step.op {
+            let low = *step.memory.as_ref()?;
+            let mut high = low;
+            high.displacement = high.displacement.wrapping_add(2);
+            let (limit, base) = Self::table_slots(interrupts);
+            body.store_memory(&low, Width::Word, |b| {
+                b.load(limit);
+            });
+            body.store_memory(&high, Width::Qword, |b| {
+                b.load(base);
+            });
+            return Some(());
+        }
         // **Lire un sélecteur de segment : un aller-retour, et c'est tout.**
         //
         // La largeur vient du décodeur, qui la tire du préfixe `0x66`, et
@@ -1756,8 +1809,6 @@ impl Module {
             step.op,
             Op::ReadModelRegister
                 | Op::WriteModelRegister
-                | Op::LoadDescriptorTable { .. }
-                | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
@@ -4452,8 +4503,11 @@ mod port_tests {
     #[test]
     fn every_privileged_family_is_refused_by_name_and_not_by_silence() {
         for (nom, forme) in [
-            ("lgdt", &[0x0f, 0x01, 0x15, 0xb1, 0xc9, 0x43, 0x01][..]),
-            ("sidt", &[0x0f, 0x01, 0x0d, 0x00, 0x00, 0x00, 0x00][..]),
+            // **Les tables de descripteurs ont quitté cette liste en entier** :
+            // `lgdt`, `lidt`, `sgdt` et `sidt` sont produits depuis cette
+            // tranche. C'est la première famille qui en sort complète — et ce
+            // n'est possible que parce que rien ne *lit* ces registres : le
+            // jour où un chemin consulte la table, la question se rouvrira.
             ("swapgs", &[0x0f, 0x01, 0xf8][..]),
             // **Les sélecteurs ne sont plus refusés en bloc.** Ranger un
             // segment et en charger un dont la base est morte — ES, SS, DS —

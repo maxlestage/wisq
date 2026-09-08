@@ -5362,9 +5362,45 @@ derrière un rangement de segment dans la même région. Le relevé compte des
 raisons, pas des instructions ; une région ne tombe que quand elle n'en a plus
 aucune.
 
+### Les tables de descripteurs : dix octets, et la question posée avant d'écrire
+
+**La tranche a commencé par une sonde jetable**, parce que les deux précédentes
+avaient montré qu'un refus nommé en cache souvent un autre : `cli` et `sti`
+restent refusés, et s'ils vivaient dans les mêmes régions, produire `lgdt`
+n'aurait rien récupéré. Faire de `lgdt`/`lidt`/`sgdt`/`sidt` des instructions
+vides — sémantiquement fausses, mais c'est une mesure, pas un commit — a répondu
+**trois régions, une par occurrence**. La crainte était infondée, et c'est
+maintenant su plutôt que supposé.
+
+**Ce que la tranche modélise** : la limite de seize bits et la base de
+soixante-quatre font l'aller-retour, dans la disposition du processeur — la
+limite d'abord, la base deux octets plus loin.
+
+**Ce qu'elle ne dit pas, et c'est le plus important ici** : aucune table n'est
+*lue* derrière ces nombres. Charger FS ou GS reste refusé, `cli` et `sti` aussi,
+et aucune interruption n'est délivrée. Un `lgdt` produit dit « ce registre se
+relit », pas « les descripteurs marchent ». C'est écrit dans le code et dans le
+test, parce que c'est exactement le genre de chose qu'on relira dans six mois
+comme une capacité.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9956 / 10 116 | **9959 / 10 116** |
+| régions refusées | 160 | **157** |
+| refus nommés | 33 | **30** |
+
+**C'est la première famille qui sort entière de la liste des refus nommés.**
+Elle n'en sort que parce que rien ne la consulte.
+
+**Un sabotage a survécu au premier passage, et il disait quelque chose.** Lire
+la limite sur soixante-quatre bits laissait six octets de base dans le registre,
+et le rangement les tronquait — donc l'aller-retour restait juste sur du faux.
+Ce que l'invité ne pouvait pas voir, un instantané l'aurait vu. Le test lit
+maintenant l'emplacement lui-même.
+
 **Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
 pour une raison qui demande un modèle : les MSR (16), les sélecteurs de segment
-(6), les registres de contrôle (5), les tables de descripteurs (3), `hlt` et
+(6), les registres de contrôle (5), `hlt` et
 `popf`.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
