@@ -324,6 +324,115 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
+/// **`pushf` produit, et le bit réservé qui ne ment plus.**
+///
+/// C'est la première instruction qu'un émetteur *refusait* et qu'il *produit*.
+/// Elle est arrivée par un relevé, pas par une relecture : `coverage` a mis un
+/// nombre en face d'un nom — six régions perdues pour `pushf` — et ce nom
+/// n'aurait jamais dû être dans la liste. `popf` peut rallumer le drapeau
+/// d'interruption sans nommer `sti`, donc il reste refusé ; `pushf` ne fait que
+/// **lire** RFLAGS, qui est déjà modélisé, et ne peut rien rallumer. Je l'avais
+/// refusé par symétrie, et la symétrie n'existait pas.
+///
+/// **Et produire cette lecture a rendu visible une divergence entre les deux
+/// cœurs.** Le bit 1 de RFLAGS vaut toujours un sur x86 — l'interpréteur Rust
+/// le pose (`Flags::read` rend `… | ALWAYS_ONE`), et l'oracle matériel le
+/// porte. La boucle hôte, elle, partait de zéro et rien ne le posait jamais.
+/// Tant que personne ne *lisait* RFLAGS comme une valeur, ça ne se voyait pas ;
+/// le premier `pushf` aurait empilé un RFLAGS qu'aucun processeur ne produit.
+///
+/// Le test regarde donc les deux moitiés : la pile a bien descendu de huit, et
+/// ce qui y est écrit porte le bit que l'architecture garantit.
+#[test]
+fn a_guest_that_pushes_its_flags_writes_a_real_rflags() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const TOP: u64 = 0x1000;
+    // mov $0x1000, %rsp ; pushfq ; ud2
+    let program = [
+        0x48, 0xc7, 0xc4, 0x00, 0x10, 0x00, 0x00, // mov $0x1000, %rsp
+        0x9c, // pushfq
+        0x0f, 0x0b, // ud2 — la machine s'arrête là, et le dit
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pushf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("pushf.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+// La pile de l'invité est repliée dans la RAM comme toute adresse.
+const octets = new DataView(vm.memory.buffer);
+console.log("arret " + why.stopped);
+console.log("rsp " + BigInt.asUintN(64, vm.globals[4].value).toString(16));
+console.log("empile " + octets.getBigUint64({empile}, true).toString(16));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            empile = TOP - 8,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire sur la sortie d'erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(line("arret "), "refusée", "la région s'arrête sur le `ud2`");
+    assert_eq!(
+        line("rsp "),
+        format!("{:x}", TOP - 8),
+        "`pushf` descend la pile de huit octets"
+    );
+    let empile = u64::from_str_radix(&line("empile "), 16).expect("un nombre");
+    assert_ne!(
+        empile & wisq_vm::x86::ALWAYS_ONE,
+        0,
+        "le bit 1 de RFLAGS vaut toujours un sur x86 : {empile:#x}"
+    );
+    // Et rien d'impossible autour : aucun des bits que ce cœur ne modélise pas
+    // ne doit apparaître de nulle part. Le drapeau d'interruption en fait
+    // partie — rien n'en délivre, donc il est à zéro, et c'est cohérent.
+    assert_eq!(
+        empile & !(wisq_vm::x86::ALWAYS_ONE | wisq_vm::x86::ARITHMETIC | wisq_vm::x86::DF),
+        0,
+        "RFLAGS ne doit porter que ce que ce cœur modélise : {empile:#x}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **Un invité qui parle, et un hôte qui l'entend.**
 ///
 /// C'est la première fois que quelque chose sort de la machine autrement que

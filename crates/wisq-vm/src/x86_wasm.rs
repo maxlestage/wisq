@@ -1573,7 +1573,6 @@ impl Module {
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
                 | Op::Halt
-                | Op::PushFlags
                 | Op::PopFlags
         ) {
             return None;
@@ -1598,7 +1597,7 @@ impl Module {
         }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
-        if matches!(step.op, Op::Push | Op::Pop | Op::Leave) {
+        if matches!(step.op, Op::Push | Op::Pop | Op::Leave | Op::PushFlags) {
             Self::stack(step, body);
             return Some(());
         }
@@ -1734,10 +1733,9 @@ impl Module {
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
-            | Op::InterruptFlag(_)
-            | Op::Halt
-            | Op::PushFlags
-            | Op::PopFlags => {
+                | Op::InterruptFlag(_)
+                | Op::Halt
+                | Op::PopFlags => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -1804,7 +1802,13 @@ impl Module {
                 Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
                     unreachable!("la direction et les chaînes sortent avant")
                 }
-                Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
+                Op::Push
+                | Op::Pop
+                | Op::Call
+                | Op::CallIndirect
+                | Op::Return
+                | Op::Leave
+                | Op::PushFlags => {
                     unreachable!("la pile sort avant")
                 }
                 Op::WideMultiply { .. }
@@ -2127,7 +2131,6 @@ impl Module {
             | Op::WriteControlRegister { .. }
             | Op::InterruptFlag(_)
             | Op::Halt
-            | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!(
                     "une instruction privilégiée n'est pas un calcul : `translate` la refuse avant"
@@ -2236,6 +2239,7 @@ impl Module {
             | Op::StringStore { .. }
             | Op::Push
             | Op::Pop
+            | Op::PushFlags
             | Op::Call
             | Op::CallIndirect
             | Op::Return
@@ -3374,6 +3378,29 @@ impl Module {
                     b.load(Body::scratch(0));
                 });
             }
+            // **`pushf` est un `push` dont la valeur vient des drapeaux**, et
+            // rien de plus. Pas de largeur à choisir ici : le décodeur a déjà
+            // tranché, et en mode 64 bits sans préfixe 0x66 ce sont huit
+            // octets. La forme à deux octets existe et n'est pas produite —
+            // elle demanderait une descente de pile de deux, ce que ce chemin
+            // ne fait pas ; `translate` la laisse donc au refus.
+            //
+            // **`popf` reste refusé, et l'asymétrie est le sujet.** Lire
+            // RFLAGS ne peut rien allumer ; l'écrire peut rallumer le drapeau
+            // d'interruption sans jamais nommer `sti`, et rien ne délivre
+            // d'interruption. Un module qui accepte `popf` accepte un `sti`
+            // déguisé.
+            Op::PushFlags => {
+                body.store(Body::scratch(0), |b| {
+                    b.load(RFLAGS_SLOT);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+                });
+                Self::at_top(body, |b| {
+                    b.load(Body::scratch(0));
+                });
+            }
             Op::Pop => {
                 body.store(Self::slot(step.dst), |b| {
                     b.load(Self::slot(4));
@@ -4205,6 +4232,29 @@ mod port_tests {
     /// se décoder, la région serait toujours refusée, la couverture toujours
     /// la même, et seul le message changerait. Les deux moitiés sont donc
     /// vérifiées séparément — le décodeur la lit **et** l'émetteur la refuse.
+    /// **L'asymétrie entre les deux moitiés d'une section critique.**
+    ///
+    /// `pushf` est produit, `popf` refusé, et ce n'est pas une inconséquence :
+    /// lire RFLAGS ne peut rien allumer, l'écrire peut rallumer le drapeau
+    /// d'interruption **sans jamais nommer `sti`**. Rien n'en délivre, donc un
+    /// module qui accepte `popf` accepte un `sti` déguisé.
+    ///
+    /// Les deux verdicts sont vérifiés ensemble parce que c'est ensemble
+    /// qu'ils ont un sens : accepter les deux, ou refuser les deux, serait
+    /// cohérent et faux. La tranche d'avant refusait les deux — par symétrie,
+    /// et la symétrie n'existait pas.
+    #[test]
+    fn reading_the_flags_is_produced_and_writing_them_is_not() {
+        assert!(
+            Module::region_or_why(&[0x9c, 0xc3], 0x1000, 0).is_ok(),
+            "`pushfq` se produit : il ne fait que lire RFLAGS"
+        );
+        match Module::region_or_why(&[0x9d, 0xc3], 0x1000, 0) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 0, "`popfq` refuse à l'entrée"),
+            other => panic!("`popfq` doit être refusé nommément, pas {other:?}"),
+        }
+    }
+
     #[test]
     fn every_privileged_family_is_refused_by_name_and_not_by_silence() {
         for (nom, forme) in [
@@ -4219,7 +4269,10 @@ mod port_tests {
             ("cli", &[0xfa][..]),
             ("sti", &[0xfb][..]),
             ("hlt", &[0xf4][..]),
-            ("pushfq", &[0x9c][..]),
+            // `pushfq` n'est plus là : il est **produit** depuis cette
+            // tranche. `popfq` reste, et l'asymétrie est le sujet — lire
+            // RFLAGS ne peut rien allumer, l'écrire peut rallumer le drapeau
+            // d'interruption sans jamais nommer `sti`.
             ("popfq", &[0x9d][..]),
         ] {
             // Première moitié : le décodeur la lit, entière.

@@ -8,6 +8,74 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — `pushf` produit, et le premier chiffre qui bouge
+
+La tranche d'avant avait établi que le décodage ne fait plus monter la
+couverture, et que 20 des 56 refus nommés ne demandent aucun modèle
+privilégié. Celle-ci en prend un : `pushf`.
+
+C'est **la première instruction que l'émetteur refusait et qu'il produit**. Et
+ce n'est pas une relecture qui l'a trouvée : c'est le relevé nommé, qui a mis
+un nombre — six régions — en face d'un nom qui n'aurait jamais dû y être. Je
+l'avais refusé par symétrie avec `popf`, et la symétrie n'existait pas : lire
+RFLAGS ne peut rien allumer, l'écrire peut rallumer le drapeau d'interruption
+sans jamais nommer `sti`.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9933 / 10 116 | **9937 / 10 116** |
+| refusées | 183 | **179** |
+| refus nommés | 56 | 52 |
+| dont `pushf` | 6 | 0 |
+
+Quatre régions sur six se compilent entièrement ; les deux autres avancent
+jusqu'au blocage suivant, que le relevé nomme. Quatre sur dix mille, c'est
+0,04 % — minuscule, et c'est le premier mouvement après trois tranches qui n'en
+avaient produit aucun.
+
+### Ce que produire une lecture a découvert
+
+Le bit 1 de RFLAGS vaut toujours un sur x86. L'interpréteur Rust le pose,
+l'oracle matériel le porte — et la boucle hôte partait de zéro sans que rien
+ne le pose jamais. **Tant que personne ne lisait RFLAGS comme une valeur, la
+divergence était invisible** ; le premier `pushf` aurait empilé un RFLAGS
+qu'aucun processeur ne produit. C'est le genre d'écart qu'un invité ne
+remarque pas tout de suite et qui rend une trace incomparable à une vraie.
+
+Trouvé en écrivant le test avant le code, et en se demandant ce que l'invité
+verrait vraiment sur sa pile — pas en relisant l'émetteur.
+
+### Un sabotage qui n'en était pas un
+
+Ajouter `PopFlags` au chemin de la pile n'a rien cassé, et j'ai failli le noter
+comme survivant. Vérification : le refus privilégié est **avant** ce chemin
+dans `translate`, donc la mutation ne pouvait pas s'appliquer. Refaite au bon
+endroit — retirer `PopFlags` du refus lui-même —, elle fait tomber le test.
+
+C'est la trahison déjà notée : un « SURVÉCU » peut être une mutation qui ne
+s'est pas appliquée. Cette fois je l'ai vérifiée au lieu de la croire.
+
+### Un chronomètre déguisé en garde
+
+`verify.sh` a échoué sur un seul test du site : « le processus du dyno sert
+réellement le site construit ». Re-lancé deux fois sur le même arbre : 9 sur 9.
+Ce passage-là avait mis **plus de dix minutes** là où les autres en mettent
+trois — la machine était chargée — et le test donnait **quatre secondes** au
+serveur pour répondre.
+
+Un budget qui dépend de la charge n'est pas une garde, c'est un chronomètre :
+il refuse un comportement correct, ce qui est la pire façon d'échouer. Porté à
+quinze secondes, et ça ne coûte rien quand tout va bien puisque la boucle sort
+au premier succès. C'est la même famille que l'assertion sur une valeur
+aléatoire notée plus bas.
+
+### Et le piège de lecture, une fois de plus
+
+`cargo test --lib "a\|b"` a rendu « 0 passed; 76 filtered out » — donc vert —
+parce que le filtre de cargo est une **sous-chaîne**, pas une expression
+régulière. C'est écrit dans ce journal depuis deux jours et je viens de
+retomber dedans. Les deux tests relancés un par un passent.
+
 ## 2026-09-08 — la sonde a fini par parler, et la course est de nous
 
 Quatrième `InvalidTransition` sur `LocalDesktopTests` en deux jours, sur une PR
