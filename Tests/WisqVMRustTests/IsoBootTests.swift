@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 
+import WisqVM
+
 @testable import WisqVMRust
 
 /// **Ce qu'on tire d'une image pour en démarrer une machine.**
@@ -295,5 +297,93 @@ final class IsoBootDecisionTests: XCTestCase {
         case .failure(let refusal):
             XCTAssertEqual(refusal, .cannotExtractInitrd("/boot/initramfs-virt"))
         }
+    }
+}
+
+/// **Reprendre où l'on s'est arrêté, quand la machine vient d'une image.**
+///
+/// Une session sauvegardée est classée sous l'empreinte du noyau qu'elle
+/// exécutait — pas sous son nom, parce que la moitié des noyaux importés
+/// s'appellent `Image` et que le second reprendrait la machine du premier.
+///
+/// Or quand le noyau sort d'une image, il est **ré-extrait à chaque
+/// démarrage**. Si cette extraction variait d'une fois sur l'autre — un octet,
+/// un ordre — l'empreinte changerait, la session précédente ne serait plus
+/// trouvée, et la personne perdrait son travail **en silence** : pas d'erreur,
+/// juste une machine qui redémarre à zéro.
+///
+/// Rien dans le verdict d'un démarrage ne dirait ça. C'est pour ça que ce
+/// test-ci existe.
+final class IsoBootResumeTests: XCTestCase {
+    private var folders: [URL] = []
+
+    override func tearDownWithError() throws {
+        for folder in folders { try? FileManager.default.removeItem(at: folder) }
+        folders = []
+    }
+
+    private func freshFolder() -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-reprise-\(getpid())-\(UUID().uuidString)")
+        folders.append(folder)
+        return folder
+    }
+
+    func testTheSameImageAlwaysNamesTheSameMachine() throws {
+        let image = try IsoGravure().write()
+        defer { try? FileManager.default.removeItem(at: image) }
+
+        // Deux démarrages, deux dossiers de déballage : exactement ce qui se
+        // passe quand on quitte l'application et qu'on y revient.
+        var identities: [String] = []
+        var kernels: [Data] = []
+        for _ in 0..<2 {
+            switch IsoBoot.decide(image, into: freshFolder(), ceiling: 1 << 20) {
+            case .failure(let refusal): XCTFail("refus inattendu : \(refusal)")
+            case .success(let boot):
+                let bytes = try Data(contentsOf: boot.kernel)
+                kernels.append(bytes)
+                identities.append(
+                    SuspendedMachine.identity(of: bytes, named: image.lastPathComponent))
+            }
+        }
+        XCTAssertEqual(kernels.count, 2)
+        XCTAssertEqual(kernels[0], kernels[1], "le noyau extrait doit être le même octet pour octet")
+        XCTAssertEqual(
+            identities[0], identities[1],
+            "l'empreinte change : la session précédente ne serait jamais retrouvée")
+    }
+
+    /// **Deux noyaux différents ne se partagent pas une machine sauvegardée.**
+    ///
+    /// Le cas réel : vous remplacez `linux.iso` par une version plus récente,
+    /// du même nom. Si la session était classée sur le nom, l'instantané de
+    /// l'ancien noyau serait rendu au nouveau — un état mémoire écrit par un
+    /// programme, restauré dans un autre. C'est le noyau **extrait** qui
+    /// signe, donc deux images de même nom mais de contenu différent ne se
+    /// confondent pas.
+    func testTwoKernelsUnderTheSameNameDoNotShareAMachine() throws {
+        let one = try IsoGravure().write()
+        let other = try IsoGravure(
+            kernel: Data((0..<3000).map { UInt8(($0 &+ 7) % 251) })
+        ).write()
+        defer {
+            try? FileManager.default.removeItem(at: one)
+            try? FileManager.default.removeItem(at: other)
+        }
+
+        func identity(of image: URL) throws -> String {
+            switch IsoBoot.decide(image, into: freshFolder(), ceiling: 1 << 20) {
+            case .failure(let refusal): throw refusal
+            case .success(let boot):
+                // **Le même nom des deux côtés**, exprès : c'est le contenu
+                // qui doit séparer, et rien d'autre.
+                return SuspendedMachine.identity(
+                    of: try Data(contentsOf: boot.kernel), named: "linux.iso")
+            }
+        }
+        XCTAssertNotEqual(
+            try identity(of: one), try identity(of: other),
+            "un instantané écrit par un noyau serait rendu à un autre")
     }
 }

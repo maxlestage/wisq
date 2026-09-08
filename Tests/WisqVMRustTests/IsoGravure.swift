@@ -34,6 +34,11 @@ struct IsoGravure {
     var carriesKernel = true
     var carriesInitrd = true
 
+    /// Les octets du noyau gravé. Réglable pour qu'un test puisse poser deux
+    /// images portant deux noyaux différents — c'est ce qui distingue deux
+    /// machines sauvegardées.
+    var kernel = IsoGravure.kernel
+
     func write() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-essai-\(getpid())-\(UUID().uuidString).iso")
@@ -126,7 +131,7 @@ struct IsoGravure {
         if carriesKernel {
             children.append(
                 record(
-                    lba: kernelLBA, size: UInt32(Self.kernel.count), directory: false,
+                    lba: kernelLBA, size: UInt32(kernel.count), directory: false,
                     name: Array("VMLINUZ_.VIR;1".utf8), rock: "vmlinuz-virt"))
         }
         if carriesInitrd {
@@ -177,7 +182,7 @@ struct IsoGravure {
         precondition(
             sectors.count == Int(kernelLBA),
             "le noyau doit être gravé au secteur promis, pas au \(sectors.count)")
-        _ = push([UInt8](Self.kernel))
+        _ = push([UInt8](kernel))
 
         return Data(sectors.flatMap { $0 })
     }

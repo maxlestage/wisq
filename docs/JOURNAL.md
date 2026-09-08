@@ -12530,3 +12530,28 @@ image sur un appareil. Ce qui est tenu, c'est que le bon noyau sort avec la
 bonne ligne de commande et le bon disque. La feuille de route garde donc cette
 ligne dans « Ensuite » — la déplacer demanderait un démarrage, pas un
 branchement.
+
+**Reprendre où l'on s'est arrêté, quand le noyau est ré-extrait à chaque
+démarrage.** Maxime a demandé que l'application sauvegarde tout ; elle le fait
+déjà — instantané mémoire à la mise en arrière-plan, couche d'écritures durable
+pour le disque — mais l'image apportée introduit un risque neuf que rien ne
+disait.
+
+Une session est classée sous l'**empreinte du noyau**, pas sous son nom : la
+moitié des noyaux importés s'appellent `Image`, et le second reprendrait la
+machine du premier. Or le noyau d'une image est ré-extrait à chaque démarrage.
+Si cette extraction variait d'un octet, l'empreinte changerait, la session
+précédente ne serait plus trouvée, et la personne perdrait son travail **en
+silence** — pas d'erreur, juste une machine qui repart à zéro.
+
+Deux tests le tiennent : le même fichier déballé deux fois dans deux dossiers
+rend le même noyau octet pour octet et la même empreinte ; deux images
+**portant deux noyaux différents sous le même nom** rendent deux empreintes
+distinctes, sans quoi l'instantané écrit par l'un serait restauré dans l'autre.
+Le sabotage — un identifiant ajouté à la fin du noyau extrait — fait tomber les
+deux.
+
+Et un mot sur ce que ça veut dire pour une image live comme Omarchy : sa racine
+est un squashfs en lecture seule, donc **tout ce que fait la personne vit en
+RAM**, dans un tmpfs. L'instantané mémoire n'est pas un confort là-dedans, il
+est la seule chose qui préserve son travail.
