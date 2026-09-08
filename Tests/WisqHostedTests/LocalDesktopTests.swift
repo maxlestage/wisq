@@ -34,6 +34,20 @@ import XCTest
 /// Rien n'est retiré ni affaibli : la suite est posée là où WebKit a ce qu'il
 /// lui faut, et « App iOS » l'exécute à chaque commit, comme « Cœur (Apple) »
 /// le faisait.
+///
+/// **Et ça n'a pas suffi — la suite reste intermittente sous son hôte.** Deux
+/// occurrences de plus, les 7 et 8 septembre, toutes deux sur
+/// `testTheDesktopPaintsTheFrameOnDemand`, avec le même message nu, dans des
+/// PR dont il est **mesuré** qu'elles ne peuvent pas l'atteindre. Deux
+/// affirmations de ce commentaire tombent avec elles : ce test n'est ni le
+/// premier du processus — il est le huitième sur neuf — ni le plus lent, à
+/// 2,3 s contre 5,2, 5,2 et 7,3 pour trois de ses voisins.
+///
+/// La règle en attendant mieux, écrite dans `docs/ROADMAP.md` avec le relevé
+/// des occurrences : **une relance, une seule**, et elle se note. Ce qui
+/// resterait à décider — une seule vue pour toute la suite, ou vivre avec la
+/// relance — change ce que ces tests mesurent, et ne se tranche pas en
+/// passant.
 @MainActor
 final class LocalDesktopTests: XCTestCase {
     /// Une RAM d'une page, et une adresse au-dessus de deux puissance
