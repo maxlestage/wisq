@@ -12615,3 +12615,62 @@ module, `scripts/wasm-paging-probe.js` le chronomètre sous JavaScriptCore. Le
 `.wasm` reste engendré — un binaire dans l'arbre est une chose que personne ne
 relit. Le site dit maintenant ce que la sonde dit : des nanosecondes par accès,
 pas un pourcentage dérivé d'une constante que personne ne peut vérifier.
+
+### La recette chimère, et l'image qu'on ne pouvait pas télécharger
+
+Maxime a chargé `omarchy-4.0.2.iso` dans le build n° 20. L'image a été lue, le
+noyau et l'initramfs en sont sortis — et la machine construite fut une **RISC-V
+32 bits**, qui a refusé l'initramfs. Le refus était juste ; le cœur ne l'était
+pas.
+
+**Le lecteur de recette fabriquait une chimère.** Il parcourait le fichier de
+chargeur d'un bout à l'autre en gardant le dernier `linux` et le dernier
+`initrd` rencontrés. Le `grub.cfg` d'Omarchy porte **quatre entrées de menu** :
+Arch, Arch avec lecteur d'écran, un secours, et memtest. Ce qui sortait :
+
+| champ | valeur rendue | d'où elle venait |
+| --- | --- | --- |
+| noyau | `/boot/memtest86+/memtest` | la **dernière** entrée |
+| initramfs | `/arch/boot/x86_64/initramfs-linux-t2.img` | la **deuxième** |
+| arguments | `… accessibility=on …` | la **deuxième** aussi |
+
+Trois champs, trois entrées. memtest n'est pas un bzImage, donc pas de cœur
+x86 ; le repli est le cœur historique, et il ne prend pas d'initramfs. Le
+message que Maxime a vu est le dernier maillon d'une chaîne qui commence quatre
+étapes plus haut.
+
+**Aucune fixture d'ici ne pouvait le montrer** : elles n'ont qu'une entrée. Le
+défaut n'existe qu'à partir de la deuxième.
+
+### Lire une image de six gigaoctets sans la télécharger
+
+Le conteneur avait 6,8 Gio libres et l'image en pèse 6,2 : la télécharger était
+hors de question, et c'était pourtant la seule façon de voir le vrai fichier.
+
+Le lecteur n'a qu'un point d'entrée — `Bytes::read(at, into)` — et une requête
+HTTP à intervalle en est une implémentation. `examples/iso-remote.rs` parcourt
+donc l'image **là où elle est**, en ne rapatriant que les secteurs demandés,
+avec un cache par tranches de 128 Kio sans lequel chaque enregistrement relu
+coûterait un aller-retour. Quelques centaines de kibioctets ont suffi à lire la
+recette, puis à afficher le `grub.cfg` tel que la distribution l'a écrit.
+
+C'est ce fichier-là, affiché en clair, qui a rendu le défaut évident. Le
+raisonnement m'avait mené à trois hypothèses, toutes fausses.
+
+**Et l'outil m'a menti une fois avant de dire vrai.** Il concluait « illisible »
+sur le noyau : `Iso::read` rend un fichier **entier** sous un plafond, et
+dix-sept mébioctets dépassaient les 64 Kio que je lui donnais. Le fichier était
+parfaitement lisible ; c'est ma question qui était mal posée. Il lit maintenant
+l'en-tête à l'endroit où le fichier commence.
+
+Le noyau d'Omarchy, une fois la bonne recette lue : `MZ` en tête — un bzImage à
+souche EFI —, `HdrS` à l'octet 514, protocole 2.15, charge utile **zstd à
+l'octet 21 196**. Reconnu sur les 40 Kio que l'application lit. Le
+reconnaisseur n'avait aucun tort ; il n'avait simplement jamais reçu le bon
+fichier.
+
+**La règle, maintenant** : une recette vient d'**une** entrée de menu. La
+première qui nomme un noyau gagne — les distributions mettent leur défaut en
+tête, et Arch le dit deux fois, par `default=archlinux` et par la place. Rien ne
+traverse d'une entrée à l'autre : une entrée sans arguments n'hérite pas de ceux
+de la précédente, ce qui était l'autre moitié du défaut et la plus discrète.
