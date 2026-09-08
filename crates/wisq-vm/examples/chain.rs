@@ -121,7 +121,7 @@ fn main() {
 const fs = require("fs");
 const memory = new WebAssembly.Memory({{ initial: {pages} }});
 const slots = [];
-const imports = {{ env: {{ mem: memory }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   imports.env["g" + slot] = slots[slot];
