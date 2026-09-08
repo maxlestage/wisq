@@ -92,15 +92,23 @@ for (const c of cases) {
   const repli = time("repli", count, c.stride, c.wsMask);
   const tampon = time("tampon", count, c.stride, c.wsMask);
   const marche = time("marche", count, c.stride, c.wsMask);
-  const accord = repli.sum === tampon.sum && repli.sum === marche.sum;
+  const garde = time("garde", count, c.stride, c.wsMask);
+  const gardeRip = time("garde_rip", count, c.stride, c.wsMask);
+  const formes = [tampon, marche, garde, gardeRip];
+  const accord = formes.every((f) => f.sum === repli.sum);
   console.log(c.titre);
   if (!accord) {
     console.log(`  LES SOMMES DIFFÈRENT — la mesure ne veut rien dire.`);
-    console.log(`  repli=${repli.sum} tampon=${tampon.sum} marche=${marche.sum}\n`);
+    console.log(`  repli=${repli.sum} tampon=${tampon.sum} marche=${marche.sum}`);
+    console.log(`  garde=${garde.sum} garde_rip=${gardeRip.sum}\n`);
     continue;
   }
   console.log(`  repli (aujourd'hui) : ${repli.ns.toFixed(2)} ns/accès`);
   console.log(`  tampon + marche     : ${tampon.ns.toFixed(2)} ns/accès  (×${(tampon.seconds / repli.seconds).toFixed(2)})`);
   console.log(`  marche seule        : ${marche.ns.toFixed(2)} ns/accès  (×${(marche.seconds / repli.seconds).toFixed(2)})`);
-  console.log(`  surcoût du tampon   : +${(tampon.ns - repli.ns).toFixed(2)} ns par accès\n`);
+  console.log(`  surcoût du tampon   : +${(tampon.ns - repli.ns).toFixed(2)} ns par accès`);
+  // Les deux formes gardées : ce que coûterait le contrôle en ligne d'une
+  // faute de page, branche jamais prise, puis le même avec RIP tenu à jour.
+  console.log(`  + contrôle de faute : ${garde.ns.toFixed(2)} ns/accès  (+${(garde.ns - tampon.ns).toFixed(2)} sur le tampon)`);
+  console.log(`  + RIP à chaque accès: ${gardeRip.ns.toFixed(2)} ns/accès  (+${(gardeRip.ns - garde.ns).toFixed(2)} de plus)\n`);
 }
