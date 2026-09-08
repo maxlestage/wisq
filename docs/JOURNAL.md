@@ -12572,3 +12572,46 @@ La leçon est plus étroite que « déplacer la décision » : ce n'est pas la
 décision qui doit déménager, ce sont **les types qui peuvent se tromper**. Un
 appelant qui ne fait que passer ses champs tels quels ne peut pas mal les
 composer.
+
+### Un chiffre publié dont la preuve avait été jetée
+
+En préparant la pagination de l'émetteur, je suis allé rouvrir la sonde qui en
+chiffrait le coût. Elle n'était pas dans le dépôt. Son propre en-tête disait
+pourquoi : « sonde jetable […] elle n'entre pas dans le dépôt ».
+
+Le choix était défendable. Ce qui ne l'était pas, c'est que **son chiffre, lui,
+était parti sur le site** — « entre 1 % et 29 % du débit », dans les deux
+langues — pendant que le module qui l'avait produit mourait avec son conteneur.
+Et `docs/DEMARRAGE.md` disait toujours l'inverse au même moment : « ce qui n'est
+pas mesuré : ce que la pagination coûterait ». Deux documents du même dépôt,
+deux réponses à la même question.
+
+**Relancée, elle ne dit pas ce qui a été publié.** Trois exécutions, à 6, 8 et
+20 millions d'accès, sommes de contrôle concordantes :
+
+| motif | repli | tampon + marche | surcoût |
+| --- | --- | --- | --- |
+| balayage court | 2,46 ns | ×1,09 | +0,23 ns |
+| balayage long | 5,95 ns | ×1,08 | +0,47 ns |
+| une page neuve à chaque accès | 16,58 ns | ×2,59 | **+26,43 ns** |
+
+Le bon cas est **meilleur** que publié. Le mauvais coûte +26 ns par accès, pas
+les +4,6 à +6,6 dont « 29 % » avait été tiré : quatre à six fois pire.
+
+Et la seconde entrée du calcul — la densité d'opérandes mémoire d'un vrai
+noyau, 24,6 % — n'est mesurable par rien dans ce dépôt. Les deux entrées du
+pourcentage publié étaient donc invérifiables, et l'une des deux était fausse.
+
+**Ce que ça change dans la façon de faire.** Une sonde jetable est une bonne
+chose : elle répond avant qu'on décide, et elle n'a pas à être entretenue. Mais
+au moment où son chiffre sort du carnet — un document, une demande de fusion, le
+site —, il cesse d'être une réponse et devient une affirmation, et une
+affirmation doit pouvoir être revérifiée. La règle n'est donc pas « toujours
+commettre les sondes » : c'est **jeter la sonde ou publier son chiffre, jamais
+les deux**.
+
+La sonde entre donc : `crates/wisq-vm/examples/paging-probe.rs` engendre le
+module, `scripts/wasm-paging-probe.js` le chronomètre sous JavaScriptCore. Le
+`.wasm` reste engendré — un binaire dans l'arbre est une chose que personne ne
+relit. Le site dit maintenant ce que la sonde dit : des nanosecondes par accès,
+pas un pourcentage dérivé d'une constante que personne ne peut vérifier.
