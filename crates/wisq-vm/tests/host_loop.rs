@@ -53,6 +53,18 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
             .unwrap_or_else(|| panic!("host.js ne déclare pas « {name} »"))
     };
     assert_eq!(value("rip"), RIP_SLOT.to_string(), "l'emplacement de RIP");
+    // **Ajouté après coup, et c'est l'aveu qui compte.** `rflags` est arrivé
+    // dans `SLOTS` avec `pushf`, et il n'était comparé à rien — dans un
+    // fichier dont le commentaire affirme que sa répétition l'est. Une case
+    // fausse ici ne casserait rien de visible : la boucle poserait le bit
+    // réservé sur **une autre globale**, et `pushf` empilerait quelque chose
+    // qui n'est pas RFLAGS. Exactement la panne silencieuse que cette
+    // comparaison existe pour empêcher.
+    assert_eq!(
+        value("rflags"),
+        wisq_vm::x86_wasm::RFLAGS_SLOT.to_string(),
+        "l'emplacement de RFLAGS"
+    );
     assert_eq!(
         value("globalCount"),
         GLOBAL_COUNT.to_string(),

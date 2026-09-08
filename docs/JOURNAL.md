@@ -55,6 +55,21 @@ endroit — retirer `PopFlags` du refus lui-même —, elle fait tomber le test.
 C'est la trahison déjà notée : un « SURVÉCU » peut être une mutation qui ne
 s'est pas appliquée. Cette fois je l'ai vérifiée au lieu de la croire.
 
+### Et la garde que je venais moi-même de laisser incomplète
+
+`web/host.js` répète les constantes de l'émetteur — il ne peut pas les importer
+— et son commentaire dit : « Le test les compare aux constantes de la
+bibliothèque, sinon la répétition finirait par mentir. » J'ai ajouté `rflags`
+à cette table pour poser le bit réservé, **et le test comparait six champs sans
+lui**. La phrase était donc devenue fausse pour le champ que je venais
+d'écrire.
+
+Ça ne serait pas tombé bruyamment : une case fausse ferait poser le bit
+réservé sur **une autre globale**, et `pushf` empilerait quelque chose qui
+n'est pas RFLAGS. Saboté à 15 au lieu de 16, les deux tests tombent — celui de
+l'accord et celui de bout en bout. Trouvé en relisant ce que le fichier
+*affirme*, pas ce qu'il fait.
+
 ### Un chronomètre déguisé en garde
 
 `verify.sh` a échoué sur un seul test du site : « le processus du dyno sert
