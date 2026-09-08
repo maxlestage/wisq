@@ -94,6 +94,40 @@ public enum IsoBoot {
         }
     }
 
+    /// **Ce que l'image demande, plus ce dont wisq a besoin pour parler.**
+    ///
+    /// Ce sont deux lignes qui disent des choses différentes, et il faut les
+    /// deux. Celle de l'image dit **où est la racine** — sans
+    /// `archisobasedir`, archiso ne trouve pas son squashfs et panique. Celle
+    /// de wisq dit **où écrire** : `console=ttyS0` ouvre la console une fois le
+    /// pilote série chargé, `earlyprintk=serial` fait écrire le noyau
+    /// directement sur le port 0x3F8 dès sa première ligne.
+    ///
+    /// **Une tranche a coûté un écran noir pour l'apprendre.** La ligne de la
+    /// recette *remplaçait* celle de wisq. La machine démarrait, affichait
+    /// « Démarrage… », et plus rien — le noyau écrivait sur un écran que
+    /// personne ne lit. `X86BootLoader` le dit dans son propre commentaire :
+    /// « sans elle, un démarrage qui échoue à mi-chemin ne dit rien du tout ».
+    ///
+    /// **La nôtre vient en dernier**, parce que Linux retient le **dernier**
+    /// `console=` comme `/dev/console` : une image qui en nommerait un autre ne
+    /// doit pas nous rendre muets.
+    ///
+    /// **Et `quiet` part.** C'est le seul mot qu'on retire, et pour une raison
+    /// précise : il est écrit pour une machine qui a un écran de démarrage et
+    /// qui n'a rien à dire à personne, alors qu'ici il éteindrait la seule
+    /// sortie qui existe. Le reste passe mot pour mot — `splash` compris, qui
+    /// ne demande qu'un dessin que personne ne fera.
+    public static func commandLine(from recipe: String) -> String {
+        let kept = recipe
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .filter { $0 != "quiet" }
+            .joined(separator: " ")
+        return kept.isEmpty
+            ? X86BootLoader.defaultCommandLine
+            : "\(kept) \(X86BootLoader.defaultCommandLine)"
+    }
+
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
     /// **`nil` veut dire « l'endroit habituel »**, comme partout ailleurs dans
@@ -138,7 +172,9 @@ public enum IsoBoot {
             Boot(
                 kind: KernelImageKind.identify(fileAt: plan.kernel),
                 kernel: plan.kernel, disk: chosen,
-                commandLine: plan.commandLine, initrd: plan.initrd)
+                // **La ligne complète, pas celle de la recette.** Voir
+                // `commandLine(from:)` : celle de l'image ne dit pas où parler.
+                commandLine: commandLine(from: plan.commandLine), initrd: plan.initrd)
         }
     }
 
