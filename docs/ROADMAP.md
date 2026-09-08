@@ -5230,12 +5230,47 @@ aurait empilé un RFLAGS qu'aucun processeur ne produit. Corrigé dans
 `web/host.js`, et tenu par un test de bout en bout sous JavaScriptCore qui
 regarde ce que l'invité a réellement écrit sur sa pile.
 
-**Ce qui reste des vingt sans décision** : `rdtsc` (12) et `cpuid` (2). Le
-premier traîne sa propre question — WebAssembly n'a pas d'horloge, donc c'est
-soit un import (un retour de main, ~190 ns) soit un compteur virtuel qui ment
-sur le temps ; le second demande de choisir ce qu'on déclare au noyau, et
-déclarer trop lui ferait prendre des chemins qu'on n'émule pas. Ni l'un ni
-l'autre n'est un simple portage.
+### `rdtsc` produit : un compteur virtuel, et le pourcentage qui bouge
+
+Maxime a répondu « fais tout », donc la question du temps est tranchée ici.
+
+**Un compteur virtuel, pas un import.** L'autre voie était d'appeler l'hôte
+pour une vraie horloge, au prix d'un retour de main — 125 à 190 ns, mesuré.
+Elle n'achète rien : un noyau calibre la fréquence de son TSC contre une
+**autre** horloge, un PIT ou un HPET, dont cette machine n'a aucun. La
+calibration est fausse des deux côtés, et la voie chère ne l'est pas moins.
+
+**Ce qui décide vraiment est une question de blocage.** Un noyau écrit
+`while (rdtsc() - début < n)`. Deux lectures qui rendraient la même valeur
+feraient une boucle qui ne se termine **jamais** — une machine qui pend,
+indiscernable d'un calcul long. Le compteur avance donc strictement à chaque
+lecture, et c'est cette propriété-là qu'un test tient, pas une fréquence.
+
+**Ce que ce compteur ne dit pas, écrit ici plutôt que découvert plus tard** :
+il n'avance que quand on le lit. Un noyau qui mesure `t0 = rdtsc() ; travail ;
+t1 = rdtsc()` trouvera toujours le même écart, quel que soit le travail. C'est
+un mensonge sur la durée, inhérent à un compteur virtuel, et assumé.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9937 / 10 116 (98,2 %) | **9949 / 10 116 (98,3 %)** |
+| régions refusées | 179 | **167** |
+| refus nommés | 52 | **40** |
+| dont `rdtsc` | 12 | **0** |
+
+**Les douze se compilent entièrement**, et le *pourcentage* bouge pour la
+première fois depuis que ce relevé existe. Depuis le début de la série :
+9933 → 9949 compilées, 183 → 167 refusées.
+
+**Deux choses ont cassé en route, et les deux étaient des gardes qui ont fait
+leur travail** : le module figé dans `WebKitBench.swift` ne déclarait pas la
+nouvelle globale — le test le dit et donne la commande pour le réécrire — et
+un test affirmait que `rdtsc` est refusé, ce qui a cessé d'être vrai. Une
+liste de refus qu'on ne raccourcit jamais ne mesure plus rien.
+
+**Ce qui reste du paquet sans modèle privilégié** : `cpuid` (2 régions). Il
+demande de choisir ce qu'on **déclare** au noyau, et en déclarer trop lui
+ferait prendre des chemins qu'on n'émule pas — c'est sa propre tranche.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et

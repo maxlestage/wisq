@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — le compteur d'horodatage, et le pourcentage qui bouge
+
+Maxime : « fais tout ». Donc les décisions que j'avais posées se prennent, une
+tranche par PR. Celle-ci est `rdtsc`.
+
+**Un compteur virtuel plutôt qu'un import.** Une vraie horloge coûterait un
+retour de main (125–190 ns) et n'achèterait rien : le noyau calibre son TSC
+contre un PIT ou un HPET que cette machine n'a pas. Ce qui décide vraiment est
+une question de **blocage** — `while (rdtsc() - début < n)` ne se termine
+jamais si deux lectures rendent la même valeur. Le compteur avance donc
+strictement à chaque lecture, et c'est cette propriété que le test tient.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9937 / 10 116 (98,2 %) | **9949 / 10 116 (98,3 %)** |
+| refusées | 179 | 167 |
+| dont `rdtsc` | 12 | 0 |
+
+Le **pourcentage** bouge pour la première fois.
+
+### Un sabotage survivant, et ce qu'il disait du test
+
+Retirer le masque sur RAX n'a rien cassé : avec un petit compteur, la moitié
+haute est nulle, donc masquer ou non donne le même résultat. **Le test ne
+pouvait pas voir la différence.** Corrigé en semant le compteur au-dessus de
+2³² depuis le pilote — et alors les quatre sabotages tombent, dont celui-là.
+
+C'est la variante « l'assertion qui a l'air d'une garde » : elle portait sur un
+résultat qu'un autre chemin satisfaisait aussi.
+
+### Deux gardes qui ont fait leur travail
+
+Le module figé dans `WebKitBench.swift` ne déclarait pas la nouvelle globale :
+le test l'a dit avec la commande pour le réécrire. Et un test affirmait que
+`rdtsc` est refusé — ce qui a cessé d'être vrai, et l'assertion a échoué au
+premier passage. Une liste de refus qu'on ne raccourcit jamais ne mesure plus
+rien ; celle-ci vient de perdre une ligne, et c'est le but.
+
+### Une mesure que j'ai faite et retirée
+
+Avant d'écrire quoi que ce soit, j'ai voulu savoir si `rdtsc` vit dans des
+boucles. J'ai compté des **motifs d'octets** `0f 31` sur les 35 Mio du fichier
+— dont l'essentiel sont des données, pas du code — et obtenu « 513
+occurrences, dont 235 en boucle », avec une boucle de deux milliards d'octets
+dans les exemples. Ce chiffre-là aurait dû m'arrêter tout de suite. Le relevé
+honnête, par le décodeur, dit 28 occurrences dans le texte.
+
+Retirée. C'est la même faute que « mesurer l'empreinte au lieu de l'acte ».
+
 ## 2026-09-08 — `pushf` produit, et le premier chiffre qui bouge
 
 La tranche d'avant avait établi que le décodage ne fait plus monter la
