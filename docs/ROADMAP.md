@@ -4964,29 +4964,64 @@ d'un noyau Linux 6.6 x86-64 se compilent déjà. Le problème est plus étroit e
 plus net — le point d'entrée s'arrêtait après **sept** instructions, sur `wrmsr`,
 que le décodeur ne connaissait pas.
 
-Cinq formes sont décodées : `rdtsc`, `cpuid`, `rdmsr`, `wrmsr`, et le retour
-lointain `lretq`. La **lecture** du point d'entrée va maintenant jusqu'à
-**vingt-cinq** instructions, et l'exploration de la région jusqu'à l'octet 1512.
+Cinq formes ont été décodées d'abord : `rdtsc`, `cpuid`, `rdmsr`, `wrmsr`, et le
+retour lointain `lretq`. Puis les trois familles qui restaient sur le chemin du
+point d'entrée : le groupe `0F 01` (`lgdt`, `lidt`, `sgdt`, `sidt`, `swapgs`),
+les sélecteurs de segment (`8C`, `8E`) et les registres de contrôle (`0F 20`,
+`0F 22`).
 
-**Ce qui reste, par fréquence dans les huit mégaoctets de texte** — et c'est une
-liste de travail, pas une estimation :
+**Où en est le point d'entrée maintenant, mesuré par `first-region` :**
+
+| | avant cette tranche | après |
+| --- | --- | --- |
+| lecture linéaire | 25 instructions, arrêt à l'octet 113 | **70 instructions**, arrêt à l'octet 291 |
+| ce qui l'arrête | `0f 20 e1` — `mov %cr4,%rcx` | `fa f4` — `cli` puis `hlt` |
+| exploration de la région | arrêtée faute de **lire** l'octet 1512 | plus aucun trou de lecture |
+| ce qui l'arrête | `0f 01 15` — `lgdt` | l'octet 35, `wrmsr` : **lu**, pas **produit** |
+
+**C'est le résultat de la tranche, et il faut le lire pour ce qu'il est.** Le
+décodage du chemin d'entrée est fini : ce qui bloque la région n'est plus une
+instruction qu'on ne sait pas lire, c'est celle qu'on refuse d'exécuter. Autrement
+dit, la question posée plus bas — fauter vers l'hôte, ou modéliser — n'est plus
+repoussable par du décodage.
+
+**Sur les huit mégaoctets de texte entiers, en revanche, le refus n'a pas
+reculé — il a changé de nature.** Mesuré des deux côtés, sur le même noyau :
+
+| | avant | après |
+| --- | --- | --- |
+| octets refusés en lecture linéaire | 5051 | **4720** |
+| régions d'entrée de fonction compilées | 9935 / 10118 (98,2 %) | 9933 / 10116 (98,2 %) |
+| refus « l'émetteur refuse » (nommé) | 29 | **48** |
+| refus `0f 01` (illisible) | 12 | 8 |
+| refus `8c`, `66 8c`, `8e` (illisibles) | 15 | **0** |
+
+Le nombre de régions refusées est le même — 183 avant, 183 après. Dix-neuf
+d'entre elles ont seulement changé de motif : elles butaient sur un octet
+illisible, elles butent maintenant sur une instruction nommée. C'est un progrès
+de diagnostic, pas de couverture, et l'annoncer autrement serait faux. (Le
+nombre d'entrées distinctes bouge de deux, de 10 118 à 10 116 : la lecture
+linéaire se resynchronise différemment quand elle lit plus de formes, et deux
+cibles de `call` qu'elle croyait voir disparaissent. Je n'ai pas vérifié
+laquelle des deux lectures a raison.)
+
+**Ce qui reste, par fréquence dans les huit mégaoctets, après cette tranche** —
+liste de travail, pas estimation :
 
 | forme | occurrences | ce que c'est |
 | --- | --- | --- |
-| `8c` / `8e` | 124 | les registres de segment |
-| `0f 01` | 64 | `lgdt`, `lidt`, `swapgs` — un groupe, à démêler par son ModRM |
-| `0f 22` / `0f 20` | 44 | les registres de contrôle, dont CR3 : la table de pages |
+| `c4` / `c5` / `62` | 174 | VEX et EVEX : le code vectoriel |
+| `0f 01` | 52 | le reste du groupe : `invlpg`, `monitor`, `xgetbv`, `rdtscp` |
 | `0f ae` | 28 | les barrières, `fxsave` |
-
-Les deux endroits où ça bute aujourd'hui, et ce ne sont pas les mêmes : la
-**lecture** linéaire s'arrête sur `0f 20 e1` — `mov %cr4,%rcx` — à l'octet 113 ;
-l'**exploration** de la région s'arrête sur `0f 01 15` — `lgdt`, opérande
-mémoire — à l'octet 1512.
+| `ae` | 28 | `scas` |
+| `9c` / `9d` | 25 | `pushf`, `popf` |
+| `0f 00` | 12 | l'autre groupe système : `lldt`, `ltr`, `sldt` |
+| `fa` / `fb` / `f4` | — | `cli`, `sti`, `hlt` : là où la lecture du point d'entrée s'arrête, et la tranche des interruptions |
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
-seul.** `wrmsr` est désormais **lu** et non **produit** : tant que l'émetteur ne
-sait pas quoi en faire, la région d'entrée refusera à l'octet 35, quoi qu'on
-décode après. Deux voies, et elles décident d'une direction :
+seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
+c'est désormais la *seule* chose qui refuse la région d'entrée. Deux voies, et
+elles décident d'une direction :
 
 - **fauter vers l'hôte** à chaque instruction privilégiée. Simple et correct,
   mais chaque `wrmsr` coûte un retour de main — environ 190 ns, mesuré — et un
@@ -4995,8 +5030,8 @@ décode après. Deux voies, et elles décident d'une direction :
   rapide, mais c'est le début d'un modèle de processeur privilégié dans du
   WebAssembly, avec tout ce que ça traîne.
 
-Rien ne presse de choisir : les quatre formes du tableau ci-dessus sont du
-décodage, et elles avancent sans que la question soit tranchée.
+Ce qui reste dans le tableau ci-dessus avance sans que la question soit
+tranchée — mais plus le point d'entrée. Pour lui, décoder ne donne plus rien.
 
 **Ce que décoder ne donne pas.** Aucune de ces instructions n'est *exécutable*
 pour autant : il faudrait un modèle de registres spécifiques au modèle, de

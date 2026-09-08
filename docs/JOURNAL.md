@@ -8,6 +8,70 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-07 — trois familles privilégiées lues, et un refus qui n'a pas reculé
+
+Suite de T2 du « tout » : faire passer un vrai noyau à travers l'émetteur. Les
+tranches précédentes avaient nommé `wrmsr`, `rdmsr`, `rdtsc`, `cpuid` et le
+retour lointain. Restaient trois familles sur le chemin du point d'entrée
+d'Alpine : le groupe `0F 01`, les sélecteurs de segment, les registres de
+contrôle. Elles sont décodées. Elles ne sont toujours pas exécutables.
+
+### Ce que ça déplace, mesuré des deux côtés
+
+Sur le point d'entrée, c'est net :
+
+| | avant | après |
+| --- | --- | --- |
+| lecture linéaire | 25 instructions, arrêt octet 113 (`mov %cr4,%rcx`) | **70**, arrêt octet 291 (`cli` puis `hlt`) |
+| exploration de la région | arrêtée faute de **lire** l'octet 1512 (`lgdt`) | plus aucun trou de lecture |
+| ce qui l'arrête maintenant | — | l'octet 35, `wrmsr` : lu, pas produit |
+
+Sur les huit mégaoctets de texte entiers, beaucoup moins :
+
+| | avant | après |
+| --- | --- | --- |
+| octets refusés en lecture linéaire | 5051 | 4720 |
+| régions d'entrée compilées | 9935 / 10 118 (98,2 %) | 9933 / 10 116 (98,2 %) |
+| refus nommés (« l'émetteur refuse ») | 29 | 48 |
+| refus `8c`, `66 8c`, `8e` (illisibles) | 15 | 0 |
+
+**183 régions refusées avant, 183 après.** Dix-neuf ont changé de motif, pas de
+verdict : elles butaient sur un octet, elles butent sur une instruction nommée.
+Le dire autrement — « la couverture progresse » — serait faux, et le test
+`every_privileged_family_is_refused_by_name_and_not_by_silence` porte les deux
+chiffres dans son commentaire pour que personne n'ait envie de l'arrondir.
+
+Ce qui a vraiment changé est ailleurs : **le décodage du chemin d'entrée est
+fini**. La région d'entrée ne refuse plus faute de lire ; elle refuse à cause de
+la décision qui attend Maxime dans `ROADMAP.md` — fauter vers l'hôte à chaque
+instruction privilégiée (~190 ns par retour de main, mesuré) ou modéliser
+quelques MSR dans l'émetteur. Cette question n'est plus repoussable par du
+décodage, et je ne la tranche pas seul.
+
+### Deux gardes que rien ne tenait, trouvées par sabotage
+
+Neuf sabotages sur onze ont été attrapés du premier coup. Deux ont **survécu**,
+et les deux étaient dans le même bras :
+
+- retirer `matches!(which, 0 | 2 | 3 | 4 | 8)` ne cassait rien : aucun test ne
+  disait que CR1, CR5, CR6 et CR7 n'existent pas ;
+- retirer `field.memory.is_none()` ne cassait rien non plus — et c'était la
+  plus dangereuse des deux. Le processeur **ignore** les bits de `mod` pour
+  `0F 20` : `0f 20 05` est `mov %cr0,%rbp`, trois octets. Laisser `read_modrm`
+  y voir un déplacement relatif à RIP en avale quatre de plus et rend une
+  longueur de sept. Ces quatre octets sont l'instruction suivante : tout ce qui
+  vient après se décale, et le flux se met à produire des instructions
+  plausibles et fausses. Un décalage silencieux, pas un refus.
+
+Les deux ont un test maintenant, chacun re-saboté.
+
+### Ce que le prochain a besoin de savoir
+
+Le point d'entrée s'arrête maintenant sur `fa f4 eb fc` — `cli`, `hlt`,
+`jmp -4`. C'est la boucle d'arrêt du noyau, et ce sont les instructions de la
+tranche suivante, celle des interruptions. Le décodeur ne les lit pas encore, et
+c'est cohérent : sans interruptions, un `hlt` est un cul-de-sac de toute façon.
+
 ## 2026-09-04, ~06h30 UTC — un témoin, un trou compté, et un défaut du harnais
 
 La tranche a changé de métier : il ne s'agit plus d'écrire une brique mais de
