@@ -8,6 +8,64 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — « c'est clos » ne l'était pas, et deux constantes enregistrées étaient fausses
+
+La PR #273 est passée au vert et fusionnée, mais « App iOS » est tombé une fois
+en route, sur `LocalDesktopTests.testTheDesktopPaintsTheFrameOnDemand` et
+`InvalidTransition { phase: idle, targetPhase: failed(deinit) }`. Troisième
+occurrence non déterministe de cette suite en deux jours, et la deuxième
+**après** son déménagement sous un hôte — déménagement que `ROADMAP.md` et
+l'en-tête du fichier de test présentaient comme la clôture du sujet.
+
+### Ce que ce tour a mesuré, et le piège que je me suis tendu en le mesurant
+
+Pour établir que mon diff ne peut pas l'atteindre, j'ai comparé le module émis
+pour le programme invité de ce test avant et après la tranche. Premier essai :
+chiffres identiques — et **ça ne prouvait rien**, parce que le `git stash`
+n'avait rien à ranger, mes changements étant déjà committés. Les deux mesures
+portaient sur le même code. C'est la variante « la mutation ne s'est pas
+appliquée » du piège du sabotage, dans un autre costume.
+
+Refait en sortant les deux fichiers de `ae9b2da`, avec **zéro** occurrence des
+nouveaux `Op` pour prouver que les deux côtés différaient : 804 octets somme
+52705 pour la première région, 603 et 37157 pour la seconde, des deux côtés. Le
+programme n'emploie que `48 ff c2`, `48 b8 …`, `ff e0`, `90`, `0f 0b`.
+
+### Deux affirmations enregistrées, démenties par le relevé du job
+
+`ROADMAP.md` tenait pour constant que le test qui échoue est « le premier du
+processus » et « toujours le plus lent ». Les durées lues dans le log brut :
+
+| test | verdict | secondes |
+| --- | --- | ---: |
+| testADesktopWithoutAFrameRefusesToPaint | vert | 7,323 |
+| testReadingPastTheGuestsRAMIsRefused | vert | 5,196 |
+| **testTheDesktopPaintsTheFrameOnDemand** | **rouge** | **2,327** |
+| testTheDesktopRunsAMachineInsideARealWebView | vert | 5,234 |
+
+Huitième sur neuf, et loin d'être le plus lent. Les deux constantes tombent.
+
+### Ce qui tient encore, vérifié plutôt qu'hérité
+
+L'inférence centrale de la feuille de route — « l'erreur ne sort d'aucun de nos
+appels, parce qu'une erreur traduite s'afficherait `script(...)` » — je l'ai
+soupçonnée fausse et elle est juste : `LocalDesktop.Failure` est un enum nu,
+sans `CustomStringConvertible` ni `LocalizedError`, donc `String(describing:)`
+d'un `.script(…)` porte bien son préfixe, et le message n'en a pas. Toutes les
+méthodes qui touchent la vue passent par `refuse()`. L'`InvalidTransition`
+arrive donc nu, depuis la machinerie de XCTest ou le démontage des vues.
+
+### Ce que je ne fais pas
+
+Trois hypothèses sont mortes sur ce sujet — la course sur `isLoading`, « c'est
+un de nos appels », le canvas. Une quatrième coûterait autant, et les deux
+sorties possibles (une seule vue pour toute la suite, ou vivre avec la relance)
+changent ce que ces tests mesurent. C'est une direction, pas un défaut nommé :
+elle est posée à Maxime dans `ROADMAP.md` plutôt qu'engagée seule.
+
+En attendant, la règle est écrite là-bas, avec le relevé daté des trois
+occurrences : **une relance, une seule**, et elle se note.
+
 ## 2026-09-07 — trois familles privilégiées lues, et un refus qui n'a pas reculé
 
 Suite de T2 du « tout » : faire passer un vrai noyau à travers l'émetteur. Les

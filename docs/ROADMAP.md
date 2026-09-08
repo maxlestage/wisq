@@ -2494,6 +2494,63 @@ iPhone simulé, `Test Suite 'LocalDesktopTests' passed`, neuf tests, zéro éche
 donc plus de rouge, et le bureau local est jugé de bout en bout à chaque commit
 — pour la première fois.
 
+### Ce n'était pas clos : la suite hébergée est intermittente, et deux « constantes » ci-dessus sont fausses
+
+Écrit le 8 septembre, après deux nouvelles occurrences. La phrase ci-dessus
+reste vraie d'un passage vert ; elle est fausse comme verdict, et l'avoir
+laissée là a coûté un cycle de plus.
+
+**Trois occurrences observées**, toutes rattrapées par une relance :
+
+| quand | test | ce que la PR touchait |
+| --- | --- | --- |
+| 7 sept. | un autre test de la suite | `7d4d1e7` vert / `967a4ab` rouge, code identique par `git diff` |
+| 7 sept., PR #268 | `testTheDesktopPaintsTheFrameOnDemand` | `MemoryByteStream` et SPICE — aucun chemin vers ce fichier |
+| 8 sept., PR #273 | le même | le décodeur x86 |
+
+Pour #273 la non-implication est **mesurée**, pas affirmée : le programme invité
+de ce test n'emploie que `48 ff c2`, `48 b8 …`, `ff e0`, `90`, `0f 0b`, et le
+module émis pour lui est identique avant et après la tranche — 804 octets
+somme 52705 pour la première région, 603 et 37157 pour la seconde, avec zéro
+occurrence des nouveaux `Op` dans les fichiers d'avant, pour prouver que la
+comparaison portait bien sur deux codes différents. (Premier essai raté : un
+`git stash` qui n'avait rien à ranger, les changements étant déjà committés.
+Les deux mesures portaient sur le même code et ne prouvaient rien.)
+
+**Ce que le passage du 8 septembre dément dans ce qui précède** :
+
+- « le test qui échoue est le **premier du processus** » — faux. Il est le
+  **huitième sur neuf** dans l'ordre alphabétique de XCTest ;
+- « et toujours le plus lent » — faux. 2,327 s, quand trois de ses voisins
+  prennent 5,196 s, 5,234 s et 7,323 s.
+
+**Ce qui tient encore.** L'erreur ne sort d'aucune méthode de `LocalDesktop` :
+`Failure.script` s'imprimerait avec son préfixe — l'enum n'a ni
+`CustomStringConvertible` ni `LocalizedError` — et le message n'en porte pas.
+Toutes les méthodes qui touchent la vue passent par `refuse()`. Le
+`InvalidTransition` arrive donc **nu**, depuis la machinerie de XCTest ou le
+démontage des vues, et `InvalidTransition` n'apparaît toujours nulle part dans
+l'arbre hors commentaires.
+
+**Et une corrélation qui n'est pas morte, contrairement à ce qui est écrit plus
+haut.** Des neuf tests, `testTheDesktopPaintsTheFrameOnDemand` est le seul qui
+déclare un écran **et** peigne ; celui qui semblait la démentir échouait à
+cause d'une sonde, aveu déjà fait ci-dessus. Ce n'est pas une cause, et ça a
+déjà été pris pour une cause deux fois.
+
+**La suite ne s'engage pas seule** — trois hypothèses sont mortes, une
+quatrième coûterait autant. Deux voies, à trancher par Maxime :
+
+- **instrumenter le démontage** : garder une seule vue pour toute la suite, ou
+  attendre explicitement la mort du processus de contenu entre deux tests. Ça
+  change ce que les tests mesurent, et c'est le genre de correction qui rend
+  vert sans rien expliquer ;
+- **laisser le défaut nommé et vivre avec la relance** : une relance par
+  occurrence, comptée, tant que le produit lui-même est vert.
+
+D'ici là, la règle est écrite : un `InvalidTransition` nu dans cette suite est
+**une relance, une seule**, et il se note ici avec sa date et sa PR.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
