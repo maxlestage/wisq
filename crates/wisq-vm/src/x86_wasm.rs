@@ -1544,17 +1544,33 @@ impl Module {
         if matches!(step.op, Op::PortIn | Op::PortOut) {
             return Self::port(step, body);
         }
-        // **Les quatre instructions privilégiées : décodées, pas traduisibles.**
+        // **Les instructions privilégiées : décodées, pas traduisibles.**
         //
-        // Le décodeur les nomme depuis qu'un noyau s'est arrêté dessus à sa
-        // huitième instruction. Les *exécuter* demande un modèle de registres
-        // spécifiques au modèle, de compteur d'horodatage et de capacités que
-        // rien n'a encore. Le refus est donc franc et nommé — `CannotTranslate`
-        // porte l'adresse — au lieu d'un `CannotDecode` qui ne disait pas
-        // laquelle manquait.
+        // Le décodeur les nomme une par une depuis qu'un noyau s'est arrêté
+        // dessus — d'abord `wrmsr` à sa huitième instruction, puis `lgdt`, puis
+        // les sélecteurs de segment, puis `mov %cr4,%rcx`. Les *exécuter*
+        // demande un modèle de MSR, de tables de descripteurs, de segments et
+        // de registres de contrôle que rien n'a encore, et ce modèle est une
+        // décision qui n'est pas prise. Le refus est donc franc et nommé —
+        // `CannotTranslate` porte l'adresse — au lieu d'un `CannotDecode` qui
+        // ne disait pas laquelle manquait.
+        //
+        // **Ce n'est pas un progrès en soi**, et l'exploration le montre : à
+        // chaque famille lue, la frontière avance de quelques octets et
+        // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
         if matches!(
             step.op,
-            Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister
+            Op::ReadTimestamp
+                | Op::CpuId
+                | Op::ReadModelRegister
+                | Op::WriteModelRegister
+                | Op::LoadDescriptorTable { .. }
+                | Op::StoreDescriptorTable { .. }
+                | Op::SwapGs
+                | Op::LoadSegment { .. }
+                | Op::StoreSegment { .. }
+                | Op::ReadControlRegister { .. }
+                | Op::WriteControlRegister { .. }
         ) {
             return None;
         }
@@ -1706,7 +1722,14 @@ impl Module {
                 | Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
-                | Op::FarReturn => {
+                | Op::FarReturn
+                | Op::LoadDescriptorTable { .. }
+                | Op::StoreDescriptorTable { .. }
+                | Op::SwapGs
+                | Op::LoadSegment { .. }
+                | Op::StoreSegment { .. }
+                | Op::ReadControlRegister { .. }
+                | Op::WriteControlRegister { .. } => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -2083,7 +2106,17 @@ impl Module {
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
                 )
             }
-            Op::ReadTimestamp | Op::CpuId | Op::ReadModelRegister | Op::WriteModelRegister => {
+            Op::ReadTimestamp
+            | Op::CpuId
+            | Op::ReadModelRegister
+            | Op::WriteModelRegister
+            | Op::LoadDescriptorTable { .. }
+            | Op::StoreDescriptorTable { .. }
+            | Op::SwapGs
+            | Op::LoadSegment { .. }
+            | Op::StoreSegment { .. }
+            | Op::ReadControlRegister { .. }
+            | Op::WriteControlRegister { .. } => {
                 unreachable!(
                     "une instruction privilégiée n'est pas un calcul : `translate` la refuse avant"
                 )
@@ -4145,6 +4178,49 @@ mod port_tests {
                 "`wrmsr` : lu par le décodeur, pas produit par l'émetteur"
             ),
             other => panic!("le refus attendu est une traduction, pas {other:?}"),
+        }
+    }
+
+    /// **Chaque famille privilégiée est refusée pour la bonne raison.**
+    ///
+    /// C'est tout l'objet de cette tranche, et c'est la seule chose qu'elle
+    /// change : `CannotDecode` dit « il y a un octet que je ne sais pas lire »
+    /// sans dire lequel ; `CannotTranslate` porte l'adresse d'une instruction
+    /// **nommée**. Le nombre de régions refusées, lui, ne bouge pas — mesuré
+    /// sur les huit mégaoctets de texte d'Alpine : 183 avant, 183 après.
+    ///
+    /// La distinction se perdrait en silence : si une de ces formes cessait de
+    /// se décoder, la région serait toujours refusée, la couverture toujours
+    /// la même, et seul le message changerait. Les deux moitiés sont donc
+    /// vérifiées séparément — le décodeur la lit **et** l'émetteur la refuse.
+    #[test]
+    fn every_privileged_family_is_refused_by_name_and_not_by_silence() {
+        for (nom, forme) in [
+            ("lgdt", &[0x0f, 0x01, 0x15, 0xb1, 0xc9, 0x43, 0x01][..]),
+            ("sidt", &[0x0f, 0x01, 0x0d, 0x00, 0x00, 0x00, 0x00][..]),
+            ("swapgs", &[0x0f, 0x01, 0xf8][..]),
+            ("mov %eax,%ds", &[0x8e, 0xd8][..]),
+            ("mov %ds,%eax", &[0x8c, 0xd8][..]),
+            ("mov %cr4,%rcx", &[0x0f, 0x20, 0xe1][..]),
+            ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
+            ("wrmsr", &[0x0f, 0x30][..]),
+        ] {
+            // Première moitié : le décodeur la lit, entière.
+            let step =
+                crate::x86::decode(forme).unwrap_or_else(|| panic!("`{nom}` doit se décoder"));
+            assert_eq!(step.length, forme.len(), "`{nom}` : la longueur entière");
+
+            // Seconde moitié : l'émetteur la refuse, et le refus porte son
+            // adresse. Le `ret` qui suit ferme le bloc ; sans lui la région
+            // serait refusée pour une raison sans rapport.
+            let mut region = forme.to_vec();
+            region.push(0xc3);
+            match Module::region_or_why(&region, 0x1000090, 0) {
+                Err(Refused::CannotTranslate { at }) => {
+                    assert_eq!(at, 0, "`{nom}` : le refus porte l'adresse de l'instruction")
+                }
+                other => panic!("`{nom}` : attendu un refus de traduction, pas {other:?}"),
+            }
         }
     }
 
