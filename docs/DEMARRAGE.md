@@ -81,14 +81,42 @@ rechargée par la marche complète en cas d'absence.
 **Ce qui est mesuré** : l'émetteur tient 247 MIPS sous JavaScriptCore, contre
 49,3 pour l'interpréteur Rust et 831 pour du WebAssembly écrit à la main.
 
-**Ce qui n'est pas mesuré** : ce que la pagination coûterait à ces 247 MIPS. Le
-dire au doigt mouillé serait un chiffre inventé qui aurait l'air d'un fait. La
-façon de le savoir est une sonde : un module qui fait la même boucle avec un
-accès replié puis avec un accès passé par un tampon de traduction, jugé sous
-JavaScriptCore comme le reste. C'est une demi-journée, et **ça devrait précéder
-la décision, pas la suivre** — les cinq tranches de ce jour ont montré trois fois
-qu'une sonde jetable posée avant le code répond à une question qu'on aurait
-sinon tranchée de travers.
+**Ce que la traduction coûterait, mesuré.** La sonde est dans le dépôt et se
+relance :
+
+```
+cargo run -p wisq-vm --release --example paging-probe -- /tmp/paging.wasm
+bun scripts/wasm-paging-probe.js /tmp/paging.wasm
+```
+
+Un seul module exporte les trois formes — le repli d'aujourd'hui, un tampon de
+soixante-quatre entrées avec marche en repli, la marche seule — pour que
+JavaScriptCore les compile de la même façon et qu'on ne chronomètre que la
+différence. **Les trois rendent la même somme de contrôle**, sans quoi une forme
+qui ne ferait rien afficherait un débit magnifique et faux.
+
+| motif d'accès | repli | tampon + marche | marche seule | surcoût du tampon |
+| --- | --- | --- | --- | --- |
+| balayage court, 512 pages | 2,46 ns | 2,69 ns (×1,09) | 5,25 ns | **+0,23 ns** |
+| balayage long, 16 384 pages | 5,95 ns | 6,41 ns (×1,08) | 8,30 ns | **+0,47 ns** |
+| une page neuve à chaque accès | 16,58 ns | 43,02 ns (×2,59) | 42,53 ns | **+26,43 ns** |
+
+Trois exécutions à 6, 8 et 20 millions d'accès s'accordent à un dixième de
+nanoseconde près sur les deux premières lignes, et à ±1 ns sur la troisième.
+
+**Ce que ça dit.** Tant que le tampon répond, la traduction est presque
+gratuite — un dixième à un demi de nanoseconde par accès, contre un repli qui en
+coûte déjà deux et demi à six. **Quand il ne répond jamais, elle coûte plus que
+tout le reste** : la troisième ligne est construite pour ça, une page neuve à
+chaque accès, et aucun tampon ne peut y servir à quelque chose. Ce n'est pas une
+prévision, c'est un plancher : le pire jour possible.
+
+**Ce qui manque encore pour en faire un pourcentage de débit.** Il faudrait
+savoir quelle fraction des instructions d'un vrai noyau porte un opérande
+mémoire — et ce nombre-là n'est mesurable par rien dans ce dépôt aujourd'hui.
+Une version antérieure de la feuille de route en tirait « entre 1 % et 29 % du
+débit » ; le chiffre est retiré jusqu'à ce que ses deux entrées soient
+vérifiables.
 
 ## Les interruptions
 

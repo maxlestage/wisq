@@ -450,6 +450,39 @@ describe("la feuille de style", () => {
     expect(printed).toContain("[data-reveal] { opacity: 1");
   });
 
+  /// **Rien ne clignote sans fin chez quelqu'un qui a demandé le calme.**
+  ///
+  /// C'est précisément ce que `prefers-reduced-motion` existe pour empêcher :
+  /// une animation infinie qu'on ne peut pas arrêter. Le curseur du nom en est
+  /// une — il bat tant que la page est ouverte —, et il n'est acceptable que
+  /// parce qu'il vit sous `[data-motion]`, un attribut que le script refuse de
+  /// poser dans ce cas-là.
+  ///
+  /// Cette garde est dans la forme, pas dans une ligne de code : c'est
+  /// justement pour ça qu'elle a besoin d'un test. Rien dans le rendu ne
+  /// signalerait qu'une règle s'en est échappée.
+  test("aucune animation infinie n'échappe à [data-motion]", () => {
+    const forever = css
+      .split("\n")
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => line.includes("infinite"));
+    expect(forever.length, "il doit en exister une, sinon ce test est creux")
+      .toBeGreaterThan(0);
+    for (const { index } of forever) {
+      // **La ligne elle-même compte, et un sabotage l'a dit.** Le premier jet
+      // cherchait le sélecteur *au-dessus* de la déclaration ; une règle écrite
+      // sur une seule ligne — `.site-header { animation: … infinite; }` — lui
+      // échappait donc entièrement, et il remontait jusqu'à une règle voisine
+      // qui, elle, était bien gardée. Il concluait vert sur une animation
+      // infinie parfaitement libre.
+      const upTo = css.split("\n").slice(0, index + 1).reverse();
+      const selector = upTo.find((line) => line.includes("{"));
+      expect(selector, "une déclaration sans règle au-dessus").toBeDefined();
+      expect(selector, "une animation infinie hors de [data-motion]")
+        .toContain("[data-motion]");
+    }
+  });
+
   /// **Les valeurs par défaut sont celles du repos.** Le script pose ses
   /// variables après coup ; entre la première peinture et sa première image,
   /// c'est la valeur de repli qui s'affiche. Un `--read` par défaut à 1
