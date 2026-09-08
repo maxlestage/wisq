@@ -336,6 +336,132 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
+/// **Le compteur d'horodatage, et la seule propriété qui compte.**
+///
+/// `rdtsc` est la deuxième instruction que l'émetteur produit, et son choix de
+/// conception tient en une phrase : **un compteur virtuel, pas un import**.
+///
+/// L'autre voie était d'appeler l'hôte pour une vraie horloge, au prix d'un
+/// retour de main — 125 à 190 ns, mesuré. Elle n'achète pourtant rien : le
+/// noyau calibre la fréquence de son TSC contre une **autre** horloge, un PIT
+/// ou un HPET, dont cette machine n'a aucun. La calibration est donc fausse
+/// dans les deux cas, et la voie chère ne l'est pas moins.
+///
+/// **Ce qui décide vraiment est ailleurs, et c'est une question de blocage.**
+/// Un noyau écrit `while (rdtsc() - début < n)`. Si deux lectures successives
+/// rendaient la même valeur, cette boucle ne se terminerait **jamais** — une
+/// machine qui pend, le pire mode de panne, indiscernable d'un calcul long.
+/// Le compteur avance donc à **chaque lecture**, strictement, et c'est ce que
+/// ce test tient.
+///
+/// **Ce que ce compteur ne dit pas, et il faut le dire** : il n'avance que
+/// quand on le lit. Un noyau qui mesure `t0 = rdtsc() ; travail ; t1 =
+/// rdtsc()` trouvera toujours le même écart, quel que soit le travail. C'est
+/// un mensonge sur la *durée*, inhérent à un compteur virtuel, et assumé —
+/// pas un défaut caché.
+#[test]
+fn the_timestamp_counter_always_moves_forward() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // Un compteur qui déborde franchement les trente-deux bits bas.
+    const SEED: u64 = 0x1234_5678_9abc_def0;
+    // rdtsc ; mov %rax,%rbx ; rdtsc ; ud2
+    let program = [
+        0x0f, 0x31, // rdtsc
+        0x48, 0x89, 0xc3, // mov %rax,%rbx
+        0x0f, 0x31, // rdtsc
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-rdtsc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("tsc.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+// **Le compteur part au-dessus de deux puissance trente-deux**, et c'est ce
+// qui rend le test capable de voir quelque chose : avec un petit compteur, la
+// moitié haute est nulle, donc masquer RAX ou ne pas le masquer donne le même
+// résultat. Un premier essai l'a laissé petit, et le sabotage du masque a
+// survécu — un test qui ne peut pas distinguer n'est pas une garde.
+vm.globals[{tsc}].value = {seed}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+console.log("arret " + why.stopped);
+console.log("avant " + BigInt.asUintN(64, vm.globals[3].value).toString());
+console.log("apres " + BigInt.asUintN(64, vm.globals[0].value).toString());
+console.log("haut " + BigInt.asUintN(64, vm.globals[2].value).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            tsc = wisq_vm::x86_wasm::TSC_SLOT,
+            seed = SEED,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(line("arret "), "refusée", "la région s'arrête sur le `ud2`");
+    let avant: u64 = line("avant ").parse().expect("un nombre");
+    let apres: u64 = line("apres ").parse().expect("un nombre");
+    assert!(
+        apres > avant,
+        "deux lectures successives doivent croître, sinon `while (rdtsc() - début < n)` \
+         ne se termine jamais : {avant} puis {apres}"
+    );
+    // **RAX ne porte que les trente-deux bits bas.** `rdtsc` écrit EAX, et le
+    // processeur met la moitié haute de RAX à zéro ; la laisser passer
+    // donnerait un compteur faux d'un facteur 2³², qu'un noyau lirait sans se
+    // plaindre.
+    assert!(
+        apres < 1 << 32,
+        "RAX ne doit porter que la moitié basse : {apres:#x}"
+    );
+    let expected = SEED.wrapping_add(2 * wisq_vm::x86_wasm::TSC_STEP);
+    assert_eq!(apres, expected & 0xffff_ffff, "et c'est celle du compteur");
+    // **La moitié haute part dans RDX, et pas ailleurs.**
+    let haut: u64 = line("haut ").parse().expect("un nombre");
+    assert_eq!(
+        haut,
+        expected >> 32,
+        "RDX porte la moitié haute : {haut:#x}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **`pushf` produit, et le bit réservé qui ne ment plus.**
 ///
 /// C'est la première instruction qu'un émetteur *refusait* et qu'il *produit*.
