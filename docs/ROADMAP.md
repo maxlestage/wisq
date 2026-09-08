@@ -5495,8 +5495,9 @@ régions qui **se traduisent**. Depuis la tranche des MSR, ce n'est plus la mêm
 chose que des régions qui **s'exécutent** : un numéro de MSR non modélisé
 s'arrête à l'exécution. Et surtout, aucune de ces cinq tranches n'approche un
 noyau qui démarre. Ce qui manque pour cela n'est plus une liste d'instructions :
-c'est la **pagination** et les **interruptions**, deux mécanismes entiers, et
-leur état des lieux est le travail qui suit ces cinq tranches.
+c'est la **pagination** et les **interruptions**, deux mécanismes entiers.
+`docs/DEMARRAGE.md` en fait l'état des lieux : ce qui manque, ce que ça
+coûterait, et ce qui reste à mesurer avant de décider.
 
 **Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
 pour une raison qui demande un modèle : les sélecteurs de segment
