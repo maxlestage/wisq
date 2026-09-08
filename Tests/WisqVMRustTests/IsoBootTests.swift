@@ -276,7 +276,15 @@ final class IsoBootDecisionTests: XCTestCase {
             XCTAssertEqual(boot.disk, image, "l'image est le disque")
             XCTAssertNotEqual(boot.kernel, image, "et ce n'est pas elle qu'on exécute")
             XCTAssertEqual(try Data(contentsOf: boot.kernel), IsoGravure.kernel)
-            XCTAssertEqual(boot.commandLine, "root=/dev/vda2 ro quiet")
+            // **La ligne porte les deux moitiés.** Celle de l'image dit où est
+            // la racine ; celle de wisq dit où écrire. `quiet` part, parce
+            // qu'il éteindrait la seule sortie qui existe. Cette assertion
+            // disait autrefois « exactement la recette », et c'est ce
+            // contrat-là qui a produit un écran noir.
+            let line = try XCTUnwrap(boot.commandLine)
+            XCTAssertTrue(line.contains("root=/dev/vda2 ro"), line)
+            XCTAssertTrue(line.hasSuffix(X86BootLoader.defaultCommandLine), line)
+            XCTAssertFalse(line.contains("quiet"), line)
             XCTAssertNotNil(boot.initrd)
             // Le noyau d'essai n'est pas un vrai bzImage : ce qui compte est
             // que le genre soit jugé sur **lui**, donc plus jamais `discImage`.
@@ -430,6 +438,100 @@ final class IsoBootFolderTests: XCTestCase {
             XCTAssertEqual(boot.disk, image)
             XCTAssertEqual(
                 boot.kernel.deletingLastPathComponent().lastPathComponent, "iso")
+        }
+    }
+}
+
+/// **La ligne de commande de l'image, plus celle dont wisq a besoin.**
+///
+/// Ce fichier-ci vient d'un écran noir. Sur `omarchy-4.0.2.iso`, la machine
+/// démarrait, affichait « Démarrage… » et plus rien du tout.
+///
+/// La cause était une régression de la tranche précédente : la ligne de la
+/// recette **remplaçait** celle de wisq au lieu de s'y ajouter. Or celle de
+/// wisq est la seule qui dise où écrire —
+/// `console=ttyS0` ouvre la console une fois le pilote série chargé, et
+/// `earlyprintk=serial` fait écrire le noyau directement sur le port 0x3F8 dès
+/// sa première ligne. `X86BootLoader` le dit dans son propre commentaire :
+/// « sans elle, un démarrage qui échoue à mi-chemin ne dit rien du tout ».
+///
+/// Une image d'installation, elle, est écrite pour un PC avec un écran. Elle
+/// ne nomme aucune console série, et demande `quiet`. Les deux lignes disent
+/// des choses différentes et nécessaires : celle de l'image dit **où est la
+/// racine**, celle de wisq dit **où parler**.
+final class IsoBootCommandLineTests: XCTestCase {
+    /// Ce que l'image demande survit mot pour mot. Sans `archisobasedir`,
+    /// archiso ne trouve pas son squashfs et panique sur sa racine.
+    func testWhatTheImageAsksForSurvivesWhole() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch archisosearchuuid=2026-08-31")
+        XCTAssertTrue(line.contains("archisobasedir=arch"), line)
+        XCTAssertTrue(line.contains("archisosearchuuid=2026-08-31"), line)
+    }
+
+    /// **Et ce que wisq ajoute est là, à la fin.**
+    ///
+    /// À la fin parce que Linux retient le **dernier** `console=` comme
+    /// `/dev/console` : une image qui en nommerait un autre ne doit pas nous
+    /// rendre muets.
+    func testWisqSaysWhereToSpeak() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch")
+        XCTAssertTrue(line.contains("console=ttyS0"), line)
+        XCTAssertTrue(line.contains("earlyprintk=serial"), line)
+        XCTAssertTrue(
+            line.hasSuffix(X86BootLoader.defaultCommandLine),
+            "les arguments de wisq doivent finir la ligne : \(line)")
+    }
+
+    /// **`quiet` part, et c'est le point.**
+    ///
+    /// Il est écrit pour une machine qui a un écran de démarrage et qui n'a
+    /// rien à dire à personne. Ici il éteint la seule sortie qui existe.
+    func testQuietGoesAway() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch quiet splash")
+        XCTAssertFalse(line.contains("quiet"), "l'unique sortie de wisq resterait muette : \(line)")
+        XCTAssertTrue(line.contains("splash"), "seul `quiet` part, pas le reste")
+        XCTAssertTrue(line.contains("archisobasedir=arch"), line)
+    }
+
+    /// Une image qui nomme déjà une console garde la sienne — la nôtre vient
+    /// après, et c'est elle que le noyau retiendra.
+    /// **Les deux positions sont dépliées, pas forcées.** Le premier jet
+    /// écrivait `ours!.lowerBound` : un sabotage qui jetait la ligne de la
+    /// recette faisait alors *planter* le test au lieu de le faire échouer, et
+    /// un plantage ne dit pas ce qui manque — il dit seulement qu'on a eu tort
+    /// de croire.
+    func testAnImageConsoleIsKeptAndOursComesAfter() throws {
+        let line = IsoBoot.commandLine(from: "console=tty0 root=/dev/vda2")
+        let theirs = try XCTUnwrap(line.range(of: "console=tty0"), "la console de l'image a disparu")
+        let ours = try XCTUnwrap(line.range(of: "console=ttyS0"), "wisq ne dit plus où écrire")
+        XCTAssertTrue(ours.lowerBound > theirs.lowerBound, "la nôtre doit venir après : \(line)")
+    }
+
+    /// Une recette sans arguments n'en invente pas, mais reçoit quand même de
+    /// quoi parler.
+    func testAnEmptyRecipeStillSpeaks() {
+        XCTAssertEqual(IsoBoot.commandLine(from: "   "), X86BootLoader.defaultCommandLine)
+    }
+
+    /// **Et le plan porte la ligne complète, pas celle de la recette.**
+    ///
+    /// C'est l'assertion qui aurait attrapé l'écran noir : le champ que le
+    /// modèle passe à la machine doit déjà contenir de quoi écrire.
+    func testThePlanCarriesTheCombinedLine() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-ligne-\(getpid())-\(UUID().uuidString)")
+        let image = try IsoGravure(commandLine: "archisobasedir=arch quiet").write()
+        defer {
+            try? FileManager.default.removeItem(at: image)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        switch IsoBoot.decide(image, unpackingInto: folder, ceiling: 1 << 20) {
+        case .failure(let refusal): XCTFail("refus inattendu : \(refusal)")
+        case .success(let boot):
+            let line = try XCTUnwrap(boot.commandLine)
+            XCTAssertTrue(line.contains("archisobasedir=arch"), line)
+            XCTAssertTrue(line.contains("console=ttyS0"), line)
+            XCTAssertFalse(line.contains("quiet"), line)
         }
     }
 }
