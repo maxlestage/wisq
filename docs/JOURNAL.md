@@ -12717,3 +12717,40 @@ le refus, la chimère de recette, puis le silence. Chacun n'était visible que s
 un **vrai** fichier, et chacun était caché par le précédent. Corriger l'un ne
 révèle le suivant qu'en le laissant échouer plus loin — ce qui est le bon ordre,
 mais demande de ne jamais confondre « ça progresse » avec « ça marche ».
+
+## La marche à quatre niveaux, du côté qui juge
+
+L'interpréteur Rust refusait les registres de contrôle depuis le premier jour,
+et c'était la bonne conduite tant qu'il n'avait pas de tables : rendre `Some`
+pour un `mov %rax,%cr3` qu'on ne sait pas exécuter serait transformer « je ne
+fais pas » en « je fais, et je me trompe ». Ce qui a changé, c'est ce qu'on lui
+demande — être le juge de la pagination de l'émetteur, ce qu'il ne peut pas
+faire en refusant.
+
+**Ce qui a failli me tromper deux fois.**
+
+D'abord le montage de test. `the_tables_are_read_by_their_physical_address` pose
+une correspondance-leurre sur l'adresse *physique* de la table racine, pour
+montrer que la marche n'en tient aucun compte. Il tombait — et pas pour la
+raison qu'il annonce : le montage n'a qu'une table de feuilles, et l'adresse
+éprouvée occupait la même case que le leurre. Le test se mesurait à lui-même.
+La leçon est étroite et vaut pour tout montage de tables écrit à la main :
+**deux adresses virtuelles distinctes ne sont pas deux cases distinctes**, et
+c'est le montage qui décide, pas l'intuition.
+
+Ensuite le sabotage qui a survécu. L'écriture à cheval sur deux pages traduit
+ses deux moitiés avant d'en poser une seule — c'est la règle qu'une instruction
+qui faute ne laisse aucune trace. J'avais un test pour ça, et il ne tenait que
+la moitié de la règle : il coupait par une *traduction* qui échoue. Mais une
+table peut parfaitement nommer une trame que la RAM attachée n'a pas. Les deux
+traductions réussissent alors, et c'est la fenêtre qui refuse — après que la
+moitié basse est posée. Le sabotage a nommé le trou ; le test qui manquait fait
+maintenant échouer la seconde écriture par la fenêtre et vérifie que la première
+n'a rien laissé.
+
+**Ce que je n'ai pas fait, et qu'il faut dire.** Aucune faute n'est délivrée à
+l'invité : une page absente arrête la machine en nommant l'adresse, là où le
+silicium poserait `#PF` et rendrait la main au noyau. C'est le mur suivant, et
+c'est aussi la question que la tranche P2 doit trancher avant d'écrire une
+ligne — un piège WebAssembly est sans retour, alors qu'une faute doit rendre la
+main.
