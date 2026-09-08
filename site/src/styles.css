@@ -840,15 +840,26 @@ pre code { white-space: pre; }
 }
 
 /* **Le curseur du terminal.** wisq est une console avant d'être une page ; le
- * bloc qui clignote après le nom est la seule ornementation qui dise ce que
- * c'est. Posé sous `[data-motion]`, donc absent quand on a demandé le calme. */
+ * trait qui clignote après le nom est la seule ornementation qui dise ce que
+ * c'est. Posé sous `[data-motion]`, donc absent quand on a demandé le calme.
+ *
+ * **Un trait, pas un bloc, et c'est une correction.** Le premier jet le voulait
+ * plein — `0.55em` de large, `1em` de haut — ce qui est juste dans un terminal
+ * de seize pixels et absurde ici : le nom monte jusqu'à 9rem, donc le curseur
+ * faisait quatre-vingts pixels de large et cent quarante de haut. Il ne se
+ * lisait plus comme un curseur mais comme un rectangle bleu posé là par erreur.
+ *
+ * Les proportions viennent des lettres : la hauteur de capitale d'un monospace
+ * gras tourne autour de `0.72em`, et le curseur s'y arrête plutôt que de
+ * dépasser. La largeur a un plancher en pixels — sous 2px un trait disparaît
+ * sur un écran ordinaire, et le clignotement n'aurait plus rien à montrer. */
 [data-motion] .hero-wordmark::after {
   content: "";
   display: inline-block;
-  width: 0.55em;
-  height: 1em;
-  margin-left: 0.12em;
-  vertical-align: -0.1em;
+  width: max(2px, 0.06em);
+  height: 0.72em;
+  margin-left: 0.08em;
+  vertical-align: -0.02em;
   background: var(--accent);
   animation: wisq-caret 1.1s steps(1) infinite;
 }
