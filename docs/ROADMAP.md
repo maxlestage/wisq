@@ -5310,9 +5310,61 @@ n'a fait qu'exposer le second. Un compte de refus **nommés** ne baisse pas du
 nombre d'occurrences qu'on supprime — une région ne tombe que quand elle n'a
 plus aucune raison de tomber.
 
+### Les sélecteurs de segment : un aller-retour, et la moitié qu'on refuse
+
+Première tranche du paquet qui *demande* un modèle — et elle montre que « ça
+demande un modèle » n'est pas un verdict uniforme.
+
+**En mode 64 bits, la base de CS, SS, DS et ES est forcée à zéro.** Le dépôt le
+tenait déjà, sous un autre angle : leurs préfixes ne changent aucune adresse.
+Un sélecteur y est donc un nombre que l'invité range et relit, et c'est
+exactement ce qui se modélise sans mentir. **FS et GS non** : les charger relit
+un descripteur dans la table globale pour en tirer une base, et cette table
+n'existe pas. Les produire ferait croire au noyau qu'on a implémenté des
+descripteurs.
+
+| | produit | refusé |
+| --- | --- | --- |
+| `mov %ds,%eax` — ranger un sélecteur | oui, les six segments | la forme mémoire, que rien n'exerce |
+| `mov %ax,%ds` — charger ES, SS, DS | oui, la base est morte | — |
+| `mov %ax,%fs` — charger FS ou GS | — | oui : la base viendrait d'un descripteur |
+
+**Une largeur fausse, trouvée en la mesurant plutôt qu'en la citant.** Le
+décodeur enregistrait `Width::Word` pour les deux formes. Sur un vrai
+processeur, en partant de `deadbeef11112222` avec CS valant `0x33` :
+
+| forme | RBX après |
+| --- | --- |
+| `8c cb` | `0000000000000033` — le sélecteur **zéro-étendu** |
+| `66 8c cb` | `deadbeef11110033` — seize bits, le reste intact |
+
+Personne ne s'en plaignait : rien ne produisait l'instruction, donc rien ne
+pouvait s'en plaindre. C'est le troisième défaut de cette série que seul le
+passage de « lu » à « produit » révèle.
+
+**Ce que ces sélecteurs ne sont pas.** Il n'y a aucune table de descripteurs
+derrière eux, et ils partent à **zéro**, ce qui veut dire « aucun chargeur n'est
+passé ici » — pas « le segment nul est chargé ». Poser une autre valeur de
+départ demanderait de lire le protocole d'amorçage à sa source ; le citer de
+mémoire fabriquerait une machine plausible plutôt qu'une machine vraie, et la
+tranche s'arrête donc à ce qu'elle peut prouver : l'aller-retour.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9950 / 10 116 | **9956 / 10 116** |
+| régions refusées | 166 | **160** |
+| refus nommés | 39 | **33** |
+| dont sélecteurs de segment | 13 | **6, tous `mov %ax,%fs`** |
+
+**Treize refus nommés disparaissent, six régions tombent, et six nouveaux
+refus apparaissent** — quatre `mov %ax,%fs` et un `lire-cr4` qui étaient cachés
+derrière un rangement de segment dans la même région. Le relevé compte des
+raisons, pas des instructions ; une région ne tombe que quand elle n'en a plus
+aucune.
+
 **Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
 pour une raison qui demande un modèle : les MSR (16), les sélecteurs de segment
-(13), les registres de contrôle (5), les tables de descripteurs (3), `hlt` et
+(6), les registres de contrôle (5), les tables de descripteurs (3), `hlt` et
 `popf`.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager

@@ -31,19 +31,20 @@ public enum WebKitBench {
     /// diverger en silence — c'est ce que l'ancien commentaire affirmait sans
     /// que rien ne le tienne.
     public static let moduleBase64 =
-        "AGFzbQEAAAABFQRgAAF/YAF+AGADfn5+AGACfn4BfgLgAiEDZW52A291dAACA2VudgJpbgADA2VudgNtZW0CAIFgA2VudgJnMAN+AQNlbnYCZzED"
+        "AGFzbQEAAAABFQRgAAF/YAF+AGADfn5+AGACfn4BfgKiAycDZW52A291dAACA2VudgJpbgADA2VudgNtZW0CAIFgA2VudgJnMAN+AQNlbnYCZzED"
         + "fgEDZW52AmcyA34BA2VudgJnMwN+AQNlbnYCZzQDfgEDZW52Amc1A34BA2VudgJnNgN+AQNlbnYCZzcDfgEDZW52Amc4A34BA2VudgJnOQN+AQNl"
         + "bnYDZzEwA34BA2VudgNnMTEDfgEDZW52A2cxMgN+AQNlbnYDZzEzA34BA2VudgNnMTQDfgEDZW52A2cxNQN+AQNlbnYDZzE2A34BA2VudgNnMTcD"
         + "fgEDZW52A2cxOAN+AQNlbnYDZzE5A34BA2VudgNnMjADfgEDZW52A2cyMQN+AQNlbnYDZzIyA34BA2VudgNnMjMDfgEDZW52A2cyNAN+AQNlbnYD"
-        + "ZzI1A34BA2VudgNnMjYDfgEDZW52A2cyNwN+AQNlbnYDZzI4A34BA2VudgNnMjkDfgEDAwIAAQQEAXAAAQcHAQNydW4AAwkHAQBBAAsBAgrxBALH"
-        + "BAAjAkJ/gyQUIwBCf4MkFSMUIxV8Qn+DJBYjEEKqboMjFlCtQgaGhCMWQoCAgICAgICAgH+DUK1CAYVCB4aEIxZC/wGDe0IBg0IBhUIChoQjFCMV"
-        + "hSMWhUIQg0IAhoQjFiMUVK1CAIaEIxQjFoUjFSMWhYNCgICAgICAgICAf4NQrUIBhUILhoQkECMWQn+DJAIjA0J/gyQUIwFCf4MkFSMUIxWFQn+D"
-        + "JBYjEEKqboMjFlCtQgaGhCMWQoCAgICAgICAgH+DUK1CAYVCB4aEIxZC/wGDe0IBg0IBhUIChoQjFCMVhSMWhUIQg0IAhoQkECMWQn+DJAMjAEJ/"
-        + "gyQUIwJCf4MkFSMUIxV8Qn+DJBYjEEKqboMjFlCtQgaGhCMWQoCAgICAgICAgH+DUK1CAYVCB4aEIxZC/wGDe0IBg0IBhUIChoQjFCMVhSMWhUIQ"
-        + "g0IAhoQjFiMUVK1CAIaEIxQjFoUjFSMWhYNCgICAgICAgICAf4NQrUIBhUILhoQkECMWQn+DJAAjBkJ/gyQUQgEkFSMUIxV9Qn+DJBYjEEKqboMj"
-        + "FlCtQgaGhCMWQoCAgICAgICAgH+DUK1CAYVCB4aEIxZC/wGDe0IBg0IBhUIChoQjFCMVhSMWhUIQg0IAhoQjFCMVVK1CAIaEIxQjFYUjFCMWhYNC"
-        + "gICAgICAgICAf4NQrUIBhUILhoQkECMWQn+DJAZCgICAgANCj4CAgAMjEELAAINQrUIBhUIBhacbJBFBAEF/IxBCwACDUK1CAYVCAYWnGwsmAQF/"
-        + "AkADQCAAUA0BIABCAX0hACABEQAAIQEgAUEASA0BDAALCws="
+        + "ZzI1A34BA2VudgNnMjYDfgEDZW52A2cyNwN+AQNlbnYDZzI4A34BA2VudgNnMjkDfgEDZW52A2czMAN+AQNlbnYDZzMxA34BA2VudgNnMzIDfgED"
+        + "ZW52A2czMwN+AQNlbnYDZzM0A34BA2VudgNnMzUDfgEDAwIAAQQEAXAAAQcHAQNydW4AAwkHAQBBAAsBAgrxBALHBAAjAkJ/gyQaIwBCf4MkGyMa"
+        + "Ixt8Qn+DJBwjEEKqboMjHFCtQgaGhCMcQoCAgICAgICAgH+DUK1CAYVCB4aEIxxC/wGDe0IBg0IBhUIChoQjGiMbhSMchUIQg0IAhoQjHCMaVK1C"
+        + "AIaEIxojHIUjGyMchYNCgICAgICAgICAf4NQrUIBhUILhoQkECMcQn+DJAIjA0J/gyQaIwFCf4MkGyMaIxuFQn+DJBwjEEKqboMjHFCtQgaGhCMc"
+        + "QoCAgICAgICAgH+DUK1CAYVCB4aEIxxC/wGDe0IBg0IBhUIChoQjGiMbhSMchUIQg0IAhoQkECMcQn+DJAMjAEJ/gyQaIwJCf4MkGyMaIxt8Qn+D"
+        + "JBwjEEKqboMjHFCtQgaGhCMcQoCAgICAgICAgH+DUK1CAYVCB4aEIxxC/wGDe0IBg0IBhUIChoQjGiMbhSMchUIQg0IAhoQjHCMaVK1CAIaEIxoj"
+        + "HIUjGyMchYNCgICAgICAgICAf4NQrUIBhUILhoQkECMcQn+DJAAjBkJ/gyQaQgEkGyMaIxt9Qn+DJBwjEEKqboMjHFCtQgaGhCMcQoCAgICAgICA"
+        + "gH+DUK1CAYVCB4aEIxxC/wGDe0IBg0IBhUIChoQjGiMbhSMchUIQg0IAhoQjGiMbVK1CAIaEIxojG4UjGiMchYNCgICAgICAgICAf4NQrUIBhUIL"
+        + "hoQkECMcQn+DJAZCgICAgANCj4CAgAMjEELAAINQrUIBhUIBhacbJBFBAEF/IxBCwACDUK1CAYVCAYWnGwsmAQF/AkADQCAAUA0BIABCAX0hACAB"
+        + "EQAAIQEgAUEASA0BDAALCws="
 
     /// **Ce que l'hôte doit fournir au module.** Ces quatre nombres sont ceux
     /// de `crates/wisq-vm/src/x86_wasm.rs`, et le même test les y compare : un
@@ -56,7 +57,7 @@ public enum WebKitBench {
     /// C'est beaucoup à demander à un WKWebView, et c'est précisément une chose
     /// que la sonde doit découvrir plutôt que supposer.
     public static let guestPages = 12289
-    public static let globalCount = 30
+    public static let globalCount = 36
     public static let ripSlot = 17
     public static let benchBase: UInt64 = 0x3000_0000
 

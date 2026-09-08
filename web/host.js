@@ -27,7 +27,12 @@ export const SLOTS = {
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
   rflags: 16,
   rip: 17,
-  globalCount: 30,
+  /// Le premier des six sélecteurs de segment — ES, CS, SS, DS, FS, GS, dans
+  /// l'ordre de l'énumération du décodeur. Ils partent à zéro, ce qui veut dire
+  /// « aucun chargeur n'est passé ici » et non « le segment nul est chargé ».
+  segment: 20,
+  segmentCount: 6,
+  globalCount: 36,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
