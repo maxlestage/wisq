@@ -4,6 +4,37 @@ use wisq_vm::kernel_image::{recognise, KernelImage};
 use wisq_vm::x86::{decode, Op};
 use wisq_vm::x86_wasm::{Module, Refused, Survey};
 
+/// Le nom court d'une instruction que l'émetteur refuse.
+///
+/// Un `{:?}` suffirait pour les formes sans champ, mais pas pour celles qui en
+/// portent : `LoadDescriptorTable { interrupts: false }` occupe une ligne de
+/// relevé à lui seul, et ce relevé en aligne dix. Les familles nommées ici
+/// sont exactement celles que les tranches privilégiées ont ajoutées.
+fn name_of(op: Op) -> String {
+    match op {
+        Op::LoadDescriptorTable { interrupts } => {
+            if interrupts { "lidt" } else { "lgdt" }.to_string()
+        }
+        Op::StoreDescriptorTable { interrupts } => {
+            if interrupts { "sidt" } else { "sgdt" }.to_string()
+        }
+        Op::SwapGs => "swapgs".to_string(),
+        Op::LoadSegment { .. } => "mov-vers-segment".to_string(),
+        Op::StoreSegment { .. } => "mov-depuis-segment".to_string(),
+        Op::ReadControlRegister { which } => format!("lire-cr{which}"),
+        Op::WriteControlRegister { which } => format!("écrire-cr{which}"),
+        Op::InterruptFlag(set) => if set { "sti" } else { "cli" }.to_string(),
+        Op::Halt => "hlt".to_string(),
+        Op::PushFlags => "pushf".to_string(),
+        Op::PopFlags => "popf".to_string(),
+        Op::ReadTimestamp => "rdtsc".to_string(),
+        Op::CpuId => "cpuid".to_string(),
+        Op::ReadModelRegister => "rdmsr".to_string(),
+        Op::WriteModelRegister => "wrmsr".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn main() {
     let path = std::env::args().nth(1).expect("le chemin du noyau");
     let bytes = fs::read(&path).expect("le noyau");
@@ -165,7 +196,22 @@ fn main() {
             }
             Err(Refused::NothingAtEntry) => "rien à cette entrée".to_string(),
             Err(Refused::RamIsNotAPowerOfTwo(pages)) => format!("{pages} pages"),
-            Err(Refused::CannotTranslate { .. }) => "l'émetteur refuse".to_string(),
+            // **Nommer l'instruction qui refuse, et pas seulement l'émetteur.**
+            //
+            // « L'émetteur refuse » était vrai et inutile : c'est le premier
+            // poste de refus, et il ne disait pas de quoi il est fait. Or
+            // c'est exactement ce qui départage les deux voies ouvertes dans
+            // `ROADMAP.md` — fauter vers l'hôte pour tout, ou modéliser une
+            // poignée de registres. Si ces refus tiennent à trois formes, la
+            // seconde vaut le coup ; s'ils sont éparpillés, elle ne vaut rien.
+            //
+            // Le décodeur relit l'octet que le refus désigne. Il l'a déjà lu
+            // une fois — c'est la définition d'un `CannotTranslate` — donc
+            // l'absence de nom ici serait un défaut, pas un cas.
+            Err(Refused::CannotTranslate { at }) => match decode(&bytes[*entry + at..end]) {
+                Some(step) => format!("refus:{}", name_of(step.op)),
+                None => "refus:illisible-au-relire".to_string(),
+            },
             Err(Refused::CannotDecode { at }) => {
                 // Un préfixe ne dit rien tout seul : c'est l'octet d'après qui
                 // nomme l'instruction refusée.
@@ -214,12 +260,35 @@ fn main() {
         100.0 * wasted as f64 / entries.len().max(1) as f64,
         cut - wasted
     );
-    print!("  ce qui les refuse :");
-    for (why, n) in worst
+    // **Les deux postes ne se lisent pas de la même façon**, et les mêler sur
+    // une ligne les rendait incomparables. Un trou de décodage se comble en
+    // apprenant une forme ; un refus nommé ne se comble qu'en sachant la
+    // *produire*. Mesuré : trois tranches de décodage n'ont pas déplacé le
+    // total d'une unité, elles ont vidé la première colonne dans la seconde.
+    let (nommés, trous): (Vec<_>, Vec<_>) = worst
         .iter()
         .filter(|(why, _)| why != "coupé par la fenêtre")
-        .take(10)
-    {
+        .partition(|(why, _)| why.starts_with("refus:"));
+    let total_nommés: usize = nommés.iter().map(|(_, n)| *n).sum();
+    let total_trous: usize = trous.iter().map(|(_, n)| *n).sum();
+    print!("  ce que l'émetteur sait lire et refuse de produire ({total_nommés}) :");
+    for (why, n) in &nommés {
+        print!(" {}×{n}", why.trim_start_matches("refus:"));
+    }
+    println!();
+    // **Les deux postes doivent recouvrir exactement les refus francs.** Ils
+    // sont comptés par deux chemins différents — l'un par soustraction, l'autre
+    // par accumulation — et c'est ce qui en fait une garde plutôt qu'une
+    // redondance. Un écart voudrait dire qu'une catégorie de refus a été
+    // introduite sans être classée, et le relevé mentirait par omission.
+    let francs = refused - cut;
+    if total_nommés + total_trous != francs {
+        println!(
+            "  /!\\ le relevé ne boucle pas : {total_nommés} + {total_trous} au lieu de {francs}"
+        );
+    }
+    print!("  ce que le décodeur ne lit pas ({total_trous}) :");
+    for (why, n) in trous.iter().take(12) {
         print!(" {why}×{n}");
     }
     println!();
