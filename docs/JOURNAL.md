@@ -8,6 +8,57 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — la section critique, et le chiffre qui n'a pas bougé trois fois de suite
+
+`cli`, `sti`, `hlt`, `pushf`, `popf` : les cinq instructions d'un octet qu'un
+noyau écrit ensemble, autour de chaque section critique. Décodées, refusées
+nommément. Le point d'entrée d'Alpine se lit maintenant **en entier** — 454
+instructions, et ce qui arrête la lecture est du remplissage `int3`, pas une
+instruction inconnue.
+
+### Ce que je voulais mesurer, et ce que la mesure a répondu
+
+La question que je m'étais posée avant d'écrire une ligne : refuser `cli` et
+`sti` coûterait-il de la couverture, vu qu'un noyau en écrit partout ? Réponse :
+**zéro**. Les régions refusées restent à 183, et les deux qui butaient sur un
+`f4` illisible butent maintenant sur un nom.
+
+Ce qui a fait apparaître la vraie information, en mettant trois tranches côte à
+côte :
+
+| | avant #273 | après #273 | après celle-ci |
+| --- | ---: | ---: | ---: |
+| lecture du point d'entrée | 25 instr. | 70 | **454** |
+| octets refusés en lecture | 5051 | 4720 | 4679 |
+| **régions compilées** | **9935 / 10 118** | **9933 / 10 116** | **9933 / 10 116** |
+| refus nommés | 29 | 48 | 56 |
+| refus illisibles `8c`/`8e`, `9c`, `f4` | 24 | 11 | **0** |
+
+**183 régions refusées, trois fois de suite, à l'unité près.** Chaque
+instruction apprise déplace un refus d'une colonne à l'autre et rien de plus.
+Ce n'est pas un échec des trois tranches — c'est la mesure qui dit où est le
+goulot, et elle ferme un axe : décoder ne fera pas monter la couverture. Elle
+ne montera que quand l'émetteur saura **produire** une instruction privilégiée.
+
+Le décodage n'est donc plus une façon de repousser la question posée à Maxime
+dans `ROADMAP.md` ; c'en est devenu une façon de ne pas la poser.
+
+### Une bêtise de méthode, attrapée par le compilateur
+
+J'ai câblé les nouveaux `Op` dans les listes de refus avec un remplacement
+global au lieu d'un remplacement unique, et j'ai dupliqué les bras dans les
+cinq sites. Rattrapé par six avertissements `unreachable pattern` — mais c'est
+le compilateur qui m'a rattrapé, pas moi. `replace(old, new)` sans le `1`, dans
+un fichier où le motif se répète, est à traiter comme une erreur de frappe.
+
+### Sabotages
+
+Six, six attrapés, chaque restauration vérifiée par `diff` : `cli`/`sti`
+confondus, `hlt` rendu illisible, `pushf`/`popf` confondus, la largeur laissée
+à `prefixes.width(false)` — qui rend Dword sans REX.W et donnerait une pile
+fausse de moitié —, le préfixe 0x66 ignoré, et `Halt` retiré du refus de
+l'émetteur.
+
 ## 2026-09-08 — « c'est clos » ne l'était pas, et deux constantes enregistrées étaient fausses
 
 La PR #273 est passée au vert et fusionnée, mais « App iOS » est tombé une fois

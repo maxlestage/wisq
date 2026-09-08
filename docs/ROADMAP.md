@@ -5062,8 +5062,8 @@ linéaire se resynchronise différemment quand elle lit plus de formes, et deux
 cibles de `call` qu'elle croyait voir disparaissent. Je n'ai pas vérifié
 laquelle des deux lectures a raison.)
 
-**Ce qui reste, par fréquence dans les huit mégaoctets, après cette tranche** —
-liste de travail, pas estimation :
+**Ce qui reste, par fréquence dans les huit mégaoctets** — liste de travail,
+pas estimation, relevée après la tranche des drapeaux :
 
 | forme | occurrences | ce que c'est |
 | --- | --- | --- |
@@ -5071,9 +5071,44 @@ liste de travail, pas estimation :
 | `0f 01` | 52 | le reste du groupe : `invlpg`, `monitor`, `xgetbv`, `rdtscp` |
 | `0f ae` | 28 | les barrières, `fxsave` |
 | `ae` | 28 | `scas` |
-| `9c` / `9d` | 25 | `pushf`, `popf` |
+| `0f 6e` / `6e` / `6f` | 57 | MMX et SSE |
 | `0f 00` | 12 | l'autre groupe système : `lldt`, `ltr`, `sldt` |
-| `fa` / `fb` / `f4` | — | `cli`, `sti`, `hlt` : là où la lecture du point d'entrée s'arrête, et la tranche des interruptions |
+
+(`cc`, 3944 fois, est du remplissage `int3` entre les fonctions et n'est pas
+décodé exprès : le lire ferait entrer le lecteur linéaire dans ce qui n'est pas
+du code.)
+
+### La section critique — et le chiffre qui n'a pas bougé trois fois de suite
+
+`cli`, `sti`, `hlt`, `pushf`, `popf` : les cinq instructions d'un octet qu'un
+noyau écrit ensemble, dans l'idiome `pushfq ; cli ; … ; popfq`. Décodées,
+refusées nommément — `popf` peut rallumer le drapeau d'interruption sans jamais
+nommer `sti`, donc l'accepter reviendrait à accepter un `sti` déguisé.
+
+Le point d'entrée d'Alpine se lit maintenant **en entier** : 454 instructions,
+et ce qui arrête la lecture à l'octet 1575 n'est plus une instruction mais
+`cc cc cc…`, le remplissage entre deux fonctions.
+
+**Et voici ce que trois tranches de décodage ont fait à la couverture :**
+
+| | avant #273 | après #273 | après celle-ci |
+| --- | ---: | ---: | ---: |
+| lecture du point d'entrée | 25 instr. | 70 | **454** |
+| octets refusés en lecture linéaire | 5051 | 4720 | **4679** |
+| **régions d'entrée compilées** | **9935 / 10 118 (98,2 %)** | **9933 / 10 116 (98,2 %)** | **9933 / 10 116 (98,2 %)** |
+| refus nommés (« l'émetteur refuse ») | 29 | 48 | **56** |
+| refus `8c`/`8e`, `9c`, `f4` (illisibles) | 24 | 11 | **0** |
+
+**Le nombre de régions refusées n'a pas bougé d'une seule unité en trois
+tranches** : 183, 183, 183. Chaque instruction apprise convertit un refus
+anonyme en refus nommé, et rien d'autre. Ce n'est pas un échec des tranches —
+c'est la mesure qui dit où est vraiment le goulot.
+
+**Conclusion, et elle ferme un axe** : continuer à décoder ne fera pas monter la
+couverture. Elle ne montera que quand l'émetteur saura **produire** une
+instruction privilégiée — c'est-à-dire quand la question ci-dessous sera
+tranchée. Le décodage n'est plus une façon de la repousser ; c'est devenu une
+façon de ne pas la poser.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
