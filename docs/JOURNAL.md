@@ -51,6 +51,15 @@ Dix mutations, sept tombées du premier coup :
 Trois fois la même leçon : **un test qui n'observe que le verdict ne tient pas
 une garde**, parce qu'une garde change ce qui se passe avant le verdict.
 
+**Et un quatrième trou, trouvé en relisant avant la fusion** : la branche de
+`Recipe::of` qui *liste* un répertoire d'entrées de chargeur — la disposition de
+la famille Arch, donc celle d'`omarchy` — n'était exercée par rien. Du code que
+rien n'exerce est du code qu'on croit juste. L'image d'essai porte maintenant un
+`/loader/entries` **et** un `syslinux.cfg` qui se contredisent, pour qu'on voie
+lequel a servi ; plus un intrus, un `00README.TXT` avec une ligne `linux`, posé
+**avant** la vraie entrée. Sans le filtre sur `.conf`, wisq démarrerait un noyau
+cité dans une documentation.
+
 `examples/iso.rs` est gardé plutôt qu'effacé : c'est l'outil qui a jugé la vraie
 image, et une vérification qu'on ne peut pas refaire n'en est pas une.
 

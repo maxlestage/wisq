@@ -156,6 +156,19 @@ fn directory(own: u32, own_size: u32, children: &[Vec<u8>]) -> Vec<u8> {
 /// * `/boot/grub/grub.cfg` dit la même chose que syslinux dans un **autre
 ///   dialecte**.
 fn tiny() -> (Vec<u8>, Vec<u8>) {
+    image(false)
+}
+
+/// La même image, **plus une entrée de chargeur `systemd-boot`** sous
+/// `/loader/entries`. C'est la disposition de la famille Arch — celle
+/// d'`omarchy` — et elle exerce deux choses que l'autre laisse dormir : la
+/// branche qui *liste un répertoire* de recettes au lieu d'ouvrir un fichier,
+/// et l'ordre de préférence.
+fn arch_like() -> Vec<u8> {
+    image(true).0
+}
+
+fn image(loader: bool) -> (Vec<u8>, Vec<u8>) {
     let kernel: Vec<u8> = (0..3000u32).map(|n| (n % 251) as u8).collect();
     let syslinux_text = b"SERIAL 0 115200\nDEFAULT virt\n\nLABEL virt\n  KERNEL /boot/vmlinuz-virt\n  INITRD /boot/initramfs-virt\n  APPEND modules=loop,squashfs quiet\n";
     let grub_text = b"set timeout=1\n\nmenuentry \"Linux virt\" {\nlinux\t/boot/vmlinuz-virt modules=loop,squashfs quiet\ninitrd\t/boot/initramfs-virt\n}\n";
@@ -250,12 +263,49 @@ fn tiny() -> (Vec<u8>, Vec<u8>) {
         "le répertoire d'essai doit déborder d'un secteur, sinon rien ne teste le bourrage"
     );
 
+    // `/loader/entries/01-archiso.conf`, quand on le demande. Il nomme un
+    // **autre** noyau que syslinux : c'est ainsi qu'on voit lequel gagne.
+    let mut root_children = vec![record(boot_lba, boot_size, true, b"BOOT", None)];
+    if loader {
+        let (conf_lba, conf_size) = build.push(
+            b"title Arch Linux\nlinux /arch/boot/x86_64/vmlinuz-linux\ninitrd /arch/boot/x86_64/initramfs-linux.img\noptions archisobasedir=arch archisolabel=WISQTEST\n",
+        );
+        // **Un intrus, posé avant le vrai.** Un fichier qui n'est pas une
+        // entrée mais qui en a l'air : il porte une ligne `linux`, et il
+        // arrive en premier dans le répertoire. Sans le filtre sur `.conf`,
+        // c'est lui qui serait lu — et wisq démarrerait un noyau cité dans
+        // une documentation.
+        let (readme_lba, readme_size) = build
+            .push(b"Exemple d'entree :\n\nlinux /ceci/nest/pas/un/noyau\ninitrd /ceci/non/plus\n");
+        let entries_lba = build.sectors.len() as u32;
+        let entries = directory(
+            entries_lba,
+            SECTOR as u32,
+            &[
+                record(readme_lba, readme_size, false, b"00README.TXT;1", None),
+                record(
+                    conf_lba,
+                    conf_size,
+                    false,
+                    b"01ARCHIS.CON;1",
+                    Some("01-archiso.conf"),
+                ),
+            ],
+        );
+        let (entries_lba, entries_size) = build.push_directory(&entries);
+
+        let loader_lba = build.sectors.len() as u32;
+        let loader_dir = directory(
+            loader_lba,
+            SECTOR as u32,
+            &[record(entries_lba, entries_size, true, b"ENTRIES", None)],
+        );
+        let (loader_lba, loader_size) = build.push_directory(&loader_dir);
+        root_children.push(record(loader_lba, loader_size, true, b"LOADER", None));
+    }
+
     let root_lba = build.sectors.len() as u32;
-    let root = directory(
-        root_lba,
-        SECTOR as u32,
-        &[record(boot_lba, boot_size, true, b"BOOT", None)],
-    );
+    let root = directory(root_lba, SECTOR as u32, &root_children);
     let (root_lba, root_size) = build.push_directory(&root);
 
     let mut pvd = [0u8; SECTOR];
@@ -598,4 +648,49 @@ fn a_rock_ridge_entry_that_lies_about_its_length_is_dropped() {
         names.contains(&"VMLINUZ_.VIR".to_string()),
         "le nom ISO reprend la main quand Rock Ridge est illisible : {names:?}"
     );
+}
+
+/// **Une recette peut être un répertoire d'entrées, et c'est elle qui gagne.**
+///
+/// Ce test-ci a été ajouté avant la fusion, en relisant : la branche de
+/// `Recipe::of` qui *liste* un répertoire au lieu d'ouvrir un fichier n'était
+/// exercée par rien. Du code que rien n'exerce est du code qu'on croit juste —
+/// et c'est justement la disposition de la famille Arch, donc celle de l'image
+/// qui a déclenché tout ce travail.
+///
+/// L'ordre compte autant que la lecture. Un `archiso.cfg` de syslinux se
+/// compose d'`INCLUDE` qui pointent d'autres fichiers ; une entrée de chargeur
+/// tient en cinq lignes sans indirection. Quand les deux sont là, la seconde
+/// répond mieux à la même question — et l'image d'essai les met en désaccord
+/// exprès pour qu'on voie laquelle a servi.
+#[test]
+fn a_directory_of_loader_entries_wins_over_syslinux() {
+    let image = arch_like();
+    let iso = Iso::open(&image[..]).expect("l'image s'ouvre");
+    // Les deux recettes sont bien là, et elles ne disent pas la même chose.
+    assert!(iso.find("/boot/syslinux/syslinux.cfg").is_some());
+    assert!(iso.find("/loader/entries/01-archiso.conf").is_some());
+
+    let recipe = Recipe::of(&iso).expect("la recette");
+    assert_eq!(
+        recipe.from, "/loader/entries/01-archiso.conf",
+        "l'entrée de chargeur passe avant syslinux"
+    );
+    assert_eq!(recipe.kernel, "/arch/boot/x86_64/vmlinuz-linux");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/arch/boot/x86_64/initramfs-linux.img")
+    );
+    assert_eq!(
+        recipe.command_line, "archisobasedir=arch archisolabel=WISQTEST",
+        "les arguments d'une entrée de chargeur sont sur leur propre ligne"
+    );
+    // **Et l'intrus n'a pas été lu.** Le répertoire porte aussi un fichier qui
+    // ressemble à une entrée sans en être une, placé avant la vraie : sans le
+    // filtre sur `.conf`, c'est lui qui aurait répondu.
+    assert!(
+        iso.find("/loader/entries/00README.TXT").is_some(),
+        "l'intrus doit être là, sinon ce test ne vérifie rien"
+    );
+    assert_ne!(recipe.kernel, "/ceci/nest/pas/un/noyau");
 }
