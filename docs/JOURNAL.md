@@ -44,9 +44,40 @@ constructeur.
 avaient chacun une copie, et deux lecteurs de fichier finissent par ne plus
 ouvrir de la même façon.
 
-**Rien ne branche encore ceci côté Swift** : l'application refuse toujours
-l'image. C'est la tranche suivante, et le dépôt a déjà fait ce découpage —
-`DesktopTranslator`, un pont jugé par la CI Linux, puis son branchement.
+**Le pont Swift est dans la même tranche, et c'est un crochet qui me l'a fait
+voir.** J'allais le livrer à part, en invoquant le précédent de
+`DesktopTranslator`. Un contrôle de dépôt m'a signalé les fichiers non commités,
+et en cherchant comment répondre j'ai vu l'argument que je n'avais pas fait :
+une frontière dont un seul côté existe est **une ABI que rien n'appelle**,
+c'est-à-dire précisément le bouchon complaisant que ce dépôt s'interdit. Les
+deux côtés partent ensemble.
+
+`IsoImage.recipe(of:)` recompose les quatre chaînes ; `IsoImage.extract` écrit
+un membre et **efface la destination quand la copie échoue en chemin**. L'ABI,
+elle, laisse le fichier incomplet — elle ne décide pas à la place de qui l'a
+nommé — et c'est le pont qui décide.
+
+**Deux sabotages ont survécu, et les deux disaient que le test regardait à
+côté.**
+
+Le fichier tronqué non effacé survivait parce que le test refusait sur le
+plafond, donc **avant** que l'ABI ne crée le fichier : il ne pouvait pas voir
+si on efface. Il fallait un échec **après** la création — une image tronquée
+dont l'enregistrement promet trois mille octets que le fichier ne porte plus.
+L'image d'essai a été regravée pour que le noyau soit **en dernier** : sans ça,
+couper la fin emporte les répertoires et l'image n'ouvre même plus.
+
+Le compte de champs, lui, **reste intenable ici** : il faudrait que l'ABI
+change. Le commentaire dit maintenant ce qui le surveille — le test C, qui
+compte les champs contre l'en-tête — et ce que la ligne fait vraiment :
+transformer une dérive en **refus plutôt qu'en arrêt brutal**, `fields[3]`
+sortant du tableau sans elle. Une garde peut valoir pour ce qu'elle évite même
+quand rien sur place ne peut la faire échouer, mais il faut le dire plutôt que
+le laisser croire.
+
+**Ce qui reste** : l'application refuse toujours l'image. Le pont existe, rien
+ne l'appelle encore depuis `LocalVMModel` — et là, `cannotRunHereExplanation`
+est appelé à **deux** endroits.
 
 ## 2026-09-08 — lire l'image plutôt que la refuser
 
