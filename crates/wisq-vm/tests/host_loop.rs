@@ -336,6 +336,170 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
+/// **`cpuid`, et la seule règle qui le rend sûr : ne déclarer que ce qu'on
+/// exécute.**
+///
+/// `cpuid` n'est pas une lecture, c'est une **promesse**. Chaque bit mis dit au
+/// noyau « tu peux utiliser ça », et il le croit sur parole — il n'y a pas de
+/// second contrôle. Déclarer une extension qu'on n'émule pas ne donne pas une
+/// panne franche : ça donne un noyau qui prend un chemin qu'on ne sait pas
+/// exécuter, plus loin, sans rapport visible avec la cause.
+///
+/// D'où le choix : **un zéro partout, sauf ce qui est vrai**. Aujourd'hui il
+/// n'y a qu'un bit vrai à déclarer — le compteur d'horodatage, produit depuis
+/// la tranche précédente. Tout le reste est à zéro, ce qui veut dire « on ne
+/// l'a pas », et c'est exact.
+///
+/// **Le fournisseur est volontairement inconnu.** Se faire passer pour Intel ou
+/// AMD ferait prendre au noyau les contournements d'errata de leurs puces —
+/// du code écrit pour des défauts que cette machine n'a pas. Un nom qu'il ne
+/// reconnaît pas le renvoie sur son chemin générique, qui est exactement ce
+/// qu'on veut.
+#[test]
+fn cpuid_declares_only_what_the_emitter_actually_does() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // Le nom du fournisseur sort en trois morceaux — EBX, puis EDX, puis ECX —
+    // et il faut les mettre tous les trois à l'abri avant la seconde feuille,
+    // sans quoi les deux tiers du nom ne seraient regardés par personne.
+    let program = [
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov $0,%eax
+        0x0f, 0xa2, // cpuid
+        0x48, 0x89, 0xc6, // mov %rax,%rsi — le nombre de feuilles
+        0x48, 0x89, 0xdf, // mov %rbx,%rdi — le premier quart du nom
+        0x48, 0x89, 0xd5, // mov %rdx,%rbp — le deuxième
+        0x49, 0x89, 0xc8, // mov %rcx,%r8  — le troisième
+        // Une feuille qu'on ne sert pas : celle du sommet des feuilles
+        // étendues, la première que Linux demande après les deux basses. Les
+        // quatre registres sont réunis par des `or` pour qu'un seul nombre
+        // suffise à dire « rien n'en est sorti ».
+        0xb8, 0x00, 0x00, 0x00, 0x80, // mov $0x80000000,%eax
+        0x0f, 0xa2, // cpuid
+        0x48, 0x09, 0xd8, // or %rbx,%rax
+        0x48, 0x09, 0xc8, // or %rcx,%rax
+        0x48, 0x09, 0xd0, // or %rdx,%rax
+        0x49, 0x89, 0xc1, // mov %rax,%r9
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov $1,%eax
+        0x0f, 0xa2, // cpuid
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-cpuid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("cpuid.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("feuilles " + lire(6));
+console.log("nom " + lire(7));
+console.log("nom2 " + lire(5));
+console.log("nom3 " + lire(8));
+console.log("inconnue " + lire(9));
+console.log("signature " + lire(0));
+console.log("edx " + lire(2));
+console.log("ecx " + lire(1));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "le `ud2` arrête : {text}"
+    );
+    // **Les valeurs sont écrites en toutes lettres, et c'est délibéré.** Une
+    // première version comparait chaque registre à la constante qui le produit
+    // — les deux côtés de l'égalité bougeaient ensemble, si bien que déclarer
+    // SSE2 ou se faire passer pour Intel laissait le test vert. Un test sur une
+    // promesse doit tenir la promesse, pas la répéter.
+    assert_eq!(
+        line("feuilles "),
+        1,
+        "la feuille zéro annonce combien il y en a"
+    );
+    assert_eq!(
+        line("nom "),
+        0x7173_6977,
+        "« wisq » : un fournisseur qu'aucun noyau ne reconnaît, donc aucun contournement d'errata"
+    );
+    assert_eq!(
+        line("nom2 "),
+        0x7361_7720,
+        "« was », la suite du nom, sortie par EDX"
+    );
+    assert_eq!(
+        line("nom3 "),
+        0x6d76_206d,
+        "« m vm », la fin du nom, sortie par ECX"
+    );
+    // **Une feuille qu'on ne sert pas ne rend rien.** Un vrai processeur rend
+    // dans ce cas la plus haute feuille qu'il connaît ; nous rendons zéro, et
+    // c'est la réponse honnête : zéro à la feuille 0x8000_0000 dit « aucune
+    // feuille étendue », ce qui est exactement vrai ici.
+    assert_eq!(
+        line("inconnue "),
+        0,
+        "hors des deux feuilles connues, les quatre registres sont nuls"
+    );
+    assert_eq!(
+        line("signature "),
+        0x0000_0600,
+        "une famille 6 nue, sans modèle ni pas"
+    );
+    // **Le seul bit vrai, et rien d'autre.** Une capacité déclarée est une
+    // promesse : ce test tient l'ensemble exact, pas seulement « le TSC est
+    // là ». Un bit de plus le ferait tomber, et c'est le but.
+    assert_eq!(
+        line("edx "),
+        0x10,
+        "le bit 4, le compteur d'horodatage, seul : c'est la seule chose qu'on exécute"
+    );
+    assert_eq!(line("ecx "), 0, "et aucune des extensions récentes");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **Le compteur d'horodatage, et la seule propriété qui compte.**
 ///
 /// `rdtsc` est la deuxième instruction que l'émetteur produit, et son choix de

@@ -8,6 +8,48 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — `cpuid`, et un test qui répétait sa promesse au lieu de la tenir
+
+Toujours sur « fais tout ». Cette tranche est `cpuid`, la dernière forme du
+paquet qui ne demande aucun modèle privilégié.
+
+**Une déclaration n'est pas une lecture.** Chaque bit posé dit au noyau « tu
+peux t'en servir », et il le croit sur parole ; se tromper ne donne pas un
+mauvais nombre, ça lui fait prendre un chemin qu'on n'exécute pas, et la panne
+tombe bien plus loin que sa cause. D'où : zéro partout, sauf le bit 4 — le
+compteur d'horodatage de la tranche d'avant. Le fournisseur est « wisq wasm vm »
+exprès : aucun noyau ne le reconnaît, donc aucun contournement d'errata.
+
+**Le test tenait le câblage et pas la promesse.** Il comparait chaque registre
+à la constante qui le produit — les deux côtés bougeaient ensemble. Déclarer
+SSE2 le laissait vert. C'est la forme déjà notée ici de « l'assertion qui a
+l'air d'une garde », dans un costume neuf : elle vérifiait que le chemin arrive
+quelque part, jamais qu'il arrive au bon endroit. Les valeurs sont maintenant
+écrites en toutes lettres, et une septième assertion demande une feuille qu'on
+ne sert pas — sans quoi rendre la feuille 1 à `0x8000_0000` passait inaperçu.
+Sept sabotages sur sept tombent.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9949 / 10 116 (98,3 %) | **9950 / 10 116 (98,4 %)** |
+| refusées | 167 | **166** |
+| dont `cpuid` | 2 | 0 |
+
+**La même garde a rougi pour la deuxième fois de suite**, et c'est un bon
+signe : le test qui liste ce que l'émetteur refuse par son nom a échoué au
+premier passage, comme il l'avait fait sur `rdtsc`. Une liste de refus qu'on ne
+raccourcit jamais ne mesure plus rien ; une qui raccourcit sans que rien ne
+casse ne gardait rien.
+
+**Deux occurrences nommées, un seul refus en moins.** `wrmsr` passe de 9 à 10
+dans le même relevé : une des deux régions cachait un `wrmsr` derrière son
+`cpuid`. Un compte de refus nommés ne baisse pas du nombre d'occurrences
+supprimées — une région ne tombe que quand elle n'a plus **aucune** raison de
+tomber. Le témoin a été mesuré en remisant les modifications et en vérifiant
+que `CPUID_` n'apparaissait plus, parce qu'une comparaison avant/après qui
+mesure deux fois le même code ne prouve rien, et je m'y étais déjà laissé
+prendre cette semaine.
+
 ## 2026-09-08 — le compteur d'horodatage, et le pourcentage qui bouge
 
 Maxime : « fais tout ». Donc les décisions que j'avais posées se prennent, une

@@ -79,6 +79,36 @@ pub const TSC_SLOT: usize = GS_SLOT + 1;
 /// est une propriété, et c'est elle qu'un test tient.
 pub const TSC_STEP: u64 = 100;
 pub const SCRATCH_SLOT: usize = TSC_SLOT + 1;
+
+/// **Ce que `cpuid` déclare, et la règle qui le rend sûr.**
+///
+/// `cpuid` n'est pas une lecture, c'est une **promesse**. Chaque bit mis dit au
+/// noyau « tu peux utiliser ça », et il le croit sur parole : il n'y a pas de
+/// second contrôle. Déclarer une extension qu'on n'émule pas ne donne pas une
+/// panne franche — ça donne un noyau qui part sur un chemin qu'on ne sait pas
+/// exécuter, plus loin, sans rapport visible avec la cause.
+///
+/// **La règle est donc : un zéro partout, sauf ce qui est vrai.** Un zéro veut
+/// dire « on ne l'a pas », et c'est exact ; un bit de plus serait un mensonge
+/// qu'on paierait ailleurs.
+///
+/// Le nom du fournisseur est volontairement **inconnu**. Se faire passer pour
+/// Intel ou AMD ferait prendre au noyau les contournements d'errata de leurs
+/// puces — du code écrit pour des défauts que cette machine n'a pas. Un nom
+/// qu'il ne reconnaît pas le renvoie sur son chemin générique.
+/// « wisq wasm vm », douze octets, dans l'ordre EBX, EDX, ECX.
+pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"wisq");
+pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b" was");
+pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"m vm");
+/// La feuille la plus haute qu'on sache servir. Une seule au-delà de zéro.
+pub const CPUID_MAX_LEAF: u32 = 1;
+/// Famille 6, modèle 0, pas 0 — une signature plausible et sans prétention.
+pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
+/// **Le seul bit vrai aujourd'hui** : le compteur d'horodatage, produit depuis
+/// la tranche précédente. Il se déclare parce qu'il existe, et parce qu'un
+/// noyau qui ne le voit pas cherche une autre horloge que cette machine n'a
+/// pas non plus.
+pub const CPUID_FEATURES_EDX: u32 = 1 << 4;
 pub const SCRATCH_COUNT: usize = 10;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
@@ -1590,6 +1620,53 @@ impl Module {
             });
             return Some(());
         }
+        // **`cpuid` : une table de constantes, et rien de privilégié.**
+        //
+        // La feuille arrive dans EAX et doit être lue **avant** qu'on écrive
+        // dedans — sans quoi la valeur de la feuille zéro déciderait de la
+        // feuille suivante. D'où le brouillon.
+        //
+        // Le choix entre les feuilles se fait par `select` plutôt que par un
+        // branchement : deux `select` imbriqués valent quelques instructions,
+        // là où un `if` ouvrirait un bloc dans un corps qui n'en attend pas.
+        if step.op == Op::CpuId {
+            body.store(Body::scratch(0), |b| {
+                b.load(Self::slot(RAX))
+                    .constant(0xffff_ffff)
+                    .op(code::I64_AND);
+            });
+            // `select` dépile la condition, puis les deux valeurs : il rend la
+            // **première** quand la condition n'est pas nulle.
+            let leaf_is = |b: &mut Body, which: u64| {
+                b.load(Body::scratch(0)).constant(which).op(code::I64_EQ);
+            };
+            let choose = |body: &mut Body, slot: usize, zero: u32, one: u32| {
+                body.store(Self::slot(slot as u8), |b| {
+                    // **`select` dépile la condition, puis deux valeurs**, et
+                    // rend la **première** quand la condition n'est pas nulle.
+                    // Le premier jet en empilait une de moins et le module ne
+                    // se compilait pas — « can't pop empty stack », ce qui est
+                    // au moins un refus franc.
+                    b.constant(u64::from(zero)); // si la feuille est zéro
+                    b.constant(u64::from(one)); // si c'est la feuille un
+                    b.constant(0); // et sinon, rien
+                    leaf_is(b, 1);
+                    b.op(code::SELECT);
+                    leaf_is(b, 0);
+                    b.op(code::SELECT);
+                });
+            };
+            // Hors des deux feuilles connues, tout est nul : c'est ce que rend
+            // un processeur pour une feuille qu'il ne sert pas, et c'est aussi
+            // ce qu'il faut dire quand on ne sait rien.
+            // Les quatre registres que `cpuid` écrit, dans l'ordre du jeu
+            // d'instructions : EAX, EBX, ECX, EDX — soit 0, 3, 1 et 2.
+            choose(body, 0, CPUID_MAX_LEAF, CPUID_SIGNATURE);
+            choose(body, 3, CPUID_VENDOR_EBX, 0);
+            choose(body, 1, CPUID_VENDOR_ECX, 0);
+            choose(body, 2, CPUID_VENDOR_EDX, CPUID_FEATURES_EDX);
+            return Some(());
+        }
         // **Les instructions privilégiées : décodées, pas traduisibles.**
         //
         // Le décodeur les nomme une par une depuis qu'un noyau s'est arrêté
@@ -1606,8 +1683,7 @@ impl Module {
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
         if matches!(
             step.op,
-            Op::CpuId
-                | Op::ReadModelRegister
+            Op::ReadModelRegister
                 | Op::WriteModelRegister
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
@@ -4168,12 +4244,13 @@ mod port_tests {
     /// dit.
     #[test]
     fn a_privileged_instruction_is_refused_by_name_not_by_silence() {
-        // **`rdtsc` a quitté cette liste, et c'est le test qui l'a dit.** Il
-        // est produit depuis la tranche du compteur virtuel ; l'assertion a
-        // échoué au premier passage, ce qui est exactement son rôle. Une
-        // liste de refus qu'on ne raccourcit jamais ne mesure plus rien.
+        // **Deux instructions ont quitté cette liste, et c'est le test qui l'a
+        // dit les deux fois.** `rdtsc` d'abord, `cpuid` ensuite : chaque fois
+        // l'assertion a échoué au premier passage de la tranche qui la
+        // produisait, ce qui est exactement son rôle. Une liste de refus qu'on
+        // ne raccourcit jamais ne mesure plus rien — et une qui raccourcit sans
+        // rien casser ne gardait rien.
         for (bytes, what) in [
-            (&[0x0f, 0xa2, 0xc3][..], "cpuid"),
             (&[0x0f, 0x32, 0xc3][..], "rdmsr"),
             (&[0x0f, 0x30, 0xc3][..], "wrmsr"),
         ] {

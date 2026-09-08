@@ -5272,6 +5272,49 @@ liste de refus qu'on ne raccourcit jamais ne mesure plus rien.
 demande de choisir ce qu'on **déclare** au noyau, et en déclarer trop lui
 ferait prendre des chemins qu'on n'émule pas — c'est sa propre tranche.
 
+### `cpuid` produit : une déclaration n'est pas une lecture, c'est une promesse
+
+`cpuid` était la dernière forme du paquet « sans modèle privilégié ». Elle
+ressemble à une lecture et n'en est pas une : chaque bit posé dit au noyau
+« tu peux t'en servir », et il le croit sur parole. Une lecture qu'on rend
+fausse donne un mauvais nombre ; une capacité qu'on déclare à tort fait
+prendre au noyau un chemin qu'on n'exécute pas, et la panne arrive bien plus
+loin, sans rapport visible avec la cause. La règle tenue ici est donc **zéro
+partout, sauf ce qui est vrai** :
+
+| feuille | ce qu'on rend | pourquoi |
+| --- | --- | --- |
+| 0 | `1`, puis « wisq wasm vm » | une seule feuille de plus, et un fournisseur qu'aucun noyau ne reconnaît — donc aucun contournement d'errata Intel ou AMD |
+| 1 | famille 6 nue ; EDX = bit 4 seul | le compteur d'horodatage, la seule capacité de la tranche précédente |
+| toute autre | quatre zéros | à `0x8000_0000`, zéro veut dire « aucune feuille étendue », ce qui est exactement vrai |
+
+**Le test a d'abord été faux, et son défaut a une forme déjà connue.** Il
+comparait chaque registre à la constante qui le produit — les deux côtés de
+l'égalité bougeaient ensemble. Déclarer SSE2 ou se faire passer pour Intel le
+laissait vert : il tenait le câblage, jamais la promesse. Sept sabotages
+tombent maintenant, dont trois qui survivaient : les valeurs sont écrites en
+toutes lettres, et les trois quarts du nom qui n'étaient regardés par personne
+sont lus.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9949 / 10 116 (98,3 %) | **9950 / 10 116 (98,4 %)** |
+| régions refusées | 167 | **166** |
+| refus nommés | 40 | **39** |
+| dont `cpuid` | 2 | **0** |
+
+**Deux occurrences nommées, un seul refus en moins, et c'est la leçon de
+mesure de la tranche.** `wrmsr` passe de 9 à 10 dans le même relevé : une des
+deux régions cachait un `wrmsr` derrière son `cpuid`, et produire le premier
+n'a fait qu'exposer le second. Un compte de refus **nommés** ne baisse pas du
+nombre d'occurrences qu'on supprime — une région ne tombe que quand elle n'a
+plus aucune raison de tomber.
+
+**Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
+pour une raison qui demande un modèle : les MSR (16), les sélecteurs de segment
+(13), les registres de contrôle (5), les tables de descripteurs (3), `hlt` et
+`popf`.
+
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
 c'est désormais la *seule* chose qui refuse la région d'entrée. Deux voies, et
