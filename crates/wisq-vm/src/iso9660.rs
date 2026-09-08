@@ -51,6 +51,31 @@ impl Bytes for &[u8] {
     }
 }
 
+/// **L'image, lue sur le disque, jamais tenue en mémoire.**
+///
+/// C'est la seule forme que le téléphone puisse employer : une image
+/// d'installation pèse des gibioctets. Elle vit ici plutôt que chez ses
+/// appelants — l'exemple et l'ABI C en avaient chacun une copie, et deux
+/// copies d'un lecteur de fichier finissent par ne plus ouvrir de la même
+/// façon.
+pub struct OnDisk(std::cell::RefCell<std::fs::File>);
+
+impl OnDisk {
+    pub fn open(path: &std::path::Path) -> Option<Self> {
+        std::fs::File::open(path)
+            .ok()
+            .map(|file| OnDisk(std::cell::RefCell::new(file)))
+    }
+}
+
+impl Bytes for OnDisk {
+    fn read(&self, at: u64, into: &mut [u8]) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = self.0.borrow_mut();
+        file.seek(SeekFrom::Start(at)).is_ok() && file.read_exact(into).is_ok()
+    }
+}
+
 /// La taille d'un secteur, et le seul multiple que le format emploie. Le
 /// descripteur la déclare tout de même, et on la lit plutôt que de la croire.
 const SECTOR: usize = 2048;
@@ -225,6 +250,36 @@ impl<B: Bytes> Iso<B> {
         self.source
             .read(u64::from(entry.start) * SECTOR as u64, &mut out)
             .then_some(out)
+    }
+
+    /// **Le même contenu, écrit au fil de l'eau.**
+    ///
+    /// `read` rend un `Vec` : commode pour un fichier de configuration de deux
+    /// cents octets, ruineux pour un initramfs de cent mébioctets sur un
+    /// téléphone. Celle-ci ne tient jamais plus d'une tranche à la fois.
+    ///
+    /// Rend faux **sans avoir fini d'écrire** quand la lecture échoue en
+    /// chemin : l'appelant doit alors jeter ce qu'il a reçu. Un fichier à
+    /// moitié écrit qu'on croirait entier est exactement le défaut que le
+    /// plafond de `read` évite ailleurs.
+    pub fn copy(&self, entry: &Entry, sink: &mut impl std::io::Write, ceiling: u64) -> bool {
+        if entry.directory || u64::from(entry.size) > ceiling {
+            return false;
+        }
+        let mut chunk = vec![0u8; 1 << 16];
+        let mut done = 0u64;
+        while done < u64::from(entry.size) {
+            let want = chunk.len().min((u64::from(entry.size) - done) as usize);
+            let at = u64::from(entry.start) * SECTOR as u64 + done;
+            if !self.source.read(at, &mut chunk[..want]) {
+                return false;
+            }
+            if sink.write_all(&chunk[..want]).is_err() {
+                return false;
+            }
+            done += want as u64;
+        }
+        true
     }
 
     /// Un enregistrement de répertoire. Rend aussi s'il désigne le répertoire
