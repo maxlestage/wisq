@@ -95,6 +95,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         "le nombre d'emplacements de table"
     );
     assert_eq!(
+        value("fsBase"),
+        wisq_vm::x86_wasm::FS_BASE_SLOT.to_string(),
+        "la base de FS"
+    );
+    assert_eq!(
+        value("kernelGs"),
+        wisq_vm::x86_wasm::KERNEL_GS_SLOT.to_string(),
+        "la base que swapgs échange avec celle de GS"
+    );
+    assert_eq!(
         value("tablePages"),
         TABLE_PAGES.to_string(),
         "les pages de la correspondance"
@@ -358,6 +368,245 @@ console.log("rdx " + vm.globals[2].value.toString());
         (laps * (1 + 2 + 3)).to_string(),
         "l'anneau doit avoir tourné {laps} fois dans un seul appel"
     );
+}
+
+/// **Les MSR : trois numéros modélisés, et un arrêt nommé pour tous les autres.**
+///
+/// **Le numéro d'un MSR vit dans ECX, pas dans l'instruction.** Le traducteur
+/// ne peut donc pas le connaître : « refuser tel MSR » n'est pas une décision
+/// de traduction, c'est un aiguillage à l'exécution. C'est ce qui distingue
+/// cette tranche des précédentes, et ce qui change le sens du relevé — une
+/// région *compilée* n'est plus forcément une région qui *va au bout*.
+///
+/// **`GS_BASE` n'est pas un aller-retour, c'est un vrai modèle.** L'émetteur
+/// consulte déjà cette base à chaque adresse préfixée par `%gs:` — un noyau
+/// x86-64 y range tout ce qui est propre à un cœur. L'écrire par `wrmsr` change
+/// donc réellement où l'invité lit, et ce test le mesure par un accès mémoire,
+/// pas par une relecture de registre.
+///
+/// **Un numéro qu'on ne modélise pas rend la main à son adresse.** Ne rien
+/// faire serait le pire des trois choix : le noyau croirait avoir posé une
+/// valeur, et la panne tomberait ailleurs. L'arrêt porte l'adresse de
+/// l'instruction, et le test le vérifie en la distinguant de celle du `ud2`
+/// qui suit — sans quoi « ça s'est arrêté » ne prouverait pas « ça s'est
+/// arrêté là ».
+#[test]
+fn an_unmodelled_model_register_stops_the_machine_where_it_stands() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let head: Vec<u8> = vec![
+        0xb8, 0xbe, 0xba, 0xfe, 0xca, // mov $0xcafebabe,%eax
+        0x48, 0x89, 0x04, 0x25, 0x10, 0x10, 0x00, 0x00, // mov %rax,0x1010
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx — GS_BASE
+        0xb8, 0x00, 0x10, 0x00, 0x00, // mov $0x1000,%eax — la moitié basse
+        // **Une moitié haute non nulle, et c'est délibéré.** Avec une base qui
+        // tient sur trente-deux bits, laisser tomber EDX ou oublier le décalage
+        // de rdmsr ne se voit nulle part — deux sabotages ont survécu comme ça.
+        // L'adresse, elle, est repliée dans la RAM, donc l'accès atterrit au
+        // même endroit : la moitié haute ne se lit que par `rdmsr`.
+        0xba, 0x00, 0x00, 0xad, 0xde, // mov $0xdead0000,%edx — la moitié haute
+        0x0f, 0x30, // wrmsr — la base de GS vaut 0xdead000000001000
+        0x65, 0x48, 0x8b, 0x3c, 0x25, 0x10, 0x00, 0x00,
+        0x00, // mov %gs:0x10,%rdi — donc 0x1010
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx
+        0x0f, 0x32, // rdmsr
+        0x48, 0x89, 0xc6, // mov %rax,%rsi — la valeur relue
+        0xb9, 0x23, 0x01, 0x00, 0x00, // mov $0x123,%ecx — un MSR qu'on ne modélise pas
+    ];
+    // L'adresse où la machine doit s'arrêter : celle du `wrmsr` inconnu, et
+    // **pas** celle du `ud2` qui le suit.
+    let stops_at = BASE + head.len() as u64;
+    let mut program = head;
+    program.extend_from_slice(&[0x0f, 0x30]); // wrmsr — numéro inconnu
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
+    let scratch = std::env::temp_dir().join(format!("wisq-host-msr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("msr.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("ou " + BigInt.asUintN(64, why.at).toString());
+console.log("gs " + lire(7));
+console.log("relu " + lire(6));
+console.log("haut " + lire(2));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "la machine s'arrête : {text}"
+    );
+    assert_eq!(
+        line("ou "),
+        stops_at,
+        "et elle s'arrête sur le `wrmsr` inconnu, pas sur le `ud2` d'après"
+    );
+    // **La preuve que `GS_BASE` est un modèle et non un rangement** : la
+    // lecture est passée par la base que `wrmsr` vient d'écrire.
+    assert_eq!(
+        line("gs "),
+        0xcafe_babe,
+        "l'accès %gs:0x10 doit être parti de la base posée par wrmsr"
+    );
+    assert_eq!(
+        line("relu "),
+        0x1000,
+        "et rdmsr rend la moitié basse dans EAX"
+    );
+    assert_eq!(
+        line("haut "),
+        0xdead_0000,
+        "et la moitié haute dans EDX — les deux moitiés font l'aller-retour"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`swapgs` échange deux bases, et n'en écrase aucune.**
+///
+/// Un noyau x86-64 l'exécute à **chaque** entrée d'anneau : la base de GS
+/// pointe l'espace utilisateur, celle du noyau attend dans `KERNEL_GS_BASE`, et
+/// l'échange les permute. Un `swapgs` qui écraserait au lieu d'échanger
+/// marcherait la première fois et perdrait la base utilisateur au retour.
+///
+/// Ce test existe parce qu'il manquait : `swapgs` a été produit dans la même
+/// tranche que les MSR, et un sabotage — « écraser au lieu d'échanger » — a
+/// survécu faute de quoi que ce soit qui l'exerce.
+#[test]
+fn swapgs_exchanges_the_two_bases_instead_of_overwriting_one() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx — GS_BASE
+        0xb8, 0x11, 0x11, 0x00, 0x00, // mov $0x1111,%eax
+        0x31, 0xd2, // xor %edx,%edx
+        0x0f, 0x30, // wrmsr
+        0xb9, 0x02, 0x01, 0x00, 0xc0, // mov $0xc0000102,%ecx — KERNEL_GS_BASE
+        0xb8, 0x22, 0x22, 0x00, 0x00, // mov $0x2222,%eax
+        0x0f, 0x30, // wrmsr
+        0x0f, 0x01, 0xf8, // swapgs
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx
+        0x0f, 0x32, // rdmsr
+        0x48, 0x89, 0xc6, // mov %rax,%rsi — GS après l'échange
+        0xb9, 0x02, 0x01, 0x00, 0xc0, // mov $0xc0000102,%ecx
+        0x0f, 0x32, // rdmsr
+        0x48, 0x89, 0xc7, // mov %rax,%rdi — celle du noyau après l'échange
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-swapgs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("swapgs.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("gs " + lire(6));
+console.log("noyau " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "le `ud2` arrête : {text}"
+    );
+    // **Les deux moitiés de l'échange, séparément.** Vérifier une seule des
+    // deux laisserait passer un écrasement : c'est exactement ce qu'un sabotage
+    // a fait ici avant que ce test existe.
+    assert_eq!(line("gs "), 0x2222, "GS porte maintenant la base du noyau");
+    assert_eq!(
+        line("noyau "),
+        0x1111,
+        "et le noyau porte celle qu'avait GS"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 /// **Les tables de descripteurs : dix octets qui font l'aller-retour.**
