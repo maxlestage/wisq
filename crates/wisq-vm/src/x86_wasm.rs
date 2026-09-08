@@ -1571,6 +1571,10 @@ impl Module {
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
+                | Op::InterruptFlag(_)
+                | Op::Halt
+                | Op::PushFlags
+                | Op::PopFlags
         ) {
             return None;
         }
@@ -1729,7 +1733,11 @@ impl Module {
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
-                | Op::WriteControlRegister { .. } => {
+                | Op::WriteControlRegister { .. }
+            | Op::InterruptFlag(_)
+            | Op::Halt
+            | Op::PushFlags
+            | Op::PopFlags => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -2116,7 +2124,11 @@ impl Module {
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }
-            | Op::WriteControlRegister { .. } => {
+            | Op::WriteControlRegister { .. }
+            | Op::InterruptFlag(_)
+            | Op::Halt
+            | Op::PushFlags
+            | Op::PopFlags => {
                 unreachable!(
                     "une instruction privilégiée n'est pas un calcul : `translate` la refuse avant"
                 )
@@ -4204,6 +4216,11 @@ mod port_tests {
             ("mov %cr4,%rcx", &[0x0f, 0x20, 0xe1][..]),
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
             ("wrmsr", &[0x0f, 0x30][..]),
+            ("cli", &[0xfa][..]),
+            ("sti", &[0xfb][..]),
+            ("hlt", &[0xf4][..]),
+            ("pushfq", &[0x9c][..]),
+            ("popfq", &[0x9d][..]),
         ] {
             // Première moitié : le décodeur la lit, entière.
             let step =
