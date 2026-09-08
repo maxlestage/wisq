@@ -32,8 +32,8 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Width, AF, CF, DF, OF, PF, SF,
-    ZF,
+    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF, CF, DF,
+    OF, PF, SF, ZF,
 };
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
@@ -78,7 +78,25 @@ pub const TSC_SLOT: usize = GS_SLOT + 1;
 /// dire vaut mieux que la déguiser en fréquence : seule sa positivité stricte
 /// est une propriété, et c'est elle qu'un test tient.
 pub const TSC_STEP: u64 = 100;
-pub const SCRATCH_SLOT: usize = TSC_SLOT + 1;
+/// **Les six sélecteurs de segment, rangés et rendus — et rien d'autre.**
+///
+/// En mode 64 bits, CS, SS, DS et ES ont une base **forcée à zéro** : aucun
+/// accès mémoire ne dépend de leur valeur, et le dépôt le tient déjà ailleurs
+/// en montrant que leurs préfixes n'y changent rien. Un sélecteur y est donc
+/// un nombre que l'invité range et relit, et c'est exactement ce qui se
+/// modélise sans mentir : l'aller-retour est fidèle.
+///
+/// **Ce que ces nombres ne sont pas** : il n'y a aucune table de descripteurs
+/// derrière eux. Ils partent à zéro, ce qui veut dire « aucun chargeur n'est
+/// passé ici » — pas « le segment nul est chargé ». La valeur de départ n'est
+/// volontairement pas une affirmation sur l'état d'amorçage : la poser
+/// demanderait de lire le protocole d'amorçage à sa source, et le citer de
+/// mémoire fabriquerait une machine plausible plutôt qu'une machine vraie.
+///
+/// L'ordre est celui de l'énumération du décodeur : ES, CS, SS, DS, FS, GS.
+pub const SEGMENT_SLOT: usize = TSC_SLOT + 1;
+pub const SEGMENT_COUNT: usize = 6;
+pub const SCRATCH_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
 
 /// **Ce que `cpuid` déclare, et la règle qui le rend sûr.**
 ///
@@ -1534,6 +1552,20 @@ impl Module {
         module
     }
 
+    /// L'emplacement d'un sélecteur, dans l'ordre de l'énumération du
+    /// décodeur : ES, CS, SS, DS, FS, GS.
+    fn segment_slot(segment: Segment) -> usize {
+        SEGMENT_SLOT
+            + match segment {
+                Segment::Es => 0,
+                Segment::Cs => 1,
+                Segment::Ss => 2,
+                Segment::Ds => 3,
+                Segment::Fs => 4,
+                Segment::Gs => 5,
+            }
+    }
+
     fn slot(register: u8) -> usize {
         register as usize
     }
@@ -1681,6 +1713,45 @@ impl Module {
         // **Ce n'est pas un progrès en soi**, et l'exploration le montre : à
         // chaque famille lue, la frontière avance de quelques octets et
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
+        // **Lire un sélecteur de segment : un aller-retour, et c'est tout.**
+        //
+        // La largeur vient du décodeur, qui la tire du préfixe `0x66`, et
+        // `put` en fait ce que le processeur en fait : sans préfixe le
+        // sélecteur est zéro-étendu sur soixante-quatre bits, avec lui seuls
+        // les seize bits bas changent. Les deux formes ont été mesurées sur un
+        // vrai processeur avant d'être écrites ici.
+        if let Op::StoreSegment { segment } = step.op {
+            // **La forme mémoire est refusée, et c'est une mesure, pas un
+            // oubli** : sur les treize occurrences du noyau Alpine, treize sont
+            // la forme registre. La produire demanderait un accès mémoire de
+            // seize bits pour un cas que rien n'exerce.
+            step.memory.is_none().then_some(())?;
+            Self::put(step.dst, step.width, body, |b| {
+                b.load(Self::segment_slot(segment));
+            });
+            return Some(());
+        }
+        // **Charger un sélecteur : seulement ceux dont la base est morte.**
+        //
+        // ES, SS et DS ont en mode 64 bits une base **forcée à zéro** : le
+        // sélecteur ne décide plus d'aucune adresse, et le ranger suffit à être
+        // fidèle. FS et GS non — les charger relit un descripteur dans la table
+        // globale pour en tirer une base, et cette table n'existe pas ici. Les
+        // produire ferait croire au noyau qu'on a implémenté des descripteurs,
+        // et la panne tomberait loin de sa cause. Charger CS ne se décode même
+        // pas : le processeur lève `#UD`.
+        if let Op::LoadSegment { segment } = step.op {
+            step.memory.is_none().then_some(())?;
+            matches!(segment, Segment::Es | Segment::Ss | Segment::Ds).then_some(())?;
+            body.store(Self::segment_slot(segment), |b| {
+                // Un sélecteur fait seize bits, quelle que soit la largeur de
+                // l'opérande source.
+                b.load(Self::slot(step.dst))
+                    .constant(0xffff)
+                    .op(code::I64_AND);
+            });
+            return Some(());
+        }
         if matches!(
             step.op,
             Op::ReadModelRegister
@@ -1688,8 +1759,6 @@ impl Module {
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
-                | Op::LoadSegment { .. }
-                | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
@@ -4386,8 +4455,13 @@ mod port_tests {
             ("lgdt", &[0x0f, 0x01, 0x15, 0xb1, 0xc9, 0x43, 0x01][..]),
             ("sidt", &[0x0f, 0x01, 0x0d, 0x00, 0x00, 0x00, 0x00][..]),
             ("swapgs", &[0x0f, 0x01, 0xf8][..]),
-            ("mov %eax,%ds", &[0x8e, 0xd8][..]),
-            ("mov %ds,%eax", &[0x8c, 0xd8][..]),
+            // **Les sélecteurs ne sont plus refusés en bloc.** Ranger un
+            // segment et en charger un dont la base est morte — ES, SS, DS —
+            // sont produits depuis cette tranche. Ce qui reste ici est ce qui
+            // demanderait une table qu'on n'a pas, et la forme que rien
+            // n'exerce.
+            ("mov %ax,%fs", &[0x8e, 0xe0][..]),
+            ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
             ("mov %cr4,%rcx", &[0x0f, 0x20, 0xe1][..]),
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
             ("wrmsr", &[0x0f, 0x30][..]),

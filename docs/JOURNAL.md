@@ -8,6 +8,50 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — les sélecteurs de segment, et une largeur qu'il fallait mesurer
+
+Toujours « fais tout ». Première tranche du paquet qui *demande* un modèle, et
+elle montre que ce n'est pas un verdict uniforme : sur treize refus, sept se
+produisent honnêtement et six ne le peuvent pas.
+
+**Ce qui décide est où va la base.** En mode 64 bits, celle de CS, SS, DS et ES
+est forcée à zéro — le dépôt le tenait déjà, par le fait que leurs préfixes ne
+changent aucune adresse. Un sélecteur y est un nombre qu'on range et qu'on
+relit, et l'aller-retour est fidèle. FS et GS non : les charger relit un
+descripteur pour en tirer une base, et cette table n'existe pas ici. Les six
+refus qui restent sont **tous** des `mov %ax,%fs`, ce qui est le résultat visé
+plutôt qu'un reste.
+
+**Une largeur fausse, trouvée en la mesurant.** Le décodeur enregistrait
+`Width::Word` pour les deux formes. Ce conteneur étant un x86-64, la question
+se tranchait en trois lignes de C plutôt qu'en citant un manuel de mémoire :
+`8c cb` rend le sélecteur **zéro-étendu** sur soixante-quatre bits, `66 8c cb`
+n'écrit que les seize bits bas. Rien ne s'en plaignait parce que rien ne
+produisait l'instruction — troisième défaut de la série que seul le passage de
+« lu » à « produit » révèle.
+
+**Ce que la valeur de départ ne dit pas.** Les sélecteurs partent à zéro, et
+zéro veut dire « aucun chargeur n'est passé ici », pas « le segment nul est
+chargé ». J'ai failli y poser l'état que le protocole d'amorçage 64 bits exige
+du chargeur ; je ne peux pas le lire à sa source depuis ici, et l'écrire de
+mémoire aurait fabriqué une machine plausible. La tranche s'arrête donc à ce
+qu'elle prouve.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9950 / 10 116 | **9956 / 10 116** |
+| refusées | 166 | **160** |
+| refus nommés | 39 | **33** |
+
+**Treize refus nommés partent, six régions tombent, six nouveaux refus
+apparaissent** — cachés derrière un rangement de segment dans la même région.
+Deuxième tranche de suite où le relevé rappelle qu'il compte des *raisons*, pas
+des instructions.
+
+**Et la garde des refus nommés a rougi pour la troisième tranche de suite.**
+Elle a maintenant deux lignes de moins et deux de plus : ce qui reste refusé y
+entre en même temps que ce qui en sort.
+
 ## 2026-09-08 — `cpuid`, et un test qui répétait sa promesse au lieu de la tenir
 
 Toujours sur « fais tout ». Cette tranche est `cpuid`, la dernière forme du

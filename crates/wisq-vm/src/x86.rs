@@ -3206,6 +3206,23 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 // Il n'y a que six segments.
                 _ => return None,
             };
+            // **La largeur a été mesurée sur un vrai processeur.** Elle n'est
+            // pas la même dans les deux formes, et le décodeur enregistrait la
+            // même pour les deux :
+            //
+            // | forme | RBX après, parti de `deadbeef11112222`, CS valant 0x33 |
+            // | --- | --- |
+            // | `8c cb` | `0000000000000033` — zéro-étendu |
+            // | `66 8c cb` | `deadbeef11110033` — seize bits, le reste intact |
+            //
+            // Personne ne s'en plaignait parce que rien ne produisait
+            // l'instruction. Le sélecteur lui-même fait toujours seize bits :
+            // ce qui change est ce qu'il advient du reste du registre.
+            let width = if prefixes.operand_size {
+                Width::Word
+            } else {
+                Width::Qword
+            };
             Some(Decoded {
                 op: if load {
                     Op::LoadSegment { segment }
@@ -3215,7 +3232,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 dst: field.register,
                 length: at,
                 memory: field.memory,
-                ..Decoded::nothing(Width::Word)
+                ..Decoded::nothing(width)
             })
         }
         0x8d => {
