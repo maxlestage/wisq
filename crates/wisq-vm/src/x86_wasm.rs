@@ -136,7 +136,26 @@ pub const MSR_FS_BASE: u64 = 0xc000_0100;
 pub const MSR_GS_BASE: u64 = 0xc000_0101;
 pub const MSR_KERNEL_GS_BASE: u64 = 0xc000_0102;
 
-pub const SCRATCH_SLOT: usize = KERNEL_GS_SLOT + 1;
+/// **Les cinq registres de contrôle que le décodeur lit** : CR0, CR2, CR3, CR4
+/// et CR8, rangés dans cet ordre.
+///
+/// **Lire se modélise, allumer la pagination non.** Écrire CR4 ou CR8 est
+/// accepté — rien ne consulte ces bits. Écrire CR0 ou CR3 est **refusé** : ce
+/// serait allumer la pagination, que cette machine n'implémente pas, et un
+/// noyau qui croit paginer part sur un chemin dont la panne n'aura aucun
+/// rapport visible avec sa cause.
+///
+/// **Ici, contrairement aux MSR, le numéro est dans l'instruction** — le champ
+/// `reg` du ModRM. « Refuser par le numéro », infaisable pour un MSR dont le
+/// numéro arrive dans ECX, est donc parfaitement possible ici.
+///
+/// **Ce que ces registres ne font pas** : rien ne lit ces bits. Ni la
+/// protection en écriture de CR0, ni le SMEP/SMAP de CR4. Accepter une écriture
+/// dit « on la range », pas « on l'applique ».
+pub const CONTROL_SLOT: usize = KERNEL_GS_SLOT + 1;
+pub const CONTROL_COUNT: usize = 5;
+
+pub const SCRATCH_SLOT: usize = CONTROL_SLOT + CONTROL_COUNT;
 
 /// **Ce que `cpuid` déclare, et la règle qui le rend sûr.**
 ///
@@ -1598,6 +1617,20 @@ impl Module {
         module
     }
 
+    /// L'emplacement d'un registre de contrôle. Les numéros ne sont pas
+    /// contigus — le décodeur n'accepte que 0, 2, 3, 4 et 8 — donc la
+    /// correspondance est écrite plutôt que calculée.
+    fn control_slot(which: u8) -> usize {
+        CONTROL_SLOT
+            + match which {
+                0 => 0,
+                2 => 1,
+                3 => 2,
+                4 => 3,
+                _ => 4, // CR8, le seul autre que le décodeur laisse passer
+            }
+    }
+
     /// Les deux emplacements d'une table : sa limite, puis sa base.
     fn table_slots(interrupts: bool) -> (usize, usize) {
         let at = TABLE_SLOT + if interrupts { 2 } else { 0 };
@@ -1765,6 +1798,30 @@ impl Module {
         // **Ce n'est pas un progrès en soi**, et l'exploration le montre : à
         // chaque famille lue, la frontière avance de quelques octets et
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
+        // **Les registres de contrôle : le numéro est connu à la traduction.**
+        //
+        // C'est la différence avec les MSR, et elle change tout : le numéro vit
+        // dans le champ `reg` du ModRM, donc « celui-ci oui, celui-là non » est
+        // une décision qu'on peut prendre **ici**, sans aiguillage ni retour de
+        // main. Un refus reste un refus de traduction, nommé, à son adresse.
+        if let Op::ReadControlRegister { which } = step.op {
+            Self::put(step.dst, step.width, body, |b| {
+                b.load(Self::control_slot(which));
+            });
+            return Some(());
+        }
+        if let Op::WriteControlRegister { which } = step.op {
+            // **CR0 et CR3 allument la pagination.** L'accepter ferait croire
+            // au noyau qu'il a une table de pages, et la panne tomberait bien
+            // plus loin que sa cause. Mesuré avant d'être décidé : sur les
+            // régions d'entrée du noyau Alpine, aucune écriture de CR0 ni de
+            // CR3 ne bloque une région — ce refus ne coûte rien.
+            matches!(which, 4 | 8).then_some(())?;
+            body.store(Self::control_slot(which), |b| {
+                b.load(Self::slot(step.dst));
+            });
+            return Some(());
+        }
         // **Les registres spécifiques au modèle : un aiguillage, pas une
         // décision de traduction.**
         //
@@ -1935,14 +1992,7 @@ impl Module {
             });
             return Some(());
         }
-        if matches!(
-            step.op,
-            Op::ReadControlRegister { .. }
-                | Op::WriteControlRegister { .. }
-                | Op::InterruptFlag(_)
-                | Op::Halt
-                | Op::PopFlags
-        ) {
+        if matches!(step.op, Op::InterruptFlag(_) | Op::Halt | Op::PopFlags) {
             return None;
         }
         // Ne rien faire n'émet rien.
@@ -4502,9 +4552,12 @@ mod port_tests {
         // refuse est un *numéro*, à l'exécution, et un refus d'exécution ne se
         // mesure pas ici. Ce qui reste sont les écritures qui allumeraient
         // quelque chose qu'on n'a pas.
+        // **Lire un registre de contrôle a quitté cette liste ; l'écrire non.**
+        // C'est toute l'asymétrie de la tranche : ranger et rendre est fidèle,
+        // allumer la pagination serait un mensonge.
         for (bytes, what) in [
             (&[0x0f, 0x22, 0xd8, 0xc3][..], "mov %rax,%cr3"),
-            (&[0x0f, 0x20, 0xc1, 0xc3][..], "mov %cr0,%rcx"),
+            (&[0x0f, 0x22, 0xc1, 0xc3][..], "mov %rcx,%cr0"),
         ] {
             match Module::region_or_why(bytes, 0x1000, 0) {
                 Err(Refused::CannotTranslate { at }) => {
@@ -4659,8 +4712,10 @@ mod port_tests {
             // n'exerce.
             ("mov %ax,%fs", &[0x8e, 0xe0][..]),
             ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
-            ("mov %cr4,%rcx", &[0x0f, 0x20, 0xe1][..]),
+            // Lire est produit depuis cette tranche ; écrire CR4 aussi. Ce qui
+            // reste est ce qui allumerait la pagination.
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
+            ("mov %rcx,%cr0", &[0x0f, 0x22, 0xc1][..]),
             ("cli", &[0xfa][..]),
             ("sti", &[0xfb][..]),
             ("hlt", &[0xf4][..]),
