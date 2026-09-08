@@ -85,6 +85,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         "le nombre de sélecteurs"
     );
     assert_eq!(
+        value("table"),
+        wisq_vm::x86_wasm::TABLE_SLOT.to_string(),
+        "la première table de descripteurs"
+    );
+    assert_eq!(
+        value("tableCount"),
+        wisq_vm::x86_wasm::TABLE_COUNT.to_string(),
+        "le nombre d'emplacements de table"
+    );
+    assert_eq!(
         value("tablePages"),
         TABLE_PAGES.to_string(),
         "les pages de la correspondance"
@@ -348,6 +358,137 @@ console.log("rdx " + vm.globals[2].value.toString());
         (laps * (1 + 2 + 3)).to_string(),
         "l'anneau doit avoir tourné {laps} fois dans un seul appel"
     );
+}
+
+/// **Les tables de descripteurs : dix octets qui font l'aller-retour.**
+///
+/// `lgdt` lit une limite de seize bits et une base de soixante-quatre, `sgdt`
+/// les rend. C'est tout ce que cette tranche prétend : le couple est rangé et
+/// rendu, dans l'ordre où le processeur le pose — la limite d'abord, la base
+/// deux octets plus loin.
+///
+/// **Ce que ça ne veut pas dire.** Il n'y a toujours aucune table derrière ces
+/// nombres, et rien ne les consulte : charger FS ou GS reste refusé, `cli` et
+/// `sti` aussi, et aucune interruption n'est délivrée. Un `lgdt` produit ne dit
+/// donc pas « les descripteurs marchent » — il dit « ce registre se relit ».
+/// Le jour où quelque chose *lira* la table, ce test ne suffira plus, et c'est
+/// écrit ici pour qu'on ne s'y trompe pas.
+///
+/// La table des interruptions est lue sans avoir jamais été chargée, exprès :
+/// deux registres qui partageraient un emplacement se trahiraient là.
+#[test]
+fn a_descriptor_table_register_makes_a_ten_byte_round_trip() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0xb8, 0x00, 0x01, 0x00, 0x00, // mov $0x100,%eax — où l'invité pose le descripteur
+        0xb9, 0xad, 0xde, 0x00, 0x00, // mov $0xdead,%ecx — la limite
+        0x66, 0x89, 0x08, // mov %cx,(%rax)
+        0x48, 0xb9, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+        0x11, // movabs $0x1122334455667788,%rcx
+        0x48, 0x89, 0x48, 0x02, // mov %rcx,2(%rax) — la base, deux octets plus loin
+        0x0f, 0x01, 0x10, // lgdt (%rax)
+        0xba, 0x00, 0x02, 0x00, 0x00, // mov $0x200,%edx — et on redemande ailleurs
+        0x0f, 0x01, 0x02, // sgdt (%rdx)
+        0x48, 0x8b, 0x32, // mov (%rdx),%rsi — limite et six octets de base
+        0x48, 0x8b, 0x7a, 0x02, // mov 2(%rdx),%rdi — la base entière
+        0xbb, 0x00, 0x03, 0x00, 0x00, // mov $0x300,%ebx
+        0x0f, 0x01, 0x0b, // sidt (%rbx) — jamais chargée
+        0x48, 0x8b, 0x2b, // mov (%rbx),%rbp
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-idt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("table.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("dix " + lire(6));
+console.log("base " + lire(7));
+console.log("interruptions " + lire(5));
+console.log("limite " + lire({limit}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            limit = wisq_vm::x86_wasm::TABLE_SLOT,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret refusée"),
+        "le `ud2` arrête : {text}"
+    );
+    // **L'emplacement lui-même, et pas seulement l'aller-retour.** Un sabotage
+    // a survécu ici : lire la limite sur soixante-quatre bits laissait six
+    // octets de base dans le registre, et le rangement les tronquait — donc
+    // l'aller-retour restait juste sur du faux. Ce que l'invité ne peut pas
+    // voir, un instantané le verrait.
+    assert_eq!(
+        line("limite "),
+        0xdead,
+        "une limite fait seize bits, et le registre n'en garde pas davantage"
+    );
+    // **La disposition, pas seulement les valeurs.** Ces huit octets couvrent
+    // la limite **et** les six premiers de la base : les intervertir, ou les
+    // séparer d'un octet de plus, change ce nombre sans changer le suivant.
+    assert_eq!(
+        line("dix "),
+        0x3344_5566_7788_dead,
+        "la limite d'abord, la base collée deux octets plus loin"
+    );
+    assert_eq!(
+        line("base "),
+        0x1122_3344_5566_7788,
+        "et la base entière ressort telle qu'elle est entrée"
+    );
+    assert_eq!(
+        line("interruptions "),
+        0,
+        "la table des interruptions n'a jamais été chargée : elle ne peut pas porter celle des descripteurs"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 /// **Les sélecteurs de segment : un aller-retour, et rien de plus.**
