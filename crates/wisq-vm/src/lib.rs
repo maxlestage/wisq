@@ -19,6 +19,7 @@ pub mod snapshot;
 pub mod store;
 pub mod virtio;
 pub mod x86;
+pub mod x86_paging;
 pub mod x86_wasm;
 
 pub use crate::core::{Bus, Core, StepResult, RAM_BASE};

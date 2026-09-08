@@ -280,6 +280,18 @@ pub struct Cpu {
     /// ce qui rend `%gs:x` équivalent à `x` — la conduite d'un noyau qui n'a
     /// pas encore installé ses variables par cœur.
     pub gs_base: u64,
+    /// **Les registres de contrôle**, par leur numéro. Cinq existent — 0, 2, 3,
+    /// 4 et 8 — et le tableau en porte neuf pour que l'indice *soit* le numéro
+    /// : une table compacte demanderait une correspondance, et c'est
+    /// exactement le genre d'endroit où l'on finit par lire CR4 pour CR3.
+    ///
+    /// CR0 porte la pagination et la protection en écriture, CR3 la racine de
+    /// la table de pages, CR4 les extensions. Voir `crate::x86_paging`.
+    pub control: [u64; 9],
+    /// **L'adresse invitée sur laquelle la traduction s'est arrêtée**, quand
+    /// elle s'est arrêtée. `faulted` dit qu'il y a eu faute ; celui-ci dit
+    /// laquelle et pourquoi, ce qu'aucun booléen ne peut porter.
+    pub unmapped: Option<crate::x86_paging::Unmapped>,
 }
 
 /// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre
@@ -295,18 +307,36 @@ impl GuestMemory {
     /// Le calcul se fait en `u64` et vérifie la **fin** de l'accès, pas son
     /// début : une lecture de huit octets à un octet de la fin tient dans la
     /// fenêtre par son adresse et pas par sa taille.
-    fn window(&self, address: u64, width: Width) -> Option<std::ops::Range<usize>> {
+    fn window(&self, address: u64, size: usize) -> Option<std::ops::Range<usize>> {
         let start = address.checked_sub(self.base)?;
-        let size = width as u64;
-        let end = start.checked_add(size)?;
+        let end = start.checked_add(size as u64)?;
         if end > self.bytes.len() as u64 {
             return None;
         }
         Some(start as usize..end as usize)
     }
 
+    /// La fenêtre porte-t-elle cet accès ? **Vérifier sans écrire**, pour
+    /// qu'un accès à cheval sur deux pages puisse s'assurer de ses deux
+    /// moitiés avant d'en poser une seule.
+    pub fn holds(&self, address: u64, size: usize) -> bool {
+        self.window(address, size).is_some()
+    }
+
     pub fn read(&self, address: u64, width: Width) -> Option<u64> {
-        let window = self.window(address, width)?;
+        self.read_bytes(address, width as usize)
+    }
+
+    /// **Lire un nombre d'octets qui n'est pas forcément une largeur
+    /// d'opérande.** Un accès coupé par une frontière de page se répartit en
+    /// deux moitiés de tailles quelconques : trois octets et cinq, par
+    /// exemple. Au-delà de huit, les octets hauts se perdraient en silence, et
+    /// la fonction rend `None` plutôt que la moitié d'une réponse.
+    pub fn read_bytes(&self, address: u64, size: usize) -> Option<u64> {
+        if size > 8 {
+            return None;
+        }
+        let window = self.window(address, size)?;
         let mut value = 0u64;
         // Petit-boutiste : l'octet de poids faible est à l'adresse la plus
         // basse. L'inverser rendrait des valeurs plausibles sur les motifs
@@ -318,7 +348,15 @@ impl GuestMemory {
     }
 
     pub fn write(&mut self, address: u64, width: Width, value: u64) -> Option<()> {
-        let window = self.window(address, width)?;
+        self.write_bytes(address, width as usize, value)
+    }
+
+    /// L'écriture correspondante. Voir `read_bytes`.
+    pub fn write_bytes(&mut self, address: u64, size: usize, value: u64) -> Option<()> {
+        if size > 8 {
+            return None;
+        }
+        let window = self.window(address, size)?;
         for (rank, byte) in self.bytes[window].iter_mut().enumerate() {
             *byte = (value >> (rank * 8)) as u8;
         }
@@ -963,7 +1001,7 @@ impl Cpu {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.memory.read(at, instruction.width)
+                self.read_memory(at, instruction.width).ok()
             }
             _ => Some(self.get(instruction.dst, instruction.width, instruction.dst_high)),
         }
@@ -974,7 +1012,7 @@ impl Cpu {
             Some(address) if instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.memory.read(at, width)
+                self.read_memory(at, width).ok()
             }
             _ => Some(self.get(instruction.src, width, instruction.src_high)),
         }
@@ -986,7 +1024,7 @@ impl Cpu {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.memory.write(at, instruction.width, value)
+                self.write_memory(at, instruction.width, value).ok()
             }
             _ => {
                 self.set(
@@ -1522,7 +1560,7 @@ impl Cpu {
 
     fn push(&mut self, value: u64) {
         let top = self.regs[4].wrapping_sub(8);
-        if self.memory.write(top, Width::Qword, value).is_none() {
+        if self.write_memory(top, Width::Qword, value).is_err() {
             self.faulted = true;
             return;
         }
@@ -1530,7 +1568,7 @@ impl Cpu {
     }
 
     fn pop(&mut self) -> Option<u64> {
-        let Some(value) = self.memory.read(self.regs[4], Width::Qword) else {
+        let Ok(value) = self.read_memory(self.regs[4], Width::Qword) else {
             self.faulted = true;
             return None;
         };
@@ -1574,7 +1612,7 @@ impl Cpu {
                 return;
             }
             let value = if moves {
-                match self.memory.read(self.regs[6], width) {
+                match self.read_memory(self.regs[6], width).ok() {
                     Some(value) => value,
                     None => {
                         self.faulted = true;
@@ -1584,7 +1622,7 @@ impl Cpu {
             } else {
                 self.get(0, width, false)
             };
-            if self.memory.write(self.regs[7], width, value).is_none() {
+            if self.write_memory(self.regs[7], width, value).is_err() {
                 self.faulted = true;
                 return;
             }
@@ -1652,7 +1690,7 @@ impl Cpu {
             }
         };
         let value = match place {
-            Some(at) => match self.memory.read(at, width) {
+            Some(at) => match self.read_memory(at, width).ok() {
                 Some(value) => value,
                 None => {
                     self.faulted = true;
@@ -1684,7 +1722,7 @@ impl Cpu {
         };
         match place {
             Some(at) => {
-                self.faulted |= self.memory.write(at, width, changed).is_none();
+                self.faulted |= self.write_memory(at, width, changed).is_err();
             }
             None => {
                 self.faulted |= self.write_destination(instruction, changed).is_none();
@@ -1785,6 +1823,20 @@ impl Cpu {
             self.jumped = true;
             return;
         }
+        // **Les registres de contrôle**, exécutés depuis la tranche de
+        // pagination. Le champ `dst` porte le registre général : `0F 20` le
+        // remplit, `0F 22` s'en remplit. La largeur est toujours de huit
+        // octets, sans REX, et le numéro du registre de contrôle est déjà
+        // validé par le décodeur — cinq numéros, pas seize.
+        if let Op::ReadControlRegister { which } = instruction.op {
+            self.regs[instruction.dst as usize] = self.control[which as usize];
+            return;
+        }
+        if let Op::WriteControlRegister { which } = instruction.op {
+            let value = self.regs[instruction.dst as usize];
+            self.write_control_register(which, value);
+            return;
+        }
         // **Les entrées-sorties, que ce cœur-ci ne fait pas — et qui le
         // disent.** Le décodeur les lit depuis cette tranche, parce qu'un
         // noyau muet est indiscernable d'un noyau en panne. Les *exécuter*
@@ -1809,8 +1861,6 @@ impl Cpu {
                 | Op::SwapGs
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
-                | Op::ReadControlRegister { .. }
-                | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
                 | Op::Halt
                 | Op::PushFlags
@@ -2084,13 +2134,14 @@ impl Cpu {
             | Op::SwapGs
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
-            | Op::ReadControlRegister { .. }
-            | Op::WriteControlRegister { .. }
             | Op::InterruptFlag(_)
             | Op::Halt
             | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
+            }
+            Op::ReadControlRegister { .. } | Op::WriteControlRegister { .. } => {
+                unreachable!("les registres de contrôle sortent avant, exécutés")
             }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
                 unreachable!("la direction et les chaînes sortent avant")
