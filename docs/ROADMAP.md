@@ -2551,6 +2551,56 @@ quatrième coûterait autant. Deux voies, à trancher par Maxime :
 D'ici là, la règle est écrite : un `InvalidTransition` nu dans cette suite est
 **une relance, une seule**, et il se note ici avec sa date et sa PR.
 
+### Et la relance a parlé : une course, nommée, et qui est de nous
+
+8 septembre, PR #276. Premier passage : `InvalidTransition` nu, comme les trois
+d'avant. **Relance du même commit : un autre message**, et celui-là est le
+nôtre —
+
+```
+LocalDesktopTests.swift:243: failed: caught error:
+  "thePageNeverCameUp("le pilote n'a pas fini de s'installer")"
+```
+
+La ligne 243 est `load()`. C'est la sonde posée le 7 septembre qui parle enfin,
+et elle nomme une course réelle :
+
+- la page charge son pilote dans un **`<script type="module">`**, donc évalué
+  *après* l'analyse du document ;
+- `load()` attendait `didFinish`, puis demandait **une seule fois** si
+  `window.wisqRun` existait ;
+- entre les deux, le module peut ne pas avoir fini. Le pilote n'a alors ni
+  échoué ni fini : il n'a pas encore couru, et `window.wisqFailure` est nul.
+
+**C'est la même faute que la course sur `web.isLoading`** corrigée dix lignes
+plus haut dans la même fonction — interroger un instant au lieu d'attendre une
+condition. Je l'avais réparée d'un côté et laissée de l'autre, pour la seconde
+fois dans ce fichier.
+
+**Et ça donne enfin un mécanisme à la corrélation du canvas** : des neuf tests,
+`testTheDesktopPaintsTheFrameOnDemand` est le seul dont la page porte un
+`<canvas>` et dont le module doit, en plus de la machine, monter un contexte de
+rendu et deux fonctions de peinture. C'est donc le module qui a le plus à faire
+avant de poser `wisqRun` — celui qui perd la course. La corrélation n'était pas
+une cause, mais elle désignait le bon endroit.
+
+**Corrigé** : `load()` attend maintenant le pilote sur un délai, comme elle
+attend déjà `didFinish`. Un verdict autre que « pas encore fini » refuse tout
+de suite — un script qui a levé ne s'installera pas en attendant. Et les deux
+verdicts sont **interpolés** dans le JavaScript qui les produit, pas recopiés :
+recopiés, leur divergence aurait fait attendre jusqu'au délai puis refuser,
+c'est-à-dire échouer comme avant, vingt secondes plus tard.
+
+Un contrat que le côté Swift lisait sans que rien ne l'écrive est maintenant
+tenu par un test Rust : **`wisqRun` est la dernière chose que le pilote
+installe**, donc sa présence veut dire que tout le reste est monté. Saboté en
+le posant en premier, le test tombe.
+
+**Ce que ça ne dit pas.** Que l'`InvalidTransition` nu soit la même chose n'est
+pas établi : deux messages différents sont sortis du même commit. La course,
+elle, est nommée et corrigée. Les passages suivants diront si l'autre message
+revient — et si oui, il faudra le chercher ailleurs que dans `load()`.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend

@@ -8,6 +8,64 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — la sonde a fini par parler, et la course est de nous
+
+Quatrième `InvalidTransition` sur `LocalDesktopTests` en deux jours, sur une PR
+qui ne touche qu'un exemple Rust et deux fichiers de `docs/`. Relance — la
+seule que la règle autorise — et **le message change** :
+
+```
+LocalDesktopTests.swift:243: failed: caught error:
+  "thePageNeverCameUp("le pilote n'a pas fini de s'installer")"
+```
+
+C'est la sonde posée le 7 septembre, celle qui devait faire dire à la page ce
+qui lui arrive plutôt que de deviner une deuxième fois. Elle a mis quatre tours
+à parler, et ce qu'elle dit est net.
+
+### La course
+
+La page charge son pilote dans un `<script type="module">` — évalué **après**
+l'analyse du document. `load()` attendait `didFinish`, puis demandait **une
+seule fois** si `window.wisqRun` existait. Entre les deux, le module peut ne pas
+avoir fini : le pilote n'a ni échoué ni abouti, il n'a pas encore couru.
+
+C'est mot pour mot la faute que j'ai corrigée dix lignes plus haut dans la même
+fonction, sur `web.isLoading`. **Deuxième fois que je répare un côté et laisse
+l'autre dans ce fichier.**
+
+### Et le canvas avait raison, sans être une cause
+
+Des neuf tests, celui qui tombe est le seul dont la page porte un `<canvas>` :
+son module doit monter, en plus de la machine, un contexte de rendu et deux
+fonctions de peinture avant de poser `wisqRun`. C'est donc celui qui a le plus à
+faire avant d'être prêt — celui qui perd la course. La corrélation n'était pas
+la cause, mais elle désignait le bon endroit, et je l'avais enterrée deux fois :
+une fois sur une preuve que ma propre sonde fabriquait, une fois sur du
+non-déterminisme.
+
+### Ce que j'ai écrit
+
+`load()` attend le pilote sur un délai, comme elle attend déjà `didFinish`. Un
+verdict autre que « pas encore fini » refuse tout de suite — un script qui a
+levé ne s'installera pas en attendant. Les deux verdicts sont **interpolés**
+dans le JavaScript qui les produit plutôt que recopiés : deux copies à garder
+d'accord auraient donné, en cas de divergence, une attente jusqu'au délai puis
+un refus, c'est-à-dire la même panne vingt secondes plus tard. Une panne plus
+lente n'est pas une panne plus lisible.
+
+Et un contrat que le Swift lisait sans que rien ne l'écrive est maintenant tenu
+côté Rust : **`wisqRun` est la dernière chose que le pilote installe**, donc sa
+présence veut dire que tout le reste est monté. Saboté en le posant en premier,
+le test tombe.
+
+### Ce que je ne prétends pas
+
+Que l'`InvalidTransition` nu soit la même chose. Deux messages différents sont
+sortis du **même commit**, à vingt minutes d'écart. La course est nommée et
+corrigée ; si l'autre revient, il faudra le chercher ailleurs que dans `load()`.
+Et ce sera la cinquième fois qu'on le cherche, donc ça se notera ici aussi.
+
 ## 2026-09-08 — de quoi « l'émetteur refuse × 56 » est fait
 
 Tranche précédente : la couverture ne bouge plus, et deux voies attendent la

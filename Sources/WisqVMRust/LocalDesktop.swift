@@ -224,25 +224,61 @@ public final class LocalDesktop {
         // mesure ne mesure plus rien. Si la question elle-même échoue, elle
         // retient l'échec et laisse le chargement réussir comme avant ; seul un
         // verdict *lisible* et négatif refuse.
-        do {
-            let value = try await web.callAsyncJavaScript(
-                """
-                if (window.wisqFailure) return window.wisqFailure;
-                return typeof window.wisqRun === "function"
-                  ? "prête"
-                  : "le pilote n'a pas fini de s'installer";
-                """,
-                arguments: [:], in: nil, contentWorld: .page
-            )
-            pageVerdict = value as? String ?? "la page n'a pas répondu lisiblement"
-        } catch {
-            pageVerdict = "la page n'a pas pu être interrogée : \(error)"
-            return
-        }
-        if let said = pageVerdict, said != "prête" {
-            throw Failure.thePageNeverCameUp(said)
+        //
+        // **Et il faut l'attendre, pas le demander une fois.** Le pilote vit
+        // dans un `<script type="module">` : il est évalué *après* l'analyse
+        // du document, et `didFinish` peut partir avant. Poser la question à
+        // cet instant-là est une course — la même que celle sur `isLoading`
+        // corrigée quelques lignes plus haut, et je l'avais réparée d'un côté
+        // en la laissant de l'autre.
+        //
+        // **Mesuré, pas supposé** : `App iOS` a rendu
+        // `thePageNeverCameUp("le pilote n'a pas fini de s'installer")` sur le
+        // seul des neuf tests dont la page porte un canvas. C'est cohérent —
+        // ce module-là a le plus à monter, donc c'est lui qui perd la course.
+        //
+        // `wisqRun` est posé **en dernier** par le pilote, et un test Rust le
+        // tient : sa présence veut donc dire que tout le reste est monté.
+        let installed = Date().addingTimeInterval(patience)
+        while true {
+            do {
+                let value = try await web.callAsyncJavaScript(
+                    """
+                    if (window.wisqFailure) return window.wisqFailure;
+                    return typeof window.wisqRun === "function"
+                      ? "\(Self.ready)"
+                      : "\(Self.stillInstalling)";
+                    """,
+                    arguments: [:], in: nil, contentWorld: .page
+                )
+                pageVerdict = value as? String ?? "la page n'a pas répondu lisiblement"
+            } catch {
+                pageVerdict = "la page n'a pas pu être interrogée : \(error)"
+                return
+            }
+            guard let said = pageVerdict else { return }
+            if said == Self.ready { return }
+            // **Un script qui a levé ne s'installera pas en attendant.** Seul
+            // « pas encore fini » vaut d'être réessayé ; tout autre verdict est
+            // une panne, et la retenir jusqu'au délai la rendrait plus lente
+            // sans la rendre plus vraie.
+            if said != Self.stillInstalling { throw Failure.thePageNeverCameUp(said) }
+            if Date() >= installed { throw Failure.thePageNeverCameUp(said) }
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
+
+    /// **Les deux verdicts que la page peut rendre d'elle-même**, et ils sont
+    /// *interpolés* dans le JavaScript qui les produit plutôt que recopiés.
+    ///
+    /// Recopiés, ils auraient été deux chaînes à garder d'accord, et leur
+    /// divergence ne se serait pas vue : la boucle aurait attendu jusqu'au
+    /// délai puis refusé — c'est-à-dire échoué exactement comme avant, vingt
+    /// secondes plus tard. Une panne plus lente n'est pas une panne plus
+    /// lisible.
+    private static let ready = "prête"
+    /// Le seul verdict qui vaut d'être réessayé.
+    private static let stillInstalling = "le pilote n'a pas fini de s'installer"
 
     /// **Pose l'image dans la RAM de l'invité**, à l'adresse repliée.
     ///
