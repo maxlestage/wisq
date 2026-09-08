@@ -8,6 +8,50 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — du mouvement sur le site, sans qu'il devienne porteur
+
+Maxime : « je veux des animations js sur toutes les pages ». Deux contraintes
+décidaient de tout avant la première ligne.
+
+**Le budget.** `tests/build.test.ts` tient tout le JavaScript du site sous
+8 000 octets bruts et 3 000 gzippés, parce que React coûtait 65 794 octets
+gzippés pour quatre comportements. Il y avait 2 350 bruts ; il y en a 3 559,
+soit 1 209 de plus pour le mouvement. Le plafond n'a pas bougé.
+
+**Et la règle que `main.ts` énonce de lui-même** : « Nothing below is
+load-bearing ». Une animation de révélation la viole par construction — elle
+masque, puis découvre — et un script qui ne part pas laisse alors une page
+blanche au lieu d'un site.
+
+D'où la forme : **toutes les règles de masquage vivent sous `[data-motion]`, un
+attribut que seul le script pose.** Sans JavaScript, il n'y a ni animation ni
+contenu invisible — les deux d'un coup. Et le script refuse de le poser dans
+deux cas : quand la personne a demandé moins d'animation, et quand le
+navigateur n'a pas d'`IntersectionObserver`. Dans les deux, il n'y aurait
+personne pour révéler ce qu'on aurait caché.
+
+**Le test exécute plutôt qu'il ne lit**, en suivant `service-worker.test.ts` —
+ce fichier-là raconte comment neuf sabotages du worker avaient passé une suite
+entière de tests qui cherchaient des chaînes. Un faux DOM, un observateur qu'on
+déclenche à la main, et `startMotion` appelé pour de vrai.
+
+**Deux de mes propres tests étaient faux, et le sabotage les a nommés.**
+Retirer la garde « est-ce un entier ? » survivait : mon faux
+`requestAnimationFrame` sautait droit à la dernière image, si bien qu'un
+compteur affichant « NaN » pendant une seconde avant de remettre la bonne
+valeur passait pour correct. L'horloge avance maintenant par pas de 120 ms, et
+chaque élément retient **tout** ce qu'on lui écrit : la montée est jugée sur ses
+images intermédiaires, pas sur son résultat. La seconde mutation ne s'appliquait
+pas — mon ancre existait en deux exemplaires, la règle et sa jumelle
+d'impression.
+
+Dix mutations, dix chutes après correction.
+
+Le compteur des chiffres de l'accueil finit **exactement sur le texte
+d'origine**, remis tel quel plutôt que reconstruit : ce sont des affirmations
+qu'un test tient, et un chiffre approché serait un mensonge que l'animation
+aurait introduit.
+
 ## 2026-09-08 — la frontière C du lecteur d'image
 
 Le lecteur ISO vit en Rust ; l'application, la bibliothèque et le chargeur

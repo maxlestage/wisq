@@ -19,6 +19,7 @@
 /// browser refusing storage, an absent element, or a stale cached page leaves
 /// an ordinary, readable website rather than an error.
 
+import { startMotion } from "./motion";
 import { applyTheme, rememberTheme, storedTheme, type Theme } from "./theme";
 
 const LANG_KEY = "wisq.lang";
@@ -45,6 +46,14 @@ function remember(key: string, value: string) {
     /* the feature simply does not outlive this page */
   }
 }
+
+// --- le mouvement ------------------------------------------------------------
+//
+// Posé en premier pour que la première section soit déjà levée quand la page
+// s'affiche, plutôt que de se lever après coup sous les yeux du lecteur. Et
+// comme tout le reste ici, ce n'est pas porteur : le module refuse de lui-même
+// dès qu'il ne pourrait pas révéler ce qu'il masquerait.
+startMotion();
 
 // --- the language ------------------------------------------------------------
 //

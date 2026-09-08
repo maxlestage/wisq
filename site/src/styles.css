@@ -759,3 +759,46 @@ pre code { white-space: pre; }
    outranks the user-agent rule for `[hidden]`. Without this the banner is
    visible on a page whose script never decided to show it. */
 [hidden] { display: none !important; }
+
+/* --- le mouvement -----------------------------------------------------------
+ *
+ * **Tout est sous `[data-motion]`, et cet attribut n'est posé que par le
+ * script.** C'est la règle entière : sans JavaScript, rien ci-dessous ne
+ * s'applique — donc aucun bloc n'est masqué en attendant d'être révélé, et une
+ * panne de script rend le site tel qu'il est, pas une page blanche.
+ *
+ * Le script ne le pose pas non plus quand la personne a demandé moins
+ * d'animation, ni quand le navigateur n'a pas d'`IntersectionObserver` : dans
+ * les deux cas il n'y aurait personne pour révéler ce qu'on aurait caché.
+ *
+ * La règle globale `prefers-reduced-motion` plus haut coupe transitions et
+ * animations partout ; celle-ci s'y ajoute plutôt qu'elle ne la remplace. Deux
+ * gardes pour la même promesse, parce que celle du script est la seule qui
+ * empêche aussi le masquage.
+ */
+
+[data-motion] [data-reveal] {
+  opacity: 0;
+  transform: translateY(var(--rise, 0.6rem));
+  transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+}
+
+[data-motion] [data-reveal][data-revealed] {
+  opacity: 1;
+  transform: none;
+}
+
+/* L'en-tête se détache du contenu dès qu'on a quitté le haut de la page. */
+[data-motion] .site-header {
+  transition: box-shadow 0.25s ease-out, background-color 0.25s ease-out;
+}
+
+[data-motion][data-scrolled] .site-header {
+  box-shadow: 0 1px 0 var(--rule), 0 6px 24px -18px rgb(0 0 0 / 55%);
+}
+
+/* **À l'impression, tout est là.** Une page imprimée n'a pas de défilement :
+ * ce qui attend d'entrer dans la vue n'y entrerait jamais. */
+@media print {
+  [data-motion] [data-reveal] { opacity: 1; transform: none; }
+}
