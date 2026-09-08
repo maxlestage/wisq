@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — les MSR, le premier vrai modèle, et un relevé qui change de sens
+
+Maxime a redit « fais tout ». Cette tranche est celle des registres spécifiques
+au modèle, et elle a commencé par démolir mon propre plan.
+
+**« Refuser par leur numéro » était infaisable.** Le numéro d'un MSR arrive dans
+ECX, à l'exécution ; le traducteur ne peut pas le connaître. Il fallait donc
+choisir entre refuser en bloc et émettre un **aiguillage**. C'est l'aiguillage :
+trois numéros modélisés, et pour tout autre un retour de main **à l'adresse de
+l'instruction**. Ne rien faire aurait été le pire des trois — le noyau croirait
+avoir posé une valeur.
+
+**Le relevé change de sens, et il faut le dire une fois pour toutes** : depuis
+cette tranche, « région compilée » ne veut plus dire « région qui va au bout ».
+Le chiffre compte des traductions.
+
+**GS_BASE est le premier vrai modèle de cette série.** Les trois tranches
+précédentes rangeaient et rendaient ; celle-ci écrit une base que l'émetteur
+**consulte à chaque adresse `%gs:`**. Le test le mesure par un accès mémoire, pas
+par une relecture de registre — c'est la différence entre mesurer l'acte et son
+empreinte. `FS_BASE`, elle, n'est qu'un rangement, et c'est écrit noir sur
+blanc : le décodeur refuse le préfixe `0x64`.
+
+**Le point d'entrée du noyau se traduit en entier.** Il butait à l'octet 35
+depuis le début de ce travail.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions compilées | 9959 / 10 116 | **9975 / 10 116** |
+| refusées | 157 | **141** |
+| refus nommés | 30 | **14** |
+
+**Trois sabotages sur six ont survécu au premier passage.** Deux pour la même
+raison : une base d'essai qui tenait sur trente-deux bits ne pouvait pas
+distinguer une moitié haute perdue d'une moitié haute juste. Le troisième était
+plus grave — j'avais produit `swapgs` **sans écrire un seul test**, et rien ne
+l'exerçait. Le sabotage l'a dit ; une relecture ne l'aurait pas dit.
+
 ## 2026-09-08 — les tables de descripteurs, et une question posée avant d'écrire
 
 **La tranche a commencé par une sonde jetable.** Les deux précédentes avaient
