@@ -31,6 +31,11 @@ export const roadmapEn: Doc = {
             "Solved by saving the machine rather than giving it a disk. The whole state below the kernel — RAM, registers, the timer, the bytes queued for the UART — is written out and restored exactly, so the guest comes back mid-syscall if that is where it was.",
         },
         {
+          term: "The x86-64 core",
+          detail:
+            "It runs a stock Alpine kernel and its init — four billion instructions, with no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images. Nine hardware corpora hold it, and the reference is not a specification read wrong: it is a real processor, asked what it produced.",
+        },
+        {
           term: "A virtual disk for the local machine",
           detail:
             "This page said it was the wrong plan, and the reasoning was right on the facts and wrong on the conclusion. rv32 nommu kernels do often lack a block driver — but wisq was offering nothing to find: no interrupt controller a device could point at, and a device tree frozen in a blob that could not grow a node. Both are gone. Either machine now takes a disk image, the guest sees it on /dev/vda, and what it writes survives a suspension inside the snapshot. What wisq still cannot do is put the block driver into a kernel you brought: if yours has none, nothing will touch the device — so the device counts its requests, and wisq says so at the end rather than leaving you with a silent disk.",
@@ -42,6 +47,16 @@ export const roadmapEn: Doc = {
     {
       kind: "dl",
       items: [
+        {
+          term: "The local desktop, through WebAssembly",
+          detail:
+            "The work in progress, and the largest of it. iOS allows no JIT, with one exception: a WKWebView may compile WebAssembly, which is data rather than code. So a translator turns regions of x86-64 instructions into modules WebKit compiles. What is measured: 9980 entry regions out of 10 116 translate on a real Alpine kernel, and the emitter holds 247 million instructions a second under JavaScriptCore against 49.3 for the Rust interpreter. What is not: it boots no kernel. A region that translates is not a region that runs, and two whole mechanisms are missing — paging and interrupts. A guest address today is folded by a mask rather than mapped through tables; writing CR3 and CR0 is refused rather than faked, because a kernel that believed it was paging would fail very far from the cause. A probe put a number on what real paging would cost: between 1 % and 29 % of throughput, depending on the access pattern.",
+        },
+        {
+          term: "Booting from the image you bring",
+          detail:
+            "An installation image carries its kernel, its initramfs and the recipe that says how to start them — paths and command line. wisq can now read those inside it: ISO 9660, names as Rock Ridge gives them, and the recipes of syslinux, grub and systemd-boot. What is missing is the wiring: the app reads the image and still refuses it, saying what it is. The command line is read, never invented — a kernel started without its own does not find its root, and the failure lands far from its cause.",
+        },
         {
           term: "RDP",
           detail:
@@ -117,6 +132,11 @@ export const roadmapFr: Doc = {
             "Résolue en sauvant la machine plutôt qu'en lui donnant un disque. Tout l'état sous le noyau — la RAM, les registres, le timer, les octets en attente sur l'UART — est écrit puis restauré à l'identique, si bien que l'invité revient au milieu d'un appel système si c'est là qu'il était.",
         },
         {
+          term: "Le cœur x86-64",
+          detail:
+            "Il fait tourner un noyau Alpine standard et son init — quatre milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images. Neuf corpus matériels le tiennent, et la référence n'est pas une spécification lue de travers : c'est un vrai processeur, à qui l'on demande ce qu'il a produit.",
+        },
+        {
           term: "Un disque virtuel pour la machine locale",
           detail:
             "Cette page disait que c'était le mauvais plan, et le raisonnement était juste sur les faits et faux sur la conclusion. Les noyaux rv32 nommu manquent souvent de pilote bloc — mais wisq n'offrait rien à trouver : aucun contrôleur d'interruption qu'un périphérique puisse désigner, et un arbre de périphériques figé dans un blob où aucun nœud ne pouvait pousser. Les deux ont disparu. Les deux machines prennent maintenant une image de disque, l'invité la voit sur /dev/vda, et ce qu'il y écrit survit à une suspension, dans l'instantané. Ce que wisq ne peut toujours pas faire, c'est mettre le pilote bloc dans un noyau que vous apportez : si le vôtre n'en a pas, personne ne touchera le périphérique — alors le périphérique compte ses requêtes, et wisq le dit à la fin plutôt que de vous laisser devant un disque muet.",
@@ -128,6 +148,16 @@ export const roadmapFr: Doc = {
     {
       kind: "dl",
       items: [
+        {
+          term: "Le bureau local, par WebAssembly",
+          detail:
+            "Le travail en cours, et le plus gros. iOS n'autorise aucun JIT, avec une exception : un WKWebView peut compiler du WebAssembly, qui est une donnée et non du code. Un traducteur transforme donc des régions d'instructions x86-64 en modules que WebKit compile. Ce qui est mesuré : 9980 régions d'entrée sur 10 116 se traduisent sur un vrai noyau Alpine, et l'émetteur tient 247 millions d'instructions par seconde sous JavaScriptCore contre 49,3 pour l'interpréteur Rust. Ce qui ne l'est pas : ça ne démarre aucun noyau. Une région qui se traduit n'est pas une région qui s'exécute, et il manque deux mécanismes entiers — la pagination et les interruptions. Une adresse invitée est aujourd'hui repliée par un masque au lieu d'être traduite par des tables ; écrire CR3 et CR0 est refusé plutôt que simulé, parce qu'un noyau qui croirait paginer tomberait en panne très loin de la cause. Une sonde a chiffré ce que coûterait la vraie pagination : entre 1 % et 29 % du débit selon le motif d'accès.",
+        },
+        {
+          term: "Démarrer depuis l'image que vous apportez",
+          detail:
+            "Une image d'installation porte son noyau, son initramfs et la recette qui dit comment les démarrer — chemins et ligne de commande. wisq sait maintenant les y lire : ISO 9660, les noms rendus par Rock Ridge, et les recettes de syslinux, de grub et de systemd-boot. Ce qui manque est le branchement : l'application lit l'image mais la refuse encore, en disant ce qu'elle est. La ligne de commande se lit et ne s'invente pas — un noyau démarré sans la sienne ne trouve pas sa racine, et la panne tombe loin de sa cause.",
+        },
         {
           term: "RDP",
           detail:
