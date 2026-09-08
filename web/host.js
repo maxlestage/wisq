@@ -23,6 +23,9 @@
 /// frontière entre Rust et cette vue à part des octets. Le test les compare aux
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 export const SLOTS = {
+  /// La case de RFLAGS. Elle ne servait à rien ici tant que personne ne lisait
+  /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
+  rflags: 16,
   rip: 17,
   globalCount: 29,
   tablePages: 16,
@@ -167,6 +170,16 @@ export function machine({
     globals.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
     env["g" + slot] = globals[slot];
   }
+  // **Le bit 1 de RFLAGS vaut toujours un sur x86.** Ce n'est pas un drapeau,
+  // c'est une constante de l'architecture : l'interpréteur Rust le pose
+  // (`Flags::read` rend `… | ALWAYS_ONE`) et l'oracle matériel le porte.
+  //
+  // Ici, tout partait de zéro. Tant que rien ne lisait RFLAGS comme une
+  // valeur, la divergence ne se voyait pas ; le premier `pushf` aurait empilé
+  // un RFLAGS qu'aucun processeur ne produit — le genre d'écart qu'un invité
+  // ne remarque pas tout de suite et qui rend une trace incomparable à une
+  // vraie.
+  globals[SLOTS.rflags].value = 0x2n;
   // **Les deux fonctions par lesquelles l'invité touche le monde.**
   //
   // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un
