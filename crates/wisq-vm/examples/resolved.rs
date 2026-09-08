@@ -135,7 +135,7 @@ const fs = require("fs");
 const memory = new WebAssembly.Memory({{ initial: {pages} + {tablePages} }});
 const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: {links} }});
 const slots = [];
-const imports = {{ env: {{ mem: memory, {table}: blocks }} }};
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n, {table}: blocks }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   imports.env["g" + slot] = slots[slot];
@@ -191,7 +191,7 @@ const againSeconds = Number(process.hrtime.bigint() - againBegan) / 1e9;
 // part, parce que ces modules-là déclarent la RAM sans confinement.
 const wide = new WebAssembly.Memory({{ initial: {guestPages} }});
 const wideSlots = [];
-const wideImports = {{ env: {{ mem: wide }} }};
+const wideImports = {{ env: {{ mem: wide, out: () => undefined, in: () => 0n }} }};
 for (let slot = 0; slot < {globals}; slot++) {{
   wideSlots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
   wideImports.env["g" + slot] = wideSlots[slot];
