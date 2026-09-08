@@ -559,6 +559,32 @@ pub enum Op {
     /// **`cld` et `std`.** Le seul moyen de changer le sens des instructions de
     /// chaîne, et donc le seul moyen de le vérifier.
     DirectionFlag(bool),
+    /// **Le drapeau d'interruption.** `FA` l'éteint (`cli`), `FB` l'allume
+    /// (`sti`). Un noyau les écrit partout : autour de chaque section
+    /// critique, et une dernière fois avant de s'arrêter pour de bon.
+    ///
+    /// **Décodées, pas produites.** Le poser dans RFLAGS serait presque juste
+    /// — un bit, à la même place que le drapeau de direction juste au-dessus —
+    /// et c'est ce qui le rend dangereux : rien ne délivre d'interruption, donc
+    /// un module qui accepte `sti` prétendrait en attendre. Un refus nommé vaut
+    /// mieux qu'une machine qui a l'air d'écouter.
+    InterruptFlag(bool),
+    /// **`F4` : arrêter le processeur jusqu'à la prochaine interruption.**
+    ///
+    /// C'est la troisième instruction du point d'entrée d'Alpine à l'octet 291,
+    /// entre un `cli` et un `jmp -4` : la boucle d'arrêt d'un noyau qui n'a
+    /// plus rien à faire, ou qui a paniqué. Sans interruptions, la produire
+    /// donnerait un arrêt définitif déguisé en attente.
+    Halt,
+    /// **`9C` : empiler RFLAGS.** Huit octets en mode 64 bits, deux avec le
+    /// préfixe 0x66. La moitié qui *sauve* l'état des interruptions avant de
+    /// les couper.
+    PushFlags,
+    /// **`9D` : dépiler RFLAGS.** La moitié qui le rend. Elle peut rallumer le
+    /// drapeau d'interruption sans jamais nommer `sti`, et c'est ce qui
+    /// l'empêche d'être produite tant que rien ne délivre d'interruption : un
+    /// module qui accepte `popf` accepte un `sti` déguisé.
+    PopFlags,
     /// **`movs` : de la mémoire vers la mémoire, RSI vers RDI.** Avec `repeat`,
     /// c'est le `memcpy` d'un noyau — 949 des 1 092 régions que le compilateur
     /// refusait encore depuis un vrai point d'entrée en portaient un.
@@ -1785,6 +1811,10 @@ impl Cpu {
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
+                | Op::InterruptFlag(_)
+                | Op::Halt
+                | Op::PushFlags
+                | Op::PopFlags
         ) {
             self.faulted = true;
             self.jumped = true;
@@ -2055,7 +2085,11 @@ impl Cpu {
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }
-            | Op::WriteControlRegister { .. } => {
+            | Op::WriteControlRegister { .. }
+            | Op::InterruptFlag(_)
+            | Op::Halt
+            | Op::PushFlags
+            | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
             }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
@@ -2928,6 +2962,37 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             op: Op::DirectionFlag(opcode == 0xfd),
             length: at,
             ..Decoded::nothing(Width::Qword)
+        }),
+        // **Le drapeau d'interruption et l'arrêt**, trois opcodes d'un octet.
+        // Ils vont ensemble parce qu'un noyau les écrit ensemble : `cli`,
+        // `hlt`, et un saut qui revient sur le `cli`.
+        0xfa | 0xfb => Some(Decoded {
+            op: Op::InterruptFlag(opcode == 0xfb),
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        0xf4 => Some(Decoded {
+            op: Op::Halt,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        // **Les drapeaux par la pile.** La largeur ne vient pas de REX mais du
+        // seul préfixe 0x66 : en mode 64 bits ces deux-là déplacent huit
+        // octets par défaut, et `prefixes.width(false)` rendrait Dword sans
+        // REX.W. La demander explicitement évite une taille de pile fausse de
+        // moitié — le genre d'erreur qui ne se voit qu'au `popf` d'après.
+        0x9c | 0x9d => Some(Decoded {
+            op: if opcode == 0x9c {
+                Op::PushFlags
+            } else {
+                Op::PopFlags
+            },
+            length: at,
+            ..Decoded::nothing(if prefixes.operand_size {
+                Width::Word
+            } else {
+                Width::Qword
+            })
         }),
         // **Les chaînes.** `a4`/`a5` déplacent, `aa`/`ab` remplissent ; le bit
         // bas de l'opcode dit l'octet contre la largeur des préfixes. Le
@@ -4095,6 +4160,87 @@ mod tests {
                 "0f {opcode:02x} 05 : le processeur y lit trois octets, pas sept"
             );
         }
+    }
+
+    /// **Les deux instructions du drapeau d'interruption, et l'arrêt.**
+    ///
+    /// `FA` éteint, `FB` allume, `F4` arrête le processeur jusqu'à la
+    /// prochaine interruption. Un octet chacune, aucun opérande — et c'est
+    /// exactement sur elles que la lecture en ligne droite du point d'entrée
+    /// d'Alpine s'arrêtait, à l'octet 291 : `fa f4 eb fc`, autrement dit
+    /// « coupe les interruptions, arrête-toi, et recommence » — la boucle
+    /// d'arrêt d'un noyau qui n'a plus rien à faire.
+    ///
+    /// **Décoder n'est pas exécuter, et ici l'écart est entier** : rien ne
+    /// délivre d'interruption, donc un `hlt` produit serait un arrêt
+    /// définitif déguisé en attente. Les trois sont refusées par l'émetteur,
+    /// nommément.
+    #[test]
+    fn the_interrupt_flag_and_the_halt_are_read() {
+        for (byte, op) in [
+            (0xfau8, Op::InterruptFlag(false)),
+            (0xfb, Op::InterruptFlag(true)),
+            (0xf4, Op::Halt),
+        ] {
+            let step = decode(&[byte]).unwrap_or_else(|| panic!("{byte:02x} se décode"));
+            assert_eq!(step.op, op, "pour {byte:02x}");
+            assert_eq!(step.length, 1, "un octet, sans opérande");
+        }
+    }
+
+    /// **`pushf` et `popf`, les deux moitiés d'une section critique.**
+    ///
+    /// L'idiome qu'un noyau écrit partout est `pushfq ; cli ; … ; popfq` :
+    /// sauver l'état des interruptions, les couper, faire ce qu'il y a à
+    /// faire, et **rendre l'état d'avant** plutôt que de rallumer aveuglément.
+    /// C'est pour ça qu'ils sont dans la même tranche que `cli` et `sti`, et
+    /// pas dans celle de la pile.
+    ///
+    /// En mode 64 bits ils déplacent **huit** octets, sans REX.W ; le préfixe
+    /// 0x66 les ramène à deux, et c'est la seule chose qui change leur taille.
+    #[test]
+    fn the_two_halves_of_a_critical_section_are_read() {
+        let push = decode(&[0x9c]).expect("pushfq");
+        assert_eq!(push.op, Op::PushFlags);
+        assert_eq!(push.length, 1);
+        assert_eq!(push.width, Width::Qword, "huit octets, sans REX.W");
+
+        let pop = decode(&[0x9d]).expect("popfq");
+        assert_eq!(pop.op, Op::PopFlags);
+        assert_eq!(pop.length, 1);
+        assert_eq!(pop.width, Width::Qword);
+
+        // Le préfixe de taille d'opérande est le seul à les rétrécir.
+        let court = decode(&[0x66, 0x9c]).expect("pushfw");
+        assert_eq!(court.op, Op::PushFlags);
+        assert_eq!(court.length, 2);
+        assert_eq!(court.width, Width::Word, "0x66 ramène à deux octets");
+    }
+
+    /// **Les quatre octets sur lesquels la lecture s'arrêtait**, tels qu'ils
+    /// sont à l'octet 291 du point d'entrée : `cli`, `hlt`, puis un saut court
+    /// de -4 qui revient sur le `cli`. Les trois se lisent d'affilée, et le
+    /// saut porte bien -4 — un déplacement relatif à l'instruction
+    /// **suivante**, pas à lui-même.
+    #[test]
+    fn the_kernels_halt_loop_reads_whole() {
+        let bytes: &[u8] = &[0xfa, 0xf4, 0xeb, 0xfc];
+        let mut at = 0usize;
+        let mut seen = Vec::new();
+        while at < bytes.len() {
+            let step = decode(&bytes[at..]).unwrap_or_else(|| panic!("l'octet {at}"));
+            seen.push((step.op, step.imm as i64));
+            at += step.length;
+        }
+        assert_eq!(at, bytes.len(), "et pas un octet de reste");
+        assert_eq!(
+            seen,
+            vec![
+                (Op::InterruptFlag(false), 0),
+                (Op::Halt, 0),
+                (Op::Jump(None), -4),
+            ]
+        );
     }
 
     /// **Le `mov %cr4,%rcx` du noyau**, à l'octet 113 de son point d'entrée —
