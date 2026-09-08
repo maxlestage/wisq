@@ -27,7 +27,7 @@ export const SLOTS = {
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
   rflags: 16,
   rip: 17,
-  globalCount: 29,
+  globalCount: 30,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
