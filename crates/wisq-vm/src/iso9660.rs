@@ -446,7 +446,72 @@ impl Recipe {
 /// Grub et systemd-boot emploient tous deux `linux`, et ne rangent pas les
 /// arguments au même endroit : grub les met sur la ligne du noyau, l'autre sur
 /// une ligne à part. Prendre les deux couvre les deux.
+/// Les entrées d'un fichier de chargeur, dans l'ordre.
+///
+/// **Un fichier en porte plusieurs, et c'est tout le sujet.** Le `grub.cfg`
+/// d'Omarchy en a quatre : Arch, Arch avec lecteur d'écran, un mode de secours,
+/// et memtest. Un mot d'ouverture — `menuentry` chez grub, `LABEL` chez
+/// syslinux — commence la suivante.
+///
+/// Ce qui précède la première est une entrée aussi : c'est ce qui fait qu'une
+/// entrée `systemd-boot`, qui n'a **aucun** mot d'ouverture et occupe son
+/// fichier entier, se lit sans cas particulier.
+fn entries(text: &str) -> Vec<&str> {
+    let mut cuts = vec![0usize];
+    for line in text.lines() {
+        let word = line.split_whitespace().next().unwrap_or("");
+        if matches!(word.to_ascii_uppercase().as_str(), "MENUENTRY" | "LABEL") {
+            let at = line.as_ptr() as usize - text.as_ptr() as usize;
+            if at != 0 {
+                cuts.push(at);
+            }
+        }
+    }
+    cuts.push(text.len());
+    cuts.windows(2)
+        .map(|pair| &text[pair[0]..pair[1]])
+        .filter(|block| !block.trim().is_empty())
+        .collect()
+}
+
+/// Lire une recette, quel que soit le chargeur qui l'a écrite.
+///
+/// **La première entrée qui nomme un noyau gagne.** Les distributions mettent
+/// leur défaut en tête — Arch le dit même deux fois, par `default=archlinux` et
+/// par la place de l'entrée —, et prendre la première est la règle la plus
+/// simple qui rende ce que la personne aurait obtenu en démarrant l'image.
+///
+/// **Honorer `default=` explicitement n'est pas fait**, et c'est un choix : ça
+/// ajouterait un dialecte de plus (l'identifiant vit dans `--id` chez grub,
+/// dans le nom du `LABEL` chez syslinux) pour départager des cas où les deux
+/// règles s'accordent déjà. Le jour où une image les fera diverger, ce sera un
+/// défaut nommé, avec son image pour le montrer.
 fn parse(text: &str, from: &str) -> Option<Recipe> {
+    entries(text).into_iter().find_map(|block| one(block, from))
+}
+
+/// Une entrée, et elle seule.
+///
+/// **Rien ne traverse d'une entrée à l'autre.** C'est la garde : le premier jet
+/// lisait le fichier entier d'un trait, gardait le dernier `linux` et le
+/// dernier `initrd`, et rendait le noyau de memtest avec l'initramfs d'Arch et
+/// les arguments d'une troisième entrée. Une machine construite là-dessus part
+/// sur le mauvais cœur, et le refus qu'elle affiche ne parle de rien de tout ça.
+///
+/// Les trois dialectes disent la même chose avec des mots différents, et un
+/// seul lecteur les couvre : on cherche le mot-clé en tête de ligne, sans égard
+/// à la casse, et on prend le reste.
+///
+/// | | noyau | initramfs | arguments |
+/// | --- | --- | --- | --- |
+/// | syslinux, isolinux | `KERNEL`, `LINUX` | `INITRD` | `APPEND` |
+/// | grub | `linux` | `initrd` | à la suite du noyau |
+/// | systemd-boot | `linux` | `initrd` | `options` |
+///
+/// Grub et systemd-boot emploient tous deux `linux`, et ne rangent pas les
+/// arguments au même endroit : grub les met sur la ligne du noyau, l'autre sur
+/// une ligne à part. Prendre les deux couvre les deux.
+fn one(text: &str, from: &str) -> Option<Recipe> {
     let mut kernel = None;
     let mut initrd = None;
     let mut command_line = String::new();

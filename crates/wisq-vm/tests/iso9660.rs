@@ -694,3 +694,124 @@ fn a_directory_of_loader_entries_wins_over_syslinux() {
     );
     assert_ne!(recipe.kernel, "/ceci/nest/pas/un/noyau");
 }
+
+/// **Une recette vient d'UNE entrée de menu, jamais de plusieurs.**
+///
+/// C'est le défaut que Maxime a vu sur son téléphone, et qu'aucune fixture
+/// d'ici ne pouvait montrer : elles n'avaient qu'une entrée.
+///
+/// Le vrai `grub.cfg` d'Omarchy 4.0.2 en porte quatre. Le lecteur parcourait le
+/// fichier d'un bout à l'autre en gardant le **dernier** `linux` et le
+/// **dernier** `initrd` rencontrés, et rendait donc une chimère : le noyau de
+/// memtest, l'initramfs d'Arch, et la ligne de commande d'une troisième entrée.
+/// L'application construisait alors une machine RISC-V — memtest n'est pas un
+/// bzImage — et refusait l'initramfs.
+///
+/// Le texte ci-dessous est celui de l'image, réduit à ses entrées.
+#[test]
+fn a_recipe_comes_from_one_menu_entry() {
+    let text = "\
+set default=archlinux
+timeout=0
+
+menuentry \"Omarchy (x86_64)\" --class arch --id 'archlinux' {
+    set gfxpayload=keep
+    linux /arch/boot/x86_64/vmlinuz-linux-t2 archisobasedir=arch quiet splash
+    initrd /arch/boot/x86_64/initramfs-linux-t2.img
+}
+
+menuentry \"Omarchy with speakup screen reader\" --id 'archlinux-accessibility' {
+    linux /arch/boot/x86_64/vmlinuz-linux-t2 archisobasedir=arch accessibility=on
+    initrd /arch/boot/x86_64/initramfs-linux-t2.img
+}
+
+menuentry \"Run Memtest86+ (RAM test)\" --class memtest {
+    linux /boot/memtest86+/memtest
+}
+";
+    let recipe = Recipe::read(text, "/boot/grub/grub.cfg").expect("la recette grub");
+    assert_eq!(recipe.kernel, "/arch/boot/x86_64/vmlinuz-linux-t2");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/arch/boot/x86_64/initramfs-linux-t2.img")
+    );
+    assert_eq!(recipe.command_line, "archisobasedir=arch quiet splash");
+    // **Ce que le défaut rendait**, nommé pour qu'on voie ce qui est refusé.
+    assert_ne!(recipe.kernel, "/boot/memtest86+/memtest");
+    assert!(!recipe.command_line.contains("accessibility"));
+}
+
+/// La même règle pour syslinux, dont les entrées commencent par `LABEL`.
+#[test]
+fn a_syslinux_recipe_stops_at_the_next_label() {
+    let text = "\
+DEFAULT virt
+LABEL virt
+  KERNEL /boot/vmlinuz-virt
+  INITRD /boot/initramfs-virt
+  APPEND modules=loop,squashfs quiet
+
+LABEL secours
+  KERNEL /boot/vmlinuz-secours
+  APPEND single
+";
+    let recipe = Recipe::read(text, "/boot/syslinux/syslinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/vmlinuz-virt");
+    assert_eq!(recipe.initrd.as_deref(), Some("/boot/initramfs-virt"));
+    assert_eq!(recipe.command_line, "modules=loop,squashfs quiet");
+}
+
+/// **Une entrée sans arguments n'hérite pas de ceux de la précédente.**
+///
+/// C'est la moitié du défaut qui ne se voit pas dans le noyau rendu : memtest
+/// n'écrit aucun argument, et la ligne de commande gardait celle d'avant. Un
+/// noyau démarré avec les arguments d'un autre cherche une racine qui n'existe
+/// pas, et la panne tombe très loin de sa cause.
+#[test]
+fn an_entry_without_arguments_inherits_none() {
+    let text = "\
+menuentry \"premier\" {
+    linux /boot/un archisobasedir=arch quiet
+}
+
+menuentry \"second\" {
+    linux /boot/deux
+}
+";
+    let recipe = Recipe::read(text, "/boot/grub/grub.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/un");
+    assert_eq!(recipe.command_line, "archisobasedir=arch quiet");
+
+    // Et si la première entrée est celle sans arguments, elle n'en invente pas.
+    let inverse = "\
+menuentry \"second\" {
+    linux /boot/deux
+}
+
+menuentry \"premier\" {
+    linux /boot/un archisobasedir=arch quiet
+}
+";
+    let recipe = Recipe::read(inverse, "/boot/grub/grub.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/deux");
+    assert_eq!(recipe.command_line, "", "des arguments venus d'ailleurs");
+}
+
+/// **Une entrée `systemd-boot` n'a aucun mot d'ouverture** : le fichier entier
+/// est l'entrée. Découper par blocs ne doit pas casser ce dialecte-là.
+#[test]
+fn a_loader_entry_is_a_whole_file() {
+    let text = "\
+title   Arch Linux install medium
+linux   /arch/boot/x86_64/vmlinuz-linux
+initrd  /arch/boot/x86_64/initramfs-linux.img
+options archisobasedir=arch quiet
+";
+    let recipe = Recipe::read(text, "/loader/entries/01-archiso.conf").expect("la recette");
+    assert_eq!(recipe.kernel, "/arch/boot/x86_64/vmlinuz-linux");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/arch/boot/x86_64/initramfs-linux.img")
+    );
+    assert_eq!(recipe.command_line, "archisobasedir=arch quiet");
+}
