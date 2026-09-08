@@ -411,6 +411,71 @@ pub enum Op {
     /// `0F 30` — y écrire. C'est l'instruction sur laquelle un noyau s'arrête,
     /// à sa huitième.
     WriteModelRegister,
+    /// **Charger une table de descripteurs.** `0F 01 /2` est `lgdt`, `/3` est
+    /// `lidt` : le même opcode, et trois bits de ModRM pour tout écart. Le
+    /// processeur lit à l'adresse donnée une limite de deux octets suivie
+    /// d'une base de huit, et s'en sert ensuite pour interpréter chaque
+    /// sélecteur — et, pour `lidt`, chaque interruption.
+    ///
+    /// Un noyau les écrit tôt : le `lgdt` d'Alpine est à l'octet 1512 de son
+    /// point d'entrée, et c'est là que l'exploration de la région s'arrêtait.
+    LoadDescriptorTable {
+        /// `lidt` plutôt que `lgdt` : la table des interruptions, pas celle
+        /// des segments. Deux tables, deux registres, aucun rapport entre
+        /// elles — les confondre chargerait l'une à la place de l'autre sans
+        /// que rien ne le signale.
+        interrupts: bool,
+    },
+    /// **Ranger une table de descripteurs.** `0F 01 /0` (`sgdt`) et `/1`
+    /// (`sidt`) font le trajet inverse : ils écrivent les dix octets en
+    /// mémoire. Non privilégiées, celles-là, ce qui les rend fréquentes hors
+    /// du noyau aussi.
+    StoreDescriptorTable {
+        /// `sidt` plutôt que `sgdt`.
+        interrupts: bool,
+    },
+    /// **`0F 01 F8` : échanger la base de GS avec celle du noyau.**
+    ///
+    /// Une seule encodage dans tout le groupe — `reg=7`, `rm=0`, opérande
+    /// registre — et ses voisins immédiats n'ont rien à voir : `F9` est
+    /// `rdtscp`, `C1` est `vmcall`. C'est la première instruction d'un
+    /// gestionnaire d'interruption, celle par laquelle le noyau retrouve ses
+    /// propres données quand il interrompt un programme.
+    SwapGs,
+    /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
+    /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
+    /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
+    /// table de descripteurs globale : les sélecteurs n'ont de sens qu'une
+    /// fois la table en place, et l'ordre le dit.
+    LoadSegment {
+        /// Lequel des six. `Cs` n'apparaît jamais ici : `8E /1` lève `#UD`.
+        segment: Segment,
+    },
+    /// **Ranger un sélecteur de segment.** `8C /r`, le trajet inverse. Non
+    /// privilégiée, celle-là : c'est ainsi qu'un programme lit son propre
+    /// anneau, en regardant les deux bits bas de CS.
+    StoreSegment {
+        /// Lequel des six, `Cs` compris.
+        segment: Segment,
+    },
+    /// **Lire un registre de contrôle.** `0F 20 /r` : le numéro vient du champ
+    /// `reg`, la destination du `rm`, et l'opérande fait **huit octets sans
+    /// REX.W** — la taille est forcée en mode 64 bits.
+    ///
+    /// C'est l'instruction sur laquelle la lecture en ligne droite du point
+    /// d'entrée s'arrêtait, à l'octet 113 : `0F 20 E1`, `mov %cr4,%rcx`.
+    ReadControlRegister {
+        /// CR0 la pagination, CR2 l'adresse fautive, CR3 la racine de la table
+        /// de pages, CR4 les extensions, CR8 la priorité d'interruption. Cinq
+        /// registres sans rien de commun ; un seul nom les confondrait.
+        which: u8,
+    },
+    /// **Écrire un registre de contrôle.** `0F 22 /r`. Écrire CR3 change la
+    /// table de pages entière ; écrire CR0 allume ou éteint la pagination.
+    WriteControlRegister {
+        /// Voir `ReadControlRegister`.
+        which: u8,
+    },
     /// `setcc` : écrire **un octet**, zéro ou un, selon les drapeaux.
     Set(Condition),
     /// `cmovcc` : écrire la source, ou laisser la destination telle quelle.
@@ -539,6 +604,29 @@ pub enum CarryAction {
     Clear,
     Set,
     Complement,
+}
+
+/// **Les six sélecteurs de segment**, dans l'ordre où le champ `reg` d'un
+/// ModRM les désigne. Le mode 64 bits a vidé quatre d'entre eux de leur base
+/// — mais pas de leur existence : un noyau les charge quand même, et FS et GS
+/// gardent la leur.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Segment {
+    /// `reg=0`.
+    Es,
+    /// `reg=1`. Se **range** mais ne se charge pas : changer de segment de code
+    /// par un `mov` lève `#UD`, et c'est le retour lointain qui le fait.
+    Cs,
+    /// `reg=2`. Changer SS change la pile, et inhibe les interruptions
+    /// jusqu'à l'instruction suivante.
+    Ss,
+    /// `reg=3`.
+    Ds,
+    /// `reg=4`. Garde une base en mode 64 bits.
+    Fs,
+    /// `reg=5`. Garde une base en mode 64 bits — celle qu'un noyau échange
+    /// par `swapgs`.
+    Gs,
 }
 
 /// Ce qu'une instruction de bit fait au bit qu'elle vient de lire.
@@ -1690,6 +1778,13 @@ impl Cpu {
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
                 | Op::FarReturn
+                | Op::LoadDescriptorTable { .. }
+                | Op::StoreDescriptorTable { .. }
+                | Op::SwapGs
+                | Op::LoadSegment { .. }
+                | Op::StoreSegment { .. }
+                | Op::ReadControlRegister { .. }
+                | Op::WriteControlRegister { .. }
         ) {
             self.faulted = true;
             self.jumped = true;
@@ -1953,7 +2048,14 @@ impl Cpu {
             | Op::CpuId
             | Op::ReadModelRegister
             | Op::WriteModelRegister
-            | Op::FarReturn => {
+            | Op::FarReturn
+            | Op::LoadDescriptorTable { .. }
+            | Op::StoreDescriptorTable { .. }
+            | Op::SwapGs
+            | Op::LoadSegment { .. }
+            | Op::StoreSegment { .. }
+            | Op::ReadControlRegister { .. }
+            | Op::WriteControlRegister { .. } => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
             }
             Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
@@ -2215,6 +2317,74 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 length: at,
                 ..Decoded::nothing(Width::Dword)
             }),
+            // **Le groupe des tables de descripteurs**, où le sens n'est pas
+            // dans l'opcode mais dans les trois bits `reg` du ModRM. Quatre
+            // formes à mémoire — `sgdt`, `sidt`, `lgdt`, `lidt` — et une
+            // forme à registre, `swapgs`, qui est l'encodage `F8` **et lui
+            // seul** : son voisin `F9` est `rdtscp` et n'a rien à voir.
+            //
+            // Le reste du groupe — `vmcall`, `monitor`, `invlpg`… — reste
+            // illisible exprès. Rendre `Some` pour un opcode qu'on ne sait
+            // pas nommer transformerait un « je ne lis pas » en « je lis, et
+            // je me trompe ».
+            // **Les registres de contrôle**, lus et écrits par leur numéro.
+            // Leurs voisins immédiats `0F 21` et `0F 23` sont les registres de
+            // **débogage** — un autre fichier de registres, que le noyau
+            // n'écrit pas ici — et restent illisibles exprès.
+            //
+            // Cinq numéros existent ; les onze autres ne désignent rien, et
+            // rendre `Some` pour eux inventerait un registre.
+            0x20 | 0x22 => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                // Aucune forme mémoire : l'opérande est un registre général,
+                // toujours. Un `mod` autre que 11 n'est pas quelque chose
+                // qu'un compilateur écrit.
+                field.memory.is_none().then_some(())?;
+                // **REX.R compte ici**, à la différence des segments : c'est
+                // lui qui distingue CR8 de CR0.
+                let which = field.reg;
+                matches!(which, 0 | 2 | 3 | 4 | 8).then_some(())?;
+                Some(Decoded {
+                    op: if second == 0x20 {
+                        Op::ReadControlRegister { which }
+                    } else {
+                        Op::WriteControlRegister { which }
+                    },
+                    dst: field.register,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
+            0x01 => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                // `swapgs` se reconnaît à ses trois conditions ensemble : le
+                // `reg` à sept, l'opérande **en registre** (donc pas de
+                // mémoire), et le `rm` à zéro. En manquer une avale un
+                // voisin.
+                if field.memory.is_none() {
+                    if field.reg & 0b111 == 7 && field.register == 0 {
+                        return Some(Decoded {
+                            op: Op::SwapGs,
+                            length: at,
+                            ..Decoded::nothing(Width::Qword)
+                        });
+                    }
+                    return None;
+                }
+                let op = match field.reg & 0b111 {
+                    0 => Op::StoreDescriptorTable { interrupts: false },
+                    1 => Op::StoreDescriptorTable { interrupts: true },
+                    2 => Op::LoadDescriptorTable { interrupts: false },
+                    3 => Op::LoadDescriptorTable { interrupts: true },
+                    _ => return None,
+                };
+                Some(Decoded {
+                    op,
+                    length: at,
+                    memory: field.memory,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
             // **Les bits.** Le numéro vient d'un registre (`reg`) ou d'un
             // immédiat, et l'opérande est le `rm`. Quand cet opérande est en
             // **mémoire**, la règle change du tout au tout : le numéro n'est
@@ -2952,6 +3122,37 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         // lise rien. Le mode registre est **invalide** pour cette instruction —
         // il n'y a pas d'adresse d'un registre — et l'assembleur ne le produit
         // pas ; le décodeur le refuse plutôt que d'inventer.
+        // **Les sélecteurs de segment.** `8C` range, `8E` charge, et le champ
+        // `reg` du ModRM dit lequel des six — masqué à trois bits, parce que
+        // le processeur ignore REX.R pour un segment.
+        0x8c | 0x8e => {
+            let load = opcode == 0x8e;
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let segment = match field.reg & 0b111 {
+                0 => Segment::Es,
+                // Charger CS lève `#UD` : c'est le retour lointain qui change
+                // de segment de code, pas un `mov`.
+                1 if load => return None,
+                1 => Segment::Cs,
+                2 => Segment::Ss,
+                3 => Segment::Ds,
+                4 => Segment::Fs,
+                5 => Segment::Gs,
+                // Il n'y a que six segments.
+                _ => return None,
+            };
+            Some(Decoded {
+                op: if load {
+                    Op::LoadSegment { segment }
+                } else {
+                    Op::StoreSegment { segment }
+                },
+                dst: field.register,
+                length: at,
+                memory: field.memory,
+                ..Decoded::nothing(Width::Word)
+            })
+        }
         0x8d => {
             let width = prefixes.width(false);
             let modrm = *bytes.get(at)?;
@@ -3685,6 +3886,233 @@ mod tests {
                 "deux octets, pas d'opérande, pour {bytes:02x?}"
             );
         }
+    }
+
+    /// **Le groupe `0f 01`, démêlé par le champ `reg` de son ModRM.**
+    ///
+    /// Cinq formes que le noyau écrit, et un même opcode. `lgdt` et `lidt`
+    /// chargent les tables de descripteurs — global et d'interruptions — depuis
+    /// la mémoire ; `sgdt` et `sidt` les y rangent ; `swapgs` échange la base de
+    /// GS avec celle du noyau, et c'est la première chose que fait un
+    /// gestionnaire d'interruption.
+    ///
+    /// **Le sens vient du ModRM, pas de l'opcode.** `0f 01 15` est un `lgdt` et
+    /// `0f 01 1d` un `lidt` : trois bits d'écart. Avaler tout le groupe sous un
+    /// seul nom rendrait « je sais lire » là où on ne saurait pas quoi faire.
+    #[test]
+    fn the_descriptor_table_group_is_untangled_by_its_modrm() {
+        // mod=00, rm=101 : un déplacement relatif à RIP, la forme qu'un noyau
+        // écrit. Seuls les trois bits du milieu changent.
+        for (reg, op) in [
+            (0u8, Op::StoreDescriptorTable { interrupts: false }),
+            (1, Op::StoreDescriptorTable { interrupts: true }),
+            (2, Op::LoadDescriptorTable { interrupts: false }),
+            (3, Op::LoadDescriptorTable { interrupts: true }),
+        ] {
+            let modrm = (reg << 3) | 0b101;
+            let bytes = [0x0f, 0x01, modrm, 0x00, 0x00, 0x00, 0x00];
+            let step = decode(&bytes).unwrap_or_else(|| panic!("reg={reg} se décode"));
+            assert_eq!(step.op, op, "pour reg={reg}");
+            assert_eq!(
+                step.length, 7,
+                "deux d'opcode, un de ModRM, quatre de déplacement"
+            );
+            assert!(step.memory.is_some(), "ces quatre-là portent une adresse");
+        }
+    }
+
+    /// **`swapgs` est une forme, pas le groupe entier.**
+    ///
+    /// `0f 01 f8` seul est `swapgs` : `reg=7` **et** `rm=0` **et** un opérande
+    /// registre. `0f 01 f9` est `rdtscp`, une instruction sans rapport, et
+    /// `0f 01 c1` est `vmcall`. Décoder « tout ce qui a reg=7 » les
+    /// confondrait — un noyau qui appelle `rdtscp` verrait GS échangé.
+    #[test]
+    fn swapgs_is_one_encoding_and_not_a_whole_corner_of_the_group() {
+        let step = decode(&[0x0f, 0x01, 0xf8]).expect("swapgs se décode");
+        assert_eq!(step.op, Op::SwapGs);
+        assert_eq!(step.length, 3);
+        assert!(step.memory.is_none(), "swapgs ne touche pas la mémoire");
+
+        for voisin in [0xf9u8, 0xc1, 0xd0] {
+            assert!(
+                decode(&[0x0f, 0x01, voisin]).is_none(),
+                "0f 01 {voisin:02x} n'est pas swapgs et ne doit pas se décoder comme tel"
+            );
+        }
+    }
+
+    /// **Le `lgdt` que le noyau écrit vraiment**, tel qu'il apparaît à l'octet
+    /// 1512 du point d'entrée d'Alpine 6.6.134 — l'endroit exact où
+    /// l'exploration de la région s'arrêtait.
+    #[test]
+    fn the_lgdt_the_kernel_actually_writes_is_read() {
+        let step = decode(&[0x0f, 0x01, 0x15, 0xb1, 0xc9, 0x43, 0x01]).expect("le lgdt du noyau");
+        assert_eq!(step.op, Op::LoadDescriptorTable { interrupts: false });
+        assert_eq!(step.length, 7);
+    }
+
+    /// **Les six sélecteurs de segment, nommés un par un.**
+    ///
+    /// `8C` range un sélecteur, `8E` en charge un, et lequel des six vient du
+    /// champ `reg` du ModRM — exactement comme pour le groupe `0F 01`. Charger
+    /// DS et charger SS ne se ressemblent pas : SS change la pile, et le
+    /// processeur inhibe les interruptions jusqu'à l'instruction suivante.
+    /// Un seul nom pour les six perdrait cette différence-là.
+    #[test]
+    fn the_segment_registers_are_named_one_by_one() {
+        use Segment::*;
+        for (reg, segment) in [(0u8, Es), (2, Ss), (3, Ds), (4, Fs), (5, Gs)] {
+            // mod=11, rm=000 : l'opérande est EAX, la forme qu'un noyau écrit.
+            let modrm = 0b1100_0000 | (reg << 3);
+            let store = decode(&[0x8c, modrm]).unwrap_or_else(|| panic!("8c reg={reg}"));
+            assert_eq!(store.op, Op::StoreSegment { segment }, "8c reg={reg}");
+            assert_eq!(store.length, 2);
+            let load = decode(&[0x8e, modrm]).unwrap_or_else(|| panic!("8e reg={reg}"));
+            assert_eq!(load.op, Op::LoadSegment { segment }, "8e reg={reg}");
+            assert_eq!(load.length, 2);
+        }
+        // CS se **range** — c'est ainsi qu'un programme lit son propre anneau.
+        assert_eq!(
+            decode(&[0x8c, 0b1100_1000]).expect("8c vers CS").op,
+            Op::StoreSegment { segment: Cs }
+        );
+    }
+
+    /// **Charger CS n'est pas une instruction, et `reg=6` ou `7` non plus.**
+    ///
+    /// `8E /1` lèverait `#UD` sur le processeur : on ne change pas de segment
+    /// de code par un `mov`, c'est le rôle du retour lointain. Et il n'y a que
+    /// six segments : `reg=6` et `reg=7` ne désignent rien. Les décoder
+    /// rendrait un nom là où le processeur refuse.
+    #[test]
+    fn loading_the_code_selector_is_not_an_instruction() {
+        assert!(
+            decode(&[0x8e, 0b1100_1000]).is_none(),
+            "8e /1 charge CS : le processeur lève #UD"
+        );
+        for reg in [6u8, 7] {
+            let modrm = 0b1100_0000 | (reg << 3);
+            assert!(
+                decode(&[0x8c, modrm]).is_none(),
+                "8c reg={reg} ne désigne rien"
+            );
+            assert!(
+                decode(&[0x8e, modrm]).is_none(),
+                "8e reg={reg} ne désigne rien"
+            );
+        }
+    }
+
+    /// **Les trois chargements de segment que le noyau écrit vraiment**, à
+    /// l'octet 1524 de son point d'entrée — l'endroit où la traduction
+    /// s'arrêtait une fois le groupe `0F 01` lu.
+    #[test]
+    fn the_three_segment_loads_the_kernel_writes_are_read() {
+        use Segment::*;
+        let bytes: &[u8] = &[0x8e, 0xd8, 0x8e, 0xd0, 0x8e, 0xc0];
+        let mut at = 0usize;
+        let mut seen = Vec::new();
+        while at < bytes.len() {
+            let step = decode(&bytes[at..]).unwrap_or_else(|| panic!("l'octet {at}"));
+            seen.push(step.op);
+            at += step.length;
+        }
+        assert_eq!(
+            seen,
+            vec![
+                Op::LoadSegment { segment: Ds },
+                Op::LoadSegment { segment: Ss },
+                Op::LoadSegment { segment: Es },
+            ]
+        );
+    }
+
+    /// **Les registres de contrôle, par leur numéro.**
+    ///
+    /// `0F 20` lit un registre de contrôle dans un registre général, `0F 22`
+    /// fait l'inverse, et le numéro vient du champ `reg`. CR0 porte la
+    /// pagination, CR3 la racine de la table de pages, CR4 les extensions :
+    /// trois registres qui n'ont rien de commun, et qu'un seul nom
+    /// confondrait.
+    ///
+    /// **L'opérande fait toujours huit octets**, sans REX.W : `mov %cr4,%rcx`
+    /// s'écrit `0F 20 E1`, trois octets, et rend les soixante-quatre bits.
+    #[test]
+    fn the_control_registers_are_read_by_their_number() {
+        for which in [0u8, 2, 3, 4] {
+            let modrm = 0b1100_0000 | (which << 3) | 0b001; // rm=001 : RCX
+            let read = decode(&[0x0f, 0x20, modrm]).unwrap_or_else(|| panic!("0f 20 cr{which}"));
+            assert_eq!(read.op, Op::ReadControlRegister { which }, "cr{which}");
+            assert_eq!(read.length, 3, "aucun REX, aucun immédiat");
+            assert_eq!(read.width, Width::Qword, "huit octets, toujours");
+            let write = decode(&[0x0f, 0x22, modrm]).unwrap_or_else(|| panic!("0f 22 cr{which}"));
+            assert_eq!(write.op, Op::WriteControlRegister { which }, "cr{which}");
+            assert_eq!(write.length, 3);
+        }
+
+        // **CR8 n'est atteignable que par REX.R**, et c'est le seul endroit du
+        // décodeur où ce bit désigne autre chose qu'un registre général :
+        // `44 0F 20 C1` est `mov %cr8,%rcx`. Le masquer à trois bits — comme il
+        // le faut pour un segment — rendrait CR0 sans que rien ne le signale.
+        let eight = decode(&[0x44, 0x0f, 0x20, 0xc1]).expect("mov %cr8,%rcx");
+        assert_eq!(eight.op, Op::ReadControlRegister { which: 8 });
+        assert_eq!(eight.length, 4, "un octet de REX en plus");
+
+        // **Les quatre numéros qui ne désignent aucun registre.** Le
+        // processeur lève `#UD` dessus ; les décoder inventerait un registre
+        // de contrôle, et le refus nommé qui suit porterait un nom faux.
+        for absent in [1u8, 5, 6, 7] {
+            let modrm = 0b1100_0000 | (absent << 3) | 0b001;
+            assert!(
+                decode(&[0x0f, 0x20, modrm]).is_none(),
+                "cr{absent} n'existe pas"
+            );
+            assert!(
+                decode(&[0x0f, 0x22, modrm]).is_none(),
+                "cr{absent} n'existe pas non plus en écriture"
+            );
+        }
+    }
+
+    /// **Un registre de contrôle n'a pas de forme mémoire, et le refuser est
+    /// une question de longueur, pas de goût.**
+    ///
+    /// Le processeur *ignore* les deux bits de `mod` pour `0F 20` : `0F 20 05`
+    /// est `mov %cr0,%rbp`, trois octets. Un décodeur qui laisse `read_modrm`
+    /// interpréter ce ModRM y voit un déplacement relatif à RIP, avale quatre
+    /// octets de plus et rend une longueur de sept. Ces quatre octets-là sont
+    /// l'instruction suivante : tout ce qui vient après se décale, et le flux
+    /// se met à produire des instructions plausibles et fausses.
+    ///
+    /// Aucun compilateur n'écrit cette forme. Le décodeur la refuse donc, et
+    /// c'est ce refus-ci que ce test tient — pas la sémantique.
+    #[test]
+    fn a_control_register_has_no_memory_form_and_a_wrong_length_would_desynchronise() {
+        for opcode in [0x20u8, 0x22] {
+            assert!(
+                decode(&[0x0f, opcode, 0x05, 0x78, 0x56, 0x34, 0x12]).is_none(),
+                "0f {opcode:02x} 05 : le processeur y lit trois octets, pas sept"
+            );
+        }
+    }
+
+    /// **Le `mov %cr4,%rcx` du noyau**, à l'octet 113 de son point d'entrée —
+    /// l'endroit exact où la **lecture** en ligne droite s'arrêtait.
+    ///
+    /// Et son voisin qui n'en est pas un : `0F 21` lit un registre de
+    /// **débogage**, pas de contrôle. Deux opcodes consécutifs, deux fichiers
+    /// de registres, et le noyau écrit l'un sans écrire l'autre.
+    #[test]
+    fn the_control_register_read_the_kernel_actually_writes_is_read() {
+        let step = decode(&[0x0f, 0x20, 0xe1]).expect("mov %cr4,%rcx");
+        assert_eq!(step.op, Op::ReadControlRegister { which: 4 });
+        assert_eq!(step.length, 3);
+        assert!(
+            decode(&[0x0f, 0x21, 0xe1]).is_none(),
+            "0f 21 est un registre de débogage, que rien ici ne lit"
+        );
+        assert!(decode(&[0x0f, 0x23, 0xe1]).is_none(), "0f 23 non plus");
     }
 
     /// **Le retour lointain, par lequel un noyau charge son sélecteur de code.**
