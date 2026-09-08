@@ -36,7 +36,7 @@
 /// `target/release/wisq-agent` un marqueur pris dans le clone, si bien que le
 /// binaire installé dit lui-même quel commit a été cloné.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -47,6 +47,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/// **Vingt secondes par contrôle, et non les cinq par défaut.**
+///
+/// Chaque test de ce fichier lance des sous-processus — un `git init`, la
+/// garde en bash, un parcours de fichiers — et le délai par défaut de Bun est
+/// de cinq secondes. Un contrôle qui échoue parce qu'il est lent n'apprend
+/// rien à personne : il dit « rouge » sur un comportement correct, et le
+/// contributeur va chercher le défaut dans ce qu'il vient d'écrire.
+///
+/// Ce n'est pas une précaution théorique. Une suite complète a rendu quatre
+/// rouges en soixante-trois secondes là où elle en met neuf, puis un seul en
+/// trente-huit, jamais les mêmes : à chaque fois un test de garde arrêté à
+/// 5 005 ou 5 720 millisecondes, sur une machine occupée à construire autre
+/// chose à côté. Un budget qui dépend de la charge est un chronomètre, pas
+/// une garde.
+setDefaultTimeout(20_000);
 
 const installer = join(import.meta.dir, "..", "..", "scripts", "install.sh");
 
