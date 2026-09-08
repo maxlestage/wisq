@@ -35,6 +35,14 @@ use wisq_vm::x86_wasm::{
 // La répétition est assumée plutôt que factorisée : elle est **comparée**, et
 // par le moteur lui-même. Un pilote à qui il manquerait ces deux fonctions ne
 // se tairait pas, il refuserait bruyamment.
+//
+// **Et ça n'a pas suffi.** L'argument suppose que quelqu'un *entende* le bruit.
+// Les trois pilotes de `examples/` ont refusé bruyamment pendant toute une
+// tranche — personne ne les lance en intégration continue — et `speed.rs`
+// traduisait même le refus en « Bun est absent » alors que Bun avait répondu.
+// `every_driver_supplies_the_functions_a_module_imports`, en bas de ce fichier,
+// écoute à leur place, et les noms qu'il vérifie viennent de la section
+// d'import d'un vrai module plutôt que d'une liste écrite à la main.
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2155,4 +2163,157 @@ fn the_short_form_refuses_exactly_what_the_explaining_one_refuses() {
             "{bytes:02x?}"
         );
     }
+}
+
+/// **Ce qu'un module importe, et ce que ses pilotes lui donnent.**
+///
+/// L'argument écrit en tête de ce fichier — « la répétition est comparée par le
+/// moteur lui-même, un pilote incomplet refuserait bruyamment » — est vrai et
+/// il n'a pas suffi. Il suppose que quelqu'un **entende** le bruit. Trois
+/// pilotes, `examples/speed.rs`, `examples/chain.rs` et `examples/resolved.rs`,
+/// ont refusé bruyamment pendant toute une tranche : personne ne les lance en
+/// intégration continue, et `speed.rs` traduisait même le refus en « Bun est
+/// absent » alors que Bun avait répondu.
+///
+/// Ce test entend à leur place. **Les noms viennent du module**, lus dans sa
+/// section d'import : ajouter une troisième fonction hôte fera tomber ce test
+/// sur les pilotes qui ne la portent pas, sans qu'on ait à penser à eux.
+///
+/// Ce qu'il ne couvre pas, et pourquoi : `web/host.js` et la sonde de
+/// l'iPhone construisent leur `env` autrement — par affectations successives —
+/// et ce sont les chemins que l'application emprunte vraiment. Un manque là se
+/// verrait au premier lancement ; ici, il ne se voyait nulle part.
+#[test]
+fn every_driver_supplies_the_functions_a_module_imports() {
+    let module =
+        Module::region(&wisq_vm::x86_wasm::BENCH_LOOP, CODE, 0).expect("la boucle du banc");
+    let wanted = function_imports(&module);
+    assert!(
+        !wanted.is_empty(),
+        "un module sans import de fonction rendrait ce test creux"
+    );
+
+    for relative in [
+        "crates/wisq-vm/examples/speed.rs",
+        "crates/wisq-vm/examples/chain.rs",
+        "crates/wisq-vm/examples/resolved.rs",
+        "crates/wisq-vm/tests/x86_wasm.rs",
+    ] {
+        let text = std::fs::read_to_string(workspace_root().join(relative))
+            .unwrap_or_else(|_| panic!("{relative}"));
+        // La fenêtre s'arrête à la première accolade fermante, ce qui suppose
+        // que les fonctions rendues n'en ouvrent aucune — d'où
+        // `() => undefined` plutôt que `() => {}`.
+        let mut seen = 0;
+        for (at, _) in text.match_indices("env: {") {
+            let rest = &text[at..];
+            let stop = rest.find('}').unwrap_or(rest.len());
+            let object = &rest[..stop];
+            // **Un objet qui en étale un autre hérite de ses fonctions.** Il en
+            // existe deux, qui remplacent la mémoire ou ajoutent la table sans
+            // toucher au reste. Celui dont ils héritent est vérifié, lui.
+            if object.contains("...") {
+                continue;
+            }
+            // **Et ce test se cite lui-même.** Le motif qu'il cherche apparaît
+            // dans son propre code, quelques lignes plus haut. Un `env` de
+            // pilote porte toujours la mémoire de l'invité ; cette citation,
+            // non.
+            if !object.contains("mem") {
+                continue;
+            }
+            for name in &wanted {
+                assert!(
+                    object.contains(&format!("{name}:")),
+                    "{relative} construit un `env` sans « {name} » : \
+                     le module l'importe, et l'instanciation le refusera\n  {object}"
+                );
+            }
+            seen += 1;
+        }
+        assert!(
+            seen > 0,
+            "{relative} ne construit aucun `env` — ce test le croit vérifié \
+             alors qu'il ne l'a pas regardé"
+        );
+    }
+}
+
+/// Les noms des fonctions qu'un module importe, lus dans sa section d'import.
+///
+/// La mémoire, la table et les globales sont écartées : elles s'importent
+/// aussi, mais un pilote les fournit par construction — c'est la fonction
+/// oubliée qui a coûté une tranche.
+fn function_imports(module: &[u8]) -> Vec<String> {
+    let mut at = 8; // l'en-tête : « \0asm » et la version
+    while at < module.len() {
+        let id = module[at];
+        at += 1;
+        let (size, read) = unsigned_at(module, at);
+        at += read;
+        let end = at + size as usize;
+        if id != 2 {
+            at = end;
+            continue;
+        }
+        let (count, read) = unsigned_at(module, at);
+        at += read;
+        let mut names = Vec::new();
+        for _ in 0..count {
+            // Le nom du module, puis celui du champ. C'est le second qu'on garde.
+            let mut field = String::new();
+            for which in 0..2 {
+                let (length, read) = unsigned_at(module, at);
+                at += read;
+                if which == 1 {
+                    field = String::from_utf8_lossy(&module[at..at + length as usize]).into_owned();
+                }
+                at += length as usize;
+            }
+            let kind = module[at];
+            at += 1;
+            match kind {
+                // fonction : l'indice de son type
+                0x00 => {
+                    let (_, read) = unsigned_at(module, at);
+                    at += read;
+                    names.push(field);
+                }
+                // table : le type d'élément, puis les bornes
+                0x01 => at += 1 + skip_limits(module, at + 1),
+                // mémoire : les bornes seules
+                0x02 => at += skip_limits(module, at),
+                // globale : le type, puis la mutabilité
+                0x03 => at += 2,
+                other => panic!("sorte d'import inconnue : {other}"),
+            }
+        }
+        return names;
+    }
+    Vec::new()
+}
+
+fn unsigned_at(bytes: &[u8], mut at: usize) -> (u64, usize) {
+    let (mut value, mut shift, mut read) = (0u64, 0u32, 0usize);
+    loop {
+        let byte = bytes[at];
+        value |= u64::from(byte & 0x7f) << shift;
+        shift += 7;
+        at += 1;
+        read += 1;
+        if byte & 0x80 == 0 {
+            return (value, read);
+        }
+    }
+}
+
+fn skip_limits(bytes: &[u8], at: usize) -> usize {
+    let flags = bytes[at];
+    let (_, read) = unsigned_at(bytes, at + 1);
+    let mut total = 1 + read;
+    if flags & 0x01 != 0 {
+        let (_, more) = unsigned_at(bytes, at + total);
+        total += more;
+    }
+    total
 }

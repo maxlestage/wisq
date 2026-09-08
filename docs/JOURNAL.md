@@ -8,6 +8,48 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — trois instruments en panne, découverts en refusant de citer un chiffre
+
+Je voulais vérifier les **247 MIPS** plutôt que les citer de mémoire. `speed.rs`
+a répondu « Bun est absent, donc le second chemin n'est pas mesuré » — alors que
+Bun était là, avait démarré, et venait d'imprimer la vraie raison deux lignes
+plus haut : `LinkError: import function env:out must be callable`.
+
+Depuis la tranche IN/OUT, **tout module émis importe `env.out` et `env.in`**.
+Le correctif avait été mis à trois endroits sur six — `web/host.js`, la sonde de
+l'iPhone, et les dix pilotes de `tests/x86_wasm.rs`. Les trois exemples pilotés
+par Bun, eux, ne l'avaient pas eu : `speed`, `chain` et `resolved` refusaient
+bruyamment depuis, et **personne n'entendait**.
+
+**L'argument qui a échoué est écrit dans le dépôt**, en tête de
+`tests/x86_wasm.rs` : « la répétition est assumée plutôt que factorisée : elle
+est comparée, et par le moteur lui-même. Un pilote à qui il manquerait ces deux
+fonctions ne se tairait pas, il refuserait bruyamment. » C'est vrai. Ça suppose
+seulement que quelqu'un *entende* le bruit — et rien ne lance les exemples en
+intégration continue. Le commentaire dit maintenant les deux moitiés.
+
+Le test qui écoute à leur place lit **la section d'import d'un vrai module** :
+ajouter une troisième fonction hôte fera tomber les pilotes qui ne la portent
+pas, sans qu'on ait à penser à eux. Six mutations jugées, dont une instructive :
+retirer les deux-points de `« {name}: »` ne fait rien tomber sur du code
+correct — c'est un affaiblissement, pas une casse. Je l'ai jugée en la
+combinant à un pilote qui perd `in:` tout en gardant les lettres dans
+`initial:` : la forme stricte tombe, la forme lâche survit. Les deux-points
+gagnent leur place.
+
+Et le second défaut, plus petit et plus laid : `compiled()` rendait `None` pour
+« Bun manque » comme pour « JavaScriptCore a refusé », et l'appelant imprimait
+la première dans les deux cas. **Un diagnostic faux imprimé comme un fait vaut
+moins que pas de diagnostic.** Un `enum` à trois branches remplace le `Option`.
+Ce point-là n'est tenu par aucun test : c'est le texte d'un exemple, et le
+dépôt ne lance pas les exemples. C'est dit plutôt que caché.
+
+**Les instruments remarchent, et ils ne disent pas 247.** Sur ce conteneur
+aujourd'hui : 289,5 MIPS pour l'émetteur, 31,2 pour l'interpréteur Rust —
+contre 247 et 49,3 au dossier. L'un monte, l'autre descend : c'est une autre
+machine ou une autre charge, pas une régression ni un progrès. Je ne réécris
+donc aucun chiffre publié sur la foi d'une seule exécution.
+
 ## 2026-09-08 — deux défauts vus sur une capture d'écran, pas dans le code
 
 Maxime a chargé `omarchy-4.0.2.iso`, la machine a refusé, et sa capture montre
