@@ -41,7 +41,7 @@ chiffres fiables viennent du parcours par régions.
 **Ce que les cinq tranches n'ont pas fait.** 9949 → 9980 régions, 40 → 9 refus
 nommés. Aucune n'approche un noyau qui démarre : ce qui manque n'est plus une
 liste d'instructions, c'est la pagination et les interruptions — deux mécanismes
-entiers, dont l'état des lieux est le travail qui suit.
+entiers, dont `docs/DEMARRAGE.md` fait l'état des lieux.
 
 ## 2026-09-08 — les MSR, le premier vrai modèle, et un relevé qui change de sens
 
