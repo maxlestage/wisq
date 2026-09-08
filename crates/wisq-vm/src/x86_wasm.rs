@@ -55,7 +55,30 @@ pub const RIP_SLOT: usize = RFLAGS_SLOT + 1;
 /// après que la première région a été traduite, et une constante figée dans le
 /// code rendrait cette région fausse dès l'installation suivante.
 pub const GS_SLOT: usize = RIP_SLOT + 1;
-pub const SCRATCH_SLOT: usize = GS_SLOT + 1;
+/// **Le compteur d'horodatage, et pourquoi c'est une globale plutôt qu'un
+/// appel à l'hôte.**
+///
+/// L'autre voie était d'importer une vraie horloge, au prix d'un retour de
+/// main — 125 à 190 ns, mesuré. Elle n'achète rien : un noyau calibre la
+/// fréquence de son TSC contre une **autre** horloge, un PIT ou un HPET, dont
+/// cette machine n'a aucun. La calibration est fausse des deux côtés, et la
+/// voie chère ne l'est pas moins.
+///
+/// **Ce qui décide est ailleurs.** Un noyau écrit
+/// `while (rdtsc() - début < n)`. Deux lectures qui rendraient la même valeur
+/// feraient une boucle qui ne se termine **jamais** : une machine qui pend,
+/// indiscernable d'un calcul long. Le compteur avance donc à chaque lecture.
+///
+/// **Ce qu'il ne dit pas** : il n'avance que quand on le lit. Un noyau qui
+/// mesure `t0 = rdtsc() ; travail ; t1 = rdtsc()` trouvera toujours le même
+/// écart, quel que soit le travail. C'est un mensonge sur la durée, inhérent à
+/// un compteur virtuel, et assumé — pas caché.
+pub const TSC_SLOT: usize = GS_SLOT + 1;
+/// Ce qu'une lecture ajoute au compteur. La valeur est **arbitraire**, et le
+/// dire vaut mieux que la déguiser en fréquence : seule sa positivité stricte
+/// est une propriété, et c'est elle qu'un test tient.
+pub const TSC_STEP: u64 = 100;
+pub const SCRATCH_SLOT: usize = TSC_SLOT + 1;
 pub const SCRATCH_COUNT: usize = 10;
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
@@ -1544,6 +1567,29 @@ impl Module {
         if matches!(step.op, Op::PortIn | Op::PortOut) {
             return Self::port(step, body);
         }
+        // **Le compteur d'horodatage, produit et non refusé.** Il ne demande
+        // aucun modèle privilégié : une globale qui monte, et ses deux moitiés
+        // dans EAX et EDX.
+        if step.op == Op::ReadTimestamp {
+            body.store(TSC_SLOT, |b| {
+                b.load(TSC_SLOT).constant(TSC_STEP).op(code::I64_ADD);
+            });
+            // **`rdtsc` écrit EAX et EDX, pas RAX et RDX.** Écrire les
+            // registres entiers laisserait la moitié haute d'avant dans RAX,
+            // là où le processeur la met à zéro — et un noyau qui recompose
+            // `edx:eax` lirait un compteur faux sans s'en apercevoir.
+            body.store(Self::slot(RAX), |b| {
+                b.load(TSC_SLOT).constant(0xffff_ffff).op(code::I64_AND);
+            });
+            body.store(Self::slot(RDX), |b| {
+                b.load(TSC_SLOT)
+                    .constant(32)
+                    .op(code::I64_SHR_U)
+                    .constant(0xffff_ffff)
+                    .op(code::I64_AND);
+            });
+            return Some(());
+        }
         // **Les instructions privilégiées : décodées, pas traduisibles.**
         //
         // Le décodeur les nomme une par une depuis qu'un noyau s'est arrêté
@@ -1560,8 +1606,7 @@ impl Module {
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
         if matches!(
             step.op,
-            Op::ReadTimestamp
-                | Op::CpuId
+            Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
                 | Op::LoadDescriptorTable { .. }
@@ -1736,7 +1781,7 @@ impl Module {
                 | Op::InterruptFlag(_)
                 | Op::Halt
                 | Op::PopFlags => {
-                    unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la refuse avant")
+                    unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
                 Op::Sub | Op::Cmp => {
                     b.load(Body::scratch(0))
@@ -2133,7 +2178,7 @@ impl Module {
             | Op::Halt
             | Op::PopFlags => {
                 unreachable!(
-                    "une instruction privilégiée n'est pas un calcul : `translate` la refuse avant"
+                    "une instruction privilégiée n'est pas un calcul : `translate` la traite avant"
                 )
             }
             Op::And | Op::Or | Op::Xor | Op::Test => {}
@@ -4123,8 +4168,11 @@ mod port_tests {
     /// dit.
     #[test]
     fn a_privileged_instruction_is_refused_by_name_not_by_silence() {
+        // **`rdtsc` a quitté cette liste, et c'est le test qui l'a dit.** Il
+        // est produit depuis la tranche du compteur virtuel ; l'assertion a
+        // échoué au premier passage, ce qui est exactement son rôle. Une
+        // liste de refus qu'on ne raccourcit jamais ne mesure plus rien.
         for (bytes, what) in [
-            (&[0x0f, 0x31, 0xc3][..], "rdtsc"),
             (&[0x0f, 0xa2, 0xc3][..], "cpuid"),
             (&[0x0f, 0x32, 0xc3][..], "rdmsr"),
             (&[0x0f, 0x30, 0xc3][..], "wrmsr"),
