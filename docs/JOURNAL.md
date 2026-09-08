@@ -8,6 +8,50 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — du mouvement sur le site, sans qu'il devienne porteur
+
+Maxime : « je veux des animations js sur toutes les pages ». Deux contraintes
+décidaient de tout avant la première ligne.
+
+**Le budget.** `tests/build.test.ts` tient tout le JavaScript du site sous
+8 000 octets bruts et 3 000 gzippés, parce que React coûtait 65 794 octets
+gzippés pour quatre comportements. Il y avait 2 350 bruts ; il y en a 3 559,
+soit 1 209 de plus pour le mouvement. Le plafond n'a pas bougé.
+
+**Et la règle que `main.ts` énonce de lui-même** : « Nothing below is
+load-bearing ». Une animation de révélation la viole par construction — elle
+masque, puis découvre — et un script qui ne part pas laisse alors une page
+blanche au lieu d'un site.
+
+D'où la forme : **toutes les règles de masquage vivent sous `[data-motion]`, un
+attribut que seul le script pose.** Sans JavaScript, il n'y a ni animation ni
+contenu invisible — les deux d'un coup. Et le script refuse de le poser dans
+deux cas : quand la personne a demandé moins d'animation, et quand le
+navigateur n'a pas d'`IntersectionObserver`. Dans les deux, il n'y aurait
+personne pour révéler ce qu'on aurait caché.
+
+**Le test exécute plutôt qu'il ne lit**, en suivant `service-worker.test.ts` —
+ce fichier-là raconte comment neuf sabotages du worker avaient passé une suite
+entière de tests qui cherchaient des chaînes. Un faux DOM, un observateur qu'on
+déclenche à la main, et `startMotion` appelé pour de vrai.
+
+**Deux de mes propres tests étaient faux, et le sabotage les a nommés.**
+Retirer la garde « est-ce un entier ? » survivait : mon faux
+`requestAnimationFrame` sautait droit à la dernière image, si bien qu'un
+compteur affichant « NaN » pendant une seconde avant de remettre la bonne
+valeur passait pour correct. L'horloge avance maintenant par pas de 120 ms, et
+chaque élément retient **tout** ce qu'on lui écrit : la montée est jugée sur ses
+images intermédiaires, pas sur son résultat. La seconde mutation ne s'appliquait
+pas — mon ancre existait en deux exemplaires, la règle et sa jumelle
+d'impression.
+
+Dix mutations, dix chutes après correction.
+
+Le compteur des chiffres de l'accueil finit **exactement sur le texte
+d'origine**, remis tel quel plutôt que reconstruit : ce sont des affirmations
+qu'un test tient, et un chiffre approché serait un mensonge que l'animation
+aurait introduit.
+
 ## 2026-09-08 — la frontière C du lecteur d'image
 
 Le lecteur ISO vit en Rust ; l'application, la bibliothèque et le chargeur
@@ -12349,3 +12393,79 @@ de son côté.
 `CannotTranslate` — « je les lis, je ne sais pas les produire » — est une
 sémantique à écrire. L'outil dit maintenant les deux séparément, parce que ce
 ne sont pas le même travail.
+
+### Le site bouge, et le faux DOM qui devinait
+
+Maxime : « c'est pauvre et ça bouge pas beaucoup ». Quatre comportements de
+plus — une cascade dans les grilles, une lueur sous le pointeur, une barre de
+lecture sur les documents, un curseur de terminal après le nom — pour **4 561
+octets bruts et 1 852 gzippés**, sous un plafond testé de 8 000 et 3 000.
+
+La forme n'a pas changé et c'est l'essentiel : **toutes les règles qui masquent
+vivent sous `[data-motion]`**, un attribut que seul le script pose. Sans
+JavaScript, il n'y a ni animation ni contenu invisible — les deux d'un coup,
+seule façon de ne pas transformer une panne de script en page blanche.
+
+**Le faux DOM a failli mentir.** Son premier jet répondait aux sélecteurs par
+`selector.includes(".fact")`. Or la cascade interroge `.cards, .steps, .facts`,
+qui **contient** `.fact` : la grille aurait reçu la liste des chiffres de
+l'accueil, et les tests de cascade auraient observé les mauvais éléments en
+passant. Il répond maintenant par correspondance exacte et **lève une erreur**
+sur ce qu'il ne connaît pas — de sorte qu'un sélecteur qui change dans la source
+fasse tomber le test au lieu de le laisser regarder ailleurs.
+
+**Et trois gardes ne se voient pas dans le verdict.** Que la lueur s'abstienne
+sur un écran tactile, que la barre de lecture n'existe pas hors d'un document,
+qu'une page plus courte que la fenêtre reste à zéro : dans les trois cas la page
+finit correcte de toute façon. Ce qui change est **ce qui est écouté, ce qui est
+créé, ce qui est écrit** — donc c'est cela que les tests observent, pas l'état
+final. Les dix sabotages tombent, y compris le repli `var(--read, 0)` changé en
+`1`, qui ferait clignoter une barre pleine à chaque premier affichage.
+
+**Et la garde anti-React refusait le DOM.** `document.createElement`, dont la
+barre de lecture a besoin, contient `createElement` — un des quatre marqueurs
+par lesquels `build.test.ts` vérifie que React n'est pas revenu dans le paquet.
+La garde a donc refusé exactement le code qu'elle existe pour encourager : du
+DOM ordinaire, écrit à la place des 65 794 octets gzippés de React. Une garde
+qui refuse ce qu'elle protège est pire qu'aucune garde, parce que la sortie
+évidente est de l'affaiblir.
+
+`createElement` est parti ; les trois autres restent, et ils ont été **mesurés**
+contre un vrai paquet React 19 de production minifié, 186 Kio, construit depuis
+les `node_modules` de ce dépôt : `useState` y apparaît 7 fois, `React` 8,
+`react` 45. Ils viennent du moteur lui-même, donc tout paquet qui embarque React
+les porte. Le sabotage l'a confirmé de bout en bout : un `import { useState }
+from "react"` remis dans `main.ts` fait tomber la garde — **et pas le budget
+d'octets**, qui voyait 5 370 octets, sous son plafond de 8 000. Les deux gardes
+ne sont pas redondantes ; celle-ci attrape ce que l'autre laisse passer.
+
+### Un chronomètre déguisé en garde
+
+La suite du site avait rendu **quatre rouges en soixante-trois secondes** là où
+elle en met neuf, puis un seul en trente-huit, jamais les mêmes tests. Je
+l'avais écrit dans une demande de fusion comme « je ne sais pas ce que
+c'était », faute de reproduction. Elle s'est reproduite, et l'explication est
+entière.
+
+Chaque test qui tombait était un test de garde — licence, mise en forme — arrêté
+à **5 005** ou **5 720 millisecondes** : le délai par défaut de Bun est de cinq
+secondes, et ces tests lancent des sous-processus par milliers. Le contrôle qui
+passe la garde de mise en forme sur les trois cent soixante-dix fichiers Swift
+du dépôt tient en 3,5 s au repos — à un cheveu de la limite. Une machine
+occupée à autre chose le fait basculer.
+
+Le dépôt avait déjà nommé le défaut, une tranche plus tôt, dans le commentaire
+d'un seul de ces tests : « un budget qui dépend de la charge n'est pas une
+garde, c'est un chronomètre ; il refuse un comportement correct, ce qui est la
+pire façon d'échouer. » Le remède avait été appliqué à ce test-là et à aucun de
+ses voisins, qui lancent pourtant les mêmes sous-processus. Les cinq fichiers
+concernés portent maintenant un `setDefaultTimeout(20_000)` en tête.
+
+**Mesuré des deux côtés**, sous quatre boucles occupées sur quatre cœurs : à
+5 000 ms la suite est rouge, à 20 000 ms elle est verte, tout le reste égal.
+
+**Ce qui reste ouvert**, et qui est la vraie cause : ce contrôle-là coûte
+environ deux mille deux cents sous-processus — six par fichier, dont trois
+uniquement pour lire le dernier octet. À **quatre fois** la charge des cœurs
+disponibles, même vingt secondes ne suffisent plus. Rendre le parcours bon
+marché est un travail à part ; le délai large le rend seulement honnête d'ici là.

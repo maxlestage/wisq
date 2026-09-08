@@ -20,10 +20,26 @@
 /// while `.swiftlint.yml` lists `App` and CI checks it every time. 235 files
 /// covered out of 236, invisibly, because that file happens to be clean.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+/// **Vingt secondes par contrôle, et non les cinq par défaut.**
+///
+/// Chaque test de ce fichier lance des sous-processus — un `git init`, la
+/// garde en bash, un parcours de fichiers — et le délai par défaut de Bun est
+/// de cinq secondes. Un contrôle qui échoue parce qu'il est lent n'apprend
+/// rien à personne : il dit « rouge » sur un comportement correct, et le
+/// contributeur va chercher le défaut dans ce qu'il vient d'écrire.
+///
+/// Ce n'est pas une précaution théorique. Une suite complète a rendu quatre
+/// rouges en soixante-trois secondes là où elle en met neuf, puis un seul en
+/// trente-huit, jamais les mêmes : à chaque fois un test de garde arrêté à
+/// 5 005 ou 5 720 millisecondes, sur une machine occupée à construire autre
+/// chose à côté. Un budget qui dépend de la charge est un chronomètre, pas
+/// une garde.
+setDefaultTimeout(20_000);
 
 const repoRoot = join(import.meta.dir, "..", "..");
 const guard = join(repoRoot, "scripts", "check-whitespace.sh");
@@ -187,17 +203,16 @@ describe("the formatting floor accepts what it must not refuse", () => {
   /// And this repository, through the default root, with no argument — the
   /// only case that holds the path resolution, since every other test passes
   /// a root explicitly.
-  /// **Vingt secondes, et non les cinq par défaut.** Ce cas-ci lance la garde
-  /// sur les trois cent soixante-dix fichiers Swift du dépôt, ce qui fait
-  /// quelques milliers de sous-processus : il tenait en trois secondes et
-  /// demie, une règle de plus l'a porté à quatre et quart, et il est tombé sur
-  /// son propre délai. Un contrôle qui échoue parce qu'il est lent n'apprend
-  /// rien à personne — et le laisser à un quart de seconde de la limite, c'est
-  /// promettre le même échec à la première machine plus lente.
+  /// Ce cas-ci lance la garde sur les trois cent soixante-dix fichiers Swift du
+  /// dépôt, ce qui fait quelques milliers de sous-processus : il tenait en
+  /// trois secondes et demie, une règle de plus l'a porté à quatre et quart, et
+  /// il est tombé sur son propre délai. C'est lui qui a fait écrire le délai
+  /// large — passé depuis en tête de fichier, parce que ses voisins lancent les
+  /// mêmes sous-processus et tombaient de la même façon.
   test("this repository, with no root given, is clean", () => {
     const result = Bun.spawnSync({ cmd: ["bash", guard] });
     const output =
       new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
     expect(result.exitCode, output).toBe(0);
-  }, 20_000);
+  });
 });

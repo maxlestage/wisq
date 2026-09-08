@@ -74,9 +74,22 @@ describe("built output", () => {
   /// install banner — for 65 794 bytes gzipped. They are plain DOM code now.
   /// This fails the moment something imports a component into `main.ts`, which
   /// is the one mistake that would silently put all of it back.
+  ///
+  /// **`createElement` used to be on this list, and it was the wrong marker.**
+  /// It is a DOM API, not a React one: the reading-progress bar calls
+  /// `document.createElement`, and the guard refused it — refusing the plain
+  /// DOM code it exists to encourage. A guard that rejects the thing it is
+  /// protecting is worse than no guard, because the obvious way out is to
+  /// weaken it.
+  ///
+  /// The three that remain were measured against a real minified React 19
+  /// production bundle, 186 KB, built from this repository's own
+  /// `node_modules`: `useState` appears 7 times, `React` 8, `react` 45. They
+  /// come from the runtime itself, so any bundle carrying React carries them,
+  /// hooks or no hooks — and no plain DOM code writes any of the three.
   test("the shipped script contains no React", () => {
     const script = read(scriptFile());
-    for (const marker of ["createElement", "useState", "react", "React"]) {
+    for (const marker of ["useState", "react", "React"]) {
       expect(script.includes(marker), `le bundle contient « ${marker} »`).toBe(false);
     }
   });
