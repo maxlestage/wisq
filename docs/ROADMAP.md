@@ -5398,8 +5398,57 @@ et le rangement les tronquait — donc l'aller-retour restait juste sur du faux.
 Ce que l'invité ne pouvait pas voir, un instantané l'aurait vu. Le test lit
 maintenant l'emplacement lui-même.
 
+### Les MSR : le premier vrai modèle, et le relevé qui change de sens
+
+**Le numéro d'un MSR vit dans ECX, pas dans l'instruction.** Le plan annoncé —
+« les autres refusés par leur numéro » — était donc infaisable tel quel : le
+traducteur ne peut pas connaître un nombre qui n'arrive qu'à l'exécution. Il n'y
+avait que deux voies, et la tranche prend la seconde :
+
+- refuser en bloc, comme avant ;
+- **émettre un aiguillage** : les trois numéros modélisés, et pour tout autre un
+  retour de main **à l'adresse de l'instruction**.
+
+Ne rien faire aurait été le pire des trois : le noyau croirait avoir posé une
+valeur, et la panne tomberait loin de sa cause.
+
+**Conséquence à ne pas laisser filer : « région compilée » ne veut plus dire
+« région qui va au bout ».** Depuis cette tranche, le relevé compte des
+traductions, pas des exécutions. Un numéro inconnu s'arrête maintenant en
+**nommant son adresse**, ce qui est un progrès sur le silence — mais c'est un
+arrêt, pas un succès.
+
+| numéro | ce qu'on en fait | est-ce un modèle ? |
+| --- | --- | --- |
+| `GS_BASE` (`0xc0000101`) | écrit `GS_SLOT` | **oui** — l'émetteur consulte cette base à *chaque* adresse `%gs:`, donc l'écrire change où l'invité lit |
+| `KERNEL_GS_BASE` (`0xc0000102`) | une base à part | oui — c'est elle que `swapgs` échange |
+| `FS_BASE` (`0xc0000100`) | rangée et rendue | **non** — le décodeur refuse le préfixe `0x64`, aucune adresse n'en dépend |
+| tout autre | arrêt nommé à son adresse | — |
+
+**`swapgs` sort du même coup** : il n'était pas produisible tant que la base du
+noyau n'existait pas. Un noyau x86-64 l'exécute à chaque entrée d'anneau.
+
+**Et le point d'entrée du noyau se traduit maintenant en entier.** Il butait à
+l'octet 35 — `wrmsr` — depuis le début de ce travail. Son premier `wrmsr` vise
+`GS_BASE`, celui des trois qui est un vrai modèle. Ce que la compilation prouve
+est qu'elle passe ; que ce soit `GS_BASE` est tenu par un autre test, qui mesure
+un **accès mémoire** plutôt qu'une compilation.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9959 / 10 116 | **9975 / 10 116** |
+| régions refusées | 157 | **141** |
+| refus nommés | 30 | **14** |
+
+**Trois sabotages ont survécu au premier passage**, et les trois disaient la
+même chose : une base qui tient sur trente-deux bits ne peut pas distinguer une
+moitié haute perdue d'une moitié haute juste. La valeur d'essai porte maintenant
+`0xdead0000` en haut — l'adresse étant repliée dans la RAM, l'accès mémoire
+atterrit au même endroit et seule la relecture voit la différence. Le troisième
+était pire : `swapgs` avait été produit **sans aucun test**.
+
 **Le paquet « sans modèle privilégié » est clos.** Ce qui reste refuse toujours
-pour une raison qui demande un modèle : les MSR (16), les sélecteurs de segment
+pour une raison qui demande un modèle : les sélecteurs de segment
 (6), les registres de contrôle (5), `hlt` et
 `popf`.
 

@@ -111,7 +111,32 @@ pub const SEGMENT_COUNT: usize = 6;
 /// L'ordre : limite de la GDT, base de la GDT, limite de l'IDT, base de l'IDT.
 pub const TABLE_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
 pub const TABLE_COUNT: usize = 4;
-pub const SCRATCH_SLOT: usize = TABLE_SLOT + TABLE_COUNT;
+/// **Les deux bases que `wrmsr` sait poser, en plus de celle de GS.**
+///
+/// `GS_SLOT` existait déjà et n'était écrit que par l'hôte ; il est consulté à
+/// **chaque** adresse préfixée par `%gs:`, et un noyau x86-64 y range tout ce
+/// qui est propre à un cœur. L'écrire depuis l'invité n'est donc pas un
+/// aller-retour : ça change réellement où il lit. C'est ce qui sépare cette
+/// tranche des trois précédentes.
+///
+/// `FS_BASE` est rangée et rendue, **sans plus** : le décodeur refuse le
+/// préfixe `0x64`, donc aucune adresse n'en dépend aujourd'hui. Le dire vaut
+/// mieux que laisser croire à une symétrie avec GS.
+///
+/// `KERNEL_GS_BASE` est la base que `swapgs` échange avec celle de GS — un
+/// noyau le fait à chaque entrée d'appel système.
+pub const FS_BASE_SLOT: usize = TABLE_SLOT + TABLE_COUNT;
+pub const KERNEL_GS_SLOT: usize = FS_BASE_SLOT + 1;
+
+/// **Les trois numéros que cette machine modélise.** Tout autre numéro rend la
+/// main à l'hôte **à l'adresse de l'instruction**. Ne rien faire serait le pire
+/// des trois choix : le noyau croirait avoir posé une valeur, et la panne
+/// tomberait loin de sa cause.
+pub const MSR_FS_BASE: u64 = 0xc000_0100;
+pub const MSR_GS_BASE: u64 = 0xc000_0101;
+pub const MSR_KERNEL_GS_BASE: u64 = 0xc000_0102;
+
+pub const SCRATCH_SLOT: usize = KERNEL_GS_SLOT + 1;
 
 /// **Ce que `cpuid` déclare, et la règle qui le rend sûr.**
 ///
@@ -383,6 +408,11 @@ mod code {
     pub const I32_WRAP_I64: u8 = 0xa7;
     /// Le `et` de trente-deux bits, qui replie une adresse invitée dans sa RAM.
     pub const I32_AND: u8 = 0x71;
+    /// Le `ou` et le « est-ce zéro » de trente-deux bits. Une comparaison
+    /// `i64.eq` rend un `i32` : réunir plusieurs comparaisons se fait donc
+    /// dans cette largeur-là, pas dans celle des valeurs comparées.
+    pub const I32_OR: u8 = 0x72;
+    pub const I32_EQZ: u8 = 0x45;
     pub const I32_ADD: u8 = 0x6a;
     pub const I32_MUL: u8 = 0x6c;
     pub const I32_LOAD: u8 = 0x28;
@@ -476,6 +506,7 @@ const HOST_IMPORTS: u32 = 2;
 /// toujours dans l'accumulateur ; le port des formes non immédiates est dans
 /// DX. Nommés parce qu'un `2` nu, ici, ne se relit pas.
 const RAX: u8 = 0;
+const RCX: u8 = 1;
 const RDX: u8 = 2;
 
 #[derive(Default)]
@@ -1734,6 +1765,105 @@ impl Module {
         // **Ce n'est pas un progrès en soi**, et l'exploration le montre : à
         // chaque famille lue, la frontière avance de quelques octets et
         // s'arrête sur la suivante. Ce qui change est qu'elle a un nom.
+        // **Les registres spécifiques au modèle : un aiguillage, pas une
+        // décision de traduction.**
+        //
+        // Le numéro vit dans ECX, une valeur d'**exécution**. Le traducteur ne
+        // peut donc pas décider « celui-ci oui, celui-là non » : il émet les
+        // trois cas qu'il connaît et, pour tout autre numéro, un retour de main
+        // à l'adresse de l'instruction.
+        //
+        // **Conséquence à ne pas laisser filer** : depuis cette tranche, une
+        // région *compilée* n'est plus forcément une région qui *va au bout*.
+        // Le relevé de couverture compte des traductions, plus des exécutions.
+        if matches!(step.op, Op::ReadModelRegister | Op::WriteModelRegister) {
+            let modelled = [
+                (MSR_FS_BASE, FS_BASE_SLOT),
+                (MSR_GS_BASE, GS_SLOT),
+                (MSR_KERNEL_GS_BASE, KERNEL_GS_SLOT),
+            ];
+            // Le numéro, ramené à trente-deux bits comme le processeur le lit.
+            body.store(Body::scratch(0), |b| {
+                b.load(Self::slot(RCX))
+                    .constant(0xffff_ffff)
+                    .op(code::I64_AND);
+            });
+            // **Le refus vient d'abord**, sinon un numéro inconnu écrirait des
+            // registres avant de rendre la main, et l'instruction rejouée
+            // repartirait d'un état qu'elle a elle-même abîmé.
+            Self::refuse_when(address, body, |b| {
+                for (rank, (numéro, _)) in modelled.iter().enumerate() {
+                    b.load(Body::scratch(0)).constant(*numéro).op(code::I64_EQ);
+                    if rank > 0 {
+                        b.op(code::I32_OR);
+                    }
+                }
+                // Aucun des trois : c'est là qu'on rend la main.
+                b.op(code::I32_EQZ);
+            });
+            if step.op == Op::WriteModelRegister {
+                // La valeur arrive en deux moitiés : EDX en haut, EAX en bas.
+                body.store(Body::scratch(1), |b| {
+                    b.load(Self::slot(RDX))
+                        .constant(0xffff_ffff)
+                        .op(code::I64_AND)
+                        .constant(32)
+                        .op(code::I64_SHL);
+                    b.load(Self::slot(RAX))
+                        .constant(0xffff_ffff)
+                        .op(code::I64_AND);
+                    b.op(code::I64_OR);
+                });
+                for (numéro, emplacement) in modelled {
+                    body.store(emplacement, |b| {
+                        b.load(Body::scratch(1)); // si le numéro est celui-ci
+                        b.load(emplacement); // sinon, rien ne bouge
+                        b.load(Body::scratch(0)).constant(numéro).op(code::I64_EQ);
+                        b.op(code::SELECT);
+                    });
+                }
+            } else {
+                body.store(Body::scratch(1), |b| {
+                    b.constant(0);
+                });
+                for (numéro, emplacement) in modelled {
+                    body.store(Body::scratch(1), |b| {
+                        b.load(emplacement);
+                        b.load(Body::scratch(1));
+                        b.load(Body::scratch(0)).constant(numéro).op(code::I64_EQ);
+                        b.op(code::SELECT);
+                    });
+                }
+                body.store(Self::slot(RAX), |b| {
+                    b.load(Body::scratch(1))
+                        .constant(0xffff_ffff)
+                        .op(code::I64_AND);
+                });
+                body.store(Self::slot(RDX), |b| {
+                    b.load(Body::scratch(1))
+                        .constant(32)
+                        .op(code::I64_SHR_U)
+                        .constant(0xffff_ffff)
+                        .op(code::I64_AND);
+                });
+            }
+            return Some(());
+        }
+        // **`swapgs` : l'échange que le noyau fait à chaque entrée d'anneau.**
+        // Il n'était pas produisible tant que la base du noyau n'existait pas ;
+        // elle existe depuis cette tranche, et l'échange devient exact.
+        if step.op == Op::SwapGs {
+            body.store(Body::scratch(0), |b| {
+                b.load(GS_SLOT);
+            });
+            body.store(GS_SLOT, |b| {
+                b.load(KERNEL_GS_SLOT);
+            });
+            body.store(KERNEL_GS_SLOT, |b| {
+                b.load(Body::scratch(0));
+            });
+            return Some(());
+        }
         // **Les tables de descripteurs : dix octets, dans les deux sens.**
         //
         // La limite occupe les deux premiers octets, la base les huit suivants.
@@ -1807,10 +1937,7 @@ impl Module {
         }
         if matches!(
             step.op,
-            Op::ReadModelRegister
-                | Op::WriteModelRegister
-                | Op::SwapGs
-                | Op::ReadControlRegister { .. }
+            Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
                 | Op::Halt
@@ -4370,9 +4497,14 @@ mod port_tests {
         // produisait, ce qui est exactement son rôle. Une liste de refus qu'on
         // ne raccourcit jamais ne mesure plus rien — et une qui raccourcit sans
         // rien casser ne gardait rien.
+        // **Cette liste est vide de MSR depuis la tranche de l'aiguillage.**
+        // `rdmsr` et `wrmsr` se traduisent maintenant tous les deux ; ce qui
+        // refuse est un *numéro*, à l'exécution, et un refus d'exécution ne se
+        // mesure pas ici. Ce qui reste sont les écritures qui allumeraient
+        // quelque chose qu'on n'a pas.
         for (bytes, what) in [
-            (&[0x0f, 0x32, 0xc3][..], "rdmsr"),
-            (&[0x0f, 0x30, 0xc3][..], "wrmsr"),
+            (&[0x0f, 0x22, 0xd8, 0xc3][..], "mov %rax,%cr3"),
+            (&[0x0f, 0x20, 0xc1, 0xc3][..], "mov %cr0,%rcx"),
         ] {
             match Module::region_or_why(bytes, 0x1000, 0) {
                 Err(Refused::CannotTranslate { at }) => {
@@ -4455,13 +4587,21 @@ mod port_tests {
         assert_eq!(read, 13, "treize instructions");
         assert_eq!(at, entry.len(), "et pas un octet de reste");
 
-        // Et ce qui reste est une sémantique, pas un octet.
+        // **Et depuis la tranche des MSR, elle se traduit en entier.**
+        //
+        // Elle butait à l'octet 35 — `wrmsr` — depuis le début de ce travail.
+        // Ce n'est plus le cas, et c'est le premier moment où le point d'entrée
+        // d'un vrai noyau passe le traducteur d'un bout à l'autre.
+        //
+        // **Ce que ça ne prouve pas**, et qu'il faut dire ici pour ne pas le
+        // relire de travers plus tard : la traduction émet un aiguillage à
+        // l'exécution, donc elle réussirait pour **n'importe quel** numéro de
+        // MSR. Que celui-ci soit `GS_BASE` — le seul des trois qui change
+        // réellement une adresse — est vrai, mais c'est un autre test qui le
+        // tient, en mesurant un accès mémoire plutôt qu'une compilation.
         match Module::region_or_why(entry, 0x1000090, 0) {
-            Err(Refused::CannotTranslate { at }) => assert_eq!(
-                at, 35,
-                "`wrmsr` : lu par le décodeur, pas produit par l'émetteur"
-            ),
-            other => panic!("le refus attendu est une traduction, pas {other:?}"),
+            Ok(_) => {}
+            other => panic!("le point d'entrée doit se traduire en entier, pas {other:?}"),
         }
     }
 
@@ -4508,7 +4648,10 @@ mod port_tests {
             // tranche. C'est la première famille qui en sort complète — et ce
             // n'est possible que parce que rien ne *lit* ces registres : le
             // jour où un chemin consulte la table, la question se rouvrira.
-            ("swapgs", &[0x0f, 0x01, 0xf8][..]),
+            // `swapgs` a quitté cette liste : la base du noyau existe depuis
+            // la tranche des MSR, donc l'échange est exact. `wrmsr` et `rdmsr`
+            // l'ont quittée aussi — ce qui refuse est désormais un **numéro**,
+            // à l'exécution, et non l'instruction.
             // **Les sélecteurs ne sont plus refusés en bloc.** Ranger un
             // segment et en charger un dont la base est morte — ES, SS, DS —
             // sont produits depuis cette tranche. Ce qui reste ici est ce qui
@@ -4518,7 +4661,6 @@ mod port_tests {
             ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
             ("mov %cr4,%rcx", &[0x0f, 0x20, 0xe1][..]),
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
-            ("wrmsr", &[0x0f, 0x30][..]),
             ("cli", &[0xfa][..]),
             ("sti", &[0xfb][..]),
             ("hlt", &[0xf4][..]),
