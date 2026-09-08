@@ -89,13 +89,18 @@ public enum BootMedia {
                 est compressé.
                 """
         case .discImage(let format):
+            // **Cette phrase a changé de fond en comble, et c'est le point de
+            // la tranche.** Elle disait « montez l'image sur un ordinateur et
+            // prenez ces deux fichiers-là » : wisq le fait maintenant tout
+            // seul. Laisser l'ancien conseil aurait envoyé quelqu'un faire à
+            // la main ce que le bouton d'à côté fait pour lui.
             return """
-                \(name) est une image de disque amorçable (\(format)).
+                \(name) est une image de disque amorçable (\(format)), pas un \
+                initramfs — et wisq sait la démarrer telle quelle.
 
-                wisq ne démarre pas une image d'installation : il lui faut le \
-                noyau et l'initramfs, qui sont **dedans**, sous `/boot`. \
-                Montez l'image sur un ordinateur et prenez ces deux \
-                fichiers-là.
+                Choisissez-la comme **noyau** : wisq y lira le noyau, \
+                l'initramfs et la ligne de commande, et branchera l'image \
+                comme disque.
                 """
         case .executable(let architecture):
             return "\(name) est un exécutable pour \(architecture.name), pas un initramfs."

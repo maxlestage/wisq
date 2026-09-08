@@ -299,9 +299,9 @@ public enum KernelImageKind: Equatable, Sendable {
         case .discImage(let format):
             return """
                 \(name) est une image de disque amorçable (\(format)) — un CD \
-                ou un DVD, pas un noyau. wisq ne démarre pas dessus : s'il y a \
-                un noyau là-dedans, il est **dedans**, sous `/boot`, avec son \
-                initramfs.
+                ou un DVD. Son noyau est **dedans**, sous `/boot`, avec son \
+                initramfs : c'est de là que wisq les prend quand on la \
+                choisit comme noyau.
                 """
         case .filesystemImage(let format):
             return """
