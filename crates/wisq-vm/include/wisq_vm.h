@@ -301,6 +301,47 @@ size_t wisq_x86_rip_slot(void);
 /* The GS segment base, which the host sets and the module reads. */
 size_t wisq_x86_gs_slot(void);
 
+/*
+ * Reading a bootable disc image.
+ *
+ * Someone arrives with an installation image and wants to run it. The kernel
+ * is inside, under /boot, with its initramfs and the recipe that says how to
+ * start them. The image itself never crosses this boundary — it weighs
+ * gibibytes, and a phone does not have that. Two paths and a verdict cross.
+ */
+
+/*
+ * The boot recipe of an image, or -1.
+ *
+ * The buffer holds FOUR NUL-terminated strings, in this order: the file the
+ * recipe came from, the kernel's path, the initramfs' path, the command line.
+ * The initramfs may be empty; the other three never are when this returns 0.
+ *
+ * Four NUL-terminated strings rather than one separated format: a command line
+ * carries spaces, equals signs and commas, and a path carries everything but
+ * the NUL byte. It is the one separator neither can contain, so the one that
+ * needs no escaping — and an escaping convention, on both sides of a boundary,
+ * is one more thing to hold forever.
+ *
+ * Released by wisq_x86_free_module, and by nothing else.
+ */
+int wisq_iso_recipe(const char *path, uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * Writes a member of the image into a file. Returns 0, or -1.
+ *
+ * `ceiling` is what the caller accepts to write. Beyond it, refusal BEFORE
+ * anything is written: a half-extracted kernel loads, and dies in an
+ * instruction that has nothing to do with it.
+ *
+ * Content passes in 64 KiB slices; nothing of the image is held whole.
+ *
+ * If the copy fails partway the destination is left incomplete and this
+ * returns -1: erasing it is the caller's, since the caller named it.
+ */
+int wisq_iso_extract(const char *path, const char *inside, const char *into,
+                     uint64_t ceiling);
+
 #ifdef __cplusplus
 }
 #endif

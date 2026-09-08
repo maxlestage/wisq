@@ -11,19 +11,7 @@
 //
 // L'image est lue **par tranches depuis le disque**, jamais tenue en mémoire :
 // une image d'installation pèse des gibioctets, et un téléphone n'a pas ça.
-use std::cell::RefCell;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use wisq_vm::iso9660::{Bytes, Iso, Recipe};
-
-struct OnDisk(RefCell<File>);
-
-impl Bytes for OnDisk {
-    fn read(&self, at: u64, into: &mut [u8]) -> bool {
-        let mut file = self.0.borrow_mut();
-        file.seek(SeekFrom::Start(at)).is_ok() && file.read_exact(into).is_ok()
-    }
-}
+use wisq_vm::iso9660::{Bytes, Iso, OnDisk, Recipe};
 
 /// Le contenu, jusqu'à trois niveaux : au-delà, une image d'installation
 /// noie sa propre recette sous des milliers de paquets.
@@ -46,11 +34,11 @@ fn main() {
         eprintln!("usage : iso <image.iso>");
         std::process::exit(2);
     };
-    let Ok(file) = File::open(&path) else {
+    let Some(source) = OnDisk::open(std::path::Path::new(&path)) else {
         eprintln!("{path} ne s'ouvre pas");
         std::process::exit(2);
     };
-    let Some(iso) = Iso::open(OnDisk(RefCell::new(file))) else {
+    let Some(iso) = Iso::open(source) else {
         eprintln!("{path} n'est pas une image ISO 9660");
         std::process::exit(2);
     };

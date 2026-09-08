@@ -640,3 +640,150 @@ pub extern "C" fn wisq_x86_rip_slot() -> usize {
 pub extern "C" fn wisq_x86_gs_slot() -> usize {
     GS_SLOT
 }
+
+// **Pourquoi lire une image de disque optique traverse la frontière.**
+//
+// Quelqu'un arrive avec une image d'installation et veut la faire tourner. Le
+// noyau est dedans, sous `/boot`, avec son initramfs et la recette qui dit
+// comment les démarrer. Le lecteur vit en Rust, à côté du reconnaisseur de
+// noyaux qui juge ce qu'on en sort ; l'application, la bibliothèque et le
+// chargeur vivent en Swift. Sans ces deux fonctions, l'application ne peut que
+// refuser.
+//
+// **Ce qui ne traverse pas** : l'image elle-même. Elle pèse des gibioctets,
+// et un téléphone n'en a pas. Ce qui passe ici, ce sont deux chemins et un
+// verdict.
+
+/// La recette de démarrage d'une image, ou -1.
+///
+/// Le tampon rendu porte **quatre chaînes**, terminées chacune par un octet
+/// nul, dans cet ordre : le fichier d'où la recette vient, le chemin du noyau,
+/// celui de l'initramfs, la ligne de commande. L'initramfs peut être vide —
+/// une recette n'en cite pas toujours — les trois autres ne le sont jamais
+/// quand la fonction rend zéro.
+///
+/// **Quatre chaînes nulles plutôt qu'un format à séparateur.** Une ligne de
+/// commande porte des espaces, des égales et des virgules ; un chemin porte
+/// tout sauf l'octet nul. C'est le seul séparateur qu'aucun des deux ne peut
+/// contenir, donc le seul qui n'ait pas besoin d'échappement — et un
+/// échappement, des deux côtés d'une frontière, est une convention de plus à
+/// tenir pour toujours.
+///
+/// Le tampon est rendu par `wisq_x86_free_module`, et par rien d'autre.
+///
+/// # Safety
+/// `path` must be a NUL-terminated C string, and `out_bytes` and `out_len`
+/// must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_iso_recipe(
+    path: *const c_char,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if path.is_null() || out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let Some(path) = borrowed_path(path) else {
+        return -1;
+    };
+    let Some(source) = crate::iso9660::OnDisk::open(&path) else {
+        return -1;
+    };
+    let Some(iso) = crate::iso9660::Iso::open(source) else {
+        return -1;
+    };
+    let Some(recipe) = crate::iso9660::Recipe::of(&iso) else {
+        return -1;
+    };
+    let mut out = Vec::new();
+    for field in [
+        recipe.from.as_str(),
+        recipe.kernel.as_str(),
+        recipe.initrd.as_deref().unwrap_or(""),
+        recipe.command_line.as_str(),
+    ] {
+        // Un champ qui porterait un octet nul casserait le découpage côté
+        // Swift ; aucun n'en porte, puisqu'ils viennent d'un `str`, mais le
+        // dire ici évite qu'un champ futur l'introduise en silence.
+        debug_assert!(!field.as_bytes().contains(&0));
+        out.extend_from_slice(field.as_bytes());
+        out.push(0);
+    }
+    hand_back(out, out_bytes, out_len);
+    0
+}
+
+/// Écrit un membre de l'image dans un fichier. Rend 0, ou -1.
+///
+/// `ceiling` est ce que l'appelant accepte d'écrire. Au-delà, refus **avant**
+/// d'avoir écrit quoi que ce soit : un noyau à moitié extrait se charge, et
+/// meurt dans une instruction qui n'a rien à voir.
+///
+/// Le contenu passe par tranches de soixante-quatre kibioctets. Rien de
+/// l'image n'est tenu en entier, ni ici ni chez l'appelant.
+///
+/// **Si la copie échoue en chemin, le fichier de destination est laissé
+/// incomplet** et cette fonction rend -1 : c'est à l'appelant de l'effacer.
+/// L'effacer ici demanderait de décider à sa place ce qu'il advient d'un
+/// fichier qu'il a nommé.
+///
+/// # Safety
+/// `path`, `inside` and `into` must be NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_iso_extract(
+    path: *const c_char,
+    inside: *const c_char,
+    into: *const c_char,
+    ceiling: u64,
+) -> c_int {
+    if path.is_null() || inside.is_null() || into.is_null() {
+        return -1;
+    }
+    let (Some(path), Some(inside), Some(into)) = (
+        borrowed_path(path),
+        borrowed_str(inside),
+        borrowed_path(into),
+    ) else {
+        return -1;
+    };
+    let Some(source) = crate::iso9660::OnDisk::open(&path) else {
+        return -1;
+    };
+    let Some(iso) = crate::iso9660::Iso::open(source) else {
+        return -1;
+    };
+    let Some(entry) = iso.find(&inside) else {
+        return -1;
+    };
+    if u64::from(entry.size) > ceiling {
+        return -1;
+    }
+    let Ok(file) = std::fs::File::create(&into) else {
+        return -1;
+    };
+    let mut sink = std::io::BufWriter::new(file);
+    if !iso.copy(&entry, &mut sink, ceiling) {
+        return -1;
+    }
+    // **Le vidage du tampon est une écriture comme une autre**, et la dernière.
+    // Sans ce contrôle, un disque plein rendrait zéro sur un fichier tronqué.
+    use std::io::Write;
+    if sink.flush().is_err() {
+        return -1;
+    }
+    0
+}
+
+/// Un chemin emprunté à C. Rend `None` sur des octets qui ne sont pas de
+/// l'UTF-8 : le reste de ce code travaille en `str`, et un chemin qu'on ne
+/// sait pas nommer ne se retrouvera de toute façon pas dans l'image.
+unsafe fn borrowed_str(text: *const c_char) -> Option<String> {
+    std::ffi::CStr::from_ptr(text)
+        .to_str()
+        .ok()
+        .map(str::to_string)
+}
+
+unsafe fn borrowed_path(text: *const c_char) -> Option<std::path::PathBuf> {
+    borrowed_str(text).map(std::path::PathBuf::from)
+}
