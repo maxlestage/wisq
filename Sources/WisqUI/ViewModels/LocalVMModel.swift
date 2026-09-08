@@ -146,12 +146,12 @@ public final class LocalVMModel {
         let isoCommandLine: String?
         let isoRamdisk: URL?
         #if WISQ_RUST_CORE
-        // Un dossier refait à chaque démarrage : deux images ne doivent jamais
-        // mélanger leurs morceaux.
+        // `storage` est optionnel et le reste : il traverse jusqu'à `IsoBoot`,
+        // qui le résout comme le fait `SuspendedMachine`. Le composer ici — sur
+        // un `URL?` — est l'erreur que la CI d'Apple a refusée, et elle est la
+        // seule à pouvoir la voir.
         switch IsoBoot.decide(
-            kernelURL,
-            into: storage.appendingPathComponent("iso", isDirectory: true),
-            ceiling: UInt64(roomNow)
+            kernelURL, unpackingInto: storage, ceiling: UInt64(roomNow)
         ) {
         case .success(let boot):
             kind = boot.kind

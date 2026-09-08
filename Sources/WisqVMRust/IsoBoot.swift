@@ -94,11 +94,41 @@ public enum IsoBoot {
         }
     }
 
+    /// Où déballer, à partir du stockage que l'application connaît.
+    ///
+    /// **`nil` veut dire « l'endroit habituel »**, comme partout ailleurs dans
+    /// ce dépôt : `SuspendedMachine` traite son `directory` de la même façon,
+    /// et deux conventions pour la même chose seraient une occasion de plus de
+    /// se tromper.
+    public static func folder(in storage: URL?) -> URL? {
+        guard let base = storage ?? (try? SuspendedMachine.directory()) else { return nil }
+        return base.appendingPathComponent("iso", isDirectory: true)
+    }
+
     /// Regarde le fichier choisi ; déballe si c'est une image amorçable.
     ///
     /// **Ce qui n'est pas une image traverse sans être touché** — pas de
     /// dossier créé, pas d'octet écrit. Le déballage est une branche, pas un
     /// passage obligé.
+    ///
+    /// `storage` est le dossier de l'application, tel qu'elle le porte :
+    /// **optionnel**, et résolu ici. C'est délibéré, et c'est une leçon payée
+    /// par un rouge. La version d'avant prenait un dossier déjà construit, donc
+    /// l'appelant composait `storage.appendingPathComponent("iso")` — sur un
+    /// `URL?`. Cette ligne-là vivait dans `LocalVMModel`, que la CI Linux ne
+    /// compile pas, et elle n'a été refusée que dix minutes plus tard par la CI
+    /// d'Apple. Le type optionnel traverse maintenant jusqu'ici, où il est
+    /// vérifié à chaque commit.
+    public static func decide(
+        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64
+    ) -> Result<Boot, Refusal> {
+        let kind = KernelImageKind.identify(fileAt: chosen)
+        guard case .discImage = kind else { return .success(.plain(chosen, kind)) }
+        guard let folder = folder(in: storage) else { return .failure(.cannotPrepare) }
+        return decide(chosen, into: folder, ceiling: ceiling)
+    }
+
+    /// La même, sur un dossier nommé — ce que les tests emploient.
     public static func decide(
         _ chosen: URL, into folder: URL, ceiling: UInt64
     ) -> Result<Boot, Refusal> {

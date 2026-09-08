@@ -387,3 +387,49 @@ final class IsoBootResumeTests: XCTestCase {
             "un instantané écrit par un noyau serait rendu à un autre")
     }
 }
+
+/// **Le dossier de déballage, résolu là où un test peut le voir.**
+///
+/// Cette poignée-ci existe parce que son absence a coûté un tour de CI : le
+/// modèle de vue composait `storage.appendingPathComponent("iso")` sur un
+/// `URL?`, et `WisqUI` n'étant compilé que par la CI d'Apple, personne d'ici ne
+/// pouvait le refuser. L'optionnel traverse maintenant jusqu'à `IsoBoot`.
+final class IsoBootFolderTests: XCTestCase {
+    func testAGivenStorageDecidesWhereTheUnpackingGoes() throws {
+        let storage = URL(fileURLWithPath: "/var/mobile/Wisq")
+        let folder = try XCTUnwrap(IsoBoot.folder(in: storage))
+        XCTAssertEqual(folder.deletingLastPathComponent().path, storage.path)
+        XCTAssertEqual(folder.lastPathComponent, "iso")
+    }
+
+    /// `nil` veut dire « l'endroit habituel », comme partout ailleurs dans ce
+    /// dépôt — pas « nulle part ».
+    func testNoStorageStillNamesAPlace() throws {
+        let folder = try XCTUnwrap(IsoBoot.folder(in: nil))
+        XCTAssertEqual(folder.lastPathComponent, "iso")
+        XCTAssertEqual(
+            folder.deletingLastPathComponent().path,
+            try SuspendedMachine.directory().path,
+            "le déballage doit vivre à côté des machines sauvegardées")
+    }
+
+    /// Et l'entrée que le modèle emploie vraiment — celle qui prend
+    /// l'optionnel — marche de bout en bout.
+    func testTheOptionalDoorUnpacksLikeTheOther() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-rangement-\(getpid())-\(UUID().uuidString)")
+        let image = try IsoGravure().write()
+        defer {
+            try? FileManager.default.removeItem(at: image)
+            try? FileManager.default.removeItem(at: storage)
+        }
+        switch IsoBoot.decide(image, unpackingInto: storage, ceiling: 1 << 20) {
+        case .failure(let refusal): XCTFail("refus inattendu : \(refusal)")
+        case .success(let boot):
+            XCTAssertEqual(try Data(contentsOf: boot.kernel), IsoGravure.kernel)
+            XCTAssertEqual(boot.disk, image)
+            XCTAssertEqual(
+                boot.kernel.deletingLastPathComponent().lastPathComponent, "iso")
+        }
+    }
+}

@@ -12555,3 +12555,20 @@ Et un mot sur ce que ça veut dire pour une image live comme Omarchy : sa racine
 est un squashfs en lecture seule, donc **tout ce que fait la personne vit en
 RAM**, dans un tmpfs. L'instantané mémoire n'est pas un confort là-dedans, il
 est la seule chose qui préserve son travail.
+
+**Et la CI d'Apple a refusé la seule ligne que la CI Linux ne pouvait pas
+voir.** `storage` est un `URL?` ; le modèle composait
+`storage.appendingPathComponent("iso")` dessus. Dix minutes de CI pour
+apprendre ce qu'un compilateur dit en une seconde — et c'est exactement le
+défaut que cette tranche prétendait éviter, une ligne plus haut que là où la
+décision avait déménagé.
+
+La correction n'est pas un `!` ni un `?`. **L'optionnel traverse maintenant
+jusqu'à `IsoBoot`**, qui le résout comme `SuspendedMachine` résout le sien —
+`nil` veut dire « l'endroit habituel », pas « nulle part ». Trois tests le
+tiennent, du côté que la CI Linux compile à chaque commit.
+
+La leçon est plus étroite que « déplacer la décision » : ce n'est pas la
+décision qui doit déménager, ce sont **les types qui peuvent se tromper**. Un
+appelant qui ne fait que passer ses champs tels quels ne peut pas mal les
+composer.
