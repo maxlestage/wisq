@@ -8,6 +8,77 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — la frontière C du lecteur d'image
+
+Le lecteur ISO vit en Rust ; l'application, la bibliothèque et le chargeur
+vivent en Swift. Deux fonctions les relient, et **ce qui ne traverse pas est
+le point important** : l'image elle-même. Elle pèse des gibioctets, un
+téléphone n'en a pas. Ce qui passe, ce sont deux chemins et un verdict.
+
+`wisq_iso_recipe` rend **quatre chaînes terminées par un octet nul** plutôt
+qu'un format à séparateur. Une ligne de commande porte des espaces, des égales
+et des virgules ; un chemin porte tout sauf l'octet nul. C'est le seul
+séparateur qu'aucun des deux ne peut contenir, donc le seul qui n'ait pas
+besoin d'échappement — et un échappement, des deux côtés d'une frontière, est
+une convention de plus à tenir pour toujours.
+
+`wisq_iso_extract` écrit **par tranches de 64 Kio** : `read` rend un `Vec`, ce
+qui va pour une recette de deux cents octets et ruine un téléphone sur un
+initramfs de cent mébioctets. Et il refuse **avant** d'écrire quand le membre
+dépasse le plafond — un noyau à moitié extrait se charge et meurt ailleurs.
+
+**Le test C existe parce que l'en-tête est écrit à la main.** Il se compile
+contre lui, se lie à la vraie bibliothèque, et lit une image que le harnais
+Rust vient de graver. Trois mutations sur la frontière, trois chutes : un champ
+retiré de la recette, le plafond ôté, les deux derniers chemins intervertis —
+cette dernière étant précisément l'erreur qu'aucun compilateur ne voit, C ne
+gardant pas les noms de paramètres au lien.
+
+**Une duplication assumée, et dite** : le harnais grave une image minuscule, en
+plus de celle des tests du lecteur. Elle est délibérément plus pauvre — ni
+bourrage, ni entrée de chargeur, ni intrus. Ce n'est pas le lecteur qu'elle
+juge, c'est la frontière, et la fabriquer en C aurait fait un troisième
+constructeur.
+
+`OnDisk` descend de l'exemple vers la bibliothèque : l'exemple et l'ABI en
+avaient chacun une copie, et deux lecteurs de fichier finissent par ne plus
+ouvrir de la même façon.
+
+**Le pont Swift est dans la même tranche, et c'est un crochet qui me l'a fait
+voir.** J'allais le livrer à part, en invoquant le précédent de
+`DesktopTranslator`. Un contrôle de dépôt m'a signalé les fichiers non commités,
+et en cherchant comment répondre j'ai vu l'argument que je n'avais pas fait :
+une frontière dont un seul côté existe est **une ABI que rien n'appelle**,
+c'est-à-dire précisément le bouchon complaisant que ce dépôt s'interdit. Les
+deux côtés partent ensemble.
+
+`IsoImage.recipe(of:)` recompose les quatre chaînes ; `IsoImage.extract` écrit
+un membre et **efface la destination quand la copie échoue en chemin**. L'ABI,
+elle, laisse le fichier incomplet — elle ne décide pas à la place de qui l'a
+nommé — et c'est le pont qui décide.
+
+**Deux sabotages ont survécu, et les deux disaient que le test regardait à
+côté.**
+
+Le fichier tronqué non effacé survivait parce que le test refusait sur le
+plafond, donc **avant** que l'ABI ne crée le fichier : il ne pouvait pas voir
+si on efface. Il fallait un échec **après** la création — une image tronquée
+dont l'enregistrement promet trois mille octets que le fichier ne porte plus.
+L'image d'essai a été regravée pour que le noyau soit **en dernier** : sans ça,
+couper la fin emporte les répertoires et l'image n'ouvre même plus.
+
+Le compte de champs, lui, **reste intenable ici** : il faudrait que l'ABI
+change. Le commentaire dit maintenant ce qui le surveille — le test C, qui
+compte les champs contre l'en-tête — et ce que la ligne fait vraiment :
+transformer une dérive en **refus plutôt qu'en arrêt brutal**, `fields[3]`
+sortant du tableau sans elle. Une garde peut valoir pour ce qu'elle évite même
+quand rien sur place ne peut la faire échouer, mais il faut le dire plutôt que
+le laisser croire.
+
+**Ce qui reste** : l'application refuse toujours l'image. Le pont existe, rien
+ne l'appelle encore depuis `LocalVMModel` — et là, `cannotRunHereExplanation`
+est appelé à **deux** endroits.
+
 ## 2026-09-08 — lire l'image plutôt que la refuser
 
 Maxime : « Débrouille toi pour lire l'image ». Le refus disait déjà quoi faire —
