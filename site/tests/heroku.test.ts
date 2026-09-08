@@ -142,7 +142,17 @@ describe("heroku-web.sh choisit son Bun comme il le promet", () => {
     });
     try {
       let page = "";
-      for (let attempt = 0; attempt < 40 && page === ""; attempt += 1) {
+      // **Le budget est large exprès, et il ne coûte rien quand tout va
+      // bien** : la boucle sort au premier succès, donc un serveur qui démarre
+      // en trois cents millisecondes n'en consomme que trois cents.
+      //
+      // Il l'est devenu après un échec : quatre secondes suffisent sur une
+      // machine au repos et pas sur une machine chargée — ce passage de
+      // `verify.sh` a mis plus de dix minutes là où les autres en mettent
+      // trois, et ce test a été le seul à tomber. Un budget qui dépend de la
+      // charge n'est pas une garde, c'est un chronomètre : il refuse un
+      // comportement correct, ce qui est la pire façon d'échouer.
+      for (let attempt = 0; attempt < 150 && page === ""; attempt += 1) {
         await Bun.sleep(100);
         // curl plutôt que fetch : le fetch de Bun honore les variables de
         // proxy de cet environnement, et 127.0.0.1 doit être joint en direct.

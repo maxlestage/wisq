@@ -5198,11 +5198,44 @@ qui n'appellent pas la même réponse :
 **Et une asymétrie que le relevé rend visible** : `pushf` a été refusé par
 symétrie avec `popf`, au motif que `popf` peut rallumer le drapeau
 d'interruption sans nommer `sti`. Mais `pushf` ne fait que **lire** RFLAGS,
-qui est déjà modélisé : il ne peut rien rallumer. Six régions payent une
-symétrie qui n'a pas lieu d'être. À reprendre — et à ne pas reprendre
-distraitement, parce que la paire `pushfq … popfq` n'est cohérente que si le
-drapeau d'interruption vaut toujours zéro, ce qui est vrai aujourd'hui et
-cessera de l'être à la tranche des interruptions.
+qui est déjà modélisé : il ne peut rien rallumer. Six régions payaient une
+symétrie qui n'avait pas lieu d'être.
+
+### `pushf` produit — et le premier chiffre qui bouge en quatre tranches
+
+C'est la première instruction que l'émetteur **refusait** et qu'il **produit**.
+`popf` reste refusé, et l'asymétrie est tenue par un test qui juge les deux
+ensemble : accepter les deux, ou refuser les deux, serait cohérent et faux.
+
+| | avant | après |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9933 / 10 116 | **9937 / 10 116** |
+| régions refusées | 183 | **179** |
+| refus nommés | 56 | **52** |
+| dont `pushf` | 6 | **0** |
+
+Quatre des six régions se compilent **entièrement** ; les deux autres avancent
+jusqu'au blocage suivant, et le relevé les nomme — `popf` une fois, lire CR0
+une fois. Quatre régions sur dix mille, c'est 0,04 % : minuscule en valeur, et
+c'est **le premier mouvement** après trois tranches de décodage qui n'en
+avaient produit aucun. Ce qui l'a trouvé n'est pas une relecture : c'est le
+relevé nommé de la tranche d'avant, qui a mis un nombre en face d'un nom.
+
+**Et produire cette lecture a découvert une divergence entre deux cœurs.** Le
+bit 1 de RFLAGS vaut toujours un sur x86 — l'interpréteur Rust le pose
+(`Flags::read` rend `… | ALWAYS_ONE`) et l'oracle matériel le porte. La boucle
+hôte, elle, partait de zéro et rien ne le posait jamais. Tant que personne ne
+*lisait* RFLAGS comme une valeur, ça ne se voyait pas ; le premier `pushf`
+aurait empilé un RFLAGS qu'aucun processeur ne produit. Corrigé dans
+`web/host.js`, et tenu par un test de bout en bout sous JavaScriptCore qui
+regarde ce que l'invité a réellement écrit sur sa pile.
+
+**Ce qui reste des vingt sans décision** : `rdtsc` (12) et `cpuid` (2). Le
+premier traîne sa propre question — WebAssembly n'a pas d'horloge, donc c'est
+soit un import (un retour de main, ~190 ns) soit un compteur virtuel qui ment
+sur le temps ; le second demande de choisir ce qu'on déclare au noyau, et
+déclarer trop lui ferait prendre des chemins qu'on n'émule pas. Ni l'un ni
+l'autre n'est un simple portage.
 
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
