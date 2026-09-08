@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — deux défauts vus sur une capture d'écran, pas dans le code
+
+Maxime a chargé `omarchy-4.0.2.iso`, la machine a refusé, et sa capture montre
+**deux défauts que personne n'avait vus** — ni moi en relisant, ni aucun test.
+
+`**disque**` s'affichait avec ses astérisques et `` `/dev/vda` `` avec ses
+accents graves : du Markdown écrit pour un lecteur qui n'existe pas. Et le
+retour à la ligne tombait **au milieu des mots** — « aucun réglage ne changer /
+a ça ». La console est une `TerminalGrid`, c'est-à-dire un vrai terminal : elle
+coupe à la colonne et ne rend aucun balisage. Un message écrit pour une personne
+y entrait tel quel.
+
+`ConsoleProse.plain` fait le strict nécessaire — les marques appariées partent,
+leur contenu reste, et le repli respecte les mots — et `finish(with:)` y passe.
+**Ce n'est pas un rendu Markdown et il ne faut pas le laisser le devenir.**
+
+**Deux choses que le sabotage a dites.** Mon test « un astérisque seul survit »
+ne pouvait pas voir la mutation qui le visait : `rm -f /tmp/*.img` n'a qu'**une**
+marque, donc il ne distingue pas « je ne vois pas de paire » de « je prends tout
+jusqu'au bout ». Il fallait une marque **ouverte et jamais fermée**. Et un
+second sabotage a montré une branche morte — `bare.isEmpty ? "" : …` — que
+`wrapped` traitait déjà correctement ; elle est partie.
+
+**Ce qui n'est pas tenu ici, et qui doit être dit** : le branchement dans
+`LocalVMModel` n'est pas testé sous Linux, `WisqUI` y étant exclu. Seule la CI
+d'Apple le typecheck. Le formateur, lui, l'est.
+
+Et la vraie réponse à « ça démarre toujours pas » n'est pas dans cette tranche :
+un ISO n'est pas un noyau, et même avec un noyau la machine x86-64 s'arrête au
+mur de la pagination décrit dans `docs/DEMARRAGE.md`.
+
 ## 2026-09-08 — les registres de contrôle, et la fin des cinq tranches
 
 Dernière tranche du programme. **Ici le numéro est dans l'instruction** — le

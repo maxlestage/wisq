@@ -459,11 +459,23 @@ public final class LocalVMModel {
         }
     }
 
+    /// **Un message écrit pour une personne, replié avant d'entrer dans la
+    /// grille.**
+    ///
+    /// La console est un **vrai** terminal : elle coupe à la colonne, sans
+    /// savoir ce qu'est un mot, et elle ne rend aucun balisage. Une capture
+    /// d'écran l'a montré — « aucun réglage ne changer / a ça », et un
+    /// `**disque**` affiché avec ses astérisques. Passer par `ConsoleProse`
+    /// coûte un appel et rend la phrase lisible.
     private func finish(with message: String) {
         machine = nil
         runFinished = nil
+        // L'état, lui, garde le message **intact** : il n'est pas destiné à une
+        // grille, et le replier ici y poserait des retours à la ligne qu'aucune
+        // vue ne demande.
         status = .finished(message)
-        _ = sink.append(Data("\n[\(message)]\n".utf8))
+        let forTheGrid = ConsoleProse.plain(message, columns: sink.columns)
+        _ = sink.append(Data("\n[\(forTheGrid)]\n".utf8))
         consoleText = sink.takeText()
     }
 }
@@ -478,6 +490,19 @@ private final class ConsoleSink: @unchecked Sendable {
     private let lock = NSLock()
     private var console = TerminalGrid()
     private var refreshPending = false
+
+    init() {
+        columns = console.columns
+    }
+
+    /// La largeur de la grille, pour que la prose se replie **avant** d'y
+    /// entrer plutôt que d'y être coupée au milieu d'un mot.
+    ///
+    /// **Recopiée plutôt que lue à travers `console`.** Cette classe est
+    /// `@unchecked Sendable` et `console` est un `var` que `reset` remplace :
+    /// le lire depuis l'acteur principal pendant qu'un fil d'émulation écrit
+    /// dedans serait une course, pour un nombre qui ne change jamais.
+    let columns: Int
 
     /// Buffers the chunk. Returns true only for the write that should schedule
     /// a refresh — every write until that refresh happens returns false.
