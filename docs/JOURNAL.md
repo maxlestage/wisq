@@ -8,6 +8,52 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — de quoi « l'émetteur refuse × 56 » est fait
+
+Tranche précédente : la couverture ne bouge plus, et deux voies attendent la
+décision de Maxime. Plutôt que d'attendre, chiffrer les deux — parce que
+« l'émetteur refuse × 56 » était le premier poste du relevé et ne disait pas de
+quoi il est fait.
+
+`coverage` nomme maintenant l'instruction derrière chaque refus, et les deux
+postes se réconcilient : **56 nommés + 36 trous de décodage = 92 refus francs**,
+comptés par deux chemins différents — l'un par soustraction, l'autre par
+accumulation. L'écart s'affiche s'il y en a un ; saboté en faisant disparaître
+une catégorie du classement, la garde dit `55 + 36 au lieu de 92`.
+
+| ce que l'émetteur lit et refuse de produire | régions |
+| --- | ---: |
+| `rdtsc` | 12 |
+| `mov` depuis un registre de segment | 10 |
+| `wrmsr` | 9 |
+| `pushf` | 6 |
+| `rdmsr` | 6 |
+| `mov` vers un segment | 3 |
+| écrire CR4 | 3 |
+| `cpuid` | 2 |
+| `lidt` | 2 |
+| `lgdt`, `hlt`, lire CR4 | 1 chacun |
+
+### Ce que ça change
+
+La question que j'avais posée était « fauter vers l'hôte, ou modéliser quelques
+MSR ». Les MSR pèsent **15 des 56**, soit 27 % : la question était mal posée. Le
+relevé sépare trois paquets — 20 qui ne demandent aucun modèle privilégié
+(`rdtsc`, `pushf`, `cpuid`), 35 qui demandent un petit modèle d'état, 1 qui
+demande vraiment les interruptions (`hlt`).
+
+**Il y a donc du travail d'émetteur ordinaire qui n'attend aucune décision** :
+vingt régions sur cinquante-six.
+
+### Et une asymétrie que j'avais posée hier soir sans la voir
+
+J'ai refusé `pushf` par symétrie avec `popf`, en écrivant que `popf` peut
+rallumer le drapeau d'interruption sans nommer `sti`. C'est vrai de `popf`.
+`pushf` ne fait que **lire** RFLAGS, déjà modélisé : il ne peut rien rallumer.
+Six régions payent une symétrie qui n'a pas lieu d'être — et je ne l'ai pas vue
+en relisant mon propre code hier, je l'ai vue parce qu'un relevé a mis un
+nombre en face du nom.
+
 ## 2026-09-08 — la section critique, et le chiffre qui n'a pas bougé trois fois de suite
 
 `cli`, `sti`, `hlt`, `pushf`, `popf` : les cinq instructions d'un octet qu'un

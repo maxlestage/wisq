@@ -5110,6 +5110,50 @@ instruction privilégiée — c'est-à-dire quand la question ci-dessous sera
 tranchée. Le décodage n'est plus une façon de la repousser ; c'est devenu une
 façon de ne pas la poser.
 
+### De quoi les 56 refus nommés sont faits — et pourquoi ça change la question
+
+« L'émetteur refuse × 56 » était vrai et inutile : premier poste du relevé, et
+muet sur son contenu. `coverage` nomme maintenant l'instruction, et les deux
+postes se réconcilient par une garde — 56 nommés + 36 trous de décodage = 92
+refus francs, comptés par deux chemins différents ; un écart s'affiche.
+
+| ce que l'émetteur lit et refuse de produire | régions |
+| --- | ---: |
+| `rdtsc` | 12 |
+| `mov` depuis un registre de segment | 10 |
+| `wrmsr` | 9 |
+| `pushf` | 6 |
+| `rdmsr` | 6 |
+| `mov` vers un registre de segment | 3 |
+| écrire CR4 | 3 |
+| `cpuid` | 2 |
+| `lidt` | 2 |
+| `lgdt`, `hlt`, lire CR4 | 1 chacun |
+
+**Ça recadre la question posée plus bas, et il faut le dire avant d'y répondre.**
+Elle était « fauter vers l'hôte pour tout, ou modéliser quelques MSR ». Or les
+MSR ne pèsent que 15 des 56 — 27 %. Le relevé sépare en fait **trois** paquets
+qui n'appellent pas la même réponse :
+
+1. **Ce qui ne demande aucun modèle privilégié — 20 sur 56.** `rdtsc` (12),
+   `pushf` (6), `cpuid` (2). Un compteur, un état déjà modélisé, une table de
+   constantes. Ce sont des tranches d'émetteur ordinaires, sans direction à
+   trancher. `rdtsc` traîne quand même une question propre — WebAssembly n'a
+   pas d'horloge, donc c'est soit un import (un retour de main, ~190 ns) soit
+   un compteur virtuel qui ment sur le temps mais ne ment que là.
+2. **Ce qui demande un petit modèle d'état — 35 sur 56.** Les sélecteurs de
+   segment (13), les MSR (15), CR4 (4), les tables de descripteurs (3).
+3. **Ce qui demande vraiment les interruptions — 1.** `hlt`.
+
+**Et une asymétrie que le relevé rend visible** : `pushf` a été refusé par
+symétrie avec `popf`, au motif que `popf` peut rallumer le drapeau
+d'interruption sans nommer `sti`. Mais `pushf` ne fait que **lire** RFLAGS,
+qui est déjà modélisé : il ne peut rien rallumer. Six régions payent une
+symétrie qui n'a pas lieu d'être. À reprendre — et à ne pas reprendre
+distraitement, parce que la paire `pushfq … popfq` n'est cohérente que si le
+drapeau d'interruption vaut toujours zéro, ce qui est vrai aujourd'hui et
+cessera de l'être à la tranche des interruptions.
+
 **Et une question qui n'est plus du décodage, à trancher plutôt qu'à engager
 seul.** Elle n'est plus repoussable : `wrmsr` est **lu** et non **produit**, et
 c'est désormais la *seule* chose qui refuse la région d'entrée. Deux voies, et
