@@ -12674,3 +12674,46 @@ première qui nomme un noyau gagne — les distributions mettent leur défaut en
 tête, et Arch le dit deux fois, par `default=archlinux` et par la place. Rien ne
 traverse d'une entrée à l'autre : une entrée sans arguments n'hérite pas de ceux
 de la précédente, ce qui était l'autre moitié du défaut et la plus discrète.
+
+### L'écran noir, et la ligne que j'avais remplacée
+
+Maxime, capture à l'appui : la machine démarre, affiche « Démarrage… », et
+plus rien. Aucun refus, aucune erreur, aucune ligne de noyau.
+
+**C'était ma régression, et le dépôt l'avait écrite d'avance.** La tranche
+précédente passait la ligne de commande de l'image au chargeur ; elle
+**remplaçait** donc celle de wisq. Or `X86BootLoader.defaultCommandLine` est la
+seule qui dise où écrire :
+
+    console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep
+
+Son propre commentaire, écrit des semaines plus tôt : « sans elle, un démarrage
+qui échoue à mi-chemin ne dit rien du tout ; avec elle, il dit où il en était.
+C'est la différence entre "ça ne marche pas" et une bannière suivie d'un message
+d'erreur. » La capture de Maxime est exactement la première moitié de cette
+phrase.
+
+La ligne d'Omarchy, elle, est écrite pour un PC avec un écran : aucune console
+série, et `quiet` par-dessus. Le noyau tournait peut-être parfaitement en
+écrivant sur un écran que personne ne lit.
+
+**Les deux lignes disent des choses différentes et nécessaires.** Celle de
+l'image dit **où est la racine** — sans `archisobasedir`, archiso ne trouve pas
+son squashfs. Celle de wisq dit **où parler**. On les additionne donc, la nôtre
+en dernier parce que Linux retient le **dernier** `console=` comme
+`/dev/console`. Un seul mot est retiré, `quiet`, et pour une raison précise : il
+est écrit pour une machine qui a un écran de démarrage, alors qu'ici il
+éteindrait la seule sortie qui existe.
+
+**Un sabotage a fait planter le test au lieu de le faire échouer.** Mon
+assertion sur l'ordre des deux `console=` dépliait les positions par `!` ; la
+mutation qui jetait la ligne de la recette faisait donc trapper le test. Un
+plantage ne dit pas ce qui manque, il dit seulement qu'on a eu tort de croire —
+les deux positions passent par `XCTUnwrap`, et le sabotage nomme maintenant ce
+qu'il casse.
+
+**Ce que cette séquence enseigne**, trois défauts d'affilée sur la même image :
+le refus, la chimère de recette, puis le silence. Chacun n'était visible que sur
+un **vrai** fichier, et chacun était caché par le précédent. Corriger l'un ne
+révèle le suivant qu'en le laissant échouer plus loin — ce qui est le bon ordre,
+mais demande de ne jamais confondre « ça progresse » avec « ça marche ».
