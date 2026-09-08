@@ -8,6 +8,61 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-09-08 — lire l'image plutôt que la refuser
+
+Maxime : « Débrouille toi pour lire l'image ». Le refus disait déjà quoi faire —
+« s'il y a un noyau là-dedans, il est **dedans**, sous `/boot`, avec son
+initramfs » — et s'arrêtait là. C'est maintenant fait.
+
+**Conçu sur un vrai ISO**, `alpine-virt 3.20.3`, téléchargé et parcouru avant
+qu'une ligne soit écrite. Trois choses y ont été mesurées :
+
+| | |
+| --- | --- |
+| les noms lisibles | viennent de **Rock Ridge** ; Joliet n'est pas nécessaire |
+| le noyau | `/boot/vmlinuz-virt`, que `recognise` accepte déjà |
+| la recette | `syslinux.cfg` **et** `grub.cfg`, avec la ligne de commande |
+
+Ce dernier point décide de la forme du module : **la ligne de commande se lit,
+elle ne s'invente pas.** `modules=loop,squashfs,sd-mod,usb-storage` n'est pas
+devinable, et un noyau démarré sans elle ne trouve pas sa racine — la panne
+tomberait très loin de sa cause.
+
+Et le point qui rassure : le noyau extrait est un bzImage gzip, c'est-à-dire
+exactement ce que le cœur Swift démarre aujourd'hui jusqu'au shell de secours.
+**Il n'y a pas de second problème derrière la porte.**
+
+**Le sabotage a trouvé trois trous, et le troisième est le plus instructif.**
+Dix mutations, sept tombées du premier coup :
+
+* le saut du bourrage remplacé par « avance d'un octet » : **survit**, parce
+  que le bourrage est des zéros et qu'avancer un par un retombe pile sur
+  l'enregistrement suivant. Les deux formes se valent — sur une image bien
+  formée. La différence tient à **un seul octet non nul** dans le bourrage :
+  avec le saut il est ignoré, sans lui il devient une longueur.
+* le plafond d'un répertoire retiré : **survit**, parce que le test regardait
+  le verdict et pas ce que le plafond protège. La lecture échouait plus loin,
+  sur une image trop courte, et `find` rendait `None` des deux côtés. Ce qu'il
+  protège, c'est **ce qu'on demande** — d'où une source qui compte la plus
+  grosse demande, et `Iso::source()` pour qu'un test puisse la regarder.
+* la garde de longueur de Rock Ridge : **survit**, parce qu'aucune image bien
+  formée ne la met en défaut. Il a fallu en fabriquer une qui ment.
+
+Trois fois la même leçon : **un test qui n'observe que le verdict ne tient pas
+une garde**, parce qu'une garde change ce qui se passe avant le verdict.
+
+**Et un quatrième trou, trouvé en relisant avant la fusion** : la branche de
+`Recipe::of` qui *liste* un répertoire d'entrées de chargeur — la disposition de
+la famille Arch, donc celle d'`omarchy` — n'était exercée par rien. Du code que
+rien n'exerce est du code qu'on croit juste. L'image d'essai porte maintenant un
+`/loader/entries` **et** un `syslinux.cfg` qui se contredisent, pour qu'on voie
+lequel a servi ; plus un intrus, un `00README.TXT` avec une ligne `linux`, posé
+**avant** la vraie entrée. Sans le filtre sur `.conf`, wisq démarrerait un noyau
+cité dans une documentation.
+
+`examples/iso.rs` est gardé plutôt qu'effacé : c'est l'outil qui a jugé la vraie
+image, et une vérification qu'on ne peut pas refaire n'en est pas une.
+
 ## 2026-09-08 — trois instruments en panne, découverts en refusant de citer un chiffre
 
 Je voulais vérifier les **247 MIPS** plutôt que les citer de mémoire. `speed.rs`
