@@ -24,6 +24,9 @@
 /// et elle ne lui sert à rien.
 const REVEALED = "#main > section, .doc > .wrap > *";
 
+/// Les grilles dont les enfants arrivent en cascade plutôt qu'ensemble.
+const GRIDS = ".cards, .steps, .facts";
+
 /// De combien on descend avant d'être remonté. Assez pour se voir, trop peu
 /// pour déplacer la lecture.
 const RISE = "0.6rem";
@@ -43,6 +46,8 @@ export function startMotion() {
   revealOnScroll();
   markScroll(root);
   countFacts();
+  followPointer();
+  readingProgress();
 }
 
 /// Chaque bloc se lève une fois, quand il entre dans la vue.
@@ -65,6 +70,77 @@ function revealOnScroll() {
     block.dataset.reveal = "";
     watcher.observe(block);
   }
+
+  // **La cascade.** Une grille entière qui apparaît d'un bloc se lit comme une
+  // image ; ses cartes qui arrivent l'une après l'autre se lisent comme une
+  // liste. Le rang est posé ici et la feuille de style en fait un retard.
+  //
+  // Il est **plafonné** : à la huitième carte le retard cesse de croître.
+  // Sinon une grille longue ferait attendre sa fin plus d'une seconde, ce qui
+  // n'est plus un rythme mais une latence.
+  for (const grid of document.querySelectorAll<HTMLElement>(GRIDS)) {
+    let rank = 0;
+    for (const item of grid.children) {
+      const cell = item as HTMLElement;
+      cell.dataset.reveal = "";
+      cell.style.setProperty("--step", String(Math.min(rank, 7)));
+      watcher.observe(cell);
+      rank += 1;
+    }
+  }
+}
+
+/// **La lueur qui suit le pointeur.**
+///
+/// Deux nombres posés sur la carte survolée, dont la feuille de style fait le
+/// centre d'un halo. Un seul écouteur pour toute la grille — un par carte
+/// serait douze écouteurs pour un effet qui n'en demande qu'un.
+///
+/// **Rien sur un écran tactile.** Un doigt n'a pas de position au repos : le
+/// halo resterait figé là où l'on a touché, ce qui est pire que pas de halo du
+/// tout. `(hover: hover)` est la question exacte à poser — pas la largeur de
+/// l'écran, qu'un portable à écran tactile démentirait.
+function followPointer() {
+  if (!window.matchMedia?.("(hover: hover)").matches) return;
+  for (const grid of document.querySelectorAll<HTMLElement>(".cards")) {
+    grid.addEventListener("pointermove", (event) => {
+      const card = (event.target as HTMLElement | null)?.closest<HTMLElement>(".card");
+      if (!card) return;
+      const box = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${event.clientX - box.left}px`);
+      card.style.setProperty("--my", `${event.clientY - box.top}px`);
+    });
+  }
+}
+
+/// **Où l'on en est dans un document.**
+///
+/// Les pages écrites sont longues — la feuille de route, l'architecture, le
+/// protocole — et une barre de défilement de navigateur est fine, grise et
+/// souvent cachée. Celle-ci est posée par le script, donc elle n'existe que
+/// là où quelque chose peut la remplir.
+///
+/// **Elle est décorative et le dit** : `aria-hidden`. Un lecteur d'écran
+/// annonce déjà la position dans le document, et une seconde voix qui répète
+/// « douze pour cent » à chaque défilement serait du bruit.
+function readingProgress() {
+  const doc = document.querySelector<HTMLElement>(".doc");
+  if (!doc) return;
+  const bar = document.createElement("div");
+  bar.className = "reading-progress";
+  bar.setAttribute("aria-hidden", "true");
+  document.body.appendChild(bar);
+
+  const draw = () => {
+    const room = document.documentElement.scrollHeight - window.innerHeight;
+    // Une page plus courte que la fenêtre n'a pas de progression : la barre
+    // resterait pleine, ce qui dirait quelque chose de faux.
+    const part = room > 0 ? Math.min(1, Math.max(0, window.scrollY / room)) : 0;
+    bar.style.setProperty("--read", String(part));
+  };
+  draw();
+  window.addEventListener("scroll", draw, { passive: true });
+  window.addEventListener("resize", draw, { passive: true });
 }
 
 /// L'en-tête se pose sur la page dès qu'on a quitté le haut.

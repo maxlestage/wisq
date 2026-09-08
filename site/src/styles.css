@@ -802,3 +802,62 @@ pre code { white-space: pre; }
 @media print {
   [data-motion] [data-reveal] { opacity: 1; transform: none; }
 }
+
+/* La cascade : le rang posé par le script devient un retard. */
+[data-motion] [data-reveal] { transition-delay: calc(var(--step, 0) * 70ms); }
+
+/* La lueur sous le pointeur. Elle ne coûte rien tant que le pointeur n'est pas
+ * passé : sans `--mx`, le halo est centré et invisible sous l'opacité zéro. */
+[data-motion] .card { position: relative; overflow: hidden; }
+[data-motion] .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+  background: radial-gradient(
+    18rem circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    transparent 60%
+  );
+}
+[data-motion] .card:hover::after { opacity: 1; }
+
+/* Où l'on en est dans un document. Posée par le script, donc absente partout
+ * où rien ne la remplirait. */
+.reading-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 100%;
+  transform: scaleX(var(--read, 0));
+  transform-origin: 0 50%;
+  background: var(--accent);
+  z-index: 50;
+  pointer-events: none;
+}
+
+/* **Le curseur du terminal.** wisq est une console avant d'être une page ; le
+ * bloc qui clignote après le nom est la seule ornementation qui dise ce que
+ * c'est. Posé sous `[data-motion]`, donc absent quand on a demandé le calme. */
+[data-motion] .hero-wordmark::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 0.12em;
+  vertical-align: -0.1em;
+  background: var(--accent);
+  animation: wisq-caret 1.1s steps(1) infinite;
+}
+
+@keyframes wisq-caret {
+  0%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@media print {
+  .reading-progress { display: none; }
+}
