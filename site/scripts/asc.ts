@@ -107,6 +107,41 @@ export async function appExists(token: string, bundleId: string): Promise<boolea
   return Boolean(apps.data?.length);
 }
 
+/// Ce que le compte porte déjà en certificats — le nombre, par type.
+///
+/// **D'où vient cette question.** Vingt-sept envois ont marché en laissant
+/// `xcodebuild -allowProvisioningUpdates` fabriquer le certificat de
+/// signature ; chaque exécution partait d'un trousseau vide et en demandait
+/// donc un neuf. Le vingt-huitième a buté sur « Your account has reached the
+/// maximum number of certificates », **quinze minutes après le début de la
+/// construction**, sur un message qui ne dit ni combien il y en a ni de quel
+/// type. Le compte se lit ici, à la treizième seconde, pour la même clé.
+///
+/// **Les noms ne sont pas imprimés, et c'est délibéré** : un nom de
+/// certificat porte l'identifiant d'équipe, et ce journal d'exécution est
+/// public. Le nombre suffit à décider ; le nom ne sert qu'à choisir lequel
+/// révoquer, et ça se fait sur developer.apple.com.
+export async function certificateInventory(token: string): Promise<Record<string, number>> {
+  const page = await call(token, "/certificates?limit=200");
+  const byType: Record<string, number> = {};
+  for (const item of page.data ?? []) {
+    byType[item.attributes?.certificateType ?? "INCONNU"] ??= 0;
+    byType[item.attributes?.certificateType ?? "INCONNU"]! += 1;
+  }
+  return byType;
+}
+
+/// La phrase que l'inventaire vaut, séparée de l'appel réseau pour être
+/// éprouvable sans compte Apple.
+export function describeCertificates(byType: Record<string, number>): string {
+  const total = Object.values(byType).reduce((sum, n) => sum + n, 0);
+  if (total === 0) return "certificats sur le compte : aucun";
+  const detail = Object.keys(byType).sort()
+    .map((type) => `${type} × ${byType[type]}`)
+    .join(", ");
+  return `certificats sur le compte : ${total} (${detail})`;
+}
+
 /// Ajoute des sorties d'étape au fichier que GitHub tend au job.
 ///
 /// **Ajoute**, et c'est tout l'intérêt de la fonction : le fichier est partagé
@@ -136,6 +171,17 @@ if (import.meta.main) {
   const teamId = await resolveTeamId(token, bundleId);
   const hasApp = await appExists(token, bundleId);
 
+  // **Un diagnostic, jamais un obstacle.** Si la clé n'a pas le droit de lire
+  // les certificats, l'envoi doit continuer : c'est une ligne d'information,
+  // pas une condition. La taire silencieusement serait pire — la raison du
+  // silence est dite.
+  let certificates: string;
+  try {
+    certificates = describeCertificates(await certificateInventory(token));
+  } catch (error) {
+    certificates = `certificats sur le compte : non lus (${(error as Error).message.slice(0, 120)})`;
+  }
+
   // Sur GitHub, ces lignes deviennent des sorties d'étape ; ailleurs elles se
   // lisent telles quelles.
   if (process.env.GITHUB_OUTPUT) {
@@ -143,6 +189,10 @@ if (import.meta.main) {
   }
   console.log(`équipe : ${teamId}`);
   console.log(`fiche d'application pour ${bundleId} : ${hasApp ? "présente" : "ABSENTE"}`);
+  console.log(certificates);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${certificates}\n`);
+  }
   if (!hasApp) {
     console.error(
       `\nAucune fiche pour ${bundleId} dans App Store Connect. L'API ne sait pas la créer.`

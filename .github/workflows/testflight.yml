@@ -13,13 +13,16 @@ name: TestFlight
 #   * une clé App Store Connect (App Store Connect → Utilisateurs et accès →
 #     Intégrations → Clés) dont l'identifiant, l'émetteur et le contenu `.p8`
 #     sont `ASC_KEY_ID`, `ASC_ISSUER_ID` et `ASC_KEY_P8` ;
-#   * un **certificat de distribution** exporté en `.p12`, encodé en base64
-#     dans `APPLE_CERT_P12`, et son mot de passe dans `APPLE_CERT_PASSWORD`.
-#     Il remplace le certificat que `-allowProvisioningUpdates` fabriquait à
-#     chaque envoi : l'envoi n° 28 a échoué sur « Your account has reached the
-#     maximum number of certificates », parce que vingt-sept exécutions
-#     partant d'un trousseau vide en avaient demandé vingt-sept. Un seul
-#     certificat sert désormais toutes les exécutions ;
+#   * **facultativement**, un certificat de distribution exporté en `.p12`,
+#     encodé en base64 dans `APPLE_CERT_P12`, avec son mot de passe dans
+#     `APPLE_CERT_PASSWORD`. Sans lui, `-allowProvisioningUpdates` en demande
+#     un neuf à chaque exécution — ce qui a marché vingt-sept fois puis buté
+#     sur « Your account has reached the maximum number of certificates ».
+#     Avec lui, un seul certificat sert toutes les exécutions et le compte
+#     n'en accumule plus. **Facultatif et non exigé** : l'envoi n° 30 a été
+#     refusé en quatre secondes pour avoir confondu les deux, et un refus ne
+#     révoque aucun certificat. L'étape « Ce que la clé sait » compte ceux du
+#     compte à chaque envoi, pour que le plafond se voie avant d'y buter ;
 #   * une fiche d'application créée dans App Store Connect portant le
 #     `PRODUCT_BUNDLE_IDENTIFIER` du projet. L'upload ne la crée pas : sans
 #     elle il échoue en disant que l'application est introuvable.
@@ -71,8 +74,6 @@ jobs:
           [ -n "$ISSUER" ] || missing="$missing ASC_ISSUER_ID"
           [ -n "$KEY_ID" ] || missing="$missing ASC_KEY_ID"
           [ -n "$KEY_P8" ] || missing="$missing ASC_KEY_P8"
-          [ -n "$CERT_P12" ] || missing="$missing APPLE_CERT_P12"
-          [ -n "$CERT_PASSWORD" ] || missing="$missing APPLE_CERT_PASSWORD"
           if [ -n "$missing" ]; then
             echo "secrets manquants :$missing" >&2
             echo "voir l'en-tête de .github/workflows/testflight.yml" >&2
@@ -82,6 +83,29 @@ jobs:
           # demande à l'API. Le secret ne sert que d'échappatoire.
           if [ -z "$TEAM_ID" ]; then
             echo "ASC_TEAM_ID absent : l'équipe sera lue sur l'API." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # **Le certificat est facultatif, et ce n'est pas de la tolérance.**
+          # L'envoi n° 30 a refusé ici, en quatre secondes, parce que cette
+          # étape exigeait le certificat que le dépôt venait de rendre
+          # obligatoire — et que le compte ne le portait pas. Le workflow
+          # s'était donné un mur à lui-même, devant le seul mur réel : le
+          # quota de certificats d'Apple, qui a arrêté les envois 28 et 29.
+          #
+          # Sans le secret, on retombe sur le chemin des vingt-sept premiers
+          # envois : Xcode demande un certificat à chaque exécution, ce qui
+          # marche tant que le compte n'est pas au plafond. Avec le secret, un
+          # seul certificat sert toutes les exécutions et le plafond ne bouge
+          # plus. Exiger n'ouvrait ni l'un ni l'autre.
+          if [ -z "$CERT_P12" ]; then
+            {
+              echo "APPLE_CERT_P12 absent : Xcode demandera un certificat à cet envoi."
+              echo "APPLE_CERT_PASSWORD absent avec lui — voir l'en-tête du workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -z "$CERT_PASSWORD" ]; then
+            # Une moitié de configuration ne se découvre pas à l'import, dix
+            # minutes plus tard : elle se dit ici.
+            echo "APPLE_CERT_P12 est là, APPLE_CERT_PASSWORD non" >&2
+            exit 1
           fi
 
       - uses: oven-sh/setup-bun@v2
@@ -122,6 +146,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8"
 
       - name: Le certificat de distribution, dans un trousseau jetable
+        if: ${{ secrets.APPLE_CERT_P12 != '' }}
         # **Ce que l'envoi n° 28 a appris.** Le dessin d'avant laissait
         # `-allowProvisioningUpdates` fabriquer le profil **et** le certificat,
         # et le commentaire d'à côté s'en félicitait : « c'est ce qui évite
@@ -180,10 +205,11 @@ jobs:
           scripts/build-app-icon.sh
           xcodegen generate
           # `-allowProvisioningUpdates` avec la clé API enregistre l'identifiant
-          # d'application et fabrique le **profil** s'ils manquent. Il
-          # fabriquait aussi le **certificat**, et c'est ce qui a fini par
-          # saturer le compte : le certificat arrive maintenant du trousseau
-          # posé à l'étape précédente, et Xcode s'en contente.
+          # d'application et fabrique le **profil** s'ils manquent. Il fabrique
+          # aussi le **certificat** — et c'est ce qui a fini par saturer le
+          # compte. Quand `APPLE_CERT_P12` est là, l'étape précédente a posé un
+          # trousseau et Xcode s'en contente ; quand il n'y est pas, cette
+          # ligne redemande un certificat, comme aux vingt-sept premiers envois.
           xcodebuild archive \
             -project Wisq.xcodeproj \
             -scheme Wisq \
