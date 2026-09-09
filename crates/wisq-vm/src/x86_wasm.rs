@@ -427,6 +427,50 @@ pub const BENCH_LOOP: [u8; 15] = [
     0x75, 0xf1, // jnz 1b
 ];
 
+/// **La seconde boucle du banc, celle qui touche la mémoire.**
+///
+/// ```text
+/// 1: movq (%rdi), %rax
+///    movq %rax, (%rdi)
+///    subq $1, %rsi
+///    jnz 1b
+/// ```
+///
+/// **Pourquoi il en fallait une seconde.** `BENCH_LOOP` est cinq instructions
+/// de registres, sans un seul accès mémoire. Or tout ce que la forme confinée
+/// ajoute — le test du bit de pagination, le tampon de traduction consulté en
+/// ligne, la vérification de faute — est **sur les accès mémoire**. Chronométrer
+/// la forme confinée sur `BENCH_LOOP` rendrait « aucune différence » : vrai, et
+/// sans le moindre rapport avec ce que le bureau fera tourner. Les deux boucles
+/// ensemble bornent le coût par le bas et par le haut.
+///
+/// **Une lecture et une écriture**, pas seulement une lecture : `guest()` est
+/// traversée par `load_at` et par `store_at`, et rien ne garantit que les deux
+/// coûtent la même chose.
+///
+/// **La densité est délibérément haute** — deux accès pour quatre instructions
+/// — et ce n'est pas ce que fait du vrai code. C'est voulu : cette boucle
+/// mesure le **coût d'un accès**, pas celui d'un noyau. Ce que la densité du
+/// vrai code vaut n'est écrit nulle part dans ce dépôt, et c'est pourquoi ces
+/// bancs rendent des nanosecondes par accès plutôt qu'un pourcentage.
+///
+/// `%rdi` vaut zéro au départ : l'adresse est donc en RAM, la même à chaque
+/// tour, et ce que la boucle lit est ce qu'elle vient d'écrire. Déterministe,
+/// ce qu'un banc doit être.
+pub const BENCH_MEMORY_LOOP: [u8; 12] = [
+    0x48, 0x8b, 0x07, // movq (%rdi), %rax
+    0x48, 0x89, 0x07, // movq %rax, (%rdi)
+    0x48, 0x83, 0xee, 0x01, // subq $1, %rsi
+    0x75, 0xf4, // jnz 1b
+];
+
+/// Combien d'instructions un tour de `BENCH_MEMORY_LOOP` exécute.
+pub const BENCH_MEMORY_PER_TURN: u64 = 4;
+
+/// Combien d'accès mémoire un tour de `BENCH_MEMORY_LOOP` fait : une lecture,
+/// une écriture.
+pub const BENCH_MEMORY_ACCESSES_PER_TURN: u64 = 2;
+
 /// L'adresse invitée où le banc charge la boucle. Elle n'est pas décorative :
 /// l'émetteur y fige les adresses de retour et les sauts.
 pub const BENCH_BASE: u64 = 0x3000_0000;
