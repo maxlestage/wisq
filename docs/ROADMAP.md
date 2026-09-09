@@ -6147,3 +6147,66 @@ par un sur la suite entière, pas sur le filtre.
 **Ce que cela ne dit pas** : le noyau ira jusqu'à l'instruction suivante qui
 manque, et il le dira de la même façon. C'est la conduite voulue, et elle a
 maintenant deux cent cinquante secondes d'avance sur la version précédente.
+
+### L'adresse était retenue exactement là où elle sert
+
+Deuxième capture de Maxime, **build 26**. `SHUFPS` a tenu : plus aucun arrêt sur
+un opcode, aucun message entre crochets — donc `finish(with:)` n'a pas été
+appelé, donc la machine tourne toujours. Le mur du build 25 est tombé et n'est
+pas revenu.
+
+Ce que la ligne d'état affiche : **1,9 milliard d'instructions · 21,4 MIPS**. Et
+la dernière ligne du noyau à l'écran est horodatée **22,09 s** de temps invité.
+
+**Ces deux nombres se comparent, et le résultat est le sujet de cette tranche.**
+Le 8253 avance d'un cran toutes les `instructionsPerTick` = 12 instructions
+retirées, à 1 193 182 crans par seconde — c'est une décision écrite dans
+`X86LegacyDevices`, pas une mesure. Donc 22,09 s invité valent environ **316
+millions d'instructions**, et il s'est écoulé **1,58 milliard d'instructions
+depuis que quoi que ce soit est apparu à l'écran**.
+
+**Et rien dans la capture ne dit si c'est lent ou si ça tourne en rond.** Les
+deux se ressemblent exactement : un compteur qui grimpe, un écran qui ne bouge
+plus. À 21,4 MIPS, le point le plus loin jamais atteint — 250 s invité, soit
+3,58 milliards — demande 167 secondes de temps réel ; la capture est prise à 89.
+« Simplement pas encore arrivé » est aussi plausible que « bloqué dans une
+boucle ».
+
+**La seule chose qui les sépare est l'adresse, et `GuestHeartbeat` ne la donnait
+qu'au blocage** — c'est-à-dire dans le cas où elle sert le moins. Une machine
+figée est déjà nommée par le mot « figée » ; c'est la machine qui *tourne* dont
+on ignore où elle est.
+
+La correction tient en une règle : **l'adresse dans toutes les phrases**. Et
+quand deux relevés séparés d'une seconde tombent à moins d'une page l'un de
+l'autre, le dire. Vingt millions d'instructions sans s'éloigner de 4 096 octets,
+c'est au plus un millier d'instructions distinctes répétées des milliers de
+fois — la machine peut le nommer elle-même plutôt que de demander à Maxime de
+comparer deux captures d'écran.
+
+**La déduction ne vaut que dans ce sens, et la phrase se tait dans l'autre.**
+Deux adresses éloignées ne prouvent pas que le noyau avance : il peut tourner
+dans une boucle plus large qu'une page. Écrire « ça avance » serait le bouchon
+complaisant que ce dépôt s'interdit — un test le tient explicitement.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| l'adresse disparaît de la phrase qui tourne (l'état d'avant) | `testAMovingMachineAlsoGivesItsAddress`, `testTwoReadingsInOnePageAreCalledALoop`, `testDistantAddressesClaimNoProgress` |
+| la comparaison de voisinage est inversée | `testTwoReadingsInOnePageAreCalledALoop`, `testDistantAddressesClaimNoProgress` |
+| le voisinage se réduit à zéro : « en rond » ne sort jamais | `testTwoReadingsInOnePageAreCalledALoop` |
+| la garde « quelque chose a tourné » saute | *(rien — voir plus bas)* |
+
+**Le quatrième sabotage a survécu**, et c'est le seul intéressant. Sans la garde
+`ran > 0`, un intervalle où **aucune** instruction n'a été retirée se lirait « en
+rond », puisque l'adresse n'a pas bougé. Elle n'a pas bougé parce qu'il n'y a
+pas eu de relevé — c'est une absence, pas une boucle, et les nommer pareil
+ferait dire à la phrase une chose qu'elle n'a pas mesurée. Ce n'était pas un
+défaut du code mais un **test manquant** ; il s'appelle
+`testAnIntervalWithNoWorkIsNotALoop`, et le même sabotage le fait maintenant
+tomber.
+
+**Ce que cette tranche ne fait pas** : elle ne rend rien plus rapide. 21,4 MIPS
+reste 21,4 MIPS, et c'est le chiffre qui décidera de la suite — l'émetteur
+WebAssembly existe précisément pour cet écart. Cette tranche rend seulement la
+question décidable, au lieu de la laisser se jouer à pile ou face sur une
+capture d'écran.

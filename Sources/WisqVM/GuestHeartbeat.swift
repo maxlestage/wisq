@@ -23,6 +23,19 @@ public enum GuestHeartbeat {
     /// qui clignote ne veut plus rien dire.
     public static let stallAfter: TimeInterval = 2
 
+    /// L'écart en deçà duquel deux relevés sont « au même endroit ».
+    ///
+    /// **Quatre kibioctets, la taille d'une page.** À vingt millions
+    /// d'instructions par seconde, ne pas s'en éloigner pendant une seconde
+    /// entière veut dire au plus un millier d'instructions distinctes, chacune
+    /// répétée des milliers de fois. Ça porte un nom : une boucle.
+    ///
+    /// **Et la déduction ne marche que dans ce sens.** Deux adresses éloignées
+    /// ne prouvent rien — le noyau peut tourner dans une boucle plus large que
+    /// ça. La phrase dit donc « en rond » quand elle le sait, et se tait
+    /// sinon, plutôt que d'affirmer une avancée qu'elle ne mesure pas.
+    public static let sameRegion: UInt64 = 4096
+
     /// Ce qu'il faut afficher, à partir de deux relevés.
     ///
     /// `since` est le relevé précédent et `seconds` le temps qui les sépare.
@@ -32,7 +45,7 @@ public enum GuestHeartbeat {
         now: GuestProgress, since: GuestProgress?, seconds: TimeInterval
     ) -> String {
         let count = instructions(now.retired)
-        guard let since, seconds > 0 else { return count }
+        guard let since, seconds > 0 else { return "\(count) · \(address(now.rip))" }
         let ran = now.retired &- since.retired
         // **Le blocage se nomme, et il donne l'adresse.** Un compteur figé dit
         // *que* c'est bloqué ; l'adresse dit **où**, et c'est la moitié avec
@@ -42,7 +55,20 @@ public enum GuestHeartbeat {
             return "\(count) — figée depuis \(Int(seconds)) s sur \(address(now.rip))"
         }
         let mips = Double(ran) / seconds / 1e6
-        return "\(count) · \(speed(mips))"
+        // **L'adresse est donnée aussi quand ça tourne**, et c'est le défaut
+        // que la deuxième capture a montré : elle n'apparaissait qu'au blocage,
+        // c'est-à-dire dans le cas où elle sert le moins. Un invité lent et un
+        // invité qui tourne en rond ont exactement le même compteur qui grimpe.
+        let place = ran > 0 && near(now.rip, since.rip)
+            ? "en rond autour de \(address(now.rip))"
+            : address(now.rip)
+        return "\(count) · \(speed(mips)) · \(place)"
+    }
+
+    /// Deux adresses à moins d'une page l'une de l'autre.
+    static func near(_ rip: UInt64, _ previous: UInt64) -> Bool {
+        let apart = rip > previous ? rip &- previous : previous &- rip
+        return apart < sameRegion
     }
 
     /// Un nombre d'instructions, en français et sans faire lire douze chiffres.

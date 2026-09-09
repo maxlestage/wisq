@@ -67,6 +67,71 @@ final class GuestHeartbeatTests: XCTestCase {
         XCTAssertEqual(GuestHeartbeat.instructions(3_200_000_000), "3,2 milliards d'instructions")
     }
 
+    /// **Une machine qui tourne donne aussi son adresse.**
+    ///
+    /// C'est le défaut que la deuxième capture de Maxime a montré : le noyau
+    /// avançait — 1,9 milliard d'instructions, 21,4 MIPS — et l'écran ne
+    /// bougeait plus depuis 1,58 milliard d'instructions. « Lent » et « en
+    /// rond » se ressemblaient exactement, et l'adresse, la seule chose qui
+    /// les sépare, n'était donnée **que** quand le compteur était figé —
+    /// c'est-à-dire dans le cas où elle sert le moins.
+    func testAMovingMachineAlsoGivesItsAddress() {
+        let line = GuestHeartbeat.line(
+            now: at(12_000_000, 0xffff_ffff_810b_2c40),
+            since: at(2_000_000, 0xffff_ffff_8100_0000),
+            seconds: 1)
+        XCTAssertTrue(line.contains("0xffffffff810b2c40"), line)
+        XCTAssertTrue(line.contains("MIPS"), line)
+    }
+
+    /// **Deux relevés dans la même page, ça s'appelle une boucle.**
+    ///
+    /// Une seconde à vingt millions d'instructions sans quitter quatre kibis
+    /// d'adresses veut dire au plus un millier d'instructions distinctes,
+    /// chacune répétée des milliers de fois. La machine peut le dire
+    /// elle-même, plutôt que de demander de comparer deux captures d'écran.
+    func testTwoReadingsInOnePageAreCalledALoop() {
+        let line = GuestHeartbeat.line(
+            now: at(30_000_000, 0xffff_ffff_810b_2c40),
+            since: at(10_000_000, 0xffff_ffff_810b_2d90),
+            seconds: 1)
+        XCTAssertTrue(line.contains("en rond"), line)
+        XCTAssertTrue(line.contains("0xffffffff810b2c40"), line)
+    }
+
+    /// **Et l'inverse ne se déduit pas.** Deux adresses éloignées ne prouvent
+    /// pas que le noyau avance : il peut tourner dans une boucle plus large
+    /// qu'une page. La phrase donne donc l'adresse et se tait sur le reste —
+    /// affirmer « ça avance » serait exactement le bouchon complaisant que ce
+    /// dépôt s'interdit.
+    func testDistantAddressesClaimNoProgress() {
+        let line = GuestHeartbeat.line(
+            now: at(30_000_000, 0xffff_ffff_8200_0000),
+            since: at(10_000_000, 0xffff_ffff_8100_0000),
+            seconds: 1)
+        XCTAssertFalse(line.contains("en rond"), line)
+        XCTAssertFalse(line.contains("avance"), line)
+        XCTAssertTrue(line.contains("0xffffffff82000000"), line)
+    }
+
+    /// **Un intervalle où rien n'a tourné n'est pas une boucle.**
+    ///
+    /// Ce test manquait, et un sabotage l'a montré en survivant : retirer la
+    /// garde « quelque chose a tourné » ne cassait rien. Sans elle, un
+    /// intervalle vide — le fil publie sur la cadence de vidage, pas à la
+    /// milliseconde — se lirait « en rond », parce que l'adresse n'a pas bougé.
+    /// Elle n'a pas bougé parce qu'aucune instruction n'a été retirée : c'est
+    /// une absence de relevé, pas une boucle. Les nommer pareil ferait dire à
+    /// la phrase une chose qu'elle n'a pas mesurée.
+    func testAnIntervalWithNoWorkIsNotALoop() {
+        let line = GuestHeartbeat.line(
+            now: at(5_000_000, 0xffff_ffff_810b_2c40),
+            since: at(5_000_000, 0xffff_ffff_810b_2c40),
+            seconds: 0.5)
+        XCTAssertFalse(line.contains("en rond"), line)
+        XCTAssertFalse(line.contains("figée"), line)
+    }
+
     /// **Une vitesse sous le million ne s'arrondit pas à zéro.** « 0 MIPS » se
     /// lirait « à l'arrêt » sur une machine qui tourne, ce qui est l'exacte
     /// confusion que tout ceci existe pour lever.
