@@ -2184,15 +2184,26 @@ impl Module {
             return Some(());
         }
         if let Op::WriteControlRegister { which } = step.op {
-            // **CR0 et CR3 allument la pagination.** L'accepter ferait croire
-            // au noyau qu'il a une table de pages, et la panne tomberait bien
-            // plus loin que sa cause. Mesuré avant d'être décidé : sur les
-            // régions d'entrée du noyau Alpine, aucune écriture de CR0 ni de
-            // CR3 ne bloque une région — ce refus ne coûte rien.
             // **CR0 et CR3 allument la pagination**, et jusqu'à cette tranche
             // les accepter aurait fait croire au noyau qu'il a une table de
             // pages sans qu'aucune adresse ne la traverse. C'est la traduction
             // qui les débloque : sans elle, le refus reste.
+            //
+            // **Les deux mises en forme n'acceptent donc pas la même chose**,
+            // et c'est la seule ligne de ce fichier où c'est vrai. Un outil qui
+            // mesure la forme libre ne mesure pas ce que l'application exécute
+            // — deux d'entre eux l'ont fait pendant une tranche.
+            // `only_the_confined_form_accepts_the_write_that_drives_paging` le
+            // tient des deux côtés.
+            //
+            // **Combien de régions ça déplace, mesuré** : zéro. Sur les 10 116
+            // entrées atteintes par un `call` du noyau Alpine, `coverage` rend
+            // 9 980 compilées sous les deux formes, au refus près. Aucune
+            // fenêtre de quatre kibioctets partant d'un début de fonction ne
+            // contient d'écriture de CR0 ou de CR3 qui bloquerait à elle seule.
+            // L'écart est réel et il ne se voit pas là — il se voit sur les
+            // régions du chemin d'entrée, que `examples/kernel-entry.rs`
+            // compile.
             matches!(which, 4 | 8)
                 .then_some(())
                 .or_else(|| body.walk.map(|_| ()))?;
