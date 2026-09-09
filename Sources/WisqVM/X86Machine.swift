@@ -102,6 +102,29 @@ public final class X86Machine: @unchecked Sendable {
     private var stopRequested = false
     private var inputQueue: [UInt8] = []
     private var pendingOutput: [UInt8] = []
+    private var published = GuestProgress(retired: 0, rip: 0)
+
+    /// **Où en est la machine, lisible pendant qu'elle tourne.**
+    ///
+    /// Ce que `retiredInstructions` rend est le compteur lui-même, et il n'est
+    /// lisible que quand la machine est à l'arrêt : le fil d'émulation l'écrit
+    /// à chaque instruction, et le lire d'ailleurs serait une course. Tous ses
+    /// appelants sont d'ailleurs des tests, un banc, et un instantané — jamais
+    /// une vue.
+    ///
+    /// Celui-ci est **publié** par le fil d'émulation, sous le verrou qui
+    /// porte déjà l'arrêt et l'entrée clavier, sur la cadence de vidage de la
+    /// console. Il est donc en retard d'au plus une poignée de tranches, ce
+    /// qui est exactement ce qu'il faut pour une ligne d'état.
+    ///
+    /// **Jamais `nil` ici** : ce cœur publie. Le type l'autorise pour les cœurs
+    /// qui ne le font pas encore, et qui doivent alors faire taire la ligne
+    /// d'état plutôt que la remplir d'un zéro qui se lirait « rien n'a tourné ».
+    public var liveProgress: GuestProgress? {
+        lock.lock()
+        defer { lock.unlock() }
+        return published
+    }
 
     /// **Où l'écran se pose, et pourquoi là.**
     ///
@@ -495,6 +518,13 @@ public final class X86Machine: @unchecked Sendable {
     }
 
     private func flushOutput() {
+        // **Avant la garde, et c'est tout l'enjeu.** Ce vidage rend la main
+        // tout de suite quand il n'y a rien à écrire ; publier après la garde
+        // ne dirait jamais rien de l'invité qui en a le plus besoin — celui
+        // qui n'écrit plus. C'est précisément le cas qu'une capture a montré.
+        lock.lock()
+        published = GuestProgress(retired: core.retired, rip: core.rip)
+        lock.unlock()
         collectOutput()
         guard !pendingOutput.isEmpty else { return }
         let data = Data(pendingOutput)

@@ -13,6 +13,33 @@ public enum GuestOutcome: Equatable, Sendable {
     case faulted(String)
 }
 
+/// **Où en est une machine, lisible pendant qu'elle tourne.**
+///
+/// `retiredInstructions` n'est lisible qu'à l'arrêt : le fil d'émulation
+/// l'écrit à chaque instruction, et le lire d'ailleurs serait une course. Tous
+/// ses appelants sont d'ailleurs des tests, un banc et un instantané — jamais
+/// une vue. Celui-ci est **publié** par le fil qui l'écrit, sous verrou, sur
+/// une cadence : il est en retard, jamais faux.
+///
+/// **Pourquoi il existe.** Une capture d'un noyau Arch sous wisq montre
+/// quelques lignes puis plus rien pendant dix minutes. « Il tourne en rond »
+/// et « il est mort » ne se corrigent pas du tout pareil, et rien à l'écran ne
+/// les distinguait — l'application ne montrait aucun signe de vie. Un compteur
+/// qui grimpe tranche en une seconde ce qu'une relecture de code ne tranche
+/// pas.
+public struct GuestProgress: Equatable, Sendable {
+    /// Ce que l'invité avait retiré au dernier point de publication.
+    public var retired: UInt64
+    /// Où il en était. Un compteur qui grimpe dit **que** ça tourne ;
+    /// l'adresse dit **où**, ce qui est la moitié qui permet d'agir.
+    public var rip: UInt64
+
+    public init(retired: UInt64, rip: UInt64) {
+        self.retired = retired
+        self.rip = rip
+    }
+}
+
 /// Ce que l'application attend d'une machine locale — et rien de plus.
 ///
 /// **Pourquoi il existe.** Il y avait un `typealias` : la machine locale était
@@ -31,8 +58,25 @@ public enum GuestOutcome: Equatable, Sendable {
 public protocol GuestMachine: AnyObject, Sendable {
     /// La mémoire de cette machine, en octets.
     var ramSizeBytes: Int { get }
-    /// Ce que l'invité a vraiment exécuté.
+    /// Ce que l'invité a vraiment exécuté. **À lire quand la machine est
+    /// arrêtée** : le fil d'émulation écrit ce compteur à chaque instruction.
+    /// Pour le regarder pendant qu'elle tourne, voir `liveProgress`.
     var retiredInstructions: UInt64 { get }
+
+    /// Où en est la machine, pendant qu'elle tourne — ou `nil` pour un cœur
+    /// qui ne publie pas encore.
+    ///
+    /// **`nil` plutôt que zéro, et ce n'est pas un détail.** Zéro se lit comme
+    /// « rien n'a tourné », c'est-à-dire exactement la confusion que cette
+    /// propriété existe pour lever. Un cœur qui ne sait pas répondre doit
+    /// faire taire la ligne d'état, pas la remplir d'un chiffre faux.
+    ///
+    /// Le cœur x86-64 le publie. Les deux cœurs rv32 ne le font pas encore :
+    /// celui en Rust demanderait un compteur atomique côté Rust, parce que
+    /// lire à travers le FFI pendant que l'autre fil tient un `&mut` n'est pas
+    /// permis — et une lecture qu'on croit inoffensive est justement la sorte
+    /// de course qui ne se voit qu'en production.
+    var liveProgress: GuestProgress? { get }
 
     /// Charge un noyau, et éventuellement un disque en mémoire.
     ///
@@ -225,4 +269,9 @@ public enum GuestMachineFactory {
         case .x86_64: return X86Machine(ramSize: ramSizeBytes, onOutput: onOutput)
         }
     }
+}
+
+extension GuestMachine {
+    /// Le défaut : un cœur qui ne publie pas se tait. Voir `liveProgress`.
+    public var liveProgress: GuestProgress? { nil }
 }

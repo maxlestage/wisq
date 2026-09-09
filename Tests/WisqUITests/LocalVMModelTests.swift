@@ -93,6 +93,33 @@ final class LocalVMModelTests: XCTestCase {
         SuspendedMachine.identity(of: Self.guestImage, named: name)
     }
 
+    /// **Un cœur qui ne publie pas son avancement ne dit rien plutôt que zéro.**
+    ///
+    /// L'invité de ce fichier est un rv32, et aucun des deux cœurs rv32 ne
+    /// publie encore : lire leur compteur pendant qu'ils tournent serait une
+    /// course, et pour celui en Rust ce serait une lecture à travers le FFI
+    /// pendant que l'autre fil tient un `&mut`.
+    ///
+    /// Ce que ce test tient est le **silence**. Un « aucune instruction »
+    /// affiché sous une machine qui tourne parfaitement se lirait « c'est
+    /// bloqué », c'est-à-dire exactement la confusion que cette ligne d'état
+    /// existe pour lever — et un bouchon complaisant vaut moins que rien.
+    @MainActor
+    func testACoreThatDoesNotPublishStaysSilentRatherThanShowingZero() throws {
+        let model = self.model()
+        XCTAssertNil(model.heartbeat, "rien ne tourne encore")
+        model.boot(kernelURL: kernel)
+        XCTAssertTrue(model.status.isRunning)
+        // Plus long qu'un battement, pour que l'horloge ait eu ses tours.
+        RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+        XCTAssertNil(
+            model.heartbeat,
+            "un cœur rv32 ne publie pas : la ligne doit se taire, pas afficher un zéro")
+        model.stop()
+        waitUntil("la machine s'arrête") { !model.status.isRunning }
+        XCTAssertNil(model.heartbeat, "et elle se tait toujours une fois arrêtée")
+    }
+
     /// The feature, end to end: run, leave, and find a machine on disk that a
     /// real interpreter will take back.
     ///
