@@ -6088,3 +6088,62 @@ décompte avait l'air bon parce que le `grep` comptait aussi la ligne
 « test result: FAILED ». Un instrument qui compte mal est le défaut que cette
 tranche entière traite ; le voir dans sa propre vérification était le bon
 rappel.
+
+### `SHUFPS` : une capture d'écran devenue 600 cas contre le vrai processeur
+
+Maxime a lancé `omarchy-4.0.2.iso` sur son iPhone et envoyé l'écran. Cette
+fois la machine ne restait pas muette : **250 secondes de temps invité**, le
+i8042, les exceptions machine, le microcode — puis un arrêt propre qui nomme sa
+cause, `unsupported("l'opcode 0F C6")`.
+
+**Ce n'est plus « ça ne marche pas », c'est une instruction manquante à son
+adresse.** Le battement de cœur de la tranche précédente est ce qui a rendu la
+différence lisible : sans lui, le même écran aurait été « figé ».
+
+`0F C6`, ce sont `SHUFPS` et `SHUFPD`. Le décodeur les lisait déjà — leur octet
+d'immédiat est dans la table depuis le début, donc la longueur était juste — et
+c'est le dispatch vectoriel qui les refusait.
+
+**Elles n'entrent pas dans un fichier de virgule flottante, malgré leur nom.**
+`SHUFPS` déplace des mots de trente-deux bits sans jamais les interpréter :
+aucun arrondi, aucun dénormal, aucun NaN à propager. Une valeur qui n'est pas
+un nombre valide la traverse intacte. C'est la même distinction que l'oracle
+faisait déjà entre `PADDD` et `ADDPS` — et c'est ce qui rend cette
+instruction-ci **exacte** plutôt qu'approchée.
+
+**L'ordre est la seule chose difficile, et c'est le processeur qui l'a dit.**
+Les deux mots bas viennent de la destination, les deux hauts de la source ;
+l'inverse produit une valeur tout aussi plausible. Le générateur écrit donc des
+valeurs différentes dans `xmm0` et `xmm1`, sans quoi l'erreur ne se verrait pas
+sur la moitié des cas.
+
+L'oracle passe de **108 à 128 instructions**, soit de 3 240 à **3 840 cas** sur
+trente états d'entrée : les six contrôles que `PSHUFD` employait déjà, repris
+pour `SHUFPS` — les positions dans l'ordre, à l'envers, croisées, toutes à zéro,
+toutes à trois, et une combinaison quelconque — et les **quatre** de `SHUFPD`,
+qui épuisent ses deux bits. Chaque forme deux fois : source registre, source
+mémoire.
+
+**Le test a été écrit avant la correction, et il est tombé** : *600 désaccords
+sur 3 840 avec le vrai processeur*, chaque ligne disant `refusé —
+unsupported("l'opcode 0F C6")`. Mot pour mot la capture de Maxime, reproduite
+dans la CI contre la réponse du silicium.
+
+`SHUFPS` réutilise `shuffleDoublewords`, qui tenait déjà `PSHUFD` : le bas de ce
+qu'elle rend de la destination avec les quatre bits bas de l'immédiat, le bas de
+ce qu'elle rend de la source avec les quatre hauts. C'est exactement la
+sémantique, sans une ligne de sélection de plus.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| les deux moitiés de `SHUFPS` échangées | `X86SIMDOracleTests.testTheCoreComputesWhatTheProcessorComputes` |
+| `SHUFPD` lit le bit 1 au lieu du bit 0 | le même |
+| la moitié haute du brassage prise au lieu de la basse | le même |
+| le préfixe `66` ignoré : `SHUFPD` exécuté comme `SHUFPS` | le même |
+
+Quatre sabotages, quatre attrapés, un seul test nommé à chaque fois — vérifié un
+par un sur la suite entière, pas sur le filtre.
+
+**Ce que cela ne dit pas** : le noyau ira jusqu'à l'instruction suivante qui
+manque, et il le dira de la même façon. C'est la conduite voulue, et elle a
+maintenant deux cent cinquante secondes d'avance sur la version précédente.

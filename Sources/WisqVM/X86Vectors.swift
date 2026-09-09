@@ -236,6 +236,40 @@ extension X86Core {
         case 0x54 where !repeatFE && !repeatFD: try logic(instruction) { $0 & $1 }
         case 0x55 where !repeatFE && !repeatFD: try logic(instruction) { ~$0 & $1 }
 
+        // `SHUFPS` et `SHUFPD`. C'est le noyau qui les a nommées : Linux
+        // s'arrête sur `0F C6` pendant l'initialisation de ses pilotes, et la
+        // capture d'écran l'a montré avant que la CI le sache.
+        //
+        // Elles ne calculent rien. Malgré le nom flottant, ce sont quatre —
+        // ou deux — morceaux recopiés à la place que dit l'immédiat, bit à
+        // bit, sans jamais regarder ce que les bits signifient. Une valeur qui
+        // n'est pas un nombre valide traverse intacte, et l'oracle le tient.
+        //
+        // La moitié basse vient toujours de la **destination**, la haute de la
+        // **source** — l'inverse produirait une valeur tout aussi plausible,
+        // et c'est le vrai processeur qui tranche dans la table.
+        case 0xC6 where !repeatFE && !repeatFD:  // SHUFPS / SHUFPD
+            let fields = try decodeFields(instruction)
+            let destination = vector(fields.reg)
+            let source = try readVectorRM(fields, 16)
+            let control = UInt8(truncatingIfNeeded: instruction.immediate)
+            if operandSize {
+                // `SHUFPD` : un bit par moitié, et rien de plus.
+                setVector(fields.reg,
+                          control & 0x01 == 0 ? destination.low : destination.high,
+                          control & 0x02 == 0 ? source.0 : source.1)
+            } else {
+                // `SHUFPS` : deux bits par mot de quatre octets. Les deux
+                // premiers choisissent dans la destination, les deux suivants
+                // dans la source — soit exactement le bas de ce que
+                // `shuffleDoublewords` rend de chacune, avec sa moitié de
+                // l'immédiat.
+                let low = Self.shuffleDoublewords(destination, control & 0x0F).0
+                let high = Self.shuffleDoublewords(
+                    (low: source.0, high: source.1), control >> 4).0
+                setVector(fields.reg, low, high)
+            }
+
         default: return false
         }
         return true
