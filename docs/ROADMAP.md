@@ -5675,3 +5675,35 @@ pagination pour le contraste.
 | écrire CR3 redevient un refus | 3 |
 | le témoin de faute n'est plus posé | 1 |
 | le contrôle de faute disparaît | 6 |
+
+### Ce que la pagination a coûté au compte des refus — mesuré après coup
+
+Relevé sur le noyau Alpine 3.20 `vmlinuz-lts` décompressé (35,8 Mio de charge
+utile, 10 116 entrées distinctes atteintes par un `call`), par
+`cargo run -p wisq-vm --release --example coverage`, juste après la fusion de la
+tranche P2 :
+
+| | avant P2 | après P2 |
+| --- | ---: | ---: |
+| régions d'entrée compilées | 9949 / 10 116 (98,3 %) | **9980 / 10 116 (98,7 %)** |
+| régions refusées | 167 | **136** |
+| refus nommés — « je lis, je refuse de produire » | 40 | **9** |
+
+**Les trente et un gagnées ne sont pas une couverture de décodage** : le
+décodeur lisait déjà ces octets. Ce sont des régions qui écrivaient CR0 ou CR3,
+et que l'émetteur refusait tant qu'aucune adresse ne traversait de table. La
+pagination les débloque toutes d'un coup, ce qui était l'effet attendu et n'avait
+jamais été chiffré.
+
+**Ce qui reste, et c'est court** : `mov-vers-segment` ×6, `popf` ×2, `hlt` ×1.
+Trente-six autres entrées butent sur des octets que le décodeur ne lit pas —
+surtout `0f 01` (8), les préfixes de verrou `f0` (4) et `f2 0f` (4).
+
+Le décodage linéaire, lui, lit **2 928 251 instructions** sur les 35,8 Mio et
+n'en refuse que 4 679 octets — 99,8 %, dont 3 944 sont des `cc`, l'octet de
+remplissage que le noyau sème entre ses fonctions.
+
+**Ce que ce tableau ne dit toujours pas.** Aucun de ces 9 980 modules n'a été
+**exécuté**. « Se compile » et « démarre » restent deux choses, et le seul
+programme jamais passé par ce chemin fait quelques régions écrites à la main.
+C'est la tranche qui vient.
