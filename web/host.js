@@ -27,6 +27,15 @@ export const SLOTS = {
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
   rflags: 16,
   rip: 17,
+  /// **Le compteur d'horodatage, que l'hôte fait avancer.**
+  ///
+  /// Le module l'incrémente à chaque `rdtsc`, ce qui suffit à ce qu'une boucle
+  /// `while (rdtsc() - début < n)` se termine. Ça ne suffit pas à ce que le
+  /// temps reflète le **travail** : sans l'hôte, `t0 = rdtsc() ; travail ;
+  /// t1 = rdtsc()` rendrait toujours le même écart, et un noyau qui attend une
+  /// durée attendrait pour toujours. Le cœur Swift l'a payé douze secondes de
+  /// blocage — voir `Tests/WisqVMTests/X86GuestClockTests.swift`.
+  tsc: 19,
   /// Le premier des six sélecteurs de segment — ES, CS, SS, DS, FS, GS, dans
   /// l'ordre de l'énumération du décodeur. Ils partent à zéro, ce qui veut dire
   /// « aucun chargeur n'est passé ici » et non « le segment nul est chargé ».
@@ -465,6 +474,26 @@ export function machine({
           }
         }
         region.run(budget);
+        // **Le temps de l'invité avance ici, et pas dans le module.**
+        //
+        // Le faire dans le module coûterait un ajout par bloc, payé partout et
+        // pour toujours, au bénéfice d'une instruction que le noyau Alpine
+        // exécute vingt-huit fois. Cette boucle, elle, vient d'accorder un
+        // budget : elle sait ce qu'elle a laissé passer, et l'ajouter est
+        // gratuit pour l'invité. C'est l'endroit que la sonde
+        // `--example deliver-probe` a désigné pour la délivrance des
+        // interruptions, et c'est le même raisonnement.
+        //
+        // **Le budget entier est ajouté, même quand la région rend la main
+        // avant de l'épuiser.** L'horloge avance donc trop vite quand les
+        // régions s'enchaînent souvent. C'est assumé : elle n'est calibrée
+        // contre rien — cette machine n'a ni PIT ni HPET à quoi se comparer —
+        // et les deux propriétés qui comptent tiennent, elle ne recule jamais
+        // et elle ne stagne jamais. Savoir ce qui a vraiment été consommé
+        // demanderait au module de l'écrire, donc un coût par bloc : ce qu'on
+        // cherche justement à éviter.
+        globals[SLOTS.tsc].value = BigInt.asIntN(
+          64, globals[SLOTS.tsc].value + budget);
         // **RIP inchangé ne veut pas dire bloqué**, et c'est une correction :
         // un anneau dont le budget s'épuise pile sur son point de départ
         // revient à l'adresse d'où il est parti après avoir tourné trois cents

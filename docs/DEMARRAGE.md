@@ -185,9 +185,11 @@ se relit, et c'est tout ce que la tranche prétendait. Rien ne lit cette table.
 Trois choses, et aucune n'est petite :
 
 1. **Une source de temps qui interrompt.** Le noyau calibre, planifie et se
-   réveille sur un timer. La machine n'en a aucun, et le compteur d'horodatage
-   qu'elle sert n'avance **que quand on le lit** — c'est un mensonge sur la durée,
-   assumé et écrit, mais qui interdit toute mesure d'intervalle.
+   réveille sur un timer. La machine n'en a aucun. Le compteur d'horodatage,
+   lui, **a cessé de mentir sur la durée** : `web/host.js` ajoute le budget
+   qu'il vient d'accorder à chaque tour de sa boucle, donc un intervalle se
+   mesure. Ce qui manque encore est la ligne qui **interrompt**, pas l'horloge
+   qui avance.
 2. **Un point de délivrance.** Une interruption arrive entre deux instructions :
    il faut un endroit où la boucle vérifie, sauve l'état sur la pile de
    l'invité, lit la table, et saute. La boucle hôte rend déjà la main
