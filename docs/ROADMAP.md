@@ -6616,3 +6616,73 @@ sabotage le fait maintenant tomber.
 **Un seul processeur ne fait pas une architecture**, et ce dépôt n'a pas d'autre
 silicium sous la main : c'est écrit dans le code pour que la prochaine mesure
 sache ce qu'elle corrige.
+
+### Le certificat exigé bloquait plus sûrement que le quota qu'il devait lever
+
+**La tranche d'avant a remplacé un mur par un autre, et je l'ai dit trop tard.**
+Les envois 28 et 29 se sont arrêtés sur « Your account has reached the maximum
+number of certificates ». La correction — faire venir le certificat d'un secret
+plutôt que d'en demander un à chaque exécution — était juste, et elle l'est
+toujours. Ce qui ne l'était pas, c'est de rendre le secret **obligatoire** : le
+compte ne le portait pas, et l'envoi n° 30 a été refusé en **quatre secondes**,
+avant même de construire.
+
+Le compte des trois refus, mis côte à côte :
+
+| envoi | où il s'arrête | après combien | ce qui bloque |
+| --- | --- | ---: | --- |
+| 28, 29 | signature de l'archive | ~15 min | le quota de certificats d'Apple |
+| 30 | « Refuser tôt », étape 3 | 4 s | le workflow lui-même |
+
+Un refus à la quatrième seconde ne révoque aucun certificat. Exiger n'ouvrait
+donc **ni** le chemin d'avant — Xcode demande un certificat, ce qui marche tant
+que le compte n'est pas au plafond — **ni** le chemin d'après. Le certificat
+redevient facultatif : présent, il sert toutes les exécutions et le compte
+n'accumule plus ; absent, on retombe exactement sur les vingt-sept envois qui
+ont marché. Une moitié de configuration — le `.p12` sans son mot de passe —
+reste refusée, parce qu'elle n'échouerait qu'à l'import, dix minutes plus loin.
+
+**Ce que le message d'Apple ne dit pas, et que la même clé sait dire.** « Maximum
+number of certificates » ne donne ni le nombre ni le type, et arrive un quart
+d'heure après le début de la construction. `/v1/certificates` répond à la
+treizième seconde, avec la clé App Store Connect déjà présente. L'étape « Ce que
+la clé sait » compte donc les certificats du compte et l'écrit dans le résumé.
+
+**Les noms ne sont pas imprimés, et c'est le vrai sujet du test.** Un nom de
+certificat est de la forme `Apple Distribution: … (ABCDE12345)` : il porte
+l'identifiant d'équipe, et un journal d'exécution GitHub est public. La fonction
+ne rend que des couples type → nombre, et le test fouille **la valeur rendue
+entière** — pas seulement la phrase — pour n'y trouver ni nom, ni numéro de
+série, ni équipe. Le sabotage qui compte par `displayName` au lieu de
+`certificateType` le fait tomber.
+
+Le diagnostic ne peut pas bloquer un envoi : si la clé n'a pas le droit de lire
+les certificats, la raison est dite dans le résumé et la construction continue.
+
+#### La garde qui promettait son propre test
+
+L'en-tête de `check-signing-secrets.sh` annonçait
+`site/tests/signing-secrets.test.ts`, et **ce fichier n'existait pas**. C'est la
+même faute que la garde de licence (#105) et celle de la matrice (#106) : une
+garde lancée à chaque commit contre un dépôt où rien n'est fautif n'a jamais
+refusé, donc personne ne l'a vérifiée. Elle en a maintenant six cas, chacun
+partant du vrai workflow avec **une** faute, plus le contrôle du workflow
+intact.
+
+| sabotage de la garde | ce qui tombe |
+| --- | --- |
+| l'étape « Refuser tôt » n'est plus exigée | `elle refuse quand l'étape … a disparu` |
+| le refus précoce n'est plus lu | `elle refuse un secret ni éprouvé ni déclaré facultatif` |
+| l'impression sur la sortie n'est plus vue | `elle refuse le certificat imprimé sur la sortie` |
+| l'écriture hors du temporaire n'est plus vue | les deux cas de redirection, et eux seuls |
+
+Le troisième cas de la garde a servi tout de suite : rendre un secret facultatif
+sans le dire au bon endroit le fait refuser. « Facultatif » doit s'écrire là où
+l'on refuse, sinon un secret ni éprouvé ni déclaré ne se verrait qu'à la
+signature.
+
+**Ce que cette tranche ne prouve pas.** Elle ne fait pas passer un envoi. Le
+quota d'Apple est intact : tant qu'un certificat n'est pas révoqué sur
+developer.apple.com, ou qu'un `.p12` n'est pas déposé dans `APPLE_CERT_P12`,
+l'envoi butera au même endroit qu'aux numéros 28 et 29 — mais il le dira
+maintenant avec le nombre sous les yeux.
