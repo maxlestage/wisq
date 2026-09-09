@@ -33,7 +33,7 @@
 
 use crate::x86::{
     decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF, CF, DF,
-    OF, PF, SF, ZF,
+    IF, OF, PF, SF, ZF,
 };
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
@@ -233,8 +233,28 @@ pub const TRANSLATE_COUNT: usize = 3;
 
 pub const FAULT_SLOT: usize = TRANSLATE_SLOT + TRANSLATE_COUNT;
 
+/// **Le témoin d'arrêt.** Zéro tant que la machine tourne ; un après un `hlt`.
+///
+/// **Pourquoi un témoin plutôt qu'un refus.** `hlt` faisait refuser la région
+/// **entière**, et une région est refusée en entier : les instructions qui la
+/// précèdent ne s'exécutaient pas non plus. C'est ce qui arrêtait la quatrième
+/// région d'un vrai noyau, sur le `cli; hlt; jmp -2` que `head_64.S` place au
+/// bout de son chemin d'erreur — un chemin dont rien ne dit que le noyau
+/// l'emprunte.
+///
+/// **Et ce n'est pas un bouchon complaisant.** Le module ne feint pas d'attendre
+/// une interruption : il pose ce témoin et rend la main, comme le fait déjà une
+/// faute de page. L'hôte lit le témoin et **nomme** l'arrêt. Dire « je sais
+/// traduire ce code, et si l'exécution y arrive je n'ai rien pour la
+/// réveiller » est plus vrai que dire « je ne sais pas le traduire ».
+///
+/// **RIP est posé après le `hlt`**, comme sur le silicium : une interruption y
+/// reprend à l'instruction suivante. Laisser RIP sur le `hlt` ferait
+/// re-exécuter l'arrêt le jour où la délivrance existera.
+pub const HALT_SLOT: usize = FAULT_SLOT + 1;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = FAULT_SLOT + 1;
+pub const GLOBAL_COUNT: usize = HALT_SLOT + 1;
 
 /// CR0.PG — le bit qui allume la pagination.
 pub const PAGING_BIT: u64 = 1 << 31;
@@ -2463,7 +2483,41 @@ impl Module {
             });
             return Some(());
         }
-        if matches!(step.op, Op::InterruptFlag(_) | Op::Halt | Op::PopFlags) {
+        // **Le drapeau d'interruption : un bit, comme celui de direction.**
+        // `cli` et `sti` ne font rien de plus sur le silicium, et le produire
+        // ne prétend pas que les interruptions marchent — rien ne délivre
+        // encore. Ce que ça change est qu'une région ne se fait plus refuser
+        // pour eux.
+        if let Op::InterruptFlag(set) = step.op {
+            body.store(RFLAGS_SLOT, |b| {
+                if set {
+                    b.load(RFLAGS_SLOT).constant(IF).op(code::I64_OR);
+                } else {
+                    b.load(RFLAGS_SLOT).constant(!IF).op(code::I64_AND);
+                }
+            });
+            return Some(());
+        }
+        // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
+        // l'instruction, et la main rendue par un indice négatif — le même
+        // chemin qu'une faute de page, qui existait déjà.
+        if step.op == Op::Halt {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address.wrapping_add(step.length as u64));
+            });
+            body.store(HALT_SLOT, |b| {
+                b.constant(1);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            return Some(());
+        }
+        // **`popf` reste refusé**, et ce n'est pas un oubli : il restaure
+        // **tous** les drapeaux depuis la pile, pas seulement IF. Le produire
+        // demanderait de décider ce que valent les bits que cet émetteur ne
+        // tient pas, et c'est une autre question que celle-ci.
+        if step.op == Op::PopFlags {
             return None;
         }
         // Ne rien faire n'émet rien.
@@ -5187,13 +5241,24 @@ mod port_tests {
             // reste est ce qui allumerait la pagination.
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
             ("mov %rcx,%cr0", &[0x0f, 0x22, 0xc1][..]),
-            ("cli", &[0xfa][..]),
-            ("sti", &[0xfb][..]),
-            ("hlt", &[0xf4][..]),
-            // `pushfq` n'est plus là : il est **produit** depuis cette
-            // tranche. `popfq` reste, et l'asymétrie est le sujet — lire
-            // RFLAGS ne peut rien allumer, l'écrire peut rallumer le drapeau
-            // d'interruption sans jamais nommer `sti`.
+            // **`cli`, `sti` et `hlt` ont quitté cette liste**, et c'est une
+            // mesure qui les a fait partir : ils arrêtaient la quatrième
+            // région d'un vrai noyau à l'octet 237, dans le `cli; hlt; jmp -2`
+            // que `head_64.S` place au bout d'un chemin d'**erreur**. Une
+            // région est refusée en entier, donc les 237 octets d'avant ne
+            // tournaient pas non plus, alors que rien ne dit que le noyau
+            // irait jusqu'à cet arrêt.
+            //
+            // `cli` et `sti` posent un bit, ce que fait aussi le silicium.
+            // `hlt` n'est pas feint pour autant : il pose son témoin et rend
+            // la main, et c'est l'hôte qui **nomme** l'arrêt. Dire « je sais
+            // traduire, et rien ne peut réveiller cette machine » est plus
+            // vrai que « je ne sais pas traduire ».
+            //
+            // `pushfq` n'est plus là non plus : il est **produit**. `popfq`
+            // reste, et l'asymétrie est le sujet — lire RFLAGS ne peut rien
+            // allumer, l'écrire restaure **tous** les drapeaux depuis la pile,
+            // pas seulement celui d'interruption.
             ("popfq", &[0x9d][..]),
         ] {
             // Première moitié : le décodeur la lit, entière.
