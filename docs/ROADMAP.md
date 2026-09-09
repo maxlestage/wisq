@@ -5676,34 +5676,49 @@ pagination pour le contraste.
 | le témoin de faute n'est plus posé | 1 |
 | le contrôle de faute disparaît | 6 |
 
-### Ce que la pagination a coûté au compte des refus — mesuré après coup
+### Ce que la pagination a changé au compte des refus : **rien**, et c'est la mesure
 
 Relevé sur le noyau Alpine 3.20 `vmlinuz-lts` décompressé (35,8 Mio de charge
 utile, 10 116 entrées distinctes atteintes par un `call`), par
-`cargo run -p wisq-vm --release --example coverage`, juste après la fusion de la
-tranche P2 :
+`cargo run -p wisq-vm --release --example coverage`, juste après la fusion des
+tranches de pagination :
 
-| | avant P2 | après P2 |
+| | après les registres de contrôle (#283) | après la pagination (P1 + P2) |
 | --- | ---: | ---: |
-| régions d'entrée compilées | 9949 / 10 116 (98,3 %) | **9980 / 10 116 (98,7 %)** |
-| régions refusées | 167 | **136** |
-| refus nommés — « je lis, je refuse de produire » | 40 | **9** |
+| régions d'entrée compilées | 9980 / 10 116 (98,7 %) | **9980 / 10 116 (98,7 %)** |
+| régions refusées | 136 | **136** |
+| refus nommés | 9 | **9** |
 
-**Les trente et un gagnées ne sont pas une couverture de décodage** : le
-décodeur lisait déjà ces octets. Ce sont des régions qui écrivaient CR0 ou CR3,
-et que l'émetteur refusait tant qu'aucune adresse ne traversait de table. La
-pagination les débloque toutes d'un coup, ce qui était l'effet attendu et n'avait
-jamais été chiffré.
+**Aucun mouvement, et c'est le résultat.** On aurait pu croire que débloquer
+`mov vers cr0` et `cr3` ferait monter le compte : c'était l'attente, et elle est
+démentie. Le tableau du paquet « sans modèle privilégié » ci-dessus l'expliquait
+déjà sans qu'on le lise — les régions qui écrivent ces deux registres étaient
+**déjà** comptées compilées depuis #283, parce que ce qui les bloquait était la
+*lecture* des registres, corrigée là, et non leur écriture.
 
-**Ce qui reste, et c'est court** : `mov-vers-segment` ×6, `popf` ×2, `hlt` ×1.
-Trente-six autres entrées butent sur des octets que le décodeur ne lit pas —
-surtout `0f 01` (8), les préfixes de verrou `f0` (4) et `f2 0f` (4).
+**La faute que j'ai failli publier, et comment elle s'est faite.** J'ai d'abord
+annoncé « 9949 → 9980, trente et une régions gagnées par la pagination ». Le
+9949 venait d'un tableau **intermédiaire** de la même série, trouvé par `grep` et
+pris pour l'état courant ; la dernière ligne de cette série, neuf lignes plus
+bas, disait déjà 9980. Comparer deux nombres est ce qui produit les vraies
+trouvailles dans ce dépôt — encore faut-il que le second soit le bon, et un
+`grep` ne rend pas une chronologie.
+
+**Ce que la pagination a rapporté est donc ailleurs**, et ne se lit pas dans ce
+relevé : elle rend exécutable ce qui ne l'était pas. « Se compile » et
+« s'exécute » ont cessé d'être la même chose depuis la tranche des MSR, et cette
+métrique-ci ne mesure que la première.
+
+**Ce qui reste, inchangé** : six `mov %ax,%fs` — la base viendrait d'un
+descripteur qu'on n'a pas —, deux `popf` et un `hlt`, qui touchent aux
+interruptions qu'on ne délivre pas. Trente-six autres entrées butent sur des
+octets illisibles, surtout `0f 01` (8), `f0` (4) et `f2 0f` (4).
 
 Le décodage linéaire, lui, lit **2 928 251 instructions** sur les 35,8 Mio et
 n'en refuse que 4 679 octets — 99,8 %, dont 3 944 sont des `cc`, l'octet de
 remplissage que le noyau sème entre ses fonctions.
 
-**Ce que ce tableau ne dit toujours pas.** Aucun de ces 9 980 modules n'a été
-**exécuté**. « Se compile » et « démarre » restent deux choses, et le seul
-programme jamais passé par ce chemin fait quelques régions écrites à la main.
-C'est la tranche qui vient.
+**Et l'outil a refusé avant moi.** Passé le `vmlinuz-lts` tel quel, `coverage`
+refuse de mesurer : « décoderait une archive comme du code, et rendrait un
+chiffre qui n'en est pas un », puis donne la commande d'extraction. Cette
+garde-là a tenu ; celle qui manquait était dans ma lecture, pas dans l'outil.
