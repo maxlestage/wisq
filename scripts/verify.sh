@@ -19,6 +19,7 @@ echo "==> Mise en forme (les règles de texte)"
 # in the app bundle and in the Homebrew formula.
 echo "==> Licence (rien ne doit en annoncer une)"
 ./scripts/check-licence-claims.sh
+./scripts/check-signing-secrets.sh
 
 # CI runs this one and this script did not — the third time this file has had
 # exactly that bug, after SwiftLint and after the Rust gates, both recorded
