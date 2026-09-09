@@ -54,6 +54,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
             .unwrap_or_else(|| panic!("host.js ne déclare pas « {name} »"))
     };
     assert_eq!(value("rip"), RIP_SLOT.to_string(), "l'emplacement de RIP");
+    // **Le compteur d'horodatage, que l'hôte fait avancer.** Une case fausse
+    // ici ferait avancer autre chose que l'horloge — un registre de segment,
+    // par exemple — sans que rien ne s'arrête : le noyau lirait une heure figée
+    // et attendrait pour toujours, et un segment porterait un nombre qui monte.
+    // Deux défauts silencieux pour une constante recopiée.
+    assert_eq!(
+        value("tsc"),
+        wisq_vm::x86_wasm::TSC_SLOT.to_string(),
+        "l'emplacement du compteur d'horodatage"
+    );
     // **Ajouté après coup, et c'est l'aveu qui compte.** `rflags` est arrivé
     // dans `SLOTS` avec `pushf`, et il n'était comparé à rien — dans un
     // fichier dont le commentaire affirme que sa répétition l'est. Une case
@@ -1532,6 +1542,108 @@ console.log("ecx " + lire(1));
 
 /// **Le compteur d'horodatage, et la seule propriété qui compte.**
 ///
+/// **Le temps de l'invité avance avec le travail, et pas seulement avec les
+/// lectures.**
+///
+/// C'est le mensonge que `docs/DEMARRAGE.md` nomme et que cette tranche
+/// retire : le compteur n'avançait qu'à chaque `rdtsc`, donc
+/// `t0 = rdtsc() ; travail ; t1 = rdtsc()` rendait toujours le même écart. Un
+/// noyau qui attend une durée sur cette horloge attend pour toujours — le cœur
+/// Swift l'a payé douze secondes de blocage sur « Mounting boot media... »
+/// (`Tests/WisqVMTests/X86GuestClockTests.swift`).
+///
+/// **C'est l'hôte qui avance l'horloge, pas le module**, et c'est un choix
+/// mesuré. Le faire dans le module coûterait un ajout par bloc, payé sur tous
+/// les modules et pour toujours, au bénéfice d'une instruction que le noyau
+/// Alpine exécute vingt-huit fois. La boucle hôte, elle, accorde déjà un budget
+/// par tour : elle sait combien de travail elle vient de laisser passer, et
+/// l'ajouter ne coûte rien à l'invité. C'est le même endroit que la sonde
+/// `--example deliver-probe` a désigné pour la délivrance des interruptions,
+/// et pour la même raison.
+///
+/// **Ce que ce test tient** : deux exécutions du même programme, avec deux
+/// budgets différents, ne rendent pas la même heure. Avant cette tranche elles
+/// rendaient exactement la même — le compteur ne connaissait que ses lectures.
+#[test]
+fn the_guest_clock_advances_with_the_work_the_host_let_through() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // `rdtsc ; ud2` : une lecture, puis la main rendue. Un seul tour de la
+    // boucle hôte exécute quelque chose ; le suivant ne trouve plus de région
+    // à cette adresse et s'arrête. Le budget est donc accordé une fois, ce qui
+    // rend l'écart entre les deux exécutions lisible.
+    let program = [0x0f, 0x31, 0x0f, 0x0b];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("clock.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let read = |budget: u64| -> u64 {
+        let driver = scratch.join(format!("d{budget}.mjs"));
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: {budget}n, rounds: 8 }});
+console.log(BigInt.asUintN(64, vm.globals[{tsc}].value).toString());
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                path = path.to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                base = BASE,
+                budget = budget,
+                tsc = wisq_vm::x86_wasm::TSC_SLOT,
+            ),
+        )
+        .expect("le pilote");
+        let output = Command::new(&bun)
+            .arg("run")
+            .arg(&driver)
+            .output()
+            .expect("bun doit démarrer");
+        let errors = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            errors.is_empty(),
+            "le pilote ne doit rien écrire en erreur : {errors}"
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .expect("une heure lisible")
+    };
+
+    let small = read(64);
+    let large = read(1024);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        large > small,
+        "deux budgets différents doivent rendre deux heures différentes — \
+         petit {small}, grand {large} : l'horloge ne connaît que ses lectures"
+    );
+    // **L'écart est exactement la différence des budgets**, et le dire vaut
+    // mieux qu'une simple inégalité : une horloge qui avancerait d'un montant
+    // arbitraire passerait l'inégalité tout en étant fausse.
+    assert_eq!(
+        large - small,
+        1024 - 64,
+        "un tour a laissé passer un budget : l'écart doit être celui des budgets"
+    );
+}
+
 /// `rdtsc` est la deuxième instruction que l'émetteur produit, et son choix de
 /// conception tient en une phrase : **un compteur virtuel, pas un import**.
 ///
@@ -1548,11 +1660,10 @@ console.log("ecx " + lire(1));
 /// Le compteur avance donc à **chaque lecture**, strictement, et c'est ce que
 /// ce test tient.
 ///
-/// **Ce que ce compteur ne dit pas, et il faut le dire** : il n'avance que
-/// quand on le lit. Un noyau qui mesure `t0 = rdtsc() ; travail ; t1 =
-/// rdtsc()` trouvera toujours le même écart, quel que soit le travail. C'est
-/// un mensonge sur la *durée*, inhérent à un compteur virtuel, et assumé —
-/// pas un défaut caché.
+/// **Ce que ce test ne tient pas, et son voisin s'en charge** : que le temps
+/// avance avec le *travail*. Le module ne connaît que ses lectures ; c'est
+/// l'hôte qui ajoute le budget accordé à chaque tour, et
+/// `the_guest_clock_advances_with_the_work_the_host_let_through` le tient.
 #[test]
 fn the_timestamp_counter_always_moves_forward() {
     let Some(bun) = bun() else {

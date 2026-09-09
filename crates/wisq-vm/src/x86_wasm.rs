@@ -69,10 +69,24 @@ pub const GS_SLOT: usize = RIP_SLOT + 1;
 /// feraient une boucle qui ne se termine **jamais** : une machine qui pend,
 /// indiscernable d'un calcul long. Le compteur avance donc à chaque lecture.
 ///
-/// **Ce qu'il ne dit pas** : il n'avance que quand on le lit. Un noyau qui
-/// mesure `t0 = rdtsc() ; travail ; t1 = rdtsc()` trouvera toujours le même
-/// écart, quel que soit le travail. C'est un mensonge sur la durée, inhérent à
-/// un compteur virtuel, et assumé — pas caché.
+/// **Et l'hôte l'avance aussi**, ce qui retire le mensonge sur la durée. Le
+/// module ne connaît que ses propres lectures ; sans autre chose,
+/// `t0 = rdtsc() ; travail ; t1 = rdtsc()` rendrait toujours le même écart, et
+/// un noyau qui attend une durée attendrait pour toujours. `web/host.js` ajoute
+/// donc le budget qu'il vient d'accorder à chaque tour de sa boucle.
+///
+/// **Pourquoi là et pas ici.** Compter le travail dans le module coûterait un
+/// ajout par bloc, payé sur tous les modules et pour toujours, au bénéfice
+/// d'une instruction que le noyau Alpine exécute vingt-huit fois. La boucle
+/// hôte sait déjà ce qu'elle a laissé passer, et l'ajouter est gratuit pour
+/// l'invité — le même endroit, et le même raisonnement, que la délivrance des
+/// interruptions, mesurée par `--example deliver-probe`.
+///
+/// **Ce qu'il ne dit toujours pas** : l'horloge n'est calibrée contre rien —
+/// cette machine n'a ni PIT ni HPET —, et le budget entier est compté même
+/// quand la région rend la main avant de l'épuiser. Elle avance donc trop vite
+/// quand les régions s'enchaînent souvent. Les deux propriétés qui comptent
+/// tiennent : elle ne recule jamais, et elle ne stagne jamais.
 pub const TSC_SLOT: usize = GS_SLOT + 1;
 /// Ce qu'une lecture ajoute au compteur. La valeur est **arbitraire**, et le
 /// dire vaut mieux que la déguiser en fréquence : seule sa positivité stricte
