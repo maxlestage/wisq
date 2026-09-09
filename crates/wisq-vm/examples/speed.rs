@@ -15,8 +15,9 @@
 use std::time::Instant;
 use wisq_vm::x86::{Cpu, Step};
 use wisq_vm::x86_wasm::{
-    host_pages, Module, BENCH_BASE, BENCH_LOOP, BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP,
-    BENCH_MEMORY_PER_TURN, BENCH_PER_TURN, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
+    host_pages, Module, BENCH_BASE, BENCH_CONFINED_PAGES, BENCH_LOOP,
+    BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, BENCH_PER_TURN,
+    GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
 };
 
 /// **Les deux formes, et pourquoi il faut les deux.**
@@ -55,9 +56,10 @@ struct Bench {
     accesses_per_turn: u64,
 }
 
-/// La RAM déclarée pour la forme confinée, en pages de 64 Kio. Une puissance
-/// de deux, que le masque exige.
-const CONFINED_PAGES: u32 = 0x4000;
+/// La RAM déclarée pour la forme confinée, en pages de 64 Kio. Elle vient de
+/// la bibliothèque : la sonde WebKit de l'application déclare la même, et deux
+/// copies feraient rendre à l'iPhone un chiffre qu'on croirait comparable.
+const CONFINED_PAGES: u32 = BENCH_CONFINED_PAGES;
 
 /// L'adresse où la région est chargée, la même que partout ailleurs.
 const CODE: u64 = BENCH_BASE;
