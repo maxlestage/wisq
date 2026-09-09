@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86_wasm::{
-    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, GLOBAL_COUNT, RFLAGS_SLOT, RIP_SLOT, TABLE_ENTRY,
-    TABLE_PAGES, TABLE_SLOTS,
+    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT,
+    RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS,
 };
 
 fn workspace_root() -> PathBuf {
@@ -765,6 +765,166 @@ console.log("rip " + lire({rip}));
         line("rip "),
         BASE + 11,
         "RIP doit avoir dépassé le `hlt`, pas rester dessus : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un sélecteur nul dans FS ou GS n'a besoin d'aucune table.**
+///
+/// **D'où ça vient.** Après la tranche du `hlt`, `--example kernel-entry`
+/// s'arrête plus loin : la quatrième région d'Alpine refuse à l'octet **319**
+/// au lieu de 237, et 319 porte `mov %eax,%fs`. Les octets d'avant, décodés :
+///
+/// ```text
+/// 311  31 c0     xor  %eax,%eax
+/// 313  8e d8     mov  %eax,%ds     produit — base morte en mode 64 bits
+/// 315  8e d0     mov  %eax,%ss     produit
+/// 317  8e c0     mov  %eax,%es     produit
+/// 319  8e e0     mov  %eax,%fs     refusé
+/// ```
+///
+/// Le refus est écrit avec sa raison : charger FS ou GS relit un descripteur
+/// dans la table globale pour en tirer une base, et cette table n'existe pas.
+/// **Mais le sélecteur vaut zéro** — le `xor` est juste avant — et un sélecteur
+/// nul ne lit aucun descripteur. Le refus était donc, à cet endroit, plus large
+/// que sa raison.
+///
+/// **Ce que le silicium fait du nul, mesuré et pas supposé.** Un programme à
+/// syscalls bruts sur le processeur de ce conteneur — la libc entre les deux
+/// relevés toucherait errno, qui vit dans le TLS pointé par FS :
+///
+/// ```text
+/// FS.base avant = 0x7f7da625f740
+/// xorl %eax,%eax ; movl %eax,%fs
+/// FS.base apres = 0x0
+/// ```
+///
+/// La base est **effacée**. C'est ce que l'émetteur produit.
+///
+/// **Et le non-nul s'arrête au lieu de mentir.** Ranger le sélecteur sans en
+/// tirer de base donnerait au noyau une adresse fausse, silencieusement, loin
+/// de sa cause — exactement ce que le refus d'origine voulait éviter. Le
+/// contrôle est donc à l'exécution : nul, on produit ; non nul, on rend la main
+/// en nommant ce qui manque.
+#[test]
+fn a_null_selector_needs_no_descriptor_and_a_real_one_says_what_is_missing() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // Ce que fait `head_64.S`, à l'octet près, plus un `hlt` pour finir.
+    let null_load: Vec<u8> = vec![
+        0x31, 0xc0, // xor  %eax,%eax
+        0x8e, 0xd8, // mov  %eax,%ds
+        0x8e, 0xd0, // mov  %eax,%ss
+        0x8e, 0xc0, // mov  %eax,%es
+        0x8e, 0xe0, // mov  %eax,%fs — celui qui refusait
+        0x8e, 0xe8, // mov  %eax,%gs
+        0xf4, // hlt
+    ];
+    // Le même, avec un vrai sélecteur : celui-là demande un descripteur.
+    let real_load: Vec<u8> = vec![
+        0xb8, 0x23, 0x00, 0x00, 0x00, // mov $0x23,%eax
+        0x8e, 0xe0, // mov %eax,%fs
+        0xf4, // hlt
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-sel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let run = |nom: &str, program: &[u8]| -> String {
+        let module = Module::resolving(program, BASE, 0, 0, PAGES)
+            .unwrap_or_else(|| panic!("`{nom}` doit se traduire"));
+        let path = scratch.join(format!("{nom}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        let driver = scratch.join(format!("{nom}.mjs"));
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+// Une base déjà posée : le chargement nul doit l'effacer, comme le silicium.
+vm.globals[{fs}].value = 0x7f0011223344n;
+vm.globals[{gs}].value = 0x7f0055667788n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("fsbase " + lire({fs}));
+console.log("gsbase " + lire({gs}));
+console.log("rip " + lire({rip}));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                path = path.to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                fs = FS_BASE_SLOT,
+                gs = GS_SLOT,
+                base = BASE,
+            ),
+        )
+        .expect("le pilote");
+        let output = Command::new(&bun)
+            .arg("run")
+            .arg(&driver)
+            .output()
+            .expect("bun");
+        let errors = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            errors.is_empty(),
+            "`{nom}` ne doit rien écrire en erreur : {errors}"
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    let value = |text: &str, name: &str| -> u64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+
+    // **Le nul traverse la région entière** et va jusqu'au `hlt`.
+    let text = run("nul", &null_load);
+    assert_eq!(
+        text.lines().next(),
+        Some("arret arrêtée sur hlt"),
+        "la suite de `head_64.S` doit s'exécuter jusqu'au bout : {text}"
+    );
+    // Et les deux bases sont effacées, comme sur le processeur mesuré.
+    assert_eq!(
+        value(&text, "fsbase "),
+        0,
+        "un sélecteur nul efface FS.base : {text}"
+    );
+    assert_eq!(value(&text, "gsbase "), 0, "et GS.base aussi : {text}");
+
+    // **Le non-nul s'arrête, et l'arrêt nomme ce qui manque.**
+    let text = run("vrai", &real_load);
+    assert_eq!(
+        text.lines().next(),
+        Some("arret un sélecteur non nul dans FS ou GS, sans table de descripteurs"),
+        "un vrai sélecteur doit nommer la table absente : {text}"
+    );
+    // **RIP reste sur l'instruction**, qui n'a rien fait : c'est la seule façon
+    // de la rejouer le jour où les descripteurs existeront.
+    assert_eq!(
+        value(&text, "rip "),
+        BASE + 5,
+        "RIP doit rester sur le `mov %eax,%fs` : {text}"
+    );
+    // Et la base n'a pas bougé : on n'invente pas une base qu'on n'a pas lue.
+    assert_eq!(
+        value(&text, "fsbase "),
+        0x7f00_1122_3344,
+        "aucune base n'est inventée quand le descripteur manque : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
