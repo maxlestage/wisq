@@ -21,7 +21,7 @@
 /// covered out of 236, invisibly, because that file happens to be clean.
 
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -195,6 +195,41 @@ describe("the formatting floor accepts what it must not refuse", () => {
   /// A brace that ends a line, which is every brace in the codebase. A rule
   /// written as "contains `{`" rather than "is only `{`" would refuse the
   /// whole repository.
+  /// **Un séparateur de ligne Unicode en fin de ligne n'est pas un espace en
+  /// fin de ligne**, et ce cas tient une décision plutôt qu'un hasard.
+  ///
+  /// La version d'avant posait la question à `grep`, sous la forme
+  /// `[[:space:]]`, et `grep` répond selon la locale : sur ce conteneur, un
+  /// U+2028 (`e2 80 a8`) collé en fin de ligne était compté comme un espace,
+  /// alors qu'un espace insécable U+00A0 ne l'était pas. Le même fichier
+  /// pouvait donc être refusé sur une machine et accepté sur une autre, pour
+  /// une variable d'environnement.
+  ///
+  /// La règle est maintenant écrite dans la garde — espace, tabulation, retour
+  /// chariot, tabulation verticale, saut de page — et c'est exactement ce que
+  /// `trailing_whitespace` regarde chez SwiftLint, dont cette garde est le
+  /// plancher. Ce test est là pour que le rétrécissement soit tenu, et non
+  /// découvert un jour comme une régression.
+  test.each([
+    ["un séparateur de ligne U+2028", "\u2028"],
+    ["un espace insécable U+00A0", "\u00a0"],
+  ])("%s en fin de ligne n'est pas un espace en fin de ligne", (_name, character) => {
+    const contents = `import Foundation\n\nlet a = 1${character}\n`;
+    const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
+    expect(code, `un caractère Unicode a été pris pour un blanc :\n${output}`).toBe(0);
+  });
+
+  /// Et le témoin, sans lequel le cas d'au-dessus passerait aussi avec une
+  /// garde qui ne regarde plus rien : le blanc ASCII, lui, est toujours refusé
+  /// au même endroit.
+  test("mais une tabulation en fin de ligne l'est toujours", () => {
+    const { code, output } = run(tree({
+      "Sources/WisqCore/A.swift": "import Foundation\n\nlet a = 1\t\n",
+    }));
+    expect(code).not.toBe(0);
+    expect(output).toContain("trailing_whitespace");
+  });
+
   test("a brace at the end of a line is not a brace on its own line", () => {
     const { code, output } = run(tree({ "Sources/WisqCore/A.swift": CLEAN }));
     expect(code, output).toBe(0);
@@ -203,12 +238,76 @@ describe("the formatting floor accepts what it must not refuse", () => {
   /// And this repository, through the default root, with no argument — the
   /// only case that holds the path resolution, since every other test passes
   /// a root explicitly.
-  /// Ce cas-ci lance la garde sur les trois cent soixante-dix fichiers Swift du
-  /// dépôt, ce qui fait quelques milliers de sous-processus : il tenait en
-  /// trois secondes et demie, une règle de plus l'a porté à quatre et quart, et
-  /// il est tombé sur son propre délai. C'est lui qui a fait écrire le délai
-  /// large — passé depuis en tête de fichier, parce que ses voisins lancent les
-  /// mêmes sous-processus et tombaient de la même façon.
+  ///
+  /// Ce cas-ci lance la garde sur tous les fichiers Swift du dépôt. Il tenait
+  /// en trois secondes et demie, une règle de plus l'a porté à quatre et quart,
+  /// et il est tombé sur son propre délai : c'est lui qui a fait écrire le
+  /// délai large en tête de fichier. La cause en a été retirée depuis — la
+  /// garde ne lance plus un cortège de sous-processus par fichier — et le test
+  /// d'en dessous tient ce qui a remplacé le chronomètre.
+  /// **Ce que coûte la garde ne doit pas dépendre du nombre de fichiers.**
+  ///
+  /// La version d'avant ouvrait onze sous-processus par fichier — `tail`, `od`,
+  /// `tr`, quatre `grep`, deux `awk` — soit plus de quatre mille cinq cents
+  /// pour un passage sur le dépôt, et 4,9 s à chaud contre 25,6 s à froid. Le
+  /// texte, lui, tient en deux mégaoctets : le coût était en `fork`, pas en
+  /// lecture.
+  ///
+  /// **Et un délai n'est pas une garde.** Le fichier avait dû monter le sien à
+  /// vingt secondes parce que la garde s'en approchait sous charge ; assener
+  /// « moins de N secondes » à la place aurait remplacé un chronomètre par un
+  /// autre, rouge sur une machine occupée et vert sur une machine oisive.
+  ///
+  /// Ce qui se mesure ici n'est pas une durée mais un **compte**, et il ne
+  /// dépend d'aucune charge : le même arbre à deux fichiers et à soixante doit
+  /// lancer **exactement** le même nombre de commandes externes. C'est deux
+  /// nombres qui doivent s'accorder — la seule forme de mesure qui ait jamais
+  /// rien trouvé dans ce dépôt.
+  test("le nombre de processus lancés ne dépend pas du nombre de fichiers", () => {
+    /// Un leurre par commande que la garde pourrait appeler : il note son nom
+    /// puis passe la main au vrai binaire, dont le chemin absolu est résolu
+    /// **avant** que le leurre existe — sans quoi il s'appellerait lui-même.
+    function counting(): { path: string; count: (root: string) => number } {
+      const names = ["git", "perl", "grep", "tail", "od", "tr", "awk", "sed", "cut", "head", "wc", "cat"];
+      const bin = mkdtempSync(join(tmpdir(), "wisq-leurres-"));
+      const ledger = join(bin, "journal");
+      for (const name of names) {
+        const real = Bun.which(name);
+        if (!real) continue;
+        writeFileSync(
+          join(bin, name),
+          `#!/bin/sh\necho ${name} >> "${ledger}"\nexec ${real} "$@"\n`,
+          { mode: 0o755 },
+        );
+      }
+      return {
+        path: bin,
+        count: (root: string) => {
+          writeFileSync(ledger, "");
+          Bun.spawnSync({
+            cmd: ["bash", guard, root],
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          });
+          return readFileSync(ledger, "utf8").split("\n").filter(Boolean).length;
+        },
+      };
+    }
+
+    const forest = (howMany: number) =>
+      tree(Object.fromEntries(
+        Array.from({ length: howMany }, (_, index) => [`Sources/WisqCore/F${index}.swift`, CLEAN]),
+      ));
+
+    const leurres = counting();
+    const few = leurres.count(forest(2));
+    const many = leurres.count(forest(60));
+
+    /// Le témoin : si les leurres n'attrapaient rien, les deux comptes seraient
+    /// nuls et l'égalité serait vraie pour la mauvaise raison.
+    expect(few).toBeGreaterThan(0);
+    expect(many, `2 fichiers → ${few} commandes, 60 → ${many}`).toBe(few);
+  });
+
   test("this repository, with no root given, is clean", () => {
     const result = Bun.spawnSync({ cmd: ["bash", guard] });
     const output =
