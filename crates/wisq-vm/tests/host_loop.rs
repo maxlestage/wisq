@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86_wasm::{
-    table_slot, Module, GLOBAL_COUNT, RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS,
+    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, GLOBAL_COUNT, RIP_SLOT, TABLE_ENTRY, TABLE_PAGES,
+    TABLE_SLOTS,
 };
 
 fn workspace_root() -> PathBuf {
@@ -515,62 +516,48 @@ console.log("haut " + lire(2));
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
-
-/// **Les registres de contrôle : lire se modélise, allumer la pagination non.**
-///
 /// **Ici, contrairement aux MSR, le numéro est dans l'instruction.** Il vit
-/// dans le champ `reg` du ModRM, que le décodeur lit. « Refuser par le
-/// numéro » — infaisable pour un MSR, dont le numéro arrive dans ECX — est
-/// donc ici parfaitement possible, et c'est ce que fait cette tranche.
+/// dans le champ `reg` du ModRM, que le décodeur lit.
 ///
 /// | | ce qu'on en fait |
 /// | --- | --- |
 /// | lire CR0, CR2, CR3, CR4, CR8 | rangé et rendu |
 /// | écrire CR4, CR8 | accepté : rien ne consulte ces bits |
-/// | **écrire CR0 ou CR3** | **refusé** — c'est allumer la pagination |
+/// | **écrire CR0 ou CR3** | **accepté depuis que la traduction existe** |
 ///
-/// **Et refuser ces deux-là ne coûte rien**, ce qui a été mesuré avant d'être
-/// décidé : sur les régions d'entrée du noyau Alpine, les seules écritures qui
-/// bloquent sont des `écrire-cr4`. Aucun `écrire-cr0`, aucun `écrire-cr3`.
+/// **Ce test disait le contraire, et il avait raison de le dire.** Écrire CR3
+/// était refusé — la région entière ne se traduisait pas — parce que
+/// l'accepter aurait fait croire au noyau qu'il a une table de pages sans
+/// qu'aucune adresse ne la traverse : une panne loin de sa cause. C'est la
+/// traduction, posée par la tranche P2, qui les débloque. Le refus n'était pas
+/// une limite qu'on lève, c'était une garde qui a tenu jusqu'à ce que la chose
+/// gardée existe.
 ///
-/// **Ce que ces registres ne font pas.** Rien ne lit ces bits : ni la
-/// protection en écriture de CR0, ni le SMEP/SMAP de CR4, ni la table de
-/// pages de CR3. Cette machine ne pagine pas et n'applique aucune protection —
-/// accepter l'écriture de CR4 dit « on la range », pas « on l'applique ».
+/// **Ce que CR4 et CR8 ne font toujours pas.** Rien ne lit leurs bits : ni le
+/// SMEP ni le SMAP. Accepter l'écriture dit « on la range », pas « on
+/// l'applique ». CR0 et CR3, eux, sont désormais **lus** — par la marche.
 #[test]
-fn a_control_register_round_trips_but_paging_stays_refused() {
+fn every_control_register_makes_a_round_trip() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
     const PAGES: u32 = 1;
     const BASE: u64 = 0x1_0000;
-    let head: Vec<u8> = vec![
+    let program: Vec<u8> = vec![
         0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x22, 0x11, 0x00,
         0x00, // movabs $0x1122deadbeef,%rax
         0x0f, 0x22, 0xe0, // mov %rax,%cr4
         0x0f, 0x20, 0xe6, // mov %cr4,%rsi — l'aller-retour
+        0x0f, 0x22, 0xd8, // mov %rax,%cr3 — la racine des tables
+        0x0f, 0x20, 0xdb, // mov %cr3,%rbx
         0x0f, 0x20, 0xc7, // mov %cr0,%rdi — jamais écrit
+        0x0f, 0x0b, // ud2
     ];
-    // L'adresse où la machine doit s'arrêter : celle de l'écriture de CR3, et
-    // **pas** celle du `ud2` qui suit.
-    let stops_at = BASE + head.len() as u64;
-    let mut program = head;
-    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3 — la pagination
-    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
     let scratch = std::env::temp_dir().join(format!("wisq-host-cr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
-    // **Le refus porte sur l'instruction, pas sur la région entière** : ce qui
-    // précède l'écriture de CR3 doit se traduire.
-    let module = Module::resolving(&program, BASE, 0, 0, PAGES);
-    assert!(
-        module.is_none(),
-        "une région qui contient `mov %rax,%cr3` ne se traduit pas"
-    );
-    // Donc on la juge sans lui : la même suite, close par un `ud2`.
-    let mut sans = program[..stops_at as usize - BASE as usize].to_vec();
-    sans.extend_from_slice(&[0x0f, 0x0b]);
-    let module = Module::resolving(&sans, BASE, 0, 0, PAGES).expect("le reste se traduit");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES)
+        .expect("une région qui écrit CR3 se traduit maintenant");
     let path = scratch.join("cr.wasm");
     std::fs::write(&path, &module).expect("le module");
     let driver = scratch.join("d.mjs");
@@ -590,6 +577,7 @@ const why = await vm.run({{ budget: 64n, rounds: 16 }});
 const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
 console.log("arret " + why.stopped);
 console.log("cr4 " + lire(6));
+console.log("cr3 " + lire(3));
 console.log("cr0 " + lire(7));
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
@@ -629,12 +617,381 @@ console.log("cr0 " + lire(7));
         0x1122_dead_beef,
         "CR4 rend les soixante-quatre bits qu'on lui a donnés"
     );
+    assert_eq!(
+        line("cr3 "),
+        0x1122_dead_beef,
+        "CR3 aussi, et c'est ce qui a changé"
+    );
     // **Un registre jamais écrit vaut zéro**, et deux registres qui
-    // partageraient un emplacement se trahiraient ici.
+    // partageraient un emplacement se trahiraient ici — CR3 vient d'être
+    // écrit avec la même valeur que CR4, donc seul CR0 peut le dire.
     assert_eq!(
         line("cr0 "),
         0,
-        "CR0 n'a jamais été écrit : il ne peut pas porter CR4"
+        "CR0 n'a jamais été écrit : il ne peut porter ni CR4 ni CR3"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un invité paginé lit à travers ses tables, et le tampon répond.**
+///
+/// C'est la tranche P2 : `guest()` ne replie plus, il traduit. Cinq choses
+/// sont éprouvées dans un seul programme, parce qu'un sabotage a survécu à
+/// chacune d'elles quand le test n'en tenait qu'une :
+///
+/// | ce que le programme fait | ce que ça tient |
+/// | --- | --- |
+/// | lit à `VA1 + 0x18` | le décalage dans la page, pas seulement la trame |
+/// | réécrit sa propre entrée de table par un alias | **le tampon**, qui doit encore répondre l'ancienne trame |
+/// | lit une page dont la trame est **au-dessus de la RAM** | le repliement, qui met le tampon hors de portée de l'invité |
+/// | lit à travers une **grande page** de deux mébioctets | le bit PS, qui arrête le parcours au répertoire |
+/// | et le même programme sans CR0.PG | le contraste : sans traduction, l'adresse repliée ne porte rien |
+///
+/// **Le tampon se mesure par ce qui devient faux quand il manque.** L'invité
+/// change sa propre entrée de feuille entre deux lectures de la même page :
+/// avec tampon, la seconde lecture rend encore l'ancienne trame ; sans, elle
+/// suit la nouvelle. Un vrai noyau vide le tampon par `invlpg` — **que cette
+/// tranche ne produit pas**, et c'est exactement ce que ce test exhibe.
+///
+/// **Ce que cette tranche ne fait pas.** La lecture des **instructions** n'est
+/// pas paginée : l'hôte résout une région par son adresse telle quelle, donc
+/// RIP est traité comme physique. Un noyau à demi-haut, dont le texte vit à
+/// `0xffffffff8...`, ne se traduirait pas. Seules les **données** passent par
+/// les tables.
+#[test]
+fn a_paged_guest_reads_through_its_page_tables() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // Quatre mébioctets, une puissance de deux, que le confinement exige.
+    const PAGES: u32 = 64;
+    const RAM: u64 = PAGES as u64 * 65536;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const FRAME_A: u64 = 0x3_0000;
+    const FRAME_B: u64 = 0x3_1000;
+    // Repliée sur quatre mébioctets, `VA1` donne `0x201000`, où il n'y a
+    // rien : sans traduction, la lecture rendrait zéro.
+    const VA1: u64 = 0xFFFF_8000_0020_1000;
+    const VA_TABLE: u64 = VA1 + 0x1000; // l'alias sur la table de feuilles
+    const VA_ABOVE: u64 = VA1 + 0x2000; // une trame au-dessus de la RAM
+    const VA_HUGE: u64 = 0xFFFF_8000_0040_0000; // couverte par une grande page
+    const WITNESS_A: u64 = 0x0123_4567_89AB_CDEF;
+    const WITNESS_B: u64 = 0x7777_7777_7777_7777;
+    const WITNESS_ZERO: u64 = 0x5555_5555_5555_5555;
+    const WITNESS_HUGE: u64 = 0x2222_2222_2222_2222;
+
+    let leaf = |at: u64| (at >> 12) & 0x1ff;
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4,%rax
+    push(&PML4.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $PG,%rax
+    push(&(1u64 << 31).to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    push(&[0x48, 0xbe]); // movabs $VA1,%rsi
+    push(&VA1.to_le_bytes());
+    push(&[0x48, 0x8b, 0x56, 0x18]); // mov 0x18(%rsi),%rdx — remplit le tampon
+                                     // Réécrire sa propre entrée de feuille, par l'alias.
+    push(&[0x48, 0xbf]); // movabs $VA_TABLE,%rdi
+    push(&VA_TABLE.to_le_bytes());
+    push(&[0x48, 0xb8]); // movabs $(FRAME_B|présente),%rax
+    push(&(FRAME_B | 0x3).to_le_bytes());
+    push(&[0x48, 0x89, 0x87]); // mov %rax,disp32(%rdi)
+    push(&((leaf(VA1) * 8) as u32).to_le_bytes());
+    push(&[0x48, 0x8b, 0x5e, 0x18]); // mov 0x18(%rsi),%rbx — le tampon parle-t-il ?
+    push(&[0x48, 0xb9]); // movabs $VA_ABOVE,%rcx
+    push(&VA_ABOVE.to_le_bytes());
+    push(&[0x48, 0x8b, 0x29]); // mov (%rcx),%rbp
+    push(&[0x48, 0xbf]); // movabs $VA_HUGE,%rdi
+    push(&VA_HUGE.to_le_bytes());
+    push(&[0x4c, 0x8b, 0x47, 0x28]); // mov 0x28(%rdi),%r8
+    push(&[0x0f, 0x0b]); // ud2 : rendre la main
+
+    // **Le même programme sans la pagination**, pour le contraste : les deux
+    // écritures de registre de contrôle remplacées par des `nop`.
+    let mut flat = program.clone();
+    for at in 0..flat.len() - 2 {
+        if flat[at] == 0x0f && flat[at + 1] == 0x22 {
+            flat[at..at + 3].copy_from_slice(&[0x90, 0x90, 0x90]);
+        }
+    }
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    let path = scratch.join("pg.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let sans = Module::resolving(&flat, BASE, 0, 0, PAGES).expect("la même sans pagination");
+    let flat_path = scratch.join("flat.wasm");
+    std::fs::write(&flat_path, &sans).expect("le module plat");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+// Les tables, posées à la main. Chaque niveau prend neuf bits de l'adresse,
+// du haut vers le bas ; la grande page s'arrête au répertoire.
+function monter(vm) {{
+  const vue = new DataView(vm.memory.buffer);
+  const present = 0x3n;                     // présente et inscriptible
+  const feuille = (va) => Number((BigInt(va) >> 12n) & 0x1ffn);
+  const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+  vue.setBigUint64({pml4} + idx({va1}n, 39) * 8, {pdpt}n | present, true);
+  vue.setBigUint64({pdpt} + idx({va1}n, 30) * 8, {pd}n | present, true);
+  vue.setBigUint64({pd} + idx({va1}n, 21) * 8, {pt}n | present, true);
+  vue.setBigUint64({pt} + feuille({va1}n) * 8, {frameA}n | present, true);
+  // L'alias : la table de feuilles vue comme une page de données.
+  vue.setBigUint64({pt} + feuille({vaTable}n) * 8, {pt}n | present, true);
+  // Une trame juste au-dessus de la RAM : repliée, elle doit tomber sur zéro.
+  vue.setBigUint64({pt} + feuille({vaAbove}n) * 8, {ram}n | present, true);
+  // **La grande page** : le bit 7 posé sur l'entrée du répertoire.
+  vue.setBigUint64({pd} + idx({vaHuge}n, 21) * 8, 0x20_0000n | present | 0x80n, true);
+
+  vue.setBigUint64({frameA} + 0x18, {witnessA}n, true);
+  vue.setBigUint64({frameB} + 0x18, {witnessB}n, true);
+  vue.setBigUint64(0, {witnessZero}n, true);
+  // La grande page couvre 0x200000..0x3fffff ; l'octet visé est à +0x28.
+  vue.setBigUint64(0x20_0000 + 0x28, {witnessHuge}n, true);
+}}
+
+async function tourner(fichier) {{
+  let asked = 0;
+  const vm = machine({{
+    translate: async () => (asked++ === 0 ? readFileSync(fichier) : null),
+    pages: {pages},
+  }});
+  monter(vm);
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 256n, rounds: 16 }});
+  const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+  return {{ why, rdx: lire(2), rbx: lire(3), rbp: lire(5), r8: lire(8) }};
+}}
+
+const p = await tourner({path:?});
+console.log("arret " + p.why.stopped);
+console.log("rdx " + p.rdx);
+console.log("rbx " + p.rbx);
+console.log("rbp " + p.rbp);
+console.log("r8 " + p.r8);
+const plat = await tourner({flat:?});
+console.log("plat " + plat.rdx);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            flat = flat_path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            va1 = VA1,
+            vaTable = VA_TABLE,
+            vaAbove = VA_ABOVE,
+            vaHuge = VA_HUGE,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            frameA = FRAME_A,
+            frameB = FRAME_B,
+            ram = RAM,
+            witnessA = WITNESS_A,
+            witnessB = WITNESS_B,
+            witnessZero = WITNESS_ZERO,
+            witnessHuge = WITNESS_HUGE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    assert_eq!(line("arret "), "refusée", "le `ud2` arrête : {text}");
+    assert_eq!(
+        number("rdx "),
+        WITNESS_A,
+        "la lecture a suivi les tables jusqu'à la trame, décalage compris"
+    );
+    assert_eq!(
+        number("rbx "),
+        WITNESS_A,
+        "le tampon répond encore l'ancienne trame — l'entrée a pourtant changé"
+    );
+    assert_eq!(
+        number("rbp "),
+        WITNESS_ZERO,
+        "une trame au-dessus de la RAM est repliée dedans, pas laissée passer"
+    );
+    assert_eq!(
+        number("r8 "),
+        WITNESS_HUGE,
+        "la grande page s'arrête au répertoire et porte son décalage"
+    );
+    assert_eq!(
+        number("plat "),
+        0,
+        "pagination éteinte, l'adresse repliée ne porte rien"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une page absente arrête la machine avant l'accès, et dit où.**
+///
+/// C'est la moitié du mécanisme que la sonde a tranché : pas de piège — un
+/// piège WebAssembly est sans retour — mais un témoin posé, CR2 rempli, et un
+/// indice de bloc négatif qui rend la main à l'hôte, comme le fait déjà chaque
+/// fin de région.
+///
+/// **Le contrôle est en ligne, donc avant l'accès**, et c'est ce que la
+/// dernière assertion tient : le registre de destination n'a pas bougé. Une
+/// instruction qui faute ne doit rien laisser derrière elle, sans quoi le
+/// noyau invité ne pourrait pas la rejouer une fois la page posée.
+///
+/// **RIP nomme l'instruction fautive**, pas la fin du bloc. Il n'était écrit
+/// qu'à la terminaison d'un bloc tant que rien ne pouvait s'arrêter au milieu ;
+/// la traduction l'oblige à être juste à chaque accès, et son coût a été mesuré
+/// avant d'être payé — voir `docs/DEMARRAGE.md`.
+///
+/// **Ce que ça ne fait pas** : aucune `#PF` n'est délivrée à l'invité. Le
+/// noyau ne reprend pas la main sur son propre gestionnaire ; c'est l'hôte qui
+/// s'arrête. Les interruptions sont le mur suivant.
+#[test]
+fn a_missing_page_stops_before_the_access_and_names_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    // Son entrée de feuille n'est jamais posée : aucune table ne la porte.
+    const ABSENT: u64 = 0xFFFF_8000_0020_5000;
+    const UNTOUCHED: u64 = 0x1111;
+
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    program.extend_from_slice(&PML4.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    program.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    program.extend_from_slice(&[0x48, 0xba]); // movabs $UNTOUCHED,%rdx
+    program.extend_from_slice(&UNTOUCHED.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    program.extend_from_slice(&ABSENT.to_le_bytes());
+    // **L'adresse de l'instruction fautive**, celle que RIP doit porter.
+    let faults_at = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x8b, 0x16]); // mov (%rsi),%rdx
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la région se traduit");
+    let path = scratch.join("pf.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+// Les trois premiers niveaux existent ; la feuille visée, non.
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({absent}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({absent}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({absent}n, 21) * 8, {pt}n | 3n, true);
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 256n, rounds: 4 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("faute " + lire({fault}));
+console.log("cr2 " + lire({cr2}));
+console.log("rdx " + lire(2));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            absent = ABSENT,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            fault = FAULT_SLOT,
+            cr2 = CONTROL_SLOT + 1,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let number = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_ne!(number("faute "), 0, "le témoin de faute est posé : {text}");
+    assert_eq!(
+        number("cr2 "),
+        ABSENT,
+        "CR2 porte l'adresse entière, pas sa page"
+    );
+    assert_eq!(
+        number("rdx "),
+        UNTOUCHED,
+        "l'accès n'a pas eu lieu : la destination n'a pas bougé"
+    );
+    assert_eq!(
+        number("rip "),
+        faults_at,
+        "RIP nomme l'instruction fautive, pas la fin du bloc"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }

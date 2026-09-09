@@ -466,6 +466,7 @@ pub unsafe extern "C" fn wisq_x86_emit_region(
 /// comme pour une région que l'émetteur ne sait pas traduire.
 ///
 /// L'hôte doit fournir une mémoire d'au moins `pages + wisq_desktop_table_pages()`
+/// `+ wisq_desktop_tlb_pages()`
 /// pages, et une table d'au moins `slot` plus les blocs de la région. Un module
 /// à qui il en manque **ne démarre pas**, ce qui est bruyant ; s'il démarrait,
 /// il piégerait au premier saut, et un piège WebAssembly est sans retour.
@@ -563,6 +564,14 @@ pub unsafe extern "C" fn wisq_desktop_page(
 #[no_mangle]
 pub extern "C" fn wisq_desktop_table_pages() -> u32 {
     crate::x86_wasm::TABLE_PAGES
+}
+
+/// Ce que le **tampon de traduction** occupe, encore au-dessus de la
+/// correspondance. À ajouter lui aussi : un module confiné le déclare dans son
+/// minimum, et un hôte qui ne l'a pas posé ne démarre pas.
+#[no_mangle]
+pub extern "C" fn wisq_desktop_tlb_pages() -> u32 {
+    crate::x86_wasm::TLB_PAGES
 }
 
 /// Céder un tampon à l'appelant, à charge pour lui de le rendre par

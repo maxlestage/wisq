@@ -40,13 +40,27 @@ export const SLOTS = {
   fsBase: 30,
   kernelGs: 31,
   /// Les cinq registres de contrôle que le décodeur lit : CR0, CR2, CR3, CR4,
-  /// CR8. Rangés et rendus ; écrire CR0 ou CR3 reste refusé.
+  /// CR8. Écrire CR0 et CR3 est produit depuis que la traduction existe :
+  /// CR0.PG allume la marche, CR3 en donne la racine, CR2 porte l'adresse
+  /// fautive.
   control: 32,
   controlCount: 5,
-  globalCount: 47,
+  /// Les trois globales de travail de la traduction — l'adresse invitée, son
+  /// numéro de page, la case du tampon — puis le témoin de faute.
+  translate: 47,
+  translateCount: 3,
+  fault: 50,
+  globalCount: 51,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
+  /// **Le tampon de traduction**, juste au-dessus de la correspondance, donc
+  /// encore plus haut que la RAM. Le module le déclare dans son minimum : un
+  /// hôte qui ne le pose pas ne démarre pas, au lieu de piéger au premier
+  /// défaut de tampon — et un piège WebAssembly est sans retour.
+  tlbPages: 1,
+  tlbEntry: 16,
+  tlbSlots: 4096,
   mix: 0x9e3779b97f4a7c15n,
 };
 
@@ -178,7 +192,9 @@ export function machine({
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
-  const memory = new WebAssembly.Memory({ initial: pages + SLOTS.tablePages });
+  const memory = new WebAssembly.Memory({
+    initial: pages + SLOTS.tablePages + SLOTS.tlbPages,
+  });
   const blocks = new WebAssembly.Table({ element: "anyfunc", initial: regions });
   const globals = [];
   const env = { mem: memory, blocks };
