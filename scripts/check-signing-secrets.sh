@@ -68,6 +68,26 @@ if [ -z "$early" ]; then
   grief "l'étape « Refuser tôt » a disparu : un secret manquant échouerait dans xcodebuild"
 fi
 
+# **Le contexte `secrets` n'existe pas dans un `if:`.** GitHub ne le dit qu'au
+# lancement — « Unrecognized named-value: 'secrets' » — et jamais avant : la CI
+# ne parse pas ce fichier, il n'est lu que par un `workflow_dispatch`. Un
+# workflow qu'on ne lance qu'à la main peut donc rester cassé aussi longtemps
+# qu'on n'envoie rien, et le seul moment où on le découvre est celui où l'on
+# voulait envoyer. C'est arrivé ici, en conditionnant l'étape du trousseau par
+# `if: ${{ secrets.APPLE_CERT_P12 != '' }}`.
+#
+# La condition se pose sur une **sortie d'étape** : le refus précoce lit le
+# secret dans son `env:`, où le contexte existe, et écrit oui ou non.
+#
+# **Et `steps.secrets.outputs.…` n'est pas le contexte `secrets`.** L'étape de
+# refus porte l'identifiant `secrets`, exprès : le dépôt est ainsi son propre
+# témoin que la garde distingue les deux. Chercher `secrets\.` sans regarder ce
+# qui précède refuserait la correction elle-même — c'est arrivé, à la première
+# écriture de ce bloc.
+while IFS= read -r line; do
+  grief "un « if » lit un secret, que GitHub refuse au lancement :$(printf '%s' "$line" | sed 's/^ *//')"
+done < <(grep -E '^[[:space:]]*if:' "$flow" | grep -E '(^|[^.[:alnum:]_])secrets\.' || true)
+
 for secret in $secrets; do
   # **Nommé ne suffit pas : il faut qu'il soit éprouvé.** Un secret peut
   # apparaître dans le bloc `env:` de l'étape sans qu'aucune ligne ne vérifie

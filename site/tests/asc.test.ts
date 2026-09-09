@@ -205,6 +205,22 @@ describe("l'inventaire des certificats", () => {
     expect(printed).not.toContain("1A2B");
   });
 
+  /// **La phrase voyage par `GITHUB_OUTPUT`, dont le format est une paire
+  /// `clé=valeur` par ligne.** Une phrase à rallonge ferait lire sa suite
+  /// comme d'autres sorties d'étape — c'est déjà la raison pour laquelle
+  /// `writeStepOutputs` refuse le multi-ligne. Ici on tient l'autre bout :
+  /// ce qui est produit tient sur une ligne, quel que soit le nombre de types
+  /// que le compte porte.
+  test("tient sur une seule ligne, quel que soit le nombre de types", () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [`TYPE_${index}`, index + 1]),
+    );
+    expect(describeCertificates(many)).not.toContain("\n");
+    const file = join(mkdtempSync(join(tmpdir(), "wisq-certificats-")), "output");
+    expect(() => writeStepOutputs(file, { certificats: describeCertificates(many) }))
+      .not.toThrow();
+  });
+
   test("la phrase dit le total et le détail", () => {
     expect(describeCertificates({ DISTRIBUTION: 2, DEVELOPMENT: 1 }))
       .toBe("certificats sur le compte : 3 (DEVELOPMENT × 1, DISTRIBUTION × 2)");

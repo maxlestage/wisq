@@ -110,6 +110,25 @@ describe("la garde des secrets de signature", () => {
     expect(verdict.said).toContain("APPLE_CERT_P12 (CERT_P12)");
   });
 
+  /// **Ce cas a été payé par un refus au lancement.** L'étape du trousseau
+  /// était conditionnée par `if: ${{ secrets.APPLE_CERT_P12 != '' }}`, et
+  /// GitHub a répondu « Unrecognized named-value: 'secrets' » : le contexte
+  /// `secrets` n'existe pas dans un `if:`. Rien ne l'a attrapé — la CI ne
+  /// parse pas ce fichier, seul un `workflow_dispatch` le fait, et un
+  /// workflow qui ne démarre pas ressemble à un workflow qui va bien.
+  ///
+  /// La faute est **muette et tardive** : elle ne se voit qu'au moment où l'on
+  /// veut envoyer. Elle se lit pourtant sur le texte, et c'est ce que la garde
+  /// fait maintenant.
+  test("elle refuse un secret lu dans un « if », que GitHub ne sait pas résoudre", () => {
+    const verdict = judge(sabotage(
+      "      - name: Le certificat de distribution, dans un trousseau jetable",
+      "      - name: Le certificat de distribution, dans un trousseau jetable\n        if: ${{ secrets.APPLE_CERT_P12 != '' }}",
+    ));
+    expect(verdict.code).toBe(1);
+    expect(verdict.said).toContain("« if »");
+  });
+
   test("elle refuse le certificat déposé dans l'arbre du dépôt", () => {
     const verdict = judge(sabotage(
       'printf \'%s\' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"',
