@@ -6686,3 +6686,35 @@ quota d'Apple est intact : tant qu'un certificat n'est pas révoqué sur
 developer.apple.com, ou qu'un `.p12` n'est pas déposé dans `APPLE_CERT_P12`,
 l'envoi butera au même endroit qu'aux numéros 28 et 29 — mais il le dira
 maintenant avec le nombre sous les yeux.
+
+#### Le `if` que GitHub ne refuse qu'au lancement
+
+La tranche d'au-dessus a conditionné l'étape du trousseau par
+`if: ${{ secrets.APPLE_CERT_P12 != '' }}`. Sept vérifications vertes, fusion,
+puis GitHub au moment du `workflow_dispatch` :
+
+```text
+(Line: 149, Col: 13): Unrecognized named-value: 'secrets'
+```
+
+Le contexte `secrets` existe dans un `env:`, pas dans un `if:`. **Rien ne
+pouvait l'attraper** : la CI ne parse pas ce fichier, seul un lancement le fait,
+et un workflow qu'on ne lance qu'à la main peut rester cassé aussi longtemps
+qu'on n'envoie rien — le seul moment où on le découvre est celui où on voulait
+envoyer. C'est la même forme que les gardes jamais déclenchées : un chemin dont
+le premier passage est aussi le premier examen.
+
+La condition se pose sur une **sortie d'étape**. Le refus précoce est le seul
+endroit qui regarde un secret ; il porte un `id:` et écrit oui ou non.
+
+**Et la garde s'est refusée elle-même du premier coup.** Écrite comme
+`if:.*secrets\.`, elle rejetait `steps.secrets.outputs.certificat` — la
+correction. L'étape garde donc l'identifiant `secrets`, exprès : le workflow du
+dépôt est le témoin permanent que la garde distingue le contexte de
+l'identifiant, et le contrôle « le workflow du dépôt passe » tombe si la
+recherche se relâche.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| la garde du `if` ne dit plus rien | `elle refuse un secret lu dans un « if »` |
+| la recherche redevient trop large | **le contrôle**, `le workflow du dépôt passe` |
