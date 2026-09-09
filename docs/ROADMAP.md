@@ -6745,3 +6745,86 @@ sert. Et parce qu'une sortie d'étape est une paire `clé=valeur` par ligne, un
 test tient l'autre bout — la phrase reste sur une seule ligne quel que soit le
 nombre de types que le compte porte. Le sabotage qui fait passer le détail à la
 ligne le fait tomber.
+
+## La garde de mise en forme était un chronomètre, et le coût était en fork
+
+**Ce qu'elle faisait.** Une boucle bash sur les 413 fichiers Swift du dépôt,
+avec un cortège de commandes externes par fichier — `tail`, `od`, `tr`, quatre
+`grep`, deux `awk`. Le nombre n'est pas estimé : les leurres du nouveau test le
+comptent, et il vaut **exactement 11,0 par fichier** (24 commandes pour un arbre
+de deux fichiers, 662 pour soixante — 638 / 58 = 11). Soit **environ 4 545
+commandes** pour un passage sur ce dépôt.
+
+| | avant | après |
+| --- | ---: | ---: |
+| un passage, à chaud | 5,05 – 5,30 s | **0,139 – 0,144 s** |
+| un passage, à froid | 25,6 s | — |
+| commandes externes | ~4 545 | 3 |
+| par fichier de plus | + 11 | **+ 0** |
+
+Le texte pèse deux mégaoctets ; le coût n'était pas la lecture, c'était le
+`fork`. Un seul `perl` fait les six règles.
+
+**Et ce n'était pas qu'une lenteur.** `site/tests/whitespace-guard.test.ts` avait
+dû monter son délai à vingt secondes parce que la garde s'en approchait sous
+charge — c'est écrit dans ce fichier, avec le mot juste : « un budget qui dépend
+de la charge est un chronomètre, pas une garde ». La cause est retirée ; le
+délai large reste, parce que les voisins lancent encore un `git init` chacun.
+
+**Le test ne mesure pas une durée, et c'est le point.** Assener « moins de N
+secondes » aurait remplacé un chronomètre par un autre — rouge sur une machine
+occupée, vert sur une oisive. Ce qui est tenu est un **compte** : le même arbre à
+deux fichiers et à soixante doit lancer exactement le même nombre de commandes
+externes. Des leurres sur le `PATH` les notent, avec un témoin — un compte nul
+ferait passer l'égalité pour la mauvaise raison. Sur la garde d'avant, ce test
+dit « 2 fichiers → 24 commandes, 60 → 662 » et tombe.
+
+### Pourquoi perl, et ce que la réécriture a changé sans le vouloir
+
+Cinq des six règles sont lignes à lignes et `awk` les ferait. La sixième —
+exactement un saut de ligne à la fin — demande de voir le **dernier octet**, et
+`awk` ne distingue pas un dernier enregistrement terminé par un saut de ligne
+d'un qui ne l'est pas. C'est la règle qui coûtait trois sous-processus à elle
+seule.
+
+**La preuve est différentielle, pas une relecture.** 707 arbres — quarante
+fichiers réels du dépôt × dix-sept mutations, plus sept cas dégénérés et vingt
+arbres multi-fichiers — jugés par les deux versions, verdict et message
+comparés. **Zéro désaccord**, sauf un, cherché exprès et instructif :
+
+```text
+let a = 1<U+2028>
+```
+
+`grep -c '[[:space:]]$'` compte ce séparateur de ligne Unicode comme un espace,
+et **pas** l'espace insécable U+00A0 d'à côté. C'est la locale qui répond : le
+même fichier était refusé ou accepté selon une variable d'environnement. La
+règle est donc maintenant énoncée dans la garde — espace, tabulation, retour
+chariot, tabulation verticale, saut de page — ce qui est exactement ce que
+`trailing_whitespace` regarde chez SwiftLint, dont cette garde est le plancher.
+Deux tests tiennent le rétrécissement, plus un témoin sur la tabulation.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le saut de ligne manquant n'est plus vu | `pas de saut de ligne final` |
+| deux sauts de ligne finaux passent | `plusieurs sauts de ligne finaux` |
+| les espaces en fin de ligne ne comptent plus | `espaces en fin de ligne`, et quatre autres |
+| l'accolade seule n'est plus vue | `accolade ouvrante seule` |
+| la garde de plateforme n'est plus vérifiée | `une garde de plateforme refermée trop tôt` |
+| deux lignes vides deviennent trois | `deux lignes vides` |
+| le fichier vide n'est plus écarté | `an empty file is not a missing newline` |
+| l'extension n'est plus filtrée | `a non-Swift file inside the scope is left alone` |
+| la ligne vide finale n'est plus retirée | `a platform guard that covers the whole file` |
+| le fichier est décodé **et** la classe redevient `\s` | les deux cas Unicode |
+
+**Un onzième sabotage a survécu, et il n'était pas un.** Décoder le fichier en
+UTF-8 sans toucher à la classe ne change rien, puisque la classe est écrite en
+ASCII : la mutation ne mutait pas. C'est la trahison connue du sabotage — un
+survivant peut être une mutation qui ne s'applique pas. Il a fallu muter les
+deux moitiés ensemble pour que le geste existe.
+
+**Une fragilité de bash payée en route.** Le programme perl était d'abord entre
+apostrophes, et la première apostrophe française d'un commentaire fermait la
+chaîne : « n'a » était devenu « na », « c'est » « cest ». Le fichier tournait
+quand même, ce qui est la mauvaise nouvelle. Il arrive maintenant par un heredoc
+entre apostrophes, qui ne cite rien et n'interprète rien.
