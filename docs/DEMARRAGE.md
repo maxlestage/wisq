@@ -228,3 +228,52 @@ l'utilisateur apporte est la sienne.
 
 Chaque étape par sa propre tranche, chacune avec sa sonde avant son code, et
 chacune sabotée avant d'être crue.
+
+### Où poser la délivrance : mesuré
+
+**Le premier mur est franchi**, donc la raison de ne pas commencer par les
+interruptions — « sans pagination, le noyau ne parvient pas à l'endroit où il
+installe ses gestionnaires » — ne tient plus. La question redevient : *où* la
+machine regarde-t-elle si une interruption attend ?
+
+Deux endroits, et **ils ne se paient pas dans la même monnaie**. Dans le module,
+un contrôle entre blocs coûte du temps à chaque bloc, qu'une interruption
+attende ou non. Dans la boucle hôte, le coût dans le module est nul ; ce qu'on
+paie est le retour de main, et ce qu'on **achète** est la latence.
+
+`cargo run -p wisq-vm --release --example deliver-probe` mesure la seconde. Le
+même travail — trente-deux millions d'instructions — découpé en budgets de plus
+en plus petits. **Le budget compte des blocs**, pas des instructions : la boucle
+de répartition décrémente une fois par `call_indirect`. Vérifié plutôt que
+supposé — à budget mille, huit millions de tours rendent la main huit mille fois.
+
+| budget, en blocs | retours de main | surcoût par instruction |
+| --- | --- | --- |
+| 1 | 8 000 000 | +16 à +80 ns, **instable** |
+| 10 | 800 000 | +2,0 à +8,6 ns, **instable** |
+| 100 | 80 000 | +0,98 à +1,53 ns |
+| 1 000 | 8 000 | +0,10 à +0,29 ns |
+| 10 000 et au-delà | 800 ou moins | sous le bruit, l'écart change de signe |
+
+**Les deux plus petits budgets ne mesurent pas ce qu'on croit.** Trois
+exécutions ont rendu +80, +65 puis +16 ns pour le même budget de 1 : à ce rythme
+d'appels, c'est le moteur qui recompile et ramasse qu'on chronomètre. Le reste
+de la courbe, lui, tient.
+
+**Ce que l'autre moitié coûterait**, et c'est une **déduction de deux mesures**,
+pas une mesure : le contrôle en ligne a été chiffré plus haut à −0,17 à +0,30 ns
+par occurrence, et `--example coverage` relève 4,5 instructions par bloc sur le
+noyau Alpine. Un contrôle par bloc vaudrait donc 0 à 0,07 ns par instruction,
+toujours payé, pour une latence d'un bloc.
+
+**Donc : la boucle hôte, avec un plancher de budget.** À mille blocs elle ne
+coûte rien de mesurable, et la latence qu'elle laisse — mille blocs, environ
+quatre mille cinq cents instructions, une vingtaine de microsecondes à
+250 MIPS — est cinq cents fois plus fine que ce qu'un timer à cent hertz
+demande. Le contrôle dans le module achèterait une précision d'un bloc dont rien
+n'a besoin, au prix d'un coût payé partout.
+
+C'était l'intuition écrite plus haut — « la boucle hôte rend déjà la main
+régulièrement, c'est le crochet naturel ». Elle est maintenant chiffrée, et le
+chiffre dit *à partir de quel budget* elle est vraie, ce que l'intuition ne
+disait pas.
