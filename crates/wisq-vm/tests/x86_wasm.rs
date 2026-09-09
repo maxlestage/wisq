@@ -18,10 +18,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::{Cpu, Step, Width};
+use wisq_vm::x86::{decode, Cpu, Op, Step, Width};
 use wisq_vm::x86_wasm::{
-    host_pages, table_base, table_slot, tlb_base, Module, Refused, GLOBAL_COUNT, GS_SLOT,
-    GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
+    host_pages, table_base, table_slot, tlb_base, Module, Refused, BENCH_MEMORY_ACCESSES_PER_TURN,
+    BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
+    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
 };
 
 // **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
@@ -2154,6 +2155,80 @@ fn an_entry_that_reaches_nothing_says_so() {
     assert_eq!(
         Module::region_or_why(&bytes, CODE, 9),
         Err(Refused::NothingAtEntry)
+    );
+}
+
+/// **La boucle mémoire du banc touche vraiment la mémoire.**
+///
+/// Sans ce test, elle serait le même défaut d'un cran au-dessus. `BENCH_LOOP`
+/// est cinq instructions de registres, sans un seul accès mémoire, et les bancs
+/// s'en sont servis pour chiffrer un émetteur dont tout le surcoût est
+/// justement **sur les accès mémoire**. Une seconde boucle qui n'en ferait pas
+/// non plus — un encodage mal recopié suffit — rendrait des nombres qu'on
+/// croirait comparables.
+///
+/// Le décodeur est le juge : il dit lesquelles de ces instructions portent un
+/// opérande mémoire, et c'est lui qui l'a appris de l'oracle matériel.
+#[test]
+fn the_memory_bench_loop_really_touches_memory() {
+    let mut at = 0usize;
+    let mut steps = Vec::new();
+    while at < BENCH_MEMORY_LOOP.len() {
+        let step = decode(&BENCH_MEMORY_LOOP[at..])
+            .unwrap_or_else(|| panic!("l'octet {at} de la boucle mémoire ne se lit pas"));
+        at += step.length.max(1);
+        steps.push(step);
+    }
+    assert_eq!(
+        steps.len() as u64,
+        BENCH_MEMORY_PER_TURN,
+        "le compte annoncé par tour ne correspond pas à ce qui se décode"
+    );
+    let touching = steps.iter().filter(|step| step.memory.is_some()).count() as u64;
+    assert_eq!(
+        touching, BENCH_MEMORY_ACCESSES_PER_TURN,
+        "une boucle de banc « mémoire » sans accès mémoire mesurerait \
+         exactement ce que `BENCH_LOOP` mesure déjà"
+    );
+    // **Une lecture et une écriture**, et pas deux du même côté : `guest()` est
+    // traversée par `load_at` et par `store_at`, et rien ne dit que les deux
+    // coûtent la même chose.
+    assert!(
+        steps
+            .iter()
+            .any(|step| matches!(step.op, Op::Mov) && step.memory.is_some()),
+        "il faut au moins un déplacement qui passe par la mémoire"
+    );
+    // Et le saut ramène bien au début : une boucle qui tomberait droit
+    // mesurerait un tour, pas une boucle.
+    let last = steps.last().expect("la boucle n'est pas vide");
+    assert_eq!(
+        BENCH_MEMORY_LOOP.len() as i64 + last.imm as i64,
+        0,
+        "le déplacement du saut ne revient pas à l'entrée"
+    );
+}
+
+/// **Et la boucle historique, elle, n'en touche aucune** — ce qui est la moitié
+/// qui donne son sens à l'autre.
+///
+/// C'est le fait qui a rendu tous les chiffres de vitesse incomparables à ce
+/// que l'application exécute, et il n'était écrit nulle part. Il l'est ici :
+/// si quelqu'un ajoute un accès mémoire à `BENCH_LOOP`, les deux bancs
+/// mesureront la même chose et ce test le dira.
+#[test]
+fn the_historic_bench_loop_touches_no_memory_at_all() {
+    let mut at = 0usize;
+    let mut touching = 0usize;
+    while at < wisq_vm::x86_wasm::BENCH_LOOP.len() {
+        let step = decode(&wisq_vm::x86_wasm::BENCH_LOOP[at..]).expect("la boucle du banc se lit");
+        at += step.length.max(1);
+        touching += usize::from(step.memory.is_some());
+    }
+    assert_eq!(
+        touching, 0,
+        "`BENCH_LOOP` sans accès mémoire est ce qui justifie l'existence de \
+         `BENCH_MEMORY_LOOP` : si elle en gagne un, les deux bancs se confondent"
     );
 }
 

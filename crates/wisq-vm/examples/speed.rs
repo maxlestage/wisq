@@ -15,8 +15,49 @@
 use std::time::Instant;
 use wisq_vm::x86::{Cpu, Step};
 use wisq_vm::x86_wasm::{
-    Module, BENCH_BASE, BENCH_LOOP, BENCH_PER_TURN, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
+    host_pages, Module, BENCH_BASE, BENCH_LOOP, BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP,
+    BENCH_MEMORY_PER_TURN, BENCH_PER_TURN, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
 };
+
+/// **Les deux formes, et pourquoi il faut les deux.**
+///
+/// L'application n'exécute que la forme confinée — `LocalDesktop` passe par
+/// `DesktopTranslator.resolvingRegion`, donc par `Module::resolving`. Ce banc
+/// n'a longtemps mesuré que la forme libre, et son chiffre est celui que la
+/// feuille de route cite partout. Les deux sont mesurées maintenant : la libre
+/// reste, parce que toute la série l'a citée, et la confinée dit ce que
+/// l'application fera vraiment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// `Module::region` : pas de masque, pas de pagination.
+    Free,
+    /// `Module::resolving` : masque, marche dans les tables, tampon.
+    Confined,
+}
+
+impl Shape {
+    fn name(self) -> &'static str {
+        match self {
+            Shape::Free => "libre",
+            Shape::Confined => "confinée (ce que l'application exécute)",
+        }
+    }
+}
+
+/// Une boucle à chronométrer : son nom, ses octets, et ce qu'un tour vaut.
+struct Bench {
+    name: &'static str,
+    code: &'static [u8],
+    per_turn: u64,
+    /// Combien d'accès mémoire un tour fait. Zéro pour la boucle historique —
+    /// et c'est justement ce qui la rend incapable de dire quoi que ce soit du
+    /// surcoût de la forme confinée.
+    accesses_per_turn: u64,
+}
+
+/// La RAM déclarée pour la forme confinée, en pages de 64 Kio. Une puissance
+/// de deux, que le masque exige.
+const CONFINED_PAGES: u32 = 0x4000;
 
 /// L'adresse où la région est chargée, la même que partout ailleurs.
 const CODE: u64 = BENCH_BASE;
@@ -64,18 +105,106 @@ fn main() {
     let interpreted = ran as f64 / elapsed / 1e6;
     println!("  interpréteur Rust : {interpreted:.1} MIPS ({elapsed:.3} s)");
 
-    match compiled(turns, instructions) {
-        Measured::Done { mips, seconds } => {
-            println!("  émetteur sous JavaScriptCore : {mips:.1} MIPS ({seconds:.3} s)");
-            println!("  rapport : ×{:.1}", mips / interpreted);
+    // **Quatre mesures, et c'est le tableau qui dit quelque chose.**
+    //
+    // Une seule case ne dit rien : le surcoût de la forme confinée est
+    // entièrement sur les accès mémoire, donc la comparer à la forme libre sur
+    // une boucle qui n'en fait aucun rend « aucune différence » — vrai, et sans
+    // rapport avec ce que le bureau fera tourner.
+    let benches = [
+        Bench {
+            name: "registres seuls",
+            code: &LOOP,
+            per_turn: PER_TURN,
+            accesses_per_turn: 0,
+        },
+        Bench {
+            name: "une lecture et une écriture",
+            code: &BENCH_MEMORY_LOOP,
+            per_turn: BENCH_MEMORY_PER_TURN,
+            accesses_per_turn: BENCH_MEMORY_ACCESSES_PER_TURN,
+        },
+    ];
+
+    println!();
+    let mut table: Vec<(&str, Shape, f64, u64, u64)> = Vec::new();
+    for bench in &benches {
+        for shape in [Shape::Free, Shape::Confined] {
+            let ran = turns * bench.per_turn;
+            match compiled(shape, bench, turns, ran) {
+                Measured::Done {
+                    mips,
+                    seconds,
+                    tremor,
+                } => {
+                    println!(
+                        "{} · {} : {mips:.1} MIPS ({seconds:.3} s, l'instrument tremble de {:.0} %)",
+                        bench.name,
+                        shape.name(),
+                        tremor * 100.0
+                    );
+                    table.push((bench.name, shape, mips, bench.accesses_per_turn, turns));
+                }
+                Measured::NoBun => {
+                    println!(
+                        "  émetteur : Bun est absent, donc le second chemin n'est pas mesuré. \
+                         Il n'est pas nul, il est inconnu."
+                    );
+                    return;
+                }
+                // La raison vient d'être imprimée, avec le détail que seule
+                // `compiled` avait. La répéter en l'appelant autrement serait
+                // la contredire.
+                Measured::Explained => return,
+            }
         }
-        Measured::NoBun => println!(
-            "  émetteur : Bun est absent, donc le second chemin n'est pas mesuré. \
-             Il n'est pas nul, il est inconnu."
-        ),
-        // La raison vient d'être imprimée, avec le détail que seule `compiled`
-        // avait. La répéter en l'appelant autrement serait la contredire.
-        Measured::Explained => {}
+    }
+    println!("  interpréteur Rust, pour mémoire : {interpreted:.1} MIPS");
+
+    // **Ce que le confinement coûte, en nanosecondes par accès.**
+    //
+    // Pas en pourcentage, et c'est une règle : un pourcentage sur cette boucle
+    // supposerait que le vrai code ait la même densité d'opérandes mémoire —
+    // deux accès pour quatre instructions — et cette densité n'est écrite nulle
+    // part dans ce dépôt. Une nanoseconde par accès se reporte sur n'importe
+    // quelle densité ; un pourcentage ne se reporte sur rien.
+    println!();
+    for bench in &benches {
+        let of = |shape: Shape| {
+            table
+                .iter()
+                .find(|(name, form, _, _, _)| *name == bench.name && *form == shape)
+                .map(|(_, _, mips, _, _)| *mips)
+        };
+        let (Some(free), Some(confined)) = (of(Shape::Free), of(Shape::Confined)) else {
+            continue;
+        };
+        // Le temps par instruction, dans les deux formes, puis l'écart.
+        let gap = 1000.0 / confined - 1000.0 / free; // ns par instruction
+        if bench.accesses_per_turn == 0 {
+            println!(
+                "{} : {gap:+.3} ns par instruction — aucune mémoire touchée, \
+                 donc rien à imputer au confinement",
+                bench.name
+            );
+            continue;
+        }
+        let per_access = gap * bench.per_turn as f64 / bench.accesses_per_turn as f64;
+        println!(
+            "{} : {gap:+.3} ns par instruction, soit **{per_access:+.2} ns par accès mémoire**",
+            bench.name
+        );
+        // **Et le tremblement imprimé plus haut ne borne pas ce chiffre-ci.**
+        // Les deux relevés d'une même case sont dos à dos : ils partagent la
+        // charge de la machine, donc ils s'accordent entre eux bien mieux que
+        // deux exécutions du programme. Mesuré : huit exécutions ont rendu de
+        // 0,5 à 1,7 ns par accès, là où chaque case annonçait 0 à 3 % de
+        // tremblement. Un seul relevé de cette ligne ne vaut donc pas mieux
+        // qu'un ordre de grandeur.
+        println!(
+            "  à relancer quelques fois : entre deux exécutions ce nombre bouge \
+             beaucoup plus que le tremblement annoncé par case"
+        );
     }
 }
 
@@ -90,6 +219,10 @@ enum Measured {
     Done {
         mips: f64,
         seconds: f64,
+        /// De combien les deux relevés du même montage se sont écartés, en
+        /// proportion. Une différence entre deux formes plus petite que ça ne
+        /// veut rien dire.
+        tremor: f64,
     },
     /// Bun n'est pas installé. Personne d'autre n'a rien dit.
     NoBun,
@@ -99,7 +232,7 @@ enum Measured {
 
 /// **Bun est-il là ?** C'est la seule question dont la réponse mérite un autre
 /// message : tout le reste est un obstacle que `measure` sait nommer.
-fn compiled(turns: u64, instructions: u64) -> Measured {
+fn compiled(shape: Shape, bench: &Bench, turns: u64, instructions: u64) -> Measured {
     let Some(bun) = ["/root/.bun/bin/bun", "bun"].into_iter().find(|path| {
         std::process::Command::new(path)
             .arg("--version")
@@ -108,8 +241,12 @@ fn compiled(turns: u64, instructions: u64) -> Measured {
     }) else {
         return Measured::NoBun;
     };
-    match measure(bun, turns, instructions) {
-        Ok((mips, seconds)) => Measured::Done { mips, seconds },
+    match measure(bun, shape, bench, turns, instructions) {
+        Ok((mips, seconds, tremor)) => Measured::Done {
+            mips,
+            seconds,
+            tremor,
+        },
         Err(why) => {
             println!("  émetteur : {why}");
             Measured::Explained
@@ -121,9 +258,27 @@ fn compiled(turns: u64, instructions: u64) -> Measured {
 ///
 /// **Chaque obstacle se nomme.** Un `Option` rendait tous les échecs
 /// identiques, et l'appelant en inventait la cause.
-fn measure(bun: &str, turns: u64, instructions: u64) -> Result<(f64, f64), String> {
-    let module = Module::region(&LOOP, CODE, 0)
-        .ok_or_else(|| "l'émetteur refuse la boucle du banc".to_string())?;
+fn measure(
+    bun: &str,
+    shape: Shape,
+    bench: &Bench,
+    turns: u64,
+    instructions: u64,
+) -> Result<(f64, f64, f64), String> {
+    // **La forme confinée est liée** : elle importe la table de l'hôte et pose
+    // ses blocs dedans. C'est celle que l'application exécute, et la mesurer
+    // sans sa table mesurerait autre chose.
+    let module = match shape {
+        Shape::Free => Module::region(bench.code, CODE, 0),
+        Shape::Confined => Module::resolving(bench.code, CODE, 0, 0, CONFINED_PAGES),
+    }
+    .ok_or_else(|| {
+        format!(
+            "l'émetteur refuse « {} » sous la forme {}",
+            bench.name,
+            shape.name()
+        )
+    })?;
     let scratch = std::env::temp_dir().join(format!("wisq-speed-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let complain = |what: &str, why: std::io::Error| format!("{what} : {why}");
@@ -142,11 +297,13 @@ fn measure(bun: &str, turns: u64, instructions: u64) -> Result<(f64, f64), Strin
 const fs = require("fs");
 const bytes = fs.readFileSync({:?});
 const memory = new WebAssembly.Memory({{ initial: {} }});
+{}
 const slots = [];
 for (let slot = 0; slot < {}; slot++) {{
   slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
 }}
 const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
+{}
 slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
 const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
 const turns = {}n;
@@ -160,15 +317,49 @@ once();                       // échauffement, non chronométré
 const started = process.hrtime.bigint();
 once();
 const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+
+// **Deux fois, et l'écart est imprimé.** Un chronomètre sur une machine
+// partagée rend des valeurs qui bougent ; sans un second relevé, rien ne dit
+// si un écart entre deux formes est réel ou s'il est le bruit. C'est la leçon
+// de `--example resolved`, qui a d'abord publié un rapport gonflé de moitié
+// pour avoir comparé deux exécutions séparées d'une heure.
+const againBegan = process.hrtime.bigint();
+once();
+const againSeconds = Number(process.hrtime.bigint() - againBegan) / 1e9;
 console.log(JSON.stringify({{
   seconds,
+  againSeconds,
   rsi: slots[6].value.toString(),
   rip: BigInt.asUintN(64, slots[{}].value).toString(16),
 }}));
 "#,
             path.to_string_lossy(),
-            GUEST_PAGES,
+            // **La taille vient de `host_pages`, jamais d'une addition ici.**
+            // Un pilote qui refaisait la somme lui-même a manqué la page du
+            // tampon et ne s'instanciait plus, en sortant avec zéro ; un test
+            // interdit désormais l'addition sur place.
+            match shape {
+                Shape::Free => GUEST_PAGES,
+                Shape::Confined => host_pages(CONFINED_PAGES),
+            },
+            // La forme liée réclame la table de l'hôte. La forme libre n'en
+            // veut pas, et lui en donner une ne changerait rien — mais un
+            // module qui l'importe sans la recevoir ne démarre pas.
+            //
+            // **L'ordre suit le gabarit, pas la logique.** La déclaration vient
+            // avant le compte de globales dans le texte ; les intervertir ici a
+            // rendu un pilote qui ne se lisait même pas — « Unexpected ; ».
+            match shape {
+                Shape::Free => String::new(),
+                Shape::Confined =>
+                    "const blocks = new WebAssembly.Table({ element: \"anyfunc\", initial: 64 });"
+                        .to_string(),
+            },
             GLOBAL_COUNT,
+            match shape {
+                Shape::Free => String::new(),
+                Shape::Confined => "imports.env.blocks = blocks;".to_string(),
+            },
             turns,
             RIP_SLOT
         ),
@@ -193,10 +384,19 @@ console.log(JSON.stringify({{
     if !text.contains("\"rsi\":\"0\"") {
         return Err(format!("la boucle n'est pas allée jusqu'au bout — {text}"));
     }
-    let key = "\"seconds\":";
     let unreadable = || format!("la sortie du pilote est illisible — {text}");
-    let start = text.find(key).ok_or_else(unreadable)? + key.len();
-    let stop = start + text[start..].find(',').ok_or_else(unreadable)?;
-    let seconds: f64 = text[start..stop].parse().map_err(|_| unreadable())?;
-    Ok((instructions as f64 / seconds / 1e6, seconds))
+    let number = |key: &str| -> Result<f64, String> {
+        let start = text.find(key).ok_or_else(unreadable)? + key.len();
+        let stop = start + text[start..].find([',', '}']).ok_or_else(unreadable)?;
+        text[start..stop].trim().parse().map_err(|_| unreadable())
+    };
+    let seconds = number("\"seconds\":")?;
+    let again = number("\"againSeconds\":")?;
+    // **Le meilleur des deux, et l'écart à côté.** Le plus rapide est celui où
+    // la machine a le moins été dérangée ; le retenir borne le bruit d'un seul
+    // côté au lieu de le laisser des deux. L'écart, lui, est imprimé pour que
+    // personne ne lise une différence plus petite que le tremblement.
+    let best = seconds.min(again);
+    let tremor = (seconds - again).abs() / best;
+    Ok((instructions as f64 / best / 1e6, best, tremor))
 }
