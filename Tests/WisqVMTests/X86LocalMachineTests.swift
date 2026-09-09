@@ -106,6 +106,67 @@ final class X86LocalMachineTests: XCTestCase {
                           "l'arrêt doit rendre la main tout de suite")
     }
 
+    /// **Une machine qui tourne sans rien écrire doit quand même dire qu'elle
+    /// avance.**
+    ///
+    /// Le symptôme vient d'une capture : un noyau Arch imprime quelques
+    /// lignes, s'arrête d'écrire, et l'écran ne bouge plus pendant dix
+    /// minutes. Rien ne distinguait « ça tourne en rond » de « c'est mort » —
+    /// et ce sont deux défauts qui ne se corrigent pas du tout pareil. Le
+    /// compteur existait ; il n'était visible de nulle part.
+    ///
+    /// **Il ne peut pas se lire depuis un autre fil sans être publié.**
+    /// `core.retired` est écrit par le fil d'émulation ; le lire depuis
+    /// l'affichage serait une course, pour un nombre qui change à chaque
+    /// instruction. Le fil le pose donc sous le même verrou que le reste, sur
+    /// la cadence de vidage qui existe déjà.
+    ///
+    /// **Et le piège est là** : ce vidage rend la main tout de suite quand il
+    /// n'y a rien à écrire. Un signe de vie posé après cette garde ne
+    /// paraîtrait jamais pour l'invité qui en a le plus besoin — celui qui
+    /// n'écrit rien. C'est exactement l'invité de ce test : `jmp -2`, une
+    /// boucle sur elle-même, muette.
+    func testAGuestThatPrintsNothingStillSaysItIsAdvancing() throws {
+        let machine = try machine([0xEB, 0xFE], out: { _ in })
+        XCTAssertEqual(machine.liveProgress?.retired, 0, "rien n'a encore tourné")
+
+        // **Un budget, pour que ce test finisse même saboté.** Un test qui
+        // pend au lieu d'échouer ne tient rien : on ne saurait pas s'il a
+        // attrapé quelque chose ou s'il attend encore.
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            machine.run(instructionBudget: 40_000_000)
+            done.signal()
+        }
+        thread.start()
+
+        // Observé depuis **ce** fil pendant que l'autre exécute : c'est tout
+        // l'objet de la publication, et un test qui lirait la machine à
+        // l'arrêt ne prouverait rien.
+        var seen = GuestProgress(retired: 0, rip: 0)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            seen = machine.liveProgress ?? seen
+            if seen.retired > 0 { break }
+            usleep(2000)
+        }
+        machine.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success,
+                       "le fil d'émulation doit rendre la main")
+
+        XCTAssertGreaterThan(
+            seen.retired, 0,
+            "un invité muet doit quand même publier ce qu'il a exécuté")
+        // **Et l'adresse avec, parce qu'un compteur qui grimpe ne dit pas
+        // *où*.** Cette boucle-ci vit à l'adresse de son point d'entrée ; ce
+        // que le test demande est qu'une adresse plausible soit publiée, pas
+        // qu'elle vaille une constante — le noyau de test peut bouger.
+        XCTAssertGreaterThan(seen.rip, 0, "l'adresse courante doit être publiée aussi")
+        // La publication ne dépasse jamais la vérité : elle est prise sur le
+        // fil qui écrit, donc elle est en retard, jamais en avance.
+        XCTAssertLessThanOrEqual(seen.retired, machine.retiredInstructions)
+    }
+
     /// Le budget borne un invité qui ne s'arrête pas.
     func testTheBudgetBoundsAnEndlessGuest() throws {
         let machine = try machine([0xEB, 0xFE], out: { _ in })
