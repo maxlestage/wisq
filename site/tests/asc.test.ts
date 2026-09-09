@@ -14,7 +14,12 @@ import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { appStoreConnectToken, writeStepOutputs } from "../scripts/asc";
+import {
+  appStoreConnectToken,
+  certificateInventory,
+  describeCertificates,
+  writeStepOutputs,
+} from "../scripts/asc";
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", {
   namedCurve: "P-256",
@@ -145,5 +150,68 @@ describe("les sorties d'étape", () => {
   test("refusent une valeur multi-ligne", () => {
     const file = join(mkdtempSync(join(tmpdir(), "wisq-outputs-")), "output");
     expect(() => writeStepOutputs(file, { equipe: "une\ndeux" })).toThrow("multi-ligne");
+  });
+});
+
+/// **Ce que l'inventaire sert à décider.** Les envois 28 et 29 ont échoué sur
+/// « Your account has reached the maximum number of certificates », quinze
+/// minutes après le début de la construction, sur un message qui ne dit ni
+/// combien ni de quel type. La même clé sait le compter à la treizième
+/// seconde ; encore faut-il qu'elle ne dise que le nombre.
+describe("l'inventaire des certificats", () => {
+  function withStubbedFetch<T>(body: unknown, run: () => Promise<T>): Promise<T & { asked: string[] }> {
+    const asked: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: any) => {
+      asked.push(String(url));
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    return run().then(
+      (value) => Object.assign(value as any, { asked }),
+      (error) => { throw error; },
+    ).finally(() => { globalThis.fetch = real; });
+  }
+
+  const payload = {
+    data: [
+      { attributes: { certificateType: "DISTRIBUTION", displayName: "Apple Distribution: Quelqu'un (ABCDE12345)", serialNumber: "1A2B" } },
+      { attributes: { certificateType: "DISTRIBUTION", displayName: "Apple Distribution: Quelqu'un (ABCDE12345)", serialNumber: "3C4D" } },
+      { attributes: { certificateType: "DEVELOPMENT", displayName: "Apple Development: Quelqu'un (ABCDE12345)", serialNumber: "5E6F" } },
+      { attributes: {} },
+    ],
+  };
+
+  test("compte par type, et range ce qu'Apple ne nomme pas", async () => {
+    const byType = await withStubbedFetch(payload, () => certificateInventory("jeton"));
+    expect(byType).toMatchObject({ DISTRIBUTION: 2, DEVELOPMENT: 1, INCONNU: 1 });
+  });
+
+  test("demande la liste entière, en une fois", async () => {
+    const byType: any = await withStubbedFetch(payload, () => certificateInventory("jeton"));
+    expect(byType.asked[0]).toContain("/certificates?limit=200");
+  });
+
+  /// **Le cœur du test, et ce n'est pas le comptage.** Un nom de certificat
+  /// porte l'identifiant d'équipe — `Apple Distribution: … (ABCDE12345)` —
+  /// et le journal d'une exécution GitHub est public. Ce que la fonction rend
+  /// est ce qui sera imprimé : rien du corps de la réponse ne doit y survivre
+  /// à part le type et le nombre. L'assertion mesure le geste, pas la
+  /// conséquence : c'est la valeur rendue qu'on fouille, entière.
+  test("ne laisse sortir ni nom, ni numéro de série, ni équipe", async () => {
+    const byType = await withStubbedFetch(payload, () => certificateInventory("jeton"));
+    const printed = describeCertificates(byType) + JSON.stringify(byType);
+    expect(printed).not.toContain("ABCDE12345");
+    expect(printed).not.toContain("Quelqu'un");
+    expect(printed).not.toContain("1A2B");
+  });
+
+  test("la phrase dit le total et le détail", () => {
+    expect(describeCertificates({ DISTRIBUTION: 2, DEVELOPMENT: 1 }))
+      .toBe("certificats sur le compte : 3 (DEVELOPMENT × 1, DISTRIBUTION × 2)");
+  });
+
+  /// Un compte vide se dit, plutôt que de rendre une parenthèse vide.
+  test("un compte sans certificat le dit", () => {
+    expect(describeCertificates({})).toBe("certificats sur le compte : aucun");
   });
 });
