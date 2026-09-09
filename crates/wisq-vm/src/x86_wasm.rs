@@ -233,7 +233,10 @@ pub const TRANSLATE_COUNT: usize = 3;
 
 pub const FAULT_SLOT: usize = TRANSLATE_SLOT + TRANSLATE_COUNT;
 
-/// **Le témoin d'arrêt.** Zéro tant que la machine tourne ; un après un `hlt`.
+/// **Le témoin d'arrêt, et sa raison.** Zéro tant que la machine tourne ;
+/// sinon un nombre qui dit **pourquoi** elle s'est arrêtée. Il s'appelait
+/// `HALT_SLOT` quand il ne portait que le `hlt` ; il en porte deux, donc ce
+/// nom-là mentait.
 ///
 /// **Pourquoi un témoin plutôt qu'un refus.** `hlt` faisait refuser la région
 /// **entière**, et une région est refusée en entier : les instructions qui la
@@ -251,10 +254,19 @@ pub const FAULT_SLOT: usize = TRANSLATE_SLOT + TRANSLATE_COUNT;
 /// **RIP est posé après le `hlt`**, comme sur le silicium : une interruption y
 /// reprend à l'instruction suivante. Laisser RIP sur le `hlt` ferait
 /// re-exécuter l'arrêt le jour où la délivrance existera.
-pub const HALT_SLOT: usize = FAULT_SLOT + 1;
+pub const STOP_SLOT: usize = FAULT_SLOT + 1;
+
+/// La machine a exécuté un `hlt`, et rien ne peut la réveiller.
+pub const STOP_HALTED: u64 = 1;
+
+/// Un sélecteur **non nul** est arrivé dans FS ou GS. Le nul ne lit aucun
+/// descripteur et se produit ; celui-ci en demanderait un, et la table
+/// n'existe pas. S'arrêter en le nommant vaut mieux que ranger le sélecteur
+/// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
+pub const STOP_SELECTOR: u64 = 2;
 
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = HALT_SLOT + 1;
+pub const GLOBAL_COUNT: usize = STOP_SLOT + 1;
 
 /// CR0.PG — le bit qui allume la pagination.
 pub const PAGING_BIT: u64 = 1 << 31;
@@ -2098,6 +2110,70 @@ impl Module {
 
     /// L'emplacement d'un sélecteur, dans l'ordre de l'énumération du
     /// décodeur : ES, CS, SS, DS, FS, GS.
+    /// **FS ou GS : le nul se produit, le reste s'arrête en le disant.**
+    ///
+    /// **Ce que fait le silicium du nul, mesuré et non supposé.** Sur le
+    /// processeur de ce conteneur, par un programme à syscalls bruts — passer
+    /// par la libc entre les deux relevés toucherait `errno`, qui vit dans le
+    /// TLS pointé par FS :
+    ///
+    /// ```text
+    /// FS.base avant = 0x7f7da625f740
+    /// xorl %eax,%eax ; movl %eax,%fs
+    /// FS.base apres = 0x0
+    /// ```
+    ///
+    /// La base est **effacée**, pas conservée. Un seul processeur ne fait pas
+    /// une architecture, et ce dépôt n'a pas d'autre silicium sous la main :
+    /// c'est écrit ici pour que la prochaine mesure sache ce qu'elle corrige.
+    ///
+    /// **Et le non-nul ne se range pas en silence.** Poser le sélecteur sans
+    /// en tirer de base donnerait au noyau une adresse fausse, loin de sa
+    /// cause — le défaut exact que le refus d'origine évitait. Il s'arrête donc
+    /// avec sa raison, RIP **sur** l'instruction, qui n'a rien fait : c'est ce
+    /// qui permettra de la rejouer le jour où les descripteurs existeront.
+    fn load_far_segment(
+        step: &Decoded,
+        segment: Segment,
+        address: u64,
+        body: &mut Body,
+    ) -> Option<()> {
+        let base = match segment {
+            Segment::Fs => FS_BASE_SLOT,
+            _ => GS_SLOT,
+        };
+        // Le sélecteur, seize bits quelle que soit la largeur de la source.
+        // **Aucun local temporaire** : `i64.eqz` le consomme, et la branche
+        // nulle sait déjà qu'il vaut zéro — le garder serait le recopier pour
+        // rien.
+        body.load(Self::slot(step.dst))
+            .constant(0xffff)
+            .op(code::I64_AND);
+        body.op(code::I64_EQZ);
+        body.op(code::IF).op(code::VOID);
+        // Nul : le sélecteur rangé, et la base effacée comme le fait le
+        // processeur.
+        body.store(Self::segment_slot(segment), |b| {
+            b.constant(0);
+        });
+        body.store(base, |b| {
+            b.constant(0);
+        });
+        body.op(0x05); // else
+                       // Non nul : rien n'est écrit, et la machine dit ce qui lui manque.
+        body.store(RIP_SLOT, |b| {
+            b.constant(address);
+        });
+        body.store(STOP_SLOT, |b| {
+            b.constant(STOP_SELECTOR);
+        });
+        body.bytes.push(code::I32_CONST);
+        signed(-1, &mut body.bytes);
+        body.op(code::RETURN);
+        body.op(code::END);
+        Some(())
+    }
+
     fn segment_slot(segment: Segment) -> usize {
         SEGMENT_SLOT
             + match segment {
@@ -2462,17 +2538,26 @@ impl Module {
             });
             return Some(());
         }
-        // **Charger un sélecteur : seulement ceux dont la base est morte.**
+        // **Charger un sélecteur.**
         //
         // ES, SS et DS ont en mode 64 bits une base **forcée à zéro** : le
         // sélecteur ne décide plus d'aucune adresse, et le ranger suffit à être
-        // fidèle. FS et GS non — les charger relit un descripteur dans la table
-        // globale pour en tirer une base, et cette table n'existe pas ici. Les
-        // produire ferait croire au noyau qu'on a implémenté des descripteurs,
-        // et la panne tomberait loin de sa cause. Charger CS ne se décode même
-        // pas : le processeur lève `#UD`.
+        // fidèle. Charger CS ne se décode même pas : le processeur lève `#UD`.
+        //
+        // **FS et GS étaient refusés en bloc, et c'était trop large.** Les
+        // charger relit un descripteur dans la table globale pour en tirer une
+        // base, et cette table n'existe pas ici — mais **un sélecteur nul ne
+        // lit aucun descripteur**. Le noyau met justement ses six segments à
+        // zéro dans `head_64.S`, et c'est là que la quatrième région d'Alpine
+        // refusait, à l'octet 319, deux instructions après un `xor %eax,%eax`.
+        //
+        // Le contrôle est donc à l'exécution, et il coûte une comparaison sur
+        // une instruction que le démarrage exécute six fois.
         if let Op::LoadSegment { segment } = step.op {
             step.memory.is_none().then_some(())?;
+            if matches!(segment, Segment::Fs | Segment::Gs) {
+                return Self::load_far_segment(step, segment, address, body);
+            }
             matches!(segment, Segment::Es | Segment::Ss | Segment::Ds).then_some(())?;
             body.store(Self::segment_slot(segment), |b| {
                 // Un sélecteur fait seize bits, quelle que soit la largeur de
@@ -2505,8 +2590,8 @@ impl Module {
             body.store(RIP_SLOT, |b| {
                 b.constant(address.wrapping_add(step.length as u64));
             });
-            body.store(HALT_SLOT, |b| {
-                b.constant(1);
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_HALTED);
             });
             body.bytes.push(code::I32_CONST);
             signed(-1, &mut body.bytes);
@@ -5235,7 +5320,20 @@ mod port_tests {
             // sont produits depuis cette tranche. Ce qui reste ici est ce qui
             // demanderait une table qu'on n'a pas, et la forme que rien
             // n'exerce.
-            ("mov %ax,%fs", &[0x8e, 0xe0][..]),
+            // **`mov %ax,%fs` a quitté cette liste, et le refus n'a pas
+            // disparu : il a changé d'heure.** Il était rendu à la
+            // traduction, donc il emportait la région entière — 237 octets
+            // d'un vrai noyau qui n'ont jamais tourné pour une instruction au
+            // bout d'un chemin d'erreur. Il est maintenant rendu à
+            // l'**exécution**, et seulement quand le sélecteur est non nul :
+            // la machine s'arrête en nommant la table qui manque, au lieu de
+            // refuser tout ce qui l'entoure. Un sélecteur nul, lui, ne lit
+            // aucun descripteur et se produit.
+            //
+            // Ce qui reste refusé à la traduction est la forme dont la source
+            // est en **mémoire** : le sélecteur ne se connaît alors qu'après
+            // une lecture, et rien n'exerce cette forme.
+            ("mov (%rax),%fs", &[0x8e, 0x20][..]),
             ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
             // Lire est produit depuis cette tranche ; écrire CR4 aussi. Ce qui
             // reste est ce qui allumerait la pagination.
