@@ -187,8 +187,72 @@ pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
 /// pas non plus.
 pub const CPUID_FEATURES_EDX: u32 = 1 << 4;
 pub const SCRATCH_COUNT: usize = 10;
+
+/// **Le témoin de faute de page.** Zéro tant que rien n'a fauté ; sinon le code
+/// d'erreur de la faute **plus un** — pour que le code zéro, qui est celui
+/// d'une lecture sur une page absente, ne passe pas pour « rien ».
+///
+/// **Pourquoi une globale et pas un piège.** Un piège WebAssembly est sans
+/// retour : il arrête l'émulateur entier, alors qu'une faute doit rendre la
+/// main au noyau invité. La boucle de répartition rend déjà la main dès qu'un
+/// bloc rend un indice négatif ; une faute pose ce témoin, et le contrôle en
+/// ligne qui suit chaque traduction fait rendre −1.
+///
+/// **Le contrôle est en ligne, et ça a été mesuré avant d'être décidé** — voir
+/// `docs/DEMARRAGE.md` : −0,17 à +0,30 ns par accès sur un balayage, la plage
+/// incluant zéro. L'autre conception, une page piège contrôlée une fois par
+/// bloc, laissait l'instruction fautive agir à moitié pour une économie
+/// qu'aucune des trois mesures ne voit.
+///
+/// **L'adresse fautive va dans CR2**, comme sur le silicium : c'est là que le
+/// gestionnaire du noyau la lira le jour où les fautes seront délivrées.
+/// **Les trois globales de travail de la traduction.** L'adresse invitée, son
+/// numéro de page, et l'adresse de la case du tampon.
+///
+/// **Elles sont à elle seule, et c'est délibéré.** Les dix emplacements de
+/// `SCRATCH` sont pris à l'intérieur d'une instruction — une chaîne d'octets en
+/// occupe trois — et `guest()` est appelé *au milieu* de ces instructions-là.
+/// S'en partager un écraserait une valeur vivante, et le défaut ne se verrait
+/// que sur les formes qui en ont besoin.
+pub const TRANSLATE_SLOT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
+pub const TRANSLATE_COUNT: usize = 3;
+
+pub const FAULT_SLOT: usize = TRANSLATE_SLOT + TRANSLATE_COUNT;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
+pub const GLOBAL_COUNT: usize = FAULT_SLOT + 1;
+
+/// CR0.PG — le bit qui allume la pagination.
+pub const PAGING_BIT: u64 = 1 << 31;
+
+/// Le bit de présence d'une entrée de table de pages. Sans lui, tout le reste
+/// de l'entrée appartient au système d'exploitation et ne veut rien dire.
+pub const ENTRY_PRESENT: u64 = 1;
+
+/// « Cette entrée est une grande page et le parcours s'arrête ici. »
+pub const ENTRY_HUGE: u64 = 1 << 7;
+
+/// Les bits d'adresse d'une entrée : de 12 à 51.
+pub const ENTRY_FRAME: u64 = 0x000F_FFFF_FFFF_F000;
+
+/// **Le tampon de traduction, et où il vit.**
+///
+/// Direct, une case par page, l'étiquette étant l'adresse de page **plus un**
+/// pour que zéro veuille dire « vide » — sans quoi la page zéro passerait pour
+/// déjà là, et l'hôte devrait empoisonner le tampon au démarrage.
+///
+/// Il vit **au-dessus de la RAM déclarée**, juste après la correspondance
+/// adresse → indice. C'est la place que `Module::confined` a ouverte : l'hôte
+/// fournit une mémoire plus grande que le module ne déclare, et le repliement
+/// par `et` met tout ce qui est au-dessus hors de portée de l'invité.
+pub const TLB_SLOTS: u32 = 4096;
+
+/// Ce qu'occupe une case : l'étiquette (huit octets) puis la trame (quatre), et
+/// quatre de rembourrage pour que la suivante reste alignée sur huit.
+pub const TLB_ENTRY: u32 = 16;
+
+/// Ce que le tampon occupe, en pages. Exactement une, par construction.
+pub const TLB_PAGES: u32 = TLB_SLOTS * TLB_ENTRY / 65536;
 
 /// **Le nom sous lequel un module lié importe la table de l'hôte.** Les blocs
 /// de toutes les régions y vivent ensemble, ce qui est la condition pour qu'un
@@ -290,6 +354,14 @@ const REACH: usize = 15;
 #[must_use]
 pub fn table_base(pages: u32) -> u32 {
     pages * 65536
+}
+
+/// **Où l'hôte doit poser le tampon de traduction** : juste au-dessus de la
+/// correspondance, donc encore plus haut que la RAM de l'invité. Même raison,
+/// même garantie — le repliement par `et` le met hors de portée de l'invité.
+#[must_use]
+pub fn tlb_base(pages: u32) -> u32 {
+    table_base(pages) + TABLE_PAGES * 65536
 }
 
 /// **La case d'une adresse, et c'est le point d'accord.** L'hôte remplit la
@@ -534,6 +606,11 @@ struct Body {
     /// **Le masque qui enferme l'invité dans sa RAM**, ou `None` s'il n'y en a
     /// pas. Voir `Body::guest`.
     confine: Option<u32>,
+    /// **L'indice de la fonction de marche**, quand le module en a une — donc
+    /// quand il est confiné, puisque c'est le confinement qui ouvre la place
+    /// où vivent les tables et le tampon. `None` rend `guest()` à sa forme
+    /// d'avant la pagination, mot pour mot.
+    walk: Option<u32>,
 }
 
 impl Body {
@@ -550,17 +627,121 @@ impl Body {
     /// **Ce que ça coûte, mesuré** : rien, et même un peu moins que rien —
     /// voir `Module::confined`, qui porte les chiffres.
     fn guest(&mut self) -> &mut Self {
+        let (Some(walk), Some(mask)) = (self.walk, self.confine) else {
+            // **Sans pagination possible, la forme d'avant, mot pour mot.**
+            self.op(code::I32_WRAP_I64);
+            if let Some(mask) = self.confine {
+                self.bytes.push(code::I32_CONST);
+                signed(i64::from(mask), &mut self.bytes);
+                self.bytes.push(code::I32_AND);
+            }
+            return self;
+        };
+        let tlb = tlb_base((mask + 1) / 65536);
+        let (va, vpn, slot) = (TRANSLATE_SLOT, TRANSLATE_SLOT + 1, TRANSLATE_SLOT + 2);
+        let fold = |b: &mut Self| {
+            b.bytes.push(code::I32_CONST);
+            signed(i64::from(mask), &mut b.bytes);
+            b.bytes.push(code::I32_AND);
+        };
+
+        // L'adresse est rangée : le repli comme le tampon la relisent, et
+        // WebAssembly n'a pas de quoi dupliquer une valeur.
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(va as u64, &mut self.bytes);
+
+        // CR0.PG éteint ? C'est l'état d'un processeur au démarrage.
+        self.load(Module::control_slot(0))
+            .constant(PAGING_BIT)
+            .op(code::I64_AND)
+            .op(code::I64_EQZ);
+        self.op(code::IF).op(0x7f); // if (result i32)
+        self.load(va).op(code::I32_WRAP_I64);
+        fold(self);
+        self.op(0x05); // else
+
+        // **Le tampon, consulté en ligne.** Son coût a été mesuré avant d'être
+        // écrit : un dixième à un demi de nanoseconde par accès tant qu'il
+        // répond — voir `docs/DEMARRAGE.md`.
+        self.store(vpn, |b| {
+            b.load(va).constant(12).op(code::I64_SHR_U);
+        });
+        self.store(slot, |b| {
+            b.load(vpn)
+                .constant(u64::from(TLB_SLOTS - 1))
+                .op(code::I64_AND)
+                .constant(u64::from(TLB_ENTRY))
+                .op(code::I64_MUL)
+                .constant(u64::from(tlb))
+                .op(code::I64_ADD);
+        });
+        self.load(slot).op(code::I32_WRAP_I64);
+        self.access(code::I64_LOAD, 0);
+        // L'étiquette est le numéro de page **plus un** : zéro veut dire vide,
+        // sans quoi la page zéro passerait pour déjà là.
+        self.load(vpn)
+            .constant(1)
+            .op(code::I64_ADD)
+            .op(code::I64_EQ);
+        self.op(code::IF).op(0x7f);
+        self.load(slot).op(code::I32_WRAP_I64);
+        self.access(code::I64_LOAD32_U, 8);
         self.op(code::I32_WRAP_I64);
-        if let Some(mask) = self.confine {
-            self.bytes.push(code::I32_CONST);
-            signed(i64::from(mask), &mut self.bytes);
-            self.bytes.push(code::I32_AND);
-        }
+        self.op(0x05); // else
+        self.load(va).call(walk);
+        self.op(code::END);
+        // La trame, plus le décalage dans la page.
+        self.load(va).op(code::I32_WRAP_I64);
+        self.bytes.push(code::I32_CONST);
+        signed(0xFFF, &mut self.bytes);
+        self.op(code::I32_AND).op(code::I32_OR);
+        self.op(code::END);
+
+        // **Le contrôle de faute, en ligne et avant l'accès.** L'instruction
+        // fautive n'a alors rien fait, ce qui est la seule façon de la rejouer.
+        // Rendre un indice de bloc négatif est ce que fait déjà chaque fin de
+        // région : la boucle de répartition rend la main à l'hôte.
+        self.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
+        self.op(code::IF).op(code::VOID);
+        self.bytes.push(code::I32_CONST);
+        signed(-1, &mut self.bytes);
+        self.op(code::RETURN);
+        self.op(code::END);
         self
     }
 
     fn op(&mut self, opcode: u8) -> &mut Self {
         self.bytes.push(opcode);
+        self
+    }
+
+    fn local_get(&mut self, index: u32) -> &mut Self {
+        self.bytes.push(0x20);
+        unsigned(u64::from(index), &mut self.bytes);
+        self
+    }
+
+    fn local_set(&mut self, index: u32) -> &mut Self {
+        self.bytes.push(0x21);
+        unsigned(u64::from(index), &mut self.bytes);
+        self
+    }
+
+    fn local_tee(&mut self, index: u32) -> &mut Self {
+        self.bytes.push(0x22);
+        unsigned(u64::from(index), &mut self.bytes);
+        self
+    }
+
+    /// **Un accès à la mémoire linéaire, sans passer par `guest()`.**
+    ///
+    /// C'est ce dont la marche a besoin : une entrée de table porte une adresse
+    /// **physique**, et la faire traduire serait une récursion sans fond.
+    /// L'alignement annoncé est nul — le module n'exige rien.
+    fn access(&mut self, opcode: u8, offset: u32) -> &mut Self {
+        self.bytes.push(opcode);
+        self.bytes.push(0);
+        unsigned(u64::from(offset), &mut self.bytes);
         self
     }
 
@@ -940,6 +1121,9 @@ impl Module {
         // Le masque se dérive du nombre de pages, une fois : `confined` a déjà
         // vérifié que c'est une puissance de deux.
         let mask = shape.confine.map(|pages| pages * 65536 - 1);
+        // **La pagination n'existe que sous confinement** : c'est lui qui ouvre
+        // la place au-dessus de la RAM déclarée, où vivent la correspondance et
+        // le tampon. Sans masque, `guest()` garde sa forme d'avant.
         let blocks = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
@@ -951,6 +1135,7 @@ impl Module {
         for (start, steps) in &blocks {
             let mut body = Body {
                 confine: mask,
+                walk: mask.map(|_| HOST_IMPORTS + blocks.len() as u32),
                 ..Body::default()
             };
             let mut at = *start;
@@ -1409,6 +1594,10 @@ impl Module {
             shared, confine, ..
         } = shape;
         let count = bodies.len();
+        // Voir `build` : la pagination n'existe que sous confinement, et le
+        // masque s'en dérive de la même façon des deux côtés.
+        let mask = confine.map(|pages| pages * 65536 - 1);
+        let paging = mask.is_some();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
         // Types : un bloc rend l'indice du suivant ; `run` prend un budget ;
@@ -1418,11 +1607,12 @@ impl Module {
         section(
             1,
             vec![
-                0x04, //
+                0x05, //
                 0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
                 0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
                 0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
                 0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
+                0x60, 0x01, 0x7e, 0x01, 0x7f, // 4 : (i64) -> i32, la marche
             ],
             &mut module,
         );
@@ -1470,9 +1660,13 @@ impl Module {
         // déclarer davantage mentirait sur ce qu'il touche. L'hôte, lui, reste
         // libre d'en fournir **plus** : c'est là que vivra ce que l'invité ne
         // doit pas pouvoir atteindre.
+        // **Le tampon est déclaré, pas seulement supposé.** Même règle que la
+        // correspondance : un hôte qui ne l'a pas posé **ne démarre pas**, au
+        // lieu de piéger au premier défaut de tampon — et un piège WebAssembly
+        // est sans retour.
         let least = match (confine, shape.lookup) {
-            (Some(pages), true) => pages + TABLE_PAGES,
-            (Some(pages), false) => pages,
+            (Some(pages), true) => pages + TABLE_PAGES + TLB_PAGES,
+            (Some(pages), false) => pages + TABLE_PAGES + TLB_PAGES,
             (None, _) => GUEST_PAGES,
         };
         unsigned(u64::from(least), &mut imports);
@@ -1499,10 +1693,19 @@ impl Module {
         section(2, imports, &mut module);
 
         let mut functions = Vec::new();
-        unsigned(count as u64 + 1, &mut functions);
-        // Les `count` premières fonctions sont les blocs, du type zéro ; la
-        // dernière est la boucle de répartition, du type un.
+        unsigned(count as u64 + 1 + u64::from(paging), &mut functions);
+        // Les `count` premières fonctions sont les blocs, du type zéro ; vient
+        // ensuite la marche quand il y en a une, du type quatre ; la dernière
+        // est la boucle de répartition, du type un.
+        //
+        // **La marche est placée après les blocs, et c'est ce qui coûte le
+        // moins.** Devant, elle décalerait tous les indices de bloc, donc la
+        // section des éléments qui les pose dans la table de l'hôte. Ici, seul
+        // l'indice exporté de `run` bouge.
         functions.resize(functions.len() + count, 0x00);
+        if paging {
+            functions.push(0x04);
+        }
         functions.push(0x01);
         section(3, functions, &mut module);
 
@@ -1523,7 +1726,10 @@ impl Module {
         let mut exports = Vec::new();
         unsigned(1, &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
-        unsigned(u64::from(HOST_IMPORTS) + count as u64, &mut exports);
+        unsigned(
+            u64::from(HOST_IMPORTS) + count as u64 + u64::from(paging),
+            &mut exports,
+        );
         section(7, exports, &mut module);
 
         // Éléments : la table pointe les blocs dans l'ordre, à partir de
@@ -1538,10 +1744,15 @@ impl Module {
         section(9, elements, &mut module);
 
         let mut code_section = Vec::new();
-        unsigned(count as u64 + 1, &mut code_section);
+        unsigned(count as u64 + 1 + u64::from(paging), &mut code_section);
         for body in &bodies {
             let mut entry = vec![0x00];
             entry.extend_from_slice(body);
+            unsigned(entry.len() as u64, &mut code_section);
+            code_section.extend_from_slice(&entry);
+        }
+        if let Some(mask) = mask {
+            let entry = Self::walk_body(mask);
             unsigned(entry.len() as u64, &mut code_section);
             code_section.extend_from_slice(&entry);
         }
@@ -1615,6 +1826,153 @@ impl Module {
         section(10, code_section, &mut module);
 
         module
+    }
+
+    /// **La marche à quatre niveaux, gravée dans le module.**
+    ///
+    /// Une fonction interne, pas un import : un retour de main à l'hôte coûte
+    /// 125 à 190 ns, ce qui rendrait un défaut de tampon plus cher que tout le
+    /// reste. Elle prend une adresse invitée et rend la **trame** — l'adresse
+    /// physique de sa page, alignée — après l'avoir posée dans le tampon.
+    ///
+    /// **Chaque niveau est replié par le masque.** Une entrée de table qui
+    /// nommerait une trame au-dessus de la RAM déclarée atteindrait sinon le
+    /// tampon lui-même et la correspondance des blocs, que le confinement est
+    /// justement là pour mettre hors de portée.
+    ///
+    /// **Sur une entrée absente, elle ne pièges pas** : elle pose le témoin de
+    /// faute et l'adresse dans CR2, et rend zéro. C'est l'appelant qui rend la
+    /// main, en ligne, avant d'avoir touché la mémoire.
+    ///
+    /// Les grandes pages s'arrêtent où le bit PS les arrête, à n'importe quel
+    /// niveau au-dessus de la feuille — ce qui couvre les deux mébioctets du
+    /// direct map de Linux et le gibioctet des mêmes lignes.
+    fn walk_body(mask: u32) -> Vec<u8> {
+        // Locales, après le paramètre : l'entrée lue, la table courante, la
+        // trame trouvée, et la case du tampon.
+        let mut body = vec![
+            0x04, // quatre groupes
+            0x01, 0x7e, // 1 : i64, l'entrée
+            0x01, 0x7f, // 2 : i32, la table
+            0x01, 0x7e, // 3 : i64, la trame
+            0x01, 0x7f, // 4 : i32, la case
+        ];
+        const ENTRY: u32 = 1;
+        const TABLE: u32 = 2;
+        const FRAME: u32 = 3;
+        const CELL: u32 = 4;
+        let tlb = tlb_base((mask + 1) / 65536);
+        let mut b = Body::default();
+
+        let fold = |b: &mut Body| {
+            b.op(code::I32_WRAP_I64);
+            b.bytes.push(code::I32_CONST);
+            signed(i64::from(mask), &mut b.bytes);
+            b.op(code::I32_AND);
+        };
+        // Poser la trame dans le tampon, puis la rendre. Écrit deux fois — une
+        // fois pour les grandes pages, une fois pour la feuille — parce que
+        // les deux sorties sont à des profondeurs différentes du code.
+        let install = |b: &mut Body| {
+            b.local_get(0)
+                .constant(12)
+                .op(code::I64_SHR_U)
+                .constant(u64::from(TLB_SLOTS - 1))
+                .op(code::I64_AND)
+                .op(code::I32_WRAP_I64);
+            b.bytes.push(code::I32_CONST);
+            signed(i64::from(TLB_ENTRY), &mut b.bytes);
+            b.op(code::I32_MUL);
+            b.bytes.push(code::I32_CONST);
+            signed(i64::from(tlb), &mut b.bytes);
+            b.op(code::I32_ADD).local_tee(CELL);
+            // L'étiquette : le numéro de page plus un.
+            b.local_get(0)
+                .constant(12)
+                .op(code::I64_SHR_U)
+                .constant(1)
+                .op(code::I64_ADD);
+            b.access(code::I64_STORE, 0);
+            b.local_get(CELL).local_get(FRAME);
+            b.access(code::I64_STORE32, 8);
+            b.local_get(FRAME).op(code::I32_WRAP_I64).op(code::RETURN);
+        };
+        let fault = |b: &mut Body| {
+            // Le code d'erreur zéro — une lecture sur une page absente — plus
+            // un, pour qu'il ne se confonde pas avec « rien n'a fauté ».
+            b.store(FAULT_SLOT, |b| {
+                b.constant(1);
+            });
+            b.store(Self::control_slot(2), |b| {
+                b.local_get(0);
+            });
+            b.bytes.push(code::I32_CONST);
+            signed(0, &mut b.bytes);
+            b.op(code::RETURN);
+        };
+
+        // La racine : CR3, ses bits d'adresse, repliée.
+        b.load(Self::control_slot(3))
+            .constant(ENTRY_FRAME)
+            .op(code::I64_AND);
+        fold(&mut b);
+        b.local_set(TABLE);
+
+        for level in [39u64, 30, 21, 12] {
+            b.local_get(TABLE)
+                .local_get(0)
+                .constant(level)
+                .op(code::I64_SHR_U)
+                .constant(0x1FF)
+                .op(code::I64_AND)
+                .op(code::I32_WRAP_I64);
+            b.bytes.push(code::I32_CONST);
+            signed(8, &mut b.bytes);
+            b.op(code::I32_MUL).op(code::I32_ADD);
+            b.access(code::I64_LOAD, 0);
+            b.local_tee(ENTRY)
+                .constant(ENTRY_PRESENT)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ);
+            b.op(code::IF).op(code::VOID);
+            fault(&mut b);
+            b.op(code::END);
+
+            if level > 12 {
+                let size = 1u64 << level;
+                b.local_get(ENTRY)
+                    .constant(ENTRY_HUGE)
+                    .op(code::I64_AND)
+                    .op(code::I64_EQZ)
+                    .op(code::I32_EQZ);
+                b.op(code::IF).op(code::VOID);
+                b.local_get(ENTRY)
+                    .constant(ENTRY_FRAME & !(size - 1))
+                    .op(code::I64_AND)
+                    .local_get(0)
+                    .constant((size - 1) & !0xFFF)
+                    .op(code::I64_AND)
+                    .op(code::I64_OR);
+                fold(&mut b);
+                b.op(code::I64_EXTEND_I32_U).local_set(FRAME);
+                install(&mut b);
+                b.op(code::END);
+            }
+
+            b.local_get(ENTRY).constant(ENTRY_FRAME).op(code::I64_AND);
+            fold(&mut b);
+            b.local_set(TABLE);
+        }
+
+        // La feuille : le dernier tour a mis la trame dans `TABLE`.
+        b.local_get(TABLE)
+            .op(code::I64_EXTEND_I32_U)
+            .local_set(FRAME);
+        install(&mut b);
+        b.op(code::END);
+
+        body.extend(b.bytes);
+        body
     }
 
     /// L'emplacement d'un registre de contrôle. Les numéros ne sont pas
@@ -1691,6 +2049,21 @@ impl Module {
     }
 
     fn translate(step: &Decoded, address: u64, body: &mut Body) -> Option<()> {
+        // **RIP est posé avant tout accès mémoire, quand la pagination
+        // existe.** Sans lui, une faute rendrait la main à l'hôte sur un RIP
+        // laissé par le bloc précédent, et l'hôte reprendrait n'importe où.
+        // `terminate` ne le pose qu'à la fin d'un bloc, ce qui suffisait tant
+        // que rien ne pouvait s'arrêter au milieu.
+        //
+        // **Ce que ça coûte : rien de mesurable.** La forme `garde_rip` de
+        // `examples/paging-probe.rs` la chronomètre — de −0,45 à +0,62 ns par
+        // accès sur trois exécutions, une plage qui inclut zéro des deux
+        // côtés. Voir `docs/DEMARRAGE.md`.
+        if body.walk.is_some() && step.memory.is_some() {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+        }
         // **Un saut n'est pas une instruction comme une autre** : il change le
         // bloc, pas l'état. Il est traité par le compilateur de région, qui
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
@@ -1816,7 +2189,13 @@ impl Module {
             // plus loin que sa cause. Mesuré avant d'être décidé : sur les
             // régions d'entrée du noyau Alpine, aucune écriture de CR0 ni de
             // CR3 ne bloque une région — ce refus ne coûte rien.
-            matches!(which, 4 | 8).then_some(())?;
+            // **CR0 et CR3 allument la pagination**, et jusqu'à cette tranche
+            // les accepter aurait fait croire au noyau qu'il a une table de
+            // pages sans qu'aucune adresse ne la traverse. C'est la traduction
+            // qui les débloque : sans elle, le refus reste.
+            matches!(which, 4 | 8)
+                .then_some(())
+                .or_else(|| body.walk.map(|_| ()))?;
             body.store(Self::control_slot(which), |b| {
                 b.load(Self::slot(step.dst));
             });

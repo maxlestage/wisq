@@ -21,7 +21,7 @@ use std::process::Command;
 use wisq_vm::x86::{Cpu, Step, Width};
 use wisq_vm::x86_wasm::{
     table_base, table_slot, Module, Refused, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TABLE_PAGES,
+    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TABLE_PAGES, TLB_PAGES,
 };
 
 // **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
@@ -1613,7 +1613,11 @@ const FOLDED = 0x00008;
 const MARK = 0xc0ffeen;
 
 function run(path, pages) {{
-  const memory = new WebAssembly.Memory({{ initial: pages }});
+  // **La mémoire doit couvrir ce que le module déclare** : la RAM de
+  // l'invité, la correspondance, et le tampon de traduction. Un hôte qui
+  // n'en pose pas assez ne démarre pas — c'est voulu, et c'est ce que ce
+  // pilote a appris le jour où la pagination est entrée.
+  const memory = new WebAssembly.Memory({{ initial: pages + {rooms} }});
   const slots = [];
   for (let slot = 0; slot < {}; slot++) {{
     slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
@@ -1642,6 +1646,7 @@ console.log("libre.repliée " + loose[1]);
             held.to_string_lossy(),
             loose.to_string_lossy(),
             GUEST_PAGES,
+            rooms = TABLE_PAGES + TLB_PAGES,
         ),
     )
     .expect("le pilote");
@@ -1797,11 +1802,12 @@ function attempt(fill, pages) {{
   return slots[2].value.toString();
 }}
 
-console.log("remplie " + attempt(1, {pages} + {table}));
-console.log("vide " + attempt(0, {pages} + {table}));
-console.log("etrangere " + attempt(2, {pages} + {table}));
+console.log("remplie " + attempt(1, {pages} + {rooms}));
+console.log("vide " + attempt(0, {pages} + {rooms}));
+console.log("etrangere " + attempt(2, {pages} + {rooms}));
 
-// **Et une mémoire sans place pour la correspondance ne doit pas démarrer.**
+// **Et une mémoire sans place pour la correspondance ni pour le tampon de
+// traduction ne doit pas démarrer.**
 // Le module la lirait au-delà de ce qui existe, ce qui *piège* — et un piège
 // WebAssembly est sans retour. Le refus au démarrage est bruyant ; le piège
 // ne l'est pas.
@@ -1815,9 +1821,9 @@ try {{
             one = one.to_string_lossy(),
             two = two.to_string_lossy(),
             pages = PAGES,
-            table = TABLE_PAGES,
             tableName = TABLE_IMPORT,
             globals = GLOBAL_COUNT,
+            rooms = TABLE_PAGES + TLB_PAGES,
             base = table_base(PAGES),
             slot = table_slot(AWAY),
             away = AWAY,
