@@ -6560,3 +6560,59 @@ secret n'a qu'un seul endroit permis, un fichier sous `RUNNER_TEMP`.
 est vérifié d'ici est la validité du YAML, le refus de la garde sur cinq arbres
 cassés, et qu'aucun secret ne quitte `RUNNER_TEMP`. La preuve est le prochain
 envoi, et il demande d'abord les deux secrets.
+
+### Le cœur Swift gardait une base que le silicium efface
+
+Trouvée en écrivant la tranche du sélecteur nul côté émetteur, et laissée à sa
+propre tranche parce que **c'est le cœur qui tourne sur le téléphone**.
+
+`X86CoreDispatch.swift`, `case 0x8E`, rangeait le sélecteur dans
+`segments[reg]` et ne touchait **aucune** base. Après un `mov %eax,%fs` nul, ce
+cœur gardait donc l'ancienne, là où le processeur l'efface — et
+`segmentBase()` la relit à **chaque** accès `%fs:` ou `%gs:`.
+
+**La mesure, refaite ici plutôt que citée** : programme à syscalls bruts sur le
+processeur de ce conteneur. Bruts parce que passer par la libc entre les deux
+relevés toucherait `errno`, qui vit dans le TLS pointé par FS — l'instrument
+aurait cassé ce qu'il mesure.
+
+```text
+FS.base avant = 0x7f7da625f740
+xorl %eax,%eax ; movl %eax,%fs
+FS.base apres = 0x0
+```
+
+**Le test mesure la conséquence, pas la case.** Ce qui casse n'est pas qu'un
+emplacement porte un nombre : c'est qu'un accès `%fs:` atterrisse ailleurs. Deux
+témoins sont donc plantés — un à l'adresse zéro, un à l'ancienne base — et c'est
+la valeur lue qui dit laquelle le cœur a choisie. Avant la correction :
+
+```text
+("2459565876494606882") is not equal to ("1229782938247303441")
+```
+
+`0x2222…` au lieu de `0x1111…` : le cœur a lu à l'ancienne base.
+
+**Ce que la tranche ne fait pas.** Un sélecteur **non nul** ne touche à rien, et
+c'est délibéré : le silicium irait chercher la base dans un descripteur, cette
+machine n'a pas de table globale, et inventer une base serait pire que garder
+celle qu'on a. Un second test le tient.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| la base n'est plus effacée (l'état d'avant) | `testANullSelectorClearsTheSegmentBaseAsTheSiliconDoes` |
+| le test du nul inversé : c'est le sélecteur réel qui efface | celui-là **et** `testARealSelectorLeavesTheBaseAlone` |
+| FS et GS confondus | `testANullSelectorClearsTheSegmentBaseAsTheSiliconDoes` |
+| la garde de segment saute | **rien — survivant, voir plus bas** |
+
+**Le quatrième a survécu, et il cachait un vrai défaut.** Sans la garde
+`which == 4 || which == 5`, l'expression `which == 4 ? fs : gs` prend la branche
+**gs** pour tout segment qui n'est pas FS : un `mov $0,%ds` effacerait la base de
+GS. Et ce n'est pas théorique — `head_64.S` met DS, SS et ES à zéro **juste
+avant** FS et GS, dans cet ordre. Le défaut serait tombé au démarrage du premier
+noyau. `testANullSelectorInTheOtherSegmentsTouchesNoBase` le tient, et le même
+sabotage le fait maintenant tomber.
+
+**Un seul processeur ne fait pas une architecture**, et ce dépôt n'a pas d'autre
+silicium sous la main : c'est écrit dans le code pour que la prochaine mesure
+sache ce qu'elle corrige.

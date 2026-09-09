@@ -41,6 +41,108 @@ final class X86SystemTests: XCTestCase {
         XCTAssertNotEqual(extended & (1 << 29), 0)
     }
 
+    /// **Un sélecteur nul dans FS efface sa base, et le cœur la gardait.**
+    ///
+    /// **Mesuré sur le vrai processeur**, par un programme à syscalls bruts —
+    /// passer par la libc entre les deux relevés toucherait `errno`, qui vit
+    /// dans le TLS pointé par FS, donc l'instrument aurait cassé ce qu'il
+    /// mesure :
+    ///
+    /// ```text
+    /// FS.base avant = 0x7f7da625f740
+    /// xorl %eax,%eax ; movl %eax,%fs
+    /// FS.base apres = 0x0
+    /// ```
+    ///
+    /// `case 0x8E` rangeait le sélecteur dans `segments[reg]` et ne touchait
+    /// **aucune** base. Après un chargement nul, ce cœur gardait donc
+    /// l'ancienne là où le silicium l'efface — et `segmentBase()` la relit à
+    /// chaque accès préfixé.
+    ///
+    /// **Latent, pas faux.** Linux met ses segments à zéro dans `head_64.S`
+    /// quand les bases valent déjà zéro, puis pose les vraies par `wrmsr` :
+    /// rien ne mord aujourd'hui. Mais c'est deux choses qui devraient
+    /// s'accorder et qui ne s'accordent pas, et le taire parce que ça ne mord
+    /// pas encore serait le garder.
+    ///
+    /// **Le test mesure la conséquence, pas la case.** Ce qui casse n'est pas
+    /// qu'un emplacement porte un nombre : c'est qu'un accès `%fs:` atterrisse
+    /// ailleurs. Deux valeurs sont donc plantées — une à la base, une à zéro —
+    /// et c'est l'adresse lue qui dit laquelle des deux le cœur a choisie.
+    func testANullSelectorClearsTheSegmentBaseAsTheSiliconDoes() throws {
+        let base: UInt64 = 0x4_0000
+        let program: [UInt8] = [
+            0x31, 0xC0, // xor  %eax,%eax
+            0x8E, 0xE0, // mov  %eax,%fs   — le sélecteur nul
+            0x64, 0x48, 0x8B, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, // mov %fs:0x10,%rax
+            0xF4, // hlt
+        ]
+        var core = try machine(program)
+        core.system.modelSpecific[X86SystemState.fsBase] = base
+        // Deux témoins, pour que l'adresse lue se lise dans le résultat.
+        try core.memory?.write(0x10, 8, 0x1111_1111_1111_1111)
+        try core.memory?.write(base + 0x10, 8, 0x2222_2222_2222_2222)
+        try core.run(budget: 20)
+        XCTAssertEqual(
+            core.registers[0], 0x1111_1111_1111_1111,
+            "après un `mov %eax,%fs` nul, `%fs:0x10` doit lire à 0x10 — la base est effacée")
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.fsBase], 0,
+            "et la case elle-même porte zéro")
+    }
+
+    /// **Et un nul dans ES, SS ou DS ne touche aucune base non plus.**
+    ///
+    /// Ce test manquait, et un sabotage l'a montré en survivant : retirer la
+    /// garde de segment ne cassait rien. Sans elle, `which == 4 ? fs : gs`
+    /// prend la branche `gs` pour **tout** segment qui n'est pas FS — donc un
+    /// `mov $0,%ds` effacerait la base de GS.
+    ///
+    /// **Ce n'est pas théorique.** `head_64.S` met DS, SS et ES à zéro juste
+    /// avant FS et GS, dans cet ordre-là. Le défaut serait tombé au démarrage
+    /// du premier noyau, sur une base que rien n'avait demandé d'effacer.
+    ///
+    /// En mode 64 bits, la base d'ES, SS et DS est **forcée à zéro** de toute
+    /// façon : il n'y a rien à effacer pour eux, et rien à toucher chez les
+    /// autres.
+    func testANullSelectorInTheOtherSegmentsTouchesNoBase() throws {
+        let fs: UInt64 = 0x4_0000
+        let gs: UInt64 = 0x5_0000
+        let program: [UInt8] = [
+            0x31, 0xC0, // xor %eax,%eax
+            0x8E, 0xD8, // mov %eax,%ds
+            0x8E, 0xD0, // mov %eax,%ss
+            0x8E, 0xC0, // mov %eax,%es
+            0xF4, // hlt
+        ]
+        var core = try machine(program)
+        core.system.modelSpecific[X86SystemState.fsBase] = fs
+        core.system.modelSpecific[X86SystemState.gsBase] = gs
+        try core.run(budget: 20)
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.fsBase], fs,
+            "un nul dans DS, SS ou ES ne concerne pas la base de FS")
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.gsBase], gs,
+            "ni celle de GS — et c'est celle-là qu'une garde manquante effacerait")
+    }
+
+    /// **Et un sélecteur non nul ne touche pas la base.** Le silicium irait la
+    /// chercher dans un descripteur ; ce cœur n'a pas de table globale, et
+    /// inventer une base serait pire que garder celle qu'on a. Ce que la
+    /// tranche corrige est le cas **nul**, qui ne lit aucun descripteur — pas
+    /// la segmentation entière.
+    func testARealSelectorLeavesTheBaseAlone() throws {
+        let base: UInt64 = 0x4_0000
+        // b8 23 00 00 00 : mov $0x23,%eax ; 8e e0 : mov %eax,%fs ; f4 : hlt
+        var core = try machine([0xB8, 0x23, 0x00, 0x00, 0x00, 0x8E, 0xE0, 0xF4])
+        core.system.modelSpecific[X86SystemState.fsBase] = base
+        try core.run(budget: 20)
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.fsBase], base,
+            "aucune base n'est inventée quand le descripteur manque")
+    }
+
     /// Une feuille inconnue rend des **zéros**, pas les registres inchangés :
     /// laisser ce qui traînait ferait lire n'importe quoi à l'invité.
     func testAnUnknownLeafAnswersZeroRatherThanLeavingWhatWasThere() throws {
