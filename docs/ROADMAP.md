@@ -6495,3 +6495,68 @@ sabotage le fait tomber.
 
 **La liste des refus nommés n'a plus que deux entrées** : un sélecteur venu de
 la mémoire, et un segment rangé en mémoire. Deux formes que rien n'exerce.
+
+### Le certificat que le workflow redemandait à chaque envoi
+
+L'envoi TestFlight n° 28 a échoué, et pas sur le code :
+
+```text
+error: Choose a certificate to revoke. Your account has reached the
+       maximum number of certificates.
+error: No profiles for 'app.wisq.ios' were found
+```
+
+**Le dessin d'origine était délibéré, et écrit à côté du code** :
+`-allowProvisioningUpdates` avec la clé App Store Connect fabrique le profil,
+« c'est ce qui évite d'avoir à transporter un certificat dans un secret ».
+Vingt-sept envois ont marché ainsi. Le vingt-huitième a buté sur le quota
+d'Apple, parce que chaque exécution partait d'un trousseau **vide** et
+demandait un certificat neuf.
+
+**Le refus n'était pas dans le workflow : il était chez Apple.** Rien à
+corriger dans le dépôt tant qu'on gardait ce dessin — seulement des certificats
+à révoquer à la main, indéfiniment. Maxime a tranché pour le certificat stocké.
+
+Le certificat vient donc d'un secret et sert toutes les exécutions ; **le
+profil continue d'être fabriqué par la clé API**, c'est la moitié qui ne coûtait
+rien. Le trousseau vit sous `RUNNER_TEMP`, jeté avec le runner.
+
+#### La garde, et ce qu'elle a d'abord manqué
+
+Deux règles du dépôt n'étaient qu'écrites : un secret ne s'écrit jamais dans le
+dépôt, et ne s'imprime jamais. `scripts/check-signing-secrets.sh` les rend
+exécutables, et **lit la liste des secrets dans le workflow** plutôt que de la
+recopier — sinon la garde aurait à son tour besoin d'une garde.
+
+**Sa première version était creuse, et le sabotage l'a dit.** Elle cherchait le
+nom du secret — `ASC_KEY_P8` — dans les commandes. Or un bloc `env:` écrit
+`KEY_P8: ${{ secrets.ASC_KEY_P8 }}`, et le `run:` ne connaît que `$KEY_P8` :
+**trois sabotages sur quatre lui ont échappé**, et les trois mutations avaient
+bien été appliquées — vérifié par `diff`, parce qu'un survivant est souvent une
+mutation qui n'a rien changé. C'est l'alias qu'il faut suivre.
+
+| sabotage | ce que la garde dit |
+| --- | --- |
+| `APPLE_CERT_P12` n'est plus éprouvé dans « Refuser tôt » | refuse, en le nommant |
+| `APPLE_CERT_PASSWORD` non plus | refuse |
+| le `.p12` écrit dans l'arbre du dépôt | refuse |
+| le `.p12` imprimé sans redirection | refuse |
+| l'étape « Refuser tôt » ôtée | refuse |
+
+**Un cinquième sabotage a survécu, et c'est lui qui était faux** :
+`echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"` écrit dans un
+tube, pas dans le journal. Ce n'était pas un défaut, donc la garde a eu raison
+de se taire. Le remplacer par un `echo` sans redirection — une vraie fuite — la
+fait refuser.
+
+**Un premier message était faux aussi.** Le `.p12` écrit dans le dépôt était
+signalé « part sur la sortie », ce qui parle d'autre chose que du défaut. Les
+deux moitiés se disent maintenant ensemble, parce que c'est la même règle : un
+secret n'a qu'un seul endroit permis, un fichier sous `RUNNER_TEMP`.
+
+#### Ce que cette tranche ne prouve pas
+
+**Elle n'a pas été exécutée.** Il n'y a ni macOS ni compte Apple ici : ce qui
+est vérifié d'ici est la validité du YAML, le refus de la garde sur cinq arbres
+cassés, et qu'aucun secret ne quitte `RUNNER_TEMP`. La preuve est le prochain
+envoi, et il demande d'abord les deux secrets.

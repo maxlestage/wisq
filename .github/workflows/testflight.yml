@@ -13,6 +13,13 @@ name: TestFlight
 #   * une clé App Store Connect (App Store Connect → Utilisateurs et accès →
 #     Intégrations → Clés) dont l'identifiant, l'émetteur et le contenu `.p8`
 #     sont `ASC_KEY_ID`, `ASC_ISSUER_ID` et `ASC_KEY_P8` ;
+#   * un **certificat de distribution** exporté en `.p12`, encodé en base64
+#     dans `APPLE_CERT_P12`, et son mot de passe dans `APPLE_CERT_PASSWORD`.
+#     Il remplace le certificat que `-allowProvisioningUpdates` fabriquait à
+#     chaque envoi : l'envoi n° 28 a échoué sur « Your account has reached the
+#     maximum number of certificates », parce que vingt-sept exécutions
+#     partant d'un trousseau vide en avaient demandé vingt-sept. Un seul
+#     certificat sert désormais toutes les exécutions ;
 #   * une fiche d'application créée dans App Store Connect portant le
 #     `PRODUCT_BUNDLE_IDENTIFIER` du projet. L'upload ne la crée pas : sans
 #     elle il échoue en disant que l'application est introuvable.
@@ -57,11 +64,15 @@ jobs:
           KEY_ID: ${{ secrets.ASC_KEY_ID }}
           KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
         run: |
           missing=""
           [ -n "$ISSUER" ] || missing="$missing ASC_ISSUER_ID"
           [ -n "$KEY_ID" ] || missing="$missing ASC_KEY_ID"
           [ -n "$KEY_P8" ] || missing="$missing ASC_KEY_P8"
+          [ -n "$CERT_P12" ] || missing="$missing APPLE_CERT_P12"
+          [ -n "$CERT_PASSWORD" ] || missing="$missing APPLE_CERT_PASSWORD"
           if [ -n "$missing" ]; then
             echo "secrets manquants :$missing" >&2
             echo "voir l'en-tête de .github/workflows/testflight.yml" >&2
@@ -110,6 +121,55 @@ jobs:
           printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8"
           chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_$KEY_ID.p8"
 
+      - name: Le certificat de distribution, dans un trousseau jetable
+        # **Ce que l'envoi n° 28 a appris.** Le dessin d'avant laissait
+        # `-allowProvisioningUpdates` fabriquer le profil **et** le certificat,
+        # et le commentaire d'à côté s'en félicitait : « c'est ce qui évite
+        # d'avoir à transporter un certificat dans un secret ». Vingt-sept
+        # envois ont marché. Le vingt-huitième a buté sur
+        # « Your account has reached the maximum number of certificates » —
+        # chaque exécution partait d'un trousseau vide et en demandait un
+        # nouveau, jusqu'au plafond d'Apple.
+        #
+        # Le certificat vient donc d'un secret, et il n'y en a plus qu'un pour
+        # toutes les exécutions. **Le profil, lui, continue d'être fabriqué par
+        # la clé API** : c'est la moitié qui ne coûtait rien.
+        #
+        # Le trousseau vit sous `RUNNER_TEMP`, jeté avec le runner, et rien de
+        # tout ceci ne touche l'arbre du dépôt — `check-signing-secrets.sh` le
+        # tient, et l'a d'abord manqué : sa première version cherchait le nom
+        # du secret alors que le `run:` ne connaît que son alias.
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          # Le mot de passe du trousseau lui-même n'est pas un secret : il ne
+          # protège rien qui survive à l'exécution.
+          security create-keychain -p runner "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p runner "$keychain"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          # Sans cette ligne, `codesign` demanderait une autorisation à chaque
+          # signature et attendrait une réponse que personne ne donnera.
+          security set-key-partition-list -S apple-tool:,apple: -s -k runner "$keychain" > /dev/null
+          # Le trousseau par défaut, sinon `xcodebuild` ne le regarde pas.
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security default-keychain -s "$keychain"
+          # Ce qu'on a vraiment importé, sans rien révéler : le nombre et le
+          # nom commun. Zéro identité ici serait un échec silencieux à la
+          # signature, quinze minutes plus tard.
+          found=$(security find-identity -v -p codesigning "$keychain" | grep -c 'Apple Distribution' || true)
+          echo "identités de distribution dans le trousseau : $found" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$found" -eq 0 ]; then
+            echo "aucune identité « Apple Distribution » dans APPLE_CERT_P12" >&2
+            echo "un certificat de développement ne signe pas une archive App Store" >&2
+            exit 1
+          fi
+
       - name: Archive signée
         env:
           ISSUER: ${{ secrets.ASC_ISSUER_ID }}
@@ -120,8 +180,10 @@ jobs:
           scripts/build-app-icon.sh
           xcodegen generate
           # `-allowProvisioningUpdates` avec la clé API enregistre l'identifiant
-          # d'application et fabrique le profil s'ils manquent : c'est ce qui
-          # évite d'avoir à transporter un certificat dans un secret.
+          # d'application et fabrique le **profil** s'ils manquent. Il
+          # fabriquait aussi le **certificat**, et c'est ce qui a fini par
+          # saturer le compte : le certificat arrive maintenant du trousseau
+          # posé à l'étape précédente, et Xcode s'en contente.
           xcodebuild archive \
             -project Wisq.xcodeproj \
             -scheme Wisq \
