@@ -6718,3 +6718,30 @@ recherche se relâche.
 | --- | --- |
 | la garde du `if` ne dit plus rien | `elle refuse un secret lu dans un « if »` |
 | la recherche redevient trop large | **le contrôle**, `le workflow du dépôt passe` |
+
+#### Et le chiffre était enterré sous xcodebuild
+
+Le premier lancement réussi a montré le deuxième défaut de la tranche
+précédente. L'envoi n° 34 s'est arrêté là où il devait :
+
+```text
+error: Choose a certificate to revoke. Your account has reached the maximum
+number of certificates.
+error: No profiles for 'app.wisq.ios' were found
+```
+
+Deux minutes, pas quinze — l'échec tombe à `GatherProvisioningInputs`, avant
+toute compilation. Mais **le nombre de certificats était illisible** : imprimé à
+la treizième seconde, il se retrouve sous des dizaines de milliers de lignes de
+`xcodebuild`, et l'API des journaux ne sert que la **fin** d'un job.
+
+C'est exactement la leçon que l'étape « Ce que l'iPhone simulé a mesuré » avait
+déjà coûtée, et je l'ai réapprise. **Un diagnostic mal placé est un diagnostic
+qui n'existe pas** — il ressemble à un instrument, il n'en est pas un.
+
+La phrase voyage donc en **sortie d'étape** et se réimprime en dernier, sous
+`always()` : c'est précisément quand l'archive échoue sur le quota que ce nombre
+sert. Et parce qu'une sortie d'étape est une paire `clé=valeur` par ligne, un
+test tient l'autre bout — la phrase reste sur une seule ligne quel que soit le
+nombre de types que le compte porte. Le sabotage qui fait passer le détail à la
+ligne le fait tomber.

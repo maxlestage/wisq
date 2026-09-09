@@ -273,6 +273,22 @@ jobs:
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER"
 
+      - name: Ce que le compte porte en certificats — en dernier, pour être lu
+        # **La place compte autant que le chiffre.** L'étape « Ce que la clé
+        # sait » l'imprime à la treizième seconde, et `xcodebuild` verse
+        # ensuite des dizaines de milliers de lignes par-dessus ; l'API des
+        # journaux ne sert que la **fin** d'un job. Un diagnostic enterré est
+        # un diagnostic qui n'existe pas — le dépôt l'avait déjà appris avec
+        # l'étape « Ce que l'iPhone simulé a mesuré ».
+        #
+        # `always()`, parce que c'est précisément quand l'archive échoue sur
+        # « maximum number of certificates » que ce nombre sert.
+        if: always()
+        env:
+          CERTIFICATS: ${{ steps.asc.outputs.certificates }}
+        run: |
+          echo "${CERTIFICATS:-certificats sur le compte : non relevés}"
+
       - name: Ce qui a été envoyé
         run: |
           echo "build ${{ github.run_number }} depuis ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
