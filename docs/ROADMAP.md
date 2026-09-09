@@ -5859,3 +5859,83 @@ défaut, pas une relecture.
 **Ce qu'il faut en faire**, et c'est la tranche suivante : faire mesurer aux
 outils la forme confinée, et republier leurs nombres. Les laisser diverger
 ferait prendre longtemps une couverture pour une autre.
+
+### Les outils mesurent la forme confinée, et les nombres ne bougent pas
+
+`examples/coverage.rs` et `examples/first-region.rs` appellent maintenant
+`Module::resolving` et `Module::resolving_or_why` — la forme *confinée et liée*,
+celle que `LocalDesktop` fait tourner par `DesktopTranslator.resolvingRegion`.
+La section précédente annonçait que leurs chiffres décrivaient un émetteur que
+l'application n'exécute pas. C'est corrigé.
+
+**Et le résultat est un non-événement, ce qui est le résultat.** Sur le même
+`vmlinux.bin`, la même fenêtre de quatre kibioctets, les mêmes 10 116 entrées :
+
+| | forme libre (publiée jusqu'ici) | forme confinée (ce qui tourne) |
+| --- | --- | --- |
+| régions d'entrée compilées | 9 980 / 10 116 (98,7 %) | **9 980 / 10 116 (98,7 %)** |
+| régions refusées | 136 | **136** |
+| dont coupées par le bord | 91 | **91** |
+| dont refusées franchement | 45 | **45** |
+| refus nommés | 9 | **9** |
+| répartition des refus nommés | `mov-vers-segment`×6, `popf`×2, `hlt`×1 | **identique** |
+
+Zéro écart. Pas parce que les deux formes acceptent la même chose — elles ne
+l'acceptent pas, `mov …,%cr3` les sépare et un test le tient des deux côtés —
+mais parce qu'**aucune fenêtre de quatre kibioctets partant d'un début de
+fonction ne contient d'écriture de CR0 ou de CR3 qui la bloquerait à elle
+seule**. Les tables de pages se chargent sur le chemin d'entrée, pas dans le
+corps du noyau, et le corps du noyau est ce que cette sonde échantillonne.
+
+**Ce que ça règle, et ce que ça ne règle pas.** Ça règle la question posée :
+les nombres publiés valent bien pour l'émetteur de l'application, et il n'y a
+pas de correction à faire. Ça ne règle pas le défaut de méthode — la
+coïncidence n'était pas prévisible, et deux outils ont mesuré une forme pour
+une autre pendant toute une série sans que rien ne le dise. La garde est
+maintenant un test, pas une relecture :
+`only_the_confined_form_accepts_the_write_that_drives_paging`, dans
+`tests/x86_wasm.rs`, échoue si la forme libre se met à accepter `cr3`, si la
+confinée cesse de l'accepter, ou si le refus s'étend à toute la famille des
+registres de contrôle.
+
+**`first-region` imprime maintenant les deux, et c'est le vrai correctif.**
+Le basculer en silence aurait refait le défaut à l'envers : un outil qui montre
+une seule forme ne peut pas dire qu'il montre la mauvaise. C'est un *désaccord
+entre deux outils* qui a révélé celui-ci, pas une relecture ; un seul outil qui
+se contredit lui-même est plus solide que deux qu'il faut penser à comparer.
+
+Sur le point d'entrée d'Alpine (`0x1000090`, fenêtre de 16 Kio) :
+
+| | forme libre | forme confinée |
+| --- | --- | --- |
+| lecture | 454 instructions, puis l'octet 1575 (`cc`) | identique |
+| traduction | la région entière | la région entière |
+| taille du module | 2 150 octets | **3 658 octets** |
+
+Mille cinq cent huit octets de plus pour la même région : c'est la marche à
+quatre niveaux, son cache d'adresses et la vérification de faute en ligne, qui
+sont dans **chaque** module confiné, une fois. Sur une région de 454
+instructions ça fait +70 % ; sur une région de dix instructions ça ferait
+beaucoup plus, et sur les grandes beaucoup moins. Le chiffre à retenir n'est
+pas le pourcentage, c'est le coût fixe : **environ 1,5 Kio par module**.
+
+Sur `0xffffffff810000c6` — la région que `kernel-entry` réclame au tour 3, et
+celle sur laquelle la section précédente affirmait l'écart — l'outil le montre
+lui-même désormais, et la section précédente était juste :
+
+| | forme libre | forme confinée |
+| --- | --- | --- |
+| s'arrête à | l'octet **89** | l'octet **237** |
+| sur | `WriteControlRegister { 3 }` (`0f 22 d8`) | `InterruptFlag(false)` (`fa f4 eb fc`) |
+| ce que ça veut dire | pas de tables où marcher | les interruptions, le mur suivant |
+
+Cent quarante-huit octets d'instructions gagnés par le confinement, sur cette
+région-là. Sur les 10 116 entrées que `coverage` échantillonne, l'écart est
+nul — ce qui ne veut pas dire qu'il l'est partout : ces deux sondes ne
+couvrent pas le noyau entier, et le chemin d'entrée est justement ce qu'elles
+échantillonnent le moins.
+
+**Et `survey` ne prend pas de mise en forme, exprès.** Il ne traduit rien : il
+parcourt le graphe des blocs et compte les retours de main. Ce parcours est
+`discover`, qui n'a jamais vu de masque. Lui passer un nombre de pages ferait
+croire que ses chiffres en dépendent.
