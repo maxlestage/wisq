@@ -59,7 +59,11 @@ export const SLOTS = {
   translate: 47,
   translateCount: 3,
   fault: 50,
-  globalCount: 51,
+  /// **Le témoin d'arrêt.** Un après un `hlt` — le module pose ce témoin et
+  /// rend la main, plutôt que de faire refuser la région entière. C'est ici que
+  /// la délivrance d'une interruption viendra l'effacer.
+  halted: 51,
+  globalCount: 52,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -494,6 +498,15 @@ export function machine({
         // cherche justement à éviter.
         globals[SLOTS.tsc].value = BigInt.asIntN(
           64, globals[SLOTS.tsc].value + budget);
+        // **Un `hlt` s'arrête, et l'arrêt se nomme.** Continuer la boucle
+        // ferait tourner l'invité dans le `jmp -2` qui suit toujours un `hlt`,
+        // et l'écran dirait « ça tourne » d'une machine qui attend une
+        // interruption que rien ne produit. C'est ici que la délivrance
+        // viendra effacer le témoin — la sonde `--example deliver-probe` a
+        // désigné cette boucle, et c'est le même endroit.
+        if (globals[SLOTS.halted].value !== 0n) {
+          return { stopped: "arrêtée sur hlt", at: rip() };
+        }
         // **RIP inchangé ne veut pas dire bloqué**, et c'est une correction :
         // un anneau dont le budget s'épuise pile sur son point de départ
         // revient à l'adresse d'où il est parti après avoir tourné trois cents

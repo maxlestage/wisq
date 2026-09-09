@@ -95,6 +95,11 @@ pub const OF: u64 = 1 << 11;
 /// que l'arithmétique ne concerne pas, donc il survit à chaque opération.
 pub const DF: u64 = 1 << 10;
 
+/// **Le drapeau d'interruption.** `cli` l'éteint, `sti` l'allume, et `popf` le
+/// change sans le nommer. Comme DF, il survit à l'arithmétique et vit dans
+/// `other` : rien de ce qui calcule ne le touche.
+pub const IF: u64 = 1 << 9;
+
 /// Les six que l'arithmétique définit. Tout le reste — DF, IF, TF… — survit à
 /// une opération arithmétique et vit ailleurs.
 pub const ARITHMETIC: u64 = CF | PF | AF | ZF | SF | OF;

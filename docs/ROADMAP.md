@@ -6210,3 +6210,96 @@ reste 21,4 MIPS, et c'est le chiffre qui décidera de la suite — l'émetteur
 WebAssembly existe précisément pour cet écart. Cette tranche rend seulement la
 question décidable, au lieu de la laisser se jouer à pile ou face sur une
 capture d'écran.
+
+### `cli`, `sti` et `hlt` cessent de faire refuser la région entière
+
+**La mesure d'abord, et elle a corrigé le plan.** `--example kernel-entry` sur
+un vrai noyau Alpine traduit trois régions puis s'arrête :
+`0xffffffff810000c6` **ne se traduit pas**, `CannotTranslate { at: 237 }`.
+
+Le plan disait « décoder `iret` ». C'était faux. `0xcf`, `0xcc` et `0xcd` sont
+bien absents de la table, mais ce n'est pas eux qui bloquent : l'octet 237 porte
+`fa f4 eb fc` — `cli`, `hlt`, un saut sur soi-même — et ce sont **`cli` et
+`hlt`**, décodés depuis longtemps, que l'émetteur refusait en
+`x86_wasm.rs`. Une région est refusée **en entier**, donc les 237 octets qui
+précèdent ne tournaient pas non plus, alors que le noyau **atteint** cette
+région, et que le `cli; hlt` de `head_64.S` est au bout d'un chemin d'**erreur**
+dont rien ne dit qu'il est emprunté. Ce document l'écrivait déjà : « un refus de
+traduction n'est pas la preuve que le noyau y serait allé. »
+
+**Ce qui est produit, et ce qui n'est pas feint.**
+
+| instruction | ce qu'elle fait maintenant |
+| --- | --- |
+| `cli` / `sti` | posent et effacent IF dans RFLAGS — l'effet architectural exact, un bit |
+| `hlt` | pose son **témoin**, met RIP **après** l'instruction, et rend la main |
+| `popf` | **reste refusé** — il restaure *tous* les drapeaux, pas seulement IF |
+
+**`hlt` n'est pas simulé, et c'est le point.** Le module ne feint pas d'attendre
+une interruption : il pose `HALT_SLOT` et rend la main par un indice négatif —
+le chemin qu'une faute de page emprunte déjà — et `web/host.js` **nomme**
+l'arrêt : `arrêtée sur hlt`. Dire « je sais traduire ce code, et si l'exécution
+y arrive je n'ai rien pour la réveiller » est plus vrai que « je ne sais pas le
+traduire ». C'est là que la délivrance viendra effacer le témoin, à l'endroit
+que `--example deliver-probe` avait désigné.
+
+**RIP passe le `hlt`**, comme sur le silicium : une interruption reprend à
+l'instruction suivante. Le laisser dessus ferait re-exécuter l'arrêt le jour où
+quelque chose réveillera la machine — un défaut qui ne se verrait pas
+aujourd'hui, puisque rien ne réveille.
+
+### Le mur suivant, mesuré : `mov %eax,%fs`
+
+Le même outil, après la tranche :
+
+| | avant | après |
+| --- | --- | --- |
+| régions traduites | 3 | 3 |
+| la quatrième refuse à l'octet | **237** (`cli`) | **319** (`mov %eax,%fs`) |
+
+Quatre-vingt-deux octets de plus se traduisent, et le nouveau mur est **l'un des
+neuf refus nommés de ce dépôt**. Les octets, décodés :
+
+```text
+311  31 c0     xor  %eax,%eax
+313  8e d8     mov  %eax,%ds     produit — base morte en mode 64 bits
+315  8e d0     mov  %eax,%ss     produit
+317  8e c0     mov  %eax,%es     produit
+319  8e e0     mov  %eax,%fs     REFUSÉ
+321  8e e8     mov  %eax,%gs
+```
+
+Le refus est exactement celui que le code documente : charger FS ou GS relit un
+descripteur dans la table globale pour en tirer une base, et cette table
+n'existe pas ici. **Cette tranche ne le lève pas.**
+
+**Et une observation qu'il faut écrire sans agir dessus** : le sélecteur chargé
+vaut **zéro** — `xor %eax,%eax` est juste avant — et un sélecteur nul ne lit
+aucun descripteur. Le refus est donc, *à cet endroit précis*, plus large que sa
+raison. Mais l'émetteur traduit instruction par instruction et ignore au moment
+d'émettre que `eax` vaut zéro : le distinguer demanderait un contrôle à
+l'exécution, donc son propre dessin, sa propre mesure et sa propre tranche.
+L'écrire ici est ce qui empêche de le redécouvrir dans trois semaines.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| `cli` et `sti` inversés | `the_halt_loop_of_a_real_kernel_translates_and_names_its_stop` |
+| RIP reste sur le `hlt` au lieu de le dépasser | le même |
+| le témoin d'arrêt n'est jamais posé | le même |
+| l'hôte cesse de regarder le témoin | le même |
+
+Un seul test, quatre propriétés, quatre sabotages attrapés — et les deux
+fichiers vérifiés **identiques par `diff`** après restauration, parce qu'un
+harnais tué laisserait le défaut dans l'arbre.
+
+**Deux gardes-miroirs ont fait leur travail** en chemin. Ajouter une globale
+fait passer `GLOBAL_COUNT` de 51 à 52, et deux tests l'ont refusé : la sonde
+`WebKitBench.swift` déclarait encore 51 imports, et son module base64 n'était
+plus celui que l'émetteur produit. Régénérés par `--example bench-module`, comme
+le message d'erreur le dit lui-même.
+
+**Un test est devenu faux parce que le monde a changé, et il s'est réécrit.**
+`every_privileged_family_is_refused_by_name_and_not_by_silence` listait `cli`,
+`sti` et `hlt` parmi les refus. Ils en sortent, avec la raison écrite à côté —
+le même geste que pour `…_but_paging_stays_refused` en P2. Un test qui devient
+faux se réécrit sur la vérité nouvelle ; il ne se supprime pas.
