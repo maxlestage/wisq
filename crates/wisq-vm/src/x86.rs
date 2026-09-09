@@ -104,6 +104,18 @@ pub const IF: u64 = 1 << 9;
 /// une opération arithmétique et vit ailleurs.
 pub const ARITHMETIC: u64 = CF | PF | AF | ZF | SF | OF;
 
+/// **Ce que `popf` a le droit d'écrire.** Les bits réservés ne se laissent pas
+/// poser : un noyau qui relit ce qu'il vient d'empiler doit retrouver la même
+/// chose, et poser un bit que le silicium refuse ferait diverger le premier
+/// `pushf` d'après.
+///
+/// **Écrit deux fois, et gardé.** Le cœur Swift le porte dans
+/// `X86CoreDispatch.swift`, `case 0x9D` ; celui-ci est sa copie pour
+/// l'émetteur. Deux littéraux dans deux langages sont exactement la forme qui
+/// a déjà menti ici, donc `both_cores_mask_the_same_flag_bits` lit le fichier
+/// Swift plutôt que de faire confiance à la recopie.
+pub const WRITABLE_FLAGS: u64 = 0x0000_0000_003F_7FD5;
+
 /// L'opération qui a posé les drapeaux, gardée **à la place** des drapeaux.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FlagOp {

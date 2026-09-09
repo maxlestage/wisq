@@ -6412,3 +6412,86 @@ exactement la forme de défaut que ce dépôt cherche — deux choses qui devrai
 s'accorder et ne s'accordent pas — et le taire parce que ça ne mord pas encore
 serait le garder. Sa propre tranche : ce cœur-là est celui qui tourne sur le
 téléphone de Maxime en ce moment.
+
+### `popf` : le mur tombe, et la région entière se traduit
+
+La tranche précédente laissait le mur à l'octet **400**, sur `popfq` :
+
+```text
+390  b8 33 00 05 80   mov  $0x80050033,%eax
+395  0f 22 c0         mov  %rax,%cr0
+398  6a 00            push $0
+400  9d               popfq            <-- le mur
+```
+
+**La raison du refus était écrite, et elle a cessé de tenir.** Elle vivait à
+côté de `pushf` : « lire RFLAGS ne peut rien allumer, l'écrire peut rallumer le
+drapeau d'interruption **sans jamais nommer `sti`** ; un module qui accepte
+`popf` accepte un `sti` déguisé. » C'était juste tant que `sti` était refusé. Il
+est **produit** depuis la tranche du `hlt`. L'asymétrie n'a plus de raison.
+
+**Le masque vient du cœur Swift**, où il est décidé et tenu : `0x3F_7FD5`, plus
+le bit réservé. Les bits que l'émetteur ne consulte pas — IOPL, NT, AC — sont
+**rangés quand même**, parce que c'est ce que fait le silicium et ce qu'un
+`pushf` doit rendre ; les perdre ferait diverger la relecture. Ce que le masque
+écarte, le processeur l'écarte aussi.
+
+**Écrit deux fois, et gardé.** Deux littéraux dans deux langages sont exactement
+la forme qui a déjà menti dans ce dépôt, donc
+`both_cores_mask_the_same_flag_bits` **lit** `X86CoreDispatch.swift` plutôt que
+de faire confiance à la recopie.
+
+#### Ce que ça débloque, et c'est le plus gros saut de la journée
+
+| | avant | après |
+| --- | --- | --- |
+| régions traduites | 3 | **6** |
+| la région `…810000c6` | refusée à l'octet 400 | **traduite entière — 39 332 octets** |
+| l'arrêt | `CannotTranslate` | `sur place` à `0xffffffff81000642` |
+
+```text
+tour 4 : 4 régions traduites, la machine réclame 0xffffffff810000cb (32 694 octets)
+tour 5 : 5 régions traduites, la machine réclame 0xffffffff81000642 (1 314 octets)
+tour 6 : 6 régions, et plus rien à traduire — sur place
+```
+
+**Le mur change de nature.** Ce n'est plus un refus de traduction : c'est du
+code traduit, exécuté, qui atteint `eb fe` — `jmp .`, un saut sur soi-même — et
+la boucle hôte le nomme correctement plutôt que de prétendre avancer.
+
+**Ce qu'on ne sait pas, et qu'on n'invente pas** : si ce `jmp .` est un chemin
+d'erreur du noyau ou une boucle de parking. La charge utile décompressée n'a
+**aucune table de symboles** — `nm` en rend zéro — donc l'adresse ne se traduit
+pas en nom de fonction d'ici. Il faudra un noyau avec ses symboles, ou son
+`System.map`. C'est la question de la tranche suivante, pas une conclusion de
+celle-ci.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le masque saute : les bits réservés s'écrivent | `what_a_kernel_pushes_is_what_it_reads_back` |
+| le bit réservé n'est plus posé | le même |
+| RSP ne remonte pas après le `popf` | **rien — survivant, voir plus bas** |
+| le masque Rust s'écarte de celui du cœur Swift | `both_cores_mask_the_same_flag_bits` |
+
+#### Deux fautes de méthode, dans la même tranche
+
+**La première : un sabotage sur une base rouge.** Après avoir implémenté `popf`
+je n'avais lancé que `--test host_loop`, pas la suite entière. Deux tests de la
+bibliothèque disaient encore l'ancienne vérité — `popfq` listé parmi les refus,
+et « l'écriture des drapeaux n'est pas produite ». Les quatre mutations ont donc
+fait tomber **ces deux-là**, à chaque fois, et le relevé ressemblait à quatre
+sabotages attrapés. Aucun ne l'était : le rouge précédait la mutation, et le
+vrai test était masqué derrière. Les deux tests se sont réécrits sur la vérité
+nouvelle — `the_flags_make_a_round_trip_through_the_stack` — et le harnais a été
+relancé sur une base verte.
+
+**La seconde, que le sabotage a trouvée : une assertion qui avait l'air d'une
+garde.** Ne pas remonter RSP après un `popf` ne changeait **aucune** valeur lue :
+les quatre empilements et les quatre dépilements se décalent ensemble, donc les
+drapeaux restaient justes pendant que la pile fuyait d'un mot à chaque `popf`.
+Le test mesurait l'**empreinte** — ce qu'on relit — au lieu de l'**acte**. Il
+vérifie maintenant que RSP revient exactement à son point de départ, et le même
+sabotage le fait tomber.
+
+**La liste des refus nommés n'a plus que deux entrées** : un sélecteur venu de
+la mémoire, et un segment rangé en mémoire. Deux formes que rien n'exerce.
