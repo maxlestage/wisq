@@ -185,7 +185,15 @@ if (import.meta.main) {
   // Sur GitHub, ces lignes deviennent des sorties d'étape ; ailleurs elles se
   // lisent telles quelles.
   if (process.env.GITHUB_OUTPUT) {
-    writeStepOutputs(process.env.GITHUB_OUTPUT, { "team-id": teamId, "app-exists": String(hasApp) });
+    writeStepOutputs(process.env.GITHUB_OUTPUT, {
+      "team-id": teamId,
+      "app-exists": String(hasApp),
+      // **Portée en sortie pour être relue à la fin du job.** Imprimée ici,
+      // la phrase est enterrée sous les dizaines de milliers de lignes de
+      // `xcodebuild`, et l'API des journaux ne sert que la fin d'un job : le
+      // seul chiffre qui décide de la suite serait illisible là où on le lit.
+      certificates,
+    });
   }
   console.log(`équipe : ${teamId}`);
   console.log(`fiche d'application pour ${bundleId} : ${hasApp ? "présente" : "ABSENTE"}`);
