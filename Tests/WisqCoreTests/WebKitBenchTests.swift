@@ -126,7 +126,7 @@ final class WebKitBenchTests: XCTestCase {
         let sentence = WebKitBench.sentence(for: .refused("Memory import env:mem is too large"))
         XCTAssertTrue(sentence.contains("refus"),
                       "un refus doit se nommer comme tel : \(sentence)")
-        XCTAssertTrue(sentence.contains("\(WebKitBench.guestPages)"),
+        XCTAssertTrue(sentence.contains("\(WebKitBench.hostPages)"),
                       "et dire ce qui a été demandé : \(sentence)")
         XCTAssertFalse(sentence.contains("outillage"),
                        "ce n'est pas de l'outillage, c'est une réponse")
@@ -140,6 +140,66 @@ final class WebKitBenchTests: XCTestCase {
     /// globales pour un module qui en importe vingt-neuf ne rend pas un mauvais
     /// chiffre, il ne rend rien — et la sonde dirait « refusé » là où c'est une
     /// constante fausse.
+    /// **Le coût d'un accès vient des deux formes, jamais d'une seule.**
+    ///
+    /// La même boucle, confinée puis libre : l'écart de temps par tour divisé
+    /// par les deux accès d'un tour. Les nombres sont choisis pour que le
+    /// résultat se calcule à la main — 400 et 500 MIPS sur quatre instructions
+    /// font 10 et 8 ns par tour, donc 2 ns d'écart, donc 1 ns par accès.
+    func testTheCostOfAnAccessComesFromBothShapesOfTheSameLoop() {
+        let reading = WebKitBench.Reading(
+            mips: 250, bridgeMilliseconds: 1, instructions: 40_000_000,
+            memoryMips: 400, freeMemoryMips: 500)
+        let cost = try? XCTUnwrap(reading.nanosecondsPerAccess)
+        XCTAssertEqual(cost ?? 0, 1, accuracy: 1e-9,
+                       "quatre instructions à 400 et 500 MIPS : deux nanosecondes d'écart "
+                           + "par tour, deux accès par tour")
+    }
+
+    /// **Un seul relevé ne peut pas rendre le coût**, et le dire est mieux que
+    /// d'en inventer un. C'est le témoin du test d'au-dessus : sans lui,
+    /// `nanosecondsPerAccess` pourrait rendre n'importe quoi quand il manque
+    /// une forme, et personne ne le verrait.
+    func testACostIsNotInventedWhenOneOfTheTwoShapesIsMissing() {
+        let base = WebKitBench.Reading(
+            mips: 250, bridgeMilliseconds: 1, instructions: 40_000_000)
+        XCTAssertNil(base.nanosecondsPerAccess, "aucune des deux formes")
+        XCTAssertNil(
+            WebKitBench.Reading(mips: 250, bridgeMilliseconds: 1, instructions: 1,
+                                memoryMips: 400).nanosecondsPerAccess,
+            "la confinée seule")
+        XCTAssertNil(
+            WebKitBench.Reading(mips: 250, bridgeMilliseconds: 1, instructions: 1,
+                                freeMemoryMips: 500).nanosecondsPerAccess,
+            "la libre seule")
+        XCTAssertTrue(WebKitBench.accessSentence(nil).contains("n'a pas pu être relevé"))
+    }
+
+    /// **Un écart négatif se dit, il ne se borne pas à zéro.** Le confinement
+    /// sort parfois plus vite que la forme libre : c'est du bruit, et afficher
+    /// « coût nul » en ferait une conclusion.
+    func testAConfinedShapeThatCameOutFasterIsCalledNoiseAndNotZeroCost() {
+        let reading = WebKitBench.Reading(
+            mips: 250, bridgeMilliseconds: 1, instructions: 1,
+            memoryMips: 500, freeMemoryMips: 400)
+        let cost = reading.nanosecondsPerAccess ?? 0
+        XCTAssertLessThan(cost, 0, "l'écart est rendu tel quel, signe compris")
+        let phrase = WebKitBench.accessSentence(cost)
+        XCTAssertTrue(phrase.contains("sous le bruit"), phrase)
+        XCTAssertFalse(phrase.contains("0.00 ns"), "un coût nul serait une conclusion")
+    }
+
+    /// **Jamais de pourcentage.** Il supposerait que le vrai code ait la
+    /// densité de la boucle mesurée — deux accès pour quatre instructions — et
+    /// cette densité n'est écrite nulle part dans ce dépôt.
+    func testTheAccessCostIsNeverStatedAsAPercentage() {
+        for cost in [0.5, 1.0, 12.0] {
+            XCTAssertFalse(WebKitBench.accessSentence(cost).contains("%"),
+                           "une nanoseconde se reporte sur n'importe quelle densité, "
+                               + "un pourcentage sur aucune")
+        }
+    }
+
     func testTheModuleIsTheEmittersAndTheConstantsDescribeIt() {
         let module = Data(base64Encoded: WebKitBench.moduleBase64) ?? Data()
         XCTAssertEqual(Array(module.prefix(4)), [0x00, 0x61, 0x73, 0x6D],
@@ -169,7 +229,7 @@ final class WebKitBenchTests: XCTestCase {
         memoryEntry.append(0x03)
         memoryEntry.append(contentsOf: Array("mem".utf8))
         memoryEntry.append(contentsOf: [0x02, 0x00])
-        var pages = WebKitBench.guestPages
+        var pages = WebKitBench.hostPages
         while true {
             var byte = UInt8(pages & 0x7F)
             pages >>= 7
@@ -178,8 +238,8 @@ final class WebKitBenchTests: XCTestCase {
             if pages == 0 { break }
         }
         XCTAssertNotNil(module.range(of: Data(memoryEntry)),
-                        "le module doit importer exactement les \(WebKitBench.guestPages) "
-                            + "pages que la sonde crée")
+                        "le module doit importer exactement les \(WebKitBench.hostPages) "
+                            + "pages que la sonde crée — la RAM, la correspondance et le tampon")
 
         XCTAssertNotNil(module.range(of: Data("run".utf8)),
                         "le module exporte « run », c'est ce que la sonde appelle")

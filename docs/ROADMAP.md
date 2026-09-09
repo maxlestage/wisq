@@ -6828,3 +6828,89 @@ apostrophes, et la première apostrophe française d'un commentaire fermait la
 chaîne : « n'a » était devenu « na », « c'est » « cest ». Le fichier tournait
 quand même, ce qui est la mauvaise nouvelle. Il arrive maintenant par un heredoc
 entre apostrophes, qui ne cite rien et n'interprète rien.
+
+## La sonde de l'iPhone mesurait la forme libre, sur la boucle sans mémoire
+
+La tranche #174 a corrigé `examples/speed.rs` — les deux formes, les deux
+boucles — et **a laissé la sonde de l'appareil derrière**. `WebKitBench` portait
+un seul module : `Module::region`, la forme **libre**, engendré sur `BENCH_LOOP`,
+cinq instructions de registres sans un seul accès mémoire.
+
+C'est la seule combinaison qui ne pouvait rien montrer. L'application n'exécute
+que `Module::resolving`, et tout ce que le confinement ajoute — le masque, la
+marche dans les tables, le tampon consulté en ligne — est **sur les accès
+mémoire**. #174 l'avait écrit noir sur blanc : « corriger la forme sans changer
+la boucle rendrait *aucune différence*, ce qui serait vrai et sans rapport ». Il
+fallait donc les deux, et la sonde en porte maintenant **trois** :
+
+| chaîne | forme | boucle | ce qu'elle répond |
+| --- | --- | --- | --- |
+| `moduleBase64` | confinée | registres | le débit représentatif |
+| `memoryModuleBase64` | confinée | mémoire | — |
+| `freeMemoryModuleBase64` | **libre** | mémoire | — |
+
+Les deux dernières ne valent qu'ensemble : leur écart est ce que le confinement
+coûte par accès **sur cet appareil-là**. Un seul relevé confiné ne peut pas le
+rendre, et soustraire deux boucles différentes mélangerait le coût d'un accès et
+celui d'un jeu d'instructions.
+
+Le script entier de la sonde, extrait de la vue et exécuté sous Bun :
+
+```text
+mips           244   (confinée, registres)
+memoryMips     379   (confinée, mémoire)
+freeMemoryMips 525   (libre, mémoire)
+```
+
+soit **≈ 1,46 ns par accès**, dans l'intervalle de 0,50 à 1,70 que #174 avait
+relevé sur ce conteneur. Ce n'est pas la mesure qui compte ici — c'est que la
+sonde puisse enfin la rendre depuis un téléphone, où le JavaScriptCore n'est pas
+celui-ci.
+
+**Aucun pourcentage, et c'est tenu par un test.** Un pourcentage supposerait que
+le vrai code ait la densité de la boucle mesurée — deux accès pour quatre
+instructions — et cette densité n'est écrite nulle part dans ce dépôt.
+
+**Ce que la sonde demande a changé, et c'est une réponse.** La forme confinée
+déclare 16 384 pages de RAM invitée (une puissance de deux, que le masque
+exige, et la première qui atteigne `BENCH_BASE`), plus la correspondance adresse
+→ indice, plus le tampon : **16 401 pages, 1026 Mio**, contre 768 auparavant.
+Le nombre vient de `host_pages()`, jamais d'une addition sur place — un pilote
+qui l'a refaite a déjà manqué la page du tampon et sortait avec zéro.
+
+### Deux modules confinés au même créneau s'écrasent en silence
+
+**Le défaut le plus intéressant de la tranche, et rien dans la CI ne l'a vu.**
+Les blocs de toutes les régions vivent dans une table commune, et un module y
+pose les siens à partir du créneau qu'on lui donne. Les deux modules confinés
+sont d'abord partis au créneau 0 — et dès que le second était instancié à côté,
+le premier cessait d'exécuter quoi que ce soit : `run` rendait la main aussitôt,
+sans piège, sans message, RIP à zéro.
+
+Ce n'est pas une relecture qui l'a trouvé. Le script de la vue a été **extrait
+de la vue et exécuté sous Bun** — la vue est du SwiftUI que Linux ne compile pas
+— et il a rendu « le module ne calcule pas comme le modèle ». Le témoin qui a
+tranché est le contrôle : n'instancier qu'un seul module confiné, et l'oracle
+repasse.
+
+Chaque boucle fait un bloc, relevé par `Module::survey`, donc les créneaux 0 et
+1 suffisent. Et le pinning octet pour octet de `webkit_probe.rs` **attrape** le
+défaut : remettre les deux au créneau 0 fait tomber deux tests, dont celui qui
+dit « memoryModuleBase64 n'est plus celui que l'émetteur produit ».
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le coût divisé par les instructions au lieu des accès | `testTheCostOfAnAccessComesFromBothShapesOfTheSameLoop` |
+| un relevé manquant ne rend plus `nil` | `testACostIsNotInventedWhenOneOfTheTwoShapesIsMissing` |
+| un écart négatif borné à zéro | `testAConfinedShapeThatCameOutFasterIsCalledNoiseAndNotZeroCost` |
+| le coût annoncé en pourcentage | `testTheAccessCostIsNeverStatedAsAPercentage` |
+| les deux confinés remis au créneau 0 | `bench_module_matches_the_probe` **et** `the_probe_carries_two_confined_modules_and_one_free` |
+
+**Un écart négatif se dit tel quel.** Le confinement sort parfois plus vite que
+la forme libre ; borner à zéro afficherait « coût nul », qui est une conclusion,
+là où c'est une mesure sous le bruit.
+
+**Ce que cette tranche ne prouve pas.** Elle n'a pas tourné sur un iPhone. Tout
+ce qui est mesuré ci-dessus l'a été sous le JavaScriptCore de Bun, sur ce
+conteneur ; ce que la sonde rendra sur un téléphone — à commencer par savoir si
+un WKWebView accorde 1026 Mio — reste la question qu'elle existe pour poser.

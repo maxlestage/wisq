@@ -12,7 +12,9 @@
 //! tourne sur Linux, à chaque commit, sans chaîne Swift.
 use std::path::{Path, PathBuf};
 use wisq_vm::x86_wasm::{
-    Module, BENCH_BASE, BENCH_LOOP, BENCH_PER_TURN, GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
+    host_pages, Module, BENCH_BASE, BENCH_CONFINED_PAGES, BENCH_LOOP,
+    BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, BENCH_PER_TURN,
+    GLOBAL_COUNT, GUEST_PAGES, RIP_SLOT,
 };
 
 fn probe() -> (PathBuf, String) {
@@ -93,20 +95,113 @@ fn number(text: &str, name: &str) -> u64 {
     }
 }
 
+/// **Les trois modules, chacun contre ce que l'émetteur produit.**
+///
+/// La sonde n'en portait qu'un, et sous la forme **libre** : l'application
+/// n'exécute que `Module::resolving`, et la boucle de registres ne touche pas
+/// la mémoire, où est tout le surcoût du confinement. Le chiffre de l'appareil
+/// décrivait donc une forme qu'il ne lancera jamais, sur la seule boucle
+/// incapable de le montrer.
 #[test]
 fn bench_module_matches_the_probe() {
-    let wanted =
-        Module::region(&BENCH_LOOP, BENCH_BASE, 0).expect("l'émetteur traduit la boucle du banc");
+    let attendus: [(&str, Vec<u8>); 3] = [
+        (
+            "moduleBase64",
+            Module::resolving(&BENCH_LOOP, BENCH_BASE, 0, 0, BENCH_CONFINED_PAGES)
+                .expect("la boucle de registres, confinée"),
+        ),
+        (
+            "memoryModuleBase64",
+            Module::resolving(&BENCH_MEMORY_LOOP, BENCH_BASE, 0, 1, BENCH_CONFINED_PAGES)
+                .expect("la boucle mémoire, confinée"),
+        ),
+        (
+            "freeMemoryModuleBase64",
+            Module::region(&BENCH_MEMORY_LOOP, BENCH_BASE, 0).expect("la boucle mémoire, libre"),
+        ),
+    ];
     let (path, text) = probe();
-    let carried = decode(&literal(&text, "moduleBase64")).expect("du base64 lisible");
+    for (name, wanted) in attendus {
+        let carried = decode(&literal(&text, name)).expect("du base64 lisible");
+        assert_eq!(
+            carried,
+            wanted,
+            "{name} de {} n'est plus celui que l'émetteur produit ({} octets contre {}). \
+             Le réécrire : cargo run -p wisq-vm --release --example bench-module",
+            path.display(),
+            carried.len(),
+            wanted.len()
+        );
+    }
+}
+
+/// **Les trois ne servent que sous la même forme et sur les mêmes boucles.**
+///
+/// Deux confinés et un libre : c'est cette dissymétrie qui rend le coût par
+/// accès. Un jour où les trois deviendraient confinés, l'écart disparaîtrait
+/// et la sonde rendrait « rien de mesurable » sans que rien ne le dise.
+#[test]
+fn the_probe_carries_two_confined_modules_and_one_free() {
+    let (_, text) = probe();
+    let libre = Module::region(&BENCH_MEMORY_LOOP, BENCH_BASE, 0).expect("la forme libre");
+    let confine = Module::resolving(&BENCH_MEMORY_LOOP, BENCH_BASE, 0, 1, BENCH_CONFINED_PAGES)
+        .expect("la forme confinée");
+    assert_ne!(
+        libre, confine,
+        "les deux formes de la même boucle rendent les mêmes octets : \
+         l'écart que la sonde mesure ne peut plus rien coûter"
+    );
+    let porte = |name: &str| decode(&literal(&text, name)).expect("du base64 lisible");
+    assert_eq!(porte("memoryModuleBase64"), confine);
+    assert_eq!(porte("freeMemoryModuleBase64"), libre);
+}
+
+/// **Deux modules confinés ne peuvent pas partager un créneau de table.**
+///
+/// Les blocs de toutes les régions vivent dans la même table, et un module y
+/// pose les siens à partir de son créneau. Deux modules au même créneau
+/// s'écrasent : le second instancié remplace les entrées du premier, qui saute
+/// alors dans le code de l'autre — sans piège et sans message, `run` rend la
+/// main aussitôt. C'est exactement ce qui est arrivé, et rien ne l'a dit avant
+/// que la sonde entière ne soit exécutée sous Bun.
+///
+/// Ce test compare les blocs relevés au pas entre les deux créneaux : tant que
+/// la boucle de registres tient dans un seul bloc, le créneau 1 est libre.
+#[test]
+fn the_two_confined_modules_do_not_share_a_table_slot() {
+    let registres = Module::survey(&BENCH_LOOP, 0).expect("le relevé de la boucle de registres");
+    assert!(
+        registres.blocks <= 1,
+        "la boucle de registres occupe {} blocs : le module mémoire, posé au créneau 1, \
+         écraserait les siens",
+        registres.blocks
+    );
+}
+
+/// **Ce que l'hôte alloue ne se recalcule pas dans la sonde.**
+///
+/// La RAM, la correspondance adresse → indice et le tampon : trois nombres, une
+/// seule addition, et elle vit dans la bibliothèque. Un pilote qui l'a refaite
+/// lui-même a manqué la page du tampon, ne s'instanciait plus, et sortait avec
+/// zéro — personne ne l'a vu pendant toute une série de tranches.
+#[test]
+fn the_probe_asks_for_what_host_pages_says() {
+    let (_, text) = probe();
     assert_eq!(
-        carried,
-        wanted,
-        "le module de {} n'est plus celui que l'émetteur produit ({} octets contre {}). \
-         Le réécrire : cargo run -p wisq-vm --release --example bench-module",
-        path.display(),
-        carried.len(),
-        wanted.len()
+        number(&text, "confinedPages"),
+        u64::from(BENCH_CONFINED_PAGES)
+    );
+    assert_eq!(
+        number(&text, "hostPages"),
+        u64::from(host_pages(BENCH_CONFINED_PAGES))
+    );
+    assert_eq!(
+        number(&text, "memoryInstructionsPerTurn"),
+        BENCH_MEMORY_PER_TURN
+    );
+    assert_eq!(
+        number(&text, "memoryAccessesPerTurn"),
+        BENCH_MEMORY_ACCESSES_PER_TURN
     );
 }
 
@@ -116,7 +211,6 @@ fn the_probe_declares_what_the_module_imports() {
     // Un module qui importe vingt-neuf globales et qu'on instancie avec
     // vingt-huit ne démarre pas : la sonde rendrait « l'appareil a refusé » là
     // où c'est une dérive entre deux fichiers du dépôt.
-    assert_eq!(number(&text, "guestPages"), u64::from(GUEST_PAGES));
     assert_eq!(number(&text, "globalCount"), GLOBAL_COUNT as u64);
     assert_eq!(number(&text, "ripSlot"), RIP_SLOT as u64);
     assert_eq!(number(&text, "benchBase"), BENCH_BASE);

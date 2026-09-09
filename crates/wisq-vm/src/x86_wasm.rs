@@ -517,6 +517,24 @@ pub const BENCH_MEMORY_PER_TURN: u64 = 4;
 /// une écriture.
 pub const BENCH_MEMORY_ACCESSES_PER_TURN: u64 = 2;
 
+/// **La RAM déclarée quand un banc mesure la forme confinée**, en pages de
+/// 64 Kio — 0x4000 pages, soit un gibioctet.
+///
+/// Une puissance de deux, parce que le repliement est un masque et qu'un
+/// masque ne borne rien d'autre. Et pas moins : la région du banc vit à
+/// `BENCH_BASE`, 0x3000_0000, donc la RAM doit au moins l'atteindre, et la
+/// puissance de deux suivante est 0x4000.
+///
+/// **Elle vit ici pour la même raison que la boucle.** Trois programmes la
+/// posent — `examples/speed.rs`, `examples/bench-module.rs` et la sonde WebKit
+/// de l'application — et trois copies dériveraient sans bruit : l'iPhone
+/// rendrait alors un chiffre qu'on croirait comparable à celui de la CI.
+///
+/// Ce que l'hôte doit **allouer** n'est pas ce nombre mais `host_pages()` de ce
+/// nombre : la RAM, plus la correspondance adresse → indice, plus le tampon.
+/// L'addition ne se refait jamais sur place.
+pub const BENCH_CONFINED_PAGES: u32 = 0x4000;
+
 /// L'adresse invitée où le banc charge la boucle. Elle n'est pas décorative :
 /// l'émetteur y fige les adresses de retour et les sauts.
 pub const BENCH_BASE: u64 = 0x3000_0000;
