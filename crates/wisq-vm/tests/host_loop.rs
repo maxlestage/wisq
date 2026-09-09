@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wisq_vm::x86_wasm::{
-    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, GLOBAL_COUNT, RIP_SLOT, TABLE_ENTRY, TABLE_PAGES,
-    TABLE_SLOTS,
+    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, GLOBAL_COUNT, RFLAGS_SLOT, RIP_SLOT, TABLE_ENTRY,
+    TABLE_PAGES, TABLE_SLOTS,
 };
 
 fn workspace_root() -> PathBuf {
@@ -639,6 +639,132 @@ console.log("cr0 " + lire(7));
         line("cr0 "),
         0,
         "CR0 n'a jamais été écrit : il ne peut porter ni CR4 ni CR3"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`cli`, `sti` et `hlt` ne font plus refuser la région entière.**
+///
+/// **D'où ça vient, et c'est une mesure.** `--example kernel-entry` traduit
+/// trois régions d'un vrai noyau Alpine puis s'arrête :
+/// `0xffffffff810000c6` ne se traduit pas, `CannotTranslate { at: 237 }`.
+/// L'octet 237 porte `fa f4 eb fc` — `cli`, `hlt`, et un saut sur soi-même :
+/// la boucle d'arrêt que `head_64.S` place au bout de son chemin d'erreur.
+///
+/// **Une région est refusée en entier**, donc les 237 octets qui précèdent ne
+/// s'exécutaient pas non plus — alors que le noyau **atteint** cette région, et
+/// que rien ne dit qu'il irait jusqu'à ce `hlt`, qui est au bout d'un chemin
+/// d'erreur. La feuille de route l'écrivait déjà : « un refus de traduction
+/// n'est pas la preuve que le noyau y serait allé ».
+///
+/// **Ce qui est produit, et ce qui ne l'est pas.** `cli` et `sti` posent et
+/// effacent IF, l'effet architectural exact : un bit, rien de feint. `hlt`,
+/// lui, n'est pas simulé — il **s'arrête et le dit**, en posant son témoin et
+/// en rendant la main. C'est plus honnête que le refus d'avant, qui affirmait
+/// « je ne sais pas traduire ce code » quand la vérité est « je sais, et si
+/// l'exécution arrive là je n'ai rien pour la réveiller ».
+///
+/// `popf` reste refusé : il restaure **tous** les drapeaux, pas seulement IF,
+/// et c'est une autre question.
+#[test]
+fn the_halt_loop_of_a_real_kernel_translates_and_names_its_stop() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00, // movq $42, %rax
+        0xfb, // sti — IF allumé
+        0xfa, // cli — puis éteint
+        0xfb, // sti — et rallumé, pour que le drapeau se lise posé
+        0xf4, // hlt — l'arrêt qui doit se nommer
+        0xeb, 0xfe, // jmp -2 : la boucle où le silicium tournerait
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-hlt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES)
+        .expect("la boucle d'arrêt de head_64.S doit se traduire, pas faire refuser la région");
+    let path = scratch.join("hlt.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rax " + lire(0));
+console.log("rflags " + lire({rflags}));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            rflags = RFLAGS_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    // **L'arrêt porte un nom, et ce n'est pas « refusée ».** Un `hlt` sans rien
+    // pour réveiller la machine est un fait à énoncer, pas une panne de
+    // traduction : les deux ne se corrigent pas au même endroit.
+    assert_eq!(
+        text.lines().next(),
+        Some("arret arrêtée sur hlt"),
+        "l'arrêt doit se nommer : {text}"
+    );
+    // Le début de la région s'exécute — c'est tout ce que le refus d'avant
+    // empêchait, et le noyau y arrive.
+    assert_eq!(
+        line("rax "),
+        42,
+        "les instructions d'avant le `hlt` tournent"
+    );
+    // **IF est un vrai bit**, pas un vœu : `sti` le pose, `cli` l'efface, et
+    // c'est le dernier des trois qui décide.
+    assert_eq!(
+        line("rflags ") & (1 << 9),
+        1 << 9,
+        "le dernier `sti` laisse IF posé : {text}"
+    );
+    // **RIP est passé le `hlt`.** Sur le silicium, une interruption reprend à
+    // l'instruction *suivante* ; laisser RIP sur le `hlt` ferait re-exécuter
+    // l'arrêt le jour où quelque chose réveillera la machine.
+    assert_eq!(
+        line("rip "),
+        BASE + 11,
+        "RIP doit avoir dépassé le `hlt`, pas rester dessus : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
