@@ -5758,3 +5758,41 @@ qu'on regarde qui la porte.
 **Ce que ce relevé ne dit toujours pas** : il compile. Il n'exécute pas. La
 distance qui reste tient en une phrase — l'hôte sait résoudre une région par son
 adresse, et cette adresse est virtuelle.
+
+### Le mur du demi-haut est plus bas que je ne l'ai écrit — et c'est un accident
+
+La tranche précédente concluait : « un noyau dont le texte vit à
+`0xffffffff8…` ne pourra pas être exécuté par l'émetteur tant que RIP sera
+traité comme physique ». **C'est trop fort, et il faut le corriger avant que ça
+durcisse en doctrine.**
+
+`web/host.js` ne cherche pas les octets d'une région à l'adresse brute : `read`
+**replie** l'adresse par le masque de la RAM, exactement comme `guest()` le
+faisait pour les données, puis lit dans la RAM invitée. Or Linux pose
+`__START_KERNEL_map = 0xffffffff80000000` et charge son texte à l'adresse
+physique `0x1000000`. Le repli soustrait donc précisément ce qu'il faut — tant
+que le masque a entre 25 et 31 bits :
+
+| RAM déclarée | masque | repli de `0xffffffff81000090` | tombe sur `0x1000090` ? |
+| --- | --- | --- | --- |
+| 16 Mio | `0x00ffffff` | `0x00000090` | non — le noyau n'y tiendrait pas |
+| 32 Mio à 2 Gio | `0x01ffffff` … `0x7fffffff` | `0x01000090` | **oui** |
+| 4 Gio et au-delà | `0xffffffff` … | `0x81000090` | non |
+
+**C'est une coïncidence, pas une conception**, et elle doit être écrite comme
+telle : elle tient parce que le masque efface exactement les bits que
+`__START_KERNEL_map` ajoute. Un noyau lié ailleurs, ou une RAM de quatre
+gibioctets, la perd.
+
+**Et elle ne couvre que le texte.** La lecture d'instruction est le seul chemin
+qui replie encore ; les **données** passent par la marche depuis la tranche P2.
+Le direct map de Linux — `0xffff888…` — se replierait n'importe où, mais aucune
+lecture d'instruction ne le vise. La coïncidence couvre donc peut-être
+exactement le cas qui compte.
+
+**Ce qui reste à mesurer, et qui n'est pas de l'arithmétique** : est-ce que la
+région d'entrée, compilée à sa base virtuelle et posée à son adresse physique,
+**tourne** sous la boucle hôte, et jusqu'où. Rien de ce qui précède ne le dit —
+c'est un calcul sur les adresses, pas une exécution. Le faire est la tranche
+suivante, et elle commencera par un montage qui échoue plutôt que par un qui
+passe.
