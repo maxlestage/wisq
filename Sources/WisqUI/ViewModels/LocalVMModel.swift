@@ -24,6 +24,23 @@ public final class LocalVMModel {
     }
 
     public private(set) var status: Status = .idle
+
+    /// **Ce que la machine fait en ce moment, en une phrase.**
+    ///
+    /// `nil` quand il n'y a rien à dire : machine à l'arrêt, ou cœur qui ne
+    /// publie pas encore son avancement. `nil` plutôt qu'une phrase vide, et
+    /// plutôt qu'un zéro : « aucune instruction » sur un cœur qui n'en compte
+    /// pas se lirait « c'est bloqué », ce qui est l'exacte confusion que cette
+    /// ligne existe pour lever.
+    public private(set) var heartbeat: String?
+
+    /// Le battement qui relit la machine pendant qu'elle tourne.
+    ///
+    /// **Il faut une horloge, et pas un rappel.** Tout ce que la vue reçoit
+    /// aujourd'hui vient de la console : un invité qui n'écrit plus ne
+    /// déclenche donc plus rien du tout, et c'est précisément lui qu'il faut
+    /// pouvoir regarder.
+    private var ticker: Task<Void, Never>?
     /// Console text, ANSI-stripped and line-edited, bounded in lines.
     public private(set) var consoleText = ""
 
@@ -243,6 +260,7 @@ public final class LocalVMModel {
             }
         }
         self.machine = machine
+        beat(machine)
 
         // The emulator owns a whole thread for its lifetime: it is a CPU, not a
         // callback. The quality of service is explicit because the default lets
@@ -536,6 +554,36 @@ public final class LocalVMModel {
         }
     }
 
+    /// **Relire la machine une fois par seconde, et en faire une phrase.**
+    ///
+    /// La lecture passe par `liveProgress`, que le fil d'émulation publie sous
+    /// verrou : lire `retiredInstructions` d'ici serait une course, sur un
+    /// nombre qui change à chaque instruction.
+    ///
+    /// **Une seconde, et pas dix fois par seconde.** Ce qu'on cherche à voir
+    /// est un ordre de grandeur et un blocage, pas une aiguille qui tremble ;
+    /// et chaque tour réveille l'affichage sur un téléphone dont l'autonomie
+    /// est celle de la personne qui regarde.
+    private func beat(_ machine: GuestMachine) {
+        ticker?.cancel()
+        heartbeat = nil
+        ticker = Task { @MainActor [weak self] in
+            var previous: GuestProgress?
+            var previousAt = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self, self.machine === machine else { return }
+                // Un cœur qui ne publie pas se tait — voir `liveProgress`.
+                guard let now = machine.liveProgress else { return }
+                let at = Date()
+                self.heartbeat = GuestHeartbeat.line(
+                    now: now, since: previous, seconds: at.timeIntervalSince(previousAt))
+                previous = now
+                previousAt = at
+            }
+        }
+    }
+
     /// **Un message écrit pour une personne, replié avant d'entrer dans la
     /// grille.**
     ///
@@ -547,6 +595,12 @@ public final class LocalVMModel {
     private func finish(with message: String) {
         machine = nil
         runFinished = nil
+        // La ligne d'état s'éteint avec la machine : un battement figé après
+        // l'arrêt dirait « bloquée » là où le message entre crochets vient de
+        // dire ce qui s'est passé.
+        ticker?.cancel()
+        ticker = nil
+        heartbeat = nil
         // L'état, lui, garde le message **intact** : il n'est pas destiné à une
         // grille, et le replier ici y poserait des retours à la ligne qu'aucune
         // vue ne demande.
