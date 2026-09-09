@@ -5796,3 +5796,66 @@ région d'entrée, compilée à sa base virtuelle et posée à son adresse physi
 c'est un calcul sur les adresses, pas une exécution. Le faire est la tranche
 suivante, et elle commencera par un montage qui échoue plutôt que par un qui
 passe.
+
+### Trois régions d'un vrai noyau s'exécutent, et le mur suivant a un nom
+
+`crates/wisq-vm/examples/kernel-entry.rs` prend la charge utile décompressée
+d'un `bzImage`, lit ses en-têtes de programme pour trouver le point d'entrée,
+pose le texte à son adresse physique dans la RAM invitée, et **fait tourner la
+machine sous `web/host.js`** — le vrai hôte, pas un pilote de circonstance.
+
+Il donne une région par tour et recommence depuis le début : le pilote est en
+JavaScript, l'émetteur en Rust, et rien ne les relie à l'exécution. C'est
+quadratique et sans importance — l'outil mesure une distance, pas une vitesse.
+
+Sur Alpine 3.20, RAM déclarée de 64 Mio :
+
+| tour | ce qui se passe |
+| --- | --- |
+| 1 | la région d'entrée **s'exécute**, la machine réclame `0xffffffff81bcca30` |
+| 2 | celle-là aussi, la machine réclame `0xffffffff810000ba` |
+| 3 | et celle-là, puis `0xffffffff810000c6` **ne se traduit pas** |
+
+**Trois régions d'un vrai noyau exécutées sous JavaScriptCore.** RSP passe de
+`0xffffffff82403f50` à `…3f48` : le noyau a posé sa pile et empilé quelque
+chose. C'est la première fois que ce chemin porte autre chose que des régions
+écrites à la main.
+
+**Ce qui arrête la quatrième**, à l'octet 237 : `fa f4 eb fc` — `cli`, `hlt`,
+puis un saut sur soi-même. La boucle d'arrêt que `head_64.S` place au bout de
+son chemin d'entrée. `cli` et `hlt` sont refusés **exprès**, parce qu'aucune
+interruption n'est délivrée, et `docs/DEMARRAGE.md` l'annonçait : « les
+interruptions sont le deuxième mur ». Le premier est tombé ; le second est là,
+nommé, à l'octet près.
+
+**À noter, parce que ça change la lecture** : une région est refusée **en
+entier**. L'exécution n'atteindrait peut-être jamais ce `cli` — il est au bout
+d'un chemin d'erreur — mais il est dans la région, donc la région ne se traduit
+pas. Un refus de traduction n'est pas la preuve que le noyau y serait allé.
+
+### Les outils de mesure ne mesurent pas l'émetteur que l'application exécute
+
+**C'est le vrai défaut trouvé en chemin, et il est structurel.**
+
+Depuis la tranche P2, la pagination — et avec elle l'acceptation de `mov vers
+cr0` et `cr3` — n'existe **que sous confinement** : c'est le confinement qui
+ouvre la place où vivent les tables et le tampon. Or :
+
+| | forme employée | écrire CR3 |
+| --- | --- | --- |
+| `examples/coverage.rs`, `examples/first-region.rs` | `Module::region`, **non confinée** | **refusé** |
+| l'application, `Module::resolving` | **confinée** | accepté |
+
+Les chiffres publiés par `coverage` — 9 980 régions d'entrée, 9 refus nommés —
+décrivent donc un émetteur que l'application **n'exécute pas**. Ils ne sont pas
+faux, ils ne mesurent pas la bonne chose.
+
+C'est visible à l'œil nu dans le relevé ci-dessus : `first-region` sur la
+région `0xffffffff810000c6` s'arrête à l'octet 89 sur `WriteControlRegister { 3 }`,
+là où `kernel-entry`, qui confine, va jusqu'à l'octet 237. **Deux outils, le
+même noyau, deux murs différents** — et c'est ce désaccord qui a révélé le
+défaut, pas une relecture.
+
+**Ce qu'il faut en faire**, et c'est la tranche suivante : faire mesurer aux
+outils la forme confinée, et republier leurs nombres. Les laisser diverger
+ferait prendre longtemps une couverture pour une autre.
