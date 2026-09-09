@@ -6013,3 +6013,78 @@ Et `BENCH_LOOP` est cinq instructions de registres, **sans un seul accès
 mémoire** : or tout le surcoût de la forme confinée est sur les accès mémoire.
 Corriger la forme sans changer la boucle rendrait « aucune différence », ce qui
 serait vrai et sans rapport avec ce que le bureau ressentira. Il faut les deux.
+
+### Les bancs mesuraient la mauvaise forme, sur la seule boucle qui ne pouvait rien montrer
+
+**Deux défauts qui se cachaient l'un l'autre**, et le second est le pire.
+
+Le premier : `examples/speed.rs` — d'où viennent les **247 MIPS** cités partout
+— émettait `Module::region`, la forme **libre**. L'application n'exécute que
+`Module::resolving`, la confinée. Même défaut que celui fermé pour `coverage` et
+`first-region`, sur les chiffres de vitesse cette fois.
+
+Le second : `BENCH_LOOP` est **cinq instructions de registres, sans un seul
+accès mémoire**. Or tout ce que la forme confinée ajoute — le test du bit de
+pagination, le tampon consulté en ligne, la vérification de faute — est sur les
+accès mémoire. Corriger la forme sans changer la boucle aurait rendu « aucune
+différence » : vrai, et sans le moindre rapport avec ce que le bureau fera
+tourner. **Il fallait les deux.**
+
+`BENCH_MEMORY_LOOP` vit maintenant à côté de `BENCH_LOOP`, dans la
+bibliothèque, pour que la sonde de l'iPhone puisse la reprendre :
+
+```text
+1: movq (%rdi), %rax     ; une lecture
+   movq %rax, (%rdi)     ; et une écriture — `load_at` et `store_at` ne sont
+   subq $1, %rsi         ;   pas le même chemin dans `guest()`
+   jnz 1b
+```
+
+**Ce que les quatre cases rendent**, sous JavaScriptCore (Bun), sur ce
+conteneur :
+
+| boucle | forme libre | forme confinée |
+| --- | --- | --- |
+| registres seuls (5 instructions) | ~322–345 MIPS | ~318–344 MIPS |
+| une lecture et une écriture (4 instructions) | ~606–647 MIPS | ~406–526 MIPS |
+
+Et ce qu'on en déduit :
+
+| boucle | ce que le confinement coûte |
+| --- | --- |
+| registres seuls | **rien de mesurable** — l'écart change de signe d'une exécution à l'autre |
+| une lecture et une écriture | **environ 1 ns par accès mémoire** |
+
+**Le chiffre est un ordre de grandeur, et le banc le dit.** Huit exécutions ont
+rendu de **0,50 à 1,70 ns par accès**, médiane autour de 1,05. Chaque case
+annonce pourtant 0 à 3 % de tremblement : les deux relevés d'une même case sont
+dos à dos et partagent la charge de la machine, donc ils s'accordent bien mieux
+que deux exécutions du programme. Le banc imprime maintenant cet avertissement
+plutôt que de laisser son tremblement interne passer pour de la précision.
+
+**Aucun pourcentage n'est publié, et c'est une règle.** Un pourcentage
+supposerait que le vrai code ait la densité de cette boucle — deux accès pour
+quatre instructions — et cette densité n'est écrite nulle part dans ce dépôt.
+Une nanoseconde par accès se reporte sur n'importe quelle densité ; un
+pourcentage ne se reporte sur rien.
+
+**Ce que ce chiffre ne contient pas** : la marche dans les tables. La pagination
+est éteinte pendant ce banc — CR0.PG est à zéro — donc ce nanoseconde-ci est le
+prix **toujours payé** : lire la globale de contrôle, tester le bit, replier par
+le masque. Le coût de la marche elle-même a été mesuré à part par
+`examples/paging-probe.rs` : +0,23 ns sur un balayage court, +0,47 sur un long,
++26,43 sur une nouvelle page à chaque accès.
+
+**Deux gardes tiennent les deux boucles**, parce qu'une « boucle mémoire » sans
+accès mémoire serait le même défaut d'un cran au-dessus :
+
+| test | ce qu'il refuse |
+| --- | --- |
+| `the_memory_bench_loop_really_touches_memory` | la boucle mémoire cesse de toucher la mémoire, le compte annoncé ment, ou le saut ne revient pas à l'entrée |
+| `the_historic_bench_loop_touches_no_memory_at_all` | `BENCH_LOOP` gagne un accès — les deux bancs se confondraient alors |
+
+Quatre sabotages, quatre attrapés, et chacun vérifié **nommément** : le premier
+décompte avait l'air bon parce que le `grep` comptait aussi la ligne
+« test result: FAILED ». Un instrument qui compte mal est le défaut que cette
+tranche entière traite ; le voir dans sa propre vérification était le bon
+rappel.
