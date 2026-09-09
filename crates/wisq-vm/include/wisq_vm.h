@@ -225,6 +225,7 @@ int wisq_x86_emit_region(const uint8_t *code, size_t len, uint64_t base, size_t 
  * region the emitter cannot translate.
  *
  * The host must provide a memory of at least `pages + wisq_desktop_table_pages()`
+ * `+ wisq_desktop_tlb_pages()`
  * pages, and a table of at least `slot` plus the region's blocks. A module
  * given less does not instantiate, which is loud; were it to instantiate, it
  * would trap on the first jump, and a WebAssembly trap has no return.
@@ -274,6 +275,13 @@ int wisq_desktop_page(uint32_t pages, uint64_t entry, const char *channel,
  * adds it to the size of the memory it creates.
  */
 uint32_t wisq_desktop_table_pages(void);
+
+/*
+ * What the translation buffer takes, above the correspondence again. A
+ * confined module declares it in its minimum: a host that has not laid it out
+ * does not start.
+ */
+uint32_t wisq_desktop_tlb_pages(void);
 
 /*
  * Releases a buffer from wisq_x86_emit_region, wisq_x86_emit_resolving or
