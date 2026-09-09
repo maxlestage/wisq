@@ -2145,6 +2145,45 @@ fn an_entry_that_reaches_nothing_says_so() {
     );
 }
 
+/// **Les deux *mises en forme*, elles, divergent — et il faut le savoir.**
+///
+/// Rien n'oblige la forme libre et la forme confinée à accepter les mêmes
+/// régions, et depuis la pagination elles ne le font plus : la marche dans les
+/// tables n'existe que sous confinement, donc l'écriture de `cr3` qui la
+/// pilote n'y est acceptée que là. Le nier serait une hypothèse ; ce test en
+/// fait un fait, parce que **trois outils de mesure ont publié pendant une
+/// tranche des chiffres pris sur la forme libre en les présentant comme ceux
+/// de l'application**, qui n'exécute que la confinée.
+///
+/// Les deux moitiés comptent. Sans la seconde, un émetteur qui refuserait
+/// *toute* écriture de registre de contrôle passerait le test.
+#[test]
+fn only_the_confined_form_accepts_the_write_that_drives_paging() {
+    // `mov %rax,%cr3` puis `ret`.
+    let paging = [0x0f, 0x22, 0xd8, 0xc3];
+    assert!(
+        matches!(
+            Module::region_or_why(&paging, CODE, 0),
+            Err(Refused::CannotTranslate { at: 0 })
+        ),
+        "la forme libre n'a pas de tables où marcher : elle doit refuser `mov %rax,%cr3`, \
+         et le refuser à l'octet zéro"
+    );
+    assert!(
+        Module::resolving_or_why(&paging, CODE, 0, 0, 16).is_ok(),
+        "la forme confinée porte la marche : elle doit accepter `mov %rax,%cr3`"
+    );
+
+    // `mov %rax,%cr4` puis `ret` : accepté des deux côtés depuis toujours, il
+    // ne pilote aucune traduction.
+    let flags = [0x0f, 0x22, 0xe0, 0xc3];
+    assert!(
+        Module::region_or_why(&flags, CODE, 0).is_ok(),
+        "la forme libre accepte `cr4`, et le refus ci-dessus porte donc bien sur `cr3` \
+         et non sur la famille entière"
+    );
+}
+
 /// **Les deux formes ne peuvent pas diverger** : celle qui rend un `Option` est
 /// celle qui explique, avec la raison jetée. Deux implémentations séparées
 /// finiraient par ne plus refuser les mêmes régions.
