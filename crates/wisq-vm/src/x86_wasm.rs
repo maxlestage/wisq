@@ -32,8 +32,8 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF, CF, DF,
-    IF, OF, PF, SF, ZF,
+    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF,
+    ALWAYS_ONE, CF, DF, IF, OF, PF, SF, WRITABLE_FLAGS, ZF,
 };
 
 /// Seize registres, puis RFLAGS, puis les emplacements de travail. L'indice est
@@ -2598,13 +2598,6 @@ impl Module {
             body.op(code::RETURN);
             return Some(());
         }
-        // **`popf` reste refusé**, et ce n'est pas un oubli : il restaure
-        // **tous** les drapeaux depuis la pile, pas seulement IF. Le produire
-        // demanderait de décider ce que valent les bits que cet émetteur ne
-        // tient pas, et c'est une autre question que celle-ci.
-        if step.op == Op::PopFlags {
-            return None;
-        }
         // Ne rien faire n'émet rien.
         if step.op == Op::Nop {
             return Some(());
@@ -2625,7 +2618,10 @@ impl Module {
         }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
-        if matches!(step.op, Op::Push | Op::Pop | Op::Leave | Op::PushFlags) {
+        if matches!(
+            step.op,
+            Op::Push | Op::Pop | Op::Leave | Op::PushFlags | Op::PopFlags
+        ) {
             Self::stack(step, body);
             return Some(());
         }
@@ -2762,8 +2758,7 @@ impl Module {
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
-                | Op::Halt
-                | Op::PopFlags => {
+                | Op::Halt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -2836,7 +2831,8 @@ impl Module {
                 | Op::CallIndirect
                 | Op::Return
                 | Op::Leave
-                | Op::PushFlags => {
+                | Op::PushFlags
+                | Op::PopFlags => {
                     unreachable!("la pile sort avant")
                 }
                 Op::WideMultiply { .. }
@@ -3158,8 +3154,7 @@ impl Module {
             | Op::ReadControlRegister { .. }
             | Op::WriteControlRegister { .. }
             | Op::InterruptFlag(_)
-            | Op::Halt
-            | Op::PopFlags => {
+            | Op::Halt => {
                 unreachable!(
                     "une instruction privilégiée n'est pas un calcul : `translate` la traite avant"
                 )
@@ -3268,6 +3263,7 @@ impl Module {
             | Op::Push
             | Op::Pop
             | Op::PushFlags
+            | Op::PopFlags
             | Op::Call
             | Op::CallIndirect
             | Op::Return
@@ -4429,6 +4425,33 @@ impl Module {
                     b.load(Body::scratch(0));
                 });
             }
+            // **`popf`, et le masque qui vient du cœur Swift.**
+            //
+            // La raison de son refus est écrite juste au-dessus : « un module
+            // qui accepte `popf` accepte un `sti` déguisé ». C'était juste tant
+            // que `sti` était refusé ; il est produit depuis la tranche
+            // précédente, donc l'asymétrie n'a plus de raison. Et c'est un
+            // `popfq` — précédé d'un `push $0` — qui arrêtait la quatrième
+            // région d'un vrai noyau, à l'octet 400.
+            //
+            // **Les bits que cet émetteur ne consulte pas sont rangés quand
+            // même** — IOPL, NT, AC. C'est ce que fait le silicium, et c'est ce
+            // qu'un `pushf` doit rendre ; les perdre ferait diverger la
+            // relecture. Ce que le masque écarte, le processeur l'écarte aussi.
+            Op::PopFlags => {
+                body.store(RFLAGS_SLOT, |b| {
+                    b.load(Self::slot(4));
+                    b.guest();
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                    b.constant(WRITABLE_FLAGS).op(code::I64_AND);
+                    b.constant(ALWAYS_ONE).op(code::I64_OR);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                });
+            }
             Op::Pop => {
                 body.store(Self::slot(step.dst), |b| {
                     b.load(Self::slot(4));
@@ -5280,27 +5303,32 @@ mod port_tests {
     /// se décoder, la région serait toujours refusée, la couverture toujours
     /// la même, et seul le message changerait. Les deux moitiés sont donc
     /// vérifiées séparément — le décodeur la lit **et** l'émetteur la refuse.
-    /// **L'asymétrie entre les deux moitiés d'une section critique.**
+    /// **Les deux moitiés d'une section critique se produisent maintenant.**
     ///
-    /// `pushf` est produit, `popf` refusé, et ce n'est pas une inconséquence :
-    /// lire RFLAGS ne peut rien allumer, l'écrire peut rallumer le drapeau
-    /// d'interruption **sans jamais nommer `sti`**. Rien n'en délivre, donc un
-    /// module qui accepte `popf` accepte un `sti` déguisé.
+    /// **Ce test disait le contraire, et il avait raison de le dire.**
+    /// L'asymétrie était écrite ainsi : lire RFLAGS ne peut rien allumer,
+    /// l'écrire peut rallumer le drapeau d'interruption **sans jamais nommer
+    /// `sti`** — donc un module qui accepte `popf` accepte un `sti` déguisé.
     ///
-    /// Les deux verdicts sont vérifiés ensemble parce que c'est ensemble
-    /// qu'ils ont un sens : accepter les deux, ou refuser les deux, serait
-    /// cohérent et faux. La tranche d'avant refusait les deux — par symétrie,
-    /// et la symétrie n'existait pas.
+    /// L'argument tenait tant que `sti` était refusé. Il est produit depuis la
+    /// tranche du `hlt`, et un `popfq` — précédé d'un `push $0` — arrêtait la
+    /// quatrième région d'un vrai noyau à l'octet 400. Refuser l'un en
+    /// produisant l'autre n'a plus de sens.
+    ///
+    /// Les deux sont donc vérifiés **ensemble**, comme avant : c'est ensemble
+    /// qu'ils ont un sens, et un aller-retour est la seule façon de le dire.
     #[test]
-    fn reading_the_flags_is_produced_and_writing_them_is_not() {
+    fn the_flags_make_a_round_trip_through_the_stack() {
         assert!(
             Module::region_or_why(&[0x9c, 0xc3], 0x1000, 0).is_ok(),
             "`pushfq` se produit : il ne fait que lire RFLAGS"
         );
-        match Module::region_or_why(&[0x9d, 0xc3], 0x1000, 0) {
-            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 0, "`popfq` refuse à l'entrée"),
-            other => panic!("`popfq` doit être refusé nommément, pas {other:?}"),
-        }
+        assert!(
+            Module::region_or_why(&[0x9d, 0xc3], 0x1000, 0).is_ok(),
+            "`popfq` se produit aussi, avec le masque du cœur Swift : refuser \
+             l'écriture en produisant la lecture n'a plus de raison depuis que \
+             `sti` existe"
+        );
     }
 
     #[test]
@@ -5353,11 +5381,16 @@ mod port_tests {
             // traduire, et rien ne peut réveiller cette machine » est plus
             // vrai que « je ne sais pas traduire ».
             //
-            // `pushfq` n'est plus là non plus : il est **produit**. `popfq`
-            // reste, et l'asymétrie est le sujet — lire RFLAGS ne peut rien
-            // allumer, l'écrire restaure **tous** les drapeaux depuis la pile,
-            // pas seulement celui d'interruption.
-            ("popfq", &[0x9d][..]),
+            // **`pushfq` et `popfq` ont quitté cette liste tous les deux.**
+            // Le premier ne fait que lire ; le second a suivi quand `sti` est
+            // devenu produit — refuser l'écriture des drapeaux en produisant
+            // l'instruction qui en allume un n'avait plus de sens. `popfq`
+            // porte le masque du cœur Swift, et un test compare les deux
+            // littéraux pour qu'ils ne divergent pas.
+            //
+            // **Cette liste n'est plus qu'à deux entrées**, et les deux sont
+            // des formes que rien n'exerce : un sélecteur venu de la mémoire,
+            // et un segment rangé en mémoire.
         ] {
             // Première moitié : le décodeur la lit, entière.
             let step =

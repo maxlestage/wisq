@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT,
     RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS,
@@ -927,6 +928,181 @@ console.log("rip " + lire({rip}));
         "aucune base n'est inventée quand le descripteur manque : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`popf` : ce qu'un noyau relit doit être ce qu'il a empilé.**
+///
+/// **D'où ça vient.** Après la tranche du sélecteur nul, la quatrième région
+/// d'Alpine refuse à l'octet **400** au lieu de 319, et 400 porte `popfq` :
+///
+/// ```text
+/// 390  b8 33 00 05 80   mov  $0x80050033,%eax
+/// 395  0f 22 c0         mov  %rax,%cr0
+/// 398  6a 00            push $0
+/// 400  9d               popfq            <-- le mur
+/// ```
+///
+/// **La valeur dépilée est un zéro empilé deux octets plus tôt** — la même
+/// forme que le sélecteur nul : le cas que le noyau exécute vraiment est celui
+/// qui ne demande rien.
+///
+/// **Et la raison du refus a cessé de tenir.** Elle était écrite à côté de
+/// `pushf` : « un module qui accepte `popf` accepte un `sti` déguisé ». C'était
+/// juste tant que `sti` était refusé ; il est produit depuis la tranche
+/// précédente. L'asymétrie « lire oui, écrire non » n'a plus de raison.
+///
+/// **Le masque vient du cœur Swift**, où il est décidé et tenu : les bits
+/// réservés ne se laissent pas écrire, et le bit 1 vaut toujours un. Un noyau
+/// qui relit ce qu'il a empilé doit retrouver la même chose, et les deux cœurs
+/// doivent en dire autant — un test à part compare les deux littéraux.
+#[test]
+fn what_a_kernel_pushes_is_what_it_reads_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        // Tous les bits à un : le masque doit se voir en entier.
+        0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, // movq $-1,%rax
+        0x50, // push %rax
+        0x9d, // popfq
+        0x9c, // pushfq
+        0x5b, // pop  %rbx
+        // Puis le cas du noyau, à l'octet près : un zéro empilé, dépilé.
+        0x6a, 0x00, // push $0
+        0x9d, // popfq
+        0x9c, // pushfq
+        0x59, // pop  %rcx
+        0xf4, // hlt
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-popf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES)
+        .expect("`popf` doit se traduire, pas faire refuser la région");
+    let path = scratch.join("popf.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+// Une pile qui tient dans la RAM déclarée.
+vm.globals[4].value = 0x8000n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("rflags " + lire({rflags}));
+console.log("rsp " + lire(4));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            rflags = RFLAGS_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some("arret arrêtée sur hlt"),
+        "le programme doit aller jusqu'au bout : {text}"
+    );
+    // **Les bits réservés ne se laissent pas écrire, et le bit 1 vaut un.**
+    // Empiler tout à un et relire doit rendre exactement le masque, bit 1
+    // compris — pas moins, ce qui perdrait un drapeau, ni plus, ce qui
+    // inventerait un état que le silicium n'a pas.
+    assert_eq!(
+        line("rbx "),
+        WRITABLE_FLAGS | ALWAYS_ONE,
+        "ce qu'un noyau relit doit être ce que le masque laisse passer : {text}"
+    );
+    // **Et le cas que le noyau exécute vraiment** : `push $0 ; popfq` laisse
+    // RFLAGS à deux, le seul bit que l'architecture impose.
+    assert_eq!(
+        line("rcx "),
+        ALWAYS_ONE,
+        "`push $0 ; popfq` laisse le bit réservé seul : {text}"
+    );
+    assert_eq!(
+        line("rflags "),
+        ALWAYS_ONE,
+        "et la case elle-même le porte : {text}"
+    );
+    // **Et la pile revient où elle était.**
+    //
+    // Ce test manquait, et un sabotage l'a montré en survivant : ne pas
+    // remonter RSP après un `popf` ne changeait **aucune** valeur lue. Les
+    // quatre `push` et les quatre dépilements se décalent ensemble, donc les
+    // drapeaux restaient justes pendant que la pile fuyait d'un mot à chaque
+    // `popf`. C'est l'assertion qui a l'air d'une garde : elle mesurait
+    // l'empreinte — ce qu'on relit — au lieu de l'acte.
+    //
+    // Le programme empile et dépile quatre fois chacun : RSP doit revenir
+    // exactement à son point de départ, ni au-dessus ni en dessous.
+    assert_eq!(
+        line("rsp "),
+        0x8000,
+        "quatre empilements et quatre dépilements ramènent RSP à son départ : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le masque de `popf` est écrit deux fois, et il ne peut pas diverger.**
+///
+/// Le cœur Swift le porte depuis la tranche du x87 ; l'émetteur le reprend.
+/// Deux littéraux dans deux langages, c'est exactement la forme qui a déjà
+/// menti dans ce dépôt — d'où cette garde, qui lit le fichier Swift plutôt que
+/// de faire confiance à la recopie.
+#[test]
+fn both_cores_mask_the_same_flag_bits() {
+    let swift = workspace_root().join("Sources/WisqVM/X86CoreDispatch.swift");
+    let text = std::fs::read_to_string(&swift).expect("le cœur Swift se lit");
+    let wanted = format!("0x{:016X}", WRITABLE_FLAGS);
+    let underscored = format!(
+        "0x{}_{}_{}_{}",
+        &wanted[2..6],
+        &wanted[6..10],
+        &wanted[10..14],
+        &wanted[14..18]
+    );
+    assert!(
+        text.contains(&underscored),
+        "{} doit porter le masque {underscored} : sinon les deux cœurs \
+         répondent deux choses différentes au même `popfq`",
+        swift.display()
+    );
 }
 
 /// **Un invité paginé lit à travers ses tables, et le tampon répond.**
