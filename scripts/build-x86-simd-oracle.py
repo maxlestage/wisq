@@ -27,6 +27,13 @@ employés nulle part. Les écrire quand même serait exactement ce que ce dépô
 trente-deux bits ; ce n'est pas `ADDPS`, et rien dans l'invité ne demande
 encore le second. Deux décisions différentes.
 
+**Et `SHUFPS` ne la demande pas non plus**, malgré son nom. Il déplace des mots
+de trente-deux bits sans les interpréter : aucun arrondi, aucun dénormal, aucun
+NaN à propager. C'est pourquoi il entre ici et pas dans un fichier de virgule
+flottante. Il est arrivé par une capture d'écran — un noyau Arch s'arrêtant sur
+`unsupported("l'opcode 0F C6")` après deux cent cinquante secondes de temps
+invité, en pleine initialisation de ses pilotes.
+
 **Aucun drapeau.** Aucune de ces instructions n'en touche un — c'est une
 propriété qui vaut d'être tenue, donc les drapeaux d'entrée varient et doivent
 revenir intacts.
@@ -94,6 +101,25 @@ def forms():
     for position in INSERTS:
         out += [f"pinsrw ${position}, %eax, %xmm0",
                 f"pinsrw ${position}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Le brassage qui puise dans les deux registres.** `PSHUFD` permute les
+    # quatre mots d'une seule source ; `SHUFPS` prend ses deux mots bas dans la
+    # **destination** et ses deux mots hauts dans la **source**. Confondre les
+    # deux donne un résultat qui a l'air juste sur la moitié des cas — d'où des
+    # valeurs différentes dans xmm0 et xmm1, sans quoi l'erreur ne se verrait
+    # pas.
+    #
+    # **Aucune arithmétique flottante ici**, malgré le nom : `SHUFPS` déplace
+    # des mots de trente-deux bits sans les interpréter. C'est la même
+    # distinction que ce fichier fait déjà entre `PADDD` et `ADDPS`, et c'est
+    # ce qui rend cette instruction-ci exacte plutôt qu'approchée.
+    for control in SHUFFLES:
+        out += [f"shufps ${control:#x}, %xmm1, %xmm0",
+                f"shufps ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # `SHUFPD` fait la même chose sur deux moitiés de soixante-quatre bits, et
+    # deux bits d'immédiat suffisent à l'épuiser : les quatre y passent.
+    for control in range(4):
+        out += [f"shufpd ${control:#x}, %xmm1, %xmm0",
+                f"shufpd ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
     # La somme des différences absolues, qui condense seize octets en deux
     # nombres et n'a d'équivalent nulle part ailleurs dans le jeu.
     out += ["psadbw %xmm1, %xmm0", f"psadbw {ALIGNED:#x}(%rsi), %xmm0"]
