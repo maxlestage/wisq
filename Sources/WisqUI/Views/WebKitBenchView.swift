@@ -144,10 +144,16 @@ private final class BenchHost {
         else {
             return .unavailable("la mesure est revenue incomplète")
         }
+        // **Les deux relevés de la boucle mémoire sont facultatifs.** Zéro veut
+        // dire « pas relevé », et `nanosecondsPerAccess` rend alors `nil` plutôt
+        // qu'un coût inventé. Les exiger ferait rendre « la mesure est revenue
+        // incomplète » à une sonde qui a parfaitement mesuré le débit.
         return WebKitBench.judge(
             mips: mips, bridgeMilliseconds: bridge,
             instructions: instructions, expected: Self.expected,
-            multiMemory: fields["multiMemory"] as? Bool ?? false)
+            multiMemory: fields["multiMemory"] as? Bool ?? false,
+            memoryMips: fields["memoryMips"] as? Double ?? 0,
+            freeMemoryMips: fields["freeMemoryMips"] as? Double ?? 0)
     }
 
     /// **L'oracle avant le chronomètre.** Le module est refait contre un modèle
@@ -162,47 +168,60 @@ private final class BenchHost {
     /// donc les créer, exactement comme le fera `X86Machine`.
     private static let script = """
         (() => {
-          const RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSI = 6;
+          const RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSI = 6, RDI = 7;
           const RIP = \(WebKitBench.ripSlot);
           const BASE = \(WebKitBench.benchBase)n;
           const TURNS = \(WebKitBench.benchTurns)n;
           const wrap = v => BigInt.asUintN(64, v);
-          // **Une globale `i64` se lit signée.** L'ancien module gardait les
-          // registres en mémoire, lue par un `BigUint64Array` ; celui-ci les
-          // garde en globales, et JavaScript en rend le complément à deux.
-          // Comparer sans repasser en non signé faisait échouer l'oracle sur
-          // des valeurs pourtant exactes.
-          const u = slot => BigInt.asUintN(64, globals[slot].value);
 
-          let instance, globals;
-          try {
-            const bytes = Uint8Array.from(atob("\(WebKitBench.moduleBase64)"), c => c.charCodeAt(0));
-            const memory = new WebAssembly.Memory({ initial: \(WebKitBench.guestPages) });
-            globals = [];
+          // **Une mémoire et une table pour les trois modules.** La forme libre
+          // en déclare moins que la confinée ; la plus grande des deux sert aux
+          // deux, et un module qui n'importe pas la table ne s'offusque pas
+          // qu'on la lui tende.
+          let memory, blocks;
+          const make = base64 => {
+            const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            const globals = [];
             // **Les deux fonctions que tout module émis réclame maintenant.**
-            // Ce banc ne fait aucune entrée-sortie — la boucle qu'il mesure ne
-            // parle à personne — mais un module qui *déclare* un import que
-            // l'objet ne porte pas est refusé à l'instanciation, et le refus
-            // s'appellerait ici « la sonde est en panne » plutôt que « il
-            // manque `env.out` ».
-            const env = { mem: memory, out: () => {}, in: () => 0n };
+            // Ce banc ne fait aucune entrée-sortie, mais un module qui
+            // *déclare* un import que l'objet ne porte pas est refusé à
+            // l'instanciation, et le refus s'appellerait « la sonde est en
+            // panne » plutôt que « il manque `env.out` ».
+            const env = { mem: memory, out: () => {}, in: () => 0n, blocks };
             for (let slot = 0; slot < \(WebKitBench.globalCount); slot++) {
               globals.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
               env["g" + slot] = globals[slot];
             }
-            instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env });
+            const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env });
+            // **Une globale `i64` se lit signée.** JavaScript en rend le
+            // complément à deux ; comparer sans repasser en non signé faisait
+            // échouer l'oracle sur des valeurs pourtant exactes.
+            const u = slot => BigInt.asUintN(64, globals[slot].value);
+            return { run: instance.exports.run, globals, u };
+          };
+
+          let confined, confinedMemory, freeMemory;
+          try {
+            // **La taille vient de `host_pages`, jamais d'une addition ici.**
+            // La RAM de l'invité, la correspondance adresse → indice et le
+            // tampon de traduction : un hôte qui en oublie une ne démarre pas,
+            // et c'est voulu — un piège WebAssembly est sans retour.
+            memory = new WebAssembly.Memory({ initial: \(WebKitBench.hostPages) });
+            blocks = new WebAssembly.Table({ element: "anyfunc", initial: 64 });
+            confined = make("\(WebKitBench.moduleBase64)");
+            confinedMemory = make("\(WebKitBench.memoryModuleBase64)");
+            freeMemory = make("\(WebKitBench.freeMemoryModuleBase64)");
           } catch (why) {
             return { refused: String(why && why.message ? why.message : why) };
           }
-          const run = instance.exports.run;
 
           // **Chaque passage repart du même état.** RAX et RCX partent non
           // nuls : à zéro, la boucle additionnerait et ouexclusiverait des
           // zéros, et l'oracle ne prouverait rien.
-          const seed = () => {
-            for (const global of globals) { global.value = 0n; }
-            globals[RAX].value = 1n;
-            globals[RCX].value = 0x0123456789abcdefn;
+          const seed = module => {
+            for (const global of module.globals) { global.value = 0n; }
+            module.globals[RAX].value = 1n;
+            module.globals[RCX].value = 0x0123456789abcdefn;
           };
 
           // **Le modèle, écrit en clair.** Cinq instructions, la boucle du
@@ -229,45 +248,81 @@ private final class BenchHost {
           // **Rien ne tient l'échauffement lui-même, et rien ne le peut.** Le
           // supprimer ne fait pas échouer la sonde : le débit baisse de moins
           // de dix pour cent, mesuré sous Bun. Un seuil assez serré pour
-          // attraper ça refuserait de répondre sur un téléphone occupé. La
-          // mesure est donc juste, l'échauffement la rend seulement fidèle.
-          seed();
-          globals[RSI].value = 1000000n;
-          run(1000008n);
+          // attraper ça refuserait de répondre sur un téléphone occupé.
+          seed(confined);
+          confined.globals[RSI].value = 1000000n;
+          confined.run(1000008n);
 
           // **Mille et un tours, pas mille.** Le `xor` rend RBX à sa valeur de
           // départ après un nombre pair de tours : avec mille, l'oracle
           // laisserait passer un module qui ne fait pas le `xor` du tout.
           const oracle = model(1001n);
-          seed();
-          globals[RSI].value = 1001n;
-          run(1009n);
-          if (u(RAX) !== oracle.rax || u(RBX) !== oracle.rbx
-              || u(RDX) !== oracle.rdx || u(RSI) !== 0n) {
+          seed(confined);
+          confined.globals[RSI].value = 1001n;
+          confined.run(1009n);
+          if (confined.u(RAX) !== oracle.rax || confined.u(RBX) !== oracle.rbx
+              || confined.u(RDX) !== oracle.rdx || confined.u(RSI) !== 0n) {
             return { error: "le module ne calcule pas comme le modele" };
           }
           // Et la boucle doit avoir rendu la main **après** sa dernière
           // instruction, pas au milieu : sinon le compte est faux.
-          if (u(RIP) !== BASE + 15n) {
+          if (confined.u(RIP) !== BASE + 15n) {
             return { error: "le module n'a pas rendu la main a la sortie de la boucle" };
           }
 
-          seed();
-          globals[RSI].value = TURNS;
+          // **La boucle mémoire, et son oracle.** `movq (%rdi),%rax` puis
+          // `movq %rax,(%rdi)`, avec RDI à zéro : elle relit ce qu'elle vient
+          // d'écrire. Un témoin posé en RAM avant le tour dit si la lecture a
+          // vraiment eu lieu — sans lui, une boucle qui ne touche pas la
+          // mémoire rendrait les mêmes zéros et passerait.
+          const WITNESS = 0x0123456789abcdefn;
+          const runMemory = (module, turns, budget) => {
+            for (const global of module.globals) { global.value = 0n; }
+            new BigUint64Array(memory.buffer, 0, 1)[0] = WITNESS;
+            module.globals[RDI].value = 0n;
+            module.globals[RSI].value = turns;
+            const began = performance.now();
+            module.run(budget);
+            const ms = performance.now() - began;
+            const witnessed = module.u(RAX) === WITNESS
+              && new BigUint64Array(memory.buffer, 0, 1)[0] === WITNESS
+              && module.u(RSI) === 0n
+              && module.u(RIP) === BASE + 12n;
+            return { ms, witnessed };
+          };
+
+          for (const module of [confinedMemory, freeMemory]) {
+            const warm = runMemory(module, 1001n, 1009n);
+            if (!warm.witnessed) {
+              return { error: "la boucle memoire ne relit pas ce qu'elle ecrit" };
+            }
+          }
+
+          seed(confined);
+          confined.globals[RSI].value = TURNS;
           // **Le compte se lit sur la machine, il ne se déduit pas d'une
           // constante.** RSI porte les tours restants ; le nombre exécuté est
           // la différence entre ce qui a été semé et ce qui reste. Écrire
           // `TURNS * 5` rendrait le débit insensible à une boucle semée trop
           // court — un chiffre deux fois trop beau, et rien pour le dire.
-          const seeded = u(RSI);
+          const seeded = confined.u(RSI);
           const began = performance.now();
-          run(TURNS + 8n);
+          confined.run(TURNS + 8n);
           const ms = performance.now() - began;
-          if (u(RSI) !== 0n) {
+          if (confined.u(RSI) !== 0n) {
             return { error: "la boucle chronometree n'est pas allee jusqu'au bout" };
           }
-          const done = Number(seeded - u(RSI)) * \(WebKitBench.instructionsPerTurn);
+          const done = Number(seeded - confined.u(RSI)) * \(WebKitBench.instructionsPerTurn);
 
+          // **Les deux formes de la boucle mémoire, dos à dos.** Leur écart est
+          // ce que le confinement coûte par accès. Séparées par autre chose que
+          // quelques microsecondes, elles ne partageraient plus la même charge
+          // de machine, et l'écart mesurerait le voisinage plutôt que la forme.
+          const perTurn = \(WebKitBench.memoryInstructionsPerTurn);
+          const mipsOf = reading =>
+            reading.witnessed ? Number(TURNS) * perTurn / (reading.ms / 1000) / 1000000 : 0;
+          const confinedRun = runMemory(confinedMemory, TURNS, TURNS + 8n);
+          const freeRun = runMemory(freeMemory, TURNS, TURNS + 8n);
           // **Une question à part, posée pendant qu'on est là.** Deux mémoires
           // importées dans un même module : soixante-huit octets, deux pages,
           // et `run` qui lit la seconde. Si l'appareil les accepte, la table
@@ -299,7 +354,13 @@ private final class BenchHost {
             multiMemory = false;
           }
 
-          return { mips: done / (ms / 1000) / 1000000, instructions: done, multiMemory };
+          return {
+            mips: done / (ms / 1000) / 1000000,
+            instructions: done,
+            multiMemory,
+            memoryMips: mipsOf(confinedRun),
+            freeMemoryMips: mipsOf(freeRun),
+          };
         })()
         """
 }
