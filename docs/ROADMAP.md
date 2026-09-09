@@ -6686,3 +6686,62 @@ quota d'Apple est intact : tant qu'un certificat n'est pas révoqué sur
 developer.apple.com, ou qu'un `.p12` n'est pas déposé dans `APPLE_CERT_P12`,
 l'envoi butera au même endroit qu'aux numéros 28 et 29 — mais il le dira
 maintenant avec le nombre sous les yeux.
+
+#### Le `if` que GitHub ne refuse qu'au lancement
+
+La tranche d'au-dessus a conditionné l'étape du trousseau par
+`if: ${{ secrets.APPLE_CERT_P12 != '' }}`. Sept vérifications vertes, fusion,
+puis GitHub au moment du `workflow_dispatch` :
+
+```text
+(Line: 149, Col: 13): Unrecognized named-value: 'secrets'
+```
+
+Le contexte `secrets` existe dans un `env:`, pas dans un `if:`. **Rien ne
+pouvait l'attraper** : la CI ne parse pas ce fichier, seul un lancement le fait,
+et un workflow qu'on ne lance qu'à la main peut rester cassé aussi longtemps
+qu'on n'envoie rien — le seul moment où on le découvre est celui où on voulait
+envoyer. C'est la même forme que les gardes jamais déclenchées : un chemin dont
+le premier passage est aussi le premier examen.
+
+La condition se pose sur une **sortie d'étape**. Le refus précoce est le seul
+endroit qui regarde un secret ; il porte un `id:` et écrit oui ou non.
+
+**Et la garde s'est refusée elle-même du premier coup.** Écrite comme
+`if:.*secrets\.`, elle rejetait `steps.secrets.outputs.certificat` — la
+correction. L'étape garde donc l'identifiant `secrets`, exprès : le workflow du
+dépôt est le témoin permanent que la garde distingue le contexte de
+l'identifiant, et le contrôle « le workflow du dépôt passe » tombe si la
+recherche se relâche.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| la garde du `if` ne dit plus rien | `elle refuse un secret lu dans un « if »` |
+| la recherche redevient trop large | **le contrôle**, `le workflow du dépôt passe` |
+
+#### Et le chiffre était enterré sous xcodebuild
+
+Le premier lancement réussi a montré le deuxième défaut de la tranche
+précédente. L'envoi n° 34 s'est arrêté là où il devait :
+
+```text
+error: Choose a certificate to revoke. Your account has reached the maximum
+number of certificates.
+error: No profiles for 'app.wisq.ios' were found
+```
+
+Deux minutes, pas quinze — l'échec tombe à `GatherProvisioningInputs`, avant
+toute compilation. Mais **le nombre de certificats était illisible** : imprimé à
+la treizième seconde, il se retrouve sous des dizaines de milliers de lignes de
+`xcodebuild`, et l'API des journaux ne sert que la **fin** d'un job.
+
+C'est exactement la leçon que l'étape « Ce que l'iPhone simulé a mesuré » avait
+déjà coûtée, et je l'ai réapprise. **Un diagnostic mal placé est un diagnostic
+qui n'existe pas** — il ressemble à un instrument, il n'en est pas un.
+
+La phrase voyage donc en **sortie d'étape** et se réimprime en dernier, sous
+`always()` : c'est précisément quand l'archive échoue sur le quota que ce nombre
+sert. Et parce qu'une sortie d'étape est une paire `clé=valeur` par ligne, un
+test tient l'autre bout — la phrase reste sur une seule ligne quel que soit le
+nombre de types que le compte porte. Le sabotage qui fait passer le détail à la
+ligne le fait tomber.
