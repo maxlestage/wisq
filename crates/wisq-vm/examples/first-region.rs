@@ -21,6 +21,26 @@ use wisq_vm::x86_wasm::{Module, Refused};
 /// tout aux adresses imprimées.
 const ENTRY: u64 = 0x1000090;
 
+/// **Le nombre de pages de 64 Kio du confinement.**
+///
+/// Cet outil a mesuré la forme *libre* pendant toute une série, et
+/// l'application n'exécute que la forme *confinée et liée*. Depuis la
+/// pagination les deux divergent : la marche dans les tables n'existe que sous
+/// confinement, donc l'écriture de `cr3` n'y est acceptée que là. Sur le point
+/// d'entrée d'Alpine, l'écart n'est pas théorique — la forme libre s'arrête à
+/// l'octet 89 sur `mov …,%cr3`, que la confinée traduit.
+///
+/// La valeur ne change pas ce qui compile : dans `build`, le nombre de pages
+/// sert à refuser ce qui n'est pas une puissance de deux, puis à graver un
+/// masque et un minimum de mémoire déclaré. C'est le confinement qui décide,
+/// pas sa taille. Soixante-quatre mébioctets, comme `examples/kernel-entry.rs`.
+const PAGES: u32 = 1024;
+
+/// L'emplacement dans la table partagée. Cet outil ne charge rien — il demande
+/// une traduction et jette le module — donc aucune région n'en écrase une
+/// autre, et zéro convient.
+const SLOT: u32 = 0;
+
 fn main() {
     let path = std::env::args().nth(1).expect("le chemin");
     let bytes = std::fs::read(&path).expect("le fichier");
@@ -49,32 +69,53 @@ fn main() {
         );
     }
 
-    // **Et ce que l'émetteur en fait**, ce qui est une autre question.
-    match Module::region_or_why(&bytes, ENTRY, 0) {
+    // **Et ce que l'émetteur en fait**, ce qui est une autre question — posée
+    // deux fois, parce qu'il y a deux émetteurs.
+    //
+    // La forme *confinée et liée* est celle que l'application exécute :
+    // `LocalDesktop` passe par `DesktopTranslator.resolvingRegion`, donc par
+    // `Module::resolving`. C'est elle le verdict.
+    //
+    // La forme *libre* est celle que cet outil mesurait avant, et elle reste
+    // imprimée à côté. Pas par nostalgie : depuis la pagination les deux
+    // n'acceptent plus la même chose, et **c'est un désaccord entre deux outils
+    // qui a révélé que celui-ci mesurait la mauvaise** — pas une relecture. Un
+    // outil qui affiche les deux ne peut plus cacher l'écart.
+    verdict(
+        "confinée (ce que l'application exécute)",
+        Module::resolving_or_why(&bytes, ENTRY, 0, SLOT, PAGES),
+        &bytes,
+    );
+    verdict("libre", Module::region_or_why(&bytes, ENTRY, 0), &bytes);
+}
+
+/// Ce qu'une mise en forme a fait de la région, en trois lignes au plus.
+fn verdict(shape: &str, outcome: Result<Vec<u8>, Refused>, bytes: &[u8]) {
+    match outcome {
         Ok(module) => println!(
-            "traduction : la région entière, {} octets de module",
+            "traduction {shape} : la région entière, {} octets de module",
             module.len()
         ),
         Err(Refused::CannotDecode { at }) => {
-            println!("traduction : arrêtée faute de savoir **lire** l'octet {at}");
+            println!("traduction {shape} : arrêtée faute de savoir **lire** l'octet {at}");
             println!(
                 "  adresse 0x{:x}, octets {}",
                 ENTRY + at as u64,
-                show(&bytes, at)
+                show(bytes, at)
             );
         }
         Err(Refused::CannotTranslate { at }) => {
-            println!("traduction : l'octet {at} se **lit** mais ne se **produit** pas");
+            println!("traduction {shape} : l'octet {at} se **lit** mais ne se **produit** pas");
             if let Some(step) = decode(&bytes[at..]) {
                 println!("  {:?}, largeur {:?}", step.op, step.width);
             }
             println!(
                 "  adresse 0x{:x}, octets {}",
                 ENTRY + at as u64,
-                show(&bytes, at)
+                show(bytes, at)
             );
         }
-        Err(other) => println!("traduction : refusée autrement — {other:?}"),
+        Err(other) => println!("traduction {shape} : refusée autrement — {other:?}"),
     }
 }
 

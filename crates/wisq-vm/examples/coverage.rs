@@ -4,6 +4,37 @@ use wisq_vm::kernel_image::{recognise, KernelImage};
 use wisq_vm::x86::{decode, Op};
 use wisq_vm::x86_wasm::{Module, Refused, Survey};
 
+/// L'adresse invitée où cette sonde suppose la région chargée. Elle n'est pas
+/// décorative : `call` empile une adresse de retour et `ret` la relit.
+const BASE: u64 = 0x3000_0000;
+
+/// **Le nombre de pages de 64 Kio du confinement, et pourquoi il y en a un.**
+///
+/// Cette sonde a mesuré pendant toute une série la forme *libre*
+/// (`Module::region`). L'application n'exécute que la forme *confinée et
+/// liée* — `resolvingRegion`, donc `Module::resolving` — et depuis la
+/// pagination les deux n'acceptent plus la même chose : la marche dans les
+/// tables n'existe que sous confinement, donc l'écriture de `cr3` qui la
+/// pilote n'y est acceptée que là. Les chiffres publiés décrivaient un
+/// émetteur que l'application ne fait pas tourner. C'est la forme confinée qui
+/// est mesurée maintenant.
+///
+/// **La valeur ne change pas ce qui compile.** Dans `build`, le nombre de
+/// pages sert à deux choses : refuser ce qui n'est pas une puissance de deux,
+/// et graver un masque plus un minimum de mémoire déclaré. Aucune des deux ne
+/// décide d'accepter ou de refuser une instruction — c'est le *confinement*
+/// qui le fait, pas sa taille. Un giboctet est pris parce que c'est ce que
+/// `examples/resolved.rs` prend, et parce que `BASE` tombe dedans.
+const PAGES: u32 = 0x4000; // 1 Gio
+
+/// **L'emplacement dans la table partagée, et pourquoi zéro convient ici.**
+///
+/// Poser deux régions au même emplacement les ferait s'écraser — c'est un
+/// défaut qu'un pilote de ce dépôt a déjà commis. Ici il n'y en a pas : cette
+/// sonde ne charge rien, elle demande une traduction et jette le module. Rien
+/// n'est jamais posé dans une table.
+const SLOT: u32 = 0;
+
 /// Le nom court d'une instruction que l'émetteur refuse.
 ///
 /// Un `{:?}` suffirait pour les formes sans champ, mais pas pour celles qui en
@@ -122,7 +153,8 @@ fn main() {
     let mut cursor = 0usize;
     let mut tried = 0usize;
     while cursor < limit && tried < 20000 {
-        if Module::region(&bytes[cursor..limit.min(cursor + 4096)], 0x30000000, 0).is_some() {
+        let window = &bytes[cursor..limit.min(cursor + 4096)];
+        if Module::resolving(window, BASE, 0, SLOT, PAGES).is_some() {
             ok += 1;
         } else {
             no += 1;
@@ -165,7 +197,7 @@ fn main() {
     let mut blame: std::collections::BTreeMap<String, usize> = Default::default();
     for entry in entries.iter().take(20000) {
         let end = limit.min(entry + 4096);
-        if Module::region(&bytes[*entry..end], 0x30000000, 0).is_some() {
+        if Module::resolving(&bytes[*entry..end], BASE, 0, SLOT, PAGES).is_some() {
             hit += 1;
             continue;
         }
@@ -176,10 +208,10 @@ fn main() {
         // en rejugeant l'octet fautif avec **tout le reste du fichier** — un
         // détour qu'elle seule pouvait faire, parce qu'elle a le fichier entier
         // sous la main. La vue du bureau ne l'a pas : elle a la fenêtre qu'elle
-        // a envoyée, et rien d'autre. `region_or_why` répond donc à sa place,
+        // a envoyée, et rien d'autre. `resolving_or_why` répond donc à sa place,
         // et cette sonde s'en sert maintenant aussi — ce qui la fait vérifier
         // la réponse à chaque exécution plutôt que la deviner deux fois.
-        let culprit = match Module::region_or_why(&bytes[*entry..end], 0x30000000, 0) {
+        let culprit = match Module::resolving_or_why(&bytes[*entry..end], BASE, 0, SLOT, PAGES) {
             Ok(_) => unreachable!("la région vient d'être refusée"),
             Err(Refused::MayBeCut { at }) => {
                 // **De combien la prudence dépasse.** `MayBeCut` dit « le
@@ -306,6 +338,12 @@ fn main() {
     // reprend après un retour de main doit lire la RAM invitée et qu'un hôte
     // hors de la vue ne le peut pas. Il reste compté à part, parce que sa
     // densité dit ce que la boucle a rapatrié.
+    //
+    // **`survey` ne prend pas de mise en forme, et ce n'est pas un oubli.** Il
+    // ne traduit rien : il parcourt le graphe des blocs et compte les formes de
+    // retour de main. Ce parcours est le même sous confinement et sans — c'est
+    // `discover`, et `discover` n'a jamais vu de masque. Lui passer un nombre
+    // de pages ferait croire que le chiffre en dépend.
     let mut total = Survey::default();
     let mut regions = 0usize;
     let mut with_repeat = 0usize;
