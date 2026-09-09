@@ -202,7 +202,37 @@ extension X86Core {
             try writeRM(fields, 2, UInt64(segments[fields.reg & 0x07]))
         case 0x8E:  // MOV Sreg, r/m16
             let fields = try decodeFields(instruction)
-            segments[fields.reg & 0x07] = UInt16(truncatingIfNeeded: try readRM(fields, 2))
+            let selector = UInt16(truncatingIfNeeded: try readRM(fields, 2))
+            let which = fields.reg & 0x07
+            segments[which] = selector
+            // **Un sélecteur nul dans FS ou GS efface la base**, et c'est
+            // mesuré : sur le processeur de ce conteneur, par un programme à
+            // syscalls bruts — passer par la libc entre les deux relevés
+            // toucherait `errno`, qui vit dans le TLS pointé par FS, donc
+            // l'instrument aurait cassé ce qu'il mesure.
+            //
+            //     FS.base avant = 0x7f7da625f740
+            //     xorl %eax,%eax ; movl %eax,%fs
+            //     FS.base apres = 0x0
+            //
+            // Ce cœur gardait l'ancienne, et `segmentBase()` la relit à chaque
+            // accès préfixé : un `%fs:` suivant aurait lu à la mauvaise
+            // adresse. Latent tant que Linux met ses segments à zéro alors que
+            // les bases valent déjà zéro — mais latent n'est pas juste.
+            //
+            // **Un sélecteur non nul ne touche à rien**, et c'est délibéré :
+            // le silicium irait chercher la base dans un descripteur, cette
+            // machine n'a pas de table globale, et inventer une base serait
+            // pire que garder celle qu'on a. Ce qui est corrigé est le cas nul,
+            // qui ne lit aucun descripteur — pas la segmentation entière.
+            //
+            // **Un seul processeur ne fait pas une architecture**, et ce dépôt
+            // n'a pas d'autre silicium sous la main : c'est écrit pour que la
+            // prochaine mesure sache ce qu'elle corrige.
+            if selector == 0, which == 4 || which == 5 {
+                let base = which == 4 ? X86SystemState.fsBase : X86SystemState.gsBase
+                system.modelSpecific[base] = 0
+            }
 
         case 0x8D:  // LEA : calcule une adresse et ne la lit pas.
             let size = Self.operandSize(instruction, byteForm: false)
