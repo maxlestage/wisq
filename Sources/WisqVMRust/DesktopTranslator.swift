@@ -25,6 +25,10 @@ public enum DesktopTranslator {
     /// vingt-huit ne démarre pas du tout.
     public static var tablePages: UInt32 { wisq_desktop_table_pages() }
 
+    /// Ce que le **tampon de traduction** occupe, encore au-dessus. L'hôte
+    /// l'ajoute lui aussi : un module confiné le déclare dans son minimum.
+    public static var tlbPages: UInt32 { wisq_desktop_tlb_pages() }
+
     /// Combien de globales `env.g0 … env.g<n-1>` le module importe.
     public static var globalCount: Int { wisq_x86_global_count() }
 

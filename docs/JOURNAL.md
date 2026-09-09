@@ -12754,3 +12754,54 @@ silicium poserait `#PF` et rendrait la main au noyau. C'est le mur suivant, et
 c'est aussi la question que la tranche P2 doit trancher avant d'écrire une
 ligne — un piège WebAssembly est sans retour, alors qu'une faute doit rendre la
 main.
+
+## Le refus qui n'était pas une limite
+
+`mov %rax,%cr3` faisait refuser la **région entière** par l'émetteur, et j'ai
+d'abord lu ça comme une limite à lever. C'était l'inverse : une garde, écrite
+avec sa raison — accepter l'écriture aurait fait croire au noyau qu'il a une
+table de pages sans qu'aucune adresse ne la traverse, et la panne serait tombée
+loin de sa cause. Elle a tenu jusqu'à ce que la chose gardée existe. Le test
+qui l'affirmait s'appelait `…_but_paging_stays_refused` ; il s'appelle
+maintenant `every_control_register_makes_a_round_trip`, et c'est le bon geste :
+un test qui devient faux parce que le monde a changé se réécrit sur la vérité
+nouvelle, il ne se supprime pas.
+
+**J'avais dit à Maxime le contraire, et c'était faux.** J'avais lu la table des
+emplacements — `CONTROL_SLOT`, cinq cases, `control_slot()` — et conclu que les
+registres étaient déjà produits. Lire est écrit pour les cinq ; **écrire** ne
+l'était que pour CR4 et CR8. Une table d'emplacements ne dit pas qui écrit
+dedans.
+
+## Six sabotages qui survivent, et pas un défaut dans le code
+
+Le premier test de la pagination passait, et il ne tenait presque rien. Douze
+sabotages, six survivants — les grandes pages, le tampon consulté, le tampon
+posé, le décalage dans la page, le repliement d'une trame hors RAM, le témoin de
+faute. Chacun d'eux était une **absence de test**, pas un défaut : le programme
+faisait une seule lecture, à l'offset zéro, d'une page ordinaire, sans jamais
+relire ni fauter.
+
+**Le tampon a été le plus intéressant à tenir**, parce qu'un tampon est
+invisible : lire deux fois la même page rend deux fois la même valeur, qu'il
+réponde ou non. Il ne se mesure que par ce qui devient **faux** quand il manque.
+L'invité réécrit donc sa propre entrée de feuille, entre les deux lectures, par
+un alias qui cartographie sa table de pages comme une page de données. Avec
+tampon, la seconde lecture rend encore l'ancienne trame ; sans, elle suit la
+nouvelle. C'est aussi, exactement, la raison d'être d'`invlpg` — que cette
+tranche ne produit pas, et que le test exhibe plutôt que de la taire.
+
+## Deux hôtes qui ne démarrent plus, et c'était voulu
+
+Le module déclare désormais dans son minimum la RAM, la correspondance **et** le
+tampon. Deux pilotes de test allouaient juste la RAM : ils ont cessé de démarrer,
+avec un `LinkError` franc. C'est le comportement que `TABLE_PAGES` documentait
+déjà — « un hôte qui ne l'a pas posée ne démarre pas, au lieu de piéger au
+premier saut ; et un piège WebAssembly est sans retour ». Le corriger, c'était
+mettre les pilotes au contrat, pas assouplir le contrat.
+
+Un troisième cas de ce même test devait rester court : il vérifie précisément
+qu'une mémoire trop petite est **refusée**. Élargir toutes les allocations d'un
+coup l'avait rendu vert pour la mauvaise raison — la garde ne gardait plus rien.
+Le sabotage ne l'aurait pas dit ; c'est le test lui-même qui a échoué, et il a
+bien fait.

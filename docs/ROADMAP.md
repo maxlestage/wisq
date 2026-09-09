@@ -5603,3 +5603,75 @@ octet, mais pas ses deux *places*. Une table peut nommer une trame que la RAM
 attachée n'a pas ; les deux traductions réussissent alors, la moitié basse
 s'écrit, et la haute échoue. Deux murs différents pour la même écriture, et le
 test n'en couvrait qu'un.
+
+## Pagination P2 : l'émetteur traduit, avec son tampon
+
+`guest()` était l'unique goulot — tout accès à la RAM invitée y passe — et il
+**repliait** : `i32.wrap_i64` puis un `et`. Il **traduit** maintenant, et les
+registres de contrôle cessent d'être à moitié refusés.
+
+| ce que la tranche a posé | où |
+| --- | --- |
+| la marche à quatre niveaux, grandes pages comprises | `Module::walk_body` |
+| le tampon de traduction, consulté **en ligne** | `Body::guest` |
+| le repliement du résultat **physique** | `Body::guest`, `walk_body` |
+| `mov vers cr0`/`cr3`, produits au lieu d'être refusés | `Module::translate` |
+| le témoin de faute et CR2 | `FAULT_SLOT`, `control_slot(2)` |
+| RIP posé avant chaque accès mémoire | `Module::translate` |
+| la place du tampon dans la mémoire de l'hôte | `tlb_base`, `web/host.js` |
+
+**La faute ne pièges pas, et le chemin existait déjà.** La boucle de
+répartition rend la main dès qu'un bloc rend un indice négatif — ce que fait
+chaque fin de région. Une page absente pose le témoin, remplit CR2, et le
+contrôle **en ligne** qui suit la traduction fait rendre −1 **avant** l'accès :
+l'instruction fautive ne laisse rien derrière elle, donc le noyau pourra la
+rejouer le jour où les fautes lui seront délivrées. Le coût de ce contrôle a
+été mesuré avant d'être payé — voir `docs/DEMARRAGE.md`.
+
+**Le tampon vit au-dessus de la RAM déclarée**, juste après la correspondance
+adresse → indice. C'est la place que le confinement ouvre, et c'est aussi
+pourquoi la traduction n'existe **que** sous confinement : sans masque, il n'y
+a pas de « au-dessus ». Le module le déclare dans son minimum, donc un hôte qui
+ne l'a pas posé **ne démarre pas** — deux pilotes de test l'ont appris ce
+jour-là, et c'est exactement le comportement voulu.
+
+**Trois choses que cette tranche ne fait pas, et les taire serait la faute que
+ce document reproche ailleurs :**
+
+1. **La lecture des instructions n'est pas paginée.** L'hôte résout une région
+   par son adresse telle quelle : RIP est traité comme physique. Un noyau à
+   demi-haut, dont le texte vit à `0xffffffff8...`, ne se traduirait pas. Seules
+   les **données** passent par les tables.
+2. **Aucune `#PF` n'est délivrée à l'invité.** La machine s'arrête ; le noyau ne
+   reprend pas la main sur son propre gestionnaire. Les interruptions restent le
+   mur suivant.
+3. **`invlpg` n'existe pas**, donc rien ne vide le tampon. Le test le montre en
+   le retournant : l'invité réécrit sa propre entrée de feuille entre deux
+   lectures, et la seconde rend encore l'ancienne trame. C'est ce qu'un vrai
+   processeur ferait sans `invlpg` — mais un noyau, lui, l'appelle.
+
+Ni CR0.WP ni le bit utilisateur ne sont consultés : il n'y a pas d'anneau trois
+ici non plus. Le cœur Rust, lui, les tient depuis P1 — c'est la première
+divergence à fermer quand le test différentiel s'étendra à la pagination.
+
+**Douze sabotages, douze tombés.** Six avaient d'abord **survécu**, et aucun
+n'était un défaut du code : c'était le test qui ne tenait qu'une lecture. Le
+programme en fait maintenant cinq choses dans une seule exécution — un décalage
+dans la page, une entrée de table réécrite par un alias pour éprouver le tampon,
+une trame au-dessus de la RAM, une grande page, et le même programme sans
+pagination pour le contraste.
+
+| sabotage | tests tombés |
+| --- | --- |
+| la marche ignore le bit de présence | 1 |
+| les grandes pages n'arrêtent plus le parcours | 1 |
+| le tampon n'est jamais consulté | 1 |
+| le tampon n'est jamais posé | 1 |
+| le décalage dans la page est perdu | 1 |
+| CR0.PG n'est plus regardé : tout se replie | 2 |
+| la racine ne vient plus de CR3 | 1 |
+| le pas d'une table passe de huit octets à un | 1 |
+| une trame hors de la RAM n'est plus repliée | 1 |
+| écrire CR3 redevient un refus | 3 |
+| le témoin de faute n'est plus posé | 1 |
+| le contrôle de faute disparaît | 6 |
