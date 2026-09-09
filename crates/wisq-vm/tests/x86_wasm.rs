@@ -20,8 +20,8 @@ use std::process::Command;
 
 use wisq_vm::x86::{Cpu, Step, Width};
 use wisq_vm::x86_wasm::{
-    table_base, table_slot, Module, Refused, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TABLE_PAGES, TLB_PAGES,
+    host_pages, table_base, table_slot, tlb_base, Module, Refused, GLOBAL_COUNT, GS_SLOT,
+    GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
 };
 
 // **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
@@ -1612,12 +1612,19 @@ const TARGET = 0x10008;
 const FOLDED = 0x00008;
 const MARK = 0xc0ffeen;
 
+// **Ce qu'un hôte doit allouer, calculé une seule fois.** Le nombre vient de
+// `host_pages`, côté Rust : la RAM de l'invité, la correspondance, et le
+// tampon de traduction. Un pilote qui refaisait la somme lui-même a manqué le
+// tampon et ne s'instanciait plus.
+const rooms = {rooms};
+const hostPages = pages => pages + rooms;
+
 function run(path, pages) {{
   // **La mémoire doit couvrir ce que le module déclare** : la RAM de
   // l'invité, la correspondance, et le tampon de traduction. Un hôte qui
   // n'en pose pas assez ne démarre pas — c'est voulu, et c'est ce que ce
   // pilote a appris le jour où la pagination est entrée.
-  const memory = new WebAssembly.Memory({{ initial: pages + {rooms} }});
+  const memory = new WebAssembly.Memory({{ initial: hostPages(pages) }});
   const slots = [];
   for (let slot = 0; slot < {}; slot++) {{
     slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
@@ -1646,7 +1653,7 @@ console.log("libre.repliée " + loose[1]);
             held.to_string_lossy(),
             loose.to_string_lossy(),
             GUEST_PAGES,
-            rooms = TABLE_PAGES + TLB_PAGES,
+            rooms = host_pages(0),
         ),
     )
     .expect("le pilote");
@@ -1772,6 +1779,11 @@ fn a_region_finds_another_region_through_the_correspondence() {
             r#"
 const fs = require("fs");
 
+// Même règle que l'autre pilote : la taille que l'hôte doit fournir vient de
+// `host_pages`, pas d'une addition écrite ici.
+const rooms = {rooms};
+const hostPages = pages => pages + rooms;
+
 // `fill` : 0 rien, 1 la bonne adresse, 2 une **autre** adresse dans la même
 // case. Le troisième cas est celui qui compte le plus : sans la comparaison,
 // le module sauterait dans un bloc qui n'a rien à voir.
@@ -1802,9 +1814,9 @@ function attempt(fill, pages) {{
   return slots[2].value.toString();
 }}
 
-console.log("remplie " + attempt(1, {pages} + {rooms}));
-console.log("vide " + attempt(0, {pages} + {rooms}));
-console.log("etrangere " + attempt(2, {pages} + {rooms}));
+console.log("remplie " + attempt(1, hostPages({pages})));
+console.log("vide " + attempt(0, hostPages({pages})));
+console.log("etrangere " + attempt(2, hostPages({pages})));
 
 // **Et une mémoire sans place pour la correspondance ni pour le tampon de
 // traduction ne doit pas démarrer.**
@@ -1823,7 +1835,7 @@ try {{
             pages = PAGES,
             tableName = TABLE_IMPORT,
             globals = GLOBAL_COUNT,
-            rooms = TABLE_PAGES + TLB_PAGES,
+            rooms = host_pages(0),
             base = table_base(PAGES),
             slot = table_slot(AWAY),
             away = AWAY,
@@ -2228,6 +2240,15 @@ fn the_short_form_refuses_exactly_what_the_explaining_one_refuses() {
 /// l'iPhone construisent leur `env` autrement — par affectations successives —
 /// et ce sont les chemins que l'application emprunte vraiment. Un manque là se
 /// verrait au premier lancement ; ici, il ne se voyait nulle part.
+///
+/// **Et une phrase de ce commentaire est devenue fausse**, ce qui a coûté une
+/// série de tranches. « La mémoire, la table et les globales — un pilote les
+/// fournit par construction » supposait qu'un pilote qui les fournit les
+/// fournit *assez grandes*. La pagination l'a démenti : un module confiné
+/// réclame une page de tampon en plus, et `examples/resolved.rs` la fournissait
+/// trop petite. Ce n'est plus tenu par une hypothèse mais par
+/// `a_confined_module_asks_for_exactly_what_host_pages_says` et
+/// `no_host_adds_up_the_pages_itself`, juste en dessous.
 #[test]
 fn every_driver_supplies_the_functions_a_module_imports() {
     let module =
@@ -2282,6 +2303,148 @@ fn every_driver_supplies_the_functions_a_module_imports() {
              alors qu'il ne l'a pas regardé"
         );
     }
+}
+
+/// **Ce qu'un module déclare comme mémoire minimale, et ce que les hôtes lui
+/// donnent.**
+///
+/// Le test voisin vérifie les **fonctions** importées, et son propre
+/// commentaire écarte « la mémoire, la table et les globales » au motif qu'un
+/// pilote les fournit par construction. C'était vrai, et la pagination l'a
+/// rendu faux : depuis qu'un module confiné réclame une page de tampon en
+/// plus, un hôte peut fournir la mémoire *et* se faire refuser sur sa taille.
+///
+/// C'est arrivé. `examples/resolved.rs` allouait `pages + TABLE_PAGES`,
+/// échouait à l'instanciation avec `LinkError`, imprimait « le pilote a
+/// échoué » et **sortait avec zéro**. Rien ne le lançait, rien ne l'entendait.
+///
+/// **Ce test tient les deux bouts** : le nombre que le module grave dans ses
+/// octets, et `host_pages`, la fonction que les hôtes appellent. Les faire
+/// diverger casse ici, pas six tranches plus tard sur un pilote que personne
+/// ne lance.
+#[test]
+fn a_confined_module_asks_for_exactly_what_host_pages_says() {
+    let code = [0x48, 0xff, 0xc2, 0xc3]; // incq %rdx ; ret
+    for pages in [1u32, 16, 1024, 0x4000] {
+        let confined = Module::confined(&code, CODE, 0, pages).expect("la forme confinée");
+        assert_eq!(
+            memory_minimum(&confined),
+            u64::from(host_pages(pages)),
+            "la forme confinée à {pages} pages"
+        );
+        // **Et le même nombre par un autre chemin.** `host_pages` seul serait
+        // creux : le module tire son minimum de cette fonction, donc les deux
+        // côtés bougeraient ensemble. Celui-ci vient de `tlb_base`, la
+        // fonction que l'hôte emploie pour **placer** le tampon : le minimum
+        // doit couvrir le sommet de ce tampon, sinon l'hôte écrirait au-delà
+        // de ce que le module déclare. Deux dérivations qui ne partagent que
+        // les constantes.
+        assert_eq!(
+            memory_minimum(&confined),
+            u64::from(tlb_base(pages) / 65536 + TLB_PAGES),
+            "le minimum déclaré ne couvre pas le sommet du tampon, à {pages} pages"
+        );
+        let resolving = Module::resolving(&code, CODE, 0, 0, pages).expect("la forme résolvante");
+        assert_eq!(
+            memory_minimum(&resolving),
+            u64::from(host_pages(pages)),
+            "la forme résolvante à {pages} pages"
+        );
+    }
+    // **Et la forme libre ne suit pas la même règle**, exprès : sans masque le
+    // module adresse toute la RAM du corpus. Sans cette moitié, un émetteur qui
+    // déclarerait `host_pages` partout passerait le test.
+    let free = Module::region(&code, CODE, 0).expect("la forme libre");
+    assert_eq!(memory_minimum(&free), u64::from(GUEST_PAGES));
+}
+
+/// **Aucun hôte n'a le droit de refaire la somme lui-même.**
+///
+/// C'est la garde qui manquait, et elle porte sur le *texte* parce que le
+/// défaut était dans le texte : cinq pilotes écrivaient chacun leur addition,
+/// et l'un d'eux ne l'a pas mise à jour. Un hôte qui instancie un module
+/// confiné doit interpoler **une** valeur, venue de `host_pages` ; une
+/// addition dans la ligne `WebAssembly.Memory` est refusée ici.
+///
+/// **Les modules libres sont hors de portée de cette règle**, et c'est pour ça
+/// que le motif cherché est l'addition, pas la fonction : un pilote qui émet
+/// `Module::region` demande `GUEST_PAGES`, une valeur seule, et passe.
+#[test]
+fn no_host_adds_up_the_pages_itself() {
+    for relative in [
+        "crates/wisq-vm/examples/speed.rs",
+        "crates/wisq-vm/examples/chain.rs",
+        "crates/wisq-vm/examples/resolved.rs",
+        "crates/wisq-vm/examples/kernel-entry.rs",
+        "crates/wisq-vm/tests/x86_wasm.rs",
+        "crates/wisq-vm/tests/host_loop.rs",
+        // **Et l'hôte que l'application exécute vraiment.** Il ne peut pas
+        // appeler `host_pages` — c'est du JavaScript — mais il porte le même
+        // pendant, et la règle vaut pour lui comme pour les autres. Il est
+        // même celui pour qui elle compte le plus.
+        "web/host.js",
+    ] {
+        let text = std::fs::read_to_string(workspace_root().join(relative))
+            .unwrap_or_else(|_| panic!("{relative}"));
+        for (at, _) in text.match_indices("WebAssembly.Memory({") {
+            let rest = &text[at..];
+            let stop = rest.find("})").map_or(rest.len(), |end| end + 2);
+            let line = &rest[..stop];
+            // Ce test se cite lui-même : sa propre phrase porte le motif.
+            if line.contains("host_pages") || line.contains("hostPages") {
+                continue;
+            }
+            assert!(
+                !line.contains('+'),
+                "{relative} additionne les pages sur place :
+  {line}
+                 un hôte de module confiné interpole `host_pages(pages)`,                  une valeur et pas une somme — c'est l'oubli qui a laissé                  `resolved.rs` cassé pendant toute une série"
+            );
+        }
+    }
+}
+
+/// Le minimum de mémoire qu'un module déclare, lu dans sa section d'import.
+fn memory_minimum(module: &[u8]) -> u64 {
+    let mut at = 8;
+    while at < module.len() {
+        let id = module[at];
+        at += 1;
+        let (size, read) = unsigned_at(module, at);
+        at += read;
+        let end = at + size as usize;
+        if id != 2 {
+            at = end;
+            continue;
+        }
+        let (count, read) = unsigned_at(module, at);
+        at += read;
+        for _ in 0..count {
+            for _ in 0..2 {
+                let (length, read) = unsigned_at(module, at);
+                at += read + length as usize;
+            }
+            let kind = module[at];
+            at += 1;
+            match kind {
+                0x00 => {
+                    let (_, read) = unsigned_at(module, at);
+                    at += read;
+                }
+                0x01 => at += 1 + skip_limits(module, at + 1),
+                // La mémoire : ses bornes commencent par un drapeau, puis le
+                // minimum. C'est lui qu'on cherche.
+                0x02 => {
+                    let (least, _) = unsigned_at(module, at + 1);
+                    return least;
+                }
+                0x03 => at += 2,
+                other => panic!("sorte d'import inconnue : {other}"),
+            }
+        }
+        break;
+    }
+    panic!("le module n'importe aucune mémoire");
 }
 
 /// Les noms des fonctions qu'un module importe, lus dans sa section d'import.
