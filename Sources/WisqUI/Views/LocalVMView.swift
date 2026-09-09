@@ -481,6 +481,24 @@ struct LocalVMTerminalView: View {
                 }
             }
 
+            // **Le signe de vie, sous la console et hors d'elle.**
+            //
+            // Hors d'elle, parce que la console est un **vrai** terminal :
+            // écrire cette phrase dedans la mêlerait à ce que l'invité écrit,
+            // et un invité qui repeint son écran l'effacerait.
+            //
+            // Il existe parce qu'une capture a montré un noyau qui imprime
+            // quelques lignes puis se tait dix minutes, sans que rien ne dise
+            // s'il tournait encore. « Il tourne en rond » et « il est mort »
+            // ne se corrigent pas pareil.
+            if let heartbeat = model.heartbeat {
+                Text(heartbeat)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Avancement de la machine : \(heartbeat)")
+            }
+
             HStack(spacing: 8) {
                 TextField("commande", text: $commandLine)
                     .textFieldStyle(.roundedBorder)
