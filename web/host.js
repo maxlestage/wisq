@@ -64,6 +64,20 @@ export const SLOTS = {
   mix: 0x9e3779b97f4a7c15n,
 };
 
+/// **Combien de pages de 64 Kio allouer pour un module confiné** : la RAM de
+/// l'invité, la correspondance, et le tampon de traduction. Le pendant exact de
+/// `host_pages` côté Rust, et la seule addition de ce fichier.
+///
+/// **Pourquoi une fonction pour une addition.** La somme a changé deux fois —
+/// la correspondance, puis le tampon — et à chaque fois il a fallu retrouver
+/// tous les hôtes qui l'écrivaient à la main. `examples/resolved.rs` a été
+/// manqué la seconde fois : il ne s'instanciait plus, imprimait sa panne et
+/// sortait avec zéro. Un test refuse maintenant l'addition sur place, ici
+/// comme là-bas.
+export function hostPages(pages) {
+  return pages + SLOTS.tablePages + SLOTS.tlbPages;
+}
+
 /// La case d'une adresse : le même calcul que `table_slot` côté Rust et que
 /// celui gravé dans les octets du module. **Les trois doivent tomber d'accord**
 /// ou rien n'est jamais trouvé — un défaut muet, qui ne coûte que de la
@@ -192,9 +206,7 @@ export function machine({
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
-  const memory = new WebAssembly.Memory({
-    initial: pages + SLOTS.tablePages + SLOTS.tlbPages,
-  });
+  const memory = new WebAssembly.Memory({ initial: hostPages(pages) });
   const blocks = new WebAssembly.Table({ element: "anyfunc", initial: regions });
   const globals = [];
   const env = { mem: memory, blocks };

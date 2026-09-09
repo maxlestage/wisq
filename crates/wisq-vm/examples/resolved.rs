@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use wisq_vm::x86_wasm::{
-    table_base, table_slot, Module, BENCH_BASE, GLOBAL_COUNT, RIP_SLOT, TABLE_IMPORT, TABLE_PAGES,
+    host_pages, table_base, table_slot, Module, BENCH_BASE, GLOBAL_COUNT, RIP_SLOT, TABLE_IMPORT,
 };
 
 const WORK: usize = 4;
@@ -58,11 +58,11 @@ fn main() {
     let mut taken: HashMap<u32, usize> = HashMap::new();
     for index in 0..LINKS {
         if let Some(other) = taken.insert(table_slot(address(index)), index) {
-            println!(
+            eprintln!(
                 "les maillons {other} et {index} tombent dans la même case : \
                  l'anneau se romprait, rien n'est mesuré"
             );
-            return;
+            std::process::exit(1);
         }
     }
 
@@ -94,8 +94,15 @@ fn main() {
             .output()
             .is_ok()
     }) else {
-        println!("Bun est absent : le gain n'est pas mesuré. Il n'est pas nul, il est inconnu.");
-        return;
+        // **Deux sorties non nulles, et elles ne disent pas la même chose.**
+        // `1` : le pilote a échoué, il y a quelque chose à réparer. `2` : la
+        // mesure est impossible ici — Bun n'est pas installé — et ce n'est le
+        // défaut de personne. Ce qu'aucune des deux ne fait, c'est rendre zéro :
+        // ce pilote a rendu zéro en ayant échoué pendant toute une série, et
+        // c'est exactement pour ça que personne ne l'a vu. Même partage que
+        // `examples/coverage.rs`.
+        eprintln!("Bun est absent : le gain n'est pas mesuré. Il n'est pas nul, il est inconnu.");
+        std::process::exit(2);
     };
 
     let scratch = std::env::temp_dir().join(format!("wisq-resolved-{}", std::process::id()));
@@ -132,7 +139,7 @@ fn main() {
         format!(
             r#"
 const fs = require("fs");
-const memory = new WebAssembly.Memory({{ initial: {pages} + {tablePages} }});
+const memory = new WebAssembly.Memory({{ initial: {hostPages} }});
 const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: {links} }});
 const slots = [];
 const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n, {table}: blocks }} }};
@@ -220,8 +227,12 @@ const hostSeconds = Number(process.hrtime.bigint() - hostBegan) / 1e9;
 
 console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds }}));
 "#,
-            pages = PAGES,
-            tablePages = TABLE_PAGES,
+            // **Ce que l'hôte doit allouer vient de la bibliothèque.** Ce
+            // pilote a écrit la somme à la main, et la tranche qui a ajouté le
+            // tampon de traduction ne l'a pas trouvé : il ne s'instanciait plus,
+            // imprimait « le pilote a échoué » et sortait avec zéro. Un test
+            // interdit maintenant l'addition sur place.
+            hostPages = host_pages(PAGES),
             table = TABLE_IMPORT,
             globals = GLOBAL_COUNT,
             listing = listing,
@@ -244,12 +255,16 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
         .expect("bun doit démarrer");
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     if !output.status.success() {
-        println!(
+        // **Un pilote qui n'a rien mesuré ne rend pas « succès ».** C'est ce
+        // qui a laissé celui-ci cassé pendant toute une série : il imprimait
+        // sa panne et sortait avec zéro, donc rien — ni un œil, ni un script —
+        // ne pouvait faire la différence avec une mesure réussie.
+        eprintln!(
             "le pilote a échoué :\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         let _ = std::fs::remove_dir_all(&scratch);
-        return;
+        std::process::exit(1);
     }
     let _ = std::fs::remove_dir_all(&scratch);
     let number = |key: &str| -> f64 {
@@ -262,9 +277,9 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
             .unwrap_or(f64::NAN)
     };
     if text.contains("\"broken\":true") {
-        println!("l'anneau s'est rompu au premier saut : rien à chronométrer.");
-        println!("{text}");
-        return;
+        eprintln!("l'anneau s'est rompu au premier saut : rien à chronométrer.");
+        eprintln!("{text}");
+        std::process::exit(1);
     }
     let ns = number("seconds") * 1e9 / steps as f64;
     let again = number("againSeconds") * 1e9 / steps as f64;

@@ -5939,3 +5939,77 @@ couvrent pas le noyau entier, et le chemin d'entrée est justement ce qu'elles
 parcourt le graphe des blocs et compte les retours de main. Ce parcours est
 `discover`, qui n'a jamais vu de masque. Lui passer un nombre de pages ferait
 croire que ses chiffres en dépendent.
+
+### Un pilote de mesure cassé depuis P2, qui rendait « succès »
+
+**Trouvé en voulant vérifier autre chose**, et c'est le meilleur des deux
+résultats de la tranche. En allant regarder quelle forme les bancs de vitesse
+émettent, `examples/resolved.rs` s'est révélé cassé :
+
+```
+LinkError: Memory import env:mem provided a 'size' that is smaller than
+the module's declared 'initial' import memory size
+```
+
+Il allouait `pages + TABLE_PAGES`. Depuis P2 un module confiné en réclame une de
+plus — le tampon de traduction. Ce pilote est le **cinquième hôte** à apprendre
+l'existence de cette page, et le seul que la tranche P2 n'a pas trouvé : les
+quatre autres étaient des tests, qui ont rougi.
+
+**Et il sortait avec zéro.** Il imprimait « le pilote a échoué » sur la sortie
+standard, puis `return`. Rien — ni un œil, ni un script — ne pouvait faire la
+différence avec une mesure réussie. Personne ne le lance en intégration
+continue ; c'est écrit dans le dépôt depuis la tranche où trois pilotes avaient
+déjà refusé bruyamment sans que personne n'entende.
+
+**La garde qui existait, et le trou que son propre commentaire nommait.**
+`every_driver_supplies_the_functions_a_module_imports` vérifie les *fonctions*
+importées, en écartant explicitement « la mémoire, la table et les globales » au
+motif qu'un pilote « les fournit par construction ». C'était vrai, et la
+pagination l'a rendu faux : un hôte peut fournir la mémoire **et** se faire
+refuser sur sa taille.
+
+**Ce qui remplace l'hypothèse.** Une fonction, `host_pages(pages)`, côté Rust,
+et son pendant `hostPages` dans `web/host.js` — la seule addition de ce
+fichier. Puis deux tests :
+
+| test | ce qu'il refuse |
+| --- | --- |
+| `a_confined_module_asks_for_exactly_what_host_pages_says` | le minimum gravé dans le module s'écarte de `host_pages`, ou du sommet du tampon calculé par `tlb_base` |
+| `no_host_adds_up_the_pages_itself` | un hôte écrit l'addition sur place au lieu d'interpoler une valeur |
+
+Le premier est dérivé **deux fois**, et il le fallait : le module tire son
+minimum de `host_pages`, donc les comparer seuls était creux — saboter la
+fonction aurait bougé les deux côtés ensemble. La seconde dérivation part de
+`tlb_base`, celle que l'hôte emploie pour *placer* le tampon. Quatre sabotages,
+quatre attrapés : la fonction qui oublie le tampon, l'émetteur qui cesse de
+l'appeler, la forme libre qui se met à le déclarer, et une addition remise dans
+`web/host.js`.
+
+**Ce que le pilote réparé rend**, et il fallait le vérifier avant de le croire :
+
+| l'anneau, 64 maillons de 6 instructions | par changement de région |
+| --- | --- |
+| enchaîné par l'hôte | 152 ns |
+| résolu dans le module | **36,3 ns** |
+| rapport | **4,2** |
+
+Les chiffres publiés — « environ quatre fois moins », un rapport entre 3,7 et
+4,3, un plafond d'environ 170 MIPS — **tiennent**. La forme résolvante est
+maintenant confinée et porte la marche dans les tables ; ça n'a pas déplacé le
+rapport. C'est mesuré, pas déduit : le pilote a été réparé d'abord, exécuté
+ensuite.
+
+**Enfin, un partage de codes de sortie**, le même que `examples/coverage.rs` :
+`1` quand le pilote a échoué et qu'il y a quelque chose à réparer, `2` quand la
+mesure est impossible ici — Bun absent — et que ce n'est le défaut de personne.
+Ce qu'aucun des deux ne fait, c'est rendre zéro.
+
+**Ce qui reste ouvert, et c'est la tranche suivante.** Les bancs de vitesse —
+`examples/speed.rs`, `examples/bench-module.rs`, `tests/webkit_probe.rs`, et
+donc `WebKitBench.moduleBase64` que la feuille de route décrit plus haut comme
+« ce que wisq engendrerait » — émettent tous `Module::region`, la forme libre.
+Et `BENCH_LOOP` est cinq instructions de registres, **sans un seul accès
+mémoire** : or tout le surcoût de la forme confinée est sur les accès mémoire.
+Corriger la forme sans changer la boucle rendrait « aucune différence », ce qui
+serait vrai et sans rapport avec ce que le bureau ressentira. Il faut les deux.

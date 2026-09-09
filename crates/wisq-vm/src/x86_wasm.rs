@@ -364,6 +364,26 @@ pub fn tlb_base(pages: u32) -> u32 {
     table_base(pages) + TABLE_PAGES * 65536
 }
 
+/// **Combien de pages de 64 Kio un hôte doit allouer pour un module confiné.**
+///
+/// La RAM de l'invité, plus la correspondance adresse → indice, plus le tampon
+/// de traduction. Le module **déclare** ce nombre comme minimum : un hôte qui
+/// en fournit moins ne démarre pas, au lieu de piéger plus tard sur une adresse
+/// qu'il croyait sienne.
+///
+/// **Pourquoi une fonction et pas une somme sur place.** Il y a eu deux
+/// tranches où la somme a changé — la correspondance, puis le tampon — et à
+/// chaque fois il a fallu retrouver tous les hôtes qui l'écrivaient à la main.
+/// La seconde fois, `examples/resolved.rs` a été oublié : il allouait
+/// `pages + TABLE_PAGES`, ne s'instanciait plus, imprimait « le pilote a
+/// échoué » et **sortait avec zéro**. Personne ne l'a vu pendant toute une
+/// série de tranches. Une somme écrite à cinq endroits est cinq occasions
+/// d'en oublier un ; celle-ci est écrite ici.
+#[must_use]
+pub fn host_pages(guest_pages: u32) -> u32 {
+    guest_pages + TABLE_PAGES + TLB_PAGES
+}
+
 /// **La case d'une adresse, et c'est le point d'accord.** L'hôte remplit la
 /// correspondance avec cette fonction, le module la relit avec le même calcul
 /// gravé dans ses octets. S'ils divergent, rien n'est jamais trouvé et le
@@ -1664,10 +1684,13 @@ impl Module {
         // correspondance : un hôte qui ne l'a pas posé **ne démarre pas**, au
         // lieu de piéger au premier défaut de tampon — et un piège WebAssembly
         // est sans retour.
-        let least = match (confine, shape.lookup) {
-            (Some(pages), true) => pages + TABLE_PAGES + TLB_PAGES,
-            (Some(pages), false) => pages + TABLE_PAGES + TLB_PAGES,
-            (None, _) => GUEST_PAGES,
+        //
+        // **Les deux formes confinées déclarent la même chose**, et ce fut deux
+        // bras identiques pendant une tranche : la correspondance et le tampon
+        // vivent au-dessus de la RAM que la région soit résolvante ou non.
+        let least = match confine {
+            Some(pages) => host_pages(pages),
+            None => GUEST_PAGES,
         };
         unsigned(u64::from(least), &mut imports);
         // **La table de l'hôte**, quand la région est liée. Le minimum déclaré
