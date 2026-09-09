@@ -5722,3 +5722,39 @@ remplissage que le noyau sème entre ses fonctions.
 refuse de mesurer : « décoderait une archive comme du code, et rendrait un
 chiffre qui n'en est pas un », puis donne la commande d'extraction. Cette
 garde-là a tenu ; celle qui manquait était dans ma lecture, pas dans l'outil.
+
+### Le point d'entrée d'un vrai noyau se traduit entièrement — et deux erreurs de lecture en chemin
+
+Relevé par `first-region` sur le point d'entrée d'Alpine 3.20 :
+
+| | ce que la série précédente disait | maintenant |
+| --- | ---: | ---: |
+| lecture linéaire | 70 instructions, arrêt à l'octet 291 | **454 instructions**, arrêt à l'octet 1575 |
+| ce qui l'arrête | `fa f4` — `cli` puis `hlt` | `cc cc cc…` — le remplissage entre deux fonctions |
+| traduction | arrêtée sur `wrmsr`, puis sur `cli` | **la région entière**, 2 150 octets de module |
+
+**C'est la première fois que le point d'entrée d'un vrai noyau se traduit
+jusqu'au bout.** Ce n'est pas la pagination seule qui l'a fait — c'est la série
+entière : `cpuid`, les sélecteurs, les tables de descripteurs, les MSR, les
+registres de contrôle, puis la traduction d'adresse.
+
+**Deux erreurs de lecture, et les deux valent d'être écrites.**
+
+*Le noyau n'est pas une image plate.* La charge utile décompressée d'un
+`bzImage` est un **ELF**, et j'ai d'abord extrait « le point d'entrée » à
+l'octet 0x90 du fichier — c'est-à-dire dans l'en-tête ELF. Le relevé disait
+alors « quatre instructions, puis l'octet 9 ne se lit pas », ce qui ressemblait
+à un résultat. L'adresse `0x1000090` est **virtuelle** ; le décalage dans le
+fichier se lit par les en-têtes de programme, et vaut 0x200090.
+
+*Et ce détour a montré autre chose.* Le segment qui porte le point d'entrée est
+chargé à `0xffffffff81000000` — le **demi-haut**. C'est exactement la limite
+écrite lors de la tranche P2 : la lecture des **instructions** n'est pas
+paginée, l'hôte résout une région par son adresse telle quelle. Un noyau dont le
+texte vit là ne pourra pas être exécuté par l'émetteur tant que RIP sera traité
+comme physique. La limite n'était pas théorique ; c'est le premier vrai noyau
+qu'on regarde qui la porte.
+
+**Ce que ce relevé ne dit toujours pas** : il compile. Il n'exécute pas. La
+distance qui reste tient en une phrase — l'hôte sait résoudre une région par son
+adresse, et cette adresse est virtuelle.
