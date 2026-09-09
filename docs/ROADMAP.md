@@ -6303,3 +6303,112 @@ le message d'erreur le dit lui-même.
 `sti` et `hlt` parmi les refus. Ils en sortent, avec la raison écrite à côté —
 le même geste que pour `…_but_paging_stays_refused` en P2. Un test qui devient
 faux se réécrit sur la vérité nouvelle ; il ne se supprime pas.
+
+### Un sélecteur nul ne lit aucun descripteur, et le silicium l'a dit
+
+La tranche précédente laissait le mur à l'octet **319** de la région
+`0xffffffff810000c6`, sur `mov %eax,%fs`. C'était l'un des neuf refus nommés, et
+il était écrit avec sa raison : charger FS ou GS relit un descripteur dans la
+table globale pour en tirer une base, et cette table n'existe pas.
+
+**La raison est bonne ; sa portée ne l'était pas.** Les octets d'avant :
+
+```text
+311  31 c0     xor  %eax,%eax
+313  8e d8     mov  %eax,%ds     produit — base morte en mode 64 bits
+315  8e d0     mov  %eax,%ss     produit
+317  8e c0     mov  %eax,%es     produit
+319  8e e0     mov  %eax,%fs     refusé
+```
+
+Le sélecteur vaut **zéro**, et un sélecteur nul ne lit aucun descripteur. Le
+refus emportait donc la région entière — 319 octets d'un vrai noyau — pour un
+danger qui n'existait pas à cet endroit.
+
+#### Ce que le silicium fait du nul, mesuré
+
+Un programme à syscalls bruts sur le processeur de ce conteneur. **Bruts, et
+c'est nécessaire** : passer par la libc entre les deux relevés toucherait
+`errno`, qui vit dans le TLS pointé par FS — l'instrument casserait ce qu'il
+mesure.
+
+```text
+FS.base avant = 0x7f7da625f740
+xorl %eax,%eax ; movl %eax,%fs
+FS.base apres = 0x0
+```
+
+**La base est effacée**, pas conservée. C'est ce que l'émetteur produit.
+
+**Un seul processeur ne fait pas une architecture.** La mesure vaut pour ce
+Xeon, et ce dépôt n'a pas d'autre silicium sous la main. C'est écrit pour que la
+prochaine mesure sache ce qu'elle corrige, plutôt que de faire passer un relevé
+pour une règle.
+
+#### Le refus n'a pas disparu : il a changé d'heure
+
+| | avant | après |
+| --- | --- | --- |
+| quand | à la **traduction** | à l'**exécution** |
+| ce qu'il emporte | la région entière | l'instruction seule |
+| ce qu'il dit | « ne se traduit pas » | « un sélecteur non nul dans FS ou GS, sans table de descripteurs » |
+| RIP | — | **sur** l'instruction, qui n'a rien fait |
+
+Ranger le sélecteur sans en tirer de base donnerait au noyau une adresse fausse,
+silencieusement, loin de sa cause — le défaut exact que le refus d'origine
+évitait, et il reste évité. Le contrôle coûte une comparaison sur une
+instruction que le démarrage exécute six fois.
+
+**Le témoin d'arrêt a changé de nom en même temps.** `HALT_SLOT` ne portait que
+le `hlt` ; il en porte deux, donc ce nom mentait. Il s'appelle `STOP_SLOT`, ses
+raisons sont nommées (`STOP_HALTED`, `STOP_SELECTOR`), et `web/host.js` les
+traduit en phrases — **y compris une raison qu'il ne connaît pas**, dite plutôt
+que passée sous silence.
+
+#### Le mur suivant : `popfq`, et le zéro empilé deux octets plus tôt
+
+| | avant | après |
+| --- | --- | --- |
+| la quatrième région refuse à l'octet | **319** (`mov %eax,%fs`) | **400** (`popfq`) |
+
+```text
+390  b8 33 00 05 80   mov  $0x80050033,%eax
+395  0f 22 c0         mov  %rax,%cr0
+398  6a 00            push $0
+400  9d               popfq            <-- le mur
+```
+
+**Même forme que le sélecteur** : la valeur dépilée est un zéro empilé deux
+octets plus tôt. Le cas que le noyau exécute réellement est celui qui ne demande
+rien.
+
+Et l'asymétrie a cessé de tenir : `pushfq` est produit, le cœur Swift produit
+`popfq` avec un masque décidé contre l'oracle matériel
+(`0x0000_0000_003F_7FD5`, plus le bit réservé), et `cli`/`sti` posent désormais
+IF. « Lire oui, écrire non » n'a plus de raison. C'est la tranche suivante, avec
+le **même masque que le cœur Swift** pour que les deux disent la même chose.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| la branche nulle n'efface plus la base | `a_null_selector_needs_no_descriptor_and_a_real_one_says_what_is_missing` |
+| le test du sélecteur inversé | le même |
+| le non-nul range le sélecteur en silence | le même |
+| RIP posé après l'instruction plutôt que dessus | le même |
+| l'hôte ne connaît plus la raison 2 | le même |
+
+Cinq sabotages, cinq attrapés, et les deux fichiers vérifiés **identiques par
+`diff`** après restauration.
+
+#### Une divergence trouvée en chemin, et laissée à sa propre tranche
+
+Le cœur **Swift**, lui, range le sélecteur et ne touche **aucune** base —
+`X86CoreDispatch.swift`, `case 0x8E`. Après un `mov %eax,%fs` nul il garde donc
+l'ancienne base là où le processeur l'efface, et un accès `%fs:` suivant lirait
+à la mauvaise adresse.
+
+**Latent, pas faux.** Linux met ses segments à zéro quand les bases valent déjà
+zéro, puis pose les vraies par `wrmsr` ; rien ne mord aujourd'hui. Mais c'est
+exactement la forme de défaut que ce dépôt cherche — deux choses qui devraient
+s'accorder et ne s'accordent pas — et le taire parce que ça ne mord pas encore
+serait le garder. Sa propre tranche : ce cœur-là est celui qui tourne sur le
+téléphone de Maxime en ce moment.
