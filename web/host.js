@@ -22,6 +22,14 @@
 /// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
 /// frontière entre Rust et cette vue à part des octets. Le test les compare aux
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
+/// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
+/// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR` — et un nombre que ce tableau
+/// ne connaît pas se dit quand même, plutôt que de passer pour « rien ».
+const STOPS = {
+  1n: "arrêtée sur hlt",
+  2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
+};
+
 export const SLOTS = {
   /// La case de RFLAGS. Elle ne servait à rien ici tant que personne ne lisait
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
@@ -59,10 +67,11 @@ export const SLOTS = {
   translate: 47,
   translateCount: 3,
   fault: 50,
-  /// **Le témoin d'arrêt.** Un après un `hlt` — le module pose ce témoin et
-  /// rend la main, plutôt que de faire refuser la région entière. C'est ici que
-  /// la délivrance d'une interruption viendra l'effacer.
-  halted: 51,
+  /// **Le témoin d'arrêt, et sa raison.** Zéro tant que la machine tourne ;
+  /// sinon un nombre qui dit **pourquoi** — le module le pose et rend la main,
+  /// plutôt que de faire refuser la région entière. C'est ici que la délivrance
+  /// d'une interruption viendra effacer le `hlt`.
+  stop: 51,
   globalCount: 52,
   tablePages: 16,
   tableEntry: 16,
@@ -504,8 +513,9 @@ export function machine({
         // interruption que rien ne produit. C'est ici que la délivrance
         // viendra effacer le témoin — la sonde `--example deliver-probe` a
         // désigné cette boucle, et c'est le même endroit.
-        if (globals[SLOTS.halted].value !== 0n) {
-          return { stopped: "arrêtée sur hlt", at: rip() };
+        const stop = globals[SLOTS.stop].value;
+        if (stop !== 0n) {
+          return { stopped: STOPS[stop] ?? `arrêt de raison inconnue (${stop})`, at: rip() };
         }
         // **RIP inchangé ne veut pas dire bloqué**, et c'est une correction :
         // un anneau dont le budget s'épuise pile sur son point de départ
