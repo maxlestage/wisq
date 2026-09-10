@@ -247,6 +247,8 @@ export function machine({
   pages,
   screen,
   serial,
+  // **La taille de départ de la table des blocs**, pas sa taille : elle
+  // grandit devant chaque région qui en a besoin (voir `HEADROOM`).
   regions = 4096,
   patience = 30000,
 }) {
@@ -430,6 +432,20 @@ export function machine({
   // Petite d'abord, grande sur demande.
   const WINDOW = 4096;
   const WIDER = 16384;
+  // **La marge que la table garde devant la prochaine région**, et pourquoi
+  // c'est une borne et non une estimation. Le module déclare pour minimum
+  // `emplacement + blocs` sur la table qu'il importe ; une table plus courte
+  // ne le laisse pas s'instancier — `LinkError`, sans retour. Or chaque bloc
+  // commence à une adresse distincte de la fenêtre, et la fenêtre fait au plus
+  // `WIDER` octets : aucune région ne peut poser plus de `WIDER` blocs. Une
+  // table qui a toujours `WIDER` entrées libres devant l'emplacement ne refuse
+  // donc **jamais** une région pour sa taille. Une entrée est un pointeur :
+  // la marge coûte 128 Kio, une fois.
+  //
+  // Le noyau Alpine a rencontré ce mur à sa 155ᵉ région, sur son premier
+  // `printk` : l'emplacement 4049 d'une table de 4096 créée une fois pour
+  // toutes. La plus grande région relevée y posait 203 blocs.
+  const HEADROOM = WIDER;
 
   /// **Lire la fenêtre dans la mémoire de l'invité**, à l'adresse repliée.
   ///
@@ -467,6 +483,11 @@ export function machine({
     }
     if (bytes === MUTE || bytes === BROKEN) return bytes;
     if (!bytes) return null;
+    // **La table grandit devant la région, avant qu'elle ne s'instancie.**
+    // C'est l'instanciation qui compare le minimum déclaré à la longueur de
+    // la table ; après, il est trop tard.
+    const wanted = slot + HEADROOM;
+    if (blocks.length < wanted) blocks.grow(wanted - blocks.length);
     // **Combien de blocs le module pose, on ne le sait qu'après.** L'émetteur
     // ne l'annonce pas, et l'instanciation est ce qui les met dans la table.
     // L'emplacement suivant se lit donc dans la table elle-même.

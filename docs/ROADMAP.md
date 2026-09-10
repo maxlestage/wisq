@@ -7748,3 +7748,51 @@ de la prochaine région avant de l'instancier, et peut garder une marge devant
 lui. C'est la tranche suivante, et elle est petite. Ce qu'elle promet : le
 premier `printk` d'un noyau Linux, engendré en WebAssembly, sur le port série
 que `host.js` écoute déjà.
+
+## La table des blocs grandit, et le noyau traverse son premier `printk`
+
+Le mur de la tranche précédente n'était pas au noyau : `web/host.js` créait la
+table des blocs une fois, `regions = 4096`, et la 155ᵉ région réclamait
+l'emplacement 4049 avec plus de 47 blocs. `LinkError`, sans retour.
+
+**Ce que la tranche pose.** Avant d'instancier une région, l'hôte garantit
+`WIDER` entrées libres devant son emplacement, par `WebAssembly.Table.grow`.
+C'est une borne et non une estimation : chaque bloc commence à une adresse
+distincte de la fenêtre, et la fenêtre fait au plus `WIDER` octets — aucune
+région ne peut poser plus de `WIDER` blocs, donc une table qui garde cette marge
+ne refuse **jamais** une région pour sa taille. La plus grande région relevée
+en pose 266 (`vprintk_store`, 186 Kio de module). Une entrée est un pointeur :
+la marge coûte 128 Kio, une fois. `regions` reste la taille de départ.
+
+**Éprouvé.** Le test part d'une table d'**un seul** emplacement, et sa
+première région en pose deux : elle déborde déjà, et seule une croissance
+**avant** l'instanciation la laisse passer. Ce détail a été gagné sur un
+sabotage : la première forme du test partait de deux emplacements, la première
+région tenait pile, et grandir *après* l'instanciation suffisait à la seconde —
+le sabotage a survécu. Resserré, trois sabotages, trois rouges : le grow retiré,
+la condition fausse, le grow déplacé après l'instanciation.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal, avec le port série
+désormais recueilli par `kernel-entry` :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 154 | 4049 | `vprintk_emit + 9` — `LinkError` |
+| après | **278** | **9408** | `setup_arch` — `MayBeCut { at: 16383 }` |
+
+Le noyau traverse `vprintk_store`, `vsnprintf`, `local_clock`,
+`console_flush_all`, ressort de `vprintk_emit`, finit `early_security_init`
+(`initialize_lsm`, `lockdown_lsm_init`), revient dans `start_kernel + 98` et
+appelle `setup_arch`. **Le port série est vide, et c'est attendu** : le premier
+`printk` ne fait qu'écrire dans le tampon — `console_flush_all` n'a aucune
+console à servir avant `console_init`, qui vient après `setup_arch`. Sans
+`earlyprintk=serial` sur la ligne de commande, la première ligne sur `0x3f8`
+n'arrive qu'à ce moment-là.
+
+**Le mur suivant est à l'émetteur, nommé.** `setup_arch` est refusée
+`MayBeCut { at: 16383 }` : le relevé atteint le **dernier octet** de la fenêtre
+de seize kibioctets, la vue redemande avec la même fenêtre — c'est déjà la
+grande — et abandonne. Une région dont le relevé touche le bord est refusée
+**entière**, alors que ses blocs complets se traduiraient et que le bloc coupé
+n'est qu'une cible de plus à résoudre hors région. C'est la tranche suivante :
+arrêter le relevé au dernier bloc complet plutôt que refuser la fenêtre.
