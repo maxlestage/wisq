@@ -72,7 +72,11 @@ export const SLOTS = {
   /// plutôt que de faire refuser la région entière. C'est ici que la délivrance
   /// d'une interruption viendra effacer le `hlt`.
   stop: 51,
-  globalCount: 52,
+  /// **`IA32_EFER`**, le quatrième MSR que le module modélise. Un vrai noyau le
+  /// lit, y pose SCE et NX, et le réécrit ; c'est sur ce `rdmsr` qu'Alpine
+  /// s'arrêtait, faute qu'il existe.
+  efer: 52,
+  globalCount: 53,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -246,6 +250,14 @@ export function machine({
   // ne remarque pas tout de suite et qui rend une trace incomparable à une
   // vraie.
   globals[SLOTS.rflags].value = 0x2n;
+  // **EFER part en long mode, et ce n'est pas une commodité.** LME (bit 8) et
+  // LMA (bit 10) : le mode 64 bits est demandé et actif, ce qui est vrai de
+  // cette machine — elle n'exécute rien d'autre. Le noyau ne lit pas EFER par
+  // curiosité : il le lit, y ajoute ses bits et le réécrit. Partir de zéro lui
+  // ferait ranger un EFER qui prétend que la machine n'est pas en 64 bits, et
+  // c'est ce registre-là qu'il relira pour décider s'il peut poser NX dans ses
+  // tables de pages.
+  globals[SLOTS.efer].value = 0x500n;
   // **Les deux fonctions par lesquelles l'invité touche le monde.**
   //
   // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un

@@ -7245,3 +7245,39 @@ essai, et c'est le premier essai qui l'a montrée.
 
 C'est la raison d'être de `fold` : une règle écrite à trois endroits est une
 règle qu'un des trois finira par écrire de travers.
+
+## EFER : le premier MSR qu'un vrai noyau ait réclamé
+
+L'émetteur modélisait déjà des MSR — trois, choisis par le numéro que l'invité
+met dans ECX à l'exécution, avec un retour de main **à l'adresse de
+l'instruction** pour tout autre numéro. Ce n'était donc pas un manque de
+modèle : c'était un numéro de plus. Alpine s'arrêtait sur `rdmsr` avec
+`0xc0000080` — `IA32_EFER` — après douze régions.
+
+**La valeur initiale n'est pas zéro, et c'est le seul point qui demandait une
+décision.** Le noyau ne lit pas EFER par curiosité : il le lit, y pose SCE et
+NX, et le réécrit. Ce qu'il relit doit dire la vérité sur la machine, et la
+vérité est que le long mode est actif — LME (bit 8) et LMA (bit 10). À zéro,
+l'invité rangerait un EFER prétendant que la machine n'est pas en 64 bits, et
+c'est ce registre-là qu'il relit plus tard pour décider s'il peut poser NX dans
+ses tables de pages. Les globales étant **importées**, la valeur de départ
+appartient à l'hôte : `web/host.js` la pose, à côté du bit 1 de RFLAGS, pour la
+même raison.
+
+| | avant | après |
+|---|---|---|
+| arrêt | `secondary_startup_64_no_verify + 308` | `+ 339` |
+| `rax` à l'arrêt | `0x0` | `0x80050033` |
+
+`0x80050033` est le CR0 de Linux en long mode — PG, WP, NE, ET, MP, PE. Le
+noyau a donc traversé sa lecture-modification-écriture d'EFER et arrive à
+l'écriture de CR0.
+
+**Ce qui n'est pas expliqué, et qu'il ne faut pas déduire.** À l'arrêt,
+`rsp = 0xffffffffffffffe8`, c'est-à-dire −24 : trois empilements depuis un
+pointeur nul. La pile porte pourtant une adresse de retour vraie
+(`secondary_startup_64_no_verify + 294`). Le montage ne donne aucune pile à ce
+chemin, et le noyau en attend une — `secondary_startup_64` charge RSP depuis
+`initial_stack`, qui vit dans `.data`, que ce montage ne pose pas. C'est la
+mesure suivante, et elle se fera comme les précédentes : en faisant dire à la
+machine ce qu'elle fait, pas en relisant l'émetteur.
