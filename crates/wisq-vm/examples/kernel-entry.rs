@@ -1,6 +1,15 @@
 //! **Le point d'entrée d'un vrai noyau, exécuté — pas seulement compilé.**
 //!
-//!     cargo run -p wisq-vm --release --example kernel-entry -- vmlinux.bin
+//!     cargo run -p wisq-vm --release --example kernel-entry -- vmlinux.bin [System.map]
+//!
+//! **Le second argument est facultatif et change tout ce qu'on peut conclure.**
+//! Sans lui l'outil rend « rip 0xffffffff81000642 », et la feuille de route a
+//! porté une tranche entière un « on ne sait pas si ce `jmp .` est un chemin
+//! d'erreur ou une boucle de parking ». Avec la carte du noyau — celle
+//! d'Alpine vit dans `boot/System.map-…` de l'ISO *standard*, et il faut
+//! **exactement** la version qu'on exécute — la même adresse se lit
+//! `__startup_64 + 658` : le rembourrage posé après le retour de la fonction,
+//! ce qui n'est ni l'un ni l'autre.
 //!
 //! `coverage` et `first-region` disent ce qui **se traduit**. Depuis la tranche
 //! des MSR, ce n'est plus la même chose que ce qui **s'exécute**, et le dépôt
@@ -27,6 +36,7 @@
 //! rendait « quatre instructions puis un octet illisible », ce qui ressemblait
 //! à un résultat. L'adresse du point d'entrée est **virtuelle** ; le décalage
 //! se lit par les en-têtes de programme, et c'est cet outil qui le fait.
+use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{Module, RIP_SLOT};
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
@@ -80,10 +90,55 @@ fn segments(image: &[u8]) -> Option<(u64, Vec<Load>)> {
     Some((entry, loads))
 }
 
+/// **Toute adresse imprimée passe par là.** Un relevé qui rend
+/// « rip 0xffffffff81000642 » n'apprend rien à personne : la feuille de route a
+/// porté pendant une tranche entière un « on ne sait pas si ce `jmp .` est un
+/// chemin d'erreur ou une boucle de parking », alors que la carte du noyau
+/// exact était dans l'ISO d'Alpine. Avec elle, l'adresse se lit
+/// « __startup_64 + 658 » — le rembourrage posé après le retour de la fonction,
+/// ce qui n'est ni l'un ni l'autre.
+///
+/// Sans carte, les adresses sortent nues, comme avant : un outil de diagnostic
+/// qui refuse de fonctionner sans son confort casse ce qu'il mesure.
+fn name_addresses(text: &str, map: &Symbols) -> String {
+    if map.is_empty() {
+        return text.to_string();
+    }
+    text.split_inclusive(char::is_whitespace)
+        .map(|word| {
+            let bare = word.trim_end();
+            let named = bare
+                .strip_prefix("0x")
+                .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                .map(|address| map.describe(address));
+            match named {
+                Some(named) => format!("{named}{}", &word[bare.len()..]),
+                None => word.to_string(),
+            }
+        })
+        .collect()
+}
+
 fn main() {
     let path = std::env::args()
         .nth(1)
         .expect("le chemin de la charge utile");
+    // **La carte est facultative, et son absence se dit.** Un fichier donné
+    // mais illisible serait pire que pas de fichier du tout : l'outil
+    // imprimerait des adresses nues en laissant croire qu'elles n'ont pas de
+    // nom, alors que c'est la carte qui n'a pas été lue.
+    let map = match std::env::args().nth(2) {
+        Some(path) => {
+            let map = std::fs::read_to_string(&path)
+                .map(|text| Symbols::parse(&text))
+                .unwrap_or_default();
+            if map.is_empty() {
+                eprintln!("{path} ne porte aucun symbole : les adresses resteront nues");
+            }
+            map
+        }
+        None => Symbols::default(),
+    };
     let image = std::fs::read(&path).expect("le fichier");
     let Some((entry, loads)) = segments(&image) else {
         eprintln!(
@@ -283,17 +338,19 @@ console.log("rsp 0x" + lire(4).toString(16));
         match compile(at, place) {
             Ok(module) => {
                 println!(
-                    "tour {round} : {} régions traduites, la machine réclame 0x{at:x} \
+                    "tour {round} : {} régions traduites, la machine réclame {} \
                      à l'emplacement {place} ({} octets)",
                     regions.len(),
+                    map.describe(at),
                     module.len()
                 );
                 regions.push((at, module));
             }
             Err(why) => {
                 println!(
-                    "tour {round} : {} régions traduites, et 0x{at:x} **ne se traduit pas** — {why}",
-                    regions.len()
+                    "tour {round} : {} régions traduites, et {} **ne se traduit pas** — {why}",
+                    regions.len(),
+                    map.describe(at)
                 );
                 break;
             }
@@ -303,6 +360,6 @@ console.log("rsp 0x" + lire(4).toString(16));
         }
     }
     println!();
-    print!("{last}");
+    print!("{}", name_addresses(&last, &map));
     let _ = std::fs::remove_dir_all(&scratch);
 }
