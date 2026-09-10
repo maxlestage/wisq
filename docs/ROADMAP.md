@@ -7333,3 +7333,40 @@ que de le supposer.
 compterait un `PT_NOTE` comme un segment à charger, et celui qui lirait
 `memory_size` là où `file_size` est attendu, ce qui ferait lire au-delà du
 fichier.
+
+## « Sur place » ne disait pas pourquoi — trois globales le disent
+
+Le relevé rendait `arret sur place` et personne ne pouvait distinguer un budget
+épuisé, un `hlt` et une faute de page. Trois globales que le module tient déjà
+et que le pilote n'imprimait pas :
+
+```text
+arret-code 0
+faute 1
+controle cr0=0x80050033 cr2=0xffff888000000000 cr3=0x2b38000 cr4=0xa0 cr8=0x0
+```
+
+**Et ça renverse la question.** L'hypothèse écrite était « le repli par masque
+ne sait pas suivre la cartographie directe, il faut la traduction par CR3 ». La
+traduction par CR3 **a lieu** : CR0.PG est posé, CR3 porte la racine que le
+noyau a construite (`0x2b38000`, en RAM), le module marche dans ses tables, et
+c'est la marche qui **échoue** — `faute 1`, et CR2 nomme l'adresse fautive,
+`0xffff888000000000`. Il n'y a rien à ajouter à l'émetteur pour cette adresse :
+il fait exactement son travail et rapporte une page absente.
+
+**La vraie cause est ailleurs, et elle était la deuxième question.** À l'entrée
+64 bits, un chargeur de démarrage pose dans RSI le pointeur vers les
+`boot_params`. Le montage ne pose rien : RSI vaut zéro, donc `real_mode_data`
+vaut zéro, donc `copy_bootdata` calcule `__va(0)` — c'est-à-dire exactement
+`page_offset_base`, `0xffff888000000000`, la base de la cartographie directe,
+que les tables précoces du noyau ne couvrent pas. Le noyau lit là où on lui a
+dit de lire, et on lui a dit zéro.
+
+C'est la tranche suivante : donner à la machine de vrais `boot_params`, à une
+adresse physique réelle, et poser leur pointeur dans RSI. `X86BootLoader` le
+fait déjà pour l'application, côté Swift.
+
+**Ce que cette tranche coûte et rapporte.** Trois lignes dans un outil de
+diagnostic, aucun comportement changé, et une hypothèse écrite renversée en une
+exécution. C'est la troisième fois de la journée qu'un relevé qui **nomme**
+tranche là où une relecture aurait choisi.

@@ -41,7 +41,7 @@
 //! se lit par les en-têtes de programme, et c'est cet outil qui le fait.
 use wisq_vm::kernel_image::loads;
 use wisq_vm::symbols::Symbols;
-use wisq_vm::x86_wasm::{Module, RIP_SLOT};
+use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
 /// confinement exige, et assez grande pour que le texte du noyau y tienne : il
@@ -368,11 +368,27 @@ const noms = ["rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
 console.log("registres " + noms
   .map((nom, at) => nom + "=0x" + lire(at).toString(16))
   .join(" "));
+// **Pourquoi elle s'est arrêtée, et pas seulement où.**
+//
+// Trois globales que le relevé ne montrait pas, et sans lesquelles « sur
+// place » ne dit pas s'il s'agit d'un budget épuisé, d'une faute de page, ou
+// d'un `hlt`. La question du moment est de savoir si le module **pagine** :
+// le noyau a écrit CR0 et CR3, et ce que le module en fait décide si une
+// adresse haute comme `page_offset_base` est traduite ou repliée par masque.
+console.log("arret-code " + lire({stop}));
+console.log("faute " + lire({fault}));
+const controle = ["cr0", "cr2", "cr3", "cr4", "cr8"];
+console.log("controle " + controle
+  .map((nom, at) => nom + "=0x" + lire({control} + at).toString(16))
+  .join(" "));
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
                 placements = placements,
                 pages = PAGES,
                 rip = RIP_SLOT,
+                stop = STOP_SLOT,
+                fault = FAULT_SLOT,
+                control = CONTROL_SLOT,
                 entry = entry_virtual,
             ),
         )
