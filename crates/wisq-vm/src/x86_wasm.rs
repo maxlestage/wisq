@@ -268,6 +268,14 @@ pub const STOP_HALTED: u64 = 1;
 /// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
 pub const STOP_SELECTOR: u64 = 2;
 
+/// **`lkgs` a été atteinte.** Elle charge la base GS du noyau depuis un
+/// sélecteur, donc depuis un descripteur, et la table n'existe pas. RIP est
+/// posé **sur** l'instruction : rien ne la reprendra, et c'est elle qu'il faut
+/// montrer. Le noyau Alpine ne l'exécute que si CPUID annonce `LKGS`, ce que
+/// `cpuid` n'annonce pas ; ce témoin dit que la promesse a été rompue, pas
+/// qu'une traduction manque.
+pub const STOP_KERNEL_GS: u64 = 3;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -2918,6 +2926,24 @@ impl Module {
             });
             return Some(());
         }
+        // **`lkgs` s'arrête dessus et le dit.** Pas de table de descripteurs
+        // d'où lire la base : le témoin est posé, RIP reste **sur**
+        // l'instruction, et la main est rendue. Décoder plutôt que refuser,
+        // parce que `native_lkgs` est à portée statique d'une région que le
+        // noyau exécute vraiment, et qu'il ne l'appelle que si CPUID le
+        // promet — ce que `cpuid` ne fait pas.
+        if step.op == Op::LoadKernelGs {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_KERNEL_GS);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            return Some(());
+        }
         // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
         // l'instruction, et la main rendue par un indice négatif — le même
         // chemin qu'une faute de page, qui existait déjà.
@@ -3103,6 +3129,7 @@ impl Module {
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
+                | Op::LoadKernelGs
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3500,6 +3527,7 @@ impl Module {
             | Op::LoadDescriptorTable { .. }
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
+            | Op::LoadKernelGs
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }

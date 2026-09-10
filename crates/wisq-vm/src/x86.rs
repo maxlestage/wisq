@@ -497,6 +497,17 @@ pub enum Op {
     /// gestionnaire d'interruption, celle par laquelle le noyau retrouve ses
     /// propres données quand il interrompt un programme.
     SwapGs,
+    /// **`F2 0F 00 /6` : charger la base GS du noyau depuis un sélecteur.**
+    ///
+    /// `lkgs`, arrivée avec FRED : elle écrit `IA32_KERNEL_GS_BASE` à partir
+    /// du descripteur que le sélecteur désigne, sans toucher GS lui-même. Le
+    /// noyau Alpine la porte dans `native_lkgs` et ne l'exécute que si CPUID
+    /// annonce `LKGS` — ce que `cpuid` n'annonce pas. Elle est décodée parce
+    /// qu'elle est **atteinte statiquement** depuis `init_scattered_cpuid_features`
+    /// et qu'un décodeur qui ne la lit pas refusait la région entière ; elle
+    /// est refusée par nom à l'exécution, faute de table de descripteurs.
+    /// Seule la forme à registre, sans REX, est lue : c'est celle du noyau.
+    LoadKernelGs,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1900,6 +1911,7 @@ impl Cpu {
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
+                | Op::LoadKernelGs
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2175,6 +2187,7 @@ impl Cpu {
             | Op::LoadDescriptorTable { .. }
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
+            | Op::LoadKernelGs
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2353,6 +2366,13 @@ fn port_width(opcode: u8, prefixes: Prefixes) -> Width {
 }
 
 pub fn decode(bytes: &[u8]) -> Option<Decoded> {
+    // **`f2` n'est pas un préfixe que ce décodeur lit — sauf devant `lkgs`.**
+    // Le lire en général et l'oublier ensuite rendrait `movsd` (`f2 0f 10`)
+    // comme un `movups` : une instruction plausible et fausse. Une seule forme
+    // le porte ici, exactement, et tout autre `f2` reste refusé comme avant.
+    if bytes.first() == Some(&0xf2) {
+        return decode_load_kernel_gs(bytes);
+    }
     let mut at = 0usize;
     let mut prefixes = Prefixes::default();
 
@@ -3785,6 +3805,25 @@ struct ModRm {
 /// ne le lui reprochait pas : aucune instruction isolée n'y portait d'accès
 /// mémoire. Les quinze programmes en portent, mais ils demandent aussi des
 /// sauts — leur refus avait donc une autre cause, qui couvrait celle-ci.
+/// **`f2 0f 00 /6`, forme à registre, et rien d'autre.** Le sélecteur vient
+/// du registre `rm` ; la forme mémoire et un REX intercalé ne sont pas lus —
+/// le noyau n'écrit ni l'une ni l'autre, et les lire serait deviner.
+fn decode_load_kernel_gs(bytes: &[u8]) -> Option<Decoded> {
+    if bytes.get(1..3)? != [0x0f, 0x00] {
+        return None;
+    }
+    let modrm = *bytes.get(3)?;
+    if modrm >> 6 != 0b11 || (modrm >> 3) & 0b111 != 6 {
+        return None;
+    }
+    Some(Decoded {
+        op: Op::LoadKernelGs,
+        dst: modrm & 0b111,
+        length: 4,
+        ..Decoded::nothing(Width::Dword)
+    })
+}
+
 fn read_modrm(bytes: &[u8], at: &mut usize, prefixes: Prefixes) -> Option<ModRm> {
     let modrm = *bytes.get(*at)?;
     *at += 1;
@@ -4147,6 +4186,73 @@ mod tests {
                 "0f 01 {voisin:02x} n'est pas swapgs et ne doit pas se décoder comme tel"
             );
         }
+    }
+
+    /// **`lkgs` se lit, et le reste de la page `f2` reste refusé.**
+    ///
+    /// `f2 0f 00 /6` charge la base GS du noyau depuis un sélecteur — l'arrivée
+    /// de FRED. Le noyau Alpine la porte dans `native_lkgs`, à 1572 octets de
+    /// `init_scattered_cpuid_features`, et ne l'exécute que si CPUID annonce
+    /// `LKGS` ; mais elle est atteinte statiquement, et un décodeur qui ne la
+    /// lit pas refusait la région entière. C'est l'`int3` de la retpoline, à
+    /// l'identique.
+    ///
+    /// **Le préfixe `f2` n'est pas lu en général**, exprès : `f2 0f 10` est
+    /// `movsd`, et un `f2` avalé sans être compris rendrait `movups` — une
+    /// instruction plausible et fausse. Seule cette forme le lit, et les
+    /// voisins qui étaient refusés le restent.
+    #[test]
+    fn lkgs_is_read_and_the_rest_of_the_f2_page_stays_refused() {
+        let step = decode(&[0xf2, 0x0f, 0x00, 0xf7]).expect("lkgs %edi se décode");
+        assert_eq!(step.op, Op::LoadKernelGs);
+        assert_eq!(step.length, 4, "préfixe, deux d'opcode, un de ModRM");
+        assert_eq!(step.dst, 7, "le sélecteur vient d'EDI");
+        assert!(
+            step.memory.is_none(),
+            "la forme à registre ne touche pas la mémoire"
+        );
+        let eax = decode(&[0xf2, 0x0f, 0x00, 0xf0]).expect("lkgs %eax se décode");
+        assert_eq!((eax.op, eax.dst), (Op::LoadKernelGs, 0));
+
+        for (bytes, why) in [
+            (
+                &[0x0f, 0x00, 0xf7][..],
+                "sans f2, /6 du groupe 6 n'est rien",
+            ),
+            (&[0xf2, 0x0f, 0x00, 0xff][..], "reg=7 n'est pas lkgs"),
+            (
+                &[0xf2, 0x0f, 0x00, 0x37][..],
+                "la forme mémoire n'est pas lue",
+            ),
+            (
+                &[0xf2, 0x0f, 0x01, 0xf8][..],
+                "f2 n'ouvre pas le reste de la page",
+            ),
+            (
+                &[0xf2, 0x0f, 0x10, 0xc1][..],
+                "movsd reste refusé, pas avalé en movups",
+            ),
+            (
+                &[0xf2, 0x48, 0x0f, 0x00, 0xf7][..],
+                "un REX entre les deux n'est pas lu",
+            ),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        // **Refusée par nom dans l'interpréteur**, RIP dessus : il n'a pas de
+        // table de descripteurs pour en lire une base, et le dire vaut mieux
+        // que poser une base inventée.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0xf2, 0x0f, 0x00, 0xf7]);
+        assert!(cpu.faulted, "lkgs est une faute nommée pour l'interpréteur");
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
+        );
     }
 
     /// **Le `lgdt` que le noyau écrit vraiment**, tel qu'il apparaît à l'octet

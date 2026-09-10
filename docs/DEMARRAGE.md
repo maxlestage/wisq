@@ -171,6 +171,7 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `popf` — qui peut rallumer le drapeau sans nommer `sti` | **produit** |
 | `iretq` — le retour d'interruption, cinq mots | **produit** ; `iretd` décodé et refusé en étant nommé |
 | `int`, `int3` — l'entrée logicielle | **produits** : le témoin porte le vecteur, RIP est déjà après, et l'hôte délivre — sans code d'erreur |
+| `lkgs` — la base GS du noyau depuis un sélecteur | **décodée**, arrêt nommé si elle est atteinte, RIP dessus ; le noyau ne l'exécute que si CPUID annonce `LKGS`, et `cpuid` ne l'annonce pas |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **interruption de matériel** | n'existe pas |
 
@@ -179,7 +180,11 @@ vecteur `0x80`, et un `cd` coupé de son octet rend `None` plutôt qu'un vecteur
 inventé. `cf` et `48 cf` se décodent depuis la tranche de la délivrance. Ce qui
 a fait entrer l'entrée logicielle : la retpoline `call +1 ; int3 ; …` de
 `__x86_indirect_thunk_rax`, dont l'`int3` n'est jamais exécuté mais refusait
-la région entière.
+la région entière. `f2 0f 00 f7` se décode en `lkgs %edi`, et seule cette
+forme lit le préfixe `f2` : `f2 0f 10` (`movsd`) reste refusé plutôt qu'avalé
+en `movups`. Ce qui l'a fait entrer : `native_lkgs`, à portée statique de
+`init_scattered_cpuid_features`, que le noyau n'appelle jamais sur ce
+processeur mais qui refusait sa région.
 
 **`lidt` produit voulait dire « le registre se relit », et c'est devenu plus.**
 La base et la limite qu'il range sont **lues** par l'hôte quand une région
