@@ -170,14 +170,16 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `hlt` — attendre une interruption | **produit** : un arrêt nommé, tant que rien ne réveille |
 | `popf` — qui peut rallumer le drapeau sans nommer `sti` | **produit** |
 | `iretq` — le retour d'interruption, cinq mots | **produit** ; `iretd` décodé et refusé en étant nommé |
-| `int`, `int3` — l'entrée logicielle | **pas même décodés** — et c'est le mur suivant, `cc` dans `__x86_indirect_thunk_rax` |
+| `int`, `int3` — l'entrée logicielle | **produits** : le témoin porte le vecteur, RIP est déjà après, et l'hôte délivre — sans code d'erreur |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **interruption de matériel** | n'existe pas |
 
-**Vérifié plutôt qu'affirmé** : `decode` rend `None` sur `cc` et `cd 80`. `cf`
-et `48 cf` se décodent depuis la tranche de la délivrance ; l'entrée
-logicielle, elle, manque encore — et un vrai noyau s'y arrête, sur le `int3`
-qu'une retpoline pose après son `call`.
+**Vérifié plutôt qu'affirmé** : `cc` se décode en vecteur trois, `cd 80` en
+vecteur `0x80`, et un `cd` coupé de son octet rend `None` plutôt qu'un vecteur
+inventé. `cf` et `48 cf` se décodent depuis la tranche de la délivrance. Ce qui
+a fait entrer l'entrée logicielle : la retpoline `call +1 ; int3 ; …` de
+`__x86_indirect_thunk_rax`, dont l'`int3` n'est jamais exécuté mais refusait
+la région entière.
 
 **`lidt` produit voulait dire « le registre se relit », et c'est devenu plus.**
 La base et la limite qu'il range sont **lues** par l'hôte quand une région

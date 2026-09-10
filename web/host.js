@@ -29,6 +29,9 @@ const STOPS = {
   1n: "arrêtée sur hlt",
   2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
 };
+/// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
+/// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
+const STOP_INTERRUPT = 0x100n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -359,22 +362,22 @@ export function machine({
   /// l'ancien empilé. Une faute *pendant* l'écriture du cadre est rendue
   /// comme telle — c'est une double faute, et la cacher ferait s'arrêter un
   /// noyau « sur place » sans un mot.
-  function deliver(vector, errorCode) {
+  function deliver(vector, errorCode, what) {
     const limit = BigInt.asUintN(64, globals[SLOTS.table + 2].value);
     const idt = BigInt.asUintN(64, globals[SLOTS.table + 3].value);
     const at = BigInt(vector) * 16n;
     if (at + 15n > limit) {
-      return `une faute de page sans porte : aucune IDT ne porte le vecteur ${vector}`;
+      return `${what} sans porte : aucune IDT ne porte le vecteur ${vector}`;
     }
     const gate = physical(idt + at);
     if (gate === null) {
-      return "une faute pendant la délivrance d'une faute de page : l'IDT n'est pas cartographiée";
+      return `une faute pendant la délivrance d'${what} : l'IDT n'est pas cartographiée`;
     }
     const vue = new DataView(memory.buffer);
     const low = vue.getBigUint64(gate, true);
     const high = vue.getBigUint64(gate + 8, true);
     if ((low & (1n << 47n)) === 0n) {
-      return `une faute de page sans porte : la porte du vecteur ${vector} n'est pas présente`;
+      return `${what} sans porte : la porte du vecteur ${vector} n'est pas présente`;
     }
     // Le décalage est en trois morceaux, dispersés par l'héritage du 386.
     const offset = (low & 0xffffn) | ((low >> 32n) & 0xffff0000n) | ((high & 0xffffffffn) << 32n);
@@ -398,7 +401,7 @@ export function machine({
       pointer -= 8n;
       const where = physical(pointer);
       if (where === null) {
-        return "une faute pendant la délivrance d'une faute de page : la pile de l'invité n'est pas cartographiée";
+        return `une faute pendant la délivrance d'${what} : la pile de l'invité n'est pas cartographiée`;
       }
       new DataView(memory.buffer).setBigUint64(where, word, true);
     }
@@ -641,7 +644,7 @@ export function machine({
         const fault = globals[SLOTS.fault].value;
         if (fault !== 0n) {
           globals[SLOTS.fault].value = 0n;
-          const why = deliver(PAGE_FAULT, fault - 1n);
+          const why = deliver(PAGE_FAULT, fault - 1n, "une faute de page");
           if (why !== null) {
             globals[SLOTS.fault].value = fault;
             return { stopped: why, at: rip() };
@@ -654,6 +657,19 @@ export function machine({
         // interruption que rien ne produit. La délivrance d'une **interruption**
         // viendra effacer ce témoin-là, au même endroit que celle de la faute.
         const stop = globals[SLOTS.stop].value;
+        // **Une interruption logicielle n'arrête pas la machine : elle est
+        // délivrée.** Le module a posé RIP après l'`int`, c'est l'adresse qui
+        // s'empile, et c'est là que l'`iretq` du gestionnaire reprend. Sans
+        // porte, le témoin est remis et l'arrêt le nomme.
+        if (stop !== 0n && (stop & ~0xffn) === STOP_INTERRUPT) {
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(Number(stop & 0xffn), 0n, "une interruption logicielle");
+          if (why !== null) {
+            globals[SLOTS.stop].value = stop;
+            return { stopped: why, at: rip() };
+          }
+          continue;
+        }
         if (stop !== 0n) {
           return { stopped: STOPS[stop] ?? `arrêt de raison inconnue (${stop})`, at: rip() };
         }
