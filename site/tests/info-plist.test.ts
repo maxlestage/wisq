@@ -78,12 +78,80 @@ test("le schéma d'URL déclaré est bien celui des liens d'appairage", () => {
   expect(daemon).toContain("wisq://agent");
 });
 
-test("App/Info.plist n'est pas suivi par git, parce qu'il est généré", () => {
-  // La garde qui compte : tant que le fichier est suivi, quelqu'un l'éditera
-  // en croyant que ça sert, et XcodeGen l'effacera au prochain passage.
-  const tracked = execFileSync("git", ["ls-files", "App/"], {
+/** Ce que `git ls-files` connaît, sous la racine donnée. */
+function tracked(path: string): string {
+  return execFileSync("git", ["ls-files", path], {
     cwd: new URL("../..", import.meta.url).pathname,
     encoding: "utf8",
   });
-  expect(tracked).not.toContain("App/Info.plist");
+}
+
+test("les deux sorties de XcodeGen sont suivies, et rien d'autre du projet", () => {
+  // Ce test disait le contraire : `App/Info.plist` ne devait PAS être suivi,
+  // pour que personne ne l'édite en croyant que ça sert. La raison était
+  // bonne et la conséquence ne l'était pas — sans `Wisq.xcodeproj` ni
+  // `Info.plist` dans le dépôt, il faut XcodeGen pour avoir quoi que ce soit
+  // à ouvrir, et XcodeGen n'est pas dans Xcode. Les deux fichiers sont donc
+  // suivis, et ce qui remplace l'exclusion est le test d'à côté : ils doivent
+  // dire la même chose que `project.yml`.
+  expect(tracked("App/")).toContain("App/Info.plist");
+  expect(tracked("Wisq.xcodeproj/")).toContain("Wisq.xcodeproj/project.pbxproj");
+
+  // La ré-inclusion du .gitignore ne laisse entrer que le fichier de projet :
+  // l'espace de travail et le schéma sont des états d'éditeur, pas la spec.
+  expect(tracked("Wisq.xcodeproj/")).not.toContain("xcworkspace");
+  expect(tracked("Wisq.xcodeproj/")).not.toContain("xcscheme");
+
+  // Le catalogue d'icônes reste dehors : c'est un binaire, et
+  // `scripts/build-app-icon.sh` le dessine depuis le code du site.
+  expect(tracked("App/")).not.toContain("Assets.xcassets");
+});
+
+/**
+ * Les cinq clés que XcodeGen écrit de lui-même, mesurées sur le fichier qu'il
+ * produit plutôt que lues dans sa documentation. Tout le reste du plist doit
+ * venir de `project.yml`, et c'est ce que le test ci-dessous exige dans les
+ * deux sens.
+ */
+const xcodegenDefaults = [
+  "CFBundleExecutable",
+  "CFBundleIdentifier",
+  "CFBundleInfoDictionaryVersion",
+  "CFBundleName",
+  "CFBundlePackageType",
+];
+
+test("le plist commité et project.yml déclarent exactement les mêmes clés", () => {
+  // La garde qui remplace l'exclusion. Un fichier généré sous suivi diverge de
+  // sa source en silence : quelqu'un modifie `project.yml` sans relancer
+  // `xcodegen generate`, et le dépôt porte un manifeste qui n'est plus celui
+  // que la spec décrit. C'est déjà arrivé dans l'autre sens, quand le plist
+  // était tenu à la main : huit clés au lieu de dix-neuf, sans un rouge.
+  //
+  // Ce que ce test ne voit pas, dit franchement : les *valeurs*. Une chaîne
+  // changée dans `project.yml` et non régénérée passe ici. La garde qui le
+  // verrait régénère et compare octet pour octet, ce que cette suite ne peut
+  // pas faire — elle tourne sous Bun, sans XcodeGen.
+  const properties = appProperties();
+  const declared = [...properties.matchAll(/^ {8}([A-Za-z][A-Za-z0-9]*):/gm)]
+    .map((match) => match[1]!);
+  expect(declared.length).toBeGreaterThan(0);
+
+  const plist = readFileSync(new URL("../../App/Info.plist", import.meta.url), "utf8");
+  const written = [...plist.matchAll(/<key>([^<]+)<\/key>/g)].map((match) => match[1]!);
+  expect(written.length).toBeGreaterThan(0);
+
+  // Sens 1 — la spec vers le fichier : ce que `project.yml` déclare est écrit.
+  for (const key of declared) {
+    expect(written).toContain(key);
+  }
+
+  // Sens 2 — le fichier vers la spec : rien n'y est arrivé par une autre voie
+  // que `project.yml`, defaults de XcodeGen mis à part. Les clés imbriquées
+  // (celles du dictionnaire de `CFBundleURLTypes`) sont couvertes ici : elles
+  // sont dans le bloc `properties`, plus bas que huit espaces.
+  for (const key of written) {
+    if (xcodegenDefaults.includes(key)) continue;
+    expect(properties).toContain(key);
+  }
 });
