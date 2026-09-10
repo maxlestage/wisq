@@ -2685,3 +2685,51 @@ fn skip_limits(bytes: &[u8], at: usize) -> usize {
     }
     total
 }
+
+/// **Le repli sur la RAM déclarée, une seule règle.**
+///
+/// L'invité tient des adresses que la mémoire linéaire du module ne porte pas
+/// telles quelles : le noyau bascule à l'adressage virtuel en cours de
+/// démarrage et réclame `0xffffffff8100013e` alors que ses octets sont à
+/// `0x100013e`. C'est le confinement qui les relie — `web/host.js` lit ses
+/// octets à `address & (base - 1)` — et cette règle était réécrite à chaque
+/// endroit qui en avait besoin. `--example kernel-entry` en avait deux : une
+/// qui repliait, une qui soustrayait à cru. La seconde **paniquait** sur une
+/// adresse virtuelle, « range start index 18446744071564165438 out of range »,
+/// dès que la première laissait passer une région virtuelle.
+#[test]
+fn a_folded_address_always_lands_inside_the_declared_ram() {
+    // La vraie mesure : l'adresse virtuelle où Alpine bascule, et l'adresse
+    // physique où ses octets vivent, sur les 64 Mio que déclare l'outil.
+    const PAGES: u32 = 1024;
+    assert_eq!(
+        Module::fold(0xffff_ffff_8100_013e, PAGES),
+        0x0100_013e,
+        "l'adresse virtuelle du noyau retombe sur ses octets"
+    );
+    // Une adresse déjà physique ne bouge pas : le repli n'est pas une
+    // conversion, c'est une projection.
+    assert_eq!(Module::fold(0x0100_013e, PAGES), 0x0100_013e);
+
+    // **La propriété qui rend l'indexation sûre**, et c'est elle qui remplace
+    // la panique : quoi qu'on donne, le résultat est dans la RAM déclarée.
+    let ram = u64::from(PAGES) * 65536;
+    for address in [
+        0,
+        u64::MAX,
+        ram,
+        ram - 1,
+        0xffff_ffff_8100_0000,
+        0x8000_0000_0000_0000,
+    ] {
+        assert!(
+            Module::fold(address, PAGES) < ram,
+            "0x{address:x} replié sort de la RAM"
+        );
+    }
+
+    // Une seule page, pour que la borne ne soit pas tenue par la seule taille
+    // choisie par l'outil.
+    assert!(Module::fold(u64::MAX, 1) < 65536);
+    assert_eq!(Module::fold(0x1_0000, 1), 0);
+}
