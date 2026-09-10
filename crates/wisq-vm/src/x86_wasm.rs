@@ -116,11 +116,14 @@ pub const SEGMENT_COUNT: usize = 6;
 /// quatre — et `sgdt` les rend. Le couple est rangé et rendu, et c'est tout ce
 /// qui est modélisé.
 ///
-/// **Ce que ça ne dit pas** : aucune table n'est *lue* derrière ces nombres, et
-/// rien dans l'émetteur ne les consulte. Charger FS ou GS reste refusé, `cli`
-/// et `sti` aussi, et aucune interruption n'est délivrée. Un `lgdt` produit dit
-/// « ce registre se relit », pas « les descripteurs marchent ». Le jour où un
-/// chemin lira la table, cette honnêteté-là devra être refaite.
+/// **Ce qui est lu derrière ces nombres, et ce qui ne l'est pas.** L'IDT l'est :
+/// quand une région pose le témoin de faute, `web/host.js` va chercher la
+/// porte du vecteur 14 à la base rangée ici, dans la limite rangée ici, et
+/// pose le cadre du mode long sur la pile de l'invité — c'est la délivrance,
+/// et `iretq` la défait. La GDT, elle, n'est toujours lue par rien : charger
+/// FS ou GS avec un sélecteur non nul reste un arrêt nommé, et aucune
+/// interruption de matériel n'est délivrée. Un `lgdt` produit dit toujours
+/// « ce registre se relit », pas « les descripteurs marchent ».
 ///
 /// L'ordre : limite de la GDT, base de la GDT, limite de l'IDT, base de l'IDT.
 pub const TABLE_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
@@ -1330,6 +1333,16 @@ impl Module {
                 // suivante : une division qui refuse doit y renvoyer l'hôte.
                 let here = base.wrapping_add(at as u64);
                 at += step.length;
+                // **`iretd` est refusé en étant nommé.** Le décodeur lit `cf`
+                // sans REX.W ; en mode long c'est un retour de trente-deux
+                // bits qu'aucun noyau n'exécute, et le produire demanderait
+                // un cadre que cette machine ne pose jamais. Un refus ici,
+                // avant `terminate`, plutôt qu'un cadre à moitié lu.
+                if step.op == Op::InterruptReturn && step.width != Width::Qword {
+                    return Err(Refused::CannotTranslate {
+                        at: at - step.length,
+                    });
+                }
                 // **Le saut final n'est pas traduit comme les autres.** Il ne
                 // change pas l'état de la machine mais le bloc courant, et
                 // c'est `terminate` qui sait le dire — lui seul connaît les
@@ -1343,6 +1356,7 @@ impl Module {
                         | Op::CallIndirect
                         | Op::Return
                         | Op::FarReturn
+                        | Op::InterruptReturn
                         | Op::Undefined
                 ) {
                     continue;
@@ -1430,9 +1444,11 @@ impl Module {
                         survey.repeats += 1;
                     }
                     Op::Undefined => survey.always += 1,
-                    Op::Return | Op::FarReturn | Op::JumpIndirect | Op::CallIndirect => {
-                        survey.perhaps += 1
-                    }
+                    Op::Return
+                    | Op::FarReturn
+                    | Op::InterruptReturn
+                    | Op::JumpIndirect
+                    | Op::CallIndirect => survey.perhaps += 1,
                     _ => {}
                 }
             }
@@ -1498,6 +1514,7 @@ impl Module {
                             | Op::CallIndirect
                             | Op::Return
                             | Op::FarReturn
+                            | Op::InterruptReturn
                             | Op::Undefined
                     )
                 });
@@ -1556,6 +1573,7 @@ impl Module {
                         | Op::CallIndirect
                         | Op::Return
                         | Op::FarReturn
+                        | Op::InterruptReturn
                         | Op::Undefined
                 );
                 let displacement = step.imm as i64;
@@ -1571,9 +1589,16 @@ impl Module {
                 // noyau range là — souvent des données de sa table de bogues.
                 let falls = !matches!(
                     step.op,
-                    Op::Jump(None) | Op::Return | Op::FarReturn | Op::Undefined
+                    Op::Jump(None)
+                        | Op::Return
+                        | Op::FarReturn
+                        | Op::InterruptReturn
+                        | Op::Undefined
                 );
-                let jumps = !matches!(step.op, Op::Return | Op::FarReturn | Op::Undefined);
+                let jumps = !matches!(
+                    step.op,
+                    Op::Return | Op::FarReturn | Op::InterruptReturn | Op::Undefined
+                );
                 steps.push(step);
                 if !ends {
                     continue;
@@ -1779,6 +1804,66 @@ impl Module {
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(16).op(code::I64_ADD);
+                });
+                Self::resolve(starts, body, shape);
+            }
+            Op::InterruptReturn => {
+                // **`iretq` défait le cadre qu'une faute a posé** : RIP, CS,
+                // RFLAGS, RSP, SS, dans cet ordre depuis le sommet de la pile.
+                // C'est l'autre moitié de la délivrance — `web/host.js` pose le
+                // cadre en entrant dans le gestionnaire, et c'est ici que
+                // l'invité en sort. L'instruction fautive est alors rejouée,
+                // ce qui est exactement ce qu'un noyau attend : il vient de
+                // cartographier la page, et la lecture qui avait fauté aboutit.
+                //
+                // **Le code d'erreur n'est pas dépilé**, comme sur le silicium :
+                // c'est au gestionnaire d'ajouter huit à RSP avant, et Linux le
+                // fait. Le dépiler ici décalerait tout le cadre d'un mot.
+                //
+                // **RIP est posé sur l'`iretq` lui-même avant la première
+                // lecture.** Ce cadre est en mémoire paginée, et l'une des cinq
+                // lectures peut fauter ; l'hôte doit alors reprendre *ici*, pas
+                // au début du bloc. Les cinq mots sont lus avant que RSP ne
+                // change — RSP est la base des quatre autres — et RIP est lu en
+                // dernier, pour qu'une faute sur le mot d'avant le laisse encore
+                // sur l'`iretq`.
+                let here = base.wrapping_add((after - step.length) as u64);
+                body.store(RIP_SLOT, |b| {
+                    b.constant(here);
+                });
+                let word = |b: &mut Body, offset: u64| {
+                    b.load(Self::slot(4));
+                    if offset != 0 {
+                        b.constant(offset).op(code::I64_ADD);
+                    }
+                    b.guest();
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                };
+                body.store(Self::segment_slot(Segment::Cs), |b| {
+                    word(b, 8);
+                    b.constant(0xffff).op(code::I64_AND);
+                });
+                body.store(RFLAGS_SLOT, |b| {
+                    word(b, 16);
+                    b.constant(WRITABLE_FLAGS).op(code::I64_AND);
+                    b.constant(ALWAYS_ONE).op(code::I64_OR);
+                });
+                body.store(Self::segment_slot(Segment::Ss), |b| {
+                    word(b, 32);
+                    b.constant(0xffff).op(code::I64_AND);
+                });
+                // La nouvelle pile, gardée de côté : la lire dans RSP tout de
+                // suite déplacerait la base sous la lecture de RIP.
+                body.store(Body::scratch(0), |b| {
+                    word(b, 24);
+                });
+                body.store(RIP_SLOT, |b| {
+                    word(b, 0);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Body::scratch(0));
                 });
                 Self::resolve(starts, body, shape);
             }
@@ -2029,13 +2114,23 @@ impl Module {
             section(4, table, &mut module);
         }
 
+        // **`run`, et `walk` quand il y en a une.** La marche est exportée
+        // pour que l'hôte traduise avec **la même** fonction que le module —
+        // il en a besoin pour délivrer une faute : lire la porte dans l'IDT et
+        // poser le cadre sur la pile sont des accès à des adresses virtuelles.
+        // Une seconde marche écrite en JavaScript aurait fini par diverger de
+        // celle-ci, en silence, sur une grande page ou un bit réservé.
         let mut exports = Vec::new();
-        unsigned(1, &mut exports);
+        unsigned(1 + u64::from(paging), &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
         unsigned(
             u64::from(HOST_IMPORTS) + count as u64 + u64::from(paging),
             &mut exports,
         );
+        if paging {
+            exports.extend_from_slice(&[0x04, b'w', b'a', b'l', b'k', 0x00]);
+            unsigned(u64::from(HOST_IMPORTS) + count as u64, &mut exports);
+        }
         section(7, exports, &mut module);
 
         // Éléments : la table pointe les blocs dans l'ordre, à partir de
@@ -2444,6 +2539,7 @@ impl Module {
                 | Op::JumpIndirect
                 | Op::CallIndirect
                 | Op::FarReturn
+                | Op::InterruptReturn
                 | Op::Undefined
         ) {
             return None;
@@ -2943,7 +3039,7 @@ impl Module {
                 | Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
-                | Op::FarReturn
+                | Op::FarReturn | Op::InterruptReturn
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
@@ -3328,8 +3424,8 @@ impl Module {
     fn carry_and_overflow(step: &Decoded, _mask: u64, sign: u64, b: &mut Body) {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
-            Op::FarReturn => {
-                unreachable!("un retour lointain change le bloc : `translate` le rend au compilateur de région")
+            Op::FarReturn | Op::InterruptReturn => {
+                unreachable!("un retour lointain ou d'interruption change le bloc : `translate` le rend au compilateur de région")
             }
             Op::PortIn | Op::PortOut => {
                 unreachable!(
@@ -5422,6 +5518,42 @@ mod port_tests {
             Module::region_or_why(after_a_far_return, 0x1000, 0).is_ok(),
             "la région s'arrête au retour lointain, sans toucher à ce qui suit"
         );
+    }
+
+    /// **Un retour d'interruption termine son bloc, comme le lointain.** Il
+    /// est écrit dans **neuf** listes, et un `matches!` en oublie une sans
+    /// que rien ne change de couleur : l'`iretq` tomberait alors dans le chemin
+    /// arithmétique, ou la région continuerait à lire ce qui suit. Ce test
+    /// tient la première liste — celle qui décide qu'on ne traduit pas ce qui
+    /// vient après.
+    #[test]
+    fn an_interrupt_return_ends_its_block_without_reaching_the_instruction_translator() {
+        let after_an_iretq: &[u8] = &[
+            0x48, 0x83, 0xc4, 0x08, // add $8,%rsp — le code d'erreur, jeté
+            0x48, 0xcf, // iretq
+            0x62, // un octet que le décodeur ne lit pas — et n'a pas à lire
+        ];
+        assert!(
+            Module::region_or_why(after_an_iretq, 0x1000, 0).is_ok(),
+            "la région s'arrête au retour d'interruption, sans toucher à ce qui suit"
+        );
+    }
+
+    /// **`iretd` est refusé en étant nommé.** `cf` sans REX.W se décode — le
+    /// décodeur ne fait pas passer un opcode connu pour un octet inconnu — mais
+    /// c'est un retour de trente-deux bits, et cette machine n'en pose jamais
+    /// le cadre. Le refus est à l'adresse de l'instruction, pas au début de la
+    /// région, pour qu'un relevé désigne la bonne ligne.
+    #[test]
+    fn a_thirty_two_bit_interrupt_return_is_refused_by_name() {
+        let narrow: &[u8] = &[
+            0x48, 0x89, 0xc3, // mov %rax,%rbx
+            0xcf, // iretd
+        ];
+        match Module::region_or_why(narrow, 0x1000, 0) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 3, "à l'iretd, pas avant"),
+            other => panic!("iretd doit être refusé en étant nommé, pas {other:?}"),
+        }
     }
 
     /// **Les treize instructions du point d'entrée se lisent toutes — et ce qui

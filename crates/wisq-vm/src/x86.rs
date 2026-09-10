@@ -580,6 +580,16 @@ pub enum Op {
     /// sélecteur de code : c'est la treizième instruction du point d'entrée
     /// d'Alpine, et la première chose qui l'arrêtait après `wrmsr`.
     FarReturn,
+    /// **Le retour d'interruption.** `48 cf` dépile **cinq** mots — RIP, CS,
+    /// RFLAGS, RSP, SS — dans cet ordre : c'est le cadre qu'une faute ou une
+    /// interruption a posé en entrant, défait en sortant. Un gestionnaire de
+    /// faute de page se termine par lui, et l'instruction fautive est alors
+    /// **rejouée** : c'est ainsi qu'un noyau cartographie à la demande.
+    ///
+    /// Le code d'erreur, lui, n'en fait pas partie : le processeur l'empile
+    /// mais ne le dépile pas, et c'est au gestionnaire d'ajouter huit à RSP
+    /// avant — Linux le fait. Le dépiler ici décalerait tout le cadre.
+    InterruptReturn,
     /// `leave` : défaire le cadre de pile — RSP reprend RBP, puis RBP se
     /// dépile. Deux instructions en une, et c'est ce qui la rend commode.
     Leave,
@@ -1873,6 +1883,7 @@ impl Cpu {
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
                 | Op::FarReturn
+                | Op::InterruptReturn
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
@@ -2146,6 +2157,7 @@ impl Cpu {
             | Op::ReadModelRegister
             | Op::WriteModelRegister
             | Op::FarReturn
+            | Op::InterruptReturn
             | Op::LoadDescriptorTable { .. }
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
@@ -2998,6 +3010,16 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             op: Op::FarReturn,
             length: at,
             ..Decoded::nothing(Width::Qword)
+        }),
+        // **Le retour d'interruption**, dont la largeur vient de REX.W : `48 cf`
+        // est la forme du mode long, `cf` seul un `iretd` que l'émetteur
+        // refuse en le nommant. Le décodeur lit les deux : un `cf` qui
+        // passerait pour un octet inconnu poserait une autre question que
+        // celle qu'il pose.
+        0xcf => Some(Decoded {
+            op: Op::InterruptReturn,
+            length: at,
+            ..Decoded::nothing(prefixes.width(false))
         }),
         // **Les deux extensions de signe, et la moitié qu'elles lisent.**
         // `0x98` étend l'accumulateur dans lui-même — AL dans AX, AX dans EAX,
@@ -4365,6 +4387,41 @@ mod tests {
                 step.op,
                 Op::Return,
                 "un retour lointain n'est pas un proche"
+            );
+        }
+    }
+
+    /// **`iretq` n'est ni un `ret` ni un `lretq`.** Il dépile **cinq** mots
+    /// — RIP, CS, RFLAGS, RSP, SS — là où le lointain en dépile deux et le
+    /// proche un seul. C'est l'instruction par laquelle un gestionnaire de
+    /// faute rend la main à ce qu'il a interrompu, et sans elle une faute
+    /// délivrée n'a pas de retour.
+    ///
+    /// `cf` seul est un `iretd` — trente-deux bits, que le mode long ne sert à
+    /// rien : le décodeur le lit quand même, et c'est l'émetteur qui refuse
+    /// cette largeur-là en la nommant. Ne pas le décoder le ferait passer pour
+    /// un octet inconnu, ce qui est une autre question.
+    #[test]
+    fn a_return_from_interrupt_is_neither_near_nor_far() {
+        let step = decode(&[0x48, 0xcf]).expect("48 cf se décode");
+        assert_eq!(step.op, Op::InterruptReturn);
+        assert_eq!(
+            step.width,
+            Width::Qword,
+            "REX.W fait la forme de soixante-quatre bits"
+        );
+        assert_eq!(step.length, 2);
+        let narrow = decode(&[0xcf]).expect("cf seul se décode aussi");
+        assert_eq!(narrow.op, Op::InterruptReturn);
+        assert_ne!(
+            narrow.width,
+            Width::Qword,
+            "sans REX.W, ce n'est pas la forme longue"
+        );
+        for other in [Op::Return, Op::FarReturn] {
+            assert_ne!(
+                step.op, other,
+                "un retour d'interruption n'est ni proche ni lointain"
             );
         }
     }
