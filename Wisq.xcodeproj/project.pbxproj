@@ -1,0 +1,625 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		036E7AA0C41E267E9C942729 /* RefusalTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9678772DAE35D4B9C83E8FC /* RefusalTextTests.swift */; };
+		15D762FF1E963EE3D1B3C9FF /* DiskLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2228E9A0A475776DB3758254 /* DiskLibraryTests.swift */; };
+		1D08F7EBF139629EADE292B9 /* LocalDesktopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17ABDA0B06F4D4901DD3669E /* LocalDesktopTests.swift */; };
+		2C358075F2037DEF6990A6B1 /* MachineLibrarySecretsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B246BB9619784E4148BDE2C1 /* MachineLibrarySecretsTests.swift */; };
+		4C9AD0A4DFD419DA818F69E1 /* LocalVMModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6FEDB0C2C333FD8EAB8A71A /* LocalVMModelTests.swift */; };
+		4F55936F75477B18EB187BB2 /* WisqVM in Frameworks */ = {isa = PBXBuildFile; productRef = 540542479D6E3183EA29AF90 /* WisqVM */; };
+		54953DA50D7A798CE526C1E6 /* KernelMemoryNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B38622C72C7A51ABDF7625D /* KernelMemoryNoteTests.swift */; };
+		6C2F8B644C3FF830FFD0DDAE /* WisqUI in Frameworks */ = {isa = PBXBuildFile; productRef = CC8BD808F974E26E9A5DC29D /* WisqUI */; };
+		72EDF6E1EC698CC61CE6B72C /* WebKitJITProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0BF5725191BD2DD77510A5 /* WebKitJITProbeTests.swift */; };
+		73FA8B4E92AEABA9AFFD57DF /* WisqVMRust in Frameworks */ = {isa = PBXBuildFile; productRef = A8392235784C02ABE3CED98C /* WisqVMRust */; };
+		76D08AD54655102FA694EC44 /* WisqUI in Frameworks */ = {isa = PBXBuildFile; productRef = D4BC149DC1AB97402E2373BD /* WisqUI */; };
+		7AB9211E1601C326926A9767 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 91678698AC52C87C6ECD230A /* Assets.xcassets */; };
+		8401DA84F9D1BD5323EC8064 /* OversizedKernelRefusalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D941282C0AF319ECFD6D2C69 /* OversizedKernelRefusalTests.swift */; };
+		97AA4B4FD21C0F2A3C464C39 /* MetalCompilerProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B9DFB4E1000452EA0E72CC4 /* MetalCompilerProbeTests.swift */; };
+		A96FCAC36CAF8B28615BF51D /* PartialLibraryBannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26180B6406D59C085590989D /* PartialLibraryBannerTests.swift */; };
+		AFB7761227C0F356482F703A /* WisqApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 906533814A35EA30217340D7 /* WisqApp.swift */; };
+		C8D1935D626747E4A9E804F4 /* ConnectionFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD1BEBB33051C7566F8839F /* ConnectionFileImportTests.swift */; };
+		E264BF1CF3630AF9145D3863 /* WisqCore in Frameworks */ = {isa = PBXBuildFile; productRef = 749BC3CB2F129CDD0D89C5BF /* WisqCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		144CEC157B04D66966C13B68 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 52E01BF9E176AD3DB83940DB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 78A23493DF3967FE5A0C51FC;
+			remoteInfo = Wisq;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		17ABDA0B06F4D4901DD3669E /* LocalDesktopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDesktopTests.swift; sourceTree = "<group>"; };
+		2228E9A0A475776DB3758254 /* DiskLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskLibraryTests.swift; sourceTree = "<group>"; };
+		26180B6406D59C085590989D /* PartialLibraryBannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PartialLibraryBannerTests.swift; sourceTree = "<group>"; };
+		2DD1BEBB33051C7566F8839F /* ConnectionFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFileImportTests.swift; sourceTree = "<group>"; };
+		47F69176D060930A9F60528C /* Wisq.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Wisq.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6B9DFB4E1000452EA0E72CC4 /* MetalCompilerProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalCompilerProbeTests.swift; sourceTree = "<group>"; };
+		8B38622C72C7A51ABDF7625D /* KernelMemoryNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryNoteTests.swift; sourceTree = "<group>"; };
+		906533814A35EA30217340D7 /* WisqApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WisqApp.swift; sourceTree = "<group>"; };
+		91678698AC52C87C6ECD230A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		9864B8F90D99EFFDC3AA81B0 /* wisq */ = {isa = PBXFileReference; lastKnownFileType = folder; name = wisq; path = .; sourceTree = SOURCE_ROOT; };
+		A6FEDB0C2C333FD8EAB8A71A /* LocalVMModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVMModelTests.swift; sourceTree = "<group>"; };
+		B246BB9619784E4148BDE2C1 /* MachineLibrarySecretsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachineLibrarySecretsTests.swift; sourceTree = "<group>"; };
+		BD0BF5725191BD2DD77510A5 /* WebKitJITProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitJITProbeTests.swift; sourceTree = "<group>"; };
+		CB9A6D423E25DADC5767E5BE /* WisqHostedTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqHostedTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D941282C0AF319ECFD6D2C69 /* OversizedKernelRefusalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OversizedKernelRefusalTests.swift; sourceTree = "<group>"; };
+		E0DE411F3715F763832BC0A3 /* WisqUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E88019A40C690A3FFBAB3DFF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E9678772DAE35D4B9C83E8FC /* RefusalTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefusalTextTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		6AB47CAF19C191FFDB81144D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6C2F8B644C3FF830FFD0DDAE /* WisqUI in Frameworks */,
+				4F55936F75477B18EB187BB2 /* WisqVM in Frameworks */,
+				E264BF1CF3630AF9145D3863 /* WisqCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A6C2441629762A0D21A9C06D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				73FA8B4E92AEABA9AFFD57DF /* WisqVMRust in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C87028385BC4616505BE1F8A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				76D08AD54655102FA694EC44 /* WisqUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0BF12149DFDB9345932CCE6E = {
+			isa = PBXGroup;
+			children = (
+				B37526D5BC95847399792C49 /* App */,
+				A68DD1DFEA52A1B9539069E0 /* Packages */,
+				15201A43D51E89C043A0C278 /* Tests */,
+				D1A85ED227F64A503EA551A3 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		15201A43D51E89C043A0C278 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				C34965E80E7BA24C122E0307 /* WisqHostedTests */,
+				B3C750C02222D778AB73D825 /* WisqUITests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		A68DD1DFEA52A1B9539069E0 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				9864B8F90D99EFFDC3AA81B0 /* wisq */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		B37526D5BC95847399792C49 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				91678698AC52C87C6ECD230A /* Assets.xcassets */,
+				E88019A40C690A3FFBAB3DFF /* Info.plist */,
+				906533814A35EA30217340D7 /* WisqApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		B3C750C02222D778AB73D825 /* WisqUITests */ = {
+			isa = PBXGroup;
+			children = (
+				2DD1BEBB33051C7566F8839F /* ConnectionFileImportTests.swift */,
+				2228E9A0A475776DB3758254 /* DiskLibraryTests.swift */,
+				8B38622C72C7A51ABDF7625D /* KernelMemoryNoteTests.swift */,
+				A6FEDB0C2C333FD8EAB8A71A /* LocalVMModelTests.swift */,
+				B246BB9619784E4148BDE2C1 /* MachineLibrarySecretsTests.swift */,
+				D941282C0AF319ECFD6D2C69 /* OversizedKernelRefusalTests.swift */,
+				26180B6406D59C085590989D /* PartialLibraryBannerTests.swift */,
+				E9678772DAE35D4B9C83E8FC /* RefusalTextTests.swift */,
+			);
+			path = WisqUITests;
+			sourceTree = "<group>";
+		};
+		C34965E80E7BA24C122E0307 /* WisqHostedTests */ = {
+			isa = PBXGroup;
+			children = (
+				17ABDA0B06F4D4901DD3669E /* LocalDesktopTests.swift */,
+				6B9DFB4E1000452EA0E72CC4 /* MetalCompilerProbeTests.swift */,
+				BD0BF5725191BD2DD77510A5 /* WebKitJITProbeTests.swift */,
+			);
+			path = WisqHostedTests;
+			sourceTree = "<group>";
+		};
+		D1A85ED227F64A503EA551A3 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				47F69176D060930A9F60528C /* Wisq.app */,
+				CB9A6D423E25DADC5767E5BE /* WisqHostedTests.xctest */,
+				E0DE411F3715F763832BC0A3 /* WisqUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		32DDD1F55EB8BFF1D46550D5 /* WisqHostedTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8A883FAA015E1DFD8D3448B0 /* Build configuration list for PBXNativeTarget "WisqHostedTests" */;
+			buildPhases = (
+				002865FDA3442384172C78B0 /* Sources */,
+				A6C2441629762A0D21A9C06D /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FB1A23B0E83722964DFA022E /* PBXTargetDependency */,
+			);
+			name = WisqHostedTests;
+			packageProductDependencies = (
+				A8392235784C02ABE3CED98C /* WisqVMRust */,
+			);
+			productName = WisqHostedTests;
+			productReference = CB9A6D423E25DADC5767E5BE /* WisqHostedTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		78A23493DF3967FE5A0C51FC /* Wisq */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A6C078855BDB5201B006CAE1 /* Build configuration list for PBXNativeTarget "Wisq" */;
+			buildPhases = (
+				9EE2164A96944A5B1D3F1DA2 /* Sources */,
+				558792D33F27FEDBF8352DA1 /* Resources */,
+				C87028385BC4616505BE1F8A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Wisq;
+			packageProductDependencies = (
+				D4BC149DC1AB97402E2373BD /* WisqUI */,
+			);
+			productName = Wisq;
+			productReference = 47F69176D060930A9F60528C /* Wisq.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA3249EE396AABD021487144 /* WisqUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DCE2EB4C1C45FA23F87173C7 /* Build configuration list for PBXNativeTarget "WisqUITests" */;
+			buildPhases = (
+				1E5A48B3DE58ECFB42E4DE52 /* Sources */,
+				6AB47CAF19C191FFDB81144D /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WisqUITests;
+			packageProductDependencies = (
+				CC8BD808F974E26E9A5DC29D /* WisqUI */,
+				540542479D6E3183EA29AF90 /* WisqVM */,
+				749BC3CB2F129CDD0D89C5BF /* WisqCore */,
+			);
+			productName = WisqUITests;
+			productReference = E0DE411F3715F763832BC0A3 /* WisqUITests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		52E01BF9E176AD3DB83940DB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 4D2FF3D47B79A0F36CDD0089 /* Build configuration list for PBXProject "Wisq" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 0BF12149DFDB9345932CCE6E;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				2685CE07100DAEB73E953D28 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 54;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				78A23493DF3967FE5A0C51FC /* Wisq */,
+				32DDD1F55EB8BFF1D46550D5 /* WisqHostedTests */,
+				AA3249EE396AABD021487144 /* WisqUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		558792D33F27FEDBF8352DA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7AB9211E1601C326926A9767 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		002865FDA3442384172C78B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1D08F7EBF139629EADE292B9 /* LocalDesktopTests.swift in Sources */,
+				97AA4B4FD21C0F2A3C464C39 /* MetalCompilerProbeTests.swift in Sources */,
+				72EDF6E1EC698CC61CE6B72C /* WebKitJITProbeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1E5A48B3DE58ECFB42E4DE52 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C8D1935D626747E4A9E804F4 /* ConnectionFileImportTests.swift in Sources */,
+				15D762FF1E963EE3D1B3C9FF /* DiskLibraryTests.swift in Sources */,
+				54953DA50D7A798CE526C1E6 /* KernelMemoryNoteTests.swift in Sources */,
+				4C9AD0A4DFD419DA818F69E1 /* LocalVMModelTests.swift in Sources */,
+				2C358075F2037DEF6990A6B1 /* MachineLibrarySecretsTests.swift in Sources */,
+				8401DA84F9D1BD5323EC8064 /* OversizedKernelRefusalTests.swift in Sources */,
+				A96FCAC36CAF8B28615BF51D /* PartialLibraryBannerTests.swift in Sources */,
+				036E7AA0C41E267E9C942729 /* RefusalTextTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9EE2164A96944A5B1D3F1DA2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AFB7761227C0F356482F703A /* WisqApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FB1A23B0E83722964DFA022E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 78A23493DF3967FE5A0C51FC /* Wisq */;
+			targetProxy = 144CEC157B04D66966C13B68 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1F74EFB41650B777A579F1E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqHostedTests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq";
+			};
+			name = Debug;
+		};
+		3D3BE083C5E5F9CF72335128 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.ios;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		43CFC96FFF552D4A2429D971 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqUITests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		72D49CEC6C2DAE361CAB4393 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		999717EBD3D0B023D66A0730 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqHostedTests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq";
+			};
+			name = Release;
+		};
+		DA81F5996B48F25B209EFCA7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E867EAA45C36784A2D846392 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqUITests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EC13631659E75DDB845E09AD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.ios;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4D2FF3D47B79A0F36CDD0089 /* Build configuration list for PBXProject "Wisq" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DA81F5996B48F25B209EFCA7 /* Debug */,
+				72D49CEC6C2DAE361CAB4393 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8A883FAA015E1DFD8D3448B0 /* Build configuration list for PBXNativeTarget "WisqHostedTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1F74EFB41650B777A579F1E2 /* Debug */,
+				999717EBD3D0B023D66A0730 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A6C078855BDB5201B006CAE1 /* Build configuration list for PBXNativeTarget "Wisq" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC13631659E75DDB845E09AD /* Debug */,
+				3D3BE083C5E5F9CF72335128 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DCE2EB4C1C45FA23F87173C7 /* Build configuration list for PBXNativeTarget "WisqUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				43CFC96FFF552D4A2429D971 /* Debug */,
+				E867EAA45C36784A2D846392 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		2685CE07100DAEB73E953D28 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		540542479D6E3183EA29AF90 /* WisqVM */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqVM;
+		};
+		749BC3CB2F129CDD0D89C5BF /* WisqCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqCore;
+		};
+		A8392235784C02ABE3CED98C /* WisqVMRust */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqVMRust;
+		};
+		CC8BD808F974E26E9A5DC29D /* WisqUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqUI;
+		};
+		D4BC149DC1AB97402E2373BD /* WisqUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 52E01BF9E176AD3DB83940DB /* Project object */;
+}
