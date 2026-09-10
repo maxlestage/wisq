@@ -7199,3 +7199,49 @@ relisant le code :
 symbole qui ne nomme plus au-delà d'un mébioctet. La même ligne de pile se lit
 maintenant `0x10000c6 (startup_64 + 54) 0x10 0x0 0x0 …` — ce qui a un nom en a
 un, le reste reste un nombre.
+
+## Le repli était écrit deux fois, et l'un des deux l'oubliait
+
+Ce n'était pas la marche dans les tables de pages qui manquait. `web/host.js`
+va chercher les octets d'une région à `address & (base - 1)` — le confinement
+est un masque, la RAM déclarée est une puissance de deux — et pour un noyau
+chargé bas ce repli tombe juste : `0xffffffff8100013e & 0x3ffffff = 0x100013e`.
+
+`--example kernel-entry` écrivait cette règle deux fois et l'oubliait une fois
+de plus. Sa fonction `compile` exigeait que l'adresse réclamée soit **dans
+l'intervalle physique** du texte, sans replier. Toute adresse virtuelle était
+donc refusée « hors du segment de texte » — et le noyau bascule à l'adressage
+virtuel dès que `secondary_startup_64` a chargé CR3. L'outil s'arrêtait
+exactement là, sur une région dont il avait les octets.
+
+`Module::fold(address, pages)` nomme la règle une fois. Avec elle :
+
+| | avant | après |
+|---|---|---|
+| régions traduites | 7 | **12** |
+| arrêt | `secondary_startup_64_no_verify + 73` | `+ 308` |
+
+Entre les deux, la machine traverse le chargement de CR3, tourne en adressage
+virtuel, appelle `early_setup_idt`, en revient par `__x86_return_thunk`, et
+reprend dans `secondary_startup_64`.
+
+**Le mur suivant est nommé, et ce n'est pas un défaut.** À l'arrêt,
+`rcx = 0xc0000080` — `MSR_EFER` — et les octets à `+308` sont `0f 32`, `rdmsr`.
+Quatorze octets plus haut, `cpuid` puis le chargement de RCX. Le module rend la
+main sur un MSR que l'hôte de l'outil ne sait pas servir, l'hôte ne peut pas
+avancer, et la machine reste sur place. C'est la frontière que le dépôt
+s'était déjà notée — « les MSR manquent au décodeur, faute d'oracle » — atteinte
+pour la première fois par un vrai noyau.
+
+### La panique que la correction rendait atteignable
+
+La boucle de relevé ajoutée deux tranches plus tôt calculait
+`base - text.physical_address()` **sans repli**. Sur une base virtuelle, ce
+n'est pas un mauvais nombre : c'est un plantage — « range start index
+18446744071564165438 out of range for slice of length 35842660 ». Elle n'était
+pas atteignable sur `master`, parce que rien ne fabriquait de base virtuelle
+avant cette tranche ; la correction du repli la rendait atteignable au premier
+essai, et c'est le premier essai qui l'a montrée.
+
+C'est la raison d'être de `fold` : une règle écrite à trois endroits est une
+règle qu'un des trois finira par écrire de travers.
