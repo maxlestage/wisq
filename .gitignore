@@ -1,7 +1,12 @@
 .DS_Store
 .build/
 DerivedData/
-*.xcodeproj/
+# `*.xcodeproj/` excluait le dossier entier, et git ne peut pas ré-inclure un
+# fichier dont le dossier parent est exclu : la ligne de ré-inclusion en
+# dessous était donc inerte depuis toujours. Exclure le *contenu* du dossier
+# (`/*`) laisse la ré-inclusion agir, et c'est elle qui met `project.pbxproj`
+# sous suivi — voir l'en-tête de `project.yml` pour la raison.
+*.xcodeproj/*
 *.xcworkspace/
 !*.xcodeproj/project.pbxproj
 xcuserdata/
@@ -25,9 +30,14 @@ site/node_modules/
 # scripts/build-app-icon.sh depuis site/scripts/icons.ts. Un binaire commité
 # est une chose que personne ne peut relire et que tout le monde doit croire.
 App/Assets.xcassets/
-# Écrit par `xcodegen generate` depuis `project.yml` : le garder sous suivi
-# donnait un fichier qui paraissait faire autorité et que l'outil effaçait.
-App/Info.plist
+# `App/Info.plist` était ici pour une bonne raison : `xcodegen generate` l'ÉCRIT
+# depuis `project.yml`, et une version écrite à la main était effacée à chaque
+# génération sans que personne le voie. Il est maintenant sous suivi quand
+# même, parce que la cible `Wisq` porte `INFOPLIST_FILE = App/Info.plist` : un
+# `project.pbxproj` commité sans lui donne un projet qui s'ouvre et ne se
+# construit pas, ce qui ne vaut pas la peine d'être commité. La règle qui
+# remplace l'exclusion est écrite en tête de `project.yml` : ce fichier ne
+# s'édite pas, il se régénère, et il part dans le même commit que la spec.
 
 # L'oracle matériel se compile sur place ; seul son verdict est versionné.
 scripts/x86-oracle/oracle
