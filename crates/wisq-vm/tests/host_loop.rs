@@ -5172,3 +5172,88 @@ console.log("rdx " + vm.globals[2].value.toString());
         "l'anneau doit avoir tourné {laps} fois à travers l'emplacement gagné"
     );
 }
+
+/// **Un noyau qui atteint `lkgs` s'arrête dessus, et l'arrêt se nomme.**
+///
+/// `f2 0f 00 f7` — `lkgs %edi` — charge la base GS du noyau depuis un
+/// sélecteur. Cette machine n'a pas de table de descripteurs pour en lire une,
+/// et le noyau Alpine ne l'exécute que si CPUID annonce `LKGS`, ce que `cpuid`
+/// n'annonce pas : elle ne sera pas atteinte. Mais elle vit dans
+/// `native_lkgs`, à portée statique de `init_scattered_cpuid_features`, et un
+/// décodeur qui ne la lit pas refusait la région entière.
+///
+/// Ce que chaque assertion tient : l'arrêt est nommé, et ce n'est pas
+/// « refusée » ; ce qui précède a tourné ; RIP est posé **sur** l'instruction,
+/// pas après — rien ne la reprendra, et c'est elle qu'il faut montrer ; ce qui
+/// suit n'a pas tourné.
+#[test]
+fn a_kernel_that_reaches_lkgs_is_stopped_by_name_on_the_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00, // movq $42, %rax
+        0xf2, 0x0f, 0x00, 0xf7, // lkgs %edi — l'arrêt qui doit se nommer
+        0x48, 0xff, 0xc2, // incq %rdx — ne doit pas tourner
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-lkgs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!("`native_lkgs` doit se traduire, pas faire refuser la région : {why:?}"),
+    };
+    let path = scratch.join("lkgs.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rax " + lire(0));
+console.log("rdx " + lire(2));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur lkgs : la base GS du noyau depuis un sélecteur, sans table de descripteurs",
+        "l'arrêt doit se nommer : {text}"
+    );
+    assert_eq!(line("rax "), "42", "les instructions d'avant tournent");
+    assert_eq!(
+        line("rip "),
+        (BASE + 7).to_string(),
+        "RIP est posé sur le `lkgs`, pas après : rien ne le reprendra"
+    );
+    assert_eq!(line("rdx "), "0", "et rien d'après n'a tourné");
+}
