@@ -50,6 +50,7 @@ fn name_of(op: Op) -> String {
             if interrupts { "sidt" } else { "sgdt" }.to_string()
         }
         Op::SwapGs => "swapgs".to_string(),
+        Op::LoadKernelGs => "lkgs".to_string(),
         Op::LoadSegment { .. } => "mov-vers-segment".to_string(),
         Op::StoreSegment { .. } => "mov-depuis-segment".to_string(),
         Op::ReadControlRegister { which } => format!("lire-cr{which}"),

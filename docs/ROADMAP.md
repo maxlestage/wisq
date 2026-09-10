@@ -7862,3 +7862,59 @@ illisible avec un arrêt nommé, comme `ud2`, et ne refuser qu'à l'exécution �
 c'est ce que fait le silicium, qui ne faute que sur ce qu'il exécute. Elle
 change le contrat de `CannotDecode`, que `coverage.rs` mesure depuis trois
 tranches ; elle n'est pas prise sans le dire.
+
+## `lkgs` est décodée, et le noyau tourne dans `jump_label_init`
+
+Le mur de la tranche précédente était un octet : `f2 0f 00 f7`, `lkgs %edi`,
+dans `native_lkgs`, à 1572 octets de `init_scattered_cpuid_features`. Le noyau
+ne l'exécute que si CPUID annonce `LKGS`, ce que `cpuid` n'annonce pas ; mais
+elle est atteinte statiquement, le décodeur ne la lisait pas, et la région
+entière était refusée. L'`int3` de la retpoline, à l'identique.
+
+**Ce que la tranche pose.** `Op::LoadKernelGs` dans le décodeur, pour cette
+seule forme : `f2 0f 00 /6` à registre, sans REX. **Le préfixe `f2` n'est pas
+lu en général**, exprès — `f2 0f 10` est `movsd`, et un `f2` avalé sans être
+compris rendrait `movups`, une instruction plausible et fausse. Tout autre `f2`
+reste refusé comme avant, et le test le tient sur cinq voisins. L'interpréteur
+la refuse par nom, RIP dessus. L'émetteur en fait un arrêt nommé,
+`STOP_KERNEL_GS`, RIP **sur** l'instruction — rien ne la reprendra, et c'est
+elle qu'il faut montrer — et `web/host.js` le nomme.
+
+**Éprouvé.** Deux tests écrits avant, rouges : le décodeur ne connaissait pas
+la variante, l'hôte refusait la région. Quatre sabotages, quatre rouges : le
+bras de l'émetteur retiré (le calcul tombe sur son `unreachable`), RIP posé
+après l'instruction, le témoin de `hlt` à la place, le décodeur qui prend tout
+le groupe 6.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 313 | 12 443 | `init_scattered_cpuid_features` — `CannotDecode { at: 1572 }` |
+| après | **394** | **17 679** | `sort_r + 308` — **tours épuisés**, plus rien à traduire |
+
+Le noyau traverse `get_cpu_cap`, `early_cpu_init`, `get_cpu_address_sizes`,
+`sld_setup`, et entre dans `jump_label_init` : la pile porte
+`__start___jump_table`, et `sort_r` trie la table des jump labels — des
+milliers d'entrées, un comparateur appelé à chaque pas. L'arrêt n'est plus un
+refus : les 4096 tours du pilote sont épuisés, aucune adresse ne manque, et
+`kernel-entry` prend ça pour la fin (« plus rien à traduire »).
+
+**Ce qu'est un tour, et pourquoi il y en a 4096.** `sort_r + 308` est
+l'instruction qui **suit** `call jump_label_cmp`. Un `call` direct dont la
+cible est hors région rend la main à l'hôte : `place` rend `-1` pour tout ce
+qui n'est pas un bloc de la région, et la correspondance adresse → indice
+n'est consultée que par les formes **indirectes** — `ret`, `jmp *`, `call *`
+— dans `resolve`. Chaque appel du comparateur coûte donc un aller-retour par
+l'hôte, et un tour. La machine **avance**, une comparaison par tour ; elle
+n'est pas bloquée. Vérifié en écartant l'autre hypothèse : les 393 adresses de
+régions du relevé tombent dans 393 cases distinctes de la correspondance,
+aucune collision.
+
+**Le mur suivant est donc à l'émetteur, nommé, et c'est un mur de vitesse** :
+une cible statique hors région doit passer par la même correspondance que les
+cibles indirectes — `lookup` sur l'adresse que `place` vient de poser, `-1`
+seulement si elle n'y est pas — au lieu de rendre la main. Et `kernel-entry`
+doit cesser de prendre « tours épuisés » pour « terminé ». Ce que ça promet :
+un noyau fait d'appels entre fonctions qui ne repasse par l'hôte qu'aux
+fautes et aux traductions.
