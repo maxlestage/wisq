@@ -125,6 +125,12 @@ describe("l'icône que l'App Store accepte", () => {
         // chaîne cherchée par une garde — et les déclarait fautifs faute d'y
         // trouver le dessin de l'icône. Ce qui compte est la ligne qui la
         // **lance** : premier mot de la ligne, une fois l'indentation ôtée.
+        //
+        // **Et c'est pour ça que l'épinglage passe par le PATH.** Faire lancer
+        // aux scripts le binaire posé par `install-xcodegen.sh` sous un autre
+        // nom — `"$xcodegen" generate` — les faisait sortir de cette garde en
+        // silence. Trois gardes de ce dépôt s'ancrent sur cette ligne
+        // littérale ; c'est le PATH qui change, pas elle.
         const invocation = /^[ \t]*xcodegen generate/m.exec(text);
         if (!invocation) continue;
         const generate = invocation.index;

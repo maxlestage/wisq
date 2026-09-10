@@ -21,6 +21,20 @@
 # suivante l'efface — c'est déjà arrivé à `App/Info.plist`, qui s'est retrouvé
 # avec huit clés au lieu de dix-neuf sans que rien ne le signale.
 #
+# **Et avec quel XcodeGen.** La comparaison ne veut rien dire si les deux côtés
+# n'engendrent pas avec la même version : deux versions écrivent deux en-têtes
+# de projet différents sans qu'aucune spec n'ait bougé. C'est arrivé le jour
+# où la comparaison a tourné pour la première fois — 2.43.0 ici, 2.46.0 posé
+# par `brew install` sur le runner, `objectVersion` 54 contre 77 — et le rouge
+# ne parlait de rien de ce que le commit contenait. Le numéro vit donc dans
+# `.xcodegen-version`, et `scripts/install-xcodegen.sh` pose celui-là :
+#
+#     PATH="$(scripts/install-xcodegen.sh):$PATH"
+#     xcodegen generate
+#
+# En changer est un geste explicite : écrire le nouveau numéro, régénérer,
+# committer les trois fichiers ensemble.
+#
 # Ce qui n'est toujours pas commité : `App/Assets.xcassets`. C'est un binaire,
 # il est dessiné par `scripts/build-app-icon.sh` depuis le même code que
 # l'icône du site, et la cible le réclame par le réglage

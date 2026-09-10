@@ -7470,3 +7470,78 @@ Ce qu'un rouge voudra dire, et c'est écrit dans le message : soit `project.yml`
 a changé sans que les fichiers engendrés suivent, soit la version de XcodeGen a
 bougé. Les deux se corrigent de la même façon — régénérer et committer — et les
 deux méritent d'être vues.
+
+## Et elle a rougi le jour même, sur la deuxième des deux choses
+
+La prédiction ci-dessus s'est vérifiée par le mauvais bout. La première
+exécution réelle de la comparaison, sur la pull request qui l'introduit, est
+rouge — et ce n'est pas `project.yml` qui a bougé.
+
+```
+Bottle xcodegen (2.46.0)                        ← ce que brew pose sur le runner
+-  objectVersion = 54;                          ← ce que le dépôt porte
++  objectVersion = 77;
+-  compatibilityVersion = "Xcode 14.0";
+-  preferredProjectObjectVersion = 54;
++  preferredProjectObjectVersion = 77;
++  productRefGroup = D1A85ED2… /* Products */;
+   (et les deux cibles de test dans l'autre ordre)
+```
+
+Les fichiers commités avaient été engendrés ici par XcodeGen 2.43.0, construit
+depuis les sources faute de Homebrew sur Linux. Le runner installe « la
+dernière », qui était 2.46.0. Cinq lignes d'en-tête de projet, aucune spec
+touchée.
+
+**La mesure qui décide.** XcodeGen 2.46.0 reconstruit ici depuis les sources,
+sur Linux, avec Swift 6.3, régénère le projet — et git donne le même couple de
+hachages que la CI a affiché : `edec003..b7f30f7`. Le blob produit sur Linux
+depuis les sources **est** celui que la bottle Homebrew produit sur macOS
+arm64. XcodeGen est déterministe d'une plateforme à l'autre ; ce qui ne l'est
+pas, c'est le numéro de version.
+
+**Ce que ça dit de la garde.** Une comparaison octet pour octet entre deux
+côtés qui n'installent pas la même version rougit sur la date de la dernière
+mise à jour de Homebrew. Ce rouge-là arrive sur un commit qui n'y est pour
+rien, il se corrige en régénérant sans que le contributeur comprenne pourquoi,
+et il apprend à tout le monde que ce contrôle-ci ne veut rien dire. Le jour de
+la vraie dérive, il sera ignoré comme les autres.
+
+**La correction est l'épinglage**, dans `.xcodegen-version`, un seul endroit,
+posé par `scripts/install-xcodegen.sh` dans les trois workflows comme dans les
+trois scripts locaux. Ça ne coûte pas une compilation : les binaires publiés
+par XcodeGen sont universels — x86_64 et arm64 dans le même Mach-O, vérifié sur
+celui de 2.46.0 — donc quatre mégaoctets et une extraction, à peu près ce que
+coûtait `brew install`.
+
+**Et la garde sur la garde s'étend d'autant**, parce qu'un `brew install
+xcodegen` qui reviendrait dans un workflow ramènerait exactement ce rouge :
+`check-generated-project.sh` exige maintenant que tout workflow qui régénère
+pose la version épinglée, et refuse un `.xcodegen-version` absent **ou vide**.
+Le vide est le cas discret — le fichier existe, `test -f` est content, et le
+numéro comparé est la chaîne vide, qui s'accorde avec la chaîne vide. Quatre
+sabotages, quatre rouges nommés, chacun sur le seul test qui le vise.
+
+**Et la première conception était mauvaise, ce sont les gardes qui l'ont dit.**
+Faire lancer aux scripts locaux le binaire épinglé sous un autre nom —
+`xcodegen=$(scripts/install-xcodegen.sh)` puis `"$xcodegen" generate` — change
+leur ligne d'invocation. Or **trois** gardes de ce dépôt s'ancrent sur cette
+ligne littérale : celle qui exige que l'icône soit dessinée avant la
+génération, celle qui exige que la CI compare ce qu'elle engendre, et celle qui
+vérifie que `verify.sh` lance ce que la CI lance. Deux ont cessé d'inspecter
+`install-ios.sh` et `test-app.sh` **en silence** — la façon exacte dont une
+garde meurt — et la troisième a rougi dans `verify.sh`, ce qui est la seule
+raison pour laquelle les deux autres ont été retrouvées.
+
+Trois gardes touchées par le même changement de forme n'est pas un accident :
+c'est le signe que la ligne `xcodegen generate` est un point d'ancrage, et
+qu'il ne faut pas y toucher. L'épinglage passe donc par le **PATH** —
+`PATH="$(scripts/install-xcodegen.sh):$PATH"`, l'installateur rendant le
+répertoire du binaire — et la ligne reste ce qu'elle a toujours été. Aucune des
+trois gardes n'a besoin d'être modifiée, ce qui est en soi la mesure que la
+deuxième conception est la bonne.
+
+Un rouge sur cette comparaison veut donc dire, désormais, une seule chose : ce
+qui est commité n'est pas ce que la spec décrit. Soit `project.yml` a changé
+sans que les fichiers engendrés suivent, soit le numéro épinglé a changé sans
+qu'on régénère. La correction est la même dans les deux cas, et c'est la seule.

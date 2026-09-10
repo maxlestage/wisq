@@ -23,14 +23,21 @@ setDefaultTimeout(20_000);
 const repoRoot = join(import.meta.dir, "..", "..");
 const guard = join(repoRoot, "scripts", "check-generated-project.sh");
 
-/// Un arbre avec les workflows donnés, et rien d'autre : la garde ne lit que
-/// `.github/workflows`.
-function treeWith(flows: Record<string, string>): string {
+/// Un arbre avec les workflows donnés, et la version épinglée que la garde
+/// exige. `version: null` la retire, et c'est le seul moyen d'éprouver la
+/// branche qui refuse un dépôt qui ne dit pas avec quel XcodeGen il a été
+/// engendré.
+function treeWith(
+  flows: Record<string, string>,
+  options: { version?: string | null } = {},
+): string {
   const root = mkdtempSync(join(tmpdir(), "wisq-projet-"));
   mkdirSync(join(root, ".github", "workflows"), { recursive: true });
   for (const [name, body] of Object.entries(flows)) {
     writeFileSync(join(root, ".github", "workflows", name), body);
   }
+  const version = options.version === undefined ? "2.46.0" : options.version;
+  if (version !== null) writeFileSync(join(root, ".xcodegen-version"), `${version}\n`);
   return root;
 }
 
@@ -78,4 +85,40 @@ test("un arbre où personne ne régénère est refusé, pas approuvé", () => {
   const { code, err } = run(root);
   expect(code).toBe(1);
   expect(err).toContain("la garde ne garde rien");
+});
+
+/// **La deuxième moitié de la règle, apprise par un rouge.** Comparer ne veut
+/// rien dire si les deux côtés n'engendrent pas avec le même XcodeGen. La
+/// première exécution réelle de la comparaison l'a montré : `brew install
+/// xcodegen` avait posé 2.46.0 sur le runner, les fichiers commités venaient
+/// de 2.43.0, et l'en-tête du projet différait — `objectVersion` 54 contre 77,
+/// `compatibilityVersion` retirée, `productRefGroup` ajoutée. Aucune spec
+/// n'avait bougé. Un `brew install` qui revient dans un workflow ramène ce
+/// rouge-là, et personne ne s'en apercevra avant qu'il tombe.
+test("un workflow qui régénère sans poser la version épinglée est refusé", () => {
+  const libre = real.replace("scripts/install-xcodegen.sh", "brew install xcodegen");
+  const root = treeWith({ "ci.yml": libre });
+  const { code, err } = run(root);
+  expect(code).toBe(1);
+  expect(err).toContain("version épinglée");
+});
+
+/// L'autre bord : le numéro lui-même. Sans ce fichier, l'installateur n'a rien
+/// à poser et la comparaison compare deux choses qui n'ont aucune raison de se
+/// ressembler.
+test("un dépôt qui ne dit pas avec quel XcodeGen il a été engendré est refusé", () => {
+  const root = treeWith({ "ci.yml": real }, { version: null });
+  const { code, err } = run(root);
+  expect(code).toBe(1);
+  expect(err).toContain(".xcodegen-version");
+});
+
+/// Et un fichier présent mais vide, qui est la façon dont ce genre de garde
+/// passe : le fichier existe, `test -f` est content, et le numéro comparé est
+/// la chaîne vide — qui vaut la chaîne vide, donc tout s'accorde sur rien.
+test("une version épinglée vide est refusée", () => {
+  const root = treeWith({ "ci.yml": real }, { version: "" });
+  const { code, err } = run(root);
+  expect(code).toBe(1);
+  expect(err).toContain(".xcodegen-version");
 });
