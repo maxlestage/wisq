@@ -138,7 +138,24 @@ jobs:
         run: bun site/scripts/asc.ts
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        # **Une version, pas « la dernière ».** Les fichiers qu'`xcodegen`
+        # écrit sont commités, et le pas « Generate project » compare ce qui
+        # vient d'être engendré à ce que le dépôt porte. Cette comparaison ne
+        # veut rien dire si les deux côtés lancent des XcodeGen différents.
+        #
+        # C'est arrivé le jour même où la comparaison a tourné pour la
+        # première fois : `brew install xcodegen` a posé 2.46.0 sur le runner,
+        # les fichiers commités avaient été engendrés en 2.43.0, et l'en-tête
+        # du projet différait — `objectVersion` 54 contre 77,
+        # `compatibilityVersion` retirée, `productRefGroup` ajoutée, les deux
+        # cibles de test dans l'autre ordre. Aucune spec n'avait bougé. Une
+        # garde qui rougit sur la date de la dernière mise à jour de Homebrew
+        # est une garde qu'on apprend à ignorer.
+        #
+        # La version vit dans `.xcodegen-version`, un seul endroit, et
+        # l'installateur la pose depuis la release publiée — un binaire
+        # universel, donc pas de compilation.
+        run: scripts/install-xcodegen.sh
 
       - name: Package the VM core as an XCFramework
         # L'application embarque l'interpréteur Rust ; sans cette étape le
@@ -215,6 +232,32 @@ jobs:
         run: |
           scripts/build-app-icon.sh
           xcodegen generate
+          # **Ce que la CI vient de fabriquer doit être ce que le dépôt porte.**
+          #
+          # `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
+          # `xcodegen generate` **et** commités : sans eux, un dépôt fraîchement
+          # cloné n'a pas de projet à ouvrir, et XcodeGen n'est pas dans Xcode.
+          # Le prix de ce choix est la dérive — quelqu'un modifie `project.yml`,
+          # ne régénère pas, et le projet ouvert dans Xcode n'est plus celui que
+          # la spec décrit.
+          #
+          # La CE régénère de toute façon avant de construire. La garde ne coûte
+          # donc qu'une comparaison : ce qui vient d'être écrit doit être
+          # identique à ce qui est commité.
+          #
+          # **Un rouge ici veut dire une seule chose** : ce qui est commité
+          # n'est pas ce que la spec décrit. La version de XcodeGen est
+          # épinglée dans `.xcodegen-version` et posée par
+          # `scripts/install-xcodegen.sh`, donc elle ne peut plus dériver
+          # toute seule — soit `project.yml` a changé sans que les fichiers
+          # engendrés suivent, soit le numéro épinglé a changé sans qu'on
+          # régénère. Dans les deux cas la correction est la même : lancer
+          # `xcodegen generate` et committer le résultat avec le changement.
+          if ! git diff --exit-code -- Wisq.xcodeproj/project.pbxproj App/Info.plist; then
+            echo "::error::les fichiers engendrés par xcodegen ne sont pas ceux du dépôt."
+            echo "::error::lancer « xcodegen generate » et committer le résultat."
+            exit 1
+          fi
           # `-allowProvisioningUpdates` avec la clé API enregistre l'identifiant
           # d'application et fabrique le **profil** s'ils manquent. Il fabrique
           # aussi le **certificat** — et c'est ce qui a fini par saturer le

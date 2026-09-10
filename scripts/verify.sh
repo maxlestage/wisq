@@ -21,6 +21,14 @@ echo "==> Licence (rien ne doit en annoncer une)"
 ./scripts/check-licence-claims.sh
 ./scripts/check-signing-secrets.sh
 
+# **Le projet Xcode est engendré et commité, donc il peut diverger.** La CI
+# régénère avant de construire et compare ; cette garde-ci vérifie que la
+# comparaison est bien là, dans chaque workflow qui régénère. Elle ne sert que
+# le jour d'une dérive, et ce jour-là il est trop tard pour s'apercevoir qu'on
+# l'avait retirée.
+echo "==> Projet Xcode (la CI compare ce qu'elle engendre)"
+./scripts/check-generated-project.sh > /dev/null
+
 # CI runs this one and this script did not — the third time this file has had
 # exactly that bug, after SwiftLint and after the Rust gates, both recorded
 # above. It takes two seconds and it guards the one failure nobody here can
@@ -192,7 +200,12 @@ if [[ "${1:-}" == "--app" ]]; then
     echo "--app requires macOS; the UI layer is UIKit." >&2
     exit 1
   fi
-  command -v xcodegen >/dev/null || { echo "xcodegen missing: brew install xcodegen" >&2; exit 1; }
+  # **La version épinglée, mise en tête du PATH.** `Wisq.xcodeproj/project.pbxproj`
+  # et `App/Info.plist` sont commités et la CI compare ce qu'elle engendre à ce
+  # que le dépôt porte. Régénérer ici avec un autre XcodeGen produirait un rouge
+  # en CI qui ne dit rien de ce qu'on vient d'écrire — c'est arrivé, sur
+  # l'en-tête du projet, entre 2.43.0 et 2.46.0.
+  PATH="$("$(dirname "$0")/install-xcodegen.sh"):$PATH"
 
   echo "==> Generating the Xcode project"
   "$(dirname "$0")/build-app-icon.sh"
