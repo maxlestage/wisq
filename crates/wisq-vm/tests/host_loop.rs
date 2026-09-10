@@ -4980,3 +4980,195 @@ console.log("arret " + why.stopped);
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **La table des blocs grandit devant les régions, au lieu de refuser le
+/// noyau.**
+///
+/// C'est le mur du premier `printk` : la 155ᵉ région du noyau Alpine réclamait
+/// l'emplacement 4049 d'une table de 4096, et son minimum déclaré —
+/// l'emplacement plus ses blocs — dépassait ce que l'hôte avait alloué une fois
+/// pour toutes. `LinkError`, sans retour, sur une machine qui avançait encore.
+///
+/// Ici le même mur, en deux régions et une table d'**un seul** emplacement.
+/// La première pose deux blocs : elle déborde déjà, et la table doit grandir
+/// **avant** de l'instancier — après, c'est trop tard, c'est l'instanciation
+/// qui compare. La seconde reçoit l'emplacement 2, au-delà de tout ce que
+/// l'hôte avait alloué. Avec la croissance, l'anneau tourne, et la table le
+/// dit. Un sabotage qui grandissait après l'instanciation a survécu à une
+/// première forme de ce test, à deux emplacements : la première région
+/// tenait, et grandir après elle suffisait à la seconde.
+#[test]
+fn the_block_table_grows_ahead_of_the_regions_instead_of_refusing_them() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const NEXT: u64 = BASE + 0x100;
+    // **Un seul emplacement, exprès.** La première région en veut deux : la
+    // table est trop courte dès le départ, et seule une croissance **avant**
+    // l'instanciation la laisse passer.
+    const REGIONS: u32 = 1;
+
+    // Deux maillons : le premier coupé en deux blocs par un saut sur place,
+    // le second d'un seul bloc. Chacun ajoute son numéro à RDX et saute
+    // indirectement à l'autre.
+    let region = |index: u64| -> Vec<u8> {
+        let mut code = vec![0x48, 0xc7, 0xc0];
+        code.extend_from_slice(&(index as u32 + 1).to_le_bytes()); // movq $n, %rax
+        if index == 0 {
+            code.extend_from_slice(&[0x48, 0x85, 0xc0]); // testq %rax, %rax
+            code.extend_from_slice(&[0x75, 0x00]); // jnz +0 : coupe le bloc
+        }
+        code.extend_from_slice(&[0x48, 0x01, 0xc2]); // addq %rax, %rdx
+        code.extend_from_slice(&[0x48, 0xb8]);
+        code.extend_from_slice(&(if index == 0 { NEXT } else { BASE }).to_le_bytes());
+        code.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+        code
+    };
+    let first = Module::survey(&region(0), 0).expect("le relevé").blocks;
+    let second = Module::survey(&region(1), 0).expect("le relevé").blocks;
+    assert_eq!(
+        (first, second),
+        (2, 1),
+        "la première région doit déborder la table à elle seule : sans ça un \
+         hôte qui grandit après l'instanciation passerait"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-table-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let mut loaded = String::new();
+    for (index, address) in [BASE, NEXT].into_iter().enumerate() {
+        let code = region(index as u64);
+        let raw = scratch.join(format!("region{index}.bin"));
+        std::fs::write(&raw, &code).expect("le code de la région");
+        loaded.push_str(&format!(
+            "[{},{:?}],",
+            address & u64::from(PAGES * 65536 - 1),
+            raw.to_string_lossy()
+        ));
+        for slot in 0..4u32 {
+            let module = Module::resolving(&code, address, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {index}"));
+            let path = scratch.join(format!("region{index}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    let laps = 200u64;
+    let blocks_per_lap = (first + second) as u64;
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const posé = new Map(
+  [{loaded}].map(([at, path]) => [at, new Uint8Array(readFileSync(path))]),
+);
+let asked = 0;
+const translate = async (address, slot) => {{
+  asked++;
+  const path = catalogue.get(address + ":" + slot);
+  return path === undefined ? null : readFileSync(path);
+}};
+
+const vm = machine({{ translate, pages: {pages}, regions: {regions} }});
+for (const [at, octets] of posé) {{
+  new Uint8Array(vm.memory.buffer, at, octets.length).set(octets);
+}}
+console.log("avant " + vm.blocks.length);
+vm.globals[{rip}].value = {base}n;
+
+// **Premier temps : la découverte.** Deux tours, une région chacun ; la
+// première déborde déjà la table d'un emplacement, la seconde reçoit
+// l'emplacement 2.
+const first = await vm.run({{ budget: 1000n, rounds: 2 }});
+console.log("decouverte " + first.stopped);
+console.log("demandes " + asked);
+console.log("regions " + vm.known.size);
+console.log("emplacements " + Array.from(vm.known.values()).map((r) => r.slot).join(","));
+console.log("apres " + vm.blocks.length);
+
+// **Second temps : l'anneau tourne**, à travers l'emplacement que la table
+// n'avait pas.
+vm.globals[{rip}].value = {base}n;
+vm.globals[2].value = 0n;
+const second = await vm.run({{ budget: {budget}n, rounds: 1 }});
+console.log("regime " + second.stopped);
+console.log("retraductions " + (asked - 2));
+console.log("rdx " + vm.globals[2].value.toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            pages = PAGES,
+            regions = REGIONS,
+            rip = RIP_SLOT,
+            base = BASE,
+            budget = laps * blocks_per_lap,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    // **C'est ici que le mur tombe ou non.** Sans croissance, la seconde
+    // région lève `LinkError` dans `install`, et le pilote meurt en erreur.
+    assert!(
+        output.status.success(),
+        "la seconde région doit s'instancier au-delà de la table initiale : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+
+    // La table a bien commencé à un : sinon le test ne déborde rien.
+    assert_eq!(seen("avant"), REGIONS.to_string(), "la table demandée");
+    assert_eq!(seen("demandes"), "2", "une traduction par région");
+    assert_eq!(seen("regions"), "2", "les deux sont retenues");
+    // **La seconde région commence bien à l'emplacement 2** — la première a
+    // posé ses deux blocs dans une table qui n'en offrait qu'un.
+    assert_eq!(
+        seen("emplacements"),
+        "0,2",
+        "la seconde région commence après les deux blocs de la première"
+    );
+    let after: u32 = seen("apres").parse().expect("une taille de table");
+    assert!(
+        after >= 3,
+        "la table doit porter au moins l'emplacement 2 et son bloc, pas {after}"
+    );
+    assert_eq!(
+        seen("retraductions"),
+        "0",
+        "en régime établi, plus rien à traduire"
+    );
+    assert_eq!(
+        seen("regime"),
+        "tours épuisés",
+        "un anneau revenu à son point de départ n'est pas une machine bloquée"
+    );
+    assert_eq!(
+        seen("rdx"),
+        (laps * (1 + 2)).to_string(),
+        "l'anneau doit avoir tourné {laps} fois à travers l'emplacement gagné"
+    );
+}
