@@ -1,6 +1,33 @@
-# XcodeGen spec. Run `xcodegen generate` to produce Wisq.xcodeproj.
-# The project file is not checked in: it is generated, and merge conflicts in a
-# .pbxproj cost more than the tool does.
+# La source de vérité du projet Xcode. `xcodegen generate` en produit deux
+# fichiers — `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` — et **les
+# deux sont commités**.
+#
+# Ils ne l'étaient pas : le raisonnement écrit ici disait qu'un `.pbxproj` généré
+# coûte plus en conflits de fusion que l'outil ne coûte à installer. Ce
+# raisonnement supposait que chacun puisse lancer l'outil, et cette supposition
+# était fausse. XcodeGen n'est pas dans Xcode ; sans lui, un dépôt fraîchement
+# cloné n'a pas de projet à ouvrir, et « ouvrir le projet » est la première
+# chose que fait quelqu'un qui veut construire l'application ou l'envoyer à
+# Apple depuis sa machine.
+#
+# Ce que ça achète, dit franchement : un fichier généré sous suivi peut diverger
+# de ce fichier-ci en silence — quelqu'un modifie `project.yml`, ne régénère
+# pas, et le projet ouvert dans Xcode n'est plus celui que la spec décrit. La
+# règle est donc : **toute modification ici s'accompagne d'un `xcodegen
+# generate`, et les deux fichiers régénérés partent dans le même commit.** Ni
+# l'un ni l'autre ne s'édite à la main : ce qu'on y écrirait, la génération
+# suivante l'efface — c'est déjà arrivé à `App/Info.plist`, qui s'est retrouvé
+# avec huit clés au lieu de dix-neuf sans que rien ne le signale.
+#
+# Ce qui n'est toujours pas commité : `App/Assets.xcassets`. C'est un binaire,
+# il est dessiné par `scripts/build-app-icon.sh` depuis le même code que
+# l'icône du site, et la cible le réclame par le réglage
+# `ASSETCATALOG_COMPILER_APPICON_NAME`.
+# Donc, sur un dépôt fraîchement cloné, avant d'ouvrir Xcode :
+#
+#     scripts/build-app-icon.sh
+#
+# Sans lui le projet s'ouvre et la construction s'arrête sur l'icône absente.
 name: Wisq
 options:
   bundleIdPrefix: app.wisq
