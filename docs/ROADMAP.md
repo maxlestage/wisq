@@ -7545,3 +7545,51 @@ Un rouge sur cette comparaison veut donc dire, désormais, une seule chose : ce
 qui est commité n'est pas ce que la spec décrit. Soit `project.yml` a changé
 sans que les fichiers engendrés suivent, soit le numéro épinglé a changé sans
 qu'on régénère. La correction est la même dans les deux cas, et c'est la seule.
+
+## La mesure de RSI, refaite : la faute suit le pointeur
+
+La tranche précédente laissait une mesure en attente — RSI valait zéro, mais la
+dérive du `lretq` avait contaminé le relevé, donc le chiffre ne prouvait rien.
+Le saut est pris maintenant, et la mesure est refaite avec le montage qui pose
+un vrai `boot_params`.
+
+| | RSI | CR2 à l'arrêt |
+|---|---|---|
+| avant | `0` | `0xffff888000000000` |
+| après | `0x9000` | **`0xffff888000009000`** |
+
+`page_offset_base` vaut `0xffff888000000000`, donc `__va(0x9000)` est
+exactement `0xffff888000009000`. **CR2 suit le pointeur**, à l'octet près.
+L'instruction fautive est `48 8b 07` — `mov (%rdi),%rax` — à
+`copy_bootdata + 38`, et la faute est un `#PF` (`faute 1`).
+
+**Ce que ça réfute, et ce que ça établit.** L'hypothèse naïve — « il manque des
+`boot_params`, pose-les et ça avancera » — est réfutée sous cette forme : les
+poser déplace la faute, elle ne disparaît pas. Ce qui est établi est plus
+précis et plus utile : Linux lit ses `boot_params` **à travers la cartographie
+directe**, et les tables de pages précoces que le noyau vient d'installer ne la
+couvrent pas encore. Ce n'est pas un pointeur faux ; c'est une lecture correcte
+d'une adresse que la machine ne sait pas encore traduire.
+
+C'est aussi la seule des deux hypothèses écrites plus haut qui tenait : « ça ne
+fera que déplacer la faute » était juste, et la première mesure qui semblait la
+contredire était celle qu'un défaut d'émission — le `lretq` non pris —
+contaminait.
+
+**Ce que ça ouvre est une direction, pas un défaut nommé**, donc elle ne se
+tranche pas ici. Trois routes, avec leur prix :
+
+1. **Délivrer le `#PF` à l'invité.** Le vrai chemin, celui qu'une machine doit
+   prendre : le noyau attend une faute, il a un gestionnaire, il cartographiera
+   et reprendra. C'est la plus grosse tranche du lot — elle touche l'émetteur,
+   la boucle hôte et la forme du module, puisqu'il faut porter la faute jusqu'à
+   l'IDT et savoir reprendre l'instruction interrompue.
+2. **Cartographier d'avance ce que le noyau va lire.** Rapide, et malhonnête :
+   c'est un bouchon complaisant qui fait passer ce cas précis en sachant
+   d'avance ce que l'invité demandera. Ce dépôt a déjà payé deux fois pour ce
+   genre de raccourci, dans un montage de test et dans un pilote de mesure.
+3. **Laisser le noyau de côté** et revenir au bureau local tel que
+   l'application le montre.
+
+La mesure est écrite ici pour qu'elle ne se reperde pas ; le choix appartient à
+Maxime.
