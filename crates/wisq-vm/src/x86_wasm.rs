@@ -542,6 +542,37 @@ pub const BENCH_BASE: u64 = 0x3000_0000;
 /// Combien d'instructions un tour de la boucle exécute.
 pub const BENCH_PER_TURN: u64 = 5;
 
+/// **Ce qu'un bloc rend à l'hôte, lu sans l'exécuter.**
+///
+/// `survey` compte ; ceci nomme. La différence a coûté une tranche : la
+/// machine s'arrêtait sur une adresse, deux explications la rendaient toutes
+/// les deux, et rien dans le dépôt ne savait dire laquelle — il fallait
+/// relire l'émetteur et choisir. Un relevé qui dit, pour chaque bloc, où il
+/// mène et par quelle instruction, remplace ce choix par une lecture.
+///
+/// Les décalages sont **relatifs à la région**, comme partout dans
+/// `discover` : l'appelant qui veut des adresses ajoute la base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outline {
+    /// Où le bloc commence.
+    pub start: usize,
+    /// Où il finit — le décalage juste après sa dernière instruction, qui est
+    /// aussi l'adresse de reprise quand rien d'autre ne la décide.
+    pub after: usize,
+    /// Combien d'instructions il porte.
+    pub steps: usize,
+    /// L'instruction qui le termine. `None` quand le bloc s'arrête au bord de
+    /// la région sans terminateur — le cas qui fait reprendre à `after`.
+    pub ends: Option<Op>,
+    /// La cible statique du terminateur, quand il en a une : `jmp`, `call` et
+    /// les sauts conditionnels. `None` pour `ret`, les formes indirectes, et
+    /// pour un bloc sans terminateur.
+    pub target: Option<i64>,
+    /// L'indice du bloc où la cible tombe, dans l'ordre de ce relevé. `None`
+    /// quand elle sort de la région : le module rend alors la main.
+    pub goes: Option<usize>,
+}
+
 /// Ce que `Module::survey` relève d'une région : sa taille, et les endroits
 /// où elle rendra la main.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1380,6 +1411,61 @@ impl Module {
             }
         }
         Some(survey)
+    }
+
+    /// **Le relevé bloc par bloc de la région, dans l'ordre des adresses.**
+    ///
+    /// Même découverte que `survey` et que l'émission — c'est `discover` qui
+    /// répond aux trois — donc ce que ce relevé dit d'un bloc est ce que le
+    /// module fera de lui, et pas une seconde lecture qui pourrait diverger.
+    ///
+    /// Ce qu'il ne dit pas : ce que fait un terminateur dont la cible n'est
+    /// connue qu'à l'exécution. Pour `ret`, `jmp *` et `call *`, `target` et
+    /// `goes` sont vides parce qu'il n'y a rien à y mettre, pas parce que la
+    /// question ne se pose pas.
+    pub fn outline(bytes: &[u8], entry: usize) -> Result<Vec<Outline>, Refused> {
+        let blocks = Self::discover(bytes, entry)?;
+        let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
+        Ok(blocks
+            .iter()
+            .map(|(start, steps)| {
+                let after = start + steps.iter().map(|step| step.length).sum::<usize>();
+                // Un bloc ne se termine que sur l'une des formes qui changent
+                // le bloc courant. Tout le reste veut dire « coupé par le bord
+                // de la région », et c'est `after` qui devient l'adresse de
+                // reprise — la distinction que ce relevé existe pour montrer.
+                let last = steps.last();
+                let ends = last.map(|step| step.op).filter(|op| {
+                    matches!(
+                        op,
+                        Op::Jump(_)
+                            | Op::LoopWhile
+                            | Op::JumpIndirect
+                            | Op::Call
+                            | Op::CallIndirect
+                            | Op::Return
+                            | Op::FarReturn
+                            | Op::Undefined
+                    )
+                });
+                let target = match ends {
+                    Some(Op::Jump(_) | Op::LoopWhile | Op::Call) => {
+                        Some(after as i64 + last.map_or(0, |step| step.imm as i64))
+                    }
+                    _ => None,
+                };
+                Outline {
+                    start: *start,
+                    after,
+                    steps: steps.len(),
+                    ends,
+                    target,
+                    goes: target
+                        .and_then(|target| usize::try_from(target).ok())
+                        .and_then(index),
+                }
+            })
+            .collect())
     }
 
     fn discover(bytes: &[u8], entry: usize) -> Result<Vec<(usize, Vec<Decoded>)>, Refused> {

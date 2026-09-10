@@ -307,6 +307,16 @@ for (let i = 0; i < 8; i++) {{
     : "hors-RAM");
 }}
 console.log("pile " + mots.join(" "));
+// **Les seize registres généraux, dans l'ordre du codage x86.** Ils coûtent
+// une ligne et ils répondent à la question que la pile ne répond pas : la
+// machine s'est-elle garée sur une valeur qu'on lui a donnée ? Un `for (;;)`
+// écrit par le noyau derrière un test sur un argument ne se comprend qu'en
+// lisant l'argument.
+const noms = ["rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
+              "r8","r9","r10","r11","r12","r13","r14","r15"];
+console.log("registres " + noms
+  .map((nom, at) => nom + "=0x" + lire(at).toString(16))
+  .join(" "));
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
                 text = text_path.to_string_lossy(),
@@ -382,5 +392,68 @@ console.log("pile " + mots.join(" "));
     }
     println!();
     print!("{}", name_addresses(&last, &map));
+
+    // **Et d'où vient l'adresse où elle s'est arrêtée.**
+    //
+    // Le relevé de la pile disait *où* la machine est ; il ne disait pas
+    // *comment* elle y est arrivée, et deux explications tenaient — un saut
+    // non pris, ou un bloc terminé sans son saut. C'est cette impasse qui a
+    // fait écrire `Module::outline` : il lit les blocs de la même découverte
+    // que l'émission, donc ce qu'il dit d'un bloc est ce que le module fait
+    // de lui. Poser la question ici, sur les vraies régions, remplace un
+    // choix de relecture par une lecture.
+    if let Some(stopped) = last
+        .lines()
+        .find_map(|line| line.strip_prefix("rip 0x"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+    {
+        println!();
+        println!("qui mène à {} :", map.describe(stopped));
+        let mut named = false;
+        // Les régions se chevauchent — la même adresse est traduite dans
+        // plusieurs fenêtres — donc le même bloc serait nommé plusieurs fois.
+        // Ce n'est pas une redite décorative : trois lignes identiques
+        // ressemblent à trois chemins, et il n'y en a qu'un.
+        let mut seen = std::collections::BTreeSet::new();
+        for (base, _) in &regions {
+            let Ok(from) = usize::try_from(base - text.virtual_address + text.offset) else {
+                continue;
+            };
+            let window = &image[from..(from + 16384).min(image.len())];
+            let Ok(blocks) = Module::outline(window, 0) else {
+                continue;
+            };
+            for block in &blocks {
+                let target = match block.target {
+                    Some(target) => base.wrapping_add(target as u64),
+                    None => continue,
+                };
+                if target != stopped {
+                    continue;
+                }
+                if !seen.insert(base + block.start as u64) {
+                    continue;
+                }
+                named = true;
+                println!(
+                    "  {} finit sur {:?} vers {}{}",
+                    map.describe(base + block.start as u64),
+                    block
+                        .ends
+                        .expect("un bloc qui a une cible a un terminateur"),
+                    map.describe(target),
+                    match block.goes {
+                        Some(_) => " — dans la même région",
+                        None => " — hors région, le module rend la main",
+                    }
+                );
+            }
+        }
+        if !named {
+            println!("  aucun bloc des régions traduites n'y mène par une cible statique.");
+            println!("  L'adresse vient donc de la pile, d'une forme indirecte, ou de la reprise après une coupe.");
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&scratch);
 }
