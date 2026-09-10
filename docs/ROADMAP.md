@@ -7144,3 +7144,58 @@ cibles, les seize registres — au lieu de compter. `survey` comptait depuis le
 début et n'aurait jamais pu répondre. Quand deux explications rendent la même
 observation, ce n'est pas une troisième relecture qu'il faut, c'est une
 observation de plus.
+
+## La sonde mesurait un chemin que l'application n'emprunte pas
+
+Et c'est la troisième fois. La sonde de l'appareil mesurait un module écrit à
+la main en croyant mesurer l'émetteur ; la sonde de l'iPhone mesurait la forme
+libre sur une boucle sans mémoire ; trois pilotes de mesure ne compilaient plus
+ce qu'ils prétendaient chronométrer. Ici, `--example kernel-entry` compilait
+chaque région à sa base **virtuelle**.
+
+**L'application, elle, a toujours démarré en physique.**
+`Sources/WisqVM/X86BootLoader.swift` charge le noyau à `preferredAddress` et
+rend `entryPoint: kernelAddress + 0x200` ; `LocalDesktop` passe à
+`resolvingRegion(code, base: address, …)`, c'est-à-dire l'adresse que l'invité
+réclame, sans arbitrer entre virtuel et physique. Le montage de l'outil était
+donc le seul à se tromper — et pendant deux tranches, l'arrêt de `__startup_64`
+a été lu comme un mur du produit alors qu'il n'appartenait qu'à la sonde.
+
+Ce que ça change, mesuré sur le vrai noyau d'Alpine, une fois l'outil remis en
+physique :
+
+| | avant | après |
+|---|---|---|
+| `__startup_64` | se gare à `+658` | **passe ses deux gardes** |
+| son `ret` | jamais exécuté | tour 5 réclame `startup_64 + 74` |
+| arrêt | `__startup_64 + 658` | `secondary_startup_64_no_verify + 73` |
+
+**Le mur suivant est donc nommé, et il n'est plus le même.** À l'arrêt,
+`rax = 0xffffffff8100013e` : une adresse **virtuelle**, chargée en absolu et
+sautée indirectement. C'est le moment où le noyau, ayant construit ses tables
+dans `__startup_64`, charge CR3 et bascule à l'adressage virtuel. Ce qui manque
+n'est pas dans l'émetteur — la pagination y est depuis P1 et P2 — mais dans la
+résolution : la région à traduire doit être cherchée **à travers les tables de
+l'invité**, pas dans le segment de texte à plat. C'est la tranche suivante.
+
+### Un nom faux est pire qu'une adresse nue
+
+Deux défauts de nommage, tous deux trouvés en lisant la sortie plutôt qu'en
+relisant le code :
+
+* **L'addition faite deux fois.** `System.map` est écrit en virtuel, la machine
+  tourne en physique, et les deux formes se croisent dans un même relevé — le
+  noyau bascule en cours de route. Ajouter `__START_KERNEL_map` à une adresse
+  qui le porte déjà ne rate pas franchement : ça déborde et ça rend un nom. La
+  sortie a imprimé « phys_startup_64 + 18446744069414584494 ». Personne ne lit
+  ça comme une erreur.
+* **Le symbole qui nomme n'importe quoi.** `nearest` rend le symbole juste en
+  dessous, quelle que soit la distance. C'est juste pour du code et faux pour
+  tout le reste : les mots de pile `0x10` et `0x0` se voyaient recoller
+  « fixed_percpu_data + 16 », et un pointeur de pile « phys_startup_64 +
+  20987576 ».
+
+`Symbols::describe_loaded` tient les deux : l'addition une seule fois, et un
+symbole qui ne nomme plus au-delà d'un mébioctet. La même ligne de pile se lit
+maintenant `0x10000c6 (startup_64 + 54) 0x10 0x0 0x0 …` — ce qui a un nom en a
+un, le reste reste un nombre.
