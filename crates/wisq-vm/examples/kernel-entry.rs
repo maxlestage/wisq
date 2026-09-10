@@ -322,7 +322,13 @@ import {{ readFileSync }} from "fs";
 const connues = new Map([{listing}]);
 let manquante = null;
 let place = 0;
+// **Ce que le noyau écrit sur le port série**, octet par octet. C'est la
+// seule voix qu'il a : un `printk` qui aboutit finit sur `0x3f8`, et
+// `host.js` l'écoute déjà. Gardé en entier et imprimé à la fin, pour ne pas se
+// mêler au relevé.
+let serie = "";
 const vm = machine({{
+  serial: (octet) => {{ serie += String.fromCharCode(octet); }},
   translate: async (address, slot) => {{
     const path = connues.get(address);
     if (path !== undefined) return readFileSync(path);
@@ -342,6 +348,7 @@ vm.globals[{rip}].value = {entry}n;
 const why = await vm.run({{ budget: 1n << 24n, rounds: 4096 }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
 console.log("arret " + why.stopped);
+console.log("serie " + JSON.stringify(serie));
 console.log("manquante " + (manquante === null ? "aucune" : "0x" + manquante.toString(16)));
 console.log("emplacement " + place);
 console.log("rip 0x" + lire({rip}).toString(16));
