@@ -6914,3 +6914,110 @@ là où c'est une mesure sous le bruit.
 ce qui est mesuré ci-dessus l'a été sous le JavaScriptCore de Bun, sur ce
 conteneur ; ce que la sonde rendra sur un téléphone — à commencer par savoir si
 un WKWebView accorde 1026 Mio — reste la question qu'elle existe pour poser.
+
+## L'endroit où le noyau s'arrête a un nom, et ce n'était ni l'un ni l'autre
+
+La tranche précédente laissait une question écrite : « on ne sait pas si ce
+`jmp .` est un chemin d'erreur du noyau ou une boucle de parking. La charge
+utile décompressée n'a **aucune table de symboles** — il faudra un noyau avec
+ses symboles, ou son `System.map`. »
+
+**Il était là depuis le début.** `alpine-standard.iso` porte
+`boot/System.map-6.6.134-0-lts`, exactement la version que la machine exécute.
+L'autre ISO en porte un aussi, pour `6.6.49-0-virt` — une autre version *et*
+une autre variante : s'en servir aurait nommé un symbole du mauvais noyau, ce
+qui est précisément l'invention que la tranche refusait.
+
+Avec la bonne carte, tout le chemin se lit :
+
+| | adresse | nom |
+| --- | --- | --- |
+| point d'entrée | `0xffffffff81000090` | `startup_64` |
+| tour 1 | `0xffffffff81bcca30` | `__x86_return_thunk` |
+| tour 2 | `0xffffffff810000ba` | `startup_64 + 42` |
+| tour 3 | `0xffffffff810000c6` | `startup_64 + 54` |
+| tour 4 | `0xffffffff810000cb` | `startup_64 + 59` |
+| tour 5 | `0xffffffff81000642` | **`__startup_64 + 658`** |
+| RSP à l'arrêt | `0xffffffff82403f40` | `init_thread_union + 16192` |
+
+**Ce que ça établit, et c'est plus que ce qu'on croyait.** RSP pointe dans
+`init_thread_union`, 192 octets sous son sommet : c'est la pile initiale que
+`startup_64` se donne lui-même. La machine ne trébuche pas à la première
+instruction — elle exécute `startup_64`, passe par le `ret` que le noyau
+compile en `__x86_return_thunk`, y revient trois fois, et entre dans
+`__startup_64`, la fonction qui construit les premières tables de pages.
+
+**Et l'arrêt n'est ni un chemin d'erreur ni une boucle de parking.** Le
+désassemblage, à la bonne adresse :
+
+```text
+ffffffff8100063d:  e9 ee c3 bc 00   jmp __x86_return_thunk   ← le retour de __startup_64
+ffffffff81000642:  eb fe            jmp 0xffffffff81000642   ← là où la machine tourne
+ffffffff81000644:  eb fe            jmp 0xffffffff81000644
+```
+
+C'est le **rembourrage que le compilateur pose après un retour**. Aucun chemin
+du noyau n'y mène ; on n'y arrive que si le `ret` en rapporte l'adresse. La
+machine tourne en rond sur deux octets de bourre.
+
+**Ce qu'on ne sait toujours pas** : pourquoi `0x642` se trouve sur la pile au
+moment de ce `ret`. Ça se mesure — instrumenter la boucle hôte pour imprimer la
+valeur dépilée — et non se déduire. Le montage est délibérément nu (« aucun
+`boot_params`, aucune table de pages, aucun descripteur »), donc une pile qui
+porte n'importe quoi est une explication candidate, pas une conclusion.
+
+**Une hypothèse morte en route, et il faut le dire.** J'ai d'abord cru que
+l'émetteur ratait le `jmp` sortant de la région et rendait l'adresse suivante —
+l'arithmétique collait, `0x63d + 5 = 0x642`. La lecture du code l'a démentie
+(`place(body, target)` pose bien la cible absolue), et le relevé aussi : le
+tour 1 réclame `__x86_return_thunk`, donc le saut **est** suivi. Une
+arithmétique qui tombe juste n'est pas une preuve.
+
+### L'outil imprimait des adresses que personne ne pouvait lire
+
+C'est la vraie leçon, et elle a déjà un jumeau dans ce dépôt — le chiffre de la
+sonde enterré sous `xcodebuild`. `kernel-entry` rendait « rip
+0xffffffff81000642 », et une tranche entière a porté un « on ne sait pas » qui
+tenait à la lisibilité du relevé, pas au manque de matière.
+
+`kernel-entry` prend donc une carte en second argument, facultative, et nomme
+**toutes** les adresses qu'il imprime. Sans elle il continue comme avant : un
+outil de diagnostic qui refuse de fonctionner sans son confort casse ce qu'il
+mesure. Une carte donnée mais illisible se dit, plutôt que de laisser croire
+que les adresses n'ont pas de nom.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le tri est supposé au lieu d'être fait | les quatre tests d'adresse |
+| la recherche exclut l'égalité | `an_address_that_is_a_symbol_carries_no_offset` |
+| sous le premier symbole, on rend quand même le premier | `an_address_below_every_symbol_is_not_named` |
+| le décalage nul s'imprime quand même | `what_a_reading_prints_keeps_the_address_and_adds_the_name` |
+
+**Un de mes propres tests mentait sur ce qu'il tenait.** Celui qui s'appelle
+« une carte dans le désordre se résout quand même » **survivait** au retrait du
+tri : chercher dans une suite non triée est un comportement non spécifié, et
+l'adresse qu'il vérifiait tombait juste par chance. Trois autres tests
+l'attrapaient — mais pas celui qui porte son nom. C'est exactement l'assertion
+qui ressemble à une garde sans en être une, et c'est le sabotage qui l'a dit.
+
+**Et une assertion écrite trop vite, attrapée par le test lui-même.**
+`describe(1)` devait rendre « rien à nommer » ; l'extrait de carte porte
+`__per_cpu_start` à l'adresse zéro, donc *toute* adresse y a un nom. Le test a
+échoué avant le moindre sabotage, et il avait raison.
+
+#### Et le harnais tué, la troisième fois que ce dépôt le paie
+
+La suite est passée au vert, puis `verify.sh` a rendu **101** : deux tests de
+symboles rouges. La cause n'était pas dans le code — c'était une mutation restée
+dans l'arbre.
+
+Le harnais de sabotage avait été lancé dans un tube, `python3 … | head -6`.
+`head` sort après six lignes, le processus reçoit `SIGPIPE` à l'impression
+suivante et meurt **avant sa restauration finale**. `saturating_sub` est resté à
+la place de `checked_sub`, et les deux tests qui tiennent « sous le premier
+symbole, il n'y a rien à nommer » ont fait exactement leur travail.
+
+C'est écrit noir sur blanc dans les règles de ce dépôt — « un harnais tué laisse
+le défaut dans l'arbre : vérifier le fichier après chaque restauration, par
+`diff` » — et le `diff` l'a trouvé en une seconde. Ce qui manquait n'était pas la
+règle, c'était de ne pas tronquer la sortie d'un harnais qui restaure.

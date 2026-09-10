@@ -17,6 +17,7 @@ pub mod kernel_image;
 pub mod machine;
 pub mod snapshot;
 pub mod store;
+pub mod symbols;
 pub mod virtio;
 pub mod x86;
 pub mod x86_paging;
