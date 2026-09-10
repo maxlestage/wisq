@@ -527,6 +527,253 @@ console.log("haut " + lire(2));
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+/// **`lretq` doit sauter là où la pile le dit, pas continuer tout droit.**
+///
+/// Mesuré sur un vrai noyau, et c'est ce qui a mené ici : `secondary_startup_64`
+/// finit par `mov %r15,%rdi ; push $retour ; push $0x10 ; push %rax ; lretq`,
+/// où `%rax` porte l'adresse de `x86_64_start_kernel` et `%r15` le pointeur
+/// vers les `boot_params`. La machine arrivait bien dans
+/// `x86_64_start_kernel` — mais avec `RDI = 0`, et la faute tombait vingt
+/// fonctions plus loin, dans `copy_bootdata`.
+///
+/// **La panne qui ressemble à un succès.** Un saut qui n'est pas pris ne
+/// s'arrête pas : il continue dans les octets suivants, qui sont du
+/// rembourrage, puis du code. La machine finit par retomber sur ses pieds — par
+/// une autre route, avec d'autres registres. Rien ne rougit, et la cause est à
+/// des milliers d'instructions de l'effet.
+///
+/// Ce test l'attrape par où il faut : la chute écrit une valeur reconnaissable.
+/// Sans elle, « RDI ne vaut pas ce qu'on attend » ne distinguerait pas « le
+/// saut n'a pas eu lieu » de « la cible n'a rien fait ».
+#[test]
+fn a_far_return_lands_where_the_stack_says() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp — une pile
+        0x48, 0xc7, 0xc0, 0x30, 0x00, 0x01, 0x00, // mov $0x10030,%rax — la cible
+        // **L'ordre compte, et c'est le noyau qui le donne** : à
+        // `secondary_startup_64 + 371` il fait `push $0x10` puis `push %rax`.
+        // `lretq` dépile le pointeur d'instruction **en premier**, donc c'est
+        // lui qui doit être au sommet, et le sélecteur juste au-dessus. Écrit
+        // dans l'autre sens, ce test a d'abord rendu « RIP = 16 » — le
+        // sélecteur pris pour une adresse.
+        0x6a, 0x10, // push $0x10 — le sélecteur
+        0x50, // push %rax — le RIP, dépilé en premier
+        0x48, 0xcb, // lretq
+        // **La chute**, si le saut n'est pas pris.
+        0x48, 0xc7, 0xc7, 0xad, 0xde, 0x00, 0x00, // mov $0xdead,%rdi
+        0x0f, 0x0b, // ud2
+    ];
+    program.resize(0x30, 0x90); // du rembourrage, comme le noyau en pose
+    program.extend_from_slice(&[
+        0x48, 0xc7, 0xc7, 0x37, 0x13, 0x00, 0x00, // mov $0x1337,%rdi — la cible
+        0x0f, 0x0b, // ud2
+    ]);
+    let scratch = std::env::temp_dir().join(format!("wisq-host-lret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("lret.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    // **La cible est une région à part, et elle doit l'être.** `discover` ne
+    // peut pas savoir où mène un `lretq` : la cible sort de la pile, à
+    // l'exécution. Le module rend donc la main sur elle, et c'est l'hôte qui
+    // sert la région d'arrivée — exactement ce que fait le pilote du noyau.
+    let arrival =
+        Module::resolving(&program[0x30..], BASE + 0x30, 0, 1, PAGES).expect("la cible se traduit");
+    let arrival_path = scratch.join("cible.wasm");
+    std::fs::write(&arrival_path, &arrival).expect("le module d'arrivée");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  // **Le bouchon sert par ADRESSE, et refuse tout le reste.** Servi par
+  // compteur, il rendait la région d'arrivée à *n'importe quelle* demande —
+  // y compris celle qui suit une chute — et l'hôte l'exécutait quand même. Le
+  // test passait alors avec le défaut en place : un bouchon complaisant cache
+  // ce qu'il devrait montrer.
+  translate: async (address) => {{
+    asked++;
+    if (address === {base}n) return readFileSync({path:?});
+    if (address === {base}n + 0x30n) return readFileSync({arrival:?});
+    return null;
+  }},
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("rdi " + lire(7));
+console.log("rip " + lire({rip}));
+console.log("rsp " + lire(4));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            arrival = arrival_path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    // **RIP dit où elle est allée**, et c'est ce qui distingue les deux pannes.
+    // La cible finit sur un `ud2`, qui laisse RIP sur lui-même : `0x10037`. Une
+    // chute laisserait RIP juste après le `lretq`, à `0x10013` — et, dans le
+    // vrai noyau, la machine repartirait de là dans le rembourrage.
+    assert_ne!(
+        line("rip "),
+        BASE + 0x13,
+        "RIP est juste après le `lretq` : le saut n'a pas été pris, la machine a continué tout droit"
+    );
+    assert_eq!(
+        line("rip "),
+        BASE + 0x37,
+        "elle doit s'arrêter sur le `ud2` de la cible"
+    );
+    assert_eq!(
+        line("rdi "),
+        0x1337,
+        "et avoir exécuté la cible que la pile portait"
+    );
+    // **Seize octets, pas huit.** `lretq` dépile deux mots ; un `ret` ordinaire
+    // n'en dépile qu'un. Sans cette assertion, un bras qui n'avance la pile que
+    // de huit passe — mesuré : ce sabotage-là survivait.
+    assert_eq!(
+        line("rsp "),
+        0xf000,
+        "le `lretq` a consommé ses deux mots, et la pile est revenue où elle était"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`mov %r15,%rdi` — le préfixe REX qui désigne la source, pas la destination.**
+///
+/// Mesuré sur un vrai noyau : à l'entrée de `x86_64_start_kernel`, RDI vaut
+/// zéro alors que le pointeur vers les `boot_params` avait bien été posé et
+/// que R15 le portait encore à l'arrêt. Quatorze octets avant le saut,
+/// `secondary_startup_64` fait pourtant `4c 89 ff`.
+///
+/// Ces trois octets sont un piège de décodage : `4c` est un REX avec **W et R**
+/// à un, et `89 ff` un ModRM `mod=11, reg=111, rm=111`. C'est **REX.R** qui
+/// étend le champ `reg` — donc la **source** est `r15` — et REX.B qui étendrait
+/// `rm`, la destination, qui reste `rdi`. Un décodeur qui applique le mauvais
+/// bit lit `mov %rdi,%rdi` : pas une erreur, un **non-événement**, et la valeur
+/// disparaît sans que rien ne rougisse.
+///
+/// Le test tient les deux sens, parce qu'un seul ne distingue pas « la source
+/// est juste » de « les deux sont le même registre ».
+#[test]
+fn a_rex_r_move_reads_the_extended_register_as_its_source() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0x49, 0xc7, 0xc7, 0x00, 0x90, 0x00, 0x00, // mov $0x9000,%r15
+        0x4c, 0x89, 0xff, // mov %r15,%rdi — celui du noyau
+        0x48, 0xc7, 0xc6, 0x37, 0x13, 0x00, 0x00, // mov $0x1337,%rsi
+        0x49, 0x89, 0xf6, // mov %rsi,%r14 — l'autre sens, REX.B cette fois
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-rex-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("rex.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("rdi " + lire(7));
+console.log("r15 " + lire(15));
+console.log("r14 " + lire(14));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        line("r15 "),
+        0x9000,
+        "la constante est bien arrivée dans r15 — sinon le reste ne mesure rien"
+    );
+    assert_eq!(
+        line("rdi "),
+        0x9000,
+        "REX.R étend le champ reg : la source est r15, la destination reste rdi"
+    );
+    assert_eq!(
+        line("r14 "),
+        0x1337,
+        "et dans l'autre sens, REX.B étend rm : la destination est r14"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **EFER, quatrième MSR modélisé, et le premier qu'un vrai noyau ait réclamé.**
 ///
 /// Alpine s'arrêtait à `secondary_startup_64_no_verify + 308`, sur `0f 32` avec
