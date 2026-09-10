@@ -286,6 +286,27 @@ console.log("manquante " + (manquante === null ? "aucune" : "0x" + manquante.toS
 console.log("emplacement " + place);
 console.log("rip 0x" + lire({rip}).toString(16));
 console.log("rsp 0x" + lire(4).toString(16));
+// **Ce que la pile porte à l'arrêt, et pourquoi ça vaut d'être imprimé.**
+// La machine s'arrête sur le rembourrage qui suit le retour de
+// `__startup_64` : un endroit où aucun chemin du noyau ne mène, et où l'on
+// n'arrive que si un `ret` en rapporte l'adresse. Le relevé disait où elle
+// est ; il ne disait pas d'où venait cette adresse. Huit mots suffisent —
+// le montage n'a que trois appels de profondeur.
+//
+// L'adresse invitée est repliée par masque sur la RAM déclarée, comme
+// partout ailleurs : c'est la même arithmétique que l'émetteur, pas une
+// seconde façon de traduire.
+const vue = new DataView(vm.memory.buffer);
+const masque = BigInt({pages}) * 65536n - 1n;
+const sommet = Number(lire(4) & masque);
+const mots = [];
+for (let i = 0; i < 8; i++) {{
+  const at = sommet + i * 8;
+  mots.push(at + 8 <= vm.memory.buffer.byteLength
+    ? "0x" + vue.getBigUint64(at, true).toString(16)
+    : "hors-RAM");
+}}
+console.log("pile " + mots.join(" "));
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
                 text = text_path.to_string_lossy(),

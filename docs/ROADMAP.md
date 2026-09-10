@@ -7021,3 +7021,58 @@ C'est écrit noir sur blanc dans les règles de ce dépôt — « un harnais tu�
 le défaut dans l'arbre : vérifier le fichier après chaque restauration, par
 `diff` » — et le `diff` l'a trouvé en une seconde. Ce qui manquait n'était pas la
 règle, c'était de ne pas tronquer la sortie d'un harnais qui restaure.
+
+## La pile dit que le `ret` n'a pas eu lieu
+
+Le relevé imprime maintenant les huit premiers mots de la pile à l'arrêt, nommés
+comme le reste. Ce sont trois lignes de code en plus, et elles tranchent une
+question que deux heures de raisonnement n'avaient pas tranchée.
+
+```text
+rip  0xffffffff81000642 (__startup_64 + 658)
+rsp  0xffffffff82403f40 (init_thread_union + 16192)
+pile 0xffffffff810000da (startup_64 + 74)
+     0xffffffff810000c6 (startup_64 + 54)
+     0x10
+     0x0 …
+```
+
+**Chaque mot se rattache à une instruction précise** du début de `startup_64` :
+
+```text
++42  push $0x10          ; le sélecteur — c'est le 0x10 en [rsp+16]
++44  lea …,%rax → +54    ;
++51  push %rax           ; c'est le +54 en [rsp+8]
++52  lretq               ; dépile les deux, sans les effacer
++54  call verify_cpu
++59  lea …,%rdi ; mov %r15,%rsi
++69  call __startup_64   ; pousse +74 — c'est le [rsp+0], et il est **vivant**
+```
+
+RSP part de `init_thread_union + 16216` et vaut `+ 16192` à l'arrêt : **trois
+mots plus bas, exactement là où `call __startup_64` l'a laissé.**
+
+**Donc le `ret` n'a pas été exécuté.** S'il l'avait été, il aurait consommé
+`startup_64 + 74` et RSP serait huit octets plus haut. La machine est sur le
+rembourrage qui suit `jmp __x86_return_thunk`, avec l'adresse de retour encore
+sur la pile : elle **est tombée à travers le saut** au lieu de le prendre.
+
+**Et ça corrige ce que j'ai écrit il y a deux heures.** J'avais formé cette
+hypothèse sur une arithmétique — `0x63d + 5 = 0x642` — puis je l'ai *enterrée*
+en lisant le code (`place(body, target)` pose bien la cible) et en voyant le
+tour 1 réclamer `__x86_return_thunk`. J'ai eu tort de l'enterrer : le tour 1
+concerne un **autre** `jmp`, dans une autre région. Une hypothèse abandonnée sur
+une preuve qui portait sur autre chose n'est pas une hypothèse éliminée — c'est
+exactement la façon de se tromper que ce dépôt s'était déjà notée.
+
+**Ce qui reste à mesurer, et il ne faut pas le déduire.** Pourquoi *ce* saut-là
+n'est pas pris alors qu'un autre l'est. Deux candidates, aucune vérifiée :
+
+* le bloc s'est terminé sans que le `jmp` soit son terminateur, et
+  `terminate` a posé l'adresse suivante — ce qui rendrait exactement 0x642 ;
+* le bloc a bien décodé le `jmp` mais l'a émis comme une chute.
+
+La mesure qui tranche est la même dans les deux cas : faire dire au module quel
+indice et quelle adresse le bloc autour de `0x63d` rend, plutôt que de relire
+`terminate` une troisième fois. **Aucune relecture de code n'a jamais rien
+trouvé ici** ; c'est la pile imprimée qui a parlé.
