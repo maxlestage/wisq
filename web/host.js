@@ -30,6 +30,24 @@ const STOPS = {
   2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
 };
 
+/// **La délivrance d'une faute, et ce qu'elle suppose.**
+///
+/// Le vecteur de la faute de page est le seul que cette machine produise :
+/// c'est le témoin `FAULT_SLOT` qui le dit, posé par la marche du module quand
+/// une page manque. Les dix vecteurs qui portent un code d'erreur sont ceux du
+/// manuel ; le noyau compte dessus pour retrouver son cadre, et en oublier un
+/// décalerait toute la pile de huit octets.
+const PAGE_FAULT = 14;
+const WITH_ERROR_CODE = new Set([8, 10, 11, 12, 13, 14, 17, 21, 29, 30]);
+/// Les bits de RFLAGS qu'une entrée de gestionnaire éteint : le pas-à-pas, le
+/// drapeau imbriqué et la reprise toujours ; les interruptions seulement par
+/// une porte d'interruption (0x0E), une porte de trappe (0x0F) les laisse.
+const TRAP_FLAG = 0x100n;
+const INTERRUPT_FLAG = 0x200n;
+const NESTED_FLAG = 0x4000n;
+const RESUME_FLAG = 0x10000n;
+const PAGING_BIT = 1n << 31n;
+
 export const SLOTS = {
   /// La case de RFLAGS. Elle ne servait à rien ici tant que personne ne lisait
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
@@ -306,6 +324,92 @@ export function machine({
   }
 
   const rip = () => BigInt.asUintN(64, globals[SLOTS.rip].value);
+  let walk = null;
+
+  /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
+  /// marche du module.** Pagination éteinte, c'est le repli, comme dans
+  /// `guest()`. Allumée, c'est `walk`, qui pose le témoin et CR2 quand la page
+  /// manque : `null` alors, et c'est à l'appelant de nommer ce qui vient de
+  /// fauter pendant qu'il faisait autre chose.
+  function physical(address) {
+    const paging = (BigInt.asUintN(64, globals[SLOTS.control].value) & PAGING_BIT) !== 0n;
+    if (!paging || walk === null) return Number(address & BigInt(base - 1));
+    const frame = walk(BigInt.asIntN(64, address));
+    if (globals[SLOTS.fault].value !== 0n) return null;
+    const page = Number(BigInt.asUintN(32, BigInt(frame)));
+    return (page + Number(address & 0xfffn)) & (base - 1);
+  }
+
+  /// **Délivrer une exception à l'invité**, comme le processeur le ferait :
+  /// la porte lue dans l'IDT, le cadre du mode long posé sur la pile — SS,
+  /// RSP, RFLAGS, CS, RIP, puis le code d'erreur pour les vecteurs qui en
+  /// portent un —, et RIP sur le gestionnaire. Rend `null` quand c'est fait,
+  /// sinon la raison pour laquelle ça ne l'a pas été.
+  ///
+  /// **Ce que ça ne fait pas, et le dit.** Aucun segment de tâche n'est
+  /// modélisé, donc ni pile d'interruption (IST) ni changement d'anneau : une
+  /// porte qui en demande arrête la machine en le nommant. Un noyau en anneau
+  /// zéro dont les portes précoces n'ont pas d'IST — c'est le cas de Linux
+  /// avant `cpu_init` — n'en a pas besoin ; le jour où il en aura, l'arrêt le
+  /// dira au lieu d'écrire le cadre sur la mauvaise pile.
+  ///
+  /// **L'ordre est celui du cœur Swift**, qui a payé pour l'apprendre : la
+  /// pile d'avant est lue avant tout changement, le cadre s'écrit à
+  /// l'alignement de seize, et le sélecteur de code n'est remplacé qu'une fois
+  /// l'ancien empilé. Une faute *pendant* l'écriture du cadre est rendue
+  /// comme telle — c'est une double faute, et la cacher ferait s'arrêter un
+  /// noyau « sur place » sans un mot.
+  function deliver(vector, errorCode) {
+    const limit = BigInt.asUintN(64, globals[SLOTS.table + 2].value);
+    const idt = BigInt.asUintN(64, globals[SLOTS.table + 3].value);
+    const at = BigInt(vector) * 16n;
+    if (at + 15n > limit) {
+      return `une faute de page sans porte : aucune IDT ne porte le vecteur ${vector}`;
+    }
+    const gate = physical(idt + at);
+    if (gate === null) {
+      return "une faute pendant la délivrance d'une faute de page : l'IDT n'est pas cartographiée";
+    }
+    const vue = new DataView(memory.buffer);
+    const low = vue.getBigUint64(gate, true);
+    const high = vue.getBigUint64(gate + 8, true);
+    if ((low & (1n << 47n)) === 0n) {
+      return `une faute de page sans porte : la porte du vecteur ${vector} n'est pas présente`;
+    }
+    // Le décalage est en trois morceaux, dispersés par l'héritage du 386.
+    const offset = (low & 0xffffn) | ((low >> 32n) & 0xffff0000n) | ((high & 0xffffffffn) << 32n);
+    const selector = (low >> 16n) & 0xffffn;
+    const kind = (low >> 40n) & 0xfn;
+    const interruptStack = (low >> 32n) & 0x7n;
+    if (interruptStack !== 0n) {
+      return "une porte à pile d'interruption, sans segment de tâche : cette machine n'a pas de TSS";
+    }
+    const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
+    if ((selector & 3n) < (code & 3n)) {
+      return "un changement d'anneau à la délivrance, sans segment de tâche : cette machine n'a pas de TSS";
+    }
+    const stack = BigInt.asUintN(64, globals[4].value);
+    const stackSelector = BigInt.asUintN(64, globals[SLOTS.segment + 2].value) & 0xffffn;
+    const flags = BigInt.asUintN(64, globals[SLOTS.rflags].value);
+    const words = [stackSelector, stack, flags, code, rip()];
+    if (WITH_ERROR_CODE.has(vector)) words.push(BigInt.asUintN(64, errorCode));
+    let pointer = stack & ~0xfn;
+    for (const word of words) {
+      pointer -= 8n;
+      const where = physical(pointer);
+      if (where === null) {
+        return "une faute pendant la délivrance d'une faute de page : la pile de l'invité n'est pas cartographiée";
+      }
+      new DataView(memory.buffer).setBigUint64(where, word, true);
+    }
+    globals[4].value = BigInt.asIntN(64, pointer);
+    globals[SLOTS.segment + 1].value = BigInt.asIntN(64, selector);
+    globals[SLOTS.rip].value = BigInt.asIntN(64, offset);
+    let entering = flags & ~(TRAP_FLAG | NESTED_FLAG | RESUME_FLAG);
+    if (kind === 0x0en) entering &= ~INTERRUPT_FLAG;
+    globals[SLOTS.rflags].value = BigInt.asIntN(64, entering);
+    return null;
+  }
 
   // **Poser une région, et l'annoncer dans la correspondance.**
   //
@@ -363,7 +467,14 @@ export function machine({
     // **Combien de blocs le module pose, on ne le sait qu'après.** L'émetteur
     // ne l'annonce pas, et l'instanciation est ce qui les met dans la table.
     // L'emplacement suivant se lit donc dans la table elle-même.
-    const run = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports.run;
+    const exports = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports;
+    const run = exports.run;
+    // **La marche du module, gardée pour la délivrance.** Chaque région
+    // paginée exporte la sienne, et elles sont toutes le même code sur la
+    // même mémoire et les mêmes globales : la première suffit. L'hôte ne
+    // traduit *jamais* par un autre chemin — une seconde marche, écrite ici,
+    // finirait par diverger de celle du module sur une grande page ou un bit.
+    if (walk === null && exports.walk !== undefined) walk = exports.walk;
     next = occupied(slot) + 1;
     if (next <= slot) {
       throw new Error(`la région à ${address} n'a posé aucun bloc à l'emplacement ${slot}`);
@@ -519,12 +630,29 @@ export function machine({
         // cherche justement à éviter.
         globals[SLOTS.tsc].value = BigInt.asIntN(
           64, globals[SLOTS.tsc].value + budget);
+        // **Une faute de page est délivrée à l'invité, ici.** La région a posé
+        // le témoin, CR2, et rendu la main avec RIP sur l'instruction fautive
+        // — qui n'a rien fait, donc qui se rejoue. Le témoin porte le code
+        // d'erreur **plus un** (voir `FAULT_SLOT` côté Rust), et il est effacé
+        // avant la délivrance : la marche qu'elle emploie peut en poser un
+        // autre, et ce serait alors une double faute, nommée. Si la
+        // délivrance ne peut pas avoir lieu, le témoin est remis pour que le
+        // relevé montre la faute qui l'a arrêtée.
+        const fault = globals[SLOTS.fault].value;
+        if (fault !== 0n) {
+          globals[SLOTS.fault].value = 0n;
+          const why = deliver(PAGE_FAULT, fault - 1n);
+          if (why !== null) {
+            globals[SLOTS.fault].value = fault;
+            return { stopped: why, at: rip() };
+          }
+          continue;
+        }
         // **Un `hlt` s'arrête, et l'arrêt se nomme.** Continuer la boucle
         // ferait tourner l'invité dans le `jmp -2` qui suit toujours un `hlt`,
         // et l'écran dirait « ça tourne » d'une machine qui attend une
-        // interruption que rien ne produit. C'est ici que la délivrance
-        // viendra effacer le témoin — la sonde `--example deliver-probe` a
-        // désigné cette boucle, et c'est le même endroit.
+        // interruption que rien ne produit. La délivrance d'une **interruption**
+        // viendra effacer ce témoin-là, au même endroit que celle de la faute.
         const stop = globals[SLOTS.stop].value;
         if (stop !== 0n) {
           return { stopped: STOPS[stop] ?? `arrêt de raison inconnue (${stop})`, at: rip() };
