@@ -265,8 +265,35 @@ pub const STOP_HALTED: u64 = 1;
 /// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
 pub const STOP_SELECTOR: u64 = 2;
 
+/// **`IA32_EFER`, le quatrième MSR modélisé.**
+///
+/// C'est le premier qu'un vrai noyau ait réclamé : Alpine s'arrêtait à
+/// `secondary_startup_64_no_verify + 308`, sur `rdmsr` avec `0xc0000080` dans
+/// ECX, faute qu'il soit dans la liste. Le noyau ne le lit pas par curiosité —
+/// il le lit, y pose SCE et NX, et le réécrit.
+///
+/// **Il lui faut donc un vrai registre, et une valeur initiale vraie.** Voir
+/// `web/host.js`, qui la pose : la machine est en long mode, donc LME et LMA.
+/// À zéro, l'invité rangerait un EFER prétendant que la machine n'est pas en
+/// 64 bits, et le relirait plus tard pour décider — entre autres — s'il peut
+/// poser le bit NX dans ses tables de pages.
+///
+/// **Ce que ce modèle ne fait pas** : rien ne lit ces bits. Comme pour les
+/// registres de contrôle, accepter une écriture dit « on la range », pas « on
+/// l'applique ».
+pub const EFER_SLOT: usize = STOP_SLOT + 1;
+
+/// Le numéro que l'invité met dans ECX pour désigner EFER.
+pub const MSR_EFER: u64 = 0xc000_0080;
+
+/// **La valeur qu'EFER porte au démarrage.** LME (bit 8) et LMA (bit 10) : le
+/// long mode est demandé et actif, ce qui est vrai de cette machine — elle
+/// n'exécute rien d'autre. `web/host.js` la pose, parce que les globales sont
+/// **importées** : leur valeur de départ appartient à l'hôte, pas au module.
+pub const EFER_LONG_MODE: u64 = (1 << 8) | (1 << 10);
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = STOP_SLOT + 1;
+pub const GLOBAL_COUNT: usize = EFER_SLOT + 1;
 
 /// CR0.PG — le bit qui allume la pagination.
 pub const PAGING_BIT: u64 = 1 << 31;
@@ -2524,7 +2551,7 @@ impl Module {
         //
         // Le numéro vit dans ECX, une valeur d'**exécution**. Le traducteur ne
         // peut donc pas décider « celui-ci oui, celui-là non » : il émet les
-        // trois cas qu'il connaît et, pour tout autre numéro, un retour de main
+        // quatre cas qu'il connaît et, pour tout autre numéro, un retour de main
         // à l'adresse de l'instruction.
         //
         // **Conséquence à ne pas laisser filer** : depuis cette tranche, une
@@ -2535,6 +2562,7 @@ impl Module {
                 (MSR_FS_BASE, FS_BASE_SLOT),
                 (MSR_GS_BASE, GS_SLOT),
                 (MSR_KERNEL_GS_BASE, KERNEL_GS_SLOT),
+                (MSR_EFER, EFER_SLOT),
             ];
             // Le numéro, ramené à trente-deux bits comme le processeur le lit.
             body.store(Body::scratch(0), |b| {

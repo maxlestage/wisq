@@ -392,7 +392,7 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
-/// **Les MSR : trois numéros modélisés, et un arrêt nommé pour tous les autres.**
+/// **Les MSR : quatre numéros modélisés, et un arrêt nommé pour tous les autres.**
 ///
 /// **Le numéro d'un MSR vit dans ECX, pas dans l'instruction.** Le traducteur
 /// ne peut donc pas le connaître : « refuser tel MSR » n'est pas une décision
@@ -527,6 +527,105 @@ console.log("haut " + lire(2));
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+/// **EFER, quatrième MSR modélisé, et le premier qu'un vrai noyau ait réclamé.**
+///
+/// Alpine s'arrêtait à `secondary_startup_64_no_verify + 308`, sur `0f 32` avec
+/// `rcx = 0xc0000080`. Rien n'était cassé : le numéro n'était pas dans les
+/// trois modélisés, le module rendait la main à l'adresse de l'instruction, et
+/// l'hôte n'avait rien à répondre. Douze régions traduites, et la machine sur
+/// place.
+///
+/// **La valeur initiale n'est pas zéro, et ce n'est pas une commodité.** Le
+/// noyau *lit* EFER, pose ses bits et le *réécrit* — la séquence est
+/// `cpuid ; mov $0xc0000080,%ecx ; rdmsr ; …`. Ce qu'il relit doit donc dire la
+/// vérité sur la machine, et la vérité est que le long mode est actif : LME
+/// (bit 8) et LMA (bit 10). À zéro, le noyau rangerait un EFER qui prétend que
+/// la machine n'est pas en 64 bits, et il le relirait plus tard pour décider,
+/// entre autres, s'il peut poser le bit NX dans ses tables de pages.
+#[test]
+fn efer_starts_in_long_mode_and_reads_back_what_was_written() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // `or $1,%eax` plutôt que `bts $0,%eax` : c'est le même bit SCE, et le
+    // `0f ba` du noyau appartient à une autre tranche que celle-ci.
+    let program: Vec<u8> = vec![
+        0xb9, 0x80, 0x00, 0x00, 0xc0, // mov $0xc0000080,%ecx — EFER
+        0x0f, 0x32, // rdmsr
+        0x48, 0x89, 0xc7, // mov %rax,%rdi — ce que la machine annonce
+        0x83, 0xc8, 0x01, // or $1,%eax — SCE, comme le fait le noyau
+        0x0f, 0x30, // wrmsr
+        0xb9, 0x80, 0x00, 0x00, 0xc0, // mov $0xc0000080,%ecx
+        0x0f, 0x32, // rdmsr
+        0x48, 0x89, 0xc6, // mov %rax,%rsi — ce qu'elle rend ensuite
+        0x0f, 0x0b, // ud2 — rendre la main pour qu'on puisse lire
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-efer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("efer.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("avant " + lire(7));
+console.log("apres " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        line("avant "),
+        0x500,
+        "la machine est en long mode : LME et LMA, et rien d'autre"
+    );
+    assert_eq!(
+        line("apres "),
+        0x501,
+        "et le bit que l'invité pose est celui qu'il relit — un registre, pas une constante"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **Ici, contrairement aux MSR, le numéro est dans l'instruction.** Il vit
 /// dans le champ `reg` du ModRM, que le décodeur lit.
 ///
