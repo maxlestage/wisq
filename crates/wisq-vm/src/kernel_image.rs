@@ -233,3 +233,91 @@ mod tests {
         assert_eq!(recognise(&[]), KernelImage::Unknown);
     }
 }
+
+/// **Un segment `PT_LOAD` d'un noyau ELF : où il vit, et ce qu'il porte.**
+///
+/// Les deux tailles ne sont pas la même chose, et les confondre coûte cher.
+/// `file_size` est ce que le fichier porte ; `memory_size` est ce que le
+/// segment occupe une fois chargé. L'écart est le BSS — des zéros que le
+/// noyau attend et qu'aucun octet du fichier ne décrit. Le vmlinux d'Alpine
+/// en traîne cinq mébioctets.
+///
+/// `physical_address` est celle à laquelle un chargeur pose le segment ;
+/// `virtual_address` est celle à laquelle il a été lié. Pour le texte d'un
+/// noyau x86-64 les deux diffèrent de `__START_KERNEL_map`, et le code de
+/// démarrage passe de l'une à l'autre en cours de route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Load {
+    /// Où le segment commence dans le fichier.
+    pub offset: u64,
+    /// L'adresse à laquelle il a été lié.
+    pub virtual_address: u64,
+    /// L'adresse à laquelle un chargeur le pose.
+    pub physical_address: u64,
+    /// Ce que le fichier en porte.
+    pub file_size: u64,
+    /// Ce qu'il occupe en mémoire — jamais moins que `file_size`.
+    pub memory_size: u64,
+}
+
+/// **Le point d'entrée et tous les segments chargeables d'un ELF64.**
+///
+/// `None` quand ce n'est pas un ELF64 petit-boutiste, quand les en-têtes de
+/// programme ne tiennent pas dans le fichier, ou quand un segment prétend
+/// porter plus d'octets que le fichier n'en a. Ce dernier cas mérite d'être
+/// refusé plutôt que tronqué : servir les octets d'à côté donnerait un noyau
+/// qui démarre et se perd plus loin, ce qui est la panne la plus chère à
+/// diagnostiquer.
+///
+/// **Tous les segments, pas seulement celui qui porte l'entrée.** Le montage
+/// de `--example kernel-entry` n'en posait qu'un, et `secondary_startup_64`
+/// chargeait son pointeur de pile depuis un `initial_stack` qui n'était nulle
+/// part : RSP valait zéro et les empilements descendaient en négatif.
+#[must_use]
+pub fn loads(bytes: &[u8]) -> Option<(u64, Vec<Load>)> {
+    if !bytes.starts_with(ELF_MAGIC) || bytes.len() < 64 {
+        return None;
+    }
+    // Classe 64 bits, et petit-boutiste : tout le reste de cette lecture en
+    // dépend, et le supposer donnerait des décalages qui ont l'air de nombres.
+    if bytes[4] != 2 || bytes[5] != 1 {
+        return None;
+    }
+    let word = |at: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+    };
+    let half = |at: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+    };
+    let entry = word(24)?;
+    let table = usize::try_from(word(32)?).ok()?;
+    let size = usize::from(half(54)?);
+    let count = usize::from(half(56)?);
+    if size < 56 {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for index in 0..count {
+        let at = table.checked_add(index.checked_mul(size)?)?;
+        bytes.get(at..at + 56)?;
+        let kind = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        if kind != 1 {
+            continue; // ce n'est pas un PT_LOAD
+        }
+        let load = Load {
+            offset: word(at + 8)?,
+            virtual_address: word(at + 16)?,
+            physical_address: word(at + 24)?,
+            file_size: word(at + 32)?,
+            memory_size: word(at + 40)?,
+        };
+        // Ce que le fichier prétend porter doit y être. Sinon on servirait les
+        // octets d'à côté, ou rien.
+        let end = load.offset.checked_add(load.file_size)?;
+        if end > bytes.len() as u64 || load.memory_size < load.file_size {
+            return None;
+        }
+        segments.push(load);
+    }
+    Some((entry, segments))
+}
