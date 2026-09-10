@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 54;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -236,7 +236,6 @@
 				};
 			};
 			buildConfigurationList = 4D2FF3D47B79A0F36CDD0089 /* Build configuration list for PBXProject "Wisq" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -248,13 +247,14 @@
 			packageReferences = (
 				2685CE07100DAEB73E953D28 /* XCLocalSwiftPackageReference "." */,
 			);
-			preferredProjectObjectVersion = 54;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D1A85ED227F64A503EA551A3 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				78A23493DF3967FE5A0C51FC /* Wisq */,
-				32DDD1F55EB8BFF1D46550D5 /* WisqHostedTests */,
 				AA3249EE396AABD021487144 /* WisqUITests */,
+				32DDD1F55EB8BFF1D46550D5 /* WisqHostedTests */,
 			);
 		};
 /* End PBXProject section */

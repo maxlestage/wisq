@@ -12,7 +12,12 @@
 set -eu
 
 [ "$(uname -s)" = "Darwin" ] || { echo "ce script exige macOS avec Xcode" >&2; exit 1; }
-command -v xcodegen >/dev/null || { echo "xcodegen manquant : brew install xcodegen" >&2; exit 1; }
+# **La version épinglée, mise en tête du PATH.** `Wisq.xcodeproj/project.pbxproj`
+# et `App/Info.plist` sont commités et la CI compare ce qu'elle engendre à ce
+# que le dépôt porte. Régénérer ici avec un autre XcodeGen produirait un rouge
+# en CI qui ne dit rien de ce qu'on vient d'écrire — c'est arrivé, sur
+# l'en-tête du projet, entre 2.43.0 et 2.46.0.
+PATH="$("$(dirname "$0")/install-xcodegen.sh"):$PATH"
 
 TEAM=""
 [ "${1:-}" = "--team" ] && TEAM="$2"
