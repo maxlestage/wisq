@@ -7370,3 +7370,73 @@ fait déjà pour l'application, côté Swift.
 diagnostic, aucun comportement changé, et une hypothèse écrite renversée en une
 exécution. C'est la troisième fois de la journée qu'un relevé qui **nomme**
 tranche là où une relecture aurait choisi.
+
+## `lretq` n'était pas pris, et la machine retombait sur ses pieds
+
+**Un défaut nommé, et la panne la plus chère qui soit : celle qui ressemble à
+un succès.**
+
+`terminate` avait un bras pour `Op::Return` et aucun pour `Op::FarReturn`. Le
+`lretq` tombait donc dans le `_` final, qui pose l'adresse **suivante** — c'est
+dire qu'il n'était pas pris du tout. Or un saut non pris ne s'arrête pas : il
+continue dans les octets d'après, qui sont du rembourrage, puis du code.
+
+Sur le vrai noyau, `secondary_startup_64` finit par :
+
+```text
+ffffffff81000257:  4c 89 ff        mov  %r15,%rdi     ; le pointeur boot_params
+ffffffff8100025a:  68 6d 02 00 81  push $0x8100026d   ; l'adresse de retour
+ffffffff81000261:  48 8b 05 ...    mov  ...,%rax      ; x86_64_start_kernel
+ffffffff81000268:  6a 10           push $0x10         ; le sélecteur
+ffffffff8100026a:  50              push %rax          ; le RIP
+ffffffff8100026b:  48 cb           lretq
+```
+
+La machine arrivait **quand même** dans `x86_64_start_kernel` — par le
+rembourrage, une autre route, et avec `RDI = 0`. La faute tombait vingt
+fonctions plus loin, dans `copy_bootdata`, sur `__va(0)`. Rien n'avait rougi
+entre les deux, et la cause était à des milliers d'instructions de l'effet.
+
+**Comment il a été trouvé, et ce que ça confirme.** Pas par relecture : en
+faisant imprimer RDI à chaque frontière de région. Au tour 12, la machine entre
+dans `x86_64_start_kernel` avec `rdi = 0` — donc avant tout appel, donc le
+problème est **avant**, pas dans le corps de la fonction. Deux hypothèses ont
+été écartées en chemin, chacune par une mesure et non par un raisonnement :
+
+* le montage ne posait pas de `boot_params` — réfuté, poser RSI ne bougeait pas
+  CR2 d'un octet (parce que la dérive jetait RDI, on le sait maintenant) ;
+* le décodeur appliquait le mauvais bit de REX à `4c 89 ff` — réfuté par un
+  test écrit exprès, qui passe. Il reste dans la suite : il tenait un
+  comportement que rien ne tenait.
+
+| | avant | après |
+|---|---|---|
+| régions traduites | 48 | **47** — la dérive a disparu |
+| RSP à l'arrêt | `init_thread_union + 16160` | `+ 16168` — les seize octets du `lretq` |
+
+**Ce que le sélecteur devient : rien, et c'est dit.** Il est dépilé et jeté,
+comme partout ailleurs dans cette machine — rien n'y modélise CS, et faire
+semblant de le ranger laisserait croire qu'on le consulte.
+
+L'arrêt reste `copy_bootdata + 38`, et c'est cohérent : sans `boot_params`,
+`real_mode_data` vaut zéro pour de bon. La mesure de RSI est à refaire
+**maintenant que le saut est pris** — c'est la tranche suivante, et elle a une
+chance d'être la bonne cette fois.
+
+### Le bouchon complaisant, encore, et cette fois dans mon propre test
+
+Le premier harnais de ce test servait la région d'arrivée **par compteur** :
+premier appel, le programme ; deuxième appel, la cible. L'hôte l'exécutait donc
+quelle que soit l'adresse demandée — y compris celle qui suit une chute. Le
+sabotage qui retire le bras `FarReturn` **survivait** : le test passait avec le
+défaut en place, parce que le bouchon rattrapait la machine.
+
+Servi **par adresse**, avec un refus franc pour tout le reste, le même sabotage
+tombe. C'est la règle que le dépôt s'était déjà écrite — « tout bouchon doit
+refuser ce que la vraie chose ne pourrait pas faire » — et elle vient de coûter
+un aller-retour parce que je ne l'avais pas appliquée à mon propre montage.
+
+Un second sabotage a survécu pour une autre raison : dépiler huit octets au lieu
+de seize passait, faute d'assertion sur la pile. `lretq` dépile deux mots là où
+un `ret` n'en dépile qu'un ; le test le vérifie maintenant, et ce sabotage-là
+tombe aussi.

@@ -1746,6 +1746,42 @@ impl Module {
                 });
                 Self::resolve(starts, body, shape);
             }
+            Op::FarReturn => {
+                // **`lretq` dépile deux mots : le pointeur d'instruction, puis
+                // le sélecteur de code.** Il n'avait aucun bras ici, donc il
+                // tombait dans le `_` d'en dessous et posait l'adresse
+                // *suivante* — c'est-à-dire qu'il n'était pas pris du tout.
+                //
+                // **La panne qui ressemble à un succès.** Un saut non pris ne
+                // s'arrête pas : il continue dans les octets d'après, qui sont
+                // du rembourrage, puis du code. Sur le vrai noyau d'Alpine,
+                // `secondary_startup_64` finit par
+                // `mov %r15,%rdi ; push $0x10 ; push %rax ; lretq` — et la
+                // machine arrivait quand même dans `x86_64_start_kernel`, par
+                // une autre route, avec `RDI = 0` au lieu du pointeur vers les
+                // `boot_params`. La faute tombait vingt fonctions plus loin,
+                // dans `copy_bootdata`, sur `__va(0)`. Rien n'avait rougi entre
+                // les deux.
+                //
+                // **Le sélecteur est dépilé et jeté**, comme partout ailleurs
+                // dans cette machine : rien ici ne modélise CS, et faire
+                // semblant de le ranger laisserait croire qu'on le consulte.
+                // Ce que le `lretq` d'un noyau x86-64 change en pratique — le
+                // passage d'un anneau à l'autre — n'est pas dans ce chemin :
+                // `startup_64` s'en sert pour recharger CS avec le même
+                // privilège.
+                body.store(RIP_SLOT, |b| {
+                    b.load(Self::slot(4));
+                    b.guest();
+                    b.op(code::I64_LOAD);
+                    b.bytes.push(0);
+                    b.bytes.push(0);
+                });
+                body.store(Self::slot(4), |b| {
+                    b.load(Self::slot(4)).constant(16).op(code::I64_ADD);
+                });
+                Self::resolve(starts, body, shape);
+            }
             _ => place(body, after as i64),
         }
     }
