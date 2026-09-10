@@ -7440,3 +7440,108 @@ Un second sabotage a survécu pour une autre raison : dépiler huit octets au li
 de seize passait, faute d'assertion sur la pile. `lretq` dépile deux mots là où
 un `ret` n'en dépile qu'un ; le test le vérifie maintenant, et ce sabotage-là
 tombe aussi.
+
+## La garde qui régénère et compare existe, et elle ne coûte presque rien
+
+Promise à la tranche qui a fait entrer `project.pbxproj` dans le dépôt, laissée
+en dette : un fichier engendré sous suivi peut diverger de sa spec en silence,
+et rien ne le voyait.
+
+**Ce qui la rend presque gratuite : la CI régénère déjà.** Les trois workflows
+qui construisent l'application lancent `scripts/build-app-icon.sh` puis
+`xcodegen generate` avant de compiler. Il ne restait qu'à comparer — un
+`git diff --exit-code` sur les deux fichiers engendrés, avec un message qui dit
+quoi faire. Aucune installation, aucune minute de plus.
+
+**Et une garde sur la garde**, parce que cette ligne-là a une propriété
+désagréable : elle ne sert que le jour d'une dérive, et ce jour-là, si
+quelqu'un l'a retirée entre-temps, rien ne l'aura dit.
+`scripts/check-generated-project.sh` vérifie donc que **tout** workflow qui
+régénère compare aussi, et que la comparaison nomme les deux fichiers. Une
+exception à retenir est une exception qu'on oublie ; il n'y en a pas.
+
+**Le test a trouvé une faiblesse dans la garde, et c'était le but.** La
+première version cherchait `App/Info.plist` n'importe où dans le workflow — et
+le trouvait dans le commentaire qui explique la garde elle-même. Un arbre où la
+comparaison ne nomme plus ce fichier passait donc. La garde lit maintenant la
+**ligne de comparaison**, pas le fichier entier.
+
+Ce qu'un rouge voudra dire, et c'est écrit dans le message : soit `project.yml`
+a changé sans que les fichiers engendrés suivent, soit la version de XcodeGen a
+bougé. Les deux se corrigent de la même façon — régénérer et committer — et les
+deux méritent d'être vues.
+
+## Et elle a rougi le jour même, sur la deuxième des deux choses
+
+La prédiction ci-dessus s'est vérifiée par le mauvais bout. La première
+exécution réelle de la comparaison, sur la pull request qui l'introduit, est
+rouge — et ce n'est pas `project.yml` qui a bougé.
+
+```
+Bottle xcodegen (2.46.0)                        ← ce que brew pose sur le runner
+-  objectVersion = 54;                          ← ce que le dépôt porte
++  objectVersion = 77;
+-  compatibilityVersion = "Xcode 14.0";
+-  preferredProjectObjectVersion = 54;
++  preferredProjectObjectVersion = 77;
++  productRefGroup = D1A85ED2… /* Products */;
+   (et les deux cibles de test dans l'autre ordre)
+```
+
+Les fichiers commités avaient été engendrés ici par XcodeGen 2.43.0, construit
+depuis les sources faute de Homebrew sur Linux. Le runner installe « la
+dernière », qui était 2.46.0. Cinq lignes d'en-tête de projet, aucune spec
+touchée.
+
+**La mesure qui décide.** XcodeGen 2.46.0 reconstruit ici depuis les sources,
+sur Linux, avec Swift 6.3, régénère le projet — et git donne le même couple de
+hachages que la CI a affiché : `edec003..b7f30f7`. Le blob produit sur Linux
+depuis les sources **est** celui que la bottle Homebrew produit sur macOS
+arm64. XcodeGen est déterministe d'une plateforme à l'autre ; ce qui ne l'est
+pas, c'est le numéro de version.
+
+**Ce que ça dit de la garde.** Une comparaison octet pour octet entre deux
+côtés qui n'installent pas la même version rougit sur la date de la dernière
+mise à jour de Homebrew. Ce rouge-là arrive sur un commit qui n'y est pour
+rien, il se corrige en régénérant sans que le contributeur comprenne pourquoi,
+et il apprend à tout le monde que ce contrôle-ci ne veut rien dire. Le jour de
+la vraie dérive, il sera ignoré comme les autres.
+
+**La correction est l'épinglage**, dans `.xcodegen-version`, un seul endroit,
+posé par `scripts/install-xcodegen.sh` dans les trois workflows comme dans les
+trois scripts locaux. Ça ne coûte pas une compilation : les binaires publiés
+par XcodeGen sont universels — x86_64 et arm64 dans le même Mach-O, vérifié sur
+celui de 2.46.0 — donc quatre mégaoctets et une extraction, à peu près ce que
+coûtait `brew install`.
+
+**Et la garde sur la garde s'étend d'autant**, parce qu'un `brew install
+xcodegen` qui reviendrait dans un workflow ramènerait exactement ce rouge :
+`check-generated-project.sh` exige maintenant que tout workflow qui régénère
+pose la version épinglée, et refuse un `.xcodegen-version` absent **ou vide**.
+Le vide est le cas discret — le fichier existe, `test -f` est content, et le
+numéro comparé est la chaîne vide, qui s'accorde avec la chaîne vide. Quatre
+sabotages, quatre rouges nommés, chacun sur le seul test qui le vise.
+
+**Et la première conception était mauvaise, ce sont les gardes qui l'ont dit.**
+Faire lancer aux scripts locaux le binaire épinglé sous un autre nom —
+`xcodegen=$(scripts/install-xcodegen.sh)` puis `"$xcodegen" generate` — change
+leur ligne d'invocation. Or **trois** gardes de ce dépôt s'ancrent sur cette
+ligne littérale : celle qui exige que l'icône soit dessinée avant la
+génération, celle qui exige que la CI compare ce qu'elle engendre, et celle qui
+vérifie que `verify.sh` lance ce que la CI lance. Deux ont cessé d'inspecter
+`install-ios.sh` et `test-app.sh` **en silence** — la façon exacte dont une
+garde meurt — et la troisième a rougi dans `verify.sh`, ce qui est la seule
+raison pour laquelle les deux autres ont été retrouvées.
+
+Trois gardes touchées par le même changement de forme n'est pas un accident :
+c'est le signe que la ligne `xcodegen generate` est un point d'ancrage, et
+qu'il ne faut pas y toucher. L'épinglage passe donc par le **PATH** —
+`PATH="$(scripts/install-xcodegen.sh):$PATH"`, l'installateur rendant le
+répertoire du binaire — et la ligne reste ce qu'elle a toujours été. Aucune des
+trois gardes n'a besoin d'être modifiée, ce qui est en soi la mesure que la
+deuxième conception est la bonne.
+
+Un rouge sur cette comparaison veut donc dire, désormais, une seule chose : ce
+qui est commité n'est pas ce que la spec décrit. Soit `project.yml` a changé
+sans que les fichiers engendrés suivent, soit le numéro épinglé a changé sans
+qu'on régénère. La correction est la même dans les deux cas, et c'est la seule.
