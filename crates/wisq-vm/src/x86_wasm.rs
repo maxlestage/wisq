@@ -399,13 +399,20 @@ pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 /// bord d'un précipice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// **Le décodage s'est arrêté tout près du bord** : à `at`, il restait
-    /// moins de quinze octets. Ça peut être une coupe. La vue redemande la
-    /// même région avec davantage d'octets, et n'a besoin de le faire que là.
+    /// **La première instruction déjà s'est arrêtée tout près du bord** : à
+    /// `at`, il restait moins de quinze octets, et rien de complet ne la
+    /// précède. Ça peut être une coupe. La vue redemande la même région avec
+    /// davantage d'octets, et n'a besoin de le faire que là.
     ///
     /// Ça *peut* aussi être une vraie instruction inconnue qui se trouvait par
     /// hasard près du bord ; elle coûte alors un aller-retour de plus, et se
     /// fait refuser franchement au second essai.
+    ///
+    /// **Une coupe après une instruction complète n'est plus un refus.** La
+    /// région se traduit jusqu'à la coupe, le bloc coupé rend la main sur
+    /// elle, et l'hôte demande la suite en arrivant là — avec une fenêtre
+    /// entière devant. C'est ce qui a levé le mur de `setup_arch` : seize
+    /// kibioctets de blocs complets refusés pour un octet à cheval.
     MayBeCut { at: usize },
 
     /// **Une instruction que le décodeur ne lit pas**, à `at`, avec toute la
@@ -1296,6 +1303,12 @@ impl Module {
     /// refus francs **montent** avec la fenêtre, de 91 à 101 — une petite
     /// fenêtre cache de vrais refus derrière des coupes, ce qui veut dire
     /// qu'un décompte de refus ne se lit jamais sans la taille qui va avec.
+    ///
+    /// **Depuis que le relevé s'arrête devant une instruction coupée** au lieu
+    /// de refuser la région, la colonne « coupées par le bord » se traduit :
+    /// ces régions rendent la main sur la coupe et la suite devient une région
+    /// de plus. Le second essai ne sert plus qu'à une fenêtre dont la
+    /// **première** instruction est coupée.
     pub fn resolving_or_why(
         bytes: &[u8],
         base: u64,
@@ -1555,6 +1568,9 @@ impl Module {
         let mut queue = vec![entry];
         let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
             std::collections::BTreeMap::new();
+        // **Où le relevé a rencontré le bord**, s'il l'a rencontré : une
+        // instruction qui ne se décode pas à moins de `REACH` octets de la fin.
+        let mut cut = None;
         while let Some(start) = queue.pop() {
             if start >= bytes.len() || !starts.insert(start) {
                 continue;
@@ -1569,11 +1585,21 @@ impl Module {
                     // **Coupé par le bord, ou vraiment inconnu ?** C'est la
                     // place restante qui répond, et elle seule : le décodeur
                     // ne sait pas dire s'il lui manquait des octets.
-                    return Err(if bytes.len() - at < REACH {
-                        Refused::MayBeCut { at }
-                    } else {
-                        Refused::CannotDecode { at }
-                    });
+                    if bytes.len() - at >= REACH {
+                        return Err(Refused::CannotDecode { at });
+                    }
+                    // **Coupé : le bloc s'arrête devant, et `at` devient une
+                    // cible hors région.** Ce qui précède est complet et se
+                    // traduit ; l'instruction à cheval sera la première d'une
+                    // région que l'hôte demandera en arrivant là, avec une
+                    // fenêtre entière devant elle. Refuser la région entière
+                    // ici a arrêté le noyau Alpine sur `setup_arch` : seize
+                    // kibioctets de blocs complets jetés pour un octet. Le
+                    // bloc coupé n'a pas de terminateur, exactement comme un
+                    // bloc dont la dernière instruction finit pile sur le
+                    // bord — `terminate` pose RIP sur `after` et rend la main.
+                    cut = Some(at);
+                    break;
                 };
                 at += step.length;
                 let ends = matches!(
@@ -1630,7 +1656,14 @@ impl Module {
             blocks.insert(start, steps);
         }
         if blocks.is_empty() {
-            return Err(Refused::NothingAtEntry);
+            // **Rien de complet, et pourquoi.** Si c'est le bord qui a coupé
+            // la toute première instruction, davantage d'octets la
+            // rendraient lisible : c'est le seul cas où redemander est le
+            // seul remède, et le seul où `MayBeCut` est encore rendu.
+            return Err(match cut {
+                Some(at) => Refused::MayBeCut { at },
+                None => Refused::NothingAtEntry,
+            });
         }
         Ok(blocks.into_iter().collect())
     }

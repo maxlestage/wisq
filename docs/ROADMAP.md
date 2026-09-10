@@ -7796,3 +7796,69 @@ grande — et abandonne. Une région dont le relevé touche le bord est refusée
 **entière**, alors que ses blocs complets se traduiraient et que le bloc coupé
 n'est qu'une cible de plus à résoudre hors région. C'est la tranche suivante :
 arrêter le relevé au dernier bloc complet plutôt que refuser la fenêtre.
+
+## Une région coupée par le bord se traduit jusqu'à la coupe, et le noyau traverse `setup_arch`
+
+Le mur de la tranche précédente : `setup_arch` refusée `MayBeCut { at: 16383 }`.
+Le relevé atteignait le dernier octet de la fenêtre de seize kibioctets, la vue
+redemandait avec la même fenêtre — c'était déjà la grande — et abandonnait.
+Seize kibioctets de blocs complets jetés pour un octet à cheval.
+
+**Ce que la tranche pose.** Dans `discover`, une instruction qui ne se décode
+pas à moins de quinze octets du bord n'est plus un refus : le bloc s'arrête
+**devant** elle, sans terminateur, et `at` devient une cible hors région — la
+forme qui existait déjà pour un bloc dont la dernière instruction finit pile sur
+le bord. `terminate` pose RIP sur la coupe et rend la main ; l'hôte demande la
+suite en arrivant là, avec une fenêtre entière devant lui, et l'instruction à
+cheval se décode en tête de la région suivante. `MayBeCut` ne reste rendu que
+si **rien** n'est complet devant la coupe : la première instruction de la
+fenêtre est coupée, et redemander est le seul remède. Le second essai de
+`web/host.js` garde ce rôle et rien d'autre ; le C ABI (`-2`) et le pont Swift
+ne changent pas.
+
+**Ce que ça change à une mesure ancienne.** La colonne « coupées par le bord »
+du tableau de `resolving_or_why` (89 régions sur 10 116 à 4 Kio) se traduit
+désormais au lieu d'être redemandée : chacune devient une région coupée plus
+une région de suite. Un aller-retour de moins et une région de plus, sur 0,9 %
+des entrées. `examples/coverage.rs` le dit dans sa ligne « dont … où la première
+instruction déjà manque de place ».
+
+**Éprouvé.** Le test tient la traduction, le relevé (un bloc, une instruction,
+sans terminateur, reprise à trois), l'exécution sous JavaScriptCore (l'`incq`
+d'avant a eu lieu, RIP posé **sur** la coupe), et une cible qui tombe sur
+l'instruction coupée : elle sort de la région, sans bloc vide ni refus. Le test
+du seuil de quinze octets a changé d'attente sur sa moitié « quatorze » — de
+`MayBeCut { at: 3 }` à « traduit, reprise à trois » — et le dit dans son
+commentaire. Trois sabotages, trois rouges : le refus d'avant rétabli, la coupe
+qui enjambe l'octet, une fenêtre sans rien de complet rendue `NothingAtEntry`.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 278 | 9408 | `setup_arch` — `MayBeCut { at: 16383 }` |
+| après | **313** | **12 443** | `init_scattered_cpuid_features` — `CannotDecode { at: 1572 }` |
+
+`setup_arch` se traduit : 353 blocs, 216 Kio de module, la plus grande région
+relevée à ce jour. Le noyau traverse `idt_setup_early_traps`,
+`idt_setup_from_table`, entre dans `get_cpu_cap`, et s'arrête sur une région
+dont l'entrée est `init_scattered_cpuid_features`. Le port série est toujours
+vide, et c'est toujours attendu : `console_init` vient après.
+
+**Le mur suivant est un octet, nommé.** À 1572 octets de l'entrée vit
+`native_lkgs` : `endbr64`, puis `f2 0f 00 f7` — `lkgs %edi`, l'instruction qui
+charge `IA32_KERNEL_GS_BASE` depuis un sélecteur, arrivée avec FRED. Le noyau
+ne l'exécute que si CPUID annonce `LKGS`, ce que `cpuid` n'annonce pas ; mais
+elle est atteinte statiquement depuis la fenêtre, et le décodeur ne la lit pas,
+donc la région entière est refusée. C'est le cas de l'`int3` de la retpoline,
+à l'identique : décoder l'instruction, et en faire un arrêt nommé si elle est
+un jour atteinte. C'est la tranche suivante.
+
+**Et une question de direction, posée plutôt que tranchée ici.** Ce mur est le
+troisième de la même famille : une instruction que le décodeur ne lit pas,
+posée dans une région où elle ne s'exécute pas, refuse toute la région à la
+traduction. La généralisation existe : arrêter le bloc **sur** l'instruction
+illisible avec un arrêt nommé, comme `ud2`, et ne refuser qu'à l'exécution —
+c'est ce que fait le silicium, qui ne faute que sur ce qu'il exécute. Elle
+change le contrat de `CannotDecode`, que `coverage.rs` mesure depuis trois
+tranches ; elle n'est pas prise sans le dire.

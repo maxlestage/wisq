@@ -221,6 +221,11 @@ fn main() {
                 // compter les fois où le second essai sera perdu. C'est le
                 // prix exact de la règle, mesuré à chaque exécution plutôt
                 // qu'estimé une fois.
+                //
+                // Depuis que l'émetteur traduit jusqu'à la coupe, ce cas ne
+                // reste que pour une fenêtre dont la **première** instruction
+                // est coupée : une région coupée plus loin compte parmi les
+                // compilées, et sa suite sera une région de plus.
                 if decode(&bytes[*entry + at..limit]).is_none() {
                     wasted += 1;
                 }
@@ -277,8 +282,8 @@ fn main() {
         .map(|(_, n)| *n)
         .unwrap_or(0);
     println!(
-        "  dont {cut} où le décodeur a manqué de place au bord des 4 Kio — la vue redemanderait \
-         avec plus d'octets — et {} refusées franchement",
+        "  dont {cut} où la première instruction déjà manque de place au bord des 4 Kio — la \
+         vue redemanderait avec plus d'octets — et {} refusées franchement",
         refused - cut
     );
     // **Ce que la prudence coûte, en clair.** La règle des quinze octets ne
