@@ -14,7 +14,9 @@
 # de ce fichier-ci en silence — quelqu'un modifie `project.yml`, ne régénère
 # pas, et le projet ouvert dans Xcode n'est plus celui que la spec décrit. La
 # règle est donc : **toute modification ici s'accompagne d'un `xcodegen
-# generate`, et les deux fichiers régénérés partent dans le même commit.** Ni
+# generate`, et les deux fichiers régénérés partent dans le même commit.** La
+# CI la tient : elle régénère avant de construire et compare le résultat à ce
+# que le dépôt porte — une dérive est un rouge, pas une surprise. Ni
 # l'un ni l'autre ne s'édite à la main : ce qu'on y écrirait, la génération
 # suivante l'efface — c'est déjà arrivé à `App/Info.plist`, qui s'est retrouvé
 # avec huit clés au lieu de dix-neuf sans que rien ne le signale.

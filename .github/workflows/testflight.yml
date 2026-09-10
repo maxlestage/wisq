@@ -215,6 +215,29 @@ jobs:
         run: |
           scripts/build-app-icon.sh
           xcodegen generate
+          # **Ce que la CI vient de fabriquer doit être ce que le dépôt porte.**
+          #
+          # `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
+          # `xcodegen generate` **et** commités : sans eux, un dépôt fraîchement
+          # cloné n'a pas de projet à ouvrir, et XcodeGen n'est pas dans Xcode.
+          # Le prix de ce choix est la dérive — quelqu'un modifie `project.yml`,
+          # ne régénère pas, et le projet ouvert dans Xcode n'est plus celui que
+          # la spec décrit.
+          #
+          # La CE régénère de toute façon avant de construire. La garde ne coûte
+          # donc qu'une comparaison : ce qui vient d'être écrit doit être
+          # identique à ce qui est commité.
+          #
+          # **Un rouge ici veut dire l'une de deux choses**, et le message le
+          # dit : soit `project.yml` a changé sans que les fichiers engendrés
+          # suivent, soit la version de XcodeGen a bougé. Les deux se corrigent
+          # de la même façon — régénérer et committer — et les deux méritent
+          # d'être vues.
+          if ! git diff --exit-code -- Wisq.xcodeproj/project.pbxproj App/Info.plist; then
+            echo "::error::les fichiers engendrés par xcodegen ne sont pas ceux du dépôt."
+            echo "::error::lancer « xcodegen generate » et committer le résultat."
+            exit 1
+          fi
           # `-allowProvisioningUpdates` avec la clé API enregistre l'identifiant
           # d'application et fabrique le **profil** s'ils manquent. Il fabrique
           # aussi le **certificat** — et c'est ce qui a fini par saturer le

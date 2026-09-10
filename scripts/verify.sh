@@ -21,6 +21,14 @@ echo "==> Licence (rien ne doit en annoncer une)"
 ./scripts/check-licence-claims.sh
 ./scripts/check-signing-secrets.sh
 
+# **Le projet Xcode est engendré et commité, donc il peut diverger.** La CI
+# régénère avant de construire et compare ; cette garde-ci vérifie que la
+# comparaison est bien là, dans chaque workflow qui régénère. Elle ne sert que
+# le jour d'une dérive, et ce jour-là il est trop tard pour s'apercevoir qu'on
+# l'avait retirée.
+echo "==> Projet Xcode (la CI compare ce qu'elle engendre)"
+./scripts/check-generated-project.sh > /dev/null
+
 # CI runs this one and this script did not — the third time this file has had
 # exactly that bug, after SwiftLint and after the Rust gates, both recorded
 # above. It takes two seconds and it guards the one failure nobody here can

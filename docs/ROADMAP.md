@@ -7440,3 +7440,33 @@ Un second sabotage a survécu pour une autre raison : dépiler huit octets au li
 de seize passait, faute d'assertion sur la pile. `lretq` dépile deux mots là où
 un `ret` n'en dépile qu'un ; le test le vérifie maintenant, et ce sabotage-là
 tombe aussi.
+
+## La garde qui régénère et compare existe, et elle ne coûte presque rien
+
+Promise à la tranche qui a fait entrer `project.pbxproj` dans le dépôt, laissée
+en dette : un fichier engendré sous suivi peut diverger de sa spec en silence,
+et rien ne le voyait.
+
+**Ce qui la rend presque gratuite : la CI régénère déjà.** Les trois workflows
+qui construisent l'application lancent `scripts/build-app-icon.sh` puis
+`xcodegen generate` avant de compiler. Il ne restait qu'à comparer — un
+`git diff --exit-code` sur les deux fichiers engendrés, avec un message qui dit
+quoi faire. Aucune installation, aucune minute de plus.
+
+**Et une garde sur la garde**, parce que cette ligne-là a une propriété
+désagréable : elle ne sert que le jour d'une dérive, et ce jour-là, si
+quelqu'un l'a retirée entre-temps, rien ne l'aura dit.
+`scripts/check-generated-project.sh` vérifie donc que **tout** workflow qui
+régénère compare aussi, et que la comparaison nomme les deux fichiers. Une
+exception à retenir est une exception qu'on oublie ; il n'y en a pas.
+
+**Le test a trouvé une faiblesse dans la garde, et c'était le but.** La
+première version cherchait `App/Info.plist` n'importe où dans le workflow — et
+le trouvait dans le commentaire qui explique la garde elle-même. Un arbre où la
+comparaison ne nomme plus ce fichier passait donc. La garde lit maintenant la
+**ligne de comparaison**, pas le fichier entier.
+
+Ce qu'un rouge voudra dire, et c'est écrit dans le message : soit `project.yml`
+a changé sans que les fichiers engendrés suivent, soit la version de XcodeGen a
+bougé. Les deux se corrigent de la même façon — régénérer et committer — et les
+deux méritent d'être vues.

@@ -120,8 +120,14 @@ describe("l'icône que l'App Store accepte", () => {
         const path = join(repoRoot, directory, entry);
         if (!statSync(path).isFile()) continue;
         const text = readFileSync(path, "utf8");
-        const generate = text.indexOf("xcodegen generate");
-        if (generate < 0) continue;
+        // **Une commande, pas une mention.** `indexOf` attrapait aussi les
+        // fichiers qui *parlent* d'`xcodegen generate` — un commentaire, une
+        // chaîne cherchée par une garde — et les déclarait fautifs faute d'y
+        // trouver le dessin de l'icône. Ce qui compte est la ligne qui la
+        // **lance** : premier mot de la ligne, une fois l'indentation ôtée.
+        const invocation = /^[ \t]*xcodegen generate/m.exec(text);
+        if (!invocation) continue;
+        const generate = invocation.index;
         const icon = text.indexOf("build-app-icon");
         if (icon < 0 || icon > generate) offenders.push(join(directory, entry));
       }
