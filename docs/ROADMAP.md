@@ -7593,3 +7593,110 @@ tranche pas ici. Trois routes, avec leur prix :
 
 La mesure est écrite ici pour qu'elle ne se reperde pas ; le choix appartient à
 Maxime.
+
+## La faute de page est délivrée à l'invité, et le noyau passe `copy_bootdata`
+
+Maxime a dit « fais tout ». C'est la route (1) — la seule qui ne soit ni un
+bouchon ni un abandon — et elle s'est révélée moins grosse que je ne l'avais
+écrit, parce que les deux moitiés du chemin existaient déjà : la région pose
+le témoin, CR2 et rend la main avec RIP sur l'instruction fautive, qui n'a
+rien fait ; et le cœur Swift savait déjà livrer une faute, ce qui a servi
+d'oracle pour l'ordre des mots et les bits de RFLAGS.
+
+**Ce que Linux attend, lu dans `head64.c`.** `x86_64_start_kernel` appelle
+`idt_setup_early_handler()` **juste avant** `copy_bootdata`. Le gestionnaire
+précoce du vecteur 14 est `do_early_exception`, qui appelle
+`early_make_pgtable(read_cr2())` : le noyau **compte** sur une faute de page
+pour peupler ses tables à la demande. Une machine qui ne la délivre pas n'est
+pas une machine qui a un défaut à `copy_bootdata + 38` — c'est une machine à
+qui il manque un mécanisme, et l'arrêt ressemblait à une divergence alors
+qu'il était le fonctionnement prévu. C'est la phrase que le Lot 7 avait déjà
+écrite pour le décompresseur, et elle valait pour l'émetteur.
+
+**Les trois pièces.**
+
+1. **`iretq` dans le décodeur et l'émetteur.** `48 cf` dépile cinq mots — RIP,
+   CS, RFLAGS, RSP, SS — et le code d'erreur n'en fait pas partie, comme sur
+   le silicium. C'est un terminateur de bloc, écrit dans les **neuf** listes
+   où `lretq` l'est. RIP est posé sur l'`iretq` lui-même avant la première
+   lecture, RIP est lu en dernier et RSP gardé de côté : une faute sur l'un
+   des cinq mots laisse l'hôte reprendre sur l'`iretq`, pas au début du bloc.
+   `cf` seul — `iretd` — est décodé et refusé en étant nommé.
+2. **`walk` exportée.** L'hôte traduit avec **la même** marche que le module.
+   Une seconde marche écrite en JavaScript aurait fini par diverger de
+   celle-ci, en silence, sur une grande page ou un bit réservé.
+3. **`deliver` dans `web/host.js`.** La porte lue dans l'IDT par la base et la
+   limite que `lidt` a rangées, la présence vérifiée, le cadre du mode long
+   posé sur la pile alignée à seize, IF éteint par une porte d'interruption,
+   le témoin effacé. Ce que ça ne fait pas est nommé : ni IST ni changement
+   d'anneau — cette machine n'a pas de TSS — et une faute *pendant* la
+   délivrance est rendue comme telle. Sans IDT, l'arrêt dit « sans porte »
+   au lieu de « sur place ».
+
+**Ce que les tests tiennent**, et chacun l'a montré en tombant sous un
+sabotage nommé — sept sabotages, sept rouges, restauration vérifiée par
+`diff` à chaque fois :
+
+| ce qui est cassé | ce qui tombe |
+|---|---|
+| `iretq` retiré de la liste des terminateurs | la fin de bloc, et les deux délivrances |
+| `iretq` prend le sélecteur pour RIP | la délivrance |
+| `iretq` laisse RSP où il est | la délivrance |
+| le code d'erreur empilé avant RIP | la délivrance |
+| IF laissé allumé dans le gestionnaire | la délivrance |
+| le témoin non effacé | les deux délivrances |
+| `cf` seul pris pour la forme longue | le refus nommé d'`iretd` |
+
+Le test de délivrance est le chemin de Linux en petit : une lecture qui
+faute, un gestionnaire qui pose la feuille, `add $8,%rsp ; iretq`, et la même
+lecture qui aboutit. Il tient que la lecture rejouée a traversé la page posée,
+que l'exécution a continué après, que l'invité a lu CR2, que RSP est revenu,
+que le cadre porte l'instruction fautive et un code nul, et que IF a été
+empilé allumé, éteint dans le gestionnaire, rallumé par l'`iretq`.
+
+**La mesure, sur le vrai noyau.** Même montage qu'avant, mêmes soixante-quatre
+tours :
+
+| avant | après |
+|---|---|
+| 47 régions, arrêt `copy_bootdata + 38`, `faute 1` | 64 régions, **la limite de tours épuisée, la machine avançait encore** |
+
+Ce qui s'est passé entre les deux se lit dans le relevé, tour par tour : au
+tour 46 la machine réclame `early_idt_handler_array + 182` — le vecteur 14,
+à treize octets par entrée dans cette construction —, puis
+`__early_make_pgtable`, `do_early_exception`, `early_idt_handler_common`,
+`restore_regs_and_return_to_kernel`, et au tour 53 **`copy_bootdata + 38`
+encore une fois** : l'instruction fautive, rejouée, qui aboutit. Ensuite
+`sanitize_boot_params`, `copy_bootdata + 96`, `x86_64_start_kernel + 95`,
+`load_ucode_bsp`, `cmdline_find_option_bool`. Le mur d'hier est une ligne au
+milieu du relevé.
+
+La limite de tours de l'outil se règle donc désormais (`WISQ_ROUNDS`), parce
+qu'elle avait cessé d'être le mur. Plus loin :
+
+| tours | régions | arrêt |
+|---|---|---|
+| 64 (l'ancienne limite) | 64 | la limite, **la machine avançait encore** |
+| 2048 | **122** | `__x86_indirect_thunk_rax`, `CannotDecode { at: 5 }` |
+
+Cent vingt-deux régions, et les noms des dernières disent où la machine est
+arrivée : `cgroup_init_subsys`, `init_and_link_css`, `online_css` — c'est
+`cgroup_init_early`, appelé par **`start_kernel`** avant `setup_arch`. Le
+noyau a quitté `head64.c` pour de bon. Le relevé compte les fautes délivrées
+sans les nommer une à une ; `cr2` porte la dernière, `__va(0)`.
+
+**Le mur suivant est un octet, et il est nommé.** `__x86_indirect_thunk_rax`
+commence par `e8 01 00 00 00 cc` — un `call +1`, puis `int3`. C'est la forme
+de retpoline que le noyau pose avant que les alternatives ne la réécrivent, et
+`0xcc` n'est pas décodé : `DEMARRAGE.md` le disait déjà, « `cc` et `cd 80`
+rendent `None` ». Toute la famille d'entrée logicielle — `int3`, `int n` — est
+la tranche suivante, et elle est petite : une porte, le même cadre que la
+faute, RIP **après** l'instruction et non dessus, comme le cœur Swift le fait.
+
+**Ce que cette tranche n'a pas fait, et le dit.** Aucune interruption de
+matériel n'est délivrée : le compteur d'horodatage avance mais rien ne frappe,
+et un `hlt` reste un arrêt nommé. Ni IST ni changement d'anneau — pas de TSS.
+Le code d'erreur d'une faute de page est toujours zéro : la marche ne dit pas
+encore si l'accès était une écriture ou une lecture d'instruction, et
+`early_make_pgtable` ne le regarde pas ; le premier gestionnaire qui le
+regardera le dira.

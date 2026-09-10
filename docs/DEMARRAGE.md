@@ -165,20 +165,25 @@ pour une économie qu'aucune des trois mesures ne voit.
 
 | | état |
 | --- | --- |
-| `lidt` / `sidt` — la table est rangée et rendue | **produit** |
-| `cli` / `sti` — le drapeau d'interruption | décodés, **refusés** |
-| `hlt` — attendre une interruption | décodé, **refusé** |
-| `popf` — qui peut rallumer le drapeau sans nommer `sti` | décodé, **refusé** |
-| `iret`, `iretq` — le retour d'interruption | **pas même décodés** |
-| `int`, `int3` — l'entrée logicielle | **pas même décodés** |
-| la délivrance d'une interruption | n'existe pas |
+| `lidt` / `sidt` — la table est rangée et rendue, **et l'IDT est lue** | **produit** |
+| `cli` / `sti` — le drapeau d'interruption | **produits** |
+| `hlt` — attendre une interruption | **produit** : un arrêt nommé, tant que rien ne réveille |
+| `popf` — qui peut rallumer le drapeau sans nommer `sti` | **produit** |
+| `iretq` — le retour d'interruption, cinq mots | **produit** ; `iretd` décodé et refusé en étant nommé |
+| `int`, `int3` — l'entrée logicielle | **pas même décodés** — et c'est le mur suivant, `cc` dans `__x86_indirect_thunk_rax` |
+| la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
+| la délivrance d'une **interruption de matériel** | n'existe pas |
 
-**Vérifié plutôt qu'affirmé** : `decode` rend `None` sur `cf`, `48 cf`, `cc` et
-`cd 80`. Ce n'est pas seulement le retour qui manque, c'est toute la famille
-d'entrée et de sortie.
+**Vérifié plutôt qu'affirmé** : `decode` rend `None` sur `cc` et `cd 80`. `cf`
+et `48 cf` se décodent depuis la tranche de la délivrance ; l'entrée
+logicielle, elle, manque encore — et un vrai noyau s'y arrête, sur le `int3`
+qu'une retpoline pose après son `call`.
 
-**`lidt` produit ne veut pas dire que les interruptions marchent.** Le registre
-se relit, et c'est tout ce que la tranche prétendait. Rien ne lit cette table.
+**`lidt` produit voulait dire « le registre se relit », et c'est devenu plus.**
+La base et la limite qu'il range sont **lues** par l'hôte quand une région
+pose le témoin de faute : la porte du vecteur 14 y est cherchée, présence et
+limite comprises, et c'est la première fois qu'un chemin consulte cette table.
+La GDT, elle, n'est toujours lue par rien.
 
 ### Ce que ça demande
 
@@ -190,13 +195,17 @@ Trois choses, et aucune n'est petite :
    qu'il vient d'accorder à chaque tour de sa boucle, donc un intervalle se
    mesure. Ce qui manque encore est la ligne qui **interrompt**, pas l'horloge
    qui avance.
-2. **Un point de délivrance.** Une interruption arrive entre deux instructions :
-   il faut un endroit où la boucle vérifie, sauve l'état sur la pile de
-   l'invité, lit la table, et saute. La boucle hôte rend déjà la main
-   régulièrement — c'est le crochet naturel.
-3. **`iret`, et la pile de retour.** Non décodé, comme toute sa famille. Le
-   dépôt a déjà payé une fois le prix de confondre un retour proche et un retour
-   lointain ; `iret` dépile davantage encore — RIP, CS, RFLAGS, RSP et SS.
+2. **Un point de délivrance.** Il **existe** pour la faute de page : `deliver`
+   dans `web/host.js`, appelé par la boucle quand une région pose le témoin —
+   il lit la porte, pose le cadre du mode long sur la pile de l'invité, éteint
+   IF pour une porte d'interruption, et saute. Une interruption de matériel
+   passerait par le même chemin, avec un vecteur qui vient d'un contrôleur
+   plutôt que du témoin ; ce qui manque est la ligne, pas le point.
+3. **`iretq`, et la pile de retour.** **Produit.** Il dépile RIP, CS, RFLAGS,
+   RSP et SS dans cet ordre, laisse le code d'erreur au gestionnaire, et pose
+   RIP sur lui-même avant sa première lecture pour qu'une faute sur le cadre
+   reprenne là. Sept sabotages l'ont éprouvé, dont « le sélecteur pris pour
+   RIP » et « RSP laissé où il est ».
 
 ### Et une raison de ne pas commencer par là
 

@@ -294,9 +294,17 @@ fn main() {
     }
     println!();
 
-    const ROUNDS: usize = 64;
+    // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.
+    // Soixante-quatre suffisaient tant que la machine s'arrêtait bien avant ;
+    // depuis que la faute de page est délivrée, elle les épuise en avançant
+    // encore. `WISQ_ROUNDS=2048` va voir plus loin, au prix d'un relevé plus
+    // long à lire.
+    let rounds: usize = std::env::var("WISQ_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(64);
     let mut last = String::new();
-    for round in 1..=ROUNDS {
+    for round in 1..=rounds {
         let mut listing = String::new();
         for (index, (at, module)) in regions.iter().enumerate() {
             let path = scratch.join(format!("r{index}.wasm"));
@@ -452,7 +460,7 @@ console.log("controle " + controle
                 break;
             }
         }
-        if round == ROUNDS {
+        if round == rounds {
             println!("tour {round} : la limite de tours est atteinte, la machine avançait encore");
         }
     }
