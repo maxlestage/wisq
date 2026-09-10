@@ -8,8 +8,11 @@
 //! d'erreur ou une boucle de parking ». Avec la carte du noyau — celle
 //! d'Alpine vit dans `boot/System.map-…` de l'ISO *standard*, et il faut
 //! **exactement** la version qu'on exécute — la même adresse se lit
-//! `__startup_64 + 658` : le rembourrage posé après le retour de la fonction,
-//! ce qui n'est ni l'un ni l'autre.
+//! `__startup_64 + 658`. Ce n'était toujours pas la réponse : le relevé des
+//! blocs a montré que cette adresse porte `eb fe` — un `for (;;)` que le noyau
+//! écrit derrière une garde sur son argument — et qu'un saut **conditionnel
+//! pris** y mène. Une adresse nommée dit où ; il faut un relevé de plus pour
+//! dire par où.
 //!
 //! `coverage` et `first-region` disent ce qui **se traduit**. Depuis la tranche
 //! des MSR, ce n'est plus la même chose que ce qui **s'exécute**, et le dépôt
@@ -59,6 +62,17 @@ struct Load {
     size: u64,
 }
 
+impl Load {
+    /// **Où ce segment vit vraiment dans la RAM invitée.** L'ELF du noyau est
+    /// lié à `__START_KERNEL_map` ; il est chargé, lui, à son adresse physique,
+    /// et c'est là que la machine l'exécute. Une seule soustraction, nommée une
+    /// fois, plutôt que quatre soustractions éparpillées dont l'une finit par
+    /// manquer.
+    fn physical_address(&self) -> u64 {
+        self.virtual_address - KERNEL_MAP
+    }
+}
+
 /// Lire les en-têtes de programme. Fait à la main plutôt qu'avec une
 /// bibliothèque : cinq champs, et une dépendance de plus pour un outil de
 /// mesure serait un coût permanent pour un besoin unique.
@@ -95,8 +109,10 @@ fn segments(image: &[u8]) -> Option<(u64, Vec<Load>)> {
 /// porté pendant une tranche entière un « on ne sait pas si ce `jmp .` est un
 /// chemin d'erreur ou une boucle de parking », alors que la carte du noyau
 /// exact était dans l'ISO d'Alpine. Avec elle, l'adresse se lit
-/// « __startup_64 + 658 » — le rembourrage posé après le retour de la fonction,
-/// ce qui n'est ni l'un ni l'autre.
+/// « __startup_64 + 658 » — la boucle de parking d'un `for (;;)` du noyau,
+/// derrière une garde sur son argument. C'était donc bien une des deux
+/// réponses envisagées, et le nom seul ne suffisait pas à trancher : il a
+/// fallu demander en plus **qui mène là**.
 ///
 /// Sans carte, les adresses sortent nues, comme avant : un outil de diagnostic
 /// qui refuse de fonctionner sans son confort casse ce qu'il mesure.
@@ -110,7 +126,7 @@ fn name_addresses(text: &str, map: &Symbols) -> String {
             let named = bare
                 .strip_prefix("0x")
                 .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-                .map(|address| map.describe(address));
+                .map(|address| map.describe_loaded(address, KERNEL_MAP));
             match named {
                 Some(named) => format!("{named}{}", &word[bare.len()..]),
                 None => word.to_string(),
@@ -151,14 +167,31 @@ fn main() {
     // **Le point d'entrée est physique, les segments sont virtuels.** Linux
     // saute à l'adresse physique après la décompression, avant toute table de
     // pages ; l'ELF, lui, est lié pour le demi-haut.
-    let entry_virtual = entry + KERNEL_MAP;
+    // **La machine tourne aux adresses PHYSIQUES, et c'est la correction de
+    // cette tranche.**
+    //
+    // Le montage compilait chaque région à sa base *virtuelle*. Tout ce qui est
+    // relatif à `%rip` rendait donc du virtuel, alors que la RAM invitée est
+    // physique — et le code de démarrage de Linux compte sur le contraire :
+    // à `startup_64`, la pagination n'est pas encore la sienne et `%rip` **est**
+    // l'adresse physique. `__startup_64` le vérifie lui-même, dès sa quatrième
+    // instruction, par `physaddr >> 46` ; l'outil échouait ce test et le noyau
+    // se garait dans son propre `for (;;)`, ce qui a coûté une tranche entière
+    // à comprendre.
+    //
+    // **La sonde mesurait donc un chemin que l'application n'emprunte pas** :
+    // `X86BootLoader` charge le noyau à `preferredAddress` et saute à
+    // `kernelAddress + 0x200`, en physique, depuis toujours. C'est la troisième
+    // fois qu'une sonde de ce dépôt mesure autre chose que ce qui tourne.
+    let entry_virtual = entry;
     let Some(text) = loads.iter().find(|load| {
-        load.virtual_address <= entry_virtual && entry_virtual < load.virtual_address + load.size
+        load.virtual_address - KERNEL_MAP <= entry_virtual
+            && entry_virtual < load.virtual_address - KERNEL_MAP + load.size
     }) else {
         eprintln!("aucun segment ne porte le point d'entrée 0x{entry_virtual:x}");
         std::process::exit(1);
     };
-    let physical = text.virtual_address - KERNEL_MAP;
+    let physical = text.physical_address();
     let ram = u64::from(PAGES) * 65536;
     println!("point d'entrée : 0x{entry:x} physique, 0x{entry_virtual:x} virtuel");
     println!(
@@ -191,10 +224,10 @@ fn main() {
     // région n'a posé aucun bloc à l'emplacement N », et c'est cette garde qui
     // a attrapé la première version de cet outil.
     let compile = |at: u64, slot: u32| -> Result<Vec<u8>, String> {
-        if at < text.virtual_address || at >= text.virtual_address + text.size {
+        if at < text.physical_address() || at >= text.physical_address() + text.size {
             return Err("hors du segment de texte".to_string());
         }
-        let from = (at - text.virtual_address + text.offset) as usize;
+        let from = (at - text.physical_address() + text.offset) as usize;
         let window = &image[from..(from + 16384).min(image.len())];
         Module::resolving_or_why(window, at, 0, slot, PAGES).map_err(|why| format!("{why:?}"))
     };
@@ -287,11 +320,10 @@ console.log("emplacement " + place);
 console.log("rip 0x" + lire({rip}).toString(16));
 console.log("rsp 0x" + lire(4).toString(16));
 // **Ce que la pile porte à l'arrêt, et pourquoi ça vaut d'être imprimé.**
-// La machine s'arrête sur le rembourrage qui suit le retour de
-// `__startup_64` : un endroit où aucun chemin du noyau ne mène, et où l'on
-// n'arrive que si un `ret` en rapporte l'adresse. Le relevé disait où elle
-// est ; il ne disait pas d'où venait cette adresse. Huit mots suffisent —
-// le montage n'a que trois appels de profondeur.
+// Le relevé dit où la machine est ; la pile dit d'où elle vient. Huit mots
+// suffisent — le montage n'a que trois appels de profondeur — et c'est ce
+// qui a permis d'établir qu'un `ret` attendu n'avait pas eu lieu, avant que
+// le relevé des blocs n'explique pourquoi.
 //
 // L'adresse invitée est repliée par masque sur la RAM déclarée, comme
 // partout ailleurs : c'est la même arithmétique que l'émetteur, pas une
@@ -372,7 +404,7 @@ console.log("registres " + noms
                     "tour {round} : {} régions traduites, la machine réclame {} \
                      à l'emplacement {place} ({} octets)",
                     regions.len(),
-                    map.describe(at),
+                    map.describe_loaded(at, KERNEL_MAP),
                     module.len()
                 );
                 regions.push((at, module));
@@ -381,7 +413,7 @@ console.log("registres " + noms
                 println!(
                     "tour {round} : {} régions traduites, et {} **ne se traduit pas** — {why}",
                     regions.len(),
-                    map.describe(at)
+                    map.describe_loaded(at, KERNEL_MAP)
                 );
                 break;
             }
@@ -408,7 +440,7 @@ console.log("registres " + noms
         .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
     {
         println!();
-        println!("qui mène à {} :", map.describe(stopped));
+        println!("qui mène à {} :", map.describe_loaded(stopped, KERNEL_MAP));
         let mut named = false;
         // Les régions se chevauchent — la même adresse est traduite dans
         // plusieurs fenêtres — donc le même bloc serait nommé plusieurs fois.
@@ -416,7 +448,7 @@ console.log("registres " + noms
         // ressemblent à trois chemins, et il n'y en a qu'un.
         let mut seen = std::collections::BTreeSet::new();
         for (base, _) in &regions {
-            let Ok(from) = usize::try_from(base - text.virtual_address + text.offset) else {
+            let Ok(from) = usize::try_from(base - text.physical_address() + text.offset) else {
                 continue;
             };
             let window = &image[from..(from + 16384).min(image.len())];
@@ -437,11 +469,11 @@ console.log("registres " + noms
                 named = true;
                 println!(
                     "  {} finit sur {:?} vers {}{}",
-                    map.describe(base + block.start as u64),
+                    map.describe_loaded(base + block.start as u64, KERNEL_MAP),
                     block
                         .ends
                         .expect("un bloc qui a une cible a un terminateur"),
-                    map.describe(target),
+                    map.describe_loaded(target, KERNEL_MAP),
                     match block.goes {
                         Some(_) => " — dans la même région",
                         None => " — hors région, le module rend la main",
