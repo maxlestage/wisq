@@ -7076,3 +7076,71 @@ La mesure qui tranche est la même dans les deux cas : faire dire au module quel
 indice et quelle adresse le bloc autour de `0x63d` rend, plutôt que de relire
 `terminate` une troisième fois. **Aucune relecture de code n'a jamais rien
 trouvé ici** ; c'est la pile imprimée qui a parlé.
+
+## Le saut est pris, et c'est le noyau qui gare la machine
+
+Les deux candidates ci-dessus sont **fausses**, toutes les deux. Elles
+partageaient une prémisse — « le saut n'est pas pris » — et c'est la prémisse
+qui était fausse.
+
+La mesure demandée a été faite, mais elle n'a pas eu besoin d'être exécutée :
+`Module::outline` lit les blocs de la **même découverte** que l'émission et dit,
+pour chacun, sur quoi il finit et où il mène. Sur les régions réelles :
+
+```text
+qui mène à 0xffffffff81000642 (__startup_64 + 658) :
+  0xffffffff810003b0 (__startup_64)       finit sur Jump(Some(Condition(5)))
+                                          vers __startup_64 + 658
+  0xffffffff81000642 (__startup_64 + 658) finit sur Jump(None)
+                                          vers __startup_64 + 658
+```
+
+`__startup_64 + 658` n'est pas du rembourrage : c'est `eb fe`, un saut sur
+lui-même — la forme que prend `for (;;)`. Et on y arrive par un saut
+**conditionnel**, pris, depuis la première instruction de `__startup_64` :
+
+```text
+ffffffff810003b0:  f3 0f 1e fa        endbr64
+ffffffff810003b4:  48 89 f8           mov  %rdi,%rax
+ffffffff810003b7:  48 c1 e8 2e        shr  $0x2e,%rax      ; physaddr >> 46
+ffffffff810003bb:  0f 85 81 02 00 00  jne  __startup_64+658 ; → for (;;)
+```
+
+C'est le noyau qui refuse son propre argument, comme il le ferait sur du
+silicium. Les registres à l'arrêt le disent sans ambiguïté :
+
+```text
+rax=0x3ffff  rdi=0xffffffff81000000
+```
+
+`rdi` porte l'adresse **virtuelle** de `_text`, pas son adresse physique.
+`0xffffffff81000000 >> 46` vaut `0x3ffff`, donc non nul, donc le test échoue et
+`__startup_64` se gare. Un second test, quinze instructions plus loin, vérifie
+que `physaddr - 0x1000000` est aligné sur 2 Mio et mène à un second `for (;;)`
+à `+660` : le noyau tient deux gardes de ce genre, et nous butons sur la
+première.
+
+**Il n'y a donc aucun défaut d'émission ici.** Le `jmp __x86_return_thunk` de
+`__startup_64` n'a jamais été atteint, et le tour 1 qui réclamait
+`__x86_return_thunk` venait bien d'ailleurs. L'émetteur a fait exactement ce
+qu'on lui demandait.
+
+**Le défaut est dans le montage, et il a maintenant un nom.** `startup_64`
+calcule l'adresse de `_text` par `%rip` — c'est ce que fait le code de démarrage
+de Linux, parce qu'à ce moment-là la pagination est éteinte et que RIP *est*
+l'adresse physique. Ici, la région est compilée à sa base **virtuelle**, donc
+tout ce qui est relatif à `%rip` rend du virtuel, et la mémoire invitée, elle,
+est physique. Le doc de `kernel-entry` disait déjà « compilée à sa base
+virtuelle et posée à son adresse physique » — la phrase décrivait
+l'incohérence, personne ne l'avait lue comme telle.
+
+C'est la tranche suivante : faire tourner l'entrée du noyau à des adresses
+physiques, comme un vrai démarrage, plutôt qu'à sa base virtuelle.
+
+**Ce que cette tranche a coûté, et ce qui l'aurait évité.** Trois relectures de
+`terminate`, deux hypothèses écrites et défendues, aucune vraie. Ce qui a
+tranché en une exécution, c'est un relevé qui **nomme** — les blocs et leurs
+cibles, les seize registres — au lieu de compter. `survey` comptait depuis le
+début et n'aurait jamais pu répondre. Quand deux explications rendent la même
+observation, ce n'est pas une troisième relecture qu'il faut, c'est une
+observation de plus.

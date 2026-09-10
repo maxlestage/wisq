@@ -1286,6 +1286,91 @@ fn a_survey_counts_where_a_region_will_hand_back() {
     assert_eq!(once.repeats, 0);
 }
 
+/// **Ce que `outline` dit, et qui a démenti une hypothèse écrite.**
+///
+/// La feuille de route portait deux explications de l'arrêt d'un vrai noyau à
+/// `__startup_64 + 658` : le bloc terminé sans que son `jmp` en soit le
+/// terminateur, ou le `jmp` émis comme une chute. Toutes les deux supposaient
+/// que le saut n'était **pas pris**. Le relevé a montré une troisième chose,
+/// qu'aucune relecture n'aurait proposée : le bloc d'à côté finit sur un saut
+/// **conditionnel** dont la cible est cette adresse, et l'adresse porte
+/// `eb fe` — la boucle de parking d'un `for (;;)` que le noyau écrit lui-même.
+/// Le saut est pris, exprès, et il n'y avait pas de défaut d'émission là.
+///
+/// Ce test tient les trois choses dont cette lecture dépendait, sur des octets
+/// écrits ici plutôt que sur un noyau qui n'est pas dans le dépôt.
+#[test]
+fn an_outline_names_where_each_block_leads() {
+    // `eb fe` seul : un saut inconditionnel sur lui-même. C'est la forme que
+    // prend `for (;;)`, et c'est elle qu'il fallait pouvoir reconnaître.
+    let parked = Module::outline(&[0xeb, 0xfe], 0).expect("la boucle de parking");
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].steps, 1);
+    assert_eq!(parked[0].after, 2, "un `eb fe` occupe deux octets");
+    assert_eq!(parked[0].ends, Some(Op::Jump(None)));
+    assert_eq!(parked[0].target, Some(0), "il retombe sur lui-même");
+    assert_eq!(
+        parked[0].goes,
+        Some(0),
+        "et sa cible est son propre bloc, ce qui est tout le sens d'un parking"
+    );
+
+    // Un saut **conditionnel** vers une boucle de parking, exactement la forme
+    // trouvée en tête de `__startup_64` : la cible est nommée, et c'est un
+    // bloc de la région. Sans ce cas, rien ne distinguerait « le saut n'est pas
+    // pris » de « le saut mène là ».
+    //   cmpq $1,%rax ; jne +4 ; xorq %rax,%rax ; ret ; eb fe
+    let guarded = Module::outline(
+        &[
+            0x48, 0x83, 0xf8, 0x01, 0x75, 0x04, 0x48, 0x31, 0xc0, 0xc3, 0xeb, 0xfe,
+        ],
+        0,
+    )
+    .expect("une garde et son parking");
+    let first = guarded.first().expect("le bloc d'entrée");
+    assert_eq!(first.start, 0);
+    assert_eq!(first.after, 6, "la comparaison et le saut");
+    assert!(
+        matches!(first.ends, Some(Op::Jump(Some(_)))),
+        "le bloc finit sur un saut conditionnel, {:?} relevé",
+        first.ends
+    );
+    assert_eq!(first.target, Some(10), "et sa cible est le `eb fe`");
+    let goes = first.goes.expect("la cible est dans la région");
+    assert_eq!(guarded[goes].start, 10, "l'indice désigne bien ce bloc-là");
+    assert_eq!(guarded[goes].ends, Some(Op::Jump(None)));
+    assert_eq!(guarded[goes].goes, Some(goes), "qui se gare sur lui-même");
+
+    // **Une cible hors de la région n'a pas d'indice**, et c'est ce qui fait
+    // rendre la main plutôt que sauter. `e9 rel32` très loin devant.
+    let leaves = Module::outline(&[0xe9, 0x00, 0x10, 0x00, 0x00], 0).expect("un saut lointain");
+    assert_eq!(leaves[0].ends, Some(Op::Jump(None)));
+    assert_eq!(leaves[0].target, Some(0x1005));
+    assert_eq!(
+        leaves[0].goes, None,
+        "hors région : le module rend la main, il ne saute pas"
+    );
+
+    // **Un bloc coupé par le bord de la région n'a pas de terminateur**, et
+    // c'est le seul cas où la reprise est `after`. C'est la distinction que le
+    // relevé existe pour rendre lisible : sans elle, « le saut mène après » et
+    // « il n'y a pas de saut » se ressemblent.
+    //   xorq %rax,%rax — et plus rien après.
+    let cut = Module::outline(&[0x48, 0x31, 0xc0], 0).expect("un bloc sans fin");
+    assert_eq!(cut[0].steps, 1);
+    assert_eq!(cut[0].after, 3);
+    assert_eq!(cut[0].ends, None, "aucune instruction ne termine ce bloc");
+    assert_eq!(cut[0].target, None);
+    assert_eq!(cut[0].goes, None);
+
+    // Un `ret` n'a pas de cible statique : elle sort de la pile. Dire `None`
+    // ici est une absence de réponse, pas une réponse.
+    let returns = Module::outline(&[0xc3], 0).expect("un ret");
+    assert_eq!(returns[0].ends, Some(Op::Return));
+    assert_eq!(returns[0].target, None);
+    assert_eq!(returns[0].goes, None);
+}
+
 /// **La boucle hôte, et pas seulement une bascule.**
 ///
 /// Le test voisin montre *une* région qui rend la main et *une* qui reprend.
