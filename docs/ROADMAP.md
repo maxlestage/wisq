@@ -7700,3 +7700,51 @@ Le code d'erreur d'une faute de page est toujours zéro : la marche ne dit pas
 encore si l'accès était une écriture ou une lecture d'instruction, et
 `early_make_pgtable` ne le regarde pas ; le premier gestionnaire qui le
 regardera le dira.
+
+## L'entrée logicielle, et le noyau qui va jusqu'à son premier `printk`
+
+Le mur de la tranche précédente était un octet : `__x86_indirect_thunk_rax`
+commence par `e8 01 00 00 00 cc` — un `call +1` qui **enjambe** un `int3`. La
+retpoline, telle que le noyau la porte avant que les alternatives ne la
+réécrivent. L'`int3` n'est jamais exécuté ; il refusait pourtant la région
+entière, faute d'être décodé.
+
+**Ce que la tranche pose.** `Op::SoftwareInterrupt` dans le décodeur — `cc`
+vaut trois, `cd nn` lit son vecteur, un `cd` coupé rend `None` plutôt qu'un
+vecteur inventé. Dans l'émetteur, la forme de `hlt` : RIP posé **après**
+l'instruction (c'est un appel, pas une faute — l'`iretq` du gestionnaire
+reprend à l'instruction suivante, et le cœur Swift fait pareil), le témoin
+d'arrêt posé à `STOP_INTERRUPT | vecteur`, la main rendue. Un témoin plutôt
+qu'une globale de plus : les emplacements sont recopiés dans `web/host.js` et
+`WebKitBench.swift`, et trois modules sont épinglés en base64 — une globale
+coûterait tout ça pour un nombre qui tient dans le témoin qui existe. Dans
+l'hôte, le témoin est délivré par le même chemin que la faute de page, sans
+code d'erreur, et effacé ; sans porte, l'arrêt est nommé.
+
+**Éprouvé** : cinq sabotages, cinq rouges nommés — RIP posé sur l'`int` au lieu
+d'après, le vecteur perdu dans le témoin, le témoin non effacé, `int n` qui
+prend toujours le trois, un code d'erreur empilé pour le vecteur trois. Le test
+de délivrance tient la reprise **après** l'`int3` (pas dessus), le cadre qui
+porte l'instruction suivante, la pile rendue à cinq mots, et le témoin effacé.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | arrêt |
+|---|---|---|
+| avant | 122 | `__x86_indirect_thunk_rax`, `CannotDecode { at: 5 }` |
+| après | **154** | `vprintk_emit + 9` — `LinkError: Table import env:blocks provided an 'initial' that is too small` |
+
+Le noyau traverse `idt_setup_from_table`, `load_ucode_bsp`,
+`init_cgroup_housekeeping`, `online_css`, entre dans `vprintk` au tour 150 et
+dans `vprintk_emit` au tour 155 : **son premier `printk`**. Et là ce n'est plus
+lui qui s'arrête. La 155ᵉ région réclame l'emplacement 4049 d'une table de
+4096, et sa taille minimale déclarée — l'emplacement plus ses blocs — dépasse
+ce que l'hôte a alloué. `web/host.js` crée la table une fois, `regions = 4096`,
+et ne la fait jamais grandir.
+
+**Le mur suivant est donc un défaut de l'hôte, nommé** : la table des blocs
+ne grandit pas. `WebAssembly.Table.grow` existe ; l'hôte connaît l'emplacement
+de la prochaine région avant de l'instancier, et peut garder une marge devant
+lui. C'est la tranche suivante, et elle est petite. Ce qu'elle promet : le
+premier `printk` d'un noyau Linux, engendré en WebAssembly, sur le port série
+que `host.js` écoute déjà.

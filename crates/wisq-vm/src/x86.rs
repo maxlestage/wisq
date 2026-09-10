@@ -641,6 +641,18 @@ pub enum Op {
     /// plus rien à faire, ou qui a paniqué. Sans interruptions, la produire
     /// donnerait un arrêt définitif déguisé en attente.
     Halt,
+    /// **`CC` et `CD nn` : une interruption demandée par le code.** Le vecteur
+    /// est dans `imm` — trois pour `int3`, l'octet suivant pour `int n`.
+    ///
+    /// C'est un **appel**, pas une faute : l'adresse empilée est celle de
+    /// l'instruction *suivante*, et l'`iretq` du gestionnaire y reprend. Le
+    /// cœur Swift avance RIP avant d'entrer, et c'est la même règle ici.
+    ///
+    /// Ce qui l'a fait entrer : `__x86_indirect_thunk_rax`, la retpoline que
+    /// le noyau porte avant que les alternatives ne la réécrivent —
+    /// `call +1 ; int3 ; …` — dont l'`int3` n'est jamais exécuté mais doit se
+    /// lire, sans quoi la région entière est refusée.
+    SoftwareInterrupt,
     /// **`9C` : empiler RFLAGS.** Huit octets en mode 64 bits, deux avec le
     /// préfixe 0x66. La moitié qui *sauve* l'état des interruptions avant de
     /// les couper.
@@ -1884,6 +1896,7 @@ impl Cpu {
                 | Op::WriteModelRegister
                 | Op::FarReturn
                 | Op::InterruptReturn
+                | Op::SoftwareInterrupt
                 | Op::LoadDescriptorTable { .. }
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
@@ -2158,6 +2171,7 @@ impl Cpu {
             | Op::WriteModelRegister
             | Op::FarReturn
             | Op::InterruptReturn
+            | Op::SoftwareInterrupt
             | Op::LoadDescriptorTable { .. }
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
@@ -3066,6 +3080,27 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`int3` et `int n`.** Le vecteur va dans `imm` ; un `cd` dont
+        // l'octet manque ne se décode pas, plutôt que de lui inventer un
+        // vecteur.
+        0xcc => Some(Decoded {
+            op: Op::SoftwareInterrupt,
+            imm: 3,
+            immediate: true,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
+        0xcd => {
+            let vector = *bytes.get(at)?;
+            at += 1;
+            Some(Decoded {
+                op: Op::SoftwareInterrupt,
+                imm: u64::from(vector),
+                immediate: true,
+                length: at,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
         // **Les drapeaux par la pile.** La largeur ne vient pas de REX mais du
         // seul préfixe 0x66 : en mode 64 bits ces deux-là déplacent huit
         // octets par défaut, et `prefixes.width(false)` rendrait Dword sans
@@ -4424,6 +4459,31 @@ mod tests {
                 "un retour d'interruption n'est ni proche ni lointain"
             );
         }
+    }
+
+    /// **`int3` et `int n` portent leur vecteur.** `cc` est le trois, sans
+    /// octet de plus ; `cd nn` lit son vecteur dans l'octet suivant. Un `cd`
+    /// coupé au bord de la fenêtre ne se décode pas — il ne faut pas lui
+    /// inventer un vecteur.
+    ///
+    /// Ce qui a rendu ce test nécessaire : `__x86_indirect_thunk_rax` commence
+    /// par `e8 01 00 00 00 cc` — un `call +1` puis un `int3` que le saut
+    /// enjambe. L'`int3` n'est jamais exécuté ; il doit quand même se lire,
+    /// sans quoi la région entière est refusée.
+    #[test]
+    fn a_software_interrupt_carries_its_vector() {
+        let three = decode(&[0xcc]).expect("cc se décode");
+        assert_eq!(three.op, Op::SoftwareInterrupt);
+        assert_eq!(three.imm, 3, "int3 est le vecteur trois");
+        assert_eq!(three.length, 1);
+        let syscall = decode(&[0xcd, 0x80]).expect("cd 80 se décode");
+        assert_eq!(syscall.op, Op::SoftwareInterrupt);
+        assert_eq!(syscall.imm, 0x80, "int $0x80 porte son vecteur");
+        assert_eq!(syscall.length, 2);
+        assert!(
+            decode(&[0xcd]).is_none(),
+            "un cd sans son octet n'a pas de vecteur"
+        );
     }
 
     /// **La huitième instruction du noyau, à sa vraie place.**
