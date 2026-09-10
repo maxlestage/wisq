@@ -199,7 +199,7 @@ fn main() {
         text.size as f64 / (1024.0 * 1024.0),
         text.offset
     );
-    let folded = entry_virtual & (ram - 1);
+    let folded = Module::fold(entry_virtual, PAGES);
     println!(
         "repli sur {} Mio de RAM : 0x{folded:x} — {}",
         ram / (1024 * 1024),
@@ -224,10 +224,17 @@ fn main() {
     // région n'a posé aucun bloc à l'emplacement N », et c'est cette garde qui
     // a attrapé la première version de cet outil.
     let compile = |at: u64, slot: u32| -> Result<Vec<u8>, String> {
-        if at < text.physical_address() || at >= text.physical_address() + text.size {
+        // **L'adresse réclamée est repliée, comme l'hôte le fait pour lire.**
+        // `web/host.js` va chercher ses octets à `address & (base - 1)` ; sans
+        // le même repli ici, toute adresse virtuelle était refusée « hors du
+        // segment de texte » — et le noyau bascule à l'adressage virtuel dès
+        // que `secondary_startup_64` a chargé CR3. L'outil s'arrêtait donc
+        // exactement là, sur une région qu'il avait les octets pour traduire.
+        let folded = Module::fold(at, PAGES);
+        if folded < text.physical_address() || folded >= text.physical_address() + text.size {
             return Err("hors du segment de texte".to_string());
         }
-        let from = (at - text.physical_address() + text.offset) as usize;
+        let from = (folded - text.physical_address() + text.offset) as usize;
         let window = &image[from..(from + 16384).min(image.len())];
         Module::resolving_or_why(window, at, 0, slot, PAGES).map_err(|why| format!("{why:?}"))
     };
@@ -448,7 +455,12 @@ console.log("registres " + noms
         // ressemblent à trois chemins, et il n'y en a qu'un.
         let mut seen = std::collections::BTreeSet::new();
         for (base, _) in &regions {
-            let Ok(from) = usize::try_from(base - text.physical_address() + text.offset) else {
+            // Le même repli, et il n'est pas décoratif : sans lui cette
+            // soustraction sur une base virtuelle ne rendait pas un mauvais
+            // nombre, elle **paniquait** — « range start index
+            // 18446744071564165438 out of range for slice of length 35842660 ».
+            let folded = Module::fold(*base, PAGES);
+            let Ok(from) = usize::try_from(folded - text.physical_address() + text.offset) else {
                 continue;
             };
             let window = &image[from..(from + 16384).min(image.len())];
