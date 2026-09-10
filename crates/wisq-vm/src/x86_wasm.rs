@@ -1413,6 +1413,32 @@ impl Module {
         Some(survey)
     }
 
+    /// **Où une adresse invitée retombe dans la RAM déclarée.**
+    ///
+    /// Le confinement est un masque : la mémoire linéaire du module fait
+    /// `pages` blocs de 64 Kio, une puissance de deux, et toute adresse y est
+    /// repliée par `& (ram - 1)`. C'est ce que fait le code émis, et c'est ce
+    /// que fait `web/host.js` pour aller chercher les octets d'une région.
+    ///
+    /// **La règle vaut d'être nommée une fois** parce qu'elle était réécrite à
+    /// chaque endroit qui en avait besoin, et qu'un de ces endroits l'oubliait.
+    /// Le noyau bascule à l'adressage virtuel en cours de démarrage : il
+    /// réclame `0xffffffff8100013e` alors que ses octets sont à `0x100013e`.
+    /// Une soustraction faite à cru sur une telle adresse ne rend pas un
+    /// mauvais nombre, elle **panique** — « range start index
+    /// 18446744071564165438 out of range ».
+    ///
+    /// Ce n'est pas une traduction d'adresse : rien ici ne consulte les tables
+    /// de pages de l'invité. C'est une projection, et elle ne tombe juste que
+    /// parce que le noyau est chargé bas dans une RAM dont la taille divise
+    /// l'écart entre ses deux formes d'adresse. `--example kernel-entry` le
+    /// vérifie et le dit avant de commencer.
+    #[must_use]
+    pub fn fold(address: u64, pages: u32) -> u64 {
+        let ram = u64::from(pages) * 65536;
+        address & (ram - 1)
+    }
+
     /// **Le relevé bloc par bloc de la région, dans l'ordre des adresses.**
     ///
     /// Même découverte que `survey` et que l'émission — c'est `discover` qui
