@@ -494,10 +494,12 @@ pub unsafe extern "C" fn wisq_x86_emit_resolving(
             hand_back(module, out_bytes, out_len);
             0
         }
-        // **Le seul refus qui ne soit pas définitif.** L'émetteur s'est arrêté
-        // à moins de quinze octets du bord des octets fournis : l'instruction
-        // qui l'a bloqué a pu être coupée. L'appelant redemande alors la même
-        // région avec une fenêtre plus large, et **une seule fois**.
+        // **Le seul refus qui ne soit pas définitif.** La première instruction
+        // de la fenêtre s'est arrêtée à moins de quinze octets du bord, et rien
+        // de complet ne la précède : elle a pu être coupée. L'appelant
+        // redemande alors la même région avec une fenêtre plus large, et **une
+        // seule fois**. Une coupe plus loin n'arrive pas ici : la région se
+        // traduit jusqu'à elle.
         Err(Refused::MayBeCut { .. }) => -2,
         Err(_) => -1,
     }
