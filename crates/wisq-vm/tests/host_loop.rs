@@ -1694,9 +1694,11 @@ console.log("plat " + plat.rdx);
 /// la traduction l'oblige à être juste à chaque accès, et son coût a été mesuré
 /// avant d'être payé — voir `docs/DEMARRAGE.md`.
 ///
-/// **Ce que ça ne fait pas** : aucune `#PF` n'est délivrée à l'invité. Le
-/// noyau ne reprend pas la main sur son propre gestionnaire ; c'est l'hôte qui
-/// s'arrête. Les interruptions sont le mur suivant.
+/// **Et sans IDT, l'arrêt est nommé.** Cette machine n'a chargé aucune table
+/// d'interruptions : la faute ne peut être délivrée à personne, et l'hôte le
+/// dit — « sans porte » — au lieu de relancer un bloc, retomber sur la même
+/// faute, et conclure « sur place ». Une faute délivrée, avec une porte, est
+/// le test qui suit.
 #[test]
 fn a_missing_page_stops_before_the_access_and_names_it() {
     let Some(bun) = bun() else {
@@ -1754,8 +1756,9 @@ vue.setBigUint64({pml4} + idx({absent}n, 39) * 8, {pdpt}n | 3n, true);
 vue.setBigUint64({pdpt} + idx({absent}n, 30) * 8, {pd}n | 3n, true);
 vue.setBigUint64({pd} + idx({absent}n, 21) * 8, {pt}n | 3n, true);
 vm.globals[{rip}].value = {base}n;
-await vm.run({{ budget: 256n, rounds: 4 }});
+const why = await vm.run({{ budget: 256n, rounds: 4 }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
 console.log("faute " + lire({fault}));
 console.log("cr2 " + lire({cr2}));
 console.log("rdx " + lire(2));
@@ -1795,7 +1798,17 @@ console.log("rip " + lire({rip}));
             .parse::<u64>()
             .expect("un nombre")
     };
+    // **Le témoin reste posé et l'arrêt le nomme.** Sans IDT il n'y a
+    // personne à qui délivrer ; l'hôte ne l'efface pas et ne relance rien.
     assert_ne!(number("faute "), 0, "le témoin de faute est posé : {text}");
+    let stopped = text
+        .lines()
+        .find_map(|l| l.strip_prefix("arret "))
+        .unwrap_or_else(|| panic!("le pilote doit dire « arret » : {text}"));
+    assert_eq!(
+        stopped, "une faute de page sans porte : aucune IDT ne porte le vecteur 14",
+        "sans IDT, la faute n'est délivrée à personne et l'arrêt le dit : {text}"
+    );
     assert_eq!(
         number("cr2 "),
         ABSENT,
@@ -4403,4 +4416,355 @@ console.log("run " + typeof window.wisqRun);
         "undefined",
         "une page qui n'a pas fini de s'installer ne doit pas offrir de démarrer"
     );
+}
+
+/// **Le montage d'une machine qui a une IDT** — partagé par les deux tests de
+/// délivrance, parce qu'ils ne diffèrent que par la pile.
+///
+/// Trois régions, servies **par adresse et par créneau** : le programme qui
+/// faute, le gestionnaire, et la reprise sur l'instruction fautive — un `iretq`
+/// atterrit au milieu de la première région, donc l'hôte en demande une qui
+/// commence là. Le bouchon refuse tout le reste, adresse ou créneau : servi
+/// par compteur, il a déjà fait survivre un sabotage.
+struct FaultRig {
+    program: Vec<u8>,
+    handler: Vec<u8>,
+    faults_at: u64,
+    ud2_at: u64,
+}
+
+const RIG_PAGES: u32 = 64;
+const RIG_BASE: u64 = 0x1_0000;
+const RIG_HANDLER: u64 = 0x1_1000;
+const RIG_IDT: u64 = 0x1_2000;
+const RIG_IDT_POINTER: u64 = 0x1_3000;
+const RIG_PML4: u64 = 0x2_0000;
+const RIG_PDPT: u64 = 0x2_1000;
+const RIG_PD: u64 = 0x2_2000;
+const RIG_PT: u64 = 0x2_3000;
+const RIG_PDPT_LOW: u64 = 0x2_4000;
+const RIG_PD_LOW: u64 = 0x2_5000;
+const RIG_FRAME: u64 = 0x3_0000;
+/// Sa feuille n'est pas posée : c'est le gestionnaire qui la posera.
+const RIG_ABSENT: u64 = 0xFFFF_8000_0020_5000;
+const RIG_WITNESS: u64 = 0x0BAD_CAFE_F00D_1234;
+const RIG_AFTER: u64 = 0x1111;
+
+fn fault_rig(stack: u64) -> FaultRig {
+    fn put(into: &mut Vec<u8>, bytes: &[u8]) {
+        into.extend_from_slice(bytes);
+    }
+    let mut program: Vec<u8> = Vec::new();
+    put(&mut program, &[0x48, 0xb8]); // movabs $PML4,%rax
+    put(&mut program, &RIG_PML4.to_le_bytes());
+    put(&mut program, &[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    put(&mut program, &[0x48, 0xb8]); // movabs $PG,%rax
+    put(&mut program, &(1u64 << 31).to_le_bytes());
+    put(&mut program, &[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    put(&mut program, &[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    put(&mut program, &RIG_IDT_POINTER.to_le_bytes());
+    put(&mut program, &[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    put(&mut program, &[0x48, 0xbc]); // movabs $stack,%rsp
+    put(&mut program, &stack.to_le_bytes());
+    put(&mut program, &[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    put(&mut program, &RIG_ABSENT.to_le_bytes());
+    put(&mut program, &[0xfb]); // sti — pour que l'entrée ait quelque chose à éteindre
+    let faults_at = RIG_BASE + program.len() as u64;
+    put(&mut program, &[0x48, 0x8b, 0x16]); // mov (%rsi),%rdx — faute, puis rejouée
+    put(&mut program, &[0x48, 0xc7, 0xc3]); // mov $AFTER,%rbx — la preuve que ça continue
+    put(&mut program, &(RIG_AFTER as u32).to_le_bytes());
+    let ud2_at = RIG_BASE + program.len() as u64;
+    put(&mut program, &[0x0f, 0x0b]); // ud2
+
+    // **Le gestionnaire fait ce que fait `early_make_pgtable`** : il pose la
+    // feuille manquante, jette le code d'erreur, et rend la main par `iretq`.
+    // CR2 est lu dans RAX pour que le test voie ce que l'invité a vu.
+    let leaf = (RIG_ABSENT >> 12) & 0x1ff;
+    let mut handler: Vec<u8> = Vec::new();
+    put(&mut handler, &[0x0f, 0x20, 0xd0]); // mov %cr2,%rax
+    put(&mut handler, &[0x9c]); // pushfq — les drapeaux **dans** le gestionnaire
+    put(&mut handler, &[0x41, 0x58]); // pop %r8
+    put(&mut handler, &[0x48, 0xb9]); // movabs $(FRAME|présente|inscriptible),%rcx
+    put(&mut handler, &(RIG_FRAME | 0x3).to_le_bytes());
+    put(&mut handler, &[0x48, 0xbf]); // movabs $(PT + feuille*8),%rdi
+    put(&mut handler, &(RIG_PT + leaf * 8).to_le_bytes());
+    put(&mut handler, &[0x48, 0x89, 0x0f]); // mov %rcx,(%rdi)
+    put(&mut handler, &[0x48, 0x83, 0xc4, 0x08]); // add $8,%rsp — le code d'erreur
+    put(&mut handler, &[0x48, 0xcf]); // iretq
+    FaultRig {
+        program,
+        handler,
+        faults_at,
+        ud2_at,
+    }
+}
+
+/// Le pilote commun : les tables, l'IDT, et les trois régions par adresse.
+fn fault_driver(rig: &FaultRig, scratch: &Path, prints: &str) -> PathBuf {
+    let modules = [
+        ("programme.wasm", &rig.program[..], RIG_BASE, 0u32),
+        ("gestionnaire.wasm", &rig.handler[..], RIG_HANDLER, 1),
+        (
+            "reprise.wasm",
+            &rig.program[(rig.faults_at - RIG_BASE) as usize..],
+            rig.faults_at,
+            2,
+        ),
+    ];
+    let mut served = String::new();
+    for (name, bytes, at, slot) in modules {
+        let module = Module::resolving(bytes, at, 0, slot, RIG_PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        served.push_str(&format!(
+            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async (address, slot) => {{
+    asked++;
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+// L'identité sur les quatre premiers mébioctets, en deux grandes pages : le
+// code, les tables, l'IDT et la pile y vivent.
+vue.setBigUint64({pml4} + 0 * 8, {pdptLow}n | present, true);
+vue.setBigUint64({pdptLow} + 0 * 8, {pdLow}n | present, true);
+vue.setBigUint64({pdLow} + 0 * 8, 0n | present | 0x80n, true);
+vue.setBigUint64({pdLow} + 1 * 8, 0x20_0000n | present | 0x80n, true);
+// Les trois niveaux au-dessus de la page absente ; la feuille, non.
+vue.setBigUint64({pml4} + idx({absent}n, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx({absent}n, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx({absent}n, 21) * 8, {pt}n | present, true);
+vue.setBigUint64({frame}, {witness}n, true);
+// La porte 14 : une porte d'interruption (0x0E), présente, sélecteur 0x10,
+// sans pile d'interruption, vers le gestionnaire.
+const porte = (offset) => {{
+  const low = (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n);
+  return [low, BigInt(offset) >> 32n];
+}};
+const [bas, haut] = porte({handler});
+vue.setBigUint64({idt} + 14 * 16, bas, true);
+vue.setBigUint64({idt} + 14 * 16 + 8, haut, true);
+vue.setUint16({idtPointer}, 256 * 16 - 1, true);
+vue.setBigUint64({idtPointer} + 2, {idt}n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("demandes " + asked);
+{prints}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = RIG_PAGES,
+            rip = RIP_SLOT,
+            base = RIG_BASE,
+            handler = RIG_HANDLER,
+            idt = RIG_IDT,
+            idtPointer = RIG_IDT_POINTER,
+            absent = RIG_ABSENT,
+            pml4 = RIG_PML4,
+            pdpt = RIG_PDPT,
+            pd = RIG_PD,
+            pt = RIG_PT,
+            pdptLow = RIG_PDPT_LOW,
+            pdLow = RIG_PD_LOW,
+            frame = RIG_FRAME,
+            witness = RIG_WITNESS,
+        ),
+    )
+    .expect("le pilote");
+    driver
+}
+
+fn run_driver(bun: &Path, driver: &Path) -> String {
+    let output = Command::new(bun)
+        .arg("run")
+        .arg(driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    text
+}
+
+/// **Une faute de page est délivrée à l'invité, et `iretq` rejoue
+/// l'instruction fautive.**
+///
+/// C'est le mécanisme par lequel un noyau Linux cartographie à la demande :
+/// `idt_setup_early_handler` pose une IDT juste avant `copy_bootdata`, et
+/// `early_make_pgtable` pose la page que la faute désigne. Sans délivrance, la
+/// machine s'arrêtait à `copy_bootdata + 38` — sur une lecture correcte d'une
+/// adresse que ses tables ne portaient pas encore. Ce test est ce chemin-là en
+/// petit : une lecture qui faute, un gestionnaire qui pose la feuille, un
+/// `iretq`, et la même lecture qui aboutit.
+///
+/// **Ce que chaque assertion tient**, et pourquoi elle est là :
+/// - `rdx` porte le témoin : la lecture **rejouée** a traversé la page que le
+///   gestionnaire vient de poser ;
+/// - `rbx` a changé : l'exécution a **continué** après, elle ne s'est pas
+///   arrêtée à la reprise ;
+/// - `rax` porte CR2 : l'invité a vu l'adresse fautive, pas l'hôte seul ;
+/// - `rsp` est revenu : les cinq mots ont été dépilés, ni plus ni moins ;
+/// - le cadre en mémoire porte l'adresse fautive et un code d'erreur nul, à
+///   l'alignement de seize que le silicium impose ;
+/// - le témoin est effacé, et l'arrêt final est le `ud2`, pas une faute.
+#[test]
+fn a_page_fault_is_delivered_to_the_guest_and_iretq_resumes_the_faulting_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const STACK: u64 = 0x4_0000;
+    let rig = fault_rig(STACK);
+    let scratch = std::env::temp_dir().join(format!("wisq-host-deliver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = fault_driver(
+        &rig,
+        &scratch,
+        r#"console.log("rdx " + lire(2));
+console.log("rbx " + lire(3));
+console.log("rax " + lire(0));
+console.log("rsp " + lire(4));
+console.log("rip " + lire(RIP));
+console.log("faute " + lire(FAULT));
+const mot = (at) => vue.getBigUint64(at, true).toString();
+console.log("cadre-rip " + mot(STACK - 8 * 5));
+console.log("cadre-code " + mot(STACK - 8 * 6));
+console.log("cadre-rsp " + mot(STACK - 8 * 2));
+console.log("cadre-rflags " + mot(STACK - 8 * 3));
+console.log("r8 " + lire(8));
+console.log("rflags " + lire(RFLAGS));"#
+            .replace("RIP", &RIP_SLOT.to_string())
+            .replace("RFLAGS", &RFLAGS_SLOT.to_string())
+            .replace("FAULT", &FAULT_SLOT.to_string())
+            .replace("STACK", &STACK.to_string())
+            .as_str(),
+    );
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    assert_eq!(
+        line("arret "),
+        "refusée",
+        "l'arrêt final est le ud2 : {text}"
+    );
+    // **Quatre demandes, et chacune se nomme** : le programme, le
+    // gestionnaire, la reprise sur l'instruction fautive, et le `ud2` — pour
+    // lequel l'hôte demande une région qui commence là, et que le bouchon
+    // refuse. C'est ce refus-là qui fait l'arrêt « refusée ».
+    assert_eq!(
+        number("demandes "),
+        4,
+        "quatre régions demandées, pas une de plus : {text}"
+    );
+    assert_eq!(
+        number("rdx "),
+        RIG_WITNESS,
+        "la lecture rejouée a traversé la page posée"
+    );
+    assert_eq!(
+        number("rbx "),
+        RIG_AFTER,
+        "l'exécution a continué après la reprise"
+    );
+    assert_eq!(number("rax "), RIG_ABSENT, "l'invité a lu CR2");
+    assert_eq!(
+        number("rsp "),
+        STACK,
+        "iretq a dépilé les cinq mots, ni plus ni moins"
+    );
+    assert_eq!(number("rip "), rig.ud2_at, "RIP est sur le ud2");
+    assert_eq!(
+        number("faute "),
+        0,
+        "le témoin est effacé une fois la faute délivrée"
+    );
+    assert_eq!(
+        number("cadre-rip "),
+        rig.faults_at,
+        "le cadre porte l'instruction fautive"
+    );
+    assert_eq!(
+        number("cadre-code "),
+        0,
+        "une lecture sur une page absente : code d'erreur nul"
+    );
+    assert_eq!(
+        number("cadre-rsp "),
+        STACK,
+        "le cadre porte la pile d'avant"
+    );
+    // **IF : empilé allumé, éteint dans le gestionnaire, rallumé par `iretq`.**
+    // Une porte d'interruption masque les interruptions en entrant ; un
+    // gestionnaire qui les trouverait encore ouvertes pourrait être
+    // réinterrompu sur sa propre pile. Et c'est le cadre qui les rend.
+    const INTERRUPT_FLAG: u64 = 0x200;
+    assert_ne!(
+        number("cadre-rflags ") & INTERRUPT_FLAG,
+        0,
+        "le cadre porte IF allumé"
+    );
+    assert_eq!(
+        number("r8 ") & INTERRUPT_FLAG,
+        0,
+        "IF est éteint dans le gestionnaire"
+    );
+    assert_ne!(number("rflags ") & INTERRUPT_FLAG, 0, "iretq rallume IF");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une faute pendant la délivrance est nommée, pas cachée.** La pile de
+/// l'invité n'est cartographiée nulle part : poser le cadre faute à son tour.
+/// Sur le silicium c'est une double faute ; ici la machine s'arrête et dit
+/// que c'est la délivrance elle-même qui a fauté — sans quoi un noyau dont la
+/// pile d'entrée manque s'arrêterait « sur place » sans un mot, exactement la
+/// panne que le cœur Swift a mise une journée à trouver.
+#[test]
+fn a_fault_while_delivering_is_named_rather_than_hidden() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const UNMAPPED_STACK: u64 = 0xFFFF_8000_0030_0000;
+    let rig = fault_rig(UNMAPPED_STACK);
+    let scratch = std::env::temp_dir().join(format!("wisq-host-double-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = fault_driver(&rig, &scratch, "");
+    let text = run_driver(&bun, &driver);
+    let stopped = text
+        .lines()
+        .find_map(|l| l.strip_prefix("arret "))
+        .unwrap_or_else(|| panic!("le pilote doit dire « arret » : {text}"));
+    assert_eq!(
+        stopped,
+        "une faute pendant la délivrance d'une faute de page : la pile de l'invité n'est pas cartographiée",
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }
