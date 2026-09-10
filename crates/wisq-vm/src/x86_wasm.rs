@@ -268,6 +268,18 @@ pub const STOP_HALTED: u64 = 1;
 /// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
 pub const STOP_SELECTOR: u64 = 2;
 
+/// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
+/// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
+/// déjà posé **après** l'instruction : c'est un appel, et c'est là que
+/// l'`iretq` du gestionnaire reprend. L'hôte délivre le vecteur par le même
+/// chemin qu'une faute de page — sans code d'erreur — puis efface le témoin.
+///
+/// Un témoin plutôt qu'une globale de plus : les emplacements sont recopiés
+/// dans `web/host.js` et `WebKitBench.swift`, et trois modules sont épinglés
+/// en base64 ; une globale coûterait tout ça pour un nombre qui tient dans le
+/// témoin qui existe.
+pub const STOP_INTERRUPT: u64 = 0x100;
+
 /// **`IA32_EFER`, le quatrième MSR modélisé.**
 ///
 /// C'est le premier qu'un vrai noyau ait réclamé : Alpine s'arrêtait à
@@ -2888,6 +2900,21 @@ impl Module {
             body.op(code::RETURN);
             return Some(());
         }
+        // **`int3` et `int n` : le témoin porte le vecteur, et RIP est déjà
+        // après l'instruction.** Même chemin que `hlt`, à ceci près que l'hôte
+        // saura reprendre : il délivre le vecteur et efface le témoin.
+        if step.op == Op::SoftwareInterrupt {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address.wrapping_add(step.length as u64));
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_INTERRUPT | (step.imm & 0xff));
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            return Some(());
+        }
         // Ne rien faire n'émet rien.
         if step.op == Op::Nop {
             return Some(());
@@ -3048,7 +3075,8 @@ impl Module {
                 | Op::ReadControlRegister { .. }
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
-                | Op::Halt => {
+                | Op::Halt
+                | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
                 Op::Sub | Op::Cmp => {
@@ -3444,7 +3472,8 @@ impl Module {
             | Op::ReadControlRegister { .. }
             | Op::WriteControlRegister { .. }
             | Op::InterruptFlag(_)
-            | Op::Halt => {
+            | Op::Halt
+            | Op::SoftwareInterrupt => {
                 unreachable!(
                     "une instruction privilégiée n'est pas un calcul : `translate` la traite avant"
                 )
@@ -5554,6 +5583,26 @@ mod port_tests {
             Err(Refused::CannotTranslate { at }) => assert_eq!(at, 3, "à l'iretd, pas avant"),
             other => panic!("iretd doit être refusé en étant nommé, pas {other:?}"),
         }
+    }
+
+    /// **La retpoline, telle que le noyau la porte avant que les alternatives
+    /// ne la réécrivent.** `call +1 ; int3 ; mov %rax,(%rsp) ; ret` — le
+    /// `call` enjambe l'`int3`, qui n'est là que pour piéger la spéculation.
+    /// Il n'est jamais exécuté, et il arrêtait pourtant tout : la région
+    /// entière était refusée sur cet octet, à `__x86_indirect_thunk_rax`,
+    /// après 122 régions d'un vrai noyau.
+    #[test]
+    fn the_retpoline_thunk_translates_before_the_alternatives_rewrite_it() {
+        let thunk: &[u8] = &[
+            0xe8, 0x01, 0x00, 0x00, 0x00, // call +1
+            0xcc, // int3 — enjambé
+            0x48, 0x89, 0x04, 0x24, // mov %rax,(%rsp)
+            0xc3, // ret
+        ];
+        assert!(
+            Module::region_or_why(thunk, 0x1000, 0).is_ok(),
+            "le thunk se traduit, int3 compris"
+        );
     }
 
     /// **Les treize instructions du point d'entrée se lisent toutes — et ce qui

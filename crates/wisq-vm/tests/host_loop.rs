@@ -4768,3 +4768,215 @@ fn a_fault_while_delivering_is_named_rather_than_hidden() {
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **Un `int3` est délivré à l'invité, et `iretq` reprend à l'instruction
+/// suivante — pas sur l'`int3`.** C'est ce qui distingue une interruption
+/// logicielle d'une faute : c'est un appel, et RIP avance avant d'être
+/// empilé. Le cœur Swift le fait ainsi (`X86CoreDispatch.swift`, 0xCC/0xCD),
+/// et c'est la même délivrance que la faute de page, sans code d'erreur.
+///
+/// Pagination éteinte, exprès : ce test tient le chemin du témoin d'arrêt et
+/// l'adresse de reprise ; la marche est tenue par la délivrance de la faute.
+#[test]
+fn a_software_interrupt_is_delivered_and_returns_after_the_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // **Quatre pages, pas une** : l'IDT et son pointeur vivent à 0x12000 et
+    // 0x13000, et le pilote les écrit sans repli. Dans une RAM de 64 Kio ces
+    // écritures tombaient au-dessus de la RAM invitée — dans la correspondance
+    // de l'hôte — et la machine ne trouvait aucune porte.
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = 0x1_1000;
+    const IDT: u64 = 0x1_2000;
+    const IDT_POINTER: u64 = 0x1_3000;
+    const STACK: u64 = 0xf000;
+    fn put(into: &mut Vec<u8>, bytes: &[u8]) {
+        into.extend_from_slice(bytes);
+    }
+    let mut program: Vec<u8> = Vec::new();
+    put(&mut program, &[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    put(&mut program, &IDT_POINTER.to_le_bytes());
+    put(&mut program, &[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    put(&mut program, &[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    put(&mut program, &(STACK as u32).to_le_bytes());
+    put(&mut program, &[0x48, 0xc7, 0xc3, 0x11, 0x11, 0x00, 0x00]); // mov $0x1111,%rbx
+    put(&mut program, &[0xcc]); // int3
+    let after_int3 = BASE + program.len() as u64;
+    put(&mut program, &[0x48, 0xc7, 0xc3, 0x22, 0x22, 0x00, 0x00]); // mov $0x2222,%rbx
+    let ud2_at = BASE + program.len() as u64;
+    put(&mut program, &[0x0f, 0x0b]); // ud2
+    let handler: Vec<u8> = vec![
+        0x48, 0xc7, 0xc1, 0x33, 0x33, 0x00, 0x00, // mov $0x3333,%rcx
+        0x48, 0xcf, // iretq — pas de code d'erreur pour le vecteur 3
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-int3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (name, bytes, at, slot) in [
+        ("programme.wasm", &program[..], BASE, 0u32),
+        ("gestionnaire.wasm", &handler[..], HANDLER, 1),
+        (
+            "reprise.wasm",
+            &program[(after_int3 - BASE) as usize..],
+            after_int3,
+            2,
+        ),
+    ] {
+        let module = Module::resolving(bytes, at, 0, slot, PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        served.push_str(&format!(
+            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const porte = (offset) => [
+  (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n),
+  BigInt(offset) >> 32n,
+];
+const [bas, haut] = porte({handler});
+vue.setBigUint64({idt} + 3 * 16, bas, true);
+vue.setBigUint64({idt} + 3 * 16 + 8, haut, true);
+vue.setUint16({idtPointer}, 256 * 16 - 1, true);
+vue.setBigUint64({idtPointer} + 2, {idt}n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const mot = (at) => vue.getBigUint64(at, true).toString();
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("rsp " + lire(4));
+console.log("rip " + lire({rip}));
+console.log("stop " + lire({stop}));
+console.log("cadre-rip " + mot({stack} - 8 * 5));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            stop = wisq_vm::x86_wasm::STOP_SLOT,
+            base = BASE,
+            handler = HANDLER,
+            idt = IDT,
+            idtPointer = IDT_POINTER,
+            stack = STACK,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    assert_eq!(
+        line("arret "),
+        "refusée",
+        "l'arrêt final est le ud2 : {text}"
+    );
+    assert_eq!(
+        number("rcx "),
+        0x3333,
+        "le gestionnaire du vecteur 3 a tourné"
+    );
+    assert_eq!(
+        number("rbx "),
+        0x2222,
+        "la reprise est après l'int3, pas dessus"
+    );
+    assert_eq!(
+        number("cadre-rip "),
+        after_int3,
+        "le cadre porte l'instruction suivante"
+    );
+    assert_eq!(
+        number("rsp "),
+        STACK,
+        "iretq a rendu la pile : cinq mots, sans code d'erreur"
+    );
+    assert_eq!(number("rip "), ud2_at, "RIP est sur le ud2");
+    assert_eq!(
+        number("stop "),
+        0,
+        "le témoin d'arrêt est effacé une fois délivré"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Sans porte, une interruption logicielle est nommée**, comme la faute :
+/// « sur place » ne dirait pas qu'un `int3` a été exécuté sans IDT.
+#[test]
+fn a_software_interrupt_without_a_gate_is_named() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0xcc, // int3
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-int3-nu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la région se traduit");
+    let path = scratch.join("int3.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 4 }});
+console.log("arret " + why.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let stopped = text
+        .lines()
+        .find_map(|l| l.strip_prefix("arret "))
+        .unwrap_or_else(|| panic!("le pilote doit dire « arret » : {text}"));
+    assert_eq!(
+        stopped, "une interruption logicielle sans porte : aucune IDT ne porte le vecteur 3",
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
