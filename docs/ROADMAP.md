@@ -7281,3 +7281,55 @@ chemin, et le noyau en attend une — `secondary_startup_64` charge RSP depuis
 `initial_stack`, qui vit dans `.data`, que ce montage ne pose pas. C'est la
 mesure suivante, et elle se fera comme les précédentes : en faisant dire à la
 machine ce qu'elle fait, pas en relisant l'émetteur.
+
+## Quatre segments, pas un — et le noyau atteint son entrée C
+
+Le montage ne posait dans la RAM invitée que le segment portant le point
+d'entrée. Le vmlinux d'Alpine en a **quatre** :
+
+| segment | adresse physique | fichier | remarque |
+|---|---|---|---|
+| 0 | `0x1000000` | 18,9 Mio | le texte — le seul posé |
+| 1 | `0x2400000` | 5,9 Mio | `.data`, où vit `initial_stack` |
+| 2 | `0x29ea000` | 0,2 Mio | le percpu, lié à zéro |
+| 3 | `0x2a1b000` | 3,3 Mio | + 4,8 Mio de BSS |
+
+`secondary_startup_64` charge son pointeur de pile depuis `initial_stack`, qui
+vit dans le segment 1. La lecture rendait zéro, RSP valait zéro, et les
+empilements descendaient en négatif — le `rsp = 0xffffffffffffffe8` relevé à la
+tranche précédente. **Le BSS n'a rien à écrire** : une `WebAssembly.Memory`
+neuve est à zéro, et c'est exactement ce que le BSS demande.
+
+**La correction a deux moitiés, et la première seule ne suffisait pas.** Une
+fois les quatre segments posés, la machine a fini `secondary_startup_64` et
+sauté dans `x86_64_start_kernel`, à `0xffffffff82a3b700` — dans le segment 3.
+`compile` ne cherchait les octets que dans le texte, et rendait « hors du
+segment de texte » sur une adresse dont les octets étaient là. Chercher dans
+n'importe quel segment chargeable est l'autre moitié.
+
+| | avant | après |
+|---|---|---|
+| régions traduites | 12 | **48** |
+| arrêt | `secondary_startup_64_no_verify + 339` | `copy_bootdata + 38` |
+| RSP | `0xffffffffffffffe8` (−24) | `init_thread_union + 16160` |
+
+Entre les deux, la machine exécute `x86_64_start_kernel`, `tdx_early_init`,
+`native_cpuid`, et entre dans `copy_bootdata`. C'est du **C du noyau**, plus du
+code d'amorçage écrit en assembleur.
+
+**Le mur suivant est nommé, et il n'est pas le même.** À l'arrêt,
+`rdi = rsi = 0xffff888000000000` — `page_offset_base`, la base de la
+cartographie directe. `copy_bootdata` lit les `boot_params` par cette
+cartographie, que seules les tables de pages de l'invité décrivent. Le repli
+par masque, qui a suffi jusqu'ici parce que le noyau tournait sur des adresses
+basses, ne peut rien pour celle-là : `0xffff888000000000` replié sur 64 Mio
+donne zéro. C'est la traduction par CR3 qu'il faut, et l'émetteur sait la faire
+depuis les tranches P1 et P2 — reste à mesurer ce que l'hôte en fait, plutôt
+que de le supposer.
+
+**Ce que la lecture des segments a gagné en passant dans le module** : elle
+était écrite à la main dans l'exemple, donc tenue par rien. Dans
+`kernel_image.rs`, elle est tenue par quatre sabotages — dont celui qui
+compterait un `PT_NOTE` comme un segment à charger, et celui qui lirait
+`memory_size` là où `file_size` est attendu, ce qui ferait lire au-delà du
+fichier.

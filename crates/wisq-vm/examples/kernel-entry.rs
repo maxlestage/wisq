@@ -39,6 +39,7 @@
 //! rendait « quatre instructions puis un octet illisible », ce qui ressemblait
 //! à un résultat. L'adresse du point d'entrée est **virtuelle** ; le décalage
 //! se lit par les en-têtes de programme, et c'est cet outil qui le fait.
+use wisq_vm::kernel_image::loads;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{Module, RIP_SLOT};
 
@@ -54,55 +55,6 @@ const PAGES: u32 = 1024; // 64 Mio
 /// Ce que Linux ajoute à une adresse physique de texte pour en faire une
 /// adresse virtuelle. `__START_KERNEL_map`, dans ses propres termes.
 const KERNEL_MAP: u64 = 0xffff_ffff_8000_0000;
-
-/// Un segment `PT_LOAD` de l'ELF : où il vit, et ce qu'il porte.
-struct Load {
-    offset: u64,
-    virtual_address: u64,
-    size: u64,
-}
-
-impl Load {
-    /// **Où ce segment vit vraiment dans la RAM invitée.** L'ELF du noyau est
-    /// lié à `__START_KERNEL_map` ; il est chargé, lui, à son adresse physique,
-    /// et c'est là que la machine l'exécute. Une seule soustraction, nommée une
-    /// fois, plutôt que quatre soustractions éparpillées dont l'une finit par
-    /// manquer.
-    fn physical_address(&self) -> u64 {
-        self.virtual_address - KERNEL_MAP
-    }
-}
-
-/// Lire les en-têtes de programme. Fait à la main plutôt qu'avec une
-/// bibliothèque : cinq champs, et une dépendance de plus pour un outil de
-/// mesure serait un coût permanent pour un besoin unique.
-fn segments(image: &[u8]) -> Option<(u64, Vec<Load>)> {
-    (image.get(..4)? == b"\x7fELF").then_some(())?;
-    let word = |at: usize| -> Option<u64> {
-        Some(u64::from_le_bytes(image.get(at..at + 8)?.try_into().ok()?))
-    };
-    let half = |at: usize| -> Option<u16> {
-        Some(u16::from_le_bytes(image.get(at..at + 2)?.try_into().ok()?))
-    };
-    let entry = word(24)?;
-    let table = word(32)? as usize;
-    let each = half(54)? as usize;
-    let count = half(56)? as usize;
-    let mut loads = Vec::new();
-    for index in 0..count {
-        let at = table + index * each;
-        let kind = u32::from_le_bytes(image.get(at..at + 4)?.try_into().ok()?);
-        if kind != 1 {
-            continue;
-        }
-        loads.push(Load {
-            offset: word(at + 8)?,
-            virtual_address: word(at + 16)?,
-            size: word(at + 32)?,
-        });
-    }
-    Some((entry, loads))
-}
 
 /// **Toute adresse imprimée passe par là.** Un relevé qui rend
 /// « rip 0xffffffff81000642 » n'apprend rien à personne : la feuille de route a
@@ -156,7 +108,7 @@ fn main() {
         None => Symbols::default(),
     };
     let image = std::fs::read(&path).expect("le fichier");
-    let Some((entry, loads)) = segments(&image) else {
+    let Some((entry, segments)) = loads(&image) else {
         eprintln!(
             "{path} n'est pas un ELF. Ce n'est pas le bzImage qu'il faut donner \
              mais sa charge utile décompressée — voir l'en-tête de ce fichier."
@@ -184,19 +136,19 @@ fn main() {
     // `kernelAddress + 0x200`, en physique, depuis toujours. C'est la troisième
     // fois qu'une sonde de ce dépôt mesure autre chose que ce qui tourne.
     let entry_virtual = entry;
-    let Some(text) = loads.iter().find(|load| {
-        load.virtual_address - KERNEL_MAP <= entry_virtual
-            && entry_virtual < load.virtual_address - KERNEL_MAP + load.size
+    let Some(text) = segments.iter().find(|load| {
+        load.physical_address <= entry_virtual
+            && entry_virtual < load.physical_address + load.memory_size
     }) else {
         eprintln!("aucun segment ne porte le point d'entrée 0x{entry_virtual:x}");
         std::process::exit(1);
     };
-    let physical = text.physical_address();
+    let physical = text.physical_address;
     let ram = u64::from(PAGES) * 65536;
     println!("point d'entrée : 0x{entry:x} physique, 0x{entry_virtual:x} virtuel");
     println!(
         "texte : 0x{physical:x} physique, {:.1} Mio, décalage 0x{:x} dans le fichier",
-        text.size as f64 / (1024.0 * 1024.0),
+        text.file_size as f64 / (1024.0 * 1024.0),
         text.offset
     );
     let folded = Module::fold(entry_virtual, PAGES);
@@ -209,10 +161,18 @@ fn main() {
             "NE TOMBE PAS sur l'adresse physique ; la région ne sera pas trouvée"
         }
     );
-    if physical + text.size > ram {
+    // **Le sommet de tout ce qui sera posé**, pas seulement du texte. C'est le
+    // BSS du dernier segment qui décide, et il n'est porté par aucun octet du
+    // fichier.
+    let top = segments
+        .iter()
+        .map(|load| load.physical_address + load.memory_size)
+        .max()
+        .unwrap_or(0);
+    if top > ram {
         println!(
-            "le texte déborde la RAM déclarée : il en faudrait {:.0} Mio",
-            (physical + text.size) as f64 / (1024.0 * 1024.0)
+            "le noyau déborde la RAM déclarée : il en faudrait {:.0} Mio",
+            top as f64 / (1024.0 * 1024.0)
         );
     }
 
@@ -231,10 +191,17 @@ fn main() {
         // que `secondary_startup_64` a chargé CR3. L'outil s'arrêtait donc
         // exactement là, sur une région qu'il avait les octets pour traduire.
         let folded = Module::fold(at, PAGES);
-        if folded < text.physical_address() || folded >= text.physical_address() + text.size {
-            return Err("hors du segment de texte".to_string());
-        }
-        let from = (folded - text.physical_address() + text.offset) as usize;
+        // **Dans n'importe quel segment, pas seulement le texte.** Une fois
+        // les quatre posés, le noyau saute pour de bon dans le dernier :
+        // `x86_64_start_kernel` vit à `0xffffffff82a3b700`. Ne chercher que
+        // dans le texte rendait « hors du segment de texte » sur une adresse
+        // dont les octets étaient là.
+        let Some(load) = segments.iter().find(|load| {
+            folded >= load.physical_address && folded < load.physical_address + load.file_size
+        }) else {
+            return Err("hors de tout segment chargeable".to_string());
+        };
+        let from = (folded - load.physical_address + load.offset) as usize;
         let window = &image[from..(from + 16384).min(image.len())];
         Module::resolving_or_why(window, at, 0, slot, PAGES).map_err(|why| format!("{why:?}"))
     };
@@ -257,11 +224,54 @@ fn main() {
     let scratch = std::env::temp_dir().join(format!("wisq-kernel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
-    // Le texte entier, pour que les sauts internes trouvent quelque chose
-    // plutôt que des zéros — ce qui ferait décoder du vide comme du code.
-    let text_path = scratch.join("texte.bin");
-    let end = (text.offset + text.size).min(image.len() as u64) as usize;
-    std::fs::write(&text_path, &image[text.offset as usize..end]).expect("le texte");
+    // **Tous les segments, pas seulement le texte.**
+    //
+    // Le montage n'en posait qu'un, et le noyau en a quatre. `.data` porte
+    // `initial_stack`, d'où `secondary_startup_64` charge son pointeur de
+    // pile : sans ce segment la lecture rendait zéro, RSP valait zéro, et les
+    // empilements descendaient en négatif — `rsp = 0xffffffffffffffe8`, relevé
+    // à `secondary_startup_64_no_verify + 339`.
+    //
+    // Le BSS n'a rien à écrire : une `WebAssembly.Memory` neuve est à zéro, et
+    // c'est exactement ce que le BSS demande. Ce qui compte est de ne pas
+    // *lire* au-delà du fichier, d'où `file_size` et non `memory_size`.
+    let mut placed: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    for (index, load) in segments.iter().enumerate() {
+        if load.file_size == 0 {
+            continue;
+        }
+        let path = scratch.join(format!("segment{index}.bin"));
+        let from = load.offset as usize;
+        let to = (load.offset + load.file_size) as usize;
+        std::fs::write(&path, &image[from..to]).expect("le segment");
+        let bss = if load.memory_size > load.file_size {
+            format!(
+                " (+ {:.1} Mio de BSS, déjà à zéro)",
+                (load.memory_size - load.file_size) as f64 / (1024.0 * 1024.0)
+            )
+        } else {
+            String::new()
+        };
+        println!(
+            "segment {index} : 0x{:x} physique, {:.1} Mio{bss}",
+            load.physical_address,
+            load.file_size as f64 / (1024.0 * 1024.0)
+        );
+        placed.push((path, load.physical_address));
+    }
+
+    // **Ce que le pilote JavaScript recevra**, calculé ici plutôt que dans les
+    // arguments du `format!` d'après : un `format!` dans un `format!` est
+    // refusé par clippy, et il a raison — le texte engendré s'y lit deux fois
+    // moins bien.
+    let placements = format!(
+        "[{}]",
+        placed
+            .iter()
+            .map(|(path, at)| format!("[{:?}, {at}]", path.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     // **Une région de plus par tour, et on recommence depuis le début.**
     //
@@ -317,7 +327,9 @@ const vm = machine({{
   }},
   pages: {pages},
 }});
-new Uint8Array(vm.memory.buffer).set(readFileSync({text:?}), {physical});
+for (const [path, at] of {placements}) {{
+  new Uint8Array(vm.memory.buffer).set(readFileSync(path), at);
+}}
 vm.globals[{rip}].value = {entry}n;
 const why = await vm.run({{ budget: 1n << 24n, rounds: 4096 }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
@@ -358,8 +370,7 @@ console.log("registres " + noms
   .join(" "));
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
-                text = text_path.to_string_lossy(),
-                physical = physical,
+                placements = placements,
                 pages = PAGES,
                 rip = RIP_SLOT,
                 entry = entry_virtual,
@@ -460,7 +471,12 @@ console.log("registres " + noms
             // nombre, elle **paniquait** — « range start index
             // 18446744071564165438 out of range for slice of length 35842660 ».
             let folded = Module::fold(*base, PAGES);
-            let Ok(from) = usize::try_from(folded - text.physical_address() + text.offset) else {
+            let Some(load) = segments.iter().find(|load| {
+                folded >= load.physical_address && folded < load.physical_address + load.file_size
+            }) else {
+                continue;
+            };
+            let Ok(from) = usize::try_from(folded - load.physical_address + load.offset) else {
                 continue;
             };
             let window = &image[from..(from + 16384).min(image.len())];
