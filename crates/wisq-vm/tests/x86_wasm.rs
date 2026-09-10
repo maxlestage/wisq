@@ -2145,12 +2145,15 @@ console.log("rdx " + slots[2].value.toString());
 /// franc — aucune quantité d'octets supplémentaires ne le rendrait lisible.
 const UNKNOWN: u8 = 0x06;
 
-/// **Une région coupée en plein milieu d'une instruction le dit.**
+/// **Une région dont la première instruction est coupée le dit.**
 ///
 /// `48 b8` suivi de huit octets charge une constante de soixante-quatre bits
 /// dans RAX. Coupée à cinq octets, elle ne se décode pas — mais elle se
 /// décoderait très bien avec la suite, et c'est toute la différence : la vue
-/// doit redemander, pas abandonner.
+/// doit redemander, pas abandonner. C'est le seul cas où redemander est le
+/// seul remède : **rien** n'est complet devant la coupe. Dès qu'une
+/// instruction l'est, la région se traduit jusqu'à la coupe — le test qui suit
+/// le tient.
 #[test]
 fn a_region_cut_in_the_middle_of_an_instruction_asks_for_more() {
     let whole = [0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8, 0xc3];
@@ -2162,6 +2165,124 @@ fn a_region_cut_in_the_middle_of_an_instruction_asks_for_more() {
         Module::region_or_why(&whole[..5], CODE, 0),
         Err(Refused::MayBeCut { at: 0 }),
         "coupée, elle demande davantage d'octets"
+    );
+}
+
+/// **Une région coupée après une instruction complète se traduit jusqu'à la
+/// coupe, et rend la main dessus.**
+///
+/// C'est le mur de `setup_arch` : le relevé du noyau atteignait le dernier
+/// octet d'une fenêtre de seize kibioctets, et la région **entière** était
+/// refusée `MayBeCut { at: 16383 }` — alors que seize kibioctets de blocs
+/// complets se traduisaient, et que l'instruction à cheval n'est qu'une cible
+/// de plus, hors région, que l'hôte sait résoudre. La vue redemandait avec la
+/// même fenêtre, c'était déjà la grande, et elle abandonnait.
+///
+/// Ce que chaque assertion tient :
+/// - la région se traduit, au lieu de demander davantage ;
+/// - le relevé s'arrête **devant** l'instruction coupée : un bloc, une
+///   instruction, sans terminateur, qui reprend à trois ;
+/// - à l'exécution, l'`incq` a eu lieu et RIP est posé **sur** la coupe, pas
+///   avant, pas après — c'est là que l'hôte traduira la suite (la forme libre
+///   ne rend pas d'indice ; la main rendue se lit à ce que `run` revient avec
+///   du budget devant lui) ;
+/// - une cible qui tombe **sur** l'instruction coupée sort de la région, par
+///   quelque route qu'on y arrive : ni bloc vide, ni refus.
+#[test]
+fn a_region_cut_after_a_complete_instruction_translates_up_to_the_cut() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // `incq %rdx` (trois octets), puis un `movabs` coupé à cinq octets sur dix.
+    let bytes = [0x48, 0xff, 0xc2, 0x48, 0xb8, 1, 2, 3];
+    let module = match Module::region_or_why(&bytes, CODE, 0) {
+        Ok(module) => module,
+        Err(why) => panic!("la région doit se traduire jusqu'à la coupe, pas {why:?}"),
+    };
+    let outline = Module::outline(&bytes, 0).expect("le relevé de la région coupée");
+    assert_eq!(outline.len(), 1, "un seul bloc : {outline:?}");
+    assert_eq!(
+        (
+            outline[0].start,
+            outline[0].after,
+            outline[0].steps,
+            outline[0].ends
+        ),
+        (0, 3, 1, None),
+        "le bloc s'arrête devant l'instruction coupée, sans terminateur : {outline:?}"
+    );
+
+    // **Une cible posée sur la coupe.** `jz +0` vise l'octet d'après, qui est
+    // l'instruction coupée : la cible sort de la région, et l'autre issue
+    // aussi.
+    let aimed = [0x48, 0xff, 0xc2, 0x74, 0x00, 0x48, 0xb8, 1, 2];
+    let outline = Module::outline(&aimed, 0).expect("le relevé");
+    assert_eq!(
+        outline.len(),
+        1,
+        "l'instruction coupée ne fait pas un bloc : {outline:?}"
+    );
+    assert_eq!(
+        (outline[0].after, outline[0].target, outline[0].goes),
+        (5, Some(5), None),
+        "la cible sur la coupe sort de la région : {outline:?}"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-coupe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const bytes = fs.readFileSync({:?});
+const memory = new WebAssembly.Memory({{ initial: {} }});
+const slots = [];
+for (let slot = 0; slot < {}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
+slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+slots[2].value = 0n;            // rdx : le témoin
+slots[4].value = 0x30003000n;   // rsp
+instance.exports.run(64n);
+console.log(JSON.stringify({{
+  rdx: slots[2].value.toString(),
+  rip: BigInt.asUintN(64, slots[{}].value).toString(16),
+}}));
+"#,
+            path.to_string_lossy(),
+            GUEST_PAGES,
+            GLOBAL_COUNT,
+            RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"rdx\":\"1\""),
+        "l'instruction complète devait avoir eu lieu, il a rendu {text}"
+    );
+    assert!(
+        text.contains("\"rip\":\"30000003\""),
+        "le module devait rendre la main **sur** la coupe, à 0x30000003 : il a rendu {text}"
     );
 }
 
@@ -2184,7 +2305,12 @@ fn an_instruction_the_decoder_does_not_know_is_a_flat_refusal() {
 /// C'est le test qui compte : le même octet inconnu, à la même place, ne rend
 /// pas la même réponse selon ce qui le suit. Quinze octets après lui, le
 /// décodeur avait toute la place qu'une instruction x86-64 peut demander —
-/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe.
+/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe :
+/// la région se traduit **jusque-là**, et la reprise à trois laissera l'hôte
+/// juger l'octet avec une fenêtre entière devant lui. Avant la tranche qui a
+/// levé le mur de `setup_arch`, cette moitié rendait `MayBeCut { at: 3 }` et
+/// la région entière était refusée ; les trois `nop` complets ne servaient à
+/// rien.
 ///
 /// Sans les deux moitiés, un seuil de zéro ou de mille passerait aussi bien.
 #[test]
@@ -2196,16 +2322,22 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
         bytes.push(UNKNOWN);
         bytes.extend(std::iter::repeat_n(0x90, restants - 1));
         assert_eq!(bytes.len() - 3, restants, "le montage du cas lui-même");
-        Module::region_or_why(&bytes, CODE, 0)
+        (
+            Module::region_or_why(&bytes, CODE, 0).map(|_| ()),
+            Module::outline(&bytes, 0)
+                .ok()
+                .map(|blocks| blocks[0].after),
+        )
     };
     assert_eq!(
         region(14),
-        Err(Refused::MayBeCut { at: 3 }),
-        "quatorze octets restants : le décodeur a pu manquer de place"
+        (Ok(()), Some(3)),
+        "quatorze octets restants : le décodeur a pu manquer de place, la région \
+         se traduit jusqu'à l'octet fautif et reprend dessus"
     );
     assert_eq!(
         region(15),
-        Err(Refused::CannotDecode { at: 3 }),
+        (Err(Refused::CannotDecode { at: 3 }), None),
         "quinze restants : il avait toute la place, donc c'est un vrai refus"
     );
 }
