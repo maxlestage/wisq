@@ -1692,21 +1692,13 @@ impl Module {
         shape: Shape,
     ) {
         // Deux valeurs à poser : l'adresse d'arrivée et l'indice du bloc.
-        // `sortie` vaut -1 quand la cible n'est pas dans la région.
-        // **L'emplacement de la région, ajouté à chaque indice.** Un bloc rend
-        // un indice **absolu** dans la table de l'hôte, pas un numéro local :
-        // voir la répartition, qui n'ajoute plus rien.
-        let at_slot = shape.shared.unwrap_or(0);
+        // Quand la cible n'est pas dans la région, c'est `aim` qui décide :
+        // la correspondance si la forme en a une, `-1` sinon.
         let place = |body: &mut Body, offset: i64| {
             body.store(RIP_SLOT, |b| {
                 b.constant(base.wrapping_add(offset as u64));
             });
-            let next = match usize::try_from(offset).ok().and_then(&index) {
-                Some(block) => i64::from(block as u32 + at_slot),
-                None => -1,
-            };
-            body.bytes.push(code::I32_CONST);
-            signed(next, &mut body.bytes);
+            Self::aim(body, usize::try_from(offset).ok().and_then(&index), shape);
         };
 
         let Some(step) = last else {
@@ -1741,7 +1733,7 @@ impl Module {
                     Self::condition(condition, b);
                     b.op(code::I32_WRAP_I64).op(code::SELECT);
                 });
-                Self::choose(body, target, after as i64, index, at_slot, |b| {
+                Self::choose(body, target, after as i64, index, shape, |b| {
                     Self::condition(condition, b);
                 });
             }
@@ -1758,7 +1750,7 @@ impl Module {
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::SELECT);
                 });
-                Self::choose(body, target, after as i64, index, at_slot, |b| {
+                Self::choose(body, target, after as i64, index, shape, |b| {
                     b.load(Self::slot(1)).constant(0).op(code::I64_NE);
                     b.op(code::I64_EXTEND_I32_U);
                 });
@@ -2008,23 +2000,54 @@ impl Module {
         body.op(code::SELECT);
     }
 
-    /// Choisir entre deux indices de bloc selon un prédicat `i64`.
+    /// **Pousser l'indice d'une cible statique.**
+    ///
+    /// Un bloc de la région : son indice **absolu** dans la table de l'hôte —
+    /// l'emplacement de la région ajouté au numéro local, voir la répartition,
+    /// qui n'ajoute plus rien. Sinon la correspondance, si la forme en a une,
+    /// et `-1` seulement quand elle ne connaît pas l'adresse, ou qu'il n'y en
+    /// a pas.
+    ///
+    /// **C'est ici qu'un `call` vers une autre fonction cesse de repasser par
+    /// l'hôte.** Jusqu'à cette tranche, seules les formes indirectes — `ret`,
+    /// `jmp *`, `call *` — consultaient la correspondance, dans `resolve` ;
+    /// une cible statique hors région rendait la main, et le noyau Alpine
+    /// payait un aller-retour par l'hôte à chaque appel de son comparateur
+    /// dans `sort_r` : une comparaison par tour, 4096 tours, et le pilote
+    /// prenait ça pour la fin. La correspondance lit RIP, que l'appelant
+    /// vient de poser sur la cible — et pour un saut conditionnel, sur la
+    /// cible **choisie** : la valeur poussée pour l'autre issue est fausse
+    /// mais écartée par le `select` qui suit.
+    fn aim(body: &mut Body, block: Option<usize>, shape: Shape) {
+        match (block, Self::lookup_base(shape)) {
+            (Some(block), _) => {
+                body.bytes.push(code::I32_CONST);
+                signed(
+                    i64::from(block as u32 + shape.shared.unwrap_or(0)),
+                    &mut body.bytes,
+                );
+            }
+            (None, Some((base, _))) => Self::lookup(base, body),
+            (None, None) => {
+                body.bytes.push(code::I32_CONST);
+                signed(-1, &mut body.bytes);
+            }
+        }
+    }
+
+    /// Choisir entre deux indices de bloc selon un prédicat `i64`. RIP porte
+    /// déjà l'adresse choisie : c'est ce que `aim` lit pour une issue hors
+    /// région.
     fn choose(
         body: &mut Body,
         taken: i64,
         fallen: i64,
         index: &impl Fn(usize) -> Option<usize>,
-        at_slot: u32,
+        shape: Shape,
         condition: impl FnOnce(&mut Body),
     ) {
-        let resolve = |offset: i64| match usize::try_from(offset).ok().and_then(index) {
-            Some(block) => i64::from(block as u32 + at_slot),
-            None => -1,
-        };
-        body.bytes.push(code::I32_CONST);
-        signed(resolve(taken), &mut body.bytes);
-        body.bytes.push(code::I32_CONST);
-        signed(resolve(fallen), &mut body.bytes);
+        Self::aim(body, usize::try_from(taken).ok().and_then(index), shape);
+        Self::aim(body, usize::try_from(fallen).ok().and_then(index), shape);
         condition(body);
         body.op(code::I32_WRAP_I64).op(code::SELECT);
     }
