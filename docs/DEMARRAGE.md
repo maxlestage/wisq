@@ -187,6 +187,7 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `lkgs` — la base GS du noyau depuis un sélecteur | **décodée**, arrêt nommé si elle est atteinte, RIP dessus ; le noyau ne l'exécute que si CPUID annonce `LKGS`, et `cpuid` ne l'annonce pas |
 | `vmcall`, `vmmcall` — l'appel à l'hyperviseur | **décodés**, arrêt nommé s'ils sont atteints, RIP dessus ; la sonde VMware du noyau ne les exécute que si CPUID annonce sa signature, et `cpuid` ne l'annonce pas |
 | `invpcid` — purger le tampon par identifiant de contexte | **décodée** (`66 0f 38 82 /r`, forme mémoire, et rien d'autre de la page `0f 38`), arrêt nommé si elle est atteinte, RIP dessus ; `native_flush_tlb_one_user` ne l'exécute que si CPUID annonce `PCID` et `INVPCID`, et `cpuid` n'annonce ni l'un ni l'autre |
+| `ltr` — charger le registre de tâche | **produite** (`0f 00 /3`, forme registre, et rien d'autre du groupe 6) : le sélecteur est rangé, seize bits, dans sa case ; aucun descripteur n'est lu derrière, et la délivrance dit toujours « cette machine n'a pas de TSS » |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **interruption de matériel** | n'existe pas |
 

@@ -101,7 +101,11 @@ export const SLOTS = {
   /// lit, y pose SCE et NX, et le réécrit ; c'est sur ce `rdmsr` qu'Alpine
   /// s'arrêtait, faute qu'il existe.
   efer: 52,
-  globalCount: 53,
+  /// **Le registre de tâche** : le sélecteur que `ltr` a chargé, seize bits,
+  /// zéro tant qu'aucun chargeur n'est passé. Aucun descripteur n'est lu
+  /// derrière — la délivrance dit toujours « cette machine n'a pas de TSS ».
+  task: 53,
+  globalCount: 54,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,

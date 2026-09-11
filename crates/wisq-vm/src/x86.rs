@@ -542,6 +542,18 @@ pub enum Op {
     /// cela, refusée par nom à l'exécution ; le préfixe `66` fait partie de
     /// l'opcode, et le reste de la page `0F 38` reste illisible.
     InvalidatePcid,
+    /// **`0F 00 /3`, forme à registre : charger le registre de tâche.**
+    ///
+    /// `ltr` prend un sélecteur, celui du TSS du processeur — la structure
+    /// où le silicium va chercher la pile de secours à chaque entrée
+    /// d'exception. Le noyau Alpine l'exécute dans
+    /// `cpu_init_exception_handling`, avec `0x40`, à 72 octets de
+    /// `native_load_tr_desc` : ce n'est pas la famille de l'`int3`, celle-là
+    /// tourne. L'émetteur range le sélecteur, seize bits, dans sa case ;
+    /// l'interpréteur la refuse par nom, faute de table où trouver le TSS. Le
+    /// reste du groupe 6 — `sldt`, `str`, `lldt`, `verr`, `verw` — et la forme
+    /// mémoire restent illisibles : le noyau ne les écrit pas ici.
+    LoadTaskRegister,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1948,6 +1960,7 @@ impl Cpu {
                 | Op::LoadKernelGs
                 | Op::HypervisorCall { .. }
                 | Op::InvalidatePcid
+                | Op::LoadTaskRegister
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2230,6 +2243,7 @@ impl Cpu {
             | Op::LoadKernelGs
             | Op::HypervisorCall { .. }
             | Op::InvalidatePcid
+            | Op::LoadTaskRegister
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2761,6 +2775,25 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // les tient). Avec un opérande registre, le même numéro de
             // `reg` veut dire une barrière. C'est `mod` qui tranche, et
             // tout ce qui n'est pas une des trois barrières se refuse.
+            // **Le groupe 6, ouvert pour `ltr` et elle seule.** Charger le
+            // registre de tâche est `/3` en forme à **registre** ; le noyau
+            // l'écrit ainsi, `0f 00 d8`, et pas autrement. `sldt`, `str`,
+            // `lldt`, `verr`, `verw` et la forme mémoire restent illisibles :
+            // les lire pour « le groupe » rendrait un nom faux pour cinq
+            // voisines. `lkgs`, `/6` derrière `f2`, a sa propre entrée avant
+            // le décodage des préfixes.
+            0x00 => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                if field.memory.is_some() || field.reg & 0b111 != 3 {
+                    return None;
+                }
+                Some(Decoded {
+                    op: Op::LoadTaskRegister,
+                    dst: field.register,
+                    length: at,
+                    ..Decoded::nothing(Width::Word)
+                })
+            }
             // **La troisième page, `0F 38`, ouverte pour une seule
             // instruction.** `invpcid` est `66 0F 38 82 /r`, et le `66` n'y
             // est pas un préfixe de largeur : c'est un octet de l'opcode, qui
@@ -4504,6 +4537,62 @@ mod tests {
             cpu.faulted,
             "invpcid est une faute nommée pour l'interpréteur"
         );
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
+        );
+    }
+
+    /// **`ltr` se lit dans sa forme à registre, et le reste du groupe 6 reste
+    /// illisible.**
+    ///
+    /// `0f 00 /3`, opérande en registre : charger le registre de tâche depuis
+    /// un sélecteur. Le noyau Alpine l'écrit à 72 octets de
+    /// `native_load_tr_desc` — `0f 00 d8`, `ltr %eax`, avec `0x40` dedans —
+    /// depuis `cpu_init_exception_handling`, et **l'exécute** : ce n'est pas
+    /// la famille de l'`int3`. C'est le TSS du processeur, sans lequel aucune
+    /// entrée d'exception ne connaît sa pile de secours.
+    ///
+    /// **Le groupe n'est pas ouvert pour autant.** `sldt`, `str`, `lldt`,
+    /// `verr`, `verw` restent illisibles ; la forme mémoire de `ltr` aussi,
+    /// parce que le noyau ne l'écrit pas et que la lire serait deviner. `/6`
+    /// sans `f2` n'est toujours rien. L'interpréteur la refuse par nom, RIP
+    /// dessus : il n'a pas de table de descripteurs où trouver le TSS.
+    #[test]
+    fn ltr_is_read_in_its_register_form_and_the_rest_of_group_six_stays_refused() {
+        let step = decode(&[0x0f, 0x00, 0xd8]).expect("ltr %eax se décode");
+        assert_eq!(step.op, Op::LoadTaskRegister);
+        assert_eq!(step.length, 3, "deux d'opcode, un de ModRM");
+        assert_eq!(step.dst, 0, "le sélecteur vient d'EAX");
+        assert!(
+            step.memory.is_none(),
+            "la forme à registre ne touche pas la mémoire"
+        );
+        let rcx = decode(&[0x0f, 0x00, 0xd9]).expect("ltr %ecx se décode");
+        assert_eq!((rcx.op, rcx.dst), (Op::LoadTaskRegister, 1));
+        let r8 = decode(&[0x41, 0x0f, 0x00, 0xd8]).expect("ltr %r8w se décode");
+        assert_eq!((r8.op, r8.dst, r8.length), (Op::LoadTaskRegister, 8, 4));
+
+        for (bytes, why) in [
+            (&[0x0f, 0x00, 0x18][..], "la forme mémoire n'est pas lue"),
+            (&[0x0f, 0x00, 0xc0][..], "sldt (/0) n'est pas lu"),
+            (&[0x0f, 0x00, 0xc8][..], "str (/1) n'est pas lu"),
+            (&[0x0f, 0x00, 0xd0][..], "lldt (/2) n'est pas lu"),
+            (&[0x0f, 0x00, 0xe0][..], "verr (/4) n'est pas lu"),
+            (&[0x0f, 0x00, 0xe8][..], "verw (/5) n'est pas lu"),
+            (&[0x0f, 0x00, 0xf0][..], "/6 sans f2 n'est rien"),
+            (&[0x0f, 0x00, 0xf8][..], "/7 ne désigne rien"),
+            (&[0x0f, 0x00][..], "coupée avant son ModRM"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x00, 0xd8]);
+        assert!(cpu.faulted, "ltr est une faute nommée pour l'interpréteur");
         assert_eq!(
             cpu.rip, 0x3000_0000,
             "et le pointeur d'instruction reste dessus"

@@ -329,8 +329,25 @@ pub const MSR_EFER: u64 = 0xc000_0080;
 /// **importées** : leur valeur de départ appartient à l'hôte, pas au module.
 pub const EFER_LONG_MODE: u64 = (1 << 8) | (1 << 10);
 
+/// **Le registre de tâche : le sélecteur que `ltr` a chargé.**
+///
+/// Le noyau Alpine l'exécute dans `cpu_init_exception_handling`, avec `0x40`
+/// — le sélecteur de son TSS —, et c'est le premier mur depuis la retpoline
+/// qui n'est pas atteint statiquement mais **exécuté**. Il lui faut donc une
+/// case, comme aux six segments : un nombre que l'invité range, seize bits,
+/// et qui part à zéro — « aucun chargeur n'est passé ici ».
+///
+/// **Ce que ce nombre n'est pas** : aucun descripteur n'est lu derrière lui.
+/// La délivrance de `web/host.js` dit toujours « cette machine n'a pas de
+/// TSS » devant une porte à pile d'interruption ; ce que les piles IST feront
+/// de ce sélecteur est une question de direction, posée quand elle sera
+/// atteinte. Une globale coûte `host.js`, `WebKitBench.swift` et trois modules
+/// épinglés — le prix a été pesé pour le témoin d'interruption, et refusé ;
+/// ici c'est un registre que l'invité charge, pas un nombre de l'hôte.
+pub const TASK_SLOT: usize = EFER_SLOT + 1;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = EFER_SLOT + 1;
+pub const GLOBAL_COUNT: usize = TASK_SLOT + 1;
 
 /// CR0.PG — le bit qui allume la pagination.
 pub const PAGING_BIT: u64 = 1 << 31;
@@ -3012,6 +3029,18 @@ impl Module {
             body.op(code::RETURN);
             return Some(());
         }
+        // **`ltr` range le sélecteur et continue.** Seize bits, quelle que soit
+        // la largeur de la source — comme ES, SS et DS. Rien n'est lu derrière :
+        // le TSS reste inconnu de la délivrance, qui le dit.
+        if step.op == Op::LoadTaskRegister {
+            step.memory.is_none().then_some(())?;
+            body.store(TASK_SLOT, |b| {
+                b.load(Self::slot(step.dst))
+                    .constant(0xffff)
+                    .op(code::I64_AND);
+            });
+            return Some(());
+        }
         // **`invpcid` s'arrête dessus et le dit.** Pas de PCID sur cette
         // machine, donc rien à purger par identifiant de contexte — et le
         // noyau ne l'exécute que si `cpuid` le promet, ce qu'il ne fait pas.
@@ -3236,6 +3265,7 @@ impl Module {
                 | Op::InvalidatePage
                 | Op::HypervisorCall { .. }
                 | Op::InvalidatePcid
+                | Op::LoadTaskRegister
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3637,6 +3667,7 @@ impl Module {
             | Op::InvalidatePage
             | Op::HypervisorCall { .. }
             | Op::InvalidatePcid
+            | Op::LoadTaskRegister
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }
