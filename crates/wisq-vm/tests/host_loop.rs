@@ -5599,3 +5599,105 @@ console.log("contraste " + sans.rbx);
          `invlpg` a fait taire"
     );
 }
+
+/// **Un noyau qui atteint `vmcall` ou `vmmcall` s'arrête dessus, et l'arrêt
+/// se nomme.**
+///
+/// Cette machine n'a pas d'hyperviseur au-dessus d'elle : un appel à
+/// l'hyperviseur n'a personne pour répondre. Le noyau Alpine ne les exécute
+/// que si CPUID annonce la signature VMware, ce que `cpuid` n'annonce pas ;
+/// mais ils vivent dans `vmware_platform`, à portée statique de
+/// `init_hypervisor_platform`, et un décodeur qui ne les lit pas refusait la
+/// région entière.
+///
+/// Les deux encodages, dans le même test : ce qui précède a tourné, RIP est
+/// posé **sur** l'instruction, ce qui suit n'a pas tourné, et l'arrêt porte le
+/// même nom pour les deux.
+#[test]
+fn a_kernel_that_reaches_a_hypervisor_call_is_stopped_by_name_on_the_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = |call: [u8; 3]| -> Vec<u8> {
+        let mut bytes = vec![0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00]; // movq $42, %rax
+        bytes.extend_from_slice(&call); // vmcall ou vmmcall
+        bytes.extend_from_slice(&[0x48, 0xff, 0xc2]); // incq %rdx — ne doit pas tourner
+        bytes
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-vmcall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut listing = String::new();
+    for (name, call) in [("intel", [0x0f, 0x01, 0xc1]), ("amd", [0x0f, 0x01, 0xd9])] {
+        let module = match Module::resolving_or_why(&program(call), BASE, 0, 0, PAGES) {
+            Ok(module) => module,
+            Err(why) => panic!("`vmware_platform` doit se traduire, pas faire refuser la région ({name}) : {why:?}"),
+        };
+        let path = scratch.join(format!("{name}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        listing.push_str(&format!("[{name:?},{:?}],", path.to_string_lossy()));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+for (const [name, path] of [{listing}]) {{
+  let asked = 0;
+  const vm = machine({{
+    translate: async () => (asked++ === 0 ? readFileSync(path) : null),
+    pages: {pages},
+  }});
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+  console.log(name + "-arret " + why.stopped);
+  console.log(name + "-rax " + lire(0));
+  console.log(name + "-rdx " + lire(2));
+  console.log(name + "-rip " + lire({rip}));
+}}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            listing = listing,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    for name in ["intel", "amd"] {
+        assert_eq!(
+            line(&format!("{name}-arret ")),
+            "arrêtée sur un appel à l'hyperviseur (vmcall ou vmmcall) : cette machine n'en a pas",
+            "l'arrêt doit se nommer ({name}) : {text}"
+        );
+        assert_eq!(
+            line(&format!("{name}-rax ")),
+            "42",
+            "les instructions d'avant tournent ({name})"
+        );
+        assert_eq!(
+            line(&format!("{name}-rip ")),
+            (BASE + 7).to_string(),
+            "RIP est posé sur l'appel, pas après ({name}) : rien ne le reprendra"
+        );
+        assert_eq!(
+            line(&format!("{name}-rdx ")),
+            "0",
+            "et rien d'après n'a tourné ({name})"
+        );
+    }
+}
