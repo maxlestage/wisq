@@ -8516,3 +8516,52 @@ tôt.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — quatre murs sur les quatorze dernières tranches. Les
 cinq derniers murs n'en étaient pas.
+
+## Les tours de la boucle hôte se règlent, et le noyau finit `mem_init`
+
+La tranche précédente finissait sur un pilote épuisé : « les 4096 tours du
+pilote sont épuisés, la machine avançait encore ». La mesure suivante,
+lancée avec `WISQ_ROUNDS=16384`, a fini **exactement** au même endroit —
+2675 régions, emplacement 94 110, `__pud_alloc + 288`. Deux mesures qui
+devraient différer et qui s'accordent au dernier octet : ce n'était pas le
+noyau, c'était l'outil. `WISQ_ROUNDS` règle la boucle de traduction ; les
+tours accordés à `vm.run` — des retours de main entre régions déjà
+traduites, pas des traductions — étaient écrits en dur, `rounds: 4096`, dans
+le pilote JavaScript que `kernel-entry` engendre.
+
+**Ce que la tranche pose.** `WISQ_TURNS` (défaut 4096) règle ces tours-là,
+séparément, et le message qui les déclare épuisés dit le nombre réel et le
+nom de la variable. Rien d'autre : `kernel-entry` est un exemple sans test,
+et le changement se mesure par sa mesure — c'est dit ici pour ne pas le faire
+passer pour tenu.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal, `WISQ_TURNS=65536`** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant (4096 tours) | 2675 | 94 110 | 52 | tours épuisés dans `__pud_alloc` |
+| après (65 536 tours) | **2786** | **96 969** | **53** | `___slab_alloc` — `CannotDecode { at: 275 }` |
+
+Le noyau finit `mem_init` et le dit : « Memory: 24480K/65144K available
+(14336K kernel code, 1950K rwdata, 5052K rodata, 3516K init, 4724K bss,
+40408K reserved, 0K cma-reserved) ». En chemin il a réclamé
+`ex_handler_msr`, quatre fois : le rattrapage par la table d'exceptions de la
+tranche #341, exercé par le noyau lui-même sur ses `rdmsr_safe`, sans une
+ligne série — c'est la variante silencieuse, et c'est exact. Puis
+`kmem_cache_init`, et le premier `___slab_alloc`.
+
+**Le mur suivant est de la famille de l'`int3`, pour la cinquième fois.**
+`___slab_alloc + 275` est `f0 48 0f c7 4e 20`, `lock cmpxchg16b 0x20(%rsi)` :
+le chemin rapide de la liste libre de SLUB, que le noyau ne prend que si le
+cache porte `__CMPXCHG_DOUBLE`, posé seulement quand CPUID annonce `CX16`, ce
+que `cpuid` n'annonce pas. Atteint statiquement depuis trois appelants,
+jamais exécuté, illisible : la région entière refusée. La tranche suivante
+la décode et **l'exécute pour de vrai** dans les deux cœurs Rust — comparer
+seize octets à RDX:RAX, écrire RCX:RBX ou recharger, poser ZF — parce que
+c'est une instruction ordinaire dont rien ne manque à cette machine, à la
+différence de `lkgs` ou `vmcall`.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — cinq murs sur les quinze dernières tranches, et ce
+mur-ci en est.

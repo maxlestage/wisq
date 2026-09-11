@@ -331,6 +331,17 @@ fn main() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(64);
+    // **Les tours accordés à `vm.run` se règlent aussi**, et séparément : ce
+    // sont des retours de main entre régions déjà traduites, pas des
+    // traductions. Quatre mille suffisaient tant qu'un mur venait avant ;
+    // depuis les registres de débogage, le noyau les épuise dans `mem_init`
+    // sans réclamer une seule adresse, et deux mesures — 4096 et 16384 tours
+    // de traduction — finissaient au même octet de `__pud_alloc`, parce que
+    // ce nombre-ci était écrit en dur. `WISQ_TURNS=65536` va voir plus loin.
+    let turns: usize = std::env::var("WISQ_TURNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4096);
     let mut last = String::new();
     for round in 1..=rounds {
         let mut listing = String::new();
@@ -376,7 +387,7 @@ vm.globals[{rip}].value = {entry}n;
 // **RSI désigne la page zéro**, comme un chargeur le fait en entrant dans
 // `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
 vm.globals[6].value = {zero_page}n;
-const why = await vm.run({{ budget: 1n << 24n, rounds: 4096 }});
+const why = await vm.run({{ budget: 1n << 24n, rounds: {turns} }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
 console.log("arret " + why.stopped);
 console.log("serie " + JSON.stringify(serie));
@@ -431,6 +442,7 @@ console.log("controle " + controle
                 host = root.join("web/host.js").to_string_lossy(),
                 placements = placements,
                 zero_page = ZERO_PAGE_AT,
+                turns = turns,
                 pages = PAGES,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
@@ -464,14 +476,14 @@ console.log("controle " + controle
         if missing == "aucune" {
             let why = line("arret ").unwrap_or_default();
             // **« Tours épuisés » n'est pas « terminé ».** Le pilote accorde
-            // 4096 tours à `vm.run` ; s'ils s'épuisent sans qu'une adresse
-            // manque, la machine tournait dans ce qu'elle connaît déjà — un
-            // tri, une boucle — et rien ne dit qu'elle s'est arrêtée. Le dire
-            // comme la fin a fait prendre `sort_r` pour un mur.
+            // `WISQ_TURNS` tours à `vm.run` ; s'ils s'épuisent sans qu'une
+            // adresse manque, la machine tournait dans ce qu'elle connaît déjà
+            // — un tri, une boucle — et rien ne dit qu'elle s'est arrêtée. Le
+            // dire comme la fin a fait prendre `sort_r` pour un mur.
             if why == "tours épuisés" {
                 println!(
-                    "tour {round} : {} régions, aucune adresse ne manque, et les 4096 tours du \
-                     pilote sont épuisés : la machine avançait encore",
+                    "tour {round} : {} régions, aucune adresse ne manque, et les {turns} tours du \
+                     pilote (WISQ_TURNS) sont épuisés : la machine avançait encore",
                     regions.len()
                 );
             } else {
