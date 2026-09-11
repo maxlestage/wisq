@@ -430,11 +430,24 @@ console.log("controle " + controle
         };
         let missing = line("manquante ").unwrap_or_default();
         if missing == "aucune" {
-            println!(
-                "tour {round} : {} régions, et plus rien à traduire — {}",
-                regions.len(),
-                line("arret ").unwrap_or_default()
-            );
+            let why = line("arret ").unwrap_or_default();
+            // **« Tours épuisés » n'est pas « terminé ».** Le pilote accorde
+            // 4096 tours à `vm.run` ; s'ils s'épuisent sans qu'une adresse
+            // manque, la machine tournait dans ce qu'elle connaît déjà — un
+            // tri, une boucle — et rien ne dit qu'elle s'est arrêtée. Le dire
+            // comme la fin a fait prendre `sort_r` pour un mur.
+            if why == "tours épuisés" {
+                println!(
+                    "tour {round} : {} régions, aucune adresse ne manque, et les 4096 tours du \
+                     pilote sont épuisés : la machine avançait encore",
+                    regions.len()
+                );
+            } else {
+                println!(
+                    "tour {round} : {} régions, et plus rien à traduire — {why}",
+                    regions.len()
+                );
+            }
             break;
         }
         let Some(at) = missing

@@ -7918,3 +7918,59 @@ seulement si elle n'y est pas — au lieu de rendre la main. Et `kernel-entry`
 doit cesser de prendre « tours épuisés » pour « terminé ». Ce que ça promet :
 un noyau fait d'appels entre fonctions qui ne repasse par l'hôte qu'aux
 fautes et aux traductions.
+
+## Une cible statique hors région passe par la correspondance, et le noyau traverse `jump_label_init`
+
+Le mur de la tranche précédente n'était pas un refus : `sort_r` appelait son
+comparateur par un `call` direct, et chaque appel rendait la main à l'hôte.
+`place` rendait `-1` pour tout ce qui n'est pas un bloc de la région, et seule
+`resolve` — les formes indirectes, `ret`, `jmp *`, `call *` — consultait la
+correspondance adresse → indice. Une comparaison par tour, 4096 tours, et
+`kernel-entry` prenait ça pour la fin.
+
+**Ce que la tranche pose.** `aim` : l'indice d'une cible statique. Un bloc de
+la région, son indice absolu ; sinon la correspondance, si la forme en a une
+(`lookup`, la même fonction que `resolve`), et `-1` seulement quand elle ne
+connaît pas l'adresse. `place` et `choose` passent par lui, donc un `call`, un
+`jmp`, un `jcc` et un `loop` dont la cible est dans une autre région déjà
+traduite y sautent **dans le module**. Pour un saut conditionnel, RIP porte la
+cible **choisie** avant la recherche : la valeur poussée pour l'autre issue est
+fausse, et écartée par le `select`. `kernel-entry` dit désormais « les 4096
+tours du pilote sont épuisés : la machine avançait encore » au lieu de « plus
+rien à traduire ».
+
+**Éprouvé.** Le test tient les trois formes statiques qui sortent d'une région
+— un `call` direct vers B, un `ret` qui revient au milieu de A (donc dans une
+troisième région, qui commence là), un `jnz` direct vers l'entrée de A — et
+exige qu'en régime établi **un seul appel** épuise le budget, sans
+retraduction. Avant : RDX à un, le premier `call` rendait la main. Deux choses
+apprises en l'écrivant : quand le budget s'épuise pile sur le point de départ,
+l'hôte exécute **un bloc de plus** pour distinguer un anneau d'une machine
+bloquée, et ce bloc se voit dans RDX et dans RSP ; et les trois modules épinglés
+de `WebKitBench.swift` changent d'octets, parce qu'un bloc coupé ou sortant
+n'est plus un `-1` sec — régénérés par `--example bench-module`. Trois
+sabotages, trois rouges : `aim` rendu à `-1`, `choose` sans correspondance, la
+recherche faite avant que RIP soit posé.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 394 | 17 679 | `sort_r + 308` — tours épuisés |
+| après | **640** | **28 515** | `native_flush_tlb_one_user` — `CannotDecode { at: 37 }` |
+
+Le noyau finit `jump_label_init`, traverse `register_module_notifier`,
+`reserve_bios_regions`, `update_static_calls`, et s'arrête dans
+`flush_tlb_one_kernel`. Le port série est toujours vide : `console_init` n'est
+pas encore atteint.
+
+**Le mur suivant est une instruction que le noyau exécute, pas seulement
+atteint.** À `native_flush_tlb_one_user + 37` : `0f 01 3f`, `invlpg (%rdi)`.
+Le groupe `0f 01` est décodé pour `lgdt`, `lidt`, `sgdt`, `sidt` et `swapgs`
+(`f8`, forme à registre) ; `/7` en forme mémoire n'est pas lu. Et ce n'est pas
+un arrêt à nommer : le module porte un **tampon** de traduction, et `invlpg`
+est exactement ce qui doit le faire oublier une page — le test du tampon
+l'exhibe depuis la pagination P2, « la raison d'être d'`invlpg`, que cette
+tranche ne produit pas ». C'est la tranche suivante : décoder, et effacer
+l'entrée du tampon pour la page désignée, dans l'émetteur comme dans
+l'interpréteur.

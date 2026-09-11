@@ -5257,3 +5257,182 @@ console.log("rip " + lire({rip}));
     );
     assert_eq!(line("rdx "), "0", "et rien d'après n'a tourné");
 }
+
+/// **Une cible statique hors région passe par la correspondance, et l'anneau
+/// tourne sans repasser par l'hôte.**
+///
+/// C'est le mur de `jump_label_init` : `sort_r` appelle son comparateur par
+/// un `call` direct, et chaque appel rendait la main à l'hôte — `place`
+/// rendait `-1` pour tout ce qui n'est pas un bloc de la région, et seule
+/// `resolve` (les formes indirectes) consultait la correspondance. Une
+/// comparaison par tour, 4096 tours, et le pilote prenait ça pour la fin.
+///
+/// Ici le même trajet en petit, et les **trois** formes statiques qui sortent
+/// d'une région : un `call` direct vers B, un `ret` qui revient au milieu de A
+/// (donc dans une troisième région, qui commence là), et un `jnz` direct qui
+/// revient à l'entrée de A. Ce que chaque assertion tient :
+/// - trois régions, trois demandes : la découverte n'en coûte pas plus ;
+/// - en régime établi, **un seul appel**, aucune retraduction, et l'anneau a
+///   tourné jusqu'au bout du budget — c'est la correspondance qui a servi, à
+///   chaque `call`, chaque `ret` et chaque `jnz` ;
+/// - RSP est revenu : les `call` et les `ret` se répondent un pour un.
+#[test]
+fn a_static_target_out_of_the_region_goes_through_the_correspondence() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const CALLEE: u64 = BASE + 0x100;
+    const STACK: u64 = 0x8000;
+    // A : `incq %rdx ; call B ; testq %rdx,%rdx ; jnz A ; ud2`. Le `jnz` est
+    // toujours pris — RDX ne retombe jamais à zéro — et sa cible est l'entrée
+    // de A : depuis la région qui commence au `testq`, c'est une sortie.
+    let a: Vec<u8> = vec![
+        0x48, 0xff, 0xc2, // incq %rdx
+        0xe8, 0xf8, 0x00, 0x00, 0x00, // call +0xf8 → B
+        0x48, 0x85, 0xd2, // testq %rdx, %rdx
+        0x75, 0xf3, // jnz -13 → A
+        0x0f, 0x0b, // ud2 : jamais atteint
+    ];
+    // B : `addq $2, %rdx ; ret`.
+    let b: Vec<u8> = vec![0x48, 0x83, 0xc2, 0x02, 0xc3];
+    // Le `ret` revient à A + 8, au milieu de A : l'hôte y demandera une région
+    // qui commence là. Ses octets sont ceux de A à partir du `testq`.
+    let after_call: Vec<u8> = a[8..].to_vec();
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-statique-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let mut loaded = String::new();
+    for (name, address, code) in [
+        ("a", BASE, &a),
+        ("b", CALLEE, &b),
+        ("a8", BASE + 8, &after_call),
+    ] {
+        if name != "a8" {
+            let raw = scratch.join(format!("{name}.bin"));
+            std::fs::write(&raw, code).expect("le code de la région");
+            loaded.push_str(&format!(
+                "[{},{:?}],",
+                address & u64::from(PAGES * 65536 - 1),
+                raw.to_string_lossy()
+            ));
+        }
+        for slot in 0..10u32 {
+            let module = Module::resolving(code, address, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {name}"));
+            let path = scratch.join(format!("{name}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    // Un tour d'anneau : le bloc d'entrée de A (`incq`, `call`), B (`addq`,
+    // `ret`), le bloc du `testq` (`jnz`). Trois blocs, et RDX gagne trois.
+    let laps = 200u64;
+    let blocks_per_lap = 3u64;
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const posé = new Map(
+  [{loaded}].map(([at, path]) => [at, new Uint8Array(readFileSync(path))]),
+);
+let asked = 0;
+const translate = async (address, slot) => {{
+  asked++;
+  const path = catalogue.get(address + ":" + slot);
+  return path === undefined ? null : readFileSync(path);
+}};
+
+const vm = machine({{ translate, pages: {pages} }});
+for (const [at, octets] of posé) {{
+  new Uint8Array(vm.memory.buffer, at, octets.length).set(octets);
+}}
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+vm.globals[{rip}].value = {base}n;
+vm.globals[4].value = {stack}n;
+
+// **Premier temps : la découverte.** A, puis B par le `call`, puis la région
+// qui commence après le `call` par le `ret`. Trois tours suffisent ; au
+// troisième, l'anneau est complet et tourne jusqu'au bout du budget.
+const first = await vm.run({{ budget: 1000n, rounds: 3 }});
+console.log("decouverte " + first.stopped);
+console.log("demandes " + asked);
+console.log("regions " + vm.known.size);
+
+// **Second temps : un seul appel.** Si les cibles statiques passent par la
+// correspondance, la boucle ne ressort qu'au bout du budget. Sinon le premier
+// `call` rend la main, et RDX s'arrête à un.
+vm.globals[{rip}].value = {base}n;
+vm.globals[4].value = {stack}n;
+vm.globals[2].value = 0n;
+const before = asked;
+const second = await vm.run({{ budget: {budget}n, rounds: 1 }});
+console.log("regime " + second.stopped);
+console.log("retraductions " + (asked - before));
+console.log("rdx " + lire(2).toString());
+console.log("rsp " + lire(4).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            stack = STACK,
+            budget = laps * blocks_per_lap,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    assert_eq!(
+        seen("demandes"),
+        "3",
+        "une traduction par région : A, B, et l'après-`call`"
+    );
+    assert_eq!(seen("regions"), "3", "les trois sont retenues");
+    assert_eq!(
+        seen("retraductions"),
+        "0",
+        "en régime établi, plus rien à traduire"
+    );
+    assert_eq!(
+        seen("regime"),
+        "tours épuisés",
+        "un seul appel doit épuiser le budget, pas rendre la main au premier `call`"
+    );
+    // **Plus un.** Le budget s'épuise pile sur l'entrée de A, et l'hôte
+    // exécute alors **un bloc de plus** pour distinguer un anneau d'une machine
+    // bloquée (voir `run` dans `web/host.js`) : ce bloc est l'`incq` de A.
+    assert_eq!(
+        seen("rdx"),
+        (laps * 3 + 1).to_string(),
+        "l'anneau doit avoir tourné {laps} fois dans un seul appel : chaque `call`, `ret` et \
+         `jnz` hors région est passé par la correspondance"
+    );
+    // Deux cents `call`, deux cents `ret` — et le bloc de plus finit sur un
+    // `call` dont l'adresse de retour est encore empilée : huit octets sous la
+    // pile de départ, ni plus ni moins.
+    assert_eq!(
+        seen("rsp"),
+        (STACK - 8).to_string(),
+        "les `call` et les `ret` se répondent un pour un, sauf celui du bloc de plus"
+    );
+}
