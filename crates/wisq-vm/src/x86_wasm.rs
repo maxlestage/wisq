@@ -145,10 +145,11 @@ pub const TABLE_COUNT: usize = 4;
 pub const FS_BASE_SLOT: usize = TABLE_SLOT + TABLE_COUNT;
 pub const KERNEL_GS_SLOT: usize = FS_BASE_SLOT + 1;
 
-/// **Les trois numéros que cette machine modélise.** Tout autre numéro rend la
-/// main à l'hôte **à l'adresse de l'instruction**. Ne rien faire serait le pire
-/// des trois choix : le noyau croirait avoir posé une valeur, et la panne
-/// tomberait loin de sa cause.
+/// **Les trois premiers numéros que cette machine modélise** ; EFER et les
+/// quatre registres de l'appel système ont les leurs plus bas. Tout autre
+/// numéro est un **arrêt nommé qui porte le numéro**, RIP sur l'instruction.
+/// Ne rien faire serait le pire des choix : le noyau croirait avoir posé une
+/// valeur, et la panne tomberait loin de sa cause.
 pub const MSR_FS_BASE: u64 = 0xc000_0100;
 pub const MSR_GS_BASE: u64 = 0xc000_0101;
 pub const MSR_KERNEL_GS_BASE: u64 = 0xc000_0102;
@@ -290,6 +291,15 @@ pub const STOP_HYPERVISOR: u64 = 4;
 /// rompue, pas qu'une traduction manque.
 pub const STOP_PCID: u64 = 5;
 
+/// **Un registre spécifique au modèle que cette machine ne modélise pas**, et
+/// son numéro dans les trente-deux bits bas. Le numéro vit dans ECX, une
+/// valeur d'exécution : le traducteur ne peut pas le connaître, donc c'est le
+/// module qui le pose dans le témoin au moment où il le lit. RIP reste **sur**
+/// l'instruction. Avant ce témoin, la machine rendait la main sans rien dire,
+/// et l'hôte ne voyait qu'un noyau « sur place » : il a fallu désassembler
+/// `syscall_init` pour apprendre que c'était `MSR_STAR`.
+pub const STOP_MSR: u64 = 1 << 32;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -346,8 +356,27 @@ pub const EFER_LONG_MODE: u64 = (1 << 8) | (1 << 10);
 /// ici c'est un registre que l'invité charge, pas un nombre de l'hôte.
 pub const TASK_SLOT: usize = EFER_SLOT + 1;
 
+/// **Les quatre registres de l'appel système**, dans l'ordre de leurs
+/// numéros : STAR (les sélecteurs), LSTAR (la cible de `syscall` en mode
+/// long), CSTAR (celle du mode de compatibilité), SYSCALL_MASK (les drapeaux
+/// que `syscall` éteint). `syscall_init` les écrit tous les quatre, et c'est
+/// sur le premier que le noyau Alpine s'arrêtait « sur place ».
+///
+/// **Ce que ces nombres ne sont pas** : rien ne les lit. `syscall` n'est pas
+/// produite ; accepter l'écriture dit « on la range », pas « on l'applique »,
+/// comme pour les registres de contrôle. Le jour où `syscall` sera produite,
+/// c'est ici qu'elle prendra sa cible.
+pub const SYSCALL_SLOT: usize = TASK_SLOT + 1;
+pub const SYSCALL_COUNT: usize = 4;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = TASK_SLOT + 1;
+pub const GLOBAL_COUNT: usize = SYSCALL_SLOT + SYSCALL_COUNT;
+
+/// Les numéros des quatre registres de l'appel système, dans l'ordre des cases.
+pub const MSR_STAR: u64 = 0xc000_0081;
+pub const MSR_LSTAR: u64 = 0xc000_0082;
+pub const MSR_CSTAR: u64 = 0xc000_0083;
+pub const MSR_SYSCALL_MASK: u64 = 0xc000_0084;
 
 /// CR0.PG — le bit qui allume la pagination.
 pub const PAGING_BIT: u64 = 1 << 31;
@@ -2790,8 +2819,8 @@ impl Module {
         //
         // Le numéro vit dans ECX, une valeur d'**exécution**. Le traducteur ne
         // peut donc pas décider « celui-ci oui, celui-là non » : il émet les
-        // quatre cas qu'il connaît et, pour tout autre numéro, un retour de main
-        // à l'adresse de l'instruction.
+        // huit cas qu'il connaît et, pour tout autre numéro, un arrêt nommé qui
+        // **porte le numéro**, RIP sur l'instruction.
         //
         // **Conséquence à ne pas laisser filer** : depuis cette tranche, une
         // région *compilée* n'est plus forcément une région qui *va au bout*.
@@ -2802,6 +2831,10 @@ impl Module {
                 (MSR_GS_BASE, GS_SLOT),
                 (MSR_KERNEL_GS_BASE, KERNEL_GS_SLOT),
                 (MSR_EFER, EFER_SLOT),
+                (MSR_STAR, SYSCALL_SLOT),
+                (MSR_LSTAR, SYSCALL_SLOT + 1),
+                (MSR_CSTAR, SYSCALL_SLOT + 2),
+                (MSR_SYSCALL_MASK, SYSCALL_SLOT + 3),
             ];
             // Le numéro, ramené à trente-deux bits comme le processeur le lit.
             body.store(Body::scratch(0), |b| {
@@ -2809,19 +2842,30 @@ impl Module {
                     .constant(0xffff_ffff)
                     .op(code::I64_AND);
             });
-            // **Le refus vient d'abord**, sinon un numéro inconnu écrirait des
-            // registres avant de rendre la main, et l'instruction rejouée
+            // **L'arrêt vient d'abord**, sinon un numéro inconnu écrirait des
+            // registres avant de s'arrêter, et l'instruction rejouée
             // repartirait d'un état qu'elle a elle-même abîmé.
-            Self::refuse_when(address, body, |b| {
-                for (rank, (numéro, _)) in modelled.iter().enumerate() {
-                    b.load(Body::scratch(0)).constant(*numéro).op(code::I64_EQ);
-                    if rank > 0 {
-                        b.op(code::I32_OR);
-                    }
+            for (rank, (numéro, _)) in modelled.iter().enumerate() {
+                body.load(Body::scratch(0))
+                    .constant(*numéro)
+                    .op(code::I64_EQ);
+                if rank > 0 {
+                    body.op(code::I32_OR);
                 }
-                // Aucun des trois : c'est là qu'on rend la main.
-                b.op(code::I32_EQZ);
+            }
+            // Aucun des huit : le témoin porte le numéro, et la main est rendue.
+            body.op(code::I32_EQZ);
+            body.op(code::IF).op(code::VOID);
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
             });
+            body.store(STOP_SLOT, |b| {
+                b.load(Body::scratch(0)).constant(STOP_MSR).op(code::I64_OR);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            body.op(code::END);
             if step.op == Op::WriteModelRegister {
                 // La valeur arrive en deux moitiés : EDX en haut, EAX en bas.
                 body.store(Body::scratch(1), |b| {
