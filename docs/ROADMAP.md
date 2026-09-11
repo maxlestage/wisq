@@ -8210,3 +8210,71 @@ arrêter le bloc sur l'instruction illisible et ne refuser qu'à l'exécution
 lèverait la famille de l'`int3` d'un coup — quatre murs sur les neuf dernières
 tranches en étaient. Ce mur-ci n'en est pas ; la tranche suivante ne dépend
 pas de la réponse.
+
+## `ltr` est produite, le registre de tâche a sa case, et le noyau entre dans `syscall_init`
+
+Le premier mur depuis la retpoline qui n'était pas de la famille de l'`int3`.
+`native_load_tr_desc + 72` est `0f 00 d8`, `ltr %eax` : charger le registre
+de tâche depuis le sélecteur `0x40`, dans `cpu_init_exception_handling`. Le
+noyau l'**exécute** — c'est le TSS du processeur — et un décodeur qui ne la
+lisait pas refusait la région entière, `CannotDecode { at: 72 }`.
+
+**Ce que la tranche pose.** `Op::LoadTaskRegister`, décodée sur `0f 00 /3` en
+forme à **registre** et rien d'autre du groupe 6 : `sldt`, `str`, `lldt`,
+`verr`, `verw` et la forme mémoire restent illisibles, `/6` sans `f2` n'est
+toujours rien. L'émetteur range le sélecteur, seize bits quelle que soit la
+largeur de la source, dans une case neuve : `TASK_SLOT`, la cinquante-quatrième
+globale. L'interpréteur la refuse par nom, RIP dessus, faute de table où
+trouver le TSS.
+
+**Une globale coûte ce qu'elle coûte, et le prix est payé en entier** :
+`web/host.js` (`task`, `globalCount`), la garde qui compare les cases
+recopiées — où `efer` était entré sans comparaison, comme `rflags` avant lui,
+et l'est enfin —, `WebKitBench.swift` (le `globalCount` et les trois modules
+épinglés, régénérés par `bench-module` et tenus par
+`bench_module_matches_the_probe`). Le témoin d'interruption avait refusé ce
+prix pour un nombre de l'hôte ; ici c'est un registre que l'invité charge.
+
+**Ce que ce nombre n'est pas.** Aucun descripteur n'est lu derrière lui. La
+délivrance de l'hôte dit toujours « cette machine n'a pas de TSS » devant une
+porte à pile d'interruption ; ce que les piles IST feront de ce sélecteur est
+une question de direction, posée quand elle sera atteinte — les portes
+précoces de Linux n'en ont pas.
+
+**Éprouvé.** Deux tests écrits avant, rouges : le décodeur (trois encodages
+lus, dont `%r8w` par REX.B ; neuf voisins qui doivent rester `None`, dont
+l'encodage coupé) et la boucle hôte (le sélecteur rangé à seize bits depuis un
+registre qui en porte trente-deux, ce qui suit tourne, la machine s'arrête sur
+le `hlt` et pas avant). Six sabotages, six rouges, chacun sur le test qu'il
+devait faire tomber : `/1` lu à la place de `/3`, la forme mémoire acceptée,
+l'interpréteur qui ne refuse plus, le masque de seize bits retiré, la case
+d'EFER écrite à la place de celle du registre de tâche, `host.js` qui recopie
+la mauvaise case.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2198 | 81 942 | 48 | `native_load_tr_desc` — `CannotDecode { at: 72 }` |
+| après | **2218** | **82 101** | 48 | `native_write_msr + 8` — **sur place** |
+
+Vingt régions de plus, et pas une ligne série : le noyau traverse
+`cpu_init_exception_handling` entier, `native_load_tr_desc` comprise, revient
+dans `cpu_init`, et entre dans `syscall_init`.
+
+**Le mur suivant est un `wrmsr` que le relevé ne sait pas nommer.**
+`syscall_init + 23` appelle `native_write_msr` avec `0xc0000081` dans ECX —
+`MSR_STAR`, le premier des registres de l'appel système — et l'émetteur ne
+modélise que quatre numéros : FS_BASE, GS_BASE, KERNEL_GS_BASE, EFER. Tout
+autre numéro rend la main **à l'adresse de l'instruction**, sans témoin ;
+l'hôte ne voit qu'une machine qui n'avance plus, et il a fallu désassembler
+pour savoir pourquoi. Deux défauts nommés pour la tranche suivante : un MSR
+inconnu doit être un arrêt nommé qui **porte le numéro** ; et `syscall_init`
+écrit STAR, LSTAR, CSTAR, SYSCALL_MASK, puis les trois SYSENTER par
+`wrmsr_safe` — les quatre premiers sont des registres de l'appel système, à
+ranger, et le coût d'une case chacun vient d'être payé une fois de plus.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — quatre murs sur les dix dernières tranches. Ce mur-ci,
+comme le précédent, n'en est pas.
