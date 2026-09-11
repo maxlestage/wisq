@@ -8458,3 +8458,61 @@ le silicium rend au repos. Pas de globale.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — quatre murs sur les treize dernières tranches. Les
 quatre derniers murs n'en étaient pas.
+
+## Les registres de débogage sont produits, et pour la première fois le pilote s'épuise avant le noyau
+
+Le mur de la tranche précédente : `pv_native_set_debugreg + 25`, `0f 23 /r`,
+`mov %rsi,%dbN` — le décodeur laissait `0F 21` et `0F 23` illisibles exprès,
+« un autre fichier de registres, que le noyau n'écrit pas ici ». Il les
+écrit : `cpu_init` efface DR0 à DR3, DR6 et DR7 au démarrage, et la région
+entière était refusée.
+
+**Ce que la tranche pose.** `Op::ReadDebugRegister` et
+`Op::WriteDebugRegister`, décodés sur `0f 21 /r` et `0f 23 /r` en forme à
+registre, par numéro — 0 à 3, 6 et 7 ; DR4 et DR5 sont des alias ou `#UD`
+selon CR4.DE, et REX.R n'y désigne rien : les décoder inventerait un
+registre. L'émetteur fait comme pour `lldt` : cette machine n'a pas de points
+d'arrêt matériels, donc **lire rend l'état de repos du silicium** — zéro pour
+les quatre adresses, `0xffff0ff0` pour DR6, `0x400` pour DR7 —, **écrire
+cet état passe** (c'est exactement ce que fait `cpu_init`, `DR6_RESERVED`
+compris, et écrire zéro dans DR7 le laisse à `0x400` comme sur le silicium),
+et **écrire autre chose s'arrête par son nom**, `STOP_DEBUG`, RIP dessus : un
+point d'arrêt posé qui ne déclencherait jamais serait un mensonge silencieux.
+L'interpréteur refuse par nom. Pas de globale : rien n'est rangé, parce que
+rien ne peut changer.
+
+**Éprouvé.** Deux tests écrits avant, rouges : le décodeur (les deux
+opcodes, les six numéros, cinq voisins qui restent `None` — DR4, DR5, REX.R,
+la forme mémoire —, l'interpréteur qui faute) et la boucle hôte (la séquence
+exacte de `cpu_init` passe jusqu'au `hlt`, DR7 se relit à `0x400`, DR6 à
+`0xffff0ff0`, DR0 à zéro ; armer le point d'arrêt 0 s'arrête par son nom, RIP
+dessus). Sept sabotages, sept rouges nommés : DR4 et DR5 acceptés, la forme
+mémoire acceptée, l'interpréteur qui ne refuse plus, l'état de repos à zéro
+pour tous, l'émetteur qui arrête le repos et laisse passer le reste, le témoin
+de `lldt` posé à la place du sien, `host.js` qui ne nomme plus l'arrêt.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2289 | 83 108 | 48 | `pv_native_set_debugreg` — `CannotDecode { at: 25 }` |
+| après | **2675** | **94 110** | **52** | **tours épuisés — la machine avançait encore** |
+
+**C'est la première fois que le pilote s'épuise avant le noyau.** Les 4096
+tours de `kernel-entry` sont consommés, aucune adresse ne manque, aucun
+témoin n'est posé : le noyau était dans `__pud_alloc`, appelé depuis
+`mem_init`, en train de bâtir ses tables de pages. Quatre lignes série de
+plus — les zonelists, « Total pages: 15872 », « Policy zone: DMA32 », « mem
+auto-init » — : `cpu_init` fini, `trap_init` fini, `mm_core_init` entamé.
+Trois cent quatre-vingt-six régions de plus en une tranche, et pas un mur.
+
+**La mesure suivante dira le mur**, avec seize mille tours au lieu de quatre
+mille ; elle tourne pendant que cette tranche est jugée, et son résultat
+ouvrira la suivante. Ce n'est pas un défaut de la machine : c'est le pilote
+de mesure qui avait un budget dimensionné pour des noyaux qui s'arrêtaient
+tôt.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — quatre murs sur les quatorze dernières tranches. Les
+cinq derniers murs n'en étaient pas.

@@ -56,6 +56,8 @@ fn name_of(op: Op) -> String {
         Op::InvalidatePcid => "invpcid".to_string(),
         Op::LoadTaskRegister => "ltr".to_string(),
         Op::LoadLocalDescriptorTable => "lldt".to_string(),
+        Op::ReadDebugRegister { which } => format!("lire-dr{which}"),
+        Op::WriteDebugRegister { which } => format!("écrire-dr{which}"),
         Op::LoadSegment { .. } => "mov-vers-segment".to_string(),
         Op::StoreSegment { .. } => "mov-depuis-segment".to_string(),
         Op::ReadControlRegister { which } => format!("lire-cr{which}"),

@@ -298,6 +298,26 @@ pub const STOP_PCID: u64 = 5;
 /// noyau Alpine, qui n'a pas de LDT. RIP est posé **sur** l'instruction.
 pub const STOP_LDT: u64 = 6;
 
+/// **Une écriture dans un registre de débogage qui armerait quelque chose.**
+/// Cette machine n'a pas de points d'arrêt matériels ; écrire l'état de repos
+/// — ce que fait `cpu_init` pour les effacer — passe sans témoin, et toute
+/// autre valeur s'arrête ici, RIP **sur** l'instruction : un point d'arrêt
+/// posé qui ne déclencherait jamais serait un mensonge silencieux.
+pub const STOP_DEBUG: u64 = 7;
+
+/// **Ce que chaque registre de débogage rend au repos**, et la seule valeur
+/// qu'une écriture peut y poser sans s'arrêter : zéro pour les quatre
+/// adresses, les bits réservés toujours à un de DR6, le bit 10 toujours à un
+/// de DR7. Une écriture est comparée hors de ces bits : écrire zéro dans DR7
+/// le laisse à `0x400`, comme sur le silicium.
+pub fn debug_register_at_rest(which: u8) -> u64 {
+    match which {
+        6 => 0xffff_0ff0,
+        7 => 0x400,
+        _ => 0,
+    }
+}
+
 /// **Un registre spécifique au modèle que cette machine ne modélise pas**, et
 /// son numéro dans les trente-deux bits bas. Le numéro vit dans ECX, une
 /// valeur d'exécution : le traducteur ne peut pas le connaître, donc c'est le
@@ -3092,6 +3112,35 @@ impl Module {
             });
             return Some(());
         }
+        // **Les registres de débogage : lire rend le repos, écrire le repos
+        // passe, écrire autre chose s'arrête et le dit.** Cette machine n'a
+        // pas de points d'arrêt matériels, et `cpu_init` ne fait que les
+        // effacer — zéro dans les adresses et DR7, `DR6_RESERVED` dans DR6.
+        if let Op::ReadDebugRegister { which } = step.op {
+            Self::put(step.dst, step.width, body, |b| {
+                b.constant(debug_register_at_rest(which));
+            });
+            return Some(());
+        }
+        if let Op::WriteDebugRegister { which } = step.op {
+            body.load(Self::slot(step.dst))
+                .constant(!debug_register_at_rest(which))
+                .op(code::I64_AND);
+            body.op(code::I64_EQZ);
+            body.op(code::I32_EQZ);
+            body.op(code::IF).op(code::VOID);
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_DEBUG);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            body.op(code::END);
+            return Some(());
+        }
         // **`lldt` : le nul passe, le reste s'arrête et le dit.** Seize bits,
         // comme les segments. Zéro ne charge rien — c'est le noyau qui dit
         // « pas de LDT » — et continue ; tout autre sélecteur désignerait un
@@ -3342,6 +3391,8 @@ impl Module {
                 | Op::InvalidatePcid
                 | Op::LoadTaskRegister
                 | Op::LoadLocalDescriptorTable
+                | Op::ReadDebugRegister { .. }
+                | Op::WriteDebugRegister { .. }
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3745,6 +3796,8 @@ impl Module {
             | Op::InvalidatePcid
             | Op::LoadTaskRegister
             | Op::LoadLocalDescriptorTable
+            | Op::ReadDebugRegister { .. }
+            | Op::WriteDebugRegister { .. }
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }

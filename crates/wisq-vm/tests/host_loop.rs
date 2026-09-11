@@ -6309,3 +6309,125 @@ for (const [name, path] of [{listing}]) {{
         "RIP est posé sur le lldt, pas après"
     );
 }
+
+/// **Effacer les registres de débogage passe et se relit ; en armer un
+/// s'arrête par son nom.**
+///
+/// `cpu_init` écrit zéro dans DR0 à DR3 et DR7, et `DR6_RESERVED`
+/// (`0xffff0ff0`) dans DR6 : c'est l'état de repos du silicium, et c'est
+/// l'état de cette machine, qui n'a pas de points d'arrêt matériels. Ces
+/// écritures-là passent, parce qu'elles ne changent rien de vrai. Une
+/// lecture rend ce que le silicium rend au repos : DR7 porte son bit 10
+/// toujours à un, DR6 ses bits réservés, les quatre adresses valent zéro.
+/// Écrire autre chose — armer un point d'arrêt — est un arrêt nommé, RIP
+/// dessus : le dire vaut mieux qu'un point d'arrêt qui ne déclencherait
+/// jamais.
+#[test]
+fn clearing_the_debug_registers_goes_on_and_arming_one_is_stopped_by_name() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut clearing: Vec<u8> = Vec::new();
+    clearing.extend_from_slice(&[0x31, 0xc0]); // xor %eax,%eax
+    for which in [0u8, 1, 2, 3] {
+        clearing.extend_from_slice(&[0x0f, 0x23, 0xc0 | (which << 3)]); // mov %rax,%drN
+    }
+    clearing.extend_from_slice(&[0xb8, 0xf0, 0x0f, 0xff, 0xff]); // mov $0xffff0ff0,%eax
+    clearing.extend_from_slice(&[0x0f, 0x23, 0xf0]); // mov %rax,%dr6
+    clearing.extend_from_slice(&[0x31, 0xc0]); // xor %eax,%eax
+    clearing.extend_from_slice(&[0x0f, 0x23, 0xf8]); // mov %rax,%dr7
+    clearing.extend_from_slice(&[0x0f, 0x21, 0xfb]); // mov %dr7,%rbx
+    clearing.extend_from_slice(&[0x0f, 0x21, 0xf1]); // mov %dr6,%rcx
+    clearing.extend_from_slice(&[0x0f, 0x21, 0xc6]); // mov %dr0,%rsi
+    clearing.extend_from_slice(&[0x48, 0xff, 0xc2]); // incq %rdx
+    clearing.push(0xf4); // hlt
+    let arming: Vec<u8> = vec![
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov $1,%eax — L0 : armer le point d'arrêt 0
+        0x0f, 0x23, 0xf8, // mov %rax,%dr7
+        0x48, 0xff, 0xc2, // incq %rdx — ne doit pas tourner
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-debugreg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut listing = String::new();
+    for (name, program) in [("efface", &clearing), ("arme", &arming)] {
+        let module = match Module::resolving_or_why(program, BASE, 0, 0, PAGES) {
+            Ok(module) => module,
+            Err(why) => panic!("`cpu_init` doit se traduire ({name}) : {why:?}"),
+        };
+        let path = scratch.join(format!("{name}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        listing.push_str(&format!("[{name:?},{:?}],", path.to_string_lossy()));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+for (const [name, path] of [{listing}]) {{
+  let asked = 0;
+  const vm = machine({{
+    translate: async () => (asked++ === 0 ? readFileSync(path) : null),
+    pages: {pages},
+  }});
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+  console.log(name + "-arret " + why.stopped);
+  console.log(name + "-rbx " + lire(3));
+  console.log(name + "-rcx " + lire(1));
+  console.log(name + "-rsi " + lire(6));
+  console.log(name + "-rdx " + lire(2));
+  console.log(name + "-rip " + lire({rip}));
+}}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            listing = listing,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("efface-arret "),
+        "arrêtée sur hlt",
+        "effacer les six registres passe, la machine va jusqu'au hlt : {text}"
+    );
+    assert_eq!(
+        line("efface-rbx "),
+        "400",
+        "DR7 se relit avec son bit 10 toujours à un"
+    );
+    assert_eq!(
+        line("efface-rcx "),
+        "ffff0ff0",
+        "DR6 se relit avec ses bits réservés"
+    );
+    assert_eq!(line("efface-rsi "), "0", "DR0 se relit à zéro");
+    assert_eq!(line("efface-rdx "), "1", "et ce qui suit a tourné");
+    assert_eq!(
+        line("arme-arret "),
+        "arrêtée sur une écriture dans un registre de débogage : cette machine n'a pas de points d'arrêt matériels",
+        "armer un point d'arrêt s'arrête par son nom : {text}"
+    );
+    assert_eq!(line("arme-rdx "), "0", "et rien d'après n'a tourné");
+    assert_eq!(
+        line("arme-rip "),
+        format!("{:x}", BASE + 5),
+        "RIP est posé sur l'écriture, pas après"
+    );
+}
