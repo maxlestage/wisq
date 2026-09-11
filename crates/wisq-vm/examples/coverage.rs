@@ -70,6 +70,7 @@ fn name_of(op: Op) -> String {
         Op::CpuId => "cpuid".to_string(),
         Op::ReadModelRegister => "rdmsr".to_string(),
         Op::WriteModelRegister => "wrmsr".to_string(),
+        Op::CompareAndExchangeSixteen => "cmpxchg16b".to_string(),
         other => format!("{other:?}"),
     }
 }

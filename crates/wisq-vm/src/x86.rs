@@ -783,6 +783,13 @@ pub enum Op {
     /// l'un ou l'autre selon le verdict. C'est sur elle que reposent tous les
     /// verrous d'un noyau.
     CompareAndExchange,
+    /// **`cmpxchg16b`** : comparer seize octets de mémoire à RDX:RAX ; s'ils
+    /// tiennent tous deux, y écrire RCX:RBX et poser ZF ; sinon relire la
+    /// paire dans RDX:RAX et l'éteindre. Aucun autre drapeau ne bouge. C'est
+    /// le chemin rapide de la liste libre de SLUB, que le noyau ne prend que
+    /// si CPUID annonce `CX16`. REX.W obligatoire : sans lui c'est
+    /// `cmpxchg8b`, que rien n'exécute ici.
+    CompareAndExchangeSixteen,
     /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
@@ -1450,6 +1457,10 @@ impl Cpu {
     /// endroits, et l'ordre compte. Lire la destination après avoir écrit la
     /// source rendrait la valeur qu'on vient d'y mettre.
     fn exchange(&mut self, instruction: &Decoded) {
+        if instruction.op == Op::CompareAndExchangeSixteen {
+            self.compare_and_exchange_sixteen(instruction);
+            return;
+        }
         let width = instruction.width;
         let (Some(destination), Some(source)) = (
             self.read_destination(instruction),
@@ -1510,6 +1521,51 @@ impl Cpu {
                 };
             }
         }
+    }
+
+    /// **`cmpxchg16b` : seize octets contre RDX:RAX.** La machinerie des
+    /// échanges lit et écrit un mot ; celle-ci en lit deux, les compare tous
+    /// deux, et n'écrit RCX:RBX que si les deux tiennent — sinon RDX:RAX
+    /// relisent la paire. ZF est le seul drapeau qui bouge.
+    ///
+    /// **Les deux mots sont lus avant qu'un seul ne soit écrit**, et si la
+    /// seconde écriture faute, la première est défaite : une instruction qui
+    /// faute ne laisse aucune trace, et RIP reste dessus.
+    fn compare_and_exchange_sixteen(&mut self, instruction: &Decoded) {
+        let Some(address) = instruction.memory else {
+            unreachable!("le décodeur ne rend `cmpxchg16b` qu'en mémoire")
+        };
+        let at = self.effective_address(&address, self.after(instruction));
+        let high_at = at.wrapping_add(8);
+        let fault = |cpu: &mut Cpu| {
+            cpu.faulted = true;
+            cpu.jumped = true;
+        };
+        let (Ok(low), Ok(high)) = (
+            self.read_memory(at, Width::Qword),
+            self.read_memory(high_at, Width::Qword),
+        ) else {
+            fault(self);
+            return;
+        };
+        let equal = low == self.regs[0] && high == self.regs[2];
+        if equal {
+            let (rbx, rcx) = (self.regs[3], self.regs[1]);
+            if self.write_memory(at, Width::Qword, rbx).is_err() {
+                fault(self);
+                return;
+            }
+            if self.write_memory(high_at, Width::Qword, rcx).is_err() {
+                let _ = self.write_memory(at, Width::Qword, low);
+                fault(self);
+                return;
+            }
+        } else {
+            self.regs[0] = low;
+            self.regs[2] = high;
+        }
+        let now = self.flags.read();
+        self.flags.write((now & !ZF) | if equal { ZF } else { 0 });
     }
 
     /// **Les multiplications, les divisions, les extensions de signe, et la
@@ -2071,7 +2127,10 @@ impl Cpu {
         }
         if matches!(
             instruction.op,
-            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange
+            Op::Exchange
+                | Op::ExchangeAndAdd
+                | Op::CompareAndExchange
+                | Op::CompareAndExchangeSixteen
         ) {
             self.exchange(instruction);
             return;
@@ -2306,7 +2365,10 @@ impl Cpu {
             | Op::CarryFlag(_) => {
                 unreachable!("les deux registres sortent avant")
             }
-            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
+            Op::Exchange
+            | Op::ExchangeAndAdd
+            | Op::CompareAndExchange
+            | Op::CompareAndExchangeSixteen => {
                 unreachable!("les échanges sortent avant")
             }
             Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
@@ -3012,6 +3074,26 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_width: width,
                     memory: field.memory,
                     ..Decoded::nothing(width)
+                })
+            }
+            // **`cmpxchg16b`, le verrou à seize octets.** C'est `/1` du
+            // groupe 9, en mémoire seulement, et avec REX.W seulement : sans
+            // lui c'est `cmpxchg8b`, que rien n'exécute ici et qui reste
+            // illisible plutôt que devinée. Le reste du groupe — `rdrand`,
+            // `rdseed`, `xsaves` et les siens — n'est pas lu.
+            0xc7 => {
+                if prefixes.width(false) != Width::Qword {
+                    return None;
+                }
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                if field.reg & 7 != 1 || field.memory.is_none() {
+                    return None;
+                }
+                Some(Decoded {
+                    op: Op::CompareAndExchangeSixteen,
+                    length: at,
+                    memory: field.memory,
+                    ..Decoded::nothing(Width::Qword)
                 })
             }
             // **`imul` à deux opérandes** : `reg` fois `rm`, tronqué, rangé
@@ -5512,5 +5594,172 @@ mod tests {
     #[test]
     fn the_fs_prefix_is_refused_for_want_of_an_oracle() {
         assert!(decode(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]).is_none());
+    }
+
+    /// **`cmpxchg16b` se lit avec REX.W, dans sa forme mémoire, et rien d'autre
+    /// du groupe 9.**
+    ///
+    /// `f0 48 0f c7 4e 20` est le mur de `___slab_alloc + 275` : le chemin
+    /// rapide de la liste libre de SLUB. Sans REX.W, `0f c7 /1` est
+    /// `cmpxchg8b`, que rien n'exécute ici et qui reste illisible plutôt que
+    /// devinée. La forme à registre de `/1` n'existe pas ; `/6` et `/7` en
+    /// registre sont `rdrand` et `rdseed`, que cette machine ne produit pas.
+    #[test]
+    fn cmpxchg16b_is_read_with_rex_w_in_its_memory_form_and_cmpxchg8b_stays_illegible() {
+        let step = decode(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20])
+            .expect("lock cmpxchg16b 0x20(%rsi) se décode");
+        assert_eq!(step.op, Op::CompareAndExchangeSixteen);
+        assert_eq!(step.length, 6, "lock, REX.W, deux d'opcode, ModRM, disp8");
+        assert_eq!(step.width, Width::Qword);
+        let address = step.memory.expect("la forme mémoire porte une adresse");
+        assert_eq!(address.base, Some(6), "la base est RSI");
+        assert_eq!(address.displacement, 0x20);
+        assert!(!step.memory_is_source, "la mémoire est la destination");
+
+        let bare = decode(&[0x48, 0x0f, 0xc7, 0x0e]).expect("cmpxchg16b (%rsi) sans lock");
+        assert_eq!((bare.op, bare.length), (Op::CompareAndExchangeSixteen, 4));
+        let r14 = decode(&[0x49, 0x0f, 0xc7, 0x4e, 0x20]).expect("cmpxchg16b 0x20(%r14)");
+        assert_eq!(
+            r14.memory.map(|a| a.base),
+            Some(Some(14)),
+            "REX.B étend la base"
+        );
+
+        for (bytes, why) in [
+            (
+                &[0x0f, 0xc7, 0x4e, 0x20][..],
+                "sans REX.W c'est cmpxchg8b, illisible",
+            ),
+            (
+                &[0xf0, 0x0f, 0xc7, 0x4e, 0x20][..],
+                "lock cmpxchg8b, illisible aussi",
+            ),
+            (&[0x48, 0x0f, 0xc7, 0xce][..], "/1 en registre n'existe pas"),
+            (
+                &[0x48, 0x0f, 0xc7, 0x56, 0x20][..],
+                "/2 (xrstors) n'est pas lu",
+            ),
+            (&[0x48, 0x0f, 0xc7, 0x46, 0x20][..], "/0 ne désigne rien"),
+            (&[0x48, 0x0f, 0xc7, 0xf0][..], "rdrand (/6) n'est pas lu"),
+            (&[0x48, 0x0f, 0xc7, 0xf8][..], "rdseed (/7) n'est pas lu"),
+            (&[0x48, 0x0f, 0xc7][..], "coupée avant son ModRM"),
+            (
+                &[0x48, 0x0f, 0xc7, 0x4e][..],
+                "coupée avant son déplacement",
+            ),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+    }
+
+    /// **`cmpxchg16b` compare seize octets à RDX:RAX, écrit RCX:RBX si les deux
+    /// moitiés tiennent, recharge RDX:RAX sinon, et ne pose que ZF.**
+    ///
+    /// Les deux moitiés comptent : une seule qui diffère suffit à refuser
+    /// l'écriture, et c'est ce que le troisième cas tient. Le préfixe `lock`
+    /// ne change rien à ce que l'instruction calcule — un seul fil.
+    #[test]
+    fn cmpxchg16b_writes_the_pair_when_both_halves_match_and_reloads_them_otherwise() {
+        const A_LOW: u64 = 0x1111_2222_3333_4444;
+        const A_HIGH: u64 = 0x5555_6666_7777_8888;
+        const N_LOW: u64 = 0x9999_aaaa_bbbb_cccc;
+        const N_HIGH: u64 = 0xdddd_eeee_ffff_0000;
+        const SLOT: u64 = 0x3000_1020;
+        let machine = |rax: u64, rdx: u64| {
+            let mut cpu = Cpu {
+                rip: 0x3000_0000,
+                memory: GuestMemory {
+                    base: 0x3000_0000,
+                    bytes: vec![0; 0x4000],
+                },
+                ..Default::default()
+            };
+            cpu.regs[0] = rax;
+            cpu.regs[2] = rdx;
+            cpu.regs[3] = N_LOW;
+            cpu.regs[1] = N_HIGH;
+            cpu.regs[6] = 0x3000_1000;
+            cpu.memory.write(SLOT, Width::Qword, A_LOW).unwrap();
+            cpu.memory.write(SLOT + 8, Width::Qword, A_HIGH).unwrap();
+            // Des drapeaux reconnaissables autour, que l'instruction doit
+            // laisser en place.
+            cpu.flags.write(CF | OF | PF | DF);
+            cpu
+        };
+        let pair = |cpu: &Cpu| {
+            (
+                cpu.memory.read(SLOT, Width::Qword).unwrap(),
+                cpu.memory.read(SLOT + 8, Width::Qword).unwrap(),
+            )
+        };
+        let code = [0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20];
+
+        // Les deux moitiés tiennent : la mémoire reçoit RCX:RBX, RDX:RAX ne
+        // bougent pas, ZF est posé, et `step` avance de six.
+        let mut cpu = machine(A_LOW, A_HIGH);
+        cpu.step(&code);
+        assert!(!cpu.faulted, "rien ne sort de la fenêtre");
+        assert_eq!(pair(&cpu), (N_LOW, N_HIGH), "la mémoire reçoit RCX:RBX");
+        assert_eq!(
+            (cpu.regs[0], cpu.regs[2]),
+            (A_LOW, A_HIGH),
+            "RDX:RAX restent"
+        );
+        assert_eq!(cpu.regs[3], N_LOW, "RBX n'est que lu");
+        assert_eq!(cpu.regs[1], N_HIGH, "RCX n'est que lu");
+        let flags = cpu.flags.read();
+        assert_ne!(flags & ZF, 0, "l'égalité pose ZF");
+        assert_eq!(
+            flags & (CF | OF | PF | DF),
+            CF | OF | PF | DF,
+            "le reste survit"
+        );
+        assert_eq!(flags & (SF | AF), 0, "rien d'autre n'apparaît");
+        assert_eq!(cpu.rip, 0x3000_0006, "six octets consommés");
+
+        // La moitié basse diffère : la mémoire reste, RDX:RAX la relisent,
+        // ZF s'éteint.
+        let mut cpu = machine(A_LOW ^ 1, A_HIGH);
+        cpu.step(&code);
+        assert!(!cpu.faulted);
+        assert_eq!(pair(&cpu), (A_LOW, A_HIGH), "rien n'est écrit");
+        assert_eq!(
+            (cpu.regs[0], cpu.regs[2]),
+            (A_LOW, A_HIGH),
+            "RDX:RAX relisent"
+        );
+        let flags = cpu.flags.read();
+        assert_eq!(flags & ZF, 0, "l'inégalité éteint ZF");
+        assert_eq!(
+            flags & (CF | OF | PF | DF),
+            CF | OF | PF | DF,
+            "le reste survit"
+        );
+
+        // La moitié haute seule diffère : même verdict. C'est ce cas qui tient
+        // que les seize octets sont comparés, pas huit.
+        let mut cpu = machine(A_LOW, A_HIGH ^ 1);
+        cpu.step(&code);
+        assert!(!cpu.faulted);
+        assert_eq!(pair(&cpu), (A_LOW, A_HIGH), "rien n'est écrit");
+        assert_eq!(
+            (cpu.regs[0], cpu.regs[2]),
+            (A_LOW, A_HIGH),
+            "RDX:RAX relisent"
+        );
+        assert_eq!(cpu.flags.read() & ZF, 0);
+
+        // Seize octets qui sortent de la fenêtre par leur fin : faute, rien
+        // d'écrit, rien de relu.
+        let mut cpu = machine(A_LOW, A_HIGH);
+        cpu.regs[6] = 0x3000_3fd8; // 0x20 plus loin : les huit derniers octets manquent
+        cpu.step(&code);
+        assert!(cpu.faulted, "la seconde moitié sort de la fenêtre");
+        assert_eq!(
+            (cpu.regs[0], cpu.regs[2]),
+            (A_LOW, A_HIGH),
+            "RDX:RAX intacts"
+        );
+        assert_eq!(cpu.rip, 0x3000_0000, "et RIP reste dessus");
     }
 }
