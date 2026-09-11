@@ -5701,3 +5701,86 @@ for (const [name, path] of [{listing}]) {{
         );
     }
 }
+
+/// **Un noyau qui atteint `invpcid` est arrêté par son nom, RIP dessus.**
+///
+/// `66 0f 38 82 /r` purge le tampon par identifiant de contexte (PCID), et
+/// cette machine n'a pas de PCID : `cpuid` n'annonce ni `PCID` ni `INVPCID`, et
+/// le noyau Alpine ne l'exécute que si les deux sont promis. Mais elle est à
+/// 103 octets de `native_flush_tlb_one_user`, atteinte statiquement depuis le
+/// trampoline des alternatives, et un décodeur qui ne la lisait pas refusait
+/// la région entière — la même famille que l'`int3`, `lkgs` et `vmcall`.
+///
+/// Ce qui précède a tourné, RIP est posé **sur** l'instruction, ce qui suit
+/// n'a pas tourné, et l'arrêt porte son nom.
+#[test]
+fn a_kernel_that_reaches_invpcid_is_stopped_by_name_on_the_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program = vec![0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00]; // movq $42, %rax
+    program.extend_from_slice(&[0x66, 0x0f, 0x38, 0x82, 0x04, 0x24]); // invpcid (%rsp), %rax
+    program.extend_from_slice(&[0x48, 0xff, 0xc2]); // incq %rdx — ne doit pas tourner
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!(
+            "`native_flush_tlb_one_user` doit se traduire, pas faire refuser la région : {why:?}"
+        ),
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-invpcid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rax " + lire(0));
+console.log("rdx " + lire(2));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur invpcid : purger le tampon par identifiant de contexte, et cette machine n'a pas de PCID",
+        "l'arrêt doit se nommer : {text}"
+    );
+    assert_eq!(line("rax "), "42", "les instructions d'avant tournent");
+    assert_eq!(
+        line("rip "),
+        (BASE + 7).to_string(),
+        "RIP est posé sur l'instruction, pas après : rien ne la reprendra"
+    );
+    assert_eq!(line("rdx "), "0", "et rien d'après n'a tourné");
+}
