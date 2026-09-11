@@ -2949,6 +2949,38 @@ impl Module {
             });
             return Some(());
         }
+        // **`invlpg` : la case du tampon que la page occupe est effacée.**
+        //
+        // Le tampon est direct — une case par numéro de page, modulo sa
+        // taille — et son étiquette à zéro veut dire « vide » : écrire zéro
+        // dans l'étiquette suffit, quelle que soit la page qui l'occupait.
+        // L'adresse est **linéaire**, calculée comme pour `lea` : elle n'est
+        // ni traduite ni lue, donc une page absente ne faute pas. Sans
+        // pagination il n'y a pas de tampon, et rien à faire.
+        //
+        // C'est ce que le test du tampon exhibait depuis la pagination P2 :
+        // après avoir réécrit sa propre entrée de feuille, l'invité relisait
+        // encore l'ancienne trame. Le noyau Alpine y arrive dans
+        // `native_flush_tlb_one_user`.
+        if step.op == Op::InvalidatePage {
+            let target = step.memory?;
+            if let (Some(mask), true) = (body.confine, body.walk.is_some()) {
+                let tlb = tlb_base((mask + 1) / 65536);
+                body.wide_address(&target);
+                body.constant(12)
+                    .op(code::I64_SHR_U)
+                    .constant(u64::from(TLB_SLOTS - 1))
+                    .op(code::I64_AND)
+                    .constant(u64::from(TLB_ENTRY))
+                    .op(code::I64_MUL)
+                    .constant(u64::from(tlb))
+                    .op(code::I64_ADD)
+                    .op(code::I32_WRAP_I64);
+                body.constant(0);
+                body.access(code::I64_STORE, 0);
+            }
+            return Some(());
+        }
         // **`lkgs` s'arrête dessus et le dit.** Pas de table de descripteurs
         // d'où lire la base : le témoin est posé, RIP reste **sur**
         // l'instruction, et la main est rendue. Décoder plutôt que refuser,
@@ -3153,6 +3185,7 @@ impl Module {
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
                 | Op::LoadKernelGs
+                | Op::InvalidatePage
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3551,6 +3584,7 @@ impl Module {
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
             | Op::LoadKernelGs
+            | Op::InvalidatePage
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }
