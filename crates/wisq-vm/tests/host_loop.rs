@@ -5436,3 +5436,166 @@ console.log("rsp " + lire(4).toString());
         "les `call` et les `ret` se répondent un pour un, sauf celui du bloc de plus"
     );
 }
+
+/// **`invlpg` fait oublier une page au tampon, et la lecture suivante suit la
+/// nouvelle entrée.**
+///
+/// Le test du tampon (`a_paged_guest_reads_through_its_page_tables`) tient
+/// qu'après avoir réécrit sa propre entrée de feuille, l'invité relit encore
+/// **l'ancienne** trame : c'est le tampon qui répond. Un vrai noyau vide ce
+/// tampon par `invlpg` — « que cette tranche ne produit pas », disait-il. Le
+/// noyau Alpine y arrive dans `flush_tlb_one_kernel`, et l'instruction refusait
+/// sa région.
+///
+/// Le même montage, un `invlpg (%rsi)` entre la réécriture et la relecture :
+/// la relecture doit rendre la **nouvelle** trame. Et le même programme avec
+/// trois `nop` à la place, pour le contraste : l'ancienne. Sans ce contraste,
+/// un tampon qui ne répondrait plus du tout rendrait le test vert pour la
+/// mauvaise raison.
+#[test]
+fn invlpg_makes_the_buffer_forget_the_page_and_the_next_read_follows_the_new_entry() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const FRAME_A: u64 = 0x3_0000;
+    const FRAME_B: u64 = 0x3_1000;
+    const VA1: u64 = 0xFFFF_8000_0020_1000;
+    const VA_TABLE: u64 = VA1 + 0x1000; // l'alias sur la table de feuilles
+    const WITNESS_A: u64 = 0x0123_4567_89AB_CDEF;
+    const WITNESS_B: u64 = 0x7777_7777_7777_7777;
+
+    let leaf = |at: u64| (at >> 12) & 0x1ff;
+    let build = |flush: &[u8]| -> Vec<u8> {
+        let mut program: Vec<u8> = Vec::new();
+        let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+        push(&[0x48, 0xb8]); // movabs $PML4,%rax
+        push(&PML4.to_le_bytes());
+        push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+        push(&[0x48, 0xb8]); // movabs $PG,%rax
+        push(&(1u64 << 31).to_le_bytes());
+        push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+        push(&[0x48, 0xbe]); // movabs $VA1,%rsi
+        push(&VA1.to_le_bytes());
+        push(&[0x48, 0x8b, 0x56, 0x18]); // mov 0x18(%rsi),%rdx — remplit le tampon
+        push(&[0x48, 0xbf]); // movabs $VA_TABLE,%rdi
+        push(&VA_TABLE.to_le_bytes());
+        push(&[0x48, 0xb8]); // movabs $(FRAME_B|présente),%rax
+        push(&(FRAME_B | 0x3).to_le_bytes());
+        push(&[0x48, 0x89, 0x87]); // mov %rax,disp32(%rdi) — réécrit la feuille
+        push(&((leaf(VA1) * 8) as u32).to_le_bytes());
+        push(flush); // invlpg (%rsi), ou trois nop
+        push(&[0x48, 0x8b, 0x5e, 0x18]); // mov 0x18(%rsi),%rbx — que répond-on ?
+        push(&[0x0f, 0x0b]); // ud2 : rendre la main
+        program
+    };
+    let with = build(&[0x0f, 0x01, 0x3e]);
+    let without = build(&[0x90, 0x90, 0x90]);
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-invlpg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = match Module::resolving_or_why(&with, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!("`invlpg` doit se traduire, pas faire refuser la région : {why:?}"),
+    };
+    let path = scratch.join("invlpg.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let contrast = Module::resolving(&without, BASE, 0, 0, PAGES).expect("le même sans invlpg");
+    let contrast_path = scratch.join("nop.wasm");
+    std::fs::write(&contrast_path, &contrast).expect("le module de contraste");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+function monter(vm) {{
+  const vue = new DataView(vm.memory.buffer);
+  const present = 0x3n;
+  const feuille = (va) => Number((BigInt(va) >> 12n) & 0x1ffn);
+  const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+  vue.setBigUint64({pml4} + idx({va1}n, 39) * 8, {pdpt}n | present, true);
+  vue.setBigUint64({pdpt} + idx({va1}n, 30) * 8, {pd}n | present, true);
+  vue.setBigUint64({pd} + idx({va1}n, 21) * 8, {pt}n | present, true);
+  vue.setBigUint64({pt} + feuille({va1}n) * 8, {frameA}n | present, true);
+  vue.setBigUint64({pt} + feuille({vaTable}n) * 8, {pt}n | present, true);
+  vue.setBigUint64({frameA} + 0x18, {witnessA}n, true);
+  vue.setBigUint64({frameB} + 0x18, {witnessB}n, true);
+}}
+
+async function tourner(fichier) {{
+  let asked = 0;
+  const vm = machine({{
+    translate: async () => (asked++ === 0 ? readFileSync(fichier) : null),
+    pages: {pages},
+  }});
+  monter(vm);
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 256n, rounds: 16 }});
+  const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+  return {{ why, rdx: lire(2), rbx: lire(3) }};
+}}
+
+const avec = await tourner({path:?});
+console.log("arret " + avec.why.stopped);
+console.log("rdx " + avec.rdx);
+console.log("rbx " + avec.rbx);
+const sans = await tourner({contrast:?});
+console.log("contraste " + sans.rbx);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            contrast = contrast_path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            va1 = VA1,
+            vaTable = VA_TABLE,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            frameA = FRAME_A,
+            frameB = FRAME_B,
+            witnessA = WITNESS_A,
+            witnessB = WITNESS_B,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    assert_eq!(line("arret "), "refusée", "le `ud2` arrête : {text}");
+    assert_eq!(
+        number("rdx "),
+        WITNESS_A,
+        "la première lecture a rempli le tampon"
+    );
+    assert_eq!(
+        number("rbx "),
+        WITNESS_B,
+        "après `invlpg`, la relecture suit la nouvelle entrée de feuille"
+    );
+    assert_eq!(
+        number("contraste "),
+        WITNESS_A,
+        "sans `invlpg`, le tampon répond encore l'ancienne trame : c'est bien lui que \
+         `invlpg` a fait taire"
+    );
+}
