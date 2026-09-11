@@ -95,3 +95,70 @@ fn something_that_is_not_an_elf_is_refused() {
     small[4] = 1; // ELFCLASS32
     assert!(loads(&small).is_none());
 }
+
+/// **La page zéro que le montage pose, et ce qu'un noyau y lit.**
+///
+/// `--example kernel-entry` n'en posait aucune : « le montage est fait pour
+/// échouer d'abord ». Il a échoué là où il devait — `extend_brk`, le
+/// `BUG_ON(_brk_start == 0)`, dernière issue d'`alloc_low_pages` quand memblock
+/// n'a rien, parce que la carte e820 était vide et que le noyau ne connaissait
+/// que les 640 Kio du repli BIOS-88.
+///
+/// Les décalages viennent de `struct boot_params` et ne se déduisent d'aucune
+/// règle : le compteur e820 à `0x1e8`, la table à `0x2d0` par entrées de vingt
+/// octets, `type_of_loader` à `0x210`, `loadflags` à `0x211`, `cmd_line_ptr` à
+/// `0x228`. Un octet posé à côté donne un noyau qui croit n'avoir aucune RAM,
+/// sans rien dire. **Et rien d'autre n'est écrit** : une page zéro qui porterait
+/// un champ de plus ferait croire au noyau à un chargeur qu'il n'a pas eu.
+#[test]
+fn the_zero_page_declares_the_ram_and_names_its_loader() {
+    use wisq_vm::kernel_image::zero_page;
+    const RAM: u64 = 64 * 1024 * 1024;
+    const COMMAND_LINE: u32 = 0x9800;
+    let page = zero_page(RAM, COMMAND_LINE);
+    assert_eq!(page.len(), 4096, "une page, exactement");
+
+    let byte = |at: usize| page[at];
+    let dword = |at: usize| u32::from_le_bytes(page[at..at + 4].try_into().unwrap());
+    let qword = |at: usize| u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
+    // Deux entrées : sous le trou du premier mégaoctet, et tout le reste.
+    assert_eq!(byte(0x1e8), 2, "deux entrées e820");
+    assert_eq!(
+        (qword(0x2d0), qword(0x2d8), dword(0x2e0)),
+        (0, 0x9fc00, 1),
+        "la mémoire basse, utilisable, jusqu'à la zone des données du BIOS"
+    );
+    assert_eq!(
+        (qword(0x2e4), qword(0x2ec), dword(0x2f4)),
+        (0x10_0000, RAM - 0x10_0000, 1),
+        "et tout ce qui est au-dessus du mégaoctet, jusqu'au bout de la RAM"
+    );
+    assert_eq!(byte(0x210), 0xff, "un chargeur non enregistré");
+    assert_eq!(
+        byte(0x211) & 0x81,
+        0x81,
+        "LOADED_HIGH et CAN_USE_HEAP : le noyau est au-dessus du mégaoctet"
+    );
+    assert_eq!(
+        dword(0x228),
+        COMMAND_LINE,
+        "où la ligne de commande est posée"
+    );
+
+    // **Rien d'autre.** Les champs écrits sont retirés ; ce qui reste doit être
+    // nul, sans quoi le noyau lirait un champ que personne n'a voulu.
+    let written: [(usize, usize); 5] =
+        [(0x1e8, 1), (0x210, 2), (0x228, 4), (0x2d0, 20), (0x2e4, 20)];
+    let stray: Vec<usize> = (0..page.len())
+        .filter(|at| {
+            page[*at] != 0
+                && !written
+                    .iter()
+                    .any(|(from, len)| (from..&(from + len)).contains(&at))
+        })
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "des octets écrits hors des champs voulus : {stray:x?}"
+    );
+}

@@ -132,6 +132,49 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|at| at + from)
 }
 
+/// **La ligne de commande que le montage donne au noyau.** Le noyau Alpine n'a
+/// pas `early_printk`, mais il a la console 8250 précoce : `earlycon` la
+/// branche sur le port `0x3f8` dès `setup_arch`, celui que `web/host.js`
+/// écoute déjà — bien avant `console_init`.
+pub const MONTAGE_COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8";
+
+/// **La page zéro qu'un chargeur doit écrire pour qu'un noyau connaisse sa
+/// RAM.** `struct boot_params`, quatre kibioctets, et cinq champs seulement.
+///
+/// **Sans la carte e820, le noyau croit qu'il n'a aucune RAM** — il retombe sur
+/// les 640 Kio du repli BIOS-88, memblock n'a rien, `alloc_low_pages` finit
+/// dans `extend_brk`, et `extend_brk` fait `BUG()` parce que `reserve_brk()`
+/// a déjà conclu la réserve. C'est exactement là que `--example kernel-entry`
+/// s'est arrêté, « sur place », à sa 1067ᵉ région, tant qu'il ne posait rien.
+///
+/// Les décalages viennent de `struct boot_params` et ne se déduisent d'aucune
+/// règle ; le chargeur Swift (`X86BootLoader`) écrit les mêmes, pour un
+/// `bzImage`. Deux entrées suffisent : ce qui est sous le trou du premier
+/// mégaoctet, et tout le reste jusqu'au bout de la RAM. `type_of_loader` à
+/// `0xFF` veut dire « un chargeur non enregistré » ; `LOADED_HIGH` et
+/// `CAN_USE_HEAP` disent que le noyau est au-dessus du mégaoctet. **Rien
+/// d'autre n'est écrit** : un ELF n'a pas d'en-tête de setup à recopier, et
+/// un champ posé de trop ferait croire au noyau à un chargeur qu'il n'a pas eu.
+#[must_use]
+pub fn zero_page(ram: u64, command_line: u32) -> Vec<u8> {
+    let mut page = vec![0u8; 4096];
+    page[0x210] = 0xff;
+    page[0x211] = 0x01 | 0x80;
+    page[0x228..0x22c].copy_from_slice(&command_line.to_le_bytes());
+    let entries: [(u64, u64, u32); 2] = [
+        (0, 0x9fc00, 1),
+        (0x10_0000, ram.saturating_sub(0x10_0000), 1),
+    ];
+    page[0x1e8] = entries.len() as u8;
+    for (index, (start, size, kind)) in entries.iter().enumerate() {
+        let at = 0x2d0 + index * 20;
+        page[at..at + 8].copy_from_slice(&start.to_le_bytes());
+        page[at + 8..at + 16].copy_from_slice(&size.to_le_bytes());
+        page[at + 16..at + 20].copy_from_slice(&kind.to_le_bytes());
+    }
+    page
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

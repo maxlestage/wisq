@@ -8078,3 +8078,75 @@ part où aller.
 montage, et RSI dessus, comme le fait déjà le chemin d'amorçage de
 l'interpréteur pour un `bzImage`. Puis mesurer. Ce que ça promet : un noyau
 qui cartographie sa mémoire, et `console_init` un peu plus loin.
+
+## La page zéro du montage, et la première ligne du noyau sur le port série
+
+Le mur de la tranche précédente n'était pas au noyau ni à l'émetteur : c'était
+le montage. `kernel-entry` ne posait aucun `boot_params` — « fait pour échouer
+d'abord » —, la carte e820 était vide, memblock n'avait rien, et
+`alloc_low_pages` finissait dans le `BUG()` d'`extend_brk`.
+
+**Ce que la tranche pose.** `kernel_image::zero_page(ram, ligne)` : une page
+de quatre kibioctets et cinq champs — deux entrées e820 (sous le trou du premier
+mégaoctet, et tout le reste jusqu'au bout de la RAM), `type_of_loader` à
+`0xFF`, `LOADED_HIGH` et `CAN_USE_HEAP`, `cmd_line_ptr`. **Rien d'autre**, et le
+test le tient : un champ posé de trop ferait croire au noyau à un chargeur qu'il
+n'a pas eu. Les décalages sont ceux que le chargeur Swift écrit déjà pour un
+`bzImage`. `kernel-entry` la pose à `0x9000`, la ligne de commande à `0x9800`,
+et RSI dessus, comme un chargeur entrant dans `startup_64`. La ligne :
+`earlycon=uart8250,io,0x3f8` — le noyau Alpine n'a pas `early_printk`, mais il
+a la console 8250 précoce, et `0x3f8` est le port que `web/host.js` écoute
+depuis la tranche des entrées-sorties.
+
+**Éprouvé.** Le test du constructeur écrit avant, rouge ; trois sabotages,
+trois rouges : la carte vide, la ligne de commande non désignée, la seconde
+entrée qui recouvre le trou.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage désormais **inégal** — c'est
+le montage qui change :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 1067 | 44 140 | `extend_brk + 168` — sur place |
+| après | **1307** | **52 583** | `native_flush_tlb_one_user + 45` — `CannotDecode { at: 58 }` |
+
+Et surtout, **le noyau parle**. Sur le port série, engendré en WebAssembly et
+jugé sous JavaScriptCore :
+
+```
+[    0.000000] Linux version 6.6.134-0-lts (buildozer@build-3-20-x86_64) (gcc (Alpine 13.2.1_git20240309) 13.2.1 20240309, GNU ld (GNU Binutils) 2.42) #1-Alpine SMP PREEMPT_DYNAMIC 2026-04-11 17:03:51
+[    0.000000] Command line: earlycon=uart8250,io,0x3f8
+[    0.000000] CPU: vendor_id 'wisq wasm vm' unknown, using generic init.
+[    0.000000] CPU: Your system may be unstable.
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x0000000003ffffff] usable
+[    0.000000] earlycon: uart8250 at I/O port 0x3f8 (options '')
+[    0.000000] printk: bootconsole [uart8250] enabled
+[    0.000000] Notice: NX (Execute Disable) protection missing in CPU!
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Fast TSC calibration failed
+[    0.000000] last_pfn = 0x4000 max_arch_pfn = 0x400000000
+[    0.000000] MTRRs disabled (not available)
+[    0.000000] x86/PAT: PAT not supported by the CPU.
+[    0.000000] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC
+[    0.000000] ACPI: Early table checksum verification disabled
+```
+
+Dix-huit lignes, dont trois qui sont des relevés sur cette machine : pas de
+NX, pas de MTRR, pas de PAT, et une calibration TSC rapide qui échoue. Ce sont
+des faits à traiter un jour, pas des pannes : le noyau les dit et continue. Il
+traverse `init_mem_mapping` entier — `phys_pte_init`, `native_set_p4d`,
+`init_memory_mapping` —, `dmi_check_system`, et entre dans l'ACPI par
+`__acpi_map_table`.
+
+**Le mur suivant est de la famille de l'`int3`, pour la quatrième fois.** À
+`native_flush_tlb_one_user + 103` : `66 0f 38 82`, `invpcid (%rsp),%rax` —
+le chemin PCID de la purge du tampon, atteint par un saut conditionnel depuis
+le trampoline des alternatives, et que le noyau ne prend que si CPUID annonce
+`INVPCID`, ce que `cpuid` n'annonce pas. Atteint, jamais exécuté, illisible : la
+région entière refusée. La tranche suivante le décode et en fait un arrêt
+nommé. **La question de direction reste posée à Maxime** — arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait cette famille
+d'un coup ; quatre murs sur les huit dernières tranches en étaient.
