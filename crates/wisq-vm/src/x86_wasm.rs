@@ -276,6 +276,13 @@ pub const STOP_SELECTOR: u64 = 2;
 /// qu'une traduction manque.
 pub const STOP_KERNEL_GS: u64 = 3;
 
+/// **Un appel à l'hyperviseur a été atteint** — `vmcall` ou `vmmcall` — et
+/// cette machine n'en a pas : personne pour répondre. RIP est posé **sur**
+/// l'instruction. Le noyau Alpine ne l'exécute que si CPUID annonce la
+/// signature VMware, ce que `cpuid` n'annonce pas ; ce témoin dit que la
+/// promesse a été rompue, pas qu'une traduction manque.
+pub const STOP_HYPERVISOR: u64 = 4;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -2981,6 +2988,23 @@ impl Module {
             }
             return Some(());
         }
+        // **`vmcall` et `vmmcall` s'arrêtent dessus et le disent.** Pas
+        // d'hyperviseur au-dessus de cette machine. Décoder plutôt que
+        // refuser, parce que la sonde VMware du noyau est à portée statique
+        // d'une région qu'il exécute, et qu'il n'appelle l'hyperviseur que si
+        // CPUID le promet — ce que `cpuid` ne fait pas.
+        if let Op::HypervisorCall { .. } = step.op {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_HYPERVISOR);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            return Some(());
+        }
         // **`lkgs` s'arrête dessus et le dit.** Pas de table de descripteurs
         // d'où lire la base : le témoin est posé, RIP reste **sur**
         // l'instruction, et la main est rendue. Décoder plutôt que refuser,
@@ -3186,6 +3210,7 @@ impl Module {
                 | Op::SwapGs
                 | Op::LoadKernelGs
                 | Op::InvalidatePage
+                | Op::HypervisorCall { .. }
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3585,6 +3610,7 @@ impl Module {
             | Op::SwapGs
             | Op::LoadKernelGs
             | Op::InvalidatePage
+            | Op::HypervisorCall { .. }
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }

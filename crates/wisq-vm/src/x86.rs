@@ -517,6 +517,19 @@ pub enum Op {
     /// qui marche les tables à chaque accès, n'a rien à oublier. La forme à
     /// registre du même `/7` est `swapgs`, et seulement avec `rm` à zéro.
     InvalidatePage,
+    /// **`0F 01 C1` et `0F 01 D9` : l'appel à l'hyperviseur**, `vmcall` chez
+    /// Intel, `vmmcall` chez AMD. Cette machine n'a pas d'hyperviseur
+    /// au-dessus d'elle : personne pour répondre. Le noyau Alpine les porte
+    /// dans `vmware_platform`, sa sonde d'hyperviseur, et ne les exécute que si
+    /// CPUID annonce la signature VMware, ce que `cpuid` n'annonce pas. Ils
+    /// sont décodés parce qu'ils sont **atteints statiquement** depuis
+    /// `init_hypervisor_platform`, et refusés par nom à l'exécution. Deux
+    /// paires exactes `(reg, rm)` de la forme à registre, comme `swapgs` : leurs
+    /// voisins `vmlaunch` et `vmrun` restent illisibles.
+    HypervisorCall {
+        /// `vmmcall` plutôt que `vmcall` : la forme d'AMD.
+        amd: bool,
+    },
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1921,6 +1934,7 @@ impl Cpu {
                 | Op::StoreDescriptorTable { .. }
                 | Op::SwapGs
                 | Op::LoadKernelGs
+                | Op::HypervisorCall { .. }
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2201,6 +2215,7 @@ impl Cpu {
             | Op::StoreDescriptorTable { .. }
             | Op::SwapGs
             | Op::LoadKernelGs
+            | Op::HypervisorCall { .. }
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2485,10 +2500,12 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // seul** : son voisin `F9` est `rdtscp` et n'a rien à voir.
             //
             // `invlpg` est `/7` en forme **mémoire**, lu depuis la tranche
-            // qui a fait oublier une page au tampon. Le reste du groupe —
-            // `vmcall`, `monitor`… — reste illisible exprès. Rendre `Some`
-            // pour un opcode qu'on ne sait pas nommer transformerait un « je
-            // ne lis pas » en « je lis, et je me trompe ».
+            // qui a fait oublier une page au tampon ; `vmcall` et `vmmcall`
+            // sont deux paires exactes de la forme à registre, lues depuis la
+            // sonde d'hyperviseur du noyau. Le reste du groupe — `monitor`,
+            // `vmlaunch`… — reste illisible exprès. Rendre `Some` pour un
+            // opcode qu'on ne sait pas nommer transformerait un « je ne lis
+            // pas » en « je lis, et je me trompe ».
             // **Les registres de contrôle**, lus et écrits par leur numéro.
             // Leurs voisins immédiats `0F 21` et `0F 23` sont les registres de
             // **débogage** — un autre fichier de registres, que le noyau
@@ -2524,14 +2541,21 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 // mémoire), et le `rm` à zéro. En manquer une avale un
                 // voisin.
                 if field.memory.is_none() {
-                    if field.reg & 0b111 == 7 && field.register == 0 {
-                        return Some(Decoded {
-                            op: Op::SwapGs,
-                            length: at,
-                            ..Decoded::nothing(Width::Qword)
-                        });
-                    }
-                    return None;
+                    // **Trois paires exactes, et rien entre elles.** `swapgs`
+                    // est `F8`, `vmcall` `C1`, `vmmcall` `D9` ; `C2` est
+                    // `vmlaunch`, `D8` est `vmrun`, et les lire pour « reg=7 »
+                    // ou « reg=0 » avalerait des voisins qui n'ont rien à voir.
+                    let op = match (field.reg & 0b111, field.register) {
+                        (7, 0) => Op::SwapGs,
+                        (0, 1) => Op::HypervisorCall { amd: false },
+                        (3, 1) => Op::HypervisorCall { amd: true },
+                        _ => return None,
+                    };
+                    return Some(Decoded {
+                        op,
+                        length: at,
+                        ..Decoded::nothing(Width::Qword)
+                    });
                 }
                 let op = match field.reg & 0b111 {
                     0 => Op::StoreDescriptorTable { interrupts: false },
@@ -4186,8 +4210,10 @@ mod tests {
     ///
     /// `0f 01 f8` seul est `swapgs` : `reg=7` **et** `rm=0` **et** un opérande
     /// registre. `0f 01 f9` est `rdtscp`, une instruction sans rapport, et
-    /// `0f 01 c1` est `vmcall`. Décoder « tout ce qui a reg=7 » les
-    /// confondrait — un noyau qui appelle `rdtscp` verrait GS échangé.
+    /// `0f 01 c1` est `vmcall` — lu depuis la tranche de la sonde
+    /// d'hyperviseur, et comme une autre instruction. Décoder « tout ce qui a
+    /// reg=7 » les confondrait — un noyau qui appelle `rdtscp` verrait GS
+    /// échangé.
     #[test]
     fn swapgs_is_one_encoding_and_not_a_whole_corner_of_the_group() {
         let step = decode(&[0x0f, 0x01, 0xf8]).expect("swapgs se décode");
@@ -4195,12 +4221,19 @@ mod tests {
         assert_eq!(step.length, 3);
         assert!(step.memory.is_none(), "swapgs ne touche pas la mémoire");
 
-        for voisin in [0xf9u8, 0xc1, 0xd0] {
+        for voisin in [0xf9u8, 0xc2, 0xd0] {
             assert!(
                 decode(&[0x0f, 0x01, voisin]).is_none(),
                 "0f 01 {voisin:02x} n'est pas swapgs et ne doit pas se décoder comme tel"
             );
         }
+        // `c1` est `vmcall` depuis la tranche de la sonde d'hyperviseur : il
+        // se décode, et surtout pas en `swapgs`.
+        assert_eq!(
+            decode(&[0x0f, 0x01, 0xc1]).map(|step| step.op),
+            Some(Op::HypervisorCall { amd: false }),
+            "0f 01 c1 est vmcall, pas swapgs"
+        );
     }
 
     /// **`lkgs` se lit, et le reste de la page `f2` reste refusé.**
@@ -4315,6 +4348,54 @@ mod tests {
         assert_eq!(
             cpu.rip, 0x3000_0003,
             "et l'exécution passe à l'instruction suivante"
+        );
+    }
+
+    /// **`vmcall` et `vmmcall` se lisent, et rien d'autre de leur coin du
+    /// groupe.**
+    ///
+    /// `0f 01 c1` est l'appel à l'hyperviseur d'Intel, `0f 01 d9` celui
+    /// d'AMD. Le noyau Alpine les porte dans `vmware_platform`, sa sonde
+    /// d'hyperviseur, et ne les exécute que si CPUID annonce la signature
+    /// VMware — ce que `cpuid` n'annonce pas. Ils sont atteints statiquement,
+    /// et un décodeur qui ne les lit pas refusait la région entière : la même
+    /// famille que l'`int3` de la retpoline et `lkgs`.
+    ///
+    /// Comme `swapgs`, ce sont des **paires exactes** `(reg, rm)` de la forme
+    /// à registre : `c2` (`vmlaunch`) et `d8` (`vmrun`) restent illisibles,
+    /// et `ff` aussi. L'interpréteur les refuse par nom, RIP dessus.
+    #[test]
+    fn vmcall_and_vmmcall_are_read_as_two_exact_encodings() {
+        let intel = decode(&[0x0f, 0x01, 0xc1]).expect("vmcall se décode");
+        assert_eq!(intel.op, Op::HypervisorCall { amd: false });
+        assert_eq!(intel.length, 3);
+        let amd = decode(&[0x0f, 0x01, 0xd9]).expect("vmmcall se décode");
+        assert_eq!(amd.op, Op::HypervisorCall { amd: true });
+        assert_eq!(amd.length, 3);
+        assert_eq!(
+            decode(&[0x0f, 0x01, 0xf8]).map(|step| step.op),
+            Some(Op::SwapGs),
+            "swapgs reste swapgs"
+        );
+        for (voisin, nom) in [(0xc2u8, "vmlaunch"), (0xd8, "vmrun"), (0xff, "rien")] {
+            assert!(
+                decode(&[0x0f, 0x01, voisin]).is_none(),
+                "0f 01 {voisin:02x} ({nom}) n'est pas lu"
+            );
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x01, 0xc1]);
+        assert!(
+            cpu.faulted,
+            "vmcall est une faute nommée pour l'interpréteur"
+        );
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
         );
     }
 
