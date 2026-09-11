@@ -24,7 +24,7 @@
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
-/// `STOP_HYPERVISOR`, `STOP_PCID` — et un nombre que ce tableau ne connaît pas se dit quand
+/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT` — et un nombre que ce tableau ne connaît pas se dit quand
 /// même, plutôt que de passer pour « rien ». `STOP_MSR` n'y est pas : il porte
 /// le numéro du registre dans ses trente-deux bits bas, et se lit à part.
 const STOPS = {
@@ -33,6 +33,7 @@ const STOPS = {
   3n: "arrêtée sur lkgs : la base GS du noyau depuis un sélecteur, sans table de descripteurs",
   4n: "arrêtée sur un appel à l'hyperviseur (vmcall ou vmmcall) : cette machine n'en a pas",
   5n: "arrêtée sur invpcid : purger le tampon par identifiant de contexte, et cette machine n'a pas de PCID",
+  6n: "arrêtée sur lldt : une table de descripteurs locale non nulle, sans table globale où la trouver",
 };
 /// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
 /// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
