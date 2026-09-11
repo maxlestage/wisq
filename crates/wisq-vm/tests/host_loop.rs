@@ -18,7 +18,7 @@ use std::process::Command;
 use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS,
+    RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
 };
 
 fn workspace_root() -> PathBuf {
@@ -116,6 +116,15 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         wisq_vm::x86_wasm::KERNEL_GS_SLOT.to_string(),
         "la base que swapgs échange avec celle de GS"
     );
+    // **EFER était entré sans comparaison, comme `rflags` avant lui** — dans
+    // un test dont le commentaire dit que la répétition est comparée. Le
+    // registre de tâche arrive tenu, et EFER l'est enfin.
+    assert_eq!(
+        value("efer"),
+        wisq_vm::x86_wasm::EFER_SLOT.to_string(),
+        "l'emplacement d'EFER"
+    );
+    assert_eq!(value("task"), TASK_SLOT.to_string(), "le registre de tâche");
     assert_eq!(
         value("control"),
         wisq_vm::x86_wasm::CONTROL_SLOT.to_string(),
@@ -5783,4 +5792,97 @@ console.log("rip " + lire({rip}));
         "RIP est posé sur l'instruction, pas après : rien ne la reprendra"
     );
     assert_eq!(line("rdx "), "0", "et rien d'après n'a tourné");
+}
+
+/// **Un noyau qui charge le registre de tâche garde le sélecteur, et continue.**
+///
+/// `0f 00 d8`, `ltr %eax` : le noyau Alpine l'exécute dans
+/// `cpu_init_exception_handling`, avec `0x40` — le sélecteur de son TSS — et
+/// c'est le premier mur depuis la retpoline qui n'est pas de la famille de
+/// l'`int3` : celui-là tourne pour de vrai. Le module range le sélecteur dans
+/// sa case, seize bits quelle que soit la largeur de la source, et **ne
+/// s'arrête pas** : ce qui suit tourne, jusqu'au `hlt`.
+///
+/// **Ce que ce nombre n'est pas** : aucun descripteur n'est lu derrière lui.
+/// La délivrance de l'hôte dit toujours « cette machine n'a pas de TSS » ;
+/// ce que les piles IST en feront est une question de direction, posée quand
+/// elle sera atteinte.
+#[test]
+fn a_kernel_that_loads_the_task_register_keeps_the_selector_and_goes_on() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0xb8, 0x40, 0x00, 0x34, 0x12, // movl $0x12340040, %eax — seize bits comptent
+        0x0f, 0x00, 0xd8, // ltr %eax
+        0x48, 0xff, 0xc2, // incq %rdx — doit tourner
+        0xf4, // hlt
+    ];
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => {
+            panic!("`native_load_tr_desc` doit se traduire, pas faire refuser la région : {why:?}")
+        }
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-ltr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("tache " + lire({task}));
+console.log("rdx " + lire(2));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            task = TASK_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur hlt",
+        "la machine ne s'arrête pas sur ltr, elle continue jusqu'au hlt : {text}"
+    );
+    assert_eq!(
+        line("tache "),
+        "64",
+        "le sélecteur 0x40 est rangé, et seize bits seulement"
+    );
+    assert_eq!(line("rdx "), "1", "ce qui suit a tourné");
+    assert_eq!(
+        line("rip "),
+        (BASE + program.len() as u64).to_string(),
+        "RIP est après le hlt"
+    );
 }
