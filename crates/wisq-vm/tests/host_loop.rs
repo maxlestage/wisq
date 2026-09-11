@@ -6431,3 +6431,164 @@ for (const [name, path] of [{listing}]) {{
         "RIP est posé sur l'écriture, pas après"
     );
 }
+
+/// **`cmpxchg16b`, compilé par JavaScriptCore : la paire écrite quand les deux
+/// moitiés tiennent, relue sinon, et ZF seul qui bouge.**
+///
+/// C'est le mur de `___slab_alloc + 275`, le chemin rapide de la liste libre
+/// de SLUB. Les tests Rust de l'émetteur lisent les octets du module ; ici le
+/// module tourne. Le programme pose une paire en mémoire, la remplace par un
+/// `cmpxchg16b` qui réussit, dépile ses drapeaux dans R8, change la moitié
+/// basse de RAX, réessaie — l'échec recharge RDX:RAX depuis la mémoire —, et
+/// dépile ses drapeaux dans R9. Les drapeaux partent de zéro et rien d'autre
+/// ne les touche : ZF doit être **le seul** bit arithmétique après le succès,
+/// et aucun après l'échec.
+#[test]
+fn cmpxchg16b_under_javascriptcore_writes_the_pair_or_reloads_it_and_moves_only_zf() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const DATA: u64 = 0x2000;
+    const A_LOW: u64 = 0x1111_2222_3333_4444;
+    const A_HIGH: u64 = 0x5555_6666_7777_8888;
+    const N_LOW: u64 = 0x9999_aaaa_bbbb_cccc;
+    const N_HIGH: u64 = 0xdddd_eeee_ffff_0000;
+    const P_LOW: u64 = 0x0123_4567_89ab_cdef;
+    const P_HIGH: u64 = 0xfedc_ba98_7654_3210;
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xc7, 0xc4, 0x00, 0x10, 0x00, 0x00]); // mov $0x1000,%rsp
+    push(&[0x48, 0xc7, 0xc6]);
+    push(&(DATA as u32).to_le_bytes()); // mov $DATA,%rsi
+    push(&[0x48, 0xb8]);
+    push(&A_LOW.to_le_bytes()); // movabs $A_LOW,%rax
+    push(&[0x48, 0xba]);
+    push(&A_HIGH.to_le_bytes()); // movabs $A_HIGH,%rdx
+    push(&[0x48, 0xbb]);
+    push(&N_LOW.to_le_bytes()); // movabs $N_LOW,%rbx
+    push(&[0x48, 0xb9]);
+    push(&N_HIGH.to_le_bytes()); // movabs $N_HIGH,%rcx
+    push(&[0x48, 0x89, 0x46, 0x20]); // mov %rax,0x20(%rsi)
+    push(&[0x48, 0x89, 0x56, 0x28]); // mov %rdx,0x28(%rsi)
+    push(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20]); // lock cmpxchg16b 0x20(%rsi) — réussit
+    push(&[0x9c, 0x41, 0x58]); // pushfq ; pop %r8
+    push(&[0x48, 0xb8]);
+    push(&(A_LOW ^ 1).to_le_bytes()); // movabs $A_LOW^1,%rax
+    push(&[0x48, 0x0f, 0xc7, 0x4e, 0x20]); // cmpxchg16b 0x20(%rsi) — échoue, recharge
+    push(&[0x9c, 0x41, 0x59]); // pushfq ; pop %r9
+                               // RDX:RAX portent maintenant la paire neuve. Seule la moitié haute est
+                               // changée : un émetteur qui ne comparerait que huit octets écrirait ici.
+    push(&[0x48, 0xba]);
+    push(&(N_HIGH ^ 1).to_le_bytes()); // movabs $N_HIGH^1,%rdx
+    push(&[0x48, 0xbb]);
+    push(&P_LOW.to_le_bytes()); // movabs $P_LOW,%rbx
+    push(&[0x48, 0xb9]);
+    push(&P_HIGH.to_le_bytes()); // movabs $P_HIGH,%rcx
+    push(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20]); // lock cmpxchg16b — échoue sur la moitié haute
+    push(&[0x9c, 0x41, 0x5a]); // pushfq ; pop %r10
+    push(&[0xf4]); // hlt
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => {
+            panic!("`___slab_alloc` doit se traduire, pas faire refuser la région : {why:?}")
+        }
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-cmpxchg16b-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+const vue = new DataView(vm.memory.buffer);
+console.log("arret " + why.stopped);
+console.log("rax " + lire(0));
+console.log("rdx " + lire(2));
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("r8 " + lire(8));
+console.log("r9 " + lire(9));
+console.log("r10 " + lire(10));
+console.log("bas " + vue.getBigUint64({low}, true).toString(16));
+console.log("haut " + vue.getBigUint64({high}, true).toString(16));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            low = DATA + 0x20,
+            high = DATA + 0x28,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let hex = |name: &str| u64::from_str_radix(&line(name), 16).expect("un nombre");
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur hlt",
+        "la machine ne s'arrête pas sur cmpxchg16b, elle continue jusqu'au hlt : {text}"
+    );
+    // Le succès a écrit RCX:RBX en mémoire ; les deux échecs n'y ont rien
+    // touché.
+    assert_eq!(hex("bas "), N_LOW, "la moitié basse reçoit RBX");
+    assert_eq!(hex("haut "), N_HIGH, "la moitié haute reçoit RCX");
+    // Chaque échec a rechargé RDX:RAX depuis la mémoire — donc la paire
+    // neuve, la moitié haute comprise après le troisième essai.
+    assert_eq!(hex("rax "), N_LOW, "l'échec recharge RAX depuis la mémoire");
+    assert_eq!(
+        hex("rdx "),
+        N_HIGH,
+        "l'échec recharge RDX depuis la mémoire"
+    );
+    assert_eq!(hex("rbx "), P_LOW, "RBX n'est que lu");
+    assert_eq!(hex("rcx "), P_HIGH, "RCX n'est que lu");
+    let after_success = hex("r8 ");
+    let after_failure = hex("r9 ");
+    let after_high_failure = hex("r10 ");
+    assert_eq!(
+        after_high_failure & wisq_vm::x86::ARITHMETIC,
+        0,
+        "la moitié haute seule qui diffère est un échec : {after_high_failure:#x}"
+    );
+    assert_eq!(
+        after_success & wisq_vm::x86::ARITHMETIC,
+        wisq_vm::x86::ZF,
+        "le succès pose ZF et rien d'autre : {after_success:#x}"
+    );
+    assert_eq!(
+        after_failure & wisq_vm::x86::ARITHMETIC,
+        0,
+        "l'échec éteint ZF et ne pose rien : {after_failure:#x}"
+    );
+    assert_ne!(after_success & ALWAYS_ONE, 0, "un vrai RFLAGS");
+    assert_eq!(
+        hex("rip "),
+        BASE + program.len() as u64,
+        "RIP est après le hlt"
+    );
+}

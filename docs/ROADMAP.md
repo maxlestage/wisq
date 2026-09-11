@@ -8565,3 +8565,87 @@ différence de `lkgs` ou `vmcall`.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — cinq murs sur les quinze dernières tranches, et ce
 mur-ci en est.
+
+## `cmpxchg16b` s'exécute pour de vrai, et le noyau passe `kmem_cache_init`
+
+Le mur de la tranche précédente était `___slab_alloc + 275`, `f0 48 0f c7 4e
+20`, `lock cmpxchg16b 0x20(%rsi)` : une instruction ordinaire dont rien ne
+manque à cette machine, à la différence de `lkgs` ou `vmcall`. Elle n'est
+donc pas arrêtée par un nom : elle est **exécutée** dans les deux cœurs Rust.
+
+**Ce que la tranche pose.** Le décodeur lit `0f c7 /1` en forme mémoire avec
+REX.W, et rien d'autre du groupe 9 — sans REX.W c'est `cmpxchg8b`, que rien
+n'exécute ici et qui reste illisible plutôt que devinée ; la forme à registre
+de `/1` n'existe pas, `rdrand` et `rdseed` ne sont pas lus. L'interpréteur
+lit les deux mots, les compare tous deux à RDX:RAX, écrit RCX:RBX si les
+deux tiennent, recharge RDX:RAX sinon, et ne pose que ZF. L'émetteur fait la
+même chose en WebAssembly : l'adresse large gardée dans un emplacement de
+travail, son voisin à plus huit, deux `load_at`, un `IF`/`ELSE` sur le
+verdict, et RFLAGS touché sur son seul bit 6 — pas de routine des drapeaux,
+elle en poserait six. Le préfixe `lock` ne change rien : un seul fil.
+
+**Le chemin de restauration, tenu sous pagination.** Seize octets à cheval
+sur deux pages, la première inscriptible, la seconde non, CR0.WP allumé :
+les deux lectures passent, la comparaison tient, la première écriture passe,
+la seconde faute. Un cœur qui s'arrêterait là laisserait une moitié de paire
+neuve en mémoire, et le noyau invité reprendrait sur une liste libre à moitié
+écrite. L'interpréteur défait la première écriture, rapporte la faute, ne
+touche ni RDX:RAX ni ZF, et laisse RIP dessus.
+
+**Quatre tests, tous rouges avant le code** — le décodeur rendait `None`, la
+région du test hôte était refusée à l'octet 62 — : le décodeur (les formes
+lues, neuf formes refusées), l'interpréteur (les deux moitiés qui tiennent ;
+la basse seule qui diffère ; la haute seule qui diffère ; la fenêtre qui
+manque), la pagination (la restauration ci-dessus), et la boucle hôte sous
+JavaScriptCore (un succès, un échec par la moitié basse, un échec par la
+moitié haute seule, les drapeaux dépilés après chacun : ZF est **le seul**
+bit arithmétique après le succès, aucun après les échecs). **Quinze
+sabotages, quinze détectés**, chacun nommant le test qui tombe, chaque
+restauration vérifiée par `diff` : REX.W plus exigé, forme registre acceptée,
+`/2` accepté, une seule moitié comparée (dans chaque cœur), ZF jamais posé,
+ZF jamais éteint, RBX et RCX échangés, RDX pas rechargé (dans chaque cœur),
+première moitié pas défaite, RBX écrit deux fois, branches inversées, moitié
+haute lue à la même adresse. Le cas « moitié haute seule » du test hôte a été
+ajouté pour que la mutation « une seule moitié comparée » de l'émetteur
+tombe : sans lui, elle survivait.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal, `WISQ_ROUNDS=4096
+WISQ_TURNS=65536`** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2786 | 96 969 | 54 | `___slab_alloc` — `CannotDecode { at: 275 }` |
+| après | **3121** | **107 810** | **57** | `cpa_flush` — `CannotDecode { at: 309 }` |
+
+`___slab_alloc` se traduit, le noyau passe `kmem_cache_init` et le dit :
+« SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1 », puis
+« kmemleak: Kernel memory leak detector disabled », puis « Kernel/User page
+tables isolation: enabled ». Trois cent trente-cinq régions de plus.
+
+**Ce que le noyau n'a pas fait** : exécuter `cmpxchg16b` lui-même. SLUB ne
+prend ce chemin que si le cache porte `__CMPXCHG_DOUBLE`, posé seulement
+quand CPUID annonce `CX16`, et `cpuid` n'annonce aujourd'hui que le compteur
+d'horodatage. Ce sont les tests qui l'exécutent, dans les deux cœurs.
+L'annoncer serait honnête maintenant — l'émetteur fait ce qu'il dirait — et
+ferait prendre au noyau le chemin rapide de la liste libre à chaque
+allocation ; c'est une décision de direction, pas un défaut, et elle est
+posée ici sans être engagée.
+
+**Le mur suivant est de la famille de l'`int3`, pour la sixième fois.**
+`cpa_flush + 309` est `3e 0f ae 38`, `clflush (%rax)` — le `3e` est le
+remplissage des alternatives du noyau, `66 0f ae /7` serait `clflushopt`.
+C'est la boucle `clflush_cache_range` de `change_page_attr_set_clr`, que le
+noyau ne prend que si CPUID annonce `CLFLUSH`, ce que `cpuid` ne fait pas :
+sans lui, `cpa_flush` vide tout et revient avant la boucle. Atteinte
+statiquement depuis `change_page_attr_set_clr + 289`, jamais exécutée,
+illisible : la région entière refusée. La tranche suivante la décode comme
+une instruction inerte — vider une ligne de cache ne fait rien sur cette
+machine —, comme les conseils au cache.
+
+**La question de direction reste posée à Maxime, et le compte monte** :
+arrêter le bloc sur l'instruction illisible et ne refuser qu'à l'exécution
+lèverait la famille de l'`int3` d'un coup — six murs sur les seize dernières
+tranches, chacun payé d'une tranche entière pour une instruction que le
+noyau n'exécute pas. L'autre voie, annoncer dans `cpuid` ce que l'émetteur
+fait vraiment (`CX16` aujourd'hui, `CLFLUSH` demain), est une décision du
+même ordre.
