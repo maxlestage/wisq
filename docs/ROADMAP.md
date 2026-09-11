@@ -8405,3 +8405,56 @@ Pas de globale neuve.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — quatre murs sur les douze dernières tranches. Les trois
 derniers murs n'en étaient pas.
+
+## `lldt` est produite : le sélecteur nul passe, l'autre s'arrête par son nom, et le noyau finit `cpu_init`
+
+Le mur de la tranche précédente : `native_set_ldt + 28`, `0f 00 d6`, `lldt
+%esi`, avec **zéro** dans ESI — le noyau n'a pas de LDT et charge le sélecteur
+nul pour le dire, depuis `load_mm_ldt` dans `cpu_init`. La même famille que
+`ltr`, `/2` du groupe 6, exécutée pour de vrai, et illisible : la région
+entière refusée.
+
+**Ce que la tranche pose.** `Op::LoadLocalDescriptorTable`, décodée sur
+`0f 00 /2` en forme à registre — le groupe 6 est désormais ouvert pour `ltr`
+et `lldt`, et rien d'autre : `sldt`, `str`, `verr`, `verw` et la forme
+mémoire restent illisibles. L'émetteur masque le sélecteur à seize bits,
+comme les segments ; **le nul passe** et continue, parce qu'il ne charge
+rien et que c'est exactement ce que demande le noyau ; **tout autre
+s'arrête** par son nom, `STOP_LDT`, RIP dessus, faute de table globale où
+trouver le descripteur — comme FS et GS non nuls. L'interpréteur la refuse
+par nom. Pas de globale neuve : rien n'est rangé, parce qu'il n'y a rien à
+ranger.
+
+**Éprouvé.** Deux tests écrits avant, rouges : le décodeur (deux encodages,
+`ltr` qui reste `ltr`, cinq voisins qui restent `None`) et la boucle hôte
+(les deux cas dans le même test — le nul sous une moitié haute non nulle
+passe jusqu'au `hlt`, `0x28` s'arrête par son nom avec RIP sur le `lldt` et
+rien d'après). Sept sabotages, sept rouges nommés : `/1` lu à la place de
+`/2`, la forme mémoire acceptée, l'interpréteur qui ne refuse plus,
+l'émetteur qui arrête le nul et laisse passer le reste, le masque de seize
+bits retiré, le témoin de l'`invpcid` posé à la place du sien, `host.js` qui
+ne nomme plus l'arrêt.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2286 | 83 091 | 48 | `native_set_ldt` — `CannotDecode { at: 28 }` |
+| après | **2289** | **83 108** | 48 | `pv_native_set_debugreg` — `CannotDecode { at: 25 }` |
+
+Trois régions : `native_set_ldt` traversée, retour dans `load_mm_ldt`, puis
+dans `cpu_init`, qui appelle aussitôt `set_debugreg(0, 7)`.
+
+**Le mur suivant est un registre de débogage.** `pv_native_set_debugreg`
+écrit `0f 23 /r`, `mov %rsi,%dbN` — et le décodeur laissait `0F 21` et
+`0F 23` illisibles exprès, « un autre fichier de registres, que le noyau
+n'écrit pas ici ». Il les écrit : `cpu_init` efface DR0 à DR3, DR6 et DR7 au
+démarrage. La tranche suivante décode les deux formes et fait comme pour
+`lldt` : écrire zéro passe — aucun point d'arrêt matériel, c'est l'état vrai
+de cette machine —, écrire autre chose est un arrêt nommé, lire rend ce que
+le silicium rend au repos. Pas de globale.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — quatre murs sur les treize dernières tranches. Les
+quatre derniers murs n'en étaient pas.

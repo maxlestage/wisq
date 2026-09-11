@@ -6205,3 +6205,107 @@ console.log("cadre-code " + mot({stack} - 8 * 6));
         "le témoin d'arrêt est effacé une fois la faute délivrée"
     );
 }
+
+/// **Un `lldt` nul passe et continue ; un `lldt` non nul s'arrête par son
+/// nom, RIP dessus.**
+///
+/// Le noyau Alpine n'a pas de LDT : `native_set_ldt` charge le sélecteur nul
+/// depuis `load_mm_ldt`, dans `cpu_init`, et c'est exactement ce qu'une
+/// machine sans table de descripteurs sait faire — rien. Un sélecteur non
+/// nul désignerait un descripteur dans la GDT, qu'aucune table ne porte ici :
+/// l'arrêt le dit, comme pour FS et GS, plutôt que de faire croire à une LDT
+/// chargée.
+///
+/// Les deux cas dans le même test, seize bits dans les deux : `%si` porte
+/// zéro sous une moitié haute non nulle dans le premier, `0x28` dans le
+/// second.
+#[test]
+fn a_null_ldt_goes_on_and_a_real_one_is_stopped_by_name() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = |selector: u32| -> Vec<u8> {
+        let mut bytes = vec![0xbe]; // movl $…,%esi
+        bytes.extend_from_slice(&selector.to_le_bytes());
+        bytes.extend_from_slice(&[0x0f, 0x00, 0xd6]); // lldt %esi
+        bytes.extend_from_slice(&[0x48, 0xff, 0xc2]); // incq %rdx
+        bytes.push(0xf4); // hlt
+        bytes
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-lldt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut listing = String::new();
+    // La moitié haute non nulle du premier : seuls seize bits comptent.
+    for (name, selector) in [("nul", 0xabcd_0000u32), ("reel", 0x28)] {
+        let module = match Module::resolving_or_why(&program(selector), BASE, 0, 0, PAGES) {
+            Ok(module) => module,
+            Err(why) => panic!("`native_set_ldt` doit se traduire ({name}) : {why:?}"),
+        };
+        let path = scratch.join(format!("{name}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        listing.push_str(&format!("[{name:?},{:?}],", path.to_string_lossy()));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+for (const [name, path] of [{listing}]) {{
+  let asked = 0;
+  const vm = machine({{
+    translate: async () => (asked++ === 0 ? readFileSync(path) : null),
+    pages: {pages},
+  }});
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+  console.log(name + "-arret " + why.stopped);
+  console.log(name + "-rdx " + lire(2));
+  console.log(name + "-rip " + lire({rip}));
+}}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            listing = listing,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("nul-arret "),
+        "arrêtée sur hlt",
+        "le sélecteur nul passe, la machine va jusqu'au hlt : {text}"
+    );
+    assert_eq!(line("nul-rdx "), "1", "et ce qui suit a tourné");
+    assert_eq!(
+        line("nul-rip "),
+        (BASE + 12).to_string(),
+        "RIP est après le hlt"
+    );
+    assert_eq!(
+        line("reel-arret "),
+        "arrêtée sur lldt : une table de descripteurs locale non nulle, sans table globale où la trouver",
+        "le sélecteur non nul s'arrête par son nom : {text}"
+    );
+    assert_eq!(line("reel-rdx "), "0", "et rien d'après n'a tourné");
+    assert_eq!(
+        line("reel-rip "),
+        (BASE + 5).to_string(),
+        "RIP est posé sur le lldt, pas après"
+    );
+}

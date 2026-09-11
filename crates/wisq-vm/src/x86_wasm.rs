@@ -291,6 +291,13 @@ pub const STOP_HYPERVISOR: u64 = 4;
 /// rompue, pas qu'une traduction manque.
 pub const STOP_PCID: u64 = 5;
 
+/// **`lldt` avec un sélecteur non nul a été atteinte.** Une table de
+/// descripteurs locale se trouve par un descripteur de la GDT, et aucune
+/// table n'est lue derrière les sélecteurs de cette machine. Le sélecteur
+/// **nul** passe sans témoin : il ne charge rien, et c'est ce que fait le
+/// noyau Alpine, qui n'a pas de LDT. RIP est posé **sur** l'instruction.
+pub const STOP_LDT: u64 = 6;
+
 /// **Un registre spécifique au modèle que cette machine ne modélise pas**, et
 /// son numéro dans les trente-deux bits bas. Le numéro vit dans ECX, une
 /// valeur d'exécution : le traducteur ne peut pas le connaître, donc c'est le
@@ -3085,6 +3092,30 @@ impl Module {
             });
             return Some(());
         }
+        // **`lldt` : le nul passe, le reste s'arrête et le dit.** Seize bits,
+        // comme les segments. Zéro ne charge rien — c'est le noyau qui dit
+        // « pas de LDT » — et continue ; tout autre sélecteur désignerait un
+        // descripteur qu'aucune table ne porte ici.
+        if step.op == Op::LoadLocalDescriptorTable {
+            step.memory.is_none().then_some(())?;
+            body.load(Self::slot(step.dst))
+                .constant(0xffff)
+                .op(code::I64_AND);
+            body.op(code::I64_EQZ);
+            body.op(code::I32_EQZ);
+            body.op(code::IF).op(code::VOID);
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_LDT);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            body.op(code::END);
+            return Some(());
+        }
         // **`invpcid` s'arrête dessus et le dit.** Pas de PCID sur cette
         // machine, donc rien à purger par identifiant de contexte — et le
         // noyau ne l'exécute que si `cpuid` le promet, ce qu'il ne fait pas.
@@ -3310,6 +3341,7 @@ impl Module {
                 | Op::HypervisorCall { .. }
                 | Op::InvalidatePcid
                 | Op::LoadTaskRegister
+                | Op::LoadLocalDescriptorTable
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3712,6 +3744,7 @@ impl Module {
             | Op::HypervisorCall { .. }
             | Op::InvalidatePcid
             | Op::LoadTaskRegister
+            | Op::LoadLocalDescriptorTable
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }

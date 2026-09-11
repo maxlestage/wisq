@@ -554,6 +554,17 @@ pub enum Op {
     /// reste du groupe 6 — `sldt`, `str`, `lldt`, `verr`, `verw` — et la forme
     /// mémoire restent illisibles : le noyau ne les écrit pas ici.
     LoadTaskRegister,
+    /// **`0F 00 /2`, forme à registre : charger la table de descripteurs
+    /// locale.**
+    ///
+    /// `lldt` prend un sélecteur qui désigne, dans la GDT, le descripteur de
+    /// la LDT. Le noyau Alpine l'exécute dans `native_set_ldt`, depuis
+    /// `load_mm_ldt` dans `cpu_init`, avec **zéro** : il n'a pas de LDT, et
+    /// le sélecteur nul le dit. L'émetteur laisse passer le nul — rien à
+    /// charger, c'est exactement ce que demande le noyau — et s'arrête par
+    /// son nom sur tout autre, faute de table globale où le trouver.
+    /// L'interpréteur la refuse par nom. Le reste du groupe 6 reste illisible.
+    LoadLocalDescriptorTable,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1961,6 +1972,7 @@ impl Cpu {
                 | Op::HypervisorCall { .. }
                 | Op::InvalidatePcid
                 | Op::LoadTaskRegister
+                | Op::LoadLocalDescriptorTable
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2244,6 +2256,7 @@ impl Cpu {
             | Op::HypervisorCall { .. }
             | Op::InvalidatePcid
             | Op::LoadTaskRegister
+            | Op::LoadLocalDescriptorTable
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2775,20 +2788,22 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // les tient). Avec un opérande registre, le même numéro de
             // `reg` veut dire une barrière. C'est `mod` qui tranche, et
             // tout ce qui n'est pas une des trois barrières se refuse.
-            // **Le groupe 6, ouvert pour `ltr` et elle seule.** Charger le
-            // registre de tâche est `/3` en forme à **registre** ; le noyau
-            // l'écrit ainsi, `0f 00 d8`, et pas autrement. `sldt`, `str`,
-            // `lldt`, `verr`, `verw` et la forme mémoire restent illisibles :
-            // les lire pour « le groupe » rendrait un nom faux pour cinq
-            // voisines. `lkgs`, `/6` derrière `f2`, a sa propre entrée avant
-            // le décodage des préfixes.
+            // **Le groupe 6, ouvert pour `ltr` et `lldt`, en forme à
+            // registre.** Le noyau les écrit ainsi — `0f 00 d8`, `0f 00 d6` —
+            // et pas autrement. `sldt`, `str`, `verr`, `verw` et la forme
+            // mémoire restent illisibles : les lire pour « le groupe »
+            // rendrait un nom faux pour quatre voisines. `lkgs`, `/6` derrière
+            // `f2`, a sa propre entrée avant le décodage des préfixes.
             0x00 => {
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                if field.memory.is_some() || field.reg & 0b111 != 3 {
-                    return None;
-                }
+                field.memory.is_none().then_some(())?;
+                let op = match field.reg & 0b111 {
+                    2 => Op::LoadLocalDescriptorTable,
+                    3 => Op::LoadTaskRegister,
+                    _ => return None,
+                };
                 Some(Decoded {
-                    op: Op::LoadTaskRegister,
+                    op,
                     dst: field.register,
                     length: at,
                     ..Decoded::nothing(Width::Word)
@@ -4553,8 +4568,9 @@ mod tests {
     /// la famille de l'`int3`. C'est le TSS du processeur, sans lequel aucune
     /// entrée d'exception ne connaît sa pile de secours.
     ///
-    /// **Le groupe n'est pas ouvert pour autant.** `sldt`, `str`, `lldt`,
-    /// `verr`, `verw` restent illisibles ; la forme mémoire de `ltr` aussi,
+    /// **Le groupe n'est pas ouvert pour autant.** `sldt`, `str`, `verr`,
+    /// `verw` restent illisibles (`lldt` a sa propre tranche) ; la forme
+    /// mémoire de `ltr` aussi,
     /// parce que le noyau ne l'écrit pas et que la lire serait deviner. `/6`
     /// sans `f2` n'est toujours rien. L'interpréteur la refuse par nom, RIP
     /// dessus : il n'a pas de table de descripteurs où trouver le TSS.
@@ -4577,7 +4593,6 @@ mod tests {
             (&[0x0f, 0x00, 0x18][..], "la forme mémoire n'est pas lue"),
             (&[0x0f, 0x00, 0xc0][..], "sldt (/0) n'est pas lu"),
             (&[0x0f, 0x00, 0xc8][..], "str (/1) n'est pas lu"),
-            (&[0x0f, 0x00, 0xd0][..], "lldt (/2) n'est pas lu"),
             (&[0x0f, 0x00, 0xe0][..], "verr (/4) n'est pas lu"),
             (&[0x0f, 0x00, 0xe8][..], "verw (/5) n'est pas lu"),
             (&[0x0f, 0x00, 0xf0][..], "/6 sans f2 n'est rien"),
@@ -4593,6 +4608,57 @@ mod tests {
         };
         cpu.step(&[0x0f, 0x00, 0xd8]);
         assert!(cpu.faulted, "ltr est une faute nommée pour l'interpréteur");
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
+        );
+    }
+
+    /// **`lldt` se lit dans sa forme à registre, et le sélecteur nul est
+    /// celui du noyau.**
+    ///
+    /// `0f 00 /2`, opérande en registre : charger la table de descripteurs
+    /// locale depuis un sélecteur. Le noyau Alpine l'écrit à 28 octets de
+    /// `native_set_ldt` — `0f 00 d6`, `lldt %esi` — depuis `load_mm_ldt`
+    /// dans `cpu_init`, avec **zéro** dans ESI : il n'a pas de LDT, et charge
+    /// le sélecteur nul pour le dire. Exécutée pour de vrai, comme `ltr`.
+    ///
+    /// La forme mémoire, `sldt`, `str`, `verr` et `verw` restent illisibles.
+    /// L'interpréteur la refuse par nom, RIP dessus : il n'a pas de table
+    /// globale où trouver une LDT, nulle ou non.
+    #[test]
+    fn lldt_is_read_in_its_register_form_and_nothing_else() {
+        let step = decode(&[0x0f, 0x00, 0xd6]).expect("lldt %esi se décode");
+        assert_eq!(step.op, Op::LoadLocalDescriptorTable);
+        assert_eq!(step.length, 3, "deux d'opcode, un de ModRM");
+        assert_eq!(step.dst, 6, "le sélecteur vient d'ESI");
+        assert!(
+            step.memory.is_none(),
+            "la forme à registre ne touche pas la mémoire"
+        );
+        let rax = decode(&[0x0f, 0x00, 0xd0]).expect("lldt %eax se décode");
+        assert_eq!((rax.op, rax.dst), (Op::LoadLocalDescriptorTable, 0));
+        assert_eq!(
+            decode(&[0x0f, 0x00, 0xd8]).map(|step| step.op),
+            Some(Op::LoadTaskRegister),
+            "ltr reste ltr"
+        );
+        for (bytes, why) in [
+            (&[0x0f, 0x00, 0x16][..], "la forme mémoire n'est pas lue"),
+            (&[0x0f, 0x00, 0xc0][..], "sldt (/0) n'est pas lu"),
+            (&[0x0f, 0x00, 0xc8][..], "str (/1) n'est pas lu"),
+            (&[0x0f, 0x00, 0xe0][..], "verr (/4) n'est pas lu"),
+            (&[0x0f, 0x00, 0xe8][..], "verw (/5) n'est pas lu"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x00, 0xd6]);
+        assert!(cpu.faulted, "lldt est une faute nommée pour l'interpréteur");
         assert_eq!(
             cpu.rip, 0x3000_0000,
             "et le pointeur d'instruction reste dessus"
