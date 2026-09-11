@@ -3274,7 +3274,10 @@ impl Module {
         }
         if matches!(
             step.op,
-            Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange
+            Op::Exchange
+                | Op::ExchangeAndAdd
+                | Op::CompareAndExchange
+                | Op::CompareAndExchangeSixteen
         ) {
             Self::exchange(step, body);
             return Some(());
@@ -3484,7 +3487,10 @@ impl Module {
                 | Op::CarryFlag(_) => {
                     unreachable!("les deux registres sortent avant")
                 }
-                Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => {
+                Op::Exchange
+                | Op::ExchangeAndAdd
+                | Op::CompareAndExchange
+                | Op::CompareAndExchangeSixteen => {
                     unreachable!("les échanges sortent avant")
                 }
                 Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
@@ -3927,6 +3933,7 @@ impl Module {
             | Op::Exchange
             | Op::ExchangeAndAdd
             | Op::CompareAndExchange
+            | Op::CompareAndExchangeSixteen
             | Op::RotateThroughCarry { .. }
             | Op::DoubleShift { .. } => {}
         }
@@ -4410,6 +4417,10 @@ impl Module {
     /// **Les trois échanges.** Ce qui les réunit : elles écrivent **deux**
     /// endroits, et il faut avoir lu les deux avant d'écrire le premier.
     fn exchange(step: &Decoded, body: &mut Body) {
+        if step.op == Op::CompareAndExchangeSixteen {
+            Self::compare_and_exchange_sixteen(step, body);
+            return;
+        }
         let width = step.width;
         let mask = width.mask();
         let sign = width.sign();
@@ -4531,6 +4542,63 @@ impl Module {
                 });
             }
         }
+    }
+
+    /// **`cmpxchg16b` : seize octets contre RDX:RAX.** Deux mots lus à
+    /// l'adresse et à l'adresse plus huit, comparés tous deux ; s'ils
+    /// tiennent, RCX:RBX y sont écrits ; sinon RDX:RAX relisent la paire.
+    /// ZF est le seul drapeau qui bouge — pas de routine des drapeaux ici,
+    /// elle en poserait six.
+    ///
+    /// L'adresse est calculée une fois et gardée : les deux lectures et les
+    /// deux écritures la relisent, et WebAssembly n'a pas de quoi dupliquer
+    /// une valeur. Le préfixe `lock` ne change rien : un seul fil.
+    fn compare_and_exchange_sixteen(step: &Decoded, body: &mut Body) {
+        let Some(address) = step.memory else {
+            unreachable!("le décodeur ne rend `cmpxchg16b` qu'en mémoire")
+        };
+        let (low_at, high_at) = (Body::scratch(5), Body::scratch(6));
+        let (low, high, equal) = (Body::scratch(7), Body::scratch(8), Body::scratch(9));
+        body.store(low_at, |b| {
+            b.wide_address(&address);
+        });
+        body.store(high_at, |b| {
+            b.load(low_at).constant(8).op(code::I64_ADD);
+        });
+        body.store(low, |b| {
+            b.load_at(low_at, Width::Qword);
+        });
+        body.store(high, |b| {
+            b.load_at(high_at, Width::Qword);
+        });
+        body.store(equal, |b| {
+            b.load(low).load(Self::slot(0)).op(code::I64_EQ);
+            b.load(high).load(Self::slot(2)).op(code::I64_EQ);
+            b.op(code::I32_AND).op(code::I64_EXTEND_I32_U);
+        });
+        body.store(RFLAGS_SLOT, |b| {
+            b.load(RFLAGS_SLOT).constant(!ZF).op(code::I64_AND);
+            b.load(equal)
+                .constant(ZF.trailing_zeros() as u64)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
+        });
+        body.load(equal).op(code::I32_WRAP_I64);
+        body.op(code::IF).op(code::VOID);
+        body.store_at(low_at, Width::Qword, |b| {
+            b.load(Self::slot(3));
+        });
+        body.store_at(high_at, Width::Qword, |b| {
+            b.load(Self::slot(1));
+        });
+        body.op(0x05); // else
+        body.store(Self::slot(0), |b| {
+            b.load(low);
+        });
+        body.store(Self::slot(2), |b| {
+            b.load(high);
+        });
+        body.op(code::END);
     }
 
     /// **Les multiplications, les divisions, les extensions de signe, et la
