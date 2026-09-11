@@ -21,10 +21,15 @@
 //! d'Alpine, compilée à sa base virtuelle et posée à son adresse physique,
 //! tourne-t-elle sous `web/host.js`, et où s'arrête-t-elle ?
 //!
-//! **Le montage est fait pour échouer d'abord.** Aucun `boot_params` n'est
-//! posé, aucune table de pages, aucun descripteur : le noyau reçoit une machine
-//! nue. Ce qui compte n'est pas qu'il aille loin, c'est que l'endroit où il
-//! s'arrête ait un **nom**.
+//! **Le montage a été fait pour échouer d'abord**, et il a échoué là où il
+//! devait : sans `boot_params`, la carte e820 est vide et le noyau s'arrêtait
+//! « sur place » dans `extend_brk`, à sa 1067ᵉ région. Depuis, il pose une
+//! page zéro — la carte e820 de sa RAM et une ligne de commande qui branche la
+//! console 8250 précoce sur le port série — et RSI dessus. Aucune table de
+//! pages, aucun descripteur : le noyau construit le reste lui-même. Ce qui
+//! compte n'est toujours pas qu'il aille loin, c'est que l'endroit où il
+//! s'arrête ait un **nom** — et, depuis la page zéro, qu'il **dise** ce qu'il
+//! fait sur `0x3f8`.
 //!
 //! **Le fichier attendu est la charge utile décompressée**, pas le `bzImage` :
 //!
@@ -39,7 +44,7 @@
 //! rendait « quatre instructions puis un octet illisible », ce qui ressemblait
 //! à un résultat. L'adresse du point d'entrée est **virtuelle** ; le décalage
 //! se lit par les en-têtes de programme, et c'est cet outil qui le fait.
-use wisq_vm::kernel_image::loads;
+use wisq_vm::kernel_image::{loads, zero_page, MONTAGE_COMMAND_LINE};
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
 
@@ -260,6 +265,29 @@ fn main() {
         placed.push((path, load.physical_address));
     }
 
+    // **La page zéro, et la ligne de commande qu'elle désigne.** Posées là où
+    // un chargeur les pose : sous le premier mégaoctet, hors du noyau. Le
+    // noyau les recopie chez lui dès `copy_bootdata`, donc l'endroit n'a pas
+    // à survivre. Sans cette page, la carte e820 est vide, et le noyau
+    // s'arrête « sur place » dans `extend_brk` à sa 1067ᵉ région — c'est
+    // écrit dans la feuille de route, et c'est ce que le montage a mesuré
+    // tant qu'il n'en posait pas.
+    const ZERO_PAGE_AT: u64 = 0x9000;
+    const COMMAND_LINE_AT: u64 = 0x9800;
+    let page = zero_page(u64::from(PAGES) * 65536, COMMAND_LINE_AT as u32);
+    let page_path = scratch.join("zero-page.bin");
+    std::fs::write(&page_path, &page).expect("la page zéro");
+    placed.push((page_path, ZERO_PAGE_AT));
+    let mut line = MONTAGE_COMMAND_LINE.as_bytes().to_vec();
+    line.push(0);
+    let line_path = scratch.join("cmdline.bin");
+    std::fs::write(&line_path, &line).expect("la ligne de commande");
+    placed.push((line_path, COMMAND_LINE_AT));
+    println!(
+        "page zéro : 0x{ZERO_PAGE_AT:x}, e820 sur {} Mio, ligne « {MONTAGE_COMMAND_LINE} »",
+        u64::from(PAGES) / 16
+    );
+
     // **Ce que le pilote JavaScript recevra**, calculé ici plutôt que dans les
     // arguments du `format!` d'après : un `format!` dans un `format!` est
     // refusé par clippy, et il a raison — le texte engendré s'y lit deux fois
@@ -345,6 +373,9 @@ for (const [path, at] of {placements}) {{
   new Uint8Array(vm.memory.buffer).set(readFileSync(path), at);
 }}
 vm.globals[{rip}].value = {entry}n;
+// **RSI désigne la page zéro**, comme un chargeur le fait en entrant dans
+// `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
+vm.globals[6].value = {zero_page}n;
 const why = await vm.run({{ budget: 1n << 24n, rounds: 4096 }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
 console.log("arret " + why.stopped);
@@ -399,6 +430,7 @@ console.log("controle " + controle
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
                 placements = placements,
+                zero_page = ZERO_PAGE_AT,
                 pages = PAGES,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
