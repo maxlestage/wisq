@@ -727,4 +727,66 @@ mod tests {
             "après, la marche"
         );
     }
+
+    /// **Un `cmpxchg16b` dont la seconde moitié est en lecture seule ne
+    /// laisse aucune trace de la première.**
+    ///
+    /// Seize octets à cheval sur deux pages, la première inscriptible, la
+    /// seconde non, CR0.WP allumé. Les deux lectures passent — lire une page
+    /// en lecture seule est permis —, la comparaison tient, la première
+    /// écriture passe, la seconde faute. Un cœur qui s'arrêterait là
+    /// laisserait une moitié de paire neuve en mémoire, et le noyau invité
+    /// reprendrait sur une liste libre à moitié écrite. Le cœur défait la
+    /// première écriture, rapporte la faute, ne touche ni RDX:RAX ni ZF, et
+    /// laisse RIP dessus.
+    #[test]
+    fn a_cmpxchg16b_whose_second_half_is_read_only_leaves_the_first_half_as_it_was() {
+        const A_LOW: u64 = 0x1111_2222_3333_4444;
+        const A_HIGH: u64 = 0x5555_6666_7777_8888;
+        let mut cpu = machine();
+        map(&mut cpu, 0x20_1000, DATA, WRITABLE);
+        map(&mut cpu, 0x20_2000, DATA + 0x1000, 0); // sans WRITABLE
+        cpu.write_control_register(0, PAGING | WRITE_PROTECT);
+        // La paire : huit octets au bout de la première page, huit au début
+        // de la seconde.
+        cpu.memory.write(DATA + 0xff8, Width::Qword, A_LOW).unwrap();
+        cpu.memory
+            .write(DATA + 0x1000, Width::Qword, A_HIGH)
+            .unwrap();
+        cpu.rip = 0x1000;
+        cpu.regs[0] = A_LOW;
+        cpu.regs[2] = A_HIGH;
+        cpu.regs[3] = 0x9999_aaaa_bbbb_cccc;
+        cpu.regs[1] = 0xdddd_eeee_ffff_0000;
+        cpu.regs[6] = 0x20_1ff8 - 0x20;
+        cpu.flags.write(crate::x86::CF);
+
+        cpu.step(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20]); // lock cmpxchg16b 0x20(%rsi)
+
+        assert!(cpu.faulted, "la seconde moitié refuse l'écriture");
+        assert_eq!(
+            cpu.unmapped,
+            Some(Unmapped::ReadOnly { address: 0x20_2000 }),
+            "et la faute nomme la page en lecture seule"
+        );
+        assert_eq!(
+            cpu.memory.read(DATA + 0xff8, Width::Qword),
+            Some(A_LOW),
+            "la première moitié est défaite"
+        );
+        assert_eq!(
+            cpu.memory.read(DATA + 0x1000, Width::Qword),
+            Some(A_HIGH),
+            "la seconde n'a jamais été écrite"
+        );
+        assert_eq!(
+            (cpu.regs[0], cpu.regs[2]),
+            (A_LOW, A_HIGH),
+            "RDX:RAX intacts"
+        );
+        let flags = cpu.flags.read();
+        assert_eq!(flags & crate::x86::ZF, 0, "ZF n'est pas posé");
+        assert_ne!(flags & crate::x86::CF, 0, "et le reste survit");
+        assert_eq!(cpu.rip, 0x1000, "RIP reste dessus");
+    }
 }
