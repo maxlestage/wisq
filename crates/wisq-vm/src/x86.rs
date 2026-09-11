@@ -530,6 +530,18 @@ pub enum Op {
         /// `vmmcall` plutôt que `vmcall` : la forme d'AMD.
         amd: bool,
     },
+    /// **`66 0F 38 82 /r` : purger le tampon par identifiant de contexte.**
+    ///
+    /// `invpcid` prend le type de purge dans le registre `reg` et un
+    /// descripteur de seize octets en mémoire — il n'a pas de forme à
+    /// registre. Cette machine n'a pas de PCID : `cpuid` n'annonce ni `PCID`
+    /// ni `INVPCID`, et le noyau Alpine ne l'exécute que si les deux sont
+    /// promis. Mais elle est à 103 octets de `native_flush_tlb_one_user`,
+    /// **atteinte statiquement** depuis le trampoline des alternatives, et un
+    /// décodeur qui ne la lit pas refusait la région entière. Décodée pour
+    /// cela, refusée par nom à l'exécution ; le préfixe `66` fait partie de
+    /// l'opcode, et le reste de la page `0F 38` reste illisible.
+    InvalidatePcid,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1935,6 +1947,7 @@ impl Cpu {
                 | Op::SwapGs
                 | Op::LoadKernelGs
                 | Op::HypervisorCall { .. }
+                | Op::InvalidatePcid
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2216,6 +2229,7 @@ impl Cpu {
             | Op::SwapGs
             | Op::LoadKernelGs
             | Op::HypervisorCall { .. }
+            | Op::InvalidatePcid
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2747,6 +2761,29 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // les tient). Avec un opérande registre, le même numéro de
             // `reg` veut dire une barrière. C'est `mod` qui tranche, et
             // tout ce qui n'est pas une des trois barrières se refuse.
+            // **La troisième page, `0F 38`, ouverte pour une seule
+            // instruction.** `invpcid` est `66 0F 38 82 /r`, et le `66` n'y
+            // est pas un préfixe de largeur : c'est un octet de l'opcode, qui
+            // la distingue de ses voisines. Sans lui, `0F 38 82` n'est rien.
+            // Le type de purge est dans `reg`, le descripteur en mémoire —
+            // il n'existe pas de forme à registre, et `mod` à 11 se refuse.
+            // `80` (`invept`) et `81` (`invvpid`) restent illisibles : ce
+            // sont des instructions d'hyperviseur, que ce noyau n'atteint pas.
+            0x38 => {
+                if !prefixes.operand_size || prefixes.repeat || *bytes.get(at)? != 0x82 {
+                    return None;
+                }
+                at += 1;
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                field.memory.is_some().then_some(())?;
+                Some(Decoded {
+                    op: Op::InvalidatePcid,
+                    dst: field.reg,
+                    length: at,
+                    memory: field.memory,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
             0xae => {
                 let field = read_modrm(bytes, &mut at, prefixes)?;
                 if field.memory.is_some() || !(5..=7).contains(&(field.reg & 0b111)) {
@@ -4392,6 +4429,80 @@ mod tests {
         assert!(
             cpu.faulted,
             "vmcall est une faute nommée pour l'interpréteur"
+        );
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
+        );
+    }
+
+    /// **`invpcid` se lit avec son préfixe, dans sa forme mémoire, et rien
+    /// d'autre.**
+    ///
+    /// `66 0f 38 82 /r` : oublier des traductions par identifiant de contexte
+    /// (PCID), le type dans le registre `reg` et un descripteur de seize
+    /// octets en mémoire. Le noyau Alpine l'écrit à 103 octets de
+    /// `native_flush_tlb_one_user` — `66 0f 38 82 04 24`, `invpcid
+    /// (%rsp),%rax` —, atteinte statiquement depuis le trampoline des
+    /// alternatives, et ne l'exécute que si CPUID annonce `INVPCID`, ce que
+    /// `cpuid` n'annonce pas. Un décodeur qui ne la lit pas refusait la
+    /// région entière : la même famille que l'`int3`, `lkgs` et `vmcall`.
+    ///
+    /// **La page `0f 38` n'est pas ouverte pour autant.** Sans `66`, `0f 38
+    /// 82` n'est rien ; la forme à registre n'existe pas — le descripteur est
+    /// en mémoire, toujours ; `invept` et `invvpid`, ses deux voisines de
+    /// gauche, restent illisibles, et `pshufb` aussi. L'interpréteur la
+    /// refuse par nom, RIP dessus : il n'a pas de tampon à purger, mais il
+    /// n'a pas de PCID non plus, et la dire « sans effet » serait affirmer
+    /// quelque chose sur un contexte qu'il ne sait pas nommer.
+    #[test]
+    fn invpcid_is_read_with_its_prefix_in_its_memory_form_and_nothing_else() {
+        let step =
+            decode(&[0x66, 0x0f, 0x38, 0x82, 0x04, 0x24]).expect("invpcid (%rsp),%rax se décode");
+        assert_eq!(step.op, Op::InvalidatePcid);
+        assert_eq!(step.length, 6, "préfixe, trois d'opcode, ModRM et SIB");
+        assert_eq!(step.dst, 0, "le type vient de RAX");
+        let address = step.memory.expect("le descripteur est en mémoire");
+        assert_eq!(address.base, Some(4), "et il est sur la pile");
+        let rcx = decode(&[0x66, 0x0f, 0x38, 0x82, 0x0f]).expect("invpcid (%rdi),%rcx se décode");
+        assert_eq!((rcx.op, rcx.dst), (Op::InvalidatePcid, 1));
+        assert_eq!(rcx.length, 5);
+
+        for (bytes, why) in [
+            (
+                &[0x0f, 0x38, 0x82, 0x04, 0x24][..],
+                "sans 66, ce n'est rien",
+            ),
+            (
+                &[0x66, 0x0f, 0x38, 0x82, 0xc0][..],
+                "la forme à registre n'existe pas",
+            ),
+            (
+                &[0x66, 0x0f, 0x38, 0x80, 0x04, 0x24][..],
+                "invept (80) n'est pas lue",
+            ),
+            (
+                &[0x66, 0x0f, 0x38, 0x81, 0x04, 0x24][..],
+                "invvpid (81) n'est pas lue",
+            ),
+            (
+                &[0x66, 0x0f, 0x38, 0x00, 0xc1][..],
+                "pshufb reste illisible",
+            ),
+            (&[0xf3, 0x0f, 0x38, 0x82, 0x04, 0x24][..], "f3 n'est pas 66"),
+            (&[0x66, 0x0f, 0x38, 0x82][..], "coupée avant son ModRM"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x66, 0x0f, 0x38, 0x82, 0x04, 0x24]);
+        assert!(
+            cpu.faulted,
+            "invpcid est une faute nommée pour l'interpréteur"
         );
         assert_eq!(
             cpu.rip, 0x3000_0000,

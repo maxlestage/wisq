@@ -186,6 +186,7 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `int`, `int3` — l'entrée logicielle | **produits** : le témoin porte le vecteur, RIP est déjà après, et l'hôte délivre — sans code d'erreur |
 | `lkgs` — la base GS du noyau depuis un sélecteur | **décodée**, arrêt nommé si elle est atteinte, RIP dessus ; le noyau ne l'exécute que si CPUID annonce `LKGS`, et `cpuid` ne l'annonce pas |
 | `vmcall`, `vmmcall` — l'appel à l'hyperviseur | **décodés**, arrêt nommé s'ils sont atteints, RIP dessus ; la sonde VMware du noyau ne les exécute que si CPUID annonce sa signature, et `cpuid` ne l'annonce pas |
+| `invpcid` — purger le tampon par identifiant de contexte | **décodée** (`66 0f 38 82 /r`, forme mémoire, et rien d'autre de la page `0f 38`), arrêt nommé si elle est atteinte, RIP dessus ; `native_flush_tlb_one_user` ne l'exécute que si CPUID annonce `PCID` et `INVPCID`, et `cpuid` n'annonce ni l'un ni l'autre |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **interruption de matériel** | n'existe pas |
 

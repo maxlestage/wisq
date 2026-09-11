@@ -283,6 +283,13 @@ pub const STOP_KERNEL_GS: u64 = 3;
 /// promesse a été rompue, pas qu'une traduction manque.
 pub const STOP_HYPERVISOR: u64 = 4;
 
+/// **`invpcid` a été atteinte.** Elle purge le tampon par identifiant de
+/// contexte, et cette machine n'a pas de PCID : `cpuid` n'annonce ni `PCID`
+/// ni `INVPCID`, et le noyau Alpine ne l'exécute que si les deux sont promis.
+/// RIP est posé **sur** l'instruction ; ce témoin dit que la promesse a été
+/// rompue, pas qu'une traduction manque.
+pub const STOP_PCID: u64 = 5;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -3005,6 +3012,23 @@ impl Module {
             body.op(code::RETURN);
             return Some(());
         }
+        // **`invpcid` s'arrête dessus et le dit.** Pas de PCID sur cette
+        // machine, donc rien à purger par identifiant de contexte — et le
+        // noyau ne l'exécute que si `cpuid` le promet, ce qu'il ne fait pas.
+        // Décoder plutôt que refuser, parce qu'elle est à portée statique de
+        // `native_flush_tlb_one_user`, que le noyau exécute vraiment.
+        if step.op == Op::InvalidatePcid {
+            body.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            body.store(STOP_SLOT, |b| {
+                b.constant(STOP_PCID);
+            });
+            body.bytes.push(code::I32_CONST);
+            signed(-1, &mut body.bytes);
+            body.op(code::RETURN);
+            return Some(());
+        }
         // **`lkgs` s'arrête dessus et le dit.** Pas de table de descripteurs
         // d'où lire la base : le témoin est posé, RIP reste **sur**
         // l'instruction, et la main est rendue. Décoder plutôt que refuser,
@@ -3211,6 +3235,7 @@ impl Module {
                 | Op::LoadKernelGs
                 | Op::InvalidatePage
                 | Op::HypervisorCall { .. }
+                | Op::InvalidatePcid
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::ReadControlRegister { .. }
@@ -3611,6 +3636,7 @@ impl Module {
             | Op::LoadKernelGs
             | Op::InvalidatePage
             | Op::HypervisorCall { .. }
+            | Op::InvalidatePcid
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::ReadControlRegister { .. }

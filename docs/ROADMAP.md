@@ -8150,3 +8150,63 @@ région entière refusée. La tranche suivante le décode et en fait un arrêt
 nommé. **La question de direction reste posée à Maxime** — arrêter le bloc sur
 l'instruction illisible et ne refuser qu'à l'exécution lèverait cette famille
 d'un coup ; quatre murs sur les huit dernières tranches en étaient.
+
+## `invpcid` est décodée, et le noyau traverse `setup_arch` entier jusqu'au `ltr` de `trap_init`
+
+Le quatrième mur de la famille de l'`int3` : `66 0f 38 82 04 24`, `invpcid
+(%rsp),%rax`, à 103 octets de `native_flush_tlb_one_user`. La purge du tampon
+par identifiant de contexte, que le noyau n'exécute que si `cpuid` annonce
+`PCID` **et** `INVPCID` — il n'annonce ni l'un ni l'autre — mais qui est
+atteinte statiquement depuis le trampoline des alternatives, par un saut
+conditionnel sur le bit PTI. Atteinte, jamais exécutée, illisible : la région
+entière refusée, `CannotDecode { at: 58 }` depuis `+ 45`.
+
+**Ce que la tranche pose.** `Op::InvalidatePcid`, décodée sur `66 0f 38 82 /r`
+et **rien d'autre** : le `66` n'y est pas un préfixe de largeur mais un octet
+de l'opcode, et sans lui `0f 38 82` n'est rien ; la forme à registre n'existe
+pas — le descripteur de seize octets est en mémoire, toujours ; `invept` et
+`invvpid`, ses deux voisines d'hyperviseur, restent illisibles, et `pshufb`
+aussi. La page `0f 38` n'existait pas dans le décodeur ; elle n'est ouverte que
+pour cette instruction. L'interpréteur la refuse par nom, RIP dessus ;
+l'émetteur en fait un arrêt nommé, `STOP_PCID`, RIP **sur** l'instruction,
+et `web/host.js` le dit en français. `coverage.rs` la nomme, `DEMARRAGE.md`
+la range dans le tableau.
+
+**Éprouvé.** Deux tests écrits avant, rouges : le décodeur (les six octets, et
+sept voisins qui doivent rester `None`, dont l'encodage coupé avant son ModRM)
+et la boucle hôte (ce qui précède tourne, RIP sur l'instruction, rien après).
+Cinq sabotages, cinq rouges, chacun sur le test qu'il devait faire tomber : le
+`66` non exigé, la forme à registre acceptée, l'interpréteur qui ne refuse plus,
+l'émetteur qui pose RIP après l'instruction, l'émetteur qui pose le témoin de
+l'hyperviseur à la place du sien.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 1307 | 52 583 | 18 | `native_flush_tlb_one_user + 45` — `CannotDecode { at: 58 }` |
+| après | **2198** | **81 942** | **48** | `native_load_tr_desc` — `CannotDecode { at: 72 }` |
+
+Le témoin `STOP_PCID` n'a jamais été posé : l'`invpcid` a été décodée, jamais
+exécutée, exactement comme prévu. Et le noyau a traversé **tout `setup_arch`**
+— l'ACPI qui ne trouve pas de RSDP et le dit, le nœud NUMA simulé, les zones
+DMA et DMA32, l'APIC absent (« Switched APIC routing to: noop »), un seul
+processeur —, puis `setup_per_cpu_areas` (« percpu: Embedded 58 pages/cpu »),
+les tables de hachage des dentries et des inodes, et il est entré dans
+`trap_init`. Trente lignes série de plus, dont « Booting paravirtualized
+kernel on bare hardware ».
+
+**Le mur suivant n'est plus de la famille de l'`int3`.** `native_load_tr_desc
++ 72` est `0f 00 d8`, `ltr %eax` : charger le registre de tâche depuis le
+sélecteur `0x40`, dans `cpu_init_exception_handling`. Celle-là, le noyau
+l'**exécute** — c'est le TSS du processeur, sans lequel aucune entrée
+d'exception ne connaît la pile de secours. La tranche suivante la décode et lui
+donne un sens : au minimum retenir le sélecteur, comme les segments ; ce que la
+délivrance de l'hôte en fera (les piles IST) est une question de direction,
+posée quand elle sera atteinte.
+
+**La question de direction reste posée à Maxime**, pour la cinquième fois :
+arrêter le bloc sur l'instruction illisible et ne refuser qu'à l'exécution
+lèverait la famille de l'`int3` d'un coup — quatre murs sur les neuf dernières
+tranches en étaient. Ce mur-ci n'en est pas ; la tranche suivante ne dépend
+pas de la réponse.
