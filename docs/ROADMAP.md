@@ -8345,3 +8345,63 @@ les registres qu'il ne trouve pas.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — quatre murs sur les onze dernières tranches. Les deux
 derniers murs n'en étaient pas.
+
+## Un MSR inconnu est une `#GP` délivrée à l'invité, et le noyau traverse `syscall_init` et `cpu_init`
+
+Le mur de la tranche précédente se lisait sans désassembler, et c'est ce
+qu'il fallait : `syscall_init + 88` écrit `MSR_IA32_SYSENTER_CS` par
+`wrmsrl_safe`, le premier des trois registres SYSENTER, et la machine
+s'arrêtait dessus en le nommant. Mais ce registre n'est pas à ranger : sur le
+silicium, un MSR inconnu lève `#GP(0)`, et le noyau le sait. Sa table
+d'exceptions rattrape la faute — `-EIO` pour la variante `_safe`, un
+« unchecked MSR access error » sur le port série pour l'autre — et il
+continue. S'arrêter, c'était boucher ce que le noyau sait faire.
+
+**Ce que la tranche pose.** Dans `web/host.js`, le témoin `STOP_MSR` n'est
+plus un arrêt : c'est une `#GP(0)` délivrée par `deliver`, le chemin de la
+faute de page — la porte 13 lue dans l'IDT, le cadre du mode long avec le
+code d'erreur nul, RIP **sur** l'instruction parce que c'est une faute et non
+un piège, IF éteint par la porte d'interruption. Le témoin est effacé avant,
+et remis si la délivrance ne peut pas avoir lieu : sans porte, l'arrêt reste
+et nomme le numéro et le vecteur. C'est la direction que Maxime a prise pour
+la faute de page — délivrer à l'invité plutôt que boucher — appliquée à la
+seconde faute qu'un vrai noyau ait réclamée.
+
+**Éprouvé.** Un test neuf, écrit avant : un `wrmsr` sur `0x123` sous une IDT
+dont la porte 13 mène à un gestionnaire qui fait ce que fait la table
+d'exceptions du noyau — dépiler le code d'erreur, avancer le RIP empilé
+après le `wrmsr`, `iretq`. Le gestionnaire a tourné, le code d'erreur est
+nul, le RIP délivré était celui du `wrmsr` (lu **dans** le gestionnaire, pas
+dans le cadre après coup : le gestionnaire l'a réécrit, et c'est ce cadre-là
+qui reste), l'exécution a repris après, la pile est revenue de ses six mots,
+le témoin est effacé. Le test sans IDT attend désormais « sans porte : aucune
+IDT ne porte le vecteur 13 », avec le numéro. Quatre sabotages, quatre rouges
+nommés : le code d'erreur non nul, le vecteur de la faute de page à la place
+du 13, le témoin non effacé avant la délivrance (la faute se redélivre à
+chaque tour), l'arrêt sans porte qui ne porte plus le numéro.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2222 | 82 127 | 48 | `native_write_msr_safe + 12` — `0x174`, nommé |
+| après | **2286** | **83 091** | 48 | `native_set_ldt` — `CannotDecode { at: 28 }` |
+
+Soixante-quatre régions de plus : les trois registres SYSENTER passent par
+`wrmsrl_safe`, la faute délivrée deux fois et rattrapée deux fois, sans une
+ligne série — c'est la variante silencieuse, et c'est exact. Le noyau finit
+`syscall_init`, `cpu_init` (`native_load_sp0`, `initialize_tlbstate_and_flush`,
+`enter_lazy_tlb`), et entre dans `load_mm_ldt`.
+
+**Le mur suivant est `lldt`**, `0f 00 d6` à `native_set_ldt + 28` : charger
+la table de descripteurs locale depuis `%esi`, qui vaut **zéro** — le noyau
+n'a pas de LDT, et charge le sélecteur nul pour le dire. La même famille que
+`ltr`, `/2` du groupe 6, exécutée pour de vrai. La tranche suivante la
+décode ; un sélecteur nul ne charge rien et continue, un sélecteur non nul
+est un arrêt nommé, RIP dessus, comme FS et GS sans table de descripteurs.
+Pas de globale neuve.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — quatre murs sur les douze dernières tranches. Les trois
+derniers murs n'en étaient pas.

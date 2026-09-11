@@ -39,7 +39,10 @@ const STOPS = {
 const STOP_INTERRUPT = 0x100n;
 /// **`STOP_MSR | numéro`** : un registre spécifique au modèle que le module ne
 /// modélise pas. Le numéro vient d'ECX à l'exécution, donc c'est le module qui
-/// le pose dans le témoin. RIP est sur l'instruction.
+/// le pose dans le témoin. RIP est sur l'instruction — et c'est là que l'hôte
+/// délivre la `#GP(0)` que le silicium lèverait, au lieu de s'arrêter : c'est
+/// au noyau de décider, sa table d'exceptions rattrape ces fautes-là. Sans
+/// porte, l'arrêt reste, et nomme le numéro.
 const STOP_MSR = 1n << 32n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
@@ -50,6 +53,11 @@ const STOP_MSR = 1n << 32n;
 /// manuel ; le noyau compte dessus pour retrouver son cadre, et en oublier un
 /// décalerait toute la pile de huit octets.
 const PAGE_FAULT = 14;
+/// **La faute de protection générale**, vecteur 13, avec un code d'erreur.
+/// C'est elle que le silicium lève sur un `wrmsr` ou un `rdmsr` dont le
+/// numéro n'existe pas — et le noyau le sait, sa table d'exceptions la
+/// rattrape.
+const GENERAL_PROTECTION = 13;
 const WITH_ERROR_CODE = new Set([8, 10, 11, 12, 13, 14, 17, 21, 29, 30]);
 /// Les bits de RFLAGS qu'une entrée de gestionnaire éteint : le pas-à-pas, le
 /// drapeau imbriqué et la reprise toujours ; les interruptions seulement par
@@ -709,12 +717,23 @@ export function machine({
           }
           continue;
         }
+        // **Un MSR inconnu est une `#GP(0)`, délivrée.** Le module a posé
+        // RIP sur l'instruction — une faute, pas un piège — et le numéro dans
+        // le témoin. Le noyau Linux rattrape ces fautes par sa table
+        // d'exceptions : `-EIO` pour `wrmsr_safe`, un « unchecked MSR access
+        // error » sur le port série pour l'autre, et il continue. Sans porte,
+        // le témoin est remis et l'arrêt nomme le numéro et le vecteur.
         if (stop !== 0n && (stop >> 32n) === (STOP_MSR >> 32n)) {
           const number = (stop & 0xffffffffn).toString(16);
-          return {
-            stopped: `arrêtée sur un registre spécifique au modèle que cette machine ne modélise pas : 0x${number}`,
-            at: rip(),
-          };
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(
+            GENERAL_PROTECTION, 0n,
+            `un registre spécifique au modèle que cette machine ne modélise pas (0x${number})`);
+          if (why !== null) {
+            globals[SLOTS.stop].value = stop;
+            return { stopped: why, at: rip() };
+          }
+          continue;
         }
         if (stop !== 0n) {
           return { stopped: STOPS[stop] ?? `arrêt de raison inconnue (${stop})`, at: rip() };

@@ -425,15 +425,17 @@ console.log("rdx " + vm.globals[2].value.toString());
 /// donc réellement où l'invité lit, et ce test le mesure par un accès mémoire,
 /// pas par une relecture de registre.
 ///
-/// **Un numéro qu'on ne modélise pas est un arrêt nommé qui porte le
-/// numéro.** Ne rien faire serait le pire des trois choix : le noyau croirait
-/// avoir posé une valeur, et la panne tomberait ailleurs. Rendre la main sans
-/// témoin — ce que la machine faisait — laissait l'hôte devant un noyau
-/// « sur place », et il a fallu désassembler `syscall_init` pour apprendre que
-/// c'était `MSR_STAR`. Le témoin porte désormais le numéro dans ses
-/// trente-deux bits bas, RIP reste **sur** l'instruction, et le test le
-/// vérifie en la distinguant de celle du `ud2` qui suit — sans quoi « ça
-/// s'est arrêté » ne prouverait pas « ça s'est arrêté là ».
+/// **Un numéro qu'on ne modélise pas est une `#GP` à délivrer, et sans porte
+/// c'est un arrêt nommé qui porte le numéro.** Ne rien faire serait le pire
+/// des choix : le noyau croirait avoir posé une valeur, et la panne tomberait
+/// ailleurs. Rendre la main sans témoin — ce que la machine faisait — laissait
+/// l'hôte devant un noyau « sur place », et il a fallu désassembler
+/// `syscall_init` pour apprendre que c'était `MSR_STAR`. Le témoin porte le
+/// numéro dans ses trente-deux bits bas, RIP reste **sur** l'instruction ; ce
+/// test n'a pas d'IDT, donc la délivrance ne peut pas avoir lieu et l'arrêt
+/// dit le numéro et le vecteur. Le test le vérifie en distinguant l'adresse
+/// de celle du `ud2` qui suit — sans quoi « ça s'est arrêté » ne prouverait
+/// pas « ça s'est arrêté là ».
 #[test]
 fn an_unmodelled_model_register_stops_the_machine_where_it_stands() {
     let Some(bun) = bun() else {
@@ -522,8 +524,8 @@ console.log("haut " + lire(2));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret arrêtée sur un registre spécifique au modèle que cette machine ne modélise pas : 0x123"),
-        "la machine s'arrête, et l'arrêt porte le numéro : {text}"
+        Some("arret un registre spécifique au modèle que cette machine ne modélise pas (0x123) sans porte : aucune IDT ne porte le vecteur 13"),
+        "sans IDT, la #GP ne peut pas être délivrée, et l'arrêt porte le numéro : {text}"
     );
     assert_eq!(
         line("ou "),
@@ -6008,5 +6010,198 @@ console.log("lstar " + lire(6));
         line("lstar "),
         "dead000110000001",
         "et rdmsr relit LSTAR entière, moitié haute comprise"
+    );
+}
+
+/// **Un MSR inconnu est délivré à l'invité comme une `#GP(0)`, et c'est le
+/// gestionnaire qui décide.**
+///
+/// Sur le silicium, `wrmsr` sur un numéro qui n'existe pas lève une faute de
+/// protection générale, code d'erreur zéro, RIP **sur** l'instruction — une
+/// faute, pas un piège. Le noyau Linux le sait : `wrmsrl_safe` a une entrée
+/// de table d'exceptions qui rend `-EIO`, et `native_write_msr` en a une
+/// aussi qui écrit « unchecked MSR access error » sur le port série et
+/// continue. C'est sur le premier registre SYSENTER, écrit par `wrmsrl_safe`
+/// dans `syscall_init`, que le noyau Alpine s'arrêtait. Délivrer la faute,
+/// c'est le laisser faire ce qu'il fait sur une vraie machine.
+///
+/// Le gestionnaire de ce test fait ce que fait la table d'exceptions du
+/// noyau : il dépile le code d'erreur, avance le RIP empilé **après** le
+/// `wrmsr`, et `iretq` reprend là. Ce que chaque assertion tient : le
+/// gestionnaire a tourné (`rcx`), le code d'erreur est nul (`r8`), le cadre
+/// porte l'instruction fautive et non la suivante, l'exécution a continué
+/// après (`rbx`), la pile est revenue (six mots, code d'erreur compris), le
+/// témoin d'arrêt est effacé, et l'arrêt final est le `ud2`.
+#[test]
+fn an_unknown_model_register_is_delivered_as_a_general_protection_fault() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = 0x1_1000;
+    const IDT: u64 = 0x1_2000;
+    const IDT_POINTER: u64 = 0x1_3000;
+    const STACK: u64 = 0xf000;
+    fn put(into: &mut Vec<u8>, bytes: &[u8]) {
+        into.extend_from_slice(bytes);
+    }
+    let mut program: Vec<u8> = Vec::new();
+    put(&mut program, &[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    put(&mut program, &IDT_POINTER.to_le_bytes());
+    put(&mut program, &[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    put(&mut program, &[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    put(&mut program, &(STACK as u32).to_le_bytes());
+    put(&mut program, &[0x48, 0xc7, 0xc3, 0x11, 0x11, 0x00, 0x00]); // mov $0x1111,%rbx
+    put(&mut program, &[0xb9, 0x23, 0x01, 0x00, 0x00]); // mov $0x123,%ecx — un MSR inconnu
+    put(&mut program, &[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov $1,%eax
+    put(&mut program, &[0x31, 0xd2]); // xor %edx,%edx
+    let faults_at = BASE + program.len() as u64;
+    put(&mut program, &[0x0f, 0x30]); // wrmsr — la #GP
+    let after_wrmsr = BASE + program.len() as u64;
+    put(&mut program, &[0x48, 0xc7, 0xc3, 0x22, 0x22, 0x00, 0x00]); // mov $0x2222,%rbx
+    let ud2_at = BASE + program.len() as u64;
+    put(&mut program, &[0x0f, 0x0b]); // ud2
+                                      // Le gestionnaire fait ce que fait la table d'exceptions du noyau :
+                                      // dépiler le code d'erreur, avancer le RIP empilé après le wrmsr, rendre.
+    let handler: Vec<u8> = vec![
+        0x48, 0xc7, 0xc1, 0x33, 0x33, 0x00, 0x00, // mov $0x3333,%rcx
+        0x41, 0x58, // pop %r8 — le code d'erreur
+        0x4c, 0x8b, 0x0c, 0x24, // mov (%rsp),%r9 — le RIP empilé, tel que délivré
+        0x48, 0x83, 0x04, 0x24, 0x02, // addq $2,(%rsp) — RIP après le wrmsr
+        0x48, 0xcf, // iretq
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-gp-msr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (name, bytes, at, slot) in [
+        ("programme.wasm", &program[..], BASE, 0u32),
+        ("gestionnaire.wasm", &handler[..], HANDLER, 1),
+        (
+            "reprise.wasm",
+            &program[(after_wrmsr - BASE) as usize..],
+            after_wrmsr,
+            2,
+        ),
+    ] {
+        let module = Module::resolving(bytes, at, 0, slot, PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        served.push_str(&format!(
+            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const porte = (offset) => [
+  (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n),
+  BigInt(offset) >> 32n,
+];
+const [bas, haut] = porte({handler});
+vue.setBigUint64({idt} + 13 * 16, bas, true);
+vue.setBigUint64({idt} + 13 * 16 + 8, haut, true);
+vue.setUint16({idtPointer}, 256 * 16 - 1, true);
+vue.setBigUint64({idtPointer} + 2, {idt}n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const mot = (at) => vue.getBigUint64(at, true).toString();
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("r8 " + lire(8));
+console.log("r9 " + lire(9));
+console.log("rsp " + lire(4));
+console.log("rip " + lire({rip}));
+console.log("stop " + lire({stop}));
+console.log("cadre-rip " + mot({stack} - 8 * 5));
+console.log("cadre-code " + mot({stack} - 8 * 6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            stop = wisq_vm::x86_wasm::STOP_SLOT,
+            base = BASE,
+            handler = HANDLER,
+            idt = IDT,
+            idtPointer = IDT_POINTER,
+            stack = STACK,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    assert_eq!(
+        line("arret "),
+        "refusée",
+        "l'arrêt final est le ud2, pas le MSR : {text}"
+    );
+    assert_eq!(
+        number("rcx "),
+        0x3333,
+        "le gestionnaire du vecteur 13 a tourné"
+    );
+    assert_eq!(
+        number("r8 "),
+        0,
+        "le code d'erreur d'une #GP sur un MSR est nul"
+    );
+    // **Le RIP délivré se lit dans le gestionnaire, pas dans la mémoire après
+    // coup** : le gestionnaire l'a avancé dans le cadre avant `iretq`, comme la
+    // table d'exceptions du noyau le fait, et c'est ce cadre-là qui reste.
+    assert_eq!(
+        number("r9 "),
+        faults_at,
+        "le cadre portait le wrmsr lui-même : une faute, pas un piège"
+    );
+    assert_eq!(
+        number("cadre-rip "),
+        after_wrmsr,
+        "et c'est le gestionnaire qui l'a avancé, dans le cadre"
+    );
+    assert_eq!(
+        number("cadre-code "),
+        0,
+        "et le code d'erreur empilé est nul"
+    );
+    assert_eq!(
+        number("rbx "),
+        0x2222,
+        "l'exécution a repris après le wrmsr, là où le gestionnaire l'a posée"
+    );
+    assert_eq!(
+        number("rsp "),
+        STACK,
+        "iretq a rendu la pile : six mots, code d'erreur compris"
+    );
+    assert_eq!(number("rip "), ud2_at, "RIP est sur le ud2");
+    assert_eq!(
+        number("stop "),
+        0,
+        "le témoin d'arrêt est effacé une fois la faute délivrée"
     );
 }
