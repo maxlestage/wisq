@@ -8278,3 +8278,70 @@ ranger, et le coût d'une case chacun vient d'être payé une fois de plus.
 l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
 l'`int3` d'un coup — quatre murs sur les dix dernières tranches. Ce mur-ci,
 comme le précédent, n'en est pas.
+
+## Un MSR inconnu est un arrêt nommé qui porte le numéro, et les quatre registres de l'appel système ont leur case
+
+Le mur de la tranche précédente n'avait pas de nom : le noyau était « sur
+place » à `native_write_msr + 8`, et il a fallu désassembler `syscall_init`
+pour apprendre que c'était `wrmsr` sur `MSR_STAR`. L'émetteur ne modélisait
+que quatre numéros — FS_BASE, GS_BASE, KERNEL_GS_BASE, EFER — et tout autre
+numéro rendait la main à l'adresse de l'instruction, **sans témoin** : l'hôte
+retraduisait la même adresse, RIP ne bougeait pas, et le relevé disait « sur
+place ». Vrai, et inutile.
+
+**Ce que la tranche pose.** Deux choses, parce que le mur en avait deux.
+
+Un témoin qui parle : `STOP_MSR`, le bit 32, et le numéro du registre dans
+les trente-deux bits bas. Le numéro vit dans ECX, une valeur d'exécution que
+le traducteur ne connaît pas — c'est donc le module qui le pose dans le
+témoin au moment où il le lit, RIP **sur** l'instruction. `web/host.js` le
+reconnaît à part des autres arrêts et le dit avec le numéro en hexadécimal.
+
+Quatre cases : `SYSCALL_SLOT`, STAR, LSTAR, CSTAR, SYSCALL_MASK, dans
+l'ordre de leurs numéros — la cinquante-cinquième à la cinquante-huitième
+globale. `syscall_init` les écrit tous les quatre ; ce sont les registres que
+`syscall` lira un jour (la cible dans LSTAR, les sélecteurs dans STAR, les
+drapeaux à éteindre dans le masque). Rangés par `wrmsr`, rendus par `rdmsr`
+sur soixante-quatre bits, lus par rien : accepter l'écriture dit « on la
+range », pas « on l'applique ». Le prix d'une globale est payé quatre fois
+d'un coup : `host.js`, la garde des cases recopiées, `WebKitBench.swift` et
+ses trois modules épinglés régénérés.
+
+**Éprouvé.** Le test du MSR inconnu attendait « refusée » et l'adresse ; il
+attend désormais le nom **avec** le numéro (`0x123`) et l'adresse du `wrmsr`,
+distinguée de celle du `ud2` qui suit. Un test neuf : les quatre écritures,
+moitié haute non nulle, chaque case relue à sa place, LSTAR relue entière par
+`rdmsr`, et la machine qui va jusqu'au `hlt`. Six sabotages, six rouges
+nommés : le témoin sans le numéro, RIP après l'instruction, les quatre
+registres retirés, LSTAR rangé dans la case de STAR, `host.js` qui recopie la
+mauvaise case, `host.js` qui ne reconnaît plus le témoin.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 2218 | 82 101 | 48 | `native_write_msr + 8` — sur place |
+| après | **2222** | **82 127** | 48 | `native_write_msr_safe + 12` — **`0x174`**, nommé |
+
+Quatre régions, et le mur suivant se lit sans désassembler : `syscall_init +
+88` écrit `MSR_IA32_SYSENTER_CS` par `wrmsrl_safe`, le premier des trois
+registres SYSENTER, avec `GDT_ENTRY_INVALID_SEG`. Les quatre registres de
+l'appel système sont passés ; celui-là n'est pas un registre à ranger, c'est
+une **faute que le noyau attend**.
+
+**Le mur suivant est une `#GP` que le noyau sait rattraper.** Sur le silicium,
+un MSR inconnu lève `#GP(0)`, et le noyau le sait : la variante `_safe` a une
+entrée de table d'exceptions qui rend `-EIO`, et la variante ordinaire en a
+une aussi, qui écrit « unchecked MSR access error » sur le port série et
+continue. La tranche suivante délivre donc la faute : quand le témoin
+`STOP_MSR` est posé et que l'IDT a une porte 13, `web/host.js` pose le cadre
+avec le code d'erreur zéro, RIP sur l'instruction — une faute, pas un piège —
+par le chemin qui délivre déjà la faute de page ; sans porte, l'arrêt nommé
+reste. C'est la direction que Maxime a prise pour la faute de page — délivrer
+à l'invité plutôt que boucher — et le noyau dira lui-même, sur le port série,
+les registres qu'il ne trouve pas.
+
+**La question de direction reste posée à Maxime** : arrêter le bloc sur
+l'instruction illisible et ne refuser qu'à l'exécution lèverait la famille de
+l'`int3` d'un coup — quatre murs sur les onze dernières tranches. Les deux
+derniers murs n'en étaient pas.

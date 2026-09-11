@@ -25,7 +25,8 @@
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
 /// `STOP_HYPERVISOR`, `STOP_PCID` — et un nombre que ce tableau ne connaît pas se dit quand
-/// même, plutôt que de passer pour « rien ».
+/// même, plutôt que de passer pour « rien ». `STOP_MSR` n'y est pas : il porte
+/// le numéro du registre dans ses trente-deux bits bas, et se lit à part.
 const STOPS = {
   1n: "arrêtée sur hlt",
   2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
@@ -36,6 +37,10 @@ const STOPS = {
 /// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
 /// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
 const STOP_INTERRUPT = 0x100n;
+/// **`STOP_MSR | numéro`** : un registre spécifique au modèle que le module ne
+/// modélise pas. Le numéro vient d'ECX à l'exécution, donc c'est le module qui
+/// le pose dans le témoin. RIP est sur l'instruction.
+const STOP_MSR = 1n << 32n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -105,7 +110,12 @@ export const SLOTS = {
   /// zéro tant qu'aucun chargeur n'est passé. Aucun descripteur n'est lu
   /// derrière — la délivrance dit toujours « cette machine n'a pas de TSS ».
   task: 53,
-  globalCount: 54,
+  /// **Les quatre registres de l'appel système** : STAR, LSTAR, CSTAR,
+  /// SYSCALL_MASK, dans l'ordre de leurs numéros. Rangés par `wrmsr`, rendus
+  /// par `rdmsr`, lus par rien : `syscall` n'est pas produite.
+  syscall: 54,
+  syscallCount: 4,
+  globalCount: 58,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -698,6 +708,13 @@ export function machine({
             return { stopped: why, at: rip() };
           }
           continue;
+        }
+        if (stop !== 0n && (stop >> 32n) === (STOP_MSR >> 32n)) {
+          const number = (stop & 0xffffffffn).toString(16);
+          return {
+            stopped: `arrêtée sur un registre spécifique au modèle que cette machine ne modélise pas : 0x${number}`,
+            at: rip(),
+          };
         }
         if (stop !== 0n) {
           return { stopped: STOPS[stop] ?? `arrêt de raison inconnue (${stop})`, at: rip() };

@@ -18,7 +18,7 @@ use std::process::Command;
 use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
+    RIP_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
 };
 
 fn workspace_root() -> PathBuf {
@@ -125,6 +125,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         "l'emplacement d'EFER"
     );
     assert_eq!(value("task"), TASK_SLOT.to_string(), "le registre de tâche");
+    assert_eq!(
+        value("syscall"),
+        SYSCALL_SLOT.to_string(),
+        "le premier registre de l'appel système"
+    );
+    assert_eq!(
+        value("syscallCount"),
+        SYSCALL_COUNT.to_string(),
+        "le nombre de registres de l'appel système"
+    );
     assert_eq!(
         value("control"),
         wisq_vm::x86_wasm::CONTROL_SLOT.to_string(),
@@ -401,7 +411,7 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
-/// **Les MSR : quatre numéros modélisés, et un arrêt nommé pour tous les autres.**
+/// **Les MSR : huit numéros modélisés, et un arrêt nommé pour tous les autres.**
 ///
 /// **Le numéro d'un MSR vit dans ECX, pas dans l'instruction.** Le traducteur
 /// ne peut donc pas le connaître : « refuser tel MSR » n'est pas une décision
@@ -415,12 +425,15 @@ console.log("rdx " + vm.globals[2].value.toString());
 /// donc réellement où l'invité lit, et ce test le mesure par un accès mémoire,
 /// pas par une relecture de registre.
 ///
-/// **Un numéro qu'on ne modélise pas rend la main à son adresse.** Ne rien
-/// faire serait le pire des trois choix : le noyau croirait avoir posé une
-/// valeur, et la panne tomberait ailleurs. L'arrêt porte l'adresse de
-/// l'instruction, et le test le vérifie en la distinguant de celle du `ud2`
-/// qui suit — sans quoi « ça s'est arrêté » ne prouverait pas « ça s'est
-/// arrêté là ».
+/// **Un numéro qu'on ne modélise pas est un arrêt nommé qui porte le
+/// numéro.** Ne rien faire serait le pire des trois choix : le noyau croirait
+/// avoir posé une valeur, et la panne tomberait ailleurs. Rendre la main sans
+/// témoin — ce que la machine faisait — laissait l'hôte devant un noyau
+/// « sur place », et il a fallu désassembler `syscall_init` pour apprendre que
+/// c'était `MSR_STAR`. Le témoin porte désormais le numéro dans ses
+/// trente-deux bits bas, RIP reste **sur** l'instruction, et le test le
+/// vérifie en la distinguant de celle du `ud2` qui suit — sans quoi « ça
+/// s'est arrêté » ne prouverait pas « ça s'est arrêté là ».
 #[test]
 fn an_unmodelled_model_register_stops_the_machine_where_it_stands() {
     let Some(bun) = bun() else {
@@ -509,8 +522,8 @@ console.log("haut " + lire(2));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
-        "la machine s'arrête : {text}"
+        Some("arret arrêtée sur un registre spécifique au modèle que cette machine ne modélise pas : 0x123"),
+        "la machine s'arrête, et l'arrêt porte le numéro : {text}"
     );
     assert_eq!(
         line("ou "),
@@ -5884,5 +5897,116 @@ console.log("rip " + lire({rip}));
         line("rip "),
         (BASE + program.len() as u64).to_string(),
         "RIP est après le hlt"
+    );
+}
+
+/// **Les quatre registres de l'appel système sont rangés, et se relisent.**
+///
+/// `syscall_init` écrit `STAR`, `LSTAR`, `CSTAR` et `SYSCALL_MASK` — c'est là
+/// que le noyau Alpine s'arrêtait « sur place », sur le premier des quatre.
+/// Ce sont les registres que `syscall` lira un jour : la cible dans LSTAR, les
+/// sélecteurs dans STAR, les drapeaux à éteindre dans le masque. Ils ont donc
+/// une case chacun, comme EFER, et l'aller-retour `wrmsr` → `rdmsr` est
+/// fidèle sur soixante-quatre bits — la moitié haute non nulle, exprès, parce
+/// qu'une moitié haute perdue ne se voit que par la relecture.
+///
+/// **Ce que ces nombres ne sont pas** : rien ne les lit. `syscall` n'est pas
+/// produite par l'émetteur ; accepter l'écriture dit « on la range », pas « on
+/// l'applique », comme pour les registres de contrôle.
+#[test]
+fn the_four_syscall_registers_are_kept_and_read_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = Vec::new();
+    // Quatre écritures : le numéro dans ECX, la moitié basse dans EAX, la haute
+    // dans EDX — chacune reconnaissable.
+    for (rank, number) in [0xc000_0081u32, 0xc000_0082, 0xc000_0083, 0xc000_0084]
+        .into_iter()
+        .enumerate()
+    {
+        let low = 0x1000_0000u32 + rank as u32;
+        let high = 0xdead_0000u32 + rank as u32;
+        program.push(0xb9);
+        program.extend_from_slice(&number.to_le_bytes()); // mov $numéro,%ecx
+        program.push(0xb8);
+        program.extend_from_slice(&low.to_le_bytes()); // mov $bas,%eax
+        program.push(0xba);
+        program.extend_from_slice(&high.to_le_bytes()); // mov $haut,%edx
+        program.extend_from_slice(&[0x0f, 0x30]); // wrmsr
+    }
+    // Relire LSTAR dans RSI, entière : la cible que `syscall` chargerait.
+    program.extend_from_slice(&[0xb9, 0x82, 0x00, 0x00, 0xc0]); // mov $0xc0000082,%ecx
+    program.extend_from_slice(&[0x0f, 0x32]); // rdmsr
+    program.extend_from_slice(&[0x48, 0xc1, 0xe2, 0x20]); // shl $32,%rdx
+    program.extend_from_slice(&[0x48, 0x09, 0xc2]); // or %rax,%rdx
+    program.extend_from_slice(&[0x48, 0x89, 0xd6]); // mov %rdx,%rsi
+    program.push(0xf4); // hlt
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!("`syscall_init` doit se traduire : {why:?}"),
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-syscall-msr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+for (let i = 0; i < {count}; i++) console.log("case" + i + " " + lire({first} + i));
+console.log("lstar " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            first = SYSCALL_SLOT,
+            count = SYSCALL_COUNT,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur hlt",
+        "les quatre écritures passent, la machine va jusqu'au hlt : {text}"
+    );
+    for rank in 0..SYSCALL_COUNT {
+        assert_eq!(
+            line(&format!("case{rank} ")),
+            format!("dead{rank:04x}1000{rank:04x}"),
+            "STAR, LSTAR, CSTAR, SYSCALL_MASK dans cet ordre, soixante-quatre bits chacun"
+        );
+    }
+    assert_eq!(
+        line("lstar "),
+        "dead000110000001",
+        "et rdmsr relit LSTAR entière, moitié haute comprise"
     );
 }

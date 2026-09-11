@@ -188,6 +188,7 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `vmcall`, `vmmcall` — l'appel à l'hyperviseur | **décodés**, arrêt nommé s'ils sont atteints, RIP dessus ; la sonde VMware du noyau ne les exécute que si CPUID annonce sa signature, et `cpuid` ne l'annonce pas |
 | `invpcid` — purger le tampon par identifiant de contexte | **décodée** (`66 0f 38 82 /r`, forme mémoire, et rien d'autre de la page `0f 38`), arrêt nommé si elle est atteinte, RIP dessus ; `native_flush_tlb_one_user` ne l'exécute que si CPUID annonce `PCID` et `INVPCID`, et `cpuid` n'annonce ni l'un ni l'autre |
 | `ltr` — charger le registre de tâche | **produite** (`0f 00 /3`, forme registre, et rien d'autre du groupe 6) : le sélecteur est rangé, seize bits, dans sa case ; aucun descripteur n'est lu derrière, et la délivrance dit toujours « cette machine n'a pas de TSS » |
+| `wrmsr` / `rdmsr` — les registres spécifiques au modèle | **produits** pour huit numéros : FS_BASE, GS_BASE, KERNEL_GS_BASE, EFER, et les quatre de l'appel système (STAR, LSTAR, CSTAR, SYSCALL_MASK), rangés et rendus ; tout autre numéro est un arrêt nommé qui **porte le numéro**, RIP dessus |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **interruption de matériel** | n'existe pas |
 
