@@ -118,6 +118,19 @@ Une version antérieure de la feuille de route en tirait « entre 1 % et 29 % du
 débit » ; le chiffre est retiré jusqu'à ce que ses deux entrées soient
 vérifiables.
 
+### `invlpg` : ce qui fait oublier une page au tampon
+
+Un tampon n'est juste que si quelqu'un peut le vider. Le noyau change une
+entrée de table puis exécute `invlpg` sur la page ; le tampon direct du module
+efface alors la case que la page occupe — son étiquette à zéro veut dire
+« vide » — et l'accès suivant remarche les tables. L'opérande est une adresse
+linéaire, calculée comme pour `lea`, ni traduite ni lue : un `invlpg` sur une
+page absente ne faute pas. **Vérifié plutôt qu'affirmé** : le montage du
+tampon, qui relisait l'ancienne trame après avoir réécrit sa feuille, relit la
+nouvelle avec un `invlpg` entre les deux, et toujours l'ancienne sans. Le
+noyau Alpine y arrive dans `native_flush_tlb_one_user`, et `0f 01 3f` refusait
+sa région avant cette tranche.
+
 ### Comment une faute de page remonte, tranché par la sonde
 
 C'était la question à trancher avant d'écrire une ligne de la tranche P2 : un

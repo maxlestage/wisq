@@ -7974,3 +7974,54 @@ l'exhibe depuis la pagination P2, « la raison d'être d'`invlpg`, que cette
 tranche ne produit pas ». C'est la tranche suivante : décoder, et effacer
 l'entrée du tampon pour la page désignée, dans l'émetteur comme dans
 l'interpréteur.
+
+## `invlpg` fait oublier une page au tampon, et le noyau entre dans `init_hypervisor_platform`
+
+Le mur de la tranche précédente était `0f 01 3f`, `invlpg (%rdi)`, dans
+`native_flush_tlb_one_user` — une instruction que le noyau **exécute**, pas
+seulement atteint. Le décodeur lisait le groupe `0f 01` pour `lgdt`, `lidt`,
+`sgdt`, `sidt` et `swapgs` ; `/7` en forme mémoire ne l'était pas.
+
+**Ce que la tranche pose.** `Op::InvalidatePage`, la forme mémoire de `/7` et
+elle seule — la forme à registre reste `swapgs` avec `rm` à zéro, et rien
+d'autre. Dans l'émetteur, sous pagination, la case du tampon que la page occupe
+est **effacée** : le tampon est direct, une case par numéro de page modulo sa
+taille, et son étiquette à zéro veut dire « vide », donc écrire zéro suffit,
+quelle que soit la page qui l'occupait. L'adresse est **linéaire**, calculée
+comme pour `lea`, ni traduite ni lue : un `invlpg` sur une page absente ne
+faute pas. Sans pagination, il n'y a pas de tampon, et rien à faire. Dans
+l'interpréteur, un pas sans effet, et c'est exact : il n'a pas de tampon, il
+marche les tables à chaque accès.
+
+**Éprouvé.** Le montage du tampon de la pagination P2 — l'invité réécrit sa
+propre entrée de feuille par un alias puis relit la même page — relit
+désormais la **nouvelle** trame avec un `invlpg (%rsi)` entre les deux, et
+toujours l'ancienne sans (le contraste est dans le même test : sans lui, un
+tampon qui ne répondrait plus du tout rendrait le test vert pour la mauvaise
+raison). Deux tests écrits avant, rouges. Trois sabotages, trois rouges :
+`invlpg` émis sans rien écrire, la case d'à côté effacée, le décodeur qui
+prend aussi `/7` à registre.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 640 | 28 515 | `native_flush_tlb_one_user` — `CannotDecode { at: 37 }` |
+| après | **686** | **30 255** | `vmware_platform` — `CannotDecode { at: 401 }` |
+
+Le noyau traverse `flush_tlb_one_kernel`, entre dans
+`init_hypervisor_platform`, sonde Xen (`xen_platform_hvm`) et arrive à la
+sonde VMware. Le port série est toujours vide : `console_init` n'est pas
+encore atteint.
+
+**Le mur suivant est de la même famille que `int3` et `lkgs`, et c'est la
+troisième fois.** À `vmware_platform + 401` : `0f 01 c1`, `vmcall` — l'appel à
+l'hyperviseur. Le noyau ne l'exécute que si CPUID annonce la signature VMware,
+ce que `cpuid` n'annonce pas ; mais il est atteint statiquement dans la
+fenêtre, et un décodeur qui ne le lit pas refuse la région entière. La tranche
+suivante le décode, avec `vmmcall` (`0f 01 d9`, sa forme AMD, dans la même
+sonde), et en fait un arrêt nommé s'il est un jour atteint. **La question de
+direction posée deux tranches plus haut tient toujours** : arrêter le bloc sur
+une instruction illisible et ne refuser qu'à l'exécution lèverait cette
+famille de murs d'un coup ; elle change le contrat de `CannotDecode`, et elle
+n'est pas prise sans le dire.

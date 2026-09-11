@@ -508,6 +508,15 @@ pub enum Op {
     /// est refusée par nom à l'exécution, faute de table de descripteurs.
     /// Seule la forme à registre, sans REX, est lue : c'est celle du noyau.
     LoadKernelGs,
+    /// **`0F 01 /7`, forme mémoire : oublier la traduction d'une page.**
+    ///
+    /// `invlpg` prend une adresse, pas une valeur : l'opérande n'est jamais
+    /// lu, et une page absente ne faute pas. Le noyau l'exécute dans
+    /// `native_flush_tlb_one_user` après avoir changé une entrée de table.
+    /// L'émetteur efface la case du tampon que la page occupe ; l'interpréteur,
+    /// qui marche les tables à chaque accès, n'a rien à oublier. La forme à
+    /// registre du même `/7` est `swapgs`, et seulement avec `rm` à zéro.
+    InvalidatePage,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -1972,7 +1981,11 @@ impl Cpu {
         // `rip + longueur + déplacement`. Aucun drapeau n'est touché — pas même
         // par `loop`, qui décrémente RCX sans rien poser, ce qui le distingue
         // d'un `dec` suivi d'un `jnz`.
-        if instruction.op == Op::Nop {
+        // **`invlpg` est un pas sans effet ici**, et c'est exact, pas une
+        // paresse : cet interpréteur n'a pas de tampon de traduction, il
+        // marche les tables à chaque accès. Il sort avant la machinerie des
+        // opérandes, parce que son opérande est une adresse à ne pas lire.
+        if matches!(instruction.op, Op::Nop | Op::InvalidatePage) {
             return;
         }
         if matches!(
@@ -2173,7 +2186,7 @@ impl Cpu {
             Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
                 unreachable!("les sauts sortent avant")
             }
-            Op::Nop => unreachable!("ne rien faire sort avant"),
+            Op::Nop | Op::InvalidatePage => unreachable!("ne rien faire sort avant"),
             Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
             Op::PortIn
             | Op::PortOut
@@ -2471,10 +2484,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // forme à registre, `swapgs`, qui est l'encodage `F8` **et lui
             // seul** : son voisin `F9` est `rdtscp` et n'a rien à voir.
             //
-            // Le reste du groupe — `vmcall`, `monitor`, `invlpg`… — reste
-            // illisible exprès. Rendre `Some` pour un opcode qu'on ne sait
-            // pas nommer transformerait un « je ne lis pas » en « je lis, et
-            // je me trompe ».
+            // `invlpg` est `/7` en forme **mémoire**, lu depuis la tranche
+            // qui a fait oublier une page au tampon. Le reste du groupe —
+            // `vmcall`, `monitor`… — reste illisible exprès. Rendre `Some`
+            // pour un opcode qu'on ne sait pas nommer transformerait un « je
+            // ne lis pas » en « je lis, et je me trompe ».
             // **Les registres de contrôle**, lus et écrits par leur numéro.
             // Leurs voisins immédiats `0F 21` et `0F 23` sont les registres de
             // **débogage** — un autre fichier de registres, que le noyau
@@ -2524,6 +2538,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     1 => Op::StoreDescriptorTable { interrupts: true },
                     2 => Op::LoadDescriptorTable { interrupts: false },
                     3 => Op::LoadDescriptorTable { interrupts: true },
+                    7 => Op::InvalidatePage,
                     _ => return None,
                 };
                 Some(Decoded {
@@ -4252,6 +4267,54 @@ mod tests {
         assert_eq!(
             cpu.rip, 0x3000_0000,
             "et le pointeur d'instruction reste dessus"
+        );
+    }
+
+    /// **`invlpg` se lit dans sa forme mémoire, et dans elle seule.**
+    ///
+    /// `0f 01 /7` avec un opérande en mémoire est `invlpg` : oublier la
+    /// traduction d'une page. Le noyau Alpine l'exécute dans
+    /// `native_flush_tlb_one_user` — `0f 01 3f`, `invlpg (%rdi)` — et un
+    /// décodeur qui ne la lit pas refusait la région entière. La forme à
+    /// registre du même `/7` est `swapgs` quand `rm` vaut zéro, et rien
+    /// d'autre : `0f 01 ff` ne se décode pas.
+    ///
+    /// **Pour l'interpréteur, c'est un pas sans effet** : il n'a pas de tampon,
+    /// il marche les tables à chaque accès. L'opérande est une adresse, pas
+    /// une lecture — un `invlpg` sur une page absente ne faute pas.
+    #[test]
+    fn invlpg_is_read_in_its_memory_form_and_nothing_else() {
+        let step = decode(&[0x0f, 0x01, 0x3f]).expect("invlpg (%rdi) se décode");
+        assert_eq!(step.op, Op::InvalidatePage);
+        assert_eq!(step.length, 3, "deux d'opcode, un de ModRM");
+        let address = step.memory.expect("un opérande en mémoire");
+        assert_eq!(address.base, Some(7), "la page vient de RDI");
+        let rsi = decode(&[0x0f, 0x01, 0x3e]).expect("invlpg (%rsi) se décode");
+        assert_eq!(rsi.op, Op::InvalidatePage);
+
+        assert_eq!(
+            decode(&[0x0f, 0x01, 0xf8]).map(|step| step.op),
+            Some(Op::SwapGs),
+            "swapgs reste swapgs"
+        );
+        assert!(
+            decode(&[0x0f, 0x01, 0xff]).is_none(),
+            "/7 à registre, rm=7 : ni swapgs ni invlpg"
+        );
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.regs[7] = 0xFFFF_8000_0000_0000;
+        cpu.step(&[0x0f, 0x01, 0x3f]);
+        assert!(
+            !cpu.faulted,
+            "invlpg ne faute pas, même sur une page qui n'existe pas"
+        );
+        assert_eq!(
+            cpu.rip, 0x3000_0003,
+            "et l'exécution passe à l'instruction suivante"
         );
     }
 
