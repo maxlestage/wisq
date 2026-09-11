@@ -593,6 +593,26 @@ pub enum Op {
         /// registres sans rien de commun ; un seul nom les confondrait.
         which: u8,
     },
+    /// **Lire un registre de débogage.** `0F 21 /r`, le numéro dans `reg`,
+    /// la destination dans `rm`, toujours en forme à registre. Cette machine
+    /// n'a pas de points d'arrêt matériels : l'émetteur rend l'état de repos
+    /// du silicium — zéro pour les quatre adresses, les bits réservés de DR6,
+    /// le bit 10 de DR7. DR4 et DR5 ne se décodent pas : alias ou `#UD`
+    /// selon CR4.DE, les lire inventerait un registre.
+    ReadDebugRegister {
+        /// 0 à 3 (les adresses), 6 (l'état), 7 (le contrôle).
+        which: u8,
+    },
+    /// **Écrire un registre de débogage.** `0F 23 /r`. Le noyau Alpine
+    /// efface les six dans `cpu_init` — `pv_native_set_debugreg` — et le
+    /// décodeur les laissait illisibles exprès. L'émetteur laisse passer une
+    /// écriture qui ne change rien de vrai (l'état de repos) et s'arrête par
+    /// son nom sur une qui armerait un point d'arrêt ; l'interpréteur refuse
+    /// par nom.
+    WriteDebugRegister {
+        /// 0 à 3 (les adresses), 6 (l'état), 7 (le contrôle).
+        which: u8,
+    },
     /// **Écrire un registre de contrôle.** `0F 22 /r`. Écrire CR3 change la
     /// table de pages entière ; écrire CR0 allume ou éteint la pagination.
     WriteControlRegister {
@@ -1973,6 +1993,8 @@ impl Cpu {
                 | Op::InvalidatePcid
                 | Op::LoadTaskRegister
                 | Op::LoadLocalDescriptorTable
+                | Op::ReadDebugRegister { .. }
+                | Op::WriteDebugRegister { .. }
                 | Op::LoadSegment { .. }
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
@@ -2257,6 +2279,8 @@ impl Cpu {
             | Op::InvalidatePcid
             | Op::LoadTaskRegister
             | Op::LoadLocalDescriptorTable
+            | Op::ReadDebugRegister { .. }
+            | Op::WriteDebugRegister { .. }
             | Op::LoadSegment { .. }
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
@@ -2547,10 +2571,28 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // `vmlaunch`… — reste illisible exprès. Rendre `Some` pour un
             // opcode qu'on ne sait pas nommer transformerait un « je ne lis
             // pas » en « je lis, et je me trompe ».
+            // **Les registres de débogage**, lus et écrits par leur numéro,
+            // entre les deux opcodes des registres de contrôle. Le noyau
+            // Alpine les efface dans `cpu_init`. Six numéros existent — 0 à
+            // 3, 6, 7 — ; 4 et 5 sont des alias ou `#UD` selon CR4.DE, et
+            // REX.R n'y désigne rien : rendre `Some` inventerait un registre.
+            0x21 | 0x23 => {
+                let field = read_modrm(bytes, &mut at, prefixes)?;
+                field.memory.is_none().then_some(())?;
+                let which = field.reg;
+                matches!(which, 0..=3 | 6 | 7).then_some(())?;
+                Some(Decoded {
+                    op: if second == 0x21 {
+                        Op::ReadDebugRegister { which }
+                    } else {
+                        Op::WriteDebugRegister { which }
+                    },
+                    dst: field.register,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
+                })
+            }
             // **Les registres de contrôle**, lus et écrits par leur numéro.
-            // Leurs voisins immédiats `0F 21` et `0F 23` sont les registres de
-            // **débogage** — un autre fichier de registres, que le noyau
-            // n'écrit pas ici — et restent illisibles exprès.
             //
             // Cinq numéros existent ; les onze autres ne désignent rien, et
             // rendre `Some` pour eux inventerait un registre.
@@ -4906,7 +4948,8 @@ mod tests {
     ///
     /// Et son voisin qui n'en est pas un : `0F 21` lit un registre de
     /// **débogage**, pas de contrôle. Deux opcodes consécutifs, deux fichiers
-    /// de registres, et le noyau écrit l'un sans écrire l'autre.
+    /// de registres — et le même numéro n'y désigne pas la même chose : CR4
+    /// existe, DR4 n'existe pas.
     #[test]
     fn the_control_register_read_the_kernel_actually_writes_is_read() {
         let step = decode(&[0x0f, 0x20, 0xe1]).expect("mov %cr4,%rcx");
@@ -4914,9 +4957,67 @@ mod tests {
         assert_eq!(step.length, 3);
         assert!(
             decode(&[0x0f, 0x21, 0xe1]).is_none(),
-            "0f 21 est un registre de débogage, que rien ici ne lit"
+            "0f 21 /4 est DR4, qui n'existe pas : ce n'est pas CR4"
         );
-        assert!(decode(&[0x0f, 0x23, 0xe1]).is_none(), "0f 23 non plus");
+        assert!(decode(&[0x0f, 0x23, 0xe1]).is_none(), "0f 23 /4 non plus");
+    }
+
+    /// **Les registres de débogage se lisent et s'écrivent par leur numéro,
+    /// et quatre et cinq n'existent pas.**
+    ///
+    /// `0F 21 /r` lit, `0F 23 /r` écrit ; le numéro est dans `reg`, le
+    /// registre général dans `rm`, toujours en forme à registre. Le noyau
+    /// Alpine les écrit dans `cpu_init` — `pv_native_set_debugreg`, `0f 23`
+    /// — pour effacer DR0 à DR3, DR6 et DR7 au démarrage, et le décodeur les
+    /// laissait illisibles exprès : « un autre fichier de registres, que le
+    /// noyau n'écrit pas ici ». Il les écrit.
+    ///
+    /// DR4 et DR5 sont des alias de DR6 et DR7 quand CR4.DE est éteint, et
+    /// `#UD` sinon : les décoder inventerait un registre. L'interpréteur les
+    /// refuse par nom, RIP dessus.
+    #[test]
+    fn debug_registers_are_read_and_written_by_number_and_four_and_five_do_not_exist() {
+        let write = decode(&[0x0f, 0x23, 0xfe]).expect("mov %rsi,%dr7 se décode");
+        assert_eq!(write.op, Op::WriteDebugRegister { which: 7 });
+        assert_eq!((write.dst, write.length), (6, 3));
+        assert!(write.memory.is_none());
+        let read = decode(&[0x0f, 0x21, 0xf1]).expect("mov %dr6,%rcx se décode");
+        assert_eq!(read.op, Op::ReadDebugRegister { which: 6 });
+        assert_eq!(read.dst, 1);
+        for which in [0u8, 1, 2, 3] {
+            let modrm = 0xc0 | (which << 3);
+            let step = decode(&[0x0f, 0x23, modrm]).unwrap_or_else(|| panic!("dr{which}"));
+            assert_eq!(step.op, Op::WriteDebugRegister { which });
+        }
+        for (bytes, why) in [
+            (&[0x0f, 0x23, 0xe0][..], "DR4 n'existe pas"),
+            (&[0x0f, 0x23, 0xe8][..], "DR5 n'existe pas"),
+            (&[0x0f, 0x21, 0xe8][..], "DR5 ne se lit pas non plus"),
+            (&[0x44, 0x0f, 0x23, 0xc0][..], "REX.R : DR8 n'existe pas"),
+            (&[0x0f, 0x23, 0x38][..], "la forme mémoire n'est pas lue"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x23, 0xfe]);
+        assert!(
+            cpu.faulted,
+            "écrire DR7 est une faute nommée pour l'interpréteur"
+        );
+        assert_eq!(
+            cpu.rip, 0x3000_0000,
+            "et le pointeur d'instruction reste dessus"
+        );
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x0f, 0x21, 0xf1]);
+        assert!(cpu.faulted, "lire DR6 aussi");
     }
 
     /// **Le retour lointain, par lequel un noyau charge son sélecteur de code.**
