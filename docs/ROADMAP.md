@@ -8025,3 +8025,56 @@ direction posée deux tranches plus haut tient toujours** : arrêter le bloc sur
 une instruction illisible et ne refuser qu'à l'exécution lèverait cette
 famille de murs d'un coup ; elle change le contrat de `CannotDecode`, et elle
 n'est pas prise sans le dire.
+
+## `vmcall` et `vmmcall` sont décodés, et le noyau traverse `init_mem_mapping` jusqu'au `boot_params` qui manque
+
+Le mur de la tranche précédente : `0f 01 c1`, `vmcall`, dans `vmware_platform`
+— la sonde d'hyperviseur du noyau, qu'il n'exécute que si CPUID annonce la
+signature VMware, ce que `cpuid` n'annonce pas. Atteint statiquement, jamais
+exécuté, illisible : la région entière refusée. Troisième mur de cette famille,
+après l'`int3` de la retpoline et `lkgs`.
+
+**Ce que la tranche pose.** `Op::HypervisorCall { amd }` : `vmcall` (`c1`) et
+`vmmcall` (`d9`), deux **paires exactes** `(reg, rm)` de la forme à registre du
+groupe `0f 01`, à côté de `swapgs` (`f8`) — `vmlaunch` (`c2`) et `vmrun` (`d8`)
+restent illisibles, comme le reste du groupe. L'interpréteur les refuse par nom,
+RIP dessus ; l'émetteur en fait un arrêt nommé, `STOP_HYPERVISOR`, RIP **sur**
+l'instruction, et `web/host.js` le nomme : « un appel à l'hyperviseur, cette
+machine n'en a pas ».
+
+**Éprouvé.** Deux tests écrits avant, rouges. Le test de l'hôte fait tourner
+les deux encodages dans le même pilote. Trois sabotages, trois rouges : le
+bras de l'émetteur retiré, RIP posé après, le décodeur qui prend tout `reg=0`
+à registre — `vmlaunch` compris.
+
+**Mesuré, sur le vrai noyau Alpine**, à montage égal :
+
+| | régions | dernier emplacement | arrêt |
+|---|---|---|---|
+| avant | 686 | 30 255 | `vmware_platform` — `CannotDecode { at: 401 }` |
+| après | **1067** | **44 140** | `extend_brk + 168` — **sur place** |
+
+Le noyau sonde KVM, finit `init_hypervisor_platform`, traverse l'e820, memblock
+(`memblock_add_range`, `kmemleak_alloc_phys`), `cleanup_highmap`,
+`efi_esrt_init`, entre dans `init_mem_mapping` — `init_range_memory_mapping`,
+`phys_pmd_init`, `clear_page_orig`, `alloc_low_pages` — et s'arrête **sur
+place** : plus une seule adresse ne manque, et un bloc de plus ne fait pas
+bouger RIP. Ce n'est plus la traduction qui s'arrête, c'est l'invité.
+
+**L'arrêt a un nom, et c'est le montage.** `extend_brk + 168` est un `ud2`,
+atteint depuis `extend_brk + 9` par `cmpq $0, _brk_start ; je` : le
+`BUG_ON(_brk_start == 0)` du noyau. `_brk_start` vaut bien `__brk_base` dans
+l'image ; c'est `reserve_brk()` qui l'a mis à zéro, comme `setup_arch` le fait
+toujours avant `init_mem_mapping`. `extend_brk` n'est donc que la dernière issue
+d'`alloc_low_pages`, prise quand `memblock_phys_alloc_range` **n'a rien
+trouvé** — et memblock n'a rien parce que `kernel-entry` ne pose **aucun
+`boot_params`** : c'était écrit en tête de l'outil, « le montage est fait pour
+échouer d'abord », la carte e820 est vide, le noyau ne connaît que les 640 Kio
+du repli BIOS-88, et la première table de pages qu'il veut allouer n'a nulle
+part où aller.
+
+**La tranche suivante est le montage, et elle est nommée** : poser un
+`boot_params` — la page zéro — avec une carte e820 qui déclare la RAM du
+montage, et RSI dessus, comme le fait déjà le chemin d'amorçage de
+l'interpréteur pour un `bzImage`. Puis mesurer. Ce que ça promet : un noyau
+qui cartographie sa mémoire, et `console_init` un peu plus loin.
