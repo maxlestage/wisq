@@ -636,6 +636,12 @@ export function machine({
     /// est indivisible. Le budget est donc le vrai plancher du gel, et à
     /// 2²⁰ blocs il vaut bien plus que huit millisecondes. Ce que coûte
     /// vraiment un gros budget ne se mesure que sur un appareil.
+    /// La case de la correspondance pour cette adresse, et où la table
+    /// commence : le relevé peut alors lire ce que la case tient vraiment
+    /// (`known`, la région installée à une adresse, est déjà exposée plus
+    /// haut). Lecture seule ; rien ne se décide dessus.
+    tableSlot,
+    tableBase: base,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       for (let round = 0; round < rounds; round++) {
