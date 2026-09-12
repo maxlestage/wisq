@@ -8649,3 +8649,71 @@ tranches, chacun payé d'une tranche entière pour une instruction que le
 noyau n'exécute pas. L'autre voie, annoncer dans `cpuid` ce que l'émetteur
 fait vraiment (`CX16` aujourd'hui, `CLFLUSH` demain), est une décision du
 même ordre.
+
+## `clflush` est inerte, et le noyau atteint `poking_init`
+
+Le mur de la tranche précédente était `cpa_flush + 309`, `3e 0f ae 38`,
+`clflush (%rax)` — la boucle `clflush_cache_range` de
+`change_page_attr_set_clr`, que le noyau ne prend que si CPUID annonce
+`CLFLUSH`, ce que `cpuid` ne fait pas. Atteinte statiquement, jamais
+exécutée, illisible : la région entière refusée. Sixième mur de la famille
+de l'`int3`.
+
+**Ce que la tranche pose.** `0f ae` porte deux jeux d'instructions sous les
+mêmes numéros, et c'est `mod` qui tranche : en registre, `/5`, `/6` et `/7`
+sont les trois barrières, lues depuis #152 ; en mémoire, `/7` est `clflush`,
+et `clflushopt` avec `66`. Vider une ligne de cache ne fait rien sur cette
+machine, qui n'en a pas : c'est un `nop`, comme les conseils au cache. Et
+comme eux, il **ne porte pas son adresse** — un cœur qui traiterait `memory`
+comme une source la lirait, et le manuel ne prévoit pour `clflush` aucune
+faute d'accès. Le `3e` que le noyau écrit devant est le remplissage de ses
+alternatives ; il était déjà lu. Les autres formes mémoire de `0f ae` —
+`fxsave`, `ldmxcsr`, `xsave`, `xsaveopt`, `clwb` — restent refusées, et
+`f3 0f ae /7` ne désigne rien.
+
+**Deux tests, rouges avant le code** — le décodeur rendait `None`, la région
+du test hôte était refusée — : le décodeur (six formes lues, dont `(%r15)`
+et un SIB, quatre refusées ; puis l'interpréteur avec une adresse **hors**
+de la fenêtre : s'il lisait, il fauterait), et la boucle hôte sous
+JavaScriptCore (les trois formes que le noyau peut écrire, puis une
+instruction qui doit tourner, puis le `hlt`). Le test des conseils au cache
+de #152 cesse d'affirmer que `clflush (%rax)` est refusée ; il garde les six
+autres refus. **Six sabotages, six détectés**, restaurations vérifiées par
+`diff` : forme mémoire `/7` refusée à nouveau (vue par le décodeur, puis par
+la boucle hôte), toute forme mémoire acceptée (`fxsave` devenait un `nop`),
+adresse gardée, `f3` accepté, barrières en registre perdues.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal, `WISQ_ROUNDS=4096
+WISQ_TURNS=65536`** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 3121 | 107 810 | 57 | `cpa_flush` — `CannotDecode { at: 309 }` |
+| après | **3202** | **110 819** | 57 | `kaslr_get_random_long` — `CannotDecode { at: 35 }` |
+
+Quatre-vingt-une régions de plus, pas une ligne série : le noyau traverse
+`cpa_flush` sans rien dire, ce qui est exact, et arrive à `poking_init`.
+Aucune ligne de plus n'était attendue ici.
+
+**Le mur suivant est de la famille de l'`int3`, pour la septième fois —
+mais la fonction, elle, est appelée pour de vrai.** `kaslr_get_random_long
++ 35` est `48 0f c7 f2`, `rdrand %rdx`, dans une boucle de dix essais gardée
+par `test $0x40000000,%eax` sur `boot_cpu_data` : le bit `RDRAND` de CPUID,
+que `cpuid` n'annonce pas. La boucle ne tourne donc jamais ; mais
+`kaslr_get_random_long` est appelée par `poking_init` (deux fois) et
+`kernel_randomize_memory`, et la région entière est refusée à cause de
+quatre octets qu'elle n'exécute pas. C'est aussi, à l'octet près,
+l'instruction que le test de `cmpxchg16b` nomme parmi les refus du groupe 9.
+La tranche suivante la décode — `rdrand` et `rdseed`, `/6` et `/7` en
+registre — et l'exécute avec la seule sémantique qu'une machine sans source
+d'aléa peut tenir : CF nul, « pas d'aléa disponible », destination mise à
+zéro, les autres drapeaux effacés ; c'est ce que le manuel prescrit, et le
+noyau réessaie dix fois puis retombe sur `rdtsc`.
+
+**Les deux questions de direction restent posées à Maxime.** Sept murs de
+la famille de l'`int3` sur les dix-sept dernières tranches : arrêter le bloc
+sur l'instruction illisible et ne refuser qu'à l'exécution les lèverait
+d'un coup, et chaque tranche de cette famille coûte une mesure d'une heure
+pour quatre octets. L'autre voie, annoncer dans `cpuid` ce que l'émetteur
+fait vraiment — `CX16` aujourd'hui, `CLFLUSH` désormais —, ferait prendre au
+noyau des chemins qu'il évite, et se décide séparément.

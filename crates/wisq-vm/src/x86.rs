@@ -2936,9 +2936,22 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     ..Decoded::nothing(Width::Qword)
                 })
             }
+            // **`0f ae` porte deux jeux d'instructions sous les mêmes numéros,
+            // et c'est `mod` qui tranche.** En registre, `/5`, `/6` et `/7`
+            // sont les trois barrières. En mémoire, `/7` est `clflush` — et
+            // `clflushopt` avec `66` — : vider une ligne de cache ne fait
+            // rien sur cette machine, qui n'en a pas. Les autres formes
+            // mémoire (`fxsave`, `ldmxcsr`, `xsave`…) écrivent ou lisent des
+            // centaines d'octets et restent refusées. Aucune ne porte son
+            // adresse : un conseil ne désigne rien à lire.
             0xae => {
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                if field.memory.is_some() || !(5..=7).contains(&(field.reg & 0b111)) {
+                let reg = field.reg & 0b111;
+                let inert = match field.memory {
+                    None => (5..=7).contains(&reg),
+                    Some(_) => reg == 7 && !prefixes.repeat,
+                };
+                if !inert {
                     return None;
                 }
                 Some(Decoded {
@@ -5419,7 +5432,8 @@ mod tests {
             (0x18, "stmxcsr (%rax)"),
             (0x20, "xsave (%rax)"),
             (0x28, "xrstor (%rax)"),
-            (0x38, "clflush (%rax)"),
+            // `/7` en mémoire est `clflush`, lue depuis la tranche qui l'a
+            // rencontrée dans `cpa_flush` : voir le test suivant.
         ] {
             assert!(
                 decode(&[0x0f, 0xae, modrm]).is_none(),
@@ -5761,5 +5775,72 @@ mod tests {
             "RDX:RAX intacts"
         );
         assert_eq!(cpu.rip, 0x3000_0000, "et RIP reste dessus");
+    }
+
+    /// **`clflush` se lit dans sa forme mémoire, avec ou sans ses préfixes, et
+    /// ne désigne rien à lire.**
+    ///
+    /// `cpa_flush + 309` est `3e 0f ae 38` : le `3e` est le remplissage des
+    /// alternatives du noyau, `66 0f ae /7` est `clflushopt`. Vider une ligne
+    /// de cache ne fait rien sur cette machine — pas de cache à vider —, donc
+    /// c'est un `nop`, comme les conseils au cache et les barrières. Et comme
+    /// eux, elle ne porte pas son adresse : un cœur qui traiterait `memory`
+    /// comme une source la lirait, et le manuel ne prévoit pour `clflush`
+    /// aucune faute d'accès sur une ligne qui n'est pas cartographiée.
+    /// L'interpréteur le tient avec une adresse **hors** de la fenêtre : s'il
+    /// la lisait, il fauterait.
+    #[test]
+    fn clflush_is_read_in_its_memory_form_with_or_without_its_prefixes_and_reads_nothing() {
+        for (bytes, length, name) in [
+            (
+                &[0x3e, 0x0f, 0xae, 0x38][..],
+                4,
+                "ds clflush (%rax) — ce que le noyau écrit",
+            ),
+            (&[0x0f, 0xae, 0x38][..], 3, "clflush (%rax)"),
+            (&[0x66, 0x0f, 0xae, 0x38][..], 4, "clflushopt (%rax)"),
+            (&[0x0f, 0xae, 0x78, 0x20][..], 4, "clflush 0x20(%rax)"),
+            (&[0x0f, 0xae, 0x3c, 0xce][..], 4, "clflush (%rsi,%rcx,8)"),
+            (&[0x41, 0x0f, 0xae, 0x3f][..], 4, "clflush (%r15)"),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{name} se lit"));
+            assert_eq!(step.op, Op::Nop, "{name}");
+            assert_eq!(step.length, length, "{name} : la longueur consommée");
+            assert!(step.memory.is_none(), "{name} : rien à lire");
+        }
+        for (bytes, why) in [
+            (
+                &[0x66, 0x0f, 0xae, 0x30][..],
+                "clwb (/6 avec 66) n'est pas lue",
+            ),
+            (&[0xf3, 0x0f, 0xae, 0x38][..], "f3 0f ae /7 ne désigne rien"),
+            (
+                &[0x0f, 0xae, 0x30][..],
+                "xsaveopt (/6 en mémoire) reste refusée",
+            ),
+            (&[0x0f, 0xae][..], "coupée avant son ModRM"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            memory: GuestMemory {
+                base: 0x3000_0000,
+                bytes: vec![0; 0x1000],
+            },
+            ..Default::default()
+        };
+        cpu.regs[0] = 0x7fff_0000_0000; // hors de la fenêtre : une lecture fauterait
+        cpu.flags.write(CF | ZF);
+        cpu.step(&[0x3e, 0x0f, 0xae, 0x38]);
+        assert!(!cpu.faulted, "rien n'est lu, donc rien ne faute");
+        assert_eq!(cpu.rip, 0x3000_0004, "quatre octets consommés");
+        assert_eq!(cpu.regs[0], 0x7fff_0000_0000, "aucun registre ne bouge");
+        assert_eq!(
+            cpu.flags.read() & (CF | ZF),
+            CF | ZF,
+            "aucun drapeau non plus"
+        );
     }
 }
