@@ -6592,3 +6592,84 @@ console.log("rip " + lire({rip}));
         "RIP est après le hlt"
     );
 }
+
+/// **`clflush` ne fait pas refuser la région, et la machine continue.**
+///
+/// C'est le mur de `cpa_flush + 309` : `3e 0f ae 38`, `clflush (%rax)`, la
+/// boucle `clflush_cache_range` de `change_page_attr_set_clr`. Les trois
+/// formes que le noyau peut écrire se suivent — avec le préfixe `3e`, nue, et
+/// `clflushopt` —, puis une instruction qui doit tourner, puis le `hlt`. Le
+/// test des octets du décodeur dit qu'elles se lisent ; celui-ci dit que le
+/// module compilé par JavaScriptCore passe dessus sans rien faire.
+#[test]
+fn a_kernel_that_flushes_a_cache_line_goes_on() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc0, 0x00, 0x20, 0x00, 0x00, // mov $0x2000,%rax
+        0x3e, 0x0f, 0xae, 0x38, // ds clflush (%rax) — ce que le noyau écrit
+        0x0f, 0xae, 0x38, // clflush (%rax)
+        0x66, 0x0f, 0xae, 0x78, 0x40, // clflushopt 0x40(%rax)
+        0x48, 0xff, 0xc2, // incq %rdx — doit tourner
+        0xf4, // hlt
+    ];
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!("`cpa_flush` doit se traduire, pas faire refuser la région : {why:?}"),
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-clflush-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rdx " + lire(2));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur hlt",
+        "la machine ne s'arrête sur aucun clflush, elle continue jusqu'au hlt : {text}"
+    );
+    assert_eq!(line("rdx "), "1", "ce qui suit a tourné");
+    assert_eq!(
+        line("rip "),
+        (BASE + program.len() as u64).to_string(),
+        "RIP est après le hlt"
+    );
+}
