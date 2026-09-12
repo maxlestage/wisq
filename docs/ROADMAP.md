@@ -8717,3 +8717,78 @@ d'un coup, et chaque tranche de cette famille coûte une mesure d'une heure
 pour quatre octets. L'autre voie, annoncer dans `cpuid` ce que l'émetteur
 fait vraiment — `CX16` aujourd'hui, `CLFLUSH` désormais —, ferait prendre au
 noyau des chemins qu'il évite, et se décide séparément.
+
+## `rdrand` répond « pas d'aléa », et le noyau épuise le pilote dans `ftrace_process_locs`
+
+Le mur de la tranche précédente était `kaslr_get_random_long + 35`, `48 0f
+c7 f2`, `rdrand %rdx` : une boucle de dix essais que le noyau ne prend que
+si CPUID annonce `RDRAND`, ce que `cpuid` ne fait pas — mais la fonction,
+elle, est appelée pour de vrai par `poking_init` et
+`kernel_randomize_memory`, et la région entière était refusée pour quatre
+octets qu'elle n'exécute pas. Septième mur de la famille de l'`int3`.
+
+**Ce que la tranche pose.** `rdrand` et `rdseed` sont `/6` et `/7` du
+groupe 9 en registre, aux trois largeurs ; `f3 0f c7 /7` est `rdpid` et
+n'est pas lu, les formes mémoire de `/6` et `/7` — les pointeurs VMX — non
+plus, et `cmpxchg16b` reste `/1` en mémoire. Les deux cœurs Rust les
+**exécutent** avec la seule sémantique qu'une machine sans source d'aléa
+peut tenir, et que le manuel prévoit : CF nul — « rien de disponible » —,
+destination mise à zéro **selon la règle de largeur** (la forme de
+trente-deux bits efface la moitié haute, celle de seize la garde), les cinq
+autres drapeaux arithmétiques effacés. Rien d'inventé : un aléa fabriqué
+ici serait un aléa qu'aucun test ne peut juger, et le noyau sait quoi faire
+de CF nul — réessayer dix fois, puis retomber sur `rdtsc`.
+
+**Deux tests, rouges avant le code** — le décodeur rendait `None`, la
+région du test hôte était refusée à l'octet 5 — : le décodeur (six formes
+lues avec leur largeur et leur destination, cinq refusées) puis
+l'interpréteur aux trois largeurs, DF gardé ; et la boucle hôte sous
+JavaScriptCore, qui reproduit `kaslr_get_random_long` à l'octet près —
+`mov $10,%eax`, dix `rdrand %rdx ; jb ; sub $1,%eax ; jne` —, où le `jb` ne
+doit jamais être pris et la sortie par épuisement doit écrire son témoin ;
+puis la règle de largeur dans l'émetteur. Le test de `cmpxchg16b` de #210
+cesse d'affirmer que `/6` et `/7` sont refusés ; il garde ses autres refus.
+**Dix sabotages, dix détectés**, restaurations vérifiées par `diff` :
+`rdrand` refusé à nouveau (vu par le décodeur, puis par la boucle hôte),
+`rdpid` accepté, `rdseed` pris pour `rdrand`, CF posé (dans chaque cœur :
+le `jb` du noyau sortirait), destination pas écrite (dans chaque cœur),
+règle de largeur ignorée (dans chaque cœur).
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal, `WISQ_ROUNDS=4096
+WISQ_TURNS=65536`** :
+
+| | régions | dernier emplacement | lignes série | arrêt |
+|---|---|---|---|---|
+| avant | 3202 | 110 819 | 57 | `kaslr_get_random_long` — `CannotDecode { at: 35 }` |
+| après | **3315** | **112 819** | **58** | **tours épuisés**, aucune adresse ne manque, la machine avançait encore |
+
+Cent treize régions de plus, une ligne de plus — « ftrace: allocating
+41322 entries in 162 pages » — et, pour la première fois depuis #209, **pas
+de mur** : `kaslr_get_random_long` se traduit, `poking_init` passe, et le
+noyau est dans `ftrace_process_locs`, en train de modifier ses 41 322 sites
+d'appel par `text_poke_early`, quand les 65 536 tours du pilote s'épuisent.
+RIP est sur `pv_native_irq_disable`, atteint depuis `text_poke_early + 62`
+par une forme indirecte — les `pv_ops` —, et « aucun bloc des régions
+traduites n'y mène par une cible statique ».
+
+**Ce que ce chiffre ne dit pas, et qu'il faut lire avant de décider.**
+Quarante et un mille sites et soixante-cinq mille tours : chaque
+`text_poke_early` coûte un ou plusieurs retours de main à l'hôte, alors que
+toutes ses régions existent. Ou bien c'est l'outil — un budget dimensionné
+pour des noyaux qui s'arrêtaient tôt, comme en #209 —, ou bien c'est la
+machine : un appel indirect vers une région déjà traduite ne devrait pas
+rendre la main, la correspondance est là pour ça. Les deux lectures ne
+mènent pas à la même tranche, et le pilote ne permet pas de trancher : il
+compte les tours, il ne dit pas d'où ils viennent. La tranche suivante lui
+fait dire les dix adresses qui rendent le plus souvent la main, et une
+mesure à `WISQ_TURNS=1048576` dira en parallèle le mur suivant.
+
+**Les deux questions de direction restent posées à Maxime.** Sept murs de
+la famille de l'`int3` sur les dix-huit dernières tranches ; celle-ci en
+était le septième et n'en a pas trouvé de huitième — pas encore, le budget
+s'est épuisé avant. Arrêter le bloc sur l'instruction illisible et ne
+refuser qu'à l'exécution les lèverait d'un coup ; annoncer dans `cpuid` ce
+que l'émetteur fait vraiment (`CX16`, `CLFLUSH`) ferait prendre au noyau
+des chemins qu'il évite ; `RDRAND`, lui, ne s'annonce pas — la machine n'a
+pas d'aléa à offrir, et l'annoncer serait un mensonge que le noyau
+paierait à chaque essai.
