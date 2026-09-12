@@ -8887,3 +8887,47 @@ l'exécution seulement » lèverait d'un coup les sept murs de la famille de
 l'`int3` ; annoncer dans `cpuid` ce que l'émetteur fait vraiment (`CX16`,
 `CLFLUSH`) ferait prendre au noyau des chemins qu'il évite — `RDRAND`, lui,
 ne s'annonce pas.
+
+## La case volée ne coûte que de la vitesse, et le sondage reste à trancher
+
+La tranche #213 mesurait, sur le vrai noyau, que la correspondance perd 85
+régions sur 3314 — une seule case par empreinte, sans sondage, la seconde
+installée écrase la première — et laissait une question ouverte :
+`pv_native_irq_disable` et `__fentry__` gardent leur case et rendent quand
+même la main. Était-ce un défaut de répartition, ou seulement le coût prévu
+d'un appel indirect entre régions ?
+
+**La sonde répond : seulement le coût.** Une région A qui boucle trois fois,
+appelle B (`endbr64 ; cli ; ret`) puis, à son retour, un appel indirect vers
+C par un pointeur en mémoire, tourne deux fois : une fois intacte, une fois
+en volant à chaque tour la case de l'adresse de retour — comme le ferait une
+région installée plus tard sur la même empreinte. **Les deux fois, la machine
+atteint son `hlt` avec `r12 == 0`.** Voler la case n'inverse rien : la lecture
+dont la case est fausse rend `-1`, l'hôte re-résout, et l'exécution continue,
+juste. Le seul écart mesuré est le nombre de retours de main, **strictement
+plus grand** quand la case est volée. Le défaut « muet » de #213 est donc bien
+muet : une perte de vitesse, pas de justesse. Le test
+`a_stolen_correspondence_cell_costs_a_hand_back_but_never_correctness` épingle
+les deux moitiés — même arrêt, même compte final ; plus de retours — et son
+sabotage (ne pas voler) fait tomber la seconde.
+
+Ce que la sonde avait un temps semblé montrer — une inversion, une cible
+intacte manquée après une entrée par case volée — était un artefact : le
+pilote lisait `vm.known` comme une fonction alors que l'hôte l'expose comme
+une carte, et une variante à appel direct revenait à une adresse qu'aucune
+région n'ouvrait. Sur l'hôte corrigé, l'inversion ne se reproduit pas.
+
+**La question de direction, pour Maxime.** Réduire ces 85 cases perdues
+demanderait un **sondage** — plusieurs cases par empreinte, une seconde
+tentative quand la première ne correspond pas — c'est-à-dire renverser la
+décision « une case par empreinte, pas de dispute », prise quand une région
+coûtait un aller-retour de toute façon. À 3314 régions, elle coûte désormais
+la moitié des tours du pilote. Faut-il ajouter le sondage, ou accepter ce
+coût ? C'est une décision de conception, pas un défaut : elle attend ton mot.
+
+**Les deux autres questions restent posées.** Généraliser « instruction
+illisible → le bloc finit là sur un arrêt nommé, refus à l'exécution
+seulement » lèverait d'un coup les sept murs de la famille de l'`int3` ;
+annoncer dans `cpuid` ce que l'émetteur fait vraiment (`CX16`, `CLFLUSH`)
+ferait prendre au noyau des chemins qu'il évite — `RDRAND`, lui, ne s'annonce
+pas.
