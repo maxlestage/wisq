@@ -8931,3 +8931,36 @@ seulement » lèverait d'un coup les sept murs de la famille de l'`int3` ;
 annoncer dans `cpuid` ce que l'émetteur fait vraiment (`CX16`, `CLFLUSH`)
 ferait prendre au noyau des chemins qu'il évite — `RDRAND`, lui, ne s'annonce
 pas.
+
+## Passé `ftrace`, le mur n'est plus une instruction : c'est le nombre de régions
+
+Les tranches #213 et #214 ont établi que la correspondance à une case par
+empreinte est correcte mais perd des cases, et laissé au pilote un budget de
+tours réglable. Restait à savoir, en poussant ce budget, si le prochain mur
+serait une instruction illisible de plus — ou autre chose.
+
+**Mesuré, sur le vrai noyau Alpine, `WISQ_ROUNDS=4096 WISQ_TURNS=1048576`** :
+la machine dépasse `ftrace_process_locs`, entre dans le formatage des messages
+du noyau (`process_string`, `string`, `memcmp`), et imprime **67 lignes série**
+— contre 58 en #212. Elle ne s'arrête sur **aucune** instruction illisible :
+il n'y a pas de `CannotDecode`. Elle s'arrête « refusée » parce qu'elle réclame
+une région de plus quand les 4096 tours de traduction sont épuisés — treize
+sous-régions de `process_string` à elles seules, chacune un point d'entrée
+distinct. Le mur est le **nombre de régions**, pas le jeu d'instructions.
+
+C'est la conséquence directe de ce que #213 a compté : le noyau se fragmente
+en milliers de régions par point d'entrée, et la correspondance à une case les
+fait re-réclamer. Monter `WISQ_ROUNDS` fait avancer la machine d'autant — mais
+chaque tour rejoue la machine depuis le début, le coût est quadratique, et une
+mesure à 8192 tours ne finit pas dans un budget de conteneur raisonnable. Le
+levier n'est donc pas un tour de plus : c'est le modèle de régions.
+
+**La question de direction, pour Maxime, désormais chiffrée.** Le sondage de
+la correspondance — plusieurs cases par empreinte — n'est plus une économie de
+vitesse : c'est ce qui débloque la profondeur de démarrage. Tant que la
+correspondance perd des cases, le noyau réclame plus de régions que le pilote
+n'en traduit, et s'arrête faute de budget plutôt que sur un défaut. Ajouter le
+sondage, ou repenser le découpage en régions ? C'est la décision qui porte la
+suite ; elle attend ton mot. Les deux autres restent posées : l'arrêt nommé
+généralisé sur instruction illisible, et l'annonce `CX16`/`CLFLUSH` dans
+`cpuid`.
