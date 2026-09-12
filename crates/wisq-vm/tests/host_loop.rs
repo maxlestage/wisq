@@ -6673,3 +6673,127 @@ console.log("rip " + lire({rip}));
         "RIP est après le hlt"
     );
 }
+
+/// **La boucle de dix essais du noyau, sans aléa : elle épuise ses essais et
+/// retombe.**
+///
+/// C'est `kaslr_get_random_long`, à l'octet près : `mov $10,%eax`, puis
+/// `rdrand %rdx ; jb pris ; sub $1,%eax ; jne` dix fois. Sous JavaScriptCore,
+/// chaque `rdrand` doit laisser CF nul — sinon le `jb` sort de la boucle —,
+/// et la sortie par épuisement doit écrire son témoin. Puis la règle de
+/// largeur, dans l'émetteur cette fois : la forme de trente-deux bits efface
+/// RCX entier, celle de seize garde le haut de RBX.
+#[test]
+fn the_kernels_ten_rdrand_tries_all_fail_and_it_falls_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = Vec::new();
+    {
+        let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+        push(&[0xb8, 0x0a, 0x00, 0x00, 0x00]); // mov $10,%eax            (0)
+        push(&[0x48, 0x0f, 0xc7, 0xf2]); // rdrand %rdx                    (5)
+        push(&[0x72, 0x28]); // jb +40 → « pris »                          (9)
+        push(&[0x83, 0xe8, 0x01]); // sub $1,%eax                          (11)
+        push(&[0x75, 0xf5]); // jne -11 → rdrand                           (14)
+        push(&[0x48, 0xc7, 0xc6, 0x01, 0x00, 0x00, 0x00]); // mov $1,%rsi  (16) épuisé
+        push(&[0x48, 0xb9]);
+        push(&u64::MAX.to_le_bytes()); // movabs $-1,%rcx                  (23)
+        push(&[0x0f, 0xc7, 0xf1]); // rdrand %ecx                          (33)
+        push(&[0x48, 0xbb]);
+        push(&0xdead_beef_cafe_f00du64.to_le_bytes()); // movabs …,%rbx    (36)
+        push(&[0x66, 0x0f, 0xc7, 0xf3]); // rdrand %bx                     (46)
+        push(&[0xf4]); // hlt                                              (50)
+    }
+    let taken = program.len() as u64; // « pris » : 51
+    program.extend_from_slice(&[0x48, 0xc7, 0xc6, 0x02, 0x00, 0x00, 0x00]); // mov $2,%rsi
+    program.push(0xf4); // hlt
+    assert_eq!(
+        taken, 51,
+        "le déplacement du jb (0x28 depuis 11) vise « pris »"
+    );
+    let module = match Module::resolving_or_why(&program, BASE, 0, 0, PAGES) {
+        Ok(module) => module,
+        Err(why) => panic!(
+            "`kaslr_get_random_long` doit se traduire, pas faire refuser la région : {why:?}"
+        ),
+    };
+    let scratch = std::env::temp_dir().join(format!("wisq-host-rdrand-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rax " + lire(0));
+console.log("rcx " + lire(1));
+console.log("rdx " + lire(2));
+console.log("rbx " + lire(3));
+console.log("rsi " + lire(6));
+console.log("rflags " + lire({rflags}));
+console.log("rip " + lire({rip}));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            rflags = RFLAGS_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let hex = |name: &str| u64::from_str_radix(&line(name), 16).expect("un nombre");
+    assert_eq!(
+        line("arret "),
+        "arrêtée sur hlt",
+        "la machine va jusqu'au hlt : {text}"
+    );
+    assert_eq!(
+        hex("rsi "),
+        1,
+        "les dix essais échouent : le noyau retombe, le jb n'est jamais pris"
+    );
+    assert_eq!(hex("rax "), 0, "les dix essais ont été comptés");
+    assert_eq!(hex("rdx "), 0, "sans aléa, RDX vaut zéro");
+    assert_eq!(hex("rcx "), 0, "rdrand %ecx efface RCX entier");
+    assert_eq!(
+        hex("rbx "),
+        0xdead_beef_cafe_0000,
+        "rdrand %bx garde le haut de RBX"
+    );
+    assert_eq!(
+        hex("rflags ") & wisq_vm::x86::ARITHMETIC,
+        0,
+        "le dernier rdrand a tout effacé, CF compris"
+    );
+    assert_eq!(
+        hex("rip "),
+        BASE + 51,
+        "arrêtée sur le premier hlt, pas sur celui de « pris »"
+    );
+}
