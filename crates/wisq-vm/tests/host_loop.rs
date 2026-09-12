@@ -6797,3 +6797,155 @@ console.log("rip " + lire({rip}));
         "arrêtée sur le premier hlt, pas sur celui de « pris »"
     );
 }
+
+/// **Une case de correspondance volée coûte un retour de main, jamais la
+/// correctitude.**
+///
+/// La correspondance adresse → indice tient **une seule case par empreinte,
+/// sans sondage** : deux adresses qui tombent au même endroit ne se disputent
+/// pas, la seconde installée écrase la première. La tranche #213 a mesuré, sur
+/// le vrai noyau, que 85 régions sur 3314 perdent ainsi leur case au profit
+/// d'une région installée plus tard — et que ces régions rendent alors la main
+/// à chaque appel. La question restée ouverte : est-ce seulement plus lent, ou
+/// est-ce faux ?
+///
+/// Ce test répond en petit. Une région A boucle trois fois : elle appelle B
+/// (`endbr64 ; cli ; ret`) puis, à son retour, un appel **indirect** vers C
+/// (`ret`) par un pointeur en mémoire. On la fait tourner deux fois : une fois
+/// sans rien toucher, une fois en **volant** la case de l'adresse de retour à
+/// chaque tour — en y écrivant une autre adresse, comme le ferait une région
+/// installée plus tard sur la même empreinte. Les deux fois, la machine
+/// **atteint son `hlt` avec `r12 == 0`** : la correctitude tient. Mais voler la
+/// case **augmente strictement** le nombre de retours de main, parce que
+/// l'adresse dont la case est fausse doit être re-résolue par l'hôte à chaque
+/// passage. Le défaut « muet » de #213 est donc bien muet : une perte de
+/// vitesse, pas de justesse. Réduire ces pertes demanderait un sondage
+/// (plusieurs cases par empreinte) — un renversement de la conception, laissé à
+/// une décision, pas à ce test.
+#[test]
+fn a_stolen_correspondence_cell_costs_a_hand_back_but_never_correctness() {
+    let Some(bun) = bun() else {
+        return;
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    const B: u64 = 0x2_0000;
+    const C: u64 = 0x2_1000;
+    const P: u64 = 0x3_0000;
+    // A : pose la pile, compte à trois, appelle B puis *P (indirect) à chaque
+    // tour, décrémente, recommence, puis s'arrête.
+    let a: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp        (0)
+        0x41, 0xbc, 0x03, 0x00, 0x00, 0x00, // mov $3,%r12d                  (7)
+        0xe8, 0xee, 0xff, 0x00, 0x00, // loop: call B                       (13)
+        0xff, 0x15, 0xe8, 0xff, 0x01, 0x00, // retour: call *P(%rip)        (18)
+        0x41, 0xff, 0xcc, // dec %r12d                                      (24)
+        0x75, 0xf0, // jnz loop                                            (27)
+        0xf4, // hlt                                                       (29)
+    ];
+    let b: Vec<u8> = vec![0xf3, 0x0f, 0x1e, 0xfa, 0xfa, 0xc3]; // endbr64 ; cli ; ret
+    let c: Vec<u8> = vec![0xc3]; // ret
+                                 // L'adresse de retour de `call B`, dont on volera la case : elle porte
+                                 // `call *P`, réatteinte à chaque tour de boucle.
+    const RETOUR: u64 = BASE + 18;
+    let regions: Vec<(u64, Vec<u8>)> = vec![
+        (BASE, a.clone()),
+        (BASE + 13, a[13..].to_vec()),
+        (BASE + 18, a[18..].to_vec()),
+        (BASE + 24, a[24..].to_vec()),
+        (B, b),
+        (C, c),
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-vol-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut listing = String::new();
+    for (at, bytes) in &regions {
+        let mut variants = String::new();
+        for slot in 0..48u32 {
+            let module = Module::resolving_or_why(bytes, *at, 0, slot, PAGES)
+                .unwrap_or_else(|why| panic!("la région {at:#x} se traduit : {why:?}"));
+            let path = scratch.join(format!("r{at:x}_{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            variants.push_str(&format!("{:?},", path.to_string_lossy()));
+        }
+        listing.push_str(&format!("[{at}n,[{variants}]],"));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const connues = new Map([{listing}]);
+async function courir(vole) {{
+  const vm = machine({{
+    translate: async (address, slot) => {{
+      const variants = connues.get(address);
+      if (variants === undefined) return null;
+      return readFileSync(variants[slot]);
+    }},
+    pages: {pages},
+  }});
+  new DataView(vm.memory.buffer).setBigUint64({p}, {c}n, true);
+  vm.globals[{rip}].value = {base}n;
+  const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+  let retours = 0;
+  let why = {{ stopped: "tours épuisés" }};
+  for (let tour = 0; tour < 64; tour++) {{
+    why = await vm.run({{ budget: 4096n, rounds: 1 }});
+    if (why.stopped !== "tours épuisés") break;
+    retours++;
+    if (vole && vm.known.get({retour}n) !== undefined) {{
+      const cell = vm.tableBase + vm.tableSlot({retour}n) * 16;
+      new DataView(vm.memory.buffer).setBigUint64(cell, {retour}n + 1n, true);
+    }}
+  }}
+  return {{ arret: why.stopped, r12: lire(12).toString(), retours }};
+}}
+const sans = await courir(false);
+const avec = await courir(true);
+console.log("sans " + sans.arret + " r12=" + sans.r12 + " retours=" + sans.retours);
+console.log("avec " + avec.arret + " r12=" + avec.r12 + " retours=" + avec.retours);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            c = C,
+            p = P,
+            retour = RETOUR,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let ligne = |prefixe: &str| -> &str {
+        text.lines()
+            .find(|l| l.starts_with(prefixe))
+            .unwrap_or_else(|| panic!("ligne « {prefixe} » absente : {text}"))
+    };
+    let sans = ligne("sans ");
+    let avec = ligne("avec ");
+    // Les deux fois, la machine finit son compte et s'arrête sur son hlt.
+    assert!(
+        sans.contains("arrêtée sur hlt") && sans.contains("r12=0"),
+        "sans vol, la boucle doit finir sur hlt avec r12=0 : {text}"
+    );
+    assert!(
+        avec.contains("arrêtée sur hlt") && avec.contains("r12=0"),
+        "avec vol, la correctitude tient : même hlt, même r12=0 : {text}"
+    );
+    // Mais voler la case coûte : strictement plus de retours de main.
+    let compte = |ligne: &str| -> u32 {
+        ligne
+            .rsplit_once("retours=")
+            .and_then(|(_, n)| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("compte de retours illisible : {ligne}"))
+    };
+    assert!(
+        compte(avec) > compte(sans),
+        "une case volée doit forcer des retours de main en plus : {text}"
+    );
+}
