@@ -8792,3 +8792,98 @@ que l'émetteur fait vraiment (`CX16`, `CLFLUSH`) ferait prendre au noyau
 des chemins qu'il évite ; `RDRAND`, lui, ne s'annonce pas — la machine n'a
 pas d'aléa à offrir, et l'annoncer serait un mensonge que le noyau
 paierait à chaque essai.
+
+
+## Le pilote dit d'où viennent les retours de main, et la correspondance perd 85 régions sur 3314
+
+La tranche précédente finissait sur un budget épuisé : 65 536 tours de
+`vm.run` dans `ftrace_process_locs`, aucune adresse ne manque, la machine
+avançait encore. Le pilote comptait les tours ; il ne disait pas d'où ils
+venaient, et deux lectures restaient ouvertes — un budget court, ou des
+retours de main qu'un appel vers une région déjà traduite ne devrait pas
+causer.
+
+**Ce que la tranche pose.** `kernel-entry` conduit désormais `vm.run` **un
+tour à la fois** et lit RIP entre deux tours : il imprime les dix adresses
+qui rendent le plus souvent la main (`retours`, nommées), les douze
+derniers retours dans l'ordre (`derniers`), et pour chacune des dix ce que
+l'hôte en sait — l'emplacement donné à l'installation et ce que la case de
+la correspondance tient (`cases`). `web/host.js` expose pour ça, en lecture
+seule, `known`, `tableSlot` et `tableBase`. Conduire un tour à la fois ne
+change rien à ce que la machine fait : une faute délivrée ou un `hlt`
+finissent le tour de la même façon. **Aucun test** : `kernel-entry` est un
+exemple sans test, et le changement se mesure par sa mesure — c'est dit ici
+pour ne pas le faire passer pour tenu.
+
+**Mesuré, sur le vrai noyau Alpine, à montage égal, `WISQ_ROUNDS=4096
+WISQ_TURNS=65536`** : 3315 régions, mêmes 58 lignes série, tours épuisés au
+même endroit ; et les retours de main, pour la première fois lisibles :
+
+| retours | adresse |
+|---|---|
+| 19 273 | `text_poke_early + 53` |
+| 19 037 | `pv_native_irq_disable` |
+| 11 351 | `__fentry__` |
+| 11 331 | `blake2s_compress_generic` |
+| 248 | `__static_call_transform + 102` |
+| 148 | `desc_read_finalized_seq + 55` |
+
+Quatre adresses portent 61 000 des 65 536 retours, **par paires** : les
+douze derniers alternent strictement `text_poke_early + 53`,
+`pv_native_irq_disable`, `text_poke_early + 53`… Ce n'est donc pas le
+budget : c'est la machine qui rend la main deux fois par `text_poke_early`,
+sur des régions qui existent toutes.
+
+**La première moitié de l'explication se calcule.** La correspondance
+adresse → indice tient **une seule case par empreinte, sans sondage** —
+« deux adresses qui tombent au même endroit ne se disputent pas : la
+seconde n'est simplement pas trouvée », disait la tranche qui l'a posée,
+quand une région coûtait un aller-retour de toute façon. À 3314 régions
+dans 65 536 cases, le calcul (le même `table_slot`, rejoué sur l'ordre
+d'installation du relevé) donne **85 régions qui perdent leur case** au
+profit d'une autre installée plus tard. `text_poke_early + 53` en est —
+prise au tour 549 par `prb_reserve_in_last + 479` —, et
+`blake2s_compress_generic` aussi — prise au tour 2314 par
+`find_next_best_node + 9`. Chaque retour de `pv_native_save_fl` vers
+`+ 53`, chaque appel de `blake2s_update` vers `blake2s_compress_generic`
+repasse donc par l'hôte : le défaut « muet, qui ne coûte que de la
+vitesse » coûte ici la moitié des tours.
+
+**La seconde moitié ne se calcule pas encore.** `pv_native_irq_disable` et
+`__fentry__` **gardent leur case**, et rendent la main quand même —
+toujours immédiatement après l'entrée par l'hôte dans une région dont la
+case est volée : `+ 53` appelle `pv_native_irq_disable` par `pv_ops`,
+`blake2s_compress_generic` appelle `__fentry__` en prologue. Ce que la
+ligne `cases` de cette mesure dit de ces deux-là : la case de `pv_native_irq_disable`
+(emplacement 3590) tient bien son adresse, indice 3590, et celle de
+`__fentry__` (emplacement 505) tient la sienne, indice 505 — compilé et
+hôte d'accord, rien de volé. Elles rendent pourtant la main, et toujours
+juste après l'entrée de l'hôte dans une région à la case volée : `+ 53`
+appelle `pv_native_irq_disable` par `pv_ops`, `blake2s_compress_generic`
+appelle `__fentry__` en prologue.
+
+**La trace des douze derniers dit après quoi.** Ils alternent
+strictement : `+ 53`, `pv_native_irq_disable`, `+ 53`,
+`pv_native_irq_disable`… La correspondance de `+ 53` étant volée, chaque
+retour vers elle repasse par l'hôte ; l'hôte rentre alors dans la région de
+`+ 53` par sa case volée, exécute jusqu'à l'appel indirect vers
+`pv_native_irq_disable` — dont la case est **intacte** — et rend quand même
+la main. Une case intacte que la boucle de répartition, une fois l'hôte
+entré par une case volée, ne retrouve pas : c'est la seconde moitié du
+défaut, et elle ne se calcule pas depuis le relevé, elle se reproduit.
+
+**Ce que la tranche suivante fait, test d'abord.** Le sondage écrit pendant
+cette tranche — une région A qui appelle B, revient sur un appel indirect
+vers C, l'hôte entrant dans A par une case qu'on lui vole — reproduit
+l'inversion : la case volée de A est trouvée, la case intacte de C est
+manquée, le tour finit sur RIP = C au lieu de continuer. Il devient le test
+d'ouverture de la tranche #214 (sondage de la correspondance et de
+l'anomalie de répartition), gardé hors de cette tranche-ci pour qu'elle
+reste ce qu'elle est : l'outil qui a rendu les retours lisibles.
+
+**Les deux questions de direction restent posées à Maxime.** Généraliser
+« instruction illisible → le bloc finit là sur un arrêt nommé, refus à
+l'exécution seulement » lèverait d'un coup les sept murs de la famille de
+l'`int3` ; annoncer dans `cpuid` ce que l'émetteur fait vraiment (`CX16`,
+`CLFLUSH`) ferait prendre au noyau des chemins qu'il évite — `RDRAND`, lui,
+ne s'annonce pas.

@@ -387,9 +387,56 @@ vm.globals[{rip}].value = {entry}n;
 // **RSI désigne la page zéro**, comme un chargeur le fait en entrant dans
 // `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
 vm.globals[6].value = {zero_page}n;
-const why = await vm.run({{ budget: 1n << 24n, rounds: {turns} }});
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+// **Un tour à la fois, et l'adresse de chaque retour de main comptée.**
+// « Tours épuisés » disait combien de fois la machine avait rendu la main,
+// pas d'où : quarante et un mille sites modifiés par `text_poke_early` et
+// soixante-cinq mille tours, sans savoir si c'est le budget qui est court ou
+// un appel indirect qui rend la main à tort vers une région déjà traduite.
+// Conduire `vm.run` un tour à la fois ne change rien à ce que la machine
+// fait — une faute délivrée ou un `hlt` finissent le tour de la même façon —,
+// et permet de lire RIP entre deux tours.
+const retours = new Map();
+// **Et les douze derniers, dans l'ordre.** Le compte dit *où* la main est
+// rendue, pas *après quoi* : deux adresses qui reviennent par paires ne se
+// lisent que dans la suite.
+const derniers = [];
+let why = {{ stopped: "tours épuisés", at: lire({rip}) }};
+for (let tour = 0; tour < {turns}; tour++) {{
+  why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
+  if (why.stopped !== "tours épuisés") break;
+  const at = lire({rip});
+  retours.set(at, (retours.get(at) ?? 0) + 1);
+  derniers.push(at);
+  if (derniers.length > 12) derniers.shift();
+}}
 console.log("arret " + why.stopped);
+console.log("retours " + [...retours.entries()]
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10)
+  .map(([at, n]) => n + " fois 0x" + at.toString(16))
+  .join(" ; "));
+console.log("derniers " + derniers.map((at) => "0x" + at.toString(16)).join(" ; "));
+// **Et ce que l'hôte sait de chacune** : l'emplacement qu'il lui a donné à
+// l'installation, et ce que la case de la correspondance tient — l'adresse
+// rangée et l'indice. Une adresse installée dont la case porte une autre
+// adresse a perdu sa place ; une case intacte qui rend quand même la main
+// désigne autre chose que la correspondance.
+const cases = [...retours.entries()]
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10)
+  .map(([at]) => {{
+    const region = vm.known.get(at);
+    const slot = vm.tableSlot(at);
+    const vue = new DataView(vm.memory.buffer);
+    const rangee = vue.getBigUint64(vm.tableBase + slot * 16, true);
+    const indice = vue.getInt32(vm.tableBase + slot * 16 + 8, true);
+    return "0x" + at.toString(16)
+      + " emplacement=" + (region === undefined ? "inconnue" : region.slot)
+      + " case=" + (rangee === at ? "intacte" : "0x" + rangee.toString(16))
+      + " indice=" + indice;
+  }});
+console.log("cases " + cases.join(" ; "));
 console.log("serie " + JSON.stringify(serie));
 console.log("manquante " + (manquante === null ? "aucune" : "0x" + manquante.toString(16)));
 console.log("emplacement " + place);
