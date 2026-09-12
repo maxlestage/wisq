@@ -71,6 +71,7 @@ fn name_of(op: Op) -> String {
         Op::ReadModelRegister => "rdmsr".to_string(),
         Op::WriteModelRegister => "wrmsr".to_string(),
         Op::CompareAndExchangeSixteen => "cmpxchg16b".to_string(),
+        Op::ReadRandom { seed } => if seed { "rdseed" } else { "rdrand" }.to_string(),
         other => format!("{other:?}"),
     }
 }

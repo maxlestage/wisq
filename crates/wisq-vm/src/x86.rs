@@ -790,6 +790,14 @@ pub enum Op {
     /// si CPUID annonce `CX16`. REX.W obligatoire : sans lui c'est
     /// `cmpxchg8b`, que rien n'exécute ici.
     CompareAndExchangeSixteen,
+    /// **`rdrand` et `rdseed`** : un nombre tiré du générateur matériel, et
+    /// CF qui dit s'il y en avait un. Cette machine n'a pas de source
+    /// d'aléa : elle répond ce que le manuel prévoit dans ce cas — CF nul,
+    /// destination à zéro, les autres drapeaux effacés —, et l'appelant
+    /// réessaie ou retombe sur autre chose, comme le noyau le fait déjà.
+    ReadRandom {
+        seed: bool,
+    },
     /// Ne rien faire. Un noyau en est plein : c'est ce qui aligne les cibles de
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
@@ -2020,6 +2028,17 @@ impl Cpu {
             self.write_control_register(which, value);
             return;
         }
+        // **`rdrand` et `rdseed`, sans source d'aléa.** Le manuel prévoit le
+        // cas : CF nul dit « rien de disponible », la destination vaut zéro
+        // — selon la règle de largeur, comme toute écriture de registre —,
+        // et les cinq autres drapeaux arithmétiques sont effacés. L'appelant
+        // réessaie ou retombe ; le noyau fait les deux.
+        if let Op::ReadRandom { .. } = instruction.op {
+            self.set(instruction.dst, instruction.width, false, 0);
+            let now = self.flags.read();
+            self.flags.write(now & !ARITHMETIC);
+            return;
+        }
         // **Les entrées-sorties, que ce cœur-ci ne fait pas — et qui le
         // disent.** Le décodeur les lit depuis cette tranche, parce qu'un
         // noyau muet est indiscernable d'un noyau en panne. Les *exécuter*
@@ -2371,6 +2390,7 @@ impl Cpu {
             | Op::CompareAndExchangeSixteen => {
                 unreachable!("les échanges sortent avant")
             }
+            Op::ReadRandom { .. } => unreachable!("l'aléa sort avant"),
             Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
                 unreachable!("les rotations et décalages doubles sortent avant")
             }
@@ -3092,22 +3112,38 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // **`cmpxchg16b`, le verrou à seize octets.** C'est `/1` du
             // groupe 9, en mémoire seulement, et avec REX.W seulement : sans
             // lui c'est `cmpxchg8b`, que rien n'exécute ici et qui reste
-            // illisible plutôt que devinée. Le reste du groupe — `rdrand`,
-            // `rdseed`, `xsaves` et les siens — n'est pas lu.
+            // illisible plutôt que devinée. Les formes mémoire de `/2` à
+            // `/7` — `xsaves`, les pointeurs VMX et les leurs — ne sont pas
+            // lues.
+            //
+            // **`rdrand` et `rdseed`** sont `/6` et `/7` du même groupe, en
+            // registre seulement, aux trois largeurs ; `f3 0f c7 /7` est
+            // `rdpid`, qui n'est pas ceci. Les formes mémoire de `/6` et `/7`
+            // sont les pointeurs VMX, et ne sont pas lues.
             0xc7 => {
-                if prefixes.width(false) != Width::Qword {
-                    return None;
-                }
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                if field.reg & 7 != 1 || field.memory.is_none() {
-                    return None;
+                let reg = field.reg & 7;
+                match (field.memory, reg) {
+                    (None, 6 | 7) => {
+                        if prefixes.repeat {
+                            return None;
+                        }
+                        let width = prefixes.width(false);
+                        Some(Decoded {
+                            op: Op::ReadRandom { seed: reg == 7 },
+                            dst: field.register,
+                            length: at,
+                            ..Decoded::nothing(width)
+                        })
+                    }
+                    (Some(_), 1) if prefixes.width(false) == Width::Qword => Some(Decoded {
+                        op: Op::CompareAndExchangeSixteen,
+                        length: at,
+                        memory: field.memory,
+                        ..Decoded::nothing(Width::Qword)
+                    }),
+                    _ => None,
                 }
-                Some(Decoded {
-                    op: Op::CompareAndExchangeSixteen,
-                    length: at,
-                    memory: field.memory,
-                    ..Decoded::nothing(Width::Qword)
-                })
             }
             // **`imul` à deux opérandes** : `reg` fois `rm`, tronqué, rangé
             // dans `reg`. Contrairement à la forme à un opérande, elle n'écrit
@@ -5617,7 +5653,7 @@ mod tests {
     /// rapide de la liste libre de SLUB. Sans REX.W, `0f c7 /1` est
     /// `cmpxchg8b`, que rien n'exécute ici et qui reste illisible plutôt que
     /// devinée. La forme à registre de `/1` n'existe pas ; `/6` et `/7` en
-    /// registre sont `rdrand` et `rdseed`, que cette machine ne produit pas.
+    /// registre sont `rdrand` et `rdseed`, tenus par leur propre test.
     #[test]
     fn cmpxchg16b_is_read_with_rex_w_in_its_memory_form_and_cmpxchg8b_stays_illegible() {
         let step = decode(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20])
@@ -5654,8 +5690,8 @@ mod tests {
                 "/2 (xrstors) n'est pas lu",
             ),
             (&[0x48, 0x0f, 0xc7, 0x46, 0x20][..], "/0 ne désigne rien"),
-            (&[0x48, 0x0f, 0xc7, 0xf0][..], "rdrand (/6) n'est pas lu"),
-            (&[0x48, 0x0f, 0xc7, 0xf8][..], "rdseed (/7) n'est pas lu"),
+            // `/6` et `/7` en registre sont `rdrand` et `rdseed`, lus depuis
+            // la tranche qui les a rencontrés dans `kaslr_get_random_long`.
             (&[0x48, 0x0f, 0xc7][..], "coupée avant son ModRM"),
             (
                 &[0x48, 0x0f, 0xc7, 0x4e][..],
@@ -5841,6 +5877,141 @@ mod tests {
             cpu.flags.read() & (CF | ZF),
             CF | ZF,
             "aucun drapeau non plus"
+        );
+    }
+
+    /// **`rdrand` et `rdseed` se lisent en registre, et ne rendent aucun
+    /// aléa.**
+    ///
+    /// `kaslr_get_random_long + 35` est `48 0f c7 f2`, `rdrand %rdx`, dans
+    /// une boucle de dix essais que le noyau ne prend que si CPUID annonce
+    /// `RDRAND`. Cette machine n'a pas de source d'aléa ; elle répond ce que
+    /// le manuel prévoit quand il n'y en a pas : CF nul, destination mise à
+    /// zéro **selon la règle de largeur** — la forme de trente-deux bits
+    /// efface la moitié haute, celle de seize la garde —, et les cinq autres
+    /// drapeaux arithmétiques effacés. Ce que l'appelant fait de CF nul est
+    /// son affaire : le noyau réessaie, puis retombe sur `rdtsc`.
+    ///
+    /// Le groupe 9 ne bouge pas autour : `cmpxchg16b` reste `/1` en mémoire,
+    /// les formes mémoire de `/6` et `/7` ne sont pas lues, et `f3 0f c7 /7`
+    /// est `rdpid`, qui n'est pas ceci.
+    #[test]
+    fn rdrand_and_rdseed_are_read_in_register_form_and_yield_no_randomness() {
+        for (bytes, seed, dst, width, name) in [
+            (
+                &[0x48, 0x0f, 0xc7, 0xf2][..],
+                false,
+                2,
+                Width::Qword,
+                "rdrand %rdx — ce que le noyau écrit",
+            ),
+            (
+                &[0x0f, 0xc7, 0xf0][..],
+                false,
+                0,
+                Width::Dword,
+                "rdrand %eax",
+            ),
+            (
+                &[0x66, 0x0f, 0xc7, 0xf1][..],
+                false,
+                1,
+                Width::Word,
+                "rdrand %cx",
+            ),
+            (
+                &[0x49, 0x0f, 0xc7, 0xf7][..],
+                false,
+                15,
+                Width::Qword,
+                "rdrand %r15",
+            ),
+            (
+                &[0x0f, 0xc7, 0xf8][..],
+                true,
+                0,
+                Width::Dword,
+                "rdseed %eax",
+            ),
+            (
+                &[0x48, 0x0f, 0xc7, 0xfb][..],
+                true,
+                3,
+                Width::Qword,
+                "rdseed %rbx",
+            ),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{name} se lit"));
+            assert_eq!(step.op, Op::ReadRandom { seed }, "{name}");
+            assert_eq!(step.dst, dst, "{name} : la destination");
+            assert_eq!(step.width, width, "{name} : la largeur");
+            assert_eq!(step.length, bytes.len(), "{name} : la longueur consommée");
+            assert!(step.memory.is_none(), "{name} : rien en mémoire");
+        }
+        let still =
+            decode(&[0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x20]).expect("cmpxchg16b se lit toujours");
+        assert_eq!(still.op, Op::CompareAndExchangeSixteen);
+        for (bytes, why) in [
+            (
+                &[0x0f, 0xc7, 0x30][..],
+                "/6 en mémoire (vmptrld) n'est pas lue",
+            ),
+            (
+                &[0x0f, 0xc7, 0x38][..],
+                "/7 en mémoire (vmptrst) n'est pas lue",
+            ),
+            (
+                &[0xf3, 0x0f, 0xc7, 0xf8][..],
+                "rdpid (f3 0f c7 /7) n'est pas rdseed",
+            ),
+            (&[0x0f, 0xc7, 0xc8][..], "/1 en registre n'existe pas"),
+            (
+                &[0x0f, 0xc7, 0xf0, 0x00][..],
+                "quatre octets ne sont pas trois",
+            ),
+        ] {
+            let step = decode(bytes);
+            assert!(
+                step.is_none() || step.unwrap().length != bytes.len(),
+                "{why} : {bytes:02x?}"
+            );
+        }
+
+        // L'interpréteur : soixante-quatre bits, la destination entière à zéro,
+        // CF nul, les autres drapeaux arithmétiques effacés, DF gardé.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.regs[2] = 0x1234_5678_9abc_def0;
+        cpu.flags.write(CF | ZF | OF | SF | PF | AF | DF);
+        cpu.step(&[0x48, 0x0f, 0xc7, 0xf2]);
+        assert!(!cpu.faulted, "rdrand n'est pas une faute");
+        assert_eq!(cpu.regs[2], 0, "sans aléa, la destination vaut zéro");
+        let flags = cpu.flags.read();
+        assert_eq!(flags & CF, 0, "CF nul : pas d'aléa disponible");
+        assert_eq!(
+            flags & (ZF | OF | SF | PF | AF),
+            0,
+            "les autres sont effacés"
+        );
+        assert_ne!(flags & DF, 0, "DF survit : il n'est pas arithmétique");
+        assert_eq!(cpu.rip, 0x3000_0004, "quatre octets consommés");
+
+        // Trente-deux bits : la moitié haute est effacée, comme pour toute
+        // écriture de cette largeur.
+        let mut cpu = Cpu::default();
+        cpu.regs[1] = u64::MAX;
+        cpu.step(&[0x0f, 0xc7, 0xf1]);
+        assert_eq!(cpu.regs[1], 0, "rdrand %ecx efface RCX entier");
+
+        // Seize bits : le reste du registre est gardé.
+        let mut cpu = Cpu::default();
+        cpu.regs[3] = 0xdead_beef_cafe_f00d;
+        cpu.step(&[0x66, 0x0f, 0xc7, 0xf3]);
+        assert_eq!(
+            cpu.regs[3], 0xdead_beef_cafe_0000,
+            "rdrand %bx ne touche que seize bits"
         );
     }
 }
