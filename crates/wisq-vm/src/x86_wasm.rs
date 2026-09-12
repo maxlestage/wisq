@@ -3165,6 +3165,23 @@ impl Module {
             body.op(code::END);
             return Some(());
         }
+        // **`rdrand` et `rdseed`, sans source d'aléa.** CF nul — « rien de
+        // disponible » —, la destination à zéro selon la règle de largeur,
+        // et les cinq autres drapeaux arithmétiques effacés : c'est ce que le
+        // manuel prévoit, et le noyau réessaie dix fois puis retombe sur
+        // `rdtsc`. Rien d'inventé : un aléa fabriqué ici serait un aléa
+        // qu'aucun test ne peut juger.
+        if let Op::ReadRandom { .. } = step.op {
+            Self::put(step.dst, step.width, body, |b| {
+                b.constant(0);
+            });
+            body.store(RFLAGS_SLOT, |b| {
+                b.load(RFLAGS_SLOT)
+                    .constant(!(CF | PF | AF | ZF | SF | OF))
+                    .op(code::I64_AND);
+            });
+            return Some(());
+        }
         // **`invpcid` s'arrête dessus et le dit.** Pas de PCID sur cette
         // machine, donc rien à purger par identifiant de contexte — et le
         // noyau ne l'exécute que si `cpuid` le promet, ce qu'il ne fait pas.
@@ -3493,6 +3510,7 @@ impl Module {
                 | Op::CompareAndExchangeSixteen => {
                     unreachable!("les échanges sortent avant")
                 }
+                Op::ReadRandom { .. } => unreachable!("l'aléa sort avant"),
                 Op::RotateThroughCarry { .. } | Op::DoubleShift { .. } => {
                     unreachable!("les rotations à travers la retenue sortent avant")
                 }
@@ -3934,6 +3952,7 @@ impl Module {
             | Op::ExchangeAndAdd
             | Op::CompareAndExchange
             | Op::CompareAndExchangeSixteen
+            | Op::ReadRandom { .. }
             | Op::RotateThroughCarry { .. }
             | Op::DoubleShift { .. } => {}
         }
