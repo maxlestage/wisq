@@ -12,7 +12,7 @@
 //! Lire ces segments était fait à la main dans l'exemple, donc tenu par rien.
 //! Ici, sur un ELF construit pour la circonstance : un outil de diagnostic qui
 //! se trompe de segment ne rend pas une erreur, il rend un résultat.
-use wisq_vm::kernel_image::loads;
+use wisq_vm::kernel_image::{loads, MONTAGE_COMMAND_LINE};
 
 /// Un ELF64 minimal : l'en-tête, puis `count` en-têtes de programme.
 fn elf(entry: u64, headers: &[(u32, u64, u64, u64, u64, u64)]) -> Vec<u8> {
@@ -160,5 +160,69 @@ fn the_zero_page_declares_the_ram_and_names_its_loader() {
     assert!(
         stray.is_empty(),
         "des octets écrits hors des champs voulus : {stray:x?}"
+    );
+}
+
+/// **Le noyau se taisait juste au moment où il avait le plus à dire.**
+///
+/// La ligne de commande du montage ne demandait qu'`earlycon`. C'est une
+/// console de **démarrage** : dès que la vraie console s'enregistre — la
+/// console d'écran, `tty0`, qui existe même sans écran — Linux désenregistre
+/// la première et bascule dessus. Le relevé le montrait en toutes lettres sans
+/// que personne le lise :
+///
+/// ```text
+/// printk: console [tty0] enabled
+/// printk: bootconsole [uart8250] disabled
+/// ```
+///
+/// Après ces deux lignes, la machine avançait encore mais **le port série
+/// était muet**, et le silence ressemblait à un arrêt. C'est un défaut du
+/// montage de mesure, pas du noyau : `web/host.js` n'écoute que `0x3f8`, et
+/// `tty0` n'y écrit rien.
+///
+/// **Ce que `keep_bootcon` a fait apparaître, six lignes, mesurées** :
+///
+/// ```text
+/// APIC disabled by BIOS
+/// Failed to register legacy timer interrupt
+/// APIC: Keep in PIC mode(8259)
+/// tsc: Unable to calibrate against PIT
+/// tsc: No reference (HPET/PMTIMER) available
+/// tsc: Marking TSC unstable due to could not calculate TSC khz
+/// ```
+///
+/// Le noyau nomme lui-même ce qui lui manque. Jusque-là, le mur de l'horloge
+/// se **déduisait** d'une adresse — un saut conditionnel vers lui-même dans
+/// `calibrate_delay` ; maintenant il se lit.
+///
+/// **Et le port est vérifié des deux côtés.** Une ligne de commande qui
+/// nommerait un port que `web/host.js` n'écoute pas ne rendrait pas une erreur,
+/// elle rendrait un silence — exactement le défaut que ce test existe pour
+/// empêcher. Les deux fichiers sont donc comparés l'un à l'autre plutôt que
+/// chacun à une constante écrite deux fois.
+#[test]
+fn the_mount_keeps_the_boot_console_on_the_port_the_host_listens_to() {
+    let mut root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+    while !root.join("Cargo.lock").exists() {
+        root = root.parent().expect("la racine du dépôt").to_path_buf();
+    }
+    let host = std::fs::read_to_string(root.join("web/host.js")).expect("web/host.js");
+    let port = host
+        .lines()
+        .find_map(|line| line.strip_prefix("const SERIAL = "))
+        .map(|rest| rest.trim_end_matches(';').trim().to_string())
+        .expect("`web/host.js` doit déclarer le port série qu'il écoute");
+    assert!(
+        MONTAGE_COMMAND_LINE.contains(&format!("earlycon=uart8250,io,{port}")),
+        "le montage doit brancher la console précoce sur le port que l'hôte \
+         écoute ({port}) : « {MONTAGE_COMMAND_LINE} »"
+    );
+    assert!(
+        MONTAGE_COMMAND_LINE
+            .split_whitespace()
+            .any(|arg| arg == "keep_bootcon"),
+        "et la garder après que `tty0` s'enregistre, sans quoi le noyau se tait \
+         au milieu de son démarrage : « {MONTAGE_COMMAND_LINE} »"
     );
 }
