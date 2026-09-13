@@ -129,6 +129,12 @@ export const SLOTS = {
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
+  /// **Combien de cases un seau porte.** Une seule case par empreinte faisait
+  /// que la seconde adresse installée écrasait la première, qui repassait
+  /// ensuite par l'hôte à chaque appel. Deux voies adjacentes par seau, donc :
+  /// autant de cases qu'avant, mais une collision ne coûte plus une éviction.
+  /// Le pendant exact de `TABLE_WAYS` côté Rust, et un test les compare.
+  tableWays: 2,
   /// **Le tampon de traduction**, juste au-dessus de la correspondance, donc
   /// encore plus haut que la RAM. Le module le déclare dans son minimum : un
   /// hôte qui ne le pose pas ne démarre pas, au lieu de piéger au premier
@@ -160,6 +166,15 @@ export function hostPages(pages) {
 export function tableSlot(address) {
   const bits = 31 - Math.clz32(SLOTS.tableSlots);
   return Number(BigInt.asUintN(64, address * SLOTS.mix) >> BigInt(64 - bits));
+}
+
+/// **Le seau d'une adresse** : sa case, dont on efface le bit de poids faible.
+/// Les deux voies du seau sont les deux cases qui se suivent, si bien qu'une
+/// adresse ne déborde jamais de la table — ce qu'un sondage circulaire ferait
+/// au dernier seau, en lisant le tampon de traduction. Le même calcul est gravé
+/// dans les octets du module, et un test les compare.
+export function tableBucket(address) {
+  return tableSlot(address) & ~(SLOTS.tableWays - 1);
 }
 
 /// **Construire la machine.**
@@ -531,7 +546,26 @@ export function machine({
     if (next <= slot) {
       throw new Error(`la région à ${address} n'a posé aucun bloc à l'emplacement ${slot}`);
     }
-    const at = base + tableSlot(address) * SLOTS.tableEntry;
+    // **Une voie libre du seau, sinon la sienne, sinon on évince la première.**
+    // Chercher d'abord une voie vide ou déjà à cette adresse, c'est ce qui fait
+    // qu'une collision cesse de coûter une éviction : deux adresses de même
+    // empreinte tiennent ensemble. Quand les deux voies sont prises par
+    // d'autres, il faut bien en sacrifier une — la première, et le défaut
+    // redevient ce qu'il était, muet et seulement plus lent.
+    const seau = base + tableBucket(address) * SLOTS.tableEntry;
+    let voie = 0;
+    for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
+      const rangee = new BigUint64Array(
+        memory.buffer,
+        seau + essai * SLOTS.tableEntry,
+        1,
+      )[0];
+      if (rangee === address || rangee === 0n) {
+        voie = essai;
+        break;
+      }
+    }
+    const at = seau + voie * SLOTS.tableEntry;
     new BigUint64Array(memory.buffer, at, 1)[0] = address;
     new Int32Array(memory.buffer, at + 8, 1)[0] = slot;
     const region = { run, slot };
