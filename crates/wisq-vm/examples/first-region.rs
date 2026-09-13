@@ -12,6 +12,12 @@
 //! décision à prendre, et cet outil l'a fait une fois : il annonçait l'octet
 //! 1512 quand la première chose qui bloquait vraiment était à l'octet 35.
 //!
+//! **Et depuis l'arrêt nommé, un troisième cas** : la région se traduit *et*
+//! porte des octets illisibles. Un `CannotDecode` ne sort plus que d'une région
+//! dont le **premier** octet ne se lit pas ; ailleurs, le bloc s'arrête devant
+//! l'octet et la traduction continue. Ces octets-là sont imprimés sous la
+//! ligne du succès, parce qu'ils sont toujours du travail à faire.
+//!
 //!     cargo run -p wisq-vm --release --example first-region -- entree.bin
 use wisq_vm::x86::decode;
 use wisq_vm::x86_wasm::{Module, Refused};
@@ -92,10 +98,31 @@ fn main() {
 /// Ce qu'une mise en forme a fait de la région, en trois lignes au plus.
 fn verdict(shape: &str, outcome: Result<Vec<u8>, Refused>, bytes: &[u8]) {
     match outcome {
-        Ok(module) => println!(
-            "traduction {shape} : la région entière, {} octets de module",
-            module.len()
-        ),
+        Ok(module) => {
+            println!(
+                "traduction {shape} : la région entière, {} octets de module",
+                module.len()
+            );
+            // **Et ce qu'elle avale sans savoir le lire.** Depuis l'arrêt nommé,
+            // « la région entière » ne veut plus dire « tout est lu » : un octet
+            // illisible arrête son bloc et laisse le reste se traduire. Ne pas
+            // l'imprimer ici ferait passer pour un succès complet ce qui est un
+            // succès **et** un manque — exactement la confusion que cet outil
+            // existe pour éviter.
+            if let Ok(stops) = Module::unreadable(bytes, 0) {
+                for at in stops {
+                    println!(
+                        "  et l'octet {at} ne se **lit** pas : la région rend la main dessus si \
+                         l'exécution y va"
+                    );
+                    println!(
+                        "    adresse 0x{:x}, octets {}",
+                        ENTRY + at as u64,
+                        show(bytes, at)
+                    );
+                }
+            }
+        }
         Err(Refused::CannotDecode { at }) => {
             println!("traduction {shape} : arrêtée faute de savoir **lire** l'octet {at}");
             println!(
