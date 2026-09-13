@@ -285,6 +285,60 @@ const TRANSMITTER_IDLE = 0x60;
 /// noyau qui sonde `0xff` passe son chemin, un noyau qui sonde `0x00` s'installe.
 const NOBODY_THERE = 0xff;
 
+/// **Les deux 8259, et le strict nécessaire pour qu'un noyau les trouve.**
+///
+/// Un PC en porte deux, en cascade : le maître sur `0x20`/`0x21`, l'esclave sur
+/// `0xa0`/`0xa1`. Le port pair est la commande, l'impair les données.
+///
+/// **Pourquoi ils existent ici.** Le noyau d'Alpine imprimait « Using NULL
+/// legacy PIC », et la raison tient en cinq instructions de `probe_8259A` : il
+/// écrit un masque sur `0x21` et le relit. Un port sans personne rend `0xff` —
+/// le bus qui flotte, la bonne réponse quand il n'y a personne — donc la
+/// relecture ne pouvait jamais correspondre, et le noyau concluait, avec
+/// raison, qu'aucun contrôleur n'est là. Sans contrôleur, pas de routage
+/// d'IRQ0 ; sans IRQ0, pas d'horloge ; sans horloge, `calibrate_delay` tourne
+/// sur lui-même. Tout ce mur tenait à huit bits qui se relisent.
+///
+/// **Ce qui n'est pas modélisé, et qui se verra le jour où ça manquera** : les
+/// registres de requête et de service, la priorité, la fin d'interruption.
+/// Rien n'en a besoin tant qu'aucune ligne ne monte — et le jour où une ligne
+/// montera, c'est la tranche de la délivrance qui les écrira, avec le test qui
+/// les exige.
+///
+/// **Une infidélité assumée, et nommée** : un vrai 8259 efface son masque en
+/// recevant ICW1. Celui-ci ne le fait pas. Aucun invité ne peut le voir — Linux
+/// écrit `0xff` juste avant l'initialisation et repose son masque juste après —
+/// mais l'écrire ici vaut mieux que de laisser croire que la question ne s'est
+/// pas posée.
+const PIC_MASTER = 0x20;
+const PIC_SLAVE = 0xa0;
+/// Le bit qui, sur le port de commande, dit « ce qui suit est une
+/// initialisation » : les trois ou quatre octets d'après ne sont plus un
+/// masque mais ICW2, ICW3 et ICW4.
+const PIC_INIT = 0x10;
+/// Et le bit d'ICW1 qui annonce un quatrième mot.
+const PIC_WANTS_ICW4 = 0x01;
+
+/// Un contrôleur au repos : tout masqué, aucune base, aucune initialisation en
+/// cours. C'est l'état d'un 8259 avant qu'un noyau ne lui parle.
+function controller() {
+  return {
+    /// **Le registre de masque**, celui que la sonde du noyau écrit et relit.
+    mask: 0xff,
+    /// **La base de vecteur**, posée par ICW2. Ce noyau y met `0x30` pour le
+    /// maître et `0x38` pour l'esclave — **pas** `0x20`, la valeur du PC
+    /// d'origine que tous les manuels donnent. Lue dans son `init_8259A`
+    /// plutôt que supposée : la supposer aurait fait délivrer IRQ0 dans la
+    /// mauvaise porte de l'IDT, très loin d'ici.
+    base: 0,
+    /// Le prochain mot d'initialisation attendu sur le port de données, ou
+    /// zéro quand il n'y a pas d'initialisation en cours.
+    expects: 0,
+    /// ICW1 a-t-il annoncé un ICW4 ?
+    wantsFour: false,
+  };
+}
+
 export function machine({
   translate,
   pages,
@@ -334,6 +388,20 @@ export function machine({
   // Les trois arguments arrivent en `i64`, donc en `BigInt` : le port, la
   // valeur, et **la largeur en octets**. La largeur est passée plutôt que
   // devinée — deux octets dont le haut est nul ressemblent à un octet.
+  /// Les deux contrôleurs de cette machine. Exposés plus bas en lecture, pour
+  /// que le relevé puisse dire ce qu'ils tiennent ; rien ne se décide dessus.
+  const pics = { master: controller(), slave: controller() };
+  /// Le contrôleur qu'un port désigne, et si c'est son port de **données**.
+  /// `null` quand le port n'est celui d'aucun des deux.
+  const controllerAt = (at) => {
+    if (at === PIC_MASTER || at === PIC_MASTER + 1) {
+      return { chip: pics.master, data: (at & 1) === 1 };
+    }
+    if (at === PIC_SLAVE || at === PIC_SLAVE + 1) {
+      return { chip: pics.slave, data: (at & 1) === 1 };
+    }
+    return null;
+  };
   env.out = (port, value, width) => {
     const at = Number(port);
     if (at === SERIAL) {
@@ -343,6 +411,44 @@ export function machine({
       if (serial) serial(Number(value & 0xffn));
       return;
     }
+    const chosen = controllerAt(at);
+    if (chosen !== null) {
+      const octet = Number(value & 0xffn);
+      if (!chosen.data) {
+        // **Le port de commande.** Le bit d'initialisation ouvre la séquence ;
+        // tout le reste — fin d'interruption, choix du registre à lire — n'a
+        // aucun effet tant qu'aucune ligne ne monte, et est ignoré en le
+        // disant plutôt qu'en le taisant.
+        if (octet & PIC_INIT) {
+          chosen.chip.expects = 2;
+          chosen.chip.wantsFour = (octet & PIC_WANTS_ICW4) !== 0;
+        }
+        return;
+      }
+      // **Le port de données porte deux choses selon le moment** : les mots
+      // d'initialisation tant qu'une séquence est ouverte, le masque sinon.
+      // Les confondre rendrait la sonde verte quand même — le noyau repose son
+      // masque juste après — et se tromperait de vecteur pour toujours.
+      switch (chosen.chip.expects) {
+        case 2:
+          chosen.chip.base = octet;
+          chosen.chip.expects = 3;
+          return;
+        case 3:
+          // ICW3, le câblage de la cascade. Rien ici ne le consulte : il n'y a
+          // qu'une machine, et l'esclave ne lève rien.
+          chosen.chip.expects = chosen.chip.wantsFour ? 4 : 0;
+          return;
+        case 4:
+          // ICW4, le mode. Seul le mode 8086 est modélisé, et c'est le seul
+          // qu'un noyau x86-64 demande.
+          chosen.chip.expects = 0;
+          return;
+        default:
+          chosen.chip.mask = octet;
+          return;
+      }
+    }
     // Tout le reste tombe dans le vide, comme sur une carte mère sans la
     // carte : une écriture vers un port absent ne fait rien et ne fait pas
     // planter la machine.
@@ -350,7 +456,16 @@ export function machine({
   };
   env.in = (port, width) => {
     void width;
-    if (Number(port) === SERIAL_STATUS) return BigInt(TRANSMITTER_IDLE);
+    const at = Number(port);
+    if (at === SERIAL_STATUS) return BigInt(TRANSMITTER_IDLE);
+    const chosen = controllerAt(at);
+    if (chosen !== null) {
+      // Le port de données rend le masque — c'est toute la sonde du noyau. Le
+      // port de commande rendrait le registre de requête ou celui de service ;
+      // les deux sont vides tant qu'aucune ligne ne monte, et zéro est alors
+      // la réponse vraie, pas un bouchon.
+      return BigInt(chosen.data ? chosen.chip.mask : 0);
+    }
     return BigInt(NOBODY_THERE);
   };
   const imports = { env };
@@ -676,6 +791,10 @@ export function machine({
     /// haut). Lecture seule ; rien ne se décide dessus.
     tableSlot,
     tableBase: base,
+    /// Les deux contrôleurs d'interruptions, pour que le relevé puisse dire ce
+    /// qu'ils tiennent — le masque, et la base de vecteur qu'ICW2 a posée.
+    /// Lecture ; rien ne se décide dessus.
+    pics,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       for (let round = 0; round < rounds; round++) {
