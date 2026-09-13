@@ -444,6 +444,414 @@ console.log("rdx " + vm.globals[2].value.toString());
     );
 }
 
+/// **Une adresse de retour au milieu d'une région connue est une région de
+/// plus, et elle n'a pas lieu d'être.**
+///
+/// La correspondance est indexée par l'adresse d'**entrée** d'une région, pas
+/// par les débuts de blocs qu'elle contient. Une cible indirecte qui retombe
+/// au milieu d'une région déjà traduite n'y est donc pas trouvée : le module
+/// rend la main, et l'hôte fabrique une seconde région qui **recouvre** la
+/// première. C'est correct, et c'est du gaspillage.
+///
+/// **Ce n'est pas un cas de laboratoire.** Sur le relevé du noyau Alpine,
+/// 1559 des 5514 régions demandées — 28 % — sont à moins de seize octets après
+/// une région déjà demandée, l'écart le plus fréquent étant neuf octets
+/// (743 fois), puis cinq (395). Ce sont les octets qui **suivent** un `call`,
+/// c'est-à-dire les adresses où les `ret` retombent.
+///
+/// **Le montage, et pourquoi cet anneau-là.** Deux régions seulement, et l'une
+/// des deux jambes de l'anneau vise un bloc qui n'est l'entrée de rien :
+///
+///   * `A` à `BASE` porte deux blocs. Le premier charge `SECOND` dans RAX et
+///     se coupe sur un `jnz` ; le second est un `jmp *%rax`.
+///   * `B` à `SECOND` charge l'adresse du **second bloc de A** dans RBX,
+///     incrémente RDX, et y saute indirectement.
+///
+/// L'anneau tourne donc entre le second bloc de A et B — et la cible qui
+/// revient vers A n'est pas son entrée.
+///
+/// **Le second temps tient en un seul appel, et c'est ce qui le rend
+/// concluant.** Sur plusieurs tours, l'hôte finirait par redemander le bloc
+/// pour une raison qui n'est pas celle qu'on mesure : le budget s'épuise
+/// quelque part dans l'anneau, et si c'est sur le second bloc de A, la boucle
+/// hôte ne reconnaît pas cette adresse — sa carte `known` est indexée par
+/// entrée de région, comme la correspondance l'était. C'est un cas résiduel,
+/// nommé plus bas, et le mesurer ici masquerait le mécanisme.
+///
+/// Un seul appel l'isole : si la correspondance porte le second bloc de A,
+/// l'anneau tourne entièrement dans WebAssembly et RDX compte des centaines
+/// de tours ; sinon la première jambe rend la main et RDX vaut un. Les deux
+/// assertions se tiennent l'une l'autre — RDX dit que l'anneau a tourné, le
+/// compte de traductions dit qu'il l'a fait sans repasser par l'hôte.
+///
+/// **Ce que cette tranche ne fait pas.** Quand le budget expire exactement sur
+/// un début de bloc, l'hôte traduit encore une région qui commence là : la
+/// correspondance connaît l'adresse, sa carte `known` non. C'est une fois par
+/// budget au pire, contre une fois par `ret` avant, et le corriger demanderait
+/// que `run` puisse démarrer ailleurs qu'à l'entrée de sa région — un
+/// changement de sa signature, donc une autre tranche.
+#[test]
+fn a_target_inside_a_known_region_needs_no_second_translation() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const SECOND: u64 = BASE + 0x100;
+    // Le second bloc de A commence après `incq %r8` (3), `movabs` (10),
+    // `testq` (3) et `jnz` (2). Écrit en toutes lettres plutôt que recalculé :
+    // le relevé le vérifie juste après, donc un décalage faux se voit ici et
+    // pas trois assertions plus loin.
+    const INSIDE: u64 = BASE + 18;
+
+    // **`incq %r8` est le témoin du bon bloc, et il a fallu un sabotage pour
+    // qu'il existe.** Sans lui, ranger l'emplacement de la **région** au lieu
+    // de celui du **bloc** passait le test : l'invité rentrait par l'entrée de
+    // A à chaque tour au lieu de son second bloc, refaisait le `movabs` et
+    // repartait — un anneau qui tourne, un RDX qui monte, et personne pour
+    // dire que la machine n'était pas là où la correspondance prétendait
+    // l'envoyer. C'est le défaut le plus difficile à voir de toute cette
+    // machinerie, et il avait survécu.
+    //
+    // R8 ne s'incrémente que dans le premier bloc. Il doit valoir **un** :
+    // l'entrée de A est franchie une seule fois, au tout début.
+    let mut first = vec![0x49, 0xff, 0xc0]; // incq %r8
+    first.extend_from_slice(&[0x48, 0xb8]); // movabs $SECOND, %rax
+    first.extend_from_slice(&SECOND.to_le_bytes());
+    first.extend_from_slice(&[0x48, 0x85, 0xc0]); // testq %rax, %rax
+    first.extend_from_slice(&[0x75, 0x00]); // jnz +0 : coupe le bloc
+    first.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+
+    let mut second = vec![0x48, 0xbb]; // movabs $INSIDE, %rbx
+    second.extend_from_slice(&INSIDE.to_le_bytes());
+    second.extend_from_slice(&[0x48, 0xff, 0xc2]); // incq %rdx
+    second.extend_from_slice(&[0xff, 0xe3]); // jmp *%rbx
+
+    // **Le relevé, avant toute exécution.** Sans lui, une région d'un seul
+    // bloc rendrait le test vert pour la mauvaise raison : la cible serait
+    // l'entrée, et il n'y aurait rien à trouver au milieu.
+    let outline = Module::outline(&first, 0).expect("le relevé de la première région");
+    assert_eq!(
+        outline.len(),
+        2,
+        "la première région doit porter deux blocs"
+    );
+    assert_eq!(
+        BASE + outline[1].start as u64,
+        INSIDE,
+        "et son second bloc doit commencer là où la seconde région vise"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-inside-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    let mut loaded = String::new();
+    for (address, code) in [(BASE, &first), (SECOND, &second), (INSIDE, &first)] {
+        // La troisième entrée est ce que l'hôte demanderait s'il ne trouvait
+        // pas `INSIDE` : une région qui **commence** au second bloc de A. Le
+        // catalogue la porte exprès — sans elle le pilote échouerait sur une
+        // traduction manquante au lieu de la compter, et « ça s'est arrêté »
+        // ne dirait pas *pourquoi*.
+        let entry = usize::try_from(address - BASE.min(address)).unwrap_or(0);
+        let bytes = if address == INSIDE {
+            &code[15..]
+        } else {
+            &code[..]
+        };
+        let _ = entry;
+        let raw = scratch.join(format!("r{address:x}.bin"));
+        std::fs::write(&raw, bytes).expect("le code");
+        if address != INSIDE {
+            loaded.push_str(&format!(
+                "[{},{:?}],",
+                address & u64::from(PAGES * 65536 - 1),
+                raw.to_string_lossy()
+            ));
+        }
+        for slot in 0..8u32 {
+            let module = Module::resolving(bytes, address, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("l'émetteur doit compiler la région {address:x}"));
+            let path = scratch.join(format!("r{address:x}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!(
+                "[\"{address}:{slot}\",{:?}],",
+                path.to_string_lossy()
+            ));
+        }
+    }
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const catalogue = new Map([{catalogue}]);
+const posé = new Map(
+  [{loaded}].map(([at, path]) => [at, new Uint8Array(readFileSync(path))]),
+);
+let asked = 0;
+const seen = [];
+const translate = async (address, slot, code) => {{
+  asked++;
+  seen.push(address.toString(16));
+  if (!(code instanceof Uint8Array) || code.length === 0) {{
+    throw new Error(`la demande à ${{address.toString(16)}} ne porte pas d'octets`);
+  }}
+  const path = catalogue.get(address + ":" + slot);
+  return path === undefined ? null : readFileSync(path);
+}};
+
+const vm = machine({{ translate, pages: {pages} }});
+for (const [at, octets] of posé) {{
+  new Uint8Array(vm.memory.buffer, at, octets.length).set(octets);
+}}
+vm.globals[{rip}].value = {base}n;
+// **Premier temps : la découverte.** Deux régions, deux traductions. Rien ne
+// se prouve ici — la correspondance ne peut pas aider tant que la cible n'y
+// est pas.
+await vm.run({{ budget: 40n, rounds: 2 }});
+console.log("demandes " + asked);
+console.log("vues " + seen.join(","));
+
+// **Second temps, et c'est celui qui compte.** Un seul tour, gros budget, en
+// repartant de l'entrée. Si la correspondance porte le second bloc de A,
+// l'anneau tourne entièrement dans WebAssembly jusqu'au bout du budget.
+// Sinon, la jambe qui revient vers A rend la main au premier passage.
+vm.globals[{rip}].value = {base}n;
+vm.globals[2].value = 0n;
+// R8 est remis à zéro ici, pas au début : le premier temps franchit l'entrée
+// lui aussi, et compter les deux rendrait l'attente dépendante du montage.
+vm.globals[8].value = 0n;
+const avant = asked;
+const run = await vm.run({{ budget: 400n, rounds: 1 }});
+console.log("arret " + run.stopped);
+console.log("retraductions " + (asked - avant));
+console.log("regions " + vm.known.size);
+console.log("rdx " + vm.globals[2].value.toString());
+console.log("r8 " + vm.globals[8].value.toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+
+    // La découverte : une traduction par région, dans l'ordre où on y arrive.
+    assert_eq!(
+        seen("demandes"),
+        "2",
+        "deux régions, deux traductions : {text}"
+    );
+    assert_eq!(seen("vues"), "10000,10100", "et dans cet ordre : {text}");
+
+    // **L'anneau doit avoir tourné.** Sans cette ligne, une machine qui
+    // s'arrête au premier saut passerait les deux assertions suivantes en
+    // n'ayant rien traduit du tout — le zéro le plus facile à obtenir.
+    let laps: u64 = seen("rdx").parse().expect("RDX est un nombre");
+    assert!(
+        laps > 100,
+        "l'anneau doit avoir tourné des dizaines de fois dans un seul appel ; \
+         un ou deux tours veut dire que la jambe qui revient vers la première \
+         région a rendu la main : {text}"
+    );
+    assert_eq!(
+        seen("retraductions"),
+        "0",
+        "une cible qui tombe sur un bloc déjà traduit se trouve dans la \
+         correspondance, et ne coûte pas une région de plus : {text}"
+    );
+    assert_eq!(
+        seen("regions"),
+        "2",
+        "et aucune région ne recouvre la première : {text}"
+    );
+    // **Et l'invité est allé dans le bon bloc, pas seulement dans la bonne
+    // région.** R8 ne bouge que dans le premier bloc de A ; s'il vaut plus de
+    // un, la correspondance renvoie à l'**entrée** de la région au lieu du
+    // bloc visé. C'est ce qu'un mauvais emplacement rangé produirait, et rien
+    // d'autre ici ne le distinguerait d'un anneau correct.
+    assert_eq!(
+        seen("r8"),
+        "1",
+        "le premier bloc de la première région ne doit être franchi qu'une \
+         fois : la correspondance doit désigner le bloc, pas la région : {text}"
+    );
+}
+
+/// **Un début de bloc n'évince jamais l'entrée d'une région.**
+///
+/// La correspondance a deux voies par seau. Y ranger les débuts de blocs
+/// multiplie par dix le nombre d'adresses qui s'y disputent la place, et la
+/// première version de cette tranche laissait un bloc chasser une entrée
+/// quand les deux voies étaient prises. Le noyau Alpine allait alors **moins**
+/// loin qu'avant la correction : 72 lignes série au lieu de 87, et les retours
+/// de main sur `pv_native_irq_disable` passaient de 2938 à 66 340 — les
+/// fonctions les plus chaudes se faisaient évincer par des blocs visités une
+/// seule fois.
+///
+/// L'entrée d'une région est la seule adresse par laquelle toute la région
+/// reste atteignable ; un début de bloc n'est qu'un raccourci. Ce test tient
+/// la règle qui en découle, et il la tient **sur la case**, pas sur une
+/// conséquence : la mesure du noyau est ce qui l'a trouvée, elle ne peut pas
+/// être ce qui la garde.
+///
+/// **Le montage force la collision au lieu de l'espérer.** Les deux voies du
+/// seau sont d'abord remplies à la main par deux adresses étrangères ; on
+/// installe ensuite une région dont un bloc tombe dans ce seau-là, cherché
+/// avec le même `table_slot` que l'émetteur grave dans ses octets. Sans cette
+/// recherche, le test passerait pour la seule raison que 65 536 seaux rendent
+/// les collisions rares.
+#[test]
+fn a_block_start_never_evicts_a_region_entry() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : la boucle hôte ne serait vérifiée par rien.");
+    };
+    use wisq_vm::x86_wasm::table_slot;
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // Le second bloc de la région, comme dans le test voisin : `incq %r8` (3),
+    // `movabs` (10), `testq` (3), `jnz` (2).
+    const INSIDE: u64 = BASE + 18;
+    let bucket = |at: u64| table_slot(at) & !(wisq_vm::x86_wasm::TABLE_WAYS - 1);
+
+    // Deux adresses étrangères qui tombent dans le seau du **bloc**, pour le
+    // remplir avant qu'il n'arrive. Cherchées, pas devinées.
+    let squatters: Vec<u64> = (1u64..2_000_000)
+        .map(|n| 0x8000_0000 + n * 8)
+        .filter(|at| bucket(*at) == bucket(INSIDE))
+        .take(2)
+        .collect();
+    assert_eq!(
+        squatters.len(),
+        2,
+        "il faut deux adresses dans le seau du bloc pour le remplir"
+    );
+
+    let mut region = vec![0x49, 0xff, 0xc0]; // incq %r8
+    region.extend_from_slice(&[0x48, 0xb8]); // movabs $BASE, %rax
+    region.extend_from_slice(&BASE.to_le_bytes());
+    region.extend_from_slice(&[0x48, 0x85, 0xc0]); // testq %rax, %rax
+    region.extend_from_slice(&[0x75, 0x00]); // jnz +0 : coupe le bloc
+    region.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let outline = Module::outline(&region, 0).expect("le relevé");
+    assert_eq!(outline.len(), 2, "la région doit porter deux blocs");
+    assert_eq!(BASE + outline[1].start as u64, INSIDE, "et le second ici");
+
+    let scratch = std::env::temp_dir().join(format!("wisq-evict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&region, BASE, 0, 0, PAGES).expect("l'émetteur");
+    let wasm = scratch.join("r.wasm");
+    std::fs::write(&wasm, &module).expect("le module");
+    let raw = scratch.join("r.bin");
+    std::fs::write(&raw, &region).expect("le code");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine, tableSlot }} from {host:?};
+import {{ readFileSync }} from "fs";
+const octets = new Uint8Array(readFileSync({raw:?}));
+const vm = machine({{
+  translate: async (address, slot) =>
+    address === {base}n && slot === 0 ? new Uint8Array(readFileSync({wasm:?})) : null,
+  pages: {pages},
+}});
+new Uint8Array(vm.memory.buffer, {physical}, octets.length).set(octets);
+const seau = (at) => vm.tableBase + (tableSlot(at) & ~1) * 16;
+// Les deux voies du seau du bloc, occupées par des étrangères.
+for (let voie = 0; voie < 2; voie += 1) {{
+  const at = seau({inside}n) + voie * 16;
+  new BigUint64Array(vm.memory.buffer, at, 1)[0] = [{squat0}n, {squat1}n][voie];
+  new Int32Array(vm.memory.buffer, at + 8, 1)[0] = 999;
+}}
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 20n, rounds: 1 }});
+// Ce que les deux voies portent après l'installation.
+const lire = (at) => {{
+  const out = [];
+  for (let voie = 0; voie < 2; voie += 1) {{
+    out.push(new BigUint64Array(vm.memory.buffer, seau(at) + voie * 16, 1)[0].toString(16));
+  }}
+  return out.join(",");
+}};
+console.log("bloc " + lire({inside}n));
+console.log("entree " + lire({base}n));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            raw = raw.to_string_lossy(),
+            wasm = wasm.to_string_lossy(),
+            pages = PAGES,
+            physical = BASE,
+            rip = RIP_SLOT,
+            base = BASE,
+            inside = INSIDE,
+            squat0 = squatters[0],
+            squat1 = squatters[1],
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let complaint = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {complaint}\n{text}"
+    );
+    let seen = |label: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+            .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+    };
+    assert_eq!(
+        seen("bloc"),
+        format!("{:x},{:x}", squatters[0], squatters[1]),
+        "les deux voies du seau étaient prises : le début de bloc doit \\
+         renoncer, pas évincer : {text}"
+    );
+    // **Et l'entrée, elle, est bien rangée.** Sans cette ligne, un hôte qui ne
+    // rangerait plus rien du tout passerait la première assertion.
+    assert_eq!(
+        seen("entree"),
+        format!("{BASE:x},0"),
+        "l'entrée de la région, elle, se range toujours : {text}"
+    );
+}
+
 /// **Les MSR : huit numéros modélisés, et un arrêt nommé pour tous les autres.**
 ///
 /// **Le numéro d'un MSR vit dans ECX, pas dans l'instruction.** Le traducteur
@@ -6963,9 +7371,26 @@ async function courir(vole) {{
     why = await vm.run({{ budget: 4096n, rounds: 1 }});
     if (why.stopped !== "tours épuisés") break;
     retours++;
-    if (vole && vm.known.get({retour}n) !== undefined) {{
-      const cell = vm.tableBase + vm.tableSlot({retour}n) * 16;
-      new DataView(vm.memory.buffer).setBigUint64(cell, {retour}n + 1n, true);
+    // **Le vol efface les deux voies du seau, et il ne demande la
+    // permission à personne.**
+    //
+    // Il était conditionné à ce que l'hôte ait installé une région dont
+    // l'entrée est l'adresse de retour — ce qui n'arrive plus depuis que la
+    // correspondance porte les débuts de blocs : l'adresse s'y trouve sans
+    // qu'aucune région ne commence là. Le vol ne se déclenchait donc jamais,
+    // et les deux moitiés du test devenaient identiques. Une garde qui se
+    // tait est pire qu'une garde absente ; celle-ci a échoué, et c'est ce
+    // qu'on lui demande.
+    //
+    // Et il efface **les deux voies** : viser la seule que l'empreinte
+    // désigne laissait l'autre répondre, ce qui rendait le vol inoffensif
+    // pour une raison qui n'a rien à voir avec ce qu'on mesure.
+    if (vole) {{
+      const seau = vm.tableBase + (vm.tableSlot({retour}n) & ~1) * 16;
+      for (let voie = 0; voie < 2; voie += 1) {{
+        new DataView(vm.memory.buffer).setBigUint64(
+          seau + voie * 16, {retour}n + 1n, true);
+      }}
     }}
   }}
   return {{ arret: why.stopped, r12: lire(12).toString(), retours }};
@@ -7260,9 +7685,11 @@ console.log("dispute " + d.arret + " tours=" + d.tours);
 /// aux bons endroits. C'est pour ça que le témoin est un compteur et pas un
 /// drapeau.
 ///
-/// **Et il en demande cinq, pas trois.** Ce test attendait trois régions et en a
-/// trouvé cinq ; les deux de plus sont des adresses de **retour**. L'assertion
-/// dit pourquoi, en détail : c'est une trouvaille de cette tranche, pas un
+/// **Et il en demande quatre, pas trois.** Ce test attendait trois régions et
+/// en a trouvé cinq ; les deux de plus étaient des adresses de **retour**.
+/// L'une des deux a disparu depuis que la correspondance porte les débuts de
+/// blocs ; l'autre tombe sur le `ud2`, qui rend la main par conception.
+/// L'assertion dit lequel est lequel — c'était une trouvaille, ce n'est pas un
 /// réglage d'attente.
 #[test]
 fn the_driver_translates_on_demand_without_knowing_the_regions_in_advance() {
@@ -7375,34 +7802,34 @@ console.log("octets " + tailles[0]);
             .trim()
             .to_string()
     };
-    // **Les cinq adresses, dans l'ordre, et rien d'autre.** C'est la seule
-    // assertion qui dit que rien n'était connu d'avance : aucune des quatre
+    // **Les quatre adresses, dans l'ordre, et rien d'autre.** C'est la seule
+    // assertion qui dit que rien n'était connu d'avance : aucune des trois
     // dernières ne se lit ailleurs que dans l'exécution de la première.
     //
-    // **Et deux d'entre elles sont des adresses de retour**, ce que ce test
-    // n'attendait pas et qui vaut d'être écrit ici plutôt que corrigé en
-    // silence : `0x10005` et `0x1000a` sont les octets *qui suivent* les deux
-    // `call`, c'est-à-dire des blocs que la première région porte **déjà**. La
-    // correspondance ne les retrouve pas, parce qu'elle est indexée par
-    // l'adresse d'**entrée** d'une région, pas par les débuts de blocs qu'elle
-    // contient — donc un `ret` qui retombe au milieu d'une région connue rend
-    // la main, et l'hôte fabrique une seconde région qui recouvre la première.
+    // **Il y en avait cinq, et la cinquième était `0x10005`** — l'octet qui
+    // suit le premier `call`, c'est-à-dire un bloc que la première région
+    // porte déjà. Elle a disparu quand la correspondance a cessé de n'y ranger
+    // que l'adresse d'entrée : le `ret` qui y retombe la trouve maintenant, et
+    // le module continue sans repasser par l'hôte. C'est cette tranche-ci, et
+    // c'est le seul changement d'attente qu'elle demande.
     //
-    // Ce n'est pas un défaut de la traduction à la demande, et cette tranche ne
-    // le corrige pas. C'est mesurable sur un vrai noyau, et le relevé de
-    // `kernel-entry` le montre en toutes lettres : `boot_cpu_init` puis
-    // `boot_cpu_init + 9`, `_printk` puis `_printk + 9`, `vprintk` puis
-    // `vprintk + 9`. Une région sur deux est une adresse de retour.
+    // **`0x1000a` reste demandée, et pas pour la même raison.** Le bloc qui
+    // commence là est le `ud2` : il rend la main **par conception**, quoi que
+    // la correspondance sache. L'hôte se retrouve alors avec une adresse que
+    // sa carte `known` ne connaît pas — elle est encore indexée par entrée de
+    // région, comme la correspondance l'était — et il traduit une région qui
+    // commence là. C'est le cas résiduel nommé dans
+    // `a_target_inside_a_known_region_needs_no_second_translation` : une fois
+    // par retour de main au pire, contre une fois par `ret` avant.
     assert_eq!(
         line("demandées "),
         format!(
-            "0x{BASE:x} 0x{:x} 0x{:x} 0x{:x} 0x{:x}",
+            "0x{BASE:x} 0x{:x} 0x{:x} 0x{:x}",
             BASE + SECOND,
-            BASE + 5,
             BASE + THIRD,
             BASE + 10
         ),
-        "cinq demandes, dans l'ordre où la machine les rencontre : {text}"
+        "quatre demandes, dans l'ordre où la machine les rencontre : {text}"
     );
     assert_eq!(
         line("rdx "),

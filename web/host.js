@@ -857,28 +857,83 @@ export function machine({
     if (next <= slot) {
       throw new Error(`la région à ${address} n'a posé aucun bloc à l'emplacement ${slot}`);
     }
-    // **Une voie libre du seau, sinon la sienne, sinon on évince la première.**
-    // Chercher d'abord une voie vide ou déjà à cette adresse, c'est ce qui fait
-    // qu'une collision cesse de coûter une éviction : deux adresses de même
-    // empreinte tiennent ensemble. Quand les deux voies sont prises par
-    // d'autres, il faut bien en sacrifier une — la première, et le défaut
-    // redevient ce qu'il était, muet et seulement plus lent.
-    const seau = base + tableBucket(address) * SLOTS.tableEntry;
-    let voie = 0;
-    for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
-      const rangee = new BigUint64Array(
-        memory.buffer,
-        seau + essai * SLOTS.tableEntry,
-        1,
-      )[0];
-      if (rangee === address || rangee === 0n) {
-        voie = essai;
-        break;
+    // **Chaque bloc de la région entre dans la correspondance, pas seulement
+    // son entrée.**
+    //
+    // Une cible indirecte qui retombe au milieu d'une région déjà traduite
+    // n'y était pas trouvée : le module rendait la main, et cette fonction
+    // fabriquait une seconde région qui **recouvre** la première. Correct, et
+    // du gaspillage — 1559 des 5514 régions demandées par le noyau Alpine,
+    // 28 %, sont à moins de seize octets après une région déjà demandée. Ce
+    // sont les octets qui suivent un `call` : les adresses où les `ret`
+    // retombent.
+    //
+    // **Les adresses viennent du module, pas d'un calcul refait ici.** Il
+    // exporte `starts(i)`, l'adresse invitée de son bloc numéro `i` — le
+    // même vecteur que sa section d'éléments a posé dans la table, donc les
+    // deux ne peuvent pas diverger. Les recalculer en JavaScript demanderait
+    // un décodeur x86 de ce côté-ci, et une divergence enverrait l'invité
+    // dans le mauvais bloc.
+    //
+    // L'entrée passe **en dernier**, et c'est délibéré : deux blocs de la
+    // même région peuvent tomber dans le même seau, et le seau n'a que
+    // `tableWays` voies. Celui qui écrit en dernier gagne, et l'entrée est
+    // l'adresse qu'on préfère ne jamais perdre — c'est la seule par laquelle
+    // toute la région reste atteignable.
+    const ranger = (quoi, où, évincer) => {
+      // **Une voie libre du seau, sinon la sienne, sinon on évince la
+      // première.** Chercher d'abord une voie vide ou déjà à cette adresse,
+      // c'est ce qui fait qu'une collision cesse de coûter une éviction :
+      // deux adresses de même empreinte tiennent ensemble. Quand les deux
+      // voies sont prises par d'autres, il faut bien en sacrifier une — la
+      // première, et le défaut redevient ce qu'il était, muet et seulement
+      // plus lent.
+      const seau = base + tableBucket(quoi) * SLOTS.tableEntry;
+      let libre = -1;
+      for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
+        const rangee = new BigUint64Array(
+          memory.buffer,
+          seau + essai * SLOTS.tableEntry,
+          1,
+        )[0];
+        if (rangee === quoi || rangee === 0n) {
+          libre = essai;
+          break;
+        }
       }
+      // **Un début de bloc ne chasse jamais une entrée de région.**
+      //
+      // C'est la leçon de la première mesure de cette tranche, et elle est
+      // chiffrée : ranger *toutes* les cases sans distinction a fait passer
+      // les retours de main sur `pv_native_irq_disable` de 2938 à 66 340. Dix
+      // fois plus d'adresses pour deux voies par seau, et les entrées les plus
+      // chaudes se faisaient évincer par des blocs qu'on ne visite qu'une
+      // fois. Le noyau allait **moins** loin qu'avant la correction.
+      //
+      // L'entrée d'une région est la seule adresse par laquelle toute la
+      // région reste atteignable ; un début de bloc n'est qu'un raccourci. Une
+      // optimisation qui évince une nécessité n'est pas une optimisation.
+      if (!évincer && libre === -1) return;
+      const at = seau + (libre === -1 ? 0 : libre) * SLOTS.tableEntry;
+      new BigUint64Array(memory.buffer, at, 1)[0] = quoi;
+      new Int32Array(memory.buffer, at + 8, 1)[0] = où;
+    };
+    // **Un module sans accesseur ne démarre pas**, au lieu de tourner plus
+    // lentement en silence. Tolérer son absence créerait une branche que rien
+    // n'exercerait jamais — tous les modules que cet hôte voit sortent du même
+    // émetteur, y compris les trois figés de la sonde de l'appareil — et une
+    // branche jamais prise est l'endroit exact où un défaut s'installe. C'est
+    // le même contrat que la table des blocs et le tampon de traduction :
+    // manquer à l'appel se dit franchement.
+    if (typeof exports.starts !== "function") {
+      throw new Error(
+        `le module à ${address} n'exporte pas ses débuts de blocs`,
+      );
     }
-    const at = seau + voie * SLOTS.tableEntry;
-    new BigUint64Array(memory.buffer, at, 1)[0] = address;
-    new Int32Array(memory.buffer, at + 8, 1)[0] = slot;
+    for (let bloc = slot + 1; bloc < next; bloc += 1) {
+      ranger(BigInt.asUintN(64, exports.starts(bloc - slot)), bloc, false);
+    }
+    ranger(address, slot, true);
     const region = { run, slot };
     known.set(address, region);
     return region;
