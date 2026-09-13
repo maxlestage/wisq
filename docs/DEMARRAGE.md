@@ -22,6 +22,15 @@ autre chose, mais il est facile de le relire de travers six mois plus tard.
 cibles de `call` trouvées dans l'image : il mesure ce que le traducteur *saurait*
 produire si on le lui demandait, pas ce qu'un démarrage traverse réellement.
 
+**Depuis l'arrêt nommé généralisé, ce chiffre est saturé et ne mesure plus
+rien.** Un octet illisible n'arrête plus que son bloc : la région se traduit,
+et le refus attend que l'exécution arrive sur l'octet. Les 10 116 régions
+d'entrée se traduisent donc toutes — 10 116 sur 10 116, zéro refus — et un
+compteur qui ne peut plus baisser ne dit plus si le décodeur progresse. Ce qui
+le dit est la colonne d'après dans le même relevé : **les octets illisibles que
+les régions compilées portent**, nommés un par un. Il y en a 34, dans 19
+régions, et c'est là qu'il faut regarder pour savoir ce qui manque encore.
+
 ## La pagination
 
 ### Ce que la machine fait aujourd'hui d'une adresse
