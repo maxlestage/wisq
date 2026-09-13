@@ -82,6 +82,17 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         GLOBAL_COUNT.to_string(),
         "le nombre de globales"
     );
+    // **Le nombre de voies par seau, comparé dès son arrivée.** L'hôte choisit
+    // la voie où il range une adresse ; le module, lui, consulte un nombre de
+    // voies gravé dans ses octets. S'ils divergent, l'hôte rangerait dans une
+    // voie que le module ne lit jamais — et rien ne s'arrêterait : la région
+    // ne serait simplement plus trouvée, le défaut muet que cette tranche
+    // vient de réduire, revenu par la porte de derrière.
+    assert_eq!(
+        value("tableWays"),
+        wisq_vm::x86_wasm::TABLE_WAYS.to_string(),
+        "le nombre de voies par seau"
+    );
     // **Les sélecteurs de segment, comparés dès leur arrivée.** La tranche
     // précédente avait laissé `rflags` entrer dans `SLOTS` sans comparaison ;
     // faire entrer deux constantes de plus sans les tenir répéterait la faute
@@ -6947,5 +6958,222 @@ console.log("avec " + avec.arret + " r12=" + avec.r12 + " retours=" + avec.retou
     assert!(
         compte(avec) > compte(sans),
         "une case volée doit forcer des retours de main en plus : {text}"
+    );
+}
+
+/// **Deux régions dont les adresses tombent dans la même case sont toutes deux
+/// retrouvées.**
+///
+/// La correspondance adresse → indice tenait **une seule case par empreinte**.
+/// Deux adresses qui tombent au même endroit ne se disputaient pas : la
+/// seconde installée écrasait la première, et la première repassait par l'hôte
+/// à chaque appel. #213 a compté ce que ça coûte sur le vrai noyau — 85 régions
+/// sur 3314 perdent leur case — et #214 a établi que c'est muet : une perte de
+/// vitesse, jamais de justesse.
+///
+/// **Ce test compare deux nombres qui doivent s'accorder.** Le même programme
+/// tourne deux fois, sur deux machines neuves : il appelle `x`, puis `y`, puis
+/// `x` de nouveau. Une fois avec `x` et `y` sur des empreintes **distinctes**
+/// — le témoin —, une fois avec `x` et `y` qui **se disputent** la même. Les
+/// deux doivent atteindre leur `hlt`, et surtout faire **le même nombre de
+/// tours de répartition** : si la case de `x` lui est prise par `y`, le
+/// troisième appel ne la trouve plus et coûte un tour de plus.
+///
+/// Le second appel, lui, tient l'autre moitié : `y` est rangée dans la seconde
+/// voie du même seau, et seule une recherche qui consulte les deux voies l'y
+/// trouve. Un correctif qui ne toucherait que l'installation, sans la
+/// recherche, laisserait ce tour de plus en place.
+#[test]
+fn two_regions_that_share_a_cell_are_both_found() {
+    let Some(bun) = bun() else {
+        return;
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+
+    /// `call` relatif : l'octet e8 puis l'écart jusqu'à la cible, compté
+    /// depuis l'instruction suivante.
+    fn appel(cible: u64, suivante: u64) -> [u8; 5] {
+        let ecart = (cible as i64 - suivante as i64) as i32;
+        let mut octets = [0xe8u8, 0, 0, 0, 0];
+        octets[1..].copy_from_slice(&ecart.to_le_bytes());
+        octets
+    }
+
+    // mov $0xf000,%rsp ; call x ; call y ; call x ; call y ; hlt
+    //
+    // **Chacune est appelée deux fois, et c'est ce qui tient les deux moitiés.**
+    // Le premier appel d'une adresse la fait installer : il rend la main de
+    // toute façon, quoi que la correspondance contienne. Seul le second dit si
+    // elle a été retrouvée. Avec un seul appel par adresse, un correctif qui
+    // rangerait bien les deux voies sans les **relire** toutes les deux
+    // passerait le test : `x` occuperait la première voie, `y` la seconde, et
+    // la seconde ne serait jamais consultée. Le sabotage l'a montré.
+    let programme = |x: u64, y: u64| -> Vec<u8> {
+        let mut octets = vec![0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00];
+        octets.extend_from_slice(&appel(x, BASE + 12));
+        octets.extend_from_slice(&appel(y, BASE + 17));
+        octets.extend_from_slice(&appel(x, BASE + 22));
+        octets.extend_from_slice(&appel(y, BASE + 27));
+        octets.push(0xf4);
+        octets
+    };
+
+    // Les empreintes du programme lui-même : les deux paires doivent les
+    // éviter, sinon la comparaison mesurerait une collision qu'on n'a pas
+    // voulue.
+    let interdites: std::collections::HashSet<u32> =
+        [BASE, BASE + 12, BASE + 17, BASE + 22, BASE + 27]
+            .iter()
+            .map(|at| table_slot(*at))
+            .collect();
+
+    // La paire qui se dispute une case : deux adresses de même empreinte.
+    let (xc, yc) = {
+        let mut vues: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+        let mut paire = None;
+        let mut at = 0x2_0000u64;
+        while at < 0x3_F000 {
+            let empreinte = table_slot(at);
+            if !interdites.contains(&empreinte) {
+                if let Some(&premiere) = vues.get(&empreinte) {
+                    paire = Some((premiere, at));
+                    break;
+                }
+                vues.insert(empreinte, at);
+            }
+            at += 16;
+        }
+        paire.expect("deux adresses de même empreinte dans la RAM de l'invité")
+    };
+
+    // Le témoin : deux adresses d'empreintes distinctes, et distinctes de
+    // celles du programme.
+    let (xt, yt) = {
+        let mut vues = interdites.clone();
+        let mut choisies = Vec::new();
+        let mut at = 0x2_0000u64;
+        while choisies.len() < 2 && at < 0x3_F000 {
+            let empreinte = table_slot(at);
+            if !vues.contains(&empreinte) {
+                vues.insert(empreinte);
+                choisies.push(at);
+            }
+            at += 16;
+        }
+        (choisies[0], choisies[1])
+    };
+    assert_eq!(
+        table_slot(xc),
+        table_slot(yc),
+        "la paire en dispute doit partager une empreinte"
+    );
+    assert_ne!(
+        table_slot(xt),
+        table_slot(yt),
+        "le témoin ne doit pas en partager"
+    );
+
+    let montage = |x: u64, y: u64| -> Vec<(u64, Vec<u8>)> {
+        let p = programme(x, y);
+        vec![
+            (BASE, p.clone()),
+            (BASE + 12, p[12..].to_vec()),
+            (BASE + 17, p[17..].to_vec()),
+            (BASE + 22, p[22..].to_vec()),
+            (BASE + 27, p[27..].to_vec()),
+            (x, vec![0xc3]),
+            (y, vec![0xc3]),
+        ]
+    };
+
+    let scratch = std::env::temp_dir().join(format!("wisq-seau-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let compiler = |nom: &str, regions: &[(u64, Vec<u8>)]| -> String {
+        let mut listing = String::new();
+        for (at, bytes) in regions {
+            let mut variantes = String::new();
+            for slot in 0..48u32 {
+                let module = Module::resolving_or_why(bytes, *at, 0, slot, PAGES)
+                    .unwrap_or_else(|why| panic!("la région {at:#x} se traduit : {why:?}"));
+                let chemin = scratch.join(format!("{nom}_{at:x}_{slot}.wasm"));
+                std::fs::write(&chemin, &module).expect("le module");
+                variantes.push_str(&format!("{:?},", chemin.to_string_lossy()));
+            }
+            listing.push_str(&format!("[{at}n,[{variantes}]],"));
+        }
+        listing
+    };
+    let temoin = compiler("t", &montage(xt, yt));
+    let dispute = compiler("d", &montage(xc, yc));
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+async function courir(connues) {{
+  const vm = machine({{
+    translate: async (address, slot) => {{
+      const variantes = connues.get(address);
+      if (variantes === undefined) return null;
+      return readFileSync(variantes[slot]);
+    }},
+    pages: {pages},
+  }});
+  vm.globals[{rip}].value = {base}n;
+  let tours = 0;
+  let why = {{ stopped: "tours épuisés" }};
+  for (let pas = 0; pas < 256; pas++) {{
+    why = await vm.run({{ budget: 4096n, rounds: 1 }});
+    if (why.stopped !== "tours épuisés") break;
+    tours++;
+  }}
+  return {{ arret: why.stopped, tours }};
+}}
+const t = await courir(new Map([{temoin}]));
+const d = await courir(new Map([{dispute}]));
+console.log("temoin " + t.arret + " tours=" + t.tours);
+console.log("dispute " + d.arret + " tours=" + d.tours);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let ligne = |prefixe: &str| -> &str {
+        text.lines()
+            .find(|l| l.starts_with(prefixe))
+            .unwrap_or_else(|| panic!("ligne « {prefixe} » absente : {text}"))
+    };
+    let tours = |ligne: &str| -> u32 {
+        ligne
+            .rsplit_once("tours=")
+            .and_then(|(_, n)| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("compte de tours illisible : {ligne}"))
+    };
+    let t = ligne("temoin ");
+    let d = ligne("dispute ");
+    assert!(
+        t.contains("arrêtée sur hlt"),
+        "le témoin doit finir sur son hlt : {text}"
+    );
+    assert!(
+        d.contains("arrêtée sur hlt"),
+        "la dispute aussi : une case prise n'a jamais coûté la justesse : {text}"
+    );
+    assert_eq!(
+        tours(d),
+        tours(t),
+        "deux adresses qui partagent une empreinte doivent être retrouvées \
+         toutes les deux, donc coûter autant de tours que si elles ne la \
+         partageaient pas : {text}"
     );
 }

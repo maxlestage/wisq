@@ -8964,3 +8964,57 @@ sondage, ou repenser le découpage en régions ? C'est la décision qui porte la
 suite ; elle attend ton mot. Les deux autres restent posées : l'arrêt nommé
 généralisé sur instruction illisible, et l'annonce `CX16`/`CLFLUSH` dans
 `cpuid`.
+
+## Deux voies par seau : les cases volées passent de 117 à 13
+
+Maxime a tranché les trois directions restées ouvertes, et dans cet ordre : le
+sondage de la correspondance d'abord, puis l'annonce `cpuid`, puis l'arrêt
+nommé généralisé. Voici la première.
+
+**D'abord, une phrase de #215 à corriger.** Elle disait que le sondage
+débloquerait la profondeur de démarrage. C'est faux, et le pilote le dit :
+une case perdue provoque un **retour de main**, que l'hôte résout depuis sa
+carte des régions connues — elle ne crée aucune région. La profondeur, elle,
+est plafonnée par `WISQ_ROUNDS`, parce que `kernel-entry` traduit **une région
+par tour en rejouant la machine depuis le début** : il est en JavaScript et ne
+peut pas appeler l'émetteur, qui est en Rust. Le sondage achète de la vitesse,
+pas de la profondeur. Le levier de la profondeur est le pilote, et c'est une
+autre tranche.
+
+**Ce que la tranche pose.** La correspondance tenait une seule case par
+empreinte, sans sondage. Elle tient maintenant un **seau de deux voies
+adjacentes** : l'empreinte dont on efface le bit de poids faible, et les deux
+cases qui se suivent. L'hôte range dans une voie libre — ou dans la sienne s'il
+réinstalle — au lieu d'écraser ; le module consulte les deux voies. Le nombre
+de seaux est divisé par deux et chacun porte deux adresses : autant de cases
+qu'avant. Les voies sont **adjacentes et non circulaires**, si bien qu'une
+adresse ne déborde jamais de la table — ce qu'un sondage linéaire ferait au
+dernier seau, en lisant le tampon de traduction et en y trouvant peut-être de
+quoi sauter n'importe où.
+
+**Mesuré, sur l'ensemble réel des 4096 régions du noyau Alpine** — le même
+calcul que #213, `table_slot` rejoué sur les régions du relevé, et il ne dépend
+pas de l'ordre : une case par empreinte en perd **117**, deux voies par seau en
+perdent **13**. Neuf fois moins de régions qui repassent par l'hôte à chaque
+appel, à 125–190 ns le retour de main.
+
+**Le test compare deux nombres qui doivent s'accorder.** Le même programme
+tourne deux fois : il appelle `x`, `y`, `x`, `y`, une fois avec deux adresses
+d'empreintes distinctes, une fois avec deux qui se disputent la même. Les deux
+atteignent leur `hlt`, et doivent coûter **le même nombre de tours de
+répartition**. Avant : cinq contre six. Après : égaux.
+
+**Et le sabotage a trouvé un trou dans ce test avant que la CI ne le trouve.**
+La première version n'appelait chaque adresse qu'une fois ; elle passait alors
+même que la recherche ne consultait qu'une voie. La raison : le premier appel
+d'une adresse la fait installer, il rend la main de toute façon, et seul un
+second appel dit si elle a été retrouvée. Avec `x` en première voie et `y` en
+seconde, la seconde n'était jamais relue et rien ne le montrait. Le test appelle
+maintenant chacune deux fois, et les deux moitiés du correctif tombent chacune
+sous son sabotage : la recherche réduite à une voie, et l'installation qui
+écrase toujours la première.
+
+**Restent deux directions, dans l'ordre que Maxime a donné** : annoncer dans
+`cpuid` ce que l'émetteur fait vraiment (`CX16`, `CLFLUSH` — `RDRAND` ne
+s'annonce pas, la machine n'a pas d'aléa à offrir), puis généraliser l'arrêt
+nommé sur instruction illisible.

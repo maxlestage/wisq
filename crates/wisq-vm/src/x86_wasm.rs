@@ -452,6 +452,22 @@ pub const TABLE_SLOTS: u32 = 1 << 16;
 /// suivante reste alignée sur huit.
 pub const TABLE_ENTRY: u32 = 16;
 
+/// **Combien de cases un seau porte.** La correspondance tenait une seule case
+/// par empreinte, sans sondage : deux adresses qui tombaient au même endroit ne
+/// se disputaient pas, la seconde installée écrasait la première, et la
+/// première repassait par l'hôte à chaque appel. #213 a compté ce que ça coûte
+/// sur le vrai noyau — 85 régions sur 3314 perdaient leur case — et #214 a
+/// établi que c'était muet : une perte de vitesse, jamais de justesse.
+///
+/// **Deux voies par seau, adjacentes, et pas de sondage circulaire.** Le seau
+/// est l'empreinte dont on efface le bit de poids faible ; ses voies sont les
+/// deux cases qui se suivent. Une adresse ne peut donc jamais déborder de la
+/// table — ce qu'un sondage linéaire ferait au dernier seau, en lisant le
+/// tampon de traduction et en y trouvant peut-être de quoi sauter n'importe
+/// où. Le nombre de seaux est divisé par deux et chacun porte deux adresses :
+/// autant de cases qu'avant, mais une collision ne coûte plus une éviction.
+pub const TABLE_WAYS: u32 = 2;
+
 /// Ce que la correspondance occupe, en pages. Un module qui la lit le déclare
 /// dans son minimum : ainsi un hôte qui ne l'a pas posée **ne démarre pas**,
 /// au lieu de piéger au premier saut vers une autre région — et un piège
@@ -1068,10 +1084,25 @@ impl Body {
             .constant(u64::from(64 - TABLE_SLOTS.trailing_zeros()))
             .op(code::I64_SHR_U)
             .op(code::I32_WRAP_I64)
+            // Le seau, et non la case : le bit de poids faible effacé range
+            // ensemble les deux voies que `lookup` consulte.
+            .constant32(!(TABLE_WAYS - 1))
+            .op(code::I32_AND)
             .constant32(TABLE_ENTRY)
             .op(code::I32_MUL)
             .constant32(base)
             .op(code::I32_ADD)
+    }
+
+    /// **Lire une case de la correspondance**, à un décalage donné depuis le
+    /// seau. Le décalage passe en LEB non signé comme WebAssembly l'exige :
+    /// l'écrire à la main tenait tant qu'il valait huit, et la seconde voie le
+    /// pousse au-delà.
+    fn cell(&mut self, opcode: u8, align: u8, offset: u32) -> &mut Self {
+        self.bytes.push(opcode);
+        self.bytes.push(align);
+        unsigned(u64::from(offset), &mut self.bytes);
+        self
     }
 
     fn constant(&mut self, value: u64) -> &mut Self {
@@ -2067,24 +2098,30 @@ impl Module {
     /// la traduction indépendante de l'endroit où l'hôte pose la région. Le
     /// retranchement d'ici le respecte au lieu de l'entamer.
     fn lookup(base: u32, body: &mut Body) {
-        // L'indice rangé dans la case, ramené au repère de la région.
-        body.entry(base);
-        body.op(code::I32_LOAD);
-        body.bytes.push(2); // alignement : quatre octets
-        body.bytes.push(8); // décalage : l'indice suit l'adresse
-                            // Le repli, si la case ne parle pas de nous.
+        // Les indices rangés dans chaque voie du seau, ramenés au repère de la
+        // région, empilés de la première voie à la dernière.
+        for way in 0..TABLE_WAYS {
+            body.entry(base);
+            // Décalage : l'indice suit l'adresse, et chaque voie suit la
+            // précédente. Alignement : quatre octets.
+            body.cell(code::I32_LOAD, 2, way * TABLE_ENTRY + 8);
+        }
+        // Le repli, si aucune voie ne parle de nous.
         body.bytes.push(code::I32_CONST);
         signed(-1, &mut body.bytes);
-        // Et la question : la case range-t-elle bien l'adresse cherchée ?
-        // Sans cette comparaison, une case vide ou occupée par une autre
-        // adresse ferait sauter le module dans un bloc au hasard — le défaut
-        // le plus difficile à voir de toute cette tranche.
-        body.entry(base);
-        body.op(code::I64_LOAD);
-        body.bytes.push(3);
-        body.bytes.push(0);
-        body.load(RIP_SLOT).op(code::I64_EQ);
-        body.op(code::SELECT);
+        // Et la question, posée à chaque voie de la dernière vers la première :
+        // celle-ci range-t-elle bien l'adresse cherchée ? Sans cette
+        // comparaison, une case vide ou occupée par une autre adresse ferait
+        // sauter le module dans un bloc au hasard — le défaut le plus difficile
+        // à voir de la tranche qui a posé la correspondance. `select` rend sa
+        // première valeur quand la condition tient : dépiler à l'envers laisse
+        // donc la voie la plus basse décider en dernier, et gagner.
+        for way in (0..TABLE_WAYS).rev() {
+            body.entry(base);
+            body.cell(code::I64_LOAD, 3, way * TABLE_ENTRY);
+            body.load(RIP_SLOT).op(code::I64_EQ);
+            body.op(code::SELECT);
+        }
     }
 
     /// **Pousser l'indice d'une cible statique.**
