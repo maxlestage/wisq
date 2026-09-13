@@ -241,6 +241,22 @@ Trois choses, et aucune n'est petite :
    qu'il vient d'accorder à chaque tour de sa boucle, donc un intervalle se
    mesure. Ce qui manque encore est la ligne qui **interrompt**, pas l'horloge
    qui avance.
+
+   **Et le noyau ne le laisse plus déduire, il le dit.** Depuis que la console
+   de démarrage n'est plus coupée — `keep_bootcon` dans la ligne du montage —
+   le relevé porte ses mots : « Failed to register legacy timer interrupt »,
+   « APIC: Keep in PIC mode(8259) », « tsc: Unable to calibrate against PIT »,
+   « tsc: No reference (HPET/PMTIMER) available ». Ni 8259, ni PIT, ni HPET, ni
+   APIC : aucune ligne capable de l'interrompre. Ce qui manque est un
+   **périphérique**, pas un raccordement.
+
+   **Et derrière, un second manque, nommé lui aussi.** Sous `lpj=` — une
+   béquille que le montage ne porte pas, et qui masque l'étalonnage au lieu de
+   le combler — la machine va jusqu'à 91 lignes série et s'arrête sur un `hlt` :
+   « x86/fpu: Giving up, no FPU found and no math emulation present ». `cpuid`
+   n'annonce pas le bit 0 d'EDX. L'ajouter demande d'abord de répondre à la
+   question que #217 a posée : l'émetteur exécute-t-il x87 ? Seul ce qu'on
+   exécute se déclare.
 2. **Un point de délivrance.** Il **existe** pour la faute de page : `deliver`
    dans `web/host.js`, appelé par la boucle quand une région pose le témoin —
    il lit la porte, pose le cadre du mode long sur la pile de l'invité, éteint

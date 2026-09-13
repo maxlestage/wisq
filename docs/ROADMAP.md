@@ -9306,3 +9306,90 @@ pendant qu'il tourne, en laissant l'autre tuyau se remplir, bloquerait les deux.
 **`WISQ_ROUNDS` compte une région de plus qu'avant** — la région d'entrée, que
 le pilote demandait au lieu de la recevoir toute compilée. Le réglage veut
 maintenant dire ce qu'il dit : le nombre de régions traduites.
+
+## Le noyau se taisait au moment où il avait le plus à dire
+
+Défaut du montage de mesure, pas du noyau — et il coûtait cher sans que rien ne
+rougisse.
+
+**Ce qui n'allait pas.** La ligne de commande du montage ne demandait
+qu'`earlycon`. C'est une console de **démarrage** : dès que la vraie console
+s'enregistre — `tty0`, la console d'écran, qui existe même sans écran — Linux
+désenregistre la première et bascule dessus. Le relevé le disait en toutes
+lettres, et personne ne le lisait :
+
+```text
+printk: console [tty0] enabled
+printk: bootconsole [uart8250] disabled
+```
+
+Après ces deux lignes la machine avançait encore, et le port série était
+**muet**. `web/host.js` n'écoute que `0x3f8` ; `tty0` n'y écrit rien. Le silence
+ressemblait à un arrêt, et c'est ce silence qu'on prenait pour la fin du
+démarrage.
+
+**La correction est un mot** : `keep_bootcon`. Et six lignes ont reparu — celles
+qui **nomment le mur suivant** :
+
+```text
+APIC disabled by BIOS
+Failed to register legacy timer interrupt
+APIC: Keep in PIC mode(8259)
+tsc: Unable to calibrate against PIT
+tsc: No reference (HPET/PMTIMER) available
+tsc: Marking TSC unstable due to could not calculate TSC khz
+```
+
+Jusqu'ici, le mur de l'horloge se **déduisait** d'une adresse — un saut
+conditionnel vers lui-même dans `calibrate_delay`, exhibé par le relevé des
+blocs. Maintenant il se **lit**, dans les mots du noyau : il n'a trouvé ni
+8259, ni PIT, ni HPET, ni APIC, donc aucune ligne capable de l'interrompre.
+
+75 lignes série deviennent 81, pour un mot dans une ligne de commande.
+
+### Ce que le test tient, et pourquoi il n'est pas une tautologie
+
+Un test sur une constante ne vaut rien s'il ne compare la constante qu'à
+elle-même. Celui-ci compare **deux fichiers de deux langages** : il lit
+`const SERIAL = 0x3f8` dans `web/host.js` et exige que la ligne de commande
+branche la console précoce sur *ce* port. Une ligne qui nommerait un port que
+l'hôte n'écoute pas ne rendrait pas une erreur, elle rendrait un silence —
+exactement le défaut que ce test existe pour empêcher. Et il exige `keep_bootcon`
+séparément.
+
+Trois sabotages, trois chutes : le montage ne garde plus la console ; le montage
+change de port ; l'hôte change de port sans que le montage le suive.
+
+### Et derrière le mur de l'horloge, mesuré sous une béquille
+
+**La béquille n'est pas commise, et c'est important.** `lpj=1000000` sur la
+ligne de commande fait sauter l'étalonnage à `calibrate_delay` — un paramètre
+Linux ordinaire, pas une modification du noyau, mais un cache-misère : il
+masque le manque au lieu de le combler, et le montage ne le porte pas. Il ne
+sert qu'à voir ce qu'il y a derrière.
+
+Derrière, la machine passe de 5147 à 5280 régions, **91 lignes série**, et
+s'arrête sur un `hlt` à `fpu__init_system + 448`. Là encore le noyau dit
+pourquoi, et c'est la dernière ligne qu'il écrit :
+
+```text
+x86/fpu: Giving up, no FPU found and no math emulation present
+```
+
+`cpuid` n'annonce pas le bit 0 d'EDX de la feuille un. Le noyau n'a ni FPU ni
+émulation mathématique, donc il abandonne — proprement, en le disant.
+
+**Deux murs nommés, dans l'ordre**, et aucun des deux n'est une instruction
+manquante :
+
+1. **L'horloge** — pas de 8259, pas de PIT, donc aucune ligne qui interrompt.
+   Le point de délivrance existe (`deliver`), `iretq` est produit, et
+   `docs/DEMARRAGE.md` a déjà chiffré *où* poser la délivrance : la boucle
+   hôte, avec un plancher de budget. Ce qui manque est le **périphérique**.
+2. **Le FPU** — un bit de `cpuid`. Mais l'annoncer se heurte à la règle que
+   #217 a posée et tenue : *seul ce qu'on exécute se déclare*. L'émetteur
+   exécute-t-il x87 ? C'est la question à trancher avant d'ajouter le bit, pas
+   après.
+
+Ces deux-là décident d'une direction ; ils sont donc posés à Maxime plutôt
+qu'engagés seul.

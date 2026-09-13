@@ -136,7 +136,21 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 /// pas `early_printk`, mais il a la console 8250 précoce : `earlycon` la
 /// branche sur le port `0x3f8` dès `setup_arch`, celui que `web/host.js`
 /// écoute déjà — bien avant `console_init`.
-pub const MONTAGE_COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8";
+///
+/// **`keep_bootcon`, et ce n'est pas un ornement.** `earlycon` est une console
+/// de *démarrage* : dès que la vraie console s'enregistre — `tty0`, la console
+/// d'écran, qui existe même sans écran — Linux désenregistre la première et
+/// bascule dessus. Le relevé le disait en toutes lettres et personne ne le
+/// lisait : « printk: console [tty0] enabled » puis « printk: bootconsole
+/// [uart8250] disabled ». Après ces deux lignes la machine avançait encore, et
+/// le port série était **muet** — un silence qui ressemble à un arrêt.
+///
+/// Six lignes ont reparu le jour où le montage l'a demandé, et ce sont
+/// exactement celles qui nomment le mur suivant : « Failed to register legacy
+/// timer interrupt », « APIC: Keep in PIC mode(8259) », « tsc: Unable to
+/// calibrate against PIT ». Le noyau dit lui-même ce qui lui manque ; il
+/// suffisait de ne pas lui couper la parole.
+pub const MONTAGE_COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8 keep_bootcon";
 
 /// **La page zéro qu'un chargeur doit écrire pour qu'un noyau connaisse sa
 /// RAM.** `struct boot_params`, quatre kibioctets, et cinq champs seulement.
