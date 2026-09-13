@@ -44,6 +44,9 @@
 //! rendait « quatre instructions puis un octet illisible », ce qui ressemblait
 //! à un résultat. L'adresse du point d'entrée est **virtuelle** ; le décalage
 //! se lit par les en-têtes de programme, et c'est cet outil qui le fait.
+use std::io::BufRead;
+use std::path::Path;
+
 use wisq_vm::kernel_image::{loads, zero_page, MONTAGE_COMMAND_LINE};
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
@@ -301,25 +304,61 @@ fn main() {
             .join(", ")
     );
 
-    // **Une région de plus par tour, et on recommence depuis le début.**
+    // **Une seule exécution, et le pilote va chercher ce qui lui manque.**
     //
-    // Le pilote ne peut pas appeler l'émetteur : il est en JavaScript, et
-    // l'émetteur en Rust. Alors chaque tour lui donne l'ensemble des régions
-    // déjà traduites, la machine repart du point d'entrée, et l'adresse qu'elle
-    // réclame en s'arrêtant devient la région du tour suivant.
+    // Il ne pouvait pas appeler l'émetteur — JavaScript d'un côté, Rust de
+    // l'autre — alors chaque tour lui donnait l'ensemble des régions déjà
+    // traduites et **rejouait le démarrage depuis le début**. C'était
+    // quadratique, et longtemps sans importance : l'outil mesure une distance,
+    // pas une vitesse. Ça a cessé d'être vrai le jour où la distance s'est mise
+    // à dépendre du budget — cinq secondes par tour à la 512ᵉ région, une
+    // vingtaine d'heures pour en atteindre quatre mille. Le mur mesuré n'était
+    // plus celui du noyau, c'était celui de l'outil.
     //
-    // **C'est déterministe**, donc chaque tour va au moins aussi loin que le
-    // précédent : la machine est neuve, le texte est reposé, rien ne persiste.
-    // C'est quadratique et ça n'a aucune importance — l'outil mesure une
-    // distance, pas une vitesse.
-    let mut regions: Vec<(u64, Vec<u8>)> = Vec::new();
+    // Ce que le pilote ne peut pas appeler, il peut le **lancer** :
+    // `Bun.spawnSync` sur `x86-translate` rend une région en quelques
+    // millisecondes, et la machine n'est plus jamais rejouée.
     match compile(entry_virtual, 0) {
-        Ok(module) => regions.push((entry_virtual, module)),
+        Ok(_) => {}
         Err(why) => {
             println!("la région d'entrée ne se traduit pas : {why}");
             std::process::exit(1);
         }
     }
+
+    // **Le manifeste que le traducteur relira**, écrit une fois : le chemin de
+    // l'image, la RAM déclarée, puis un segment par ligne. Le refaire à chaque
+    // région rouvrirait trente-cinq mébioctets par appel.
+    let manifest = scratch.join("manifeste.txt");
+    let mut lines = format!("{path}\n{PAGES}\n");
+    for load in &segments {
+        lines.push_str(&format!(
+            "{} {} {}\n",
+            load.physical_address, load.offset, load.file_size
+        ));
+    }
+    std::fs::write(&manifest, lines).expect("le manifeste");
+
+    // **Où le traducteur se trouve.** À côté de cet exemple dans `target`, ou
+    // sous la racine. S'il manque, le dire avec la commande qui le construit
+    // plutôt que d'échouer sur un `spawnSync` dont le message ne nomme rien.
+    let translator = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .and_then(|dir| dir.parent())
+                .map(Path::to_path_buf)
+        })
+        .map(|dir| dir.join("x86-translate"))
+        .filter(|at| at.exists())
+        .or_else(|| {
+            let at = root.join("target/release/x86-translate");
+            at.exists().then_some(at)
+        });
+    let Some(translator) = translator else {
+        println!("`x86-translate` n'est pas construit : cargo build -p wisq-vm --release --bin x86-translate");
+        std::process::exit(1);
+    };
     println!();
 
     // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.
@@ -342,15 +381,8 @@ fn main() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(4096);
-    let mut last = String::new();
-    for round in 1..=rounds {
-        let mut listing = String::new();
-        for (index, (at, module)) in regions.iter().enumerate() {
-            let path = scratch.join(format!("r{index}.wasm"));
-            std::fs::write(&path, module).expect("le module");
-            listing.push_str(&format!("[{at}n,{:?}],", path.to_string_lossy()));
-        }
-        let driver = scratch.join("d.mjs");
+    let driver = scratch.join("d.mjs");
+    {
         std::fs::write(
             &driver,
             format!(
@@ -358,9 +390,13 @@ fn main() {
 import {{ machine }} from {host:?};
 import {{ readFileSync }} from "fs";
 
-const connues = new Map([{listing}]);
 let manquante = null;
 let place = 0;
+// **Combien de régions le pilote s'autorise à traduire.** C'est ce que
+// `WISQ_ROUNDS` réglait quand chaque région coûtait une exécution entière ;
+// le nom du réglage ne change pas, ce qu'il coûte, si.
+let traduites = 0;
+const plafond = {rounds};
 // **Ce que le noyau écrit sur le port série**, octet par octet. C'est la
 // seule voix qu'il a : un `printk` qui aboutit finit sur `0x3f8`, et
 // `host.js` l'écoute déjà. Gardé en entier et imprimé à la fin, pour ne pas se
@@ -368,15 +404,31 @@ let place = 0;
 let serie = "";
 const vm = machine({{
   serial: (octet) => {{ serie += String.fromCharCode(octet); }},
-  translate: async (address, slot) => {{
-    const path = connues.get(address);
-    if (path !== undefined) return readFileSync(path);
-    // **L'adresse qu'on ne sait pas servir est le résultat du tour.**
-    if (manquante === null) {{
-      manquante = address;
-      place = slot;
+  // **Le pilote va chercher l'émetteur au lieu d'attendre le tour suivant.**
+  //
+  // `x86-translate` rend les octets d'une région en quelques millisecondes.
+  // C'est ce qui remplace le rejeu du démarrage — et la seule chose qui a
+  // changé de ce côté-ci : la boucle hôte voit toujours une fonction à qui
+  // elle donne une adresse et qui rend des octets, ou rien.
+  translate: (address, slot) => {{
+    if (traduites >= plafond) {{
+      if (manquante === null) {{ manquante = address; place = slot; }}
+      console.log("plafond 0x" + address.toString(16));
+      return null;
     }}
-    return null;
+    const out = Bun.spawnSync(
+      [{translator:?}, {manifest:?}, address.toString(), String(slot)]
+    );
+    if (out.exitCode !== 0) {{
+      if (manquante === null) {{ manquante = address; place = slot; }}
+      console.log("refusée 0x" + address.toString(16) + " emplacement " + slot
+        + " " + out.stderr.toString().trim());
+      return null;
+    }}
+    traduites += 1;
+    console.log("traduit 0x" + address.toString(16) + " emplacement " + slot
+      + " octets " + out.stdout.length);
+    return out.stdout;
   }},
   pages: {pages},
 }});
@@ -490,6 +542,9 @@ console.log("controle " + controle
                 placements = placements,
                 zero_page = ZERO_PAGE_AT,
                 turns = turns,
+                rounds = rounds,
+                translator = translator.to_string_lossy(),
+                manifest = manifest.to_string_lossy(),
                 pages = PAGES,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
@@ -499,23 +554,82 @@ console.log("controle " + controle
             ),
         )
         .expect("le pilote");
+    }
 
-        let output = std::process::Command::new(bun)
-            .arg("run")
-            .arg(&driver)
-            .output()
-            .expect("bun");
-        let text_out = String::from_utf8_lossy(&output.stdout).to_string();
-        let errors = String::from_utf8_lossy(&output.stderr);
-        if !errors.is_empty() {
-            println!("tour {round} : le pilote a écrit en erreur");
-            print!("{errors}");
-            break;
+    // **Les erreurs du pilote vont dans un fichier**, pas dans un tuyau que
+    // personne ne vide : lire sa sortie standard ligne à ligne pendant qu'il
+    // tourne et laisser l'autre tuyau se remplir bloquerait les deux.
+    let errors_path = scratch.join("erreurs.txt");
+    let mut child = std::process::Command::new(bun)
+        .arg("run")
+        .arg(&driver)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::from(
+            std::fs::File::create(&errors_path).expect("le fichier d'erreurs"),
+        ))
+        .spawn()
+        .expect("bun");
+
+    // **Les régions, nommées au fur et à mesure.** Le pilote ne connaît pas la
+    // carte des symboles ; il imprime des adresses nues et c'est ici qu'elles
+    // prennent un nom, à mesure qu'elles arrivent — un relevé qui n'arriverait
+    // qu'à la fin ne dirait pas si la machine avance encore.
+    let mut regions: Vec<u64> = Vec::new();
+    let mut last = String::new();
+    {
+        let out = child.stdout.take().expect("la sortie du pilote");
+        let hex = |text: &str| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok();
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            match fields.as_slice() {
+                ["traduit", at, "emplacement", slot, "octets", size] => {
+                    if let Some(at) = hex(at) {
+                        println!(
+                            "tour {} : {} régions traduites, la machine réclame {} \
+                             à l'emplacement {slot} ({size} octets)",
+                            regions.len() + 1,
+                            regions.len(),
+                            map.describe_loaded(at, KERNEL_MAP)
+                        );
+                        regions.push(at);
+                    }
+                }
+                ["refusée", at, "emplacement", _, why @ ..] => {
+                    if let Some(at) = hex(at) {
+                        println!(
+                            "tour {} : {} régions traduites, et {} **ne se traduit pas** — {}",
+                            regions.len() + 1,
+                            regions.len(),
+                            map.describe_loaded(at, KERNEL_MAP),
+                            why.join(" ")
+                        );
+                    }
+                }
+                ["plafond", _] => {
+                    println!(
+                        "tour {} : la limite de tours est atteinte, la machine avançait encore",
+                        regions.len()
+                    );
+                }
+                _ => {
+                    last.push_str(&line);
+                    last.push('\n');
+                }
+            }
         }
-        last = text_out.clone();
+    }
+    let status = child.wait().expect("bun");
+    let errors = std::fs::read_to_string(&errors_path).unwrap_or_default();
+    if !errors.is_empty() {
+        println!("le pilote a écrit en erreur");
+        print!("{errors}");
+    }
+    if !status.success() {
+        println!("le pilote s'est arrêté sur {status}");
+    }
+    {
         let line = |name: &str| -> Option<String> {
-            text_out
-                .lines()
+            last.lines()
                 .find_map(|l| l.strip_prefix(name))
                 .map(|rest| rest.trim().to_string())
         };
@@ -529,50 +643,25 @@ console.log("controle " + controle
             // dire comme la fin a fait prendre `sort_r` pour un mur.
             if why == "tours épuisés" {
                 println!(
-                    "tour {round} : {} régions, aucune adresse ne manque, et les {turns} tours du \
+                    "{} régions, aucune adresse ne manque, et les {turns} tours du \
                      pilote (WISQ_TURNS) sont épuisés : la machine avançait encore",
                     regions.len()
                 );
             } else {
-                println!(
-                    "tour {round} : {} régions, et plus rien à traduire — {why}",
-                    regions.len()
-                );
+                println!("{} régions, et plus rien à traduire — {why}", regions.len());
             }
-            break;
-        }
-        let Some(at) = missing
-            .strip_prefix("0x")
-            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        else {
-            println!("tour {round} : adresse illisible « {missing} »");
-            break;
-        };
-        let place: u32 = line("emplacement ")
-            .and_then(|text| text.parse().ok())
-            .unwrap_or(0);
-        match compile(at, place) {
-            Ok(module) => {
-                println!(
-                    "tour {round} : {} régions traduites, la machine réclame {} \
-                     à l'emplacement {place} ({} octets)",
-                    regions.len(),
-                    map.describe_loaded(at, KERNEL_MAP),
-                    module.len()
-                );
-                regions.push((at, module));
-            }
-            Err(why) => {
-                println!(
-                    "tour {round} : {} régions traduites, et {} **ne se traduit pas** — {why}",
-                    regions.len(),
-                    map.describe_loaded(at, KERNEL_MAP)
-                );
-                break;
-            }
-        }
-        if round == rounds {
-            println!("tour {round} : la limite de tours est atteinte, la machine avançait encore");
+        } else {
+            println!(
+                "{} régions, et la machine s'est arrêtée sur {}",
+                regions.len(),
+                match missing
+                    .strip_prefix("0x")
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                {
+                    Some(at) => map.describe_loaded(at, KERNEL_MAP),
+                    None => missing.clone(),
+                }
+            );
         }
     }
     println!();
@@ -600,7 +689,7 @@ console.log("controle " + controle
         // Ce n'est pas une redite décorative : trois lignes identiques
         // ressemblent à trois chemins, et il n'y en a qu'un.
         let mut seen = std::collections::BTreeSet::new();
-        for (base, _) in &regions {
+        for base in &regions {
             // Le même repli, et il n'est pas décoratif : sans lui cette
             // soustraction sur une base virtuelle ne rendait pas un mauvais
             // nombre, elle **paniquait** — « range start index
