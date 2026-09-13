@@ -24,3 +24,7 @@ path = "src/bin/bench.rs"
 [[bin]]
 name = "wisq-x86-bench"
 path = "src/bin/x86-bench.rs"
+
+[[bin]]
+name = "x86-translate"
+path = "src/bin/x86-translate.rs"

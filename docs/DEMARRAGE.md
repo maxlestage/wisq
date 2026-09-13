@@ -229,7 +229,14 @@ La GDT, elle, n'est toujours lue par rien.
 Trois choses, et aucune n'est petite :
 
 1. **Une source de temps qui interrompt.** Le noyau calibre, planifie et se
-   réveille sur un timer. La machine n'en a aucun. Le compteur d'horodatage,
+   réveille sur un timer. La machine n'en a aucun.
+
+   **Ce n'est plus une prévision, c'est la mesure.** Depuis que le pilote de
+   `kernel-entry` ne rejoue plus le démarrage à chaque région, il va jusqu'au
+   bout de ce que la machine sait faire — 5179 régions, 75 lignes série — et
+   s'arrête sur `calibrate_delay + 1091`, un saut conditionnel **vers
+   lui-même** : le noyau attend que `jiffies` avance. Le mur n'est plus une
+   instruction manquante ni un budget d'outil. C'est celui-ci. Le compteur d'horodatage,
    lui, **a cessé de mentir sur la durée** : `web/host.js` ajoute le budget
    qu'il vient d'accorder à chaque tour de sa boucle, donc un intervalle se
    mesure. Ce qui manque encore est la ligne qui **interrompt**, pas l'horloge
