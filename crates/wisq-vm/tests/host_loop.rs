@@ -7201,3 +7201,226 @@ console.log("dispute " + d.arret + " tours=" + d.tours);
          partageaient pas : {text}"
     );
 }
+
+/// **Le pilote traduit à la demande, sans connaître les régions d'avance.**
+///
+/// C'est le mécanisme qui manquait, et son absence coûtait cher : `kernel-entry`
+/// ne pouvait pas appeler l'émetteur — JavaScript d'un côté, Rust de l'autre —
+/// alors il **rejouait le démarrage depuis le début** à chaque nouvelle région,
+/// une exécution de Bun par région. Quadratique : cinq secondes par tour à la
+/// 512ᵉ région, une vingtaine d'heures pour en atteindre quatre mille. Ce n'est
+/// pas le jeu d'instructions qui bornait la profondeur de démarrage depuis
+/// #215, c'est ce coût-là.
+///
+/// **Ce que ce test tient, et qu'aucun autre ne tenait.** Tous les pilotes de
+/// ce fichier servent des modules **préparés d'avance** : le test connaît les
+/// régions parce qu'il les a compilées lui-même. Ici le pilote n'en connaît
+/// aucune. Il reçoit une adresse et va chercher un traducteur, comme
+/// l'application ira chercher l'émetteur dans son processus hôte.
+///
+/// **Le montage force trois régions distinctes**, et c'est le point : les deux
+/// cibles de `call` sont à trente-deux et soixante-cinq kibioctets, donc hors
+/// de la fenêtre de seize kibioctets que le traducteur lit. La découverte ne
+/// peut pas les avaler dans la première région ; il **faut** que la boucle
+/// redemande, deux fois, à des adresses que rien n'a annoncées.
+///
+/// Un bouchon complaisant — qui rendrait la même région à n'importe quelle
+/// demande — ferait tomber `rdx`, parce que les deux `incq` n'auraient pas lieu
+/// aux bons endroits. C'est pour ça que le témoin est un compteur et pas un
+/// drapeau.
+///
+/// **Et il en demande cinq, pas trois.** Ce test attendait trois régions et en a
+/// trouvé cinq ; les deux de plus sont des adresses de **retour**. L'assertion
+/// dit pourquoi, en détail : c'est une trouvaille de cette tranche, pas un
+/// réglage d'attente.
+#[test]
+fn the_driver_translates_on_demand_without_knowing_the_regions_in_advance() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 8;
+    // **Une base virtuelle qui se replie sur l'adresse physique**, comme celle
+    // d'un noyau : `0xffffffff80010000 & (512 Kio - 1)` vaut `0x10000`. Ce
+    // n'est pas de la décoration — le traducteur doit replier avant de
+    // chercher le segment, sinon toute adresse virtuelle serait « hors de tout
+    // segment » et la machine s'arrêterait à sa première.
+    const BASE: u64 = 0xffff_ffff_8001_0000;
+    const PHYSICAL: u64 = 0x1_0000;
+    // Trois régions, à trente-deux kibioctets l'une de l'autre.
+    const SECOND: u64 = 0x8000;
+    const THIRD: u64 = 0x1_0000;
+    const UNREADABLE: u64 = 0x4000;
+
+    let mut image = vec![0u8; (THIRD + 0x10) as usize];
+    // `call +0x7ffb` vers 0x8000, `call +0xfff6` vers 0x10000, puis `ud2`.
+    image[0..5].copy_from_slice(&[0xe8, 0xfb, 0x7f, 0x00, 0x00]);
+    image[5..10].copy_from_slice(&[0xe8, 0xf6, 0xff, 0x00, 0x00]);
+    image[10..12].copy_from_slice(&[0x0f, 0x0b]);
+    // Chacune des deux régions appelées incrémente RDX et rend la main.
+    for at in [SECOND, THIRD] {
+        image[at as usize..at as usize + 4].copy_from_slice(&[0x48, 0xff, 0xc2, 0xc3]);
+    }
+    // **Un octet que le décodeur ne lit pas**, à seize kibioctets pile — donc
+    // hors de la fenêtre de la première région, et sur la route de personne.
+    // Il n'est là que pour qu'on puisse demander au traducteur une région
+    // qu'il doit refuser, et vérifier *comment* il le dit.
+    image[UNREADABLE as usize] = 0x06;
+
+    let scratch = std::env::temp_dir().join(format!("wisq-demande-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let image_path = scratch.join("image.bin");
+    std::fs::write(&image_path, &image).expect("l'image");
+    // Le manifeste : le chemin, le nombre de pages, puis un segment par ligne
+    // — adresse physique, décalage dans le fichier, taille.
+    let manifest = scratch.join("manifeste.txt");
+    std::fs::write(
+        &manifest,
+        format!(
+            "{}\n{PAGES}\n{PHYSICAL} 0 {}\n",
+            image_path.to_string_lossy(),
+            image.len()
+        ),
+    )
+    .expect("le manifeste");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+const demandées = [];
+const tailles = [];
+const vm = machine({{
+  // **Le pilote ne sait rien des régions.** Il reçoit une adresse, il va
+  // chercher un traducteur, il rend les octets. C'est exactement la forme que
+  // l'application a — un aller-retour vers le processus où vit l'émetteur.
+  translate: (address, slot) => {{
+    demandées.push(address);
+    const out = Bun.spawnSync([{translator:?}, {manifest:?}, address.toString(), String(slot)]);
+    if (out.exitCode !== 0) return null;
+    tailles.push(out.stdout.length);
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+vm.globals[4].value = 0x70000n;  // rsp
+vm.globals[2].value = 0n;        // rdx : le témoin
+const why = await vm.run({{ budget: 1000n, rounds: 32 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("arret " + why.stopped);
+console.log("rdx " + lire(2).toString());
+console.log("rip 0x" + lire({rip}).toString(16));
+console.log("demandées " + demandées.map((a) => "0x" + a.toString(16)).join(" "));
+console.log("octets " + tailles[0]);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            manifest = manifest.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{errors}\n{text}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    // **Les cinq adresses, dans l'ordre, et rien d'autre.** C'est la seule
+    // assertion qui dit que rien n'était connu d'avance : aucune des quatre
+    // dernières ne se lit ailleurs que dans l'exécution de la première.
+    //
+    // **Et deux d'entre elles sont des adresses de retour**, ce que ce test
+    // n'attendait pas et qui vaut d'être écrit ici plutôt que corrigé en
+    // silence : `0x10005` et `0x1000a` sont les octets *qui suivent* les deux
+    // `call`, c'est-à-dire des blocs que la première région porte **déjà**. La
+    // correspondance ne les retrouve pas, parce qu'elle est indexée par
+    // l'adresse d'**entrée** d'une région, pas par les débuts de blocs qu'elle
+    // contient — donc un `ret` qui retombe au milieu d'une région connue rend
+    // la main, et l'hôte fabrique une seconde région qui recouvre la première.
+    //
+    // Ce n'est pas un défaut de la traduction à la demande, et cette tranche ne
+    // le corrige pas. C'est mesurable sur un vrai noyau, et le relevé de
+    // `kernel-entry` le montre en toutes lettres : `boot_cpu_init` puis
+    // `boot_cpu_init + 9`, `_printk` puis `_printk + 9`, `vprintk` puis
+    // `vprintk + 9`. Une région sur deux est une adresse de retour.
+    assert_eq!(
+        line("demandées "),
+        format!(
+            "0x{BASE:x} 0x{:x} 0x{:x} 0x{:x} 0x{:x}",
+            BASE + SECOND,
+            BASE + 5,
+            BASE + THIRD,
+            BASE + 10
+        ),
+        "cinq demandes, dans l'ordre où la machine les rencontre : {text}"
+    );
+    assert_eq!(
+        line("rdx "),
+        "2",
+        "les deux régions appelées ont chacune incrémenté RDX : {text}"
+    );
+    assert_eq!(
+        line("rip "),
+        format!("0x{:x}", BASE + 10),
+        "et la machine finit sur le `ud2` de la première région : {text}"
+    );
+
+    // **Le traducteur rend le module que l'émetteur rendrait**, au même octet
+    // près. C'est ce qui tient la fenêtre qu'il lit : avec une fenêtre plus
+    // courte, la première région ne porterait pas ses trois blocs, et la suite
+    // marcherait quand même — par d'autres régions, sans que rien ne rougisse.
+    let expected = Module::resolving_or_why(&image[..16384], BASE, 0, 0, PAGES)
+        .expect("la région d'entrée se traduit");
+    assert_eq!(
+        line("octets "),
+        expected.len().to_string(),
+        "le premier module fait la taille que l'émetteur lui donne : {text}"
+    );
+
+    // **Les codes de sortie sont le protocole**, et rien ne les tenait : un
+    // pilote qui confondrait « je ne sais pas lire cet octet » et « il n'y a
+    // pas d'octets là » chercherait une instruction manquante là où il n'y a
+    // qu'une adresse hors image.
+    let ask = |at: u64| {
+        Command::new(env!("CARGO_BIN_EXE_x86-translate"))
+            .arg(&manifest)
+            .arg(at.to_string())
+            .arg("0")
+            .output()
+            .expect("le traducteur")
+            .status
+            .code()
+    };
+    assert_eq!(ask(BASE), Some(0), "la région d'entrée se traduit");
+    assert_eq!(
+        ask(BASE + UNREADABLE),
+        Some(2),
+        "un octet illisible à l'entrée est un refus franc, et le dit par 2"
+    );
+    assert_eq!(
+        ask(BASE + 0x3_0000),
+        Some(3),
+        "une adresse qui ne tombe dans aucun segment le dit par 3, pas par 2"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
