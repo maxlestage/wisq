@@ -9687,3 +9687,108 @@ Trois nouveaux, sept sabotages, chacun tombant sur le sien.
 
 Le premier est le seul dont le témoin soit un noyau entier plutôt qu'un
 montage : retirer le bit remet le `hlt` là où il était, à l'octet près.
+
+## #224 — la correspondance apprend les débuts de blocs, pas seulement l'entrée
+
+Un défaut que ce dépôt avait nommé lui-même deux fois — dans le relevé de #219
+et dans le commentaire de `install` — sans le corriger :
+
+> Seule l'adresse d'**entrée** y est rangée, pas chaque bloc : l'émetteur ne dit
+> pas où commencent ses blocs. Un saut au milieu d'une autre région rend la
+> main, et l'hôte traduit alors une région qui commence là — deux traductions
+> qui se recouvrent.
+
+**Le chiffre a été remesuré plutôt que recopié.** Le ROADMAP disait 31 % sur
+5179 régions ; sur le relevé d'après #223 c'est **1559 des 5514 régions
+demandées, 28 %**, à moins de seize octets d'une région déjà demandée. L'écart
+dominant est neuf octets (743 fois), puis cinq (395) : les octets qui suivent un
+`call`, c'est-à-dire les adresses où les `ret` retombent.
+
+### Ce que la tranche fait, et pourquoi de cette façon
+
+Le module **exporte** ses débuts de blocs — `starts(i)` rend l'adresse invitée
+de son bloc numéro `i` — et l'hôte range une case par bloc au lieu d'une par
+région.
+
+Deux formes ont été écartées, chacune pour une raison :
+
+- **Un troisième champ dans la réponse de l'application.** Cinquante-quatre
+  endroits fournissent la fonction `translate` ; changer sa forme de retour les
+  toucherait tous, pour une information que le module porte déjà.
+- **Le module pose ses propres cases.** Il faudrait alors réécrire en
+  WebAssembly la politique de voies et d'éviction qui vit en JavaScript, et
+  faire vivre deux copies d'une règle qui doit être unique.
+
+L'export laisse la politique là où elle est et **rend l'ordre indémontable
+plutôt que testé** : le même vecteur `starts` engendre la section d'éléments —
+qui pose le bloc *i* à l'emplacement `slot + i` — et la chaîne de l'accesseur.
+
+### La mesure, et le détour qu'elle a imposé
+
+| | avant (#223) | premier jet | après |
+| --- | --- | --- | --- |
+| régions traduites | 5514 | 1176 | **1676** |
+| demandes à moins de 16 octets d'une autre | 1559 (28 %) | 21 (2 %) | **94 (6 %)** |
+| lignes série | 87 | **72** | 87 |
+| arrêt | `fpu__init_system + 183` | tours épuisés | `fpu__init_system + 183` |
+
+**Le premier jet allait moins loin que l'état d'avant, et le chiffre le plus
+flatteur était celui du jet cassé.** 1176 régions, 2 % de recouvrement — et un
+noyau qui perd quinze lignes de journal. Ranger *toutes* les cases sans
+distinction faisait passer les retours de main sur `pv_native_irq_disable` de
+2938 à **66 340** : dix fois plus d'adresses pour deux voies par seau, et les
+entrées les plus chaudes se faisaient évincer par des blocs visités une seule
+fois.
+
+**D'où la règle** : un début de bloc ne prend qu'une voie **libre**, jamais la
+place de quelqu'un. L'entrée d'une région est la seule adresse par laquelle
+toute la région reste atteignable ; un raccourci qui chasse une nécessité n'est
+pas un raccourci. Avec elle : 5514 → **1676 régions**, soit **70 % de moins**,
+le noyau va exactement aussi loin qu'avant et s'arrête au **même octet**,
+`fxsave` à `fpu__init_system + 183`.
+
+### Ce que la tranche ne fait pas
+
+Quand le budget expire exactement sur un début de bloc, l'hôte traduit encore
+une région qui commence là : la correspondance connaît l'adresse, mais la carte
+`known` de la boucle hôte est, elle, toujours indexée par entrée de région.
+C'est une fois par retour de main au pire, contre une fois par `ret` avant, et
+le corriger demanderait que `run` puisse démarrer ailleurs qu'à l'entrée de sa
+région — un changement de sa signature, donc une autre tranche. Les 6 % qui
+restent sont surtout ça.
+
+### Les tests, et le sabotage qui a trouvé le vrai trou
+
+Deux nouveaux, quatre sabotages, et **le plus important a d'abord survécu**.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| l'accesseur décale l'adresse d'un octet | `a_target_inside_a_known_region…` |
+| l'hôte ne range aucun début de bloc | le même |
+| **l'hôte range l'emplacement de la *région* au lieu de celui du *bloc*** | le même — **après correction du test** |
+| un début de bloc peut évincer une entrée | `a_block_start_never_evicts_a_region_entry` |
+
+Le troisième est celui qui compte : ranger le mauvais emplacement envoie
+l'invité dans le **mauvais bloc**, et le test le laissait passer. L'anneau
+tournait, RDX montait, et personne ne disait que la machine n'était pas où la
+correspondance prétendait l'envoyer. Le témoin manquant est un `incq %r8` dans
+le premier bloc : il doit valoir **un**, parce que l'entrée n'est franchie
+qu'une fois.
+
+Le quatrième a été écrit après coup, et pour la même raison : la règle
+anti-éviction n'était tenue que par une mesure écrite dans ce document. Une
+mesure trouve une règle ; elle ne la garde pas.
+
+### Deux gardes voisines qu'il a fallu remettre en état
+
+- `a_stolen_correspondence_cell_costs_a_hand_back_but_never_correctness` volait
+  la case seulement une fois que l'hôte avait installé une région dont
+  l'entrée était l'adresse de retour — ce qui n'arrive plus. Son déclencheur ne
+  se déclenchait plus, et les deux moitiés du test devenaient identiques. Elle
+  a **échoué** plutôt que de se taire, ce qui est ce qu'on lui demande. Le vol
+  efface maintenant les deux voies du seau, sans condition.
+- `the_driver_translates_on_demand_without_knowing_the_regions_in_advance`
+  demandait cinq régions, il en demande quatre : celle qui disparaît est
+  `0x10005`, l'octet qui suit le premier `call`. `0x1000a` reste, parce que le
+  bloc qui commence là est le `ud2` — il rend la main par conception, quoi que
+  la correspondance sache.
