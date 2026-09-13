@@ -258,6 +258,15 @@ Trois choses, et aucune n'est petite :
    il ne manque plus que le 8254 pour la cadencer (T2) et quelqu'un pour la
    lever (T3).
 
+   **Et T2 a levé le mur en entier, sans T3.** Le 8254 compte désormais contre
+   la même horloge que `rdtsc`, et l'étalonnage réussit : « tsc: Fast TSC
+   calibration using PIT », « tsc: Detected 999.989 MHz processor ». Un noyau
+   qui a une fréquence digne de confiance **n'exécute pas** sa boucle
+   d'étalonnage, il la calcule — « Calibrating delay loop (skipped) ». Le saut
+   conditionnel vers lui-même de `calibrate_delay` n'est plus atteint. T3 reste
+   nécessaire pour les jiffies et l'ordonnanceur, mais plus pour la raison
+   écrite ici.
+
    **Et derrière, un second manque, nommé lui aussi.** Sous `lpj=` — une
    béquille que le montage ne porte pas, et qui masque l'étalonnage au lieu de
    le combler — la machine va jusqu'à 91 lignes série et s'arrête sur un `hlt` :

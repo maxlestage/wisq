@@ -7563,6 +7563,7 @@ const vm = machine({{
 vm.globals[{rip}].value = {base}n;
 await vm.run({{ budget: 1000n, rounds: 4 }});
 console.log("rax " + BigInt.asUintN(64, vm.globals[0].value).toString(16));
+console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
 {extra}
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
@@ -7596,4 +7597,250 @@ fn line_of(text: &str, label: &str) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+/// **Le prologue d'étalonnage du noyau, exécuté tel quel, trouve un 8254.**
+///
+/// Lu dans `quick_pit_calibrate`, à `0xffffffff81056382`, et c'est du canal
+/// **deux** qu'il se sert — celui du haut-parleur, dont le portillon est sur le
+/// port `0x61` :
+///
+/// ```text
+/// in  $0x61,%al ; and $0xfc,%eax ; or $0x1,%eax ; out %al,$0x61
+/// mov $0xb0,%al ; out %al,$0x43     ; canal 2, accès bas/haut, mode 0, binaire
+/// mov $0xff,%al ; out %al,$0x42     ; le compteur bas
+///                 out %al,$0x42     ; puis le haut — 0xffff
+/// in  $0x42,%al ×4
+/// ```
+///
+/// **Ce test n'assène pas la valeur que le noyau compare.** Il compare `%al` à
+/// `0xff` après ces quatre lectures — et `0xff` est *exactement* ce que rend un
+/// port où il n'y a personne. Une assertion sur cette valeur-là serait verte
+/// sans le moindre 8254, et c'est le piège que ce dépôt s'est déjà interdit.
+///
+/// Ce qu'il tient à la place est le **portillon** : `0x61` doit rendre ce que le
+/// noyau vient d'y écrire. Un port qui flotte rend `0xff` ; celui-ci doit rendre
+/// `0x01` — le bit du portillon allumé, celui du haut-parleur éteint, et la
+/// sortie du canal 2 encore basse parce qu'un compteur en mode 0 ne la lève
+/// qu'en atteignant zéro.
+#[test]
+fn the_kernels_calibration_prologue_finds_a_timer() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x31, 0xc0, // xor %eax,%eax
+        0xe4, 0x61, // in  $0x61,%al        — lire le portillon
+        0x83, 0xe0, 0xfc, // and $0xfffffffc,%eax
+        0x83, 0xc8, 0x01, // or  $0x1,%eax
+        0xe6, 0x61, // out %al,$0x61        — portillon ouvert, haut-parleur muet
+        0xb0, 0xb0, // mov $0xb0,%al
+        0xe6, 0x43, // out %al,$0x43        — le mot de commande
+        0xb0, 0xff, // mov $0xff,%al
+        0xe6, 0x42, // out %al,$0x42        — le compteur bas
+        0xe6, 0x42, // out %al,$0x42        — puis le haut
+        0xe4, 0x42, // in  $0x42,%al        — les quatre lectures du noyau
+        0xe4, 0x42, //
+        0xe4, 0x42, //
+        0xe4, 0x42, //
+        0x31, 0xc0, // xor %eax,%eax
+        0xe4, 0x61, // in  $0x61,%al        — et c'est ÇA que le test tient
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "prologue-8254", "");
+    assert_eq!(
+        line_of(&text, "rax "),
+        "1",
+        "le port du portillon doit rendre ce qu'on vient d'y écrire — pas le \
+         0xff d'un bus qui flotte, et pas la sortie d'un compteur qui n'a pas \
+         fini : {text}"
+    );
+}
+
+/// **Le compteur descend, et il descend au bon rythme.**
+///
+/// C'est la seule propriété dont l'étalonnage a besoin, et la seule qu'un
+/// modèle puisse se tromper en silence. Le noyau ne lit pas l'heure : il compte
+/// combien de fois son propre `rdtsc` avance pendant que le compteur du 8254
+/// perd un octet de poids fort, et il en déduit une fréquence. Un compteur qui
+/// ne bouge pas fait échouer l'étalonnage ; un compteur qui bouge au mauvais
+/// rythme fait **annoncer une fréquence fausse**, ce qui est pire — la machine
+/// dormirait trop peu ou trop longtemps partout, sans que rien ne rougisse.
+///
+/// **Le montage.** Le compteur est chargé à `0xffff`, puis lu trois fois,
+/// séparées par quatre mille `rdtsc`. Chaque `rdtsc` avance l'horloge de
+/// `TSC_STEP`, cent — c'est le contrat de l'émetteur, et le seul mouvement
+/// d'horloge de ce test : un seul tour est accordé, donc le budget que la
+/// boucle hôte ajoute d'ordinaire tombe après tout le monde.
+///
+/// Quatre mille lectures font donc 400 000 unités d'horloge. À 1 193 182 Hz
+/// pour le 8254 contre le gigahertz nominal du compteur d'horodatage, cela fait
+/// **477** pas — et ce nombre est écrit ici en toutes lettres plutôt que
+/// recalculé depuis les deux constantes, sans quoi les deux côtés bougeraient
+/// ensemble et le test ne tiendrait plus rien.
+#[test]
+fn the_timer_counts_down_at_the_rate_the_kernel_will_measure() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    /// Ce que quatre mille `rdtsc` font perdre au compteur. Écrit, pas calculé.
+    const STEPS: u64 = 477;
+    let mut program: Vec<u8> = vec![
+        0xb0, 0x01, 0xe6, 0x61, // portillon ouvert
+        0xb0, 0xb0, 0xe6, 0x43, // canal 2, accès bas/haut, mode 0
+        0xb0, 0xff, 0xe6, 0x42, 0xe6, 0x42, // chargé à 0xffff
+    ];
+    // Lire les deux octets du compteur et les recomposer dans un registre que
+    // `rdtsc` ne touche pas — il n'écrit qu'EAX et EDX.
+    let read_into = |program: &mut Vec<u8>, keep: u8| {
+        program.extend_from_slice(&[
+            0x31, 0xc0, // xor %eax,%eax
+            0xe4, 0x42, // in  $0x42,%al   — l'octet bas
+            0x89, 0xc1, // mov %eax,%ecx
+            0x31, 0xc0, // xor %eax,%eax
+            0xe4, 0x42, // in  $0x42,%al   — puis le haut
+            0xc1, 0xe0, 0x08, // shl $8,%eax
+            0x09, 0xc8, // or  %ecx,%eax
+            0x89, keep, // mov %eax,<registre gardé>
+        ]);
+    };
+    read_into(&mut program, 0xc3); // → %ebx
+    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    read_into(&mut program, 0xc6); // → %esi
+    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    read_into(&mut program, 0xc7); // → %edi
+    program.extend_from_slice(&[0x0f, 0x0b]);
+
+    let text = drive(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "rythme-8254",
+        r#"const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("compteurs " + lire(3) + " " + lire(6) + " " + lire(7));"#,
+    );
+    let counts: Vec<u64> = line_of(&text, "compteurs ")
+        .split_whitespace()
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    assert_eq!(counts.len(), 3, "trois lectures du compteur : {text}");
+    assert_eq!(
+        counts[0], 0xffff,
+        "la première lecture voit le compteur tel qu'il vient d'être chargé, \
+         parce que rien n'a encore fait avancer l'horloge : {text}"
+    );
+    assert_eq!(
+        (counts[0] - counts[1], counts[1] - counts[2]),
+        (STEPS, STEPS),
+        "et il perd le même nombre de pas pour la même durée, {STEPS} — \
+         c'est ce rapport que le noyau prendra pour la fréquence de son \
+         compteur d'horodatage : {text}"
+    );
+}
+
+/// **Écrire un diviseur et lire un compteur sont deux séquences, pas une.**
+///
+/// En accès bas-puis-haut, la puce se souvient de deux choses différentes : de
+/// quel octet du diviseur elle attend l'écriture, et quel octet du compte elle
+/// rendra à la prochaine lecture. Les tenir dans un seul drapeau marche tant
+/// que personne n'entrelace les deux — et ce test entrelace, exprès.
+///
+/// Le montage est la programmation périodique du noyau, lue dans
+/// `pit_set_periodic` à `0xffffffff818f8b60` — `0x34` sur le port de commande
+/// (canal 0, bas/haut, **mode 2**), puis `0x89` et `0x0f`, soit un diviseur de
+/// 3977 : 1 193 182 hertz divisés par 3977 font trois cents, et ce noyau est
+/// bâti à trois cents hertz. Une lecture est glissée **entre les deux
+/// écritures**.
+///
+/// Avec deux séquences séparées, le diviseur vaut `0x0f89` et le compte ne peut
+/// pas le dépasser. Avec une seule, la lecture consomme la moitié de
+/// l'écriture, les octets se décalent, et le diviseur devient un autre nombre —
+/// que le compte trahit aussitôt.
+#[test]
+fn writing_a_divisor_and_reading_a_count_are_two_sequences() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const DIVISOR: u64 = 0x0f89;
+    let program = [
+        0xb0, 0x34, 0xe6, 0x43, // mot de commande : canal 0, bas/haut, mode 2
+        0xb0, 0x89, 0xe6, 0x40, // l'octet bas du diviseur
+        0xe4, 0x40, // et une lecture glissée au milieu
+        0xb0, 0x0f, 0xe6, 0x40, // l'octet haut
+        // puis le compte, recomposé dans RBX
+        0x31, 0xc0, 0xe4, 0x40, 0x89, 0xc1, 0x31, 0xc0, 0xe4, 0x40, 0xc1, 0xe0, 0x08, 0x09, 0xc8,
+        0x89, 0xc3, //
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "sequences-8254",
+        r#"console.log("compte " + BigInt.asUintN(64, vm.globals[3].value));
+console.log("diviseur " + vm.pits[0].reload);"#,
+    );
+    assert_eq!(
+        line_of(&text, "diviseur "),
+        DIVISOR.to_string(),
+        "les deux écritures composent 0x0f89, que la lecture du milieu ne doit \
+         pas décaler : {text}"
+    );
+    let count: u64 = line_of(&text, "compte ").parse().unwrap_or(u64::MAX);
+    assert!(
+        count > 0 && count <= DIVISOR,
+        "et un compteur en mode 2 ne dépasse jamais son diviseur : {count} \
+         pour {DIVISOR} — {text}"
+    );
+}
+
+/// **Le canal périodique recharge, il ne court pas après zéro.**
+///
+/// C'est ce qui distingue le mode 2 — celui de la cadence, que `pit_set_periodic`
+/// programme — du mode 0 de l'étalonnage. En mode 0 le compteur descend et
+/// **boucle** par en bas ; en mode 2 il repart de son diviseur à chaque fois
+/// qu'il l'atteint. T3 fera monter IRQ0 sur ce rechargement : un compteur qui
+/// boucle au lieu de recharger donnerait une cadence de soixante-cinq mille
+/// pas au lieu de son diviseur, soit une interruption toutes les cinquante-cinq
+/// millisecondes au lieu de trois — et rien ne rougirait.
+///
+/// **Le montage rend le tour court exprès.** Un diviseur de seize pas se
+/// franchit en deux cents `rdtsc` ; celui du noyau, 3977, en demanderait
+/// trente-trois mille, soit un programme plus gros que la fenêtre que le
+/// traducteur lit. Deux cents lectures font vingt mille unités d'horloge, donc
+/// vingt-trois pas du 8254 — un tour entier et sept de plus. Le compteur doit
+/// donc rendre **neuf** : seize moins sept. S'il bouclait, il rendrait 65 529.
+#[test]
+fn the_periodic_channel_reloads_instead_of_running_past_zero() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = vec![
+        0xb0, 0x34, 0xe6, 0x43, // canal 0, bas/haut, mode 2
+        0xb0, 0x10, 0xe6, 0x40, // diviseur : seize
+        0xb0, 0x00, 0xe6, 0x40, //
+    ];
+    program.extend(std::iter::repeat_n([0x0f, 0x31], 200).flatten());
+    program.extend_from_slice(&[
+        0x31, 0xc0, 0xe4, 0x40, 0x89, 0xc1, 0x31, 0xc0, 0xe4, 0x40, 0xc1, 0xe0, 0x08, 0x09, 0xc8,
+        0x89, 0xc3, // le compte, dans RBX
+        0x0f, 0x0b,
+    ]);
+    let text = drive(&bun, &program, BASE, PAGES, "periodique-8254", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "9",
+        "seize moins les sept pas du second tour — un compteur qui bouclerait \
+         rendrait 65529 : {text}"
+    );
 }
