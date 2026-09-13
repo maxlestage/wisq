@@ -267,13 +267,19 @@ Trois choses, et aucune n'est petite :
    nécessaire pour les jiffies et l'ordonnanceur, mais plus pour la raison
    écrite ici.
 
-   **Et derrière, un second manque, nommé lui aussi.** Sous `lpj=` — une
-   béquille que le montage ne porte pas, et qui masque l'étalonnage au lieu de
-   le combler — la machine va jusqu'à 91 lignes série et s'arrête sur un `hlt` :
-   « x86/fpu: Giving up, no FPU found and no math emulation present ». `cpuid`
-   n'annonce pas le bit 0 d'EDX. L'ajouter demande d'abord de répondre à la
-   question que #217 a posée : l'émetteur exécute-t-il x87 ? Seul ce qu'on
-   exécute se déclare.
+   **Et derrière, un second manque — levé à son tour.** La machine s'arrêtait
+   sur un `hlt` à `fpu__init_system + 448` : « x86/fpu: Giving up, no FPU found
+   and no math emulation present », faute que `cpuid` annonce le bit 0 d'EDX.
+   La question que #217 avait posée — l'émetteur exécute-t-il x87 ? — a été
+   tranchée en exécutant ce que le noyau vérifie derrière la garde : `db e3`,
+   `fninit`, qui remet le mot de contrôle à `0x037f` et le mot d'état à zéro.
+   Le bit est donc annoncé **et** tenu.
+
+   Le mur suivant est `fxsave` à `fpu__init_system + 183`, désassemblé :
+   512 octets d'état, dont le noyau relit le masque MXCSR à l'offset `0x1c`.
+   Une aire entière contre deux mots — une autre taille de tranche. Ce que
+   cette machine ne fait toujours pas est le **calcul** en virgule flottante ;
+   la première instruction qui en demanderait un est un arrêt nommé.
 2. **Un point de délivrance.** Il **existe** pour la faute de page : `deliver`
    dans `web/host.js`, appelé par la boucle quand une région pose le témoin —
    il lit la porte, pose le cadre du mode long sur la pile de l'invité, éteint

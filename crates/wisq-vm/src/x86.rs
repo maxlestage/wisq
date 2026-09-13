@@ -729,6 +729,23 @@ pub enum Op {
     /// plus rien à faire, ou qui a paniqué. Sans interruptions, la produire
     /// donnerait un arrêt définitif déguisé en attente.
     Halt,
+    /// **`DB E3` : remettre le x87 à son état d'allumage.**
+    ///
+    /// Mot de contrôle à `0x037F` — toutes les exceptions masquées, précision
+    /// étendue, arrondi au plus proche —, mot d'état à zéro, pile vide.
+    ///
+    /// **Pourquoi celle-là et pas les quatre-vingts autres du x87.** Un noyau
+    /// Linux ne calcule pas en virgule flottante ; il *initialise* le
+    /// coprocesseur, puis sauvegarde et restaure son état aux changements de
+    /// contexte. `fpu__init_system` — mesuré par désassemblage à
+    /// `0xffffffff82a461f4` sur Alpine 6.6 — exécute `fninit` comme première
+    /// chose derrière la garde `X86_FEATURE_FPU`. Sans elle, la machine ne
+    /// franchit pas la ligne « x86/fpu: Giving up ».
+    ///
+    /// **Les autres formes de `DB` restent illisibles**, et c'est voulu :
+    /// `db /0` est `fild`, un vrai calcul. Décoder l'octet entier ferait
+    /// croire à un coprocesseur qui compte.
+    FpuInit,
     /// **`CC` et `CD nn` : une interruption demandée par le code.** Le vecteur
     /// est dans `imm` — trois pour `int3`, l'octet suivant pour `int n`.
     ///
@@ -2074,6 +2091,7 @@ impl Cpu {
                 | Op::StoreSegment { .. }
                 | Op::InterruptFlag(_)
                 | Op::Halt
+                | Op::FpuInit
                 | Op::PushFlags
                 | Op::PopFlags
         ) {
@@ -2363,6 +2381,7 @@ impl Cpu {
             | Op::StoreSegment { .. }
             | Op::InterruptFlag(_)
             | Op::Halt
+            | Op::FpuInit
             | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
@@ -3396,6 +3415,16 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             op: Op::Halt,
             length: at,
             ..Decoded::nothing(Width::Qword)
+        }),
+        // **`DB E3`, et rien d'autre du groupe `DB`.** Le sens du coprocesseur
+        // n'est pas dans l'opcode mais dans l'octet qui suit : `E3` est
+        // `fninit`, `E0` à `E2` sont trois formes que rien n'emploie, et tout
+        // le reste — `/0` en tête — est `fild`, un vrai calcul. Décoder
+        // l'octet entier ferait croire à un coprocesseur qui compte.
+        0xdb if bytes.get(at) == Some(&0xe3) => Some(Decoded {
+            op: Op::FpuInit,
+            length: at + 1,
+            ..Decoded::nothing(Width::Word)
         }),
         // **`int3` et `int n`.** Le vecteur va dans `imm` ; un `cd` dont
         // l'octet manque ne se décode pas, plutôt que de lui inventer un
@@ -6013,5 +6042,42 @@ mod tests {
             cpu.regs[3], 0xdead_beef_cafe_0000,
             "rdrand %bx ne touche que seize bits"
         );
+    }
+}
+
+#[cfg(test)]
+mod x87 {
+    use super::*;
+
+    /// **`fninit` se décode, et rien d'autre du groupe `DB`.**
+    ///
+    /// C'est la première instruction que `fpu__init_system` exécute derrière sa
+    /// garde `X86_FEATURE_FPU` — lue par désassemblage à `0xffffffff82a461f4`,
+    /// pas supposée. Le relevé de couverture la voyait déjà : `db` figure deux
+    /// fois dans la colonne des octets qu'une région traduit sans savoir les
+    /// lire.
+    ///
+    /// **Et le reste du groupe doit rester illisible.** `db /0` est `fild`, qui
+    /// charge un entier sur la pile du coprocesseur : un vrai calcul, que cette
+    /// machine ne fait pas. Décoder l'octet `db` en entier ferait croire à un
+    /// coprocesseur qui compte, et le premier programme qui compterait
+    /// rendrait un résultat faux au lieu d'un refus nommé.
+    #[test]
+    fn fninit_decodes_and_the_rest_of_its_group_does_not() {
+        let step = decode(&[0xdb, 0xe3]).expect("`fninit` doit se décoder");
+        assert_eq!(step.op, Op::FpuInit);
+        assert_eq!(step.length, 2, "deux octets, sans ModRM à part le sien");
+        for (bytes, what) in [
+            (&[0xdb, 0x04, 0x24][..], "fild (%rsp)"),
+            (&[0xdb, 0xe0][..], "feni, que rien n'emploie"),
+            (&[0xdb, 0xe2][..], "fnclex"),
+            (&[0xd9, 0xe3][..], "un autre opcode du coprocesseur"),
+        ] {
+            assert!(
+                decode(bytes).is_none(),
+                "{what} doit rester illisible : un refus nommé vaut mieux \
+                 qu'un calcul faux"
+            );
+        }
     }
 }
