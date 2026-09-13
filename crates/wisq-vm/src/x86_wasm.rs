@@ -550,6 +550,15 @@ pub enum Refused {
 
     /// **Une instruction que le décodeur ne lit pas**, à `at`, avec toute la
     /// place qu'il lui fallait. Redemander n'apporterait rien.
+    ///
+    /// **Elle ne sort plus que du point d'entrée.** Un octet illisible plus
+    /// loin dans la région arrête son bloc — le module rend la main dessus, et
+    /// c'est la région qui *commence* là qui est refusée, si l'exécution y va.
+    /// Refuser la région entière jetait tout ce qui la précédait pour un octet
+    /// que la découverte spéculative avait lu et que personne n'exécutait
+    /// peut-être. Ce qui a été lu sans être compris se relève par
+    /// `Module::unreadable`, qui existe pour que la tranche ne fasse pas
+    /// perdre ce qu'elle apprend.
     CannotDecode { at: usize },
 
     /// **Une instruction que le décodeur lit mais que l'émetteur ne sait pas
@@ -1486,7 +1495,7 @@ impl Module {
         // **La pagination n'existe que sous confinement** : c'est lui qui ouvre
         // la place au-dessus de la RAM déclarée, où vivent la correspondance et
         // le tampon. Sans masque, `guest()` garde sa forme d'avant.
-        let blocks = Self::discover(bytes, entry)?;
+        let (blocks, _) = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
             .iter()
@@ -1604,7 +1613,7 @@ impl Module {
     /// retour de main doit pouvoir la lire. Un interpréteur qui vit ailleurs ne
     /// le peut pas — et « ailleurs » comprend l'application elle-même.
     pub fn survey(bytes: &[u8], entry: usize) -> Option<Survey> {
-        let blocks = Self::discover(bytes, entry).ok()?;
+        let (blocks, _) = Self::discover(bytes, entry).ok()?;
         let mut survey = Survey {
             blocks: blocks.len(),
             ..Default::default()
@@ -1666,7 +1675,7 @@ impl Module {
     /// `goes` sont vides parce qu'il n'y a rien à y mettre, pas parce que la
     /// question ne se pose pas.
     pub fn outline(bytes: &[u8], entry: usize) -> Result<Vec<Outline>, Refused> {
-        let blocks = Self::discover(bytes, entry)?;
+        let (blocks, _) = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         Ok(blocks
             .iter()
@@ -1711,7 +1720,35 @@ impl Module {
             .collect())
     }
 
-    fn discover(bytes: &[u8], entry: usize) -> Result<Vec<(usize, Vec<Decoded>)>, Refused> {
+    /// **Les octets qu'une région traduit sans savoir les lire**, à leurs
+    /// décalages, en ordre croissant.
+    ///
+    /// Depuis que le bloc s'arrête devant un octet illisible au lieu de faire
+    /// refuser la région, ce que le décodeur ne sait pas lire ne se lit plus
+    /// dans un `Err`. Il fallait qu'il se lise **quelque part** : ces adresses
+    /// sont ce qui a guidé les dix dernières tranches — `lkgs`, `invlpg`,
+    /// `invpcid`, `ltr`, `lldt`, `cmpxchg16b`, `clflush`, `rdrand` sont toutes
+    /// arrivées par là. Une tranche qui cesse de refuser sans rendre ce relevé
+    /// éteindrait l'instrument qui l'a produite.
+    ///
+    /// **Ce n'est pas la même chose qu'une coupe.** Une instruction que le bord
+    /// de la fenêtre a tranchée n'est pas nommée ici : elle serait lisible avec
+    /// plus d'octets, et la compter ferait chercher une instruction manquante
+    /// là où il n'y a qu'un bord. C'est `REACH` qui départage, et lui seul.
+    ///
+    /// **Ce que ces adresses ne disent pas** : que l'exécution y aille. La
+    /// découverte est spéculative — elle suit les deux issues de chaque saut —
+    /// donc un octet nommé ici peut n'être jamais atteint. C'est justement
+    /// pourquoi il ne coûte plus la région.
+    pub fn unreadable(bytes: &[u8], entry: usize) -> Result<Vec<usize>, Refused> {
+        Self::discover(bytes, entry).map(|(_, stops)| stops)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn discover(
+        bytes: &[u8],
+        entry: usize,
+    ) -> Result<(Vec<(usize, Vec<Decoded>)>, Vec<usize>), Refused> {
         let mut starts = std::collections::BTreeSet::new();
         let mut queue = vec![entry];
         let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
@@ -1719,6 +1756,11 @@ impl Module {
         // **Où le relevé a rencontré le bord**, s'il l'a rencontré : une
         // instruction qui ne se décode pas à moins de `REACH` octets de la fin.
         let mut cut = None;
+        // **Et où il a rencontré un octet qu'il ne sait pas lire**, avec toute
+        // la place qu'il lui fallait. Chacun arrête son bloc ; aucun ne refuse
+        // la région. `unreadable` les rend, parce qu'ils doivent rester
+        // comptables.
+        let mut stops = std::collections::BTreeSet::new();
         while let Some(start) = queue.pop() {
             if start >= bytes.len() || !starts.insert(start) {
                 continue;
@@ -1734,7 +1776,21 @@ impl Module {
                     // place restante qui répond, et elle seule : le décodeur
                     // ne sait pas dire s'il lui manquait des octets.
                     if bytes.len() - at >= REACH {
-                        return Err(Refused::CannotDecode { at });
+                        // **Un arrêt nommé, et non plus un refus.** Le bloc
+                        // finit devant l'octet, exactement comme devant une
+                        // coupe ; ce qui change est ce que l'hôte trouvera en
+                        // arrivant là — une région dont le premier octet est
+                        // illisible, et *elle* est refusée franchement.
+                        //
+                        // Refuser ici refusait la région **entière**, alors
+                        // que la découverte est spéculative : elle suit les
+                        // deux issues de chaque saut conditionnel et la suite
+                        // de chaque `call`, donc elle lit des octets que
+                        // l'exécution n'atteindra peut-être jamais. C'est le
+                        // même défaut que le mur de `setup_arch`, déplacé du
+                        // bord vers le milieu — et la même correction.
+                        stops.insert(at);
+                        break;
                     }
                     // **Coupé : le bloc s'arrête devant, et `at` devient une
                     // cible hors région.** Ce qui précède est complet et se
@@ -1804,16 +1860,29 @@ impl Module {
             blocks.insert(start, steps);
         }
         if blocks.is_empty() {
-            // **Rien de complet, et pourquoi.** Si c'est le bord qui a coupé
-            // la toute première instruction, davantage d'octets la
-            // rendraient lisible : c'est le seul cas où redemander est le
-            // seul remède, et le seul où `MayBeCut` est encore rendu.
-            return Err(match cut {
-                Some(at) => Refused::MayBeCut { at },
-                None => Refused::NothingAtEntry,
+            // **Rien de complet, et pourquoi.** Blocs vides veut dire que
+            // l'entrée elle-même n'a pas décodé — rien n'est mis dans la file
+            // avant elle — donc l'unique arrêt ou l'unique coupe est la
+            // sienne, et l'adresse rendue est celle du point d'entrée. Les deux
+            // sont donc **exclusifs** ici, et l'ordre des bras ne décide de
+            // rien : c'est le seuil, plus haut, qui a déjà choisi lequel des
+            // deux porte l'adresse.
+            //
+            // Si c'est le bord qui a coupé cette première instruction,
+            // davantage d'octets la rendraient lisible : c'est le seul cas où
+            // redemander est le seul remède, et le seul où `MayBeCut` est
+            // encore rendu. Si le décodeur avait la place, redemander serait
+            // perdu, et c'est ici — et plus qu'ici — que `CannotDecode` sort.
+            return Err(match (stops.iter().next(), cut) {
+                (Some(&at), _) => Refused::CannotDecode { at },
+                (None, Some(at)) => Refused::MayBeCut { at },
+                (None, None) => Refused::NothingAtEntry,
             });
         }
-        Ok(blocks.into_iter().collect())
+        Ok((
+            blocks.into_iter().collect(),
+            stops.into_iter().collect::<Vec<_>>(),
+        ))
     }
 
     /// **Ce qu'un bloc fait à la fin : dire où aller.**
