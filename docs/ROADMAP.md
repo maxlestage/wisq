@@ -9393,3 +9393,99 @@ manquante :
 
 Ces deux-là décident d'une direction ; ils sont donc posés à Maxime plutôt
 qu'engagés seul.
+
+## L'horloge, T1 : le 8259 se laisse trouver, et deux lignes du noyau disparaissent
+
+Première des trois tranches de l'horloge, la direction que Maxime a tranchée
+(« les deux, l'horloge d'abord »).
+
+**Le mur tenait à huit bits qui ne se relisaient pas.** Le noyau imprimait
+« Using NULL legacy PIC » depuis toujours. La raison se lit dans son binaire —
+`probe_8259A`, à `0xffffffff8104e7a0`, et elle tient en cinq instructions :
+
+```text
+mov $0xff,%eax ; out %al,$0xa1     ; masque tout sur l'esclave
+mov $0xfb,%eax ; out %al,$0x21     ; masque tout sauf la cascade sur le maître
+in  $0x21,%al                      ; et relit
+cmp $0xfb,%al                      ; ce qu'il vient d'écrire
+```
+
+`web/host.js` rendait `0xff` pour tout port sans personne — le bus qui flotte,
+la bonne réponse quand il n'y a personne. La relecture ne pouvait donc jamais
+valoir `0xfb`, et le noyau concluait, **avec raison**, qu'aucun contrôleur n'est
+là. Sans contrôleur, pas de routage d'IRQ0 ; sans IRQ0, pas d'horloge ; sans
+horloge, `calibrate_delay` tourne sur lui-même. Tout ce mur tenait à un registre
+de masque.
+
+**Ce que la tranche pose** : les deux 8259 en cascade — maître sur `0x20`/`0x21`,
+esclave sur `0xa0`/`0xa1` —, leur registre de masque qui se relit, et la
+séquence d'initialisation qui pose une **base de vecteur**.
+
+**Ce qu'elle ne pose pas, et le dit** : les registres de requête et de service,
+la priorité, la fin d'interruption. Rien n'en a besoin tant qu'aucune ligne ne
+monte, et le zéro que rend le port de commande est alors la réponse *vraie*, pas
+un bouchon. Une infidélité est nommée plutôt que tue : un vrai 8259 efface son
+masque en recevant ICW1, celui-ci ne le fait pas, et aucun invité ne peut le
+voir parce que Linux écrit `0xff` juste avant et repose son masque juste après.
+
+### La base de vecteur est `0x30`, et l'avoir lue plutôt que supposée a évité une tranche
+
+`init_8259A`, à `0xffffffff8104e620`, écrit :
+
+```text
+out 0xff→0x21   out 0x11→0x20   out 0x30→0x21   out 0x04→0x21   out 0x03→0x21
+out 0x11→0xa0   out 0x38→0xa1   out 0x02→0xa1   out 0x01→0xa1
+```
+
+ICW2 vaut **`0x30`** pour le maître et `0x38` pour l'esclave. Pas `0x20` — la
+valeur du PC d'origine, celle que donnent tous les manuels et celle qu'un modèle
+écrit de mémoire aurait portée. Avec `0x20`, la tranche de la délivrance aurait
+sauté dans la mauvaise porte de l'IDT, et le défaut serait tombé trois tranches
+plus loin sans que rien ne dise pourquoi.
+
+**C'est la deuxième fois dans ce travail qu'un désassemblage remplace une
+supposition** — la première était l'entrée du noyau, en #188 — et les deux fois
+ça a coûté cinq minutes et fait gagner une tranche.
+
+### La mesure
+
+| | avant | après |
+| --- | --- | --- |
+| `Using NULL legacy PIC` | imprimé | **disparu** |
+| `Failed to register legacy timer interrupt` | imprimé | **disparu** |
+| `NR_IRQS … preallocated irqs` | 0 | **16** |
+| régions traduites | 5147 | 5357 |
+
+**Deux des six lignes de diagnostic s'en vont d'un coup.** La seconde est la
+plus parlante : le noyau n'échoue plus à enregistrer l'interruption du timer —
+la ligne existe, son gestionnaire est en place. Il ne manque plus que quelqu'un
+pour la lever.
+
+**Et la machine s'arrête toujours au même endroit**, `calibrate_delay + 1091`.
+C'était attendu et il faut le dire : enregistrer une ligne n'est pas la lever.
+T2 pose le 8254 — « tsc: Unable to calibrate against PIT » est la prochaine
+ligne à faire tomber — et T3 fait monter IRQ0 depuis la boucle hôte, là où
+`docs/DEMARRAGE.md` a déjà chiffré le coût.
+
+### Les tests
+
+Deux tests, et le programme du premier **est la sonde du noyau, octet pour
+octet**, exécutée à travers l'émetteur sous JavaScriptCore. Le second rejoue sa
+séquence d'initialisation et exige les deux bases.
+
+Ce que le second tient et que le premier ne peut pas tenir : un modèle qui
+rangerait ICW2 dans le masque rendrait la sonde **verte quand même**, puisque le
+noyau repose son masque juste après — et se tromperait de vecteur pour toujours.
+Les bases ne s'observent pas depuis l'invité ; elles se lisent dans le relevé,
+que la machine expose désormais en lecture à côté de la correspondance.
+
+Quatre sabotages, quatre chutes : le port de données rend le bus qui flotte ;
+ICW2 est rangé dans le masque ; le bit d'initialisation est ignoré ; le maître
+et l'esclave sont intervertis. Le dernier ne tombe **que** sur le second test —
+la sonde du noyau est symétrique et ne peut pas les distinguer.
+
+### Ce que la tranche ne touche pas
+
+Les deux autres cœurs. L'interpréteur Rust et le cœur Swift ont leur propre
+histoire de périphériques ; ce qui est posé ici l'est dans `web/host.js`, la
+machine du bureau local — celle que « il faut que desktop marche bien » désigne.

@@ -250,6 +250,14 @@ Trois choses, et aucune n'est petite :
    APIC : aucune ligne capable de l'interrompre. Ce qui manque est un
    **périphérique**, pas un raccordement.
 
+   **Le premier des trois est posé.** `web/host.js` modélise les deux 8259
+   depuis la tranche T1 : leur masque se relit, et leur base de vecteur est
+   celle que ce noyau emploie — `0x30`, lue dans son `init_8259A`, pas `0x20`.
+   Deux lignes du journal s'en vont : « Using NULL legacy PIC » et **« Failed
+   to register legacy timer interrupt »**. La ligne du timer est enregistrée ;
+   il ne manque plus que le 8254 pour la cadencer (T2) et quelqu'un pour la
+   lever (T3).
+
    **Et derrière, un second manque, nommé lui aussi.** Sous `lpj=` — une
    béquille que le montage ne porte pas, et qui masque l'étalonnage au lieu de
    le combler — la machine va jusqu'à 91 lignes série et s'arrête sur un `hlt` :
