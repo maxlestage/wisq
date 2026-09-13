@@ -200,11 +200,24 @@ pub const CPUID_MAX_LEAF: u32 = 1;
 /// Famille 6, modèle 0, pas 0 — une signature plausible et sans prétention.
 pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
 /// **Ce qui se déclare dans EDX, parce que l'émetteur le fait vraiment** : le
-/// compteur d'horodatage (bit 4), et `clflush` (bit 19), produit depuis #211.
+/// coprocesseur (bit 0), le compteur d'horodatage (bit 4), et `clflush`
+/// (bit 19), produit depuis #211.
+///
+/// **Le bit zéro est celui qui décide qu'un noyau démarre.** `fpu__init_system`
+/// le teste — désassemblé à `0xffffffff82a461d0` sur Alpine 6.6 — et saute
+/// droit sur « x86/fpu: Giving up, no FPU found and no math emulation
+/// present » s'il est nul. Ce n'est pas un chemin plus long : c'est un `hlt`.
+///
+/// **Et il n'est pas cru sur parole**, ce qui est ce qui rend son annonce
+/// compatible avec la règle de #217. Derrière la garde, le noyau exécute
+/// `fninit` — que l'émetteur produit — et lira l'état qu'elle laisse. Ce qu'on
+/// déclare, il le mesure ; et on le lui donne pour de vrai. Ce que cette
+/// machine **ne** fait pas est le calcul en virgule flottante, et la première
+/// instruction qui en demanderait un sera un arrêt nommé comme les autres.
 /// Le compteur se déclare parce qu'un noyau qui ne le voit pas cherche une
 /// autre horloge que cette machine n'a pas non plus ; `clflush` parce que le
 /// noyau, sans lui, vide ses caches par des chemins plus longs.
-pub const CPUID_FEATURES_EDX: u32 = (1 << 4) | (1 << 19);
+pub const CPUID_FEATURES_EDX: u32 = 1 | (1 << 4) | (1 << 19);
 
 /// **Ce qui se déclare dans ECX** : `cmpxchg16b` (bit 13), produit depuis #210.
 /// C'est ce bit que `system_has_cmpxchg128()` regarde, et sans lui SLUB
@@ -418,8 +431,41 @@ pub const TASK_SLOT: usize = EFER_SLOT + 1;
 pub const SYSCALL_SLOT: usize = TASK_SLOT + 1;
 pub const SYSCALL_COUNT: usize = 4;
 
+/// **Le mot de contrôle du coprocesseur x87, et son mot d'état.**
+///
+/// Deux globales de seize bits utiles, rangées comme les autres. Elles sont là
+/// parce qu'un noyau Linux **n'entre pas dans son démarrage** sans coprocesseur :
+/// `fpu__init_system` teste le bit zéro d'EDX de la feuille un de `cpuid` et
+/// saute droit sur « x86/fpu: Giving up, no FPU found and no math emulation
+/// present » s'il est nul. Le bit annoncé, la première chose que le noyau fait
+/// derrière la garde est `fninit`.
+///
+/// **Ce que cette machine calcule en virgule flottante : rien.** L'état existe,
+/// les instructions d'état s'exécutent, et la première instruction de *calcul*
+/// sera un arrêt nommé comme les autres. Un noyau ne calcule pas en flottant —
+/// il initialise, sauvegarde et restaure —, donc ce partage n'est pas un
+/// artifice : c'est exactement la frontière que le démarrage traverse.
+pub const FPU_CONTROL_SLOT: usize = SYSCALL_SLOT + SYSCALL_COUNT;
+pub const FPU_STATUS_SLOT: usize = FPU_CONTROL_SLOT + 1;
+/// Ce que `fninit` pose dans le mot de contrôle : toutes les exceptions
+/// masquées, précision étendue, arrondi au plus proche. C'est la valeur que
+/// Linux vérifie — il exige `mot & 0x103f == 0x003f`.
+pub const FPU_CONTROL_RESET: u64 = 0x037f;
+/// **Ce que le mot de contrôle vaut avant que `fninit` passe**, et ce n'est pas
+/// la même chose : le silicium sort de RESET avec `0x0040`, pas avec `0x037f`
+/// (table 9-1 du manuel Intel). Les deux valeurs se ressemblent assez pour
+/// qu'on les confonde, et assez peu pour qu'un noyau qui lirait le mot **avant**
+/// de l'initialiser voie la différence.
+///
+/// Laisser zéro là serait le confort qui cache le défaut : zéro est un mot
+/// légal — exceptions démasquées, simple précision — qu'aucun processeur ne
+/// produit au démarrage. Une machine qui rend zéro ici ne se ferait pas
+/// prendre par un noyau, elle se ferait prendre par la trace d'un vrai
+/// processeur, un jour, sur une divergence qu'on ne saurait plus expliquer.
+pub const FPU_CONTROL_POWER_ON: u64 = 0x0040;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = SYSCALL_SLOT + SYSCALL_COUNT;
+pub const GLOBAL_COUNT: usize = FPU_STATUS_SLOT + 1;
 
 /// Les numéros des quatre registres de l'appel système, dans l'ordre des cases.
 pub const MSR_STAR: u64 = 0xc000_0081;
@@ -3345,6 +3391,25 @@ impl Module {
             body.op(code::RETURN);
             return Some(());
         }
+        // **`fninit` remet le coprocesseur à son allumage**, et c'est tout ce
+        // qu'elle fait : le mot de contrôle à sa valeur de repos, le mot d'état
+        // à zéro. Pas de retour de main — contrairement au `hlt` juste en
+        // dessous, elle n'arrête rien.
+        //
+        // **La pile du coprocesseur et son mot d'étiquettes ne sont pas
+        // modélisés**, et rien ne peut encore le voir : il faudrait `fxsave`
+        // ou une instruction de calcul pour les lire, et ni l'une ni l'autre
+        // n'existe. Le jour où l'une existera, elle trouvera ces deux mots
+        // déjà justes plutôt qu'un état inventé sur place.
+        if step.op == Op::FpuInit {
+            body.store(FPU_CONTROL_SLOT, |b| {
+                b.constant(FPU_CONTROL_RESET);
+            });
+            body.store(FPU_STATUS_SLOT, |b| {
+                b.constant(0);
+            });
+            return Some(());
+        }
         // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
         // l'instruction, et la main rendue par un indice négatif — le même
         // chemin qu'une faute de page, qui existait déjà.
@@ -3547,6 +3612,7 @@ impl Module {
                 | Op::WriteControlRegister { .. }
                 | Op::InterruptFlag(_)
                 | Op::Halt
+                | Op::FpuInit
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
@@ -3937,6 +4003,7 @@ impl Module {
             }
             Op::ReadTimestamp
             | Op::CpuId
+            | Op::FpuInit
             | Op::ReadModelRegister
             | Op::WriteModelRegister
             | Op::LoadDescriptorTable { .. }

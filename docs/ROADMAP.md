@@ -9591,3 +9591,99 @@ Quatre, et cinq sabotages qui tombent chacun sur sa mutation.
 La commande de relecture du 8254 — ce noyau ne l'emploie pas. Les modes autres
 que zéro et deux : il n'en programme pas d'autres, et les deviner serait
 inventer. La sortie des canaux zéro et un, que rien ne consulte.
+
+## #223 — le mur du FPU : annoncer le bit, et exécuter ce qui est derrière
+
+Le second des deux murs que Maxime a tranchés. Le premier — l'horloge — est
+tombé en deux tranches ; celui-ci tient en une phrase du noyau :
+
+```text
+x86/fpu: Giving up, no FPU found and no math emulation present
+```
+
+`fpu__init_system` teste le bit 0 d'EDX à la feuille 1 de `cpuid`, désassemblé
+à `0xffffffff82a4619d` sur Alpine 6.6, et saute à `+ 447` — un `hlt` — s'il est
+nul. Ce n'est pas un chemin plus long : c'est la fin du démarrage.
+
+### Ce que la tranche annonce, et ce qu'elle exécute
+
+**Le bit, et l'instruction derrière.** Annoncer sans exécuter serait le
+mensonge que #217 s'est interdit : le noyau ne croit pas la déclaration sur
+parole, il exécute `fninit` juste derrière la garde et lit l'état qu'elle
+laisse. La tranche fait donc les deux.
+
+- `db e3` — **et lui seul du groupe `db`** — se décode en `Op::FpuInit`. `fild`,
+  `fnclex`, `fnstenv` et leurs voisins restent illisibles, donc refusés en étant
+  nommés.
+- L'émetteur produit deux écritures : `0x037f` dans le mot de contrôle, zéro
+  dans le mot d'état. Linux exige exactement `mot & 0x103f == 0x003f`.
+- Deux globales de plus (58 et 59), donc `GLOBAL_COUNT` passe de 58 à 60, et
+  les trois modules épinglés de la sonde iPhone ont été réengendrés.
+- L'interpréteur Rust, lui, **nomme et faute** sur `FpuInit`, comme il le fait
+  déjà pour `hlt`, `pushf` et `popf`.
+
+**Et une valeur qui n'était réclamée par personne.** Le silicium sort de RESET
+avec `0x0040` dans le mot de contrôle, pas avec `0x037f` — deux valeurs
+qu'aucun noyau ne distingue, parce qu'aucun ne lit le mot avant de
+l'initialiser. La globale partait donc à zéro : un mot légal qu'aucun
+processeur ne produit au démarrage. L'hôte pose maintenant `0x0040`, et un test
+le tient — le seul de la tranche qui n'exerce aucune instruction.
+
+### La mesure
+
+Deux relevés complets du noyau Alpine, à un bit de `CPUID_FEATURES_EDX` près.
+
+| | bit 0 tu | bit 0 annoncé |
+| --- | --- | --- |
+| arrêt | `fpu__init_system + 448`, un `hlt` | `fpu__init_system + 183` |
+| raison | « no FPU found » | `fxsave` ne se décode pas |
+| régions traduites | 5497 | **5514** |
+| lignes série | 88 | **87** |
+| dernière ligne | « x86/fpu: Giving up… » | « MMIO Stale Data… » |
+
+**Une ligne de moins, et c'est le bon signe** : celle qui disparaît est l'aveu
+d'échec. La machine traverse maintenant `native_read_cr0`, `native_write_cr0`,
+`fninit`, `fpu__init_cpu_xstate` et `fpstate_init_user` — cinq régions que le
+saut d'abandon lui faisait sauter — avant de buter sur l'instruction suivante.
+
+Dans le relevé de couverture, les deux octets `db` quittent la colonne des
+octets illisibles portés par une région compilée. Il en reste 32, menés par
+`c4` — le préfixe VEX d'AVX — treize fois.
+
+### Le mur suivant, désassemblé plutôt que deviné
+
+```text
+ffffffff82a46207: 0f ae 05 d2 f1 13 00   fxsave 0x13f1d2(%rip)   # 0xffffffff82b853e0
+ffffffff82a4620e: 8b 05 e8 f1 13 00      mov    0x13f1e8(%rip),%eax  # 0xffffffff82b853fc
+ffffffff82a46214: 85 c0                  test   %eax,%eax
+```
+
+C'est `fpu__init_system_mxcsr` : le noyau sauvegarde 512 octets d'état, puis
+relit le masque MXCSR à l'offset `0x1c` de ce qu'il vient d'écrire. `fxsave`
+est donc la tranche suivante du coprocesseur, et elle est d'une autre taille
+que celle-ci — une aire de 512 octets avec sa disposition, contre deux mots.
+
+### Ce que cette machine ne calcule toujours pas
+
+Rien en virgule flottante. L'état existe, `fninit` s'exécute, et la première
+instruction de **calcul** x87 sera un arrêt nommé comme les autres. Un noyau
+n'en exécute pas : il initialise, sauvegarde et restaure. C'est exactement la
+frontière que le démarrage traverse, et c'est pourquoi ce partage n'est pas un
+artifice.
+
+### Les tests
+
+Trois nouveaux, sept sabotages, chacun tombant sur le sien.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le bit 0 retiré d'EDX | `cpuid_declares_only_what_the_emitter_actually_does` — **et le noyau revient à `+ 448`** |
+| `fninit` n'émet rien | `fninit_resets_the_coprocessor_to_its_power_on_state` |
+| le mot d'état n'est pas remis à zéro | le même, sur `fsw` |
+| la valeur d'allumage vaut celle de `fninit` | `the_coprocessor_starts…` et le miroir de `host.js` |
+| l'hôte ne pose pas la valeur d'allumage | `the_coprocessor_starts…` |
+| `db e3` compté un octet | `fninit_decodes_and_the_rest_of_its_group_does_not` |
+| tout le groupe `db` décodé | le même, sur `fild (%rsp)` |
+
+Le premier est le seul dont le témoin soit un noyau entier plutôt qu'un
+montage : retirer le bit remet le `hlt` là où il était, à l'octet près.
