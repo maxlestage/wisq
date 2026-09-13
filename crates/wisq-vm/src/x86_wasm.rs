@@ -199,11 +199,33 @@ pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"m vm");
 pub const CPUID_MAX_LEAF: u32 = 1;
 /// Famille 6, modèle 0, pas 0 — une signature plausible et sans prétention.
 pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
-/// **Le seul bit vrai aujourd'hui** : le compteur d'horodatage, produit depuis
-/// la tranche précédente. Il se déclare parce qu'il existe, et parce qu'un
-/// noyau qui ne le voit pas cherche une autre horloge que cette machine n'a
-/// pas non plus.
-pub const CPUID_FEATURES_EDX: u32 = 1 << 4;
+/// **Ce qui se déclare dans EDX, parce que l'émetteur le fait vraiment** : le
+/// compteur d'horodatage (bit 4), et `clflush` (bit 19), produit depuis #211.
+/// Le compteur se déclare parce qu'un noyau qui ne le voit pas cherche une
+/// autre horloge que cette machine n'a pas non plus ; `clflush` parce que le
+/// noyau, sans lui, vide ses caches par des chemins plus longs.
+pub const CPUID_FEATURES_EDX: u32 = (1 << 4) | (1 << 19);
+
+/// **Ce qui se déclare dans ECX** : `cmpxchg16b` (bit 13), produit depuis #210.
+/// C'est ce bit que `system_has_cmpxchg128()` regarde, et sans lui SLUB
+/// n'arme pas son chemin `__CMPXCHG_DOUBLE`.
+///
+/// **`RDRAND` (bit 30) ne s'y trouve pas, et c'est délibéré.** L'émetteur le
+/// *décode* depuis #212, mais il ne rend aucun aléa : il pose zéro et laisse CF
+/// à zéro, ce qui veut dire « raté, réessaie ». L'annoncer ferait rejouer au
+/// noyau sa boucle de dix essais pour rien avant qu'il ne se rabatte. Décoder
+/// n'est pas exécuter, et seul ce qu'on exécute se déclare.
+pub const CPUID_FEATURES_ECX: u32 = 1 << 13;
+
+/// **EBX de la feuille un, et la moitié qu'on ne peut pas oublier.** Ses bits
+/// 15:8 portent la taille de ligne de `clflush`, comptée en quantums de huit
+/// octets : huit, donc, pour des lignes de soixante-quatre.
+///
+/// Annoncer `clflush` sans elle serait une promesse tenue à moitié, et la
+/// moitié manquante pend la machine : Linux lit `x86_clflush_size` ici, et
+/// `clflush_cache_range` s'en sert comme **pas de boucle**. À zéro, la boucle
+/// n'avance jamais — pas un refus franc, un gel.
+pub const CPUID_LEAF_ONE_EBX: u32 = 8 << 8;
 pub const SCRATCH_COUNT: usize = 10;
 
 /// **Le témoin de faute de page.** Zéro tant que rien n'a fauté ; sinon le code
@@ -2818,8 +2840,8 @@ impl Module {
             // Les quatre registres que `cpuid` écrit, dans l'ordre du jeu
             // d'instructions : EAX, EBX, ECX, EDX — soit 0, 3, 1 et 2.
             choose(body, 0, CPUID_MAX_LEAF, CPUID_SIGNATURE);
-            choose(body, 3, CPUID_VENDOR_EBX, 0);
-            choose(body, 1, CPUID_VENDOR_ECX, 0);
+            choose(body, 3, CPUID_VENDOR_EBX, CPUID_LEAF_ONE_EBX);
+            choose(body, 1, CPUID_VENDOR_ECX, CPUID_FEATURES_ECX);
             choose(body, 2, CPUID_VENDOR_EDX, CPUID_FEATURES_EDX);
             return Some(());
         }
