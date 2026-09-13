@@ -9190,3 +9190,119 @@ abandons, donc la mesurer demanderait un cas fabriqué.
 la mesure quadratique et met le budget de tours — pas le jeu d'instructions —
 en travers du chemin. C'est écrit depuis #215, ça ne demande aucune décision de
 conception, et ça n'a toujours pas été fait.
+
+## Le pilote cesse de rejouer le démarrage, et le mur suivant a un nom : l'horloge
+
+Défaut nommé, signalé deux fois à Maxime et jamais corrigé — donc corrigé sans
+lui redemander.
+
+**Ce qui n'allait pas.** `examples/kernel-entry.rs` ne pouvait pas appeler
+l'émetteur : la boucle hôte est en JavaScript, l'émetteur en Rust. Alors chaque
+nouvelle région lui coûtait une **exécution entière** — l'ensemble des régions
+déjà traduites réécrit sur le disque, Bun relancé, la machine rejouée depuis le
+point d'entrée jusqu'à ce qu'elle réclame une adresse de plus. Quadratique :
+cinq secondes par tour à la 512ᵉ région, une vingtaine d'heures pour en
+atteindre quatre mille.
+
+**C'était sans importance jusqu'à ce que ça devienne le mur.** L'outil mesure
+une distance, pas une vitesse — c'est écrit dans son en-tête depuis le début, et
+c'était vrai tant qu'un mur d'instruction venait avant le budget. Depuis #215
+l'ordre s'est inversé : « le mur n'est plus une instruction, c'est le nombre de
+régions ». Or ce nombre était borné par le coût de l'outil, pas par la machine.
+Le dépôt mesurait donc son propre pilote et l'écrivait comme un résultat.
+
+**Ce que le pilote ne peut pas appeler, il peut le lancer.** Un binaire,
+`x86-translate`, traduit **une** région : il lit un manifeste écrit une fois —
+le chemin de l'image, la RAM déclarée, un segment par ligne — replie l'adresse
+comme l'hôte le fait, va chercher seize kibioctets par un `seek`, et rend les
+octets du module sur sa sortie standard. Le pilote JavaScript l'appelle par
+`Bun.spawnSync` depuis `translate`. Une seule exécution de Bun, un processus de
+quelques millisecondes par région, et la machine n'est **plus jamais** rejouée.
+
+**Les codes de sortie sont le protocole**, et c'est délibéré : 0 avec le module,
+2 quand l'émetteur refuse — la raison sur la sortie d'erreur —, 3 quand
+l'adresse ne tombe dans aucun segment. Confondre 2 et 3 ferait chercher une
+instruction manquante là où il n'y a que des octets absents ; les deux sont
+tenus par le test.
+
+### La mesure
+
+| | avant | après |
+| --- | --- | --- |
+| 512 régions, relevé identique octet pour octet | **43 minutes** | **1 seconde** |
+| le plus loin jamais atteint | 4096 régions, plusieurs heures, **borné par le budget** | **5179 régions, 17 secondes, borne jamais atteinte** |
+| lignes série | 67 | **75** |
+
+**Et pour la première fois la machine s'arrête d'elle-même** : « 5179 régions,
+et plus rien à traduire ». Ce n'est plus un budget qui coupe la mesure.
+
+### Le mur suivant, nommé
+
+`calibrate_delay + 1091` — un saut conditionnel **vers lui-même**, que le relevé
+des blocs exhibe sans qu'on ait à le déduire :
+
+```text
+0xffffffff81002413 (calibrate_delay + 1091) finit sur Jump(Some(Condition(4)))
+  vers 0xffffffff81002413 (calibrate_delay + 1091) — dans la même région
+```
+
+C'est le noyau qui attend que `jiffies` avance. **La machine n'a pas d'horloge
+qui interrompt**, et `docs/DEMARRAGE.md` l'annonce comme le premier de ses trois
+manques depuis qu'il existe. C'est la première fois que la mesure le **rejoint**
+au lieu de s'arrêter avant : le mur n'est plus une instruction, plus le nombre de
+régions, plus le coût de l'outil — c'est le temps.
+
+**Et la console change de main avant de se taire.** Les deux dernières lignes
+série sont `printk: console [tty0] enabled` puis
+`printk: bootconsole [uart8250] disabled` : après ça le noyau écrit sur la
+console d'écran, pas sur le port série. Le silence qui suit n'est pas une panne,
+c'est un aiguillage — le dire ici pour qu'on ne cherche pas un défaut là où il
+n'y en a pas.
+
+### Ce que la tranche a trouvé sans le chercher
+
+**Une région sur trois est une adresse de retour.** Le test du mécanisme
+attendait trois régions et en a demandé cinq ; les deux de plus sont les octets
+qui **suivent** les deux `call`, c'est-à-dire des blocs que la première région
+porte déjà. La correspondance est indexée par l'adresse d'**entrée** d'une
+région, pas par les débuts de blocs qu'elle contient : un `ret` qui retombe au
+milieu d'une région connue rend donc la main, et l'hôte fabrique une seconde
+région qui recouvre la première.
+
+Mesuré sur les 5179 régions du vrai noyau : **1586 d'entre elles — 31 % — sont à
+moins de seize octets après une autre région déjà demandée**, l'écart le plus
+fréquent étant neuf octets (716 fois), puis cinq (380). C'est le prochain levier
+sur le nombre de régions, et il ne demande aucune décision de conception : que
+chaque région déclare ses débuts de blocs dans la correspondance au lieu de sa
+seule entrée.
+
+### Ce que les tests tiennent
+
+Un test, `the_driver_translates_on_demand_without_knowing_the_regions_in_advance`,
+et cinq sabotages qui tombent chacun sur sa mutation.
+
+Tous les autres pilotes de `tests/host_loop.rs` servent des modules **préparés
+d'avance** : le test connaît les régions parce qu'il les a compilées lui-même.
+Celui-ci n'en connaît aucune. Le montage force les deux cibles de `call` à
+trente-deux et soixante-cinq kibioctets, donc **hors** de la fenêtre que le
+traducteur lit — la découverte ne peut pas les avaler, il *faut* redemander. Et
+la base est virtuelle, `0xffffffff80010000`, qui se replie sur `0x10000` comme
+celle d'un noyau : sans le repli, la première adresse serait déjà « hors de tout
+segment ».
+
+Les cinq sabotages : le traducteur ignore l'adresse demandée ; il ignore
+l'emplacement et compile tout à zéro ; il ne replie pas l'adresse virtuelle ; un
+refus sort avec zéro au lieu de deux ; sa fenêtre est réduite à huit octets. Les
+deux derniers ont **survécu au premier passage** — rien ne tenait les codes de
+sortie, et la taille de la fenêtre était masquée par le défaut des adresses de
+retour, qui redemande les mêmes régions de toute façon. Deux assertions de plus :
+le premier module fait exactement la taille que l'émetteur lui donne en
+mémoire, et les trois codes de sortie sont exigés un par un.
+
+**Un détail de mécanique qui a failli passer.** La sortie d'erreur du pilote va
+dans un fichier, pas dans un tuyau : lire sa sortie standard ligne à ligne
+pendant qu'il tourne, en laissant l'autre tuyau se remplir, bloquerait les deux.
+
+**`WISQ_ROUNDS` compte une région de plus qu'avant** — la région d'entrée, que
+le pilote demandait au lieu de la recevoir toute compilée. Le réglage veut
+maintenant dire ce qu'il dit : le nombre de régions traduites.
