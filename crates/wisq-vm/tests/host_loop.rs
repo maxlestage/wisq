@@ -7424,3 +7424,176 @@ console.log("octets " + tailles[0]);
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **La sonde du noyau, exécutée telle quelle, trouve enfin un 8259.**
+///
+/// « Using NULL legacy PIC » : c'est ce que le noyau d'Alpine imprime, et il le
+/// dit depuis toujours sans que personne aille voir pourquoi. La raison tient
+/// en cinq instructions, lues dans le binaire plutôt que supposées —
+/// `probe_8259A`, à `0xffffffff8104e7a0` :
+///
+/// ```text
+/// mov $0xff,%eax ; out %al,$0xa1     ; masque tout sur l'esclave
+/// mov $0xfb,%eax ; out %al,$0x21     ; masque tout sauf la cascade sur le maître
+/// in  $0x21,%al                      ; et relit
+/// cmp $0xfb,%al                      ; ce qu'il vient d'écrire
+/// ```
+///
+/// `web/host.js` rendait `0xff` pour tout port sans personne — le bus qui
+/// flotte, ce qui est la bonne réponse quand il n'y a personne. La relecture ne
+/// pouvait donc jamais valoir `0xfb`, et le noyau concluait, correctement,
+/// qu'il n'y a pas de contrôleur d'interruptions. Sans contrôleur, pas de
+/// routage d'IRQ0 ; sans IRQ0, pas d'horloge ; sans horloge, `calibrate_delay`
+/// tourne sur lui-même. Tout le mur tient à un registre de huit bits qui se
+/// relit.
+///
+/// **Le programme de ce test est la sonde du noyau, octet pour octet**, avec un
+/// `xor` devant pour que ce qui reste dans RAX vienne du port et de rien
+/// d'autre — `in %al` n'écrit que l'octet bas.
+#[test]
+fn the_kernels_own_probe_finds_the_interrupt_controller() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x31, 0xc0, // xor %eax,%eax
+        0xb0, 0xff, // mov $0xff,%al
+        0xe6, 0xa1, // out %al,$0xa1
+        0xb0, 0xfb, // mov $0xfb,%al
+        0xe6, 0x21, // out %al,$0x21
+        0x31, 0xc0, // xor %eax,%eax  — RAX ne portera que ce que le port rend
+        0xe4, 0x21, // in  $0x21,%al
+        0x0f, 0x0b, // ud2            — rend la main
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "sonde-8259", "");
+    assert_eq!(
+        line_of(&text, "rax "),
+        "fb",
+        "le maître doit rendre le masque qu'on vient de lui écrire : {text}"
+    );
+}
+
+/// **La séquence d'initialisation pose une base de vecteur, et ce n'est pas
+/// celle qu'on aurait écrite de mémoire.**
+///
+/// Lue dans `init_8259A`, à `0xffffffff8104e620`, et c'est la raison d'être de
+/// ce test : la base du maître est **`0x30`**, pas `0x20`. Un modèle écrit de
+/// tête aurait porté `0x20` — la valeur du PC d'origine, celle de tous les
+/// manuels — et la tranche qui délivre IRQ0 aurait sauté dans la mauvaise
+/// porte de l'IDT, vingt tranches plus loin, sans que rien ne dise pourquoi.
+///
+/// ```text
+/// out 0xff→0x21   out 0x11→0x20   out 0x30→0x21   out 0x04→0x21   out 0x03→0x21
+/// out 0x11→0xa0   out 0x38→0xa1   out 0x02→0xa1   out 0x01→0xa1
+/// ```
+///
+/// `0x11` porte le bit d'initialisation : ce qui suit sur le port de données
+/// n'est plus un masque mais ICW2, ICW3, ICW4. **C'est la seule chose que ce
+/// test tient et que la sonde ne tenait pas** : un modèle qui rangerait ICW2
+/// dans le masque rendrait la sonde verte quand même — le noyau repose son
+/// masque juste après — et se tromperait de vecteur pour toujours.
+#[test]
+fn the_init_sequence_sets_the_vector_base_the_kernel_actually_uses() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program = Vec::new();
+    for (value, port) in [
+        (0xffu8, 0x21u8), // masque tout sur le maître
+        (0x11, 0x20),     // ICW1 : initialisation, ICW4 suivra
+        (0x30, 0x21),     // ICW2 : la base de vecteur du maître
+        (0x04, 0x21),     // ICW3 : l'esclave est sur IR2
+        (0x03, 0x21),     // ICW4 : mode 8086, fin automatique
+        (0x11, 0xa0),     // et la même chose pour l'esclave
+        (0x38, 0xa1),     // ICW2 : sa base à lui
+        (0x02, 0xa1),     // ICW3 : son identité de cascade
+        (0x01, 0xa1),     // ICW4
+        (0xfb, 0x21),     // le masque que le noyau repose après l'initialisation
+    ] {
+        program.extend_from_slice(&[0xb0, value, 0xe6, port]);
+    }
+    program.extend_from_slice(&[0x31, 0xc0, 0xe4, 0x21, 0x0f, 0x0b]);
+    let text = drive(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "init-8259",
+        r#"console.log("bases " + vm.pics.master.base + " " + vm.pics.slave.base);"#,
+    );
+    assert_eq!(
+        line_of(&text, "bases "),
+        "48 56",
+        "les bases posées par ICW2 sont 0x30 et 0x38 — celles que ce noyau \
+         emploie, pas celles du PC d'origine : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rax "),
+        "fb",
+        "et le port de données redevient le masque une fois l'initialisation \
+         finie : ICW4 ne doit pas rester dedans : {text}"
+    );
+}
+
+/// Compiler un programme, le faire tourner sous `web/host.js`, et rendre ce que
+/// le pilote a imprimé. `extra` ajoute des lignes au relevé.
+fn drive(bun: &Path, program: &[u8], base: u64, pages: u32, name: &str, extra: &str) -> String {
+    let module = Module::resolving(program, base, 0, 0, pages).expect("la région se traduit");
+    let scratch = std::env::temp_dir().join(format!("wisq-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+await vm.run({{ budget: 1000n, rounds: 4 }});
+console.log("rax " + BigInt.asUintN(64, vm.globals[0].value).toString(16));
+{extra}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = pages,
+            rip = RIP_SLOT,
+            base = base,
+            extra = extra,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{errors}\n{text}"
+    );
+    text
+}
+
+/// La valeur qui suit une étiquette dans le relevé du pilote.
+fn line_of(text: &str, label: &str) -> String {
+    text.lines()
+        .find_map(|line| line.strip_prefix(label))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
