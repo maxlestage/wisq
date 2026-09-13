@@ -125,7 +125,17 @@ export const SLOTS = {
   /// par `rdmsr`, lus par rien : `syscall` n'est pas produite.
   syscall: 54,
   syscallCount: 4,
-  globalCount: 58,
+  /// **Le mot de contrôle du coprocesseur**, et son mot d'état juste après.
+  /// `fninit` y pose 0x037F et zéro ; rien d'autre ne les touche encore, aucune
+  /// instruction de calcul x87 n'étant produite.
+  fpuControl: 58,
+  fpuStatus: 59,
+  /// **Le mot de contrôle avant que `fninit` passe**, qui n'est pas celui
+  /// qu'elle pose : le silicium sort de RESET avec 0x0040. Un noyau lit
+  /// rarement le mot sans l'avoir initialisé, donc laisser zéro ici ne se
+  /// verrait pas — c'est exactement pour ça que ça se pose.
+  fpuControlPowerOn: 0x40,
+  globalCount: 60,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -444,6 +454,7 @@ export function machine({
   // c'est ce registre-là qu'il relira pour décider s'il peut poser NX dans ses
   // tables de pages.
   globals[SLOTS.efer].value = 0x500n;
+  globals[SLOTS.fpuControl].value = BigInt(SLOTS.fpuControlPowerOn);
   // **Les deux fonctions par lesquelles l'invité touche le monde.**
   //
   // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un

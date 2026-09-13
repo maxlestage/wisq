@@ -17,8 +17,9 @@ use std::process::Command;
 
 use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
 use wisq_vm::x86_wasm::{
-    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT,
-    RIP_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
+    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON, FPU_CONTROL_SLOT,
+    FPU_STATUS_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT, SYSCALL_COUNT,
+    SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
 };
 
 fn workspace_root() -> PathBuf {
@@ -145,6 +146,27 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         value("syscallCount"),
         SYSCALL_COUNT.to_string(),
         "le nombre de registres de l'appel système"
+    );
+    // **Les deux mots du coprocesseur, tenus dès leur arrivée.** Ils ne sont
+    // relus par personne côté hôte, et c'est justement pourquoi une case
+    // fausse ici ne se verrait pas : `fninit` remettrait à 0x037F une autre
+    // globale — un sélecteur de segment, un registre de contrôle — pendant
+    // que le mot de contrôle garderait ce qu'il avait. Rien ne s'arrêterait ;
+    // le noyau lirait plus tard un état qu'il n'a pas posé.
+    assert_eq!(
+        value("fpuControl"),
+        FPU_CONTROL_SLOT.to_string(),
+        "l'emplacement du mot de contrôle du coprocesseur"
+    );
+    assert_eq!(
+        value("fpuStatus"),
+        FPU_STATUS_SLOT.to_string(),
+        "l'emplacement du mot d'état du coprocesseur"
+    );
+    assert_eq!(
+        value("fpuControlPowerOn"),
+        format!("0x{:x}", FPU_CONTROL_POWER_ON),
+        "le mot de contrôle que l'hôte pose au démarrage"
     );
     assert_eq!(
         value("control"),
@@ -2397,13 +2419,22 @@ console.log("ebx " + lire(3));
         0x0000_0600,
         "une famille 6 nue, sans modèle ni pas"
     );
-    // **Le seul bit vrai, et rien d'autre.** Une capacité déclarée est une
+    // **L'ensemble exact, et rien d'autre.** Une capacité déclarée est une
     // promesse : ce test tient l'ensemble exact, pas seulement « le TSC est
     // là ». Un bit de plus le ferait tomber, et c'est le but.
+    //
+    // Le bit 0 est le seul des trois qui promette plus que la machine ne
+    // tient : il dit « il y a un coprocesseur », et de ce coprocesseur seule
+    // `fninit` s'exécute. Ce n'est pas un mensonge muet pour autant — les
+    // autres instructions x87 restent illisibles, et une région qui en porte
+    // une est refusée en le nommant. Le noyau qui croit ce bit va donc plus
+    // loin qu'avant, puis bute sur `fxsave` avec une raison écrite, au lieu
+    // de renoncer à tout le coprocesseur sur un test de bit.
     assert_eq!(
         line("edx "),
-        0x8_0010,
-        "le bit 4 (compteur d'horodatage) et le bit 19 (clflush), et eux seuls"
+        0x8_0011,
+        "le bit 0 (coprocesseur), le bit 4 (compteur d'horodatage) et le bit 19 \
+         (clflush), et eux seuls"
     );
     assert_eq!(
         line("ecx "),
@@ -7542,6 +7573,22 @@ fn the_init_sequence_sets_the_vector_base_the_kernel_actually_uses() {
 /// Compiler un programme, le faire tourner sous `web/host.js`, et rendre ce que
 /// le pilote a imprimé. `extra` ajoute des lignes au relevé.
 fn drive(bun: &Path, program: &[u8], base: u64, pages: u32, name: &str, extra: &str) -> String {
+    drive_with(bun, program, base, pages, name, "", extra)
+}
+
+/// La même, avec des lignes posées **avant** que la machine ne parte : c'est la
+/// seule façon de partir d'un état que le programme lui-même n'aurait pas pu
+/// écrire.
+#[allow(clippy::too_many_arguments)]
+fn drive_with(
+    bun: &Path,
+    program: &[u8],
+    base: u64,
+    pages: u32,
+    name: &str,
+    setup: &str,
+    extra: &str,
+) -> String {
     let module = Module::resolving(program, base, 0, 0, pages).expect("la région se traduit");
     let scratch = std::env::temp_dir().join(format!("wisq-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
@@ -7561,6 +7608,7 @@ const vm = machine({{
   pages: {pages},
 }});
 vm.globals[{rip}].value = {base}n;
+{setup}
 await vm.run({{ budget: 1000n, rounds: 4 }});
 console.log("rax " + BigInt.asUintN(64, vm.globals[0].value).toString(16));
 console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
@@ -7571,6 +7619,7 @@ console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
             pages = pages,
             rip = RIP_SLOT,
             base = base,
+            setup = setup,
             extra = extra,
         ),
     )
@@ -7842,5 +7891,103 @@ fn the_periodic_channel_reloads_instead_of_running_past_zero() {
         "9",
         "seize moins les sept pas du second tour — un compteur qui bouclerait \
          rendrait 65529 : {text}"
+    );
+}
+
+/// **`fninit` remet le coprocesseur à son allumage, et c'est ce que le noyau
+/// vérifiera.**
+///
+/// Annoncer le bit zéro d'EDX ne suffit pas : `fpu__init_system` exécute
+/// `fninit` derrière sa garde, puis lit l'état qu'elle laisse. Le mot de
+/// contrôle doit valoir `0x037f` — toutes les exceptions masquées, précision
+/// étendue, arrondi au plus proche — et le mot d'état zéro. Linux exige
+/// exactement `mot & 0x103f == 0x003f`, ce que `0x037f` satisfait.
+///
+/// **Les deux mots partent d'une valeur que le programme n'aurait pas pu
+/// écrire**, et c'est tout l'intérêt : un émetteur qui traduirait `fninit` en
+/// rien du tout laisserait `0xabcd` dans le mot d'état, et le noyau
+/// effacerait le bit de capacité qu'on vient de lui annoncer. Partir de zéro
+/// rendrait ce test vert sans la moindre remise à l'état d'allumage.
+#[test]
+fn fninit_resets_the_coprocessor_to_its_power_on_state() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let text = drive_with(
+        &bun,
+        &[0xdb, 0xe3, 0x0f, 0x0b], // fninit ; ud2
+        BASE,
+        PAGES,
+        "fninit",
+        &format!(
+            "vm.globals[{control}].value = 0x1234n;\nvm.globals[{status}].value = 0xabcdn;",
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+        &format!(
+            r#"console.log("fcw " + vm.globals[{control}].value);
+console.log("fsw " + vm.globals[{status}].value);"#,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "fcw "),
+        "895",
+        "le mot de contrôle doit valoir 0x037f, ce que `fninit` pose — et ce \
+         que Linux exige : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fsw "),
+        "0",
+        "et le mot d'état doit être remis à zéro, pas laissé tel quel : {text}"
+    );
+}
+
+/// **Avant `fninit`, le mot de contrôle n'est pas zéro non plus.**
+///
+/// Le silicium sort de RESET avec `0x0040`, et `fninit` y pose ensuite
+/// `0x037f` : deux valeurs distinctes, qu'il est facile de confondre parce
+/// qu'un noyau n'en lit qu'une. Personne ici ne lit la première — c'est
+/// précisément pourquoi elle a besoin d'un test : une globale laissée à zéro
+/// donnerait un mot légal qu'aucun processeur ne produit au démarrage, et la
+/// divergence ne se verrait que le jour où on comparerait une trace au vrai
+/// matériel.
+///
+/// Le programme n'exécute rien du coprocesseur : `ud2` tout de suite. Ce qui
+/// est jugé, c'est donc l'état que **l'hôte** pose, et rien d'autre.
+#[test]
+fn the_coprocessor_starts_at_the_word_a_processor_leaves_after_reset() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let text = drive_with(
+        &bun,
+        &[0x0f, 0x0b], // ud2, sans toucher au coprocesseur
+        BASE,
+        PAGES,
+        "fpu-allumage",
+        "",
+        &format!(
+            r#"console.log("fcw " + vm.globals[{control}].value);
+console.log("fsw " + vm.globals[{status}].value);"#,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "fcw "),
+        FPU_CONTROL_POWER_ON.to_string(),
+        "le mot de contrôle avant toute initialisation vaut 0x0040, pas zéro \
+         et pas 0x037f : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fsw "),
+        "0",
+        "le mot d'état, lui, sort bien de RESET à zéro : {text}"
     );
 }
