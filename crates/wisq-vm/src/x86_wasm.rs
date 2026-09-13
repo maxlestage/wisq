@@ -900,6 +900,7 @@ mod code {
     /// dans cette largeur-là, pas dans celle des valeurs comparées.
     pub const I32_OR: u8 = 0x72;
     pub const I32_EQZ: u8 = 0x45;
+    pub const I32_NE: u8 = 0x47;
     pub const I32_ADD: u8 = 0x6a;
     pub const I32_MUL: u8 = 0x6c;
     pub const I32_LOAD: u8 = 0x28;
@@ -1599,7 +1600,7 @@ impl Module {
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Ok(Self::assemble(bodies, shape))
+        Ok(Self::assemble(bodies, &starts, shape))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -2314,7 +2315,12 @@ impl Module {
     }
 
     /// **Le module : une fonction par bloc, plus la boucle qui les enchaîne.**
-    fn assemble(bodies: Vec<Vec<u8>>, shape: Shape) -> Vec<u8> {
+    ///
+    /// `starts` porte l'adresse **invitée** de chaque bloc, dans l'ordre où la
+    /// section d'éléments les pose dans la table de l'hôte. C'est le même
+    /// vecteur que `resolve` compare à RIP : les deux relevés ne peuvent pas
+    /// diverger, puisqu'ils n'en font qu'un.
+    fn assemble(bodies: Vec<Vec<u8>>, starts: &[u64], shape: Shape) -> Vec<u8> {
         let Shape {
             shared, confine, ..
         } = shape;
@@ -2332,12 +2338,13 @@ impl Module {
         section(
             1,
             vec![
-                0x05, //
+                0x06, //
                 0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
                 0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
                 0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
                 0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
                 0x60, 0x01, 0x7e, 0x01, 0x7f, // 4 : (i64) -> i32, la marche
+                0x60, 0x01, 0x7f, 0x01, 0x7e, // 5 : (i32) -> i64, les débuts
             ],
             &mut module,
         );
@@ -2421,10 +2428,11 @@ impl Module {
         section(2, imports, &mut module);
 
         let mut functions = Vec::new();
-        unsigned(count as u64 + 1 + u64::from(paging), &mut functions);
+        unsigned(count as u64 + 2 + u64::from(paging), &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
-        // ensuite la marche quand il y en a une, du type quatre ; la dernière
-        // est la boucle de répartition, du type un.
+        // ensuite la marche quand il y en a une, du type quatre ; puis la
+        // boucle de répartition, du type un ; et l'accesseur des débuts en
+        // dernier, du type cinq.
         //
         // **La marche est placée après les blocs, et c'est ce qui coûte le
         // moins.** Devant, elle décalerait tous les indices de bloc, donc la
@@ -2435,6 +2443,10 @@ impl Module {
             functions.push(0x04);
         }
         functions.push(0x01);
+        // **Et l'accesseur des débuts de blocs, tout à la fin.** Après `run`
+        // pour la même raison que la marche est après les blocs : ce qui est
+        // ajouté en queue ne décale l'indice de personne.
+        functions.push(0x05);
         section(3, functions, &mut module);
 
         // Table : les blocs, pour le `call_indirect` de la boucle.
@@ -2458,10 +2470,40 @@ impl Module {
         // Une seconde marche écrite en JavaScript aurait fini par diverger de
         // celle-ci, en silence, sur une grande page ou un bit réservé.
         let mut exports = Vec::new();
-        unsigned(1 + u64::from(paging), &mut exports);
+        unsigned(2 + u64::from(paging), &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
         unsigned(
             u64::from(HOST_IMPORTS) + count as u64 + u64::from(paging),
+            &mut exports,
+        );
+        // **Où commencent les blocs, pour que l'hôte les range dans la
+        // correspondance.**
+        //
+        // L'hôte n'y rangeait que l'adresse d'**entrée** d'une région : une
+        // cible indirecte qui retombe au milieu d'une région déjà traduite
+        // n'y était pas trouvée, le module rendait la main, et l'hôte
+        // fabriquait une seconde région qui recouvre la première. Mesuré sur
+        // le noyau Alpine : 1559 des 5514 régions demandées — 28 % — sont à
+        // moins de seize octets après une région déjà demandée. Ce sont les
+        // octets qui suivent un `call`, c'est-à-dire les adresses où les
+        // `ret` retombent.
+        //
+        // **Pourquoi un export plutôt qu'un troisième champ dans la réponse
+        // de l'application.** Cinquante-quatre endroits fournissent la
+        // fonction `translate` ; en changer la forme de retour les toucherait
+        // tous, pour une information que le module porte déjà. Et l'hôte
+        // l'instancie de toute façon : la lire dans ses exports ne coûte pas
+        // un aller-retour de plus.
+        //
+        // **L'ordre est tenu par construction, pas par un test.** Le même
+        // vecteur `starts` engendre la section d'éléments — qui pose le bloc
+        // *i* à l'emplacement `slot + i` — et cette chaîne-ci. Deux relevés
+        // qui divergeraient enverraient l'invité dans le **mauvais bloc** :
+        // le défaut le plus difficile à voir de toute cette machinerie, et
+        // celui qu'un accesseur écrit ailleurs aurait rendu possible.
+        exports.extend_from_slice(&[0x06, b's', b't', b'a', b'r', b't', b's', 0x00]);
+        unsigned(
+            u64::from(HOST_IMPORTS) + count as u64 + u64::from(paging) + 1,
             &mut exports,
         );
         if paging {
@@ -2482,7 +2524,7 @@ impl Module {
         section(9, elements, &mut module);
 
         let mut code_section = Vec::new();
-        unsigned(count as u64 + 1 + u64::from(paging), &mut code_section);
+        unsigned(count as u64 + 2 + u64::from(paging), &mut code_section);
         for body in &bodies {
             let mut entry = vec![0x00];
             entry.extend_from_slice(body);
@@ -2561,6 +2603,36 @@ impl Module {
         ]);
         unsigned(dispatch.len() as u64, &mut code_section);
         code_section.extend_from_slice(&dispatch);
+
+        // **L'accesseur des débuts, une chaîne de `select` sans branchement.**
+        //
+        // Il rend l'adresse invitée du bloc dont on lui donne le numéro, dans
+        // le repère de la région — zéro est son entrée. L'hôte l'appelle une
+        // fois par bloc, à l'installation, jamais pendant l'exécution : c'est
+        // pourquoi une chaîne linéaire suffit là où le corps d'un bloc aurait
+        // demandé mieux.
+        //
+        // **Le repli est l'entrée de la région.** Un numéro hors bornes rend
+        // donc une adresse que la correspondance porte déjà, au lieu de zéro
+        // — qui est une adresse invitée valide, et qui ferait ranger une case
+        // menant n'importe où. L'hôte ne demande jamais plus de blocs qu'il
+        // n'en compte dans la table ; ce repli est ce qui rend l'erreur
+        // inoffensive plutôt que silencieuse.
+        let mut reader = vec![0x00]; // aucune locale : le numéro est l'argument
+        reader.push(code::I64_CONST);
+        signed(starts.first().copied().unwrap_or(0) as i64, &mut reader);
+        for (block, start) in starts.iter().enumerate().skip(1) {
+            reader.push(code::I64_CONST);
+            signed(*start as i64, &mut reader);
+            reader.extend_from_slice(&[0x20, 0x00]); // local.get 0
+            reader.push(code::I32_CONST);
+            signed(block as i64, &mut reader);
+            reader.push(code::I32_NE);
+            reader.push(code::SELECT);
+        }
+        reader.push(code::END);
+        unsigned(reader.len() as u64, &mut code_section);
+        code_section.extend_from_slice(&reader);
         section(10, code_section, &mut module);
 
         module
