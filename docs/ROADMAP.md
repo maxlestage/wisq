@@ -9018,3 +9018,61 @@ sous son sabotage : la recherche réduite à une voie, et l'installation qui
 `cpuid` ce que l'émetteur fait vraiment (`CX16`, `CLFLUSH` — `RDRAND` ne
 s'annonce pas, la machine n'a pas d'aléa à offrir), puis généraliser l'arrêt
 nommé sur instruction illisible.
+
+## `cpuid` annonce enfin ce que l'émetteur fait, et la moitié qu'on ne pouvait pas oublier
+
+Deuxième des trois directions que Maxime a tranchées. L'émetteur exécute
+`cmpxchg16b` pour de vrai depuis #210 et `clflush` depuis #211, mais `cpuid`
+n'annonçait que le compteur d'horodatage. Le noyau croit `cpuid` sur parole :
+ce qu'il n'y voit pas, il ne le prend pas. SLUB n'armait donc pas son chemin
+`__CMPXCHG_DOUBLE`, et `cpa_flush` vidait ses caches par des chemins plus
+longs — deux fois du travail refusé pour une capacité présente.
+
+**Ce que la tranche déclare** : `CX16` (ECX bit 13) et `CLFLUSH` (EDX bit 19),
+qui rejoignent le compteur d'horodatage. Et rien d'autre.
+
+**`RDRAND` reste tu, et c'est le cas qui mérite d'être dit.** L'émetteur le
+*décode* depuis #212 — mais il ne rend aucun aléa : il pose zéro et laisse CF à
+zéro, ce que le manuel appelle « raté, réessaie ». Un noyau qui verrait le bit
+annoncé rejouerait sa boucle de dix essais dans `kaslr_get_random_long` pour
+rien avant de se rabattre sur `rdtsc`. **Décoder n'est pas exécuter**, et seul
+ce qu'on exécute se déclare.
+
+**La moitié qu'on ne pouvait pas oublier.** Annoncer `clflush` oblige à donner
+sa **taille de ligne**, dans EBX de la feuille un, bits 15:8, comptée en
+quantums de huit octets. Linux la lit comme `x86_clflush_size` et s'en sert
+comme **pas de boucle** dans `clflush_cache_range`. À zéro, la boucle n'avance
+jamais : pas un refus franc, un gel — et un gel dans une machine qui vient
+d'annoncer qu'elle savait faire. EBX porte donc huit, pour des lignes de
+soixante-quatre octets, et le test l'exige au même titre que les deux bits.
+
+**Le test était déjà là et portait déjà la bonne règle** : `cpuid n'est pas une
+lecture, c'est une promesse`. Il compare les quatre registres à des valeurs
+écrites en toutes lettres — jamais aux constantes qui les produisent, sans quoi
+les deux côtés bougeraient ensemble. Il lit désormais aussi EBX de la feuille
+un, que personne ne regardait. Quatre sabotages tombent chacun sur sa mutation :
+`CLFLUSH` retiré, `CX16` retiré, la taille de ligne mise à zéro, et `RDRAND`
+annoncé alors que la machine n'a pas d'aléa.
+
+**Et deux lignes de `docs/DEMARRAGE.md` sont devenues fausses le jour où ce
+commit passe** — celles de `cmpxchg16b` et de `clflush`, qui disaient « ce que
+`cpuid` n'annonce pas ». Elles sont corrigées ici. Celle de `rdrand` dit la même
+chose et reste vraie : c'est tout l'intérêt de l'avoir écrite trois fois.
+
+**Ce que la mesure dit, et surtout ce qu'elle ne dit pas.** Une mesure bornée
+— `WISQ_ROUNDS=512 WISQ_TURNS=65536` — traduit ses 513 régions et s'arrête sur
+son budget de tours, en réclamant `e820__memory_setup_default` : pas de mur de
+décodage nouveau, pas de gel. Mais 513 régions, c'est le tout début du
+démarrage : elle n'imprime aucune ligne série et **n'atteint ni `cpa_flush` ni
+le chemin `__CMPXCHG_DOUBLE` de SLUB**, c'est-à-dire précisément les deux
+chemins que ces annonces ouvrent. Elle ne prouve donc rien à leur sujet.
+
+Ce qui tient cette tranche, c'est le test, pas la mesure. La mesure profonde
+serait la preuve — 3200 régions au moins pour voir la première ligne série —
+mais elle est quadratique et se compte en heures, pour la raison écrite en
+#215 : le pilote rejoue la machine depuis le début à chaque région. C'est dit
+ici plutôt que sous-entendu, parce qu'une mesure trop courte qui ne rougit pas
+ressemble à une preuve et n'en est pas une.
+
+**Reste la troisième direction** : généraliser l'arrêt nommé sur instruction
+illisible — le bloc finit là, et le refus n'a lieu qu'à l'exécution.

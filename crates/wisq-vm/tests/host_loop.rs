@@ -2241,10 +2241,22 @@ console.log("jamais " + lire(6));
 /// panne franche : ça donne un noyau qui prend un chemin qu'on ne sait pas
 /// exécuter, plus loin, sans rapport visible avec la cause.
 ///
-/// D'où le choix : **un zéro partout, sauf ce qui est vrai**. Aujourd'hui il
-/// n'y a qu'un bit vrai à déclarer — le compteur d'horodatage, produit depuis
-/// la tranche précédente. Tout le reste est à zéro, ce qui veut dire « on ne
-/// l'a pas », et c'est exact.
+/// D'où le choix : **un zéro partout, sauf ce qui est vrai**. Trois bits le
+/// sont : le compteur d'horodatage, `clflush` (#211) et `cmpxchg16b` (#210) —
+/// tous trois exécutés pour de vrai par l'émetteur. Tout le reste est à zéro,
+/// ce qui veut dire « on ne l'a pas », et c'est exact.
+///
+/// **`RDRAND` reste tu, et c'est le cas le plus intéressant.** L'émetteur le
+/// *décode* depuis #212, mais il ne rend aucun aléa : il pose zéro et laisse CF
+/// à zéro, ce qui veut dire « raté, réessaie ». Un noyau qui verrait le bit
+/// annoncé rejouerait sa boucle dix fois pour rien avant de se rabattre. Décoder
+/// n'est pas exécuter, et seul ce qu'on exécute se déclare.
+///
+/// **Et annoncer `clflush` oblige à donner sa taille de ligne.** Linux lit
+/// `x86_clflush_size` dans EBX de la feuille un, bits 15:8, multipliés par huit.
+/// À zéro, `clflush_cache_range` calcule un pas nul et **boucle sans jamais
+/// avancer** : la promesse serait tenue à moitié, et la moitié manquante
+/// pendrait la machine au lieu de la faire échouer.
 ///
 /// **Le fournisseur est volontairement inconnu.** Se faire passer pour Intel ou
 /// AMD ferait prendre au noyau les contournements d'errata de leurs puces —
@@ -2312,6 +2324,7 @@ console.log("inconnue " + lire(9));
 console.log("signature " + lire(0));
 console.log("edx " + lire(2));
 console.log("ecx " + lire(1));
+console.log("ebx " + lire(3));
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             path = path.to_string_lossy(),
@@ -2389,10 +2402,21 @@ console.log("ecx " + lire(1));
     // là ». Un bit de plus le ferait tomber, et c'est le but.
     assert_eq!(
         line("edx "),
-        0x10,
-        "le bit 4, le compteur d'horodatage, seul : c'est la seule chose qu'on exécute"
+        0x8_0010,
+        "le bit 4 (compteur d'horodatage) et le bit 19 (clflush), et eux seuls"
     );
-    assert_eq!(line("ecx "), 0, "et aucune des extensions récentes");
+    assert_eq!(
+        line("ecx "),
+        0x2000,
+        "le bit 13 (cmpxchg16b) seul — et surtout pas le bit 30, RDRAND, que la \
+         machine décode sans avoir d'aléa à rendre"
+    );
+    assert_eq!(
+        line("ebx "),
+        0x800,
+        "la taille de ligne de clflush : huit quantums de huit octets, soit \
+         soixante-quatre. À zéro, la boucle de vidage du noyau ne fait pas un pas"
+    );
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
