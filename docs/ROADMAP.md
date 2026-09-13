@@ -9489,3 +9489,105 @@ la sonde du noyau est symétrique et ne peut pas les distinguer.
 Les deux autres cœurs. L'interpréteur Rust et le cœur Swift ont leur propre
 histoire de périphériques ; ce qui est posé ici l'est dans `web/host.js`, la
 machine du bureau local — celle que « il faut que desktop marche bien » désigne.
+
+## L'horloge, T2 : le 8254 compte, et le mur de l'étalonnage tombe en entier
+
+Deuxième des trois tranches de l'horloge — et elle en a fait plus que ce qu'on
+lui demandait, ce qui vaut d'être dit avant les chiffres.
+
+**Ce que le noyau demande, lu dans son binaire.** `quick_pit_calibrate`, à
+`0xffffffff81056382`, se sert du canal **deux** du 8254, celui du haut-parleur :
+
+```text
+in  $0x61,%al ; and $0xfc ; or $0x1 ; out %al,$0x61   ; ouvrir le portillon
+mov $0xb0,%al ; out %al,$0x43                         ; canal 2, bas/haut, mode 0
+mov $0xff,%al ; out %al,$0x42 ; out %al,$0x42         ; charger 0xffff
+in  $0x42,%al ×4                                      ; puis regarder descendre
+```
+
+Il ne demande l'heure à personne : il compte combien de fois son propre `rdtsc`
+avance pendant que le compteur perd un octet de poids fort, et il en **déduit**
+la fréquence de son compteur d'horodatage. Les deux horloges n'ont donc pas à
+être justes — elles doivent être **d'accord entre elles**.
+
+**Ce que la tranche pose** : les trois compteurs sur `0x40`–`0x42`, le mot de
+commande sur `0x43`, le portillon sur `0x61`, et un compte qui descend contre
+l'horloge de l'invité — celle que `rdtsc` avance de `TSC_STEP` par lecture et
+que la boucle hôte avance de son budget par tour. **La même horloge, pas une
+seconde** : une seconde divergerait, et c'est précisément leur rapport que
+l'étalonnage mesure.
+
+**Une constante cesse d'être sans conséquence.** `TSC_STEP` dit depuis toujours
+que sa valeur est arbitraire et que « seule sa positivité stricte est une
+propriété ». C'était vrai tant que rien ne s'y comparait. Le rapport entre le
+quartz du 8254 — 1 193 182 Hz, celui que Linux a en dur — et la fréquence
+nominale du compteur d'horodatage décide maintenant de ce que la machine
+**annonce**. Un gigahertz rond, écrit et justifié plutôt que tombé d'un calcul.
+
+### La mesure
+
+| | avant | après |
+| --- | --- | --- |
+| `tsc: Fast TSC calibration failed` | imprimé | **disparu** |
+| `tsc: Unable to calibrate against PIT` | imprimé | **disparu** |
+| `tsc: No reference (HPET/PMTIMER) available` | imprimé | **disparu** |
+| `tsc: Marking TSC unstable…` | imprimé | **disparu** |
+| — | | `tsc: Fast TSC calibration using PIT` |
+| — | | **`tsc: Detected 999.989 MHz processor`** |
+| lignes série | 79 | **88** |
+| régions traduites | 5357 | 5497 |
+
+**999,989 MHz pour un gigahertz déclaré** : onze millionièmes d'écart, et ils
+viennent des arrondis entiers du noyau. Les deux horloges sont d'accord.
+
+### Ce que la tranche a fait de plus que prévu, et pourquoi T3 change de raison
+
+Le plan disait : T2 pose le 8254, T3 fait monter IRQ0, et c'est T3 qui lève le
+mur de `calibrate_delay`. **C'est faux, et la mesure le dit** :
+
+```text
+Calibrating delay loop (skipped), value calculated using timer frequency.. 2000.31 BogoMIPS (lpj=3333296)
+```
+
+Un noyau qui a une fréquence de compteur d'horodatage **digne de confiance**
+n'exécute pas sa boucle d'étalonnage : il la calcule. Le saut conditionnel vers
+lui-même à `calibrate_delay + 1091`, sur lequel la machine butait depuis la
+tranche du pilote, n'est plus atteint du tout. Le mur de l'horloge est tombé
+sans qu'aucune ligne n'ait été levée.
+
+T3 reste nécessaire — les jiffies, l'ordonnanceur et tout ce qui dort en
+dépendent — mais **plus pour la raison écrite**. Elle sera reprise à son tour,
+avec le mur que la mesure lui donnera plutôt que celui qu'on lui prêtait.
+
+**Et la machine va maintenant d'elle-même là où la béquille l'avait menée** :
+`fpu__init_system + 448`, un `hlt`, et le noyau dit pourquoi — « x86/fpu:
+Giving up, no FPU found and no math emulation present ». C'est le second des
+deux murs que Maxime a tranchés, et il est maintenant atteint sans `lpj=`.
+
+### Les tests
+
+Quatre, et cinq sabotages qui tombent chacun sur sa mutation.
+
+- **Le prologue d'étalonnage du noyau, octet pour octet.** Il n'assène **pas**
+  la valeur que le noyau compare : `0xff` est exactement ce que rend un port où
+  il n'y a personne, donc une assertion dessus serait verte sans le moindre
+  8254. Ce qu'il tient est le **portillon**, qui doit rendre ce qu'on vient d'y
+  écrire.
+- **Le rythme.** Trois lectures séparées par quatre mille `rdtsc`. Le nombre de
+  pas perdus — 477 — est écrit en toutes lettres, pas recalculé depuis les deux
+  constantes, sans quoi les deux côtés bougeraient ensemble.
+- **Écrire un diviseur et lire un compte sont deux séquences.** Une lecture est
+  glissée entre les deux écritures, exprès. J'avais d'abord tenu les deux dans
+  un seul drapeau ; ça marchait sur tout ce que le noyau fait, et c'est
+  précisément le genre de chose qui mord trois tranches plus tard.
+- **Le canal périodique recharge.** Un diviseur de seize pas, franchi en deux
+  cents `rdtsc` — celui du noyau, 3977, demanderait un programme plus gros que
+  la fenêtre du traducteur. Sans ce test, le sabotage « le mode 2 boucle » a
+  **survécu** au premier passage : le montage ne laissait pas passer assez de
+  temps pour qu'un tour se referme.
+
+### Ce qui n'est pas modélisé, et qui est nommé plutôt que tu
+
+La commande de relecture du 8254 — ce noyau ne l'emploie pas. Les modes autres
+que zéro et deux : il n'en programme pas d'autres, et les deviner serait
+inventer. La sortie des canaux zéro et un, que rien ne consulte.

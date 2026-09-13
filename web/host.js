@@ -310,6 +310,72 @@ const NOBODY_THERE = 0xff;
 /// écrit `0xff` juste avant l'initialisation et repose son masque juste après —
 /// mais l'écrire ici vaut mieux que de laisser croire que la question ne s'est
 /// pas posée.
+/// **Le 8254, et l'horloge contre laquelle il compte.**
+///
+/// `quick_pit_calibrate` — lu à `0xffffffff81056382` — ne demande pas l'heure :
+/// il compte combien de fois son propre `rdtsc` avance pendant que le compteur
+/// du 8254 perd un octet de poids fort, et il en **déduit** la fréquence du
+/// compteur d'horodatage. Les deux horloges n'ont donc pas à être justes, elles
+/// doivent être **d'accord entre elles** : c'est leur rapport, et lui seul, qui
+/// décide de ce que le noyau annoncera.
+///
+/// Le quartz du PC d'origine, celui que Linux a en dur.
+const PIT_HZ = 1193182n;
+/// **La fréquence nominale du compteur d'horodatage.** Elle était arbitraire et
+/// sans conséquence tant que rien ne s'y comparait — `TSC_STEP` côté émetteur
+/// dit d'ailleurs que « seule sa positivité stricte est une propriété ». Elle
+/// cesse de l'être ici : c'est ce gigahertz que le noyau mesurera et
+/// imprimera. Le choisir rond vaut mieux que le laisser tomber d'un calcul.
+const TSC_HZ = 1_000_000_000n;
+/// Les ports du 8254 : trois compteurs et un mot de commande.
+const PIT_CHANNEL = 0x40;
+const PIT_COMMAND = 0x43;
+/// **Le port B du contrôleur système**, où vit le portillon du canal deux —
+/// celui que l'étalonnage ouvre avant de compter. Bit 0 le portillon, bit 1 le
+/// haut-parleur, bit 5 la sortie du canal deux, en lecture seule.
+const PIT_GATE = 0x61;
+const PIT_GATE_OPEN = 0x01;
+const PIT_OUT_TWO = 0x20;
+
+/// Un compteur au repos.
+///
+/// **Le temps consommé est gardé, pas déduit d'une date de chargement.** Un
+/// portillon qui se ferme puis se rouvre doit reprendre là où il en était, et
+/// l'écrire ainsi évite l'arithmétique inverse — celle qui retrouverait une
+/// date à partir d'un compte — qui n'aurait été juste que par accident.
+function counter() {
+  return {
+    /// Le mode du 8254. Ce noyau n'en programme que deux : le zéro pour
+    /// l'étalonnage, le deux pour sa cadence périodique.
+    mode: 0,
+    /// Comment les octets se lisent et s'écrivent : 1 le bas seul, 2 le haut
+    /// seul, 3 le bas puis le haut.
+    access: 3,
+    /// Le diviseur chargé. Zéro vaut soixante-cinq mille cinq cent trente-six,
+    /// comme sur la puce.
+    reload: 0,
+    /// Les pas déjà comptés avant la dernière ouverture du portillon.
+    consumed: 0n,
+    /// L'horloge de l'invité à cette ouverture.
+    openedAt: 0n,
+    /// Le portillon. Ceux des canaux zéro et un sont câblés en l'air sur un PC.
+    open: true,
+    /// L'octet bas déjà écrit, en attente du haut.
+    low: 0,
+    /// La prochaine lecture rendra-t-elle l'octet haut ?
+    readHigh: false,
+    /// La prochaine écriture porte-t-elle l'octet haut du diviseur ?
+    ///
+    /// **Séparé de la lecture, et ce n'est pas une précaution en l'air** : la
+    /// puce se souvient des deux indépendamment, et les confondre suffirait à
+    /// ce qu'une lecture glissée entre les deux écritures d'un diviseur décale
+    /// les octets. Le noyau intercale un délai entre ses deux `out`.
+    writeHigh: false,
+    /// Le compte figé par une commande de verrou, ou `null`.
+    latched: null,
+  };
+}
+
 const PIC_MASTER = 0x20;
 const PIC_SLAVE = 0xa0;
 /// Le bit qui, sur le port de commande, dit « ce qui suit est une
@@ -388,6 +454,51 @@ export function machine({
   // Les trois arguments arrivent en `i64`, donc en `BigInt` : le port, la
   // valeur, et **la largeur en octets**. La largeur est passée plutôt que
   // devinée — deux octets dont le haut est nul ressemblent à un octet.
+  /// Les trois compteurs du 8254, et le port qui porte le portillon du
+  /// troisième. Exposés plus bas en lecture, comme les contrôleurs.
+  const pits = [counter(), counter(), counter()];
+  /// Ce que l'invité a écrit sur le port du portillon. Les bits hauts sont à
+  /// lui ; le bit cinq, lui, vient de la puce et n'est pas rangé ici.
+  let gatePort = 0;
+  /// L'horloge de l'invité, celle que `rdtsc` avance et que la boucle hôte
+  /// avance aussi. **Le 8254 compte contre elle et contre rien d'autre** :
+  /// une seconde horloge divergerait, et l'étalonnage mesure justement leur
+  /// rapport.
+  const now = () => BigInt.asUintN(64, globals[SLOTS.tsc].value);
+  /// Les pas du 8254 qu'un compteur a vus depuis son chargement.
+  const stepsOf = (chip) =>
+    chip.consumed + (chip.open ? ((now() - chip.openedAt) * PIT_HZ) / TSC_HZ : 0n);
+  /// Ce qu'un compteur rendrait s'il était lu maintenant.
+  ///
+  /// **Le mode deux recharge, les autres bouclent.** Ce sont les deux seules
+  /// formes que ce noyau programme, et les seules dont la descente est écrite :
+  /// un mode qu'il ne demande pas serait deviné, pas modélisé.
+  const countOf = (chip) => {
+    const reload = chip.reload === 0 ? 0x10000 : chip.reload;
+    const steps = stepsOf(chip);
+    if (chip.mode === 2 || chip.mode === 6) {
+      return reload - Number(steps % BigInt(reload));
+    }
+    return Number((BigInt(reload) - steps) & 0xffffn);
+  };
+  /// Charger un diviseur : le compteur repart de son sommet, maintenant.
+  const load = (chip, value) => {
+    chip.reload = value & 0xffff;
+    chip.consumed = 0n;
+    chip.openedAt = now();
+    chip.latched = null;
+    chip.readHigh = false;
+  };
+  /// **La sortie du canal deux**, celle que le port du portillon rend au bit
+  /// cinq. En mode zéro elle monte quand le compte atteint zéro, et c'est le
+  /// seul mode dont ce noyau la consulte ; ailleurs elle est dite basse plutôt
+  /// que devinée.
+  const outTwo = () => {
+    const chip = pits[2];
+    if (chip.mode !== 0) return false;
+    return stepsOf(chip) >= BigInt(chip.reload === 0 ? 0x10000 : chip.reload);
+  };
+
   /// Les deux contrôleurs de cette machine. Exposés plus bas en lecture, pour
   /// que le relevé puisse dire ce qu'ils tiennent ; rien ne se décide dessus.
   const pics = { master: controller(), slave: controller() };
@@ -409,6 +520,64 @@ export function machine({
       // 16550 seulement avec la FIFO ; ici l'octet bas suffit, et le dire est
       // plus honnête que de faire semblant.
       if (serial) serial(Number(value & 0xffn));
+      return;
+    }
+    if (at === PIT_GATE) {
+      // **Le portillon du canal deux.** Le bit cinq appartient à la puce et
+      // n'est pas rangé : l'écrire n'a aucun effet sur un vrai PC non plus.
+      const octet = Number(value & 0xffn);
+      gatePort = octet & ~PIT_OUT_TWO;
+      const wanted = (octet & PIT_GATE_OPEN) !== 0;
+      const chip = pits[2];
+      if (wanted !== chip.open) {
+        // Le temps déjà compté est mis de côté avant la fermeture, et
+        // l'ouverture repart de maintenant. Un compteur ne perd donc rien à
+        // être suspendu, et ne gagne rien non plus.
+        if (!wanted) chip.consumed = stepsOf(chip);
+        chip.open = wanted;
+        chip.openedAt = now();
+      }
+      return;
+    }
+    if (at === PIT_COMMAND) {
+      const octet = Number(value & 0xffn);
+      const which = octet >> 6;
+      // **La commande de relecture** — canal trois — n'est pas modélisée. Ce
+      // noyau ne l'emploie pas ; l'ignorer en le disant vaut mieux que de
+      // rendre un état inventé.
+      if (which === 3) return;
+      const chip = pits[which];
+      const access = (octet >> 4) & 3;
+      if (access === 0) {
+        // Le verrou : le compte est figé jusqu'à ce que ses deux octets soient
+        // lus. C'est ce qui existe pour qu'un lecteur ne voie pas un octet bas
+        // d'avant et un octet haut d'après.
+        chip.latched = countOf(chip);
+        chip.readHigh = false;
+        return;
+      }
+      chip.mode = (octet >> 1) & 7;
+      chip.access = access;
+      chip.low = 0;
+      chip.readHigh = false;
+      chip.writeHigh = false;
+      chip.latched = null;
+      return;
+    }
+    if (at >= PIT_CHANNEL && at < PIT_CHANNEL + 3) {
+      const chip = pits[at - PIT_CHANNEL];
+      const octet = Number(value & 0xffn);
+      if (chip.access === 1) load(chip, octet);
+      else if (chip.access === 2) load(chip, octet << 8);
+      else if (!chip.writeHigh) {
+        // Bas puis haut : le premier octet attend le second, et le compteur ne
+        // repart qu'une fois les deux écrits — comme la puce.
+        chip.low = octet;
+        chip.writeHigh = true;
+      } else {
+        chip.writeHigh = false;
+        load(chip, (octet << 8) | chip.low);
+      }
       return;
     }
     const chosen = controllerAt(at);
@@ -458,6 +627,22 @@ export function machine({
     void width;
     const at = Number(port);
     if (at === SERIAL_STATUS) return BigInt(TRANSMITTER_IDLE);
+    if (at === PIT_GATE) {
+      return BigInt(gatePort | (outTwo() ? PIT_OUT_TWO : 0));
+    }
+    if (at >= PIT_CHANNEL && at < PIT_CHANNEL + 3) {
+      const chip = pits[at - PIT_CHANNEL];
+      const value = chip.latched !== null ? chip.latched : countOf(chip);
+      if (chip.access === 1) return BigInt(value & 0xff);
+      if (chip.access === 2) return BigInt((value >> 8) & 0xff);
+      if (!chip.readHigh) {
+        chip.readHigh = true;
+        return BigInt(value & 0xff);
+      }
+      chip.readHigh = false;
+      chip.latched = null;
+      return BigInt((value >> 8) & 0xff);
+    }
     const chosen = controllerAt(at);
     if (chosen !== null) {
       // Le port de données rend le masque — c'est toute la sonde du noyau. Le
@@ -795,6 +980,8 @@ export function machine({
     /// qu'ils tiennent — le masque, et la base de vecteur qu'ICW2 a posée.
     /// Lecture ; rien ne se décide dessus.
     pics,
+    /// Les trois compteurs du 8254, au même titre et pour la même raison.
+    pits,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       for (let round = 0; round < rounds; round++) {
