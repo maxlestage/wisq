@@ -9076,3 +9076,117 @@ ressemble à une preuve et n'en est pas une.
 
 **Reste la troisième direction** : généraliser l'arrêt nommé sur instruction
 illisible — le bloc finit là, et le refus n'a lieu qu'à l'exécution.
+
+## L'octet illisible n'emporte plus sa région : le bloc s'arrête devant, et le refus attend l'exécution
+
+Troisième et dernière des trois directions que Maxime a tranchées.
+
+**Ce qui n'allait pas, en une phrase.** La découverte des blocs est
+**spéculative** — elle suit les deux issues de chaque saut conditionnel et la
+suite de chaque `call` — donc elle lit des octets que l'exécution n'atteindra
+peut-être jamais. Un seul d'entre eux que le décodeur ne savait pas lire
+refusait la **région entière**. C'est exactement le mur de `setup_arch`, à
+ceci près que l'octet fautif n'était pas au bord de la fenêtre mais au milieu,
+et que la correction est la même : le bloc finit devant l'octet, le reste se
+traduit.
+
+**Ce n'est pas le refus qui disparaît, c'est son moment.** Le bloc s'arrête, le
+module pose RIP sur l'octet et rend la main, et l'hôte demande une région qui
+**commence** là. C'est celle-là qui est refusée franchement, et seulement si
+l'exécution y va. `Refused::CannotDecode` ne sort donc plus que d'un point
+d'entrée illisible.
+
+**La contrepartie était réelle, et elle est tenue.** Je l'avais dite à Maxime
+en lui proposant la direction : ces refus sont précisément ce qui a guidé les
+dix dernières tranches — `lkgs`, `invlpg`, `invpcid`, `ltr`, `lldt`,
+`cmpxchg16b`, `clflush`, `rdrand` sont toutes arrivées par un `CannotDecode`
+nommé. Cesser de refuser sans rien mettre à la place aurait **éteint
+l'instrument qui a produit la tranche**. `Module::unreadable` rend donc les
+décalages des octets qu'une région traduit sans savoir les lire, et
+`examples/coverage.rs` en fait une colonne à part. Une coupe n'y figure pas :
+elle serait lisible avec plus d'octets, et la compter ferait chercher une
+instruction manquante là où il n'y a qu'un bord de fenêtre.
+
+**La mesure, sur les huit mégaoctets de texte d'Alpine** (forme confinée, une
+région par cible de `call`, fenêtre de 4 Kio) :
+
+| | avant | après |
+| --- | --- | --- |
+| régions compilées | 10 097 | **10 116** |
+| régions refusées | 19 | **0** |
+| octets illisibles nommés | 19 (un par région refusée) | **34, dans 19 régions compilées** |
+| régions tous les 512 octets | 13 607 / 2 777 refusées | **14 991 / 1 393 refusées** |
+
+**Le relevé nomme plus qu'avant, et pas seulement autrement.** Un refus
+n'annonçait que le **premier** octet illisible d'une région, puisqu'il
+l'emportait. Une région qui se traduit les porte tous : `c4` passe de 1 à 13 —
+c'est le préfixe VEX de l'AVX, et il était masqué treize fois par un voisin —
+`0f 02` (`lar`) de 3 à 5, `db` (la pile x87) de 1 à 2. Le reste :
+`48`×3 et `f3 48`×3 (un REX.W sur un opcode que la table n'a pas), `8f`×2,
+`0f 00`×1, `0f 09` (`wbinvd`)×1, `0f ae`×1, `c5`×1, `f3 0f`×1, `ff`×1.
+
+**Et un chiffre publié cesse ici de mesurer quoi que ce soit.** « N régions sur
+10 116 » ne peut plus baisser : elles se traduisent toutes. `docs/DEMARRAGE.md`
+le dit désormais en toutes lettres, et renvoie à la colonne des octets.
+
+### Ce que la mesure du noyau dit — c'est-à-dire rien, et c'était prévisible
+
+`WISQ_ROUNDS=512 WISQ_TURNS=65536` sur le noyau d'Alpine rend un relevé
+**identique octet pour octet** à celui de #217 : les mêmes 512 tours dans le
+même ordre, le même arrêt sur `e820__memory_setup_default`, les mêmes
+registres, la même pile, zéro ligne série.
+
+Ce n'est pas une déception, c'est ce que #215 avait déjà établi : sur ce chemin
+de démarrage, **il n'y a plus un seul `CannotDecode`**. Les dix tranches
+précédentes l'ont vidé un mur à la fois. Lever un mur qui n'est plus là ne
+déplace rien, et une mesure plus profonde ne le déplacerait pas davantage —
+elle coûterait des heures pour rendre le même verdict, pour la raison écrite en
+#215 : le pilote rejoue la machine depuis le début à chaque région.
+
+Ce que la tranche achète est donc **préventif**, et c'est le seul mérite qu'on
+peut lui donner honnêtement : le onzième mur de cette famille — un octet
+atteint par la découverte, jamais par l'exécution — ne coûtera plus une
+tranche. Il coûtera une ligne dans la colonne des octets illisibles.
+
+### Ce que les tests tiennent
+
+Trois tests, et cinq sabotages qui tombent chacun sur sa mutation.
+
+- `an_unreadable_byte_on_a_branch_nobody_takes_no_longer_costs_the_region` : un
+  `jne` pris qui saute par-dessus l'octet fautif. La région se traduit, l'octet
+  est nommé au décalage 5, **rien n'est traduit derrière lui** — le sauter pour
+  reprendre à l'octet d'après exécuterait le milieu d'une instruction qu'on n'a
+  pas lue —, et sous JavaScriptCore les deux `incq` ont lieu et RIP finit sur
+  le `ud2`. Puis la région qui **commence** sur l'octet est refusée
+  franchement.
+- `an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it` : la
+  même paire, en plus court.
+- `the_edge_is_fifteen_bytes_and_both_sides_are_held`, réécrit. Le seuil de
+  `REACH` ne se lit plus dans le sort de la région — les deux moitiés se
+  traduisent maintenant pareillement — mais à deux autres endroits : au point
+  d'entrée, où `MayBeCut` dit de redemander et `CannotDecode` dit que ce serait
+  perdu ; et dans le relevé des illisibles, où seule la moitié franche est
+  nommée.
+
+Les cinq sabotages : l'octet illisible refuse de nouveau la région entière ; une
+coupe est nommée comme un arrêt franc ; le seuil de quinze octets décide à
+l'envers ; l'octet est sauté et la traduction reprend derrière ; le relevé des
+illisibles ne rend jamais rien. Un sixième a **survécu** et n'était pas un
+défaut : l'ordre des deux bras qui départagent la coupe de l'arrêt au point
+d'entrée ne décide de rien, parce que le seuil a déjà choisi lequel des deux
+porte l'adresse. Le commentaire le dit maintenant, plutôt que de laisser croire
+à une priorité.
+
+### Ce que la tranche ne fait pas
+
+**`CannotTranslate` n'est pas généralisé.** Une instruction que le décodeur lit
+et que l'émetteur ne sait pas produire refuse toujours sa région entière. Le
+même argument s'y appliquerait mot pour mot, mais c'est une autre tranche — et
+ce cas ne s'est **jamais produit** sur le noyau d'Alpine, zéro sur 3673
+abandons, donc la mesurer demanderait un cas fabriqué.
+
+**Et le levier de la profondeur de démarrage reste entier** : le pilote
+`kernel-entry` rejoue la machine depuis le début à chaque région, ce qui rend
+la mesure quadratique et met le budget de tours — pas le jeu d'instructions —
+en travers du chemin. C'est écrit depuis #215, ça ne demande aucune décision de
+conception, et ça n'a toujours pas été fait.

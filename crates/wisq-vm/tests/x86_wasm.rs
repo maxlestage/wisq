@@ -2286,17 +2286,40 @@ console.log(JSON.stringify({{
     );
 }
 
-/// **Une instruction que le décodeur ne connaît pas est un refus franc**, et
-/// redemander n'y changerait rien.
+/// **Un octet illisible ne refuse plus la région : il arrête son bloc, et le
+/// refus attend qu'on y aille.**
+///
+/// C'était l'inverse jusqu'ici, et c'est ce que cette tranche renverse. La
+/// découverte est **spéculative** : elle suit les deux issues de chaque saut
+/// conditionnel et la suite de chaque `call`, donc elle lit des octets que
+/// l'exécution n'atteindra peut-être jamais. Un seul d'entre eux qui ne se
+/// décodait pas emportait la région entière — le même défaut que le mur de
+/// `setup_arch`, à ceci près que l'octet fautif n'était pas au bord mais au
+/// milieu.
+///
+/// Le refus n'a pas disparu, il a changé de moment : le bloc s'arrête devant
+/// l'octet, le module rend la main **sur** lui, et l'hôte demande une région
+/// qui commence là. C'est cette région-là qui est refusée franchement — et
+/// seulement si l'exécution y va.
 #[test]
-fn an_instruction_the_decoder_does_not_know_is_a_flat_refusal() {
+fn an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it() {
     let mut bytes = vec![0x90; 4];
     bytes.push(UNKNOWN);
     bytes.extend(std::iter::repeat_n(0x90, 40));
+    assert!(
+        Module::region_or_why(&bytes, CODE, 0).is_ok(),
+        "les quatre `nop` complets se traduisent, l'octet fautif arrête le bloc"
+    );
     assert_eq!(
-        Module::region_or_why(&bytes, CODE, 0),
-        Err(Refused::CannotDecode { at: 4 }),
-        "l'octet fautif est nommé, et le refus est franc"
+        Module::unreadable(&bytes, 0),
+        Ok(vec![4]),
+        "et il est **nommé** : cesser de refuser ne doit pas vouloir dire cesser \
+         d'apprendre ce qui manque"
+    );
+    assert_eq!(
+        Module::region_or_why(&bytes[4..], CODE + 4, 0),
+        Err(Refused::CannotDecode { at: 0 }),
+        "la région qui commence dessus, elle, est refusée franchement"
     );
 }
 
@@ -2305,19 +2328,48 @@ fn an_instruction_the_decoder_does_not_know_is_a_flat_refusal() {
 /// C'est le test qui compte : le même octet inconnu, à la même place, ne rend
 /// pas la même réponse selon ce qui le suit. Quinze octets après lui, le
 /// décodeur avait toute la place qu'une instruction x86-64 peut demander —
-/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe :
-/// la région se traduit **jusque-là**, et la reprise à trois laissera l'hôte
-/// juger l'octet avec une fenêtre entière devant lui. Avant la tranche qui a
-/// levé le mur de `setup_arch`, cette moitié rendait `MayBeCut { at: 3 }` et
-/// la région entière était refusée ; les trois `nop` complets ne servaient à
-/// rien.
+/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe.
+///
+/// **Ce que la tranche de l'arrêt nommé a déplacé.** La distinction ne se lit
+/// plus dans le sort de la région : depuis qu'un octet illisible arrête son
+/// bloc au lieu de refuser la région, les deux moitiés se traduisent
+/// pareillement et s'arrêtent au même endroit. Elle se lit à deux autres
+/// endroits, et c'est là que ce test la tient maintenant :
+///
+/// - **au point d'entrée**, où rien de complet ne précède : `MayBeCut` dit à
+///   la vue de redemander avec une fenêtre plus grande, `CannotDecode` lui dit
+///   que ce serait perdu ;
+/// - **dans le relevé des illisibles**, où seule la moitié franche est nommée.
+///   Nommer une coupe ferait chercher une instruction manquante là où il n'y a
+///   qu'un bord de fenêtre — exactement la confusion que `REACH` existe pour
+///   éviter.
 ///
 /// Sans les deux moitiés, un seuil de zéro ou de mille passerait aussi bien.
 #[test]
 fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
     // `restants` compte à partir de l'octet fautif, celui-ci compris : c'est la
     // place dont le décodeur disposait pour lire une instruction entière.
-    let region = |restants: usize| {
+    let at_entry = |restants: usize| {
+        let mut bytes = vec![UNKNOWN];
+        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
+        assert_eq!(bytes.len(), restants, "le montage du cas lui-même");
+        Module::region_or_why(&bytes, CODE, 0).map(|_| ())
+    };
+    assert_eq!(
+        at_entry(14),
+        Err(Refused::MayBeCut { at: 0 }),
+        "quatorze octets restants : le décodeur a pu manquer de place, et rien \
+         de complet ne précède — la vue redemande"
+    );
+    assert_eq!(
+        at_entry(15),
+        Err(Refused::CannotDecode { at: 0 }),
+        "quinze restants : il avait toute la place, donc redemander serait perdu"
+    );
+
+    // La même paire derrière trois `nop`, où le sort de la région ne dépend
+    // plus du seuil — seul le nom en dépend.
+    let after_three_nops = |restants: usize| {
         let mut bytes = vec![0x90; 3];
         bytes.push(UNKNOWN);
         bytes.extend(std::iter::repeat_n(0x90, restants - 1));
@@ -2327,18 +2379,151 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
             Module::outline(&bytes, 0)
                 .ok()
                 .map(|blocks| blocks[0].after),
+            Module::unreadable(&bytes, 0),
         )
     };
     assert_eq!(
-        region(14),
-        (Ok(()), Some(3)),
-        "quatorze octets restants : le décodeur a pu manquer de place, la région \
-         se traduit jusqu'à l'octet fautif et reprend dessus"
+        after_three_nops(14),
+        (Ok(()), Some(3), Ok(vec![])),
+        "quatorze restants : la région se traduit jusqu'à l'octet et reprend \
+         dessus, mais il n'est pas nommé — ce peut n'être que la fenêtre"
     );
     assert_eq!(
-        region(15),
-        (Err(Refused::CannotDecode { at: 3 }), None),
-        "quinze restants : il avait toute la place, donc c'est un vrai refus"
+        after_three_nops(15),
+        (Ok(()), Some(3), Ok(vec![3])),
+        "quinze restants : même traduction, même reprise, et l'octet est nommé"
+    );
+}
+
+/// **Un octet illisible sur une branche que personne ne prend ne coûte plus
+/// rien.**
+///
+/// C'est la mesure de la tranche, en petit : la région porte un octet que le
+/// décodeur ne lit pas, elle se traduit quand même, et l'exécution va jusqu'au
+/// bout sans jamais le rencontrer. Avant, cette région était refusée entière.
+///
+/// **Le montage tient précisément à ce que la découverte soit spéculative.**
+/// `jne` ouvre deux suites ; le décodage les lit toutes les deux, l'exécution
+/// n'en prend qu'une. L'octet fautif est sur celle qui n'est pas prise. Un
+/// test où l'octet serait sur la route de l'exécution ne dirait pas ça — il
+/// dirait la moitié d'après, celle du refus à l'arrivée, et elle est tenue
+/// séparément ici.
+///
+/// Ce que chaque assertion tient :
+/// - la région se traduit, au lieu d'être refusée ;
+/// - l'octet est **nommé** dans le relevé des illisibles, à son décalage :
+///   la tranche ne doit pas faire perdre ce qu'elle apprend ;
+/// - à l'exécution, les **deux** `incq` ont eu lieu — donc la branche prise
+///   est bien celle qui saute par-dessus l'octet — et RIP est posé sur le
+///   `ud2` qui finit le bloc d'arrivée ;
+/// - la région qui **commence** sur l'octet est refusée franchement : le
+///   refus n'a pas disparu, il attend qu'on y aille.
+#[test]
+fn an_unreadable_byte_on_a_branch_nobody_takes_no_longer_costs_the_region() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let bytes = {
+        let mut bytes = vec![
+            0x48, 0xff, 0xc2, // 0  : incq %rdx      — RDX passe à 1, ZF à zéro
+            0x75, 0x03,    // 3  : jne +3        — pris, vers 8
+            UNKNOWN, // 5  : l'octet que la découverte lit et que rien n'exécute
+            0x90, 0x90, // 6  : du remplissage, jamais atteint non plus
+            0x48, 0xff, 0xc2, // 8  : incq %rdx      — le témoin, RDX passe à 2
+            0x0f, 0x0b, // 11 : ud2           — rend la main sur elle-même
+        ];
+        // Douze octets de plus pour que l'octet fautif soit à vingt du bord :
+        // au-delà de `REACH`, donc un refus franc et pas une coupe.
+        bytes.extend(std::iter::repeat_n(0x90, 12));
+        bytes
+    };
+    assert_eq!(bytes.len() - 5, 20, "le montage du cas lui-même");
+
+    let module = match Module::region_or_why(&bytes, CODE, 0) {
+        Ok(module) => module,
+        Err(why) => panic!("la région doit se traduire malgré l'octet illisible, pas {why:?}"),
+    };
+    assert_eq!(
+        Module::unreadable(&bytes, 0),
+        Ok(vec![5]),
+        "l'octet est nommé, à son décalage"
+    );
+    // **Et rien n'est traduit derrière lui sur cette route.** Le sauter pour
+    // reprendre à l'octet d'après serait la correction séduisante et fausse :
+    // ce qu'on n'a pas su lire a peut-être une longueur, et exécuter ce qui
+    // suit reviendrait à exécuter le milieu d'une instruction.
+    assert_eq!(
+        Module::outline(&bytes, 0)
+            .expect("le relevé")
+            .iter()
+            .map(|block| block.start)
+            .collect::<Vec<_>>(),
+        vec![0, 8],
+        "deux blocs, et aucun ne commence dans le remplissage des octets 5 à 7"
+    );
+
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-arret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let path = scratch.join("m.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+const fs = require("fs");
+const bytes = fs.readFileSync({:?});
+const memory = new WebAssembly.Memory({{ initial: {} }});
+const slots = [];
+for (let slot = 0; slot < {}; slot++) {{
+  slots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const imports = {{ env: {{ mem: memory, out: () => undefined, in: () => 0n }} }};
+slots.forEach((global, slot) => {{ imports.env["g" + slot] = global; }});
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+slots[2].value = 0n;            // rdx : le témoin
+slots[4].value = 0x30003000n;   // rsp
+instance.exports.run(64n);
+console.log(JSON.stringify({{
+  rdx: slots[2].value.toString(),
+  rip: BigInt.asUintN(64, slots[{}].value).toString(16),
+}}));
+"#,
+            path.to_string_lossy(),
+            GUEST_PAGES,
+            GLOBAL_COUNT,
+            RIP_SLOT
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé le module :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("\"rdx\":\"2\""),
+        "les deux `incq` devaient avoir eu lieu — le saut par-dessus l'octet est \
+         pris — il a rendu {text}"
+    );
+    assert!(
+        text.contains("\"rip\":\"3000000b\""),
+        "le module devait aller jusqu'au `ud2` de l'octet 11, à 0x3000000b : {text}"
+    );
+
+    assert_eq!(
+        Module::region_or_why(&bytes[5..], CODE + 5, 0),
+        Err(Refused::CannotDecode { at: 0 }),
+        "et si l'exécution y allait, c'est là que le refus tomberait"
     );
 }
 

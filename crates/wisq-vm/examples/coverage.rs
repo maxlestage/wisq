@@ -205,10 +205,38 @@ fn main() {
     let (mut hit, mut refused) = (0usize, 0usize);
     let mut wasted = 0usize;
     let mut blame: std::collections::BTreeMap<String, usize> = Default::default();
+    // **Et ce que les régions compilées avalent sans savoir le lire.**
+    //
+    // Depuis que le bloc s'arrête devant un octet illisible au lieu de faire
+    // refuser la région, ces octets ont quitté la colonne des refus : leur
+    // région se traduit, et ils n'arrêtent la machine que si l'exécution y va.
+    // Ne plus les compter ferait croire que le décodeur est complet ; les
+    // compter avec les refus ferait croire qu'ils coûtent une région. Ils ont
+    // donc leur propre colonne — et c'est celle qui nomme les instructions à
+    // apprendre, comme la colonne des refus le faisait avant elle.
+    let mut stopped = 0usize;
+    let mut holes: std::collections::BTreeMap<String, usize> = Default::default();
+    // Un préfixe ne dit rien tout seul : c'est l'octet d'après qui nomme
+    // l'instruction en cause.
+    let name_byte = |walk: usize| match bytes[walk] {
+        0xf2 | 0xf3 | 0x0f | 0x66 => format!(
+            "{:02x}-{:02x}",
+            bytes[walk],
+            bytes.get(walk + 1).copied().unwrap_or(0)
+        ),
+        other => format!("{other:02x}"),
+    };
     for entry in entries.iter().take(20000) {
         let end = limit.min(entry + 4096);
-        if Module::resolving(&bytes[*entry..end], BASE, 0, SLOT, PAGES).is_some() {
+        let verdict = Module::resolving_or_why(&bytes[*entry..end], BASE, 0, SLOT, PAGES);
+        if verdict.is_ok() {
             hit += 1;
+            let stops =
+                Module::unreadable(&bytes[*entry..end], 0).expect("la région vient de se traduire");
+            stopped += usize::from(!stops.is_empty());
+            for at in stops {
+                *holes.entry(name_byte(*entry + at)).or_default() += 1;
+            }
             continue;
         }
         refused += 1;
@@ -221,7 +249,7 @@ fn main() {
         // a envoyée, et rien d'autre. `resolving_or_why` répond donc à sa place,
         // et cette sonde s'en sert maintenant aussi — ce qui la fait vérifier
         // la réponse à chaque exécution plutôt que la deviner deux fois.
-        let culprit = match Module::resolving_or_why(&bytes[*entry..end], BASE, 0, SLOT, PAGES) {
+        let culprit = match verdict {
             Ok(_) => unreachable!("la région vient d'être refusée"),
             Err(Refused::MayBeCut { at }) => {
                 // **De combien la prudence dépasse.** `MayBeCut` dit « le
@@ -259,19 +287,10 @@ fn main() {
                 Some(step) => format!("refus:{}", name_of(step.op)),
                 None => "refus:illisible-au-relire".to_string(),
             },
-            Err(Refused::CannotDecode { at }) => {
-                // Un préfixe ne dit rien tout seul : c'est l'octet d'après qui
-                // nomme l'instruction refusée.
-                let walk = *entry + at;
-                match bytes[walk] {
-                    0xf2 | 0xf3 | 0x0f | 0x66 => format!(
-                        "{:02x}-{:02x}",
-                        bytes[walk],
-                        bytes.get(walk + 1).copied().unwrap_or(0)
-                    ),
-                    other => format!("{other:02x}"),
-                }
-            }
+            // **Et il ne sort plus que d'un point d'entrée illisible.** Un
+            // octet illisible plus loin arrête son bloc au lieu de refuser la
+            // région ; il est compté dans `holes`, pas ici.
+            Err(Refused::CannotDecode { at }) => name_byte(*entry + at),
         };
         *blame.entry(culprit).or_default() += 1;
     }
@@ -336,6 +355,24 @@ fn main() {
     }
     print!("  ce que le décodeur ne lit pas ({total_trous}) :");
     for (why, n) in trous.iter().take(12) {
+        print!(" {why}×{n}");
+    }
+    println!();
+
+    // **La colonne qui a remplacé la précédente comme instrument.** Les dix
+    // dernières tranches sont sorties de la liste des refus francs ; depuis
+    // l'arrêt nommé, ce qui manque au décodeur se lit ici, dans des régions
+    // qui se traduisent. Le nombre de régions ne dit plus rien de ce qui
+    // manque — c'est le nombre d'**octets** nommés qui le dit, et il compte
+    // désormais tous ceux d'une région, pas seulement le premier.
+    let mut worst_holes: Vec<_> = holes.into_iter().collect();
+    worst_holes.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let total_holes: usize = worst_holes.iter().map(|(_, n)| *n).sum();
+    print!(
+        "  régions compilées portant un octet illisible : {stopped} sur {hit} \
+         ({total_holes} octets) :"
+    );
+    for (why, n) in worst_holes.iter().take(12) {
         print!(" {why}×{n}");
     }
     println!();
