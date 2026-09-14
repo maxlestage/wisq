@@ -10134,3 +10134,75 @@ régions. Les relevés de cette tranche sont pris à
 attend les exceptions en attente du coprocesseur — et sur une machine dont le
 coprocesseur n'en lève aucune, elle ne fait rien.
 
+
+## #228 — `fwait` (9b) : une instruction d'un octet, et le dernier mur du démarrage
+
+`fpu__drop + 136` portait l'octet `9b`. Une seule instruction, un seul octet,
+et elle refusait `fpu__drop` en entier.
+
+`fwait` (aussi écrite `wait`) attend que le coprocesseur ait fini, puis **prend**
+les exceptions qu'il a laissées en attente. Sur cette machine, le mot d'état du
+x87 n'est jamais écrit qu'à zéro, par `fninit` ; aucune arithmétique x87 ne se
+décode ; **aucun bit d'exception ne peut donc y être posé**. Il n'y a rien à
+attendre et rien à prendre : `fwait` ne fait rien.
+
+Ce n'est pas une convention, c'est une **conclusion**, et elle a une date de
+péremption — elle devient fausse le jour où un calcul x87 existe. Le commentaire
+du bras de décodage le dit, et nomme le cœur Swift à réviser avec.
+
+### Encore une règle qui ne vivait que dans un cœur sur trois
+
+`Sources/WisqVM/X86CoreDispatch.swift:84` traitait déjà `0x9B` comme inerte,
+avec le bon raisonnement écrit à côté : « Ce cœur n'a pas de coprocesseur qui
+calcule, donc il n'y a jamais rien à attendre ni à prendre. » Le décodeur Rust
+ne la connaissait pas.
+
+**Quatrième fois de suite.** #225 (les 416 octets de `fxsave`), #226 (le vidage
+du tampon sur CR3/CR4/CR0), et maintenant `fwait` : trois règles que le cœur
+Swift portait seul. Le réflexe, désormais : **avant de conclure qu'une règle
+manque, chercher si l'un des trois cœurs ne la tient pas déjà** — la réponse y
+est plus souvent qu'ailleurs, et elle est déjà argumentée.
+
+### Ce que le test tient, en plus du bras
+
+`9b db e3` — la forme historique de `finit` — se lit en **deux** instructions :
+`fwait` d'un octet, puis `fninit`. Un bras qui mangerait l'octet suivant
+passerait le premier test et tomberait sur celui-là. Et `df e0` (`fstsw ax`)
+reste illisible : `fwait` ne rend pas lisible le reste de la famille x87.
+
+Trois sabotages, tous tombés : `fwait` non décodée ; `fwait` longue de deux
+octets ; `fstsw ax` devenue lisible. Restauration vérifiée par `diff`.
+
+### La mesure : le mur ne s'est pas déplacé, il a disparu
+
+| | avant (#227) | après |
+| --- | --- | --- |
+| régions traduites | 10 144 | **10 776** |
+| lignes de journal | 204 | **206** |
+| arrêt | `fpu__drop + 136`, `CannotDecode { at: 0 }` | **aucun** — le million de tours du pilote s'épuise, la machine avançait encore |
+
+C'est le premier relevé depuis le début de cette série où la machine **ne
+s'arrête sur rien**. Elle est dans `jent_entropy_init` — l'initialisation du
+générateur d'entropie par gigue d'horloge — et elle tourne : `jent_rct_insert`,
+`jent_apt_failure`, `crypto_sha3_update`. Les deux lignes gagnées sont
+`workingset: timestamp_bits=40 max_order=13 bucket_order=0` et `zbud: loaded`.
+
+**Ce relevé ne dit pas que le noyau démarre.** Il dit qu'il n'y a plus
+d'instruction manquante sur le chemin parcouru en un million de tours. Le
+prochain mur, s'il existe, demande un budget plus grand — et `jent_entropy_init`
+est précisément le genre de boucle qui peut tourner longtemps sans avancer,
+faute d'une horloge qui bouge assez. **La question suivante n'est plus « quelle
+instruction manque » mais « la machine progresse-t-elle ou tourne-t-elle en
+rond »**, et il faut un relevé qui la pose, pas une conjecture.
+
+### Le relevé de couverture
+
+| | avant (#226) | après |
+| --- | --- | --- |
+| instructions lues en linéaire | 2 932 211 | **2 932 212** |
+| octets refusés | 642 | **641** |
+| régions tous les 512 octets | 14 991 compilées, 1393 refusées | **14 994 compilées, 1390 refusées** |
+
+Un octet, une instruction, **trois régions**. C'est l'écart entre ce qu'un
+octet illisible coûte en lui-même et ce qu'il coûte au voisinage : il emporte
+chaque fenêtre qui le traverse.
