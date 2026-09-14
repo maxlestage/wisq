@@ -10282,3 +10282,94 @@ dernière adresse neuve suit le budget ou reste à 860 189.
 
 Si le mur suivant est une horloge et non une instruction, c'est une **direction**
 — et elle se pose à Maxime, elle ne se tranche pas ici.
+
+## #231 — la RAM se règle, et le refus mord au bon endroit
+
+Depuis #228 le noyau va assez loin pour mourir d'autre chose qu'une instruction
+manquante. À 64 Mio — ce que `kernel-entry` portait en dur — il franchit tous
+ses initcalls, enregistre `PF_INET6`, `PF_CAN`, les trois ordonnanceurs d'E/S,
+atteint `sched_clock: Marking stable`, puis :
+
+```
+kworker/u2:1 invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0
+prepare_kernel_cred ← call_usermodehelper_exec_async
+Kernel panic - not syncing: System is deadlocked on memory
+```
+
+`WISQ_RAM` déclare désormais la taille en mébioctets. **Le défaut ne bouge pas.**
+Les relevés des tranches précédentes ont été pris à 64 Mio, et les changer en
+silence rendrait incomparables des mesures que cette feuille de route met côte à
+côte.
+
+### Deux avertissements qui n'avaient pas de dents
+
+Le pilote imprimait « NE TOMBE PAS sur l'adresse physique ; la région ne sera pas
+trouvée » puis **continuait**, et « le noyau déborde la RAM déclarée » puis
+**continuait** aussi. Le relevé parlait ensuite d'une région introuvable, trois
+écrans plus loin, sans que rien ne relie les deux.
+
+`usable_ram` refuse, et dit pourquoi avec de quoi agir : `TooSmall` porte ce
+qu'il faudrait, `FoldMisses` porte où l'adresse tombe. L'ordre des refus n'est
+pas indifférent — une taille qui n'est pas une puissance de deux n'a pas de
+masque du tout, et lui demander où son repli tombe ferait chercher un défaut de
+repli là où le défaut est la taille.
+
+**La règle de la puissance de deux existait déjà** dans cette feuille de route :
+« la RAM d'un invité confiné doit être une puissance de deux », et `confined` la
+tient côté émetteur. `usable_ram` la fait tenir aussi côté pilote, au lieu de la
+laisser à un `const` bien choisi.
+
+### La garde approuvait pour la mauvaise raison, et les sabotages ne l'ont pas vu
+
+Écrite d'abord sur le repli de `entry_virtual` — l'adresse d'entrée de l'ELF —
+elle passait ses six tests, tombait sous ses trois sabotages, et **acceptait
+quatre gibioctets sur le vrai noyau**, contre toute l'arithmétique.
+
+La raison : pour `vmlinux.bin`, le point d'entrée est **déjà physique**,
+`0x1000090` des deux côtés. Replier une adresse déjà physique est un
+non-événement quelle que soit la taille ; la garde interrogeait une adresse qui
+ne pouvait jamais la faire mordre.
+
+Ce que la machine replie pour de vrai, ce sont les adresses **virtuelles**
+qu'elle réclame une fois `secondary_startup_64` passé et CR3 chargé :
+`0x1000090 + __START_KERNEL_map`. Corrigée, la garde rend la borne annoncée :
+
+| `WISQ_RAM` | ce que le pilote répond |
+| --- | --- |
+| 16 | le noyau en réclame 50 Mio, BSS compris |
+| 48 | 768 pages n'est pas une puissance de deux |
+| 64, 256, 2048 | le repli tombe sur l'adresse physique |
+| 4096 | le repli amène `0xffffffff81000090` sur `0x81000090` |
+| 8192 | le repli amène `0xffffffff81000090` sur `0x181000090` |
+
+**Aucun des trois sabotages n'aurait attrapé ça.** Ils tenaient que la garde
+refuse ce qu'elle doit refuser ; aucun ne tenait qu'elle refuse **pour la bonne
+raison**. C'est l'essai contre le vrai noyau qui l'a trouvé, et le démenti est
+écrit dans le test, à côté de la constante.
+
+C'est l'« assertion qui a l'air d'une garde », dans sa forme la plus discrète :
+non pas une assertion satisfaite par un autre chemin, mais une assertion posée
+sur la mauvaise grandeur — vraie, vérifiée, et sans rapport avec ce qu'on croit
+mesurer.
+
+### La mesure
+
+| | 64 Mio | 256 Mio |
+| --- | --- | --- |
+| mémoire annoncée | `24480K/65144K` | `218364K/261752K` |
+| régions traduites | 14 348 | 13 905 |
+| lignes de journal | 372 | **230** |
+| fin | oom-killer, panique | les 4 000 000 tours s'épuisent, la machine avançait encore |
+
+**Les 142 lignes de journal perdues ne sont pas du progrès perdu** : c'était le
+vidage de l'oom-killer et la trace de la panique. À 256 Mio le noyau atteint le
+même point fonctionnel — `sched_clock: Marking stable` — sans mourir, et le
+budget de tours le coupe en pleine marche : dernière adresse neuve au tour
+3 801 180 sur quatre millions.
+
+### Ce que ça ne tranche pas
+
+À 256 Mio le budget redevient le facteur limitant. Savoir jusqu'où le noyau irait
+demande un budget plus grand, pas plus de mémoire — et la question d'après, celle
+de l'espace utilisateur, demande un initramfs, ce qui est une **direction** et
+non un défaut.

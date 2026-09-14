@@ -343,10 +343,28 @@ Trois choses, et aucune n'est petite :
    nombre était en réalité le rang de la traduction. **Le pilote imprimait deux
    compteurs sous un seul mot** ; il ne le fait plus.
 
-   Ce que ça ne tranche pas : se refermer sur trente adresses n'est pas ne plus
-   jamais avancer. La mesure suivante est le même relevé à un budget plus grand,
-   pour voir si le tour de la dernière adresse neuve suit le budget ou reste à
-   860 189.
+   **Et à budget quadruple, le tour de la dernière adresse neuve suit le
+   budget** : 3 932 806 sur quatre millions, soit 98,3 %. La machine n'était pas
+   coincée, elle avançait. 14 348 régions, 372 lignes de journal, et un mur qui
+   n'est ni une instruction ni une horloge :
+
+   ```
+   kworker/u2:1 invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0
+   Kernel panic - not syncing: System is deadlocked on memory
+   ```
+
+   **Le pilote déclarait 64 Mio en dur.** `WISQ_RAM` les règle depuis #231, avec
+   un refus — pas un avertissement — pour toute taille dont le repli par masque
+   n'amène plus une adresse virtuelle sur sa place physique. À 256 Mio le noyau
+   ne meurt plus : il atteint le même point, `sched_clock: Marking stable`, et
+   c'est le budget de tours qui le coupe en pleine marche.
+
+   Les 372 lignes de journal tombent alors à 230, et **ce n'est pas du progrès
+   perdu** : les 142 de différence étaient le vidage de l'oom-killer et la trace
+   de la panique. Compter les lignes de journal mesure le bavardage.
+
+   Ce que ça ne tranche pas : la suite, c'est l'espace utilisateur, et il demande
+   un initramfs. C'est une direction, pas un défaut.
 
    **Et `WISQ_ROUNDS=8192` ne suffit plus** : les relevés se prennent désormais
    à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.
