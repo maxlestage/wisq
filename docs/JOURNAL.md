@@ -13110,3 +13110,52 @@ La correction est donc de donner à `f9` le même traitement qu'à `c1` : une
 assertion qui dit ce qu'il **est**, pas seulement ce qu'il n'est pas. **Une
 assertion négative vieillit mal** : elle reste vraie quand le monde change, et
 cesse d'être la chose qu'on voulait tenir.
+
+## Un nombre exact et une lecture fausse, pour la troisième fois
+
+`100.0 %` imprimé au-dessus de « 641 octets refusés ». Le quotient est bon au
+dixième près ; la phrase dit le contraire de ses deux voisines.
+
+C'est la même famille que #229 et #231, et le triplet vaut d'être posé côte à
+côte :
+
+- **#229** : un pilote concluait « la machine avançait encore » à partir du seul
+  fait que rien n'avait manqué — ce qu'une boucle stérile produit à l'identique.
+- **#231** : une garde repliait l'adresse d'entrée de l'ELF, déjà physique. Le
+  calcul était juste, la grandeur n'était pas la bonne.
+- **#234** : un arrondi exact rend une affirmation — *il n'en reste aucun* —
+  qu'aucun arrondi n'a le droit de rendre.
+
+Aucun des trois n'est un défaut de calcul. Les trois sont des défauts de
+**sens** : ce que le nombre dit à qui le lit, et non ce qu'il vaut. Un test
+d'égalité ne les attrape pas, parce qu'ils sont vrais.
+
+Ce qui les attrape, à chaque fois : **lire le relevé en entier plutôt que la
+ligne qu'on cherchait**. Les 641 octets refusés étaient imprimés juste au-dessus
+du 100,0 %, et les douze opcodes juste en dessous. Il n'y avait rien à déduire,
+seulement trois lignes à lire ensemble.
+
+## Deux bornes plutôt qu'une, et pourquoi le miroir n'est pas décoratif
+
+La première version ne réservait que `100 %`. Poser une borne d'un seul côté
+déplace le mensonge au lieu de le supprimer : un relevé où presque tout est
+refusé afficherait « 0,0 % », qu'on lit comme « rien ne passe » alors que
+quelque chose passe — et ce quelque chose est justement ce qu'on cherche quand
+on lit cette ligne-là.
+
+Le test miroir est venu après coup, et il a servi tout de suite : c'est en
+l'écrivant que le rabat figé au dixième s'est révélé faux pour les parts
+imprimées au centième. **Une règle qui ne vaut que dans un sens n'est pas une
+règle, c'est un cas particulier qu'on n'a pas fini d'écrire.**
+
+## Une tâche qui énonçait un fait périmé
+
+La tâche ouverte sur les formes SSE disait « c'est la première catégorie de
+refus du relevé de couverture ». En relançant l'instrument : zéro refus sur les
+cibles de `call`, les deux colonnes de refus vides.
+
+Le fait était vrai quand il a été écrit. Douze tranches de décodage plus tard il
+ne l'est plus, et personne ne l'avait rouvert — une liste de travail est un
+endroit où les faits vieillissent sans que rien ne rougisse. La routine de
+réveil le dit déjà dans ses propres termes : **vérifier les chiffres plutôt que
+les citer**. Elle vise les chiffres du dépôt ; elle vaut aussi pour les siens.
