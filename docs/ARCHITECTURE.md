@@ -240,7 +240,7 @@ de toucher à ce côté-là :
 | cœur | où | ce qu'il fait |
 | --- | --- | --- |
 | `Sources/WisqVM/X86Core*.swift` | Swift | interprète — **et c'est celui que l'application construit pour un invité x86** |
-| `crates/wisq-vm/src/x86.rs` | Rust | interprète, mesuré à 49 MIPS |
+| `crates/wisq-vm/src/x86.rs` | Rust | interprète ; `cargo run -p wisq-vm --release --example speed` en donne 32,6 à 34,3 MIPS sur trois passages du 14 septembre 2026, et le chiffre suit le coureur |
 | `crates/wisq-vm/src/x86_wasm.rs` | Rust | **traduit** une région en module WebAssembly |
 
 Les trois lisent le même corpus matériel, `Tests/Fixtures/x86-oracle.tsv` —
