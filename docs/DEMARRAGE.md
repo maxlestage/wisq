@@ -134,21 +134,43 @@ JavaScriptCore les compile de la même façon et qu'on ne chronomètre que la
 différence. **Les trois rendent la même somme de contrôle**, sans quoi une forme
 qui ne ferait rien afficherait un débit magnifique et faux.
 
+**Les deux machines mesurées, et pourquoi il en faut deux.** Un premier relevé a
+longtemps figuré ici seul. Relancé sur un autre coureur, il ne se reproduit pas :
+les valeurs absolues diffèrent d'un facteur deux à six selon la ligne.
+
 | motif d'accès | repli | tampon + marche | marche seule | surcoût du tampon |
 | --- | --- | --- | --- | --- |
-| balayage court, 512 pages | 2,46 ns | 2,69 ns (×1,09) | 5,25 ns | **+0,23 ns** |
-| balayage long, 16 384 pages | 5,95 ns | 6,41 ns (×1,08) | 8,30 ns | **+0,47 ns** |
+| **coureur A** (relevé d'origine) | | | | |
+| balayage court, 512 pages | 2,46 ns | 2,69 ns (×1,09) | 5,25 ns | +0,23 ns |
+| balayage long, 16 384 pages | 5,95 ns | 6,41 ns (×1,08) | 8,30 ns | +0,47 ns |
 | une page neuve à chaque accès | 16,58 ns | 43,02 ns (×2,59) | 42,53 ns | **+26,43 ns** |
+| **coureur B** (14 septembre 2026, trois passages) | | | | |
+| balayage court, 512 pages | 1,07–1,14 | 1,79–1,87 | 3,95–3,99 | +0,71 à +0,76 |
+| balayage long, 16 384 pages | 2,43–2,66 | 2,87–3,06 | 4,40–4,55 | +0,39 à +0,44 |
+| une page neuve à chaque accès | 10,47–11,29 | 15,23–15,86 | 13,23–13,68 | **+4,03 à +4,76** |
 
-Trois exécutions à 6, 8 et 20 millions d'accès s'accordent à un dixième de
-nanoseconde près sur les deux premières lignes, et à ±1 ns sur la troisième.
+Sur chaque machine prise à part, les passages s'accordent : à un dixième de
+nanoseconde près sur les deux premières lignes, à sept dixièmes sur la
+troisième. **Cette concordance est interne à une machine, et la version
+antérieure de ce paragraphe la présentait comme une propriété de la mesure.**
 
-**Ce que ça dit.** Tant que le tampon répond, la traduction est presque
-gratuite — un dixième à un demi de nanoseconde par accès, contre un repli qui en
-coûte déjà deux et demi à six. **Quand il ne répond jamais, elle coûte plus que
-tout le reste** : la troisième ligne est construite pour ça, une page neuve à
-chaque accès, et aucun tampon ne peut y servir à quelque chose. Ce n'est pas une
-prévision, c'est un plancher : le pire jour possible.
+**Ce que les deux machines disent ensemble.** Tant que le tampon répond, la
+traduction est presque gratuite : de deux dixièmes à trois quarts de
+nanoseconde par accès, contre un repli qui en coûte déjà un à six. Les deux
+coureurs s'accordent là-dessus, et c'est l'énoncé qui porte la décision.
+
+**Quand il ne répond jamais, le tampon est une perte sèche** — il coûte plus
+que la marche seule sur les deux machines — mais *combien* ne se transporte
+pas : +26 ns sur A, +4 sur B. La troisième ligne est construite pour ça, une
+page neuve à chaque accès, et aucun tampon ne peut y servir à quelque chose.
+Une version antérieure en tirait qu'elle « coûte plus que tout le reste » :
+vrai sur A, où le surcoût vaut une fois et demie le repli ; faux sur B, où il
+en vaut quatre dixièmes.
+
+Ce motif reste ce pour quoi il est construit — **un plancher, le pire jour
+possible, pas une prévision**. Mais sa profondeur, elle, **n'est pas établie à
+mieux qu'un facteur six**, et c'est tout ce que deux machines permettent d'en
+dire.
 
 **Ce qui manque encore pour en faire un pourcentage de débit.** Il faudrait
 savoir quelle fraction des instructions d'un vrai noyau porte un opérande
@@ -205,7 +227,8 @@ Trois exécutions à 8 et 12 millions d'accès :
 **Le contrôle en ligne est sous le bruit** sur les deux motifs de balayage — la
 plage inclut zéro, et une des mesures est négative, ce qui dit qu'on mesure
 l'ordonnanceur et non le code. Sur le motif qui casse le tampon il coûte au plus
-une nanoseconde, là où la marche elle-même en coûte trente. Tenir RIP à jour à
+une nanoseconde, là où la marche elle-même en coûte treize à quarante-trois selon
+le coureur (voir le tableau à deux machines plus haut). Tenir RIP à jour à
 chaque accès n'est pas séparable du bruit.
 
 **Donc : le contrôle en ligne.** La page piège aurait acheté un mécanisme faux
