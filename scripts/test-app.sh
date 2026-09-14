@@ -97,7 +97,7 @@ fi
 # entière a été déplacée ici et rien dans ce relevé n'aurait permis de vérifier
 # qu'elle avait bien tourné plutôt que d'avoir disparu du bundle. Un nombre
 # seul se lit aussi bien comme une réussite que comme une absence.
-mesures=$(grep -E "^(WebKit|pont|Metal) [^:]*: |Executed [0-9]+ tests|Test Suite '[A-Za-z]+' (passed|failed)" "$sortie" | tail -40 || true)
+mesures=$(grep -E "^(WebKit|pont|Metal|bureau) [^:]*: |Executed [0-9]+ tests|Test Suite '[A-Za-z]+' (passed|failed)" "$sortie" | tail -40 || true)
 if [ -n "$mesures" ]; then
   echo "==> Mesures"
   echo "$mesures"
