@@ -489,19 +489,20 @@ le double se verra.
 **C'est de ce chiffre que dépend ce qu'un vrai noyau coûterait**, pas de celui
 d'à côté.
 
-### Trois conclusions tirées de trop peu de points, en trois tranches
+### Quatre conclusions tirées de trop peu de points, et la quatrième démentie par le passage suivant
 
-Ce que quatre passages ont rendu, pour cent vingt-huit régions traduites :
+Ce que quatre relevés de `bureau` ont rendu, pour cent vingt-huit régions
+traduites :
 
-| | #371 | #372 (a) | #372 (b) |
-| --- | --- | --- | --- |
-| `bureau`, millisecondes par région | 7,44 | 7,24 | **5,35** |
-| `bureau`, en lectures de registre | — | 5,04 | **5,37** |
-| l'étalon interne (`global`) | — | 1,44 ms | 0,996 ms |
-| `pont`, micro-banc d'une autre suite | 3,09 ms | 0,48 ms | 0,36 ms |
-| `WebKit` | 864 MIPS | 1702 MIPS | 1649 MIPS |
+| | #371 | #372 (a) | #372 (b) | #372 (c) |
+| --- | --- | --- | --- | --- |
+| `bureau`, millisecondes par région | 7,44 | 7,24 | **5,35** | **8,68** |
+| `bureau`, en lectures de registre | — | 5,04 | **5,37** | **2,31** |
+| l'étalon interne (`global`) | — | 1,44 ms | 0,996 ms | **3,76 ms** |
+| `pont`, micro-banc d'une autre suite | 3,09 ms | 0,48 ms | 0,36 ms | 0,82 ms |
+| `WebKit` | 864 MIPS | 1702 MIPS | 1649 MIPS | 1203 MIPS |
 
-**Et trois fois de suite, j'ai conclu avant d'avoir de quoi.**
+**Et quatre fois de suite, j'ai conclu avant d'avoir de quoi.**
 
 1. **Un point.** J'ai multiplié le `pont` d'un passage par le nombre de régions
    d'un noyau et annoncé treize secondes. Deux grandeurs différentes, un seul
@@ -509,19 +510,32 @@ Ce que quatre passages ont rendu, pour cent vingt-huit régions traduites :
 2. **Deux points.** 7,44 puis 7,24 : j'en ai tiré que les millisecondes
    tenaient et que le rapport ne servait à rien. Le troisième passage les
    écarte de trente-neuf pour cent.
-3. **Et le rapport n'a que deux observations** — 5,04 et 5,37. Elles se
-   ressemblent. En conclure qu'il est stable serait refaire la faute d'à côté,
-   dans l'autre sens.
+3. **Deux observations du rapport** — 5,04 et 5,37 — qui se ressemblent. En
+   conclure qu'il était stable aurait refait la faute d'à côté, dans l'autre
+   sens ; je m'en suis abstenu.
+4. **Mais j'ai écrit, dans la même page, que « le second varie moins ».** C'est
+   la même faute, en plus discret : une comparaison de dispersions tirée de
+   deux valeurs contre trois. **Le passage qui a validé la tranche l'a
+   démentie** — le rapport est tombé à 2,31.
+
+Sur ces quatre relevés, c'est **le rapport qui s'étale le plus** : de 2,31 à
+5,37, un facteur 2,3, là où les millisecondes vont de 5,35 à 8,68, un facteur
+1,6. Le dénominateur y est pour quelque chose — l'étalon interne va de 0,996 à
+3,76 ms, un facteur 3,8, plus large que la grandeur qu'il est censé
+normaliser. **Ce n'est pas davantage une loi que ne l'était l'affirmation
+inverse** : quatre relevés n'en font pas plus que deux.
 
 **Ce qui est mesuré, et rien de plus** : les deux chiffres sont imprimés à
 chaque passage, l'un en millisecondes, l'autre contre un étalon pris dans le
-même test à la même seconde. Sur les quatre passages vus, le second varie
-moins ; quatre passages ne font pas une loi.
+même test à la même seconde. Aucun des deux n'est présenté comme le bon, et
+cette page ne dira lequel varie le moins que le jour où assez de passages
+l'auront montré.
 
-Ce que ça permet déjà de dire sans risque, parce que c'est un ordre de
-grandeur et non un chiffre : pour les 15 319 régions d'un vrai noyau, la
-traduction seule pèse **des dizaines de secondes** — pas les treize que j'avais
-annoncées. C'est le mur de #167, et il est plus haut que la première estimation.
+Ce que ça permet déjà de dire sans risque, parce que c'est un intervalle
+mesuré et non un chiffre : pour les 15 319 régions d'un vrai noyau, la
+traduction seule pèse **entre quatre-vingts et cent trente-cinq secondes**
+selon le passage — pas les treize que j'avais annoncées. C'est le mur de #167,
+et il est plus haut que la première estimation.
 
 ### Ce que l'étalon est, et ce qu'il n'est pas
 

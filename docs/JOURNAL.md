@@ -13159,3 +13159,41 @@ ne l'est plus, et personne ne l'avait rouvert — une liste de travail est un
 endroit où les faits vieillissent sans que rien ne rougisse. La routine de
 réveil le dit déjà dans ses propres termes : **vérifier les chiffres plutôt que
 les citer**. Elle vise les chiffres du dépôt ; elle vaut aussi pour les siens.
+
+## La phrase discrète qui concluait pendant que la page disait ne pas conclure
+
+La tranche précédente existait pour arrêter de conclure. Elle nommait trois
+conclusions tirées de trop peu de points, expliquait pourquoi la troisième
+n'avait pas été tirée, et donnait à la page la forme que `progress.rs` avait
+déjà prise : dire ce qui est mesuré, ne rien en déduire.
+
+Puis, huit lignes plus bas, elle écrivait : « Sur les quatre passages vus, le
+second varie moins. »
+
+C'est une conclusion. Elle compare deux dispersions, l'une tirée de trois
+valeurs, l'autre de deux, et elle tranche. Elle ne s'annonce pas comme une
+conclusion parce qu'elle est courte, subordonnée, et suivie d'un désaveu —
+« quatre passages ne font pas une loi » — qui lui sert d'alibi plutôt que de
+garde. **Un désaveu collé derrière une affirmation ne la retire pas.**
+
+Le passage de la CI qui a rendu la tranche verte l'a démentie dans la même
+minute : le rapport est tombé de 5,37 à 2,31, et sur quatre relevés c'est
+maintenant lui qui s'étale le plus — un facteur 2,3 contre 1,6 pour les
+millisecondes. Le dénominateur explique une part de l'écart : l'étalon interne
+va de 0,996 à 3,76 ms, plus large que la grandeur qu'il devait stabiliser.
+
+**Et la réécriture a failli reproduire la faute en la corrigeant.** La première
+version disait que l'étalon variait « plus que tout le reste du tableau ». Faux :
+le micro-banc d'à côté couvre un facteur 8,6 dans le même tableau. Il a suffi de
+diviser deux nombres déjà écrits trois lignes plus haut pour le voir — ce qui
+veut dire que la phrase avait été écrite sans les regarder.
+
+Ce que ça enseigne, et qui ne se range pas dans une garde exécutable : une page
+qui refuse de conclure doit être relue **phrase par phrase**, pas section par
+section. Le titre disait ne pas conclure ; le corps concluait. Et un superlatif
+— « plus que tout le reste » — est une affirmation sur des nombres, donc une
+chose à vérifier, jamais un effet de style.
+
+Le chiffre qui reste, parce qu'il est un intervalle mesuré et non une moyenne :
+pour les 15 319 régions d'un vrai noyau, la traduction seule pèse entre quatre-
+vingts et cent trente-cinq secondes selon le passage.
