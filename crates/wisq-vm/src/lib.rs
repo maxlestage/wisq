@@ -8,6 +8,7 @@
 //! app links it as a static library through [`ffi`], the host tools link it as
 //! a normal crate, and the benchmark measures the same code all of them run.
 
+pub mod census;
 pub mod core;
 pub mod desktop;
 pub mod dtb;
