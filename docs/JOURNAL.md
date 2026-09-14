@@ -12870,3 +12870,39 @@ mesurer — une sonde qui chronomètre une écriture de CR3 seule. Un compteur d
 génération rendrait le vidage constant ; il attendra que cette sonde existe.
 Optimiser sur une intuition, c'est se donner le droit de ne jamais vérifier.
 
+## Deux noms qui décrivaient le pilote, pas la machine
+
+Vingt tests lisaient l'arrêt d'un `ud2` comme « refusée » ou « sur place ». Les
+deux étaient vrais et aucun ne parlait de la machine : « refusée » voulait dire
+que le bouchon de test n'avait pas voulu traduire la région commençant sur le
+`ud2`, et « sur place » que l'hôte avait redemandé la même adresse. Le `ud2`
+lui-même ne disait rien, parce qu'il ne posait aucun témoin.
+
+Vingt attentes à reprendre, une par une. Deux d'entre elles, emportées par un
+remplacement en masse, parlaient en réalité d'un vrai refus de traduction — il a
+fallu les rendre. **Un remplacement en masse sur une chaîne qui a deux causes
+n'est pas un remplacement, c'est un pari.**
+
+## La couverture qu'on vide en renommant
+
+En changeant ces vingt attentes, plus rien ne tenait le chemin « sur place ».
+Personne ne l'avait demandé, personne ne l'aurait vu : la suite était verte, et
+le chemin toujours atteint par un vrai noyau.
+
+Ce n'est pas un cas particulier. **Quand un comportement cesse de passer par un
+chemin, les tests qui le tenaient au passage cessent de le tenir** — et ils ne
+rougissent pas pour le dire, ils rougissent pour l'autre raison. Le réflexe à
+garder : après avoir changé ce qu'une instruction rend, chercher ce que plus
+personne ne tient.
+
+## Le sabotage qui ne sabotait rien
+
+Délivrer `#UD` avec un code d'erreur de 1 au lieu de 0 n'a fait tomber aucun
+test. La conclusion tentante — « il manque une garde » — était fausse : `deliver`
+n'empile un code d'erreur que pour les dix vecteurs qui en portent un, et 6 n'en
+est pas. L'argument était **ignoré**.
+
+Un « SURVÉCU » est une hypothèse, pas un résultat. Celle-ci se vérifie en une
+minute, et le vrai sabotage — ajouter 6 à la liste des vecteurs à code d'erreur,
+ce qui décale la pile du gestionnaire de huit octets — tombe aussitôt.
+

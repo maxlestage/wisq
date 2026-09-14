@@ -362,6 +362,24 @@ pub fn debug_register_at_rest(which: u8) -> u64 {
 /// `syscall_init` pour apprendre que c'était `MSR_STAR`.
 pub const STOP_MSR: u64 = 1 << 32;
 
+/// **`ud2` pose ce témoin, et l'hôte délivre `#UD` au lieu de s'arrêter.**
+///
+/// Un noyau Linux exécute `ud2` **exprès**, des dizaines de fois par
+/// démarrage : `WARN()` compile en un appel à `__warn_printk` suivi d'un
+/// `ud2`, et son gestionnaire consulte `__bug_table`, y trouve
+/// `BUGFLAG_WARNING`, **avance RIP de deux** et reprend. `BUG()` n'y est pas,
+/// et le noyau panique — la distinction vit dans sa table, pas ici, donc elle
+/// se fait d'elle-même dès que la délivrance est fidèle.
+///
+/// **RIP reste sur le `ud2`** : `#UD` est une faute, pas un piège, et c'est le
+/// gestionnaire qui décide d'avancer. Empiler l'adresse d'après ferait
+/// reprendre le noyau deux octets trop loin, puisqu'il y ajoute lui-même la
+/// longueur de l'instruction.
+///
+/// Sans porte, l'arrêt reste et se nomme — la conduite que la faute de page a
+/// posée.
+pub const STOP_UNDEFINED: u64 = 8;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -2051,6 +2069,14 @@ impl Module {
                 // reprendrait à l'octet suivant, qui n'est pas du code.
                 body.store(RIP_SLOT, |b| {
                     b.constant(here);
+                });
+                // **Et le dire.** Sans témoin, l'hôte ne voyait qu'un retour de
+                // main sur une adresse qu'il ne connaissait pas : il redemandait
+                // la même région, retombait sur le même `ud2`, et concluait
+                // « sur place ». C'est ce qui arrêtait un vrai noyau sur chacun
+                // de ses `WARN` — voir `STOP_UNDEFINED`.
+                body.store(STOP_SLOT, |b| {
+                    b.constant(STOP_UNDEFINED);
                 });
                 body.bytes.push(code::I32_CONST);
                 signed(-1, &mut body.bytes);

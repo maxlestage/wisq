@@ -50,6 +50,18 @@ import XCTest
 /// passant.
 @MainActor
 final class LocalDesktopTests: XCTestCase {
+    /// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
+    ///
+    /// Avant, il ne posait aucun témoin : l'hôte ne voyait qu'un retour de main
+    /// sur une adresse inconnue, redemandait la même région, et concluait
+    /// « sur place ». Ce nom-là décrivait la boucle hôte ; celui-ci décrit la
+    /// machine. Le même texte est tenu côté Rust par `UD2_SANS_PORTE` dans
+    /// `crates/wisq-vm/tests/host_loop.rs` — **et ces tests-ci sont les seuls à
+    /// le juger dans un vrai WebKit**, donc ils ne peuvent pas s'en remettre à
+    /// lui.
+    static let ud2SansPorte =
+        "une instruction indéfinie (ud2) sans porte : aucune IDT ne porte le vecteur 6"
+
     /// Une RAM d'une page, et une adresse au-dessus de deux puissance
     /// cinquante-trois : c'est là que vivent les noyaux, et c'est ce qui
     /// attrape une adresse passée en nombre plutôt qu'en texte.
@@ -74,7 +86,11 @@ final class LocalDesktopTests: XCTestCase {
         try await desktop.place(program(), at: base)
 
         let stopped = try await desktop.run()
-        XCTAssertEqual(stopped.why, "sur place", "le `ud2` arrête la machine")
+        XCTAssertEqual(
+            stopped.why,
+            Self.ud2SansPorte,
+            "le `ud2` arrête la machine, et depuis #227 il le dit lui-même"
+        )
         XCTAssertEqual(stopped.at, base + 0x103, "et elle dit où")
 
         // **Deux incréments, et c'est ce qui prouve que la machine a tourné.**
@@ -83,9 +99,14 @@ final class LocalDesktopTests: XCTestCase {
         let rdx = try await desktop.global(2)
         XCTAssertEqual(rdx, 2, "les deux régions se sont exécutées")
 
-        // Trois traductions : les deux régions, plus l'adresse du `ud2` que la
-        // seconde atteint en retombant dessus.
-        XCTAssertEqual(desktop.translations, 3, "une traduction par adresse atteinte")
+        // Deux traductions : les deux régions.
+        //
+        // **Deux, et non trois depuis #227.** La troisième était l'adresse du
+        // `ud2` : l'hôte y réclamait une région faute de savoir pourquoi le
+        // bloc lui rendait la main. Le module pose désormais un témoin, donc
+        // l'hôte nomme l'arrêt au lieu de demander à traduire une instruction
+        // qui n'en est pas une.
+        XCTAssertEqual(desktop.translations, 2, "une traduction par adresse atteinte")
         XCTAssertEqual(desktop.refusals, 0)
         XCTAssertEqual(
             desktop.unreadable, 0,
@@ -243,7 +264,7 @@ final class LocalDesktopTests: XCTestCase {
         try await desktop.load()
         try await desktop.place(program(), at: base)
         let stopped = try await desktop.run()
-        XCTAssertEqual(stopped.why, "sur place")
+        XCTAssertEqual(stopped.why, Self.ud2SansPorte)
 
         let pixels = try await desktop.paint()
         XCTAssertEqual(

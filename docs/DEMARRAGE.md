@@ -300,10 +300,25 @@ Trois choses, et aucune n'est petite :
    `clocksource: jiffies`, `NET: Registered PF_NETLINK/PF_ROUTE`,
    `TCP: Hash tables configured`. Il en est aux **initcalls**.
 
-   Le mur suivant est `do_one_initcall + 673`, derrière la plainte du noyau
-   « initcall inet_init+0x0/0x560 returned with preemption imbalance ». Ce que
-   cette machine ne fait toujours pas est le **calcul** en virgule flottante ;
-   la première instruction qui en demanderait un est un arrêt nommé.
+   **Et le mur d'après n'était pas davantage une instruction manquante** : à
+   `do_one_initcall + 673` se trouve un `ud2` que Linux exécute **exprès**.
+   `WARN()` compile en un appel à `__warn_printk` suivi d'un `ud2`, et son
+   gestionnaire `#UD` consulte `__bug_table`, avance RIP de deux, et reprend.
+   Tant que le vecteur 6 n'était pas délivré, chaque avertissement du noyau
+   était un arrêt définitif.
+
+   Délivré, le noyau **imprime sa trace d'avertissement en entier et continue**
+   — 175 lignes de journal à 204, 8176 régions à 10 144 — jusqu'à
+   `NET: Registered PF_UNIX/PF_LOCAL`, `PF_XDP`, `PCI: CLS`, `rtc_cmos` et
+   `Initialise system trusted keyrings`.
+
+   Le mur suivant est `fpu__drop + 136` : l'octet `9b`, **`fwait`**, qui attend
+   les exceptions en attente du coprocesseur. Ce que cette machine ne fait
+   toujours pas est le **calcul** en virgule flottante ; la première instruction
+   qui en demanderait un est un arrêt nommé.
+
+   **Et `WISQ_ROUNDS=8192` ne suffit plus** : les relevés se prennent désormais
+   à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.
 
    **Et `WISQ_TURNS=65536` ne suffit plus** pour aller jusque-là : à ce budget
    la machine s'épuise dans `ftrace_init`, qui convertit 41 322 sites d'appel
