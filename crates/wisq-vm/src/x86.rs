@@ -459,6 +459,13 @@ pub enum Op {
     /// n'a encore. Ce qui change est qu'un refus porte maintenant un nom.
     /// `0F 31` — le compteur d'horodatage, dans EDX:EAX.
     ReadTimestamp,
+    /// `rdtscp` : le compteur d'horodatage, **et** `IA32_TSC_AUX` dans ECX.
+    ///
+    /// Séparée de `ReadTimestamp` plutôt que portée par un booléen : les deux
+    /// n'écrivent pas les mêmes registres, et un émetteur qui les confondrait
+    /// laisserait dans ECX ce qui s'y trouvait — que le noyau lirait comme un
+    /// numéro de processeur.
+    ReadTimestampAndProcessor,
     /// `0F A2` — les capacités du processeur, dans EAX/EBX/ECX/EDX.
     CpuId,
     /// `0F 32` — lire le registre spécifique au modèle que ECX désigne.
@@ -2102,6 +2109,7 @@ impl Cpu {
             Op::PortIn
                 | Op::PortOut
                 | Op::ReadTimestamp
+                | Op::ReadTimestampAndProcessor
                 | Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
@@ -2393,6 +2401,7 @@ impl Cpu {
             Op::PortIn
             | Op::PortOut
             | Op::ReadTimestamp
+            | Op::ReadTimestampAndProcessor
             | Op::CpuId
             | Op::ReadModelRegister
             | Op::WriteModelRegister
@@ -2764,6 +2773,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     // ou « reg=0 » avalerait des voisins qui n'ont rien à voir.
                     let op = match (field.reg & 0b111, field.register) {
                         (7, 0) => Op::SwapGs,
+                        // **`rdtscp` partage l'octet modrm de `swapgs`.**
+                        // `f8` est `rm=0`, `f9` est `rm=1` ; le bras ne
+                        // regardait que le premier, et la seconde refusait
+                        // alors toute région qui la porte.
+                        (7, 1) => Op::ReadTimestampAndProcessor,
                         (0, 1) => Op::HypervisorCall { amd: false },
                         (3, 1) => Op::HypervisorCall { amd: true },
                         _ => return None,
@@ -4514,6 +4528,47 @@ mod tests {
     /// Aucune des quatre ne porte d'opérande : deux octets, et c'est tout. Ce
     /// que le test tient est donc la longueur autant que le nom — une forme
     /// décodée à trois octets décalerait tout ce qui suit.
+    /// **`rdtscp` est le voisin immédiat de `swapgs`, et seul l'un des deux se
+    /// lisait.**
+    ///
+    /// Les deux partagent l'octet modrm `0f 01 /7` en forme registre :
+    /// `f8` est `rm=0`, `f9` est `rm=1`. Le bras ne regardait que `rm=0`, donc
+    /// `swapgs` passait et `rdtscp` non — et `rdtscp` refuse alors la région
+    /// entière qui la porte.
+    ///
+    /// **Ce que `rdtscp` fait de plus que `rdtsc`** : elle pose aussi ECX,
+    /// depuis `IA32_TSC_AUX`. Sur cette machine aucun `wrmsr` n'écrit ce
+    /// registre, donc ECX reçoit zéro — et c'est une valeur *juste*, pas un
+    /// bouchon : un processeur dont personne n'a posé le TSC_AUX rend zéro
+    /// aussi. La sérialisation qu'elle promet en plus n'a rien à tenir ici, un
+    /// seul fil et aucun réordonnancement.
+    ///
+    /// **Le troisième octet compte, et la longueur avec.** Une forme lue à deux
+    /// octets décalerait tout ce qui suit dans la région.
+    #[test]
+    fn rdtscp_reads_where_swapgs_reads_and_they_do_not_collide() {
+        let step = decode(&[0x0f, 0x01, 0xf9]).expect("`rdtscp` se lit");
+        assert_eq!(step.op, Op::ReadTimestampAndProcessor);
+        assert_eq!(step.length, 3, "`0f 01 f9` fait trois octets");
+        assert!(step.memory.is_none(), "`rdtscp` ne désigne rien à lire");
+
+        // **Le voisin ne bouge pas.** Un bras élargi qui avalerait `rm=0`
+        // rendrait `swapgs` sous un autre nom, et le passage d'anneau
+        // n'échangerait plus rien.
+        let swapgs = decode(&[0x0f, 0x01, 0xf8]).expect("`swapgs` se lit encore");
+        assert_eq!(swapgs.op, Op::SwapGs);
+
+        // Et le reste de la forme registre de `0f 01` reste illisible : cette
+        // tranche ouvre une porte, pas la famille.
+        for third in [0xc8u8, 0xc9, 0xee, 0xef, 0xe8, 0xfa, 0xfb] {
+            assert!(
+                decode(&[0x0f, 0x01, third]).is_none(),
+                "`0f 01 {third:02x}` reste illisible ; \
+                 l'élargir demande de savoir ce qu'elle fait"
+            );
+        }
+    }
+
     #[test]
     fn the_four_privileged_instructions_a_kernel_reaches_first_are_decoded() {
         for (bytes, op) in [
@@ -4579,12 +4634,23 @@ mod tests {
         assert_eq!(step.length, 3);
         assert!(step.memory.is_none(), "swapgs ne touche pas la mémoire");
 
-        for voisin in [0xf9u8, 0xc2, 0xd0] {
+        for voisin in [0xc2u8, 0xd0] {
             assert!(
                 decode(&[0x0f, 0x01, voisin]).is_none(),
                 "0f 01 {voisin:02x} n'est pas swapgs et ne doit pas se décoder comme tel"
             );
         }
+        // **`f9` a changé de camp, et le commentaire de ce test le disait
+        // déjà.** Il était rangé avec les illisibles alors que la prose
+        // au-dessus le nommait `rdtscp` : l'assertion tenait « ce n'est pas
+        // swapgs » là où la phrase tenait « c'est rdtscp ». Tant que
+        // l'instruction était refusée, les deux se ressemblaient ; elles ne se
+        // ressemblent plus.
+        assert_eq!(
+            decode(&[0x0f, 0x01, 0xf9]).map(|step| step.op),
+            Some(Op::ReadTimestampAndProcessor),
+            "0f 01 f9 est rdtscp, pas swapgs"
+        );
         // `c1` est `vmcall` depuis la tranche de la sonde d'hyperviseur : il
         // se décode, et surtout pas en `swapgs`.
         assert_eq!(

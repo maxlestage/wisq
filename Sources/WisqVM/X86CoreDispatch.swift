@@ -394,14 +394,52 @@ extension X86Core {
             // besoin.
             if (instruction.modrm! >> 3) & 0x07 == 7 {
                 if group.mod == 0b11 {
-                    // SWAPGS : échanger la base de GS avec celle que le noyau
-                    // garde de côté. C'est ainsi qu'un noyau bascule entre sa
-                    // zone par processeur et celle de l'espace utilisateur, à
-                    // chaque entrée et chaque sortie.
-                    let aside = system.modelSpecific[X86SystemState.kernelGSBase] ?? 0
-                    system.modelSpecific[X86SystemState.kernelGSBase] =
-                        system.modelSpecific[X86SystemState.gsBase] ?? 0
-                    system.modelSpecific[X86SystemState.gsBase] = aside
+                    // **`rm` sépare `SWAPGS` de ses voisins, et il se lit.**
+                    //
+                    // Ce bras ne regardait que `reg == 7` et `mod == 3`, donc
+                    // toute la famille en forme registre tombait sur `SWAPGS` —
+                    // `f9` (RDTSCP) compris. Le noyau demandait l'heure et
+                    // repartait avec ses deux bases de GS interverties : sa
+                    // zone par processeur pointait sur celle de l'espace
+                    // utilisateur, et le prochain accès `%gs:` lisait ailleurs.
+                    //
+                    // Ce n'était pas un refus, c'était une **réponse fausse**,
+                    // et une réponse fausse ne se signale pas. Les voisins non
+                    // décidés sont donc refusés par leur nom plutôt que servis
+                    // par celui d'à côté.
+                    switch group.rm {
+                    case 0:
+                        // SWAPGS : échanger la base de GS avec celle que le
+                        // noyau garde de côté. C'est ainsi qu'un noyau bascule
+                        // entre sa zone par processeur et celle de l'espace
+                        // utilisateur, à chaque entrée et chaque sortie.
+                        let aside = system.modelSpecific[X86SystemState.kernelGSBase] ?? 0
+                        system.modelSpecific[X86SystemState.kernelGSBase] =
+                            system.modelSpecific[X86SystemState.gsBase] ?? 0
+                        system.modelSpecific[X86SystemState.gsBase] = aside
+                    case 1:
+                        // RDTSCP : le compteur d'horodatage dans EDX:EAX, et
+                        // `IA32_TSC_AUX` dans ECX. Aucun `wrmsr` de cette
+                        // machine n'écrit ce registre, donc ECX reçoit zéro —
+                        // et c'est une valeur juste, pas un bouchon : un
+                        // processeur dont personne n'a posé le TSC_AUX rend
+                        // zéro aussi. Ne rien écrire y laisserait ce qui
+                        // traînait, que le noyau lirait comme un numéro de
+                        // processeur.
+                        // **La même horloge que `RDTSC`**, et pas une seconde
+                        // à côté : `retired &+ idled`, tours d'attente compris.
+                        // Deux horloges qui divergent feraient reculer le temps
+                        // d'une lecture à l'autre, et un noyau qui les compare
+                        // se croirait sur deux processeurs.
+                        let cycles = retired &+ idled
+                        write(0, 4, highByte: false, cycles & 0xFFFF_FFFF)
+                        write(2, 4, highByte: false, (cycles >> 32) & 0xFFFF_FFFF)
+                        write(1, 4, highByte: false, 0)
+                    default:
+                        throw Fault.unsupported(
+                            "0f 01 \(String(format: "%02x", instruction.modrm!)) "
+                                + "n'est pas décidée")
+                    }
                 } else {
                     // INVLPG : ce cache-ci n'est pas assez fin pour n'oublier
                     // qu'une page, donc il oublie tout. C'est plus lent et

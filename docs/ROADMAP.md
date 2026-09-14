@@ -10373,3 +10373,76 @@ budget de tours le coupe en pleine marche : dernière adresse neuve au tour
 demande un budget plus grand, pas plus de mémoire — et la question d'après, celle
 de l'espace utilisateur, demande un initramfs, ce qui est une **direction** et
 non un défaut.
+
+## #232 — `rdtscp` : une instruction, deux pannes, trois cœurs
+
+`0f 01` en forme registre range huit instructions sous `reg = 7`, et c'est `rm`
+qui les sépare : `f8` est `swapgs`, `f9` est `rdtscp`. Les trois cœurs
+ignoraient `rm` — et **aucun des trois ne se trompait de la même façon**.
+
+| cœur | ce qu'il faisait de `0f 01 f9` | ce que ça donnait |
+| --- | --- | --- |
+| Swift (`X86CoreDispatch`) | `reg == 7 && mod == 3` → `SWAPGS` | une **réponse fausse** |
+| Rust (`x86::decode`) | `(7, 0)` seulement → `None` | la région entière refusée |
+| wasm (`x86_wasm`) | jamais atteint, faute d'op | rien |
+
+Le cœur Swift est le seul des trois à mentir. Le noyau demande l'heure ; il
+repart avec ses deux bases de GS interverties — sa zone par processeur pointe
+sur celle de l'espace utilisateur, et le prochain accès `%gs:` lit ailleurs,
+sans que rien ne le signale. Le refus du décodeur Rust, lui, est bruyant : il
+coupe la région et se nomme. **Le même trou produit un mur qu'on trouve et une
+corruption qu'on ne trouve pas.**
+
+### Ce qui est écrit
+
+`rdtscp` fait ce que fait `rdtsc`, plus une écriture : `ECX` reçoit
+`IA32_TSC_AUX`. Aucun `wrmsr` de cette machine n'écrit ce registre, donc zéro —
+une valeur **juste**, pas un bouchon : un processeur dont personne n'a posé le
+TSC_AUX rend zéro lui aussi. Ce qui serait faux est de ne rien écrire : `ECX`
+garderait ce qu'il portait, et `vgetcpu` le lirait comme un numéro de
+processeur.
+
+Et c'est **la même horloge que `rdtsc`**, pas une seconde à côté : `retired +
+idled` côté Swift, le même `TSC_SLOT` côté wasm. Deux horloges qui divergent
+feraient reculer le temps d'une lecture à l'autre.
+
+La forme `default` du `switch` refuse par son nom les six `rm` restants, au lieu
+de les faire tomber chez le voisin.
+
+### Cinq tests, cinq sabotages
+
+| sabotage | ce qu'il retire | le test qui tombe |
+| --- | --- | --- |
+| S1 | le cœur Swift redevient aveugle à `rm` | `testRDTSCPDoesNotSwapTheGSBases…` |
+| S2 | `rdtscp` n'écrit plus ECX (Swift) | `testRDTSCPReadsTheSameClockAsRDTSC…` |
+| S3 | le bras Rust avale `rm = 0` aussi | `rdtscp_reads_where_swapgs_reads…` |
+| S4 | l'émetteur wasm n'écrit plus ECX | `rdtscp_reads_the_same_counter…` |
+| S5 | l'émetteur ne connaît plus `rdtscp` | le même, sur le refus de traduction |
+
+**S2 a d'abord survécu.** L'écriture d'ECX était posée dans deux cœurs sur trois
+et tenue par aucun test : le sabotage a nommé le trou, le test l'a fermé, et le
+sabotage rejoué tombe en citant `0x123456789abcdef0` — la valeur que l'ancien
+code laissait passer.
+
+### La mesure
+
+Sur le vrai noyau, à 256 Mio et vingt millions de tours, le relevé est
+**identique** à celui d'avant la tranche : 15 319 régions, 292 lignes de
+console, `marche 20000000 5479728 15318 7`, et la même panique
+`VFS: Unable to mount root fs on unknown-block(0,0)`.
+
+Un balayage d'octets de l'image trouve 37 fois `0f 01 f9`, dont 36 au-delà du
+dernier symbole de code. Ce démarrage-ci n'exécute donc jamais `rdtscp`.
+
+**Ce défaut n'a pas été trouvé par un mur, il a été trouvé en lisant le
+groupe 7.** C'est ce que la ligne « identique » veut dire : la mesure ne
+confirme pas la correction, elle confirme qu'aucune mesure ne l'aurait
+demandée.
+
+### Ce que ça ne tranche pas
+
+Le balayage d'octets ne distingue pas un début d'instruction du milieu d'une
+autre : il indique, il ne prouve pas. Et les 44 formes SSE que le cœur Swift
+décode sans que le décodeur Rust en connaisse une seule restent la première
+catégorie de refus du relevé de couverture — une **direction**, posée et non
+engagée.

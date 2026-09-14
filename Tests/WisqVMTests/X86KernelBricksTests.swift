@@ -306,6 +306,84 @@ final class X86KernelBricksTests: XCTestCase {
         XCTAssertEqual(core.mxcsr, 0x1DC0)
     }
 
+    /// **`RDTSCP` ne doit pas échanger la base de GS.**
+    ///
+    /// Le groupe 7 de `0f 01` range `SWAPGS` sous « reg vaut sept et mod vaut
+    /// trois » — sans regarder `rm`. Or `rm` est ce qui sépare `f8` de `f9` :
+    /// `SWAPGS` est `rm = 0`, `RDTSCP` est `rm = 1`. Toute la famille en `mod =
+    /// 3` tombait donc dans le bras de `SWAPGS`.
+    ///
+    /// **Ce n'est pas un refus, c'est une réponse fausse.** Le noyau demande
+    /// l'heure et repart avec ses deux bases de GS interverties — sa zone par
+    /// processeur pointe sur celle de l'espace utilisateur, et le prochain
+    /// accès `%gs:` lit ailleurs. Un refus franc aurait nommé le problème ;
+    /// répondre pour le voisin le cache.
+    ///
+    /// Le test tient les deux côtés : `RDTSCP` laisse les bases où elles sont,
+    /// et `SWAPGS` les échange toujours.
+    func testRDTSCPDoesNotSwapTheGSBasesTheWayItsNeighbourDoes() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        // 0f 01 f9 = RDTSCP, puis F4 = HLT pour arrêter proprement.
+        var core = try Self.core(ram, [0x0F, 0x01, 0xF9, 0xF4])
+        core.system.modelSpecific[X86SystemState.gsBase] = 0xAAAA
+        core.system.modelSpecific[X86SystemState.kernelGSBase] = 0xBBBB
+        try core.run(budget: 1)
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.gsBase], 0xAAAA,
+            "RDTSCP n'échange rien : la base de GS reste où le noyau l'a mise")
+        XCTAssertEqual(
+            core.system.modelSpecific[X86SystemState.kernelGSBase], 0xBBBB,
+            "et celle que le noyau garde de côté ne bouge pas non plus")
+    }
+
+    /// **`RDTSCP` rend une heure, et il écrase ECX pour la rendre.**
+    ///
+    /// Trois écritures, pas deux : `EDX:EAX` reçoivent le compteur, et `ECX`
+    /// reçoit `IA32_TSC_AUX`. Aucun `wrmsr` de cette machine n'écrit ce
+    /// registre, donc zéro — et zéro est la réponse juste, pas un bouchon :
+    /// un processeur dont personne n'a posé le TSC_AUX rend zéro lui aussi.
+    ///
+    /// Ce qui serait faux, c'est de **ne pas écrire** : ECX garderait ce qui
+    /// traînait, et le noyau le lirait comme un numéro de processeur. C'est
+    /// ainsi que `vgetcpu` répond, et ainsi que le noyau choisit la zone par
+    /// processeur où il range la suite. Le test met donc une valeur bien
+    /// visible dans RCX d'abord, pour que la laisser en place se voie.
+    ///
+    /// Et l'heure rendue est **celle de `RDTSC`**, à la même seconde : la
+    /// même égalité que tient `X86GuestClockTests`, `retired + idled - 1`,
+    /// l'instruction lisant l'heure avant de se retirer elle-même. Deux
+    /// horloges qui divergeraient feraient reculer le temps d'une lecture à
+    /// l'autre.
+    func testRDTSCPReadsTheSameClockAsRDTSCAndClearsTheProcessorNumber() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0x0F, 0x01, 0xF9, 0xF4])
+        // De quoi voir si ECX est laissé tel quel — et si les trente-deux bits
+        // hauts de RCX survivent, ce qu'une écriture 32 bits ne permet pas.
+        core.registers[1] = 0x1234_5678_9ABC_DEF0
+        try core.run(budget: 1)
+
+        XCTAssertEqual(
+            core.registers[1], 0,
+            "RDTSCP pose IA32_TSC_AUX dans ECX ; personne ne l'a écrit, donc zéro")
+
+        let read = (core.registers[2] << 32) | (core.registers[0] & 0xFFFF_FFFF)
+        XCTAssertEqual(
+            read, core.retired &+ core.idled &- 1,
+            "la même horloge que RDTSC, lue avant que l'instruction ne se retire")
+    }
+
+    /// Et le voisin, lui, échange toujours — sans quoi la correction aurait
+    /// éteint le passage d'anneau au lieu de le préciser.
+    func testSWAPGSStillSwapsAfterItsNeighbourWasSeparated() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0x0F, 0x01, 0xF8, 0xF4])
+        core.system.modelSpecific[X86SystemState.gsBase] = 0xAAAA
+        core.system.modelSpecific[X86SystemState.kernelGSBase] = 0xBBBB
+        try core.run(budget: 1)
+        XCTAssertEqual(core.system.modelSpecific[X86SystemState.gsBase], 0xBBBB)
+        XCTAssertEqual(core.system.modelSpecific[X86SystemState.kernelGSBase], 0xAAAA)
+    }
+
     /// `FWAIT` attend que le coprocesseur ait fini. Il n'y en a pas qui
     /// calcule, donc il n'y a jamais rien à attendre — mais le noyau en sème
     /// autour de ses instructions x87.

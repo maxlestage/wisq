@@ -13045,3 +13045,68 @@ Les 142 lignes de différence sont le vidage de l'oom-killer et la trace de la
 panique. Elles ne racontent pas ce que le noyau a fait, elles racontent comment
 il est mort. **Compter les lignes de journal mesure le bavardage, pas l'avancée**
 — et il a fallu les lire pour le savoir.
+
+## Un mur qu'on trouve, une corruption qu'on ne trouve pas
+
+`swapgs` et `rdtscp` partagent `0f 01 /7` en forme registre ; seul `rm` les
+sépare. Les trois cœurs ignoraient `rm`, et les trois pannes n'étaient pas la
+même.
+
+Le décodeur Rust rendait `None` : la région entière refusée, l'adresse nommée,
+un mur qu'un relevé fait apparaître. Le cœur Swift exécutait `SWAPGS` : les deux
+bases de GS interverties, rien de signalé, et la faute se manifeste plus tard et
+ailleurs — dans le premier accès `%gs:` qui suit.
+
+**Un refus est une panne qui se cherche ; une réponse fausse est une panne qui
+se cache.** C'est le même argument que le dépôt tient depuis #78 pour les
+machines illisibles et depuis #218 pour les instructions inconnues, reformulé
+ici pour un bras de `switch` : le `default` qui refuse par son nom vaut mieux
+que le bras voisin qui accepte tout.
+
+Et c'est aussi pourquoi celui-ci s'est fait attendre. Quinze tranches
+consécutives sont parties d'un mur mesuré — une adresse, un octet, un nom de
+fonction. Celle-ci est partie d'une lecture du groupe 7, parce que le cœur qui
+se trompait ne produisait aucun mur. La mesure d'après, identique à celle
+d'avant, le dit sans ambiguïté : **ce démarrage n'exécute jamais `rdtscp`**, et
+aucune mesure n'aurait donc jamais demandé cette correction.
+
+## « Survécu » a nommé un vrai trou, cette fois
+
+Trois sabotages, deux tombés, un survivant : retirer l'écriture d'`ECX` du cœur
+Swift ne faisait rougir aucun test. La discipline dit qu'un « survécu » est une
+hypothèse, pas un résultat — mais ici l'hypothèse se vérifiait à la lecture :
+j'avais écrit cette mise à zéro dans deux cœurs sur trois, en la commentant
+longuement, et écrit zéro test qui remarquerait son absence.
+
+Ce que ça ajoute à la discipline : **un commentaire qui explique pourquoi une
+écriture est nécessaire est une dette de test**. Plus l'explication est
+convaincante, plus l'absence de garde est facile à ne pas voir — la prose fait
+le travail que le test devrait faire, et elle ne rougit jamais.
+
+Le sabotage rejoué tombe maintenant en citant `0x123456789abcdef0`, la valeur
+semée dans RCX pour cela. Et le même trou existait dans le troisième cœur :
+l'émetteur wasm posait `ECX` sans qu'un seul test hôte le tienne. Deux
+sabotages de plus, deux tests de plus, cinq sur cinq qui tombent.
+
+## Le commentaire tenait la bonne règle, l'assertion une plus faible
+
+`verify.sh` a rougi sur un test que la tranche ne touchait pas :
+`swapgs_is_one_encoding_and_not_a_whole_corner_of_the_group`. Sa prose disait
+déjà, mot pour mot, « `0f 01 f9` est `rdtscp`, une instruction sans rapport » —
+et son assertion rangeait `f9` dans une boucle sur les octets qui **ne se
+décodent pas**.
+
+Les deux énoncés se ressemblaient tant que `rdtscp` était refusée. Ils ont cessé
+de se ressembler dès qu'elle s'est décodée, et le test est tombé en disant
+exactement l'inverse de ce que son commentaire annonçait.
+
+C'est le pendant de la leçon de #231 — une assertion posée sur la mauvaise
+grandeur — vue depuis l'autre bout : ici l'auteur **savait** la bonne règle, il
+l'a écrite en français au-dessus, et n'a exécutable que la moitié qui était
+alors vérifiable. Le voisin `c1` (`vmcall`), lui, avait bien reçu son
+`assert_eq!` nommé le jour où il est devenu décodable.
+
+La correction est donc de donner à `f9` le même traitement qu'à `c1` : une
+assertion qui dit ce qu'il **est**, pas seulement ce qu'il n'est pas. **Une
+assertion négative vieillit mal** : elle reste vraie quand le monde change, et
+cesse d'être la chose qu'on voulait tenir.
