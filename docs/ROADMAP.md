@@ -10446,3 +10446,100 @@ autre : il indique, il ne prouve pas. Et les 44 formes SSE que le cœur Swift
 décode sans que le décodeur Rust en connaisse une seule restent la première
 catégorie de refus du relevé de couverture — une **direction**, posée et non
 engagée.
+
+## #234 — « 100,0 % de succès » sous une ligne qui nomme 641 refus
+
+Le relevé de couverture imprimait, trois lignes de suite :
+
+```text
+décodage linéaire : 2932212 instructions lues, 641 octets refusés
+  soit 100.0 % de succès
+  opcodes refusés les plus fréquents : 0f×148 c4×127 66×65 c5×27 …
+```
+
+Le chiffre est juste : 2 932 212 sur 2 932 853 vaut 99,978 %, qui s'arrondit à
+100,0 au dixième. **La phrase est fausse** — elle dit que le décodeur lit tout,
+encadrée par deux lignes qui comptent ce qu'il ne lit pas.
+
+Et ce n'est pas une maladresse isolée. La même mise en forme sert ailleurs dans
+le même fichier, où elle est **vraie** :
+
+```text
+régions depuis les cibles de `call` : 10116 compilées, 0 refusées (100.0 %)
+```
+
+Rien, dans le texte imprimé, ne séparait le 100,0 qui compte de celui qui
+arrondit. C'est la forme la plus coûteuse d'un relevé qui trompe : il ne se
+trompe pas, il rend deux faits différents indiscernables.
+
+### Une réserve, pas une précision
+
+Ajouter des décimales ne corrige rien : ça déplace le seuil. Un relevé à
+99,9999 % arrondirait à cent le jour où il ne reste qu'un octet refusé — le jour
+précisément où ce dernier octet est ce qu'on cherche.
+
+Ce qui manquait est une **réserve**. `crates/wisq-vm/src/rate.rs` la tient :
+
+| ce qui est mesuré | ce qui s'imprime |
+| --- | --- |
+| zéro refus | `100 %` — sans décimale, la seule chose qui s'écrive cent |
+| zéro succès | `0 %` — sans décimale non plus |
+| tout le reste | rabattu à l'intérieur : `99,978 %` s'écrit `99,9 %` |
+
+L'absence de décimale n'est pas cosmétique : c'est ce qui rend les deux
+affirmations reconnaissables à l'œil, au milieu de voisines qui en portent une.
+
+Le rabat suit la précision demandée — au centième, la borne haute est 99,99 —
+parce qu'une borne figée au dixième rabattrait « 0,30 % des instructions » sur
+0,1 et mentirait dans l'autre sens.
+
+`Rate::of` refuse en plus une mesure vide, là où l'ancienne formule divisait par
+`.max(1)` : une sonde qui n'avait rien compté affichait « 100,0 % ».
+
+### Ce que le relevé dit maintenant
+
+```text
+décodage linéaire : 2932212 instructions lues, 641 octets refusés
+  soit 99,9 % de succès
+régions tous les 512 octets : 14994 compilées, 1390 refusées (91,5 %)
+régions depuis les cibles de `call` : 10116 compilées, 0 refusées (100 %)
+```
+
+Les sept pourcentages du fichier passent par la même porte. En laisser un seul
+en dehors aurait reconduit le défaut à l'endroit qu'on ne regarde pas.
+
+### Cinq sabotages
+
+| sabotage | le test qui tombe |
+| --- | --- |
+| la réserve du haut disparaît | `a_survey_that_refused_nothing_says_a_hundred_exactly` |
+| le rabat disparaît | trois tests, dont celui des nombres mesurés |
+| la réserve du bas disparaît | `nothing_at_all_says_zero_exactly` |
+| la porte accepte une mesure vide | `a_survey_that_measured_nothing_is_refused…` |
+| le pas est figé au dixième | `the_reserved_bounds_follow_the_precision_asked_for` |
+
+### Ce que la mesure a dit d'autre, et qui périme une tâche
+
+En relançant `coverage` pour cette tranche, le relevé rend :
+
+```text
+régions depuis les cibles de `call` : 10116 compilées, 0 refusées (100 %)
+  ce que l'émetteur sait lire et refuse de produire (0) :
+  ce que le décodeur ne lit pas (0) :
+```
+
+**Il n'y a plus de première catégorie de refus** : il n'y a plus de refus du
+tout sur les cibles de `call`. La tâche qui parlait des 44 formes SSE comme de
+« la première catégorie de refus du relevé de couverture » énonçait un fait qui
+a cessé d'être vrai. Les formes VEX (`c4`, `c5`) restent en tête du décodage
+**linéaire** — 127 et 27 octets — et treize d'entre elles dorment à l'intérieur
+de régions qui compilent, jamais atteintes.
+
+Ce n'est donc plus un mur. C'est un compte à surveiller.
+
+### Ce que ça ne tranche pas
+
+Le décodage linéaire lit les octets d'affilée, y compris ceux qui ne sont pas du
+code : une part de ces 641 refus est de la donnée, et le relevé ne les sépare
+pas. Le dire demanderait de suivre les sections de l'ELF, ce qui est une
+**direction** et non un défaut.
