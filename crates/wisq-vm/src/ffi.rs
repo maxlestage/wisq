@@ -394,7 +394,12 @@ pub unsafe extern "C" fn wisq_vm_free(vm: *mut WisqVM) {
 //
 // **Why this crosses the boundary, when so little else does.** iOS gives an
 // App Store app no page that is both writable and executable, so the app's x86
-// core interprets — 10,6 MIPS, and more than an hour to boot a desktop. WebKit
+// core interprets — 10,6 MIPS when it was last measured, before this file
+// existed, and more than an hour to boot a desktop. That figure is an origin
+// point, not a fact of today: **it cannot be re-run from a Linux runner**,
+// since the Swift core needs the Apple toolchain. What carries the argument is
+// the order, and the order has not moved — an interpreter alone does not boot a
+// desktop in a usable time. WebKit
 // is the one exception: a `WKWebView` may compile WebAssembly, which is data
 // rather than code. The emitter that turns a region of guest instructions into
 // such a module lives in Rust, beside the interpreter it was differentially
