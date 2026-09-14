@@ -13330,3 +13330,45 @@ fait tomber.
 Deux fois de suite, sur le même test, la même erreur de forme : *vérifier ce que
 le test sait déjà au lieu de ce que le code fait.* Le sabotage est ce qui l'a
 dit, et lui seul — les six tests passaient au vert entre les deux.
+
+## Une concordance interne à une machine, écrite comme une propriété de la mesure
+
+Le tableau de la sonde de pagination est le mieux construit de `DEMARRAGE.md` :
+il nomme ses deux commandes, il dit pourquoi les trois formes partagent un
+module, il exige que les trois rendent la même somme de contrôle. Et il porte
+une phrase que rien d'autre dans le fichier ne portait : **« trois exécutions à
+6, 8 et 20 millions d'accès s'accordent à un dixième de nanoseconde près »**.
+
+Relancé sur un autre coureur, trois passages :
+
+| surcoût du tampon | publié | p1 | p2 | p3 |
+| --- | ---: | ---: | ---: | ---: |
+| balayage court | +0,23 | +0,71 | +0,71 | +0,76 |
+| balayage long | +0,47 | +0,40 | +0,44 | +0,39 |
+| une page neuve | **+26,43** | +4,76 | +4,76 | +4,03 |
+
+**Les trois passages s'accordent entre eux**, exactement comme annoncé : à cinq
+centièmes sur les deux premières lignes, à sept dixièmes sur la troisième. La
+phrase décrit donc quelque chose de réel — mais ce quelque chose est la
+stabilité **d'une machine**, et elle était écrite comme la stabilité **de la
+mesure**. La ligne du milieu se transporte ; les deux autres non, et la
+troisième est à un facteur six.
+
+**C'est la troisième qui portait la conclusion la plus forte du chapitre** :
+« quand le tampon ne répond jamais, il coûte plus que tout le reste ». Vrai sur
+le premier coureur, où le surcoût vaut une fois et demie le repli. Faux sur le
+second, où il en vaut quatre dixièmes. Ce qui survit aux deux : le tampon est
+alors une **perte sèche** — il coûte plus que la marche seule des deux côtés —
+mais de combien ne se sait pas à mieux qu'un facteur six.
+
+**Ce que ce cas ajoute aux trois précédents.** #240 et #241 corrigeaient des
+chiffres écrits sans date ni commande. Ici la date et les commandes étaient là,
+la reproductibilité était énoncée, et la mesure était honnête. Le défaut s'était
+logé d'un cran plus haut : dans **la portée** qu'on prête à une concordance.
+Trois exécutions qui s'accordent ne disent rien de la quatrième ailleurs, et
+c'est exactement ce qu'on a envie de leur faire dire.
+
+Une conclusion qui dépend d'un *ordre de grandeur* survit au changement de
+machine — le recensement de pointeurs de #241 l'a montré. Une conclusion qui
+dépend d'une *grandeur* n'y survit pas. Les deux se ressemblent à l'écriture ;
+seule la seconde exige un second coureur avant d'être posée.
