@@ -275,11 +275,28 @@ Trois choses, et aucune n'est petite :
    `fninit`, qui remet le mot de contrôle à `0x037f` et le mot d'état à zéro.
    Le bit est donc annoncé **et** tenu.
 
-   Le mur suivant est `fxsave` à `fpu__init_system + 183`, désassemblé :
-   512 octets d'état, dont le noyau relit le masque MXCSR à l'offset `0x1c`.
-   Une aire entière contre deux mots — une autre taille de tranche. Ce que
-   cette machine ne fait toujours pas est le **calcul** en virgule flottante ;
-   la première instruction qui en demanderait un est un arrêt nommé.
+   **Et `fxsave` derrière, levé aussi.** La machine s'arrêtait pour de vrai à
+   `fpu__init_system + 183` — `0f ae 05 d2 f1 13 00` —, que le noyau exécute
+   sans garde parce que `X86_FEATURE_FXSR` est replié à vrai à la compilation
+   sur x86-64. L'aire porte maintenant ce que la machine a — les deux mots du
+   x87 — et **zéro pour ce qu'elle n'a pas** : ni registre XMM, ni MXCSR,
+   aucun registre x87 occupé. Masque MXCSR nul, Linux prend sa valeur par
+   défaut documentée, et dit enfin **« x86/fpu: x87 FPU will use FXSAVE »** —
+   88 lignes de journal au lieu de 87.
+
+   Elle n'en écrit que **416** des 512 : les quatre-vingt-seize derniers sont
+   laissés tels quels, ce que le corpus matériel a mesuré sur le silicium.
+
+   Le mur suivant est `__text_poke + 1093`, et il est d'une autre famille :
+   « sur place », la machine tourne sans avancer, dans la machinerie qui
+   réécrit le texte du noyau. Ce que cette machine ne fait toujours pas est le
+   **calcul** en virgule flottante ; la première instruction qui en demanderait
+   un est un arrêt nommé.
+
+   **Et `WISQ_TURNS=65536` ne suffit plus** pour aller jusque-là : à ce budget
+   la machine s'épuise dans `ftrace_init`, qui convertit 41 322 sites d'appel
+   et rend la main deux fois par site. Les relevés de cette tranche sont pris à
+   `WISQ_ROUNDS=8192 WISQ_TURNS=1000000`.
 2. **Un point de délivrance.** Il **existe** pour la faute de page : `deliver`
    dans `web/host.js`, appelé par la boucle quand une région pose le témoin —
    il lit la porte, pose le cadre du mode long sur la pile de l'invité, éteint
