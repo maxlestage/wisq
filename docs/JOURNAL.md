@@ -13197,3 +13197,28 @@ chose à vérifier, jamais un effet de style.
 Le chiffre qui reste, parce qu'il est un intervalle mesuré et non une moyenne :
 pour les 15 319 régions d'un vrai noyau, la traduction seule pèse entre quatre-
 vingts et cent trente-cinq secondes selon le passage.
+
+### Le sixième relevé démentira le cinquième, et c'est le tableau qui était mal conçu
+
+Le passage qui a validé la correction ci-dessus a rendu un cinquième point :
+`bureau : 6,773 ms, 1,569 fois une lecture de registre par le pont (4,316 ms)`.
+Le rapport, déjà tombé de 5,37 à 2,31, tombe encore à 1,57. Sur cinq relevés il
+couvre maintenant un facteur 3,4 quand les millisecondes en couvrent 1,6.
+
+**Et la correction se faisait démentir à son tour, exactement comme ce qu'elle
+corrigeait.** Pas sur le fond — la phrase disait « sur ces quatre relevés », et
+elle était vraie de ces quatre-là. Sur la forme : un tableau qui recopie chaque
+passage de la CI est faux entre deux passages, et le devient sans que personne
+ne touche au fichier. Recopier le cinquième point n'y change rien ; le sixième
+arrive au prochain commit.
+
+Le défaut n'était donc pas dans les chiffres mais dans ce que le tableau
+prétendait être. Il est maintenant **daté** : « les relevés vus jusqu'au
+14 septembre 2026 », avec la phrase qui dit que le vrai registre est ailleurs —
+dans la ligne que chaque passage imprime. Un échantillon daté ne vieillit pas,
+il reste ce qu'il a toujours été ; un inventaire implicite, si.
+
+C'est la même leçon qu'une tâche périmée retrouvée deux jours plus tôt, prise
+par l'autre bout : là, un fait vrai à l'écriture avait cessé de l'être sans que
+rien ne rougisse. Ici, on sait d'avance qu'il cessera. **Quand on sait qu'un
+énoncé va se périmer, la date fait partie de l'énoncé.**

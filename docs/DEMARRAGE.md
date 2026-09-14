@@ -489,18 +489,21 @@ le double se verra.
 **C'est de ce chiffre que dépend ce qu'un vrai noyau coûterait**, pas de celui
 d'à côté.
 
-### Quatre conclusions tirées de trop peu de points, et la quatrième démentie par le passage suivant
+### Quatre conclusions tirées de trop peu de points, et la quatrième démentie deux fois
 
-Ce que quatre relevés de `bureau` ont rendu, pour cent vingt-huit régions
-traduites :
+Les relevés de `bureau` **vus jusqu'au 14 septembre 2026**, pour cent vingt-huit
+régions traduites. Ce tableau est un échantillon daté, pas un inventaire : le
+vrai registre, ce sont les lignes que chaque passage imprime dans son résumé.
+L'y recopier à chaque exécution rendrait la page fausse entre deux, et c'est
+précisément la faute que cette section raconte.
 
-| | #371 | #372 (a) | #372 (b) | #372 (c) |
-| --- | --- | --- | --- | --- |
-| `bureau`, millisecondes par région | 7,44 | 7,24 | **5,35** | **8,68** |
-| `bureau`, en lectures de registre | — | 5,04 | **5,37** | **2,31** |
-| l'étalon interne (`global`) | — | 1,44 ms | 0,996 ms | **3,76 ms** |
-| `pont`, micro-banc d'une autre suite | 3,09 ms | 0,48 ms | 0,36 ms | 0,82 ms |
-| `WebKit` | 864 MIPS | 1702 MIPS | 1649 MIPS | 1203 MIPS |
+| | #371 | #372 (a) | #372 (b) | #372 (c) | #372 (d) |
+| --- | --- | --- | --- | --- | --- |
+| `bureau`, millisecondes par région | 7,44 | 7,24 | **5,35** | **8,68** | 6,77 |
+| `bureau`, en lectures de registre | — | 5,04 | **5,37** | **2,31** | **1,57** |
+| l'étalon interne (`global`) | — | 1,44 ms | 0,996 ms | **3,76 ms** | **4,32 ms** |
+| `pont`, micro-banc d'une autre suite | 3,09 ms | 0,48 ms | 0,36 ms | 0,82 ms | 0,53 ms |
+| `WebKit` | 864 MIPS | 1702 MIPS | 1649 MIPS | 1203 MIPS | 898 MIPS |
 
 **Et quatre fois de suite, j'ai conclu avant d'avoir de quoi.**
 
@@ -516,14 +519,16 @@ traduites :
 4. **Mais j'ai écrit, dans la même page, que « le second varie moins ».** C'est
    la même faute, en plus discret : une comparaison de dispersions tirée de
    deux valeurs contre trois. **Le passage qui a validé la tranche l'a
-   démentie** — le rapport est tombé à 2,31.
+   démentie** — le rapport est tombé à 2,31, puis à 1,57 au passage d'après,
+   celui qui a validé la correction elle-même.
 
-Sur ces quatre relevés, c'est **le rapport qui s'étale le plus** : de 2,31 à
-5,37, un facteur 2,3, là où les millisecondes vont de 5,35 à 8,68, un facteur
-1,6. Le dénominateur y est pour quelque chose — l'étalon interne va de 0,996 à
-3,76 ms, un facteur 3,8, plus large que la grandeur qu'il est censé
-normaliser. **Ce n'est pas davantage une loi que ne l'était l'affirmation
-inverse** : quatre relevés n'en font pas plus que deux.
+Sur ces cinq relevés, c'est **le rapport qui s'étale le plus** : de 1,57 à
+5,37, un facteur 3,4, là où les millisecondes vont de 5,35 à 8,68, un facteur
+1,6. Le dénominateur y est pour quelque chose, et c'est de l'arithmétique et
+non une trouvaille — l'étalon interne va de 0,996 à 4,32 ms, un facteur 4,3,
+plus large que la grandeur qu'il est censé normaliser. **Ce n'est pas davantage
+une loi que ne l'était l'affirmation inverse** : cinq relevés n'en font pas
+plus que deux, et le sixième arrivera avec le prochain passage.
 
 **Ce qui est mesuré, et rien de plus** : les deux chiffres sont imprimés à
 chaque passage, l'un en millisecondes, l'autre contre un étalon pris dans le
