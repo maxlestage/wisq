@@ -39,6 +39,9 @@ const STOPS = {
 /// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
 /// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
 const STOP_INTERRUPT = 0x100n;
+/// **`ud2`** : l'instruction indéfinie, que l'hôte délivre au vecteur 6 au lieu
+/// de s'arrêter. RIP est **sur** l'instruction.
+const STOP_UNDEFINED = 8n;
 /// **`STOP_MSR | numéro`** : un registre spécifique au modèle que le module ne
 /// modélise pas. Le numéro vient d'ECX à l'exécution, donc c'est le module qui
 /// le pose dans le témoin. RIP est sur l'instruction — et c'est là que l'hôte
@@ -60,6 +63,11 @@ const PAGE_FAULT = 14;
 /// numéro n'existe pas — et le noyau le sait, sa table d'exceptions la
 /// rattrape.
 const GENERAL_PROTECTION = 13;
+/// **L'instruction indéfinie**, vecteur 6, sans code d'erreur. C'est celle que
+/// Linux se lève à lui-même : `WARN()` compile en un `ud2`, et son
+/// gestionnaire consulte `__bug_table` pour décider s'il reprend — ce qu'il
+/// fait des dizaines de fois par démarrage — ou s'il panique.
+const INVALID_OPCODE = 6;
 const WITH_ERROR_CODE = new Set([8, 10, 11, 12, 13, 14, 17, 21, 29, 30]);
 /// Les bits de RFLAGS qu'une entrée de gestionnaire éteint : le pas-à-pas, le
 /// drapeau imbriqué et la reprise toujours ; les interruptions seulement par
@@ -1153,6 +1161,20 @@ export function machine({
           const why = deliver(
             GENERAL_PROTECTION, 0n,
             `un registre spécifique au modèle que cette machine ne modélise pas (0x${number})`);
+          if (why !== null) {
+            globals[SLOTS.stop].value = stop;
+            return { stopped: why, at: rip() };
+          }
+          continue;
+        }
+        // **Une instruction indéfinie est délivrée, pas un arrêt.** Le module a
+        // posé RIP **sur** le `ud2` — une faute, pas un piège : c'est le
+        // gestionnaire qui décide d'avancer, et Linux y ajoute lui-même la
+        // longueur de l'instruction quand sa table dit « avertissement ».
+        // Sans porte, le témoin est remis et l'arrêt le nomme.
+        if (stop === STOP_UNDEFINED) {
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(INVALID_OPCODE, 0n, "une instruction indéfinie (ud2)");
           if (why !== null) {
             globals[SLOTS.stop].value = stop;
             return { stopped: why, at: rip() };

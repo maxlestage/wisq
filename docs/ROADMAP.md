@@ -10049,3 +10049,88 @@ emplacements de **parités différentes**, donc un pas doublé en épargne
 exactement une. Ce n'est pas un hasard heureux — c'est ce que le choix de trois
 adresses distinctes achète.
 
+## #227 — `ud2` n'est pas un arrêt : c'est la mécanique de `WARN`
+
+Le mur laissé par #226, `do_one_initcall + 673`, n'était pas une instruction
+manquante non plus :
+
+```
+201e45:  48 c7 c7 68 77 1d 82   mov  $0xffffffff821d7768,%rdi   ; le format
+201e4c:  e8 bf 13 0c 00         call __warn_printk
+201e51:  0f 0b                  ud2
+201e53:  e9 ea fd ff ff         jmp  <suite>
+```
+
+**Linux exécute `ud2` exprès.** `WARN()` compile en un appel à `__warn_printk`
+suivi d'un `ud2` ; son gestionnaire `#UD` consulte `__bug_table`, y trouve
+`BUGFLAG_WARNING`, **avance RIP de deux** et reprend. `BUG()` n'y est pas, et le
+noyau panique. La distinction vit dans sa table, pas ici : elle se fait d'elle-
+même dès que la délivrance est fidèle.
+
+Tant que le vecteur 6 n'était pas délivré, **chaque avertissement du noyau était
+un arrêt définitif**. Et le message qui suivait — « initcall inet_init+0x0/0x560
+returned with preemption imbalance » — n'était que le texte de l'avertissement :
+le noyau repose lui-même `preempt_count` et continue.
+
+### Ce que la délivrance suppose, et qu'un test tient
+
+**RIP reste sur le `ud2`.** `#UD` est une *faute*, pas un piège : c'est le
+gestionnaire qui décide d'avancer, et Linux y ajoute lui-même la longueur de
+l'instruction. Empiler l'adresse d'après ferait reprendre le noyau deux octets
+trop loin, au milieu de l'instruction suivante. Le gestionnaire du test range
+donc le RIP empilé **tel quel** avant d'y toucher.
+
+**Et le vecteur 6 ne porte pas de code d'erreur.** Un mot de trop décalerait
+toute la pile du gestionnaire de huit octets — c'est le sabotage S3.
+
+### L'onde sur les tests, et ce qu'elle a appris
+
+Vingt tests tenaient le `ud2` comme fin de programme et lisaient « refusée » ou
+« sur place ». **Ces deux noms décrivaient le pilote de test, pas la machine** :
+« refusée » voulait dire « le bouchon n'a pas voulu traduire la région qui
+commence sur le `ud2` », et « sur place » « l'hôte a redemandé la même adresse ».
+Le nom d'aujourd'hui décrit la machine.
+
+Deux de ces vingt, emportées par un remplacement en masse, parlaient en réalité
+d'un vrai refus de traduction. Elles ont été rendues.
+
+**Et une couverture a été vidée sans qu'on la cherche.** En renommant ces
+attentes, plus rien ne tenait le chemin « sur place » — alors qu'il est bien
+vivant : le noyau y tombait encore à `do_one_initcall`. Un test le vise
+désormais, par un saut indirect vers sa propre adresse.
+
+### Un sabotage « survivant » qui n'en était pas un
+
+Délivrer `#UD` avec un code d'erreur de 1 au lieu de 0 n'a fait tomber personne.
+Ce n'était pas un trou : `deliver` n'empile un code d'erreur que pour les dix
+vecteurs qui en portent un, et 6 n'en est pas. **La mutation ne mutait rien.**
+Le vrai sabotage est d'ajouter 6 à `WITH_ERROR_CODE` — et celui-là tombe, sur
+le seul test dont le gestionnaire lit `(%rsp)`.
+
+### La mesure
+
+| | avant (#226) | après |
+| --- | --- | --- |
+| régions traduites | 8176 | **10 144** |
+| lignes de journal | 175 | **204** |
+| arrêt | `do_one_initcall + 673`, sur place | `fpu__drop + 136`, `CannotDecode { at: 0 }` |
+
+**Le noyau imprime une trace d'avertissement complète** — « ------------[ cut
+here ]------------ », le `WARNING:`, la pile jusqu'à `ret_from_fork_asm`,
+« ---[ end trace 0000000000000000 ]--- » — **et continue** :
+`NET: Registered PF_UNIX/PF_LOCAL`, `PF_XDP`, `PCI: CLS 0 bytes`,
+`platform rtc_cmos: registered platform RTC device`,
+`Initialise system trusted keyrings`.
+
+Le relevé de couverture est identique : le décodeur n'a pas changé.
+
+**`WISQ_ROUNDS=8192` ne suffit plus** — la machine traduit plus de dix mille
+régions. Les relevés de cette tranche sont pris à
+`WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.
+
+### Le mur suivant
+
+`fpu__drop + 136` : l'octet `9b`, **`fwait`**. Une instruction d'un octet qui
+attend les exceptions en attente du coprocesseur — et sur une machine dont le
+coprocesseur n'en lève aucune, elle ne fait rien.
+
