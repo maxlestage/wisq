@@ -489,28 +489,45 @@ le double se verra.
 **C'est de ce chiffre que dépend ce qu'un vrai noyau coûterait**, pas de celui
 d'à côté.
 
-### Et le chiffre seul ne se lisait pas non plus
+### Et ce que j'attendais du second chiffre était l'inverse de ce qu'il dit
 
-Deux passages consécutifs, sur du code qui ne touchait ni l'un ni l'autre :
+La mesure ci-dessus a été jugée fragile sur la foi de sa voisine : `pont`, le
+micro-banc de `WebKitJITProbeTests`, avait rendu 0,88 ms puis 3,09 ms sur du
+code identique. J'en ai conclu que des millisecondes ne pouvaient rien dire sur
+un coureur partagé, et posé un second chiffre — un rapport — pour la sauver.
 
-| | passage de #370 | passage de #371 |
-| --- | --- | --- |
-| `pont`, aller-retour nu | 0,88 ms | **3,09 ms** |
-| `WebKit` | 1151 MIPS | **864 MIPS** |
-| `Metal compilation` | 1371 ms | **2078 ms** |
+**Trois passages ont mesuré le contraire :**
 
-**Le coureur entier était trois fois plus lent.** Des millisecondes seules ne
-disent donc pas si l'émetteur a changé ou si la machine était chargée — le
-défaut que cette mesure venait corriger chez sa voisine, reconduit d'un cran
-plus loin, par moi, dans la tranche d'après.
+| | #370 | #371 | #372 |
+| --- | --- | --- | --- |
+| `bureau`, 128 régions traduites | — | **7,44 ms** | **7,24 ms** |
+| `pont`, micro-banc | 0,88 ms | 3,09 ms | **0,48 ms** |
+| `WebKit` | 1151 MIPS | 864 MIPS | 1702 MIPS |
 
-La mesure imprime maintenant un **rapport** en plus des millisecondes, contre
-un étalon chronométré dans le même test, à la suite : soixante-quatre appels à
-`global`, l'aller-retour le moins cher que l'API publique offre. L'étalon subit
-la même charge que ce qu'il sert à lire, donc le rapport survit au coureur là
-où les millisecondes ne survivent pas.
+Trois pour cent d'écart d'un côté, un facteur six et demi de l'autre. **C'est
+la mesure courte qui est fragile, pas la longue** : cent vingt-huit traductions
+sont dominées par du travail réel, deux cents incréments par l'ordonnanceur.
 
-Première valeur relevée : **7,44 ms par région traduite, pour un aller-retour
-nu à 3,09 ms** — soit environ deux fois et demie. C'est ce rapport-là qui est
-le fait ; les millisecondes, elles, ne valent que pour le passage qui les a
-produites.
+Le second chiffre reste — il est gratuit et il dit autre chose : ce que la
+traduction coûte *par rapport au pont*, sur la même machine à la même seconde.
+Mais il ne sauve rien, et la ligne qui l'annonçait comme un sauvetage était
+fausse.
+
+**Deux corrections, dans la même veine, à une tranche d'intervalle.** #236
+remplaçait une extrapolation par une mesure ; #237 a voulu normaliser cette
+mesure contre une grandeur plus bruyante qu'elle. Dans les deux cas le tort
+venait de raisonner sur une grandeur plutôt que de la regarder bouger.
+
+### Ce que l'étalon est, et ce qu'il n'est pas
+
+`global` coûte 1,44 ms le jour où un `evaluateJavaScript` nu en coûte 0,48 : il
+traverse le gestionnaire de messages du bureau, pas seulement le moteur. La
+ligne imprimée le nomme donc « une lecture de registre par le pont », et non
+« un aller-retour nu » comme elle le faisait d'abord — sans quoi on croirait
+comparer deux fois la même chose.
+
+Ce que ça donne, mesuré : **une traduction coûte environ cinq lectures de
+registre par le pont**, et 7,2 à 7,4 ms sur les coureurs vus jusqu'ici. Pour
+les 15 319 régions d'un vrai noyau, c'est de l'ordre de **cent dix secondes de
+traduction** — le mur de #167, et il ne dépend pas du coureur autant que je le
+craignais.

@@ -351,20 +351,31 @@ final class LocalDesktopTests: XCTestCase {
             "une demande illisible voudrait dire que la page et le pont ont divergé"
         )
 
-        // **Un étalon pris dans le même passage, sinon le chiffre ne se lit
-        // pas.**
+        // **Un second chiffre, et l'inverse de ce que j'attendais de lui.**
         //
-        // Deux passages consécutifs ont mesuré 0,88 ms puis 3,09 ms pour le
-        // même aller-retour nu, sur du code identique : le coureur partagé
-        // varie d'un facteur trois. Des millisecondes seules ne disent donc
-        // pas si l'émetteur a changé ou si la machine était chargée — et
-        // c'est exactement le défaut que cette mesure prétendait corriger
-        // chez sa voisine, reconduit d'un cran plus loin.
+        // Il a été posé pour sauver le premier : `pont`, le micro-banc de
+        // `WebKitJITProbeTests`, avait donné 0,88 ms puis 3,09 ms sur du code
+        // identique, et j'en avais conclu que des millisecondes seules ne
+        // pouvaient rien dire ici non plus.
         //
-        // `global` est l'aller-retour le moins cher que l'API publique offre :
-        // un message, une lecture d'entier, un retour. Le chronométrer **ici**,
-        // à la suite, donne un étalon soumis à la même charge que la mesure
-        // qu'il sert à lire. Le rapport, lui, survit au coureur.
+        // **Trois passages plus tard, c'est le contraire qui est mesuré.** La
+        // ligne ci-dessus a rendu 7,44 puis 7,24 ms — trois pour cent d'écart
+        // — pendant que `pont` parcourait 0,88, 3,09 puis 0,48, soit un
+        // facteur six et demi. Cent vingt-huit traductions sont dominées par
+        // du travail réel ; un micro-banc de deux cents incréments est dominé
+        // par l'ordonnanceur. **C'est la mesure courte qui est fragile, pas la
+        // longue.**
+        //
+        // Le second chiffre reste, parce qu'il est gratuit et qu'il dit autre
+        // chose : ce que la traduction coûte *par rapport au pont*, sur la
+        // même machine à la même seconde. Mais il ne sauve rien, et il ne faut
+        // pas le lire comme si.
+        //
+        // **Et `global` n'est pas « nu ».** Mesuré à 1,44 ms le jour où un
+        // `evaluateJavaScript` nu en coûtait 0,48 : il traverse le
+        // gestionnaire de messages du bureau, pas seulement le moteur. Le
+        // nommer par ce qu'il est évite de croire qu'on compare deux fois la
+        // même chose.
         let laps = 64
         let reference = Date()
         for _ in 0..<laps {
@@ -373,8 +384,8 @@ final class LocalDesktopTests: XCTestCase {
         let bare = Date().timeIntervalSince(reference) / Double(laps) * 1000
         print(
             "bureau : \(each) ms par région traduite, "
-                + "\(each / bare) fois un aller-retour nu de \(bare) ms, "
-                + "sur \(Self.regions) régions")
+                + "\(each / bare) fois une lecture de registre par le pont "
+                + "(\(bare) ms), sur \(Self.regions) régions")
     }
 
     /// Le nombre de régions enchaînées, et l'écart entre deux.
