@@ -287,11 +287,23 @@ Trois choses, et aucune n'est petite :
    Elle n'en écrit que **416** des 512 : les quatre-vingt-seize derniers sont
    laissés tels quels, ce que le corpus matériel a mesuré sur le silicium.
 
-   Le mur suivant est `__text_poke + 1093`, et il est d'une autre famille :
-   « sur place », la machine tourne sans avancer, dans la machinerie qui
-   réécrit le texte du noyau. Ce que cette machine ne fait toujours pas est le
-   **calcul** en virgule flottante ; la première instruction qui en demanderait
-   un est un arrêt nommé.
+   **Et le mur d'après n'était pas une instruction : c'était un défaut.** La
+   machine s'arrêtait sur le `BUG_ON(memcmp(addr, opcode, len))` de
+   `__text_poke + 1093` — le noyau écrivait un correctif à travers une
+   cartographie temporaire, le relisait, et ne le retrouvait pas. L'émetteur
+   ne vidait **jamais** son tampon de traduction sur une écriture de CR3, CR4
+   ou CR0, là où le cœur Swift vide sur les trois et où l'interpréteur Rust
+   n'a aucun cache. `__text_poke` écrit CR3 deux fois par correctif.
+
+   Corrigé, le noyau **double son journal** — 88 lignes à 175, 1782 régions à
+   8176 — et franchit `Freeing SMP alternatives memory`, `smpboot`,
+   `clocksource: jiffies`, `NET: Registered PF_NETLINK/PF_ROUTE`,
+   `TCP: Hash tables configured`. Il en est aux **initcalls**.
+
+   Le mur suivant est `do_one_initcall + 673`, derrière la plainte du noyau
+   « initcall inet_init+0x0/0x560 returned with preemption imbalance ». Ce que
+   cette machine ne fait toujours pas est le **calcul** en virgule flottante ;
+   la première instruction qui en demanderait un est un arrêt nommé.
 
    **Et `WISQ_TURNS=65536` ne suffit plus** pour aller jusque-là : à ce budget
    la machine s'épuise dans `ftrace_init`, qui convertit 41 322 sites d'appel
