@@ -48,6 +48,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use wisq_vm::kernel_image::{loads, zero_page, MONTAGE_COMMAND_LINE};
+use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
 
@@ -453,16 +454,36 @@ const retours = new Map();
 // rendue, pas *après quoi* : deux adresses qui reviennent par paires ne se
 // lisent que dans la suite.
 const derniers = [];
+// **Depuis quand plus rien n'est neuf.** « La machine avançait encore » se
+// déduisait du seul fait que le budget s'était épuisé sans qu'une adresse
+// manque — ce qu'une boucle qui tourne sans progresser produit à l'identique.
+// Ces trois compteurs sont ce qu'il faut pour ne plus le déduire : le tour où
+// une adresse a été vue pour la dernière fois *pour la première fois*, et
+// l'étroitesse du dernier dixième du budget. `Progress`, côté Rust, les met en
+// forme — et refuse de conclure, parce qu'une boucle chaude légitime n'ouvre
+// pas de terrain neuf non plus.
+let neuf = null;
+const queue = new Set();
+const debutDeLaQueue = {turns} - Math.floor({turns} / 10);
+// **Le vrai indice de tour.** Le relevé imprimait « tour N » en y mettant le
+// rang de la traduction, et concluait sur « les N tours du pilote » qui, eux,
+// étaient de vrais tours. Le même mot comptait deux choses.
+let tours = 0;
 let why = {{ stopped: "tours épuisés", at: lire({rip}) }};
 for (let tour = 0; tour < {turns}; tour++) {{
   why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
+  tours = tour + 1;
   if (why.stopped !== "tours épuisés") break;
   const at = lire({rip});
+  if (!retours.has(at)) neuf = tour + 1;
   retours.set(at, (retours.get(at) ?? 0) + 1);
+  if (tour >= debutDeLaQueue) queue.add(at);
   derniers.push(at);
   if (derniers.length > 12) derniers.shift();
 }}
 console.log("arret " + why.stopped);
+console.log("marche " + tours + " " + (neuf === null ? "aucun" : neuf)
+  + " " + retours.size + " " + queue.size);
 console.log("retours " + [...retours.entries()]
   .sort((a, b) => b[1] - a[1])
   .slice(0, 10)
@@ -585,7 +606,7 @@ console.log("controle " + controle
                 ["traduit", at, "emplacement", slot, "octets", size] => {
                     if let Some(at) = hex(at) {
                         println!(
-                            "tour {} : {} régions traduites, la machine réclame {} \
+                            "traduction {} : {} régions posées, la machine réclame {} \
                              à l'emplacement {slot} ({size} octets)",
                             regions.len() + 1,
                             regions.len(),
@@ -597,7 +618,7 @@ console.log("controle " + controle
                 ["refusée", at, "emplacement", _, why @ ..] => {
                     if let Some(at) = hex(at) {
                         println!(
-                            "tour {} : {} régions traduites, et {} **ne se traduit pas** — {}",
+                            "traduction {} : {} régions posées, et {} **ne se traduit pas** — {}",
                             regions.len() + 1,
                             regions.len(),
                             map.describe_loaded(at, KERNEL_MAP),
@@ -607,7 +628,8 @@ console.log("controle " + controle
                 }
                 ["plafond", _] => {
                     println!(
-                        "tour {} : la limite de tours est atteinte, la machine avançait encore",
+                        "après {} régions posées, le plafond de traductions \
+                         (WISQ_ROUNDS) est atteint",
                         regions.len()
                     );
                 }
@@ -642,11 +664,43 @@ console.log("controle " + controle
             // — un tri, une boucle — et rien ne dit qu'elle s'est arrêtée. Le
             // dire comme la fin a fait prendre `sort_r` pour un mur.
             if why == "tours épuisés" {
+                // **Ce que le pilote a le droit de dire, et ce qu'il disait.**
+                // « La machine avançait encore » se déduisait du seul fait que
+                // le budget s'était épuisé sans qu'une adresse manque — ce
+                // qu'une boucle qui tourne sans progresser produit aussi. La
+                // ligne `marche` porte maintenant de quoi ne plus le déduire.
                 println!(
                     "{} régions, aucune adresse ne manque, et les {turns} tours du \
-                     pilote (WISQ_TURNS) sont épuisés : la machine avançait encore",
+                     pilote (WISQ_TURNS) sont épuisés",
                     regions.len()
                 );
+                let walked = line("marche ").unwrap_or_default();
+                let seen = (|| {
+                    let fields: Vec<&str> = walked.split_whitespace().collect();
+                    let [turns, fresh, distinct, tail] = fields.as_slice() else {
+                        return None;
+                    };
+                    let count = |text: &str| text.parse::<usize>().ok();
+                    Progress::of(
+                        count(turns)?,
+                        match *fresh {
+                            "aucun" => None,
+                            text => Some(count(text)?),
+                        },
+                        count(distinct)?,
+                        count(tail)?,
+                    )
+                })();
+                // **Un comptage qu'on n'a pas eu n'est pas un comptage nul.**
+                // Le dire manquant vaut mieux qu'une phrase d'aplomb sur des
+                // nombres qui ne sont pas arrivés.
+                match seen {
+                    Some(seen) => println!("{}", seen.describe()),
+                    None => println!(
+                        "le pilote n'a pas rendu de comptage de marche lisible : \
+                         on ne sait donc pas si la machine ouvrait encore du terrain"
+                    ),
+                }
             } else {
                 println!("{} régions, et plus rien à traduire — {why}", regions.len());
             }

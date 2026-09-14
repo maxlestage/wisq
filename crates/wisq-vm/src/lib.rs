@@ -15,6 +15,7 @@ pub mod ffi;
 pub mod iso9660;
 pub mod kernel_image;
 pub mod machine;
+pub mod progress;
 pub mod snapshot;
 pub mod store;
 pub mod symbols;
