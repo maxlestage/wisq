@@ -273,6 +273,103 @@ final class LocalDesktopTests: XCTestCase {
         )
     }
 
+    /// **Cent vingt-huit régions enchaînées, sous le vrai WebKit.**
+    ///
+    /// Les huit autres tests de cette suite font tourner **deux** régions. Ils
+    /// prouvent que les moitiés s'emboîtent ; ils ne touchent pas ce qui ne
+    /// commence à travailler qu'au-delà : la table de blocs qui grandit, la
+    /// correspondance adresse → indice, et la boucle hôte qui repasse par le
+    /// pont à chaque saut qu'elle ne sait pas résoudre.
+    ///
+    /// **Toute cette machinerie n'est jugée que sous Bun.** Le mur des 4049
+    /// emplacements (#196) et la correspondance (#224) ont été trouvés et
+    /// tenus là, sur le JavaScriptCore que Bun embarque. C'est le bon moteur,
+    /// mais pas le bon hôte : le module passe ici par un `WKWebView`, un
+    /// processus de contenu séparé et un gestionnaire de messages, et rien de
+    /// tout ça n'existe sous Bun.
+    ///
+    /// Ce que ce test ajoute est donc **l'échelle, dans le moteur qui
+    /// expédie** : cent vingt-huit traductions au lieu de deux, chacune un
+    /// aller-retour complet par le pont.
+    ///
+    /// **Pourquoi un saut indirect à chaque fois.** L'émetteur résout un saut
+    /// direct à la traduction et enchaîne les blocs dans le même module ; un
+    /// saut par registre, il ne peut pas. Chaque région rend donc vraiment la
+    /// main, et le compte de traductions est le compte de régions — sans quoi
+    /// ce test mesurerait un seul module et pas la boucle.
+    ///
+    /// **Et RDX compte les passages, pas les traductions.** Un arrêt au bon
+    /// endroit se produirait aussi si la boucle avait sauté des régions ; RDX
+    /// à cent vingt-huit dit que chacune a couru.
+    func testAHundredAndTwentyEightRegionsChainThroughTheBridgeUnderWebKit() async throws {
+        // Quatre pages : 256 Kio. Les régions occupent 0x1000 à 0x9000, donc
+        // une page n'aurait pas suffi — et le repli se fait par un masque sur
+        // une puissance de deux, ce qui rend le débordement silencieux plutôt
+        // que refusé. La taille est donc choisie, pas héritée.
+        let desktop = try LocalDesktop(pages: 4, entry: base)
+        try await desktop.load()
+        try await desktop.place(chain(of: Self.regions), at: base)
+
+        let stopped = try await desktop.run(patience: 60)
+        XCTAssertEqual(
+            stopped.why, Self.ud2SansPorte,
+            "la dernière région s'arrête sur son `ud2`, comme les autres tests"
+        )
+        XCTAssertEqual(
+            stopped.at, base + UInt64((Self.regions - 1) * Self.stride + 3),
+            "et elle dit où : le `ud2` de la dernière région"
+        )
+
+        let rdx = try await desktop.global(2)
+        XCTAssertEqual(
+            rdx, UInt64(Self.regions),
+            "chaque région incrémente RDX une fois : les 128 ont couru"
+        )
+        XCTAssertEqual(
+            desktop.translations, Self.regions,
+            "une traduction par région — un saut par registre ne se résout pas à la traduction"
+        )
+        XCTAssertEqual(desktop.refusals, 0, "aucune région n'est refusée")
+        XCTAssertEqual(
+            desktop.unreadable, 0,
+            "une demande illisible voudrait dire que la page et le pont ont divergé"
+        )
+    }
+
+    /// Le nombre de régions enchaînées, et l'écart entre deux.
+    ///
+    /// 128 × 256 octets tiennent dans les quatre pages déclarées ci-dessus,
+    /// avec le point d'entrée à 0x1000 : la dernière région finit à 0x9000.
+    private static let regions = 128
+    private static let stride = 0x100
+
+    /// **Une chaîne de régions qui ne se résout pas à la traduction.**
+    ///
+    /// Chaque région incrémente RDX, charge l'adresse de la suivante dans RAX
+    /// et y saute **par le registre**. La dernière s'arrête sur `ud2`.
+    ///
+    /// L'adresse vient de `base`, la même que celle passée à `place` : la
+    /// recopier ici donnerait deux endroits à corriger, et un saut vers une
+    /// adresse jamais posée se lirait comme un défaut du pont.
+    private func chain(of count: Int) -> Data {
+        var image = Data()
+        for index in 0..<count {
+            var region = Data([0x48, 0xFF, 0xC2])  // inc %rdx
+            if index == count - 1 {
+                region.append(contentsOf: [0x0F, 0x0B])  // ud2
+            } else {
+                let next = base + UInt64((index + 1) * Self.stride)
+                region.append(contentsOf: [0x48, 0xB8])  // movabs $…,%rax
+                withUnsafeBytes(of: next.littleEndian) { region.append(contentsOf: $0) }
+                region.append(contentsOf: [0xFF, 0xE0])  // jmp *%rax
+            }
+            region.append(
+                contentsOf: [UInt8](repeating: 0x90, count: Self.stride - region.count))
+            image.append(region)
+        }
+        return image
+    }
+
     /// **Un bureau sans écran refuse de peindre**, au lieu de laisser croire
     /// qu'une image est passée. C'est le refus qui distingue « rien à montrer »
     /// de « rien ne s'est affiché ».
