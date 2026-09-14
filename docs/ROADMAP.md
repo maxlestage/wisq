@@ -10543,3 +10543,41 @@ Le décodage linéaire lit les octets d'affilée, y compris ceux qui ne sont pas
 code : une part de ces 641 refus est de la donnée, et le relevé ne les sépare
 pas. Le dire demanderait de suivre les sections de l'ELF, ce qui est une
 **direction** et non un défaut.
+
+## #235 — le bureau n'enchaînait que deux régions sous WebKit
+
+Les neuf tests de `LocalDesktopTests` font tourner **deux** régions. Ils
+prouvent que les moitiés s'emboîtent dans un vrai `WKWebView` ; ils ne touchent
+pas ce qui ne commence à travailler qu'au-delà : la table de blocs qui grandit,
+la correspondance adresse → indice, et la boucle hôte qui repasse par le pont à
+chaque saut qu'elle ne sait pas résoudre.
+
+**Toute cette machinerie n'est jugée que sous Bun.** Le mur des 4049
+emplacements (#196) et la correspondance (#224) ont été trouvés et tenus là,
+sur le JavaScriptCore que Bun embarque. C'est le bon moteur, mais pas le bon
+hôte : sous WebKit le module passe par un processus de contenu séparé et un
+gestionnaire de messages, dont rien n'existe sous Bun.
+
+Le test ajouté enchaîne **cent vingt-huit régions**, chacune reliée à la
+suivante par un saut par registre — que l'émetteur ne peut pas résoudre à la
+traduction, donc chacune rend vraiment la main. Le compte de traductions est
+alors le compte de régions, et RDX compte les passages : un arrêt au bon
+endroit se produirait aussi si la boucle avait sauté des régions.
+
+### Ce que ce test ne peut pas être jugé ici
+
+`LocalDesktopTests.swift` est sous `#if canImport(WebKit)` : sur Linux il n'est
+même pas typé. `swiftlint --strict` en vérifie la forme, et c'est tout ce que ce
+conteneur peut en dire. **Son seul juge est « App iOS »**, dans un iPhone
+simulé — et c'est Maxime qui a ouvert cette porte : « tu peux la tester sur la
+ci (l'application) ».
+
+Écrire un test qu'on ne peut pas lancer soi-même demande de le dire, pas de
+l'oublier : si la CI le refuse, c'est le test qui est en cause jusqu'à preuve
+du contraire, pas le bureau.
+
+### Ce que ça ne tranche pas
+
+Un vrai noyau à travers le bureau reste hors d'atteinte d'une tranche : il
+faudrait porter côté Swift tout le pilote de `examples/kernel-entry.rs` — les
+segments ELF, la page zéro, l'e820. C'est #167, et ça reste entier.
