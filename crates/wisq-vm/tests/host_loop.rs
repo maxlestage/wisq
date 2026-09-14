@@ -22,6 +22,22 @@ use wisq_vm::x86_wasm::{
     SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
 };
 
+/// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
+///
+/// Avant, un `ud2` ne posait aucun témoin : l'hôte ne voyait qu'un retour de
+/// main sur une adresse inconnue, redemandait la même région, et concluait
+/// « refusée » ou « sur place » selon ce que le pilote répondait. Les deux
+/// noms décrivaient le pilote, pas la machine. Celui-ci décrit la machine.
+const UD2_SANS_PORTE: &str =
+    "une instruction indéfinie (ud2) sans porte : aucune IDT ne porte le vecteur 6";
+
+/// **La même, quand une IDT existe mais ne porte pas la porte 6.** Les trois
+/// montages à IDT de ce fichier n'installent que la porte dont ils ont besoin ;
+/// leur `ud2` final tombe donc sur une porte absente, ce que l'hôte distingue
+/// d'une IDT manquante — et c'est la distinction qui compte pour diagnostiquer.
+const UD2_PORTE_ABSENTE: &str =
+    "une instruction indéfinie (ud2) sans porte : la porte du vecteur 6 n'est pas présente";
+
 fn workspace_root() -> PathBuf {
     let mut at = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     while !at.join("Cargo.lock").exists() {
@@ -1431,7 +1447,7 @@ console.log("cr0 " + lire(7));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
         "le `ud2` arrête : {text}"
     );
     assert_eq!(
@@ -2113,7 +2129,7 @@ console.log("plat " + plat.rdx);
             .to_string()
     };
     let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
-    assert_eq!(line("arret "), "refusée", "le `ud2` arrête : {text}");
+    assert_eq!(line("arret "), UD2_SANS_PORTE, "le `ud2` arrête : {text}");
     assert_eq!(
         number("rdx "),
         WITNESS_A,
@@ -2341,7 +2357,7 @@ console.log("r8 " + lire(8));
     );
     assert_eq!(
         line_of(&text, "arret "),
-        "refusée",
+        UD2_SANS_PORTE,
         "le `ud2` arrête : {text}"
     );
     assert_eq!(
@@ -2378,6 +2394,309 @@ console.log("r8 " + lire(8));
         "f6",
         "**éteindre puis rallumer la pagination vide aussi** : tout ce que le \
          tampon savait était vrai d'un monde qui n'existe plus : {text}"
+    );
+}
+
+/// **`ud2` est délivré au vecteur 6, et le gestionnaire reprend après — c'est
+/// la mécanique de `WARN` de Linux.**
+///
+/// Un noyau Linux exécute `ud2` **exprès**, des dizaines de fois pendant son
+/// démarrage : `WARN()` compile en un appel à `__warn_printk` suivi d'un
+/// `ud2`, et son gestionnaire `#UD` consulte `__bug_table`, y trouve
+/// `BUGFLAG_WARNING`, **avance RIP de deux** et reprend. Tant que le vecteur 6
+/// n'est pas délivré, chaque avertissement du noyau est un arrêt définitif —
+/// c'est le mur mesuré après #226, à `do_one_initcall + 673`, derrière
+/// « initcall inet_init+0x0/0x560 returned with preemption imbalance ».
+///
+/// **Ce que le test tient et qu'on ne peut pas obtenir autrement.** Le RIP
+/// empilé doit être celui du `ud2` lui-même, **pas celui d'après** : `#UD` est
+/// une *faute*, pas un piège, et c'est le gestionnaire qui décide d'avancer.
+/// Le confondre avec un piège ferait reprendre le noyau deux octets trop loin
+/// — après que son gestionnaire y a lui-même ajouté deux — au milieu de
+/// l'instruction suivante. Le gestionnaire range donc le RIP empilé tel quel
+/// dans RAX avant d'y toucher.
+///
+/// Et sans IDT, l'arrêt reste et se nomme : c'est la conduite que #194 a
+/// posée pour la faute de page — « sans porte », la machine le dit au lieu de
+/// boucler.
+#[test]
+fn an_undefined_instruction_is_delivered_and_the_handler_resumes_past_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = 0x1_1000;
+    const IDT: u64 = 0x1_2000;
+    const IDT_POINTER: u64 = 0x1_3000;
+    const STACK: u64 = 0x8_0000;
+    /// La valeur que la reprise pose dans RBX : elle ne peut y être que si la
+    /// machine a repris **après** le `ud2`.
+    const AFTER: u32 = 0x1111;
+
+    fn put(into: &mut Vec<u8>, bytes: &[u8]) {
+        into.extend_from_slice(bytes);
+    }
+    // Le programme, en deux formes : avec l'IDT chargée, et sans.
+    let build = |with_idt: bool| -> (Vec<u8>, u64) {
+        let mut program: Vec<u8> = Vec::new();
+        if with_idt {
+            put(&mut program, &[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+            put(&mut program, &IDT_POINTER.to_le_bytes());
+            put(&mut program, &[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+        }
+        put(&mut program, &[0x48, 0xbc]); // movabs $STACK,%rsp
+        put(&mut program, &STACK.to_le_bytes());
+        put(&mut program, &[0xfb]); // sti — pour que l'entrée ait quelque chose à éteindre
+        let ud2_at = BASE + program.len() as u64;
+        put(&mut program, &[0x0f, 0x0b]); // ud2
+        put(&mut program, &[0x48, 0xc7, 0xc3]); // mov $AFTER,%rbx — la preuve que ça reprend
+        put(&mut program, &AFTER.to_le_bytes());
+        put(&mut program, &[0xf4]); // hlt — un arrêt propre et nommé
+        (program, ud2_at)
+    };
+    let (program, ud2_at) = build(true);
+    let (flat, flat_ud2_at) = build(false);
+
+    // **Le gestionnaire fait ce que fait `handle_bug` de Linux** : il range le
+    // RIP empilé tel quel — pour que le test voie que c'est une faute —, y
+    // ajoute la longueur du `ud2`, et rend la main.
+    let mut handler: Vec<u8> = Vec::new();
+    put(&mut handler, &[0x48, 0x8b, 0x04, 0x24]); // mov (%rsp),%rax
+    put(&mut handler, &[0x48, 0x83, 0x04, 0x24, 0x02]); // addq $2,(%rsp)
+    put(&mut handler, &[0x48, 0xcf]); // iretq
+
+    let scratch = std::env::temp_dir().join(format!("wisq-ud2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // **Une carte par exécution.** L'hôte alloue ses emplacements de table à
+    // partir de zéro pour chaque machine, et c'est lui qui les passe à
+    // `translate(address, slot, code)` : un pilote qui les compterait lui-même
+    // servirait le mauvais module au deuxième tour.
+    let compile = |name: &str, bytes: &[u8], at: u64, slot: u32| -> String {
+        let module = Module::resolving(bytes, at, 0, slot, PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        format!(
+            "  if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        )
+    };
+    let served = compile("programme.wasm", &program, BASE, 0)
+        + &compile("gestionnaire.wasm", &handler, HANDLER, 1)
+        + &compile(
+            "reprise.wasm",
+            &program[(ud2_at + 2 - BASE) as usize..],
+            ud2_at + 2,
+            2,
+        );
+    let served_flat = compile("plat.wasm", &flat, BASE, 0);
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+function servir(address, slot) {{
+{served}  return null;
+}}
+
+function servirPlat(address, slot) {{
+{servedFlat}  return null;
+}}
+
+// La porte 6 : une porte d'interruption (0x0E), présente, sélecteur 0x10,
+// sans pile d'interruption, vers le gestionnaire.
+const porte = (offset) => {{
+  const low = (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n);
+  return [low, BigInt(offset) >> 32n];
+}};
+
+async function tourner(avecIdt) {{
+  const vm = machine({{
+    translate: async (address, slot) =>
+      avecIdt ? servir(address, slot) : servirPlat(address, slot),
+    pages: {pages},
+  }});
+  if (avecIdt) {{
+    const vue = new DataView(vm.memory.buffer);
+    const [bas, haut] = porte({handler});
+    vue.setBigUint64({idt} + 6 * 16, bas, true);
+    vue.setBigUint64({idt} + 6 * 16 + 8, haut, true);
+    vue.setUint16({idtPointer}, 16 * 256 - 1, true);
+    vue.setBigUint64({idtPointer} + 2, {idt}n, true);
+  }}
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 256n, rounds: 32 }});
+  const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+  return {{ why, rax: lire(0), rbx: lire(3) }};
+}}
+
+const avec = await tourner(true);
+console.log("arret " + avec.why.stopped);
+console.log("rax " + avec.rax);
+console.log("rbx " + avec.rbx);
+const sans = await tourner(false);
+console.log("sans " + sans.why.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            served = served,
+            servedFlat = served_flat,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            handler = HANDLER,
+            idt = IDT,
+            idtPointer = IDT_POINTER,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "arrêtée sur hlt",
+        "la machine doit être allée jusqu'au `hlt` qui suit la reprise — donc \
+         avoir franchi le `ud2` au lieu de tourner dessus : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rax "),
+        format!("{ud2_at:x}"),
+        "**le RIP empilé est celui du `ud2` lui-même** : `#UD` est une faute, \
+         pas un piège, et c'est le gestionnaire qui décide d'avancer. Empiler \
+         l'adresse d'après ferait reprendre Linux deux octets trop loin, \
+         puisque `handle_bug` y ajoute lui-même la longueur du `ud2` : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("{AFTER:x}"),
+        "et la reprise a bien exécuté l'instruction qui suit le `ud2` : {text}"
+    );
+    assert!(
+        line_of(&text, "sans ").contains("sans porte") && line_of(&text, "sans ").contains("6"),
+        "sans IDT, l'arrêt reste et se nomme — la conduite que #194 a posée \
+         pour la faute de page : {text}"
+    );
+    let _ = flat_ud2_at;
+}
+
+/// **« Sur place » existe encore, et quelque chose doit le tenir.**
+///
+/// Avant #227, c'était le `ud2` qui y menait : il rendait la main sans dire
+/// pourquoi, l'hôte redemandait la même adresse, et la boucle constatait que
+/// RIP n'avait pas bougé. Maintenant qu'un `ud2` se nomme, **plus aucun test
+/// n'exerçait ce chemin** — et il est loin d'être mort : le noyau Alpine y
+/// tombe encore, mesuré, à `do_one_initcall + 673`.
+///
+/// Un saut indirect vers sa propre adresse y mène de la façon la plus simple
+/// qui soit : le bloc rend la main avec RIP inchangé, l'hôte le rappelle, et
+/// rien n'avance. C'est exactement ce qu'un noyau fait quand il boucle sur une
+/// faute qu'il ne sait pas traiter.
+///
+/// **Ce n'est pas « le budget s'est épuisé »**, et la distinction est celle
+/// qu'un test voisin défend déjà : un anneau qui revient à son point de départ
+/// après trois cents tours a *avancé*. Ici la machine ne fait rien du tout.
+#[test]
+fn a_machine_that_returns_to_the_same_address_is_named_in_place() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // `movabs` fait dix octets : le `jmp *%rax` commence juste après.
+    const HERE: u64 = BASE + 10;
+    let mut program: Vec<u8> = vec![0x48, 0xb8];
+    program.extend_from_slice(&HERE.to_le_bytes());
+    program.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax — vers lui-même
+
+    let scratch = std::env::temp_dir().join(format!("wisq-surplace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // Deux régions : le programme, et celle qui commence **sur** le saut — la
+    // seule que l'hôte redemandera, et dans laquelle il tournera sans avancer.
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la région se traduit");
+    let path = scratch.join("s.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let loop_module =
+        Module::resolving(&program[10..], HERE, 0, 1, PAGES).expect("la région du saut se traduit");
+    let loop_path = scratch.join("boucle.wasm");
+    std::fs::write(&loop_path, &loop_module).expect("le module du saut");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async (address) => {{
+    asked += 1;
+    if (address === {base}n) return readFileSync({path:?});
+    if (address === {here}n) return readFileSync({loopPath:?});
+    return null;
+  }},
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 1024 }});
+console.log("arret " + why.stopped);
+console.log("ou " + why.at.toString(16));
+console.log("demandes " + asked);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            loopPath = loop_path.to_string_lossy(),
+            here = HERE,
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        errors.is_empty(),
+        "le pilote n'écrit rien en erreur : {errors}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "sur place",
+        "une machine qui revient à la même adresse doit être nommée, pas \
+         laissée tourner mille vingt-quatre fois pour rien : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "ou "),
+        format!("{HERE:x}"),
+        "et l'arrêt dit **où** : l'adresse du saut, pas celle de l'entrée : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "demandes "),
+        "2",
+        "deux traductions, et pas une de plus : l'hôte reconnaît l'adresse au \
+         tour suivant, et c'est là qu'il voit qu'elle n'a pas bougé : {text}"
     );
 }
 
@@ -2619,7 +2938,7 @@ console.log("noyau " + lire(7));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
         "le `ud2` arrête : {text}"
     );
     // **Les deux moitiés de l'échange, séparément.** Vérifier une seule des
@@ -2731,7 +3050,7 @@ console.log("limite " + lire({limit}));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
         "le `ud2` arrête : {text}"
     );
     // **L'emplacement lui-même, et pas seulement l'aller-retour.** Un sabotage
@@ -2871,7 +3190,7 @@ console.log("jamais " + lire(6));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
         "le `ud2` arrête : {text}"
     );
     assert_eq!(
@@ -3024,7 +3343,7 @@ console.log("ebx " + lire(3));
     };
     assert_eq!(
         text.lines().next(),
-        Some("arret refusée"),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
         "le `ud2` arrête : {text}"
     );
     // **Les valeurs sont écrites en toutes lettres, et c'est délibéré.** Une
@@ -3297,7 +3616,11 @@ console.log("haut " + BigInt.asUintN(64, vm.globals[2].value).toString());
             .trim()
             .to_string()
     };
-    assert_eq!(line("arret "), "refusée", "la région s'arrête sur le `ud2`");
+    assert_eq!(
+        line("arret "),
+        UD2_SANS_PORTE,
+        "la région s'arrête sur le `ud2`"
+    );
     let avant: u64 = line("avant ").parse().expect("un nombre");
     let apres: u64 = line("apres ").parse().expect("un nombre");
     assert!(
@@ -3411,7 +3734,11 @@ console.log("empile " + octets.getBigUint64({empile}, true).toString(16));
             .trim()
             .to_string()
     };
-    assert_eq!(line("arret "), "refusée", "la région s'arrête sur le `ud2`");
+    assert_eq!(
+        line("arret "),
+        UD2_SANS_PORTE,
+        "la région s'arrête sur le `ud2`"
+    );
     assert_eq!(
         line("rsp "),
         format!("{:x}", TOP - 8),
@@ -3524,7 +3851,7 @@ console.log("ou " + why.at.toString(16));
     // Et la machine s'est arrêtée là où le programme s'arrête : sur le `ud2`,
     // dix octets après le début. Sans cette ligne, un « hi » dit deux fois par
     // une machine qui boucle passerait pour un succès.
-    assert_eq!(seen("arret"), "refusée");
+    assert_eq!(seen("arret"), UD2_SANS_PORTE);
     assert_eq!(seen("ou"), format!("{:x}", BASE + 10), "sur le `ud2`");
 }
 
@@ -3587,7 +3914,13 @@ console.log("demandes " + asked);
             .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
             .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
     };
-    assert_eq!(seen("arret"), "sur place", "le blocage doit se nommer");
+    assert_eq!(
+        seen("arret"),
+        UD2_SANS_PORTE,
+        "le blocage doit se nommer — et depuis #227 il se nomme mieux qu'avant : \
+         la machine dit l'instruction qui l'arrête au lieu de constater \
+         qu'elle n'avance plus"
+    );
     assert_eq!(seen("ou"), format!("{BASE:x}"), "et dire où");
     // Mille vingt-quatre tours étaient permis : s'y être arrêté au premier
     // veut dire que la boucle n'a pas tourné pour rien.
@@ -3924,29 +4257,40 @@ console.log("fenetres " + fenêtres.join(","));
             .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
             .unwrap_or_else(|| panic!("le harnais n'a pas dit « {label} » :\n{text}"))
     };
-    // Trois adresses demandées, chacune avec l'emplacement que la vue a
+    // Deux adresses demandées, chacune avec l'emplacement que la vue a
     // choisi : c'est le contrat que l'application devra tenir.
-    assert_eq!(seen("demandes"), "3", "une traduction par adresse atteinte");
+    //
+    // **Deux, et non trois depuis #227.** La troisième était l'adresse du
+    // `ud2` final : l'hôte la réclamait faute de savoir pourquoi le bloc lui
+    // rendait la main, et il le sait désormais.
+    assert_eq!(seen("demandes"), "2", "une traduction par adresse atteinte");
     // **Et chaque demande porte une fenêtre pleine.** Sans cette ligne, le
     // harnais imprimerait les tailles sans que rien ne les lise — une mesure
     // morte, qui a l'air d'une garde.
+    //
+    // **Deux fenêtres, et non trois depuis #227** : la troisième était celle du
+    // `ud2` final, que l'hôte ne réclame plus.
     assert_eq!(
         seen("fenetres"),
-        "4096,4096,4096",
+        "4096,4096",
         "la vue envoie quatre kibioctets par demande"
     );
     assert_eq!(
         seen("vues"),
-        format!("{}:0,{}:1,{}:2", BASE, BASE + 0x100, BASE + 0x103),
+        format!("{}:0,{}:1", BASE, BASE + 0x100),
         "l'adresse **et** l'emplacement traversent le pont"
     );
     // Deux `incq %rdx` : les deux régions ont tourné, pas seulement été
     // traduites.
     assert_eq!(seen("rdx"), "2", "les deux régions ont calculé");
-    assert_eq!(seen("arret"), "sur place", "le `ud2` arrête la machine");
+    assert_eq!(
+        seen("arret"),
+        UD2_SANS_PORTE,
+        "le `ud2` arrête la machine, et le dit"
+    );
     assert_eq!(
         seen("postes"),
-        format!("sur place {}", BASE + 0x103),
+        format!("{UD2_SANS_PORTE} {}", BASE + 0x103),
         "et l'arrêt remonte à l'application par le pont, l'adresse en décimal \
          comme celle d'une demande de traduction"
     );
@@ -4389,7 +4733,11 @@ console.log("abandon " + pourquoi.stopped);
         "true",
         "redemander la même fenêtre ne servirait à rien"
     );
-    assert_eq!(seen("arret"), "sur place", "le `ud2` arrête la machine");
+    assert_eq!(
+        seen("arret"),
+        UD2_SANS_PORTE,
+        "le `ud2` arrête la machine, et le dit"
+    );
     // **Deux et pas trois.** Une vue qui redemanderait tant qu'on lui répond
     // « encore » tournerait sans fin sur une région vraiment intraduisible.
     assert_eq!(
@@ -5056,7 +5404,11 @@ console.log("finale " + images[images.length - 1]);
 
     // **Phase 3.** L'arrêt remonte, et l'image d'après l'arrêt est celle de
     // l'arrêt.
-    assert_eq!(seen("arret"), "sur place sur place", "le `ud2` arrête tout");
+    assert_eq!(
+        seen("arret"),
+        format!("{UD2_SANS_PORTE} {UD2_SANS_PORTE}"),
+        "le `ud2` arrête tout"
+    );
     assert_eq!(
         seen("finale"),
         ["255,255,255,255"; 4].join(","),
@@ -5408,16 +5760,20 @@ console.log("rflags " + lire(RFLAGS));"#
     let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
     assert_eq!(
         line("arret "),
-        "refusée",
+        UD2_PORTE_ABSENTE,
         "l'arrêt final est le ud2 : {text}"
     );
-    // **Quatre demandes, et chacune se nomme** : le programme, le
-    // gestionnaire, la reprise sur l'instruction fautive, et le `ud2` — pour
-    // lequel l'hôte demande une région qui commence là, et que le bouchon
-    // refuse. C'est ce refus-là qui fait l'arrêt « refusée ».
+    // **Trois demandes, et chacune se nomme** : le programme, le gestionnaire,
+    // et la reprise sur l'instruction fautive.
+    //
+    // **Trois, et non quatre depuis #227.** La quatrième était le `ud2` final :
+    // l'hôte réclamait une région qui commence là, le bouchon la refusait, et
+    // c'est ce refus qui faisait l'arrêt « refusée ». Le module pose désormais
+    // un témoin, donc l'hôte sait ce qu'il tient sans avoir à le demander — et
+    // l'arrêt nomme l'instruction plutôt que le silence du bouchon.
     assert_eq!(
         number("demandes "),
-        4,
+        3,
         "quatre régions demandées, pas une de plus : {text}"
     );
     assert_eq!(
@@ -5630,7 +5986,7 @@ console.log("cadre-rip " + mot({stack} - 8 * 5));
     let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
     assert_eq!(
         line("arret "),
-        "refusée",
+        UD2_PORTE_ABSENTE,
         "l'arrêt final est le ud2 : {text}"
     );
     assert_eq!(
@@ -5656,8 +6012,10 @@ console.log("cadre-rip " + mot({stack} - 8 * 5));
     assert_eq!(number("rip "), ud2_at, "RIP est sur le ud2");
     assert_eq!(
         number("stop "),
-        0,
-        "le témoin d'arrêt est effacé une fois délivré"
+        wisq_vm::x86_wasm::STOP_UNDEFINED,
+        "le témoin de la faute délivrée est effacé, et celui du `ud2` final est \
+         **remis** : sa délivrance, elle, n'a pas pu avoir lieu — la porte 6 \
+         manque —, et le relevé doit montrer ce qui a arrêté la machine"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
@@ -6318,7 +6676,7 @@ console.log("contraste " + sans.rbx);
             .to_string()
     };
     let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
-    assert_eq!(line("arret "), "refusée", "le `ud2` arrête : {text}");
+    assert_eq!(line("arret "), UD2_SANS_PORTE, "le `ud2` arrête : {text}");
     assert_eq!(
         number("rdx "),
         WITNESS_A,
@@ -6744,7 +7102,8 @@ console.log("lstar " + lire(6));
 /// gestionnaire a tourné (`rcx`), le code d'erreur est nul (`r8`), le cadre
 /// porte l'instruction fautive et non la suivante, l'exécution a continué
 /// après (`rbx`), la pile est revenue (six mots, code d'erreur compris), le
-/// témoin d'arrêt est effacé, et l'arrêt final est le `ud2`.
+/// témoin de la faute délivrée est effacé, et l'arrêt final est le `ud2` —
+/// que la porte 6, absente de ce montage, ne peut pas rattraper.
 #[test]
 fn an_unknown_model_register_is_delivered_as_a_general_protection_fault() {
     let Some(bun) = bun() else {
@@ -6870,7 +7229,7 @@ console.log("cadre-code " + mot({stack} - 8 * 6));
     let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
     assert_eq!(
         line("arret "),
-        "refusée",
+        UD2_PORTE_ABSENTE,
         "l'arrêt final est le ud2, pas le MSR : {text}"
     );
     assert_eq!(
@@ -6914,8 +7273,10 @@ console.log("cadre-code " + mot({stack} - 8 * 6));
     assert_eq!(number("rip "), ud2_at, "RIP est sur le ud2");
     assert_eq!(
         number("stop "),
-        0,
-        "le témoin d'arrêt est effacé une fois la faute délivrée"
+        wisq_vm::x86_wasm::STOP_UNDEFINED,
+        "le témoin de la faute délivrée est effacé, et celui du `ud2` final est \
+         **remis** : sa délivrance, elle, n'a pas pu avoir lieu — la porte 6 \
+         manque —, et le relevé doit montrer ce qui a arrêté la machine"
     );
 }
 
@@ -8062,13 +8423,13 @@ console.log("octets " + tailles[0]);
     // par retour de main au pire, contre une fois par `ret` avant.
     assert_eq!(
         line("demandées "),
-        format!(
-            "0x{BASE:x} 0x{:x} 0x{:x} 0x{:x}",
-            BASE + SECOND,
-            BASE + THIRD,
-            BASE + 10
-        ),
-        "quatre demandes, dans l'ordre où la machine les rencontre : {text}"
+        format!("0x{BASE:x} 0x{:x} 0x{:x}", BASE + SECOND, BASE + THIRD),
+        // **Trois, et non quatre depuis #227.** La quatrième était l'adresse du
+        // `ud2` : l'hôte y réclamait une région parce qu'il ne savait pas
+        // pourquoi le bloc lui rendait la main. Il le sait maintenant — le
+        // module pose un témoin —, et il nomme l'arrêt au lieu de demander à
+        // traduire une instruction qui n'en est pas une.
+        "trois demandes, dans l'ordre où la machine les rencontre : {text}"
     );
     assert_eq!(
         line("rdx "),
@@ -8858,7 +9219,7 @@ console.log("voisine " + compte({next}, 0x1000));
     );
     assert_eq!(
         line_of(&text, "arret "),
-        "refusée",
+        UD2_SANS_PORTE,
         "le `ud2` arrête : {text}"
     );
     assert_eq!(
