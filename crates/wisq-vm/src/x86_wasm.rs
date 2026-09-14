@@ -3024,7 +3024,7 @@ impl Module {
         // **Le compteur d'horodatage, produit et non refusé.** Il ne demande
         // aucun modèle privilégié : une globale qui monte, et ses deux moitiés
         // dans EAX et EDX.
-        if step.op == Op::ReadTimestamp {
+        if matches!(step.op, Op::ReadTimestamp | Op::ReadTimestampAndProcessor) {
             body.store(TSC_SLOT, |b| {
                 b.load(TSC_SLOT).constant(TSC_STEP).op(code::I64_ADD);
             });
@@ -3042,6 +3042,24 @@ impl Module {
                     .constant(0xffff_ffff)
                     .op(code::I64_AND);
             });
+            // **`rdtscp` pose ECX en plus, depuis `IA32_TSC_AUX`.**
+            //
+            // Aucun `wrmsr` de cette machine n'écrit ce registre, donc il vaut
+            // zéro — et c'est une valeur **juste**, pas un bouchon : un
+            // processeur dont personne n'a posé le TSC_AUX rend zéro aussi.
+            //
+            // Ce qu'il ne faut surtout pas faire est de ne rien écrire : ECX
+            // garderait ce qu'il portait, et le noyau le lirait comme un numéro
+            // de processeur. Une valeur d'avant qui traîne ressemble à une
+            // réponse.
+            //
+            // Et c'est **ECX**, pas RCX : comme pour EAX et EDX, le processeur
+            // met la moitié haute à zéro.
+            if step.op == Op::ReadTimestampAndProcessor {
+                body.store(Self::slot(RCX), |b| {
+                    b.constant(0);
+                });
+            }
             return Some(());
         }
         // **`cpuid` : une table de constantes, et rien de privilégié.**
@@ -3848,6 +3866,7 @@ impl Module {
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
                 ),
                 Op::ReadTimestamp
+                | Op::ReadTimestampAndProcessor
                 | Op::CpuId
                 | Op::ReadModelRegister
                 | Op::WriteModelRegister
@@ -4260,6 +4279,7 @@ impl Module {
                 )
             }
             Op::ReadTimestamp
+            | Op::ReadTimestampAndProcessor
             | Op::CpuId
             | Op::FpuInit
             | Op::FxSave
