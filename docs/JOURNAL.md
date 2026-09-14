@@ -12954,3 +12954,49 @@ question a changé de nature, et l'outil doit changer avec : jusqu'ici il
 suffisait de nommer l'octet qui bloque, maintenant il faut un relevé qui
 distingue le progrès de la ronde. Écrire « ça démarre » ici serait la première
 affirmation de cette série que rien ne tient.
+
+## Un mot qui compte deux choses fabrique des conclusions
+
+`kernel-entry` imprimait « tour 10776 » en y mettant le rang de la traduction,
+puis concluait sur « les 1000000 tours du pilote », qui étaient de vrais tours.
+Deux unités sous un seul mot, dans le même texte.
+
+Ce n'est pas qu'un défaut de lisibilité. **Cette tranche s'est ouverte sur une
+conjecture fausse tirée de là** : voyant « tour 10776 » puis « 1000000 tours
+épuisés », j'en ai déduit que la machine n'avait plus rien traduit pendant neuf
+cent quatre-vingt-neuf mille tours, donc qu'elle tournait en rond depuis
+longtemps. La mesure, une fois le compteur réparé, dit tout autre chose : la
+dernière adresse neuve est au tour **860 189**, à 86 % du budget.
+
+La conjecture a été démentie par l'outil écrit pour la vérifier, et par le
+défaut même qu'il corrigeait. Un relevé qui nomme mal ce qu'il compte n'est pas
+seulement pénible à lire : **il fabrique des conclusions, y compris chez qui
+l'a écrit** — qui est pourtant la personne la mieux placée pour s'en méfier.
+
+## Ne pas remplacer une affirmation non tenue par une autre
+
+« La machine avançait encore » se déduisait du seul fait que le budget s'était
+épuisé sans qu'une adresse manque. La tentation, en le retirant, était d'écrire
+« la machine tournait en ronde » — la conclusion opposée, tirée d'aussi peu.
+
+Trente adresses distinctes sur cent trente-neuf mille tours ne se lisent pas
+comme un `memcpy`, mais une boucle chaude légitime n'ouvre pas de terrain neuf
+non plus, et son dernier dixième est étroit. Les deux chiffres ne **prouvent**
+rien ; ils sont décisifs pour qui lit, ce qui n'est pas la même chose.
+
+Un test l'impose désormais au relevé : il échoue si la phrase contient « ronde »
+ou « boucle ». **Une garde contre sa propre envie de conclure**, écrite au
+moment où on l'a encore.
+
+## Ce qui arrive d'un pilote que rien ne juge
+
+Les quatre nombres de la ligne `marche` sont comptés par du JavaScript
+qu'aucun test ne tient. `Progress::of` refuse donc ce qu'aucune exécution
+n'aurait pu produire — une adresse neuve après le dernier tour, un dernier
+dixième plus large que le relevé entier, un relevé de zéro tour — plutôt que de
+mettre en forme un comptage cassé.
+
+Et surtout : **un comptage absent n'est pas un comptage nul.** Si la ligne
+n'arrive pas, le relevé dit qu'on ne sait pas. Le repli silencieux sur zéro
+aurait rendu « aucune adresse n'a jamais été neuve » — une phrase d'aplomb,
+fausse, et indiscernable d'un vrai résultat.
