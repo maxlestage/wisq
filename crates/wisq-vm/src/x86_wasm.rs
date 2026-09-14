@@ -3118,6 +3118,61 @@ impl Module {
             body.store(Self::control_slot(which), |b| {
                 b.load(Self::slot(step.dst));
             });
+            // **Et le tampon de traduction se vide.** Un vrai processeur le
+            // fait ; celui-ci ne le faisait que sur `invlpg`, une entrée à la
+            // fois — et c'était la seule divergence des trois cœurs sur ce
+            // point : `X86Paging.swift` vide sur les trois registres, et
+            // l'interpréteur Rust n'a aucun cache à vider.
+            //
+            // **Ce que ça tuait, mesuré sur un vrai noyau.** `__text_poke`
+            // écrit son correctif à travers une cartographie temporaire :
+            // `use_temporary_mm` **écrit CR3**, `text_poke_memcpy` écrit,
+            // `unuse_temporary_mm` **réécrit CR3**, puis le noyau relit à
+            // l'adresse d'origine et compare. Avec un tampon qui garde tout,
+            // l'écriture peut atterrir dans la trame qu'un correctif précédent
+            // avait cartographiée là — et Alpine s'arrêtait sur le
+            // `BUG_ON(memcmp(addr, opcode, len))` de `__text_poke + 1093`.
+            //
+            // **CR4 n'est pas un extra** : `__flush_tlb_global()` de Linux sans
+            // `INVPCID` est exactement `native_write_cr4(cr4 ^ X86_CR4_PGE)`
+            // puis la valeur d'origine. Le cœur Swift a déjà payé son absence —
+            // « Invalid relocation target, existing value is nonzero », puis
+            // « bad pud ».
+            //
+            // **On vide sur toute écriture des trois, sans regarder quels bits
+            // changent.** Plus large que ce que le manuel exige, jamais faux,
+            // et un cœur qui essaierait d'être fin ici se tromperait un jour
+            // sur un bit qu'il n'avait pas prévu. C'est le raisonnement que le
+            // cœur Swift tient déjà pour CR4, et il vaut pour les trois.
+            //
+            // **Et il vide tout, pas une entrée.** Comme le cœur Swift : « plus
+            // lent et jamais faux ; l'inverse serait le contraire ». Un
+            // compteur de génération rendrait ça constant au lieu de linéaire,
+            // au prix de quatre octets par entrée et d'un débordement à
+            // traiter — ce sera une tranche si la mesure la réclame, pas une
+            // supposition maintenant.
+            if matches!(which, 0 | 3 | 4) {
+                if let (Some(mask), true) = (body.confine, body.walk.is_some()) {
+                    let tlb = tlb_base((mask + 1) / 65536);
+                    let end = u64::from(tlb) + u64::from(TLB_SLOTS) * u64::from(TLB_ENTRY);
+                    body.store(Body::scratch(0), |b| {
+                        b.constant(u64::from(tlb));
+                    });
+                    body.op(code::LOOP).op(code::VOID);
+                    body.load(Body::scratch(0)).op(code::I32_WRAP_I64);
+                    body.constant(0);
+                    body.access(code::I64_STORE, 0);
+                    body.store(Body::scratch(0), |b| {
+                        b.load(Body::scratch(0))
+                            .constant(u64::from(TLB_ENTRY))
+                            .op(code::I64_ADD);
+                    });
+                    body.load(Body::scratch(0)).constant(end).op(code::I64_NE);
+                    body.op(code::BRANCH_IF);
+                    unsigned(0, &mut body.bytes);
+                    body.op(code::END); // loop
+                }
+            }
             return Some(());
         }
         // **Les registres spécifiques au modèle : un aiguillage, pas une
