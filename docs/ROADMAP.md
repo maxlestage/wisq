@@ -10206,3 +10206,79 @@ rond »**, et il faut un relevé qui la pose, pas une conjecture.
 Un octet, une instruction, **trois régions**. C'est l'écart entre ce qu'un
 octet illisible coûte en lui-même et ce qu'il coûte au voisinage : il emporte
 chaque fenêtre qui le traverse.
+
+## #229 — le relevé cesse d'affirmer, et la mesure dément la conjecture
+
+Deux défauts dans `kernel-entry`, et le second était invisible parce que le
+premier lui servait de décor.
+
+### « tour N » ne comptait pas des tours
+
+Les lignes du relevé imprimaient `regions.len() + 1` sous le mot « tour » —
+le **rang de la traduction** — pendant que la conclusion du même relevé parlait
+des « 1000000 tours du pilote », qui, eux, étaient de vrais tours. Le même mot
+comptait deux choses dans le même texte, et l'indice de tour réel n'était
+imprimé nulle part alors que la boucle JavaScript le connaissait.
+
+Les lignes disent maintenant « traduction N : N-1 régions posées ».
+
+### « la machine avançait encore » n'était tenu par rien
+
+La phrase se déduisait du seul fait que le budget s'était épuisé sans qu'une
+adresse manque — **ce qu'une boucle qui tourne sans progresser produit à
+l'identique**. Le relevé de #228 se termine dans `jent_entropy_init`, qui mesure
+la gigue d'horloge et boucle jusqu'à ce que ses tests statistiques passent : si
+le TSC ne bouge pas assez, elle ne finit jamais.
+
+Le nouveau module `progress` énonce à la place ce qui est mesuré : le tour où
+une adresse a été atteinte pour la dernière fois sans l'avoir jamais été, donc
+combien de tours ont suivi sans rien de neuf, et combien d'adresses distinctes
+le dernier dixième du budget a visitées.
+
+**Il ne conclut pas, et un test l'y oblige** — il échoue si la phrase contient
+« ronde » ou « boucle ». Une boucle chaude légitime, un `memcpy` long, n'ouvre
+pas de terrain neuf non plus ; conclure sur ces deux chiffres remplacerait une
+affirmation non tenue par une autre.
+
+**Il refuse ce qu'aucune exécution n'aurait pu produire** — une adresse neuve
+après le dernier tour, un dernier dixième plus large que le relevé entier, un
+relevé de zéro tour. Ces quatre nombres viennent d'un pilote JavaScript que rien
+ne juge. Et **un comptage absent n'est pas un comptage nul** : si la ligne
+n'arrive pas, le relevé dit qu'on ne sait donc pas.
+
+### La mesure, qui dément la conjecture qui a ouvert la tranche
+
+```
+marche 1000000 860189 10775 30
+plus aucune adresse neuve depuis le tour 860189 sur 1000000 —
+les 139811 tours suivants n'ont visité que 30 adresses distinctes,
+sur 10775 vues en tout
+```
+
+La tranche s'est ouverte sur « la machine tourne sans doute en rond depuis le
+début » : le relevé de #228 posait sa dernière région à la traduction 10 776, et
+**ce nombre a été lu comme un tour** — précisément parce que le pilote imprimait
+le rang des traductions sous le mot « tour ».
+
+C'est faux. La machine a atteint du terrain neuf **jusqu'au tour 860 189 sur un
+million, soit 86 % du budget**, avant de se refermer sur trente adresses pour
+les 139 811 derniers.
+
+**La conjecture a été démentie par l'outil écrit pour la vérifier, et par le
+défaut même qu'il corrigeait.** Un relevé qui nomme mal ce qu'il compte ne rend
+pas seulement la lecture difficile : il fabrique des conclusions, y compris
+chez qui l'a écrit.
+
+Le comportement de la machine n'a pas changé : 10 776 régions, les mêmes
+206 lignes de journal. Seul ce que le relevé sait en dire a changé.
+
+### Ce que ça ouvre, et ce que ça ne tranche pas
+
+Trente adresses sur 139 811 tours ne se lisent pas comme un `memcpy`. Mais
+**« se refermer sur trente adresses » n'est pas « ne plus jamais avancer »** —
+`jent_entropy_init` peut tourner longtemps et finir. Le savoir demande une
+mesure de plus : le même relevé à un budget plus grand, et voir si le tour de la
+dernière adresse neuve suit le budget ou reste à 860 189.
+
+Si le mur suivant est une horloge et non une instruction, c'est une **direction**
+— et elle se pose à Maxime, elle ne se tranche pas ici.
