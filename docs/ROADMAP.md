@@ -9933,3 +9933,119 @@ survécu au premier jet des tests et a fait corriger les tests, pas le code ;
 le cinquième est la forme la plus tentante du mensonge — une valeur plausible
 pour un registre qui n'existe pas ; le sixième justifie à lui seul la boucle.
 
+## #226 — le tampon de traduction ne se vidait jamais sur CR3, CR4 ni CR0
+
+Le mur laissé par #225 n'était pas une instruction illisible. La machine
+s'arrêtait « sur place » à `__text_poke + 1093`, et là se trouve un `ud2`
+atteint **volontairement** :
+
+```
+253135:  4c 89 ef        mov  %r13,%rdi        ; addr
+253138:  e8 d3 16 b5 00  call memcmp
+25313d:  85 c0           test %eax,%eax
+25313f:  0f 84 51 fe ..  je   <suite>
+253145:  0f 0b           ud2
+```
+
+C'est `BUG_ON(memcmp(addr, opcode, len))` — « If the text does not match what
+we just wrote then something is fundamentally screwy ». Le noyau écrit son
+correctif, le relit, et ne le retrouve pas. **Un défaut de correction, pas un
+manque.**
+
+### Comment il a été trouvé : en comparant trois choses qui doivent s'accorder
+
+Pas en relisant du code. En mettant les trois cœurs côte à côte sur la même
+question — que fait chacun quand l'invité écrit un registre de contrôle ?
+
+| cœur | vide son cache de traduction sur CR3 / CR4 / CR0 ? |
+| --- | --- |
+| interpréteur Rust (`x86_paging.rs`) | **aucun cache** — juste par construction, et son commentaire le dit |
+| cœur Swift (`X86Paging.swift`) | **oui, les trois** |
+| **émetteur WebAssembly** (`x86_wasm.rs`) | **non, aucun des trois** — seulement `invlpg`, une entrée à la fois |
+
+Et c'est l'émetteur qui fait tourner le vrai noyau.
+
+**Le cœur Swift avait déjà payé ce défaut**, et son commentaire raconte
+laquelle des trois écritures manquait : celle de CR4. `__flush_tlb_global()` de
+Linux sans `INVPCID` est exactement `native_write_cr4(cr4 ^ X86_CR4_PGE)` puis
+la valeur d'origine ; `vfree` l'appelle en rendant une plage large. Sans ce
+vidage : « Invalid relocation target, existing value is nonzero », puis
+« bad pud ». C'est la tâche #136, une chasse entière.
+
+### Pourquoi ça tuait précisément `__text_poke`
+
+Il écrit son correctif **à travers une cartographie temporaire** :
+`use_temporary_mm(poking_mm)` **écrit CR3**, `text_poke_memcpy` écrit à
+`poking_addr`, `unuse_temporary_mm` **réécrit CR3**, puis le noyau relit à
+`addr` et compare. Deux changements d'espace d'adressage par correctif, et un
+tampon qui garde tout : l'écriture peut atterrir dans la trame qu'un correctif
+précédent avait cartographiée là.
+
+### La correction, et pourquoi elle est plus large que le manuel
+
+On vide sur **toute** écriture de CR0, CR3 ou CR4, sans regarder quels bits
+changent. C'est le raisonnement que le cœur Swift tient déjà pour CR4, et il
+vaut pour les trois : « plus large que ce que le manuel exige, jamais faux, et
+un cœur qui essaierait d'être fin ici se tromperait un jour sur un bit qu'il
+n'avait pas prévu ».
+
+Et il vide **tout**, pas une entrée — comme le cœur Swift : « plus lent et
+jamais faux ; l'inverse serait le contraire ».
+
+### La mesure
+
+Mêmes réglages des deux côtés — `WISQ_ROUNDS=8192 WISQ_TURNS=1000000`.
+
+| | avant (#225) | après |
+| --- | --- | --- |
+| régions traduites | 1782 | **8176** |
+| lignes de journal | 88 | **175** |
+| arrêt | `__text_poke + 1093`, `BUG_ON(memcmp)` | `do_one_initcall + 673`, sur place |
+
+**Ce que le noyau franchit maintenant et qu'il n'avait jamais franchi** :
+`Freeing SMP alternatives memory: 36K` — c'est-à-dire que le rapiéçage du texte
+va au bout —, puis `smpboot`, `Mount-cache`, `clocksource: jiffies`,
+`NET: Registered PF_NETLINK/PF_ROUTE protocol family`,
+`TCP: Hash tables configured`. Il en est aux **initcalls** : l'initialisation
+des sous-systèmes.
+
+Le relevé de couverture est **identique** au précédent, et c'est attendu : le
+décodeur n'a pas changé. Le gain est entièrement à l'exécution.
+
+### Ce que cette tranche ne mesure pas, et il faut le dire
+
+**Le prix du vidage n'est pas mesuré.** Les deux exécutions font 9 s et 34 s,
+mais la seconde traduit 4,6 fois plus de régions et imprime deux fois plus de
+journal : ces trente-quatre secondes mélangent le coût du vidage et le travail
+supplémentaire, et rien ici ne les sépare. Citer 9 → 34 comme « le prix du
+vidage » serait un chiffre faux du mauvais côté.
+
+Ce qu'on peut dire : le vidage **n'a pas empêché** la machine d'aller quatre
+fois plus loin dans le même budget de tours.
+
+Un compteur de génération rendrait le vidage constant au lieu de linéaire — au
+prix de quatre octets par entrée et d'un débordement à traiter. Ce sera une
+tranche **si une mesure la réclame**, et cette mesure reste à faire : une sonde
+qui chronomètre une écriture de CR3 seule. Pas avant.
+
+### Les tests, et les sabotages
+
+Un seul test, `changing_the_address_space_empties_the_translation_buffer`, en
+trois phases sur **trois adresses distinctes** — pour qu'une phase ne remplisse
+pas le tampon d'une autre, et que chaque vidage soit tenu pour lui-même. Il
+tombait sur les trois défauts à la fois, ses trois témoins de remplissage
+passant : ce qui manquait était bien le vidage, pas la lecture.
+
+| ce qu'on casse | ce qui tombe |
+| --- | --- |
+| CR3 ne vide plus | l'assertion CR3, **seule** |
+| CR4 ne vide plus | l'assertion CR4, **seule** |
+| CR0 ne vide plus | l'assertion CR0, **seule** |
+| une seule entrée vidée au lieu des 4096 | l'assertion CR3 |
+| le pas de la boucle saute une entrée sur deux | l'assertion CR4 **seule** |
+
+Le dernier vaut d'être lu : les trois adresses du test tombent sur des
+emplacements de **parités différentes**, donc un pas doublé en épargne
+exactement une. Ce n'est pas un hasard heureux — c'est ce que le choix de trois
+adresses distinctes achète.
+

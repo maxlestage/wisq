@@ -12834,3 +12834,39 @@ défaut documentée. Le sabotage qui écrit `0x1f80` est celui qu'il fallait
 écrire, parce qu'il est la forme la plus flatteuse du mensonge : pas un bouchon
 qui ne fait rien, un bouchon qui a l'air de savoir.
 
+## Le défaut qu'aucune relecture n'aurait trouvé, et que trois colonnes ont donné
+
+Le noyau s'arrêtait sur un `BUG_ON` de `__text_poke` : il écrivait un octet de
+correctif, le relisait, ne le retrouvait pas. Onze murs de suite avaient été
+des instructions manquantes ; celui-là n'en était pas un, et chercher une
+douzième instruction n'aurait mené nulle part.
+
+Ce qui l'a donné tient en un tableau. La même question posée aux trois cœurs —
+que fais-tu quand l'invité écrit un registre de contrôle ? L'interpréteur Rust :
+rien, il n'a pas de cache. Le cœur Swift : il vide, sur CR3, CR4 et CR0.
+L'émetteur WebAssembly : **rien du tout**. Et c'est l'émetteur qui fait tourner
+le vrai noyau.
+
+Le commentaire du cœur Swift racontait même l'histoire de la fois où *lui*
+avait manqué le vidage de CR4 — « Invalid relocation target », puis « bad pud »,
+la tâche #136. La règle était écrite dans le dépôt depuis des mois ; elle
+n'était écrite que dans un cœur sur trois.
+
+**Une règle vraie dans un fichier n'est pas une règle du programme.** C'est la
+même leçon que #71 — « deux fichiers affirment qu'ils ne peuvent pas diverger,
+et divergent » — vue d'un autre côté : ici rien n'affirmait qu'ils ne pouvaient
+pas diverger, et personne ne les avait mis côte à côte.
+
+## Trente-quatre secondes qui ne mesurent pas ce qu'on voudrait
+
+Le relevé d'avant prend 9 secondes, celui d'après 34. La tentation était
+d'écrire « le vidage coûte 25 secondes ». C'est faux : la seconde exécution
+traduit 4,6 fois plus de régions et imprime deux fois plus de journal. Ces
+trente-quatre secondes mélangent le prix du vidage et le travail
+supplémentaire, et rien dans ces deux relevés ne les sépare.
+
+Le chiffre honnête est donc : **non mesuré**, avec ce qu'il faudrait pour le
+mesurer — une sonde qui chronomètre une écriture de CR3 seule. Un compteur de
+génération rendrait le vidage constant ; il attendra que cette sonde existe.
+Optimiser sur une intuition, c'est se donner le droit de ne jamais vérifier.
+
