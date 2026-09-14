@@ -351,25 +351,17 @@ final class LocalDesktopTests: XCTestCase {
             "une demande illisible voudrait dire que la page et le pont ont divergé"
         )
 
-        // **Un second chiffre, et l'inverse de ce que j'attendais de lui.**
+        // **Deux chiffres, et aucun des deux ne tranche encore.**
         //
-        // Il a été posé pour sauver le premier : `pont`, le micro-banc de
-        // `WebKitJITProbeTests`, avait donné 0,88 ms puis 3,09 ms sur du code
-        // identique, et j'en avais conclu que des millisecondes seules ne
-        // pouvaient rien dire ici non plus.
+        // Quatre passages : la ligne ci-dessus a rendu 7,44, 7,24 puis 5,35 ms,
+        // et le rapport 5,04 puis 5,37. Le second varie moins sur ce qu'on a
+        // vu — mais deux observations ne font pas une loi, et c'est en
+        // concluant de deux points que la version précédente de ce commentaire
+        // affirmait le contraire.
         //
-        // **Trois passages plus tard, c'est le contraire qui est mesuré.** La
-        // ligne ci-dessus a rendu 7,44 puis 7,24 ms — trois pour cent d'écart
-        // — pendant que `pont` parcourait 0,88, 3,09 puis 0,48, soit un
-        // facteur six et demi. Cent vingt-huit traductions sont dominées par
-        // du travail réel ; un micro-banc de deux cents incréments est dominé
-        // par l'ordonnanceur. **C'est la mesure courte qui est fragile, pas la
-        // longue.**
-        //
-        // Le second chiffre reste, parce qu'il est gratuit et qu'il dit autre
-        // chose : ce que la traduction coûte *par rapport au pont*, sur la
-        // même machine à la même seconde. Mais il ne sauve rien, et il ne faut
-        // pas le lire comme si.
+        // Les deux sont donc imprimés, sans qu'aucun soit présenté comme *le*
+        // chiffre. `docs/DEMARRAGE.md` porte le tableau complet et dit ce
+        // qu'il ne permet pas de conclure.
         //
         // **Et `global` n'est pas « nu ».** Mesuré à 1,44 ms le jour où un
         // `evaluateJavaScript` nu en coûtait 0,48 : il traverse le

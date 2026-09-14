@@ -489,34 +489,39 @@ le double se verra.
 **C'est de ce chiffre que dépend ce qu'un vrai noyau coûterait**, pas de celui
 d'à côté.
 
-### Et ce que j'attendais du second chiffre était l'inverse de ce qu'il dit
+### Trois conclusions tirées de trop peu de points, en trois tranches
 
-La mesure ci-dessus a été jugée fragile sur la foi de sa voisine : `pont`, le
-micro-banc de `WebKitJITProbeTests`, avait rendu 0,88 ms puis 3,09 ms sur du
-code identique. J'en ai conclu que des millisecondes ne pouvaient rien dire sur
-un coureur partagé, et posé un second chiffre — un rapport — pour la sauver.
+Ce que quatre passages ont rendu, pour cent vingt-huit régions traduites :
 
-**Trois passages ont mesuré le contraire :**
-
-| | #370 | #371 | #372 |
+| | #371 | #372 (a) | #372 (b) |
 | --- | --- | --- | --- |
-| `bureau`, 128 régions traduites | — | **7,44 ms** | **7,24 ms** |
-| `pont`, micro-banc | 0,88 ms | 3,09 ms | **0,48 ms** |
-| `WebKit` | 1151 MIPS | 864 MIPS | 1702 MIPS |
+| `bureau`, millisecondes par région | 7,44 | 7,24 | **5,35** |
+| `bureau`, en lectures de registre | — | 5,04 | **5,37** |
+| l'étalon interne (`global`) | — | 1,44 ms | 0,996 ms |
+| `pont`, micro-banc d'une autre suite | 3,09 ms | 0,48 ms | 0,36 ms |
+| `WebKit` | 864 MIPS | 1702 MIPS | 1649 MIPS |
 
-Trois pour cent d'écart d'un côté, un facteur six et demi de l'autre. **C'est
-la mesure courte qui est fragile, pas la longue** : cent vingt-huit traductions
-sont dominées par du travail réel, deux cents incréments par l'ordonnanceur.
+**Et trois fois de suite, j'ai conclu avant d'avoir de quoi.**
 
-Le second chiffre reste — il est gratuit et il dit autre chose : ce que la
-traduction coûte *par rapport au pont*, sur la même machine à la même seconde.
-Mais il ne sauve rien, et la ligne qui l'annonçait comme un sauvetage était
-fausse.
+1. **Un point.** J'ai multiplié le `pont` d'un passage par le nombre de régions
+   d'un noyau et annoncé treize secondes. Deux grandeurs différentes, un seul
+   relevé.
+2. **Deux points.** 7,44 puis 7,24 : j'en ai tiré que les millisecondes
+   tenaient et que le rapport ne servait à rien. Le troisième passage les
+   écarte de trente-neuf pour cent.
+3. **Et le rapport n'a que deux observations** — 5,04 et 5,37. Elles se
+   ressemblent. En conclure qu'il est stable serait refaire la faute d'à côté,
+   dans l'autre sens.
 
-**Deux corrections, dans la même veine, à une tranche d'intervalle.** #236
-remplaçait une extrapolation par une mesure ; #237 a voulu normaliser cette
-mesure contre une grandeur plus bruyante qu'elle. Dans les deux cas le tort
-venait de raisonner sur une grandeur plutôt que de la regarder bouger.
+**Ce qui est mesuré, et rien de plus** : les deux chiffres sont imprimés à
+chaque passage, l'un en millisecondes, l'autre contre un étalon pris dans le
+même test à la même seconde. Sur les quatre passages vus, le second varie
+moins ; quatre passages ne font pas une loi.
+
+Ce que ça permet déjà de dire sans risque, parce que c'est un ordre de
+grandeur et non un chiffre : pour les 15 319 régions d'un vrai noyau, la
+traduction seule pèse **des dizaines de secondes** — pas les treize que j'avais
+annoncées. C'est le mur de #167, et il est plus haut que la première estimation.
 
 ### Ce que l'étalon est, et ce qu'il n'est pas
 
@@ -525,9 +530,3 @@ traverse le gestionnaire de messages du bureau, pas seulement le moteur. La
 ligne imprimée le nomme donc « une lecture de registre par le pont », et non
 « un aller-retour nu » comme elle le faisait d'abord — sans quoi on croirait
 comparer deux fois la même chose.
-
-Ce que ça donne, mesuré : **une traduction coûte environ cinq lectures de
-registre par le pont**, et 7,2 à 7,4 ms sur les coureurs vus jusqu'ici. Pour
-les 15 319 régions d'un vrai noyau, c'est de l'ordre de **cent dix secondes de
-traduction** — le mur de #167, et il ne dépend pas du coureur autant que je le
-craignais.
