@@ -87,4 +87,80 @@ describe("advertised claims match the repository", () => {
     // The site counts GitGuardian alongside our own jobs.
     expect(claimedValue(/gates|portes/)).toBe(jobs + 1);
   });
+
+  /// **Les chiffres que ce fichier ne tient pas, nommés plutôt que tus.**
+  ///
+  /// Ce fichier vérifie deux des quatre chiffres publiés. Un lecteur — et
+  /// l'auteur de ces lignes le premier — en conclut raisonnablement que les
+  /// quatre le sont : rien ici ne dit le contraire, et le commentaire de
+  /// `content.ts` promet que la garde « échoue quand un chiffre cesse d'être
+  /// vrai ».
+  ///
+  /// **Le silence est le défaut**, pas la décision qui manque. Ce qui suit ne
+  /// prétend pas tenir ces deux chiffres : ça tient une autre propriété, et
+  /// elle est réelle — **aucun chiffre publié n'échappe à l'examen sans qu'on
+  /// l'ait écrit**. Un cinquième chiffre ajouté au site fait rougir ce test
+  /// jusqu'à ce que quelqu'un décide de quel côté il tombe.
+  ///
+  /// Pourquoi ces deux-là ne sont pas tenus, et pourquoi le remède n'est pas
+  /// d'ici :
+  ///
+  /// - « 0 avertissement, concurrence stricte » — le mécanisme existe
+  ///   (`SWIFT_STRICT_CONCURRENCY: complete` à trois endroits de `project.yml`,
+  ///   `swift-tools-version 6.0`), mais **aucun `-warnings-as-errors` nulle
+  ///   part**. Un avertissement apparaîtrait sans rougir la CI. L'ajouter est
+  ///   une décision de politique : elle rendrait rouge un dépôt qui compile.
+  /// - « 1 vrai noyau démarré par exécution CI » — l'étape le récupère en
+  ///   « best effort » (`|| true`) et saute avec un `::warning::` s'il manque,
+  ///   ce que le commentaire de l'étape énonce, donc délibérément. Une
+  ///   exécution peut démarrer zéro noyau et rester verte. Rendre ça rouge est
+  ///   la même nature de décision : une panne d'un téléchargement tiers
+  ///   rougirait le dépôt.
+  ///
+  /// Une garde qui se contenterait de vérifier que l'étape *existe* serait
+  /// « une assertion qui a l'air d'une garde » : elle tiendrait le mécanisme,
+  /// pas le nombre. Aucun des deux chiffres n'est établi comme faux
+  /// aujourd'hui ; ils sont **non tenus**, et c'est ça qui est écrit.
+  const notHeld = new Map([
+    [
+      "warnings, strict concurrency",
+      "aucun -warnings-as-errors nulle part : un avertissement n'ouvre aucune porte",
+    ],
+    [
+      "real kernel booted per CI run",
+      "l'étape récupère l'image en best effort et saute si elle manque",
+    ],
+  ]);
+
+  test("every advertised figure is either checked here or named as unheld", () => {
+    const checked = [/tests/, /gates|portes/];
+    for (const item of copy.en.facts.items) {
+      const held = checked.some((pattern) => pattern.test(item.label));
+      const named = notHeld.has(item.label);
+      expect(
+        held || named,
+        `le site publie « ${item.value} ${item.label} » et rien ici ne le ` +
+          `vérifie ni ne dit pourquoi. Ajoute une vérification, ou inscris-le ` +
+          `dans notHeld avec sa raison — un chiffre publié ne passe pas en silence.`,
+      ).toBe(true);
+      // **Et pas les deux.** Un chiffre qui serait à la fois vérifié et
+      // déclaré non tenu laisserait une entrée périmée derrière une garde qui
+      // marche, jusqu'à ce que quelqu'un lise la liste et la croie.
+      expect(
+        held && named,
+        `« ${item.label} » est vérifié ici *et* inscrit comme non tenu ; ` +
+          `l'entrée de notHeld est périmée.`,
+      ).toBe(false);
+    }
+  });
+
+  /// La liste ne doit pas survivre à ce qu'elle décrit : une raison écrite pour
+  /// un chiffre que le site n'affiche plus est une explication sans objet, et
+  /// elle se lit comme une lacune qui n'existe pas.
+  test("nothing lingers in the unheld list for a figure the site no longer shows", () => {
+    const published = new Set(copy.en.facts.items.map((item) => item.label));
+    for (const label of notHeld.keys()) {
+      expect(published.has(label), `« ${label} » n'est plus publié`).toBe(true);
+    }
+  });
 });
