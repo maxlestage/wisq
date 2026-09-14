@@ -1492,8 +1492,10 @@ impl Module {
     /// l'aveugle — un aller-retour de plus sur chaque vrai refus — ou
     /// abandonnerait des régions qu'une fenêtre plus large aurait traduites.
     ///
-    /// **Ce que ça vaut, mesuré** sur le noyau Alpine, avec des fenêtres de
-    /// tailles différentes et 10 116 entrées atteintes par un `call` :
+    /// **Ce que ça valait, mesuré** sur le noyau Alpine, avec des fenêtres de
+    /// tailles différentes et 10 116 entrées atteintes par un `call`. Ce
+    /// tableau est **daté** : il précède la douzaine de tranches de décodeur
+    /// et le passage à l'arrêt nommé.
     ///
     /// | fenêtre | compilées | coupées par le bord | refusées franchement |
     /// | --- | --- | --- | --- |
@@ -1501,12 +1503,28 @@ impl Module {
     /// | 4 Kio | 9930 (98,2 %) | 89 | 97 |
     /// | 16 Kio | 10009 (98,9 %) | 6 | 101 |
     ///
-    /// Deux choses s'y lisent. Le rendement décroît vite, donc une grande
-    /// fenêtre fixe paierait des octets pour presque rien : mieux vaut une
-    /// petite fenêtre et un second essai sur les 0,9 % qui le demandent. Et les
-    /// refus francs **montent** avec la fenêtre, de 91 à 101 — une petite
-    /// fenêtre cache de vrais refus derrière des coupes, ce qui veut dire
-    /// qu'un décompte de refus ne se lit jamais sans la taille qui va avec.
+    /// **Ce qu'il vaut aujourd'hui**, `--example coverage` sur le même noyau,
+    /// à la même fenêtre de 4 Kio et sur la même population :
+    ///
+    /// | fenêtre | compilées | refusées franchement |
+    /// | --- | --- | --- |
+    /// | 4 Kio | **10 116 (100 %)** | **0** |
+    ///
+    /// Les deux colonnes qui manquent ont disparu ensemble, et l'addition le
+    /// montre : 9930 + 89 + 97 = 10 116. Les 89 régions coupées par le bord et
+    /// les 97 refusées franchement **compilent** maintenant toutes, et portent
+    /// un arrêt nommé là où le décodeur s'arrête. « Refusées franchement » ne
+    /// compte donc plus rien qui existe — ce n'est pas un chiffre tombé à zéro,
+    /// c'est une catégorie abolie.
+    ///
+    /// **Ce que le tableau daté enseigne encore**, et pourquoi il reste ici
+    /// plutôt que d'être effacé. Le rendement décroît vite avec la taille de
+    /// fenêtre : une grande fenêtre fixe paierait des octets pour presque rien,
+    /// donc une petite fenêtre et un second essai valent mieux — c'est encore
+    /// la conduite du code. Et les refus francs **montaient** avec la fenêtre,
+    /// de 91 à 101 : une petite fenêtre cachait de vrais refus derrière des
+    /// coupes. La leçon vaut au-delà de la colonne qui l'a produite — **un
+    /// décompte de refus ne se lit jamais sans la taille qui va avec**.
     ///
     /// **Depuis que le relevé s'arrête devant une instruction coupée** au lieu
     /// de refuser la région, la colonne « coupées par le bord » se traduit :
