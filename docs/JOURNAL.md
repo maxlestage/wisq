@@ -13000,3 +13000,48 @@ Et surtout : **un comptage absent n'est pas un comptage nul.** Si la ligne
 n'arrive pas, le relevé dit qu'on ne sait pas. Le repli silencieux sur zéro
 aurait rendu « aucune adresse n'a jamais été neuve » — une phrase d'aplomb,
 fausse, et indiscernable d'un vrai résultat.
+
+## Une garde qui approuve pour la mauvaise raison
+
+`usable_ram` devait refuser les tailles de RAM dont le repli par masque n'amène
+plus une adresse virtuelle sur sa place physique. Écrite, testée six fois,
+éprouvée par trois sabotages qui sont tous tombés, passée sous clippy strict.
+
+Sur le vrai noyau, elle acceptait quatre gibioctets — exactement la taille que
+tout le raisonnement désignait comme la première à casser.
+
+Elle interrogeait le repli du point d'entrée de l'ELF. Pour cette image, ce
+point d'entrée est **déjà physique** : `0x1000090` des deux côtés. Replier une
+adresse déjà physique ne change rien, quelle que soit la taille. La garde ne se
+trompait pas de calcul, elle se trompait **de grandeur** : elle mesurait quelque
+chose qui ne pouvait pas la faire mordre.
+
+C'est la forme la plus discrète de l'« assertion qui a l'air d'une garde ». Pas
+une assertion qu'un autre chemin satisfait par hasard — une assertion vraie,
+vérifiée, reproductible, et sans rapport avec ce qu'on croit tenir.
+
+## Ce que trois sabotages ne peuvent pas dire
+
+Les trois mutations tombaient : la garde du repli retirée, la puissance de deux
+non exigée, l'ordre des refus inversé. Chacune vérifiait que **la garde refuse
+ce qu'elle doit refuser**.
+
+Aucune ne vérifiait qu'elle refuse **pour la bonne raison**, parce qu'un
+sabotage part de la garde telle qu'elle est écrite : il éprouve sa solidité, pas
+sa pertinence. Muter une prémisse fausse donne une prémisse fausse autrement.
+
+Ce que ça ajoute à la discipline : après avoir saboté, **essayer la garde sur la
+vraie chose et vérifier qu'elle refuse quelque chose**. Une garde qui n'a jamais
+rien refusé en conditions réelles n'est pas éprouvée — c'est le même reproche
+que #105 et #106 adressaient à deux scripts de garde, et il se reformule ici
+pour du code.
+
+## Des lignes de journal perdues qui ne sont pas du progrès perdu
+
+À 64 Mio le noyau imprime 372 lignes ; à 256 Mio il en imprime 230. La lecture
+paresseuse serait « la machine va moins loin ».
+
+Les 142 lignes de différence sont le vidage de l'oom-killer et la trace de la
+panique. Elles ne racontent pas ce que le noyau a fait, elles racontent comment
+il est mort. **Compter les lignes de journal mesure le bavardage, pas l'avancée**
+— et il a fallu les lire pour le savoir.

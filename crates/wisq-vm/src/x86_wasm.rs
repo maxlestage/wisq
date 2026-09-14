@@ -6159,6 +6159,70 @@ impl Module {
     }
 }
 
+/// Pourquoi une taille de RAM déclarée ne peut pas servir.
+///
+/// Chaque variante porte de quoi agir : `FoldMisses` dit **où** l'adresse
+/// tombe, `TooSmall` dit **combien** il en faudrait. Un refus qui ne dit que
+/// « non » oblige à refaire le calcul à la main, et c'est là qu'on se trompe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RamRefusal {
+    /// Zéro page : il n'y a pas de machine.
+    Empty,
+    /// Le confinement de l'émetteur travaille par masque, et `ram - 1` n'est un
+    /// masque que pour une puissance de deux. Autrement il découpe une adresse
+    /// au hasard — ce n'est pas une préférence de style, c'est une condition de
+    /// correction.
+    NotAPowerOfTwo,
+    /// Le noyau ne tient pas dans ce qui est déclaré. `needed` est ce que le
+    /// sommet de ses segments réclame, BSS compris.
+    TooSmall { needed: u64 },
+    /// Le repli n'amène plus l'adresse d'entrée virtuelle sur sa place
+    /// physique. `folded` est où elle tombe à la place.
+    FoldMisses { folded: u64 },
+}
+
+/// **Une taille de RAM est-elle utilisable pour ce noyau, et sinon pourquoi.**
+///
+/// Cette fonction existe parce que la règle vivait en commentaire. Le pilote
+/// imprimait « NE TOMBE PAS sur l'adresse physique ; la région ne sera pas
+/// trouvée », puis **continuait** — et le relevé parlait trois écrans plus loin
+/// d'une région introuvable, sans que rien ne relie les deux. Une machine qui
+/// démarre sur une adresse repliée de travers ne se plaint pas : elle s'égare.
+///
+/// **Ce qui se joue dans le repli.** `Module::fold` est
+/// `address & (pages * 65536 - 1)`. Pour que `0xffffffff81000090` tombe sur
+/// `0x1000090`, le masque doit effacer le demi-haut *et* le `0x8` du
+/// `0x81000090`. À deux gibioctets le masque vaut `0x7fffffff` et mord encore
+/// dessus ; à quatre il vaut `0xffffffff` et le laisse passer. La borne n'est
+/// donc pas un choix de prudence, c'est une arithmétique — et elle est
+/// désormais vérifiée plutôt qu'énoncée.
+///
+/// **L'ordre des refus n'est pas indifférent.** Une taille qui n'est pas une
+/// puissance de deux n'a pas de masque du tout ; lui demander où son repli
+/// tombe ferait chercher un défaut de repli là où le défaut est la taille.
+pub fn usable_ram(
+    pages: u32,
+    entry_virtual: u64,
+    entry_physical: u64,
+    top: u64,
+) -> Result<(), RamRefusal> {
+    if pages == 0 {
+        return Err(RamRefusal::Empty);
+    }
+    if !pages.is_power_of_two() {
+        return Err(RamRefusal::NotAPowerOfTwo);
+    }
+    let ram = u64::from(pages) * 65536;
+    if top > ram {
+        return Err(RamRefusal::TooSmall { needed: top });
+    }
+    let folded = Module::fold(entry_virtual, pages);
+    if folded != entry_physical {
+        return Err(RamRefusal::FoldMisses { folded });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod port_tests {
     use super::*;
