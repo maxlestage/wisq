@@ -1,6 +1,7 @@
 // Combien du vrai noyau le compilateur accepte-t-il ?
 use std::fs;
 use wisq_vm::kernel_image::{recognise, KernelImage};
+use wisq_vm::rate::Rate;
 use wisq_vm::x86::{decode, Op};
 use wisq_vm::x86_wasm::{Module, Refused, Survey};
 
@@ -41,6 +42,32 @@ const SLOT: u32 = 0;
 /// portent : `LoadDescriptorTable { interrupts: false }` occupe une ligne de
 /// relevé à lui seul, et ce relevé en aligne dix. Les familles nommées ici
 /// sont exactement celles que les tranches privilégiées ont ajoutées.
+/// **Une proportion, ou le mot qui dit qu'il n'y en a pas.**
+///
+/// `Rate` refuse une mesure vide plutôt que de rendre `NaN` ; ce relevé, lui,
+/// doit imprimer quelque chose. Le passe-plat nomme ce cas au lieu de le
+/// masquer par un `.max(1)` au dénominateur — l'ancienne formule divisait par
+/// un plutôt que par zéro, ce qui rendait « 100,0 % » pour une sonde qui
+/// n'avait rien mesuré du tout.
+fn share(hit: usize, missed: usize, decimals: usize) -> String {
+    match Rate::of(hit as u64, missed as u64) {
+        Some(rate) => rate.describe(decimals),
+        None => "rien de mesuré".to_string(),
+    }
+}
+
+/// La même chose pour une part d'une population : `part` sur `whole`.
+///
+/// Une part plus grande que son tout n'est pas une proportion, c'est un
+/// comptage cassé, et le dire vaut mieux que d'imprimer un nombre supérieur à
+/// cent avec l'aplomb des autres.
+fn part_of(part: usize, whole: usize, decimals: usize) -> String {
+    match whole.checked_sub(part) {
+        Some(rest) => share(part, rest, decimals),
+        None => format!("{part} sur {whole} : comptage incohérent"),
+    }
+}
+
 fn name_of(op: Op) -> String {
     match op {
         Op::LoadDescriptorTable { interrupts } => {
@@ -136,11 +163,7 @@ fn main() {
         }
     }
     println!("décodage linéaire : {decoded} instructions lues, {unknown} octets refusés");
-    let total = decoded + unknown;
-    println!(
-        "  soit {:.1} % de succès",
-        100.0 * decoded as f64 / total as f64
-    );
+    println!("  soit {} de succès", share(decoded, unknown, 1));
     let mut worst: Vec<_> = refused.into_iter().collect();
     worst.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     print!("  opcodes refusés les plus fréquents :");
@@ -173,8 +196,8 @@ fn main() {
         cursor += 512;
     }
     println!(
-        "régions tous les 512 octets : {ok} compilées, {no} refusées ({:.1} %)",
-        100.0 * ok as f64 / (ok + no) as f64
+        "régions tous les 512 octets : {ok} compilées, {no} refusées ({})",
+        share(ok, no, 1)
     );
 
     // **La seconde part de là où l'exécution entre vraiment.** Les cibles des
@@ -295,9 +318,9 @@ fn main() {
         *blame.entry(culprit).or_default() += 1;
     }
     println!(
-        "régions depuis les cibles de `call` : {hit} compilées, {refused} refusées ({:.1} %) \
+        "régions depuis les cibles de `call` : {hit} compilées, {refused} refusées ({}) \
          — {} entrées distinctes",
-        100.0 * hit as f64 / (hit + refused).max(1) as f64,
+        share(hit, refused, 1),
         entries.len()
     );
     let mut worst: Vec<_> = blame.into_iter().collect();
@@ -321,9 +344,9 @@ fn main() {
     // essai sera perdu, et les compter est la seule façon de savoir si le
     // choix reste bon quand le décodeur progresse.
     println!(
-        "  dont {wasted} qui se feront refuser au second essai — {:.2} % des entrées, \
+        "  dont {wasted} qui se feront refuser au second essai — {} des entrées, \
          le prix de ne pas abandonner les {} autres",
-        100.0 * wasted as f64 / entries.len().max(1) as f64,
+        part_of(wasted, entries.len(), 2),
         cut - wasted
     );
     // **Les deux postes ne se lisent pas de la même façon**, et les mêler sur
@@ -420,24 +443,24 @@ fn main() {
         total.instructions as f64 / total.blocks.max(1) as f64
     );
     println!(
-        "  rendent la main à coup sûr (`ud2`) : {} ({:.2} % des instructions, \
+        "  rendent la main à coup sûr (`ud2`) : {} ({} des instructions, \
          une toutes les {:.0})",
         total.always,
-        100.0 * total.always as f64 / total.instructions.max(1) as f64,
+        part_of(total.always, total.instructions, 2),
         total.instructions as f64 / total.always.max(1) as f64
     );
     println!(
-        "  chaînes répétées, désormais dans le module : {} ({:.2} % des instructions)",
+        "  chaînes répétées, désormais dans le module : {} ({} des instructions)",
         total.repeats,
-        100.0 * total.repeats as f64 / total.instructions.max(1) as f64
+        part_of(total.repeats, total.instructions, 2)
     );
     println!(
-        "  régions contenant au moins un `rep` : {with_repeat} sur {regions} ({:.1} %)",
-        100.0 * with_repeat as f64 / regions.max(1) as f64
+        "  régions contenant au moins un `rep` : {with_repeat} sur {regions} ({})",
+        part_of(with_repeat, regions, 1)
     );
     println!(
-        "  peuvent rendre la main (`ret`, `jmp *`, `call *`) : {} ({:.2} % des instructions)",
+        "  peuvent rendre la main (`ret`, `jmp *`, `call *`) : {} ({} des instructions)",
         total.perhaps,
-        100.0 * total.perhaps as f64 / total.instructions.max(1) as f64
+        part_of(total.perhaps, total.instructions, 2)
     );
 }
