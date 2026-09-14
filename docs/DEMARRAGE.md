@@ -488,3 +488,29 @@ le double se verra.
 
 **C'est de ce chiffre que dépend ce qu'un vrai noyau coûterait**, pas de celui
 d'à côté.
+
+### Et le chiffre seul ne se lisait pas non plus
+
+Deux passages consécutifs, sur du code qui ne touchait ni l'un ni l'autre :
+
+| | passage de #370 | passage de #371 |
+| --- | --- | --- |
+| `pont`, aller-retour nu | 0,88 ms | **3,09 ms** |
+| `WebKit` | 1151 MIPS | **864 MIPS** |
+| `Metal compilation` | 1371 ms | **2078 ms** |
+
+**Le coureur entier était trois fois plus lent.** Des millisecondes seules ne
+disent donc pas si l'émetteur a changé ou si la machine était chargée — le
+défaut que cette mesure venait corriger chez sa voisine, reconduit d'un cran
+plus loin, par moi, dans la tranche d'après.
+
+La mesure imprime maintenant un **rapport** en plus des millisecondes, contre
+un étalon chronométré dans le même test, à la suite : soixante-quatre appels à
+`global`, l'aller-retour le moins cher que l'API publique offre. L'étalon subit
+la même charge que ce qu'il sert à lire, donc le rapport survit au coureur là
+où les millisecondes ne survivent pas.
+
+Première valeur relevée : **7,44 ms par région traduite, pour un aller-retour
+nu à 3,09 ms** — soit environ deux fois et demie. C'est ce rapport-là qui est
+le fait ; les millisecondes, elles, ne valent que pour le passage qui les a
+produites.

@@ -327,7 +327,6 @@ final class LocalDesktopTests: XCTestCase {
         let started = Date()
         let stopped = try await desktop.run(patience: 60)
         let each = Date().timeIntervalSince(started) / Double(Self.regions) * 1000
-        print("bureau : \(each) ms par région traduite, sur \(Self.regions) régions")
         XCTAssertEqual(
             stopped.why, Self.ud2SansPorte,
             "la dernière région s'arrête sur son `ud2`, comme les autres tests"
@@ -351,6 +350,31 @@ final class LocalDesktopTests: XCTestCase {
             desktop.unreadable, 0,
             "une demande illisible voudrait dire que la page et le pont ont divergé"
         )
+
+        // **Un étalon pris dans le même passage, sinon le chiffre ne se lit
+        // pas.**
+        //
+        // Deux passages consécutifs ont mesuré 0,88 ms puis 3,09 ms pour le
+        // même aller-retour nu, sur du code identique : le coureur partagé
+        // varie d'un facteur trois. Des millisecondes seules ne disent donc
+        // pas si l'émetteur a changé ou si la machine était chargée — et
+        // c'est exactement le défaut que cette mesure prétendait corriger
+        // chez sa voisine, reconduit d'un cran plus loin.
+        //
+        // `global` est l'aller-retour le moins cher que l'API publique offre :
+        // un message, une lecture d'entier, un retour. Le chronométrer **ici**,
+        // à la suite, donne un étalon soumis à la même charge que la mesure
+        // qu'il sert à lire. Le rapport, lui, survit au coureur.
+        let laps = 64
+        let reference = Date()
+        for _ in 0..<laps {
+            _ = try await desktop.global(2)
+        }
+        let bare = Date().timeIntervalSince(reference) / Double(laps) * 1000
+        print(
+            "bureau : \(each) ms par région traduite, "
+                + "\(each / bare) fois un aller-retour nu de \(bare) ms, "
+                + "sur \(Self.regions) régions")
     }
 
     /// Le nombre de régions enchaînées, et l'écart entre deux.
