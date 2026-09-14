@@ -327,7 +327,6 @@ final class LocalDesktopTests: XCTestCase {
         let started = Date()
         let stopped = try await desktop.run(patience: 60)
         let each = Date().timeIntervalSince(started) / Double(Self.regions) * 1000
-        print("bureau : \(each) ms par région traduite, sur \(Self.regions) régions")
         XCTAssertEqual(
             stopped.why, Self.ud2SansPorte,
             "la dernière région s'arrête sur son `ud2`, comme les autres tests"
@@ -351,6 +350,34 @@ final class LocalDesktopTests: XCTestCase {
             desktop.unreadable, 0,
             "une demande illisible voudrait dire que la page et le pont ont divergé"
         )
+
+        // **Deux chiffres, et aucun des deux ne tranche encore.**
+        //
+        // Quatre passages : la ligne ci-dessus a rendu 7,44, 7,24 puis 5,35 ms,
+        // et le rapport 5,04 puis 5,37. Le second varie moins sur ce qu'on a
+        // vu — mais deux observations ne font pas une loi, et c'est en
+        // concluant de deux points que la version précédente de ce commentaire
+        // affirmait le contraire.
+        //
+        // Les deux sont donc imprimés, sans qu'aucun soit présenté comme *le*
+        // chiffre. `docs/DEMARRAGE.md` porte le tableau complet et dit ce
+        // qu'il ne permet pas de conclure.
+        //
+        // **Et `global` n'est pas « nu ».** Mesuré à 1,44 ms le jour où un
+        // `evaluateJavaScript` nu en coûtait 0,48 : il traverse le
+        // gestionnaire de messages du bureau, pas seulement le moteur. Le
+        // nommer par ce qu'il est évite de croire qu'on compare deux fois la
+        // même chose.
+        let laps = 64
+        let reference = Date()
+        for _ in 0..<laps {
+            _ = try await desktop.global(2)
+        }
+        let bare = Date().timeIntervalSince(reference) / Double(laps) * 1000
+        print(
+            "bureau : \(each) ms par région traduite, "
+                + "\(each / bare) fois une lecture de registre par le pont "
+                + "(\(bare) ms), sur \(Self.regions) régions")
     }
 
     /// Le nombre de régions enchaînées, et l'écart entre deux.

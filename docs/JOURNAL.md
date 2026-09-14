@@ -13159,3 +13159,66 @@ ne l'est plus, et personne ne l'avait rouvert — une liste de travail est un
 endroit où les faits vieillissent sans que rien ne rougisse. La routine de
 réveil le dit déjà dans ses propres termes : **vérifier les chiffres plutôt que
 les citer**. Elle vise les chiffres du dépôt ; elle vaut aussi pour les siens.
+
+## La phrase discrète qui concluait pendant que la page disait ne pas conclure
+
+La tranche précédente existait pour arrêter de conclure. Elle nommait trois
+conclusions tirées de trop peu de points, expliquait pourquoi la troisième
+n'avait pas été tirée, et donnait à la page la forme que `progress.rs` avait
+déjà prise : dire ce qui est mesuré, ne rien en déduire.
+
+Puis, huit lignes plus bas, elle écrivait : « Sur les quatre passages vus, le
+second varie moins. »
+
+C'est une conclusion. Elle compare deux dispersions, l'une tirée de trois
+valeurs, l'autre de deux, et elle tranche. Elle ne s'annonce pas comme une
+conclusion parce qu'elle est courte, subordonnée, et suivie d'un désaveu —
+« quatre passages ne font pas une loi » — qui lui sert d'alibi plutôt que de
+garde. **Un désaveu collé derrière une affirmation ne la retire pas.**
+
+Le passage de la CI qui a rendu la tranche verte l'a démentie dans la même
+minute : le rapport est tombé de 5,37 à 2,31, et sur quatre relevés c'est
+maintenant lui qui s'étale le plus — un facteur 2,3 contre 1,6 pour les
+millisecondes. Le dénominateur explique une part de l'écart : l'étalon interne
+va de 0,996 à 3,76 ms, plus large que la grandeur qu'il devait stabiliser.
+
+**Et la réécriture a failli reproduire la faute en la corrigeant.** La première
+version disait que l'étalon variait « plus que tout le reste du tableau ». Faux :
+le micro-banc d'à côté couvre un facteur 8,6 dans le même tableau. Il a suffi de
+diviser deux nombres déjà écrits trois lignes plus haut pour le voir — ce qui
+veut dire que la phrase avait été écrite sans les regarder.
+
+Ce que ça enseigne, et qui ne se range pas dans une garde exécutable : une page
+qui refuse de conclure doit être relue **phrase par phrase**, pas section par
+section. Le titre disait ne pas conclure ; le corps concluait. Et un superlatif
+— « plus que tout le reste » — est une affirmation sur des nombres, donc une
+chose à vérifier, jamais un effet de style.
+
+Le chiffre qui reste, parce qu'il est un intervalle mesuré et non une moyenne :
+pour les 15 319 régions d'un vrai noyau, la traduction seule pèse entre quatre-
+vingts et cent trente-cinq secondes selon le passage.
+
+### Le sixième relevé démentira le cinquième, et c'est le tableau qui était mal conçu
+
+Le passage qui a validé la correction ci-dessus a rendu un cinquième point :
+`bureau : 6,773 ms, 1,569 fois une lecture de registre par le pont (4,316 ms)`.
+Le rapport, déjà tombé de 5,37 à 2,31, tombe encore à 1,57. Sur cinq relevés il
+couvre maintenant un facteur 3,4 quand les millisecondes en couvrent 1,6.
+
+**Et la correction se faisait démentir à son tour, exactement comme ce qu'elle
+corrigeait.** Pas sur le fond — la phrase disait « sur ces quatre relevés », et
+elle était vraie de ces quatre-là. Sur la forme : un tableau qui recopie chaque
+passage de la CI est faux entre deux passages, et le devient sans que personne
+ne touche au fichier. Recopier le cinquième point n'y change rien ; le sixième
+arrive au prochain commit.
+
+Le défaut n'était donc pas dans les chiffres mais dans ce que le tableau
+prétendait être. Il est maintenant **daté** : « les relevés vus jusqu'au
+14 septembre 2026 », avec la phrase qui dit que le vrai registre est ailleurs —
+dans la ligne que chaque passage imprime. Un échantillon daté ne vieillit pas,
+il reste ce qu'il a toujours été ; un inventaire implicite, si.
+
+C'est la même leçon qu'une tâche périmée retrouvée deux jours plus tôt, prise
+par l'autre bout : là, un fait vrai à l'écriture avait cessé de l'être sans que
+rien ne rougisse. Ici, on sait d'avance qu'il cessera. **Quand on sait qu'un
+énoncé va se périmer, la date fait partie de l'énoncé.**
