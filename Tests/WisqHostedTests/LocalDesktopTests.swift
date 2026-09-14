@@ -310,7 +310,24 @@ final class LocalDesktopTests: XCTestCase {
         try await desktop.load()
         try await desktop.place(chain(of: Self.regions), at: base)
 
+        // **Ce que coûte une traduction, mesuré ici et pas ailleurs.**
+        //
+        // `WebKitJITProbeTests` chronomètre un aller-retour **nu** — un
+        // `evaluateJavaScript` qui incrémente un entier. Une traduction est
+        // tout autre chose : le message, puis l'émetteur Rust, puis
+        // `WebAssembly.instantiate`. Extrapoler l'une depuis l'autre donne un
+        // plancher qu'on lirait comme une estimation.
+        //
+        // Cent vingt-huit régions sont le premier endroit du dépôt où ce coût
+        // se mesure sur le vrai moteur. Aucun seuil : un coureur partagé n'en
+        // porte pas, et un simulateur n'a pas de plafond thermique — mais un
+        // changement qui le double se verra dans le journal, et c'est de ce
+        // chiffre-là que dépend ce qu'un vrai noyau coûterait, lui qui en
+        // réclame quinze mille.
+        let started = Date()
         let stopped = try await desktop.run(patience: 60)
+        let each = Date().timeIntervalSince(started) / Double(Self.regions) * 1000
+        print("bureau : \(each) ms par région traduite, sur \(Self.regions) régions")
         XCTAssertEqual(
             stopped.why, Self.ud2SansPorte,
             "la dernière région s'arrête sur son `ud2`, comme les autres tests"
