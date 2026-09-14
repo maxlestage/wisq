@@ -13222,3 +13222,34 @@ C'est la même leçon qu'une tâche périmée retrouvée deux jours plus tôt, p
 par l'autre bout : là, un fait vrai à l'écriture avait cessé de l'être sans que
 rien ne rougisse. Ici, on sait d'avance qu'il cessera. **Quand on sait qu'un
 énoncé va se périmer, la date fait partie de l'énoncé.**
+
+## Le texte qui dit où regarder est le pire endroit où laisser vieillir un nombre
+
+`docs/DEMARRAGE.md` annonçait « 34 octets illisibles, dans 19 régions », et
+ajoutait, dans la même phrase, que **c'est là qu'il faut regarder pour savoir ce
+qui manque encore**. La mesure du jour en donne 17 régions et 31 octets.
+
+Ce n'est pas une dérive de quelques heures : `docs/ROADMAP.md` enregistre
+« 17 (31 octets) » **depuis #225**, et sept tranches de décodage ont passé sans
+que personne ne compare les deux fichiers. Le registre historique avait raison ;
+le document qui oriente le travail avait tort.
+
+**Et c'est la méthode qui l'a trouvé, pas une relecture.** Comparer deux nombres
+qui devraient s'accorder — ici le relevé relancé et la phrase publiée — a encore
+une fois produit la trouvaille, exactement comme 1925 tests contre 1992, ou
+passe contre échoue sur un commit identique. Aucune lecture attentive de
+`DEMARRAGE.md` n'aurait signalé « 34 » : le nombre est plausible, bien formé, et
+il a l'air d'un fait.
+
+La correction ne consiste pas à écrire 31 à la place de 34. Un chiffre qui baisse
+à chaque tranche de décodage sera faux de nouveau au prochain commit. Il porte
+donc **sa date et la commande qui le redérive**, comme le tableau des relevés
+`bureau` corrigé une heure plus tôt pour la même raison — la différence étant
+qu'ici la leçon est appliquée au lieu d'être seulement racontée.
+
+**Ce qui s'est perdu en même temps**, et qui relève du même défaut : le ROADMAP
+n'avait aucune section pour #236, #237 ni #238 — trois tranches fusionnées sans
+trace, dans le fichier que la routine de réveil impose de relire **avant**
+d'ouvrir une tranche. Un registre qui saute trois entrées enverra la prochaine
+session chercher du travail déjà fait ; c'est ce qui avait coûté trois tours de
+CI le 7 septembre. Les trois sections sont écrites.

@@ -10581,3 +10581,75 @@ du contraire, pas le bureau.
 Un vrai noyau à travers le bureau reste hors d'atteinte d'une tranche : il
 faudrait porter côté Swift tout le pilote de `examples/kernel-entry.rs` — les
 segments ELF, la page zéro, l'e820. C'est #167, et ça reste entier.
+
+## #236 — ce qu'une traduction coûte sous WebKit, mesuré au lieu d'extrapolé
+
+`WebKitJITProbeTests` chronométrait depuis longtemps un aller-retour **nu** par
+le pont — un `evaluateJavaScript` qui incrémente un entier. Multiplier ce
+chiffre par les 15 319 régions d'un noyau et annoncer treize secondes était
+tentant, et faux : une traduction n'est pas un aller-retour nu, c'est le
+message, puis l'émetteur Rust qui produit le module, puis
+`WebAssembly.instantiate`. Les deux grandeurs n'ont en commun que le trajet.
+
+Le test des cent vingt-huit régions imprime donc **sa propre mesure** —
+`bureau : … ms par région traduite` — premier endroit du dépôt où ce coût-là
+est relevé sur le moteur qui expédie. Aucun seuil : un coureur partagé n'en
+porte pas, et un simulateur n'a pas de plafond thermique. Mais la ligne est
+dans le résumé de chaque passage, à côté des autres, et un changement qui la
+double se verra.
+
+## #237 / #238 — un rapport posé pour sauver une mesure, et la page qui concluait en disant ne pas conclure
+
+#237 posait un **second chiffre** — le coût d'une traduction divisé par un
+étalon pris dans le même test à la même seconde — pour sauver la mesure en
+millisecondes de #236, jugée fragile parce que sa voisine `pont` avait rendu
+0,88 ms puis 3,09 ms sur du code identique.
+
+**Cinq passages ont répondu, et aucune des deux grandeurs n'en sort stable.**
+Le tableau complet est dans `docs/DEMARRAGE.md`, daté ; l'essentiel est que le
+rapport s'étale plus que ce qu'il devait normaliser, parce que son dénominateur
+est la grandeur la plus mobile du relevé.
+
+### Quatre conclusions tirées de trop peu de points
+
+Une extrapolation depuis un point. Une stabilité affirmée depuis deux, démentie
+par le troisième. Une troisième tentation, refusée. Et une quatrième écrite
+**huit lignes sous le titre qui annonçait les trois autres** : « le second
+varie moins », une comparaison de dispersions tirée de deux valeurs contre
+trois, avec un désaveu collé derrière qui lui servait d'alibi plutôt que de
+garde. Le passage de CI qui a rendu la tranche verte l'a démentie.
+
+**Un désaveu placé derrière une affirmation ne la retire pas**, et une page qui
+refuse de conclure se relit phrase par phrase, pas section par section.
+
+### Le tableau devenait faux tout seul
+
+La correction s'est fait démentir à son tour. Pas sur le fond — elle disait
+« sur ces quatre relevés » et c'était vrai de ces quatre-là — mais sur la
+forme : **un tableau qui recopie chaque passage de la CI est faux entre deux
+passages, et le devient sans que personne ne touche au fichier.** Recopier le
+cinquième point n'y changeait rien ; le sixième arrive au commit suivant.
+
+Le défaut n'était donc pas dans les chiffres mais dans ce que le tableau
+prétendait être. Il est maintenant **daté**, et dit que le registre vivant est
+ailleurs : la ligne que chaque passage imprime. Quand on sait qu'un énoncé va
+se périmer, la date fait partie de l'énoncé.
+
+### Et l'étiquette était fausse
+
+`global` coûte 1,44 ms le jour où un `evaluateJavaScript` nu en coûte 0,48 : il
+traverse le gestionnaire de messages du bureau, pas seulement le moteur. La
+ligne le nomme désormais « une lecture de registre par le pont », et non « un
+aller-retour nu » — sans quoi on croirait comparer deux fois la même chose.
+
+### Ce que ça permet de dire, et rien de plus
+
+Pour les 15 319 régions d'un vrai noyau, la traduction seule pèse **entre
+quatre-vingts et cent trente-cinq secondes** selon le passage — un intervalle
+mesuré, pas une moyenne. C'est le mur de #167, plus haut que la première
+estimation.
+
+### Ce que ça ne tranche pas
+
+Laquelle des deux grandeurs varie le moins. Cinq relevés n'en font pas plus que
+deux, et la page ne le dira que le jour où assez de passages l'auront montré.
