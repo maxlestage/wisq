@@ -18,8 +18,8 @@ use std::process::Command;
 use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON, FPU_CONTROL_SLOT,
-    FPU_STATUS_SLOT, FS_BASE_SLOT, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT, SYSCALL_COUNT,
-    SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
+    FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT,
+    SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
 };
 
 fn workspace_root() -> PathBuf {
@@ -8370,6 +8370,290 @@ console.log("fsw " + vm.globals[{status}].value);"#,
         line_of(&text, "fsw "),
         "0",
         "et le mot d'état doit être remis à zéro, pas laissé tel quel : {text}"
+    );
+}
+
+/// **`fxsave` écrit l'aire de 512 octets : ce que la machine a, et zéro pour
+/// ce qu'elle n'a pas.**
+///
+/// C'est le mur mesuré après #224 — la machine s'arrête pour de vrai à
+/// `fpu__init_system + 183`, sur `0f ae 05 d2 f1 13 00`.
+///
+/// **Les zéros ne sont pas un remplissage, ils sont la vérité.** L'émetteur
+/// n'a aucun registre XMM et aucune instruction XMM ne se décode : personne
+/// n'a jamais pu écrire dans cette moitié de l'aire. Le mot d'étiquettes
+/// abrégé vaut zéro pour la même raison — aucun registre x87 n'est occupé.
+/// MXCSR et son masque valent zéro parce que cette machine n'a pas de MXCSR,
+/// et Linux prévoit ce cas : masque nul, il prend sa valeur par défaut
+/// documentée.
+///
+/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** L'aire est
+/// pré-remplie de `0xee` : un `fxsave` qui n'écrirait rien, ou qui n'écrirait
+/// que les quatre premiers octets, laisserait ces témoins en place. Et les
+/// deux mots venus des globales portent des valeurs que `fninit` ne produit
+/// pas — `0x1234` et `0xabcd` —, donc un émetteur qui écrirait `0x037f` et
+/// zéro en dur tomberait aussi.
+///
+/// Les huit octets de part et d'autre sont gardés : une aire de 513 octets
+/// écraserait la mémoire du voisin.
+#[test]
+fn fxsave_writes_the_state_the_machine_has_and_zero_for_what_it_has_not() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const AREA: u32 = 0x2000;
+    // **Le nombre est écrit ici en toutes lettres, et non lu dans la
+    // constante que ce test garde.** Le lire là-bas rendrait le test complice :
+    // changer 416 en 512 changerait l'attente en même temps que le code, et
+    // rien ne tomberait — deux sabotages l'ont montré en survivant.
+    const WRITTEN: usize = 416;
+    assert_eq!(
+        FXSAVE_WRITTEN as usize, WRITTEN,
+        "un vrai processeur n'écrit que 416 des 512 octets de l'aire — mesuré \
+         par le corpus matériel, et le cœur Swift s'arrête au même octet"
+    );
+    let text = drive_with(
+        &bun,
+        &[0x0f, 0xae, 0x00, 0x0f, 0x0b], // fxsave (%rax) ; ud2
+        BASE,
+        PAGES,
+        "fxsave",
+        &format!(
+            r#"vm.globals[0].value = {area}n;
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;
+new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xee);"#,
+            area = AREA,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+        &format!(
+            r#"const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
+console.log("reste " + aire.slice(4, {written}).reduce((n, o) => n + (o === 0 ? 0 : 1), 0));
+console.log("reserve " + aire.slice({written}).every((o) => o === 0xee));
+console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).join(","));
+console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).join(","));
+console.log("fcw " + vm.globals[{control}].value);
+console.log("fsw " + vm.globals[{status}].value);"#,
+            area = AREA,
+            written = WRITTEN,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "tete "),
+        "3412cdab00000000",
+        "le mot de contrôle en 0x00, le mot d'état en 0x02, et le mot \
+         d'étiquettes abrégé nul en 0x04 — aucun registre x87 n'est occupé : \
+         {text}"
+    );
+    assert_eq!(
+        line_of(&text, "reste "),
+        "0",
+        "les 412 octets qui suivent doivent être écrits à zéro, pas laissés \
+         tels quels : ST0-7 et XMM0-15 n'existent pas ici, et MXCSR non plus \
+         — Linux prend sa valeur par défaut quand le masque lit zéro : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "reserve "),
+        "true",
+        "et les 96 derniers octets de l'aire restent tels quels : le corpus \
+         matériel a mesuré qu'un vrai processeur ne les touche pas, et le \
+         cœur Swift s'arrête au même octet : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "avant "),
+        "238,238,238,238,238,238,238,238",
+        "rien au-dessous de l'aire : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "apres "),
+        "238,238,238,238,238,238,238,238",
+        "ni au-dessus : 512 octets, pas un de plus : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fcw "),
+        "4660",
+        "`fxsave` ne modifie pas le coprocesseur : 0x1234 doit être intact, \
+         ce qui est aussi ce qui la rend rejouable après une faute : {text}"
+    );
+    assert_eq!(line_of(&text, "fsw "), "43981", "et le mot d'état : {text}");
+}
+
+/// **L'aire de `fxsave` à cheval sur deux pages tombe dans les deux trames.**
+///
+/// C'est ce que la forme en boucle achète, et il fallait le tenir plutôt que
+/// l'affirmer. Chaque tour écrit huit octets par le chemin ordinaire, donc
+/// chaque tour traduit son adresse pour son propre compte. La forme évidente
+/// — traduire une fois, puis écrire à `adresse + 8`, `adresse + 16`… par le
+/// décalage statique de WebAssembly — aurait été juste tant que l'aire tient
+/// dans une page, et aurait écrit **dans la trame d'à côté** dès qu'elle n'y
+/// tient plus. Un noyau ne choisit pas où `struct fxregs_state` atterrit.
+///
+/// Les deux pages sont mappées sur des trames **non contiguës** : la seconde
+/// moitié de l'aire ne peut atterrir au bon endroit que par une vraie seconde
+/// traduction. La trame qui suit la première en mémoire physique est
+/// pré-remplie et doit rester intacte — c'est elle que la forme évidente
+/// aurait écrasée.
+#[test]
+fn an_fxsave_area_that_straddles_two_pages_lands_in_both_frames() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const FRAME_A: u64 = 0x3_0000;
+    /// **Pas `FRAME_A + 0x1000`** : la seconde page est délibérément ailleurs.
+    const FRAME_B: u64 = 0x3_8000;
+    /// La trame qui suit `FRAME_A` en physique, que rien ne doit toucher.
+    const NEXT: u64 = FRAME_A + 0x1000;
+    const VA: u64 = 0xFFFF_8000_0020_0000;
+    /// 0xF00 + 416 = 0x10a0 : 256 octets écrits dans la première page, 160
+    /// dans la seconde. Et 0xF00 est aligné sur seize, ce que `fxsave` exige.
+    const AT: u64 = 0xF00;
+    /// Écrit en toutes lettres, et non lu dans la constante gardée : voir le
+    /// test voisin.
+    const WRITTEN: u64 = 416;
+
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4,%rax
+    push(&PML4.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $PG,%rax
+    push(&(1u64 << 31).to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    push(&[0x48, 0xb8]); // movabs $VA+AT,%rax
+    push(&(VA + AT).to_le_bytes());
+    push(&[0x0f, 0xae, 0x00]); // fxsave (%rax)
+    push(&[0x0f, 0x0b]); // ud2
+
+    let scratch = std::env::temp_dir().join(format!("wisq-fxsave-pg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    let path = scratch.join("fx.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({va}n, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx({va}n, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx({va}n, 21) * 8, {pt}n | present, true);
+vue.setBigUint64({pt} + idx({va}n, 12) * 8, {frameA}n | present, true);
+vue.setBigUint64({pt} + idx({va}n + 0x1000n, 12) * 8, {frameB}n | present, true);
+// Les trois trames pré-remplies : les deux mappées, et celle qui suit la
+// première en physique et que personne ne doit toucher.
+for (const trame of [{frameA}, {frameB}, {next}]) {{
+  new Uint8Array(vm.memory.buffer, trame, 0x1000).fill(0xee);
+}}
+vm.globals[{rip}].value = {base}n;
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;
+const why = await vm.run({{ budget: 256n, rounds: 8 }});
+console.log("arret " + why.stopped);
+const octets = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+const compte = (at, n) => new Uint8Array(vm.memory.buffer, at, n)
+  .reduce((c, o) => c + (o === 0 ? 0 : 1), 0);
+console.log("tete " + octets({frameA} + {at}, 8));
+console.log("basse " + compte({frameA} + {at} + 4, 0x100 - 4));
+console.log("haute " + compte({frameB}, {written} - 0x100));
+console.log("avant " + octets({frameA} + {at} - 8, 8));
+console.log("apres " + octets({frameB} + {written} - 0x100, 8));
+console.log("voisine " + compte({next}, 0x1000));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+            va = VA,
+            at = AT,
+            written = WRITTEN,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            frameA = FRAME_A,
+            frameB = FRAME_B,
+            next = NEXT,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        errors.is_empty(),
+        "le pilote n'écrit rien en erreur : {errors}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "refusée",
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "tete "),
+        "3412cdab00000000",
+        "les deux mots du coprocesseur sont au début de l'aire, dans la \
+         première trame : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "basse "),
+        "0",
+        "le reste de la première page est écrit à zéro : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "haute "),
+        "0",
+        "et les 160 octets qui débordent tombent dans la **seconde** trame, \
+         que seule une vraie deuxième traduction peut atteindre : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "avant "),
+        "eeeeeeeeeeeeeeee",
+        "rien au-dessous de l'aire : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "apres "),
+        "eeeeeeeeeeeeeeee",
+        "ni au-dessus : 416 octets écrits, pas un de plus : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "voisine "),
+        "4096",
+        "la trame qui suit la première en physique n'est pas touchée — c'est \
+         elle qu'un décalage statique aurait écrasée : {text}"
     );
 }
 
