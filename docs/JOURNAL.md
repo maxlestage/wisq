@@ -13253,3 +13253,36 @@ trace, dans le fichier que la routine de réveil impose de relire **avant**
 d'ouvrir une tranche. Un registre qui saute trois entrées enverra la prochaine
 session chercher du travail déjà fait ; c'est ce qui avait coûté trois tours de
 CI le 7 septembre. Les trois sections sont écrites.
+
+## Trois fois la même faute dans la même page, dont une dans son propre préambule
+
+`docs/DEMARRAGE.md` ouvrait sa section sur le coût d'une traduction ainsi :
+`WebKitJITProbeTests` chronomètre le moteur (**1151 MIPS**) et un aller-retour
+nu par le pont (**0,88 ms**). Deux valeurs, posées comme des propriétés du
+moteur.
+
+Le tableau daté, **dans la même page, trois sections plus bas**, donne pour ces
+deux grandeurs 864 à 1702 MIPS et 0,36 à 3,09 ms — un facteur deux et un
+facteur huit. Ni 1151 ni 0,88 n'y figurent : ce sont les valeurs d'un passage
+antérieur au tableau.
+
+**La section qui enseigne à ne pas conclure d'un seul point s'ouvrait sur deux
+conclusions tirées d'un seul point.** Et c'est la troisième fois que cette faute
+s'écrit dans ce fichier en deux tranches : une extrapolation depuis un relevé,
+une phrase qui comparait deux dispersions, et maintenant le préambule lui-même.
+
+Trois occurrences ne sont plus des accidents, ce sont les symptômes d'une même
+habitude : **quand on a un nombre sous les yeux, l'écrire coûte moins cher que
+d'écrire ce qu'on ne sait pas encore de lui.** La prose récompense le chiffre
+précis ; la mesure, elle, ne le promet pas.
+
+La règle qui s'en dégage, et qui vaut pour tout ce dépôt : **un chiffre relevé
+sur un coureur partagé n'entre dans une phrase qu'accompagné de sa date ou de
+son étendue.** Jamais seul, jamais au présent de vérité générale. Les trois
+endroits qui le faisaient sont corrigés ; celui-ci le dit pour que la
+quatrième fois se voie à l'écriture plutôt qu'au relevé suivant.
+
+**Ce qu'aucune garde ne tiendra ici.** Un script peut compter des tests ou
+comparer un tableau à un fichier ; il ne peut pas distinguer un nombre publié
+comme un fait d'un nombre publié comme un relevé. C'est une discipline
+d'écriture, et la seule prise qu'on ait dessus est de l'avoir écrite.
