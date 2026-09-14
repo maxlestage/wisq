@@ -12906,3 +12906,51 @@ Un « SURVÉCU » est une hypothèse, pas un résultat. Celle-ci se vérifie en 
 minute, et le vrai sabotage — ajouter 6 à la liste des vecteurs à code d'erreur,
 ce qui décale la pile du gestionnaire de huit octets — tombe aussitôt.
 
+
+## Quatre fois de suite, la règle était déjà écrite ailleurs
+
+`fwait` ne fait rien sur cette machine. C'est une conclusion, pas une
+convention, et elle demande un raisonnement : le mot d'état du x87 n'est jamais
+écrit qu'à zéro, aucune arithmétique x87 ne se décode, donc aucune exception ne
+peut être en attente, donc il n'y a rien à attendre ni à prendre.
+
+Ce raisonnement était **déjà écrit**, mot pour mot, dans
+`Sources/WisqVM/X86CoreDispatch.swift`. Comme les 416 octets de `fxsave` l'ont
+été. Comme le vidage du tampon sur CR3, CR4 et CR0 l'a été.
+
+Trois cœurs x86 lisent le même oracle et doivent se conduire pareil ; rien ne
+les oblige à **savoir** la même chose. Une règle qui vit dans un seul des trois
+n'est pas fausse, elle est invisible : elle ne rougit nulle part, et on la
+redécouvre par une mesure sur un vrai noyau, au prix d'une tranche entière.
+
+Le réflexe, maintenant : **avant de conclure qu'une règle manque, chercher si
+l'un des trois ne la tient pas déjà.** Ce n'est pas de l'économie de travail,
+c'est de l'économie de raisonnement — la règle qui est là est déjà argumentée,
+et son argument est ce qu'il faut recopier, pas son code.
+
+## Une conclusion datée, et le devoir de l'écrire
+
+« `fwait` ne fait rien » est vrai aujourd'hui et faux le jour où un calcul x87
+existe dans cette machine. Une inertie qui dépend d'une absence doit **dire de
+quelle absence** elle dépend, sinon elle survit à sa cause.
+
+Le commentaire du bras le dit et nomme le fichier à réviser avec. C'est le même
+geste que le bouchon qui refuse ce que la vraie chose ne pourrait pas faire :
+on n'écrit pas seulement ce qui est vrai, on écrit **ce qui le rend vrai**.
+
+## Le premier relevé sans mur, et pourquoi ce n'est pas « ça démarre »
+
+Après cette tranche, le noyau ne s'arrête sur rien : le million de tours du
+pilote s'épuise et la machine avançait encore. Depuis dix-huit tranches chaque
+mesure nommait une instruction ; celle-ci n'en nomme aucune.
+
+La tentation est de lire « le noyau démarre ». Le relevé ne dit pas ça. Il dit
+qu'**il n'y a plus d'instruction manquante sur le chemin parcouru en un million
+de tours** — et la machine est au milieu de `jent_entropy_init`, une boucle qui
+peut tourner très longtemps sans progresser si l'horloge ne bouge pas assez.
+
+Avancer et boucler se ressemblent beaucoup, vus depuis un compteur de tours. La
+question a changé de nature, et l'outil doit changer avec : jusqu'ici il
+suffisait de nommer l'octet qui bloque, maintenant il faut un relevé qui
+distingue le progrès de la ronde. Écrire « ça démarre » ici serait la première
+affirmation de cette série que rien ne tient.
