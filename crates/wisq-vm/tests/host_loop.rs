@@ -2142,6 +2142,245 @@ console.log("plat " + plat.rdx);
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// **Changer d'espace d'adressage vide le tampon de traduction — CR3, CR4 et
+/// CR0.**
+///
+/// C'est ce qu'un vrai processeur fait, et c'est la seule chose que le tampon
+/// de `guest()` ne faisait pas : il n'était vidé que par `invlpg`, une entrée à
+/// la fois. **Les deux autres cœurs ne se conduisent pas comme ça** —
+/// `X86Paging.swift` vide sur les trois, et l'interpréteur Rust n'a aucun cache
+/// à vider. Le cœur qui fait tourner le vrai noyau était le seul à diverger.
+///
+/// **Ce que ça tue, mesuré.** `__text_poke` écrit un correctif à travers une
+/// cartographie temporaire : `use_temporary_mm` **écrit CR3**, `text_poke_memcpy`
+/// écrit, `unuse_temporary_mm` **réécrit CR3**, puis le noyau relit à l'adresse
+/// d'origine et compare. Avec un tampon qui garde tout, l'écriture peut
+/// atterrir dans la trame qu'un correctif précédent avait cartographiée là. Le
+/// noyau Alpine s'arrêtait sur le `BUG_ON(memcmp(addr, opcode, len))` de
+/// `__text_poke + 1093`.
+///
+/// **Et CR4 n'est pas un extra** : `__flush_tlb_global()` de Linux sans
+/// `INVPCID` est exactement `native_write_cr4(cr4 ^ X86_CR4_PGE)` puis la
+/// valeur d'origine. Le cœur Swift a déjà payé son absence — c'est la tâche
+/// #136, « Invalid relocation target, existing value is nonzero », puis
+/// « bad pud ».
+///
+/// Les trois phases lisent **trois adresses distinctes**, pour qu'une phase ne
+/// remplisse pas le tampon d'une autre : chaque vidage est tenu pour lui-même.
+#[test]
+fn changing_the_address_space_empties_the_translation_buffer() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    // La première table, celle du départ.
+    const PML4_A: u64 = 0x2_0000;
+    const PDPT_A: u64 = 0x2_1000;
+    const PD_A: u64 = 0x2_2000;
+    const PT_A: u64 = 0x2_3000;
+    // La seconde, vers laquelle CR3 bascule.
+    const PML4_B: u64 = 0x2_4000;
+    const PDPT_B: u64 = 0x2_5000;
+    const PD_B: u64 = 0x2_6000;
+    const PT_B: u64 = 0x2_7000;
+    const FRAME_A: u64 = 0x3_0000;
+    const FRAME_B: u64 = 0x3_1000;
+    const FRAME_C: u64 = 0x3_2000;
+    const FRAME_D: u64 = 0x3_3000;
+    const FRAME_E: u64 = 0x3_4000;
+    const FRAME_F: u64 = 0x3_5000;
+    const VA1: u64 = 0xFFFF_8000_0020_0000; // la phase CR3
+    const VA2: u64 = VA1 + 0x1000; // la phase CR4
+    const VA3: u64 = VA1 + 0x2000; // la phase CR0
+    const VA_TABLE: u64 = VA1 + 0x3000; // l'alias qui expose PT_B comme données
+    const PAGING: u64 = 1 << 31;
+    const PAGE_GLOBAL: u64 = 0x80; // CR4.PGE, le bit que Linux bascule
+
+    let leaf = |at: u64| (at >> 12) & 0x1ff;
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4_A,%rax
+    push(&PML4_A.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $PAGING,%rax
+    push(&PAGING.to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+
+    // **Phase CR3.** Une lecture remplit le tampon, puis l'espace change.
+    push(&[0x48, 0xbe]); // movabs $VA1,%rsi
+    push(&VA1.to_le_bytes());
+    push(&[0x48, 0x8b, 0x16]); // mov (%rsi),%rdx — témoin A, et le tampon retient
+    push(&[0x48, 0xb8]); // movabs $PML4_B,%rax
+    push(&PML4_B.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3 — **aucun invlpg**
+    push(&[0x48, 0x8b, 0x1e]); // mov (%rsi),%rbx — doit suivre la nouvelle table
+
+    // **Phase CR4.** La même chose, mais c'est l'entrée de feuille qui change,
+    // et le vidage passe par une écriture de CR4 — `__flush_tlb_global`.
+    push(&[0x48, 0xbe]); // movabs $VA2,%rsi
+    push(&VA2.to_le_bytes());
+    push(&[0x48, 0x8b, 0x0e]); // mov (%rsi),%rcx — témoin C
+    push(&[0x48, 0xbf]); // movabs $VA_TABLE,%rdi — l'alias sur PT_B
+    push(&VA_TABLE.to_le_bytes());
+    push(&[0x48, 0xb8]); // movabs $(FRAME_D|présente),%rax
+    push(&(FRAME_D | 0x3).to_le_bytes());
+    push(&[0x48, 0x89, 0x87]); // mov %rax,disp32(%rdi)
+    push(&((leaf(VA2) * 8) as u32).to_le_bytes());
+    push(&[0x48, 0xb8]); // movabs $PAGE_GLOBAL,%rax
+    push(&PAGE_GLOBAL.to_le_bytes());
+    push(&[0x0f, 0x22, 0xe0]); // mov %rax,%cr4
+    push(&[0x48, 0x8b, 0x2e]); // mov (%rsi),%rbp — doit suivre la nouvelle trame
+
+    // **Phase CR0.** La pagination s'éteint et se rallume ; tout ce que le
+    // tampon savait était vrai d'un monde qui n'existe plus.
+    push(&[0x48, 0xbe]); // movabs $VA3,%rsi
+    push(&VA3.to_le_bytes());
+    push(&[0x4c, 0x8b, 0x0e]); // mov (%rsi),%r9 — témoin E
+    push(&[0x48, 0xb8]); // movabs $(FRAME_F|présente),%rax
+    push(&(FRAME_F | 0x3).to_le_bytes());
+    push(&[0x48, 0x89, 0x87]); // mov %rax,disp32(%rdi)
+    push(&((leaf(VA3) * 8) as u32).to_le_bytes());
+    push(&[0x31, 0xc0]); // xor %eax,%eax
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 — pagination éteinte
+    push(&[0x48, 0xb8]); // movabs $PAGING,%rax
+    push(&PAGING.to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 — et rallumée
+    push(&[0x4c, 0x8b, 0x06]); // mov (%rsi),%r8 — doit suivre la nouvelle trame
+    push(&[0x0f, 0x0b]); // ud2
+
+    let scratch = std::env::temp_dir().join(format!("wisq-flush-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    let path = scratch.join("f.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+// La première table : VA1 seule, vers la trame A.
+vue.setBigUint64({pml4a} + idx({va1}n, 39) * 8, {pdpta}n | present, true);
+vue.setBigUint64({pdpta} + idx({va1}n, 30) * 8, {pda}n | present, true);
+vue.setBigUint64({pda} + idx({va1}n, 21) * 8, {pta}n | present, true);
+vue.setBigUint64({pta} + idx({va1}n, 12) * 8, {frameA}n | present, true);
+// La seconde : les trois adresses, et l'alias qui expose sa table de feuilles.
+vue.setBigUint64({pml4b} + idx({va1}n, 39) * 8, {pdptb}n | present, true);
+vue.setBigUint64({pdptb} + idx({va1}n, 30) * 8, {pdb}n | present, true);
+vue.setBigUint64({pdb} + idx({va1}n, 21) * 8, {ptb}n | present, true);
+vue.setBigUint64({ptb} + idx({va1}n, 12) * 8, {frameB}n | present, true);
+vue.setBigUint64({ptb} + idx({va2}n, 12) * 8, {frameC}n | present, true);
+vue.setBigUint64({ptb} + idx({va3}n, 12) * 8, {frameE}n | present, true);
+vue.setBigUint64({ptb} + idx({vatable}n, 12) * 8, {ptb}n | present, true);
+// Un témoin distinct au début de chaque trame.
+for (const [trame, temoin] of [[{frameA}, 0xa1n], [{frameB}, 0xb2n], [{frameC}, 0xc3n],
+                               [{frameD}, 0xd4n], [{frameE}, 0xe5n], [{frameF}, 0xf6n]]) {{
+  vue.setBigUint64(trame, temoin, true);
+}}
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 512n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rdx " + lire(2));
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("rbp " + lire(5));
+console.log("r9 " + lire(9));
+console.log("r8 " + lire(8));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            va1 = VA1,
+            va2 = VA2,
+            va3 = VA3,
+            vatable = VA_TABLE,
+            pml4a = PML4_A,
+            pdpta = PDPT_A,
+            pda = PD_A,
+            pta = PT_A,
+            pml4b = PML4_B,
+            pdptb = PDPT_B,
+            pdb = PD_B,
+            ptb = PT_B,
+            frameA = FRAME_A,
+            frameB = FRAME_B,
+            frameC = FRAME_C,
+            frameD = FRAME_D,
+            frameE = FRAME_E,
+            frameF = FRAME_F,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "refusée",
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rdx "),
+        "a1",
+        "la première lecture suit la première table : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "b2",
+        "**écrire CR3 change d'espace d'adressage** : la même adresse doit \
+         suivre la nouvelle table, pas ce que le tampon avait retenu de \
+         l'ancienne — c'est ce que fait `use_temporary_mm` deux fois par \
+         `__text_poke` : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rcx "),
+        "c3",
+        "la lecture qui remplit le tampon pour la phase CR4 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbp "),
+        "d4",
+        "**écrire CR4 vide tout**, et c'est la seule façon dont Linux sans \
+         INVPCID y arrive — `native_write_cr4(cr4 ^ X86_CR4_PGE)` : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r9 "),
+        "e5",
+        "la lecture qui remplit le tampon pour la phase CR0 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r8 "),
+        "f6",
+        "**éteindre puis rallumer la pagination vide aussi** : tout ce que le \
+         tampon savait était vrai d'un monde qui n'existe plus : {text}"
+    );
+}
+
 /// **Une page absente arrête la machine avant l'accès, et dit où.**
 ///
 /// C'est la moitié du mécanisme que la sonde a tranché : pas de piège — un
