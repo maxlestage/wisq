@@ -486,15 +486,24 @@ disait pas.
 
 ## Ce qu'une traduction coûte sous WebKit, et pourquoi le chiffre d'à côté ne le disait pas
 
-`WebKitJITProbeTests` chronomètre deux choses depuis longtemps : le moteur
-(**1151 MIPS sur 160 M d'instructions**) et un aller-retour **nu** par le pont
-(**0,88 ms**), un `evaluateJavaScript` qui incrémente un entier.
+`WebKitJITProbeTests` chronomètre deux choses depuis longtemps : le moteur, sur
+160 M d'instructions, et un aller-retour **nu** par le pont — un
+`evaluateJavaScript` qui incrémente un entier.
+
+**Ni l'un ni l'autre n'est une constante, et ce paragraphe a longtemps écrit
+qu'ils l'étaient** : « 1151 MIPS » et « 0,88 ms », les valeurs d'un passage,
+posées comme des propriétés du moteur. Le tableau daté plus bas, dans cette même
+page, donne pour ces deux grandeurs 864 à 1702 MIPS et 0,36 à 3,09 ms sur les
+passages relevés — et ni 1151 ni 0,88 n'y figurent. C'était la troisième fois
+que la même faute s'écrivait ici, et cette fois dans les lignes qui introduisent
+la section qui la raconte.
 
 Il est tentant de multiplier le second par le nombre de régions d'un noyau —
 15 319 — et d'annoncer treize secondes. **C'est un plancher présenté comme une
-estimation.** Une traduction n'est pas un aller-retour nu : c'est le message,
-puis l'émetteur Rust qui produit le module, puis `WebAssembly.instantiate`. Les
-deux grandeurs n'ont en commun que le trajet.
+estimation**, et il est bâti sur un chiffre qui varie d'un facteur huit. Une
+traduction n'est pas un aller-retour nu : c'est le message, puis l'émetteur
+Rust qui produit le module, puis `WebAssembly.instantiate`. Les deux grandeurs
+n'ont en commun que le trajet.
 
 Le test des cent vingt-huit régions imprime donc sa propre mesure —
 `bureau : … ms par région traduite` — et c'est le premier endroit du dépôt où
