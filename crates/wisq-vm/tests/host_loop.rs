@@ -3521,6 +3521,117 @@ console.log(BigInt.asUintN(64, vm.globals[{tsc}].value).toString());
     );
 }
 
+/// **`rdtscp` à travers l'émetteur : la même horloge, et ECX écrasé.**
+///
+/// Le troisième cœur émet trois écritures là où `rdtsc` en émet deux. Les deux
+/// premières, `EDX:EAX`, sont le même code — un seul `matches!` couvre les deux
+/// instructions, donc les tenir une fois les tient. **La troisième n'était
+/// tenue par rien**, et un sabotage l'a montré : retirer l'écriture d'ECX
+/// laissait tous les tests passer.
+///
+/// Ce que cette écriture achète se lit à l'envers. Sans elle, ECX garde ce
+/// qu'il portait en entrant dans la région — une valeur quelconque, laissée là
+/// par l'instruction d'avant. `vgetcpu` la lirait comme un numéro de
+/// processeur, et le noyau irait chercher sa zone par processeur à un indice
+/// qu'aucun `wrmsr` n'a jamais posé. Une valeur d'avant qui traîne ressemble à
+/// une réponse : c'est exactement le mode de panne que ce dépôt refuse.
+///
+/// Le test sème donc RCX d'une valeur qui déborde les trente-deux bits, pour
+/// que **ne pas écrire** et **écrire un ECX qui ne remet pas la moitié haute à
+/// zéro** se distinguent l'un de l'autre.
+#[test]
+fn rdtscp_reads_the_same_counter_and_clears_the_processor_number() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const SEED: u64 = 0x1234_5678_9abc_def0;
+    // Ce que RCX porte en entrant. S'il ressort tel quel, l'écriture manque ;
+    // s'il ressort avec sa moitié haute, l'écriture n'est pas une écriture
+    // trente-deux bits.
+    const STALE: u64 = 0xdead_beef_cafe_babe;
+    // 0f 01 f9 = rdtscp ; 0f 0b = ud2 pour rendre la main proprement.
+    let program = [0x0f, 0x01, 0xf9, 0x0f, 0x0b];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-rdtscp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("tscp.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+vm.globals[{tsc}].value = {seed}n;
+vm.globals[1].value = {stale}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+console.log("arret " + why.stopped);
+console.log("bas " + BigInt.asUintN(64, vm.globals[0].value).toString());
+console.log("haut " + BigInt.asUintN(64, vm.globals[2].value).toString());
+console.log("aux " + BigInt.asUintN(64, vm.globals[1].value).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            tsc = wisq_vm::x86_wasm::TSC_SLOT,
+            seed = SEED,
+            stale = STALE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("arret "),
+        UD2_SANS_PORTE,
+        "la région s'arrête sur le `ud2`, donc le `rdtscp` d'avant a bien été traduit"
+    );
+    let expected = SEED.wrapping_add(wisq_vm::x86_wasm::TSC_STEP);
+    let bas: u64 = line("bas ").parse().expect("un nombre");
+    let haut: u64 = line("haut ").parse().expect("un nombre");
+    assert_eq!(
+        bas,
+        expected & 0xffff_ffff,
+        "`rdtscp` lit le même compteur que `rdtsc`, d'un pas"
+    );
+    assert_eq!(haut, expected >> 32, "et sa moitié haute va dans RDX");
+    let aux: u64 = line("aux ").parse().expect("un nombre");
+    assert_eq!(
+        aux, 0,
+        "ECX porte IA32_TSC_AUX ; personne ne l'a écrit, donc zéro — et surtout \
+         pas {STALE:#x}, que `vgetcpu` lirait comme un numéro de processeur"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// `rdtsc` est la deuxième instruction que l'émetteur produit, et son choix de
 /// conception tient en une phrase : **un compteur virtuel, pas un import**.
 ///
