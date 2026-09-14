@@ -50,7 +50,9 @@ use std::path::Path;
 use wisq_vm::kernel_image::{loads, zero_page, MONTAGE_COMMAND_LINE};
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
-use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
+use wisq_vm::x86_wasm::{
+    usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT,
+};
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
 /// confinement exige, et assez grande pour que le texte du noyau y tienne : il
@@ -60,6 +62,26 @@ use wisq_vm::x86_wasm::{Module, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT};
 /// par le masque de la RAM qui fait tomber `0xffffffff81000090` sur
 /// `0x1000090`. À quatre gibioctets il ne tomberait plus juste.
 const PAGES: u32 = 1024; // 64 Mio
+
+/// **Ce que `WISQ_RAM` déclare, en mébioctets**, quand il est posé.
+///
+/// Le défaut ne bouge pas : les relevés des tranches précédentes ont été pris à
+/// 64 Mio, et les changer en silence rendrait incomparables des mesures que la
+/// feuille de route met côte à côte.
+///
+/// La taille est **refusée** plutôt qu'ajustée quand elle ne peut pas servir —
+/// `usable_ram` dit pourquoi. Arrondir à la puissance de deux voisine serait
+/// obligeant et faux : le relevé porterait un chiffre que personne n'a demandé.
+fn declared_pages() -> Result<u32, String> {
+    let Some(value) = std::env::var("WISQ_RAM").ok() else {
+        return Ok(PAGES);
+    };
+    let mib: u64 = value
+        .parse()
+        .map_err(|_| format!("WISQ_RAM={value} ne se lit pas comme un nombre de mébioctets"))?;
+    u32::try_from(mib * 1024 * 1024 / 65536)
+        .map_err(|_| format!("WISQ_RAM={mib} est trop grand pour être compté en pages"))
+}
 
 /// Ce que Linux ajoute à une adresse physique de texte pour en faire une
 /// adresse virtuelle. `__START_KERNEL_map`, dans ses propres termes.
@@ -153,23 +175,14 @@ fn main() {
         std::process::exit(1);
     };
     let physical = text.physical_address;
-    let ram = u64::from(PAGES) * 65536;
-    println!("point d'entrée : 0x{entry:x} physique, 0x{entry_virtual:x} virtuel");
-    println!(
-        "texte : 0x{physical:x} physique, {:.1} Mio, décalage 0x{:x} dans le fichier",
-        text.file_size as f64 / (1024.0 * 1024.0),
-        text.offset
-    );
-    let folded = Module::fold(entry_virtual, PAGES);
-    println!(
-        "repli sur {} Mio de RAM : 0x{folded:x} — {}",
-        ram / (1024 * 1024),
-        if folded == entry {
-            "tombe sur l'adresse physique"
-        } else {
-            "NE TOMBE PAS sur l'adresse physique ; la région ne sera pas trouvée"
+    let pages = match declared_pages() {
+        Ok(pages) => pages,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(1);
         }
-    );
+    };
+    let ram = u64::from(pages) * 65536;
     // **Le sommet de tout ce qui sera posé**, pas seulement du texte. C'est le
     // BSS du dernier segment qui décide, et il n'est porté par aucun octet du
     // fichier.
@@ -178,13 +191,58 @@ fn main() {
         .map(|load| load.physical_address + load.memory_size)
         .max()
         .unwrap_or(0);
-    if top > ram {
-        println!(
-            "le noyau déborde la RAM déclarée : il en faudrait {:.0} Mio",
-            top as f64 / (1024.0 * 1024.0)
+    // **Un refus, pas un avertissement.** Le pilote imprimait « NE TOMBE PAS
+    // sur l'adresse physique » et continuait ; le relevé parlait ensuite d'une
+    // région introuvable, trois écrans plus loin, sans que rien ne relie les
+    // deux. Une machine qui démarre sur une adresse repliée de travers ne se
+    // plaint pas : elle s'égare.
+    // **L'adresse à replier n'est pas celle de l'ELF.** Pour cette image le
+    // point d'entrée est déjà physique — `0x1000090` des deux côtés — et un
+    // repli qui le prendrait pour témoin passerait toujours, quelle que soit la
+    // taille. Ce que la machine replie pour de vrai, ce sont les adresses
+    // **virtuelles** : le noyau bascule à l'adressage virtuel dès que
+    // `secondary_startup_64` a chargé CR3, et réclame alors
+    // `0xffffffff81000090` pour l'octet qui est à `0x1000090`.
+    //
+    // La première version de cette garde interrogeait `entry_virtual` et
+    // acceptait quatre gibioctets. Elle n'était pas fausse par erreur de
+    // calcul : elle mesurait la mauvaise adresse, et un bouchon qui approuve
+    // pour une raison qui n'est pas la bonne est pire qu'aucun bouchon.
+    let claimed = entry.wrapping_add(KERNEL_MAP);
+    if let Err(why) = usable_ram(pages, claimed, entry, top) {
+        eprintln!(
+            "{} Mio de RAM ne peuvent pas servir à ce noyau : {}",
+            ram / (1024 * 1024),
+            match why {
+                RamRefusal::Empty => "il n'y a pas de machine sans mémoire".to_string(),
+                RamRefusal::NotAPowerOfTwo => format!(
+                    "{pages} pages n'est pas une puissance de deux, et le confinement \
+                     de l'émetteur travaille par masque"
+                ),
+                RamRefusal::TooSmall { needed } => format!(
+                    "le noyau en réclame {:.0} Mio, BSS compris",
+                    needed as f64 / (1024.0 * 1024.0)
+                ),
+                RamRefusal::FoldMisses { folded } => format!(
+                    "le repli amène 0x{claimed:x} sur 0x{folded:x} au lieu de \
+                     0x{entry:x} — les régions réclamées en virtuel ne seraient \
+                     pas trouvées"
+                ),
+            }
         );
+        std::process::exit(1);
     }
-
+    println!("point d'entrée : 0x{entry:x} physique, 0x{entry_virtual:x} virtuel");
+    println!(
+        "texte : 0x{physical:x} physique, {:.1} Mio, décalage 0x{:x} dans le fichier",
+        text.file_size as f64 / (1024.0 * 1024.0),
+        text.offset
+    );
+    let folded = Module::fold(entry_virtual, pages);
+    println!(
+        "repli sur {} Mio de RAM : 0x{folded:x} — tombe sur l'adresse physique",
+        ram / (1024 * 1024)
+    );
     // **Traduire la région qui commence à une adresse virtuelle**, en allant
     // chercher ses octets là où le segment les porte.
     // **L'emplacement compte.** L'hôte donne à chaque région une place dans sa
@@ -199,7 +257,7 @@ fn main() {
         // segment de texte » — et le noyau bascule à l'adressage virtuel dès
         // que `secondary_startup_64` a chargé CR3. L'outil s'arrêtait donc
         // exactement là, sur une région qu'il avait les octets pour traduire.
-        let folded = Module::fold(at, PAGES);
+        let folded = Module::fold(at, pages);
         // **Dans n'importe quel segment, pas seulement le texte.** Une fois
         // les quatre posés, le noyau saute pour de bon dans le dernier :
         // `x86_64_start_kernel` vit à `0xffffffff82a3b700`. Ne chercher que
@@ -212,7 +270,7 @@ fn main() {
         };
         let from = (folded - load.physical_address + load.offset) as usize;
         let window = &image[from..(from + 16384).min(image.len())];
-        Module::resolving_or_why(window, at, 0, slot, PAGES).map_err(|why| format!("{why:?}"))
+        Module::resolving_or_why(window, at, 0, slot, pages).map_err(|why| format!("{why:?}"))
     };
 
     let Some(bun) = ["/root/.bun/bin/bun", "bun"].into_iter().find(|path| {
@@ -278,7 +336,7 @@ fn main() {
     // tant qu'il n'en posait pas.
     const ZERO_PAGE_AT: u64 = 0x9000;
     const COMMAND_LINE_AT: u64 = 0x9800;
-    let page = zero_page(u64::from(PAGES) * 65536, COMMAND_LINE_AT as u32);
+    let page = zero_page(u64::from(pages) * 65536, COMMAND_LINE_AT as u32);
     let page_path = scratch.join("zero-page.bin");
     std::fs::write(&page_path, &page).expect("la page zéro");
     placed.push((page_path, ZERO_PAGE_AT));
@@ -289,7 +347,7 @@ fn main() {
     placed.push((line_path, COMMAND_LINE_AT));
     println!(
         "page zéro : 0x{ZERO_PAGE_AT:x}, e820 sur {} Mio, ligne « {MONTAGE_COMMAND_LINE} »",
-        u64::from(PAGES) / 16
+        u64::from(pages) / 16
     );
 
     // **Ce que le pilote JavaScript recevra**, calculé ici plutôt que dans les
@@ -331,7 +389,7 @@ fn main() {
     // l'image, la RAM déclarée, puis un segment par ligne. Le refaire à chaque
     // région rouvrirait trente-cinq mébioctets par appel.
     let manifest = scratch.join("manifeste.txt");
-    let mut lines = format!("{path}\n{PAGES}\n");
+    let mut lines = format!("{path}\n{pages}\n");
     for load in &segments {
         lines.push_str(&format!(
             "{} {} {}\n",
@@ -566,7 +624,7 @@ console.log("controle " + controle
                 rounds = rounds,
                 translator = translator.to_string_lossy(),
                 manifest = manifest.to_string_lossy(),
-                pages = PAGES,
+                pages = pages,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
                 fault = FAULT_SLOT,
@@ -748,7 +806,7 @@ console.log("controle " + controle
             // soustraction sur une base virtuelle ne rendait pas un mauvais
             // nombre, elle **paniquait** — « range start index
             // 18446744071564165438 out of range for slice of length 35842660 ».
-            let folded = Module::fold(*base, PAGES);
+            let folded = Module::fold(*base, pages);
             let Some(load) = segments.iter().find(|load| {
                 folded >= load.physical_address && folded < load.physical_address + load.file_size
             }) else {
