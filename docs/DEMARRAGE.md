@@ -332,6 +332,22 @@ Trois choses, et aucune n'est petite :
    n'est plus « quelle instruction manque » mais **« la machine progresse-t-elle
    ou tourne-t-elle en rond »**, et il faut un relevé qui la pose.
 
+   **#229 la pose, et la réponse n'est pas celle qu'on attendait.** Le pilote
+   compte désormais le tour où une adresse a été atteinte pour la dernière fois
+   sans l'avoir jamais été : `marche 1000000 860189 10775 30`. La machine a
+   ouvert du terrain neuf **jusqu'au tour 860 189 sur un million** — 86 % du
+   budget — puis s'est refermée sur trente adresses pour les 139 811 derniers.
+
+   La conjecture qui avait ouvert cette tranche — « elle tourne en rond depuis
+   le début » — venait de lire « tour 10776 » dans le relevé de #228, où ce
+   nombre était en réalité le rang de la traduction. **Le pilote imprimait deux
+   compteurs sous un seul mot** ; il ne le fait plus.
+
+   Ce que ça ne tranche pas : se refermer sur trente adresses n'est pas ne plus
+   jamais avancer. La mesure suivante est le même relevé à un budget plus grand,
+   pour voir si le tour de la dernière adresse neuve suit le budget ou reste à
+   860 189.
+
    **Et `WISQ_ROUNDS=8192` ne suffit plus** : les relevés se prennent désormais
    à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.
 

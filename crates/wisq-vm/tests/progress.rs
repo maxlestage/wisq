@@ -34,21 +34,33 @@ fn a_run_that_keeps_reaching_new_ground_says_so_with_its_last_new_turn() {
 
 #[test]
 fn a_run_that_stopped_reaching_new_ground_names_the_turn_and_the_silence_after_it() {
-    // Le relevé de #228 : dernière région neuve très tôt, un million de tours.
-    let seen = Progress::of(1_000_000, Some(10_776), 10_800, 6).expect("des comptes cohérents");
+    // **Les vrais chiffres du noyau Alpine après #228**, relevés par ce pilote
+    // à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000` : `marche 1000000 860189 10775 30`.
+    //
+    // Ils ont démenti ce que cette tranche croyait aller montrer. La
+    // conjecture était « la machine tourne en rond depuis le début » — le
+    // relevé de #228 posait sa dernière région à la traduction 10 776, et ce
+    // nombre a été lu comme un tour parce que le pilote imprimait le rang des
+    // traductions sous le mot « tour ». La machine a en fait atteint du
+    // terrain neuf jusqu'au tour **860 189 sur un million**, soit 86 % du
+    // budget, avant de se refermer sur trente adresses.
+    //
+    // C'est exactement ce que cette tranche existe pour empêcher : une
+    // conclusion tirée d'un relevé qui nomme mal ce qu'il compte.
+    let seen = Progress::of(1_000_000, Some(860_189), 10_775, 30).expect("des comptes cohérents");
     let said = seen.describe();
     assert!(
-        said.contains("10776"),
+        said.contains("860189"),
         "le tour de la dernière adresse neuve doit être dit : {said}"
     );
     assert!(
-        said.contains("989224"),
+        said.contains("139811"),
         "le nombre de tours passés sans rien de neuf doit être dit, \
          pas laissé à soustraire : {said}"
     );
     assert!(
-        said.contains(" 6 "),
-        "l'étroitesse du dernier dixième est le second chiffre, et il doit \
+        said.contains(" 30 "),
+        "l'étroitesse de ce qui suit est le second chiffre, et il doit \
          être là : {said}"
     );
     // **Et surtout : le relevé ne conclut pas.** Une boucle chaude légitime
