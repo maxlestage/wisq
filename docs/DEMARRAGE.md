@@ -28,8 +28,25 @@ et le refus attend que l'exécution arrive sur l'octet. Les 10 116 régions
 d'entrée se traduisent donc toutes — 10 116 sur 10 116, zéro refus — et un
 compteur qui ne peut plus baisser ne dit plus si le décodeur progresse. Ce qui
 le dit est la colonne d'après dans le même relevé : **les octets illisibles que
-les régions compilées portent**, nommés un par un. Il y en a 34, dans 19
-régions, et c'est là qu'il faut regarder pour savoir ce qui manque encore.
+les régions compilées portent**, nommés un par un. C'est là qu'il faut regarder
+pour savoir ce qui manque encore.
+
+**Ce chiffre baisse à chaque tranche de décodage, donc il porte sa date et sa
+commande** plutôt que d'être recopié ici comme un fait. Au 14 septembre 2026,
+sur l'image de référence :
+
+```
+cargo run -p wisq-vm --release --example coverage -- <noyau>
+→ régions compilées portant un octet illisible : 17 sur 10116 (31 octets)
+  c4×13  0f-02×5  f3-48×3  48×2  8f×2  0f-00×1  0f-09×1  0f-ae×1  c5×1
+  f3-0f×1  ff×1
+```
+
+Une version antérieure de ce paragraphe annonçait « 34, dans 19 régions » : le
+relevé de la tranche qui l'avait écrit, laissé derrière par sept tranches de
+décodage. `docs/ROADMAP.md` avait le bon depuis #225 et personne ne les avait
+comparés. **Le texte qui dit où regarder est le pire endroit où laisser vieillir
+un nombre.**
 
 ## La pagination
 
