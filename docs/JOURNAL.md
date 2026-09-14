@@ -13372,3 +13372,39 @@ Une conclusion qui dépend d'un *ordre de grandeur* survit au changement de
 machine — le recensement de pointeurs de #241 l'a montré. Une conclusion qui
 dépend d'une *grandeur* n'y survit pas. Les deux se ressemblent à l'écriture ;
 seule la seconde exige un second coureur avant d'être posée.
+
+## Un seul nombre ne pouvait plus désigner ce que le banc mesure
+
+`docs/DEMARRAGE.md` portait encore un trio de chiffres nus : « l'émetteur tient
+247 MIPS sous JavaScriptCore, contre 49,3 pour l'interpréteur Rust et 831 pour
+du WebAssembly écrit à la main ». Pas de date, pas de commande — le motif que
+deux tranches venaient de corriger ailleurs dans le même fichier.
+
+Le banc existe pourtant et se relance. Trois passages :
+
+| | publié | relevé |
+| --- | ---: | --- |
+| interpréteur Rust | 49,3 | 32,6 – 34,3 |
+| émetteur, registres, libre | — | 313,8 – 315,4 |
+| émetteur, registres, confinée | — | 283,8 – 290,1 |
+| émetteur, mémoire, libre | — | 577,2 – 577,7 |
+| émetteur, mémoire, confinée | — | 408,4 – 416,3 |
+| émetteur, « sous JavaScriptCore » | **247** | *ne correspond à aucune* |
+
+**Le défaut n'est pas que 247 ait vieilli, c'est qu'il ne désigne plus rien.**
+Depuis que le banc distingue la forme libre de la forme confinée et la boucle de
+registres de la boucle qui touche la mémoire, il imprime **quatre** chiffres
+d'émetteur. Une phrase qui en cite un seul ne peut plus dire lequel — et le
+lecteur qui relance la commande pour vérifier obtient quatre réponses dont
+aucune n'est celle-là.
+
+C'est une forme de péremption qu'aucune des tranches précédentes n'avait
+rencontrée : **le chiffre n'a pas bougé, c'est la grandeur qui s'est scindée.**
+Un relevé qui se subdivise laisse derrière lui des phrases dont le sujet a
+disparu, et elles se lisent encore très bien.
+
+**Ce qui tient, et pourquoi c'était le bon énoncé depuis le début.** Tout le
+travail de couverture repose sur l'idée que l'émetteur est plus rapide que
+l'interpréteur. C'est un **ordre**, pas une grandeur : huit à dix-huit fois ici,
+cinq fois sur le coureur d'origine. Il se transporte, et il aurait fallu
+n'écrire que lui.

@@ -117,8 +117,34 @@ cache : la voie normale est un tampon de traduction — une table de hachage
 adresse virtuelle → adresse physique, consultée en quelques instructions, et
 rechargée par la marche complète en cas d'absence.
 
-**Ce qui est mesuré** : l'émetteur tient 247 MIPS sous JavaScriptCore, contre
-49,3 pour l'interpréteur Rust et 831 pour du WebAssembly écrit à la main.
+**Ce qui est mesuré, et par quelle commande :**
+
+```
+cargo run -p wisq-vm --release --example speed
+```
+
+Au 14 septembre 2026, trois passages sur le même coureur que le tableau du
+tampon plus bas :
+
+| | MIPS |
+| --- | ---: |
+| interpréteur Rust | 32,6 – 34,3 |
+| émetteur, registres seuls, forme libre | 313,8 – 315,4 |
+| émetteur, registres seuls, **forme confinée** (ce que l'application exécute) | 283,8 – 290,1 |
+| émetteur, une lecture et une écriture, forme libre | 577,2 – 577,7 |
+| émetteur, une lecture et une écriture, **forme confinée** | 408,4 – 416,3 |
+
+**L'énoncé qui porte tout le travail de couverture est un ordre, pas une
+grandeur** : l'émetteur va huit à dix-huit fois plus vite que l'interpréteur.
+Celui-là se transporte.
+
+Une version antérieure de ce paragraphe disait « l'émetteur tient 247 MIPS
+contre 49,3 pour l'interpréteur Rust et 831 pour du WebAssembly écrit à la
+main » — trois nombres nus, sans date ni commande. Aucun des trois ne se
+retrouve ici, et **le banc imprime désormais quatre chiffres d'émetteur là où la
+phrase en citait un** : la forme libre et la forme confinée, chacune sur une
+boucle de registres et sur une boucle qui touche la mémoire. Un seul nombre ne
+pouvait plus désigner ce qui est mesuré.
 
 **Ce que la traduction coûterait, mesuré.** La sonde est dans le dépôt et se
 relance :
