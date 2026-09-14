@@ -237,10 +237,16 @@ const BROKEN = Object.freeze({ panne: "en panne" });
 /// ne se traitent pas pareil : l'un arrête la machine, l'autre coûte un
 /// aller-retour.
 ///
-/// Sur le vrai noyau Alpine, 91 régions sur 10 116 tombent là avec une fenêtre
-/// de 4 Kio, et **toutes** se traduisent au second essai. Une fenêtre de 16 Kio
-/// dès le départ les prendrait aussi, en payant quatre fois les octets sur les
-/// 99,1 % qui n'en ont pas besoin.
+/// Sur le vrai noyau Alpine, une petite minorité de régions tombait là avec
+/// une fenêtre de 4 Kio, et **toutes** se traduisaient au second essai. Le
+/// compte exact, sa date et ce qu'il vaut aujourd'hui vivent dans la doc de
+/// `Module::resolving_or_why` : il était recopié ici avec un chiffre qui ne
+/// s'accordait pas avec l'autre copie.
+///
+/// **Et depuis l'arrêt nommé, ce chemin s'est vidé.** Une instruction coupée
+/// par le bord ne fait plus refuser la région : elle rend la main là où le
+/// décodeur s'arrête. Le second essai ne sert plus qu'à une fenêtre dont la
+/// **première** instruction est coupée.
 const MORE = Object.freeze({ manque: "des octets" });
 
 /// **Attendre une traduction, mais pas éternellement.**
@@ -772,18 +778,22 @@ export function machine({
 
   // **Poser une région, et l'annoncer dans la correspondance.**
   //
-  // Seule l'adresse d'**entrée** y est rangée, pas chaque bloc : l'émetteur ne
-  // dit pas où commencent ses blocs, et une cible venue d'ailleurs est presque
-  // toujours une entrée de fonction. Un saut au milieu d'une autre région rend
-  // la main, et l'hôte traduit alors une région qui commence là — deux
-  // traductions qui se recouvrent, ce qui est correct et seulement moins
-  // économe.
-  // **La fenêtre d'octets, et pourquoi ces deux tailles.** Mesuré sur le noyau
-  // Alpine, avec 10 116 entrées atteintes par un `call` : 4 Kio traduit 98,2 %
-  // des régions et en laisse 91 manquer de place ; 16 Kio en traduit 98,9 % et
-  // n'en laisse que 6. Le rendement décroît vite, donc une grande fenêtre
-  // paierait quatre fois les octets sur les 99,1 % qui n'en ont pas besoin.
-  // Petite d'abord, grande sur demande.
+  // **Chaque début de bloc y entre, pas seulement l'entrée.** Ce commentaire a
+  // dit le contraire pendant une tranche entière après que le code eut cessé
+  // d'être vrai : « seule l'adresse d'entrée y est rangée, l'émetteur ne dit
+  // pas où commencent ses blocs ». L'émetteur le dit depuis qu'il exporte
+  // `starts`, et la boucle plus bas range une case par bloc. Un commentaire
+  // qui décrit l'inverse du code est pire qu'un commentaire absent — celui
+  // qui le lit ne va pas vérifier.
+  //
+  // **La fenêtre d'octets, et pourquoi ces deux tailles.** Le chiffrage vit
+  // dans la doc de `Module::resolving_or_why` côté Rust, avec sa date et ce
+  // qu'il vaut aujourd'hui. Il était recopié ici, et les deux copies avaient
+  // déjà divergé — 89 régions coupées d'un côté, 91 de l'autre, pour la même
+  // mesure. Une seule source, donc, et un renvoi.
+  //
+  // Ce qui ne bouge pas, et qui suffit à lire le code : le rendement décroît
+  // vite avec la taille de fenêtre, donc petite d'abord, grande sur demande.
   const WINDOW = 4096;
   const WIDER = 16384;
   // **La marge que la table garde devant la prochaine région**, et pourquoi
