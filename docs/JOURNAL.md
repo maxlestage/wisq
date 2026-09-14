@@ -13286,3 +13286,47 @@ quatrième fois se voie à l'écriture plutôt qu'au relevé suivant.
 comparer un tableau à un fichier ; il ne peut pas distinguer un nombre publié
 comme un fait d'un nombre publié comme un relevé. C'est une discipline
 d'écriture, et la seule prise qu'on ait dessus est de l'avoir écrite.
+
+## Deux nombres sous la phrase « c'est une mesure », et aucun moyen de la refaire
+
+`docs/DEMARRAGE.md` appuie son argument le plus lourd — un repli d'adresses ne
+mènera jamais un noyau là où il s'attend à vivre — sur un comptage de pointeurs
+dans l'image de référence : **122 994** hauts contre **11 933** bas, introduits
+par « Ce n'est pas une supposition, c'est une mesure ».
+
+Aucune commande n'accompagnait la mesure. En la refaisant, aucune définition
+plausible ne rend ces deux nombres : le préfixe exact `0xffffffff8` donne
+122 970, la borne `>= 0xffffffff80000000` en donne 134 984, et les bandes basses
+essayées vont de 515 à 36 081. L'écart sur le premier est de vingt-quatre — une
+paille — mais **une mesure qu'on ne peut pas refaire n'est pas une mesure, quelle
+que soit la taille de l'écart.**
+
+**L'argument, lui, tient sous toutes les définitions** : entre neuf et onze fois
+plus de hautes que de basses. C'est l'ordre de grandeur qui portait la
+conclusion, jamais les six chiffres significatifs — et c'est précisément
+pourquoi les écrire ainsi ne coûtait rien à personne jusqu'à ce que quelqu'un
+essaie de les vérifier.
+
+La correction est un module et un pilote : `census.rs` fixe les deux bandes,
+`examples/pointer-census.rs` les compte, et le document porte la commande avec
+sa date. Le relevé d'aujourd'hui : 122 970 hautes, 12 109 basses, 10,2 fois plus.
+
+### Et j'ai écrit deux assertions qui avaient l'air de gardes, coup sur coup
+
+**La première.** Un test nommé « un mot ne peut pas être compté dans les deux
+bandes » vérifiait que `hautes + basses <= total`. Un sabotage rendant la bande
+basse non exclusive — `if` au lieu de `else if` — l'a traversé sans le faire
+tomber. Les deux bandes sont disjointes **par leurs valeurs**, pas par le
+`else` : la somme restait juste dans les deux cas. Le test tenait une
+tautologie.
+
+**La seconde, en le corrigeant.** La réécriture comparait `0xffffffff80000000`
+à `0x03ffffff` — deux littéraux recopiés dans le test. Un sabotage déplaçant le
+plafond bas par-dessus la bande haute est passé au travers une deuxième fois :
+**une assertion sur une copie ne dit rien de l'original.** Les quatre bornes
+sont maintenant publiques et le test les lit sur le module ; le même sabotage le
+fait tomber.
+
+Deux fois de suite, sur le même test, la même erreur de forme : *vérifier ce que
+le test sait déjà au lieu de ce que le code fait.* Le sabotage est ce qui l'a
+dit, et lui seul — les six tests passaient au vert entre les deux.

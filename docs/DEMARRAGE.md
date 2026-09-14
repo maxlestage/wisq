@@ -75,16 +75,29 @@ Mais un noyau Linux x86-64 n'est pas bâti pour tourner là. Il est bâti pour
 tourner **en haut**, autour de `0xffffffff80000000`, et il y saute dès qu'il a
 posé ses tables de pages.
 
-**Ce n'est pas une supposition, c'est une mesure.** Dans les 35 842 660 octets de
-l'image de référence, en ne regardant que les mots de huit octets alignés :
+**Ce n'est pas une supposition, c'est une mesure — et elle se refait :**
 
-| ce que le mot vaut | occurrences |
-| --- | ---: |
-| une adresse noyau haute, `0xffffffff8…` | **122 994** |
-| une adresse physique du même ordre de grandeur | 11 933 |
+```
+cargo run -p wisq-vm --release --example pointer-census -- <noyau>
+```
+
+Au 14 septembre 2026, sur l'image de référence :
+
+```text
+35842660 octets, 4480332 mots alignés de huit (4 octets de queue, hors du compte)
+adresses noyau hautes (0xffffffff8…) : 122970
+adresses de chargement physique [0x1000000, 0x4000000) : 12109
+soit 10.2 fois plus de hautes que de basses
+```
 
 Dix fois plus de pointeurs hauts que bas. Le noyau s'attend à vivre en haut, et
 **un repli ne l'y emmènera jamais** : il ne fait pas correspondre, il alias.
+
+**Une version antérieure portait deux nombres — 122 994 et 11 933 — sous la
+même phrase, sans la commande.** Aucune des définitions plausibles ne les
+reproduit. Le rapport, lui, tient sous toutes : c'est l'ordre de grandeur qui
+portait l'argument, pas les six chiffres significatifs. `crates/wisq-vm/src/census.rs`
+fixe désormais les deux bandes, et six tests tiennent ce qu'elles comptent.
 
 ### Le mur a un nom, et ce sont deux instructions
 
