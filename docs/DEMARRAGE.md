@@ -312,10 +312,25 @@ Trois choses, et aucune n'est petite :
    `NET: Registered PF_UNIX/PF_LOCAL`, `PF_XDP`, `PCI: CLS`, `rtc_cmos` et
    `Initialise system trusted keyrings`.
 
-   Le mur suivant est `fpu__drop + 136` : l'octet `9b`, **`fwait`**, qui attend
-   les exceptions en attente du coprocesseur. Ce que cette machine ne fait
-   toujours pas est le **calcul** en virgule flottante ; la première instruction
-   qui en demanderait un est un arrêt nommé.
+   **Et le mur d'après tenait en un octet** : `fpu__drop + 136` portait `9b`,
+   **`fwait`**, qui attend les exceptions en attente du coprocesseur. Sur cette
+   machine le mot d'état du x87 n'est jamais écrit qu'à zéro et aucune
+   arithmétique x87 ne se décode : rien ne peut y être en attente, donc `fwait`
+   ne fait rien. C'est une **conclusion**, et elle devient fausse le jour où un
+   calcul x87 existe — ce que cette machine ne fait toujours pas, et la première
+   instruction qui en demanderait un reste un arrêt nommé.
+
+   Décodée, **le mur ne s'est pas déplacé : il a disparu.** 10 144 régions à
+   10 776, 204 lignes de journal à 206 (`workingset:` et `zbud: loaded`), et
+   **aucun arrêt** — le million de tours du pilote s'épuise dans
+   `jent_entropy_init` et la machine avançait encore.
+
+   **Ce relevé ne dit pas que le noyau démarre.** Il dit qu'il n'y a plus
+   d'instruction manquante sur le chemin parcouru en un million de tours.
+   `jent_entropy_init` est précisément le genre de boucle qui peut tourner
+   longtemps sans avancer si l'horloge ne bouge pas assez. La question suivante
+   n'est plus « quelle instruction manque » mais **« la machine progresse-t-elle
+   ou tourne-t-elle en rond »**, et il faut un relevé qui la pose.
 
    **Et `WISQ_ROUNDS=8192` ne suffit plus** : les relevés se prennent désormais
    à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.

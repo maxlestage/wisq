@@ -3572,6 +3572,27 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`fwait` — `9b` — attend le coprocesseur, et il n'y a rien à
+        // attendre.**
+        //
+        // L'instruction prend l'exception du coprocesseur s'il en a une en
+        // suspens. Ici il n'en a jamais : le mot d'état n'est écrit que par
+        // `fninit`, qui le met à zéro, et aucune instruction de **calcul** x87
+        // ne se décode — donc aucun bit d'exception ne peut être posé. Ne rien
+        // faire est exact, pas commode.
+        //
+        // **Le jour où un calcul x87 existera, ceci sera faux**, et il faudra
+        // le revoir en même temps que le cœur Swift, qui tient déjà le même
+        // raisonnement au même endroit.
+        //
+        // `9b` sert aussi de préfixe d'attente aux formes « avec wait » —
+        // `9b db e3` est `finit`, `9b df e0` est `fstsw ax`. Les lire en deux
+        // instructions rend la même chose : attendre, puis faire.
+        0x9b => Some(Decoded {
+            op: Op::Nop,
+            length: at,
+            ..Decoded::nothing(Width::Qword)
+        }),
         // `nop`, la forme courte. Avec un bit B de REX ce n'est plus un `nop`
         // mais `xchg %r8, %rax` — le même octet, deux instructions, et les
         // confondre échangerait deux registres au lieu de ne rien faire.
@@ -5564,6 +5585,51 @@ mod tests {
         ] {
             assert!(decode(&[0x0f, 0xae, modrm]).is_none(), "{name}");
         }
+    }
+
+    /// **`fwait` n'attend rien, et c'est une conclusion, pas une commodité.**
+    ///
+    /// Le mur mesuré après #227 : la machine s'arrête à `fpu__drop + 136` sur
+    /// l'octet `9b`. `fwait` — `wait` est son autre nom — attend que le
+    /// coprocesseur ait fini son travail et **prend son exception s'il en a
+    /// une**.
+    ///
+    /// Ici, il n'y en a jamais. Le mot d'état du x87 n'est écrit que par
+    /// `fninit`, qui le met à zéro, et **aucune instruction de calcul x87 ne se
+    /// décode** : aucun bit d'exception ne peut être posé. Ne rien faire est
+    /// donc exact, pas commode. Le cœur Swift tient déjà le même raisonnement
+    /// — `X86CoreDispatch.swift` — et le jour où une instruction de calcul
+    /// existera, les deux devront être revus ensemble.
+    ///
+    /// **`9b` sert aussi de préfixe d'attente aux formes « avec wait » du
+    /// x87** : `9b db e3` est `finit` là où `db e3` est `fninit`, et
+    /// `9b df e0` est `fstsw ax`. Les lire en **deux** instructions donne la
+    /// même chose — attendre, puis faire — et le test le tient plutôt que de
+    /// le supposer.
+    #[test]
+    fn fwait_reads_as_one_byte_and_leaves_its_companions_alone() {
+        let step = decode(&[0x9b]).expect("fwait se lit");
+        assert_eq!(step.op, Op::Nop);
+        assert_eq!(step.length, 1, "un octet, et un seul");
+        assert!(step.memory.is_none(), "`fwait` ne désigne rien à lire");
+
+        // **La forme « avec wait » de `finit`, lue en deux.** Le premier octet
+        // attend, le second initialise — et c'est exactement ce que le manuel
+        // décrit sous le nom de `finit`.
+        let wait = decode(&[0x9b, 0xdb, 0xe3]).expect("le `9b` de `finit` se lit");
+        assert_eq!(wait.op, Op::Nop);
+        assert_eq!(wait.length, 1, "il ne mange pas le `db e3` qui le suit");
+        let then = decode(&[0xdb, 0xe3]).expect("et `fninit` suit");
+        assert_eq!(then.op, Op::FpuInit);
+
+        // **`9b df e0` — `fstsw ax` — reste illisible derrière son attente.**
+        // Lire le mot d'état demanderait de le rendre dans AX, ce que cette
+        // machine ne fait pas encore ; l'attente, elle, se lit.
+        assert!(
+            decode(&[0xdf, 0xe0]).is_none(),
+            "`fstsw ax` n'est pas décodée : la lire rendrait un mot d'état \
+             dans AX sans que rien ne l'y écrive"
+        );
     }
 
     /// **`fxsave` porte son adresse, et ses voisines restent illisibles.**
