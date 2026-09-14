@@ -746,6 +746,37 @@ pub enum Op {
     /// `db /0` est `fild`, un vrai calcul. Décoder l'octet entier ferait
     /// croire à un coprocesseur qui compte.
     FpuInit,
+    /// **`0F AE /0`, forme mémoire : écrire l'état du coprocesseur.**
+    ///
+    /// C'est le mur mesuré après #224 : la machine s'arrête pour de vrai à
+    /// `fpu__init_system + 183` sur `0f ae 05 d2 f1 13 00`. Le noyau
+    /// l'exécute **sans garde** — `X86_FEATURE_FXSR` fait partie du masque
+    /// requis d'x86-64, donc `boot_cpu_has` y est replié à vrai à la
+    /// compilation, quoi que `cpuid` annonce.
+    ///
+    /// **L'aire réserve 512 octets et l'instruction n'en écrit que 416** : les
+    /// quatre-vingt-seize derniers sont laissés tels quels, ce que le corpus
+    /// matériel a **mesuré** sur le silicium. Voir `FXSAVE_WRITTEN` dans
+    /// `x86_wasm`, et `X86FloatingPointState.swift` du côté Swift.
+    ///
+    /// **Ce que l'aire contient ici.** Le mot de contrôle et le mot d'état du
+    /// x87, qui existent ; zéro partout ailleurs, ce qui est **la vérité** et
+    /// non un remplissage : aucune instruction XMM ne se décode et l'émetteur
+    /// n'a aucun registre vectoriel, donc aucun invité n'a jamais pu écrire
+    /// dans cette moitié de l'aire — le cœur Swift, lui, les tient, et y écrit
+    /// leur vrai contenu. Le mot d'étiquettes abrégé vaut zéro pour
+    /// la même raison — aucun registre x87 n'est occupé. MXCSR et son masque
+    /// valent zéro parce que cette machine n'a pas de MXCSR ; Linux prévoit ce
+    /// cas et prend sa valeur par défaut documentée quand le masque lit zéro.
+    ///
+    /// **`fxsave64` est le même octet derrière REX.W**, et il rend la même
+    /// chose : le préfixe ne change que le format de FIP et FDP, nuls dans les
+    /// deux cas.
+    ///
+    /// **Elle ne modifie rien du coprocesseur**, donc elle est idempotente :
+    /// rejouée après une faute de page survenue au milieu de l'aire, elle
+    /// réécrit exactement les mêmes octets.
+    FxSave,
     /// **`CC` et `CD nn` : une interruption demandée par le code.** Le vecteur
     /// est dans `imm` — trois pour `int3`, l'octet suivant pour `int n`.
     ///
@@ -2092,6 +2123,7 @@ impl Cpu {
                 | Op::InterruptFlag(_)
                 | Op::Halt
                 | Op::FpuInit
+                | Op::FxSave
                 | Op::PushFlags
                 | Op::PopFlags
         ) {
@@ -2382,6 +2414,7 @@ impl Cpu {
             | Op::InterruptFlag(_)
             | Op::Halt
             | Op::FpuInit
+            | Op::FxSave
             | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
@@ -2979,13 +3012,30 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // et c'est `mod` qui tranche.** En registre, `/5`, `/6` et `/7`
             // sont les trois barrières. En mémoire, `/7` est `clflush` — et
             // `clflushopt` avec `66` — : vider une ligne de cache ne fait
-            // rien sur cette machine, qui n'en a pas. Les autres formes
-            // mémoire (`fxsave`, `ldmxcsr`, `xsave`…) écrivent ou lisent des
-            // centaines d'octets et restent refusées. Aucune ne porte son
-            // adresse : un conseil ne désigne rien à lire.
+            // rien sur cette machine, qui n'en a pas. Ces quatre-là ne
+            // portent pas leur adresse : un conseil ne désigne rien à lire.
+            //
+            // **`/0` en mémoire est `fxsave`, et elle porte la sienne** : elle
+            // écrit 512 octets, et c'est le mur que le noyau atteint dès qu'il
+            // initialise le coprocesseur. Les cinq autres formes mémoire
+            // (`fxrstor`, `ldmxcsr`, `stmxcsr`, `xsave`, `xrstor`) restent
+            // refusées : elles lisent ou écrivent un état vectoriel que ce
+            // cœur ne porte pas, et les lire rendrait un nom faux.
             0xae => {
                 let field = read_modrm(bytes, &mut at, prefixes)?;
                 let reg = field.reg & 0b111;
+                // **Ni `66` ni `f3` devant `0f ae /0` en mémoire** : ces deux
+                // formes ne sont pas définies, et les lire comme `fxsave`
+                // écrirait 512 octets pour une instruction qui n'existe pas.
+                if field.memory.is_some() && reg == 0 && !prefixes.repeat && !prefixes.operand_size
+                {
+                    return Some(Decoded {
+                        op: Op::FxSave,
+                        length: at,
+                        memory: field.memory,
+                        ..Decoded::nothing(Width::Qword)
+                    });
+                }
                 let inert = match field.memory {
                     None => (5..=7).contains(&reg),
                     Some(_) => reg == 7 && !prefixes.repeat,
@@ -5485,20 +5535,20 @@ mod tests {
             assert!(step.memory.is_none(), "{name} : rien à lire");
         }
 
-        // Et les sept que la forme mémoire cache derrière les mêmes numéros.
-        // Aucune n'est un `nop` : `fxsave` écrit 512 octets, `ldmxcsr` change
-        // l'arrondi de toute la virgule flottante vectorielle. Ce cœur-ci ne
-        // porte ni XMM ni MXCSR, donc il refuse — et ce refus est ce que le
-        // test tient.
+        // Et les cinq que la forme mémoire cache derrière les mêmes numéros.
+        // Aucune n'est un `nop` : `ldmxcsr` change l'arrondi de toute la
+        // virgule flottante vectorielle, `xrstor` relit des centaines
+        // d'octets. Ce cœur-ci ne porte ni XMM ni MXCSR, donc il refuse — et
+        // ce refus est ce que le test tient.
         for (modrm, name) in [
-            (0x00u8, "fxsave (%rax)"),
-            (0x08, "fxrstor (%rax)"),
+            (0x08u8, "fxrstor (%rax)"),
             (0x10, "ldmxcsr (%rax)"),
             (0x18, "stmxcsr (%rax)"),
             (0x20, "xsave (%rax)"),
             (0x28, "xrstor (%rax)"),
-            // `/7` en mémoire est `clflush`, lue depuis la tranche qui l'a
-            // rencontrée dans `cpa_flush` : voir le test suivant.
+            // `/0` en mémoire est `fxsave`, et `/7` est `clflush` : toutes
+            // deux lues depuis la tranche qui les a rencontrées dans un vrai
+            // noyau. Voir les deux tests suivants.
         ] {
             assert!(
                 decode(&[0x0f, 0xae, modrm]).is_none(),
@@ -5513,6 +5563,59 @@ mod tests {
             (0xe0, "0f ae /4 en registre"),
         ] {
             assert!(decode(&[0x0f, 0xae, modrm]).is_none(), "{name}");
+        }
+    }
+
+    /// **`fxsave` porte son adresse, et ses voisines restent illisibles.**
+    ///
+    /// Le mur mesuré après #224 : la machine s'arrête pour de vrai à
+    /// `fpu__init_system + 183`, sur `0f ae 05 d2 f1 13 00`. Le noyau
+    /// l'exécute sans garde parce que `X86_FEATURE_FXSR` fait partie du masque
+    /// requis d'x86-64 : `boot_cpu_has` y est replié à vrai à la compilation,
+    /// quoi que `cpuid` annonce.
+    ///
+    /// Ce que ce test tient, et que le corpus matériel ne peut pas tenir : la
+    /// **frontière**. Un octet de plus ou de moins dans le numéro de `reg`, ou
+    /// le côté registre pris pour le côté mémoire, et cinq instructions
+    /// changeraient de sens sans qu'aucun programme ne le montre.
+    #[test]
+    fn fxsave_carries_its_address_and_its_neighbours_stay_unreadable() {
+        // La forme exacte relevée dans le noyau Alpine 6.6 : relative au
+        // pointeur d'instruction, sept octets.
+        let step = decode(&[0x0f, 0xae, 0x05, 0xd2, 0xf1, 0x13, 0x00]).expect("fxsave se lit");
+        assert_eq!(step.op, Op::FxSave);
+        assert_eq!(step.length, 7, "sept octets, tous consommés");
+        let area = step
+            .memory
+            .expect("fxsave désigne les 512 octets qu'elle écrit");
+        assert_eq!(area.displacement, 0x0013_f1d2);
+        assert!(
+            area.relative,
+            "le déplacement se compte depuis l'octet qui suit l'instruction"
+        );
+        assert!(area.base.is_none() && area.index.is_none());
+
+        // La forme à base de registre, celle que les tests de l'hôte écrivent.
+        let step = decode(&[0x0f, 0xae, 0x00]).expect("fxsave (%rax) se lit");
+        assert_eq!(step.op, Op::FxSave);
+        assert_eq!(step.length, 3);
+        assert_eq!(step.memory.expect("son adresse").base, Some(0));
+
+        // **`fxsave64` est le même octet derrière REX.W**, et il rend ici la
+        // même chose : le préfixe ne change que le format de FIP et FDP, que
+        // cette machine écrit nuls dans les deux cas.
+        let large = decode(&[0x48, 0x0f, 0xae, 0x00]).expect("fxsave64 (%rax) se lit");
+        assert_eq!(large.op, Op::FxSave);
+        assert_eq!(large.length, 4);
+
+        // **Les préfixes qui ne nomment plus `fxsave`.** `66 0f ae /0` et
+        // `f3 0f ae /0` en mémoire ne sont pas définis ; les lire comme
+        // `fxsave` écrirait 512 octets pour une instruction qui n'existe pas.
+        for (bytes, name) in [
+            (&[0x66, 0x0f, 0xae, 0x00][..], "66 0f ae /0"),
+            (&[0xf3, 0x0f, 0xae, 0x00][..], "f3 0f ae /0"),
+        ] {
+            assert!(decode(bytes).is_none(), "{name} n'est pas fxsave");
         }
     }
 

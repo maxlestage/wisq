@@ -12805,3 +12805,32 @@ qu'une mémoire trop petite est **refusée**. Élargir toutes les allocations d'
 coup l'avait rendu vert pour la mauvaise raison — la garde ne gardait plus rien.
 Le sabotage ne l'aurait pas dit ; c'est le test lui-même qui a échoué, et il a
 bien fait.
+
+## Le nombre que les tests lisaient dans la constante qu'ils gardaient
+
+`fxsave` réserve 512 octets et n'en écrit que 416 — mesuré sur le silicium, pas
+lu dans un manuel. Le premier jet en écrivait 512, et les deux tests de l'hôte
+étaient verts, parce qu'ils tiraient la taille de `FXSAVE_WRITTEN`, la constante
+même dont ils devaient tenir la valeur. Changer 416 en 512 changeait l'attente
+en même temps que le code.
+
+Ça ne s'est pas vu en relisant le test. Ça s'est vu parce que **deux sabotages
+ont survécu** — 256 et 512 — là où six autres tombaient. Un test qui lit sa
+réponse dans ce qu'il interroge ne garde rien ; le nombre est maintenant écrit
+en toutes lettres dans le test, et c'est la constante exportée qui lui est
+confrontée, pas l'inverse.
+
+La leçon n'est pas « ne pas partager de constantes ». Elle est : **un miroir
+n'est un miroir que si les deux faces viennent d'endroits différents.**
+
+## Un zéro vrai vaut mieux qu'une valeur plausible
+
+L'aire de `fxsave` porte MXCSR à l'offset `0x18`. Cette machine n'a pas de
+MXCSR. La tentation était d'y écrire `0x1f80`, sa valeur de repos sur un
+processeur qui en aurait un : plausible, légale, et invisible à tout noyau.
+
+Zéro est la vérité, et Linux la prévoit — masque nul, il prend sa valeur par
+défaut documentée. Le sabotage qui écrit `0x1f80` est celui qu'il fallait
+écrire, parce qu'il est la forme la plus flatteuse du mensonge : pas un bouchon
+qui ne fait rien, un bouchon qui a l'air de savoir.
+

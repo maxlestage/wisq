@@ -464,6 +464,21 @@ pub const FPU_CONTROL_RESET: u64 = 0x037f;
 /// processeur, un jour, sur une divergence qu'on ne saurait plus expliquer.
 pub const FPU_CONTROL_POWER_ON: u64 = 0x0040;
 
+/// **Ce que `fxsave` écrit vraiment : 416 octets, pas 512.**
+///
+/// L'aire que l'instruction réserve fait bien 512 octets, mais les
+/// quatre-vingt-seize derniers sont laissés tels quels. **C'est mesuré, pas
+/// lu** : le corpus matériel a fait tourner un programme qui remplit l'aire de
+/// `0xcc` avant l'instruction, et les a retrouvés intacts — voir
+/// `Sources/WisqVM/X86FloatingPointState.swift`, où le cœur Swift s'arrête au
+/// même octet.
+///
+/// Écrire les 512 effacerait quatre-vingt-seize octets qu'un vrai processeur
+/// laisse en place. Ça ne se verrait pas d'un noyau, qui ne les lit pas ; ça se
+/// verrait le jour où on comparerait une trace au silicium, sur une divergence
+/// qu'on ne saurait plus expliquer.
+pub const FXSAVE_WRITTEN: u64 = 416;
+
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = FPU_STATUS_SLOT + 1;
 
@@ -3500,6 +3515,77 @@ impl Module {
             });
             return Some(());
         }
+        // **`fxsave` écrit l'aire : l'état que la machine a, et zéro pour ce
+        // qu'elle n'a pas.**
+        //
+        // **416 octets, pas 512** — voir `FXSAVE_WRITTEN`, qui dit pourquoi
+        // et d'où vient le nombre.
+        //
+        // Le mot de contrôle et le mot d'état du x87 existent, et sortent de
+        // leurs globales. Tout le reste est nul, et **c'est la vérité, pas un
+        // remplissage** : l'émetteur n'a aucun registre XMM et aucune
+        // instruction XMM ne se décode, donc aucun invité n'a jamais pu écrire
+        // dans cette moitié de l'aire ; aucun registre x87 n'est occupé, donc
+        // le mot d'étiquettes abrégé est nul ; et cette machine n'a pas de
+        // MXCSR, donc son masque est nul — cas que Linux prévoit, et où il
+        // prend sa valeur par défaut documentée.
+        //
+        // **Une boucle plutôt que soixante-quatre écritures en ligne.** Chaque
+        // tour écrit huit octets par le même chemin qu'un accès ordinaire,
+        // donc chaque tour est traduit et replié pour son propre compte : une
+        // aire à cheval sur deux pages tombe dans les deux trames, sans que
+        // rien ici n'ait à le savoir. Soixante-quatre accès en ligne auraient
+        // été justes aussi, et auraient coûté soixante-quatre copies du
+        // parcours de tables — plusieurs kibioctets de module par `fxsave`.
+        //
+        // **Une faute au milieu de l'aire laisse une aire à moitié écrite, et
+        // ça se rejoue.** `fxsave` ne modifie rien du coprocesseur : réexécutée
+        // depuis son début, elle réécrit exactement les mêmes octets. C'est
+        // l'unique instruction de cet émetteur dont le contrôle de faute ne
+        // peut pas tenir la promesse « elle n'a rien fait », et l'idempotence
+        // est ce qui rend ça sans conséquence.
+        if step.op == Op::FxSave {
+            let area = *step.memory.as_ref()?;
+            // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area);
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load(Body::scratch(0))
+                    .constant(FXSAVE_WRITTEN)
+                    .op(code::I64_ADD);
+            });
+            body.op(code::LOOP).op(code::VOID);
+            body.store_at(Body::scratch(0), Width::Qword, |b| {
+                b.constant(0);
+            });
+            body.store(Body::scratch(0), |b| {
+                b.load(Body::scratch(0)).constant(8).op(code::I64_ADD);
+            });
+            // **Le test est en fin de tour**, et c'est juste parce que l'aire
+            // ne peut pas être vide : 416 n'est pas zéro. Le mettre en tête
+            // coûterait un branchement de plus pour un cas qui n'existe pas.
+            body.load(Body::scratch(0))
+                .load(Body::scratch(1))
+                .op(code::I64_NE);
+            body.op(code::BRANCH_IF);
+            unsigned(0, &mut body.bytes);
+            body.op(code::END); // loop
+                                // Et les deux mots qui existent, posés par-dessus les zéros.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area);
+            });
+            body.store_at(Body::scratch(0), Width::Word, |b| {
+                b.load(FPU_CONTROL_SLOT);
+            });
+            body.store(Body::scratch(0), |b| {
+                b.load(Body::scratch(0)).constant(2).op(code::I64_ADD);
+            });
+            body.store_at(Body::scratch(0), Width::Word, |b| {
+                b.load(FPU_STATUS_SLOT);
+            });
+            return Some(());
+        }
         // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
         // l'instruction, et la main rendue par un indice négatif — le même
         // chemin qu'une faute de page, qui existait déjà.
@@ -3703,6 +3789,7 @@ impl Module {
                 | Op::InterruptFlag(_)
                 | Op::Halt
                 | Op::FpuInit
+                | Op::FxSave
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
@@ -4094,6 +4181,7 @@ impl Module {
             Op::ReadTimestamp
             | Op::CpuId
             | Op::FpuInit
+            | Op::FxSave
             | Op::ReadModelRegister
             | Op::WriteModelRegister
             | Op::LoadDescriptorTable { .. }

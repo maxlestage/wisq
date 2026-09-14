@@ -9792,3 +9792,144 @@ mesure trouve une règle ; elle ne la garde pas.
   `0x10005`, l'octet qui suit le premier `call`. `0x1000a` reste, parce que le
   bloc qui commence là est le `ud2` — il rend la main par conception, quoi que
   la correspondance sache.
+
+## #225 — le mur de `fxsave` : écrire ce que la machine a, et rien d'inventé
+
+Le mur laissé par #224 : la machine s'arrête **pour de vrai** — RIP y est, ce
+n'est pas une région refusée de loin — à `fpu__init_system + 183` :
+
+```
+ffffffff82a46207: 0f ae 05 d2 f1 13 00   fxsave 0x13f1d2(%rip)
+ffffffff82a4620e: 8b 05 e8 f1 13 00      mov    0x13f1e8(%rip),%eax
+ffffffff82a46214: 85 c0                  test   %eax,%eax
+ffffffff82a46216: 74 ..                  je     ...
+```
+
+C'est `fpu__init_system_mxcsr`, inliné : sauvegarder l'état, relire le masque
+MXCSR à l'offset `0x1c` de l'aire, et prendre une valeur par défaut s'il est
+nul.
+
+**Le noyau l'exécute sans garde, et ce n'est pas un oubli de sa part.**
+`X86_FEATURE_FXSR` fait partie du masque requis d'x86-64 : `boot_cpu_has` y est
+replié à **vrai à la compilation**, quoi que `cpuid` annonce. Annoncer ou taire
+le bit ne change rien à ce que le noyau exécute — et `cpuid` n'a donc pas
+bougé, comme RDRAND depuis #215.
+
+### La forme honnête : ce qui existe sort de son état, ce qui n'existe pas est nul
+
+| offset | contenu | d'où il vient |
+| --- | --- | --- |
+| `0x00` | FCW | `FPU_CONTROL_SLOT` |
+| `0x02` | FSW | `FPU_STATUS_SLOT` |
+| `0x04` | mot d'étiquettes abrégé | zéro — **aucun registre x87 n'est occupé** |
+| `0x18`, `0x1c` | MXCSR, son masque | zéro — **cette machine n'a pas de MXCSR** |
+| `0x20`..`0x9f` | ST0-7 | zéro |
+| `0xa0`..`0x19f` | XMM0-15 | zéro — **l'émetteur n'a aucun registre XMM** |
+| `0x1a0`..`0x1ff` | réservé | **laissé tel quel** |
+
+Les zéros ne sont pas un remplissage : aucune instruction XMM ne se décode et
+l'émetteur ne porte aucun registre vectoriel, donc **aucun invité n'a jamais pu
+écrire là**. Un `fxsave` qui ne ferait rien — un `nop` — était déjà un sabotage
+attrapé en #211 ; un `fxsave` qui inventerait `0x1f80` dans MXCSR serait le
+même défaut sous une forme plus flatteuse, et c'est le sabotage S4.
+
+Le masque nul n'est pas un aveu d'ignorance déguisé : Linux le prévoit
+explicitement — masque nul, il prend `0x0000ffbf`, sa valeur par défaut
+documentée. La machine dit ce qu'elle est, et le noyau sait quoi en faire.
+
+**Le cœur Swift répond autrement, et les deux ont raison.** Lui *a* seize
+registres XMM et un MXCSR (#128), donc il y écrit leur vrai contenu et un
+masque de `0xffff`. La divergence est entre deux machines qui n'ont pas le même
+matériel, pas entre deux lectures du même manuel.
+
+### 416 octets, pas 512 — et le nombre vient du silicium
+
+L'aire réserve 512 octets ; l'instruction n'en écrit que **416**. Les
+quatre-vingt-seize derniers restent tels quels. Ce n'est pas lu dans un manuel,
+c'est **mesuré** : le corpus matériel fait tourner un programme qui remplit
+l'aire de `0xcc` avant l'instruction et les retrouve intacts — le cœur Swift
+s'arrête déjà au même octet depuis #131.
+
+Le premier jet écrivait les 512, et les tests le laissaient passer parce qu'ils
+lisaient la constante qu'ils étaient censés garder. Deux sabotages — 256 octets,
+et 512 — ont **survécu**, ce qui est la seule façon dont ça pouvait se voir. Le
+nombre est maintenant écrit en toutes lettres dans les tests, et la constante
+exportée leur est confrontée.
+
+### Une boucle, et pourquoi pas soixante-quatre écritures en ligne
+
+Chaque tour écrit huit octets par le chemin d'un accès ordinaire, donc chaque
+tour **traduit son adresse pour son propre compte**. La forme évidente —
+traduire une fois, puis écrire à `adresse + 8`, `+ 16`… par le décalage statique
+de WebAssembly — est juste tant que l'aire tient dans une page, et écrit **dans
+la trame d'à côté** dès qu'elle n'y tient plus. Un noyau ne choisit pas où
+`struct fxregs_state` atterrit. C'est le sabotage S7, et il ne tombe que sur le
+test paginé : `an_fxsave_area_that_straddles_two_pages_lands_in_both_frames`
+mappe deux pages virtuelles voisines sur des trames **non contiguës** et garde
+la trame physique qui suit la première.
+
+La boucle coûte aussi beaucoup moins de module : soixante-quatre accès en ligne
+auraient été soixante-quatre copies du parcours de tables, plusieurs kibioctets
+par `fxsave`.
+
+**Une faute au milieu de l'aire laisse une aire à moitié écrite.** C'est la
+seule instruction de cet émetteur dont le contrôle de faute ne tient pas la
+promesse « elle n'a rien fait ». Ça ne coûte rien parce que `fxsave` **ne
+modifie rien du coprocesseur** : rejouée depuis son début, elle réécrit
+exactement les mêmes octets. L'idempotence n'est pas une excuse trouvée après
+coup, c'est ce qui rend la forme en boucle légitime, et un test tient que les
+deux globales sont intactes après.
+
+### La mesure
+
+Les deux colonnes sont prises avec les **mêmes réglages** —
+`WISQ_ROUNDS=8192 WISQ_TURNS=1000000` —, le témoin sur le code d'avant.
+
+| | avant (#224) | après |
+| --- | --- | --- |
+| régions traduites | 1676 | **1782** |
+| lignes série | 87 | **88** |
+| dernière ligne | `MMIO Stale Data: Unknown` | **`x86/fpu: x87 FPU will use FXSAVE`** |
+| arrêt | `fpu__init_system + 183`, refusée | `__text_poke + 1093`, **sur place** |
+
+La ligne gagnée est celle que le noyau n'avait jamais pu dire : il a sauvegardé
+son état, relu le masque, pris la valeur par défaut, et **choisi FXSAVE**. Le
+mur suivant est ailleurs — `__text_poke`, la machinerie qui réécrit le texte du
+noyau pour les alternatives et pour ftrace — et il est d'une autre famille :
+« sur place », la machine tourne sans avancer.
+
+**`WISQ_TURNS=65536` ne suffit plus.** À 65 536 tours la machine épuise son
+budget dans `ftrace_init`, qui convertit 41 322 sites d'appel et rend la main
+deux fois par site. Ce n'est pas une régression de cette tranche — c'est le
+constat de #213 qui redevient le facteur limitant dès que le mur qui venait
+avant disparaît.
+
+### Le relevé de couverture
+
+| | avant | après |
+| --- | --- | --- |
+| octets refusés en décodage linéaire | 653 | **642** |
+| régions compilées portant un octet illisible | 18 (32 octets) | **17 (31 octets)** |
+
+Il reste un `0f-ae` illisible : les cinq autres formes mémoire du même octet —
+`fxrstor`, `ldmxcsr`, `stmxcsr`, `xsave`, `xrstor` — restent refusées, et le
+test `the_hints_are_read_and_the_state_savers_are_refused` tient ce refus.
+
+### Les sabotages
+
+| ce qu'on casse | ce qui tombe |
+| --- | --- |
+| le mot de contrôle n'est plus écrit | les deux tests de l'hôte |
+| l'aire ne fait plus que 256 octets | les deux |
+| **l'aire entière est écrite, les 96 réservés compris** | les deux — *après correction des tests* |
+| la boucle écrit soixante-quatre fois au même endroit | les deux |
+| **MXCSR prend `0x1f80`, la valeur de repos d'un processeur qui en aurait un** | les deux |
+| **l'aire est repliée une fois, sans retraduire à chaque huit octets** | le test paginé **seulement** |
+| la forme registre de `0f ae /0` passe aussi | `the_hints_are_read…` |
+| le préfixe `66` ne ferme plus `fxsave` | `fxsave_carries…` |
+
+Les trois en gras sont ceux qui ont appris quelque chose. Le troisième a
+survécu au premier jet des tests et a fait corriger les tests, pas le code ;
+le cinquième est la forme la plus tentante du mensonge — une valeur plausible
+pour un registre qui n'existe pas ; le sixième justifie à lui seul la boucle.
+
