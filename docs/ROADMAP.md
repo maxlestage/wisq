@@ -2624,9 +2624,26 @@ timer réarmé. Un message est livré **sans laisser passer un timer déjà dû*
 cède aussi peu qu'une micro-tâche, et aurait donné une boucle qui a l'air de
 respirer et une page toujours gelée.
 
-Le prix du timer, au même endroit : **dix-neuf pour cent de débit**. Le souffle
-se règle sur le **temps** et non sur les tours — un tour peut valoir un bloc
-comme un million. Ce que la respiration ne peut pas découper : un
+Le prix du timer, mesuré par le test qui le tient :
+`the_machine_lets_the_page_breathe_while_it_runs` fait tourner le même travail
+en respirant et en apnée, prouve par RDX que c'est le même, et imprime
+désormais ce qu'il mesurait déjà —
+
+    cargo test -p wisq-vm --release --test host_loop \
+        the_machine_lets_the_page_breathe_while_it_runs -- --nocapture
+
+— soit **13 à 14 % de débit** sur cinq passages le 15 septembre 2026, pour 32
+à 38 battements de page obtenus contre zéro en apnée.
+
+> Cette ligne annonçait « dix-neuf pour cent », et ce n'est pas une erreur
+> corrigée. Ce chiffre venait d'un montage décrit dans `web/host.js` —
+> 2 991 417 tours contre 3 679 889 — qu'aucune commande ne refait, et le
+> pourcentage dépend de la quantité de travail qui tient entre deux souffles.
+> Les deux ne se départagent pas ; ce qui change est qu'il y en a un qui se
+> relance. Le relevé d'origine reste au JOURNAL, daté, comme ce qu'il est.
+
+Le souffle se règle sur le **temps** et non sur les tours — un tour peut valoir
+un bloc comme un million. Ce que la respiration ne peut pas découper : un
 `region.run(budget)` est indivisible, donc le budget est le vrai plancher du
 gel, et ce qu'il coûte à 2²⁰ blocs ne se mesure que sur un appareil.
 
