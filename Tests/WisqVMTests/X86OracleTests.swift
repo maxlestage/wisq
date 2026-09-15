@@ -86,6 +86,11 @@ final class X86OracleTests: XCTestCase {
         /// silicium lisait la fenêtre de données, et tombe juste tant qu'aucun
         /// cas ne porte le préfixe.
         var gsBase: UInt64?
+        /// **Combien de lignes « cas » le lecteur a vues**, qu'il les ait
+        /// gardées ou non. `cases.count` dit ce qu'il a gardé ; la différence
+        /// entre les deux est ce qu'il a laissé tomber en silence, et c'est
+        /// exactement ce que le plancher d'en dessous ne voyait pas.
+        var casSeen = 0
     }
 
     static var path: String {
@@ -103,6 +108,10 @@ final class X86OracleTests: XCTestCase {
             let field = line.split(separator: "\t")
             guard let kind = field.first else { continue }
             func number(_ index: Int) -> UInt64 { UInt64(field[index], radix: 16) ?? 0 }
+            // Compté **avant** le `switch` : un « cas » que la garde `where`
+            // recale tombe dans `default` et disparaîtrait sans laisser de
+            // trace. Ici il laisse la sienne.
+            if kind == "cas" { fixture.casSeen += 1 }
             switch kind {
             case "état" where field.count >= 6:
                 fixture.states[Int(field[1]) ?? -1] = State(
@@ -155,7 +164,28 @@ final class X86OracleTests: XCTestCase {
 
     func testTheCoreAnswersWhatTheProcessorAnswers() throws {
         let fixture = try Self.read(Self.path)
-        XCTAssertGreaterThan(fixture.cases.count, 5000, "l'oracle doit couvrir, pas illustrer")
+
+        // **Le lecteur ne doit rien laisser tomber en silence.** Son en-tête
+        // l'annonce : « un enregistrement que ce lecteur ne connaît pas est
+        // ignoré en silence, exprès ». C'est vrai et voulu pour les genres
+        // qu'il ne traite pas — mais un « cas » que la garde `where` recale
+        // tomberait par le même chemin, et jusqu'ici rien ne l'aurait dit.
+        XCTAssertEqual(
+            fixture.cases.count, fixture.casSeen,
+            "le lecteur a laissé tomber \(fixture.casSeen - fixture.cases.count) cas sur "
+                + "\(fixture.casSeen) : ils ne portent pas les treize champs attendus")
+
+        // **Le même plancher que le jumeau Rust**, et c'est le point.
+        // `crates/wisq-vm/tests/x86_oracle.rs` exige `checked > 13140` sur les
+        // 13 220 cas du fichier — il tolère d'en perdre quatre-vingts. Celui-ci
+        // exigeait **5 000**, c'est-à-dire qu'il tolérait d'en perdre huit mille
+        // deux cent vingt, soixante-deux pour cent de la couverture, sans que
+        // rien ne rougisse. Deux gardes sur la même fixture, dans deux langages,
+        // et une seule aurait vu un lecteur cesser d'analyser les deux tiers du
+        // fichier. Elles disent maintenant la même chose.
+        XCTAssertGreaterThan(
+            fixture.cases.count, 13_140,
+            "la couverture a reculé : \(fixture.cases.count) cas lus")
         XCTAssertGreaterThan(fixture.instructions.count, 200)
         // Un enregistrement que ce lecteur ne connaît pas est ignoré en
         // silence, exprès ; celui-ci ne doit pas l'être.
@@ -260,6 +290,13 @@ final class X86OracleTests: XCTestCase {
                                 + "rdi \(hex(pointers.3))"))
             }
         }
+        // **Dire le compte, comme le jumeau Rust le dit.** Il imprime « x86
+        // Rust : N cas matériels vérifiés » ; celui-ci calculait le sien, s'en
+        // servait dans une égalité, et ne le disait jamais. Un nombre qu'un
+        // test connaît et tait est un nombre que la documentation devra
+        // deviner.
+        print("x86 Swift : \(agreed) cas matériels vérifiés sur \(fixture.cases.count)")
+
         let summary = byInstruction.sorted { $0.value > $1.value }
             .map { "  \($0.key) × \($0.value)" }.joined(separator: "\n")
         XCTAssertEqual(
