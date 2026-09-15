@@ -13491,3 +13491,57 @@ sept à huit fois — et il suffit à la conclusion.
 un troisième régime — un `call_indirect` nu sur la table partagée, sans
 correspondance à lire — pour que la soustraction devienne légitime. C'est un bras
 de banc à écrire, pas une direction à trancher.
+
+## Le troisième terme était écrit en dur, et il valait le double
+
+`--example resolved` mesure deux régimes dans le même processus — c'est sa
+raison d'être, et #245 vient de s'en servir. Il en imprimait un troisième :
+« le changement de région coûte environ **15 ns** ». Celui-là n'était mesuré
+nulle part. Le programme divisait par une constante :
+
+    let inside = PER_LINK as f64 * 1000.0 / 247.0;
+
+**247 est exactement le nombre que #243 a retiré.** Depuis cette tranche, le
+banc de vitesse n'imprime plus un chiffre d'émetteur mais quatre — registres
+seuls ou avec mémoire, forme libre ou confinée — de 284 à 578 MIPS. Selon celui
+qu'on mettait dans cette division, la ligne annonçait de quinze à vingt-neuf
+nanosecondes. Le nombre n'était donc pas seulement périmé : **il n'était plus
+déterminable** à partir de ce que le dépôt mesure.
+
+Et la prose à côté était honnête sur la mauvaise chose. Elle disait « c'est une
+déduction de deux mesures, pas une mesure » — vrai, mais ce n'est pas la
+déduction qui clochait. Une déduction entre deux nombres du même processus est
+licite ; celle-ci mêlait une mesure d'aujourd'hui à une constante d'un autre
+jour. **L'avertissement couvrait la forme du raisonnement et laissait passer la
+provenance de l'opérande.**
+
+**Ce qui le remplace est une mesure.** Une seule région, dont le saut indirect
+retombe sur sa propre entrée : la répartition reste interne, il n'y a ni
+correspondance à lire ni région à quitter. Confinée comme les maillons résolus,
+pour que la seule différence soit le changement de région. Trois passages le
+15 septembre 2026 :
+
+| | |
+| --- | --- |
+| en changeant de région | 39,9 – 40,2 ns |
+| sans jamais changer | 17,9 – 19,1 ns |
+| le changement lui-même | **20,8 – 22,3 ns**, soit 52 à 55 % du maillon |
+
+**Le double de ce qui était publié.** Et la soustraction est maintenant licite —
+même processus, même émetteur, même code de maillon, même confinement.
+
+**Le garde-fou compte, il ne constate pas.** Chaque maillon ajoute quatre fois
+RAX — constant ici — dans RDX. Après N maillons, RDX vaut exactement 4·N·entrée.
+Le pilote vérifie cette égalité avant de chronométrer. Elle dit **combien** de
+maillons ont tourné, donc aussi ce que le budget compte : un budget en
+instructions aurait rendu six fois moins de maillons et une mesure six fois trop
+rapide, sans que rien ne le signale. Sabotage — faire sauter le maillon hors de
+sa région — : le garde tombe et imprime « le maillon seul a tourné 3221225728 au
+lieu de 3221225472000 », soit un maillon au lieu de mille. Un `assert` sur
+« RDX ≠ 0 » aurait laissé passer.
+
+**Le signe à retenir.** Un banc qui mesure deux termes et en grave un troisième
+publie un nombre dont personne ne vérifiera jamais la provenance : il sort de la
+même ligne que les vrais, dans la même unité, avec la même autorité. Chercher
+les constantes numériques **dans le code des instruments**, pas seulement dans
+leur prose.
