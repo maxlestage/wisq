@@ -13408,3 +13408,39 @@ travail de couverture repose sur l'idée que l'émetteur est plus rapide que
 l'interpréteur. C'est un **ordre**, pas une grandeur : huit à dix-huit fois ici,
 cinq fois sur le coureur d'origine. Il se transporte, et il aurait fallu
 n'écrire que lui.
+
+## Le chiffre corrigé dans le document vivait encore, au présent, dans trois sources
+
+La tranche d'avant retirait « 247 MIPS » de `docs/DEMARRAGE.md`, parce que le
+banc imprime désormais quatre chiffres d'émetteur et qu'un seul ne désigne plus
+rien. Le même couple — 49 contre 247 — était resté dans le commentaire de module
+de `crates/wisq-vm/src/x86.rs`, sous un titre qui dit **« ce qu'on sait
+maintenant »**, avec sa commande nommée, et il en tirait « cinq fois ».
+
+Mesuré : huit à dix-huit fois. Le rapport était sous-estimé d'un facteur deux à
+trois, dans le fichier même dont c'est le sujet.
+
+**Corriger un document ne corrige pas ses copies.** Un chiffre publié se
+recopie : dans un commentaire de module, dans une frontière C, dans un en-tête
+destiné à Swift. Chacune de ces copies vieillit séparément, et aucune ne rougit.
+La méthode qui trouve ces copies est la même que pour tout le reste — chercher le
+nombre, pas la phrase — mais il faut penser à la lancer *après* la correction, et
+pas seulement avant.
+
+### Trois citations, trois traitements différents
+
+- **Le couple 49 / 247 dans `x86.rs`** : remplacé par l'étendue mesurée du jour,
+  avec les quatre formes que le banc imprime, et « cinq fois » remplacé par
+  l'ordre qui se transporte.
+- **Les trois chiffres d'origine — 10,6 en Swift, 157 pour rv32, 1103 pour un
+  module écrit à la main** : gardés, **datés, et dits non relançables depuis un
+  coureur Linux**. Le cœur Swift demande la chaîne Apple ; le module écrit à la
+  main a été remplacé par ce que l'émetteur engendre. Les corriger aurait exigé
+  d'inventer une valeur — exactement la faute que toute cette série traque.
+- **`docs/ROADMAP.md`, son tableau des débits** : laissé tel quel. C'est un
+  enregistrement historique dans une section datée, et le confondre avec une
+  affirmation au présent serait la faute symétrique.
+
+**Un nombre qu'on ne peut pas refaire n'est pas faux : il est daté.** La
+différence entre les deux se dit en une ligne, et c'est cette ligne qui manquait
+partout.

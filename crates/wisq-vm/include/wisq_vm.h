@@ -184,8 +184,11 @@ void wisq_vm_free(WisqVM *vm);
  * The x86-64 to WebAssembly translator.
  *
  * iOS gives an App Store app no page that is both writable and executable,
- * so the app's x86 core interprets — 10,6 MIPS, more than an hour to boot a
- * desktop. WebKit is the one exception: a WKWebView may compile
+ * so the app's x86 core interprets — 10,6 MIPS when it was last measured,
+ * before this header existed, and more than an hour to boot a desktop. That
+ * figure is an origin point rather than a fact of today, and it cannot be
+ * re-run from a Linux runner; what carries the argument is the order, which
+ * has not moved. WebKit is the one exception: a WKWebView may compile
  * WebAssembly, which is data rather than code. These five functions are how
  * Swift reaches the emitter that produces it.
  *
