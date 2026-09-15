@@ -802,6 +802,29 @@ pub enum Op {
     /// rejouée après une faute de page survenue au milieu de l'aire, elle
     /// réécrit exactement les mêmes octets.
     FxSave,
+    /// **`0F AE /1` en mémoire : `fxrstor`, la moitié relecture du couple.**
+    ///
+    /// Le mur mesuré à #252, et il est arrivé six tranches après son jumeau :
+    /// `restore_fpregs_from_fpstate` relit l'état neuf du coprocesseur au
+    /// moment de basculer vers `/init`. **`fxsave` était décodée depuis #225 ;
+    /// celle-ci ne l'a jamais été**, et un test le garantissait. Sauver sans
+    /// savoir relire n'est pas la moitié d'une capacité, c'est une capacité
+    /// qui ne sert à rien.
+    ///
+    /// **Ce qu'elle consomme ici : deux mots, et rien d'autre.** Le mot de
+    /// contrôle en `0x00` et le mot d'état en `0x02` sont les seuls registres
+    /// du coprocesseur que cette machine porte. MXCSR, les huit registres x87
+    /// et les seize XMM ne sont pas restaurés parce qu'ils n'existent pas ici
+    /// — et non parce qu'on aurait choisi de les ignorer : les restaurer
+    /// demanderait de les avoir, et le cœur Swift, qui les a, fait l'inverse.
+    ///
+    /// **Ce qu'elle exige : que l'aire entière soit lisible.** Mesuré sur le
+    /// silicium plutôt que lu : posée à cheval sur une page illisible, la vraie
+    /// instruction fait faute dès que le moindre des 512 octets manque —
+    /// y compris les quatre-vingt-seize derniers, que `fxsave` n'écrit pas et
+    /// dont le contenu, mesuré lui aussi, ne change rien à ce qui est
+    /// restauré. Accessibles et consommés sont deux questions différentes.
+    FxRestore,
     /// **`CC` et `CD nn` : une interruption demandée par le code.** Le vecteur
     /// est dans `imm` — trois pour `int3`, l'octet suivant pour `int n`.
     ///
@@ -2150,6 +2173,7 @@ impl Cpu {
                 | Op::Halt
                 | Op::FpuInit
                 | Op::FxSave
+                | Op::FxRestore
                 | Op::PushFlags
                 | Op::PopFlags
         ) {
@@ -2442,6 +2466,7 @@ impl Cpu {
             | Op::Halt
             | Op::FpuInit
             | Op::FxSave
+            | Op::FxRestore
             | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
@@ -3047,10 +3072,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // rien sur cette machine, qui n'en a pas. Ces quatre-là ne
             // portent pas leur adresse : un conseil ne désigne rien à lire.
             //
-            // **`/0` en mémoire est `fxsave`, et elle porte la sienne** : elle
-            // écrit 512 octets, et c'est le mur que le noyau atteint dès qu'il
-            // initialise le coprocesseur. Les cinq autres formes mémoire
-            // (`fxrstor`, `ldmxcsr`, `stmxcsr`, `xsave`, `xrstor`) restent
+            // **`/0` en mémoire est `fxsave` et `/1` est `fxrstor`** : elles
+            // se répondent, et c'est le couple que le démarrage réclame — l'une
+            // dès l'initialisation du coprocesseur, l'autre au moment de
+            // basculer vers le premier processus. Les quatre autres formes
+            // mémoire (`ldmxcsr`, `stmxcsr`, `xsave`, `xrstor`) restent
             // refusées : elles lisent ou écrivent un état vectoriel que ce
             // cœur ne porte pas, et les lire rendrait un nom faux.
             0xae => {
@@ -3059,10 +3085,13 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 // **Ni `66` ni `f3` devant `0f ae /0` en mémoire** : ces deux
                 // formes ne sont pas définies, et les lire comme `fxsave`
                 // écrirait 512 octets pour une instruction qui n'existe pas.
-                if field.memory.is_some() && reg == 0 && !prefixes.repeat && !prefixes.operand_size
+                if field.memory.is_some()
+                    && (reg == 0 || reg == 1)
+                    && !prefixes.repeat
+                    && !prefixes.operand_size
                 {
                     return Some(Decoded {
-                        op: Op::FxSave,
+                        op: if reg == 0 { Op::FxSave } else { Op::FxRestore },
                         length: at,
                         memory: field.memory,
                         ..Decoded::nothing(Width::Qword)
@@ -5640,14 +5669,18 @@ mod tests {
             assert!(step.memory.is_none(), "{name} : rien à lire");
         }
 
-        // Et les cinq que la forme mémoire cache derrière les mêmes numéros.
+        // Et les quatre que la forme mémoire cache derrière les mêmes numéros.
         // Aucune n'est un `nop` : `ldmxcsr` change l'arrondi de toute la
         // virgule flottante vectorielle, `xrstor` relit des centaines
         // d'octets. Ce cœur-ci ne porte ni XMM ni MXCSR, donc il refuse — et
         // ce refus est ce que le test tient.
+        //
+        // **`/1` n'est plus de la liste depuis #253.** `fxrstor` y figurait,
+        // et c'est ce qui rendait le défaut invisible : le dépôt *garantissait*
+        // par un test que la moitié relecture du couple resterait manquante,
+        // pendant que `fxsave` se décodait trois lignes plus haut.
         for (modrm, name) in [
-            (0x08u8, "fxrstor (%rax)"),
-            (0x10, "ldmxcsr (%rax)"),
+            (0x10u8, "ldmxcsr (%rax)"),
             (0x18, "stmxcsr (%rax)"),
             (0x20, "xsave (%rax)"),
             (0x28, "xrstor (%rax)"),
@@ -5766,6 +5799,67 @@ mod tests {
             (&[0xf3, 0x0f, 0xae, 0x00][..], "f3 0f ae /0"),
         ] {
             assert!(decode(bytes).is_none(), "{name} n'est pas fxsave");
+        }
+    }
+
+    /// **`fxrstor` se lit, et c'est la moitié du couple que #225 n'avait pas
+    /// posée.**
+    ///
+    /// Le mur mesuré à #252, atteint quand le noyau bascule vers `/init` :
+    ///
+    /// ```text
+    /// 0xffffffff8105a57c : 48 0f ae 4b 40    fxrstor64 0x40(%rbx)
+    /// ```
+    ///
+    /// C'est `restore_fpregs_from_fpstate`, qui relit l'état neuf du
+    /// coprocesseur pour le premier processus. `fxsave` se décodait depuis
+    /// #225 ; `fxrstor` non — et **un test le garantissait**, celui qui la
+    /// rangeait parmi les formes illisibles. Sauver sans savoir relire n'est
+    /// pas la moitié d'une capacité, c'est une capacité qui ne sert à rien.
+    ///
+    /// Ce que ce test tient, et que le corpus matériel ne peut pas tenir : la
+    /// **frontière**. `/0` et `/1` ne sont séparés que par trois bits du
+    /// `modrm` ; les confondre ferait écrire l'aire là où il faut la lire.
+    #[test]
+    fn fxrstor_reads_back_what_fxsave_wrote_and_is_not_its_neighbour() {
+        // La forme exacte relevée dans le noyau Alpine 6.6, REX.W comprise.
+        let step = decode(&[0x48, 0x0f, 0xae, 0x4b, 0x40]).expect("fxrstor64 se lit");
+        assert_eq!(step.op, Op::FxRestore);
+        assert_eq!(step.length, 5, "cinq octets, tous consommés");
+        let area = step.memory.expect("fxrstor désigne l'aire qu'elle relit");
+        assert_eq!(area.base, Some(3), "0x40(%rbx)");
+        assert_eq!(area.displacement, 0x40);
+        assert!(!area.relative);
+
+        // La forme courte, celle que les tests de l'hôte écrivent.
+        let step = decode(&[0x0f, 0xae, 0x08]).expect("fxrstor (%rax) se lit");
+        assert_eq!(step.op, Op::FxRestore);
+        assert_eq!(step.length, 3);
+        assert_eq!(step.memory.expect("son adresse").base, Some(0));
+
+        // **La frontière avec `fxsave`.** Le même octet de tête, trois bits de
+        // `modrm` de différence, et le sens s'inverse.
+        assert_eq!(
+            decode(&[0x0f, 0xae, 0x00]).expect("fxsave").op,
+            Op::FxSave,
+            "`/0` reste `fxsave` : c'est elle qui écrit"
+        );
+
+        // **La forme registre de `/1` n'existe pas.** `0f ae c8` n'est pas
+        // `fxrstor` : sans opérande mémoire il n'y a pas d'aire à relire, et
+        // la lire comme telle nommerait une instruction qui n'existe pas.
+        assert!(
+            decode(&[0x0f, 0xae, 0xc8]).is_none(),
+            "`0f ae /1` en registre n'est pas `fxrstor`"
+        );
+
+        // **Les préfixes qui ne nomment plus `fxrstor`.** `66 0f ae /1` et
+        // `f3 0f ae /1` ne sont pas définis.
+        for (bytes, name) in [
+            (&[0x66, 0x0f, 0xae, 0x08][..], "66 0f ae /1"),
+            (&[0xf3, 0x0f, 0xae, 0x08][..], "f3 0f ae /1"),
+        ] {
+            assert!(decode(bytes).is_none(), "{name} n'est pas fxrstor");
         }
     }
 
