@@ -189,6 +189,85 @@ pub fn zero_page(ram: u64, command_line: u32) -> Vec<u8> {
     page
 }
 
+/// **Où l'archive initramfs est posée dans la RAM de l'invité, et sa taille.**
+///
+/// Ce n'est pas le contenu : le chargeur pose les octets lui-même, et la page
+/// zéro ne fait que dire au noyau où les trouver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ramdisk {
+    pub at: u64,
+    pub bytes: u64,
+}
+
+/// Ce qu'une archive ne peut pas être, et pourquoi la page zéro la refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RamdiskRefusal {
+    /// Zéro octet. Le noyau lirait une archive qui n'existe pas.
+    Empty,
+    /// Au-delà de ce que `ramdisk_image` et `ramdisk_size` savent porter. Le
+    /// demi-haut de chacun vit dans `ext_ramdisk_image` et `ext_ramdisk_size`,
+    /// que cette page n'écrit pas : tronquer donnerait au noyau une autre
+    /// archive, à une autre adresse, sans rien signaler.
+    TooHigh { top: u64 },
+    /// Sous ce que le chargeur a déjà posé : l'archive écraserait le noyau.
+    BelowFloor { at: u64, floor: u64 },
+    /// Au-dessus de ce qui lui est laissé — le bout de la RAM, ou la base du
+    /// cadre quand un écran occupe le haut.
+    PastCeiling { top: u64, ceiling: u64 },
+}
+
+/// **Dire au noyau où est son initramfs.**
+///
+/// `zero_page` décrit une machine sans racine, et c'est ce que le montage de
+/// l'émetteur a été jusqu'ici : à 8 000 000 tours, tous les `initcall` passés,
+/// il finissait dans `prepare_namespace` sur « VFS: Unable to mount root fs on
+/// unknown-block(0,0) ». Le noyau n'avait aucun moyen d'apprendre qu'une archive
+/// était posée dans sa RAM. Les deux champs qui le disent — `ramdisk_image` à
+/// 0x218 et `ramdisk_size` à 0x21c — ne sont écrits par personne côté Rust,
+/// alors que le chargeur Swift (`X86BootLoader`) les écrit depuis toujours.
+///
+/// **La pose est indépendante de celle de l'écran, et c'est délibéré.** Ce sont
+/// deux champs de `boot_params` sans rapport l'un avec l'autre. Une fonction qui
+/// poserait les deux ensemble se dédoublerait au premier cas qui n'en veut
+/// qu'un, et deux copies finissent par diverger — c'est la leçon que ce dépôt
+/// paie le plus souvent. Celle-ci s'applique à une page nue comme à une page qui
+/// porte déjà un écran.
+///
+/// **`ceiling` est demandé plutôt que deviné.** C'est le bout de la RAM quand il
+/// n'y a pas d'écran, et la **base du cadre** quand il y en a un : la page zéro
+/// ne peut pas savoir lequel, le chargeur si. Tenir dans la RAM ne suffit pas —
+/// une archive peut tenir dans la mémoire et déborder sur l'écran, exactement le
+/// piège que #251 a payé pour le cadre lui-même.
+pub fn declare_ramdisk(
+    page: &mut [u8],
+    ramdisk: Ramdisk,
+    floor: u64,
+    ceiling: u64,
+) -> Result<(), RamdiskRefusal> {
+    if ramdisk.bytes == 0 {
+        return Err(RamdiskRefusal::Empty);
+    }
+    let top = ramdisk.at.saturating_add(ramdisk.bytes);
+    if top > u64::from(u32::MAX) {
+        return Err(RamdiskRefusal::TooHigh { top });
+    }
+    if ramdisk.at < floor {
+        return Err(RamdiskRefusal::BelowFloor {
+            at: ramdisk.at,
+            floor,
+        });
+    }
+    if top > ceiling {
+        return Err(RamdiskRefusal::PastCeiling { top, ceiling });
+    }
+    // Bornés juste au-dessus : le sommet tient dans un u32, donc les deux aussi.
+    let at = u32::try_from(ramdisk.at).expect("borné juste au-dessus");
+    let bytes = u32::try_from(ramdisk.bytes).expect("borné juste au-dessus");
+    page[0x218..0x21c].copy_from_slice(&at.to_le_bytes());
+    page[0x21c..0x220].copy_from_slice(&bytes.to_le_bytes());
+    Ok(())
+}
+
 /// Ce qu'un écran ne peut pas être, et pourquoi la page zéro le refuse.
 ///
 /// **Les champs de `screen_info` sont étroits et ne le disent pas.**

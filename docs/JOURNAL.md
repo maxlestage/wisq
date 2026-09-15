@@ -13908,3 +13908,66 @@ l'outil de couverture lancé sur un `vmlinuz` compressé rendait 6,6 % au lieu d
 absence. Chercher une chaîne dans un binaire ne prouve rien tant qu'on n'a pas
 montré que cette chaîne **pourrait** y être en clair — et le contrôle qui le
 montre est une chaîne dont on sait déjà qu'elle y est.
+
+## #252 — la page zéro ne savait pas dire au noyau qu'il avait une racine
+
+**Le défaut, et c'est la troisième fois la même forme.** `zero_page` écrit cinq
+champs et pas un de plus — sa propre garde du « rien d'autre » le tient. Ni
+`ramdisk_image` (0x218) ni `ramdisk_size` (0x21c) n'en font partie, alors que le
+chargeur Swift les écrit depuis toujours. Le montage de l'émetteur n'avait donc
+aucun moyen de dire au noyau qu'une archive était posée dans sa RAM, et
+terminait sur « VFS: Unable to mount root fs on unknown-block(0,0) ».
+
+**La pose est indépendante de celle de l'écran, et c'est le point de forme de la
+tranche.** La tentation était d'ajouter un paramètre à `zero_page_with_screen`,
+fusionnée une heure plus tôt. Ce sont deux champs de `boot_params` sans rapport :
+une fonction qui poserait les deux ensemble se dédoublerait au premier cas qui
+n'en veut qu'un, et deux copies finissent par diverger. `declare_ramdisk`
+s'applique donc à une page nue comme à une page qui porte déjà un écran, et le
+test éprouve les deux.
+
+**Le plafond est demandé, pas deviné** — et c'est #251 qui l'a appris à ses
+dépens. Une archive peut tenir dans la RAM **et** déborder sur l'écran. Le
+plafond est le bout de la mémoire quand il n'y a pas de cadre, et la base du
+cadre quand il y en a un ; la page zéro ne peut pas savoir lequel, le chargeur
+si.
+
+### Ce que le noyau a répondu
+
+    RAMDISK: [mem 0x0322c000-0x0322efff]
+    Trying to unpack rootfs image as initramfs...
+    Freeing initrd memory: 12K
+    Run /init as init process
+
+La panique a disparu, et le noyau **lance le programme de l'archive**. 16 178
+régions traduites contre 15 324 sans racine.
+
+L'archive est un cpio de 9 728 octets fabriqué pour l'occasion : un `/init`
+statique de quarante octets, écrit en assembleur, qui imprime une marque puis
+s'endort, plus un `dev/console`. Elle est jetable et se refait par la commande
+notée à la feuille de route — une mesure qui ne se refait pas n'est pas une
+mesure, c'est #241.
+
+### Ce que ça ne montre PAS, et la tentation refusée
+
+**L'espace utilisateur ne tourne pas.** La marque `WISQ-INIT-VIVANT` n'apparaît
+nulle part : la machine s'arrête **avant** que `/init` n'exécute sa première
+instruction. « Run /init as init process » dit que le noyau l'appelle, pas qu'il
+s'est exécuté. Écrire « wisq atteint l'espace utilisateur » serait exactement le
+genre de phrase que ce journal passe son temps à corriger.
+
+### Le mur suivant, et c'est un jumeau manquant
+
+    0xffffffff8105a57c ne se traduit pas — CannotDecode { at: 0 }
+    48 0f ae 4b 40    fxrstor64 0x40(%rbx)
+
+**`fxsave` est décodée depuis #225 ; `fxrstor` ne l'a jamais été.** La tranche
+qui a posé l'écriture des 512 octets du FPU n'a pas posé leur relecture, et rien
+ne l'a signalé pendant six tranches parce qu'aucun chemin parcouru ne la
+demandait. Le premier à la demander est celui qui bascule vers le premier
+processus : restaurer un état FPU neuf pour `/init`.
+
+**Un couple d'instructions qui se répondent est un couple à traiter ensemble.**
+Sauver sans savoir relire n'est pas la moitié d'une capacité, c'est une capacité
+qui ne sert à rien — et elle a attendu le seul chemin qui la réclame pour le
+dire.
