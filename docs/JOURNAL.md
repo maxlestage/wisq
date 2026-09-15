@@ -13444,3 +13444,50 @@ pas seulement avant.
 **Un nombre qu'on ne peut pas refaire n'est pas faux : il est daté.** La
 différence entre les deux se dit en une ligne, et c'est cette ligne qui manquait
 partout.
+
+## Le chiffre qui a décidé la piste, publié comme le prix de la piste
+
+`scripts/wasm-table-probe.ts` a été écrit pour répondre à une question de
+faisabilité : JavaScriptCore laisse-t-il un module en appeler un autre par une
+table partagée, et à quel prix ? Réponse : oui, quelques nanosecondes. C'est ce
+qui a décidé la piste.
+
+La forme est construite depuis, et `--example resolved` la mesure — les deux
+régimes dans le même processus, comme #242 l'exige : 159 à 162 ns pour le retour
+de main, 39,1 à 40,8 ns pour la forme résolue. Mais six endroits — deux
+commentaires de `x86_wasm.rs`, un dans son corps, deux dans ses tests, un dans la
+sortie de la sonde elle-même — citaient toujours le chiffre de la sonde comme le
+coût de la forme construite. L'un disait exactement : « le module trouve l'indice
+lui-même et y va par `call_indirect`, mesuré à 7,2 ns ». Cette phrase décrit mot
+pour mot ce que `--example resolved` mesure, et `--example resolved` dit
+sept à huit fois plus.
+
+**Ce n'est pas un chiffre périmé, et c'est ce qui le distingue.** #239 à #244
+corrigeaient des nombres qui avaient cessé d'être vrais. Celui-ci n'a jamais
+porté sur ce qu'on lui faisait dire : la sonde chronomètre deux modules écrits à
+la main, sans correspondance à lire, et elle l'énonce en tête. Le commentaire de
+`resolving` nommait même la partie manquante — « la lecture de la correspondance
+une poignée d'instructions » — et la laissait sans chiffre, à côté d'un nombre
+qui l'excluait. **La part non chiffrée était la plus chère des deux.**
+
+Et en relançant la sonde pour ne pas recopier son chiffre : quatre passages
+rendent 5,0 à 5,5 ns aujourd'hui, pas 7,2, et 45,7 à 46,6 au lieu de 54,1. Le
+rapport qu'elle imprime est passé de ×7 à ×8-9. Les deux nombres étaient donc
+datés en plus d'être mal employés — et seul le second défaut changeait une
+conclusion.
+
+Au passage, une leçon de #242 rejouée sur moi : j'ai écrit une fourchette après
+trois passages, et le quatrième en est sorti par le bas. Ce qu'on peut écrire,
+ce sont **les bornes des passages qu'on a faits**, en disant que ce sont les
+leurs.
+
+**Ce que je n'ai pas écrit, et pourquoi.** 39,1 − 5,4 = 33,7 ns se lirait comme
+« ce que coûte la correspondance ». Ce n'en est pas une mesure : les deux nombres
+viennent de deux instruments, sur deux montages différents. Les soustraire serait
+exactement la faute que cette tranche corrige. Ce qui se constate est l'ordre —
+sept à huit fois — et il suffit à la conclusion.
+
+**La piste que ça ouvre, nommée et pas engagée** : donner à `--example resolved`
+un troisième régime — un `call_indirect` nu sur la table partagée, sans
+correspondance à lire — pour que la soustraction devienne légitime. C'est un bras
+de banc à écrire, pas une direction à trancher.

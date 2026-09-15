@@ -2722,6 +2722,21 @@ d'appel mégamorphe disparaît : `call_indirect` n'a pas de cache en ligne à
 perdre. Un enchaînement à 7 ns au lieu de 192 sortirait le bureau de sa
 contrainte — 640 MIPS à 4,5 instructions par bloc au lieu de 23.
 
+> **Relancée le 15 septembre 2026** sur le coureur d'aujourd'hui, quatre
+> passages : 5,0–5,5 ns, 45,7–46,6 ns, 2,8–3,0 ns. Ce sont les bornes de ces
+> quatre passages-là, pas celles de la mesure : le cinquième pourrait en sortir,
+> et les deux premiers ont déjà démenti la fourchette des deux suivants. Ce qui
+> tient est le rapport — la sonde imprime ×8 à ×9 là où elle imprimait ×7.
+>
+> **Et la dernière phrase du paragraphe ci-dessus est une prédiction, qui n'a
+> pas tenu.** Elle prête à la forme à construire le chiffre d'une sonde qui ne
+> mesurait pas la même chose : deux modules écrits à la main, sans
+> correspondance à lire. La forme construite en lit une à chaque changement de
+> région, et `--example resolved` la mesure à 39–41 ns, pas 7 — donc environ
+> cent soixante-dix MIPS de plafond, pas six cent quarante. Le tableau mesuré
+> est plus bas dans ce document ; c'est lui qui fait foi, et cette section reste
+> pour dire ce qui a décidé la piste.
+
 La sonde mesure **le moteur**, pas wisq : deux modules écrits à la main,
 minuscules, sans rapport avec l'émetteur. C'est voulu — la question portait sur
 ce que JavaScriptCore sait faire.
