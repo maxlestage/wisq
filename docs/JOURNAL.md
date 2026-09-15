@@ -13700,3 +13700,67 @@ fichier : un nombre calculé à chaque exécution et jamais dit.
    deux énoncés, pas seulement leurs verdicts.** Les deux étaient verts ; l'un
    exigeait 13 140, l'autre 5 000. Le vert commun masquait un désaccord d'un
    facteur deux et demi sur ce qui était réellement éprouvé.
+
+## #250 — le champ était en unités de 64 Kio, et on y écrivait des octets
+
+**Ce qui a ouvert la tranche.** Pas une relecture : une copie. #167 demande que le
+montage de l'émetteur sache déclarer un écran au noyau, comme le chargeur Swift
+le fait déjà. Avant de recopier ces quatorze champs en Rust, il fallait savoir
+s'ils étaient justes. Un seul ne l'était pas.
+
+`lfb_size`, à 0x1C de la page zéro, n'est **pas** en octets. Le noyau le dit
+lui-même, dans `drivers/firmware/sysfb_simplefb.c` :
+
+    size = si->lfb_size;
+    if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
+        size <<= 16;
+    length = mode->height * mode->stride;
+    if (length > size) {
+        printk(KERN_WARNING "sysfb: VRAM smaller than advertised\n");
+        return ERR_PTR(-EINVAL);
+    }
+
+« shifted by 16 bits for historical reasons », dit le commentaire d'à côté. Le
+chargeur annonce `VIDEO_TYPE_VLFB` ; il écrivait donc 3 145 728 là où le noyau
+lisait **206 158 430 208** octets de VRAM pour un cadre de trois mégaoctets.
+
+**Pourquoi ça ne s'était jamais vu, et c'est le cœur de l'affaire.** La seule
+vérification du noyau sur ce champ est un `>`. Une VRAM surdéclarée la passe
+toujours : le défaut ne produit aucun symptôme, il **désarme une garde**. Plus
+rien ne pouvait déclencher « VRAM smaller than advertised ». Et `vesafb`, qui
+calcule `size_total = lfb_size * 65536` pour borner ses ressources, en aurait
+tiré des téraoctets.
+
+**Une erreur qui éteint une vérification au lieu d'en déclencher une ne se
+signale pas toute seule.** Il faut aller la chercher depuis la règle, pas depuis
+le symptôme — ici, en lisant le code du noyau au lieu de s'en souvenir.
+
+**Le test épinglait la mauvaise valeur.** `XCTAssertEqual(u32(0x1C), 1024*768*4)`
+tenait le défaut en place depuis #147. Une garde écrite en recopiant ce que le
+code fait, plutôt que ce que la règle exige, ne fait que photographier l'erreur.
+
+**La preuve, de la bonne forme.** L'ancienne assertion **passe**, la neuve
+**tombe** :
+
+    ancienne  u32(0x1C) == 1024*768*4      PASSE
+    noyau     needed <= advertised          PASSE   ← un `>` ne voit jamais un excès
+    neuve     advertised < needed + 65536   TOMBE   206 158 430 208 annoncés
+                                                    pour un cadre de 3 145 728
+
+**Deux trahisons du sabotage, sur cette tranche.**
+
+1. **Le cadre de mesure ne tenait pas l'arrondi.** 1024 × 768 × 4 fait 48 unités
+   **tout rond** : un arrondi vers le bas y donne la même réponse que le bon, et
+   serait invisible. Il a fallu un second cadre, 800 × 600, qui tombe à 29,3
+   unités. Sous sabotage, c'est lui qui tombe, et lui seul. **Une garde éprouvée
+   sur une valeur qui tombe juste n'éprouve pas l'arrondi.**
+2. **La garde plantait au lieu d'échouer.** Écrite `advertised - needed < 65_536`
+   sur des `UInt64`, elle débordait par le bas exactement dans le cas qu'elle
+   doit détecter : « Illegal instruction » dans la construction du message, pas
+   une assertion. Réécrite `advertised < needed + 65_536`. **Une garde qui ne
+   survit pas à ce qu'elle doit détecter ne rapporte rien** — et c'est un
+   sabotage, non une relecture, qui l'a montré.
+
+**Le signe à retenir.** Avant de recopier une règle d'un langage dans un autre,
+vérifier la règle à sa source. Le jumeau qu'on s'apprête à copier est une
+autorité commode, pas une autorité.
