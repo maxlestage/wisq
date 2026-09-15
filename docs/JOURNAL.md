@@ -13643,3 +13643,60 @@ La ligne qui les trahit ressemble à celle-ci, et elle est banale :
     assert!(breathing < holding * 3 + 100, "…");
 
 Une valeur lue, un seuil, et rien entre les deux.
+
+## La même garde dans deux langages, et deux planchers qui diffèrent d'un facteur deux et demi
+
+`Tests/Fixtures/x86-oracle.tsv` porte **13 220** cas matériels. Deux tests les
+rejouent, un par cœur, et ils devraient dire la même chose.
+
+| | plancher | tolère de perdre |
+| --- | --- | --- |
+| `crates/wisq-vm/tests/x86_oracle.rs` | `checked > 13140` | 80 cas — 0,6 % |
+| `Tests/WisqVMTests/X86OracleTests.swift` | `cases.count > 5000` | **8 220 cas — 62 %** |
+
+Le côté Swift avait pourtant l'assertion la plus forte en apparence :
+`XCTAssertEqual(agreed, fixture.cases.count)` — **tous** les cas lus doivent
+s'accorder, aucun toléré. Elle est vraie, et elle ne protège pas ce qu'on
+croit : **ses deux côtés rétrécissent ensemble.** Si le lecteur cesse d'analyser
+la moitié du fichier, `agreed` et `cases.count` tombent de concert et l'égalité
+reste vraie. Ce qui restait entre cette égalité et un test creux était le
+plancher, et il valait 5 000.
+
+**Le lecteur est précisément celui qui laisse tomber en silence.** Son en-tête
+l'écrit : « un enregistrement que ce lecteur ne connaît pas est ignoré en
+silence, exprès ». C'est juste et voulu pour les genres qu'il ne traite pas —
+mais un `cas` que la garde `where field.count >= 13` recale tombe par le même
+chemin, sans laisser de trace.
+
+**Le sabotage qui compte n'est pas celui qu'on fait d'abord.** Mon premier
+essai supprimait *tous* les cas ; les deux nouvelles assertions tombaient, et
+j'ai failli m'en contenter. Mais l'ancien plancher aussi aurait rougi — zéro est
+en dessous de cinq mille. Ça ne prouvait rien du défaut, seulement que les
+assertions neuves fonctionnent. Le sabotage honnête est **partiel** : garder
+6 000 cas sur 13 220.
+
+    ancien  cases.count > 5000        PASSE   (6000 > 5000)
+    ancien  agreed == cases.count     PASSE   (6000 == 6000)
+    neuf    cases.count == casSeen    TOMBE   « a laissé tomber 7220 cas sur 13220 »
+    neuf    cases.count > 13140       TOMBE   « la couverture a reculé : 6000 cas lus »
+
+Le test aurait été **vert** en n'éprouvant que 45 % de l'oracle, et sa ligne de
+relevé aurait affiché « 6000 cas vérifiés sur 6000 » — la perfection apparente.
+
+**Ce que la tranche pose.** Le lecteur compte désormais les lignes `cas` qu'il
+**voit**, avant que la garde ne filtre ; le test exige que vu et gardé soient
+égaux, ce qui interdit le silence ; et le plancher passe à 13 140, celui du
+jumeau Rust, pour que les deux gardes disent la même chose. Le test imprime
+aussi son compte — `x86 Swift : 13220 cas matériels vérifiés sur 13220` — comme
+le jumeau Rust imprime le sien depuis toujours. C'est #248 dans un autre
+fichier : un nombre calculé à chaque exécution et jamais dit.
+
+**Deux signes à retenir.**
+
+1. **Une égalité dont les deux côtés bougent ensemble n'est pas une garde de
+   couverture.** `agreed == total` reste vrai quand le total s'effondre. Il faut
+   un ancrage extérieur — ici, le nombre de lignes du fichier.
+2. **Quand la même règle est écrite deux fois dans deux langages, comparer les
+   deux énoncés, pas seulement leurs verdicts.** Les deux étaient verts ; l'un
+   exigeait 13 140, l'autre 5 000. Le vert commun masquait un désaccord d'un
+   facteur deux et demi sur ce qui était réellement éprouvé.
