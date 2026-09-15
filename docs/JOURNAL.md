@@ -13604,3 +13604,42 @@ si elle tenait la question entière. #223 a écrit noir sur blanc ce qu'elle ne
 tenait pas — les deux chiffres nommés dans `notHeld` — et **c'est le périmètre,
 pas le contenu, qui manquait à l'énoncé**. Une garde devrait dire non seulement
 ce qu'elle ne vérifie pas, mais **où elle ne regarde pas**.
+
+## L'instrument mesurait à chaque commit, et jetait le nombre
+
+`web/host.js` gelait « le timer de respiration coûte **dix-neuf pour cent de
+débit** », avec son relevé : 2 991 417 tours contre 3 679 889. Un protocole
+décrit — un souffle toutes les huit millisecondes pendant trois cents — et
+**aucune commande**. C'est le mode de #241.
+
+Sauf qu'ici le dépôt savait déjà le refaire, et le faisait.
+`the_machine_lets_the_page_breathe_while_it_runs` fait tourner le même travail
+deux fois, en respirant et en apnée, **prouve par RDX que c'est le même**, lit
+les deux durées, les compare à un seuil — et n'en imprime aucune. Le nombre
+était produit à chaque exécution de la CI et jeté à la ligne suivante.
+
+Il imprime maintenant. Cinq passages le 15 septembre 2026 : **13 à 14 %**,
+serré, avec 32 à 38 battements de page obtenus contre zéro en apnée — le zéro
+que le test exigeait déjà.
+
+**Et ce n'est pas « dix-neuf était faux ».** Les deux montages ne portent pas la
+même quantité de travail entre deux souffles, et ce pourcentage en dépend
+directement : un souffle coûte une tâche, et ce qu'elle pèse se rapporte à ce
+qui tourne entre deux. Rien ne permet de départager les deux relevés. Ce qui
+change est qu'il y en a maintenant **un qui se relance**, et l'autre reste au
+JOURNAL, daté, comme ce qu'il est.
+
+**Le signe à retenir, et c'est un onzième mode.** Les dix précédents portaient
+sur un nombre écrit quelque part. Celui-ci porte sur un nombre **qui n'était
+écrit nulle part alors qu'il était calculé partout**. Un test qui mesure une
+grandeur pour la comparer à un seuil la connaît mieux que la documentation qui
+la gèle — et il la jette. Chercher les instruments qui **parsent une valeur
+sans jamais la dire** : ils tiennent la réponse à une question que le dépôt pose
+ailleurs, sans savoir qu'il la pose.
+
+La ligne qui les trahit ressemble à celle-ci, et elle est banale :
+
+    let breathing: u64 = seen("duree").parse().expect("la durée");
+    assert!(breathing < holding * 3 + 100, "…");
+
+Une valeur lue, un seuil, et rien entre les deux.

@@ -982,9 +982,27 @@ export function machine({
   /// aussi peu qu'une micro-tâche. Il aurait donné une boucle qui a l'air de
   /// respirer et une page toujours gelée — la pire des deux issues.
   ///
-  /// Ce que le timer coûte, mesuré au même endroit : 2 991 417 tours contre
-  /// 3 679 889 sans respirer, soit **dix-neuf pour cent de débit**. C'est le
-  /// prix d'une vue qui répond.
+  /// **Ce que le timer coûte, et comment le refaire.** Le test
+  /// `the_machine_lets_the_page_breathe_while_it_runs` fait tourner le même
+  /// travail deux fois — une fois en respirant toutes les huit millisecondes,
+  /// une fois jamais — et prouve par RDX que c'est le même. Il imprime
+  /// désormais ce qu'il mesurait déjà :
+  ///
+  ///     cargo test -p wisq-vm --release --test host_loop \
+  ///         the_machine_lets_the_page_breathe_while_it_runs -- --nocapture
+  ///
+  /// Cinq passages le 15 septembre 2026 : **13 à 14 % du débit**, pour 32 à 38
+  /// battements de page obtenus contre zéro en apnée. C'est le prix d'une vue
+  /// qui répond.
+  ///
+  /// **Ce paragraphe disait « dix-neuf pour cent », et ce n'est pas une
+  /// correction d'erreur.** Ce chiffre-là venait d'un montage décrit ici
+  /// — 2 991 417 tours contre 3 679 889 — qu'aucune commande ne refait. Les
+  /// deux ne se départagent pas : ce pourcentage dépend de la quantité de
+  /// travail qui tient entre deux souffles, et les deux montages n'en portent
+  /// pas la même. Ce qui change est qu'il y en a maintenant un qui se relance,
+  /// et que **l'instrument tournait déjà à chaque commit en jetant son
+  /// nombre**.
   function souffler() {
     return new Promise((settle) => setTimeout(settle, 0));
   }
