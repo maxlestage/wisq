@@ -78,6 +78,42 @@ public struct X86BootLoader {
         /// Quatre octets par pixel, et pas de remplissage en fin de ligne.
         public var bytesPerRow: Int { width * 4 }
         public var byteCount: Int { bytesPerRow * height }
+
+        /// **Ce que `lfb_size` porte : la VRAM annoncée, en unités de 64 Kio.**
+        ///
+        /// Le champ n'est pas en octets, et le noyau le dit lui-même —
+        /// `drivers/firmware/sysfb_simplefb.c` :
+        ///
+        /// ```c
+        /// size = si->lfb_size;
+        /// if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
+        ///     size <<= 16;
+        /// length = mode->height * mode->stride;
+        /// if (length > size) {
+        ///     printk(KERN_WARNING "sysfb: VRAM smaller than advertised");
+        ///     return ERR_PTR(-EINVAL);
+        /// }
+        /// ```
+        ///
+        /// « shifted by 16 bits for historical reasons », dit le commentaire
+        /// d'à côté. Ce chargeur annonce `VIDEO_TYPE_VLFB`, donc il est dans ce
+        /// cas-là, et y écrire un nombre d'octets déclarait 65 536 fois le
+        /// cadre. `vesafb`, qui calcule `size_total = lfb_size * 65536` pour
+        /// borner ses ressources, en tirait des téraoctets.
+        ///
+        /// **Rien ne le signalait**, et c'est le point : la seule vérification
+        /// du noyau sur ce champ est un `>`, qu'une VRAM surdéclarée passe
+        /// toujours. Le défaut ne cassait rien — il rendait le refus
+        /// « VRAM smaller than advertised » inatteignable.
+        ///
+        /// **L'arrondi va vers le haut, et c'est le seul sens possible.** Le
+        /// champ ne sait pas compter plus fin que 64 Kio ; arrondir vers le bas
+        /// annoncerait moins que le cadre, et le noyau refuserait l'écran.
+        public var advertisedVideoMemory: UInt32 {
+            // Saturer plutôt que piéger : une valeur trop grande reste du bon
+            // côté de la vérification du noyau, un plantage du chargeur non.
+            UInt32(clamping: (UInt64(max(byteCount, 0)) + 0xFFFF) / 0x1_0000)
+        }
     }
 
     /// `VIDEO_TYPE_VLFB` : VESA en mode graphique, cadre linéaire. Sans cette
@@ -213,7 +249,7 @@ public struct X86BootLoader {
             write16(&page, 0x14, UInt16(truncatingIfNeeded: screen.height))
             write16(&page, 0x16, 32)  // lfb_depth : quatre octets par pixel
             write32(&page, 0x18, UInt32(truncatingIfNeeded: screen.base))
-            write32(&page, 0x1C, UInt32(truncatingIfNeeded: screen.byteCount))
+            write32(&page, 0x1C, screen.advertisedVideoMemory)
             write16(&page, 0x24, UInt16(truncatingIfNeeded: screen.bytesPerRow))
             // XRGB8888 : bleu en bas, puis vert, puis rouge, l'octet inutilisé
             // en haut. C'est l'ordre que `simpledrm` attend et celui que la
