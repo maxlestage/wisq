@@ -508,6 +508,29 @@ pub const FPU_CONTROL_POWER_ON: u64 = 0x0040;
 /// qu'on ne saurait plus expliquer.
 pub const FXSAVE_WRITTEN: u64 = 416;
 
+/// **Les 512 octets que l'aire du coprocesseur occupe, et qu'il faut pouvoir
+/// atteindre.**
+///
+/// À ne pas confondre avec `FXSAVE_WRITTEN`, qui en vaut 416 : ce sont deux
+/// nombres différents, et les confondre est facile. `fxsave` **écrit** 416
+/// octets et **exige** que les 512 soient accessibles ; `fxrstor` en
+/// **consomme** quatre ici — les deux mots que cette machine porte — et exige
+/// les mêmes 512.
+///
+/// Mesuré plutôt que lu, le 15 septembre, sur le silicium de la machine de
+/// développement : l'aire posée à cheval sur une page rendue illisible par
+/// `mprotect`, un enfant par décalage. `fxrstor` fait faute dès que 496 octets
+/// seulement sont en page ; `fxsave` fait faute dès 448, **alors qu'elle n'en
+/// écrit que 416** — un contrôle qui a d'abord fait croire à une asymétrie
+/// entre les deux, et qui dit en réalité que l'instrument mesurait l'accès et
+/// non l'écriture. Une troisième mesure a montré que le contenu des
+/// quatre-vingt-seize derniers octets ne change rien à ce que `fxrstor`
+/// restaure : zéro octet de différence entre une queue à `0x00` et à `0xff`.
+///
+/// La commande est à la feuille de route — une mesure qui ne se refait pas
+/// n'est pas une mesure.
+pub const FPU_AREA_BYTES: u64 = 512;
+
 /// Le nombre de globales que le module déclare et exporte.
 pub const GLOBAL_COUNT: usize = FPU_STATUS_SLOT + 1;
 
@@ -963,6 +986,7 @@ mod code {
     pub const I64_CTZ: u8 = 0x7a;
     pub const I64_EXTEND_I32_U: u8 = 0xad;
     pub const I64_SHR_S: u8 = 0x87;
+    pub const DROP: u8 = 0x1a;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LE_U: u8 = 0x58;
     /// Le reste d'une division non signée. C'est ce qui ramène un compte de
@@ -3730,6 +3754,72 @@ impl Module {
             });
             return Some(());
         }
+        // **`fxrstor` relit l'aire : les deux mots que cette machine porte, et
+        // rien d'autre.**
+        //
+        // C'est la moitié relecture du couple, et elle est arrivée six tranches
+        // après son jumeau — le premier chemin qui la réclame est celui qui
+        // bascule vers `/init`.
+        //
+        // **Elle ne restaure que le mot de contrôle et le mot d'état.** MXCSR,
+        // les huit registres x87 et les seize XMM ne sont pas restaurés parce
+        // qu'ils **n'existent pas ici**, et non parce qu'on aurait choisi de
+        // les ignorer : les restaurer demanderait de les avoir. Le cœur Swift,
+        // qui les a, fait l'inverse — la divergence est entre deux machines qui
+        // n'ont pas le même matériel.
+        //
+        // **Le balayage d'abord, la restauration ensuite, et l'ordre est le
+        // fond de l'affaire.** Un vrai processeur exige que les 512 octets
+        // soient lisibles, y compris les quatre-vingt-seize derniers dont le
+        // contenu ne change rien — les deux faits sont mesurés, voir
+        // `FPU_AREA_BYTES`. Lire d'abord toute l'aire en jetant ce qu'on
+        // n'utilise pas reproduit cette faute ; poser les deux mots avant
+        // laisserait, sur une aire à cheval sur une page absente, un
+        // coprocesseur à moitié restauré qu'aucun rejeu ne rattraperait. Dans
+        // cet ordre, **ou tout est lisible et l'état change, ou rien ne
+        // change** — ce qui est plus fort que ce que `fxsave` peut promettre.
+        if step.op == Op::FxRestore {
+            let area = *step.memory.as_ref()?;
+            // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area);
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load(Body::scratch(0))
+                    .constant(FPU_AREA_BYTES)
+                    .op(code::I64_ADD);
+            });
+            body.op(code::LOOP).op(code::VOID);
+            // Lue et jetée : ce tour n'est là que pour que la page derrière
+            // l'octet se fasse traduire, et fasse faute si elle manque.
+            body.load_at(Body::scratch(0), Width::Qword);
+            body.op(code::DROP);
+            body.store(Body::scratch(0), |b| {
+                b.load(Body::scratch(0)).constant(8).op(code::I64_ADD);
+            });
+            // Le test est en fin de tour, comme chez le jumeau, et pour la
+            // même raison : 512 n'est pas zéro.
+            body.load(Body::scratch(0))
+                .load(Body::scratch(1))
+                .op(code::I64_NE);
+            body.op(code::BRANCH_IF);
+            unsigned(0, &mut body.bytes);
+            body.op(code::END); // loop
+                                // L'aire est entière : les deux mots peuvent entrer.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area);
+            });
+            body.store(FPU_CONTROL_SLOT, |b| {
+                b.load_at(Body::scratch(0), Width::Word);
+            });
+            body.store(Body::scratch(0), |b| {
+                b.load(Body::scratch(0)).constant(2).op(code::I64_ADD);
+            });
+            body.store(FPU_STATUS_SLOT, |b| {
+                b.load_at(Body::scratch(0), Width::Word);
+            });
+            return Some(());
+        }
         // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
         // l'instruction, et la main rendue par un indice négatif — le même
         // chemin qu'une faute de page, qui existait déjà.
@@ -3935,6 +4025,7 @@ impl Module {
                 | Op::Halt
                 | Op::FpuInit
                 | Op::FxSave
+                | Op::FxRestore
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
@@ -4328,6 +4419,7 @@ impl Module {
             | Op::CpuId
             | Op::FpuInit
             | Op::FxSave
+            | Op::FxRestore
             | Op::ReadModelRegister
             | Op::WriteModelRegister
             | Op::LoadDescriptorTable { .. }

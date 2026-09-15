@@ -31,6 +31,11 @@ use wisq_vm::x86_wasm::{
 const UD2_SANS_PORTE: &str =
     "une instruction indéfinie (ud2) sans porte : aucune IDT ne porte le vecteur 6";
 
+/// **La faute de page quand aucune IDT ne la recueille.** Le pendant du
+/// précédent pour le vecteur 14 ; le montage de `fxrstor` s'en sert pour
+/// montrer qu'une aire incomplète fait faute au lieu de passer.
+const FAUTE_SANS_PORTE: &str = "une faute de page sans porte : aucune IDT ne porte le vecteur 14";
+
 /// **La même, quand une IDT existe mais ne porte pas la porte 6.** Les trois
 /// montages à IDT de ce fichier n'installent que la porte dont ils ont besoin ;
 /// leur `ud2` final tombe donc sur une porte absente, ce que l'hôte distingue
@@ -9218,6 +9223,240 @@ console.log("fsw " + vm.globals[{status}].value);"#,
          ce qui est aussi ce qui la rend rejouable après une faute : {text}"
     );
     assert_eq!(line_of(&text, "fsw "), "43981", "et le mot d'état : {text}");
+}
+
+/// **`fxrstor` relit ce que `fxsave` a écrit, et ne touche pas l'aire.**
+///
+/// Le mur mesuré à #252 : la machine s'arrête pour de vrai à
+/// `0xffffffff8105a57c`, sur `48 0f ae 4b 40` — `restore_fpregs_from_fpstate`,
+/// qui relit l'état neuf du coprocesseur au moment de basculer vers `/init`.
+/// **`fxsave` était décodée depuis #225 ; celle-ci ne l'a jamais été.**
+///
+/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** Les deux
+/// globales portent avant l'instruction des valeurs que l'aire ne contient
+/// pas : un `fxrstor` qui ne ferait rien les laisserait en place, un qui
+/// n'en relirait qu'une laisserait l'autre, et un qui les échangerait
+/// donnerait deux fois le mauvais mot. L'aire est en outre relue après coup :
+/// `fxrstor` **lit**, elle n'écrit pas — la confondre avec son jumeau
+/// écraserait l'état qu'on vient de lui donner.
+#[test]
+fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const AREA: u32 = 0x2000;
+    let text = drive_with(
+        &bun,
+        &[0x0f, 0xae, 0x08, 0x0f, 0x0b], // fxrstor (%rax) ; ud2
+        BASE,
+        PAGES,
+        "fxrstor",
+        &format!(
+            r#"vm.globals[0].value = {area}n;
+// L'aire est remplie de témoins, puis les deux mots que la machine porte
+// vraiment y sont posés. Les témoins doivent être lus sans être consommés.
+new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xaa);
+const vue = new DataView(vm.memory.buffer);
+vue.setUint16({area} + 0x00, 0x0ff1, true);
+vue.setUint16({area} + 0x02, 0x0ee2, true);
+// Et les globales portent autre chose : ce qui doit être remplacé.
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;"#,
+            area = AREA,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+        &format!(
+            r#"console.log("fcw " + vm.globals[{control}].value);
+console.log("fsw " + vm.globals[{status}].value);
+const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
+console.log("temoins " + aire.slice(4).every((o) => o === 0xaa));
+console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).every((o) => o === 0xaa));
+console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).every((o) => o === 0xaa));"#,
+            area = AREA,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "fcw "),
+        "4081",
+        "le mot de contrôle vient de l'aire, en 0x00 : 0x0ff1 = 4081, et non \
+         le 0x1234 que la globale portait avant : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fsw "),
+        "3810",
+        "et le mot d'état vient de 0x02 : 0x0ee2 = 3810. Les deux valeurs \
+         diffèrent exprès — les échanger donnerait 3810 et 4081 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "tete "),
+        "f10fe20eaaaaaaaa",
+        "`fxrstor` **lit** l'aire : les deux mots doivent y être restés tels \
+         quels, et les témoins juste après aussi. La confondre avec `fxsave` \
+         écraserait l'état qu'on vient de lui donner : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "temoins "),
+        "true",
+        "et les 508 octets qui suivent restent 0xaa — rien n'est écrit dans \
+         l'aire : {text}"
+    );
+    assert_eq!(line_of(&text, "avant "), "true", "rien au-dessous : {text}");
+    assert_eq!(line_of(&text, "apres "), "true", "ni au-dessus : {text}");
+}
+
+/// **Une aire de `fxrstor` dont un octet manque ne restaure rien du tout.**
+///
+/// Ce test tient les deux faits **mesurés sur le silicium** le 15 septembre,
+/// et non lus dans un manuel — la commande est à la feuille de route :
+///
+/// 1. Un vrai processeur exige que **les 512 octets** soient lisibles. L'aire
+///    posée à cheval sur une page rendue illisible par `mprotect`, `fxrstor`
+///    fait faute dès qu'il n'y a que 496 octets en page — bien au-delà des
+///    416 que `fxsave` écrit. (Le contrôle sur `fxsave` fait faute dès 448 :
+///    l'instrument mesure **l'accès**, pas l'écriture. Les deux nombres sont
+///    différents et c'est exactement le piège.)
+/// 2. Le **contenu** des quatre-vingt-seize derniers octets, lui, ne change
+///    rien : zéro octet de différence entre une queue à `0x00` et à `0xff`.
+///
+/// Un `fxrstor` qui ne lirait que les quatre octets dont il se sert
+/// passerait sans broncher là où le silicium fait faute — un émetteur plus
+/// permissif que la machine qu'il imite, c'est-à-dire un bouchon complaisant.
+///
+/// **Et l'ordre est tenu ici, pas seulement écrit dans un commentaire.** Le
+/// balayage vient avant la restauration, donc les deux globales doivent être
+/// **intactes** après la faute : ou tout est lisible et l'état change, ou rien
+/// ne change. Poser les deux mots d'abord laisserait un coprocesseur à moitié
+/// restauré, et le rejeu par `iretq` ne le rattraperait pas.
+#[test]
+fn an_fxrstor_area_missing_one_page_restores_nothing_at_all() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const FRAME_A: u64 = 0x3_0000;
+    const VA: u64 = 0xFFFF_8000_0020_0000;
+    /// **Le décalage est choisi sur la frontière, et c'est tout le test.**
+    ///
+    /// `0xE60 + 416 = 0x1000` **exactement** : les 416 octets que `fxsave`
+    /// écrit tiennent au dernier octet près dans la page cartographiée, et le
+    /// 417e est le premier de la page absente. Un balayage de 512 fait donc
+    /// faute, un balayage de 416 passe.
+    ///
+    /// La première version de ce test posait l'aire à `0xF00`, où
+    /// `0xF00 + 416` déborde déjà : elle ne distinguait pas 416 de 512, et un
+    /// sabotage qui ramenait le balayage aux 416 du jumeau y a **survécu**.
+    /// C'est la leçon de #250 à l'envers — là un nombre tombait pile sur une
+    /// frontière et cachait un arrondi, ici il en était trop loin et cachait
+    /// une troncature. Un témoin doit être posé **sur** la frontière.
+    ///
+    /// Et `0xE60` est aligné sur seize, ce que `fxrstor` exige.
+    const AT: u64 = 0xE60;
+
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4,%rax
+    push(&PML4.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $PG,%rax
+    push(&(1u64 << 31).to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    push(&[0x48, 0xb8]); // movabs $VA+AT,%rax
+    push(&(VA + AT).to_le_bytes());
+    push(&[0x0f, 0xae, 0x08]); // fxrstor (%rax)
+    push(&[0x0f, 0x0b]); // ud2
+
+    let scratch = std::env::temp_dir().join(format!("wisq-fxrstor-pg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    let path = scratch.join("fx.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({va}n, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx({va}n, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx({va}n, 21) * 8, {pt}n | present, true);
+vue.setBigUint64({pt} + idx({va}n, 12) * 8, {frameA}n | present, true);
+// **La page suivante n'est délibérément pas cartographiée** : c'est elle qui
+// porte les 256 derniers octets de l'aire.
+new Uint8Array(vm.memory.buffer, {frameA}, 0x1000).fill(0xaa);
+// Un état parfaitement valide dans la moitié lisible : si la machine ne
+// lisait que ce dont elle se sert, elle le prendrait et n'y verrait rien.
+vue.setUint16({frameA} + {at} + 0x00, 0x0ff1, true);
+vue.setUint16({frameA} + {at} + 0x02, 0x0ee2, true);
+vm.globals[{rip}].value = {base}n;
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;
+const why = await vm.run({{ budget: 256n, rounds: 8 }});
+console.log("arret " + why.stopped);
+console.log("fcw " + vm.globals[{control}].value);
+console.log("fsw " + vm.globals[{status}].value);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            control = FPU_CONTROL_SLOT,
+            status = FPU_STATUS_SLOT,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            frameA = FRAME_A,
+            va = VA,
+            at = AT,
+        ),
+    )
+    .expect("le pilote");
+
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert_eq!(
+        line_of(&text, "arret "),
+        FAUTE_SANS_PORTE,
+        "la seconde moitié de l'aire n'est pas cartographiée : un vrai \
+         processeur fait faute, mesuré. Un `fxrstor` qui ne lirait que les \
+         quatre octets dont il se sert passerait ici sans broncher : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fcw "),
+        "4660",
+        "et **rien n'a été restauré** : 0x1234 = 4660 est intact. Le balayage \
+         passe avant la restauration, donc ou tout est lisible et l'état \
+         change, ou rien ne change : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "fsw "),
+        "43981",
+        "de même pour le mot d'état : 0xabcd = 43981 : {text}"
+    );
 }
 
 /// **L'aire de `fxsave` à cheval sur deux pages tombe dans les deux trames.**

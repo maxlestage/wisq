@@ -354,7 +354,27 @@ fn main() {
         };
         let from = (folded - load.physical_address + load.offset) as usize;
         let window = &image[from..(from + 16384).min(image.len())];
-        Module::resolving_or_why(window, at, 0, slot, pages).map_err(|why| format!("{why:?}"))
+        // **Un refus dit désormais ce qu'il avait dans les mains.** Sans ces
+        // trois nombres, diagnostiquer un mur demande de refaire à la main le
+        // repli, la recherche de segment et le décalage dans le fichier — et
+        // une erreur dans cette reconstitution se lit comme une contradiction
+        // entre l'outil et lui-même. C'est arrivé à #253, qui a passé deux
+        // mesures à croire un mur déplacé parce que la sonde écrite à côté,
+        // elle, traduisait.
+        Module::resolving_or_why(window, at, 0, slot, pages).map_err(|why| {
+            let tete: Vec<String> = window
+                .iter()
+                .take(12)
+                .map(|octet| format!("{octet:02x}"))
+                .collect();
+            format!(
+                "{why:?} — repli 0x{folded:x}, segment paddr 0x{:x} décalage 0x{:x}, \
+                 fichier 0x{from:x}, octets {}",
+                load.physical_address,
+                load.offset,
+                tete.join(" ")
+            )
+        })
     };
 
     let Some(bun) = ["/root/.bun/bin/bun", "bun"].into_iter().find(|path| {
@@ -563,6 +583,48 @@ fn main() {
         println!("`x86-translate` n'est pas construit : cargo build -p wisq-vm --release --bin x86-translate");
         std::process::exit(1);
     };
+    // **Et qu'il ne date pas d'avant la dernière modification des sources.**
+    //
+    // `cargo run --example kernel-entry` reconstruit la bibliothèque et cet
+    // exemple, **pas** le binaire séparé qu'il lance. Le contrôle d'existence
+    // juste au-dessus laissait donc passer un traducteur périmé, qui décode le
+    // jeu d'instructions d'il y a une heure — et la mesure accuse alors une
+    // instruction que la tranche vient d'ajouter.
+    //
+    // C'est arrivé à #253 : trois mesures d'affilée ont buté sur `fxrstor`
+    // **après** que `fxrstor` eut été décodée, parce que ce binaire-là datait
+    // d'une demi-heure plus tôt. Deux sondes écrites à côté traduisaient la
+    // même région sans broncher, ce qui se lisait comme une contradiction de
+    // l'outil avec lui-même. Ce sont deux dates de fichier qui ont tranché,
+    // pas une relecture.
+    //
+    // **Le repère est la source, pas l'autre binaire.** Une première version
+    // comparait le traducteur à ce pilote-ci ; construits par le même
+    // `cargo build`, leur ordre de liaison est arbitraire, et la garde a
+    // refusé une mesure parfaitement fraîche — elle est tombée sur son
+    // premier essai, ce qui est la meilleure chose qui pouvait lui arriver.
+    // La question réellement posée est « ce binaire est-il postérieur au
+    // dernier `.rs` du cœur ? », et c'est celle-là qu'on pose.
+    let derniere_source = std::fs::read_dir(root.join("crates/wisq-vm/src"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entree| entree.path().extension().is_some_and(|fin| fin == "rs"))
+        .filter_map(|entree| entree.metadata().and_then(|meta| meta.modified()).ok())
+        .max();
+    if let (Some(source), Ok(binaire)) = (
+        derniere_source,
+        translator.metadata().and_then(|meta| meta.modified()),
+    ) {
+        if binaire < source {
+            println!(
+                "`x86-translate` date d'avant la dernière modification des sources : \
+                 il décoderait le jeu d'instructions d'avant.\n\
+                 Le reconstruire : cargo build -p wisq-vm --release --bin x86-translate"
+            );
+            std::process::exit(1);
+        }
+    }
     println!();
 
     // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.

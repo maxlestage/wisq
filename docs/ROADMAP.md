@@ -10945,3 +10945,83 @@ réparable seul.
 
 La question de l'affichage de #251 reste ouverte telle quelle : tous les
 `initcall` passent, et aucun périphérique d'affichage n'est construit.
+
+## #253 — `fxrstor`, le jumeau que `fxsave` attendait depuis six tranches
+
+`fxsave` se décode depuis #225 ; `fxrstor` ne l'a jamais été. Et un test de
+`x86.rs` **garantissait** qu'elle ne le soit pas : `fxrstor (%rax)` figurait
+parmi les formes illisibles, trois lignes sous `fxsave`. La tranche a donc retiré
+une ligne de test autant qu'elle en a ajouté.
+
+Le mur mesuré à #252, atteint au moment où le noyau bascule vers `/init` :
+
+```
+0xffffffff8105a57c : 48 0f ae 4b 40   fxrstor64 0x40(%rbx)
+```
+
+C'est `restore_fpregs_from_fpstate`, qui relit l'état neuf du coprocesseur pour
+le premier processus.
+
+### Ce qu'elle restaure, et ce qu'elle exige
+
+**Deux mots, et rien d'autre** : le mot de contrôle en `0x00`, le mot d'état en
+`0x02`. MXCSR, les huit registres x87 et les seize XMM ne sont pas restaurés
+parce qu'ils **n'existent pas dans ce cœur** — pas parce qu'on aurait choisi de
+les ignorer. Le cœur Swift, qui les a, fait l'inverse.
+
+**Mais elle exige l'aire entière lisible**, et le balayage passe **avant** la
+restauration : ou tout est lisible et l'état change, ou rien ne change. Un
+`fxrstor` qui ne lirait que les quatre octets dont il se sert passerait là où le
+silicium fait faute.
+
+Relevé le 15 septembre, aire à cheval sur une page rendue illisible par
+`mprotect`, un enfant par décalage :
+
+| question | réponse |
+|---|---|
+| `fxrstor` exige-t-elle les 512 octets lisibles ? | oui — faute dès 496 en page |
+| `fxsave` aussi, alors qu'elle n'en écrit que 416 ? | **oui** — faute dès 448 |
+| le contenu des octets 416–511 change-t-il ce qui est restauré ? | non — 0 écart |
+
+Le contrôle sur `fxsave` a corrigé une première lecture : l'instrument mesure
+**l'accès**, pas l'écriture. 512 accessibles et 416 écrits sont deux nombres
+différents, et le 416 de #225 tient.
+
+### L'instrument mesurait avec un traducteur périmé
+
+`kernel-entry` ne traduit pas lui-même : il lance `x86-translate` par
+`Bun.spawnSync`, et `cargo run --example kernel-entry` **ne reconstruit pas** ce
+binaire — le pilote ne vérifiait que son existence. Trois mesures ont buté sur
+`fxrstor` après sa correction, avec un binaire vieux d'une demi-heure.
+
+Le pilote refuse désormais de mesurer avec un traducteur antérieur au dernier
+`.rs` du cœur. **La commande de mesure construit donc les deux :**
+
+```
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  ./target/release/examples/kernel-entry /tmp/vmlinux.bin
+```
+
+### Ce que la mesure dit une fois l'instrument réparé
+
+| | avant | après |
+| --- | --- | --- |
+| régions traduites | 16 178 | **16 189** |
+| arrêt | `fxrstor64 0x40(%rbx)` illisible | `0x401000`, hors de tout segment chargeable |
+
+**`0x401000` est le point d'entrée de `/init`** — vérifié dans l'en-tête ELF de
+l'archive, segment exécutable `R+X` à cette adresse exacte. Le noyau a fini sa
+bascule et saute dans l'espace utilisateur.
+
+### Ce que ça ne montre PAS
+
+**L'espace utilisateur ne tourne pas.** La marque de `/init` n'apparaît nulle
+part, et pas une de ses instructions n'a été exécutée. Ce qui a changé est la
+**nature** du mur : il n'est plus dans la machine, il est dans l'instrument —
+`kernel-entry` sert les octets depuis le fichier ELF du noyau, et le code de
+`/init` n'y est pas ; il vit en mémoire invitée, déballé de l'initramfs.
+
+Le mur suivant est donc une **direction**, pas un défaut nommé : faire servir au
+pilote les octets de la mémoire invitée plutôt que ceux du fichier. Elle attend
+le mot de Maxime.
