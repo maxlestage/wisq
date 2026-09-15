@@ -13971,3 +13971,101 @@ processus : restaurer un état FPU neuf pour `/init`.
 Sauver sans savoir relire n'est pas la moitié d'une capacité, c'est une capacité
 qui ne sert à rien — et elle a attendu le seul chemin qui la réclame pour le
 dire.
+
+## #253 — un jumeau manquant, et trois mesures perdues sur un binaire périmé
+
+**Le défaut, et il était garanti par un test.** `fxsave` se décode depuis #225 ;
+`fxrstor` ne l'a jamais été. Mieux : `x86.rs` portait un test qui rangeait
+`fxrstor (%rax)` parmi les formes illisibles, avec le commentaire « ce refus est
+ce que le test tient » — trois lignes sous `fxsave`, qui se décodait. Le dépôt
+**garantissait** que la moitié relecture du couple resterait manquante.
+
+La tranche a donc dû retirer une ligne de test, pas seulement en ajouter. Une
+tranche qui n'aurait fait qu'ajouter du décodage aurait rougi sur sa propre
+correction.
+
+**Sauver sans savoir relire n'est pas la moitié d'une capacité.** Rien ne l'a
+signalé pendant six tranches parce qu'aucun chemin parcouru ne réclamait la
+relecture. Le premier à la réclamer est celui qui bascule vers le premier
+processus.
+
+### Ce que le silicium a répondu, et le contrôle qui a corrigé ma lecture
+
+Trois mesures sur la machine de développement, aire posée à cheval sur une page
+rendue illisible par `mprotect`, un enfant par décalage :
+
+| question | réponse |
+|---|---|
+| `fxrstor` exige-t-elle les 512 octets lisibles ? | oui — faute dès 496 en page |
+| `fxsave` aussi, alors qu'elle n'en écrit que 416 ? | **oui** — faute dès 448 |
+| le contenu des octets 416–511 change-t-il ce qui est restauré ? | non — 0 écart |
+
+**J'ai annoncé une asymétrie qui n'existe pas.** La première mesure semblait
+dire que `fxrstor` lisait plus loin que `fxsave` n'écrit. C'est le contrôle sur
+`fxsave` qui a démenti : l'instrument mesurait **l'accès**, pas l'écriture. Les
+deux nombres coexistent — 512 accessibles, 416 écrits — et le 416 de #225 tient.
+
+**Un instrument qui répond à une question voisine de la sienne est un piège**, et
+seul le contrôle le montre.
+
+### Le sabotage qui a survécu, et c'est #250 à l'envers
+
+S3 ramenait le balayage de l'aire de 512 à 416 octets. Il a **survécu** au
+premier essai : l'aire était posée à `0xF00`, où `0xF00 + 416` déborde déjà sur
+la page absente — le test ne pouvait pas distinguer les deux nombres. Déplacée à
+`0xE60`, où `0xE60 + 416 = 0x1000` **exactement**, elle les distingue, et S3
+tombe.
+
+#250 avait un témoin qui tombait pile sur une frontière et cachait un arrondi ;
+celui-ci en était trop loin et cachait une troncature. **Un témoin se pose sur
+la frontière, ni avant ni après.**
+
+### Le vrai défaut de la tranche, et il a coûté trois mesures
+
+`kernel-entry` ne traduit pas lui-même : il **lance un autre binaire**,
+`x86-translate`, par `Bun.spawnSync`. Et `cargo run --release --example
+kernel-entry` reconstruit la bibliothèque et l'exemple, **pas** ce binaire-là.
+Le pilote ne vérifiait que son **existence**.
+
+Trois mesures d'affilée ont donc buté sur `fxrstor` **après** que `fxrstor` eut
+été décodée, avec un traducteur vieux d'une demi-heure. J'ai d'abord accusé le
+noyau de réécrire son propre code, puis mes propres sondes. Les deux étaient
+faux. **Ce sont deux dates de fichier qui ont tranché, pas une relecture** —
+`08:23:26` pour le binaire, `08:53:54` pour la source.
+
+C'est la famille de #168 : un outil de mesure qui ne compile pas ce qu'il
+prétend mesurer. Toute mesure de la feuille de route prise juste après une
+modification du décodeur a pu être fausse de la même façon.
+
+**Et la garde posée pour ça est tombée à son premier essai.** Elle comparait le
+traducteur au pilote ; construits par le même `cargo build`, leur ordre de
+liaison est arbitraire, et elle a refusé une mesure parfaitement fraîche. Le
+repère juste est la **source** : « ce binaire est-il postérieur au dernier `.rs`
+du cœur ? ». Éprouvée dans les deux sens ensuite — muette sur un binaire frais,
+sortie 1 sur un binaire daté de 2020.
+
+**Une garde qui tombe à son premier essai vaut mieux qu'une garde qui dort six
+tranches.**
+
+### Ce que la mesure dit une fois l'instrument réparé
+
+| | avant | après |
+| --- | --- | --- |
+| régions traduites | 16 178 | **16 189** |
+| arrêt | `fxrstor64 0x40(%rbx)` illisible | `0x401000`, hors de tout segment |
+
+`0x401000` est **le point d'entrée de `/init`** — vérifié dans l'en-tête ELF de
+l'archive, segment exécutable `R+X` à cette adresse exacte. Le noyau a fini sa
+bascule et saute dans l'espace utilisateur.
+
+### Ce que ça ne dit PAS, et c'est la même phrase qu'à #252
+
+**L'espace utilisateur ne tourne toujours pas.** La marque de `/init` n'apparaît
+nulle part et pas une de ses instructions n'a été exécutée. Ce qui a changé est
+la **nature** du mur : il n'est plus dans la machine, il est dans l'instrument —
+`kernel-entry` sert les octets depuis le fichier ELF du noyau, et le code de
+`/init` n'y est pas, il vit en mémoire invitée.
+
+Écrire « wisq atteint l'espace utilisateur » serait faux de la même façon qu'à
+#252, et pour une raison de plus : cette fois la machine le demande vraiment, et
+c'est le pilote qui ne sait pas répondre.
