@@ -10771,11 +10771,54 @@ aligné sur une page, et imprime où :
 enregistre `simpledrm`, traduit d'autres régions et s'arrête ailleurs. Les
 relevés précédents ont été pris sans, et resteraient incomparables.
 
+### L'hypothèse a été vérifiée, et le défaut se voit dans la console du noyau
+
+Relevé le 15 septembre, deux passages aux réglages identiques :
+
+```
+WISQ_RAM=256 WISQ_ROUNDS=16384 WISQ_TURNS=4000000 \
+  cargo run -p wisq-vm --release --example kernel-entry -- /tmp/vmlinux.bin
+```
+
+— le second avec `WISQ_SCREEN=1024x768` en plus. Ce que **le noyau lui-même**
+imprime :
+
+| | sans écran | avec écran |
+| --- | --- | --- |
+| e820 lu par le noyau | 2 entrées, tout utilisable | 3, dont `0x0fd00000-0x0fffffff` **reserved** |
+| `last_pfn` | `0x10000` | `0xfd00` |
+| `NODE_DATA(0)` | `[mem 0x0ff7c000-0x0ff81fff]` | `[mem 0x0fcfa000-0x0fcfffff]` |
+| pages totales | 64 256 | 63 500 |
+| mémoire | `218364K/261752K` | `215300K/258680K` |
+| régions traduites | 13 905 | 13 910 |
+
+**Linux garde bien le type le plus élevé sur le recouvrement** : l'entrée
+utilisable, posée jusqu'au bout de la RAM, ressort tronquée à `0x0fcfffff`, et
+le cadre ressort réservé. Ce n'est plus une hypothèse écrite dans un
+commentaire, c'est une ligne de console.
+
+**Et la ligne qui montre le défaut est `NODE_DATA(0)`.** Sans la réservation, le
+noyau posait sa structure de comptabilité de nœud à `0x0ff7c000` — **dans le
+cadre**, entre `0x0fd00000` et `0x0fffffff`, exactement là où la vue peint. Ce
+n'était donc pas une inquiétude de principe : la toute première allocation de
+memblock atterrissait déjà sur l'écran.
+
+Les 3 072 Kio de différence de mémoire annoncée sont exactement la taille du
+cadre, à l'octet près.
+
 ### Ce que ça ne tranche pas
 
-Où le noyau s'arrête **avec** un écran : la mesure n'est pas faite ici, et le
-mur de traduction de #237 — quatre-vingts à cent trente-cinq secondes pour
-15 319 régions — reste devant. L'hypothèse sur laquelle repose l'entrée
-réservée, à savoir que Linux garde le type le plus élevé sur un recouvrement
-d'e820, est écrite dans le code plutôt que vérifiée ici : c'est la première
-chose à regarder si l'écran se fait piétiner.
+**Le noyau ne construit aucun périphérique d'affichage à partir de ce
+`screen_info`** : rien dans la console ne nomme `simpledrm`, `simplefb` ni
+`sysfb`, et le `fbcon: Taking over console` qu'on y lit est présent **dans les
+deux** passages — c'est la console muette, pas notre cadre. La page zéro dit
+donc la vérité au noyau sur la mémoire, et pas encore assez pour qu'il peigne.
+Savoir ce qui manque — un noyau sans `sysfb` compilé dedans, ou un démarrage
+coupé avant l'`initcall` qui l'enregistre — est la question suivante, et elle
+n'est pas tranchée ici.
+
+Les cinq régions de plus (13 905 contre 13 910) sont le chemin qui lit la page
+zéro, pas un pilote : cinq régions ne sont pas un pilote d'affichage.
+
+Le mur de traduction de #237 — quatre-vingts à cent trente-cinq secondes pour
+15 319 régions — reste devant.

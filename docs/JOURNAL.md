@@ -13813,6 +13813,37 @@ le code et dans le test : si un jour l'écran se fait piétiner, c'est la premi�
 chose à vérifier.
 
 **Et l'écran reste éteint par défaut.** `WISQ_SCREEN` est absent sauf demande :
-un noyau qui voit un cadre linéaire enregistre `simpledrm`, traduit d'autres
-régions et s'arrête ailleurs. En déclarer un en silence rendrait incomparables
-des mesures que la feuille de route met côte à côte.
+en déclarer un en silence rendrait incomparables des mesures que la feuille de
+route met côte à côte.
+
+### L'hypothèse a été vérifiée, et le défaut se voyait dans une ligne de console
+
+Deux passages aux réglages identiques, le second avec `WISQ_SCREEN=1024x768`.
+Ce que le noyau imprime lui-même :
+
+    sans écran   BIOS-e820: [mem 0x00100000-0x0fffffff] usable
+    avec écran   BIOS-e820: [mem 0x00100000-0x0fcfffff] usable
+                 BIOS-e820: [mem 0x0fd00000-0x0fffffff] reserved
+
+**Linux garde bien le type le plus élevé sur un recouvrement.** L'entrée
+utilisable était posée jusqu'au bout de la RAM ; elle ressort tronquée. Ce
+n'est plus une hypothèse dans un commentaire.
+
+**Et la ligne qui montre le défaut est ailleurs :**
+
+    sans écran   NODE_DATA(0) allocated [mem 0x0ff7c000-0x0ff81fff]
+    avec écran   NODE_DATA(0) allocated [mem 0x0fcfa000-0x0fcfffff]
+
+`0x0ff7c000` est **dans le cadre**. Sans la réservation, la toute première
+allocation de memblock atterrissait déjà sur l'écran. Le défaut n'était pas une
+inquiétude de principe : il se produisait à la première occasion.
+
+**Ce que la mesure ne dit pas, et qu'il faut dire aussi.** Rien dans la console
+ne nomme `simpledrm`, `simplefb` ni `sysfb`. Le `fbcon: Taking over console`
+qu'on y lit est présent **dans les deux** passages — c'est la console muette,
+pas notre cadre. La page zéro dit donc la vérité au noyau sur la mémoire, et
+pas encore assez pour qu'il peigne. Cinq régions traduites de plus, ce n'est
+pas un pilote d'affichage.
+
+**La tentation, refusée** : écrire « l'écran marche » parce que l'e820 est juste.
+L'e820 est juste, et c'est tout ce qui est montré.
