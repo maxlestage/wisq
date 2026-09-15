@@ -13874,6 +13874,34 @@ Les deux premières sont **exactement** celles lues à la source dans
 première piste tombe : il reste la seconde, le démarrage coupé avant
 l'`initcall`.
 
+### La seconde est tombée aussi, et a découvert plus grand qu'elle
+
+`WISQ_TURNS=8000000`, le double. 15 324 régions, 296 lignes de console contre
+234, et une fin qui n'est plus un épuisement :
+
+    Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+      mount_root_generic ← prepare_namespace ← kernel_init
+
+`prepare_namespace` s'exécute **après** `do_initcalls()`. `sysfb_init` est un
+`device_initcall` : il a donc tourné, et n'a créé aucun périphérique. Les deux
+explications que j'avais avancées sont mortes. Il en faut une troisième, et je
+ne l'ai pas — **c'est un progrès, pas une réponse**, et c'est tout ce qu'on peut
+en dire aujourd'hui.
+
+**Mais la mesure a rendu autre chose, et de plus grand.** Le noyau ne s'arrête
+plus sur une instruction illisible, ni sur un budget, ni faute de mémoire : il
+parcourt tous ses `initcall`, atteint `kernel_init`, cherche une racine, n'en
+trouve pas et panique — ce qu'un noyau sans racine fait sur n'importe quelle
+machine. **Le mur de #167 n'est plus dans la machine.** Il est dans ce qu'on ne
+lui a pas donné.
+
+**Ce qu'il ne faut pas en conclure.** Ni « le noyau démarre » au sens où un
+utilisateur l'entendrait — il n'y a pas d'espace utilisateur, pas de shell, rien
+à voir — ni que l'écran marche : aucune ligne ne le nomme. Ce qui est établi est
+plus étroit et plus solide : **la machine ne casse plus avant la fin du
+démarrage du noyau**, et ce qui manque maintenant est un initramfs, qui est une
+direction et non un défaut.
+
 **La faute est la même que celle du module `kernel_image` documente en tête** :
 l'outil de couverture lancé sur un `vmlinuz` compressé rendait 6,6 % au lieu de
 98,2 %, et ce nombre *ressemblait* à une mesure. Ici, un zéro ressemblait à une
