@@ -164,3 +164,86 @@ describe("advertised claims match the repository", () => {
     }
   });
 });
+
+/// **La page publique ne vit pas dans `content.ts`, et la garde d'à côté n'y
+/// regardait pas.**
+///
+/// Le test précédent tient une invariante réelle — aucun chiffre du bloc
+/// `facts` n'échappe à l'examen — et elle a été lue comme si elle valait pour
+/// le site. Elle ne vaut que pour quatre nombres. `src/pages/roadmap.ts`
+/// décrit le travail en cours **au présent**, et en portait cinq autres que
+/// rien ne regardait : deux étaient faux, un était faux dans le sens
+/// défavorable au projet, et un cinquième n'avait plus de sens depuis que le
+/// banc s'était scindé.
+///
+/// **Un balayage par unité les aurait manqués.** Chercher « un nombre suivi de
+/// MIPS, de `ns`, de `%` » laisse passer « ISO 9660 » — ce qui est heureux ici,
+/// puisque ce n'en est pas un — mais laisserait passer tout autant un chiffre
+/// écrit sans son unité. Ce test compte donc **les nombres**, et demande pour
+/// chacun une ligne qui dit d'où il vient. La justification est le produit :
+/// une liste de commandes relançables, et un refus net dès qu'un nombre
+/// apparaît sans la sienne.
+describe("the roadmap page states the present, and every number in it is accounted for", () => {
+  /// Chaque entrée dit **comment on la refait**, ou pourquoi ce n'est pas une
+  /// mesure. Une entrée qui ne saurait dire ni l'un ni l'autre n'a rien à faire
+  /// sur une page qui parle au présent.
+  const accounted = new Map([
+    [
+      "10 116",
+      "les régions d'entrée atteintes par un `call` du noyau Alpine : " +
+        "`cargo run -p wisq-vm --release --example coverage -- <noyau>`. " +
+        "Pas tenu par la CI — l'étape récupère l'image en best effort.",
+    ],
+    [
+      "17",
+      "les régions compilées portant un octet illisible, même commande, même " +
+        "relevé. Elles se comptent dans la même ligne que les 10 116.",
+    ],
+    [
+      "9660",
+      "ce n'est pas une mesure : c'est le numéro de la norme ISO des " +
+        "systèmes de fichiers de disque optique.",
+    ],
+  ]);
+
+  test("no number appears on the roadmap page without a line saying where it comes from", () => {
+    const page = readFileSync(
+      join(import.meta.dir, "..", "src", "pages", "roadmap.ts"),
+      "utf8",
+    );
+    // Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à
+    // un mot ni à un trait d'union : « x86-64 » et « rv32ima » ne sont pas des
+    // chiffres publiés, « 10 116 » en est un.
+    const numbers = page.match(/(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g) ?? [];
+    for (const raw of numbers) {
+      const number = raw.trim();
+      expect(
+        accounted.has(number),
+        `la page de feuille de route publie « ${number} » et rien ne dit d'où ` +
+          `il vient. Ajoute-le à \`accounted\` avec la commande qui le refait, ` +
+          `ou avec la raison pour laquelle ce n'est pas une mesure.`,
+      ).toBe(true);
+    }
+  });
+
+  /// La liste ne survit pas à ce qu'elle décrit — même règle que pour
+  /// `notHeld` : une justification pour un nombre retiré de la page se lit
+  /// comme une garde qui couvre quelque chose, alors qu'elle ne couvre rien.
+  test("nothing lingers in the accounted list for a number the page no longer carries", () => {
+    const page = readFileSync(
+      join(import.meta.dir, "..", "src", "pages", "roadmap.ts"),
+      "utf8",
+    );
+    const numbers = new Set(
+      (page.match(/(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g) ?? []).map((n) =>
+        n.trim(),
+      ),
+    );
+    for (const number of accounted.keys()) {
+      expect(
+        numbers.has(number),
+        `« ${number} » n'est plus sur la page ; sa justification ne couvre rien.`,
+      ).toBe(true);
+    }
+  });
+});

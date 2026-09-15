@@ -157,11 +157,22 @@ pub const MSR_KERNEL_GS_BASE: u64 = 0xc000_0102;
 /// **Les cinq registres de contrôle que le décodeur lit** : CR0, CR2, CR3, CR4
 /// et CR8, rangés dans cet ordre.
 ///
-/// **Lire se modélise, allumer la pagination non.** Écrire CR4 ou CR8 est
-/// accepté — rien ne consulte ces bits. Écrire CR0 ou CR3 est **refusé** : ce
-/// serait allumer la pagination, que cette machine n'implémente pas, et un
-/// noyau qui croit paginer part sur un chemin dont la panne n'aura aucun
-/// rapport visible avec sa cause.
+/// **Écrire CR4 ou CR8 est accepté** — rien ne consulte ces bits.
+///
+/// **Écrire CR0 ou CR3 allume la pagination, et les deux mises en forme n'en
+/// font pas la même chose.** La forme confinée — celle que l'application
+/// exécute — les **accepte** : une adresse invitée traverse alors quatre
+/// niveaux de tables derrière le tampon de traduction. La forme libre les
+/// **refuse** toujours, faute de traduction derrière : un noyau qui croirait
+/// paginer partirait sur un chemin dont la panne n'aurait aucun rapport
+/// visible avec sa cause.
+///
+/// C'est la **seule** divergence d'acceptation entre les deux formes de tout
+/// ce fichier, et `only_the_confined_form_accepts_the_write_that_drives_paging`
+/// la tient des deux côtés. Ce paragraphe a dit le contraire pendant les deux
+/// tranches qui ont suivi celle qui l'a rendu faux : il énonçait « la
+/// pagination, que cette machine n'implémente pas » à trois mille lignes du
+/// code qui l'implémente.
 ///
 /// **Ici, contrairement aux MSR, le numéro est dans l'instruction** — le champ
 /// `reg` du ModRM. « Refuser par le numéro », infaisable pour un MSR dont le
