@@ -10736,3 +10736,46 @@ tombe pas — parce que le premier seul ne peut pas éprouver l'arrondi.
 peut désormais recopier des champs justes. Rien n'a encore fait démarrer un vrai
 noyau avec un cadre à travers l'émetteur — le mur de traduction de #237 (quatre-
 vingts à cent trente-cinq secondes pour 15 319 régions) reste devant.
+
+## #251 — la page zéro de l'émetteur sait déclarer un écran, et refuse ceux qu'elle décrirait de travers
+
+Le montage de l'émetteur porte un `desktop::Screen` jusqu'à la vue depuis le lot
+8, et ne le disait pas au noyau : deux entrées e820, toutes deux utilisables,
+zéro octet de `screen_info`. `zero_page_with_screen` écrit les quatorze champs
+du jumeau Swift — mêmes décalages, mêmes valeurs, `lfb_size` en unités de 64 Kio
+depuis #250 — et ajoute l'entrée e820 réservée.
+
+**Cinq refus, dont un que les quatre premiers n'avaient pas vu :**
+
+| refus | ce qu'il empêche |
+|---|---|
+| `Empty` | un cadre sans pixel |
+| `TooLarge` | 70 000 tronqué à 4464 par le `u16` de `lfb_width` |
+| `BaseTooHigh` | une adresse tronquée par le `u32` de `lfb_base` |
+| `OutsideRam` | une entrée e820 sur de la mémoire qui n'existe pas |
+| `WouldOverwrite` | **un cadre qui tient dans la RAM, par-dessus le noyau** |
+
+Le cinquième vient d'un essai sur le pilote, pas d'une relecture :
+`WISQ_SCREEN=4096x4096` était accepté sur une machine de 64 Mio — le cadre fait
+exactement 64 Mio — et se posait à l'adresse zéro. Tenir dans la RAM n'est pas
+tenir quelque part ; `floor` est désormais un paramètre.
+
+`kernel-entry` lit `WISQ_SCREEN=1024x768`, pose le cadre en haut de la RAM,
+aligné sur une page, et imprime où :
+
+```
+écran : 0x3d00000, 1024x768 en XRGB8888, 3072 Kio réservés dans l'e820
+```
+
+**L'écran est éteint par défaut**, et c'est délibéré : un noyau qui en voit un
+enregistre `simpledrm`, traduit d'autres régions et s'arrête ailleurs. Les
+relevés précédents ont été pris sans, et resteraient incomparables.
+
+### Ce que ça ne tranche pas
+
+Où le noyau s'arrête **avec** un écran : la mesure n'est pas faite ici, et le
+mur de traduction de #237 — quatre-vingts à cent trente-cinq secondes pour
+15 319 régions — reste devant. L'hypothèse sur laquelle repose l'entrée
+réservée, à savoir que Linux garde le type le plus élevé sur un recouvrement
+d'e820, est écrite dans le code plutôt que vérifiée ici : c'est la première
+chose à regarder si l'écran se fait piétiner.

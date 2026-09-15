@@ -226,3 +226,227 @@ fn the_mount_keeps_the_boot_console_on_the_port_the_host_listens_to() {
          au milieu de son démarrage : « {MONTAGE_COMMAND_LINE} »"
     );
 }
+
+/// **Le montage de l'émetteur déclarait un écran à la vue, et les mêmes octets
+/// au noyau comme mémoire libre.**
+///
+/// `desktop::Screen` traverse le C ABI, la page et la boucle hôte : la vue sait
+/// où peindre. `zero_page` ne le savait pas — deux entrées e820, toutes deux
+/// utilisables, et pas un octet de `screen_info`. Le noyau distribuait donc à
+/// qui voulait les pages que la vue peignait, et n'avait aucun moyen de savoir
+/// qu'il y avait un écran.
+///
+/// Son jumeau Swift, `X86BootLoader`, écrit ces champs depuis #147 et nomme la
+/// conséquence en toutes lettres : « un écran non réservé est de la mémoire que
+/// le noyau donnera à quelqu'un d'autre ». Les décalages sont les siens, aux
+/// mêmes valeurs — **c'est la même page zéro, écrite par deux chargeurs**, et
+/// #250 a dû corriger `lfb_size` avant que cette copie soit permise.
+///
+/// **L'entrée réservée chevauche l'entrée utilisable, et c'est voulu.** Le cadre
+/// est au-dessus du mégaoctet, donc dans l'intervalle que la deuxième entrée
+/// déclare utilisable. Linux résout un recouvrement dans `e820__update_table` en
+/// gardant le **type le plus élevé** des entrées qui se recouvrent, et
+/// `E820_TYPE_RESERVED` (2) l'emporte sur `E820_TYPE_RAM` (1). C'est une
+/// hypothèse sur le noyau, pas une évidence : elle est écrite ici pour qu'on
+/// sache quoi vérifier si un jour l'écran se fait piétiner.
+#[test]
+fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
+    use wisq_vm::desktop::Screen;
+    use wisq_vm::kernel_image::zero_page_with_screen;
+    const RAM: u64 = 64 * 1024 * 1024;
+    const COMMAND_LINE: u32 = 0x9800;
+    /// Le sommet de ce que le chargeur a posé : au-dessous, le noyau.
+    const FLOOR: u64 = 0x0100_0000;
+    let screen = Screen {
+        base: 0x0200_0000,
+        width: 1024,
+        height: 768,
+    };
+    let page =
+        zero_page_with_screen(RAM, COMMAND_LINE, screen, FLOOR).expect("un écran descriptible");
+    assert_eq!(page.len(), 4096, "une page, exactement");
+
+    let byte = |at: usize| page[at];
+    let word = |at: usize| u16::from_le_bytes(page[at..at + 2].try_into().unwrap());
+    let dword = |at: usize| u32::from_le_bytes(page[at..at + 4].try_into().unwrap());
+    let qword = |at: usize| u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
+
+    // **Trois entrées, et la troisième est l'écran.** Sans elle, l'allocateur
+    // distribue les pages que la vue peint.
+    assert_eq!(
+        byte(0x1e8),
+        3,
+        "trois entrées e820 : la basse, la haute, l'écran"
+    );
+    assert_eq!(
+        (qword(0x2f8), qword(0x300), dword(0x308)),
+        (
+            screen.base,
+            u64::from(screen.width) * u64::from(screen.height) * 4,
+            2
+        ),
+        "le cadre, réservé : le noyau le lit, ne l'alloue jamais"
+    );
+
+    // **`VIDEO_TYPE_VLFB`, sans quoi tout le reste est ignoré.** Le chemin
+    // moderne — `sysfb`, puis `simpledrm` — s'accroche à cette valeur et ne
+    // regarde même pas les champs suivants si elle n'y est pas.
+    assert_eq!(byte(0x0f), 0x23, "orig_video_isVGA : un cadre linéaire");
+    assert_eq!(word(0x12), 1024, "lfb_width");
+    assert_eq!(word(0x14), 768, "lfb_height");
+    assert_eq!(word(0x16), 32, "lfb_depth : quatre octets par pixel");
+    assert_eq!(dword(0x18), 0x0200_0000, "lfb_base");
+    assert_eq!(
+        dword(0x1c),
+        48,
+        "lfb_size : la VRAM annoncée, en unités de 64 Kio"
+    );
+    assert_eq!(
+        word(0x24),
+        1024 * 4,
+        "lfb_linelength : une ligne, en octets"
+    );
+
+    // La vérification que le noyau fait lui-même, refaite ici. Voir #250 : le
+    // champ est décalé de seize bits pour VIDEO_TYPE_VLFB, et une valeur trop
+    // grande passe toujours — d'où la seconde borne.
+    let advertised = u64::from(dword(0x1c)) << 16;
+    let needed = u64::from(word(0x14)) * u64::from(word(0x24));
+    assert!(
+        needed <= advertised,
+        "le noyau refuserait le cadre : « VRAM smaller than advertised », \
+         {needed} octets demandés contre {advertised} annoncés"
+    );
+    assert!(
+        advertised < needed + 65_536,
+        "{advertised} octets annoncés pour un cadre de {needed} — \
+         le champ est en unités de 64 Kio, pas en octets"
+    );
+
+    // XRGB8888 : bleu en bas, vert, rouge, l'octet inutilisé en haut. Se
+    // tromper d'ordre rend un bureau aux couleurs inversées, ce qu'aucune
+    // assertion de géométrie n'attrape.
+    assert_eq!(
+        [
+            byte(0x26),
+            byte(0x27),
+            byte(0x28),
+            byte(0x29),
+            byte(0x2a),
+            byte(0x2b),
+            byte(0x2c),
+            byte(0x2d)
+        ],
+        [8, 16, 8, 8, 8, 0, 8, 24],
+        "la place de chaque couleur dans le mot de trente-deux bits"
+    );
+
+    // **Rien d'autre.** Même garde que pour la page sans écran : les champs
+    // voulus sont retirés, ce qui reste doit être nul.
+    let written: [(usize, usize); 9] = [
+        (0x0f, 1),
+        (0x12, 6),
+        (0x18, 8),
+        (0x24, 2),
+        (0x26, 8),
+        (0x1e8, 1),
+        (0x210, 2),
+        (0x228, 4),
+        (0x2d0, 60),
+    ];
+    let stray: Vec<usize> = (0..page.len())
+        .filter(|at| {
+            page[*at] != 0
+                && !written
+                    .iter()
+                    .any(|(from, len)| (from..&(from + len)).contains(&at))
+        })
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "des octets écrits hors des champs voulus : {stray:x?}"
+    );
+}
+
+/// **Un écran que la page ne saurait pas décrire est refusé, et le refus dit
+/// laquelle des quatre raisons.**
+///
+/// Les champs de `screen_info` sont étroits et ne le disent pas : `lfb_width` et
+/// `lfb_height` sont des `u16`, `lfb_base` un `u32`. Écrire dedans en tronquant
+/// donnerait un écran d'une autre taille, à une autre adresse, **sans rien
+/// signaler** — la famille de défauts que ce dépôt passe son temps à corriger.
+/// Un cadre hors de la RAM déclarée est refusé pour une autre raison : l'entrée
+/// e820 décrirait de la mémoire qui n'existe pas.
+#[test]
+fn a_screen_the_page_could_not_describe_is_refused() {
+    use wisq_vm::desktop::Screen;
+    use wisq_vm::kernel_image::{zero_page_with_screen, ScreenRefusal};
+    const RAM: u64 = 64 * 1024 * 1024;
+    const COMMAND_LINE: u32 = 0x9800;
+    const FLOOR: u64 = 0x0100_0000;
+    let refuse =
+        |screen: Screen| zero_page_with_screen(RAM, COMMAND_LINE, screen, FLOOR).unwrap_err();
+
+    assert_eq!(
+        refuse(Screen {
+            base: 0x0200_0000,
+            width: 1024,
+            height: 0
+        }),
+        ScreenRefusal::Empty,
+        "un cadre sans hauteur n'a aucun pixel à peindre"
+    );
+    assert_eq!(
+        refuse(Screen {
+            base: 0x0200_0000,
+            width: 70_000,
+            height: 768
+        }),
+        ScreenRefusal::TooLarge {
+            width: 70_000,
+            height: 768
+        },
+        "70 000 ne tient pas dans le u16 de lfb_width : tronqué, il vaudrait 4464"
+    );
+    assert_eq!(
+        refuse(Screen {
+            base: 0x1_0000_0000,
+            width: 1024,
+            height: 768
+        }),
+        ScreenRefusal::BaseTooHigh {
+            base: 0x1_0000_0000
+        },
+        "lfb_base est un u32 : au-delà de quatre gibioctets l'adresse serait tronquée"
+    );
+    assert_eq!(
+        refuse(Screen {
+            base: RAM - 4096,
+            width: 1024,
+            height: 768
+        }),
+        ScreenRefusal::OutsideRam {
+            top: RAM - 4096 + 1024 * 768 * 4,
+            ram: RAM
+        },
+        "l'entrée e820 décrirait de la mémoire que la machine n'a pas"
+    );
+    // **Celui-ci tient dans la RAM, et c'est justement le piège.**
+    // 4096 x 4096 x 4 fait exactement 64 Mio : il « rentre » dans une machine de
+    // 64 Mio en la couvrant entièrement, noyau compris. Un premier jet acceptait
+    // ce cadre et le posait à l'adresse zéro ; l'e820 aurait déclaré toute la
+    // mémoire réservée. C'est un essai à la main sur le vrai pilote qui l'a
+    // montré, pas une relecture.
+    assert_eq!(
+        refuse(Screen {
+            base: 0,
+            width: 4096,
+            height: 4096
+        }),
+        ScreenRefusal::WouldOverwrite {
+            base: 0,
+            floor: FLOOR
+        },
+        "un cadre qui tient dans la RAM peut tenir par-dessus le noyau"
+    );
+}

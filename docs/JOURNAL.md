@@ -13764,3 +13764,55 @@ code fait, plutôt que ce que la règle exige, ne fait que photographier l'erreu
 **Le signe à retenir.** Avant de recopier une règle d'un langage dans un autre,
 vérifier la règle à sa source. Le jumeau qu'on s'apprête à copier est une
 autorité commode, pas une autorité.
+
+## #251 — un écran déclaré à la vue, et la même mémoire déclarée libre au noyau
+
+**Le défaut.** `desktop::Screen` traverse le C ABI, la page et la boucle hôte :
+la vue sait où peindre. `kernel_image::zero_page` ne le savait pas — deux
+entrées e820, toutes deux **utilisables**, et pas un octet de `screen_info`. Le
+montage de l'émetteur déclarait donc un cadre à la vue et les mêmes octets au
+noyau comme mémoire libre. L'allocateur ne consulte que l'e820 ; il aurait
+distribué les pages que la vue peignait, et n'aurait jamais su qu'il y avait un
+écran.
+
+Le jumeau Swift écrit ces champs depuis #147 et nomme la conséquence : « un
+écran non réservé est de la mémoire que le noyau donnera à quelqu'un d'autre ».
+C'est #250 qui a rendu la copie permissible : il fallait d'abord que ces champs
+soient justes.
+
+**Le piège que le pilote a montré, et qu'aucune relecture n'aurait donné.** Le
+premier jeu de refus tenait sur quatre raisons : cadre vide, trop grand pour
+`lfb_width`/`lfb_height` (des `u16`), base au-delà de ce que `lfb_base` porte
+(un `u32`), cadre hors de la RAM. Les quatre passaient. Puis un essai à la main
+sur le vrai pilote :
+
+    WISQ_SCREEN=4096x4096   code=0
+
+Accepté. 4096 × 4096 × 4 fait **exactement 64 Mio** : sur une machine de 64 Mio
+il « tient », et se posait à l'adresse zéro — par-dessus le noyau, la page zéro
+et la ligne de commande. L'e820 aurait déclaré **toute la mémoire réservée**, et
+le noyau n'aurait plus eu un octet à lui.
+
+**Tenir dans la RAM n'est pas tenir quelque part.** Le refus manquant est
+devenu un cinquième, `WouldOverwrite`, et un paramètre : `floor`, le premier
+octet que le cadre a le droit d'occuper. Le chargeur le connaît, la page zéro
+non — donc il est demandé, pas deviné. C'est la forme que `usable_ram` avait
+déjà prise pour la même raison.
+
+**Ce qui l'a trouvé** : avoir lancé le pilote sur les quatre entrées possibles
+plutôt que sur la bonne. Une garde écrite d'après ce qu'on imagine refuser
+couvre ce qu'on a imaginé ; les quatre refus étaient justes, et le cinquième
+n'était dans aucun d'eux.
+
+**L'hypothèse énoncée plutôt que tue.** L'entrée réservée **chevauche** l'entrée
+utilisable : le cadre est au-dessus du mégaoctet, donc dans l'intervalle que la
+deuxième entrée déclare libre. Linux résout un recouvrement dans
+`e820__update_table` en gardant le **type le plus élevé**, et `E820_TYPE_RESERVED`
+l'emporte sur `E820_TYPE_RAM`. C'est ce sur quoi ce montage repose, écrit dans
+le code et dans le test : si un jour l'écran se fait piétiner, c'est la première
+chose à vérifier.
+
+**Et l'écran reste éteint par défaut.** `WISQ_SCREEN` est absent sauf demande :
+un noyau qui voit un cadre linéaire enregistre `simpledrm`, traduit d'autres
+régions et s'arrête ailleurs. En déclarer un en silence rendrait incomparables
+des mesures que la feuille de route met côte à côte.

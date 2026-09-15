@@ -47,7 +47,8 @@
 use std::io::BufRead;
 use std::path::Path;
 
-use wisq_vm::kernel_image::{loads, zero_page, MONTAGE_COMMAND_LINE};
+use wisq_vm::desktop::Screen;
+use wisq_vm::kernel_image::{loads, zero_page, zero_page_with_screen, MONTAGE_COMMAND_LINE};
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
@@ -81,6 +82,59 @@ fn declared_pages() -> Result<u32, String> {
         .map_err(|_| format!("WISQ_RAM={value} ne se lit pas comme un nombre de mébioctets"))?;
     u32::try_from(mib * 1024 * 1024 / 65536)
         .map_err(|_| format!("WISQ_RAM={mib} est trop grand pour être compté en pages"))
+}
+
+/// **L'écran que `WISQ_SCREEN` demande, ou aucun.**
+///
+/// Absent, le montage décrit une machine sans affichage — ce que toutes les
+/// mesures de la feuille de route ont supposé jusqu'ici. `1024x768` en pose un
+/// **en haut de la RAM**, aligné sur une page : c'est l'endroit le plus loin du
+/// noyau et de sa réserve, et l'entrée e820 qui le protège n'a alors à couvrir
+/// que la fin de la mémoire.
+///
+/// La forme est refusée plutôt que devinée. Un `WISQ_SCREEN` mal écrit qui
+/// donnerait silencieusement « pas d'écran » ferait croire à une mesure sans
+/// affichage alors qu'on en avait demandé un.
+fn declared_screen(ram: u64, floor: u64) -> Result<Option<Screen>, String> {
+    let Ok(value) = std::env::var("WISQ_SCREEN") else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some((width, height)) = value.split_once(['x', 'X']) else {
+        return Err(format!(
+            "WISQ_SCREEN={value} ne se lit pas : il faut « largeur x hauteur », par exemple 1024x768"
+        ));
+    };
+    let (Ok(width), Ok(height)) = (width.trim().parse::<u32>(), height.trim().parse::<u32>())
+    else {
+        return Err(format!(
+            "WISQ_SCREEN={value} ne se lit pas : les deux nombres doivent être entiers"
+        ));
+    };
+    let bytes = u64::from(width) * u64::from(height) * 4;
+    // **Il doit rester au-dessus de ce que le chargeur a posé, pas seulement
+    // tenir dans la RAM.** 4096 x 4096 en XRGB8888 fait exactement 64 Mio :
+    // sur une machine de 64 Mio il « tient », et se pose à l'adresse zéro,
+    // par-dessus le noyau. `zero_page_with_screen` le refuse ; la place est
+    // calculée ici, donc la demande se refuse ici aussi, avec la taille qu'il
+    // faudrait pour qu'elle passe.
+    if bytes == 0 || bytes > ram.saturating_sub(floor) {
+        return Err(format!(
+            "un cadre {width}x{height} demande {} Kio, et il reste {} Kio \
+             au-dessus de ce que le noyau occupe — WISQ_RAM peut l'agrandir",
+            bytes / 1024,
+            ram.saturating_sub(floor) / 1024
+        ));
+    }
+    // En haut de la RAM, aligné sur une page : le noyau pose son texte en bas.
+    Ok(Some(Screen {
+        base: (ram - bytes) & !0xFFF,
+        width,
+        height,
+    }))
 }
 
 /// Ce que Linux ajoute à une adresse physique de texte pour en faire une
@@ -336,7 +390,39 @@ fn main() {
     // tant qu'il n'en posait pas.
     const ZERO_PAGE_AT: u64 = 0x9000;
     const COMMAND_LINE_AT: u64 = 0x9800;
-    let page = zero_page(u64::from(pages) * 65536, COMMAND_LINE_AT as u32);
+    let ram = u64::from(pages) * 65536;
+    // **L'écran est facultatif, et il est éteint par défaut.** Les relevés des
+    // tranches précédentes ont été pris sans, et en déclarer un en silence
+    // rendrait incomparables des mesures que la feuille de route met côte à
+    // côte : le noyau qui voit un cadre linéaire enregistre `simpledrm`, donc
+    // traduit d'autres régions et s'arrête ailleurs.
+    //
+    // `WISQ_SCREEN=1024x768` en pose un en haut de la RAM, aligné sur une page.
+    // Le refus est **nommé** plutôt qu'arrondi : un montage qui corrigerait en
+    // douce la demande mesurerait autre chose que ce qu'on lui a demandé.
+    let page = match declared_screen(ram, top) {
+        Ok(None) => zero_page(ram, COMMAND_LINE_AT as u32),
+        Ok(Some(screen)) => match zero_page_with_screen(ram, COMMAND_LINE_AT as u32, screen, top) {
+            Ok(page) => {
+                println!(
+                    "écran : 0x{:x}, {}x{} en XRGB8888, {} Kio réservés dans l'e820",
+                    screen.base,
+                    screen.width,
+                    screen.height,
+                    u64::from(screen.width) * u64::from(screen.height) * 4 / 1024
+                );
+                page
+            }
+            Err(why) => {
+                eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
+                std::process::exit(1);
+            }
+        },
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }
+    };
     let page_path = scratch.join("zero-page.bin");
     std::fs::write(&page_path, &page).expect("la page zéro");
     placed.push((page_path, ZERO_PAGE_AT));

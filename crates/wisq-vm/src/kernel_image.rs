@@ -189,6 +189,145 @@ pub fn zero_page(ram: u64, command_line: u32) -> Vec<u8> {
     page
 }
 
+/// Ce qu'un écran ne peut pas être, et pourquoi la page zéro le refuse.
+///
+/// **Les champs de `screen_info` sont étroits et ne le disent pas.**
+/// `lfb_width` et `lfb_height` sont des `u16`, `lfb_base` un `u32`. Y écrire en
+/// tronquant donnerait un écran d'une autre taille, à une autre adresse, sans
+/// rien signaler — et un bureau qui peint à côté ne se plaint pas, il peint à
+/// côté. Le refus est donc la seule réponse honnête.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenRefusal {
+    /// Une largeur ou une hauteur nulle : aucun pixel à peindre.
+    Empty,
+    /// Au-delà de ce que `lfb_width` et `lfb_height` savent porter.
+    TooLarge { width: u32, height: u32 },
+    /// Au-delà de ce que `lfb_base` sait porter. Le demi-haut d'une adresse vit
+    /// dans `ext_lfb_base`, que le noyau ne lit que si `capabilities` porte
+    /// `VIDEO_CAPABILITY_64BIT_BASE` — ce que cette page n'annonce pas.
+    BaseTooHigh { base: u64 },
+    /// Le cadre dépasse la RAM déclarée : l'entrée e820 décrirait de la mémoire
+    /// que la machine n'a pas.
+    OutsideRam { top: u64, ram: u64 },
+    /// Le cadre commence sous ce que le chargeur a déjà posé — le noyau, sa
+    /// page zéro, sa ligne de commande. **Un cadre qui tient dans la RAM peut
+    /// tenir par-dessus le noyau** : 4096 x 4096 en XRGB8888 fait exactement
+    /// 64 Mio, donc « tient » dans une machine de 64 Mio, en la couvrant
+    /// entièrement. L'e820 déclarerait alors toute la mémoire réservée, et le
+    /// noyau n'aurait plus un octet à lui.
+    WouldOverwrite { base: u64, floor: u64 },
+}
+
+/// **La page zéro d'une machine qui a un écran.**
+///
+/// `zero_page` décrit une machine sans affichage, et c'est resté vrai tant que
+/// le montage de l'émetteur n'en avait pas. Il en a un : `desktop::Screen`
+/// traverse le C ABI, la page et la boucle hôte, et la vue peint dedans. Sans
+/// ce que cette fonction ajoute, le noyau recevait deux entrées e820 toutes
+/// deux **utilisables** et pas un octet de `screen_info` : il distribuait les
+/// pages que la vue peignait, et ignorait qu'il y avait un écran.
+///
+/// **Les décalages et les valeurs sont ceux du chargeur Swift**
+/// (`X86BootLoader`), qui écrit la même page zéro pour un `bzImage`. C'est
+/// délibérément une copie : deux chargeurs qui décrivent la même machine
+/// doivent la décrire pareil. #250 a dû corriger `lfb_size` chez lui — le champ
+/// est en unités de 64 Kio — avant que cette copie soit permise.
+///
+/// **L'entrée réservée chevauche l'entrée utilisable, et c'est voulu.** Le cadre
+/// est au-dessus du mégaoctet, donc dans l'intervalle que la deuxième entrée
+/// déclare libre. Linux résout un recouvrement dans `e820__update_table` en
+/// gardant le **type le plus élevé**, et `E820_TYPE_RESERVED` (2) l'emporte sur
+/// `E820_TYPE_RAM` (1). C'est une hypothèse sur le noyau, énoncée ici plutôt que
+/// tue : si un jour l'écran se fait piétiner, c'est elle qu'il faut vérifier
+/// d'abord.
+///
+/// Le format est **XRGB8888**, quatre octets par pixel, sans remplissage en fin
+/// de ligne : celui que `simpledrm` prend sans conversion, et celui que la vue
+/// pose tel quel dans son canvas.
+///
+/// `floor` est le premier octet que le cadre a le droit d'occuper : le chargeur
+/// le connaît, la page zéro non. Il est demandé plutôt que deviné parce que
+/// tenir dans la RAM ne suffit pas — un cadre peut tenir **par-dessus le
+/// noyau**, et l'e820 déclarerait alors réservée une mémoire dont le noyau a
+/// besoin.
+pub fn zero_page_with_screen(
+    ram: u64,
+    command_line: u32,
+    screen: crate::desktop::Screen,
+    floor: u64,
+) -> Result<Vec<u8>, ScreenRefusal> {
+    if screen.width == 0 || screen.height == 0 {
+        return Err(ScreenRefusal::Empty);
+    }
+    if screen.width > u32::from(u16::MAX) || screen.height > u32::from(u16::MAX) {
+        return Err(ScreenRefusal::TooLarge {
+            width: screen.width,
+            height: screen.height,
+        });
+    }
+    if screen.base > u64::from(u32::MAX) {
+        return Err(ScreenRefusal::BaseTooHigh { base: screen.base });
+    }
+    // Les deux bornes ci-dessus tiennent le produit : 65 535 x 65 535 x 4 reste
+    // très en deçà de ce qu'un u64 porte, donc rien ne déborde ici.
+    let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+    let top = screen.base + bytes;
+    if top > ram {
+        return Err(ScreenRefusal::OutsideRam { top, ram });
+    }
+    // **Tenir dans la RAM ne suffit pas.** `floor` est le premier octet que le
+    // cadre a le droit d'occuper : au-dessous vivent le noyau, sa page zéro et
+    // sa ligne de commande. Sans cette borne, un cadre de 4096 x 4096 passait
+    // sur une machine de 64 Mio — il fait exactement 64 Mio — et couvrait tout.
+    if screen.base < floor {
+        return Err(ScreenRefusal::WouldOverwrite {
+            base: screen.base,
+            floor,
+        });
+    }
+    // Le cadre entier doit aussi rester descriptible par `lfb_base`, qui est le
+    // début : c'est la borne du haut qui compte pour l'entrée e820, et elle est
+    // déjà couverte par `top > ram` tant que la RAM tient sur 32 bits. Une RAM
+    // plus grande laisserait passer un cadre dont le sommet dépasse `u32` sans
+    // que rien ne le lise de travers — l'entrée e820 est en 64 bits.
+
+    let mut page = zero_page(ram, command_line);
+
+    // `VIDEO_TYPE_VLFB`. **Sans cette valeur, tout le reste est ignoré** : le
+    // noyau ne regarde même pas les champs suivants.
+    page[0x0f] = 0x23;
+    let width = u16::try_from(screen.width).expect("borné juste au-dessus");
+    let height = u16::try_from(screen.height).expect("borné juste au-dessus");
+    page[0x12..0x14].copy_from_slice(&width.to_le_bytes());
+    page[0x14..0x16].copy_from_slice(&height.to_le_bytes());
+    page[0x16..0x18].copy_from_slice(&32u16.to_le_bytes()); // lfb_depth
+    let base = u32::try_from(screen.base).expect("borné juste au-dessus");
+    page[0x18..0x1c].copy_from_slice(&base.to_le_bytes());
+    // **En unités de 64 Kio, arrondi vers le haut** — voir #250. Arrondir vers
+    // le bas annoncerait moins que le cadre, et le noyau le refuserait sur son
+    // propre « VRAM smaller than advertised ».
+    let units = u32::try_from(bytes.div_ceil(0x1_0000)).unwrap_or(u32::MAX);
+    page[0x1c..0x20].copy_from_slice(&units.to_le_bytes());
+    let line = width * 4;
+    page[0x24..0x26].copy_from_slice(&line.to_le_bytes());
+    // XRGB8888 : bleu en bas, puis vert, puis rouge, l'octet inutilisé en haut.
+    // Se tromper d'ordre rend un bureau aux couleurs inversées, ce qu'aucune
+    // vérification de géométrie n'attrape.
+    page[0x26..0x2e].copy_from_slice(&[8, 16, 8, 8, 8, 0, 8, 24]);
+
+    // **L'écran, réservé.** L'allocateur ne consulte que cette carte ; sans
+    // l'entrée, deux écritures se disputeraient les mêmes pages, et le bureau se
+    // corromprait sous des causes sans rapport.
+    let entries = page[0x1e8];
+    let at = 0x2d0 + entries as usize * 20;
+    page[at..at + 8].copy_from_slice(&screen.base.to_le_bytes());
+    page[at + 8..at + 16].copy_from_slice(&bytes.to_le_bytes());
+    page[at + 16..at + 20].copy_from_slice(&2u32.to_le_bytes());
+    page[0x1e8] = entries + 1;
+
+    Ok(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
