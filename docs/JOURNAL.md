@@ -13545,3 +13545,62 @@ publie un nombre dont personne ne vérifiera jamais la provenance : il sort de l
 même ligne que les vrais, dans la même unité, avec la même autorité. Chercher
 les constantes numériques **dans le code des instruments**, pas seulement dans
 leur prose.
+
+## La garde ne regardait pas là où vivent les chiffres
+
+`site/tests/claims.test.ts` tient une invariante réelle : **aucun chiffre du
+bloc `facts` n'échappe à l'examen sans qu'on ait écrit pourquoi**, et un
+cinquième ajouté le fait rougir. #223 l'a écrite et close là-dessus.
+
+Elle itère `copy.en.facts.items`. Quatre nombres. Le site en publie bien
+davantage, et `src/pages/roadmap.ts` — la page qui décrit le travail en cours,
+**au présent** — en portait cinq que rien ne regardait :
+
+| publié | relancé le 15 septembre 2026 |
+| --- | --- |
+| « 9980 régions d'entrée sur 10 116 » | **10 116 sur 10 116**, 100 % |
+| « l'émetteur tient 247 millions d'instructions/s » | aucun nombre unique depuis #243 |
+| « contre 49,3 pour l'interpréteur Rust » | 32,6 à 34,3 MIPS |
+| « +0,2 à +0,6 ns par accès tant qu'un tampon répond » | +0,42 à +1,10 ns |
+| « +26 ns quand chaque accès tombe sur une page neuve » | +4,8 un soir, **+22,3** un autre |
+
+Le premier est le seul de toute la série qui soit faux **dans le sens
+défavorable** : il datait d'avant la vingtaine de tranches qui ont décodé
+`lkgs`, `invlpg`, `invpcid`, `ltr`, `lldt`, `cmpxchg16b`, `clflush`, `rdrand`,
+`rdtscp`, `fwait`. Le projet s'était amélioré et sa vitrine ne l'avait pas
+appris.
+
+Le dernier n'est pas publiable comme un point : deux exécutions de la même
+sonde, sur la même machine, à quelques heures d'écart, rendent +4,8 puis
++22,3 ns. Le repli reste à 11 ns dans les deux cas — c'est la marche de pages
+qui a doublé. Le cas « page neuve » est le plus hostile au cache et le moins
+transportable des trois, et c'est précisément celui que la page gravait.
+
+**Et la prose était plus périmée que les chiffres.** Elle annonçait qu'« il
+manque deux mécanismes entiers — la pagination et les interruptions » et
+qu'« écrire CR3 et CR0 est refusé plutôt que simulé ». La pagination est faite
+(#169, #170), les fautes et les pièges sont délivrés (#194, #195, #227),
+le 8259 et le 8254 existent (#221, #222). Le commentaire de tête de
+`x86_wasm.rs` le disait encore lui aussi, **à trois mille lignes du code qui
+l'implémente** : la forme confinée accepte l'écriture de CR0 et CR3 et traduit
+par tables ; seule la forme libre refuse encore. Un test tenait déjà cette
+divergence des deux côtés ; personne n'avait relu le paragraphe qu'elle rendait
+faux.
+
+**Ce que la nouvelle garde compte, et pourquoi pas par unité.** Le premier
+balayage que j'ai écrit cherchait « un nombre suivi de MIPS, de ns, de % ». Il
+a manqué **9660**, présent deux fois sur la page. Ce n'est pas une mesure —
+c'est le numéro de la norme ISO — mais un chiffre publié sans son unité aurait
+échappé de la même façon. La garde compte donc **les nombres**, et exige pour
+chacun une ligne qui dit d'où il vient : la commande qui le refait, ou la
+raison pour laquelle ce n'en est pas un. Le sabotage tombe dans les deux sens —
+un nombre ajouté sans justification fait tomber
+`no number appears on the roadmap page without a line saying where it comes from`,
+une justification qui survit à son nombre fait tomber
+`nothing lingers in the accounted list for a number the page no longer carries`.
+
+**Le signe à retenir.** Une garde qui tient une invariante vraie se lit comme
+si elle tenait la question entière. #223 a écrit noir sur blanc ce qu'elle ne
+tenait pas — les deux chiffres nommés dans `notHeld` — et **c'est le périmètre,
+pas le contenu, qui manquait à l'énoncé**. Une garde devrait dire non seulement
+ce qu'elle ne vérifie pas, mais **où elle ne regarde pas**.
