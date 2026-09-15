@@ -10813,9 +10813,19 @@ cadre, à l'octet près.
 `sysfb`, et le `fbcon: Taking over console` qu'on y lit est présent **dans les
 deux** passages — c'est la console muette, pas notre cadre. La page zéro dit
 donc la vérité au noyau sur la mémoire, et pas encore assez pour qu'il peigne.
-Savoir ce qui manque — un noyau sans `sysfb` compilé dedans, ou un démarrage
-coupé avant l'`initcall` qui l'enregistre — est la question suivante, et elle
-n'est pas tranchée ici.
+
+**Ce n'est pas que le code manque.** Les chaînes de `printk` de
+`sysfb_simplefb.c` sont dans cette image — `VRAM smaller than advertised`,
+`inaccessible VRAM base`, `simple-framebuffer`, `vesa-framebuffer`, une
+occurrence chacune. `sysfb` est compilé dedans. Reste donc la seconde
+explication, non vérifiée à ce jour : le démarrage est **coupé avant
+l'`initcall`** qui enregistre le périphérique, et il faut un budget de tours
+plus grand pour le savoir.
+
+**Chercher un nom de symbole dans un vmlinux ne prouve rien** : `kallsyms` est
+compressée par jetons. Une première recherche sur `sysfb_init`, `simpledrm` et
+`simplefb` a rendu zéro partout et aurait fait conclure l'inverse. Le contrôle
+qui rend la recherche valide est une chaîne dont on sait déjà qu'elle est là.
 
 Les cinq régions de plus (13 905 contre 13 910) sont le chemin qui lit la page
 zéro, pas un pilote : cinq régions ne sont pas un pilote d'affichage.

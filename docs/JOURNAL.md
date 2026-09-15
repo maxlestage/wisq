@@ -13847,3 +13847,36 @@ pas un pilote d'affichage.
 
 **La tentation, refusée** : écrire « l'écran marche » parce que l'e820 est juste.
 L'e820 est juste, et c'est tout ce qui est montré.
+
+### Et la recherche qui devait trancher a d'abord répondu le contraire du vrai
+
+Deux explications possibles au silence de l'affichage : ce noyau d'Alpine n'a
+pas `sysfb` compilé dedans, ou le démarrage est coupé avant l'`initcall` qui
+l'enregistre. La première se tranche par une recherche dans l'image, pas par un
+relevé de quarante minutes. Première recherche :
+
+    sysfb_init     0        simpledrm    0        simplefb    0
+
+Zéro partout. La conclusion s'offrait : le noyau n'a pas le code. **Elle est
+fausse.** Ce sont des **noms de symboles**, et la table `kallsyms` est
+compressée par jetons — un nom de symbole ne se trouve pas en clair dans un
+vmlinux. La recherche ne mesurait pas ce qu'on croyait.
+
+Ce qui se trouve en clair, ce sont les chaînes de `printk`, dans `.rodata` :
+
+    "VRAM smaller than advertised"   1
+    "inaccessible VRAM base"         1
+    "simple-framebuffer"             1
+    "vesa-framebuffer"               1
+
+Les deux premières sont **exactement** celles lues à la source dans
+`sysfb_simplefb.c` pour #250. `sysfb` est donc bien dans ce noyau, et la
+première piste tombe : il reste la seconde, le démarrage coupé avant
+l'`initcall`.
+
+**La faute est la même que celle du module `kernel_image` documente en tête** :
+l'outil de couverture lancé sur un `vmlinuz` compressé rendait 6,6 % au lieu de
+98,2 %, et ce nombre *ressemblait* à une mesure. Ici, un zéro ressemblait à une
+absence. Chercher une chaîne dans un binaire ne prouve rien tant qu'on n'a pas
+montré que cette chaîne **pourrait** y être en clair — et le contrôle qui le
+montre est une chaîne dont on sait déjà qu'elle y est.
