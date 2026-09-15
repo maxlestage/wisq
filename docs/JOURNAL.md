@@ -13764,3 +13764,147 @@ code fait, plutôt que ce que la règle exige, ne fait que photographier l'erreu
 **Le signe à retenir.** Avant de recopier une règle d'un langage dans un autre,
 vérifier la règle à sa source. Le jumeau qu'on s'apprête à copier est une
 autorité commode, pas une autorité.
+
+## #251 — un écran déclaré à la vue, et la même mémoire déclarée libre au noyau
+
+**Le défaut.** `desktop::Screen` traverse le C ABI, la page et la boucle hôte :
+la vue sait où peindre. `kernel_image::zero_page` ne le savait pas — deux
+entrées e820, toutes deux **utilisables**, et pas un octet de `screen_info`. Le
+montage de l'émetteur déclarait donc un cadre à la vue et les mêmes octets au
+noyau comme mémoire libre. L'allocateur ne consulte que l'e820 ; il aurait
+distribué les pages que la vue peignait, et n'aurait jamais su qu'il y avait un
+écran.
+
+Le jumeau Swift écrit ces champs depuis #147 et nomme la conséquence : « un
+écran non réservé est de la mémoire que le noyau donnera à quelqu'un d'autre ».
+C'est #250 qui a rendu la copie permissible : il fallait d'abord que ces champs
+soient justes.
+
+**Le piège que le pilote a montré, et qu'aucune relecture n'aurait donné.** Le
+premier jeu de refus tenait sur quatre raisons : cadre vide, trop grand pour
+`lfb_width`/`lfb_height` (des `u16`), base au-delà de ce que `lfb_base` porte
+(un `u32`), cadre hors de la RAM. Les quatre passaient. Puis un essai à la main
+sur le vrai pilote :
+
+    WISQ_SCREEN=4096x4096   code=0
+
+Accepté. 4096 × 4096 × 4 fait **exactement 64 Mio** : sur une machine de 64 Mio
+il « tient », et se posait à l'adresse zéro — par-dessus le noyau, la page zéro
+et la ligne de commande. L'e820 aurait déclaré **toute la mémoire réservée**, et
+le noyau n'aurait plus eu un octet à lui.
+
+**Tenir dans la RAM n'est pas tenir quelque part.** Le refus manquant est
+devenu un cinquième, `WouldOverwrite`, et un paramètre : `floor`, le premier
+octet que le cadre a le droit d'occuper. Le chargeur le connaît, la page zéro
+non — donc il est demandé, pas deviné. C'est la forme que `usable_ram` avait
+déjà prise pour la même raison.
+
+**Ce qui l'a trouvé** : avoir lancé le pilote sur les quatre entrées possibles
+plutôt que sur la bonne. Une garde écrite d'après ce qu'on imagine refuser
+couvre ce qu'on a imaginé ; les quatre refus étaient justes, et le cinquième
+n'était dans aucun d'eux.
+
+**L'hypothèse énoncée plutôt que tue.** L'entrée réservée **chevauche** l'entrée
+utilisable : le cadre est au-dessus du mégaoctet, donc dans l'intervalle que la
+deuxième entrée déclare libre. Linux résout un recouvrement dans
+`e820__update_table` en gardant le **type le plus élevé**, et `E820_TYPE_RESERVED`
+l'emporte sur `E820_TYPE_RAM`. C'est ce sur quoi ce montage repose, écrit dans
+le code et dans le test : si un jour l'écran se fait piétiner, c'est la première
+chose à vérifier.
+
+**Et l'écran reste éteint par défaut.** `WISQ_SCREEN` est absent sauf demande :
+en déclarer un en silence rendrait incomparables des mesures que la feuille de
+route met côte à côte.
+
+### L'hypothèse a été vérifiée, et le défaut se voyait dans une ligne de console
+
+Deux passages aux réglages identiques, le second avec `WISQ_SCREEN=1024x768`.
+Ce que le noyau imprime lui-même :
+
+    sans écran   BIOS-e820: [mem 0x00100000-0x0fffffff] usable
+    avec écran   BIOS-e820: [mem 0x00100000-0x0fcfffff] usable
+                 BIOS-e820: [mem 0x0fd00000-0x0fffffff] reserved
+
+**Linux garde bien le type le plus élevé sur un recouvrement.** L'entrée
+utilisable était posée jusqu'au bout de la RAM ; elle ressort tronquée. Ce
+n'est plus une hypothèse dans un commentaire.
+
+**Et la ligne qui montre le défaut est ailleurs :**
+
+    sans écran   NODE_DATA(0) allocated [mem 0x0ff7c000-0x0ff81fff]
+    avec écran   NODE_DATA(0) allocated [mem 0x0fcfa000-0x0fcfffff]
+
+`0x0ff7c000` est **dans le cadre**. Sans la réservation, la toute première
+allocation de memblock atterrissait déjà sur l'écran. Le défaut n'était pas une
+inquiétude de principe : il se produisait à la première occasion.
+
+**Ce que la mesure ne dit pas, et qu'il faut dire aussi.** Rien dans la console
+ne nomme `simpledrm`, `simplefb` ni `sysfb`. Le `fbcon: Taking over console`
+qu'on y lit est présent **dans les deux** passages — c'est la console muette,
+pas notre cadre. La page zéro dit donc la vérité au noyau sur la mémoire, et
+pas encore assez pour qu'il peigne. Cinq régions traduites de plus, ce n'est
+pas un pilote d'affichage.
+
+**La tentation, refusée** : écrire « l'écran marche » parce que l'e820 est juste.
+L'e820 est juste, et c'est tout ce qui est montré.
+
+### Et la recherche qui devait trancher a d'abord répondu le contraire du vrai
+
+Deux explications possibles au silence de l'affichage : ce noyau d'Alpine n'a
+pas `sysfb` compilé dedans, ou le démarrage est coupé avant l'`initcall` qui
+l'enregistre. La première se tranche par une recherche dans l'image, pas par un
+relevé de quarante minutes. Première recherche :
+
+    sysfb_init     0        simpledrm    0        simplefb    0
+
+Zéro partout. La conclusion s'offrait : le noyau n'a pas le code. **Elle est
+fausse.** Ce sont des **noms de symboles**, et la table `kallsyms` est
+compressée par jetons — un nom de symbole ne se trouve pas en clair dans un
+vmlinux. La recherche ne mesurait pas ce qu'on croyait.
+
+Ce qui se trouve en clair, ce sont les chaînes de `printk`, dans `.rodata` :
+
+    "VRAM smaller than advertised"   1
+    "inaccessible VRAM base"         1
+    "simple-framebuffer"             1
+    "vesa-framebuffer"               1
+
+Les deux premières sont **exactement** celles lues à la source dans
+`sysfb_simplefb.c` pour #250. `sysfb` est donc bien dans ce noyau, et la
+première piste tombe : il reste la seconde, le démarrage coupé avant
+l'`initcall`.
+
+### La seconde est tombée aussi, et a découvert plus grand qu'elle
+
+`WISQ_TURNS=8000000`, le double. 15 324 régions, 296 lignes de console contre
+234, et une fin qui n'est plus un épuisement :
+
+    Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+      mount_root_generic ← prepare_namespace ← kernel_init
+
+`prepare_namespace` s'exécute **après** `do_initcalls()`. `sysfb_init` est un
+`device_initcall` : il a donc tourné, et n'a créé aucun périphérique. Les deux
+explications que j'avais avancées sont mortes. Il en faut une troisième, et je
+ne l'ai pas — **c'est un progrès, pas une réponse**, et c'est tout ce qu'on peut
+en dire aujourd'hui.
+
+**Mais la mesure a rendu autre chose, et de plus grand.** Le noyau ne s'arrête
+plus sur une instruction illisible, ni sur un budget, ni faute de mémoire : il
+parcourt tous ses `initcall`, atteint `kernel_init`, cherche une racine, n'en
+trouve pas et panique — ce qu'un noyau sans racine fait sur n'importe quelle
+machine. **Le mur de #167 n'est plus dans la machine.** Il est dans ce qu'on ne
+lui a pas donné.
+
+**Ce qu'il ne faut pas en conclure.** Ni « le noyau démarre » au sens où un
+utilisateur l'entendrait — il n'y a pas d'espace utilisateur, pas de shell, rien
+à voir — ni que l'écran marche : aucune ligne ne le nomme. Ce qui est établi est
+plus étroit et plus solide : **la machine ne casse plus avant la fin du
+démarrage du noyau**, et ce qui manque maintenant est un initramfs, qui est une
+direction et non un défaut.
+
+**La faute est la même que celle du module `kernel_image` documente en tête** :
+l'outil de couverture lancé sur un `vmlinuz` compressé rendait 6,6 % au lieu de
+98,2 %, et ce nombre *ressemblait* à une mesure. Ici, un zéro ressemblait à une
+absence. Chercher une chaîne dans un binaire ne prouve rien tant qu'on n'a pas
+montré que cette chaîne **pourrait** y être en clair — et le contrôle qui le
+montre est une chaîne dont on sait déjà qu'elle y est.

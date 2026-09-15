@@ -10736,3 +10736,124 @@ tombe pas — parce que le premier seul ne peut pas éprouver l'arrondi.
 peut désormais recopier des champs justes. Rien n'a encore fait démarrer un vrai
 noyau avec un cadre à travers l'émetteur — le mur de traduction de #237 (quatre-
 vingts à cent trente-cinq secondes pour 15 319 régions) reste devant.
+
+## #251 — la page zéro de l'émetteur sait déclarer un écran, et refuse ceux qu'elle décrirait de travers
+
+Le montage de l'émetteur porte un `desktop::Screen` jusqu'à la vue depuis le lot
+8, et ne le disait pas au noyau : deux entrées e820, toutes deux utilisables,
+zéro octet de `screen_info`. `zero_page_with_screen` écrit les quatorze champs
+du jumeau Swift — mêmes décalages, mêmes valeurs, `lfb_size` en unités de 64 Kio
+depuis #250 — et ajoute l'entrée e820 réservée.
+
+**Cinq refus, dont un que les quatre premiers n'avaient pas vu :**
+
+| refus | ce qu'il empêche |
+|---|---|
+| `Empty` | un cadre sans pixel |
+| `TooLarge` | 70 000 tronqué à 4464 par le `u16` de `lfb_width` |
+| `BaseTooHigh` | une adresse tronquée par le `u32` de `lfb_base` |
+| `OutsideRam` | une entrée e820 sur de la mémoire qui n'existe pas |
+| `WouldOverwrite` | **un cadre qui tient dans la RAM, par-dessus le noyau** |
+
+Le cinquième vient d'un essai sur le pilote, pas d'une relecture :
+`WISQ_SCREEN=4096x4096` était accepté sur une machine de 64 Mio — le cadre fait
+exactement 64 Mio — et se posait à l'adresse zéro. Tenir dans la RAM n'est pas
+tenir quelque part ; `floor` est désormais un paramètre.
+
+`kernel-entry` lit `WISQ_SCREEN=1024x768`, pose le cadre en haut de la RAM,
+aligné sur une page, et imprime où :
+
+```
+écran : 0x3d00000, 1024x768 en XRGB8888, 3072 Kio réservés dans l'e820
+```
+
+**L'écran est éteint par défaut**, et c'est délibéré : un noyau qui en voit un
+enregistre `simpledrm`, traduit d'autres régions et s'arrête ailleurs. Les
+relevés précédents ont été pris sans, et resteraient incomparables.
+
+### L'hypothèse a été vérifiée, et le défaut se voit dans la console du noyau
+
+Relevé le 15 septembre, deux passages aux réglages identiques :
+
+```
+WISQ_RAM=256 WISQ_ROUNDS=16384 WISQ_TURNS=4000000 \
+  cargo run -p wisq-vm --release --example kernel-entry -- /tmp/vmlinux.bin
+```
+
+— le second avec `WISQ_SCREEN=1024x768` en plus. Ce que **le noyau lui-même**
+imprime :
+
+| | sans écran | avec écran |
+| --- | --- | --- |
+| e820 lu par le noyau | 2 entrées, tout utilisable | 3, dont `0x0fd00000-0x0fffffff` **reserved** |
+| `last_pfn` | `0x10000` | `0xfd00` |
+| `NODE_DATA(0)` | `[mem 0x0ff7c000-0x0ff81fff]` | `[mem 0x0fcfa000-0x0fcfffff]` |
+| pages totales | 64 256 | 63 500 |
+| mémoire | `218364K/261752K` | `215300K/258680K` |
+| régions traduites | 13 905 | 13 910 |
+
+**Linux garde bien le type le plus élevé sur le recouvrement** : l'entrée
+utilisable, posée jusqu'au bout de la RAM, ressort tronquée à `0x0fcfffff`, et
+le cadre ressort réservé. Ce n'est plus une hypothèse écrite dans un
+commentaire, c'est une ligne de console.
+
+**Et la ligne qui montre le défaut est `NODE_DATA(0)`.** Sans la réservation, le
+noyau posait sa structure de comptabilité de nœud à `0x0ff7c000` — **dans le
+cadre**, entre `0x0fd00000` et `0x0fffffff`, exactement là où la vue peint. Ce
+n'était donc pas une inquiétude de principe : la toute première allocation de
+memblock atterrissait déjà sur l'écran.
+
+Les 3 072 Kio de différence de mémoire annoncée sont exactement la taille du
+cadre, à l'octet près.
+
+### Ce que ça ne tranche pas
+
+**Le noyau ne construit aucun périphérique d'affichage à partir de ce
+`screen_info`** : rien dans la console ne nomme `simpledrm`, `simplefb` ni
+`sysfb`, et le `fbcon: Taking over console` qu'on y lit est présent **dans les
+deux** passages — c'est la console muette, pas notre cadre. La page zéro dit
+donc la vérité au noyau sur la mémoire, et pas encore assez pour qu'il peigne.
+
+**Ce n'est ni le code qui manque, ni le budget** — les deux explications
+avancées sont mortes, et c'est une troisième mesure qui les a tuées.
+
+Le code est là : les chaînes de `printk` de `sysfb_simplefb.c` sont dans cette
+image — `VRAM smaller than advertised`, `inaccessible VRAM base`,
+`simple-framebuffer`, `vesa-framebuffer`, une occurrence chacune.
+
+Le budget non plus. À `WISQ_TURNS=8000000`, le double, **le démarrage va
+jusqu'au bout** :
+
+```
+Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+  mount_root_generic ← prepare_namespace ← kernel_init
+```
+
+15 324 régions, 296 lignes de console contre 234. Et `prepare_namespace`
+s'exécute **après** `do_initcalls()` : `sysfb_init`, qui est un
+`device_initcall`, a donc tourné. Il n'a créé aucun périphérique d'affichage, et
+on ne sait pas encore pourquoi. **La question reste ouverte, et les deux
+premières réponses sont écartées** — ce qui est un progrès, pas une réponse.
+
+### Le fait neuf, et il est plus grand que l'écran
+
+**Le noyau démarre désormais entièrement à travers l'émetteur.** Il ne s'arrête
+plus sur une instruction illisible, ni sur un budget, ni faute de mémoire : il
+parcourt tous ses `initcall`, atteint `kernel_init`, cherche une racine, n'en
+trouve aucune et panique — **ce qu'un noyau sans racine fait sur n'importe
+quelle machine**.
+
+Le mur de #167 n'est donc plus dans la machine. Il est dans ce qu'on ne lui a
+pas donné : un système de fichiers racine. C'est l'initramfs, et c'est une
+**direction** — elle attend le mot de Maxime, pas une tranche de plus.
+
+**Chercher un nom de symbole dans un vmlinux ne prouve rien** : `kallsyms` est
+compressée par jetons. Une première recherche sur `sysfb_init`, `simpledrm` et
+`simplefb` a rendu zéro partout et aurait fait conclure l'inverse. Le contrôle
+qui rend la recherche valide est une chaîne dont on sait déjà qu'elle est là.
+
+Les cinq régions de plus (13 905 contre 13 910) sont le chemin qui lit la page
+zéro, pas un pilote : cinq régions ne sont pas un pilote d'affichage.
+
+Le mur de traduction de #237 — quatre-vingts à cent trente-cinq secondes pour
+15 319 régions — reste devant.
