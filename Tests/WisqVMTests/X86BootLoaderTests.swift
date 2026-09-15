@@ -283,7 +283,13 @@ final class X86BootLoaderTests: XCTestCase {
         XCTAssertEqual(u16(0x14), 768, "lfb_height")
         XCTAssertEqual(u16(0x16), 32, "lfb_depth : quatre octets par pixel")
         XCTAssertEqual(u32(0x18), 0xE000_0000, "lfb_base")
-        XCTAssertEqual(u32(0x1C), 1024 * 768 * 4, "lfb_size")
+        // **Pas en octets.** `lfb_size` est en unités de 64 Kio dès que
+        // `orig_video_isVGA` annonce VIDEO_TYPE_VLFB, ce que la ligne
+        // ci-dessus vient de vérifier. 1024 × 768 × 4 = 3 145 728 octets,
+        // soit 48 unités tout rond. Cette assertion a longtemps épinglé le
+        // nombre d'octets, et tenait ainsi le défaut en place : le test qui
+        // suit refait la vérification du noyau et dit pourquoi.
+        XCTAssertEqual(u32(0x1C), 48, "lfb_size : la VRAM annoncée, en unités de 64 Kio")
         XCTAssertEqual(u16(0x24), 1024 * 4, "lfb_linelength : une ligne, en octets")
 
         // La place de chaque couleur dans le mot de trente-deux bits. En
@@ -298,6 +304,90 @@ final class X86BootLoaderTests: XCTestCase {
         XCTAssertEqual(page[0x2B], 0, "blue_pos")
         XCTAssertEqual(page[0x2C], 8, "rsvd_size")
         XCTAssertEqual(page[0x2D], 24, "rsvd_pos")
+    }
+
+    /// **La VRAM annoncée n'est pas comptée en octets, et le noyau le dit
+    /// lui-même.**
+    ///
+    /// `drivers/firmware/sysfb_simplefb.c`, à la lettre :
+    ///
+    /// ```c
+    /// size = si->lfb_size;
+    /// if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
+    ///     size <<= 16;
+    /// length = mode->height * mode->stride;
+    /// if (length > size) {
+    ///     printk(KERN_WARNING "sysfb: VRAM smaller than advertised");
+    ///     return ERR_PTR(-EINVAL);
+    /// }
+    /// ```
+    ///
+    /// Le champ est en **unités de 64 Kio** — « shifted by 16 bits for
+    /// historical reasons », dit le commentaire d'à côté — dès lors que
+    /// `orig_video_isVGA` annonce `VIDEO_TYPE_VLFB`, ce que ce chargeur fait.
+    /// Y écrire un nombre d'octets annonce 65 536 fois le cadre.
+    ///
+    /// **Et ça ne se voit pas, parce que la garde du noyau est un `>`.** Une
+    /// VRAM surdéclarée passe toujours : le seul effet est que « VRAM smaller
+    /// than advertised » ne peut plus jamais se déclencher, et qu'un `vesafb` —
+    /// qui fait `size_total = lfb_size * 65536` pour borner ses ressources —
+    /// bornerait sur des téraoctets. Une erreur qui désarme une vérification au
+    /// lieu d'en déclencher une ne se signale pas toute seule : il faut la
+    /// chercher depuis la règle, pas depuis le symptôme.
+    ///
+    /// Les deux assertions vont par paire, et aucune ne suffit seule. La
+    /// première est la vérification du noyau, refaite telle quelle ; une valeur
+    /// trop grande y passe. La seconde exige que la déclaration **soit** le
+    /// cadre, à l'unité près — c'est elle qui refuse les octets.
+    func testTheAdvertisedVideoMemoryIsCountedInSixtyFourKibibyteUnits() throws {
+        // **Deux cadres, et le second est le seul qui tienne l'arrondi.**
+        // 1024 × 768 × 4 fait 3 145 728 octets, soit 48 unités tout rond : un
+        // arrondi vers le bas y donnerait la même réponse que le bon, et ne se
+        // verrait pas. 800 × 600 × 4 fait 1 920 000 octets, soit 29,3 unités —
+        // là, arrondir vers le bas annonce moins que le cadre, et c'est la
+        // première assertion qui tombe, avec le message du noyau.
+        for (width, height) in [(1024, 768), (800, 600)] {
+            let ram = memory()
+            let screen = X86BootLoader.Framebuffer(
+                base: 0xE000_0000, width: width, height: height)
+            let placement = try X86BootLoader.load(
+                kernel: Self.syntheticKernel(), into: ram, framebuffer: screen)
+            let page = ram.dump(placement.bootParametersAddress, X86BootLoader.bootParametersSize)
+
+            func u16(_ offset: Int) -> UInt16 {
+                UInt16(page[offset]) | (UInt16(page[offset + 1]) << 8)
+            }
+            func u32(_ offset: Int) -> UInt32 {
+                (0..<4).reduce(UInt32(0)) { $0 | (UInt32(page[offset + $1]) << (8 * UInt32($1))) }
+            }
+
+            // Ce que le noyau calcule, avec les champs qu'il lit vraiment.
+            let advertised = UInt64(u32(0x1C)) << 16
+            let needed = UInt64(u16(0x14)) * UInt64(u16(0x24))
+            XCTAssertLessThanOrEqual(
+                needed, advertised,
+                "\(width)×\(height) : le noyau refuserait le cadre — "
+                    + "« VRAM smaller than advertised », \(needed) octets demandés "
+                    + "contre \(advertised) annoncés")
+
+            // Et la déclaration est le cadre, pas un multiple de lui. Une unité
+            // de plus au maximum : le champ ne sait pas compter plus fin que
+            // 64 Kio, donc un cadre qui ne tombe pas juste s'arrondit vers le
+            // haut — d'une unité, jamais de deux.
+            //
+            // **Comparée dans ce sens-là, et pas par une soustraction.** La
+            // première version écrivait `advertised - needed < 65_536` : sur des
+            // `UInt64`, quand la VRAM annoncée est trop petite — le cas même que
+            // l'assertion d'au-dessus vient d'attraper — la soustraction déborde
+            // par le bas et le test **plante** au lieu d'échouer. Un sabotage l'a
+            // montré : « Illegal instruction » dans la construction du message,
+            // pas une assertion. Une garde qui ne survit pas à ce qu'elle doit
+            // détecter ne rapporte rien.
+            XCTAssertLessThan(
+                advertised, needed + 65_536,
+                "\(width)×\(height) : \(advertised) octets annoncés pour un cadre "
+                    + "de \(needed) — le champ est en unités de 64 Kio, pas en octets")
+        }
     }
 
     /// **Un écran non réservé est de la mémoire que le noyau va donner à

@@ -10698,3 +10698,41 @@ estimation.
 
 Laquelle des deux grandeurs varie le moins. Cinq relevés n'en font pas plus que
 deux, et la page ne le dira que le jour où assez de passages l'auront montré.
+
+## #250 — `lfb_size` est en unités de 64 Kio, et le chargeur y écrivait des octets
+
+Première tranche de #167 côté bureau, et elle n'ajoute rien : elle corrige ce
+qu'il aurait fallu recopier.
+
+Le montage de l'émetteur (`kernel_image::zero_page`) ne sait pas encore déclarer
+d'écran au noyau ; son jumeau Swift (`X86BootLoader`) le fait depuis #147, sur
+quatorze champs de `screen_info` plus une entrée e820 réservée. Avant de porter
+ces champs en Rust, ils ont été vérifiés **à la source du noyau** plutôt que
+recopiés. Un seul était faux.
+
+| champ | ce qu'il portait | ce qu'il porte |
+|---|---|---|
+| `lfb_size` (0x1C) | 3 145 728 — des octets | 48 — des unités de 64 Kio |
+
+Pour un cadre de 1024 × 768 en XRGB8888, le noyau lisait donc
+**206 158 430 208 octets** de VRAM annoncée. Le décalage de seize bits est dans
+`drivers/firmware/sysfb_simplefb.c`, conditionné à `VIDEO_TYPE_VLFB`, que ce
+chargeur annonce.
+
+**Aucun symptôme, et c'est le point.** La seule vérification du noyau sur ce
+champ est `if (length > size)` : une VRAM surdéclarée la passe toujours. Le
+défaut n'était pas visible parce qu'il n'était pas bruyant — il rendait
+inatteignable le refus « VRAM smaller than advertised ». Un `vesafb`, lui, aurait
+borné ses ressources sur des téraoctets.
+
+L'arrondi se fait **vers le haut** : le champ ne compte pas plus fin que 64 Kio,
+et arrondir vers le bas annoncerait moins que le cadre, ce que le noyau refuse.
+La garde porte sur deux cadres — un qui tombe juste sur une unité, un qui n'y
+tombe pas — parce que le premier seul ne peut pas éprouver l'arrondi.
+
+### Ce que ça ne tranche pas
+
+`zero_page` ne déclare toujours aucun écran : c'est la tranche suivante, et elle
+peut désormais recopier des champs justes. Rien n'a encore fait démarrer un vrai
+noyau avec un cadre à travers l'émetteur — le mur de traduction de #237 (quatre-
+vingts à cent trente-cinq secondes pour 15 319 régions) reste devant.
