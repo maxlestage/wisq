@@ -1461,10 +1461,20 @@ impl Module {
     /// Le module n'a plus sa table : il **importe** `env.blocks` et y place ses
     /// blocs à partir de `slot`. Deux régions liées à la même table peuvent
     /// alors s'appeler par `call_indirect` sans repasser par l'hôte — et c'est
-    /// tout l'enjeu, mesuré avant d'être écrit : un enchaînement par la boucle
-    /// hôte coûte **environ 190 ns**, un `call_indirect` vers un autre module **7,2**.
-    /// Les deux chiffres viennent de `--example chain` et de
-    /// `scripts/wasm-table-probe.ts`.
+    /// tout l'enjeu, sondé avant d'être écrit. `bun scripts/wasm-table-probe.ts`,
+    /// quatre passages le 15 septembre 2026 : **5,0 à 5,5 ns** pour un
+    /// `call_indirect` vers un autre module, contre **45,7 à 46,6 ns** pour les
+    /// mêmes cibles appelées depuis JavaScript. Deux chiffres du même
+    /// instrument, donc comparables entre eux.
+    ///
+    /// Ce sont les bornes de ces quatre passages-là et non celles de la mesure :
+    /// un cinquième pourrait en sortir.
+    ///
+    /// **Ce couple dit que le moteur en est capable ; il ne dit pas ce que la
+    /// forme coûte.** La sonde chronomètre deux modules écrits à la main, sans
+    /// correspondance à lire — elle l'énonce elle-même en tête. Ce que coûte la
+    /// forme construite est mesuré par `--example resolved`, et c'est sept à
+    /// huit fois plus : voir `resolving`.
     ///
     /// **Cette tranche ne prend pas encore le gain.** `resolve` compare toujours
     /// l'adresse aux blocs de sa propre région et rend la main pour tout le
@@ -1496,12 +1506,32 @@ impl Module {
     /// lit lui-même : quand la cible n'est aucun de ses blocs, il y cherche
     /// l'indice au lieu de rendre la main.
     ///
-    /// **Ce que ça remplace.** Un retour de main coûte environ 190 ns, dont
-    /// l'essentiel n'est pas WebAssembly mais le site d'appel JavaScript qui
-    /// perd son cache en ligne. Un `call_indirect` vers un autre module coûte
-    /// 7,2 ns, et la lecture de la correspondance une poignée d'instructions.
-    /// Les deux chiffres viennent de `--example chain` et de
-    /// `scripts/wasm-table-probe.ts`.
+    /// **Ce que ça remplace, mesuré sur cette forme-ci.** `cargo run -p wisq-vm
+    /// --release --example resolved` fait tourner le même anneau de
+    /// soixante-quatre maillons dans les deux régimes, **dans le même
+    /// processus**. Trois passages le 15 septembre 2026 :
+    ///
+    /// | un changement de région | par changement |
+    /// | --- | --- |
+    /// | enchaîné par la boucle hôte | 159 – 162 ns |
+    /// | résolu dans le module | 39,1 – 40,8 ns |
+    /// | rapport | **4,0 à 4,1 fois moins** |
+    ///
+    /// Ce qui disparaît n'est pas du WebAssembly : c'est un aller-retour par un
+    /// site d'appel JavaScript qui perd son cache en ligne. Les nanosecondes
+    /// bougent avec la charge de la machine — ce banc a rendu de 125 à 190 ns
+    /// pour la forme hôte selon les jours — **et c'est le rapport qui tient**.
+    ///
+    /// **Ne pas y lire le chiffre de `scripts/wasm-table-probe.ts`.** Cette
+    /// sonde-là chronomètre un `call_indirect` nu entre deux modules écrits à
+    /// la main, sans correspondance à lire : le même jour, sur cette même
+    /// machine, elle rend 5,0 à 5,5 ns. Elle a établi que le moteur en était
+    /// capable, et c'est ce qui a décidé la piste — pas ce qu'elle coûte. La
+    /// forme construite lit en plus la correspondance à chaque changement, et
+    /// se mesure **sept à huit fois plus haut**. Les deux nombres viennent de deux
+    /// instruments : leur différence n'est pas une mesure et ne se publie pas
+    /// comme telle. Ce qui se constate est l'ordre — la part que la sonde ne
+    /// chiffrait pas est la plus chère des deux.
     ///
     /// L'hôte doit remplir la correspondance avec `table_base` et
     /// `table_slot` : ce sont **les mêmes fonctions** que celles gravées dans
@@ -2512,10 +2542,14 @@ impl Module {
         // **Sa propre table, ou celle de l'hôte.** La forme historique définit
         // la sienne : chaque module a la sienne, et un `call_indirect` ne peut
         // désigner qu'un bloc de sa propre région — passer à la suivante coûte
-        // alors un retour de main, mesuré à environ 190 ns. La forme liée **importe** la
-        // table et y pose ses blocs à l'emplacement que l'hôte lui donne, ce qui
-        // ouvre la porte à un enchaînement qui ne sort jamais de WebAssembly :
-        // 7,2 ns relevés par `scripts/wasm-table-probe.ts`.
+        // alors un retour de main : `--example resolved` en a relevé 159 à 162 ns
+        // le 15 septembre 2026, et ce banc a rendu de 125 à 190 ns selon les
+        // jours. La forme liée **importe** la table et y pose ses blocs à
+        // l'emplacement que l'hôte lui donne, ce qui ouvre la porte à un
+        // enchaînement qui ne sort jamais de WebAssembly. La porte, pas le
+        // chiffre : les quelques nanosecondes de `scripts/wasm-table-probe.ts`
+        // sont celles d'un `call_indirect` nu, et ce que la forme résolue coûte
+        // vraiment se lit dans `--example resolved`.
         if shared.is_none() {
             let mut table = vec![0x01, 0x70, 0x00];
             unsigned(count as u64, &mut table);

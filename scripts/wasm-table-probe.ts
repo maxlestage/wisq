@@ -115,8 +115,15 @@ console.log(
   "Ce que ça dit du bureau : la répartition entre régions peut redevenir interne,",
 );
 console.log(
-  "et les 192 ns du retour de main ne seraient plus payés qu'aux cibles jamais traduites.",
+  "et le retour de main ne serait plus payé qu'aux cibles jamais traduites.",
 );
+console.log(
+  "Ce que ça ne dit pas : ce que coûtera la forme construite, qui lira en plus une",
+);
+console.log(
+  "correspondance à chaque changement. C'est `--example resolved` qui la mesure, et",
+);
+console.log("elle rend sept à huit fois ce chiffre-ci.");
 console.log(
   "Reste la question de l'indice : une région ne connaît pas celui d'une adresse qu'elle",
 );

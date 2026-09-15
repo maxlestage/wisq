@@ -1501,7 +1501,12 @@ console.log(JSON.stringify({{ taken, lost, rdx: u(2).toString(16), rip: u({rip})
 /// C'est la première moitié de ce que la mesure a désigné. Un module lié
 /// n'a plus sa propre table : il importe celle de l'hôte et y pose ses blocs à
 /// l'emplacement qu'on lui donne. Deux régions liées à la même table pourront
-/// alors s'appeler sans repasser par JavaScript — 7,2 ns contre 192.
+/// alors s'appeler sans repasser par JavaScript. C'est
+/// `scripts/wasm-table-probe.ts` qui l'a rendu crédible — 5,0 à 5,5 ns pour un
+/// `call_indirect` nu entre deux modules, contre 45,7 à 46,6 depuis JavaScript, relevés
+/// le 15 septembre 2026 — mais ce chiffre-là est celui du moteur, pas celui de
+/// la forme construite : `--example resolved` mesure celle-ci sept à huit fois
+/// plus haut, parce qu'elle lit en plus la correspondance.
 ///
 /// **Cette tranche ne prend pas le gain, elle le prépare**, et c'est
 /// exactement ce que ce test doit établir : le module lié se lie, il tourne, et
@@ -1818,10 +1823,14 @@ fn a_confinement_that_is_not_a_power_of_two_is_refused() {
 /// **Une région saute dans une autre sans repasser par l'hôte.**
 ///
 /// C'est le but de tout ce qui précède. Jusqu'ici, un saut vers une adresse
-/// que la région ne contient pas rendait la main : environ 190 ns, dont
-/// l'essentiel n'est pas WebAssembly mais le site d'appel JavaScript qui perd
-/// son cache en ligne. Avec la correspondance, le module trouve l'indice
-/// lui-même et y va par `call_indirect`, mesuré à 7,2 ns.
+/// que la région ne contient pas rendait la main, dont l'essentiel n'est pas
+/// WebAssembly mais le site d'appel JavaScript qui perd son cache en ligne.
+/// Avec la correspondance, le module trouve l'indice lui-même et y va par
+/// `call_indirect` : `--example resolved` a relevé 39,1 à 40,8 ns le
+/// 15 septembre 2026, contre 159 à 162 ns pour le retour de main mesuré dans le
+/// même processus. Les quelques nanosecondes de `scripts/wasm-table-probe.ts`
+/// sont celles d'un `call_indirect` nu, sans correspondance à lire : c'est ce
+/// qui a décidé la piste, pas ce qu'elle coûte.
 ///
 /// Le test se juge sur **le nombre de tours de la boucle hôte** : un seul
 /// appel à `run` doit exécuter les deux régions. Et il se juge dans les deux
