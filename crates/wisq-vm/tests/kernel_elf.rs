@@ -450,3 +450,155 @@ fn a_screen_the_page_could_not_describe_is_refused() {
         "un cadre qui tient dans la RAM peut tenir par-dessus le noyau"
     );
 }
+
+/// **Le montage de l'émetteur ne pouvait pas dire au noyau où est son
+/// initramfs.**
+///
+/// `zero_page` écrit cinq champs et pas un de plus — la garde du « rien
+/// d'autre » le tient. Ni `ramdisk_image` (0x218) ni `ramdisk_size` (0x21c) n'en
+/// font partie, alors que son jumeau Swift les écrit depuis toujours. Le noyau
+/// n'avait donc aucun moyen d'apprendre qu'une archive était posée dans sa RAM,
+/// et finissait dans `prepare_namespace` sur
+/// « VFS: Unable to mount root fs on unknown-block(0,0) » — mesuré à 8 000 000
+/// tours, tous les `initcall` passés.
+///
+/// **La pose est indépendante de celle de l'écran, et c'est voulu.** Ce sont
+/// deux champs de `boot_params` sans rapport ; deux fonctions qui écriraient
+/// chacune sa moitié de la page finiraient par diverger. Celle-ci s'applique à
+/// une page nue comme à une page qui porte déjà un écran.
+#[test]
+fn the_zero_page_points_the_kernel_at_the_initramfs_it_was_given() {
+    use wisq_vm::desktop::Screen;
+    use wisq_vm::kernel_image::{declare_ramdisk, zero_page, zero_page_with_screen, Ramdisk};
+    const RAM: u64 = 64 * 1024 * 1024;
+    const COMMAND_LINE: u32 = 0x9800;
+    const FLOOR: u64 = 0x0100_0000;
+    let archive = Ramdisk {
+        at: 0x0200_0000,
+        bytes: 3_000_000,
+    };
+
+    let mut page = zero_page(RAM, COMMAND_LINE);
+    declare_ramdisk(&mut page, archive, FLOOR, RAM).expect("une archive descriptible");
+    let dword = |page: &[u8], at: usize| u32::from_le_bytes(page[at..at + 4].try_into().unwrap());
+    assert_eq!(dword(&page, 0x218), 0x0200_0000, "ramdisk_image");
+    assert_eq!(dword(&page, 0x21c), 3_000_000, "ramdisk_size");
+
+    // **Rien d'autre que les deux champs, en plus de ce que `zero_page` pose.**
+    let written: [(usize, usize); 6] = [
+        (0x1e8, 1),
+        (0x210, 2),
+        (0x218, 8),
+        (0x228, 4),
+        (0x2d0, 20),
+        (0x2e4, 20),
+    ];
+    let stray: Vec<usize> = (0..page.len())
+        .filter(|at| {
+            page[*at] != 0
+                && !written
+                    .iter()
+                    .any(|(from, len)| (from..&(from + len)).contains(&at))
+        })
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "des octets écrits hors des champs voulus : {stray:x?}"
+    );
+
+    // **Et la même pose sur une page qui porte déjà un écran.** Le plafond est
+    // alors la base du cadre, pas le bout de la RAM : l'archive n'a pas le droit
+    // d'aller peindre sur l'écran.
+    let screen = Screen {
+        base: 0x03D0_0000,
+        width: 1024,
+        height: 768,
+    };
+    let mut both =
+        zero_page_with_screen(RAM, COMMAND_LINE, screen, FLOOR).expect("un écran descriptible");
+    declare_ramdisk(&mut both, archive, FLOOR, screen.base).expect("sous le cadre");
+    assert_eq!(
+        dword(&both, 0x218),
+        0x0200_0000,
+        "ramdisk_image, avec écran"
+    );
+    assert_eq!(dword(&both, 0x21c), 3_000_000, "ramdisk_size, avec écran");
+    assert_eq!(both[0x0f], 0x23, "et l'écran est toujours déclaré");
+    assert_eq!(both[0x1e8], 3, "et ses trois entrées e820 sont intactes");
+}
+
+/// **Une archive que la page ne saurait pas décrire est refusée, et le refus dit
+/// laquelle des quatre raisons.**
+///
+/// `ramdisk_image` et `ramdisk_size` sont des `u32`. Le demi-haut de chacun vit
+/// dans `ext_ramdisk_image` et `ext_ramdisk_size`, que cette page n'écrit pas —
+/// au-delà de quatre gibioctets, écrire en tronquant donnerait au noyau une
+/// autre archive, à une autre adresse, **sans rien signaler**.
+///
+/// Le plafond est demandé plutôt que deviné : c'est le bout de la RAM quand il
+/// n'y a pas d'écran, et la base du cadre quand il y en a un. La page zéro ne
+/// peut pas le savoir seule.
+#[test]
+fn a_ramdisk_the_page_could_not_describe_is_refused() {
+    use wisq_vm::kernel_image::{declare_ramdisk, zero_page, Ramdisk, RamdiskRefusal};
+    const RAM: u64 = 64 * 1024 * 1024;
+    const FLOOR: u64 = 0x0100_0000;
+    let refuse = |archive: Ramdisk, ceiling: u64| {
+        let mut page = zero_page(RAM, 0x9800);
+        declare_ramdisk(&mut page, archive, FLOOR, ceiling).unwrap_err()
+    };
+
+    assert_eq!(
+        refuse(
+            Ramdisk {
+                at: 0x0200_0000,
+                bytes: 0
+            },
+            RAM
+        ),
+        RamdiskRefusal::Empty,
+        "une archive vide n'est pas une archive"
+    );
+    assert_eq!(
+        refuse(
+            Ramdisk {
+                at: 0x1_0000_0000,
+                bytes: 4096
+            },
+            0x2_0000_0000
+        ),
+        RamdiskRefusal::TooHigh { top: 0x1_0000_1000 },
+        "ramdisk_image est un u32 : au-delà, l'adresse serait tronquée"
+    );
+    assert_eq!(
+        refuse(
+            Ramdisk {
+                at: 0x0080_0000,
+                bytes: 4096
+            },
+            RAM
+        ),
+        RamdiskRefusal::BelowFloor {
+            at: 0x0080_0000,
+            floor: FLOOR
+        },
+        "sous le plancher, l'archive écraserait le noyau"
+    );
+    // **Celui-ci tient dans la RAM, et c'est le piège de #251 à nouveau.**
+    // L'archive rentre sous le bout de la mémoire mais déborde sur le cadre :
+    // le plafond n'est pas la RAM, c'est la base de l'écran.
+    assert_eq!(
+        refuse(
+            Ramdisk {
+                at: 0x03C0_0000,
+                bytes: 3_000_000
+            },
+            0x03D0_0000
+        ),
+        RamdiskRefusal::PastCeiling {
+            top: 0x03C0_0000 + 3_000_000,
+            ceiling: 0x03D0_0000
+        },
+        "tenir dans la RAM ne suffit pas quand un écran occupe le haut"
+    );
+}

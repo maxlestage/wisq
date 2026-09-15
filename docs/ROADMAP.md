@@ -10857,3 +10857,91 @@ zéro, pas un pilote : cinq régions ne sont pas un pilote d'affichage.
 
 Le mur de traduction de #237 — quatre-vingts à cent trente-cinq secondes pour
 15 319 régions — reste devant.
+
+## #252 — la page zéro ne savait pas dire au noyau qu'il avait une racine
+
+`zero_page` écrit cinq champs et pas un de plus — sa propre garde du « rien
+d'autre » le tient. `ramdisk_image` (0x218) et `ramdisk_size` (0x21c) n'en
+faisaient pas partie, alors que le chargeur Swift les écrit depuis toujours. Le
+montage de l'émetteur n'avait donc **aucun moyen** de dire au noyau qu'une
+archive était posée dans sa RAM, et #251 s'était terminé sur « VFS: Unable to
+mount root fs on unknown-block(0,0) ».
+
+`declare_ramdisk` pose les deux champs sur **une page déjà écrite**, nue ou
+portant un écran. C'est délibérément une seconde fonction et non un paramètre de
+plus à `zero_page_with_screen` : ce sont deux champs de `boot_params` sans
+rapport, et une fonction qui les poserait ensemble se dédoublerait au premier
+appelant qui n'en veut qu'un.
+
+**Quatre refus :**
+
+| refus | ce qu'il empêche |
+|---|---|
+| `Empty` | une archive sans octet |
+| `TooHigh` | un sommet tronqué par le `u32` de `ramdisk_image` |
+| `BelowFloor` | une archive posée sur le noyau ou sur la page zéro |
+| `PastCeiling` | une archive qui déborde de la RAM — **ou sur le cadre** |
+
+**Le plafond est demandé, pas deviné.** Une archive peut tenir dans la RAM *et*
+mordre sur l'écran. Le plafond est le bout de la mémoire quand il n'y a pas de
+cadre, la base du cadre quand il y en a un : la page zéro ne peut pas savoir
+lequel, le chargeur si. C'est la leçon de `WouldOverwrite`, apprise une tranche
+plus tôt et appliquée ici sans repasser par la panne.
+
+### Ce que le noyau a répondu
+
+`kernel-entry` lit `WISQ_INITRAMFS=<chemin>` et pose l'archive juste au-dessus
+du noyau, alignée sur une page. Relevé le 15 septembre :
+
+```
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  cargo run -p wisq-vm --release --example kernel-entry -- /tmp/vmlinux.bin
+```
+
+Ce que **le noyau lui-même** imprime :
+
+```
+RAMDISK: [mem 0x0322c000-0x0322efff]
+Trying to unpack rootfs image as initramfs...
+Freeing initrd memory: 12K
+Run /init as init process
+```
+
+| | sans racine (#251) | avec racine |
+| --- | --- | --- |
+| fin du démarrage | `Kernel panic — VFS: Unable to mount root fs` | `Run /init as init process` |
+| régions traduites | 15 324 | 16 178 |
+
+L'archive est jetable et **se refait** — une mesure qui ne se refait pas n'est
+pas une mesure, c'est #241. Un `/init` statique de quarante octets en
+assembleur, qui imprime une marque puis s'endort, plus un `dev/console` :
+
+```
+as --64 -o init.o init.s && ld -o initrd/init init.o
+mknod initrd/dev/console c 5 1
+cd initrd && find . -print0 | cpio --null -o --format=newc > ../initramfs.cpio
+```
+
+### Ce que ça ne montre PAS
+
+**L'espace utilisateur ne tourne pas.** La marque imprimée par `/init`
+n'apparaît nulle part : la machine s'arrête **avant** que le programme n'exécute
+sa première instruction. « Run /init as init process » dit que le noyau
+l'appelle, pas qu'il s'est exécuté.
+
+### Le mur suivant, et c'est un jumeau manquant
+
+```
+0xffffffff8105a57c ne se traduit pas — CannotDecode { at: 0 }
+48 0f ae 4b 40    fxrstor64 0x40(%rbx)
+```
+
+**`fxsave` est décodée depuis #225 ; `fxrstor` ne l'a jamais été.** La tranche
+qui a posé l'écriture des 512 octets du FPU n'a pas posé leur relecture, et rien
+ne l'a signalé pendant six tranches parce qu'aucun chemin parcouru ne la
+demandait. Le premier à la réclamer est celui qui bascule vers le premier
+processus : restaurer un état FPU neuf pour `/init`. C'est un **défaut nommé**,
+réparable seul.
+
+La question de l'affichage de #251 reste ouverte telle quelle : tous les
+`initcall` passent, et aucun périphérique d'affichage n'est construit.

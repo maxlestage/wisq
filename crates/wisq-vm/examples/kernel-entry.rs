@@ -48,7 +48,9 @@ use std::io::BufRead;
 use std::path::Path;
 
 use wisq_vm::desktop::Screen;
-use wisq_vm::kernel_image::{loads, zero_page, zero_page_with_screen, MONTAGE_COMMAND_LINE};
+use wisq_vm::kernel_image::{
+    declare_ramdisk, loads, zero_page, zero_page_with_screen, Ramdisk, MONTAGE_COMMAND_LINE,
+};
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
@@ -82,6 +84,34 @@ fn declared_pages() -> Result<u32, String> {
         .map_err(|_| format!("WISQ_RAM={value} ne se lit pas comme un nombre de mébioctets"))?;
     u32::try_from(mib * 1024 * 1024 / 65536)
         .map_err(|_| format!("WISQ_RAM={mib} est trop grand pour être compté en pages"))
+}
+
+/// **L'archive que `WISQ_INITRAMFS` demande, ou aucune.**
+///
+/// Absente, le montage décrit une machine sans racine — ce qu'il a été jusqu'à
+/// cette tranche, et qui se termine par « VFS: Unable to mount root fs on
+/// unknown-block(0,0) » une fois tous les `initcall` passés.
+///
+/// **Elle est posée juste au-dessus du noyau, alignée sur une page.** Le noyau
+/// la réserve lui-même dès qu'il la connaît, et la libère après l'avoir
+/// déballée ; l'endroit n'a donc pas à survivre, il doit seulement ne marcher
+/// sur personne. Le plafond est le cadre s'il y en a un, le bout de la RAM
+/// sinon — c'est `declare_ramdisk` qui le vérifie, pas ce code.
+fn declared_initramfs(floor: u64) -> Result<Option<(Vec<u8>, Ramdisk)>, String> {
+    let Ok(path) = std::env::var("WISQ_INITRAMFS") else {
+        return Ok(None);
+    };
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).map_err(|why| format!("{path} ne se lit pas : {why}"))?;
+    if bytes.is_empty() {
+        return Err(format!("{path} est vide : ce n'est pas une archive"));
+    }
+    let at = (floor + 0xFFF) & !0xFFF;
+    let count = bytes.len() as u64;
+    Ok(Some((bytes, Ramdisk { at, bytes: count })))
 }
 
 /// **L'écran que `WISQ_SCREEN` demande, ou aucun.**
@@ -423,6 +453,35 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // **L'archive, si on en demande une.** Le plafond est le cadre quand il y
+    // en a un : une archive qui tiendrait dans la RAM peut déborder sur
+    // l'écran, et `declare_ramdisk` le refuse plutôt que de l'accepter.
+    let mut page = page;
+    match declared_initramfs(top) {
+        Ok(None) => {}
+        Ok(Some((bytes, archive))) => {
+            let ceiling = declared_screen(ram, top)
+                .ok()
+                .flatten()
+                .map_or(ram, |screen| screen.base);
+            if let Err(why) = declare_ramdisk(&mut page, archive, top, ceiling) {
+                eprintln!("cette archive ne peut pas être décrite au noyau : {why:?}");
+                std::process::exit(1);
+            }
+            let at = scratch.join("initramfs.bin");
+            std::fs::write(&at, &bytes).expect("l'archive");
+            placed.push((at, archive.at));
+            println!(
+                "initramfs : 0x{:x}, {} Kio — le noyau a une racine à déballer",
+                archive.at,
+                archive.bytes / 1024
+            );
+        }
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }
+    }
     let page_path = scratch.join("zero-page.bin");
     std::fs::write(&page_path, &page).expect("la page zéro");
     placed.push((page_path, ZERO_PAGE_AT));
