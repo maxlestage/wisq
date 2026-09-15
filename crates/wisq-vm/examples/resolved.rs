@@ -83,6 +83,24 @@ fn main() {
         };
         plain.push(module);
     }
+
+    // **Le troisième régime : les mêmes six instructions, sans jamais changer
+    // de région.** Un seul maillon, dont le saut indirect retombe sur sa
+    // propre entrée : la répartition reste interne au module, il n'y a ni
+    // correspondance à lire ni région à quitter. Confinée comme les maillons
+    // résolus, pour que la seule différence soit le changement de région.
+    //
+    // **C'était le terme manquant.** Il était écrit en dur — 247 MIPS — relevé
+    // un autre jour, et depuis #243 aucun nombre unique ne désigne plus ce que
+    // le banc de vitesse mesure : il en imprime quatre, de 284 à 578 MIPS
+    // selon la forme. Selon celui qu'on y mettait, la déduction allait de
+    // quinze à vingt-neuf nanosecondes. Elle se mesure ici, dans le même
+    // processus que les deux autres.
+    let alone_code = link(address(0));
+    let Some(alone) = Module::confined(&alone_code, address(0), 0, PAGES) else {
+        eprintln!("l'émetteur refuse le maillon seul — le troisième terme manquerait");
+        std::process::exit(1);
+    };
     println!(
         "{LINKS} maillons de {PER_LINK} instructions, un saut indirect chacun, \
          aucune collision dans la correspondance"
@@ -131,6 +149,12 @@ fn main() {
             index
         ));
     }
+
+    let alone_path = scratch.join("a.wasm");
+    std::fs::write(&alone_path, &alone).expect("le maillon seul");
+    // Le chemin cité, préparé ici : un `format!` dans les arguments d'un autre
+    // `format!` est refusé par clippy, et le pilote ne se compilerait plus.
+    let alone_quoted = format!("{:?}", alone_path.to_string_lossy());
 
     let steps = 2_000_000u64;
     let driver = scratch.join("d.js");
@@ -225,7 +249,48 @@ const hostBegan = process.hrtime.bigint();
 host({steps});
 const hostSeconds = Number(process.hrtime.bigint() - hostBegan) / 1e9;
 
-console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds }}));
+// **Et les mêmes instructions sans jamais changer de région.** Sa propre
+// mémoire, confinée comme celle des maillons résolus, et pas de table : ce
+// module ne sort jamais de lui-même.
+const tight = new WebAssembly.Memory({{ initial: {alonePages} }});
+const tightSlots = [];
+const tightImports = {{ env: {{ mem: tight, out: () => undefined, in: () => 0n }} }};
+for (let slot = 0; slot < {globals}; slot++) {{
+  tightSlots.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+  tightImports.env["g" + slot] = tightSlots[slot];
+}}
+const solo = new WebAssembly.Instance(
+  new WebAssembly.Module(fs.readFileSync({alonePath})), tightImports).exports.run;
+function alone(steps) {{
+  tightSlots[RIP].value = {entry}n;
+  tightSlots[2].value = 0n;
+  solo(BigInt(steps));
+}}
+
+// **Compter les maillons, pas seulement constater qu'il s'est passé quelque
+// chose.** Chaque maillon ajoute {work} fois RAX — qui vaut l'entrée, constante
+// ici — dans RDX. Après N maillons, RDX vaut exactement {work}·N·entrée. Cette
+// égalité dit **combien** de maillons ont tourné, donc aussi ce que le budget
+// compte : un budget en instructions rendrait six fois moins de maillons et
+// une mesure six fois trop rapide, sans que rien ne le signale.
+alone(1000);
+const expected = {work}n * 1000n * {entry}n;
+if (BigInt.asUintN(64, tightSlots[2].value) !== BigInt.asUintN(64, expected)) {{
+  console.log(JSON.stringify({{
+    broken: true,
+    rip: "le maillon seul a tourné " + BigInt.asUintN(64, tightSlots[2].value) +
+         " au lieu de " + BigInt.asUintN(64, expected),
+  }}));
+  process.exit(0);
+}}
+alone(200000); // échauffement
+const aloneBegan = process.hrtime.bigint();
+alone({steps});
+const aloneSeconds = Number(process.hrtime.bigint() - aloneBegan) / 1e9;
+
+console.log(JSON.stringify({{
+  broken: false, seconds, againSeconds, hostSeconds, aloneSeconds,
+}}));
 "#,
             // **Ce que l'hôte doit allouer vient de la bibliothèque.** Ce
             // pilote a écrit la somme à la main, et la tranche qui a ajouté le
@@ -244,6 +309,9 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
             links = LINKS,
             loose = loose,
             guestPages = wisq_vm::x86_wasm::GUEST_PAGES,
+            alonePages = host_pages(PAGES),
+            alonePath = alone_quoted,
+            work = WORK,
         ),
     )
     .expect("le pilote");
@@ -284,6 +352,7 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
     let ns = number("seconds") * 1e9 / steps as f64;
     let again = number("againSeconds") * 1e9 / steps as f64;
     let by_host = number("hostSeconds") * 1e9 / steps as f64;
+    let inside = number("aloneSeconds") * 1e9 / steps as f64;
     println!();
     println!("un changement de région, enchaîné par l'**hôte**   : {by_host:.0} ns");
     println!("un changement de région, résolu dans le **module** : {ns:.1} ns");
@@ -306,21 +375,24 @@ console.log(JSON.stringify({{ broken: false, seconds, againSeconds, hostSeconds 
          MIPS de plafond",
         PER_LINK as f64 * 1000.0 / ns
     );
-    println!("— contre 247 MIPS que l'émetteur atteint *dans* une région, sans jamais");
-    println!("changer. L'écart entre ces deux plafonds borne ce que l'enchaînement");
-    println!("coûte encore :");
-    let inside = PER_LINK as f64 * 1000.0 / 247.0;
     println!(
-        "  {:.1} ns par maillon ici, {inside:.1} ns si les mêmes {PER_LINK} instructions \
-         tournaient",
-        ns
+        "— contre {:.0} MIPS que les mêmes {PER_LINK} instructions atteignent *dans* une",
+        PER_LINK as f64 * 1000.0 / inside
     );
+    println!("région, sans jamais en changer. L'écart entre ces deux plafonds est ce que");
+    println!("l'enchaînement coûte encore :");
+    println!("  {ns:.1} ns par maillon en changeant de région, {inside:.1} ns sans jamais changer");
     println!(
-        "  sans jamais changer de région — soit **{:.0} ns** pour le changement lui-même.",
-        ns - inside
+        "  — soit **{:.1} ns** pour le changement lui-même, et **{:.0} %** du temps du maillon.",
+        ns - inside,
+        (ns - inside) / ns * 100.0
     );
     println!();
-    println!("Ce dernier nombre est une **déduction de deux mesures**, pas une mesure : il");
-    println!("suppose que les 247 MIPS relevés sur la boucle du banc valent aussi pour ces");
-    println!("six instructions-ci. À prendre comme un ordre de grandeur.");
+    println!("**Ce dernier nombre est une soustraction, et elle est licite** : les deux");
+    println!("termes sortent du même processus, du même émetteur, du même code de maillon,");
+    println!("sous la même confinement. Seul le changement de région les sépare. La");
+    println!("version précédente citait 247 MIPS écrits en dur, relevés un autre jour sur");
+    println!("une autre boucle ; depuis #243 aucun nombre unique ne désigne plus ce que le");
+    println!("banc de vitesse mesure, et selon celui qu'on y mettait cette ligne annonçait");
+    println!("de quinze à vingt-neuf nanosecondes.");
 }

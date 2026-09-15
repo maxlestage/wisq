@@ -2847,10 +2847,23 @@ mesure désormais **les deux formes dans le même processus** : le rapport se
 tient alors entre 3,7 et 4,3 sur des exécutions successives.
 
 Le plafond que l'enchaînement impose passe de quarante à environ **cent
-soixante-dix MIPS**, contre 247 que l'émetteur atteint *dans* une région sans
-jamais changer. L'écart entre ces deux plafonds borne ce que le changement
-coûte encore : une dizaine de nanosecondes — une déduction de deux mesures,
-pas une mesure, et le programme le dit.
+cinquante MIPS**, contre **trois cent quinze à trois cent trente-cinq** que les
+mêmes six instructions atteignent *dans* une région sans jamais en changer.
+L'écart entre ces deux plafonds est ce que le changement coûte : **20,8 à
+22,3 ns**, soit **52 à 55 %** du temps d'un maillon — trois passages le
+15 septembre 2026.
+
+> **Ce dernier terme était écrit en dur, et il était faux.** Le programme
+> divisait par « 247 MIPS », un relevé d'un autre jour sur une autre boucle, et
+> en tirait « une dizaine de nanosecondes ». Depuis #243 aucun nombre unique ne
+> désigne plus ce que le banc de vitesse mesure — il en imprime quatre, de 284
+> à 578 MIPS selon la forme — et selon celui qu'on y mettait, cette ligne
+> annonçait de quinze à vingt-neuf nanosecondes. Le terme est désormais
+> **mesuré dans le même processus que les deux autres** : une seule région dont
+> le saut indirect retombe sur sa propre entrée, confinée comme les maillons
+> résolus, de sorte que la seule différence soit le changement de région. La
+> soustraction est alors licite, et le coût réel est **le double** de ce qui
+> était publié.
 
 **Comment c'est fait, et les trois choix qui comptent.**
 
