@@ -5134,6 +5134,31 @@ console.log("rdx-apnee " + apnée.rdx.toString());
     let beats: u64 = seen("battements").parse().expect("les battements");
     let held: u64 = seen("apnee").parse().expect("les battements en apnée");
 
+    // **Ce que la respiration coûte, imprimé plutôt que jeté.**
+    //
+    // Ce test mesure les deux durées sur le même travail — `rdx` le prouve
+    // trois assertions plus bas — et les comparait à un seuil sans jamais dire
+    // combien. Pendant ce temps le commentaire de `web/host.js` gelait « dix-
+    // neuf pour cent de débit », relevé par un protocole décrit mais qu'aucune
+    // commande ne refait. L'instrument existait, tournait à chaque commit, et
+    // c'est le chiffre qui manquait.
+    //
+    //     cargo test -p wisq-vm --release --test host_loop \
+    //         the_machine_lets_the_page_breathe_while_it_runs -- --nocapture
+    //
+    // Le seuil reste un rapport et non une valeur : un coureur lent reste un
+    // coureur honnête, et ce qui suit est un relevé, pas une garde.
+    println!(
+        "respiration : {holding} ms en apnée contre {breathing} ms en respirant \
+         — la respiration coûte {:.0} % du débit, {beats} battements de page \
+         obtenus contre {held}",
+        if breathing == 0 {
+            0.0
+        } else {
+            (breathing as f64 - holding as f64) / breathing as f64 * 100.0
+        }
+    );
+
     // **Le même travail des deux côtés.** Sans cette ligne, une respiration
     // qui écourterait la boucle passerait pour un gain de réactivité.
     assert_eq!(
