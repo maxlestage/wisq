@@ -11131,3 +11131,107 @@ machine ne peut pas en tirer de droits. Ce que la parade MDS en attend est un
 **effet de bord du silicium** — vider les tampons — que rien ici ne modélise :
 l'exécuter comme un `nop` qui pose ZF est fidèle à ce que cette machine *est*,
 et le taire serait la faute que ce document reproche ailleurs.
+
+## #255 — `verw` : sept octets que le fichier ne portait pas, et un ZF que cette machine ne peut pas calculer
+
+Le mur laissé par #254, sur le chemin du retour vers l'anneau trois :
+
+```
+refusée 0xffffffff81c01963 … CannotDecode { at: 0 } octets 0f002dd6e6ffffeb20…
+fichier @0xe01963 : 90909090909090…
+```
+
+`verw -0x192a(%rip)` en mémoire, **sept `nop`** dans le fichier : un site
+d'`alternative` corrigé au démarrage par la parade MDS (`CLEAR_CPU_BUF`), que
+le noyau annonce sur le port série. L'opérande désigne `mds_verw_sel`, où
+l'image porte `18 00` — `__KERNEL_DS`.
+
+### Une imprécision de #254, corrigée
+
+#254 disait qu'« un test garantit que `verw` ne soit pas décodée ». **Non.**
+Les trois tests portent sur `0f 00 e8`, la forme **registre**, et restent
+justes. Ce sont des **commentaires** qui affirmaient la forme mémoire
+illisible — quatre, corrigés ici. Aucun test retiré : la tranche n'a pas la
+forme de #253.
+
+### Ce que la tranche pose
+
+`Op::VerifySegmentWrite`, décodée sur `0f 00 /5` **en forme mémoire** et rien
+d'autre du groupe : `sldt`, `str`, `verr` et la forme registre de `verw`
+restent illisibles, et `lldt`/`ltr` gardent leurs formes registre.
+
+| | |
+| --- | --- |
+| **l'opérande est lu** | seize bits, à l'adresse. Le manuel prévoit la faute d'accès pour `verw`, contrairement à `clflush` — c'est la seule chose observable de l'instruction ici |
+| **rien n'est vidé** | ce que Linux en attend est un effet de bord du silicium ; cette machine n'a aucun tampon spéculatif, comme elle n'a pas de cache derrière `clflush` |
+| **aucun drapeau ne bouge** | et c'est une **infidélité assumée**, pas un oubli |
+
+**Pourquoi ZF n'est pas inventé.** Sur du silicium, `verw $__KERNEL_DS` rendrait
+ZF à un — le descripteur dit « inscriptible ». Rien ici ne consulte la GDT, donc
+la valeur n'est pas *calculable* ; en poser une serait inventer un descripteur,
+et l'oracle — un vrai processeur — le démentirait le jour où `0f 00 /5`
+entrerait dans son corpus. Mesuré sans conséquence sur le seul chemin où ce
+noyau l'exécute : après le `verw` viennent `eb 20`, un saut **inconditionnel**,
+`add $8,%rsp`, un saut, et `48 cf` — `iretq`, qui recharge RFLAGS depuis la
+pile. Relevé dans l'image.
+
+**Le jour où un invité branchera sur ce ZF, il faudra lire le descripteur dans
+la GDT** — dont cette machine tient déjà la limite et la base. C'est écrit dans
+la doc de l'op, à l'endroit où il faudra le faire.
+
+### Éprouvé, et le sabotage a survécu au premier essai
+
+| sabotage | tombe sur |
+| --- | --- |
+| S1 — la forme mémoire n'est plus décodée | les **trois** tests |
+| S2 — l'émetteur n'émet plus la lecture | le test de la page absente |
+| S3 — l'interpréteur ne lit plus l'opérande | le test du décodeur |
+| S4 — l'émetteur **invente** ZF | **rien, au premier essai** |
+
+S4 *ajoutait* ZF à un état où tous les drapeaux inscriptibles étaient déjà
+posés : l'assertion ne pouvait pas échouer. Le test tourne maintenant **deux
+fois**, avec et sans ZF. Et le test frère ne suffisait pas non plus — « la
+région tourne », « les drapeaux ne bougent pas », « le sélecteur n'est pas
+écrasé » sont trois assertions qu'un émetteur qui ne lirait *rien* passerait :
+il a fallu une seconde région avec une page absente sous l'opérande.
+
+**Deuxième tranche de suite où le sabotage désigne une assertion vide.** C'est
+la leçon de #254 répétée : une assertion sur un état qui la satisfait déjà
+n'est pas une garde.
+
+### La mesure
+
+| | avant (#254) | après |
+| --- | --- | --- |
+| régions traduites | 11 948 | 11 948 |
+| tours | 2 333 782 | 2 333 782 |
+| arrêt | `0xffffffff81c01963` illisible | **`aucune page derrière l'adresse`** |
+| RIP | `0xffffffff81c01963` | **`0x401000`** |
+
+**Les deux premiers nombres ne bougent pas, et c'est cohérent** : tout ce qui
+suit le `verw` vit dans la région **déjà traduite**. La machine exécute
+maintenant le retour KPTI en entier, `iretq` compris, et finit là où il
+l'envoie — `0x401000`, le point d'entrée de `/init` vérifié à #253.
+
+### Ce que ça ne montre PAS, et le mur suivant est déjà mesuré
+
+**L'espace utilisateur ne tourne pas.** L'arrêt est celui que #254 a nommé, et
+la sonde dit depuis quoi — le CR3 a changé (`0x3462000` → `0x3463000`), donc
+l'ancien relevé ne valait plus :
+
+```
+sonde-cr3 0x3463000 pour 0x401000
+sonde-marche n3[0]=0x0
+sonde-pgd noyau        0x3462000 n3[0]=0x0
+sonde-pgd utilisateur  0x3463000 n3[0]=0x0
+```
+
+`0x3463000` vaut `0x3462000 + 0x1000` : la paire de PGD que l'isolation des
+tables de pages tient côte à côte. **Les deux moitiés ont `PML4[0]` à zéro**, et
+`PML4[0]` couvre tout l'espace utilisateur.
+
+Le CR3 que la machine porte au saut **ne décrit donc pas l'espace d'adressage du
+processus** : ce n'est pas « la page de `/init` manque », c'est « la table qui
+devrait la nommer est vide ». La tranche suivante part de là — quelle écriture
+de CR3 se perd entre `Run /init as init process` et le saut ? — et elle
+commence par une observation, pas par une hypothèse.
