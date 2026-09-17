@@ -14222,3 +14222,111 @@ CR0/CR3/CR4 « n'avait rien de frais à aller chercher ». **Faux** : ce tampon-
 est celui de la **traduction d'adresses**, pas un cache de code. Vérifié dans
 `x86_wasm.rs` avant d'en faire un argument. Le défaut était ailleurs, et plus
 simple.
+
+## #255 — `verw`, sept octets que le fichier ne portait pas
+
+Le mur laissé par #254, à `0xffffffff81c01963` : `0f 00 2d d6 e6 ff ff`,
+`verw -0x192a(%rip)`, `CannotDecode { at: 0 }`. Dans le **fichier** ELF du
+noyau, aux mêmes sept octets, **sept `nop`** : c'est un site d'`alternative`
+que le noyau corrige au démarrage — la parade MDS, `CLEAR_CPU_BUF` — et qu'il
+annonce lui-même sur le port série (« MDS: Vulnerable: Clear CPU buffers
+attempted, no microcode »). L'ancien instrument, qui lisait le fichier,
+traduisait les `nop` et passait outre sans un mot.
+
+### Une imprécision de #254, corrigée plutôt que répétée
+
+J'ai écrit à #254 qu'« un test garantit que `verw` ne soit pas décodée ». **Ce
+n'est pas exact.** Les trois tests portent sur `0f 00 e8` — la forme
+**registre** —, et ils restent vrais et justes. Ce sont des **commentaires**,
+pas des tests, qui affirmaient « la forme mémoire reste illisible ». La
+différence compte : un commentaire faux se corrige, un test faux se retire.
+Quatre commentaires corrigés ici ; aucun test retiré.
+
+### Ce que cette machine peut faire de `verw`, et ce qu'elle ne peut pas
+
+Ce que Linux attend de l'instruction **n'est pas son résultat**, c'est son
+effet de bord : vider les tampons du processeur. Cette machine n'en a aucun,
+pas plus que de cache derrière `clflush`. Il n'y a donc rien à vider, et c'est
+le même raisonnement.
+
+**Mais l'opérande est lu**, et c'est la différence avec `clflush` : le manuel
+prévoit pour `verw` une faute d'accès sur un opérande illisible. Les deux cœurs
+la produisent, et c'est le **seul** comportement observable de l'instruction
+ici.
+
+**Ce que la machine ne rend pas : ZF.** Sur du silicium, `verw $__KERNEL_DS`
+rendrait ZF **à un** — le descripteur dit « inscriptible ». Rien ici ne consulte
+la GDT, donc aucune valeur n'est *calculable* ; en inventer une serait inventer
+un descripteur, et l'oracle — qui est un vrai processeur — le démentirait le
+jour où `0f 00 /5` entrerait dans son corpus. **Infidélité assumée et nommée**,
+et mesurée sans conséquence sur le seul chemin où ce noyau l'exécute : les
+octets qui suivent sont `eb 20`, un saut **inconditionnel**, puis
+`add $8,%rsp`, un saut, et `48 cf` — `iretq`, qui recharge RFLAGS depuis la
+pile. Relevé dans l'image, pas supposé.
+
+### Le sabotage a survécu au premier essai. Deuxième tranche de suite.
+
+| sabotage | tombe sur |
+| --- | --- |
+| S1 — le décodeur ne lit plus la forme mémoire | les **trois** tests |
+| S2 — l'émetteur n'émet plus la lecture | `a_verw_whose_operand_page_is_absent_faults_before_the_next_instruction` |
+| S3 — l'interpréteur ne lit plus l'opérande | `verw_is_read_in_its_memory_form_carries_its_operand_and_touches_no_flag` |
+| S4 — l'émetteur **invente** ZF | **rien, au premier essai** |
+
+S4 ajoutait ZF — exactement la valeur du silicium — à un état de départ où
+**tous** les drapeaux inscriptibles étaient déjà posés, ZF compris. L'assertion
+ne pouvait pas échouer. Le test tourne maintenant **deux fois**, une avec ZF
+posé et une sans : la première attrape un ZF effacé, la seconde un ZF inventé.
+
+C'est la même faute qu'au S4 de #254, une tranche plus tôt : **une assertion
+qui ne peut pas échouer n'est pas une garde.** Deux fois de suite, et les deux
+fois c'est le sabotage qui l'a dit, pas la relecture.
+
+Et le test frère ne suffisait pas non plus : « la région tourne », « les
+drapeaux ne bougent pas », « le sélecteur n'est pas écrasé » sont **trois
+assertions qu'un émetteur qui ne lirait rien du tout passerait**. Il a fallu
+une seconde région, avec une page absente sous l'opérande, pour rendre la
+lecture observable.
+
+### Ce que la mesure dit
+
+| | avant (#254) | après |
+| --- | --- | --- |
+| régions traduites | 11 948 | 11 948 |
+| tours | 2 333 782 | 2 333 782 |
+| arrêt | `0xffffffff81c01963` illisible | **`aucune page derrière l'adresse`** |
+| RIP | `0xffffffff81c01963` | **`0x401000`** |
+
+**Les deux premiers nombres sont identiques, et c'est cohérent** : tout ce qui
+suit le `verw` — le saut, `add $8,%rsp`, le saut, l'`iretq` — vit dans la
+région **déjà traduite**. Aucune région de plus, aucun tour de plus, et la
+machine finit là où l'`iretq` l'envoie.
+
+`0x401000` est le point d'entrée de `/init`, vérifié à #253 dans l'en-tête ELF
+de l'archive. La machine exécute donc maintenant **tout** le retour vers
+l'anneau trois, `verw` et `iretq` compris.
+
+### Ce que ça ne montre PAS, et le mur suivant est mesuré
+
+**L'espace utilisateur ne tourne pas.** L'arrêt est celui que #254 a nommé :
+il n'y a aucune page derrière `0x401000`. Et la sonde dit depuis quoi — le CR3
+a changé depuis #254 (`0x3462000` → `0x3463000`), donc l'ancien relevé ne
+valait plus :
+
+```
+sonde-cr3 0x3463000 pour 0x401000
+sonde-marche n3[0]=0x0
+sonde-pgd noyau        0x3462000 n3[0]=0x0
+sonde-pgd utilisateur  0x3463000 n3[0]=0x0
+```
+
+`0x3463000` vaut `0x3462000 + 0x1000` : c'est le PGD **utilisateur** que
+l'isolation des tables de pages tient à côté de celui du noyau. **Les deux
+moitiés de la paire ont `PML4[0]` à zéro**, et `PML4[0]` couvre tout
+l'espace utilisateur.
+
+Donc le CR3 que la machine porte au moment du saut **ne décrit pas l'espace
+d'adressage du processus**. Ce n'est pas « la page de `/init` manque », c'est
+« la table qui devrait la nommer est vide ». La tranche suivante est là, et elle
+commence par une observation, pas par une hypothèse : quelle écriture de CR3
+l'émetteur perd-il entre `Run /init as init process` et le saut ?

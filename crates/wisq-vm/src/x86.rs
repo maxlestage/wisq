@@ -576,8 +576,9 @@ pub enum Op {
     /// `native_load_tr_desc` : ce n'est pas la famille de l'`int3`, celle-là
     /// tourne. L'émetteur range le sélecteur, seize bits, dans sa case ;
     /// l'interpréteur la refuse par nom, faute de table où trouver le TSS. Le
-    /// reste du groupe 6 — `sldt`, `str`, `lldt`, `verr`, `verw` — et la forme
-    /// mémoire restent illisibles : le noyau ne les écrit pas ici.
+    /// reste du groupe 6 — `sldt`, `str`, `lldt`, `verr` — reste illisible : le
+    /// noyau ne les écrit pas ici. (`verw` en mémoire se lit depuis #255 ; sa
+    /// forme registre, non.)
     LoadTaskRegister,
     /// **`0F 00 /2`, forme à registre : charger la table de descripteurs
     /// locale.**
@@ -590,6 +591,43 @@ pub enum Op {
     /// son nom sur tout autre, faute de table globale où le trouver.
     /// L'interpréteur la refuse par nom. Le reste du groupe 6 reste illisible.
     LoadLocalDescriptorTable,
+    /// **`0F 00 /5`, forme mémoire : `verw`.**
+    ///
+    /// Le mur mesuré à #254, sur le chemin du retour vers l'espace
+    /// utilisateur : `0f 00 2d d6 e6 ff ff`, `verw -0x192a(%rip)`, sept octets
+    /// à `0xffffffff81c01963`. Dans le **fichier** ELF du noyau, les mêmes
+    /// sept octets sont des `nop` : c'est un site d'`alternative`, corrigé au
+    /// démarrage par la parade MDS (`CLEAR_CPU_BUF`), que le noyau annonce sur
+    /// le port série — « MDS: Vulnerable: Clear CPU buffers attempted, no
+    /// microcode ». L'opérande désigne `mds_verw_sel`, où l'image porte
+    /// `18 00` : `__KERNEL_DS`.
+    ///
+    /// **Ce que Linux en attend n'est pas le résultat, c'est l'effet de
+    /// bord** — vider les tampons du processeur. Cette machine n'en a aucun, ni
+    /// spéculation ni tampon de remplissage : il n'y a rien à vider, et c'est
+    /// le même raisonnement que `clflush`, qui ne vide aucun cache parce qu'il
+    /// n'y a pas de cache.
+    ///
+    /// **Mais l'opérande est lu**, lui, et c'est la différence avec `clflush` :
+    /// le manuel prévoit pour `verw` une faute d'accès sur un opérande
+    /// illisible, et ce cœur-ci la produit. Seize bits, à l'adresse.
+    ///
+    /// **Ce que cette machine ne rend pas : ZF.** Sur du silicium, `verw` pose
+    /// ZF selon que le segment désigné est inscriptible — ce qui se lit dans
+    /// le descripteur, dans la GDT. Rien ici ne consulte les descripteurs, donc
+    /// aucune valeur ne peut être **calculée** ; en inventer une serait
+    /// inventer un descripteur, et le vrai processeur de l'oracle le
+    /// démentirait. Les drapeaux ne bougent donc pas. **C'est une infidélité
+    /// assumée et nommée**, et elle est sans conséquence sur le seul chemin où
+    /// ce noyau exécute l'instruction : les octets qui suivent sont `eb 20`,
+    /// un saut **inconditionnel**, puis `add $8,%rsp`, un saut, et `48 cf` —
+    /// `iretq`, qui recharge RFLAGS depuis la pile. Relevé dans l'image, pas
+    /// supposé. Le jour où un invité branchera sur ce ZF, c'est ici qu'il
+    /// faudra lire la GDT.
+    ///
+    /// `verr` (`/4`), `sldt` (`/0`), `str` (`/1`) et la forme **registre** de
+    /// `verw` restent illisibles : ce noyau ne les écrit pas ici.
+    VerifySegmentWrite,
     /// **Charger un sélecteur de segment.** `8E /r`, où le champ `reg`
     /// désigne lequel des six. Le noyau en charge trois d'affilée — DS, SS,
     /// ES — à l'octet 1524 de son point d'entrée, juste après avoir chargé sa
@@ -2110,6 +2148,28 @@ impl Cpu {
             self.jumped = true;
             return;
         }
+        // **`verw` : l'opérande est lu, et rien d'autre ne se passe.**
+        //
+        // Cette machine n'a aucun tampon à vider — ce que la parade MDS du
+        // noyau attend de l'instruction est un effet de bord du silicium — et
+        // elle ne consulte aucun descripteur, donc elle ne peut pas *calculer*
+        // ZF : les drapeaux ne bougent pas, et la doc de `Op::VerifySegmentWrite`
+        // dit pourquoi c'est une infidélité assumée plutôt qu'un oubli.
+        //
+        // **La lecture, elle, est réelle.** Le manuel prévoit la faute d'accès
+        // sur un opérande illisible, contrairement à `clflush` — un opérande
+        // hors de la fenêtre faute donc ici, et c'est le seul comportement
+        // observable de l'instruction sur ce cœur.
+        if instruction.op == Op::VerifySegmentWrite {
+            if self.read_destination(instruction).is_none() {
+                // **RIP reste sur l'instruction**, comme toute faute d'accès
+                // de ce cœur : c'est ce qui permet de la rejouer une fois la
+                // page présente.
+                self.faulted = true;
+                self.jumped = true;
+            }
+            return;
+        }
         // **Les registres de contrôle**, exécutés depuis la tranche de
         // pagination. Le champ `dst` porte le registre général : `0F 20` le
         // remplit, `0F 22` s'en remplit. La largeur est toujours de huit
@@ -2467,6 +2527,7 @@ impl Cpu {
             | Op::FpuInit
             | Op::FxSave
             | Op::FxRestore
+            | Op::VerifySegmentWrite
             | Op::PushFlags
             | Op::PopFlags => {
                 unreachable!("les entrées-sorties et les instructions privilégiées sortent avant, avec une faute")
@@ -3023,13 +3084,29 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // tout ce qui n'est pas une des trois barrières se refuse.
             // **Le groupe 6, ouvert pour `ltr` et `lldt`, en forme à
             // registre.** Le noyau les écrit ainsi — `0f 00 d8`, `0f 00 d6` —
-            // et pas autrement. `sldt`, `str`, `verr`, `verw` et la forme
+            // et pas autrement. `sldt`, `str`, `verr` et les autres formes
             // mémoire restent illisibles : les lire pour « le groupe »
-            // rendrait un nom faux pour quatre voisines. `lkgs`, `/6` derrière
+            // rendrait un nom faux pour chacune. La seule forme mémoire lue
+            // est `/5`, `verw`, depuis #255 — le mur du retour vers l'anneau
+            // trois. `lkgs`, `/6` derrière
             // `f2`, a sa propre entrée avant le décodage des préfixes.
             0x00 => {
                 let field = read_modrm(bytes, &mut at, prefixes)?;
-                field.memory.is_none().then_some(())?;
+                // **`/5` en mémoire est `verw`, et c'est la seule forme
+                // mémoire du groupe que ce cœur lise.** Elle porte son
+                // adresse : le manuel prévoit la faute d'accès, contrairement
+                // à `clflush`. Les quatre autres numéros en mémoire — `sldt`,
+                // `str`, `lldt`, `ltr`, `verr` — restent illisibles, et les
+                // lire « pour le groupe » rendrait un nom faux pour chacune.
+                if field.memory.is_some() {
+                    (field.reg & 0b111 == 5).then_some(())?;
+                    return Some(Decoded {
+                        op: Op::VerifySegmentWrite,
+                        length: at,
+                        memory: field.memory,
+                        ..Decoded::nothing(Width::Word)
+                    });
+                }
                 let op = match field.reg & 0b111 {
                     2 => Op::LoadLocalDescriptorTable,
                     3 => Op::LoadTaskRegister,
@@ -4955,7 +5032,8 @@ mod tests {
     /// entrée d'exception ne connaît sa pile de secours.
     ///
     /// **Le groupe n'est pas ouvert pour autant.** `sldt`, `str`, `verr`,
-    /// `verw` restent illisibles (`lldt` a sa propre tranche) ; la forme
+    /// `verw` en registre restent illisibles (`lldt` a sa propre tranche, et
+    /// `verw` en mémoire la sienne, #255) ; la forme
     /// mémoire de `ltr` aussi,
     /// parce que le noyau ne l'écrit pas et que la lire serait deviner. `/6`
     /// sans `f2` n'est toujours rien. L'interpréteur la refuse par nom, RIP
@@ -5009,7 +5087,8 @@ mod tests {
     /// dans `cpu_init`, avec **zéro** dans ESI : il n'a pas de LDT, et charge
     /// le sélecteur nul pour le dire. Exécutée pour de vrai, comme `ltr`.
     ///
-    /// La forme mémoire, `sldt`, `str`, `verr` et `verw` restent illisibles.
+    /// `sldt`, `str`, `verr` et `verw` en registre restent illisibles, et les
+    /// formes mémoire aussi — sauf `/5`, `verw`, que #255 a ouverte.
     /// L'interpréteur la refuse par nom, RIP dessus : il n'a pas de table
     /// globale où trouver une LDT, nulle ou non.
     #[test]
@@ -6254,6 +6333,129 @@ mod tests {
             CF | ZF,
             "aucun drapeau non plus"
         );
+    }
+
+    /// **`verw` se lit dans sa forme mémoire, porte son opérande, et ne
+    /// touche à aucun drapeau.**
+    ///
+    /// Le mur mesuré à #254, à `0xffffffff81c01963` : `0f 00 2d d6 e6 ff ff`,
+    /// `verw -0x192a(%rip)`. Dans le **fichier** ELF du noyau, aux mêmes sept
+    /// octets, **sept `nop`** — c'est un site d'`alternative` que le noyau
+    /// corrige au démarrage, la parade MDS (`CLEAR_CPU_BUF`), et l'ancien
+    /// instrument qui lisait le fichier passait outre sans un mot.
+    ///
+    /// **Ce que ce test tient, et qui n'allait pas de soi :**
+    ///
+    /// | | |
+    /// | --- | --- |
+    /// | la forme **mémoire** se lit | c'était le mur |
+    /// | elle **porte son adresse** | contrairement à `clflush` : le manuel prévoit la faute d'accès pour `verw` |
+    /// | les **drapeaux ne bougent pas** | aucun descripteur n'est consulté, donc ZF n'est pas calculable |
+    /// | la forme **registre** reste illisible | et trois autres tests l'affirment déjà |
+    ///
+    /// **La troisième ligne est une infidélité assumée, pas un oubli**, et
+    /// c'est pour ça qu'elle a son assertion : sur du silicium,
+    /// `verw $__KERNEL_DS` rendrait ZF **à un**. Ici rien ne lit la GDT, et
+    /// inventer la valeur serait inventer un descripteur — l'oracle, qui est
+    /// un vrai processeur, le démentirait le jour où `0f 00 /5` entrerait dans
+    /// son corpus. Mesuré sans conséquence sur le seul chemin où ce noyau
+    /// l'exécute : les octets qui suivent sont `eb 20`, un saut
+    /// **inconditionnel**, puis `add $8,%rsp`, un saut, et `48 cf` — `iretq`,
+    /// qui recharge RFLAGS depuis la pile.
+    ///
+    /// **Et une précision sur #254, qui a été imprécis** : aucun test ne
+    /// garantissait la forme *mémoire* illisible. Ce que trois tests
+    /// affirment, et qui reste vrai, c'est `0f 00 e8` — la forme **registre**.
+    /// C'étaient des commentaires, pas des tests, qui disaient « la forme
+    /// mémoire reste illisible ».
+    #[test]
+    fn verw_is_read_in_its_memory_form_carries_its_operand_and_touches_no_flag() {
+        let kernel = decode(&[0x0f, 0x00, 0x2d, 0xd6, 0xe6, 0xff, 0xff])
+            .expect("`verw -0x192a(%rip)`, ce que le noyau exécute, se lit");
+        assert_eq!(kernel.op, Op::VerifySegmentWrite);
+        assert_eq!(kernel.length, 7, "sept octets, la taille du site corrigé");
+        let at = kernel.memory.expect("elle porte son opérande");
+        assert!(at.relative, "l'adressage est relatif à %rip");
+        assert_eq!(
+            at.displacement as i32, -0x192a,
+            "et le déplacement désigne `mds_verw_sel`"
+        );
+
+        for (bytes, length, name) in [
+            (&[0x0f, 0x00, 0x28][..], 3, "verw (%rax)"),
+            (&[0x0f, 0x00, 0x68, 0x20][..], 4, "verw 0x20(%rax)"),
+            (&[0x41, 0x0f, 0x00, 0x2f][..], 4, "verw (%r15)"),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{name} se lit"));
+            assert_eq!(step.op, Op::VerifySegmentWrite, "{name}");
+            assert_eq!(step.length, length, "{name} : la longueur consommée");
+            assert!(step.memory.is_some(), "{name} : elle porte son opérande");
+        }
+
+        // **Le groupe 6 ne s'ouvre pas autour.** Quatre voisines en mémoire et
+        // la forme registre de `verw` : les lire « pour le groupe » rendrait
+        // un nom faux pour chacune.
+        for (bytes, why) in [
+            (&[0x0f, 0x00, 0xe8][..], "verw en registre n'est pas lue"),
+            (&[0x0f, 0x00, 0x20][..], "verr (/4) en mémoire non plus"),
+            (&[0x0f, 0x00, 0x00][..], "sldt (/0) en mémoire non plus"),
+            (&[0x0f, 0x00, 0x08][..], "str (/1) en mémoire non plus"),
+            (&[0x0f, 0x00, 0x10][..], "lldt (/2) en mémoire non plus"),
+            (&[0x0f, 0x00, 0x18][..], "ltr (/3) en mémoire non plus"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+        // Et les deux formes à registre que le noyau écrit vraiment restent
+        // ce qu'elles sont.
+        assert_eq!(
+            decode(&[0x0f, 0x00, 0xd6]).map(|step| step.op),
+            Some(Op::LoadLocalDescriptorTable),
+            "`lldt %esi` n'a pas changé de nom"
+        );
+        assert_eq!(
+            decode(&[0x0f, 0x00, 0xd8]).map(|step| step.op),
+            Some(Op::LoadTaskRegister),
+            "`ltr %eax` non plus"
+        );
+
+        // **L'opérande est lu pour de vrai, et rien d'autre ne se passe.**
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            memory: GuestMemory {
+                base: 0x3000_0000,
+                bytes: vec![0; 0x1000],
+            },
+            ..Default::default()
+        };
+        cpu.regs[0] = 0x3000_0800; // dans la fenêtre
+        cpu.flags.write(CF | ZF);
+        cpu.step(&[0x0f, 0x00, 0x28]);
+        assert!(!cpu.faulted, "un opérande lisible ne faute pas");
+        assert_eq!(cpu.rip, 0x3000_0003, "trois octets consommés");
+        assert_eq!(
+            cpu.flags.read() & (CF | ZF),
+            CF | ZF,
+            "**aucun drapeau ne bouge** : ZF n'est pas calculable sans descripteur"
+        );
+        assert_eq!(cpu.regs[0], 0x3000_0800, "et aucun registre non plus");
+
+        // **Et un opérande illisible faute** — c'est là toute la différence
+        // avec `clflush`, qui ne lit rien et ne faute jamais.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            memory: GuestMemory {
+                base: 0x3000_0000,
+                bytes: vec![0; 0x1000],
+            },
+            ..Default::default()
+        };
+        cpu.regs[0] = 0x7fff_0000_0000; // hors de la fenêtre
+        cpu.step(&[0x0f, 0x00, 0x28]);
+        assert!(
+            cpu.faulted,
+            "un opérande hors de la fenêtre faute : le manuel le prévoit pour `verw`"
+        );
+        assert_eq!(cpu.rip, 0x3000_0000, "et RIP reste sur l'instruction");
     }
 
     /// **`rdrand` et `rdseed` se lisent en registre, et ne rendent aucun
