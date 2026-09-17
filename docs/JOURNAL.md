@@ -14069,3 +14069,156 @@ la **nature** du mur : il n'est plus dans la machine, il est dans l'instrument �
 Écrire « wisq atteint l'espace utilisateur » serait faux de la même façon qu'à
 #252, et pour une raison de plus : cette fois la machine le demande vraiment, et
 c'est le pilote qui ne sait pas répondre.
+
+## #254 — l'hôte avait déjà les octets et le pilote les jetait pour rouvrir le fichier
+
+`web/host.js` passe la fenêtre d'une région en **troisième argument** de
+`translate` depuis toujours : `translate(address, slot, read(address, WINDOW))`.
+Le pilote de mesure déclarait `translate: (address, slot) => …`. Le troisième
+argument tombait par terre, et `x86-translate` rouvrait l'image ELF du noyau
+pour aller chercher les mêmes octets par un `seek`.
+
+Sauf que ce ne sont **pas** les mêmes octets.
+
+### Le nombre qui a tranché, et il ne vient pas d'une relecture de code
+
+Une sonde temporaire a comparé, pour **chaque** région traduite, la fenêtre de
+seize kibioctets telle que le fichier la donne à la même fenêtre telle que la
+mémoire de l'invité la porte :
+
+```
+sonde 16189 comparees 15761 divergentes
+```
+
+**15 761 des 16 189 fenêtres différaient.** 97,4 %. Le noyau réécrit son propre
+texte pendant tout son démarrage — `alternatives`, retpolines, appels
+statiques, les 41 322 entrées de `ftrace`, l'optimisation des `kprobes` — et le
+dépôt traduisait le texte d'avant.
+
+### Deux façons de traduire la même adresse, dont une seule consulte les tables
+
+Le repli par le masque n'était pas seulement un raccourci du pilote : c'était
+`read` lui-même, dans `web/host.js`, la boucle hôte qui tourne aussi dans
+l'application. Le module, lui, traduit ses accès mémoire par la marche à quatre
+niveaux. Deux réponses à « quels octets vivent à cette adresse », qui ne
+s'accordent que par accident — celui, écrit noir sur blanc dans `Module::fold`,
+d'un noyau chargé bas dans une RAM dont la taille divise l'écart entre ses deux
+formes d'adresse.
+
+**Et l'hôte avait déjà la bonne fonction.** `physical(address)` replie quand la
+pagination est éteinte et marche les quatre niveaux quand elle est allumée. Elle
+existe depuis la délivrance des fautes, et elle servait à trouver **l'IDT**. Pas
+le code.
+
+### Le dépôt le garantissait, comme à #253
+
+De la tranche P2, dans le doc de `a_paged_guest_reads_through_its_page_tables` :
+
+> **Ce que cette tranche ne fait pas.** La lecture des **instructions** n'est pas
+> paginée : l'hôte résout une région par son adresse telle quelle, donc RIP est
+> traité comme physique. Seules les **données** passent par les tables.
+
+Écrit une fois comme une limite honnête, resté assez longtemps pour devenir une
+garantie — exactement la forme de #253, où un test *garantissait* que `fxrstor`
+reste indécodable.
+
+### Ce que le repli désignait au mur précédent : rien du tout
+
+La mesure de #253 s'arrêtait sur `0x401000`, le point d'entrée de `/init`. Deux
+sondes, au moment de cet arrêt :
+
+```
+sonde-repli 0x401000 0000000000000000000000000000000000000000000000000000000000000000
+sonde-repli-nul true
+sonde-marche n3[0]=0x0
+sonde-physique aucune : une entree absente
+```
+
+Le repli désigne le physique `0x401000`, où les **4096 octets sont nuls**. Un
+pilote qui aurait simplement servi la mémoire invitée sans marcher les tables
+aurait traduit quatre kibioctets de `add %al,(%rax)` et la machine serait partie
+en morceaux très loin de la cause. C'est pour ça que l'absence a un **nom**
+maintenant — « aucune page derrière l'adresse » — et pas un tableau de zéros.
+
+Et la marche, elle, échoue au premier niveau : l'espace d'adressage que la
+machine porte à cet instant ne cartographie rien à `0x401000`.
+
+### Ce que la mesure dit
+
+| | avant (#253) | après |
+| --- | --- | --- |
+| régions traduites | 16 189 | **11 948** |
+| tours | 6 059 070 | 2 333 782 |
+| arrêt | `0x401000`, hors de tout segment | `0xffffffff81c01963`, `CannotDecode { at: 0 }` |
+| CR3 à l'arrêt | `0x3462000` | `0x3463000` |
+| RSP à l'arrêt | `0x7fff7e9d3670` | `0xfffffe0000002fd8` |
+
+Quatre mille deux cent quarante et une régions **de moins**, et trois millions
+sept cent mille retours de main de moins. Ce n'est pas surprenant — ce n'est
+plus le même code — mais la cause n'est pas mesurée : une lecture plausible est
+que les `alternatives` remplacent des appels indirects par des appels directs,
+et elle n'est **pas** vérifiée ici.
+
+`0x3463000` vaut `0x3462000 + 0x1000`, c'est-à-dire le PGD **utilisateur** que
+l'isolation des tables de pages (KPTI) tient à côté de celui du noyau ; et
+`0xfffffe0000002fd8` est dans la `cpu_entry_area`, la pile du tremplin d'entrée.
+La machine est donc en plein retour vers l'espace utilisateur.
+
+### Le nouveau mur, et c'est lui qui prouve la tranche
+
+```
+refusée 0xffffffff81c01963 … CannotDecode { at: 0 } octets 0f002dd6e6ffffeb20415f415e415d41
+```
+
+`0f 00 2d d6 e6 ff ff` : **`verw` — `0f 00 /5`, forme mémoire relative à
+`%rip`**, sept octets. Aux mêmes sept octets, le fichier ELF porte :
+
+```
+fichier @0xe01963 : 90909090909090…
+```
+
+**Sept `nop`.** C'est un site d'`alternative`, et le noyau l'a corrigé au
+démarrage — il l'a même dit sur le port série : « MDS: Vulnerable: Clear CPU
+buffers attempted, no microcode ». L'opérande désigne
+`0xffffffff81c0196a - 0x192a = 0xffffffff81c00040`, où le fichier porte
+`18 00` — le sélecteur `__KERNEL_DS`. C'est `mds_verw_sel`, et les deux octets
+le disent au lieu de le supposer.
+
+**L'ancien instrument ne pouvait pas voir ce mur.** Il traduisait sept `nop` et
+passait outre sans un mot. Ce qui veut dire quelque chose de désagréable sur la
+mesure de #253 : **son arrivée à `/init` a été obtenue en exécutant du code que
+le noyau avait remplacé.** Le mur est plus tôt qu'avant, et il est vrai.
+
+### Ce que ça ne montre PAS
+
+**L'espace utilisateur ne tourne toujours pas**, et cette fois la machine
+n'arrive même plus à son point d'entrée. C'est un progrès et non un recul : elle
+s'arrête maintenant sur une instruction que le noyau a réellement écrite, sur le
+chemin même du retour vers l'anneau trois.
+
+### Les quatre sabotages, et le seul qui a survécu
+
+| sabotage | tombe sur |
+| --- | --- |
+| S1 — replier toujours, ne jamais marcher | les **deux** tests de la tranche |
+| S2 — marcher une fois puis lire tout droit | `the_host_reads_the_code_through_the_page_tables_and_not_by_folding` |
+| S3 — rendre des zéros au lieu de `null` | `an_address_the_page_tables_do_not_map_is_named_rather_than_folded` |
+| S4 — laisser le témoin de faute et CR2 derrière | **rien, au premier essai** |
+
+**S4 a survécu, et l'assertion qui devait l'attraper était vide.** Le test
+vérifiait « témoin de faute à zéro à la fin » sur un programme où **aucune
+marche ne fautait jamais** : elle ne pouvait qu'être vraie. Il a fallu une
+seconde région dont la fenêtre butte sur une page absente — la lecture faute,
+s'arrête court, et le programme tient dans les 256 octets qui restent. S4 tombe
+alors, parce que l'invité hériterait d'une faute que l'hôte a causée en lisant.
+
+C'est #250 retourné une fois de plus : **un sabotage qui survit désigne une
+assertion qui ne pouvait pas échouer**, pas un code correct.
+
+### Une hypothèse écrite et fausse, corrigée avant d'être défendue
+
+En ouvrant la tranche j'ai écrit que le vidage de tampon ajouté par #226 sur
+CR0/CR3/CR4 « n'avait rien de frais à aller chercher ». **Faux** : ce tampon-là
+est celui de la **traduction d'adresses**, pas un cache de code. Vérifié dans
+`x86_wasm.rs` avant d'en faire un argument. Le défaut était ailleurs, et plus
+simple.
