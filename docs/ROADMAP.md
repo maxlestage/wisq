@@ -5687,6 +5687,9 @@ ce document reproche ailleurs :**
    par son adresse telle quelle : RIP est traité comme physique. Un noyau à
    demi-haut, dont le texte vit à `0xffffffff8...`, ne se traduirait pas. Seules
    les **données** passent par les tables.
+   *(Plus vrai depuis #254 : l'hôte lit la fenêtre à travers les tables, comme
+   le module lit ses données. Cette ligne est restée écrite assez longtemps
+   pour devenir une garantie.)*
 2. **Aucune `#PF` n'est délivrée à l'invité.** La machine s'arrête ; le noyau ne
    reprend pas la main sur son propre gestionnaire. Les interruptions restent le
    mur suivant.
@@ -5813,7 +5816,8 @@ durcisse en doctrine.**
 
 `web/host.js` ne cherche pas les octets d'une région à l'adresse brute : `read`
 **replie** l'adresse par le masque de la RAM, exactement comme `guest()` le
-faisait pour les données, puis lit dans la RAM invitée. Or Linux pose
+faisait pour les données, puis lit dans la RAM invitée. *(Il marche les tables
+depuis #254 ; le repli ne reste que pagination éteinte.)* Or Linux pose
 `__START_KERNEL_map = 0xffffffff80000000` et charge son texte à l'adresse
 physique `0x1000000`. Le repli soustrait donc précisément ce qu'il faut — tant
 que le masque a entre 25 et 31 bits :
@@ -9260,7 +9264,9 @@ Le dépôt mesurait donc son propre pilote et l'écrivait comme un résultat.
 `x86-translate`, traduit **une** région : il lit un manifeste écrit une fois —
 le chemin de l'image, la RAM déclarée, un segment par ligne — replie l'adresse
 comme l'hôte le fait, va chercher seize kibioctets par un `seek`, et rend les
-octets du module sur sa sortie standard. Le pilote JavaScript l'appelle par
+octets du module sur sa sortie standard. *(Depuis #254 il ne lit plus le
+fichier : la fenêtre arrive sur l'entrée standard, lue par l'hôte dans la
+mémoire de l'invité, et le manifeste n'existe plus.)* Le pilote JavaScript l'appelle par
 `Bun.spawnSync` depuis `translate`. Une seule exécution de Bun, un processus de
 quelques millisecondes par région, et la machine n'est **plus jamais** rejouée.
 
@@ -11025,3 +11031,103 @@ part, et pas une de ses instructions n'a été exécutée. Ce qui a changé est 
 Le mur suivant est donc une **direction**, pas un défaut nommé : faire servir au
 pilote les octets de la mémoire invitée plutôt que ceux du fichier. Elle attend
 le mot de Maxime.
+
+## #254 — l'hôte cherchait les octets du code au repli du masque, et le pilote jetait ceux qu'on lui donnait
+
+Le mur laissé par #253 était dans l'instrument, pas dans la machine : le pilote
+servait les octets du **fichier ELF**. Maxime a donné le mot sur cette
+direction. Ce qu'elle a trouvé en chemin est un défaut nommé, et il est dans
+`web/host.js` — la boucle hôte qui tourne aussi dans l'application, pas
+seulement dans le pilote de mesure.
+
+### Deux moitiés, et une seule les consultait
+
+| qui | comment il traduit une adresse invitée |
+| --- | --- |
+| le module (ses accès mémoire) | la marche à quatre niveaux, tampon en ligne |
+| `physical()` de l'hôte (pour trouver l'**IDT**) | repli si CR0.PG est éteint, marche sinon |
+| **`read()` de l'hôte (pour trouver le **code**)** | **le repli, toujours** |
+| `x86-translate` | il ne regardait pas la mémoire du tout : `seek` dans l'image ELF |
+
+La fonction juste existait, à quatre cents lignes de là, et servait l'IDT.
+
+### Le nombre
+
+Une sonde a comparé, région par région, la fenêtre du fichier à celle de la
+mémoire invitée : **15 761 des 16 189 fenêtres divergeaient**, soit 97,4 %. Le
+noyau réécrit son texte tout au long du démarrage.
+
+### Ce que la tranche change
+
+1. **`read()` lit à travers les tables**, par `physical()`, **page par page** :
+   deux pages virtuelles voisines n'ont aucune raison d'avoir des trames
+   voisines, et une fenêtre qui commence en cours de page traverse la frontière.
+2. **Une fenêtre courte n'est pas une erreur** ; **aucun octet** en est une, et
+   elle porte un nom : « aucune page derrière l'adresse ». Sans ce nom, le repli
+   rendait toujours quelque chose — au mur de #253 il rendait 4096 octets nuls.
+3. **Le témoin de faute et CR2 sont rendus tels qu'ils ont été trouvés** : une
+   lecture de l'hôte ne doit pas faire hériter l'invité d'une faute.
+4. **`x86-translate` reçoit sa fenêtre sur l'entrée standard.** Le manifeste
+   disparaît ; ses arguments sont `<pages> <adresse> <emplacement>`. Le code de
+   sortie 3 change de sens — non plus « hors de tout segment du fichier » mais
+   « aucun octet » — et un test le tient.
+5. **Le pilote cesse de jeter le troisième argument de `translate`**, et imprime
+   les seize premiers octets d'une fenêtre refusée : depuis cette tranche, les
+   relire dans le fichier ne donne plus la même chose.
+
+### La mesure
+
+```
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  ./target/release/examples/kernel-entry /tmp/vmlinux.bin
+```
+
+| | avant (#253) | après |
+| --- | --- | --- |
+| régions traduites | 16 189 | **11 948** |
+| tours | 6 059 070 | 2 333 782 |
+| arrêt | `0x401000`, hors de tout segment | `0xffffffff81c01963`, `CannotDecode { at: 0 }` |
+| CR3 à l'arrêt | `0x3462000` | `0x3463000` — le PGD **utilisateur** de KPTI |
+| RSP à l'arrêt | `0x7fff7e9d3670` | `0xfffffe0000002fd8` — la `cpu_entry_area` |
+
+Quatre mille deux cent quarante et une régions de moins : ce n'est plus le même
+code. La cause n'est pas mesurée et n'est donc pas affirmée.
+
+### Le nouveau mur prouve la tranche mieux qu'un test
+
+```
+refusée 0xffffffff81c01963 … CannotDecode { at: 0 } octets 0f002dd6e6ffffeb20…
+fichier @0xe01963 : 90909090909090…
+```
+
+En mémoire, `verw -0x192a(%rip)` — `0f 00 /5`, forme mémoire, sept octets. Dans
+le fichier, **sept `nop`**. C'est le site d'`alternative` de la parade MDS, que
+le noyau a corrigé au démarrage et qu'il a annoncé sur le port série (« MDS:
+Vulnerable: Clear CPU buffers attempted, no microcode »). L'opérande désigne
+`0xffffffff81c00040`, où le fichier porte `18 00` : `__KERNEL_DS`, c'est-à-dire
+`mds_verw_sel`.
+
+**L'ancien instrument traduisait sept `nop` et passait outre.** Ce qui veut dire
+que l'arrivée à `/init` mesurée par #253 a été obtenue en exécutant du code que
+le noyau avait remplacé. Le mur est plus tôt, et il est vrai.
+
+### Ce que ça ne montre PAS
+
+**L'espace utilisateur ne tourne pas**, et la machine n'atteint même plus son
+point d'entrée. C'est un progrès : elle s'arrête sur une instruction que le
+noyau a réellement écrite, sur le chemin du retour vers l'anneau trois.
+
+### La tranche suivante, et elle a un nom
+
+**`verw` (`0f 00 /5`, forme mémoire) n'est pas décodée**, et
+`native_load_tr_desc_reads_the_task_register` **garantit** qu'elle ne le soit
+pas : `(&[0x0f, 0x00, 0xe8][..], "verw (/5) n'est pas lu")`. C'est la troisième
+fois que le dépôt tient par un test l'absence de ce qu'il lui faudra —
+après #253 et après la phrase de P2 sur la lecture des instructions.
+
+`verw` charge un sélecteur et écrit ZF ; sans table de descripteurs, cette
+machine ne peut pas en tirer de droits. Ce que la parade MDS en attend est un
+**effet de bord du silicium** — vider les tampons — que rien ici ne modélise :
+l'exécuter comme un `nop` qui pose ZF est fidèle à ce que cette machine *est*,
+et le taire serait la faute que ce document reproche ailleurs.
