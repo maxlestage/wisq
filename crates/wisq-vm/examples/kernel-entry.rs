@@ -550,19 +550,13 @@ fn main() {
         }
     }
 
-    // **Le manifeste que le traducteur relira**, écrit une fois : le chemin de
-    // l'image, la RAM déclarée, puis un segment par ligne. Le refaire à chaque
-    // région rouvrirait trente-cinq mébioctets par appel.
-    let manifest = scratch.join("manifeste.txt");
-    let mut lines = format!("{path}\n{pages}\n");
-    for load in &segments {
-        lines.push_str(&format!(
-            "{} {} {}\n",
-            load.physical_address, load.offset, load.file_size
-        ));
-    }
-    std::fs::write(&manifest, lines).expect("le manifeste");
-
+    // **Le manifeste a disparu avec la lecture du fichier.** Il portait le
+    // chemin de l'image et la table des segments chargeables : le traducteur
+    // s'en servait pour retrouver un décalage **dans le fichier ELF**. Les
+    // octets d'une région ne sont pas là — le noyau réécrit son propre texte,
+    // et `/init` n'arrive en mémoire qu'une fois déballé de l'archive. C'est
+    // l'hôte qui les a, et il les passe en troisième argument de `translate` ;
+    // il ne restait plus qu'à les prendre.
     // **Où le traducteur se trouve.** À côté de cet exemple dans `target`, ou
     // sous la racine. S'il manque, le dire avec la commande qui le construit
     // plutôt que d'échouer sur un `spawnSync` dont le message ne nomme rien.
@@ -676,19 +670,34 @@ const vm = machine({{
   // C'est ce qui remplace le rejeu du démarrage — et la seule chose qui a
   // changé de ce côté-ci : la boucle hôte voit toujours une fonction à qui
   // elle donne une adresse et qui rend des octets, ou rien.
-  translate: (address, slot) => {{
+  translate: (address, slot, code) => {{
     if (traduites >= plafond) {{
       if (manquante === null) {{ manquante = address; place = slot; }}
       console.log("plafond 0x" + address.toString(16));
       return null;
     }}
-    const out = Bun.spawnSync(
-      [{translator:?}, {manifest:?}, address.toString(), String(slot)]
-    );
+    // **Les octets viennent de l'hôte, pas du fichier.** `code` est la
+    // fenêtre que `host.js` a lue dans la mémoire de l'invité, à travers les
+    // tables de pages quand elles sont en service. Le pilote la **jetait** et
+    // laissait le traducteur rouvrir l'image ELF : sur ce noyau-ci, 15 761
+    // des 16 189 fenêtres traduites différaient de ce que la mémoire portait
+    // à la même adresse.
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
     if (out.exitCode !== 0) {{
       if (manquante === null) {{ manquante = address; place = slot; }}
+      // **Et les octets refusés, tels que l'hôte les a lus.** Depuis #254 ils
+      // viennent de la mémoire de l'invité : les relire dans le fichier ELF
+      // pour comprendre un refus ne donne plus la même chose, et c'est
+      // justement le cas qui compte — un site d'`alternative` corrigé par le
+      // noyau porte des nops dans le fichier et l'instruction patchée en
+      // mémoire. Seize octets suffisent à nommer l'instruction.
+      const tete = Array.from(code.subarray(0, 16))
+        .map((o) => o.toString(16).padStart(2, "0")).join("");
       console.log("refusée 0x" + address.toString(16) + " emplacement " + slot
-        + " " + out.stderr.toString().trim());
+        + " " + out.stderr.toString().trim() + " octets " + tete);
       return null;
     }}
     traduites += 1;
@@ -830,7 +839,6 @@ console.log("controle " + controle
                 turns = turns,
                 rounds = rounds,
                 translator = translator.to_string_lossy(),
-                manifest = manifest.to_string_lossy(),
                 pages = pages,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
