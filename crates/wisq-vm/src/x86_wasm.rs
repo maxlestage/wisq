@@ -3820,6 +3820,30 @@ impl Module {
             });
             return Some(());
         }
+        // **`verw` : l'opérande est lu, et c'est tout ce que cette machine
+        // peut faire de l'instruction.**
+        //
+        // Ce que la parade MDS du noyau en attend est un effet de bord du
+        // silicium — vider les tampons du processeur. Il n'y en a aucun ici,
+        // pas plus que de cache derrière `clflush`. Et aucun descripteur n'est
+        // consulté, donc ZF n'est pas **calculable** : les drapeaux ne bougent
+        // pas, et la doc de `Op::VerifySegmentWrite` dit pourquoi c'est une
+        // infidélité assumée, mesurée sans conséquence sur le seul chemin où
+        // ce noyau l'exécute.
+        //
+        // **La lecture est émise quand même**, et elle n'est pas décorative :
+        // c'est elle qui fait traduire la page derrière l'opérande, et fauter
+        // si elle manque — ce que le manuel prévoit pour `verw` et pas pour
+        // `clflush`. Deux octets lus, jetés par `DROP`.
+        if step.op == Op::VerifySegmentWrite {
+            let selector = *step.memory.as_ref()?;
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&selector);
+            });
+            body.load_at(Body::scratch(0), Width::Word);
+            body.op(code::DROP);
+            return Some(());
+        }
         // **`hlt` s'arrête et le dit.** Le témoin posé, RIP après
         // l'instruction, et la main rendue par un indice négatif — le même
         // chemin qu'une faute de page, qui existait déjà.
@@ -4026,6 +4050,7 @@ impl Module {
                 | Op::FpuInit
                 | Op::FxSave
                 | Op::FxRestore
+                | Op::VerifySegmentWrite
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
                 }
@@ -4420,6 +4445,7 @@ impl Module {
             | Op::FpuInit
             | Op::FxSave
             | Op::FxRestore
+            | Op::VerifySegmentWrite
             | Op::ReadModelRegister
             | Op::WriteModelRegister
             | Op::LoadDescriptorTable { .. }

@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS};
+use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON, FPU_CONTROL_SLOT,
     FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT,
@@ -10112,6 +10112,232 @@ console.log("rdx " + lire(2).toString());
         line("rdx "),
         "0",
         "le leurre posé au repli n'a pas tourné : {text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`verw` tourne, lit son opérande, et ne touche à aucun drapeau.**
+///
+/// Le mur mesuré à #254 : `0f 00 2d d6 e6 ff ff`, `verw -0x192a(%rip)`, à
+/// `0xffffffff81c01963`, sur le chemin du retour vers l'espace utilisateur.
+/// Dans le **fichier** ELF, aux mêmes sept octets, sept `nop` — c'est un site
+/// d'`alternative` que le noyau corrige au démarrage (la parade MDS), et
+/// l'ancien instrument, qui lisait le fichier, passait outre sans un mot.
+///
+/// **Ce que ce test tient sur l'émetteur, et ce qu'un sabotage ferait
+/// tomber :**
+///
+/// | | ce qui casse sans ça |
+/// | --- | --- |
+/// | la région se traduit et va jusqu'au bout | l'émetteur refusait tout le retour vers l'anneau trois |
+/// | RBX, écrit **après** le `verw`, porte son témoin | une région traduite qui ne s'exécute pas ressemblerait à un succès |
+/// | les drapeaux sont **intacts** | un ZF inventé serait une valeur plausible et fausse |
+/// | l'opérande est **lu** | c'est la seule chose observable de l'instruction ici, et elle fait fauter une page absente |
+///
+/// **La troisième ligne est l'infidélité assumée de la tranche.** Sur du
+/// silicium, `verw $__KERNEL_DS` rendrait ZF à un ; rien ici ne lit la GDT, et
+/// inventer la valeur serait inventer un descripteur. Mesuré sans conséquence
+/// sur le seul chemin où ce noyau l'exécute : après le `verw` viennent `eb 20`,
+/// un saut **inconditionnel**, puis `add $8,%rsp`, un saut, et `iretq`, qui
+/// recharge RFLAGS depuis la pile.
+///
+/// **Et elle est éprouvée dans les deux sens, parce qu'un sabotage a survécu
+/// au premier essai.** Le test partait d'un état où *tous* les drapeaux
+/// inscriptibles étaient posés, ZF compris : un émetteur qui *ajoutait* ZF —
+/// exactement la valeur du silicium — n'y changeait rien, et l'assertion ne
+/// pouvait pas échouer. Deux exécutions donc, une avec ZF posé et une sans :
+/// la première attrape un ZF effacé, la seconde un ZF inventé. C'est la même
+/// leçon que le sabotage S4 de #254, une tranche plus tôt, et elle est
+/// arrivée deux fois de suite.
+#[test]
+fn verw_runs_reads_its_operand_and_leaves_every_flag_alone() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    /// Où vit le sélecteur. `__KERNEL_DS` y sera posé, comme le noyau le fait
+    /// dans `mds_verw_sel`.
+    const SELECTOR_AT: u32 = 0x2000;
+    for (before, sens) in [
+        (
+            ALWAYS_ONE | WRITABLE_FLAGS,
+            "ZF posé au départ : un ZF effacé se verrait",
+        ),
+        (
+            ALWAYS_ONE | (WRITABLE_FLAGS & !ZF),
+            "ZF absent au départ : un ZF inventé se verrait",
+        ),
+    ] {
+        let text = drive_with(
+            &bun,
+            &[
+                0x0f, 0x00, 0x28, // verw (%rax)
+                0x48, 0xc7, 0xc3, 0x07, 0x00, 0x00,
+                0x00, // mov $7,%rbx — le témoin d'après
+                0x0f, 0x0b, // ud2
+            ],
+            BASE,
+            PAGES,
+            "verw",
+            &format!(
+                r#"vm.globals[0].value = {at}n;
+new DataView(vm.memory.buffer).setUint16({at}, 0x0018, true); // __KERNEL_DS
+vm.globals[{flags}].value = {before}n;"#,
+                at = SELECTOR_AT,
+                flags = RFLAGS_SLOT,
+                before = before,
+            ),
+            &format!(
+                r#"console.log("flags " + BigInt.asUintN(64, vm.globals[{flags}].value).toString(16));
+console.log("selecteur " + new DataView(vm.memory.buffer).getUint16({at}, true).toString(16));"#,
+                flags = RFLAGS_SLOT,
+                at = SELECTOR_AT,
+            ),
+        );
+        assert_eq!(
+            line_of(&text, "rbx "),
+            "7",
+            "**la région tourne jusqu'au bout** : le témoin posé après le \
+             `verw` est là, donc l'instruction n'a ni refusé la région ni rendu \
+             la main ({sens}) : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "flags "),
+            format!("{before:x}"),
+            "**aucun drapeau ne bouge**, ZF compris : cette machine ne \
+             consulte aucun descripteur, donc elle ne peut pas le calculer, et \
+             en inventer un serait inventer un descripteur ({sens}) : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "selecteur "),
+            "18",
+            "et le sélecteur n'est pas écrasé : `verw` le lit, elle ne l'écrit \
+             pas ({sens}) : {text}"
+        );
+    }
+}
+
+/// **`verw` sur une page absente faute, et le témoin d'après ne tourne pas.**
+///
+/// C'est l'assertion qui rend la lecture de l'opérande **observable**, et sans
+/// elle un sabotage survit : le test frère vérifie que la région tourne, que
+/// les drapeaux ne bougent pas et que le sélecteur n'est pas écrasé — un
+/// émetteur qui ne lirait rien du tout passerait les trois. Or la lecture est
+/// tout ce que l'instruction fait ici, et c'est elle que le manuel assortit
+/// d'une faute d'accès, contrairement à `clflush`.
+///
+/// La même leçon que le sabotage S4 de #254, une tranche plus tôt : **une
+/// assertion qui ne peut pas échouer n'est pas une garde.**
+#[test]
+fn a_verw_whose_operand_page_is_absent_faults_before_the_next_instruction() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    /// **Aucune entrée de feuille n'est posée** : la marche échoue au dernier
+    /// niveau, et l'opérande n'a pas de page derrière lui.
+    const VA: u64 = 0xFFFF_8000_0020_0000;
+
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4,%rax
+    push(&PML4.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $PG,%rax
+    push(&(1u64 << 31).to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    push(&[0x48, 0xb8]); // movabs $VA,%rax
+    push(&VA.to_le_bytes());
+    push(&[0x0f, 0x00, 0x28]); // verw (%rax)
+                               // **Le témoin est après**, et il ne doit pas être atteint : une faute
+                               // d'accès laisse RIP sur l'instruction qui l'a causée.
+    push(&[0x48, 0xc7, 0xc3, 0x07, 0x00, 0x00, 0x00]); // mov $7,%rbx
+    push(&[0x0f, 0x0b]); // ud2
+
+    let scratch = std::env::temp_dir().join(format!("wisq-verw-pg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    let path = scratch.join("verw.wasm");
+    std::fs::write(&path, &module).expect("le module");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({va}n, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx({va}n, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx({va}n, 21) * 8, {pt}n | present, true);
+// **Et rien dans la table de feuilles** : l'opérande n'a pas de page.
+vm.globals[{rip}].value = {base}n;
+vm.globals[3].value = 0n; // rbx : le témoin d'après
+const why = await vm.run({{ budget: 256n, rounds: 8 }});
+console.log("arret " + why.stopped);
+console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
+console.log("cr2 0x" + BigInt.asUintN(64, vm.globals[{control} + 1].value).toString(16));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            control = CONTROL_SLOT,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            va = VA,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{errors}\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "une faute de page sans porte : aucune IDT ne porte le vecteur 14",
+        "**l'opérande est lu pour de vrai** : sa page manque, donc la machine \
+         faute. Un émetteur qui n'émettrait aucune lecture passerait outre \
+         sans un mot : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "0",
+        "et le témoin d'après n'a pas tourné : la faute laisse RIP sur le \
+         `verw` : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "cr2 "),
+        format!("0x{VA:x}"),
+        "CR2 porte l'adresse de l'opérande, pas une autre : {text}"
     );
 
     let _ = std::fs::remove_dir_all(&scratch);
