@@ -257,6 +257,24 @@ const BROKEN = Object.freeze({ panne: "en panne" });
 /// **première** instruction est coupée.
 const MORE = Object.freeze({ manque: "des octets" });
 
+/// **« Il n'y a aucune page derrière cette adresse. »** L'espace d'adressage
+/// que la machine porte ne cartographie rien là — la marche s'arrête sur une
+/// entrée absente, à n'importe lequel des quatre niveaux.
+///
+/// **Pourquoi ce n'est pas un refus de l'émetteur, et pourquoi ça ne peut pas
+/// être un `null` de plus.** « Refusée » dit que l'émetteur n'a pas su lire un
+/// octet ; ici il n'y a pas d'octet du tout. Les deux se corrigent à des
+/// kilomètres l'un de l'autre : l'un dans le décodeur, l'autre dans ce que
+/// l'invité a fait de ses tables.
+///
+/// **Et surtout, ça remplace une complaisance.** L'hôte allait chercher les
+/// octets à `adresse & (RAM - 1)`, ce qui rend **toujours** quelque chose,
+/// parce que toute la RAM est lisible. Au saut dans `/init` du vrai noyau
+/// d'Alpine, ce repli désignait 4096 octets **tous nuls** : l'émetteur aurait
+/// traduit autant de `add %al,(%rax)`, et la machine serait partie en morceaux
+/// très loin de la cause.
+const UNMAPPED = Object.freeze({ absent: "aucune page" });
+
 /// **Attendre une traduction, mais pas éternellement.**
 ///
 /// Le réveil est **désarmé** dès que la réponse arrive : une machine qui
@@ -819,26 +837,74 @@ export function machine({
   // toutes. La plus grande région relevée y posait 203 blocs.
   const HEADROOM = WIDER;
 
-  /// **Lire la fenêtre dans la mémoire de l'invité**, à l'adresse repliée.
+  /// **Lire la fenêtre là où la machine lirait**, et nulle part ailleurs.
   ///
-  /// Deux précautions, et aucune n'est décorative. La longueur est bornée par
-  /// `base` — la fin de la RAM invitée — parce que **la correspondance vit
-  /// juste au-dessus** : lire plus loin l'enverrait à l'application, qui la
-  /// prendrait pour du code.
+  /// **C'est `physical` qui décide, la même fonction que la délivrance
+  /// emploie pour trouver l'IDT.** Elle replie par le masque de la RAM quand
+  /// la pagination est éteinte, et marche les quatre niveaux quand elle est
+  /// allumée — c'est-à-dire exactement ce que fait le module pour ses propres
+  /// accès. Cette lecture-ci repliait *toujours*, et le dépôt l'avait écrit
+  /// plutôt que corrigé : « la lecture des instructions n'est pas paginée,
+  /// donc RIP est traité comme physique ». Deux façons de traduire la même
+  /// adresse, dont une seule consulte les tables.
+  ///
+  /// Le repli ne tombait juste que parce qu'un noyau est chargé bas dans une
+  /// RAM dont la taille divise l'écart entre ses deux formes d'adresse —
+  /// `Module::fold` le dit déjà. L'espace utilisateur, lui, vit ailleurs : au
+  /// saut dans `/init`, le repli désignait 4096 octets tous nuls.
+  ///
+  /// **Page par page, parce que deux pages virtuelles voisines n'ont aucune
+  /// raison d'avoir des trames voisines.** Une fenêtre qui commence en cours
+  /// de page traverse la frontière ; la lire d'un trait rendrait les octets de
+  /// la trame *physiquement* suivante, qui appartient à quelqu'un d'autre.
+  ///
+  /// **Une fenêtre courte n'est pas une erreur** : elle s'arrête à la
+  /// première page absente, et le décodeur s'arrêtera là où elle s'arrête.
+  /// Rend `null` quand il n'y a rien du tout — pas un tableau vide, que
+  /// l'émetteur prendrait pour une région sans instruction.
+  ///
+  /// **Le témoin de faute et CR2 sont rendus tels qu'ils ont été trouvés.** La
+  /// marche les pose quand une entrée manque ; les laisser ferait prendre à
+  /// l'invité, plus tard, une faute que *l'hôte* a causée en lisant — et rien
+  /// ne la relierait à cette lecture-là.
   ///
   /// Et c'est une **copie**, pas une vue. Une vue sur `memory.buffer` se
   /// détache si la mémoire grandit, et l'invité peut la réécrire pendant
   /// l'aller-retour vers l'application — qui traduirait alors des octets qui
   /// ont bougé sous son nez.
   function read(address, window) {
-    const at = Number(address & BigInt(base - 1));
-    return new Uint8Array(memory.buffer, at, Math.min(window, base - at)).slice();
+    const temoin = globals[SLOTS.fault].value;
+    const cr2 = globals[SLOTS.control + 1].value;
+    const out = new Uint8Array(window);
+    let filled = 0;
+    while (filled < window) {
+      globals[SLOTS.fault].value = 0n;
+      const at = physical(address + BigInt(filled));
+      if (at === null) break;
+      // **Le bout de la RAM est une borne dure** : la correspondance des
+      // blocs et le tampon de traduction vivent juste au-dessus, et lire plus
+      // loin les enverrait à l'application, qui les prendrait pour du code.
+      const edge = base - at;
+      const take = Math.min(4096 - (at & 0xfff), window - filled, edge);
+      if (take <= 0) break;
+      out.set(new Uint8Array(memory.buffer, at, take), filled);
+      filled += take;
+      if (take === edge) break;
+    }
+    globals[SLOTS.fault].value = temoin;
+    globals[SLOTS.control + 1].value = cr2;
+    return filled === 0 ? null : out.slice(0, filled);
   }
 
   async function install(address) {
     const slot = next;
+    // **Rien à traduire est une réponse, pas un incident.** Elle remonte
+    // jusqu'au relevé sous son nom au lieu de se confondre avec un refus de
+    // l'émetteur.
+    const window = read(address, WINDOW);
+    if (window === null) return UNMAPPED;
     let bytes = await answered(
-      () => translate(address, slot, read(address, WINDOW)),
+      () => translate(address, slot, window),
       patience,
     );
     // **Un seul second essai, et seulement sur « il m'en faut plus ».** À
@@ -847,8 +913,10 @@ export function machine({
     // région qui manque encore de place à seize kibioctets ne se traduira pas
     // en redemandant sans fin.
     if (bytes === MORE) {
+      const wider = read(address, WIDER);
+      if (wider === null) return UNMAPPED;
       bytes = await answered(
-        () => translate(address, slot, read(address, WIDER)),
+        () => translate(address, slot, wider),
         patience,
       );
       if (bytes === MORE) return null;
@@ -1104,6 +1172,9 @@ export function machine({
           }
           if (region === BROKEN) {
             return { stopped: "traduction en panne", at: here };
+          }
+          if (region === UNMAPPED) {
+            return { stopped: "aucune page derrière l'adresse", at: here };
           }
           if (region === null) {
             return { stopped: "refusée", at: here };

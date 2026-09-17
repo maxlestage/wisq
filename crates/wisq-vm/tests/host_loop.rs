@@ -1957,11 +1957,15 @@ fn both_cores_mask_the_same_flag_bits() {
 /// suit la nouvelle. Un vrai noyau vide le tampon par `invlpg` — **que cette
 /// tranche ne produit pas**, et c'est exactement ce que ce test exhibe.
 ///
-/// **Ce que cette tranche ne fait pas.** La lecture des **instructions** n'est
-/// pas paginée : l'hôte résout une région par son adresse telle quelle, donc
-/// RIP est traité comme physique. Un noyau à demi-haut, dont le texte vit à
-/// `0xffffffff8...`, ne se traduirait pas. Seules les **données** passent par
-/// les tables.
+/// **Ce que cette tranche ne faisait pas, et qui est fait depuis #254.** La
+/// lecture des **instructions** n'était pas paginée : l'hôte résolvait une
+/// région par son adresse repliée sur le masque de la RAM, donc RIP était
+/// traité comme physique, et seules les **données** passaient par les tables.
+/// Cette phrase-là est restée écrite pendant des tranches entières : le dépôt
+/// **garantissait** par un commentaire que la moitié « chercher le code » du
+/// couple resterait manquante. C'est
+/// `the_host_reads_the_code_through_the_page_tables_and_not_by_folding` qui
+/// tient l'autre moitié maintenant.
 #[test]
 fn a_paged_guest_reads_through_its_page_tables() {
     let Some(bun) = bun() else {
@@ -8470,18 +8474,6 @@ fn the_driver_translates_on_demand_without_knowing_the_regions_in_advance() {
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let image_path = scratch.join("image.bin");
     std::fs::write(&image_path, &image).expect("l'image");
-    // Le manifeste : le chemin, le nombre de pages, puis un segment par ligne
-    // — adresse physique, décalage dans le fichier, taille.
-    let manifest = scratch.join("manifeste.txt");
-    std::fs::write(
-        &manifest,
-        format!(
-            "{}\n{PAGES}\n{PHYSICAL} 0 {}\n",
-            image_path.to_string_lossy(),
-            image.len()
-        ),
-    )
-    .expect("le manifeste");
 
     let driver = scratch.join("d.mjs");
     std::fs::write(
@@ -8489,21 +8481,31 @@ fn the_driver_translates_on_demand_without_knowing_the_regions_in_advance() {
         format!(
             r#"
 import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
 const demandées = [];
 const tailles = [];
 const vm = machine({{
   // **Le pilote ne sait rien des régions.** Il reçoit une adresse, il va
   // chercher un traducteur, il rend les octets. C'est exactement la forme que
   // l'application a — un aller-retour vers le processus où vit l'émetteur.
-  translate: (address, slot) => {{
+  // **Les octets arrivent par l'hôte.** Il les a lus dans la mémoire de
+  // l'invité — repliés par le masque ici, puisque rien n'a allumé la
+  // pagination — et le traducteur ne connaît plus d'autre source : c'est la
+  // tranche #254, et c'est ce qui rend ce test capable de dire *où* les
+  // octets ont été pris.
+  translate: (address, slot, code) => {{
     demandées.push(address);
-    const out = Bun.spawnSync([{translator:?}, {manifest:?}, address.toString(), String(slot)]);
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
     if (out.exitCode !== 0) return null;
     tailles.push(out.stdout.length);
     return out.stdout;
   }},
   pages: {pages},
 }});
+new Uint8Array(vm.memory.buffer).set(readFileSync({image:?}), {physical});
 vm.globals[{rip}].value = {base}n;
 vm.globals[4].value = 0x70000n;  // rsp
 vm.globals[2].value = 0n;        // rdx : le témoin
@@ -8517,7 +8519,8 @@ console.log("octets " + tailles[0]);
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             translator = env!("CARGO_BIN_EXE_x86-translate"),
-            manifest = manifest.to_string_lossy(),
+            image = image_path.to_string_lossy(),
+            physical = PHYSICAL,
             pages = PAGES,
             rip = RIP_SLOT,
             base = BASE,
@@ -8599,26 +8602,46 @@ console.log("octets " + tailles[0]);
     // pilote qui confondrait « je ne sais pas lire cet octet » et « il n'y a
     // pas d'octets là » chercherait une instruction manquante là où il n'y a
     // qu'une adresse hors image.
-    let ask = |at: u64| {
-        Command::new(env!("CARGO_BIN_EXE_x86-translate"))
-            .arg(&manifest)
+    let ask = |at: u64, window: &[u8]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_x86-translate"))
+            .arg(PAGES.to_string())
             .arg(at.to_string())
             .arg("0")
-            .output()
-            .expect("le traducteur")
-            .status
-            .code()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("le traducteur");
+        std::io::Write::write_all(child.stdin.as_mut().expect("l'entrée"), window)
+            .expect("la fenêtre");
+        drop(child.stdin.take());
+        child.wait().expect("le traducteur").code()
     };
-    assert_eq!(ask(BASE), Some(0), "la région d'entrée se traduit");
+    // **La fenêtre telle que l'hôte la lirait** : l'adresse repliée sur la RAM
+    // déclarée, moins l'adresse physique où ce test a posé l'image.
+    let window = |at: u64| {
+        let from = (Module::fold(at, PAGES) - PHYSICAL) as usize;
+        &image[from..(from + 16384).min(image.len())]
+    };
     assert_eq!(
-        ask(BASE + UNREADABLE),
+        ask(BASE, window(BASE)),
+        Some(0),
+        "la région d'entrée se traduit"
+    );
+    assert_eq!(
+        ask(BASE + UNREADABLE, window(BASE + UNREADABLE)),
         Some(2),
         "un octet illisible à l'entrée est un refus franc, et le dit par 2"
     );
+    // **Et une fenêtre vide dit 3, pas 2.** C'est ce que le code 3 veut dire
+    // depuis #254 : non plus « cette adresse ne tombe dans aucun segment du
+    // fichier » — il n'y a plus de fichier — mais « il n'y a aucun octet ».
+    // Un pilote qui confondrait les deux chercherait une instruction
+    // manquante là où il n'y a rien du tout.
     assert_eq!(
-        ask(BASE + 0x3_0000),
+        ask(BASE, &[]),
         Some(3),
-        "une adresse qui ne tombe dans aucun segment le dit par 3, pas par 2"
+        "une fenêtre vide n'est pas un refus de l'émetteur : elle le dit par 3"
     );
 
     let _ = std::fs::remove_dir_all(&scratch);
@@ -9676,4 +9699,420 @@ console.log("fsw " + vm.globals[{status}].value);"#,
         "0",
         "le mot d'état, lui, sort bien de RESET à zéro : {text}"
     );
+}
+
+/// **L'hôte va chercher les octets d'une région là où la machine les lirait.**
+///
+/// C'est la tranche #254, et c'est le défaut que la tranche P2 avait **écrit**
+/// plutôt que corrigé : « la lecture des **instructions** n'est pas paginée :
+/// l'hôte résout une région par son adresse telle quelle, donc RIP est traité
+/// comme physique ». Le dépôt garantissait donc, par un commentaire, que la
+/// moitié « chercher le code » du couple resterait manquante — la même forme
+/// que #253.
+///
+/// **Deux réponses à la même question, et elles ne s'accordent pas.** Le
+/// module traduit ses accès mémoire par la marche à quatre niveaux ;
+/// `web/host.js` allait chercher les octets à `adresse & (RAM - 1)`. Les deux
+/// ne tombent juste ensemble que parce que le noyau est chargé bas dans une
+/// RAM dont la taille divise l'écart entre ses deux formes d'adresse —
+/// `Module::fold` le dit déjà. Dès que la cartographie n'est plus celle-là —
+/// l'espace utilisateur, une cartographie temporaire, un noyau ailleurs — le
+/// repli nomme **autre chose**.
+///
+/// **Mesuré sur le vrai noyau, pas supposé.** Au moment où Alpine saute dans
+/// `/init` à `0x401000`, le repli désigne le physique `0x401000`, où les 4096
+/// octets sont **tous nuls** : l'hôte aurait traduit quatre kibioctets de
+/// `add %al,(%rax)` et la machine serait partie en morceaux loin de la cause.
+///
+/// **Ce programme pose deux leurres, et chacun attrape un sabotage
+/// différent :**
+///
+/// | leurre | où | ce qu'il attrape |
+/// | --- | --- | --- |
+/// | `mov $9,%edx` | au **repli** de l'adresse virtuelle | un hôte qui replie au lieu de marcher |
+/// | `mov $8,%ecx` | à la trame **physiquement suivante** | un hôte qui marche une fois puis lit tout droit |
+///
+/// Le second n'est pas décoratif : la fenêtre commence à `0xF00` d'une page et
+/// **traverse** la frontière. Les deux pages virtuelles sont contiguës ; leurs
+/// trames ne le sont pas. Un hôte qui marche pour la première et continue dans
+/// la mémoire linéaire lirait le leurre.
+///
+/// **Et une seconde région dont la fenêtre butte sur une page absente**, parce
+/// qu'un sabotage a survécu sans elle : la marche pose le témoin de faute et
+/// CR2 quand une entrée manque, et l'hôte doit les rendre tels qu'il les a
+/// trouvés. Tant qu'aucune lecture ne fautait, l'assertion sur le témoin était
+/// vide — elle ne pouvait qu'être vraie. Ici la seconde page de la seconde
+/// région **manque** : la fenêtre s'arrête court, le programme tient dans ce
+/// qui reste, et l'invité ne doit pas hériter d'une faute que l'hôte a causée
+/// en lisant.
+#[test]
+fn the_host_reads_the_code_through_the_page_tables_and_not_by_folding() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // Quatre mébioctets, une puissance de deux, que le confinement exige.
+    const PAGES: u32 = 64;
+    const ENTRY: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    /// La trame de la première page virtuelle de la région.
+    const FRAME_ONE: u64 = 0x3_0000;
+    /// Celle qui la suit **physiquement**, et que rien ne cartographie : le
+    /// leurre de la lecture tout droit.
+    const FRAME_NEXT: u64 = 0x3_1000;
+    /// La trame de la **seconde** page virtuelle, ailleurs.
+    const FRAME_TWO: u64 = 0x4_0000;
+    /// La trame de la seconde région, dont la page **suivante** manque.
+    const FRAME_THREE: u64 = 0x5_0000;
+    /// L'adresse virtuelle de la région, à `0xF00` dans sa page : la fenêtre
+    /// de 4096 octets que l'hôte lit traverse donc la frontière de page.
+    const VA: u64 = 0xFFFF_8000_0030_0F00;
+    /// Là où le repli par le masque de la RAM enverrait `VA`.
+    const FOLDED: u64 = VA & (PAGES as u64 * 65536 - 1);
+    /// La seconde région, elle aussi à `0xF00` dans sa page : sa fenêtre de
+    /// 4096 octets réclame la page suivante, que rien ne cartographie.
+    const VA_SHORT: u64 = 0xFFFF_8000_0030_2F00;
+    const FOLDED_SHORT: u64 = VA_SHORT & (PAGES as u64 * 65536 - 1);
+
+    // **La région d'entrée**, pagination éteinte : elle charge CR3, allume
+    // CR0.PG, puis saute à l'adresse virtuelle.
+    let mut entry: Vec<u8> = Vec::new();
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    entry.extend_from_slice(&PML4.to_le_bytes());
+    entry.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    entry.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    entry.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $VA,%rax
+    entry.extend_from_slice(&VA.to_le_bytes());
+    entry.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+
+    // **La vraie région**, coupée en deux par la frontière de page. Les 256
+    // octets du haut de la première page portent le témoin et de quoi remplir
+    // jusqu'au bord ; la suite vit dans l'autre trame.
+    let mut first = vec![0x90u8; 0x100];
+    first[0..5].copy_from_slice(&[0xba, 0x01, 0x00, 0x00, 0x00]); // mov $1,%edx
+    let mut second: Vec<u8> = Vec::new();
+    second.extend_from_slice(&[0xb9, 0x02, 0x00, 0x00, 0x00]); // mov $2,%ecx
+    second.extend_from_slice(&[0x48, 0xb8]); // movabs $VA_SHORT,%rax
+    second.extend_from_slice(&VA_SHORT.to_le_bytes());
+    second.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+                                             // **La seconde région**, qui tient dans les 256 octets que sa page laisse.
+    let short = [
+        0xbb, 0x03, 0x00, 0x00, 0x00, // mov $3,%ebx
+        0x0f, 0x0b, // ud2 : rendre la main
+    ];
+    // Les deux leurres, chacun avec un témoin qui ne peut venir que de lui.
+    let decoy_folded = [
+        0xba, 0x09, 0x00, 0x00, 0x00, // mov $9,%edx
+        0xb9, 0x09, 0x00, 0x00, 0x00, // mov $9,%ecx
+        0x0f, 0x0b, // ud2
+    ];
+    let decoy_next = [
+        0xb9, 0x08, 0x00, 0x00, 0x00, // mov $8,%ecx
+        0x0f, 0x0b, // ud2
+    ];
+    let decoy_short = [
+        0xbb, 0x09, 0x00, 0x00, 0x00, // mov $9,%ebx
+        0x0f, 0x0b, // ud2
+    ];
+
+    let scratch = std::env::temp_dir().join(format!("wisq-fetch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let place = |name: &str, bytes: &[u8]| {
+        let path = scratch.join(name);
+        std::fs::write(&path, bytes).expect("un morceau de mémoire");
+        path
+    };
+    let entry_path = place("entree.bin", &entry);
+    let first_path = place("premiere.bin", &first);
+    let second_path = place("seconde.bin", &second);
+    let folded_path = place("leurre-repli.bin", &decoy_folded);
+    let next_path = place("leurre-suite.bin", &decoy_next);
+    let short_path = place("courte.bin", &short);
+    let decoy_short_path = place("leurre-courte.bin", &decoy_short);
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const vm = machine({{
+  // **Le vrai chemin, de bout en bout** : l'hôte lit la fenêtre dans la
+  // mémoire de l'invité, l'émetteur traduit *ces* octets. Rien n'est préparé
+  // d'avance par ce test, et c'est tout l'intérêt — un module pré-construit
+  // ne dirait rien de l'endroit où les octets ont été pris.
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) {{
+      console.log("refusée 0x" + address.toString(16) + " "
+        + out.stderr.toString().trim());
+      return null;
+    }}
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+for (const [chemin, at] of [
+  [{entry_path:?}, {entry_at}],
+  [{first_path:?}, {first_at}],
+  [{second_path:?}, {second_at}],
+  [{folded_path:?}, {folded_at}],
+  [{next_path:?}, {next_at}],
+  [{short_path:?}, {short_at}],
+  [{decoy_short_path:?}, {decoy_short_at}],
+]) {{
+  new Uint8Array(vm.memory.buffer).set(readFileSync(chemin), at);
+}}
+// Les tables, posées à la main : deux pages virtuelles contiguës, deux trames
+// qui ne le sont pas.
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((va >> BigInt(shift)) & 0x1ffn);
+const va = {va}n;
+vue.setBigUint64({pml4} + idx(va, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx(va, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx(va, 21) * 8, {pt}n | present, true);
+vue.setBigUint64({pt} + idx(va, 12) * 8, {frame_one}n | present, true);
+vue.setBigUint64({pt} + idx(va + 0x1000n, 12) * 8, {frame_two}n | present, true);
+// La seconde région : sa page est là, celle d'après **ne l'est pas**.
+vue.setBigUint64({pt} + idx({va_short}n, 12) * 8, {frame_three}n | present, true);
+vm.globals[{rip}].value = {entry_at}n;
+vm.globals[4].value = 0x8000n; // rsp, que rien n'utilise ici
+const why = await vm.run({{ budget: 1n << 20n, rounds: 64 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("arret " + why.stopped);
+console.log("rdx " + lire(2).toString());
+console.log("rcx " + lire(1).toString());
+console.log("rbx " + lire(3).toString());
+console.log("faute " + lire({fault}).toString());
+console.log("cr2 0x" + lire({control} + 1).toString(16));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            entry_path = entry_path.to_string_lossy(),
+            first_path = first_path.to_string_lossy(),
+            second_path = second_path.to_string_lossy(),
+            folded_path = folded_path.to_string_lossy(),
+            next_path = next_path.to_string_lossy(),
+            short_path = short_path.to_string_lossy(),
+            decoy_short_path = decoy_short_path.to_string_lossy(),
+            entry_at = ENTRY,
+            first_at = FRAME_ONE + 0xF00,
+            second_at = FRAME_TWO,
+            folded_at = FOLDED,
+            next_at = FRAME_NEXT,
+            short_at = FRAME_THREE + 0xF00,
+            decoy_short_at = FOLDED_SHORT,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            frame_one = FRAME_ONE,
+            frame_two = FRAME_TWO,
+            frame_three = FRAME_THREE,
+            va = VA,
+            va_short = VA_SHORT,
+            rip = RIP_SLOT,
+            fault = FAULT_SLOT,
+            control = CONTROL_SLOT,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{errors}\n{text}"
+    );
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("rdx "),
+        "1",
+        "**la première page vient de sa trame, pas du repli** : `9` voudrait \
+         dire que l'hôte est allé chercher les octets à `adresse & (RAM - 1)`, \
+         où ce test a posé un leurre : {text}"
+    );
+    assert_eq!(
+        line("rcx "),
+        "2",
+        "**la seconde page vient de sa trame à elle** : `8` voudrait dire que \
+         l'hôte a marché pour la première page puis lu tout droit dans la \
+         mémoire linéaire, où ce test a posé l'autre leurre : {text}"
+    );
+    assert_eq!(
+        line("rbx "),
+        "3",
+        "**la seconde région a tourné bien que sa fenêtre soit courte** : sa \
+         seconde page manque, la lecture de l'hôte s'arrête là, et les 256 \
+         octets qui restent suffisent. `9` voudrait dire le repli, `0` que la \
+         région n'a pas tourné du tout : {text}"
+    );
+    assert_eq!(
+        line("arret "),
+        "une instruction indéfinie (ud2) sans porte : aucune IDT ne porte le vecteur 6",
+        "et la machine finit sur le `ud2` de la seconde région : {text}"
+    );
+    // **La lecture de l'hôte ne laisse aucune trace.** La marche pose le
+    // témoin de faute et CR2 quand une entrée manque ; si l'hôte ne les
+    // rendait pas tels qu'il les a trouvés, l'invité prendrait plus tard une
+    // faute qu'il n'a pas causée — et rien ici ne la relierait à cette
+    // lecture-là.
+    assert_eq!(
+        line("faute "),
+        "0",
+        "le témoin de faute est intact après les lectures de l'hôte : {text}"
+    );
+    assert_eq!(line("cr2 "), "0x0", "et CR2 aussi : {text}");
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une adresse que les tables ne cartographient pas s'arrête en le disant.**
+///
+/// C'est l'autre moitié de #254, et c'est ce qui empêche la correction d'être
+/// complaisante. Sans elle, l'hôte n'a que deux réponses possibles à « donne-
+/// moi les octets de cette adresse » : des octets, ou le repli — et le repli
+/// rend **toujours** quelque chose, parce que toute la RAM est lisible. Quatre
+/// kibioctets de zéros se décodent en `add %al,(%rax)` répété : la machine
+/// partirait en morceaux très loin de la cause.
+///
+/// C'est exactement ce qui attendait au mur mesuré : au saut dans `/init`, le
+/// repli désignait 4096 octets tous nuls.
+///
+/// **Le nom est l'intérêt.** « refusée » dit que l'émetteur n'a pas su lire un
+/// octet ; « aucune page derrière l'adresse » dit que la machine demande du
+/// code là où son propre espace d'adressage ne met rien. Les deux se
+/// corrigent à des kilomètres l'un de l'autre.
+#[test]
+fn an_address_the_page_tables_do_not_map_is_named_rather_than_folded() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const ENTRY: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    /// **Aucune entrée de PML4 n'est posée** : la marche échoue au premier
+    /// niveau, comme elle le fait sur le vrai noyau à `0x401000`.
+    const VA: u64 = 0x40_1000;
+    /// Et au repli de cette adresse, un programme parfaitement valide — celui
+    /// que l'hôte exécuterait s'il repliait. Le témoin est ce qu'il **n'a pas
+    /// fait**.
+    const FOLDED: u64 = VA & (PAGES as u64 * 65536 - 1);
+
+    let mut entry: Vec<u8> = Vec::new();
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    entry.extend_from_slice(&PML4.to_le_bytes());
+    entry.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    entry.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    entry.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    entry.extend_from_slice(&[0x48, 0xb8]); // movabs $VA,%rax
+    entry.extend_from_slice(&VA.to_le_bytes());
+    entry.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    let decoy = [
+        0xba, 0x07, 0x00, 0x00, 0x00, // mov $7,%edx
+        0x0f, 0x0b, // ud2
+    ];
+
+    let scratch = std::env::temp_dir().join(format!("wisq-absente-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let entry_path = scratch.join("entree.bin");
+    std::fs::write(&entry_path, &entry).expect("l'entrée");
+    let decoy_path = scratch.join("leurre.bin");
+    std::fs::write(&decoy_path, decoy).expect("le leurre");
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+for (const [chemin, at] of [
+  [{entry_path:?}, {entry_at}],
+  [{decoy_path:?}, {decoy_at}],
+]) {{
+  new Uint8Array(vm.memory.buffer).set(readFileSync(chemin), at);
+}}
+vm.globals[{rip}].value = {entry_at}n;
+vm.globals[4].value = 0x8000n;
+vm.globals[2].value = 0n; // rdx : le témoin du leurre
+const why = await vm.run({{ budget: 1n << 20n, rounds: 64 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("arret " + why.stopped);
+console.log("ou 0x" + BigInt.asUintN(64, why.at).toString(16));
+console.log("rdx " + lire(2).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            entry_path = entry_path.to_string_lossy(),
+            decoy_path = decoy_path.to_string_lossy(),
+            entry_at = ENTRY,
+            decoy_at = FOLDED,
+            rip = RIP_SLOT,
+        ),
+    )
+    .expect("le pilote");
+
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "le pilote a échoué :\n{errors}\n{text}"
+    );
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("arret "),
+        "aucune page derrière l'adresse",
+        "l'arrêt **nomme** ce qui manque, et ce n'est ni « refusée » ni un \
+         module traduit depuis des zéros : {text}"
+    );
+    assert_eq!(
+        line("ou "),
+        format!("0x{VA:x}"),
+        "et il dit à quelle adresse : {text}"
+    );
+    assert_eq!(
+        line("rdx "),
+        "0",
+        "le leurre posé au repli n'a pas tourné : {text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
 }
