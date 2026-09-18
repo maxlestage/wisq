@@ -15116,3 +15116,116 @@ Le premier essai a échoué, et bien : `x86-translate` datait d'avant mon éditi
 et le pilote a refusé de mesurer plutôt que de faire tourner un décodeur périmé
 — « il décoderait le jeu d'instructions d'avant ». C'est la famille de #168, et
 elle m'a attrapé.
+
+## #263 — l'émetteur mène Alpine jusqu'en anneau trois, et bute sur une instruction que cette machine n'a pas
+
+C'est la mesure la plus loin que l'émetteur ait portée, et elle a d'abord fallu
+réparer son entrée.
+
+### L'archive était cassée, et le noyau le disait
+
+La première mesure s'est arrêtée dans `__const_udelay`, et le relevé de #262 a
+montré ce que le silence cachait : **trois adresses distinctes sur 1 140 335
+tours.** Le journal du noyau a nommé la cause en une ligne :
+
+```
+Run /init as init process
+Failed to execute /init (error -13)
+…
+Kernel panic - not syncing: No working init found.
+```
+
+`-13`, c'est `EACCES`. Et la liste des appelants d'`udelay` portait
+`panic + 624`, `panic + 635`, `panic + 729` : **le « mur » était la boucle
+`mdelay` de `panic()` lui-même.** Un noyau qui panique tourne là pour toujours,
+et c'est la conduite correcte.
+
+L'archive était la mienne. `x.cpio`, reconstruite en septembre, portait
+**490 fichiers tous en `0644`, aucun lien symbolique, aucun bit d'exécution**.
+La vraie `initramfs-lts` d'Alpine v3.20 — téléchargée depuis `dl-cdn`, pour
+exactement `6.6.134-0-lts` — en porte **114 exécutables et 14 liens**, dont
+`bin/sh -> /bin/busybox`, et son `/init` est en `-rwxr-xr-x`. Les deux archives
+décompressées ne diffèrent que de 2 908 octets : précisément les modes et les
+liens perdus.
+
+**Quatrième reconstruction fausse de la séance.** Je n'ai pas rafistolé la
+mienne — deviner quels fichiers étaient des liens aurait été une cinquième.
+
+### Ce que la vraie racine donne
+
+```
+10 929 régions, 4 236 661 tours
+Trying to unpack rootfs image as initramfs…
+Freeing initrd memory: 105388K
+anneau=3  cs=0x33  ss=0x2b  cr3=0x8dfb000  rip=0x7f9606d8743e
+marche 4236661 4236660 10929 0
+arret refusée — CannotDecode { at: 0 }
+octets 66 48 0f 6e c7 | 48 89 fb | 66 0f 6c c0 | 48 83 ec 10
+```
+
+**L'émetteur WebAssembly a mené un vrai noyau Alpine, avec sa vraie racine de
+cent cinq mégaoctets, à travers tout son démarrage, puis dans `/init`, puis en
+anneau trois, où `ld-musl-x86_64.so.1` tourne pour de vrai.** #259 exécutait
+quarante octets d'assembleur écrits à la main.
+
+Et `marche 4236661 4236660` dit l'essentiel : **la dernière adresse neuve est au
+tour 4 236 660 sur 4 236 661.** La machine ouvrait du terrain jusqu'à l'instant
+exact de l'arrêt. Aucune ronde, aucun plateau — le contraire de ce que la
+première mesure montrait.
+
+### L'instruction
+
+| octets | instruction |
+| --- | --- |
+| `66 48 0f 6e c7` | **`movq %rdi,%xmm0`** — non décodée |
+| `48 89 fb` | `mov %rdi,%rbx` |
+| `66 0f 6c c0` | `punpcklqdq %xmm0,%xmm0` |
+| `48 83 ec 10` | `sub $0x10,%rsp` |
+
+C'est le prologue de `memset` dans musl : diffuser l'octet de remplissage dans
+un registre SSE, puis le dupliquer sur les deux moitiés.
+
+### Pourquoi ce n'est pas une tranche
+
+Le cœur Swift la connaît depuis #128 — `X86Vectors.swift` porte
+`case 0x6E where operandSize` et ses deux voisines, et l'oracle SIMD de #178 les
+juge contre le vrai silicium sur 3 840 cas. Les deux cœurs Rust, eux, n'ont
+**rien** : ni registre vectoriel, ni instruction. Et le dépôt ne l'a pas oublié
+— il l'a écrit, quatre fois :
+
+> « l'émetteur n'a aucun registre XMM et aucune instruction XMM ne se décode »
+> « les seize XMM ne sont pas restaurés parce qu'ils **n'existent pas ici**, et
+> non parce qu'on aurait choisi de les ignorer »
+> « le cœur Swift, qui les a, fait l'inverse — la divergence est entre deux
+> machines qui n'ont pas le même matériel »
+
+Donner `movq %rdi,%xmm0` à l'émetteur, c'est donc lui donner **seize registres
+de cent vingt-huit bits qu'il n'a pas**. Et cette décision en entraîne d'autres :
+comment représenter 128 bits dans une globale WebAssembly ; que devient
+`fxsave`, dont le commentaire dit **vrai aujourd'hui** parce que les registres
+n'existent pas et deviendrait faux le jour où ils existeraient ; comment
+l'instantané les porte ; et à quelles conditions les cœurs Rust entrent dans un
+oracle que seul le cœur Swift affronte.
+
+**C'est de l'architecture, pas un défaut. Elle attend la parole de Maxime.**
+
+### Deux choses que le journal dit et que personne n'a relevées
+
+**`initcall inet_init+0x0/0x560 returned with preemption imbalance`**, avec un
+`WARNING` à `init/main.c:1263`. Le noyau compare lui-même `preempt_count` avant
+et après chaque `initcall` et signale l'écart : **deux nombres qui devraient
+s'accorder et ne s'accordent pas** — exactement la forme qui a produit toutes
+les vraies trouvailles de ce dépôt. Elle est dans le journal de *chaque* mesure
+depuis des tranches, et aucune ne l'a lue. La question à poser en premier :
+le cœur Swift produit-il le même avertissement ? S'il ne le produit pas, c'est
+l'émetteur qui perd un compte.
+
+Et, moins clair mais aussi constant : `local IPI:TIMEOUT` suivi de
+`BUG: 1 unexpected failures (out of 2)` au test NMI du noyau.
+
+### Ce que cette mesure ne montre pas
+
+**Rien n'a été affiché.** Le noyau a déballé la racine et lancé `/init`, mais la
+mesure s'arrête avant que `busybox` ait parlé, avant qu'un module soit chargé,
+et donc avant `simpledrm`. « Jusqu'en anneau trois » n'est pas « jusqu'à un
+bureau », et la distance entre les deux est encore inconnue.
