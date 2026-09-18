@@ -7751,6 +7751,11 @@ encore si l'accès était une écriture ou une lecture d'instruction, et
 `early_make_pgtable` ne le regarde pas ; le premier gestionnaire qui le
 regardera le dira.
 
+> **Il l'a dit à #258, et il s'appelle `do_user_addr_fault`.** Le bit 2 — l'accès
+> vient de l'espace utilisateur — décide entre « je pose la page » et « oops ».
+> L'hôte le compose depuis CS à chaque délivrance, et le bit 4 suit la règle du
+> manuel plutôt que d'être posé d'office.
+
 ## L'entrée logicielle, et le noyau qui va jusqu'à son premier `printk`
 
 Le mur de la tranche précédente était un octet : `__x86_indirect_thunk_rax`
@@ -11385,3 +11390,80 @@ n'apparaît nulle part, et pas une de ses instructions n'a été exécutée.
 la ligne ne fait rien tomber. Il est tenu par l'oracle Swift et par cette
 phrase. Le compte passe à 2519 : trois tests, douze sabotages, douze chutes
 nommées.
+
+## #258 — l'espace utilisateur tourne : quatre instructions de `/init`, et leurs effets
+
+Deux défauts que la mesure de #257 avait nommés, et qui ne pouvaient pas être
+corrigés séparément.
+
+| | avant | après |
+| --- | --- | --- |
+| un chargement d'instruction dont la page manque | `install` rend `UNMAPPED`, `run` nomme l'arrêt | **une `#PF` est délivrée**, CR2 sur l'adresse illisible |
+| le code d'erreur d'une faute de page | toujours **zéro** | le bit 2 selon l'anneau, le bit 4 selon le manuel |
+
+Corriger le premier sans le second aurait donné une délivrance qui mène à un
+oops : sans le bit 2, Linux traite la faute comme venant du noyau et tue
+`/init`. Le cœur Swift l'a payé au lot 7 — `Oops: 0010`, `Attempted to kill
+init!`.
+
+### Le bit 4 suit la règle du manuel, il n'est pas posé d'office
+
+« Set to 0 if CR4.SMEP = 0 and either CR4.PAE = 0 or IA32_EFER.NXE = 0 ». En
+mode long PAE est toujours posé, donc : SMEP ou NXE. Cette machine n'arme ni
+l'un ni l'autre — son noyau le dit, « Notice: NX (Execute Disable) protection
+missing in CPU! ». Éprouvé dans les deux sens.
+
+### Plus une garde de double faute
+
+Deux chargements fautifs **d'affilée**, sans qu'une région s'installe entre les
+deux, veut dire que le gestionnaire est lui-même hors de la carte. Nommé, au
+lieu d'épuiser les tours. Le compteur retombe dès qu'une région s'installe —
+et c'est la remise à zéro que le dixième sabotage a trouvée nue.
+
+### Ce que la mesure dit
+
+```
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  ./target/release/examples/kernel-entry /tmp/vmlinux.bin
+```
+
+```
+arret refusée
+marche 2333575 2333574 11989 0
+rip 0x401018
+registres rax=0x2 rcx=0x0 rdx=0x0 rbx=0x0 rsp=0x7ffe30b87660 rbp=0x0 rsi=0x1 rdi=0x401036 …
+selecteurs es=0x0 cs=0x33 ss=0x2b ds=0x0 fs=0x0 gs=0x0 anneau=3
+controle cr0=0x80050033 cr2=0x401000 cr3=0x3463000 cr4=0x6a0 cr8=0x0
+```
+
+**Ce ne sont pas des adresses, ce sont des effets.** Les quatre premières
+instructions de `/init`, telles qu'`objdump` les donne, et ce qu'elles laissent :
+
+| instruction | attendu | mesuré |
+| --- | --- | --- |
+| `mov $0x2,%rax` | `rax = 2` | `0x2` |
+| `lea 0x28(%rip),%rdi` → `chemin` | `rdi = 0x401036` | `0x401036` |
+| `mov $0x1,%rsi` | `rsi = 1` | `0x1` |
+| `xor %rdx,%rdx` | `rdx = 0` | `0x0` |
+
+`0x401036` est l'adresse que `objdump` donne pour l'étiquette `chemin`. Et
+`0x401018` est le `syscall`, cinquième instruction.
+
+### Ce que ça montre, et ce que ça ne montre pas
+
+**Ce qui est nouveau :** un programme d'espace utilisateur exécute des
+instructions sous wisq, sur une page que le noyau lui a cartographiée en réponse
+à une faute que wisq lui a délivrée.
+
+**Ce qui ne l'est pas :** la marque de `/init` n'apparaît pas. Elle s'imprime
+par un `write`, donc par un appel système. Quatre instructions, ce n'est pas un
+programme qui tourne — c'est un programme qui a commencé.
+
+### La tranche suivante, nommée par l'arrêt lui-même
+
+**#259 — `syscall` et `sysret`, produites par l'émetteur et exécutées.** Les
+quatre MSR sont rangés depuis #205, et le dépôt le dit : « lus par rien :
+`syscall` n'est pas produite ». Le cœur Swift les fait depuis #129.
+
+Le compte passe à 2524 : cinq tests, dix sabotages, dix chutes nommées.

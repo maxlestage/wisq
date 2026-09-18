@@ -445,6 +445,12 @@ Trois choses, et aucune n'est petite :
    Ce que ça ne tranche pas : la suite, c'est l'espace utilisateur, et il demande
    un initramfs. C'est une direction, pas un défaut.
 
+   **Tranchée depuis.** Avec un initramfs, le noyau appelle `/init` et wisq lui
+   délivre la faute de chargement de son point d'entrée. À #258, **quatre
+   instructions de `/init` s'exécutent** en anneau trois, et leurs effets sont
+   dans les registres ; la machine s'arrête sur le `syscall` qui suit, que
+   l'émetteur ne produit pas.
+
    **Et `WISQ_ROUNDS=8192` ne suffit plus** : les relevés se prennent désormais
    à `WISQ_ROUNDS=16384 WISQ_TURNS=1000000`.
 
