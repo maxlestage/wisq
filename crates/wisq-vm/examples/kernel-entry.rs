@@ -54,7 +54,8 @@ use wisq_vm::kernel_image::{
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
-    usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, STOP_SLOT,
+    usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, SEGMENT_SLOT, STOP_SLOT,
+    TASK_SLOT,
 };
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
@@ -826,6 +827,17 @@ console.log("registres " + noms
 // d'un `hlt`. La question du moment est de savoir si le module **pagine** :
 // le noyau a écrit CR0 et CR3, et ce que le module en fait décide si une
 // adresse haute comme `page_offset_base` est traduite ou repliée par masque.
+// **Les six sélecteurs, et le registre de tâche.** Le relevé donnait RIP, la
+// pile, les seize registres généraux et les cinq registres de contrôle — et
+// se taisait sur l'**anneau**, qui est devenu la question à #256 : la
+// délivrance d'une faute refuse par son nom un changement d'anneau, faute de
+// TSS, donc savoir si CS porte trois ou zéro décide de quel mur on parle.
+// Deux bits qu'aucune autre ligne ne portait.
+const segments = ["es", "cs", "ss", "ds", "fs", "gs"];
+console.log("selecteurs " + segments
+  .map((nom, at) => nom + "=0x" + (lire({segment} + at) & 0xffffn).toString(16))
+  .join(" ") + " anneau=" + (lire({segment} + 1) & 3n));
+console.log("tache 0x" + (lire({task}) & 0xffffn).toString(16));
 console.log("arret-code " + lire({stop}));
 console.log("faute " + lire({fault}));
 const controle = ["cr0", "cr2", "cr3", "cr4", "cr8"];
@@ -844,6 +856,8 @@ console.log("controle " + controle
                 stop = STOP_SLOT,
                 fault = FAULT_SLOT,
                 control = CONTROL_SLOT,
+                segment = SEGMENT_SLOT,
+                task = TASK_SLOT,
                 entry = entry_virtual,
             ),
         )
