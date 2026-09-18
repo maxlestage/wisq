@@ -54,10 +54,18 @@ public struct X86BootLoader {
     /// **L'écran qu'on annonce au noyau, ou rien.**
     ///
     /// Linux ne devine pas qu'il y a un cadre à peindre : il lit `screen_info`,
-    /// les soixante-quatre premiers octets de la page zéro. Le chemin moderne —
-    /// `sysfb`, puis `simpledrm` ou `simplefb` — s'accroche à
-    /// `VIDEO_TYPE_VLFB` et lit ensuite l'adresse, la géométrie et la place de
-    /// chaque couleur dans le pixel.
+    /// les soixante-quatre premiers octets de la page zéro. `sysfb` y regarde
+    /// le type, puis l'adresse, la géométrie et la place de chaque couleur
+    /// dans le pixel.
+    ///
+    /// **Quel pilote ramasse ensuite dépend du noyau invité, pas de nous.**
+    /// Ce commentaire disait jusqu'à #260 que le chemin moderne — `sysfb`,
+    /// puis `simpledrm` ou `simplefb` — « s'accroche à `VIDEO_TYPE_VLFB` ».
+    /// C'était faux deux fois : `sysfb` accepte `VIDEO_TYPE_EFI` tout autant,
+    /// et le noyau de référence mesuré (Alpine 6.6.134-0-lts) ne porte ni
+    /// `simpledrm` ni `simplefb` — son seul pilote de tampon est `efifb`.
+    /// Voir #260 dans le JOURNAL : aucune déclaration n'atteint les deux
+    /// familles de pilotes, et le choix est une direction ouverte.
     ///
     /// Le format est **XRGB8888**, quatre octets par pixel : c'est celui que
     /// `simpledrm` accepte sans conversion, et celui que Core Graphics et
@@ -116,9 +124,16 @@ public struct X86BootLoader {
         }
     }
 
-    /// `VIDEO_TYPE_VLFB` : VESA en mode graphique, cadre linéaire. Sans cette
-    /// valeur dans `orig_video_isVGA`, le noyau ignore tout le reste de
-    /// `screen_info` et démarre sans écran.
+    /// `VIDEO_TYPE_VLFB` : VESA en mode graphique, cadre linéaire. **C'est le
+    /// seul type pour lequel le noyau décale `lfb_size` de seize bits**, donc
+    /// ce champ et l'unité de la taille sont un seul couple — voir
+    /// `lfb_size` ci-dessus.
+    ///
+    /// Ce n'est pas, en revanche, la condition pour que le reste de
+    /// `screen_info` soit lu : le commentaire d'ici l'affirmait jusqu'à #260,
+    /// et la mesure le démentit. Sous `VIDEO_TYPE_EFI` le noyau de référence
+    /// relit ces champs un par un et les rend
+    /// (`efifb: mode is 1024x768x32, linelength=4096`).
     public static let videoTypeLinearFramebuffer: UInt8 = 0x23
 
     public static let e820CountOffset = 0x1E8
