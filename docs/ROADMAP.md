@@ -11467,3 +11467,60 @@ quatre MSR sont rangés depuis #205, et le dépôt le dit : « lus par rien :
 `syscall` n'est pas produite ». Le cœur Swift les fait depuis #129.
 
 Le compte passe à 2524 : cinq tests, dix sabotages, dix chutes nommées.
+
+## #259 — `syscall` et `sysretq` : deux appels servis par le vrai noyau
+
+Le mur venait de #258, avec une adresse : `rip 0x401018`, le `syscall` de
+`/init`. `0f 05` n'était décodée par personne, et le dépôt le disait en deux
+endroits — « lus par rien : `syscall` n'est pas produite ».
+
+### Ce que la tranche pose
+
+| | |
+| --- | --- |
+| **décodeur** | `0f 05` (deux octets) et `48 0f 07` (trois). `0f 07` **sans** REX.W reste illisible : ce serait un retour vers le mode compatibilité, sous un segment de code 32 bits |
+| **interpréteur Rust** | un **refus nommé**, avec `rdmsr`, `swapgs` et `ltr` : son `Cpu` ne modélise ni segments ni MSR, et un `syscall` dans le harnais entrerait dans le noyau de l'hôte |
+| **émetteur** | les deux, pour de vrai — c'est le chemin qui tourne dans l'application |
+
+L'oracle est `Sources/WisqVM/X86SystemCalls.swift`, écrit à #129 : RCX porte
+l'adresse de la **suite**, R11 les drapeaux, le masque éteint ce que le noyau a
+demandé, les sélecteurs d'entrée sont **forcés** à l'anneau zéro, le retour
+prend `+16` pour le code et `+8` pour la pile — et **la pile ne change pas**.
+
+### Ce que la mesure dit
+
+```
+arret sur place
+marche 2334242 2334241 12113 0
+rip 0x401034
+registres rax=0xb rcx=0x401034 rdx=0xb rbx=0x0 rsp=0x7ffe30b87670 rbp=0x0 rsi=0x401043 rdi=0x3 …
+selecteurs es=0x0 cs=0x33 ss=0x2b ds=0x0 fs=0x0 gs=0x0 anneau=3
+```
+
+**Ce sont les réponses du noyau, pas des adresses.** `rdi = 3` est le
+descripteur qu'`open("/dev/console")` a rendu ; `rax = 11` est le nombre
+d'octets que `write` a comptés. Un appel raté rendrait un errno négatif.
+`rip = 0x401034` est le `jmp` final du programme : l'arrêt « sur place » est la
+boucle de `/init`, pas la machine.
+
+### Ce que ça ne montre pas
+
+**La marque n'apparaît pas sur la console, et le `write` n'a pas échoué.** Le
+journal dit où les octets sont allés : « Console: colour dummy device 80x25 »,
+« printk: console [tty0] enabled ». `/dev/console` résout vers tty0, muet ; le
+port série capturé est `earlycon`.
+
+**Et quarante octets d'assembleur ne sont pas un système.** Ce qui est établi
+est que la porte fonctionne dans les deux sens. Un vrai `/init` en demandera
+des centaines d'appels de plus.
+
+### Les onze sabotages, et la leçon du montage
+
+Sept sont tombés du premier coup ; quatre ont survécu, et chacun nommait un trou
+du **test**. Le plus instructif : avec `0x23` — la valeur que Linux met vraiment
+dans STAR — `exit + 16` porte **déjà** l'anneau trois, donc forcer le RPL ou
+l'oublier donne le même nombre. **La vraie valeur du noyau était celle qui
+cachait le défaut.** Le montage prend `0x20` à la sortie et `0x13` à l'entrée,
+pour que les deux masquages portent quelque chose.
+
+Le compte passe à 2526 : deux tests, onze sabotages, onze chutes nommées.

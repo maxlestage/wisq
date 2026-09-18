@@ -706,6 +706,28 @@ pub enum Op {
     /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
     /// à quel bloc elle correspond : il rend la main.
     JumpIndirect,
+    /// **`syscall` : entrer dans le noyau sans passer par l'IDT.**
+    ///
+    /// C'est le mur que #258 a nommé avec une adresse. L'ancienne façon
+    /// d'appeler le noyau — `int 0x80` — passait par l'IDT, le TSS et un cadre
+    /// de pile complet. Celle-ci ne fait rien de tout ça : elle range
+    /// l'adresse de retour dans RCX, les drapeaux dans R11, prend son segment
+    /// et sa cible dans des MSR, et saute.
+    ///
+    /// **Elle ne change pas de pile.** RSP reste celui du programme, et c'est
+    /// au noyau de le remplacer — d'où le `swapgs` en tête de son
+    /// gestionnaire. Un cœur qui changerait la pile ici ferait travailler le
+    /// noyau sur une pile qu'il croit encore devoir aller chercher.
+    SystemCall,
+    /// **`sysretq` : rendre la main au programme.**
+    ///
+    /// Le retour ne repasse pas par où l'entrée est venue : `STAR` porte un
+    /// second sélecteur pour ça. **REX.W est obligatoire** — sans lui,
+    /// l'instruction rend la main au mode compatibilité, sous un segment de
+    /// code 32 bits, et le programme exécuterait ses propres octets comme
+    /// s'ils voulaient dire autre chose. Le décodeur refuse donc cette forme
+    /// plutôt que de la confondre avec celle-ci.
+    SystemReturn,
     /// **`ud2` : l'instruction indéfinie, que Linux exécute exprès.**
     ///
     /// `BUG()` et `WARN()` se compilent en `0f 0b`, et un noyau en sème par
@@ -2224,6 +2246,8 @@ impl Cpu {
                 | Op::HypervisorCall { .. }
                 | Op::InvalidatePcid
                 | Op::LoadTaskRegister
+                | Op::SystemCall
+                | Op::SystemReturn
                 | Op::LoadLocalDescriptorTable
                 | Op::ReadDebugRegister { .. }
                 | Op::WriteDebugRegister { .. }
@@ -2497,6 +2521,9 @@ impl Cpu {
             }
             Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
                 unreachable!("les sauts sortent avant")
+            }
+            Op::SystemCall | Op::SystemReturn => {
+                unreachable!("l'appel système sort avant")
             }
             Op::Nop | Op::InvalidatePage => unreachable!("ne rien faire sort avant"),
             Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
@@ -3023,6 +3050,26 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     src_width: width,
                     memory: None,
                     memory_is_source: false,
+                })
+            }
+            // **`syscall` et `sysretq`.** Deux et trois octets, aucun
+            // opérande — tout passe par les registres et les MSR. `0f 07`
+            // **sans** REX.W est le retour vers le mode compatibilité : il
+            // reste illisible, et c'est une garde, pas un oubli.
+            0x05 => Some(Decoded {
+                op: Op::SystemCall,
+                length: at,
+                ..Decoded::nothing(Width::Qword)
+            }),
+            0x07 => {
+                prefixes
+                    .rex
+                    .is_some_and(|rex| rex & 0b1000 != 0)
+                    .then_some(())?;
+                Some(Decoded {
+                    op: Op::SystemReturn,
+                    length: at,
+                    ..Decoded::nothing(Width::Qword)
                 })
             }
             // **`ud2`.** Deux octets, aucun opérande. Refuser de la décoder
@@ -6627,6 +6674,58 @@ mod x87 {
                 "{what} doit rester illisible : un refus nommé vaut mieux \
                  qu'un calcul faux"
             );
+        }
+    }
+
+    /// **`syscall` et `sysretq` se lisent, et les voisines restent muettes.**
+    ///
+    /// C'est le mur que #258 a nommé avec une adresse : la machine s'arrête à
+    /// `0x401018`, qui est le `syscall` de `/init` — `0f 05`, cinquième
+    /// instruction du programme. Ni le décodeur ni l'émetteur ne la
+    /// connaissaient ; aucun `Op` ne l'attendait.
+    ///
+    /// **`sysret` exige REX.W, et le refus est le fond de l'affaire.** Sans
+    /// lui, l'instruction rend la main au **mode compatibilité** — un segment
+    /// de code 32 bits, sous lequel le programme exécuterait ses propres
+    /// octets comme s'ils voulaient dire autre chose. Le cœur Swift refuse
+    /// cette forme par son nom depuis #129 ; la lire ici sans la distinguer
+    /// serait pire que ne pas la lire.
+    ///
+    /// | ce que le test tient | ce qui casse sans ça |
+    /// | --- | --- |
+    /// | `0f 05` se lit, deux octets | la région de `/init` est refusée entière |
+    /// | `48 0f 07` se lit, trois octets | le noyau entre et ne ressort pas |
+    /// | `0f 07` **ne** se lit **pas** | un retour en mode compatibilité, silencieux |
+    /// | les six voisines restent muettes | un nom faux pour chacune |
+    #[test]
+    fn syscall_reads_and_sysret_needs_its_wide_prefix() {
+        let entry = decode(&[0x0f, 0x05]).expect("`syscall` se lit");
+        assert_eq!(entry.op, Op::SystemCall);
+        assert_eq!(entry.length, 2, "deux octets, aucun opérande");
+        assert!(
+            entry.memory.is_none(),
+            "elle ne touche aucune mémoire : ni pile, ni descripteur"
+        );
+
+        let back = decode(&[0x48, 0x0f, 0x07]).expect("`sysretq` se lit");
+        assert_eq!(back.op, Op::SystemReturn);
+        assert_eq!(back.length, 3, "le REX.W compte dans la longueur");
+
+        // **Le voisinage ne s'ouvre pas.** `0f 07` sans REX.W est le retour
+        // vers le mode compatibilité, et les cinq autres sont des
+        // instructions système que ce cœur ne produit pas.
+        for (bytes, why) in [
+            (
+                &[0x0f, 0x07][..],
+                "sysret sans REX.W rendrait la main en 32 bits",
+            ),
+            (&[0x0f, 0x04][..], "0f 04 n'existe pas"),
+            (&[0x0f, 0x06][..], "clts n'est pas produite"),
+            (&[0x0f, 0x08][..], "invd non plus"),
+            (&[0x0f, 0x09][..], "wbinvd non plus"),
+            (&[0x0f, 0x0a][..], "0f 0a n'existe pas"),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
     }
 }
