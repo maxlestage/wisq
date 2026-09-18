@@ -114,3 +114,72 @@ fn counts_that_no_single_run_could_have_produced_are_refused() {
         "un relevé de zéro tour ne mesure rien"
     );
 }
+
+/// **La cadence du battement : jamais muet sur un long relevé, jamais un
+/// déluge sur un court.**
+///
+/// #262 a été ouverte sur un fait, pas sur une intuition : une mesure lancée à
+/// `WISQ_TURNS=40000000` a tourné **deux heures à 99,8 % de processeur sans
+/// imprimer une ligne**. Le pilote JavaScript engendré n'écrivait rien dans sa
+/// boucle de tours — `arret`, `marche`, `retours` et le reste ne sortent
+/// qu'après. Impossible, pendant ce temps, de dire si la machine avançait ou
+/// tournait en rond : exactement la question que #229 a appris à poser, avec
+/// des compteurs qui n'arrivaient qu'à la fin.
+///
+/// `beat` est la période, en tours, entre deux lignes de progrès. Deux bornes
+/// la tiennent, et elles tirent en sens contraire :
+///
+/// - **jamais un déluge** — deux cents lignes au plus, quel que soit le
+///   budget, sinon le relevé devient illisible et noie les lignes de
+///   traduction ;
+/// - **jamais muet** — un relevé assez long pour qu'on se demande s'il avance
+///   doit en donner au moins une vingtaine.
+///
+/// Un plancher garde les relevés courts tranquilles : à mille tours, la
+/// machine a fini avant qu'on ait le temps de se poser la question, et le
+/// relevé final suffit.
+///
+/// **Ce que ce test ne tient pas, et il faut le dire** : que la ligne soit
+/// bien émise *dans* la boucle. Ça, seul un vrai relevé le montre — le juger
+/// ici demanderait de faire tourner Bun sur un noyau, ce qu'un test unitaire
+/// ne fait pas. La cadence, elle, est la décision, et elle est ici.
+#[test]
+fn the_beat_is_never_a_flood_and_never_silent_on_a_long_run() {
+    /// Le plus grand nombre de lignes qu'un relevé a le droit d'imprimer.
+    const MOST: usize = 200;
+    /// Au-delà de ce budget, on se demande si la machine avance — et le relevé
+    /// doit répondre sans attendre sa propre fin.
+    const LONG: usize = 100_000;
+    /// Le moins qu'un tel relevé doive dire.
+    const LEAST: usize = 20;
+
+    for turns in [
+        1,
+        2,
+        999,
+        1_024,
+        65_536,
+        LONG,
+        1_000_000,
+        8_000_000,
+        40_000_000,
+        usize::MAX,
+    ] {
+        let beat = Progress::beat(turns);
+        assert!(
+            beat >= 1,
+            "une période nulle ne bat jamais — et en JavaScript, `tour % 0`              vaut NaN, donc le relevé serait muet sans le dire ({turns} tours)"
+        );
+        let lines = turns / beat;
+        assert!(
+            lines <= MOST,
+            "{lines} lignes de progrès pour {turns} tours : le relevé noierait              ses propres traductions"
+        );
+        if turns >= LONG {
+            assert!(
+                lines >= LEAST,
+                "{lines} lignes pour {turns} tours : c'est le silence que #262                  a payé deux heures"
+            );
+        }
+    }
+}

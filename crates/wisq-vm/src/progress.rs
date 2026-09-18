@@ -51,6 +51,33 @@ impl Progress {
         turns / 10
     }
 
+    /// **Tous les combien le pilote doit dire où il en est**, en tours.
+    ///
+    /// Les quatre nombres de `Progress` ne sortent qu'à la fin. #262 a mesuré
+    /// ce que ça coûte : un relevé lancé à quarante millions de tours a tourné
+    /// **deux heures à 99,8 % de processeur sans imprimer une ligne**, et il
+    /// n'y avait aucun moyen de dire s'il avançait ou s'il tournait en rond —
+    /// la question même que #229 a appris à poser.
+    ///
+    /// La période tire entre deux bornes contraires. **Jamais un déluge** :
+    /// deux cents lignes au plus, sinon le relevé noie ses propres lignes de
+    /// traduction. **Jamais muet** : un relevé assez long pour qu'on se pose la
+    /// question doit répondre sans attendre sa fin. Le plancher garde les
+    /// relevés courts tranquilles — à mille tours la machine a fini avant
+    /// qu'on ait eu le temps de se demander quoi que ce soit.
+    ///
+    /// Le nombre vit ici, et pas dans le pilote, pour que le JavaScript
+    /// engendré et le test qui le tient ne puissent pas en prendre deux
+    /// différents — la même raison que `tail`.
+    #[must_use]
+    pub fn beat(turns: usize) -> usize {
+        /// Sous ce budget, le relevé final suffit : la machine a déjà fini.
+        const QUIET: usize = 1 << 10;
+        /// Le plus grand nombre de lignes qu'un relevé a le droit d'imprimer.
+        const MOST: usize = 200;
+        QUIET.max(turns / MOST)
+    }
+
     /// Refuse tout ce qu'une seule exécution n'aurait pas pu produire.
     #[must_use]
     pub fn of(
