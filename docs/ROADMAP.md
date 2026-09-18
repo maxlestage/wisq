@@ -11674,3 +11674,44 @@ cadence ; la place, seul un vrai relevé la montre, et il est cité dans le
 JOURNAL. Une recherche de chaîne dans le gabarit serait la fausse garde de #98.
 
 Le compte passe à 2528 : un test, trois sabotages, trois chutes nommées.
+
+## #263 — l'émetteur mène Alpine jusqu'en anneau trois ; la suite est une direction
+
+**Mesure, pas tranche.** Avec la vraie `initramfs-lts` d'Alpine v3.20 pour
+`6.6.134-0-lts` — 105 Mo, 114 exécutables, 14 liens — l'émetteur WebAssembly a
+mené le noyau à travers tout son démarrage, l'a vu déballer sa racine
+(« Freeing initrd memory: 105388K »), lancer `/init`, et passer **en anneau
+trois**, où `ld-musl-x86_64.so.1` tourne pour de vrai : 10 929 régions,
+4 236 661 tours, `cs=0x33`, `cr3=0x8dfb000`.
+
+`marche 4236661 4236660 10929 0` — **la dernière adresse neuve est au tour
+4 236 660 sur 4 236 661** : la machine ouvrait du terrain jusqu'à l'instant de
+l'arrêt.
+
+L'arrêt est `CannotDecode` sur `66 48 0f 6e c7` = **`movq %rdi,%xmm0`**, le
+prologue de `memset` dans musl.
+
+**La première mesure avait menti, et c'est mon archive qui mentait.** `x.cpio`,
+reconstruite en septembre, avait perdu tous les bits d'exécution et tous les
+liens symboliques ; le noyau refusait `/init` avec `-13` (EACCES) et paniquait,
+et le « mur » apparent était la boucle `mdelay` de `panic()`. Quatrième
+reconstruction fausse de la séance — la vraie archive a été téléchargée, pas
+rafistolée.
+
+**Pourquoi la suite est une direction.** Le cœur Swift porte `0f 6e` depuis #128
+et l'oracle SIMD de #178 le juge contre le silicium. Les deux cœurs Rust n'ont
+ni registre vectoriel ni instruction vectorielle, et le dépôt l'écrit quatre
+fois comme une limite honnête, pas comme un oubli. Donner cette instruction à
+l'émetteur, c'est lui donner seize registres de 128 bits, décider de leur forme
+en WebAssembly, refaire `fxsave`/`fxrstor` dont les commentaires disent vrai
+*parce que* ces registres n'existent pas, refaire l'instantané, et faire entrer
+les cœurs Rust dans l'oracle SIMD. **Cela attend la parole de Maxime.**
+
+**Un candidat de défaut nommé, pour la tranche suivante** : le journal de chaque
+mesure porte `initcall inet_init+0x0/0x560 returned with preemption imbalance`
+et un `WARNING` à `init/main.c:1263`. Le noyau compare lui-même `preempt_count`
+avant et après l'`initcall` — deux nombres qui devraient s'accorder. Personne ne
+l'a lu. Premier pas : le cœur Swift produit-il le même avertissement ?
+
+**Ce que ça ne montre pas** : rien n'a été affiché. Ni `busybox`, ni un module,
+ni `simpledrm`. « Jusqu'en anneau trois » n'est pas « jusqu'à un bureau ».
