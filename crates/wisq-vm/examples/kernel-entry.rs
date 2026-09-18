@@ -54,8 +54,8 @@ use wisq_vm::kernel_image::{
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
-    usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, RIP_SLOT, SEGMENT_SLOT, STOP_SLOT,
-    TASK_SLOT,
+    usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, GS_SLOT, RIP_SLOT, SEGMENT_SLOT,
+    STOP_SLOT, TASK_SLOT,
 };
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
@@ -113,6 +113,54 @@ fn declared_initramfs(floor: u64) -> Result<Option<(Vec<u8>, Ramdisk)>, String> 
     let at = (floor + 0xFFF) & !0xFFF;
     let count = bytes.len() as u64;
     Ok(Some((bytes, Ramdisk { at, bytes: count })))
+}
+
+/// **La case que `WISQ_WATCH` demande de suivre, ou aucune.**
+///
+/// Le pilote sait dire *où* la machine en est — #262 lui a donné le battement
+/// — mais il ne savait dire **aucune valeur** de la mémoire de l'invité
+/// pendant qu'elle tourne. #264 a passé une tranche entière à chercher
+/// pourquoi `preempt_count` dérive à `inet_init` sans jamais pouvoir regarder
+/// `preempt_count`.
+///
+/// Deux formes, et rien d'autre :
+///
+/// - `WISQ_WATCH=ffffffff82b0b110` — une adresse invitée, telle quelle.
+/// - `WISQ_WATCH=gs:2e7c8` — un décalage depuis **la base du segment GS**,
+///   relue à chaque relevé. C'est par là qu'un noyau x86-64 atteint tout ce
+///   qui est propre à un cœur, `preempt_count` compris ; et cette base n'est
+///   posée qu'après les premières régions, donc la figer ici la rendrait
+///   fausse.
+///
+/// **La forme est refusée plutôt que devinée**, comme `WISQ_SCREEN` : un
+/// `WISQ_WATCH` mal écrit qui donnerait silencieusement « rien à suivre »
+/// ferait lire une mesure muette comme une mesure sans dérive.
+fn watched() -> Result<Option<(bool, u64)>, String> {
+    let Ok(value) = std::env::var("WISQ_WATCH") else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let (from_gs, digits) = match value.split_once(':') {
+        Some(("gs" | "GS", rest)) => (true, rest.trim()),
+        Some((other, _)) => {
+            return Err(format!(
+                "WISQ_WATCH={value} ne se lit pas : le seul segment nommé est « gs », pas \
+                 « {other} »"
+            ))
+        }
+        None => (false, value),
+    };
+    let digits = digits.strip_prefix("0x").unwrap_or(digits);
+    let Ok(at) = u64::from_str_radix(digits, 16) else {
+        return Err(format!(
+            "WISQ_WATCH={value} ne se lit pas : il faut « adresse » ou « gs:décalage », en \
+             hexadécimal, par exemple gs:2e7c8"
+        ));
+    };
+    Ok(Some((from_gs, at)))
 }
 
 /// **L'écran que `WISQ_SCREEN` demande, ou aucun.**
@@ -627,6 +675,13 @@ fn main() {
     // depuis que la faute de page est délivrée, elle les épuise en avançant
     // encore. `WISQ_ROUNDS=2048` va voir plus loin, au prix d'un relevé plus
     // long à lire.
+    let watch = match watched() {
+        Ok(watch) => watch,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+    };
     let rounds: usize = std::env::var("WISQ_ROUNDS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -644,6 +699,32 @@ fn main() {
         .unwrap_or(4096);
     let driver = scratch.join("d.mjs");
     {
+        // **Le guet, rendu en JavaScript — ou rien du tout.** Sans
+        // `WISQ_WATCH`, pas une ligne de plus : une mesure qui ne surveille
+        // rien ne doit pas payer une lecture de mémoire par battement.
+        //
+        // La base du segment GS est **relue à chaque relevé** plutôt que
+        // capturée une fois : le noyau la pose après les premières régions, et
+        // une valeur figée désignerait la page zéro pour tout le début du
+        // démarrage — c'est-à-dire un compteur toujours nul, et une mesure qui
+        // ment dans le sens rassurant.
+        let guet = match watch {
+            None => String::new(),
+            Some((from_gs, at)) => format!(
+                r#"
+    {{
+      const socle = {from_gs} ? lire({gs}) : 0n;
+      const octets = vm.read(socle + 0x{at:x}n, 4);
+      console.log("guet " + (tour + 1) + " " + (octets === null || octets.length < 4
+        ? "illisible"
+        : "0x" + new DataView(octets.buffer, octets.byteOffset, 4)
+            .getUint32(0, true).toString(16)));
+    }}"#,
+                from_gs = from_gs,
+                gs = GS_SLOT,
+                at = at,
+            ),
+        };
         std::fs::write(
             &driver,
             format!(
@@ -764,7 +845,7 @@ for (let tour = 0; tour < {turns}; tour++) {{
   // ne puissent pas en prendre deux différentes.
   if ((tour + 1) % {beat} === 0) {{
     console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
-      + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);
+      + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);{guet}
   }}
 }}
 console.log("arret " + why.stopped);
@@ -857,6 +938,7 @@ console.log("controle " + controle
   .join(" "));
 "#,
                 host = root.join("web/host.js").to_string_lossy(),
+                guet = guet,
                 placements = placements,
                 zero_page = ZERO_PAGE_AT,
                 turns = turns,
@@ -938,6 +1020,12 @@ console.log("controle " + controle
                 // suite ce que #229 ne disait qu'à la fin — le tour où une
                 // adresse a été neuve pour la dernière fois, et combien
                 // d'adresses distinctes ont été vues.
+                // **Ce que le guet a vu, au même battement.** Une ligne à
+                // part plutôt qu'un champ de plus sur la précédente : sans
+                // `WISQ_WATCH` elle n'existe pas, et le relevé garde sa forme.
+                ["guet", turn, value] => {
+                    println!("  guet au tour {turn} : {value}");
+                }
                 ["marche-en-cours", turn, at, fresh, distinct] => {
                     if let Some(at) = hex(at) {
                         println!(
