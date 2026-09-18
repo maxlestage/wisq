@@ -15958,3 +15958,102 @@ par ailleurs une garde dure — `refused.is_empty()` d'un côté,
 `agreed == cases.count == casSeen` de l'autre. Mais ils diront un jour ce que
 l'émetteur disait hier. Les dériver du fichier, comme la garde 2 ci-dessus, est
 une tranche à part et elle est petite.
+
+## #268 — j'ai écrit la règle dans #267, puis je l'ai enfreinte douze lignes plus bas
+
+Miroirs inchangés à **2529**. Aucune fonction de test de plus : trois planchers
+remis au corpus du jour, et un quatrième rendu à l'émetteur — celui que #267 a
+retiré en croyant le remplacer.
+
+### Le défaut est dans du code que je venais de fusionner
+
+#267 a remplacé le plancher de l'émetteur par une égalité :
+
+```rust
+assert_eq!(checked + handed_back, oracle.cases.len(), …)
+```
+
+**Ses deux côtés bougent ensemble.** Si `Tests/Fixtures/x86-oracle.tsv`
+rétrécit, `checked + handed_back` et `oracle.cases.len()` tombent de concert et
+l'égalité reste vraie. L'égalité répond à « rien ne sort du champ du test » ;
+elle ne répond pas à « le fichier n'a pas maigri ». Ce sont deux questions, et
+#267 a supprimé la garde de la seconde en ajoutant celle de la première.
+
+Le dépôt portait déjà la règle, écrite par la tranche qui avait comparé les
+planchers Rust et Swift :
+
+> « **Une égalité dont les deux côtés bougent ensemble n'est pas une garde de
+> couverture.** `agreed == total` reste vrai quand le total s'effondre. Il faut
+> un ancrage extérieur — ici, le nombre de lignes du fichier. »
+
+Et le journal de #267 **cite cette tranche**, à quinze lignes de l'endroit où
+il décrit l'égalité qu'il venait d'écrire. J'ai relu la règle, je l'ai
+recopiée, et j'ai fait exactement ce qu'elle interdit.
+
+### Un plancher contre un corpus qui rétrécit ne peut pas être dérivé du fichier
+
+C'est la nuance que #267 a manquée, et elle est simple : dériver le seuil du
+fichier qu'on surveille est circulaire. Un tel plancher **doit** rester un
+nombre écrit à la main. Sa seule discipline est de valoir le corpus du jour —
+et ce qu'il faut discipliner, c'est de le remonter à chaque tranche qui
+agrandit l'oracle.
+
+### La mesure : les trois cœurs verts sur une fixture amputée
+
+200 lignes `cas` retirées du fichier, 13 388 → **13 188**. Rien d'autre changé.
+
+| cœur | relevé | plancher d'alors | verdict |
+| --- | --- | --- | --- |
+| interpréteur Rust | 13 188 cas vérifiés | `checked > 13140` | **vert** |
+| émetteur WebAssembly | 13 020 + 168 = 13 188 | *aucun* depuis #267 | **vert** |
+| cœur Swift | 13 188 sur 13 188 | `cases.count > 13_140` | **vert** |
+
+**Les trois.** Le corpus perd 200 cas matériels et pas un test ne bronche —
+l'interpréteur et le Swift parce que leurs planchers avaient 248 cas de retard,
+l'émetteur parce qu'il n'en avait plus du tout.
+
+### Ce que la tranche pose
+
+| fichier | avant | après |
+| --- | --- | --- |
+| `crates/wisq-vm/tests/x86_oracle.rs` | `checked > 13140` | `checked >= 13388` |
+| `crates/wisq-vm/tests/x86_wasm.rs` | *rien* | `checked + handed_back >= 13388`, **à côté** de l'égalité |
+| `Tests/WisqVMTests/X86OracleTests.swift` | `cases.count > 13_140` | `>= 13_388` |
+| `Tests/WisqVMTests/X86OracleTests.swift` | `instructions.count > 200` | `>= 533` |
+
+L'égalité de #267 reste : elle est juste, elle répond à sa question, et elle ne
+peut pas vieillir. C'est son remplacement du plancher qui était faux, pas
+elle-même.
+
+### Sabotage
+
+La même amputation de 200 lignes `cas`, contre les planchers neufs — les trois
+tombent, chacun en se nommant :
+
+```
+x86_oracle.rs:471  le décodeur ne reconnaît plus que 13188 cas : la couverture a reculé
+x86_wasm.rs:668    l'oracle ne porte plus que 13188 cas : la fixture a maigri
+X86OracleTests.swift:192  XCTAssertGreaterThanOrEqual failed: ("13188") is less
+                          than ("13388") — la couverture a reculé : 13188 cas lus
+```
+
+Restauration de la fixture vérifiée par `diff`, et le compte relu : 13 388.
+
+**Ce que ce sabotage ne couvre pas, et il faut le dire.** Le plancher sur les
+**formes** (`instructions.count >= 533`) n'est pas exercé par cette amputation :
+elle retire des lignes `cas`, pas des lignes `instr`, et le compte de formes ne
+bouge pas. Une mutation qui retirerait des formes orphelinerait leurs cas, et
+c'est le `XCTFail("cas orphelin")` du lecteur qui parlerait d'abord. Ce
+plancher-là est donc une ceinture sur un scénario déjà couvert, pas un cliquet
+dont j'aurais montré la morsure.
+
+### Le signe à retenir, et c'est un douzième mode
+
+Les onze précédents portaient sur un nombre, une chaîne, une absence. Celui-ci
+porte sur **une règle citée et enfreinte dans le même document**. Écrire la
+leçon n'immunise pas contre elle : #267 a passé quatre paragraphes à expliquer
+qu'un plancher écrit à la main vieillit, et a conclu qu'il fallait donc le
+supprimer — alors que la conclusion juste était de le **tenir à jour**. Se
+méfier du moment où une tranche remplace une garde au lieu d'en ajouter une :
+demander laquelle des deux questions l'ancienne posait, et qui la pose
+maintenant.
