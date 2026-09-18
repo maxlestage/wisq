@@ -755,6 +755,17 @@ for (let tour = 0; tour < {turns}; tour++) {{
   if (tour >= debutDeLaQueue) queue.add(at);
   derniers.push(at);
   if (derniers.length > 12) derniers.shift();
+  // **Dire où on en est, pendant qu'on y est.** Les quatre compteurs
+  // ci-dessus ne sortaient qu'après la boucle : un relevé de quarante
+  // millions de tours restait muet deux heures durant, et rien ne
+  // distinguait une machine qui avance d'une qui tourne en rond — la
+  // question même que #229 a appris à poser. La période vient de
+  // `Progress::beat`, côté Rust, pour que le pilote et le test qui la tient
+  // ne puissent pas en prendre deux différentes.
+  if ((tour + 1) % {beat} === 0) {{
+    console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
+      + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);
+  }}
 }}
 console.log("arret " + why.stopped);
 console.log("marche " + tours + " " + (neuf === null ? "aucun" : neuf)
@@ -849,6 +860,7 @@ console.log("controle " + controle
                 placements = placements,
                 zero_page = ZERO_PAGE_AT,
                 turns = turns,
+                beat = Progress::beat(turns),
                 rounds = rounds,
                 translator = translator.to_string_lossy(),
                 pages = pages,
@@ -919,6 +931,21 @@ console.log("controle " + controle
                          (WISQ_ROUNDS) est atteint",
                         regions.len()
                     );
+                }
+                // **Où la machine en est, pendant qu'elle y est.** Sans cette
+                // ligne, un relevé long est muet jusqu'à sa mort : #262 en a
+                // payé deux heures. Elle porte de quoi trancher tout de
+                // suite ce que #229 ne disait qu'à la fin — le tour où une
+                // adresse a été neuve pour la dernière fois, et combien
+                // d'adresses distinctes ont été vues.
+                ["marche-en-cours", turn, at, fresh, distinct] => {
+                    if let Some(at) = hex(at) {
+                        println!(
+                            "tour {turn} sur {turns} : {} — {distinct} adresses \
+                             distinctes, la dernière neuve au tour {fresh}",
+                            map.describe_loaded(at, KERNEL_MAP)
+                        );
+                    }
                 }
                 _ => {
                     last.push_str(&line);
