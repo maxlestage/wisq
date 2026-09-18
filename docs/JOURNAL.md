@@ -15220,6 +15220,10 @@ depuis des tranches, et aucune ne l'a lue. La question à poser en premier :
 le cœur Swift produit-il le même avertissement ? S'il ne le produit pas, c'est
 l'émetteur qui perd un compte.
 
+> **#264 l'a lu**, plus bas : le déséquilibre est le nôtre — QEMU passe
+> `inet_init` sans un mot — et il tombe à la première exécution de softirq de
+> la vie de la machine.
+
 Et, moins clair mais aussi constant : `local IPI:TIMEOUT` suivi de
 `BUG: 1 unexpected failures (out of 2)` au test NMI du noyau.
 
@@ -15229,3 +15233,218 @@ Et, moins clair mais aussi constant : `local IPI:TIMEOUT` suivi de
 mesure s'arrête avant que `busybox` ait parlé, avant qu'un module soit chargé,
 et donc avant `simpledrm`. « Jusqu'en anneau trois » n'est pas « jusqu'à un
 bureau », et la distance entre les deux est encore inconnue.
+
+## #264 — l'avertissement de `preempt_count` est le nôtre, et il tombe au premier softirq de la machine
+
+*Mesure, pas tranche. Aucun code ne change ; les miroirs restent à 2528.*
+
+#263 avait relevé, sans la lire, une ligne présente dans **chaque** journal de
+mesure qui va assez loin :
+
+```
+------------[ cut here ]------------
+initcall inet_init+0x0/0x560 returned with preemption imbalance
+WARNING: CPU: 0 PID: 1 at init/main.c:1263 do_one_initcall+0x2a1/0x340
+```
+
+`do_one_initcall` relève `preempt_count()` avant l'appel, le relit après, et
+signale l'écart. Le désassemblage le montre en clair : `mov %gs:…,%r13d` puis
+`and $0x7fffffff,%r13d` à `do_one_initcall + 55`, la même paire à `+ 100`, et
+`cmp %eax,%r13d` juste derrière. Le bit 31 (`PREEMPT_NEED_RESCHED`) est masqué
+**des deux côtés** : la dérive est dans les vrais compteurs, pas dans le drapeau
+de réordonnancement. Le noyau recolle ensuite avec `preempt_count_set`, et c'est
+pourquoi la machine atteint quand même l'anneau trois.
+
+### D'abord : est-ce seulement le nôtre ?
+
+La question n'avait jamais été posée. Cette séance a payé **quatre**
+reconstructions fausses pour avoir conclu sans témoin extérieur ; cette fois le
+témoin existe. Le même noyau (`/tmp/vmlinuz-lts`, Alpine 6.6.134-0-lts) et la
+même racine (`initramfs-lts` d'Alpine v3.20, 107 914 588 octets) sous QEMU
+8.2.2, en TCG :
+
+```
+qemu-system-x86_64 -nographic -no-reboot -m 512 -smp 1 \
+  -kernel vmlinuz-lts -initrd initramfs-vraie.cpio \
+  -append "console=ttyS0 earlycon=uart8250,io,0x3f8 keep_bootcon"
+```
+
+Résultat : `UDP-Lite hash table entries…` → `NET: Registered PF_UNIX/PF_LOCAL` —
+**rien entre les deux**. Aucun `cut here`, aucun avertissement, et le démarrage
+continue jusqu'au shell de secours de l'initramfs.
+
+Un doute restait : notre machine n'a ni APIC local, ni PCI, ni ACPI, et c'est
+peut-être *cette forme-là* que le noyau n'aime pas. Second passage, dans la
+forme de notre machine :
+
+```
+  -machine pc,acpi=off -append "… nolapic noapic acpi=off pci=off"
+```
+
+Le noyau dit alors `APIC disabled via kernel command line`,
+`APIC: Keep in PIC mode(8259)`, `PCI: System does not support PCI` — la forme de
+wisq. Et toujours : `UDP-Lite` → `PF_UNIX`, sans un mot.
+
+**Le déséquilibre est donc le nôtre**, et c'est mesuré, pas déduit.
+
+### Ensuite : où
+
+Le relevé de traductions de l'émetteur le dit tout seul. Autour d'`inet_init` :
+
+```
+6116 : inet_register_protosw + 131
+6117 : do_softirq.part.0
+6118 : __do_softirq
+6119 : handle_softirqs
+6120 : irqtime_account_irq
+6123 : tasklet_action      6124 : tasklet_action_common.isra.0
+6128 : kbd_bh
+```
+
+Une traduction est une **première** demande. `do_softirq.part.0`,
+`__do_softirq`, `handle_softirqs` et `tasklet_action` n'apparaissent qu'ici, une
+seule fois chacun, à la traduction 6117 sur 10 929 : c'est la **toute première
+exécution de softirq de la vie de cette machine**, et elle tombe à l'intérieur
+d'`inet_init`, dans le `spin_unlock_bh` d'`inet_register_protosw`.
+
+`_raw_spin_lock_bh`, `_raw_spin_unlock_bh` et `__local_bh_enable_ip` avaient
+été traduits bien plus tôt — traductions 2151, 2153 et 2154 — et avaient donc
+tourné des milliers de fois **sans** prendre la branche `do_softirq`.
+
+Le seul `initcall` qui déséquilibre le compte est donc le seul pendant lequel ce
+chemin-là s'ouvre. Ce n'est pas une coïncidence qu'on suppose : c'est une
+coïncidence qu'on lit dans le journal.
+
+### Ce que la mesure élimine
+
+**Ce n'est pas une action de softirq.** `handle_softirqs` compare lui-même le
+compte avant et après chaque action et crie sinon. La phrase est bien compilée
+dans cette image — `strings` la trouve, une fois :
+
+```
+softirq: huh, entered softirq %u %s %p with preempt_count %08x, exited with %08x?
+```
+
+Elle n'apparaît dans aucun de nos journaux. L'absence vaut donc quelque chose,
+et c'est parce qu'on est allé vérifier que la phrase existe là où on la cherche
+— la règle que #261 a payée.
+
+**Ce n'est pas un changement de pile.** `__do_softirq`, ici, tient en deux
+instructions : `xor %edi,%edi ; jmp handle_softirqs`. Ce noyau ne bascule pas
+sur une pile de softirq à cet endroit.
+
+La dérive est donc dans **l'encadrement** du chemin, pas dans son contenu. Les
+instructions en jeu, relevées dans l'image :
+
+| fonction | ce qu'elle fait au compteur |
+|---|---|
+| `handle_softirqs + 67` | `addl $0x100,%gs:…(%rip)` |
+| `handle_softirqs + 404` | `addl $0xffffff00,%gs:…(%rip)` |
+| `handle_softirqs + 519/550/596/626` | `incl` / `decl` |
+| `handle_softirqs + 699` | `cmpxchg %edx,%gs:…(%rip)` |
+| `__local_bh_enable_ip + 28` | `add %esi,%gs:…(%rip)` |
+| `__local_bh_enable_ip + 49` | `decl %gs:…(%rip)` |
+| `tasklet_action_common` | quatre paires `incl`/`decl` |
+
+Sur tout le noyau, `preempt_count` est touché 4 057 fois : 1 901 `decl`,
+1 710 `incl`, 289 `mov`, 130 `addl`, 19 `andl`, 6 `cmpxchg`, 1 `orl` — et
+**un seul `add` d'un registre**, celui d'`__local_bh_enable_ip + 28`. La forme
+la plus rare du noyau est sur le chemin qui s'ouvre pour la première fois au
+moment exact où le compte dérive. C'est une piste, pas une conclusion : rien ne
+l'a encore exécutée devant un juge.
+
+### Ce qui n'est pas établi
+
+**Quelle instruction perd le compte.** La mesure situe le chemin, pas l'octet.
+Le noyau n'imprime pas les deux valeurs dans cet avertissement-là ; le vidage de
+registres du `WARN` donne `R13 = 0` (le compte d'avant) mais `RAX` a déjà été
+écrasé quand la trace sort.
+
+**Quelle instruction perd le compte** — voir plus bas : le chemin est nommé, le
+trou dans l'oracle aussi, mais pas encore l'octet.
+
+### Le cœur Swift ne le produit pas
+
+`swift test -c release --filter X86BootAttemptTests` sur les mêmes fichiers,
+213 secondes, **2 689 863 007 instructions retirées**, un test exécuté, verdict
+imprimé — la suite a bien tourné, et c'est vérifié au verdict et non au filtre.
+
+Le contrôle d'abord : le cœur Swift a-t-il dépassé `inet_init` ? Oui, et il y va
+exactement comme QEMU :
+
+```
+[   32.528108] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes, linear)
+[   32.550804] NET: Registered PF_UNIX/PF_LOCAL protocol family
+```
+
+Rien entre les deux. Et `preemption imbalance` n'apparaît **nulle part** dans
+son journal — aucun `initcall`, pas seulement `inet_init`.
+
+Trois témoins, donc, et un seul accusé :
+
+| machine | `inet_init` |
+|---|---|
+| QEMU 8.2.2, forme ordinaire | silencieux |
+| QEMU 8.2.2, forme de notre machine | silencieux |
+| cœur Swift (interpréteur) | silencieux, partout |
+| **émetteur WebAssembly (lignée Rust)** | **déséquilibré** |
+
+**La divergence est dans la lignée Rust, et le cœur Swift est l'oracle.**
+
+### Pourquoi rien ne l'avait attrapée : la forme n'est jugée nulle part
+
+Les 4 057 touches à `preempt_count` de ce noyau sont **toutes** en RIP-relatif
+préfixé GS, et **3 768** d'entre elles sont des lectures-modifications-écritures
+(`incl`, `decl`, `addl`, `add`, `andl`, `orl`, `cmpxchg`). Seules 289 sont des
+lectures.
+
+L'oracle porte 526 formes d'instruction. Quinze portent le préfixe GS :
+
+```
+445  movq %gs:0x10, %rax              454  incq %gs:0x30
+448  movq %rax, %gs:0x18              455  andl $0x0F0F0F0F, %gs:0x8
+453  addq %rax, %gs:0x28              468  movq %gs:-805306360(%rip), %rax
+…
+```
+
+Il y a donc **GS + absolu + lecture-modification-écriture** (`incq %gs:0x30`,
+`addq %rax,%gs:0x28`, `andl $…,%gs:0x8`), et **GS + RIP-relatif + lecture**
+(`movq %gs:…(%rip),%rax`, le cas posé exprès dont `x86.rs` parle).
+
+**La combinaison des deux — GS + RIP-relatif + lecture-modification-écriture,
+sur 32 bits — n'est jugée par rien.** Le corpus n'en porte aucune non plus :
+sur ses 9 225 formes, **zéro** ne commence par `65`.
+
+C'est exactement la forme qui porte tout l'état par processeur de Linux. Elle
+traverse le démarrage 3 768 fois pour le seul `preempt_count`, et aucun juge ne
+l'a jamais regardée.
+
+### Et la phrase qui a creusé le trou est dans le dépôt
+
+`scripts/build-x86-oracle.py`, au-dessus du seul cas GS + RIP-relatif :
+
+> « **Personne n'écrit ça** — un noyau atteint ses variables par cœur par un
+> déplacement absolu »
+
+La seconde moitié est vraie aux trois quarts. La première est fausse. Sur les
+**33 382** instructions préfixées GS du noyau de référence, **8 559 sont en
+RIP-relatif** — une sur quatre. Et pour `preempt_count`, c'est 4 057 sur 4 057.
+
+Croyant la forme introuvable, on n'en a gravé qu'un seul cas, **et une
+lecture**. C'est très exactement pour cela que GS + RIP-relatif + RMW n'a jamais
+eu de juge. Le commentaire est corrigé ici ; les cas manquants sont #265, parce
+que les graver est une tranche et non une phrase.
+
+**#265 : poser ces formes dans l'oracle, et voir lequel des trois cœurs tombe.**
+Le test avant le correctif, au sens propre : les lignes de l'oracle se
+fabriquent contre le vrai silicium (`scripts/build-x86-oracle.py`), et cette
+machine-ci est un x86-64.
+
+### Ce que cette mesure ajoute au dépôt comme méthode
+
+Un émulateur de référence répond en trois minutes à la question « est-ce le
+nôtre ? ». Quatre fois cette séance, la réponse a été cherchée par le
+raisonnement et trouvée fausse. Un `scripts/boot-reference.sh` qui démarre le
+même noyau et la même racine sous QEMU dans la forme de notre machine — et qui
+**refuse franchement** quand QEMU n'est pas là, plutôt que de se taire — est une
+tranche à part entière, et elle est proposée, pas prise.

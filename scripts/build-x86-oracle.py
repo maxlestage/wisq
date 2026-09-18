@@ -531,13 +531,31 @@ def snippets():
     yield "nopw %cs:0x0(%rax,%rax,1)"
     yield "nopl 0x0(%rax)"
     yield "nopw 0x0(%rax,%rax,1)"
-    # **Le segment ET le pointeur d'instruction, ensemble.** Personne n'écrit
-    # ça — un noyau atteint ses variables par cœur par un déplacement absolu —
-    # mais les deux mécanismes se rencontrent dans le code des deux cœurs, et
-    # sans ce cas rien ne dit lequel gagne. Un sabotage l'a montré : faire
-    # perdre le segment au figeage de l'adresse relative ne faisait tomber
-    # aucun test, et l'interpréteur, lui, sortait **avant** d'ajouter la base.
-    # Les deux cœurs auraient divergé en silence sur la première occurrence.
+    # **Le segment ET le pointeur d'instruction, ensemble.** Les deux mécanismes
+    # se rencontrent dans le code des deux cœurs, et sans ce cas rien ne dit
+    # lequel gagne. Un sabotage l'a montré : faire perdre le segment au figeage
+    # de l'adresse relative ne faisait tomber aucun test, et l'interpréteur,
+    # lui, sortait **avant** d'ajouter la base. Les deux cœurs auraient divergé
+    # en silence sur la première occurrence.
+    #
+    # **Cette ligne a longtemps dit « personne n'écrit ça — un noyau atteint
+    # ses variables par cœur par un déplacement absolu ». C'est faux, et #264
+    # l'a mesuré** sur le noyau de référence (Alpine 6.6.134-0-lts) : sur ses
+    # 33 382 instructions préfixées GS, **8 559 sont en RIP-relatif**, une sur
+    # quatre. Le déplacement nu domine, il ne règne pas. Et pour
+    # `preempt_count`, le compteur que `do_one_initcall` relève avant et après
+    # chaque `initcall`, c'est **4 057 sur 4 057** — dont 3 768 en
+    # lecture-modification-écriture.
+    #
+    # **Ce que la phrase fausse a coûté** : croyant la forme introuvable, on
+    # n'en a gravé qu'un seul cas, et **une lecture**. GS + absolu + RMW est
+    # jugé (`incq %gs:0x30`, `addq %rax,%gs:0x28`, `andl $…,%gs:0x8`) ; GS +
+    # RIP-relatif + lecture est jugé, ici même ; **GS + RIP-relatif +
+    # lecture-modification-écriture ne l'est par rien**, et c'est la forme qui
+    # porte tout l'état par processeur de Linux. #264 a mesuré une divergence
+    # exactement là — l'émetteur WebAssembly déséquilibre `preempt_count` à
+    # `inet_init`, là où QEMU et le cœur Swift ne le font pas. **#265 grave ces
+    # formes ; cette liste-ci ne les a pas encore.**
     #
     # Le déplacement est calculé pour retomber dans la fenêtre : le processeur
     # ajoute la base du segment à une adresse déjà relative, donc l'adresse
