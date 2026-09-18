@@ -7678,7 +7678,8 @@ qu'il était le fonctionnement prévu. C'est la phrase que le Lot 7 avait déjà
    limite que `lidt` a rangées, la présence vérifiée, le cadre du mode long
    posé sur la pile alignée à seize, IF éteint par une porte d'interruption,
    le témoin effacé. Ce que ça ne fait pas est nommé : ni IST ni changement
-   d'anneau — cette machine n'a pas de TSS — et une faute *pendant* la
+   d'anneau — cette machine n'a pas de TSS *(plus vrai depuis #257 : les deux
+   lisent le segment de tâche derrière `TR`)* — et une faute *pendant* la
    délivrance est rendue comme telle. Sans IDT, l'arrêt dit « sans porte »
    au lieu de « sur place ».
 
@@ -8289,6 +8290,12 @@ délivrance de l'hôte dit toujours « cette machine n'a pas de TSS » devant un
 porte à pile d'interruption ; ce que les piles IST feront de ce sélecteur est
 une question de direction, posée quand elle sera atteinte — les portes
 précoces de Linux n'en ont pas.
+
+> **Atteinte à #256, tranchée à #257.** Cette phrase est restée assez longtemps
+> pour passer pour une garantie : au saut dans `/init` la machine était en
+> anneau trois avec `TR = 0x40`, et la délivrance refusait en disant qu'il n'y
+> avait pas de TSS. Depuis #257, `kernelStack` lit le descripteur et y trouve
+> `RSP0` et les sept piles d'interruption.
 
 **Éprouvé.** Deux tests écrits avant, rouges : le décodeur (trois encodages
 lus, dont `%r8w` par REX.B ; neuf voisins qui doivent rester `None`, dont
@@ -11303,3 +11310,78 @@ naît que d'une exécution de vingt minutes sur un vrai noyau, et une garde qui
 vérifierait que les constantes lues sont celles que l'émetteur exporte serait
 tautologique. Ce qui la tient est la mesure, refaisable par la commande
 ci-dessus. Le compte ne bouge pas : 2516.
+
+## #257 — la délivrance lit le descripteur derrière le sélecteur de TSS, et y trouve RSP0
+
+`web/host.js` refusait deux choses par leur nom : une porte à pile
+d'interruption, et un changement d'anneau à la délivrance. Les deux disaient
+« cette machine n'a pas de TSS ». Elle en a un — `TR = 0x40`, mesuré par #256.
+Ce qui manquait était la **lecture du descripteur derrière ce sélecteur**.
+
+### Ce que la tranche pose
+
+`kernelStack(niveau, pileInterruption, quoi)` dans `web/host.js` :
+
+| étape | refus si elle échoue |
+| --- | --- |
+| le registre de tâche est chargé | « aucun registre de tâche chargé : aucun `ltr` n'est passé » |
+| `sélecteur & ~7` + 15 tient dans la limite de la GDT | « le sélecteur de tâche 0x40 est hors de la GDT » |
+| la GDT est cartographiée | « une faute pendant la délivrance … : la GDT n'est pas cartographiée » |
+| le type est 9 ou 11 | « le descripteur 0x40 n'est pas un segment de tâche » |
+| la limite couvre la fin d'`IST7`, à 0x5b | « le segment de tâche ne porte que N octets, il en faut 92 » |
+| le TSS est cartographié | « une faute pendant la délivrance … : le segment de tâche n'est pas cartographié » |
+
+Puis `RSP0` à l'offset `4 + niveau * 8`, ou `ISTn` à `0x24 + (n-1) * 8`. Et
+`deliver` change de pile **avant** les empilements, annule `SS`, empile la pile
+d'avant, et remplace `CS` avant d'écrire le cadre — l'ordre du cœur Swift, qui a
+payé pour l'apprendre.
+
+**La base est relue à chaque délivrance, pas gardée au `ltr`.** L'hôte ne voit
+jamais passer un `ltr` ; le module ne lui laisse que seize bits. L'infidélité
+est nommée dans la doc du créneau `task` : elle ne se voit que pour un noyau qui
+réécrirait son descripteur sans refaire son `ltr`, ce que Linux ne fait pas.
+
+### Ce que la mesure dit
+
+```
+as --64 -o init.o init.s && ld -o initrd/init init.o
+mknod initrd/dev/console c 5 1
+cd initrd && find . -print0 | cpio --null -o --format=newc > ../initramfs.cpio
+# et couper le remplissage de bloc juste après TRAILER!!!, sinon le noyau s'en plaint
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  ./target/release/examples/kernel-entry /tmp/vmlinux.bin
+```
+
+```
+arret aucune page derrière l'adresse
+marche 2333398 2333397 11946 0
+rip 0x401000
+selecteurs es=0x0 cs=0x33 ss=0x2b ds=0x0 fs=0x0 gs=0x0 anneau=3
+tache 0x40
+```
+
+**Le mur n'a pas bougé, et c'est attendu** : la machine s'arrête *avant* de
+fauter. L'hôte ne délivre pas de faute de page pour un **chargement
+d'instruction** — `install` rend `UNMAPPED`, `run` nomme l'arrêt, et personne ne
+passe par `deliver`. #257 enlève la marche qui manquait *après* celle-là.
+
+### La tranche suivante, nommée par cet arrêt
+
+**#258 — un chargement d'instruction dont la page manque est délivré au noyau,
+pas nommé comme un arrêt.** C'est exactement ce que `/init` réclame à
+`0x401000` : son texte est cartographié à la demande, et la première faute de
+fetch arrive **en anneau trois** — donc sur la pile que #257 vient de rendre
+lisible. Sans #257 elle se serait arrêtée sur le refus ; sans #258 elle ne part
+pas.
+
+### Ce que cette tranche ne montre pas
+
+**L'espace utilisateur ne tourne toujours pas.** La marque de `/init`
+n'apparaît nulle part, et pas une de ses instructions n'a été exécutée.
+
+**Et l'ordre — CS avant les empilements — n'est tenu par aucun test.**
+`web/host.js` ne vérifie pas le bit utilisateur sur ses écritures, donc déplacer
+la ligne ne fait rien tomber. Il est tenu par l'oracle Swift et par cette
+phrase. Le compte passe à 2519 : trois tests, douze sabotages, douze chutes
+nommées.

@@ -125,8 +125,24 @@ export const SLOTS = {
   /// s'arrêtait, faute qu'il existe.
   efer: 52,
   /// **Le registre de tâche** : le sélecteur que `ltr` a chargé, seize bits,
-  /// zéro tant qu'aucun chargeur n'est passé. Aucun descripteur n'est lu
-  /// derrière — la délivrance dit toujours « cette machine n'a pas de TSS ».
+  /// zéro tant qu'aucun chargeur n'est passé.
+  ///
+  /// **La délivrance lit le descripteur derrière**, dans la GDT, depuis #257 :
+  /// c'est là que vivent `RSP0` et les piles d'interruption, donc c'est ce qui
+  /// permet à une faute prise en anneau trois d'atterrir sur la pile du noyau.
+  /// Ce commentaire disait le contraire — « aucun descripteur n'est lu
+  /// derrière » — et il l'a dit assez longtemps pour passer pour une garantie
+  /// alors que ce n'était qu'une limite de #204.
+  ///
+  /// **Seize bits, et rien de plus : l'infidélité est ici.** Le silicium lit le
+  /// descripteur une fois, à l'instant du `ltr`, et garde base et limite dans
+  /// une partie invisible du registre ; nous le relisons à chaque délivrance.
+  /// Un noyau qui réécrirait le descripteur sans refaire son `ltr` verrait
+  /// donc la nouvelle valeur au lieu de l'ancienne. Linux ne le fait pas — il
+  /// modifie `RSP0` *dans* le TSS, ce qui est exactement ce que cette relecture
+  /// rend visible. Garder base et limite ici coûterait deux globales de plus,
+  /// et #204 a compté ce que coûte une globale : l'hôte, la garde,
+  /// `WebKitBench.swift` et trois modules épinglés.
   task: 53,
   /// **Les quatre registres de l'appel système** : STAR, LSTAR, CSTAR,
   /// SYSCALL_MASK, dans l'ordre de leurs numéros. Rangés par `wrmsr`, rendus
@@ -737,12 +753,14 @@ export function machine({
   /// portent un —, et RIP sur le gestionnaire. Rend `null` quand c'est fait,
   /// sinon la raison pour laquelle ça ne l'a pas été.
   ///
-  /// **Ce que ça ne fait pas, et le dit.** Aucun segment de tâche n'est
-  /// modélisé, donc ni pile d'interruption (IST) ni changement d'anneau : une
-  /// porte qui en demande arrête la machine en le nommant. Un noyau en anneau
-  /// zéro dont les portes précoces n'ont pas d'IST — c'est le cas de Linux
-  /// avant `cpu_init` — n'en a pas besoin ; le jour où il en aura, l'arrêt le
-  /// dira au lieu d'écrire le cadre sur la mauvaise pile.
+  /// **La pile change quand elle doit changer**, depuis #257 : une porte qui
+  /// nomme une pile d'interruption l'impose toujours, et sinon on en change dès
+  /// que le niveau de privilège baisse. Les deux nombres viennent du segment
+  /// d'état de tâche, lu derrière le sélecteur du registre de tâche — voir
+  /// `kernelStack`. Ce paragraphe disait « aucun segment de tâche n'est
+  /// modélisé, donc ni pile d'interruption ni changement d'anneau » ; c'était
+  /// vrai, et c'est précisément ce qui arrêtait la machine au saut dans
+  /// `/init`, où #256 a mesuré `CS = 0x33` et `TR = 0x40`.
   ///
   /// **L'ordre est celui du cœur Swift**, qui a payé pour l'apprendre : la
   /// pile d'avant est lue avant tout changement, le cadre s'écrit à
@@ -750,6 +768,78 @@ export function machine({
   /// l'ancien empilé. Une faute *pendant* l'écriture du cadre est rendue
   /// comme telle — c'est une double faute, et la cacher ferait s'arrêter un
   /// noyau « sur place » sans un mot.
+  /// **Le dernier octet qu'une lecture de pile peut toucher dans le TSS** : la
+  /// fin d'`IST7`, à `0x24 + 6 * 8 + 7`. Un segment plus court ne peut pas
+  /// porter les sept piles d'interruption, et rendrait des octets qui ne sont
+  /// pas des piles. Le cœur Swift refuse sur la même borne, et c'est de lui
+  /// qu'elle vient.
+  const TASK_LAST_BYTE = 0x5bn;
+
+  /// **La pile sur laquelle le cadre doit être posé**, lue dans le segment
+  /// d'état de tâche que le registre de tâche désigne. Rend un nombre, ou la
+  /// chaîne qui dit pourquoi ça n'a pas pu être fait.
+  ///
+  /// **Le descripteur est relu ici, pas gardé depuis le `ltr`.** L'hôte ne voit
+  /// jamais passer un `ltr` : c'est le module qui l'exécute, et il ne laisse
+  /// derrière lui que les seize bits du sélecteur. Ce que cette relecture rend
+  /// et ce que le silicium aurait gardé ne diffèrent que pour un noyau qui
+  /// réécrirait le descripteur sans refaire son `ltr` ; la doc du créneau
+  /// `task` porte l'infidélité et ce qu'elle coûterait à corriger.
+  ///
+  /// **Chaque refus nomme ce qui manque**, parce que le suivant sera diagnostiqué
+  /// depuis un relevé de noyau et pas depuis un débogueur. Un segment de tâche
+  /// absent, hors de la GDT, du mauvais type, trop court ou non cartographié ne
+  /// donnent pas la même correction.
+  function kernelStack(level, interruptStack, what) {
+    const selector = BigInt.asUintN(64, globals[SLOTS.task].value) & 0xffffn;
+    if (selector === 0n) {
+      return `${what} avec un changement de pile, et aucun registre de tâche chargé : aucun \`ltr\` n'est passé`;
+    }
+    const limit = BigInt.asUintN(64, globals[SLOTS.table].value);
+    const gdt = BigInt.asUintN(64, globals[SLOTS.table + 1].value);
+    // Les trois bits du bas d'un sélecteur ne font pas partie de l'indice.
+    const position = selector & ~0x7n;
+    if (position + 15n > limit) {
+      return `${what} avec un changement de pile : le sélecteur de tâche 0x${selector.toString(16)} est hors de la GDT`;
+    }
+    const entry = physical(gdt + position);
+    if (entry === null) {
+      return `une faute pendant la délivrance d'${what} : la GDT n'est pas cartographiée`;
+    }
+    const vue = new DataView(memory.buffer);
+    const low = vue.getBigUint64(entry, true);
+    const high = vue.getBigUint64(entry + 8, true);
+    // Neuf c'est « TSS long disponible », onze « TSS long occupé ». Rien
+    // d'autre ne porte de pile, et un descripteur de code lu comme un TSS
+    // rendrait une base plausible.
+    const kind = (low >> 40n) & 0x1fn;
+    if (kind !== 9n && kind !== 11n) {
+      return `${what} avec un changement de pile : le descripteur 0x${selector.toString(16)} n'est pas un segment de tâche`;
+    }
+    // La base en quatre morceaux, la limite en deux : l'héritage du 386, que le
+    // mode long n'a pas rangé.
+    const taskBase = ((low >> 16n) & 0xff_ffffn) |
+      (((low >> 56n) & 0xffn) << 24n) |
+      ((high & 0xffff_ffffn) << 32n);
+    let taskLimit = (low & 0xffffn) | (((low >> 48n) & 0x0fn) << 16n);
+    // Le bit de granularité : posé, la limite compte des pages de quatre
+    // kibioctets, et le dernier octet valide est celui du haut de la dernière.
+    if ((low & (1n << 55n)) !== 0n) taskLimit = (taskLimit << 12n) | 0xfffn;
+    if (taskLimit < TASK_LAST_BYTE) {
+      return `${what} avec un changement de pile : le segment de tâche ne porte que ${taskLimit + 1n} octets, il en faut ${TASK_LAST_BYTE + 1n}`;
+    }
+    // `RSP0` est à quatre et les suivantes de huit en huit ; `IST1` est à 0x24,
+    // et les six autres de huit en huit. Ce n'est pas un choix, c'est le format.
+    const offset = interruptStack !== 0n
+      ? 0x24n + (interruptStack - 1n) * 8n
+      : 4n + BigInt(level) * 8n;
+    const where = physical(taskBase + offset);
+    if (where === null) {
+      return `une faute pendant la délivrance d'${what} : le segment de tâche n'est pas cartographié`;
+    }
+    return vue.getBigUint64(where, true);
+  }
+
   function deliver(vector, errorCode, what) {
     const limit = BigInt.asUintN(64, globals[SLOTS.table + 2].value);
     const idt = BigInt.asUintN(64, globals[SLOTS.table + 3].value);
@@ -772,29 +862,43 @@ export function machine({
     const selector = (low >> 16n) & 0xffffn;
     const kind = (low >> 40n) & 0xfn;
     const interruptStack = (low >> 32n) & 0x7n;
-    if (interruptStack !== 0n) {
-      return "une porte à pile d'interruption, sans segment de tâche : cette machine n'a pas de TSS";
-    }
     const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
-    if ((selector & 3n) < (code & 3n)) {
-      return "un changement d'anneau à la délivrance, sans segment de tâche : cette machine n'a pas de TSS";
-    }
+    // **Ce qu'on empile, c'est la pile d'avant**, lue ici avant tout
+    // changement : c'est elle que l'`iretq` rendra au programme.
     const stack = BigInt.asUintN(64, globals[4].value);
     const stackSelector = BigInt.asUintN(64, globals[SLOTS.segment + 2].value) & 0xffffn;
     const flags = BigInt.asUintN(64, globals[SLOTS.rflags].value);
+    // **Deux raisons d'en changer, et elles ne se recouvrent pas.** Une porte
+    // qui nomme une pile d'interruption l'impose toujours ; sinon, on change
+    // seulement si le niveau de privilège baisse.
+    const target = selector & 3n;
+    let top = stack;
+    if (interruptStack !== 0n || target < (code & 3n)) {
+      const switched = kernelStack(Number(target), interruptStack, what);
+      if (typeof switched === "string") return switched;
+      top = switched;
+      // **Le sélecteur de pile devient nul en même temps**, comme le fait le
+      // processeur : en mode long il n'a plus de base ni de limite, et le
+      // garder ferait croire au noyau qu'il vient de l'anneau d'où il venait.
+      globals[SLOTS.segment + 2].value = 0n;
+    }
     const words = [stackSelector, stack, flags, code, rip()];
     if (WITH_ERROR_CODE.has(vector)) words.push(BigInt.asUintN(64, errorCode));
-    let pointer = stack & ~0xfn;
+    // **Et l'anneau change avant les empilements, pas après.** Le cadre s'écrit
+    // sur la pile du noyau, interdite aux programmes ; le processeur y écrit
+    // parce qu'il est déjà passé en anneau zéro à ce moment-là. Le CS d'avant
+    // est dans `words` — c'est lui que l'`iretq` rendra.
+    globals[SLOTS.segment + 1].value = BigInt.asIntN(64, selector);
+    let pointer = top & ~0xfn;
     for (const word of words) {
       pointer -= 8n;
       const where = physical(pointer);
       if (where === null) {
-        return `une faute pendant la délivrance d'${what} : la pile de l'invité n'est pas cartographiée`;
+        return `une faute pendant la délivrance d'${what} : la pile où le cadre s'écrit n'est pas cartographiée`;
       }
       new DataView(memory.buffer).setBigUint64(where, word, true);
     }
     globals[4].value = BigInt.asIntN(64, pointer);
-    globals[SLOTS.segment + 1].value = BigInt.asIntN(64, selector);
     globals[SLOTS.rip].value = BigInt.asIntN(64, offset);
     let entering = flags & ~(TRAP_FLAG | NESTED_FLAG | RESUME_FLAG);
     if (kind === 0x0en) entering &= ~INTERRUPT_FLAG;
