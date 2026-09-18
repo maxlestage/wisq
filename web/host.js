@@ -58,6 +58,31 @@ const STOP_MSR = 1n << 32n;
 /// manuel ; le noyau compte dessus pour retrouver son cadre, et en oublier un
 /// décalerait toute la pile de huit octets.
 const PAGE_FAULT = 14;
+/// **Le bit 2 du code d'erreur d'une faute de page : l'accès venait de
+/// l'espace utilisateur.**
+///
+/// C'est **le** bit que Linux regarde pour trancher entre « une page manque à
+/// un programme, je la lui pose » et « le noyau est parti dans le décor,
+/// j'affiche un oops ». Le cœur Swift l'a payé une fois, au lot 7 : premier
+/// programme jamais lancé, `Oops: 0010`, puis `Kernel panic — not syncing:
+/// Attempted to kill init!`. Le journal le dit en une phrase — « le programme
+/// n'avait rien fait de mal, on avait juste oublié de dire qu'il était le
+/// programme ».
+///
+/// Le niveau vient des deux bits du bas de CS, et de rien d'autre.
+const USER_FAULT = 0x4n;
+/// **Le bit 4 : l'accès était un chargement d'instruction.** Et le manuel le
+/// réserve — « set to 0 if CR4.SMEP = 0 and either CR4.PAE = 0 or
+/// IA32_EFER.NXE = 0 ». En mode long PAE est toujours posé, donc la condition
+/// se réduit à SMEP ou NXE ; cette machine n'arme ni l'un ni l'autre, et son
+/// propre noyau le dit au démarrage — « Notice: NX (Execute Disable)
+/// protection missing in CPU! ». Le poser d'office serait une infidélité
+/// silencieuse : un noyau qui distingue les deux causes agirait sur un bit que
+/// le silicium ne lui aurait pas donné.
+const FETCH_FAULT = 0x10n;
+/// `IA32_EFER.NXE`, et `CR4.SMEP` : les deux qui rendent le bit 4 vivant.
+const NX_ENABLE = 1n << 11n;
+const SMEP_ENABLE = 1n << 20n;
 /// **La faute de protection générale**, vecteur 13, avec un code d'erreur.
 /// C'est elle que le silicium lève sur un `wrmsr` ou un `rdmsr` dont le
 /// numéro n'existe pas — et le noyau le sait, sa table d'exceptions la
@@ -768,6 +793,26 @@ export function machine({
   /// l'ancien empilé. Une faute *pendant* l'écriture du cadre est rendue
   /// comme telle — c'est une double faute, et la cacher ferait s'arrêter un
   /// noyau « sur place » sans un mot.
+  /// **Le code d'erreur d'une faute de page, complété par ce que seul l'hôte
+  /// sait.**
+  ///
+  /// Le module pose le bit de présence et celui d'écriture — il est le seul à
+  /// savoir ce que l'accès tentait. Il ne sait pas dire l'anneau : il range le
+  /// témoin et rend la main, et c'est ici que CS est lu. Et le chargement
+  /// d'instruction, il ne le voit pas du tout : c'est l'hôte qui va chercher
+  /// les octets d'une région.
+  function pageFaultCode(base, fetch) {
+    const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
+    let out = base;
+    if ((code & 3n) === 3n) out |= USER_FAULT;
+    if (fetch) {
+      const efer = BigInt.asUintN(64, globals[SLOTS.efer].value);
+      const cr4 = BigInt.asUintN(64, globals[SLOTS.control + 3].value);
+      if ((efer & NX_ENABLE) !== 0n || (cr4 & SMEP_ENABLE) !== 0n) out |= FETCH_FAULT;
+    }
+    return out;
+  }
+
   /// **Le dernier octet qu'une lecture de pile peut toucher dans le TSS** : la
   /// fin d'`IST7`, à `0x24 + 6 * 8 + 7`. Un segment plus court ne peut pas
   /// porter les sept piles d'interruption, et rendrait des octets qui ne sont
@@ -1258,6 +1303,12 @@ export function machine({
     pits,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
+      // **Combien de chargements d'instruction ont fauté d'affilée**, sans
+      // qu'une seule région s'installe entre les deux. Un noyau qui
+      // cartographie à la demande en enchaîne autant qu'il veut — mais entre
+      // chacun une région s'installe, et ce compteur retombe. Deux d'affilée
+      // veut dire que le gestionnaire est lui-même hors de la carte.
+      let unfetchable = 0;
       for (let round = 0; round < rounds; round++) {
         if (performance.now() - dernier >= breath) {
           await souffler();
@@ -1278,11 +1329,43 @@ export function machine({
             return { stopped: "traduction en panne", at: here };
           }
           if (region === UNMAPPED) {
-            return { stopped: "aucune page derrière l'adresse", at: here };
+            // **Ce n'est pas une panne de l'hôte, c'est l'événement que le
+            // noyau attend.** Le texte d'un programme est cartographié à la
+            // demande : la première page arrive parce que le processeur faute
+            // dessus. S'arrêter ici — ce que faisait #257 — laissait `/init`
+            // sur son point d'entrée, `0x401000`, sans que rien ne faute.
+            //
+            // **CR2 porte l'adresse qu'on n'a pas su lire**, et RIP est
+            // déjà dessus : c'est elle que le cadre empile, donc celle que
+            // l'`iretq` rejouera, une fois la page posée.
+            unfetchable += 1;
+            if (unfetchable > 1) {
+              // **Deux d'affilée sans qu'une région s'installe entre les
+              // deux : c'est le gestionnaire lui-même qui manque.** Sur le
+              // silicium c'est une double faute ; ici la délivrance
+              // boucherait, et la boucle rendrait « tours épuisés » — un
+              // relevé qui ne dit pas ce qui manque.
+              return {
+                stopped:
+                  "une faute pendant la délivrance d'une faute de page sur un " +
+                  "chargement d'instruction : le gestionnaire lui-même n'est pas " +
+                  "cartographié",
+                at: here,
+              };
+            }
+            globals[SLOTS.control + 1].value = BigInt.asIntN(64, here);
+            const why = deliver(
+              PAGE_FAULT,
+              pageFaultCode(0n, true),
+              "une faute de page sur un chargement d'instruction",
+            );
+            if (why !== null) return { stopped: why, at: here };
+            continue;
           }
           if (region === null) {
             return { stopped: "refusée", at: here };
           }
+          unfetchable = 0;
         }
         region.run(budget);
         // **Le temps de l'invité avance ici, et pas dans le module.**
@@ -1316,7 +1399,8 @@ export function machine({
         const fault = globals[SLOTS.fault].value;
         if (fault !== 0n) {
           globals[SLOTS.fault].value = 0n;
-          const why = deliver(PAGE_FAULT, fault - 1n, "une faute de page");
+          const why = deliver(
+            PAGE_FAULT, pageFaultCode(fault - 1n, false), "une faute de page");
           if (why !== null) {
             globals[SLOTS.fault].value = fault;
             return { stopped: why, at: rip() };

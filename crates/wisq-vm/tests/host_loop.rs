@@ -17,10 +17,10 @@ use std::process::Command;
 
 use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
-    table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON, FPU_CONTROL_SLOT,
-    FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT,
-    SEGMENT_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOT, TABLE_SLOTS,
-    TASK_SLOT,
+    table_slot, Module, CONTROL_SLOT, EFER_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON,
+    FPU_CONTROL_SLOT, FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT,
+    RFLAGS_SLOT, RIP_SLOT, SEGMENT_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES,
+    TABLE_SLOT, TABLE_SLOTS, TASK_SLOT,
 };
 
 /// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
@@ -5682,6 +5682,11 @@ const RIG_PD_LOW: u64 = 0x2_5000;
 const RIG_FRAME: u64 = 0x3_0000;
 /// Sa feuille n'est pas posée : c'est le gestionnaire qui la posera.
 const RIG_ABSENT: u64 = 0xFFFF_8000_0020_5000;
+/// **Une seconde page absente, dans la même table que la première** — ses
+/// trois niveaux sont donc déjà posés, et sa feuille pas davantage. Elle sert
+/// à #258 : deux chargements fautifs **séparés** par une région installée,
+/// c'est-à-dire ce que fait un noyau qui cartographie à la demande.
+const RIG_ABSENT_TOO: u64 = RIG_ABSENT + 0x1000;
 const RIG_WITNESS: u64 = 0x0BAD_CAFE_F00D_1234;
 const RIG_AFTER: u64 = 0x1111;
 
@@ -10104,9 +10109,17 @@ console.log("rdx " + lire(2).toString());
         "le pilote a échoué :\n{errors}\n{text}"
     );
     let line = |name: &str| line_of(&text, name);
+    // **Le nom a changé à #258, et il en dit plus.** Tant que rien ne
+    // délivrait, l'arrêt était « aucune page derrière l'adresse » : l'hôte
+    // constatait qu'il ne savait pas lire et s'arrêtait là. Depuis, il
+    // **faute** — et ce montage n'a pas d'IDT, donc c'est la délivrance qui
+    // n'aboutit pas, en le disant. Ce que le test tient n'a pas bougé : la
+    // page absente est nommée, ce n'est ni « refusée » ni un module traduit
+    // depuis des zéros.
     assert_eq!(
         line("arret "),
-        "aucune page derrière l'adresse",
+        "une faute de page sur un chargement d'instruction sans porte : \
+         aucune IDT ne porte le vecteur 14",
         "l'arrêt **nomme** ce qui manque, et ce n'est ni « refusée » ni un \
          module traduit depuis des zéros : {text}"
     );
@@ -10400,8 +10413,23 @@ const TSS_AFTER: u32 = 9;
 
 /// **Le programme qui faute, et l'adresse de sa faute.** Il lit une adresse
 /// dont la feuille n'est pas posée ; le témoin d'après ne doit pas tourner.
-fn tss_program() -> (Vec<u8>, u64) {
+fn tss_program(fetch: bool) -> (Vec<u8>, u64) {
     let mut program: Vec<u8> = Vec::new();
+    if fetch {
+        // **Le saut indirect, parce qu'un `jmp` direct ne porte pas si loin.**
+        // `RIG_ABSENT` est à plus de deux gibioctets d'ici ; un `rel32` ne l'
+        // atteint pas. L'indirect rend la main à l'hôte avec RIP **sur** la
+        // cible, ce que #199 a posé — et c'est le chargement d'instruction
+        // dont la page manque.
+        program.extend_from_slice(&[0x48, 0xb8]); // movabs $ABSENT,%rax
+        program.extend_from_slice(&RIG_ABSENT.to_le_bytes());
+        program.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+                                                  // Ce qui suit n'est jamais atteint — mais il faut de quoi finir la
+                                                  // région, sinon l'émetteur n'a pas de terminateur.
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+                                                  // L'adresse fautive **est** la cible, et pas une adresse de ce bloc.
+        return (program, RIG_ABSENT);
+    }
     program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
     program.extend_from_slice(&RIG_ABSENT.to_le_bytes());
     let faults_at = RIG_BASE + program.len() as u64;
@@ -10416,26 +10444,55 @@ fn tss_program() -> (Vec<u8>, u64) {
 /// lancer, `ist` le champ de pile d'interruption de la porte, et `tweaks` du
 /// JavaScript glissé juste avant `run` — c'est par là que les cinq refus
 /// abîment une pièce du montage, et une seule.
-fn tss_driver(scratch: &Path, code: u64, stack: u64, ist: u64, tweaks: &str) -> PathBuf {
-    let (program, _) = tss_program();
-    // **Le gestionnaire, en anneau zéro.** Il pose son témoin et s'arrête : ce
-    // qui est éprouvé est l'arrivée, pas le retour — #194 tient le retour.
+fn tss_driver(
+    scratch: &Path,
+    code: u64,
+    stack: u64,
+    ist: u64,
+    fetch: bool,
+    chain: bool,
+    tweaks: &str,
+) -> PathBuf {
+    let (program, _) = tss_program(fetch);
     let mut handler: Vec<u8> = Vec::new();
-    handler.extend_from_slice(&[0x48, 0xbb]); // movabs $WITNESS,%rbx
-    handler.extend_from_slice(&TSS_WITNESS.to_le_bytes());
-    handler.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    if chain {
+        // **Le gestionnaire qui refaute, et qui compte ses passages.** Il
+        // n'installe rien : il saute sur une *seconde* page absente. Entre les
+        // deux chargements fautifs, sa propre région s'est installée — donc le
+        // compteur de double faute doit être retombé, et ce nombre de passages
+        // est la seule chose qui le dise.
+        handler.extend_from_slice(&[0x48, 0xff, 0xc3]); // incq %rbx
+        handler.extend_from_slice(&[0x48, 0xb8]); // movabs $ABSENT_TOO,%rax
+        handler.extend_from_slice(&RIG_ABSENT_TOO.to_le_bytes());
+        handler.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+        handler.extend_from_slice(&[0x0f, 0x0b]); // ud2 — jamais atteint
+    } else {
+        // **Le gestionnaire, en anneau zéro.** Il pose son témoin et s'arrête :
+        // ce qui est éprouvé est l'arrivée, pas le retour — #194 tient le
+        // retour.
+        handler.extend_from_slice(&[0x48, 0xbb]); // movabs $WITNESS,%rbx
+        handler.extend_from_slice(&TSS_WITNESS.to_le_bytes());
+        handler.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    }
 
-    let mut served = String::new();
-    for (name, bytes, at, slot) in [
-        ("programme.wasm", &program[..], RIG_BASE, 0u32),
-        ("gestionnaire.wasm", &handler[..], RIG_HANDLER, 1),
+    // **Les octets vivent en mémoire invitée, et la traduction est à la
+    // demande.** Un module préconstruit porte son créneau **gravé**, et le
+    // créneau dépend du nombre de blocs que la région précédente a posés : un
+    // `jmp *%rax` en pose deux là où une lecture n'en pose qu'un. Le
+    // gestionnaire était alors compilé pour l'emplacement 1 et installé au 2,
+    // où il n'avait rien posé — « la région à 69632 n'a posé aucun bloc à
+    // l'emplacement 2 ». Le protocole de #254 est ce qui tient ici : l'hôte
+    // passe la fenêtre qu'il a lue **par les tables**, et `x86-translate`
+    // traduit pour l'emplacement demandé, quel qu'il soit.
+    let mut placed = String::new();
+    for (name, bytes, at) in [
+        ("programme.bin", &program[..], RIG_BASE),
+        ("gestionnaire.bin", &handler[..], RIG_HANDLER),
     ] {
-        let module = Module::resolving(bytes, at, 0, slot, RIG_PAGES)
-            .unwrap_or_else(|| panic!("{name} se traduit"));
         let path = scratch.join(name);
-        std::fs::write(&path, &module).expect(name);
-        served.push_str(&format!(
-            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+        std::fs::write(&path, bytes).expect(name);
+        placed.push_str(&format!(
+            "new Uint8Array(vm.memory.buffer).set(readFileSync({:?}), {at});\n",
             path.to_string_lossy()
         ));
     }
@@ -10448,12 +10505,17 @@ fn tss_driver(scratch: &Path, code: u64, stack: u64, ist: u64, tweaks: &str) -> 
 import {{ machine }} from {host:?};
 import {{ readFileSync }} from "fs";
 const vm = machine({{
-  translate: async (address, slot) => {{
-{served}    return null;
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
   }},
   pages: {pages},
 }});
-const vue = new DataView(vm.memory.buffer);
+{placed}const vue = new DataView(vm.memory.buffer);
 const present = 0x3n;
 const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
 // L'identité sur les quatre premiers mébioctets : le code, les tables, la GDT,
@@ -10533,6 +10595,7 @@ console.log("rdx " + lire(2).toString());
 console.log("cs 0x" + (lire({segment} + 1) & 0xffffn).toString(16));
 console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
 console.log("rsp 0x" + lire(4).toString(16));
+console.log("cr2 0x" + lire({control} + 1).toString(16));
 // **Le cadre lu depuis RSP**, et non depuis un sommet supposé : ce que le
 // gestionnaire trouverait. De bas en haut c'est le code d'erreur, RIP, CS,
 // RFLAGS, RSP, SS — l'ordre du manuel, et en oublier un décale tout.
@@ -10544,7 +10607,8 @@ for (let i = 0; i < 6; i++) {{
 console.log("cadre " + cadre.join(" "));
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
-            served = served,
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            placed = placed,
             pages = RIG_PAGES,
             pml4 = RIG_PML4,
             pdpt = RIG_PDPT,
@@ -10624,13 +10688,15 @@ fn a_fault_taken_in_ring_three_lands_on_the_kernel_stack_from_the_task_segment()
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
-    let (_, faults_at) = tss_program();
+    let (_, faults_at) = tss_program(false);
     let scratch = tss_scratch("anneau");
     let driver = tss_driver(
         &scratch,
         TSS_USER_CODE,
         TSS_USER_STACK_SELECTOR,
         0,
+        false,
+        false,
         "// rien à abîmer : c'est le montage sain.",
     );
     let text = run_driver(&bun, &driver);
@@ -10725,6 +10791,8 @@ fn an_interrupt_stack_gate_takes_its_stack_from_the_task_segment_without_changin
         TSS_KERNEL_CODE,
         TSS_KERNEL_STACK_SELECTOR,
         1,
+        false,
+        false,
         "// la porte nomme IST1 ; l'anneau, lui, ne bouge pas.",
     );
     let text = run_driver(&bun, &driver);
@@ -10823,7 +10891,15 @@ fn a_task_segment_that_cannot_carry_a_stack_is_refused_by_name() {
     ];
     for (name, tweak, expected) in cases {
         let scratch = tss_scratch(name);
-        let driver = tss_driver(&scratch, TSS_USER_CODE, TSS_USER_STACK_SELECTOR, 0, &tweak);
+        let driver = tss_driver(
+            &scratch,
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0,
+            false,
+            false,
+            &tweak,
+        );
         let text = run_driver(&bun, &driver);
         assert_eq!(
             line_of(&text, "arret "),
@@ -10838,4 +10914,318 @@ fn a_task_segment_that_cannot_carry_a_stack_is_refused_by_name() {
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }
+}
+
+/// **Un chargement d'instruction dont la page manque est délivré au noyau, pas
+/// nommé comme un arrêt.**
+///
+/// C'est la tranche #258, et c'est exactement ce que `/init` réclame. #257 a
+/// mesuré la machine à `rip 0x401000` — le point d'entrée de `/init` — sur
+/// « aucune page derrière l'adresse », en anneau trois, avec un TSS chargé. Le
+/// texte d'un programme est cartographié **à la demande** : le noyau pose la
+/// première page quand le processeur faute dessus. Ici personne ne fautait ;
+/// l'hôte constatait qu'il ne savait pas lire les octets et s'arrêtait.
+///
+/// **La différence tient en une phrase :** `install` ne sait pas lire une page
+/// absente, mais ce n'est pas une panne de l'hôte — c'est l'événement que le
+/// noyau attend.
+///
+/// **Le cadre doit pointer sur la cible, pas sur le saut.** RIP empilé est
+/// l'adresse qu'on n'a pas pu lire, sinon l'`iretq` du noyau rejouerait le
+/// `jmp` — ce qui marcherait par accident ici et pas quand la cible arrive
+/// d'un appel indirect.
+#[test]
+fn a_fetch_whose_page_is_absent_is_delivered_instead_of_stopping_the_machine() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("fetch");
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        true,
+        false,
+        "// le programme saute sur la page absente : rien à abîmer.",
+    );
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "**le gestionnaire a tourné** : la faute de chargement a été délivrée \
+         au lieu d'arrêter la machine sur « aucune page derrière l'adresse » : \
+         {text}"
+    );
+    assert_eq!(
+        line("cr2 "),
+        format!("0x{RIG_ABSENT:x}"),
+        "CR2 porte l'adresse qu'on n'a pas pu lire : c'est là que le noyau \
+         posera la page : {text}"
+    );
+    assert_eq!(
+        line("rsp "),
+        format!("0x{:x}", (TSS_KERNEL_STACK & !0xf) - 48),
+        "et le cadre est sur la pile du noyau : une faute de chargement en \
+         anneau trois passe par `RSP0` comme les autres : {text}"
+    );
+    let words: Vec<String> = line("cadre ").split(' ').map(str::to_string).collect();
+    assert_eq!(
+        words[1],
+        format!("0x{RIG_ABSENT:x}"),
+        "**le cadre pointe sur la cible, pas sur le saut** : c'est l'adresse \
+         que l'`iretq` rejouera, et elle sera cartographiée : {text}"
+    );
+    assert_eq!(
+        words[2],
+        format!("0x{TSS_USER_CODE:x}"),
+        "avec le CS du programme : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le code d'erreur d'une faute de page dit qui l'a demandée.**
+///
+/// Le bit 2 dit que l'accès vient de l'espace utilisateur, et c'est **le** bit
+/// que Linux regarde pour trancher entre « une page manque à un programme, je
+/// la lui pose » et « le noyau est parti dans le décor, j'affiche un oops ».
+/// Le cœur Swift l'a payé une fois, au lot 7 : premier programme jamais lancé,
+/// `Oops: 0010`, `Kernel panic - not syncing: Attempted to kill init!`. Le
+/// journal le dit en une phrase — « le programme n'avait rien fait de mal, on
+/// avait juste oublié de dire qu'il était le programme ».
+///
+/// `web/host.js` ne le posait pas : le module range « code d'erreur zéro, plus
+/// un » et l'hôte soustrayait un. Zéro veut dire « une lecture du noyau sur une
+/// page absente », ce qui était vrai tant qu'aucune faute d'anneau trois ne
+/// pouvait être délivrée. Depuis #257 elles le peuvent.
+///
+/// **Le niveau vient des deux bits du bas de CS, et de rien d'autre.**
+#[test]
+fn a_page_fault_error_code_says_whether_the_access_came_from_user_space() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // Une **lecture de donnée**, pas un chargement : le bit utilisateur ne
+    // dépend pas de la nature de l'accès, et les deux chemins doivent le poser.
+    for (name, code, stack, expected) in [
+        (
+            "anneau-trois",
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0x4u64,
+        ),
+        (
+            "anneau-zero",
+            TSS_KERNEL_CODE,
+            TSS_KERNEL_STACK_SELECTOR,
+            0x0,
+        ),
+    ] {
+        let scratch = tss_scratch(name);
+        let driver = tss_driver(
+            &scratch,
+            code,
+            stack,
+            0,
+            false,
+            false,
+            "// une lecture de donnée, et l'anneau est posé plus haut.",
+        );
+        let text = run_driver(&bun, &driver);
+        assert_eq!(
+            line_of(&text, "rbx "),
+            format!("0x{TSS_WITNESS:x}"),
+            "le gestionnaire doit avoir tourné pour que le cadre existe : {text}"
+        );
+        let words: Vec<String> = line_of(&text, "cadre ")
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            words[0],
+            format!("0x{expected:x}"),
+            "**le code d'erreur de « {name} » doit porter le bit 2 selon \
+             l'anneau**, et rien de plus : ni le bit de présence, ni celui \
+             d'écriture, ni celui de chargement — cette machine n'arme ni NXE \
+             ni SMEP : {text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+/// **Le bit de chargement d'instruction n'apparaît que quand le processeur le
+/// poserait.**
+///
+/// Le manuel est explicite : le bit 4 du code d'erreur « is reserved (set to 0)
+/// if CR4.SMEP = 0 and either CR4.PAE = 0 or IA32_EFER.NXE = 0 ». Or cette
+/// machine n'annonce pas NX — son propre noyau le dit au démarrage, « Notice:
+/// NX (Execute Disable) protection missing in CPU! » — et n'applique pas SMEP.
+/// Le poser toujours serait une infidélité **silencieuse** : un noyau qui
+/// distingue les deux causes agirait sur un bit que le silicium ne lui aurait
+/// pas donné.
+///
+/// **Ce qui est éprouvé ici est donc la condition, pas le bit.** Le même
+/// chargement, deux fois : sans NXE il ne porte que l'anneau, avec NXE il
+/// porte les deux. Un hôte qui poserait le bit inconditionnellement passerait
+/// la seconde moitié et tomberait sur la première.
+#[test]
+fn the_instruction_bit_appears_only_where_the_processor_would_set_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    for (name, tweak, expected) in [
+        (
+            "sans-nxe",
+            "// EFER reste tel que le module le pose : NXE éteint.".to_string(),
+            0x4u64,
+        ),
+        (
+            "avec-nxe",
+            format!("vm.globals[{EFER_SLOT}].value |= 1n << 11n; // NXE, que le manuel exige"),
+            0x14,
+        ),
+        (
+            "avec-smep",
+            format!(
+                "vm.globals[{}].value |= 1n << 20n; // SMEP, l'autre moitié de la règle",
+                CONTROL_SLOT + 3
+            ),
+            0x14,
+        ),
+    ] {
+        let scratch = tss_scratch(name);
+        let driver = tss_driver(
+            &scratch,
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0,
+            true,
+            false,
+            &tweak,
+        );
+        let text = run_driver(&bun, &driver);
+        assert_eq!(
+            line_of(&text, "rbx "),
+            format!("0x{TSS_WITNESS:x}"),
+            "le gestionnaire doit avoir tourné pour que le cadre existe : {text}"
+        );
+        let words: Vec<String> = line_of(&text, "cadre ")
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            words[0],
+            format!("0x{expected:x}"),
+            "« {name} » : le bit 4 suit la règle du manuel, il n'est pas posé \
+             d'office : {text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+/// **Un gestionnaire dont la page manque à son tour est nommé, pas bouclé.**
+///
+/// C'est le piège que la délivrance d'une faute de chargement ouvre : si la
+/// porte mène à une adresse que les tables ne portent pas non plus, la boucle
+/// faute, délivre, refaute, redélivre — et rend « tours épuisés », un relevé
+/// qui ne dit pas ce qui manque. Sur le silicium c'est une double faute.
+///
+/// **La garde compte les chargements fautifs d'affilée, pas les fautes.** Un
+/// noyau qui cartographie à la demande en enchaîne autant qu'il veut : entre
+/// chacun une région s'installe, et le compteur retombe. Deux d'affilée sans
+/// qu'une seule région s'installe ne peut vouloir dire qu'une chose.
+///
+/// Le montage le pose en une ligne : la porte du vecteur 14 mène à la page
+/// absente elle-même.
+#[test]
+fn a_handler_whose_own_page_is_absent_is_named_instead_of_looping() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("double");
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        true,
+        false,
+        &format!(
+            "// La porte mène là où la page manque : le gestionnaire est \
+             hors de la carte.\n\
+             const [b2, h2] = porte({RIG_ABSENT}n);\n\
+             vue.setBigUint64({RIG_IDT} + 14 * 16, b2, true);\n\
+             vue.setBigUint64({RIG_IDT} + 14 * 16 + 8, h2, true);"
+        ),
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "arret "),
+        "une faute pendant la délivrance d'une faute de page sur un chargement \
+         d'instruction : le gestionnaire lui-même n'est pas cartographié",
+        "**l'arrêt nomme la double faute** au lieu d'épuiser les tours : \
+         {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "0x0",
+        "et aucun témoin n'a tourné : il n'y avait pas de gestionnaire à \
+         atteindre : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le compteur de double faute retombe dès qu'une région s'installe.**
+///
+/// C'est la garde qu'aucune assertion ne tenait, et le sabotage l'a dit :
+/// retirer la remise à zéro ne faisait tomber aucun test, parce qu'aucun
+/// montage ne délivrait **deux** chargements fautifs séparés par une région
+/// installée. Or c'est exactement ce que fait un noyau qui cartographie à la
+/// demande : il en enchaîne autant que le programme a de pages.
+///
+/// **Le montage : deux pages absentes, et un gestionnaire qui refaute.** Il
+/// compte ses passages dans RBX et saute sur la seconde. Entre les deux
+/// chargements fautifs, sa propre région s'est installée.
+///
+/// | | avec la remise à zéro | sans |
+/// | --- | --- | --- |
+/// | passages du gestionnaire | **2** | 1 |
+/// | arrêt | la double faute nommée | la même, un tour plus tôt |
+///
+/// **L'arrêt est le même des deux côtés** — c'est le nombre de passages qui
+/// tranche, et c'est pour ça que l'assertion porte sur lui. Une assertion sur
+/// l'arrêt aurait eu l'air d'une garde sans en être une.
+#[test]
+fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("chaine");
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        true,
+        true,
+        "// deux pages absentes, et le gestionnaire saute sur la seconde.",
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "0x2",
+        "**le gestionnaire est passé deux fois** : le premier chargement \
+         fautif a été délivré, sa région s'est installée, le compteur est \
+         retombé, et le second a été délivré aussi. Sans la remise à zéro il \
+         ne passerait qu'une fois : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "une faute pendant la délivrance d'une faute de page sur un chargement \
+         d'instruction : le gestionnaire lui-même n'est pas cartographié",
+        "et le troisième chargement, lui, n'a rien installé entre-temps : la \
+         garde le nomme : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }
