@@ -14408,3 +14408,138 @@ commande écrite dans la feuille de route. Le compte de tests ne bouge pas :
 **L'espace utilisateur ne tourne toujours pas.** Mais la machine y est — anneau
 trois, CS et SS justes, `iretq` correct — et le mur suivant a deux nombres au
 lieu d'une intuition.
+
+## #257 — la machine avait un TSS, et la délivrance disait qu'elle n'en avait pas
+
+#256 a posé deux nombres côte à côte au saut dans `/init` : `CS = 0x33` — anneau
+trois — et `TR = 0x40` — un sélecteur de TSS **est** chargé. Et la délivrance
+refusait par son nom :
+
+> un changement d'anneau à la délivrance, sans segment de tâche : cette machine
+> n'a pas de TSS
+
+Elle en a un. Ce qui manquait n'était pas le sélecteur, c'était **quelqu'un pour
+lire le descripteur derrière**. `web/host.js` l'écrivait, depuis #204 :
+
+> Aucun descripteur n'est lu derrière — la délivrance dit toujours « cette
+> machine n'a pas de TSS ».
+
+**Quatrième fois dans cette famille** qu'une limite honnête, écrite une fois,
+reste assez longtemps pour passer pour une garantie : la phrase de P2 sur la
+lecture des instructions (#254), les commentaires sur la forme mémoire de `verw`
+(#255), « aucun descripteur n'est lu derrière » nommée par #256, et maintenant
+corrigée.
+
+### L'oracle était écrit, et il avait déjà payé
+
+`Sources/WisqVM/X86Interrupts.swift` fait ça depuis #127, et ses commentaires
+portent les pièges au prix où ils ont été payés :
+
+| ce que le cœur Swift sait | ce qu'il a coûté |
+| --- | --- |
+| le descripteur fait seize octets, base en quatre morceaux | — |
+| `RSP0` à l'offset 4, `IST1` à 0x24, les suivantes de huit en huit | — |
+| la limite doit couvrir la fin d'`IST7`, à 0x5b | un TSS trop court rendrait des octets qui ne sont pas des piles |
+| **l'anneau change avant les empilements, pas après** | « la toute première faute de page d'un programme n'a plus pu être livrée — le noyau a été refusé sur sa propre pile d'entrée, à `0xfffffe00000000e0` » |
+| le sélecteur de pile devient **nul** en même temps | le garder ferait croire au noyau qu'il vient de l'anneau d'où il venait |
+
+Il n'y avait donc rien à deviner. `kernelStack` dans `web/host.js` refait ces
+lectures, `deliver` refait cet ordre, et les deux refus de #204 disparaissent —
+celui du changement d'anneau et celui de la pile d'interruption, qui étaient le
+même manque.
+
+### Ce qui est relu plutôt que gardé, et pourquoi
+
+Le silicium lit le descripteur **une fois**, à l'instant du `ltr`, et garde base
+et limite dans une partie invisible du registre de tâche. Nous le relisons à
+chaque délivrance. L'hôte ne voit jamais passer un `ltr` — c'est le module qui
+l'exécute, et il ne laisse derrière lui que seize bits de sélecteur.
+
+L'écart ne se voit que pour un noyau qui réécrirait le descripteur **sans**
+refaire son `ltr`. Linux ne le fait pas : il modifie `RSP0` *dans* le TSS à
+chaque changement de tâche, ce que cette relecture rend précisément visible.
+Garder base et limite coûterait deux globales, et #204 a compté ce que coûte une
+globale : `host.js`, la garde, `WebKitBench.swift`, trois modules épinglés.
+L'infidélité est donc nommée dans la doc du créneau `task`, pas cachée.
+
+### Les tests, et les douze sabotages
+
+Trois tests, un montage commun, et **le montage est la moitié du travail**.
+
+Le TSS n'est pas posé bas. À `0x15000`, ses octets de base 31:24 et 63:32
+seraient nuls, et un émetteur qui les oublierait passerait le test sans un mot.
+Il vit donc à `0x0000_00ab_8201_5000`, derrière les tables de pages, où les trois
+morceaux portent chacun quelque chose — ce qui oblige du même coup la lecture du
+descripteur à traverser la marche, comme la vraie.
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| jamais de changement de pile | les trois tests |
+| SS gardé au lieu d'être annulé | anneau trois, IST |
+| `RSP0` lu à l'offset huit | anneau trois |
+| `IST` lue à l'offset de `RSP0` | IST |
+| base sans ses bits 31:24 | anneau trois, IST |
+| base sans ses bits 63:32 | les trois tests |
+| aucune garde sur la limite du TSS | les refus |
+| aucune garde sur le sélecteur nul | les refus |
+| aucune garde sur le type du descripteur | les refus |
+| aucune garde sur la limite de la GDT | les refus |
+| aucune garde sur la cartographie du TSS | les refus |
+| le cadre porte la pile d'après, pas celle d'avant | anneau trois, IST |
+
+Douze pour douze, chacun nommé. Et les cinq refus sont **cinq messages
+distincts** — registre de tâche vide, sélecteur hors de la GDT, descripteur qui
+n'est pas un TSS, TSS trop court, TSS non cartographié — parce que le prochain
+mur sera diagnostiqué depuis un relevé de noyau et pas depuis un débogueur, et
+que « cette machine n'a pas de TSS » ne disait pas quoi corriger.
+
+### Ce qu'aucun test ne tient, et il faut le dire
+
+**L'ordre.** Le cœur Swift pose CS *avant* les empilements parce que sa
+vérification du bit utilisateur refuserait l'écriture sinon. `web/host.js`
+n'a aucune vérification de privilège sur les écritures : y déplacer la ligne
+après la boucle ne fait tomber aucun test. L'ordre est donc tenu par l'oracle et
+par ce paragraphe, pas par une assertion — et le jour où l'hôte vérifiera le bit
+utilisateur, il deviendra vérifiable.
+
+### La mesure, et ce qu'elle ne montre pas
+
+L'archive est jetable et se refait : un `/init` statique qui ouvre
+`/dev/console`, y écrit une marque, puis boucle. Point d'entrée `0x401000`,
+vérifié dans son en-tête ELF — la même adresse que #254 et #256.
+
+| | #256 | #257 |
+| --- | --- | --- |
+| régions traduites | 11 948 | **11 946** |
+| tours | 2 333 782 | **2 333 398** |
+| arrêt | « aucune page derrière l'adresse » à `0x401000` | **le même** |
+| anneau | `cs=0x33 ss=0x2b anneau=3` | le même |
+| `TR` | `0x40` | le même |
+
+**Le mur n'a pas bougé, et c'est attendu.** Il n'est pas dans la délivrance : la
+machine s'arrête **avant** de fauter, parce que l'hôte ne sait pas quoi faire
+d'une adresse dont la lecture d'instructions ne trouve aucune page. `install`
+rend `UNMAPPED` et `run` nomme l'arrêt ; personne ne délivre de faute de page
+pour un **chargement d'instruction**. C'est la tranche suivante, et elle a
+besoin de celle-ci : la première faute de fetch de `/init` arrive en anneau
+trois, donc sans le TSS elle s'arrêterait sur le refus que #257 vient d'enlever.
+#257 est la marche d'avant, pas un détour.
+
+**L'espace utilisateur ne tourne toujours pas.** La marque de `/init` n'apparaît
+nulle part et pas une de ses instructions n'a été exécutée.
+
+Les deux nombres bougent de quatre régions et de 384 tours vers le **bas**, et
+ce n'est pas la tranche : c'est l'archive. Celle de #256 est perdue avec son
+conteneur — celle-ci porte un `/init` d'une autre taille, donc une racine d'une
+autre taille, donc quelques pages de moins à cartographier. Ce qui doit être
+identique l'est : l'adresse d'arrêt, son nom, l'anneau, le sélecteur de tâche.
+
+### Une observation en passant, qui n'est pas cette tranche
+
+`cpio` remplit son dernier bloc de zéros après le `TRAILER!!!`, et le noyau s'en
+plaint — « rootfs image is not initramfs (invalid magic at start of compressed
+archive) » — **après** avoir déballé `/init` quand même. L'archive coupée juste
+après le trailer ne provoque plus la plainte, et c'est celle dont viennent les
+chiffres ci-dessus. Ce n'est pas un défaut de wisq : `declare_ramdisk` déclare
+la taille exacte du fichier, pas une taille arrondie. Noté dans la recette pour
+qui refera la mesure.

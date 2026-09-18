@@ -19,7 +19,8 @@ use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON, FPU_CONTROL_SLOT,
     FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT, RFLAGS_SLOT, RIP_SLOT,
-    SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOTS, TASK_SLOT,
+    SEGMENT_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOT, TABLE_SLOTS,
+    TASK_SLOT,
 };
 
 /// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
@@ -5979,6 +5980,9 @@ console.log("rflags " + lire(RFLAGS));"#
 
 /// **Une faute pendant la délivrance est nommée, pas cachée.** La pile de
 /// l'invité n'est cartographiée nulle part : poser le cadre faute à son tour.
+/// Le message ne dit plus « la pile de l'invité » depuis #257, parce que ce
+/// n'est plus forcément la sienne : quand l'anneau change, le cadre s'écrit
+/// sur celle que `RSP0` nomme.
 /// Sur le silicium c'est une double faute ; ici la machine s'arrête et dit
 /// que c'est la délivrance elle-même qui a fauté — sans quoi un noyau dont la
 /// pile d'entrée manque s'arrêterait « sur place » sans un mot, exactement la
@@ -6001,7 +6005,8 @@ fn a_fault_while_delivering_is_named_rather_than_hidden() {
         .unwrap_or_else(|| panic!("le pilote doit dire « arret » : {text}"));
     assert_eq!(
         stopped,
-        "une faute pendant la délivrance d'une faute de page : la pile de l'invité n'est pas cartographiée",
+        "une faute pendant la délivrance d'une faute de page : la pile où le cadre \
+         s'écrit n'est pas cartographiée",
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
@@ -7034,10 +7039,12 @@ console.log("rip " + lire({rip}));
 /// sa case, seize bits quelle que soit la largeur de la source, et **ne
 /// s'arrête pas** : ce qui suit tourne, jusqu'au `hlt`.
 ///
-/// **Ce que ce nombre n'est pas** : aucun descripteur n'est lu derrière lui.
-/// La délivrance de l'hôte dit toujours « cette machine n'a pas de TSS » ;
-/// ce que les piles IST en feront est une question de direction, posée quand
-/// elle sera atteinte.
+/// **Ce que ce nombre n'est pas, et ce qu'il est devenu.** À #204, aucun
+/// descripteur n'était lu derrière lui, et la délivrance disait toujours
+/// « cette machine n'a pas de TSS ». Depuis **#257** elle lit le descripteur
+/// dans la GDT et y trouve `RSP0` — mais *ce* test ne tient toujours que le
+/// rangement du sélecteur, seize bits dans sa case, et rien d'autre ; la
+/// délivrance est tenue par les trois tests de #257.
 #[test]
 fn a_kernel_that_loads_the_task_register_keeps_the_selector_and_goes_on() {
     let Some(bun) = bun() else {
@@ -10341,4 +10348,494 @@ console.log("cr2 0x" + BigInt.asUintN(64, vm.globals[{control} + 1].value).toStr
     );
 
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+// **Le montage du segment de tâche**, partagé par les trois tests de #257.
+//
+// Il reprend le plan mémoire de #194 — l'identité sur les quatre premiers
+// mébioctets, et une adresse haute dont les trois niveaux sont posés mais pas
+// la feuille — et y ajoute deux pages : la GDT et le TSS.
+//
+// **Le pilote pose l'anneau plutôt que de le rejouer.** #256 a mesuré qu'au
+// saut dans `/init` l'`iretq` charge bien `CS = 0x33` et `SS = 0x2b` ; ce qui
+// est éprouvé ici est la **délivrance**, pas le chemin qui y mène, donc le
+// pilote écrit les deux sélecteurs et la pagination avant de lancer.
+/// La GDT, une page libre du plan de #194, identité oblige : sa base est une
+/// globale, pas un descripteur empaqueté.
+const TSS_GDT: u64 = 0x1_4000;
+/// **Le TSS vit derrière les tables, et son adresse n'est pas un choix de
+/// confort.** Une base de descripteur s'écrit en quatre morceaux dispersés ;
+/// posée bas, ses octets 31:24 et 63:32 seraient nuls, et un émetteur qui les
+/// oublierait passerait le test. Celle-ci les porte : 0xab pour les bits
+/// 39:32, 0x82 pour les bits 31:24, 0x015000 pour le reste. Elle oblige du même
+/// coup la lecture du TSS à passer par les tables, comme la vraie.
+const TSS_AT: u64 = 0x0000_00ab_8201_5000;
+/// La trame où cette page virtuelle atterrit — c'est là que le pilote écrit,
+/// parce qu'il écrit dans la mémoire linéaire et non par les tables.
+const TSS_FRAME: u64 = 0x2_c000;
+/// Les trois niveaux qui portent `TSS_AT`, et sa feuille.
+const TSS_PDPT: u64 = 0x2_6000;
+const TSS_PD: u64 = 0x2_7000;
+const TSS_PT: u64 = 0x2_b000;
+/// La pile du **programme**, celle qu'il faut retrouver dans le cadre.
+const TSS_OLD_STACK: u64 = 0x2_8000;
+/// Celle du **noyau**, que `RSP0` nomme.
+const TSS_KERNEL_STACK: u64 = 0x2_9000;
+/// Et celle qu'une porte à pile d'interruption impose, `IST1`.
+const TSS_IST_STACK: u64 = 0x2_a000;
+/// Le sélecteur de TSS que Linux charge : `GDT_ENTRY_TSS * 8`.
+const TSS_SELECTOR: u64 = 0x40;
+/// Les deux sélecteurs d'anneau trois de Linux, `__USER_CS` et `__USER_DS`.
+const TSS_USER_CODE: u64 = 0x33;
+const TSS_USER_STACK_SELECTOR: u64 = 0x2b;
+/// Et ceux d'anneau zéro, `__KERNEL_CS` et `__KERNEL_DS`.
+const TSS_KERNEL_CODE: u64 = 0x10;
+const TSS_KERNEL_STACK_SELECTOR: u64 = 0x18;
+/// La limite du TSS de Linux, `sizeof(struct x86_hw_tss) - 1`. Elle couvre la
+/// fin d'`IST7`, à 0x5b — un TSS plus court doit être refusé.
+const TSS_LIMIT: u64 = 0x67;
+const TSS_WITNESS: u64 = 0x0FED_BEEF_1234_5678;
+/// Ce que le témoin d'après la faute écrirait s'il tournait.
+const TSS_AFTER: u32 = 9;
+
+/// **Le programme qui faute, et l'adresse de sa faute.** Il lit une adresse
+/// dont la feuille n'est pas posée ; le témoin d'après ne doit pas tourner.
+fn tss_program() -> (Vec<u8>, u64) {
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    program.extend_from_slice(&RIG_ABSENT.to_le_bytes());
+    let faults_at = RIG_BASE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x8b, 0x16]); // mov (%rsi),%rdx — la faute
+    program.extend_from_slice(&[0x48, 0xc7, 0xc2]); // mov $AFTER,%rdx
+    program.extend_from_slice(&TSS_AFTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    (program, faults_at)
+}
+
+/// Le pilote commun. `code` et `stack` sont les sélecteurs posés avant de
+/// lancer, `ist` le champ de pile d'interruption de la porte, et `tweaks` du
+/// JavaScript glissé juste avant `run` — c'est par là que les cinq refus
+/// abîment une pièce du montage, et une seule.
+fn tss_driver(scratch: &Path, code: u64, stack: u64, ist: u64, tweaks: &str) -> PathBuf {
+    let (program, _) = tss_program();
+    // **Le gestionnaire, en anneau zéro.** Il pose son témoin et s'arrête : ce
+    // qui est éprouvé est l'arrivée, pas le retour — #194 tient le retour.
+    let mut handler: Vec<u8> = Vec::new();
+    handler.extend_from_slice(&[0x48, 0xbb]); // movabs $WITNESS,%rbx
+    handler.extend_from_slice(&TSS_WITNESS.to_le_bytes());
+    handler.extend_from_slice(&[0x0f, 0x0b]); // ud2
+
+    let mut served = String::new();
+    for (name, bytes, at, slot) in [
+        ("programme.wasm", &program[..], RIG_BASE, 0u32),
+        ("gestionnaire.wasm", &handler[..], RIG_HANDLER, 1),
+    ] {
+        let module = Module::resolving(bytes, at, 0, slot, RIG_PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        served.push_str(&format!(
+            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        ));
+    }
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const present = 0x3n;
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+// L'identité sur les quatre premiers mébioctets : le code, les tables, la GDT,
+// le TSS et les trois piles y vivent.
+vue.setBigUint64({pml4} + 0 * 8, {pdptLow}n | present, true);
+vue.setBigUint64({pdptLow} + 0 * 8, {pdLow}n | present, true);
+vue.setBigUint64({pdLow} + 0 * 8, 0n | present | 0x80n, true);
+vue.setBigUint64({pdLow} + 1 * 8, 0x20_0000n | present | 0x80n, true);
+// Les trois niveaux au-dessus de la page que le programme lira ; la feuille,
+// non : c'est elle qui fait la faute.
+vue.setBigUint64({pml4} + idx({absent}n, 39) * 8, {pdpt}n | present, true);
+vue.setBigUint64({pdpt} + idx({absent}n, 30) * 8, {pd}n | present, true);
+vue.setBigUint64({pd} + idx({absent}n, 21) * 8, {pt}n | present, true);
+// Et les quatre niveaux du TSS, jusqu'à sa feuille : c'est la seule page de ce
+// montage que l'identité ne couvre pas, et c'est exprès.
+vue.setBigUint64({pml4} + idx({tss}n, 39) * 8, {tssPdpt}n | present, true);
+vue.setBigUint64({tssPdpt} + idx({tss}n, 30) * 8, {tssPd}n | present, true);
+vue.setBigUint64({tssPd} + idx({tss}n, 21) * 8, {tssPt}n | present, true);
+vue.setBigUint64({tssPt} + idx({tss}n, 12) * 8, {tssFrame}n | present, true);
+
+// **Le descripteur de tâche, seize octets en mode long**, avec sa base en
+// quatre morceaux. Le type 9 est « TSS long disponible », ce que `ltr` laisse
+// derrière lui ; 11 serait « occupé ».
+const poser = (base, limite, type) => {{
+  const bas = BigInt(limite)
+    | ((BigInt(base) & 0xffffffn) << 16n)
+    | (BigInt(type) << 40n)
+    | (1n << 47n)
+    | (((BigInt(base) >> 24n) & 0xffn) << 56n);
+  vue.setBigUint64({gdt} + {selector}, bas, true);
+  vue.setBigUint64({gdt} + {selector} + 8, BigInt(base) >> 32n, true);
+}};
+poser({tss}n, {tssLimit}, 9);
+vm.globals[{table}].value = 0xffffn;       // limite de la GDT
+vm.globals[{table} + 1].value = BigInt({gdt});
+
+// **`RSP0` à l'offset quatre, `IST1` à 0x24** — ce n'est pas un choix, c'est
+// le format du mode long.
+vue.setBigUint64({tssFrame} + 4, BigInt({kernelStack}), true);
+vue.setBigUint64({tssFrame} + 0x24, BigInt({istStack}), true);
+
+// **L'IDT : une porte d'interruption pour le vecteur 14**, sélecteur d'anneau
+// zéro. Le champ de pile d'interruption occupe les trois bits du bas de
+// l'octet qui suit le sélecteur.
+const porte = (offset) => {{
+  const low = (BigInt(offset) & 0xffffn) | (BigInt({kernelCode}) << 16n)
+    | (BigInt({ist}) << 32n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n);
+  return [low, BigInt(offset) >> 32n];
+}};
+const [porteBas, porteHaut] = porte({handler});
+vue.setBigUint64({idt} + 14 * 16, porteBas, true);
+vue.setBigUint64({idt} + 14 * 16 + 8, porteHaut, true);
+vm.globals[{table} + 2].value = 0xffffn;   // limite de l'IDT
+vm.globals[{table} + 3].value = BigInt({idt});
+
+// **Le registre de tâche**, comme `ltr` le laisse : seize bits, rien de plus.
+vm.globals[{task}].value = BigInt({selector});
+
+// La pagination, posée par le pilote : un programme d'anneau trois ne pourrait
+// écrire ni CR0 ni CR3.
+vm.globals[{control}].value = BigInt(1) << 31n;
+vm.globals[{control} + 2].value = {pml4}n;
+
+// L'anneau, posé plutôt que rejoué.
+vm.globals[{segment} + 1].value = BigInt({code});
+vm.globals[{segment} + 2].value = BigInt({stack});
+vm.globals[4].value = BigInt({oldStack});
+vm.globals[{rip}].value = {base}n;
+
+{tweaks}
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("arret " + why.stopped);
+console.log("rbx 0x" + lire(3).toString(16));
+console.log("rdx " + lire(2).toString());
+console.log("cs 0x" + (lire({segment} + 1) & 0xffffn).toString(16));
+console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
+console.log("rsp 0x" + lire(4).toString(16));
+// **Le cadre lu depuis RSP**, et non depuis un sommet supposé : ce que le
+// gestionnaire trouverait. De bas en haut c'est le code d'erreur, RIP, CS,
+// RFLAGS, RSP, SS — l'ordre du manuel, et en oublier un décale tout.
+const bas = Number(lire(4));
+const cadre = [];
+for (let i = 0; i < 6; i++) {{
+  cadre.push("0x" + vue.getBigUint64(bas + i * 8, true).toString(16));
+}}
+console.log("cadre " + cadre.join(" "));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            served = served,
+            pages = RIG_PAGES,
+            pml4 = RIG_PML4,
+            pdpt = RIG_PDPT,
+            pd = RIG_PD,
+            pt = RIG_PT,
+            pdptLow = RIG_PDPT_LOW,
+            pdLow = RIG_PD_LOW,
+            absent = RIG_ABSENT,
+            gdt = TSS_GDT,
+            tss = TSS_AT,
+            tssFrame = TSS_FRAME,
+            tssPdpt = TSS_PDPT,
+            tssPd = TSS_PD,
+            tssPt = TSS_PT,
+            tssLimit = TSS_LIMIT,
+            selector = TSS_SELECTOR,
+            idt = RIG_IDT,
+            handler = RIG_HANDLER,
+            kernelCode = TSS_KERNEL_CODE,
+            kernelStack = TSS_KERNEL_STACK,
+            istStack = TSS_IST_STACK,
+            oldStack = TSS_OLD_STACK,
+            code = code,
+            stack = stack,
+            ist = ist,
+            base = RIG_BASE,
+            table = TABLE_SLOT,
+            task = TASK_SLOT,
+            control = CONTROL_SLOT,
+            segment = SEGMENT_SLOT,
+            rip = RIP_SLOT,
+            tweaks = tweaks,
+        ),
+    )
+    .expect("le pilote");
+    driver
+}
+
+/// Un répertoire de travail neuf, nommé par le cas — cinq refus dans le même
+/// répertoire se marcheraient dessus.
+fn tss_scratch(what: &str) -> PathBuf {
+    let scratch = std::env::temp_dir().join(format!("wisq-tss-{what}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    scratch
+}
+
+/// **Une faute prise en anneau trois atterrit sur la pile du noyau, lue dans
+/// le segment d'état de tâche.**
+///
+/// C'est la tranche #257, et c'est le mur que #256 a nommé avec deux nombres :
+/// au saut dans `/init`, `CS = 0x33` — anneau trois — et `TR = 0x40` — un
+/// sélecteur de TSS **est** chargé. Or la délivrance refusait par son nom :
+/// « un changement d'anneau à la délivrance, sans segment de tâche : cette
+/// machine n'a pas de TSS », alors que la machine en a un. Le dépôt l'avait
+/// écrit plutôt que corrigé, depuis #204 : « Aucun descripteur n'est lu
+/// derrière ».
+///
+/// **L'oracle est le cœur Swift**, qui fait ça depuis #127 et dont les
+/// commentaires portent les pièges déjà payés : le descripteur de seize octets
+/// en mode long, la base en quatre morceaux, `RSP0` à l'offset 4, la limite qui
+/// doit couvrir jusqu'à la fin d'`IST7`, et surtout — « **l'anneau change avant
+/// les empilements, pas après** », parce que le cadre s'écrit sur une pile
+/// interdite au programme.
+///
+/// **Ce que chaque assertion tient, et ce qu'un sabotage y ferait tomber :**
+///
+/// | assertion | ce qui casse sans elle |
+/// | --- | --- |
+/// | le gestionnaire a tourné | la machine s'arrêtait, et tout l'espace utilisateur avec |
+/// | `RSP` est sur `RSP0`, pas sur la pile du programme | le noyau écrirait son cadre sur une pile que le programme peut lire et écrire |
+/// | le cadre porte le **SS et le RSP du programme** | l'`iretq` ne saurait pas où rendre la main |
+/// | `SS` devient **nul** | le processeur le fait en mode long ; le garder ferait croire au noyau qu'il vient d'où il venait |
+/// | `CS` est celui de la porte | l'anneau doit changer **avant** les empilements |
+#[test]
+fn a_fault_taken_in_ring_three_lands_on_the_kernel_stack_from_the_task_segment() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let (_, faults_at) = tss_program();
+    let scratch = tss_scratch("anneau");
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        "// rien à abîmer : c'est le montage sain.",
+    );
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "**le gestionnaire a tourné** : la faute prise en anneau trois a été \
+         délivrée au lieu d'arrêter la machine : {text}"
+    );
+    assert_eq!(
+        line("arret "),
+        UD2_PORTE_ABSENTE,
+        "et l'arrêt final est le `ud2` du gestionnaire, pas la faute : {text}"
+    );
+    assert_eq!(
+        line("rdx "),
+        "0",
+        "l'instruction d'après la faute n'a pas tourné : la faute laisse RIP \
+         dessus : {text}"
+    );
+    assert_eq!(
+        line("cs "),
+        format!("0x{TSS_KERNEL_CODE:x}"),
+        "CS est celui de la porte : l'anneau a changé : {text}"
+    );
+    assert_eq!(
+        line("ss "),
+        "0x0",
+        "**SS est nul** : le processeur l'annule en mode long, et le garder \
+         ferait croire au noyau qu'il vient d'où il venait : {text}"
+    );
+    // Cinq mots plus le code d'erreur, donc quarante-huit octets sous le
+    // sommet aligné. C'est **la** case qui distingue les deux piles.
+    assert_eq!(
+        line("rsp "),
+        format!("0x{:x}", (TSS_KERNEL_STACK & !0xf) - 48),
+        "**le cadre est sur la pile du noyau**, celle que `RSP0` nomme, et pas \
+         sur celle du programme : {text}"
+    );
+    let frame = line("cadre ");
+    let words: Vec<&str> = frame.split(' ').collect();
+    assert_eq!(
+        words.len(),
+        6,
+        "le pilote doit rendre les six mots du cadre : {text}"
+    );
+    assert_eq!(
+        words[1],
+        format!("0x{faults_at:x}"),
+        "le cadre porte l'adresse de l'instruction fautive, pas la suivante : \
+         {text}"
+    );
+    assert_eq!(
+        words[2],
+        format!("0x{TSS_USER_CODE:x}"),
+        "et le CS du programme, celui de l'anneau trois : {text}"
+    );
+    assert_eq!(
+        words[4],
+        format!("0x{TSS_OLD_STACK:x}"),
+        "et son RSP, celui d'avant la faute : {text}"
+    );
+    assert_eq!(
+        words[5],
+        format!("0x{TSS_USER_STACK_SELECTOR:x}"),
+        "**et son SS** — c'est de là que l'`iretq` rendra la main : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une porte à pile d'interruption prend sa pile dans `IST1`, même sans
+/// changement d'anneau.**
+///
+/// C'est l'autre moitié du refus que #257 remplace : la délivrance disait
+/// « une porte à pile d'interruption, sans segment de tâche » et s'arrêtait,
+/// même quand le noyau était déjà en anneau zéro. Linux pose des IST sur la
+/// double faute, le NMI et `#MC` dès `cpu_init_exception_handling` — celles-là
+/// arriveront avant la première faute d'espace utilisateur.
+///
+/// **Les deux raisons de changer de pile ne se recouvrent pas**, et ce test
+/// tient celle que l'autre ne tient pas : ici l'anneau ne bouge pas, et la
+/// pile bouge quand même.
+#[test]
+fn an_interrupt_stack_gate_takes_its_stack_from_the_task_segment_without_changing_ring() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("ist");
+    let driver = tss_driver(
+        &scratch,
+        TSS_KERNEL_CODE,
+        TSS_KERNEL_STACK_SELECTOR,
+        1,
+        "// la porte nomme IST1 ; l'anneau, lui, ne bouge pas.",
+    );
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "**le gestionnaire a tourné** : une porte à IST est délivrée au lieu \
+         d'arrêter la machine : {text}"
+    );
+    assert_eq!(
+        line("rsp "),
+        format!("0x{:x}", (TSS_IST_STACK & !0xf) - 48),
+        "**le cadre est sur `IST1`**, pas sur la pile courante ni sur `RSP0` : \
+         un TSS lu au mauvais offset les confondrait : {text}"
+    );
+    assert_eq!(
+        line("cs "),
+        format!("0x{TSS_KERNEL_CODE:x}"),
+        "l'anneau n'a pas bougé, et c'est exprès : {text}"
+    );
+    assert_eq!(
+        line("ss "),
+        "0x0",
+        "SS est nul quand même : le processeur l'annule à tout changement de \
+         pile, pas seulement à un changement d'anneau : {text}"
+    );
+    let words: Vec<String> = line("cadre ").split(' ').map(str::to_string).collect();
+    assert_eq!(
+        words[5],
+        format!("0x{TSS_KERNEL_STACK_SELECTOR:x}"),
+        "et le cadre porte le SS d'avant, celui du noyau : {text}"
+    );
+    assert_eq!(
+        words[4],
+        format!("0x{TSS_OLD_STACK:x}"),
+        "et le RSP d'avant : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Cinq façons d'avoir un segment de tâche qui ne vaut rien, et cinq refus
+/// qui ne se ressemblent pas.**
+///
+/// Le prochain mur sera diagnostiqué depuis un relevé de noyau, pas depuis un
+/// débogueur : « cette machine n'a pas de TSS » ne disait pas quoi corriger.
+/// Un registre de tâche vide, un sélecteur hors de la GDT, un descripteur qui
+/// n'est pas un TSS, un TSS trop court pour porter ses piles et un TSS dont la
+/// base n'est pas cartographiée demandent cinq corrections différentes.
+///
+/// **Aucun n'écrit un cadre quelque part au hasard**, et c'est ce que le refus
+/// achète : le témoin du gestionnaire reste à zéro dans les cinq cas.
+#[test]
+fn a_task_segment_that_cannot_carry_a_stack_is_refused_by_name() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let cases: [(&str, String, String); 5] = [
+        (
+            "sans-tr",
+            format!("vm.globals[{TASK_SLOT}].value = 0n;"),
+            "une faute de page avec un changement de pile, et aucun registre de \
+             tâche chargé : aucun `ltr` n'est passé"
+                .to_string(),
+        ),
+        (
+            "hors-gdt",
+            format!("vm.globals[{TABLE_SLOT}].value = 0x3fn;"),
+            format!(
+                "une faute de page avec un changement de pile : le sélecteur de \
+                 tâche 0x{TSS_SELECTOR:x} est hors de la GDT"
+            ),
+        ),
+        (
+            "mauvais-type",
+            format!("poser({TSS_AT}n, {TSS_LIMIT}, 2);"),
+            format!(
+                "une faute de page avec un changement de pile : le descripteur \
+                 0x{TSS_SELECTOR:x} n'est pas un segment de tâche"
+            ),
+        ),
+        (
+            "trop-court",
+            format!("poser({TSS_AT}n, 0x3f, 9);"),
+            "une faute de page avec un changement de pile : le segment de tâche \
+             ne porte que 64 octets, il en faut 92"
+                .to_string(),
+        ),
+        (
+            "hors-carte",
+            format!("poser({RIG_ABSENT}n, {TSS_LIMIT}, 9);"),
+            "une faute pendant la délivrance d'une faute de page : le segment de \
+             tâche n'est pas cartographié"
+                .to_string(),
+        ),
+    ];
+    for (name, tweak, expected) in cases {
+        let scratch = tss_scratch(name);
+        let driver = tss_driver(&scratch, TSS_USER_CODE, TSS_USER_STACK_SELECTOR, 0, &tweak);
+        let text = run_driver(&bun, &driver);
+        assert_eq!(
+            line_of(&text, "arret "),
+            expected,
+            "le refus « {name} » doit nommer ce qui manque, et lui seul : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "rbx "),
+            "0x0",
+            "et « {name} » ne doit pas avoir délivré : un cadre écrit au hasard \
+             est pire qu'un arrêt : {text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }
