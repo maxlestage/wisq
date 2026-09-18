@@ -3059,3 +3059,101 @@ fn a_folded_address_always_lands_inside_the_declared_ram() {
     assert!(Module::fold(u64::MAX, 1) < 65536);
     assert_eq!(Module::fold(0x1_0000, 1), 0);
 }
+
+/// **Le pilote de mesure sait lire la mémoire de l'invité pendant qu'il
+/// mesure — et regarder ne change rien.**
+///
+/// #262 a donné au pilote de quoi dire *où* la machine en est. Il ne savait
+/// dire **aucune valeur** de sa mémoire : #264 a passé une tranche entière à
+/// chercher pourquoi `preempt_count` dérive à `inet_init` sans jamais pouvoir
+/// regarder `preempt_count`. Le lecteur existait pourtant — c'est celui que la
+/// traduction emploie pour aller chercher ses fenêtres d'octets — mais il
+/// restait une fermeture privée de `machine()`.
+///
+/// Deux choses sont tenues ici :
+///
+/// 1. **Le lecteur est exposé et rend les octets de l'invité**, à l'adresse
+///    invitée qu'on lui donne.
+/// 2. **Regarder ne dérange rien.** Le témoin de faute et CR2 reviennent comme
+///    ils étaient. C'est ce qui sépare un instrument d'une écriture : une
+///    lecture qui laisserait le témoin allumé ferait délivrer une faute que
+///    l'invité n'a pas provoquée, et le relevé accuserait le noyau.
+///
+/// **Ce qui n'est pas tenu ici, et il faut le dire** : la marche des tables de
+/// pages, et son refus. La pagination est éteinte dans ce test, donc `read`
+/// prend son repli. Le chemin paginé est celui que chaque mesure de noyau
+/// emprunte déjà — #254 a compté 15 761 fenêtres sur 16 189 qui différaient du
+/// fichier ELF, ce qui ne se peut que si la marche a bien lieu.
+#[test]
+fn the_driver_can_read_the_guests_memory_without_disturbing_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le lecteur de l'hôte ne serait vérifié par rien.");
+    };
+    const AT: u64 = 0x1000;
+    const VALUE: u32 = 0xdead_beef;
+    const WITNESS: u64 = 7;
+    const CR2: u64 = 0x1234;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|up| up.parent())
+        .expect("la racine du dépôt");
+    let scratch = std::env::temp_dir().join(format!("wisq-guet-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.js");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+// `pages` se compte en pages de 64 Kio, et doit être une puissance de
+// deux : seize font un mébioctet, de quoi loger l'adresse visée.
+const vm = machine({{ translate: () => null, pages: 16 }});
+new DataView(vm.memory.buffer).setUint32({at}, {value}, true);
+vm.globals[SLOTS.fault].value = {witness}n;
+vm.globals[SLOTS.control + 1].value = {cr2}n;
+const octets = vm.read({at}n, 4);
+console.log("lu " + (octets === null
+  ? "rien"
+  : "0x" + new DataView(octets.buffer, octets.byteOffset, 4)
+      .getUint32(0, true).toString(16)));
+console.log("temoin " + vm.globals[SLOTS.fault].value);
+console.log("cr2 " + vm.globals[SLOTS.control + 1].value);
+"#,
+            host = root.join("web/host.js").to_string_lossy(),
+            at = AT,
+            value = VALUE,
+            witness = WITNESS,
+            cr2 = CR2,
+        ),
+    )
+    .expect("le pilote");
+
+    let out = std::process::Command::new(&bun)
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "le pilote doit tourner ; il a dit :\n{}\n{said}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        said.contains(&format!("lu 0x{VALUE:x}")),
+        "le lecteur doit rendre l'entier que la mémoire de l'invité porte à \
+         0x{AT:x} ; il a dit :\n{said}"
+    );
+    assert!(
+        said.contains(&format!("temoin {WITNESS}")),
+        "lire ne doit pas éteindre le témoin de faute — une faute inventée par \
+         l'instrument serait délivrée à l'invité ; il a dit :\n{said}"
+    );
+    assert!(
+        said.contains(&format!("cr2 {CR2}")),
+        "lire ne doit pas écraser CR2 : c'est l'adresse que la dernière vraie \
+         faute a nommée ; il a dit :\n{said}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
