@@ -15657,3 +15657,163 @@ chemin ; et le softirq qui tourne est la tâchelette du clavier — `tasklet_act
 
 Mesurer, maintenant qu'on peut : `WISQ_WATCH=gs:2e7c8` sur le noyau de
 référence, et lire la trajectoire du compteur autour d'`inet_init`.
+
+*Fait* — voir « #266 T2 » plus bas : la mesure, la limite de l'instrument, et
+une lecture fausse que son contrôle a défaite.
+
+## #266 T2 — la mesure, et la lecture fausse que le contrôle a démentie
+
+Docs seulement : aucune ligne de code, aucun test de plus, miroirs inchangés à
+**2529**. Ce que cette tranche dépose, c'est ce que l'instrument de T1 a
+réellement mesuré — **y compris une phrase fausse que j'ai écrite et que le
+contrôle a défaite**, parce que c'est précisément ce qu'une prochaine session
+ne doit pas avoir à redécouvrir.
+
+### Les deux courses
+
+Toutes deux sur le noyau de référence, par la commande canonique :
+
+```
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=512 WISQ_INITRAMFS=$S/initramfs-vraie.cpio WISQ_ROUNDS=65536 \
+  WISQ_TURNS=<tours> WISQ_WATCH=gs:2e7c8 \
+  stdbuf -oL ./target/release/examples/kernel-entry /tmp/vmlinux.bin $S/System.map-lts
+```
+
+`Progress::beat(tours)` vaut `max(1024, tours / 200)`, donc le battement suit
+la longueur demandée : **6 500 000 tours → battement 32 500**, 130 relevés ;
+**600 000 tours → battement 3 000**, 200 relevés. `inet_init` siégeant vers le
+tour 552 000, 3 000 est le battement le plus fin qu'on puisse obtenir *à cette
+profondeur* sans allonger la course.
+
+**La course longue reproduit #263 à l'identique**, avertissement compris :
+`marche 4236661 4236660 10929 0`, `arret refusée`, `rip 0x7f9606d8743e`.
+L'instrument ne change pas ce qu'il mesure.
+
+### Ce que la course courte montre, et qui n'est pas une inférence
+
+`inet_init` est réclamé au battement **552 000** ; son dernier battement est
+**585 000** (`ipfrag_init`, `inet_frags_init`, `fqdir_init`) ; et
+l'avertissement tombe dans le battement suivant, **588 000**, par
+`__warn_printk` → `asm_exc_invalid_op` → `handle_bug` → `report_bug`. Le
+journal série le nomme :
+
+```
+initcall inet_init+0x0/0x560 returned with preemption imbalance
+WARNING: CPU: 0 PID: 1 at init/main.c:1263 do_one_initcall+0x2a1/0x340
+RBX: ffffffff82b0b110
+```
+
+`%rbx` porte l'adresse d'`inet_init` : c'est bien celui-là que
+`do_one_initcall` accuse.
+
+La trajectoire du compteur autour de cette fenêtre, relevé par relevé :
+
+| tour | compteur | ce qui est réclamé dans le battement |
+|---|---|---|
+| 540 000 | `0x80000000` | |
+| 543 000 | `0x80000002` | |
+| 546 000 | `0x80000000` | |
+| 549 000 | `0x80000004` | |
+| **552 000** | **`0x80000000`** | `tty_init`, `inet_init`, `proto_register` |
+| **555 000** | **`0x80000002`** | `inet_register_protosw`, `do_softirq.part.0`, `handle_softirqs`, `kbd_bh`, `arp_init`, `ip_init` |
+| 558 000 | `0x80000001` | `ip_rt_init`, `devinet_init` |
+| 561 000 | `0x80000002` | `ip_fib_init` |
+| 564 000 | `0x80000003` | `fib_trie_init` |
+| 567 000 | `0x80000003` | |
+| 570 000 | `0x80000001` | `fib4_rules_init`, `xfrm_init` |
+| 573 000 | `0x80000003` | `xfrm_state_init`, `igmp_mc_init`, `tcp_init` |
+| 576 000 | `0x80000002` | `tcp_init` |
+| 579 000 | `0x80000002` | `tcp_v4_init`, `mptcp_init` |
+| 582 000 | `0x80000002` | `mptcp_token_init`, `udp_init`, `icmp_init` |
+| **585 000** | **`0x80000001`** | `ipfrag_init`, `fqdir_init`, `__warn_printk` |
+| 588 000 | `0x80000003` | `asm_exc_invalid_op`, `handle_bug`, `show_regs` |
+
+Le bit 31 est `PREEMPT_NEED_RESCHED`, que le noyau range **inversé** : allumé
+veut dire « rien à replanifier ». Le compte lui-même est donc le quartet de
+poids faible, et il prend ici les valeurs **0 à 4**.
+
+Deux relevés seulement encadrent quelque chose qui a un sens : **à l'entrée
+d'`inet_init` le compte est 0, et l'avertissement dit qu'à sa sortie il ne
+l'est pas.** C'est exactement ce que #264 avait établi par déduction ; c'est
+maintenant *vu*.
+
+**Et le premier softirq de la machine tombe dans le battement 552 000 →
+555 000** — le battement même où le compteur quitte 0 pour 2. Les deux faits
+de #264 coïncident dans un seul relevé.
+
+### Une limite de l'instrument, à connaître avant de lire un relevé
+
+Les 28 premiers relevés de la course courte (tours 3 000 à 84 000) valent
+`0x1`, pas une valeur à bit 31. Ce n'est pas une dérive : **`gs:2e7c8` ne
+désigne `preempt_count` qu'une fois la zone par processeur posée.** Avant le
+tour ≈ 87 000, la fenêtre lit autre chose. `WISQ_WATCH` relit la base GS à
+chaque battement — il ne peut pas inventer une zone qui n'existe pas encore.
+
+### Ma lecture fausse, et le contrôle qui l'a défaite
+
+J'ai écrit de cette trajectoire : **« il n'y revient plus une seule fois »** —
+le compteur ne retournerait plus à zéro après le premier softirq. **C'est
+faux.**
+
+Le contrôle sur la course longue :
+
+| | relevés | à compte nul |
+|---|---|---|
+| avant le tour 552 500 | 17 | **2** (12 %) |
+| après | 113 | **46** (41 %) |
+
+L'inverse exact de ce que je venais de lire. Le compteur repasse par zéro plus
+souvent *après* le pivot qu'avant.
+
+Et les deux courses se contredisent en apparence :
+
+| | avant le pivot | après le pivot |
+|---|---|---|
+| courte (battement 3 000) | 25 / 184 à zéro | **0 / 16** |
+| longue (battement 32 500) | 2 / 17 à zéro | **46 / 113** |
+
+Elles ne mesurent pas deux conduites : elles échantillonnent **deux endroits**.
+La course courte s'arrête 48 000 tours après le pivot, en plein cœur de la
+suite d'`inet_init`, où le noyau tient légitimement des verrous ; la longue
+couvre 3,6 millions de tours, la plus grande partie hors de toute section
+préemption-désactivée. Sur la même fenêtre qu'elle — ses 16 premiers relevés
+après le pivot, étalés sur 520 000 tours — la course longue en compte 6 à
+zéro. Rien ne se contredit ; ma phrase généralisait une fenêtre à un
+démarrage.
+
+### Ce que cela établit sur l'instrument lui-même, et qui commande T3
+
+**Un échantillonnage à tour fixe ne peut pas distinguer « légitimement non nul
+au milieu d'une fonction » de « dérivé ».** Un compteur de préemption non nul
+n'est pas une anomalie : c'est un noyau qui fait son travail. Il n'est *tenu*
+de valoir zéro qu'à un seul endroit — **là où `do_one_initcall` le compare**,
+c'est-à-dire aux frontières d'initcall. Partout ailleurs, un relevé non nul ne
+prouve rien, et un relevé nul ne disculpe rien.
+
+Un guet qui se déclenche à un tour mesure du bruit autour d'un signal. Il a
+suffi ici parce qu'un battement est tombé exactement sur l'entrée d'`inet_init`
+— **par chance**, pas par construction.
+
+### T3 : une question de direction, pas un défaut nommé
+
+Faire tirer le guet **là où la valeur a un sens** — aux frontières de
+`do_one_initcall` — plutôt qu'à des tours arbitraires. L'obstacle est déjà
+connu : l'émetteur ne rend la main qu'aux bords de région et aux coupes, donc
+une adresse quelconque n'est pas observable. Une forme praticable : relever à
+**chaque retour de main dont le RIP tombe dans l'intervalle d'un symbole
+nommé**, en se servant de la carte des symboles que le pilote charge déjà.
+
+Plus d'une réponse se défend. Elle revient à Maxime.
+
+### Ce qui reste ouvert pour la dérive elle-même
+
+Inchangé depuis #265, et #266 T1 en a retiré un candidat :
+
+1. **la coupe des régions et le retour de main** — la plus large différence de
+   structure entre l'accusé et les témoins, puisque le cœur Swift ne coupe
+   pas ;
+2. ~~une interruption délivrée pendant `handle_softirqs`~~ — **mort** : rien ne
+   délivre d'interruption matérielle ;
+3. **une autre instruction du chemin**, qui changerait le flot plutôt que le
+   compte.
