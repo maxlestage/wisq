@@ -14330,3 +14330,81 @@ d'adressage du processus**. Ce n'est pas « la page de `/init` manque », c'est
 « la table qui devrait la nommer est vide ». La tranche suivante est là, et elle
 commence par une observation, pas par une hypothèse : quelle écriture de CR3
 l'émetteur perd-il entre `Run /init as init process` et le saut ?
+
+## #256 — le relevé se taisait sur l'anneau, au moment où c'était toute la question
+
+L'arrêt laissé par #255 : `RIP = 0x401000`, le point d'entrée de `/init`, et
+« aucune page derrière l'adresse ». Deux murs possibles, très différents, et le
+nombre qui tranche n'était **imprimé nulle part**.
+
+### Pourquoi l'anneau décidait, et pourquoi il manquait
+
+`deliver()`, dans `web/host.js`, refuse un changement d'anneau **par son nom** :
+
+```js
+const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
+if ((selector & 3n) < (code & 3n)) {
+  return "un changement d'anneau à la délivrance, sans segment de tâche : cette machine n'a pas de TSS";
+}
+```
+
+Donc, selon ce que CS porte à l'arrêt :
+
+| CS | ce que ça veut dire | le mur réel |
+| --- | --- | --- |
+| anneau 3 | la machine est vraiment dans l'espace utilisateur | délivrer la `#PF` ne déplacerait le mur que d'un cran : la délivrance refuse le changement d'anneau |
+| anneau 0 | l'`iretq` n'a pas chargé le sélecteur utilisateur | un défaut dans l'`iretq` ou dans le cadre empilé |
+
+Or le relevé donnait RIP, la pile, les seize registres généraux, les cinq
+registres de contrôle — et **pas un des six sélecteurs**. La famille de #185 et
+de #220 : l'instrument se taît là où il a le plus à dire. Trois lignes de plus,
+posées **en dur** et non en sonde jetable, parce que #241 a déjà puni « c'était
+une mesure, et aucun moyen de la refaire ».
+
+### Ce que la mesure dit
+
+```
+selecteurs es=0x0 cs=0x33 ss=0x2b ds=0x0 fs=0x0 gs=0x0 anneau=3
+tache 0x40
+```
+
+- **CS = 0x33** : `__USER_CS` de Linux x86-64, RPL 3. **La machine est en
+  anneau trois.** L'`iretq` a fait son travail, et la seconde hypothèse est
+  réfutée par un nombre plutôt que par un raisonnement.
+- **SS = 0x2b** : `__USER_DS`, RPL 3. Cohérent, et ce n'est pas rien — deux
+  sélecteurs faux ensemble seraient une coïncidence, deux justes ensemble sont
+  un cadre correctement dépilé.
+- **TR = 0x40** : `GDT_ENTRY_TSS * 8`. **Un sélecteur de TSS est chargé.**
+
+### Le défaut que ça nomme, et le dépôt l'avait écrit
+
+Deux choses qui devraient s'accorder, et qui ne s'accordent pas :
+
+| ce que la machine tient | ce que la délivrance dit |
+| --- | --- |
+| `TASK_SLOT` = `0x40`, posé par `ltr` à #204 | « cette machine **n'a pas** de TSS » |
+
+Et c'est écrit noir sur blanc dans `web/host.js`, depuis #204 :
+
+> Aucun descripteur n'est lu derrière — la délivrance dit toujours « cette
+> machine n'a pas de TSS ».
+
+**Troisième fois dans cette famille** qu'une limite honnête, écrite une fois,
+est restée assez longtemps pour devenir une garantie — après la phrase de P2 sur
+la lecture des instructions (#254) et les commentaires sur la forme mémoire de
+`verw` (#255). La machine a un sélecteur de TSS ; ce qui manque est quelqu'un
+pour **lire le descripteur derrière** et y trouver RSP0, la pile du noyau.
+
+### Ce que cette tranche ne fait pas
+
+Elle ne corrige rien. Elle transforme deux hypothèses en un défaut nommé, et
+c'est tout ce qu'elle prétend. **Aucun test nouveau** : la sortie de cet exemple
+n'est produite que par une exécution de vingt minutes sur un vrai noyau, et un
+test qui vérifierait que les constantes lues sont celles que l'émetteur exporte
+serait tautologique. Ce qui la tient est la mesure elle-même, refaisable par la
+commande écrite dans la feuille de route. Le compte de tests ne bouge pas :
+2516.
+
+**L'espace utilisateur ne tourne toujours pas.** Mais la machine y est — anneau
+trois, CS et SS justes, `iretq` correct — et le mur suivant a deux nombres au
+lieu d'une intuition.

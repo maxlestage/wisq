@@ -11235,3 +11235,71 @@ processus** : ce n'est pas « la page de `/init` manque », c'est « la table qu
 devrait la nommer est vide ». La tranche suivante part de là — quelle écriture
 de CR3 se perd entre `Run /init as init process` et le saut ? — et elle
 commence par une observation, pas par une hypothèse.
+
+## #256 — le relevé nomme l'anneau, et le mur suivant cesse d'être une intuition
+
+#255 laissait la machine à `RIP = 0x401000` — le point d'entrée de `/init` — sur
+« aucune page derrière l'adresse ». Deux murs possibles, et le nombre qui
+tranche n'était imprimé nulle part.
+
+`deliver()` refuse un changement d'anneau par son nom, faute de TSS. Donc si CS
+porte l'anneau trois, délivrer la `#PF` sur une lecture d'instruction ne
+déplacerait le mur que d'un cran ; s'il porte zéro, c'est l'`iretq` qui est en
+cause. Le relevé donnait RIP, la pile, les seize registres généraux et les cinq
+registres de contrôle — **et pas un des six sélecteurs**.
+
+### Ce que la tranche pose
+
+Trois lignes, **en dur** et non en sonde : les six sélecteurs, l'anneau que CS
+porte, et le registre de tâche. Famille de #185 et #220 ; posé de façon
+permanente parce que #241 a puni l'inverse.
+
+### Ce que la mesure dit
+
+```
+cargo build -p wisq-vm --release --bin x86-translate --example kernel-entry
+WISQ_RAM=256 WISQ_INITRAMFS=<archive>.cpio WISQ_ROUNDS=16384 WISQ_TURNS=8000000 \
+  ./target/release/examples/kernel-entry /tmp/vmlinux.bin
+```
+
+```
+selecteurs es=0x0 cs=0x33 ss=0x2b ds=0x0 fs=0x0 gs=0x0 anneau=3
+tache 0x40
+```
+
+| | |
+| --- | --- |
+| `CS = 0x33` | `__USER_CS`, RPL 3 — **la machine est en anneau trois** |
+| `SS = 0x2b` | `__USER_DS`, RPL 3 — le cadre a été dépilé correctement |
+| `TR = 0x40` | `GDT_ENTRY_TSS * 8` — **un sélecteur de TSS est chargé** |
+
+L'`iretq` a donc fait son travail, et l'hypothèse « le sélecteur utilisateur
+n'est pas chargé » est réfutée par un nombre.
+
+### Le défaut nommé, et le dépôt l'avait écrit
+
+| ce que la machine tient | ce que la délivrance dit |
+| --- | --- |
+| `TASK_SLOT` = `0x40`, posé par `ltr` depuis #204 | « cette machine **n'a pas** de TSS » |
+
+Et la phrase est dans `web/host.js` depuis #204 : « Aucun descripteur n'est lu
+derrière — la délivrance dit toujours *cette machine n'a pas de TSS* ».
+**Troisième fois** qu'une limite écrite une fois devient une garantie, après la
+phrase de P2 sur la lecture des instructions (#254) et les commentaires sur la
+forme mémoire de `verw` (#255).
+
+### La tranche suivante, nommée par deux nombres
+
+**#257 — la délivrance lit le descripteur derrière le sélecteur de TSS et y
+trouve RSP0.** C'est ce qui permet un changement d'anneau, donc la seule porte
+par laquelle une faute prise en anneau trois peut atteindre le gestionnaire du
+noyau. Tant qu'elle n'existe pas, toute faute de l'espace utilisateur arrête la
+machine, et la pagination à la demande du texte de `/init` est hors d'atteinte.
+
+### Ce que cette tranche ne fait pas
+
+Elle ne corrige rien, et **n'ajoute aucun test** : la sortie de cet exemple ne
+naît que d'une exécution de vingt minutes sur un vrai noyau, et une garde qui
+vérifierait que les constantes lues sont celles que l'émetteur exporte serait
+tautologique. Ce qui la tient est la mesure, refaisable par la commande
+ci-dessus. Le compte ne bouge pas : 2516.
