@@ -457,8 +457,19 @@ fn every_accepted_instruction_matches_the_silicon() {
             .join("\n")
     );
     // Une tranche qui ne vérifierait rien passerait ce test sans rien dire.
+    //
+    // **Et ce plancher ne peut pas être dérivé du fichier.** Il garde contre un
+    // corpus qui RÉTRÉCIT, et le comparer à `oracle.cases.len()` serait
+    // circulaire : les deux côtés tomberaient ensemble. #267 a fait cette
+    // erreur sur l'émetteur — en remplaçant son plancher par une égalité, elle
+    // a retiré la seule chose qui voyait une fixture tronquée. Mesuré : en
+    // retirant 200 lignes `cas` du fichier, les trois cœurs restaient **verts**,
+    // celui-ci à 13 188 cas contre un plancher de 13 140.
+    //
+    // Il doit donc rester un nombre écrit à la main, et sa seule discipline est
+    // de valoir le corpus du jour — 13 388 cas au moment de #268.
     assert!(
-        checked > 13140,
+        checked >= 13388,
         "le décodeur ne reconnaît plus que {checked} cas : la couverture a reculé"
     );
     // **Et le cliquet dans l'autre sens.** Un plancher sur les cas vérifiés ne

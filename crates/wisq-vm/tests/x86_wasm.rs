@@ -648,6 +648,28 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
          l'hôte : ils ont disparu du champ du test",
         oracle.cases.len() - checked - handed_back
     );
+    // **Et le plancher revient, parce que l'égalité ci-dessus ne le remplace
+    // pas.** Ses deux côtés bougent ensemble : si la fixture rétrécit, `checked
+    // + handed_back` et `oracle.cases.len()` tombent de concert et l'égalité
+    // reste vraie. #267 a retiré `checked + handed_back > 13210` en croyant le
+    // remplacer, et a laissé l'émetteur sans aucune garde contre un corpus
+    // tronqué — alors que le dépôt porte déjà la règle, écrite par la tranche
+    // qui avait comparé les planchers Rust et Swift : « une égalité dont les
+    // deux côtés bougent ensemble n'est pas une garde de couverture ; il faut
+    // un ancrage extérieur ».
+    //
+    // Les deux gardes répondent à deux questions différentes, et il en faut
+    // deux : l'égalité dit « rien ne sort du champ du test », le plancher dit
+    // « le fichier n'a pas maigri ». Le second ne peut pas être dérivé du
+    // fichier, donc il reste un nombre écrit à la main, et sa seule discipline
+    // est de valoir le corpus du jour — 13 388 cas au moment de #268.
+    // Mesuré : en retirant 200 lignes `cas`, ce test restait vert à
+    // 13 020 + 168 = 13 188.
+    assert!(
+        checked + handed_back >= 13388,
+        "l'oracle ne porte plus que {} cas : la fixture a maigri",
+        checked + handed_back
+    );
     // **Et le retour de main n'est légitime que là où le module ne peut pas
     // savoir.** Un plancher sur `checked` voulait attraper une famille qui
     // repasse de « comparée » à « rendue » ; il le faisait par un nombre, donc

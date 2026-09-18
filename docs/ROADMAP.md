@@ -11944,3 +11944,33 @@ lesquelles : ce sont les sept sauts et appels **indirects**. L'affirmation de
 `instructions.count > 200`, quand le corpus vaut 13 388 cas et 533 formes. Ce
 ne sont pas des trous — les deux tests portent une garde dure par ailleurs —
 mais les dériver du fichier est une tranche à part.
+
+## #268 — la règle citée dans #267, et enfreinte douze lignes plus bas
+
+Miroirs inchangés à **2529**. Détail dans [`JOURNAL.md`](JOURNAL.md).
+
+**Le défaut, dans #267.** Elle a remplacé le plancher de l'émetteur par
+`assert_eq!(checked + handed_back, oracle.cases.len())`. Les deux côtés bougent
+ensemble : si la fixture rétrécit, les deux tombent et l'égalité tient. Or le
+dépôt porte déjà la règle — « une égalité dont les deux côtés bougent ensemble
+n'est pas une garde de couverture » — et le journal de #267 **la cite**, à
+quinze lignes de l'égalité qu'il venait d'écrire.
+
+**La nuance manquée** : un plancher qui garde contre un corpus qui *rétrécit*
+ne peut pas être dérivé du fichier qu'il surveille — ce serait circulaire. Il
+doit rester un nombre écrit à la main, tenu à jour.
+
+**La mesure.** 200 lignes `cas` retirées de l'oracle, 13 388 → 13 188 : les
+**trois** cœurs restaient verts. L'interpréteur et le Swift parce que leurs
+planchers avaient 248 cas de retard ; l'émetteur parce qu'il n'en avait plus du
+tout depuis #267.
+
+**Ce que la tranche pose.** `checked >= 13388` côté interpréteur ;
+`checked + handed_back >= 13388` côté émetteur, **à côté** de l'égalité qui
+reste ; `cases.count >= 13_388` et `instructions.count >= 533` côté Swift. La
+même amputation fait maintenant tomber les trois, chacun en se nommant.
+
+**Douzième mode à retenir** : une règle citée et enfreinte dans le même
+document. Se méfier du moment où une tranche **remplace** une garde au lieu
+d'en ajouter une — demander laquelle des deux questions l'ancienne posait, et
+qui la pose maintenant.

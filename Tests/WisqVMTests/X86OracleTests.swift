@@ -183,10 +183,18 @@ final class X86OracleTests: XCTestCase {
         // rien ne rougisse. Deux gardes sur la même fixture, dans deux langages,
         // et une seule aurait vu un lecteur cesser d'analyser les deux tiers du
         // fichier. Elles disent maintenant la même chose.
-        XCTAssertGreaterThan(
-            fixture.cases.count, 13_140,
+        // **Ces deux planchers ne peuvent pas être dérivés du fichier.** Ils
+        // gardent contre un corpus qui RÉTRÉCIT, et les comparer au fichier
+        // serait circulaire. Ils doivent donc valoir le corpus du jour :
+        // 13 388 cas et 533 formes au moment de #268. Ils valaient 13 140 et
+        // 200, soit 248 cas et 333 formes de jeu — mesuré, en retirant 200
+        // lignes `cas` du fichier, ce test restait vert à 13 188 sur 13 188.
+        XCTAssertGreaterThanOrEqual(
+            fixture.cases.count, 13_388,
             "la couverture a reculé : \(fixture.cases.count) cas lus")
-        XCTAssertGreaterThan(fixture.instructions.count, 200)
+        XCTAssertGreaterThanOrEqual(
+            fixture.instructions.count, 533,
+            "la couverture a reculé : \(fixture.instructions.count) formes lues")
         // Un enregistrement que ce lecteur ne connaît pas est ignoré en
         // silence, exprès ; celui-ci ne doit pas l'être.
         let gsBase = try XCTUnwrap(
