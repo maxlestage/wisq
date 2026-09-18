@@ -14794,6 +14794,14 @@ sur une instruction ou un service qui manque.
 
 ## #260 — l'écran déclaré, le pilote qui n'existe pas, et une preuve que j'avais fabriquée
 
+> **CORRIGÉ PAR #261, et sur son point central.** Le titre dit « le pilote qui
+> n'existe pas » : il existe. `simpledrm` est un **module** de ce noyau, et le
+> dépôt portait déjà le témoin — 6 septembre 2026, même noyau — où il se lie
+> sous `VLFB`. Tout ce qui suit et qui repose sur « ce noyau ne porte qu'un
+> pilote de tampon » est faux, y compris la direction posée à Maxime, qui est
+> retirée. Les trois mesures restent justes ; c'est leur lecture qui ne
+> l'était pas. Lire #261 avant cette entrée.
+
 Cette entrée commence par une erreur, parce que c'est la partie utile.
 
 ### Ce que j'ai affirmé, et qui ne tenait pas
@@ -14926,3 +14934,103 @@ noyau a lié un pilote et bascule sa console dessus ; rien ici ne lit le contenu
 du cadre, et la vue qui devrait le peindre n'est pas dans la boucle de cette
 mesure. La suite de cette question est une image affichée, pas une ligne de
 journal.
+
+## #261 — « la chaîne est absente » n'est pas « le pilote manque », et le témoin était déjà là
+
+#260 a été fusionnée il y a un commit. Sa conclusion centrale est fausse, et
+c'est la troisième fois de suite que je me trompe sur la même question, toujours
+de la même façon : **en prenant une absence pour une preuve.**
+
+### L'inférence, et le test qui la casse
+
+#260 écrit : « Le seul pilote de tampon de ce noyau est `efifb` ; `simplefb`,
+`simpledrm`, `vesafb` et `vga16fb` sont absents de l'image. » La deuxième moitié
+est un fait, la première est une déduction — et la déduction est invalide.
+
+La façon de le voir tient en une commande. Cherchons dans `vmlinux` des pilotes
+qu'Alpine lts a certainement :
+
+| cherché | occurrences dans `/tmp/vmlinux.bin` |
+| --- | --- |
+| `ext4` | **0** |
+| `btrfs`, `xfs` | **0** |
+| `virtio_blk`, `virtio_net` | **0** |
+| `nvme`, `usbcore` | **0** |
+| `e1000`, `overlay` | **0** |
+
+Un noyau Alpine qui ne saurait pas monter un `ext4` n'existe pas. Ces pilotes
+sont des **modules**, et le noyau porte tout le chargeur pour les prendre :
+`vermagic`, `module_layout`, « Unknown symbol %s », « module verification
+failed: signature and/or required key missing ». Une chaîne absente de `vmlinux`
+dit donc exactement une chose — **pas intégré** — et jamais « pas supporté ».
+
+### Le témoin que le dépôt portait déjà
+
+`Tests/WisqVMTests/X86BootAttemptTests.swift`, ligne 137, et le CHANGELOG. Le
+**6 septembre 2026**, sur le noyau que ce même fichier nomme en tête —
+Linux 6.6.134-0-lts d'Alpine 3.20, **le même que celui de mes trois mesures** —
+avec `WISQ_PC_DISPLAY=1024x768` et l'`initramfs-lts` d'Alpine :
+
+```
+[drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0
+simple-framebuffer.0: [drm] fb0: simpledrmdrmfb frame buffer device
+```
+
+Sous `VIDEO_TYPE_VLFB` et `lfb_size` en unités de 64 Kio. **La déclaration du
+dépôt se lie sur ce noyau, et c'était mesuré depuis douze jours.** Et que des
+modules se chargent pour de vrai sous wisq, le dépôt le sait aussi : #136 a pour
+sujet un module chargé dont un octet était corrompu.
+
+### Ce que les trois mesures de #260 établissent vraiment
+
+Elles sont justes. C'est leur lecture qui ne l'était pas. Mon initramfs fait
+cinq kibioctets et porte un `/init` de quarante octets : **aucun module.** Sans
+modules, le seul pilote de tampon atteignable est celui qui est intégré,
+`efifb`, et `efifb` exige `VIDEO_TYPE_EFI`. Les trois lignes du tableau
+mesurent donc **mon montage**, pas le noyau, et encore moins un défaut de wisq.
+
+Ce qui reste vrai et vaut d'être su :
+
+- un démarrage **sans modules** n'a pas d'écran, à moins de déclarer `EFI` — et
+  alors l'écran ne marche que parce que `lfb_size` sous-déclare, ce qui détourne
+  `sysfb` du chemin moderne vers l'ancien ;
+- le couple type + unité reste un couple, et `the_video_type_and_the_size_unit_are_one_pair`
+  le tient toujours. Ce test n'a rien de faux : il tient la cohérence du couple,
+  pas le choix du type ;
+- le commentaire que #260 a corrigé, lui, était bien faux — « sans
+  `VIDEO_TYPE_VLFB`, tout le reste est ignoré » — et la correction tient.
+
+### La direction est retirée
+
+#260 posait à Maxime un choix entre trois routes, sur la prémisse qu'aucune
+déclaration n'atteint les deux familles de pilotes. **La prémisse est fausse :
+`VLFB` + unités les atteint toutes les deux** — `simpledrm` quand il est là,
+et rien quand il n'y a pas de modules, ce qui est le cas d'aucune vraie racine.
+Il n'y a pas de fourche, pas de choix à faire, et rien qui attende sa parole
+sur ce point. Je l'ai retirée des deux documents.
+
+### Trois fois la même erreur, et ce qu'elle a en commun
+
+| | ce que j'ai affirmé | ce qui manquait |
+| --- | --- | --- |
+| 1 | « wisq déclare le parfum que ce noyau ne peut pas lier » | la mesure invoquée ne demandait **aucun écran** |
+| 2 | la sonde confirme | la sonde **n'avait pas tourné** — syntaxe refusée, et je n'avais pas lu le code de sortie |
+| 3 | « ce noyau ne porte qu'`efifb` » | les chaînes de `vmlinux` ne voient **pas les modules** |
+
+Chaque fois : une absence — pas de ligne `écran :`, pas de sortie, pas de chaîne
+— lue comme une présence de preuve. Et chaque fois, la vérification qui manquait
+tenait en une commande : demander à la mesure ce qu'elle mesurait, lire le code
+de sortie, tester l'inférence sur un cas dont on connaît déjà la réponse.
+
+Le dernier est le plus facile à refaire et le plus utile à retenir : **avant de
+conclure d'une absence, chercher la même absence là où l'on sait que la chose
+est présente.** `ext4` aurait suffi.
+
+### Pourquoi il n'y a pas de test nouveau
+
+Rien dans le code n'était faux. Ce qui était faux est une conclusion écrite en
+prose, et la correction est en prose. Le seul test que #260 a ajouté est juste
+et reste. Écrire ici un test pour « le noyau porte `simpledrm` en module »
+demanderait un initramfs avec les modules d'Alpine, que ce conteneur n'a pas —
+et l'écrire sans, ce serait fabriquer une assertion qui ne peut pas échouer,
+exactement ce que les sabotages de cette session passent leur temps à trouver.

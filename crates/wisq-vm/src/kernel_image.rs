@@ -383,9 +383,17 @@ pub fn zero_page_with_screen(
     // lu.** Le commentaire d'ici l'a affirmé jusqu'à #260 — « sans cette
     // valeur, tout le reste est ignoré » — et la mesure le démentit : sous
     // `VIDEO_TYPE_EFI`, le noyau de référence relit ces champs un par un et les
-    // rend (`efifb: mode is 1024x768x32, linelength=4096`). Quel type déclarer
-    // dépend du pilote que porte le noyau invité, et c'est une direction
-    // ouverte — voir #260 dans le JOURNAL.
+    // rend (`efifb: mode is 1024x768x32, linelength=4096`).
+    //
+    // **`VIDEO_TYPE_VLFB` est la bonne valeur, et #261 a dû défaire ce que #260
+    // en avait conclu.** #260 a mesuré qu'un `VLFB` déclaré n'atteignait aucun
+    // pilote, et en a tiré que ce noyau n'en portait qu'un, `efifb` — sur la
+    // seule foi de chaînes absentes de `vmlinux`. L'inférence est invalide :
+    // `ext4`, `virtio_blk` et `nvme` en sont absents aussi, parce qu'ils sont
+    // des **modules**. Le témoin du 6 septembre, dans
+    // `Tests/WisqVMTests/X86BootAttemptTests.swift`, montre `simpledrm` se lier
+    // sous `VLFB` sur ce même noyau, avec un initramfs qui porte ses modules.
+    // Ce qui manquait à la mesure de #260, c'était les modules, pas la valeur.
     page[0x0f] = 0x23;
     let width = u16::try_from(screen.width).expect("borné juste au-dessus");
     let height = u16::try_from(screen.height).expect("borné juste au-dessus");
