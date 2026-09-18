@@ -559,9 +559,31 @@ def snippets():
     #
     # Le déplacement est calculé pour retomber dans la fenêtre : le processeur
     # ajoute la base du segment à une adresse déjà relative, donc l'adresse
-    # nue vaut deux fois l'arène. Huit octets, c'est la longueur de
-    # `65 48 8b 05 <disp32>`, mesurée sur l'assembleur et pas devinée.
-    yield f"movq %gs:{0x10 - (CODE + 8)}(%rip), %rax"
+    # nue vaut deux fois l'arène.
+    #
+    # **Et la longueur ne s'écrit pas à la main.** Elle l'a été — « huit
+    # octets » en dur — et c'est un compte qui ne faute pas quand il se trompe :
+    # l'instruction touche l'octet d'à côté, dans la fenêtre, en silence.
+    # `aim_at_window` la demande à l'assembleur.
+    #
+    # **Et les mêmes en lecture-modification-écriture.** #264 a mesuré ce que
+    # la phrase corrigée plus haut cachait : l'oracle jugeait GS + absolu +
+    # modification, et GS + relatif + lecture ; jamais les trois ensemble. Or
+    # c'est ce que le noyau écrit, et rien d'autre, pour son compteur de
+    # préemption — 4 057 fois, dont 3 768 qui modifient. Les sept formes sont
+    # celles qu'il emploie vraiment, avec leur compte dans l'image de
+    # référence ; le décalage visé diffère pour chacune, pour qu'aucune ne
+    # puisse passer pour sa voisine dans la fenêtre rendue.
+    yield from aim_at_window((
+        ("movq %gs:{}(%rip), %rax", 0x10),
+        ("incl %gs:{}(%rip)", 0x04),                      # 65 ff 05 — 1 710 fois
+        ("decl %gs:{}(%rip)", 0x08),                      # 65 ff 0d — 1 901 fois
+        ("addl $0x0F0F0F0F, %gs:{}(%rip)", 0x0c),         # 65 81 05 —   130 fois
+        ("addl %ecx, %gs:{}(%rip)", 0x14),                # 65 01 /r —     1 fois
+        ("cmpxchgl %ecx, %gs:{}(%rip)", 0x18),            # 65 0f b1 —     6 fois
+        ("andl $0x0F0F0F0F, %gs:{}(%rip)", 0x1c),         # 65 81 25 —    19 fois
+        ("orl $0x0F0F0F0F, %gs:{}(%rip)", 0x20),          # 65 81 0d —     1 fois
+    ))
     # **`lea` ignore le préfixe** : elle ne touche pas la mémoire, donc ne
     # traverse pas l'unité de segmentation. L'assembleur avertit que le préfixe
     # est sans effet ; le silicium le confirme, et c'est ce qu'on grave ici. Un
@@ -889,6 +911,76 @@ def division_state(dividend, divisor, size, signed):
         fixed[2] = high
     fixed[1] = divisor & mask
     return fixed + [0x002]
+
+
+def aim_at_window(forms):
+    """Des formes `%gs:…(%rip)` qui visent chacune un octet de la fenêtre.
+
+    L'adresse effective d'une de ces formes vaut
+    `base_du_segment + (rip_après + déplacement)`, et l'oracle pose la base du
+    segment sur la fenêtre de données : viser l'octet `n` demande donc un
+    déplacement de `n - (CODE + longueur)`.
+
+    **La longueur vient de l'assembleur**, et c'est tout l'intérêt de ce
+    détour. Un compte à la main qui se trompe d'un octet ne fait pas fauter :
+    le déplacement reste dans la fenêtre et l'instruction touche l'octet d'à
+    côté. L'oracle graverait alors fidèlement un cas qui n'est pas celui qu'on
+    croyait écrire, et aucun test ne le dirait.
+    """
+    forms = list(forms)
+    lengths = [len(item) // 2
+               for item in assemble([text.format(0x11223344) for text, _ in forms])]
+    aimed = [text.format(spot - (CODE + length))
+             for (text, spot), length in zip(forms, lengths)]
+
+    # **Et c'est objdump qui dit où ça vise, pas nous.** Comparer la longueur
+    # d'essai à la longueur réelle ne prouverait rien : une forme relative au
+    # pointeur d'instruction encode toujours son déplacement sur quatre octets,
+    # donc les deux seraient égales quoi qu'il arrive — une garde qui ne peut
+    # pas refuser. Le désassembleur, lui, **résout** l'adresse, et il le fait
+    # par son propre calcul : si la formule ci-dessus se trompait de la
+    # longueur, son verdict et le nôtre divergeraient. C'est ce contrôle-là qui
+    # peut échouer.
+    # Les formes sont assemblées à la suite, donc chacune est jugée depuis son
+    # propre décalage dans la section : c'est lui qu'objdump ajoute, et c'est
+    # ce décalage-là qu'il faut retrancher pour retomber sur la fenêtre. Ce
+    # détail a fait refuser la garde à sa première exécution.
+    for (text, spot), (offset, target) in zip(forms, resolved_targets(aimed)):
+        wanted = (spot - CODE + offset) % (1 << 64)
+        if target != wanted:
+            raise SystemExit(
+                f"{text} vise {target:#x} d'après objdump, et {wanted:#x} "
+                f"d'après le calcul : le déplacement ne tombe pas sur "
+                f"l'octet {spot:#x} de la fenêtre")
+    return aimed
+
+
+def resolved_targets(texts):
+    """L'adresse que chaque forme relative vise, telle qu'objdump la résout.
+
+    Le désassembleur écrit la cible en commentaire — `# 0xffffffffd0000004` —
+    parce qu'il refait lui-même l'addition du déplacement et du pointeur
+    d'instruction. C'est une seconde opinion, et c'est tout ce qu'on lui
+    demande. Chaque cible vient avec le décalage de son instruction dans la
+    section, sans quoi on comparerait des adresses prises depuis deux origines
+    différentes.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "aim.s"
+        obj = Path(directory) / "aim.o"
+        with open(source, "w") as out:
+            out.write(".text\n" + "".join(f"    {text}\n" for text in texts))
+        subprocess.run(["as", "--64", "-o", str(obj), str(source)], check=True)
+        listing = subprocess.run(
+            ["objdump", "-d", "--insn-width=16", str(obj)],
+            capture_output=True, text=True, check=True).stdout
+    found = [(int(where, 16), int(target, 16)) for where, target in
+             re.findall(r"^\s*([0-9a-f]+):\t.*# (0x[0-9a-f]+)$", listing, re.M)]
+    if len(found) != len(texts):
+        raise SystemExit(
+            f"{len(texts)} formes relatives demandées, {len(found)} cibles "
+            f"résolues par objdump")
+    return found
 
 
 def assemble(texts):
