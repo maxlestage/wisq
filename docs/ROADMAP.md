@@ -11829,3 +11829,38 @@ et le retour de main (le témoin Swift, lui, ne coupe pas) ; la délivrance
 d'interruption pendant `handle_softirqs`, qui rouvre les interruptions autour
 de sa boucle ; une autre instruction du chemin, qui changerait le flot plutôt
 que le compte.
+
+## #266 T1 — le pilote gagne un œil sur la mémoire qu'il mesure
+
+Miroirs 2528 → **2529**. Détail dans [`JOURNAL.md`](JOURNAL.md).
+
+**Le manque** : #262 a donné au pilote de quoi dire *où* la machine en est ; il
+ne savait dire **aucune valeur** de sa mémoire. #264 a cherché pendant une
+tranche entière pourquoi `preempt_count` dérive à `inet_init` sans jamais
+pouvoir regarder `preempt_count`.
+
+**Ce qui change** : `read(address, window)` de `web/host.js` — celui qui marche
+les tables de pages, préserve le témoin de faute et CR2, et rend `null` plutôt
+que des zéros — était une fermeture privée. Il est exposé. Et `WISQ_WATCH`
+demande au pilote de suivre une case : `ffffffff82b0b110` pour une adresse
+invitée, `gs:2e7c8` pour un décalage depuis la base du segment GS, **relue à
+chaque relevé** parce que le noyau la pose après les premières régions. La
+forme est refusée plutôt que devinée ; sans `WISQ_WATCH`, pas une ligne ni une
+lecture de plus.
+
+**Le test** tient que le lecteur rend les octets de l'invité, et que **regarder
+ne dérange rien** : une lecture qui laisserait le témoin de faute allumé ferait
+délivrer à l'invité une faute qu'il n'a pas provoquée. Il ne tient pas la
+marche paginée — la pagination est éteinte dans ce test, et le chemin paginé
+est celui que chaque mesure de noyau emprunte déjà.
+
+**Ce que l'enquête a établi sans écrire de code** : le candidat « une
+interruption délivrée pendant `handle_softirqs` » est **mort** — `x86_wasm.rs`
+dit deux fois que rien ne délivre d'interruption. Et l'horloge de l'invité ne
+bouge pas de tout le démarrage sous l'émetteur : 224 lignes horodatées, **une
+seule valeur**, quand le cœur Swift en porte 203 distinctes et QEMU 207. Ce
+n'est pas une découverte, c'est ce que la limite documentée produit — vérifié
+avant d'être annoncé.
+
+**T2** : mesurer, maintenant qu'on peut — `WISQ_WATCH=gs:2e7c8` sur le noyau de
+référence, et lire la trajectoire du compteur autour d'`inet_init`.

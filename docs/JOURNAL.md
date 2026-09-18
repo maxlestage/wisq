@@ -15558,3 +15558,102 @@ formes-là. Ce qui n'a pas encore été regardé, dans l'ordre de ce qui est pro
    notre machine a un 8259 et une horloge depuis #221 et #222.
 3. **Une autre instruction du chemin**, qui changerait le flot plutôt que le
    compte.
+
+## #266 T1 — le pilote ne savait lire aucune valeur de la mémoire qu'il mesure
+
+*Les miroirs passent de 2528 à 2529 : un test de plus.*
+
+#264 a passé une tranche entière à chercher pourquoi `preempt_count` dérive à
+`inet_init`, **sans jamais pouvoir regarder `preempt_count`**. #265 a retiré la
+seule piste qu'elle avait. Le manque est là, et il est structurel : #262 a
+donné au pilote de quoi dire *où* la machine en est ; il ne savait dire **aucune
+valeur** de sa mémoire.
+
+### Le lecteur existait, et restait enfermé
+
+`web/host.js` porte déjà `read(address, window)` : il marche les tables de
+pages quand elles sont en service, préserve le témoin de faute et CR2, s'arrête
+au bord de la RAM, et rend `null` quand il n'a rien pu lire. C'est le lecteur
+que la traduction emploie pour aller chercher ses fenêtres d'octets — celui
+dont #254 a montré qu'il compte, avec 15 761 fenêtres sur 16 189 différant du
+fichier ELF.
+
+Il était une fermeture privée de `machine()`. Il est maintenant rendu avec
+`memory`, `globals`, `blocks` et `known` : **un seul lecteur**, pas un second
+qui pourrait en différer.
+
+### `WISQ_WATCH`, et pourquoi la base GS se relit à chaque battement
+
+```
+WISQ_WATCH=ffffffff82b0b110   une adresse invitée, telle quelle
+WISQ_WATCH=gs:2e7c8           un décalage depuis la base du segment GS
+```
+
+La seconde forme est celle qui compte ici : c'est par GS qu'un noyau x86-64
+atteint tout ce qui est propre à un cœur, `preempt_count` compris. **La base
+est relue à chaque relevé**, pas capturée une fois : le noyau la pose après les
+premières régions, et une valeur figée désignerait la page zéro pendant tout le
+début du démarrage — c'est-à-dire un compteur toujours nul, et une mesure qui
+ment dans le sens rassurant.
+
+La forme est **refusée plutôt que devinée**, comme `WISQ_SCREEN` : un
+`WISQ_WATCH` mal écrit qui donnerait silencieusement « rien à suivre » ferait
+lire une mesure muette comme une mesure sans dérive.
+
+Sans `WISQ_WATCH`, pas une ligne de plus et pas une lecture de plus : une
+mesure qui ne surveille rien ne doit pas payer un accès mémoire par battement.
+
+### Ce que le test tient, et ce qu'il ne tient pas
+
+`the_driver_can_read_the_guests_memory_without_disturbing_it` tient deux
+choses : le lecteur rend bien les octets de l'invité à l'adresse donnée, et
+**regarder ne dérange rien** — le témoin de faute et CR2 reviennent comme ils
+étaient. Cette seconde moitié est ce qui sépare un instrument d'une écriture :
+une lecture qui laisserait le témoin allumé ferait délivrer à l'invité une
+faute qu'il n'a pas provoquée, et le relevé accuserait le noyau.
+
+**Ce qu'il ne tient pas, et il faut le dire** : la marche des tables de pages,
+et son refus. La pagination est éteinte dans ce test. Le chemin paginé est
+celui que chaque mesure de noyau emprunte déjà.
+
+**Sabotage** : retirer la remise en place du témoin de faute dans `read` fait
+tomber le test sur son assertion du témoin, nommément. Restauration vérifiée
+par `diff`.
+
+### Ce que l'enquête a établi en chemin, et qui n'est pas du code
+
+**Le candidat « une interruption délivrée pendant `handle_softirqs` » est
+mort**, et c'est le dépôt qui le dit, deux fois, dans `x86_wasm.rs` :
+
+> « `cli` et `sti` ne font rien de plus sur le silicium, et le produire ne
+> prétend pas que les interruptions marchent — **rien ne délivre encore** »
+>
+> « l'écrire peut rallumer le drapeau d'interruption sans jamais nommer `sti`,
+> et **rien ne délivre d'interruption** »
+
+Aucune interruption matérielle n'est délivrée : aucune paire entrée/sortie de
+`HARDIRQ` ne peut donc se perdre.
+
+**Et l'horloge de l'invité ne bouge pas de tout le démarrage** — conséquence de
+cette limite, visible dans chaque journal et jamais relevée :
+
+| machine | lignes horodatées | valeurs distinctes | jusqu'à |
+|---|---|---|---|
+| émetteur WebAssembly | 224 | **1** | `0.000000` |
+| cœur Swift | 225 | 203 | 92,699056 |
+| QEMU, forme de notre machine | 391 | 207 | 3,539777 |
+
+Ce n'est **pas** une découverte : c'est ce que la limite documentée produit. Il
+fallait aller le vérifier avant de l'annoncer — la règle que #261 a payée, et
+qui sert ici pour la deuxième fois de la journée.
+
+**Deux autres faits, pour la suite** : `wakeup_softirqd` n'a jamais été
+traduit, donc la boucle de reprise de `handle_softirqs` n'a pas pris ce
+chemin ; et le softirq qui tourne est la tâchelette du clavier — `tasklet_action`
+→ `tasklet_action_common` → `kbd_bh` → `led_trigger_event` —, levée par
+`__tasklet_schedule` à la traduction 6040, juste avant `inet_init`.
+
+### T2
+
+Mesurer, maintenant qu'on peut : `WISQ_WATCH=gs:2e7c8` sur le noyau de
+référence, et lire la trajectoire du compteur autour d'`inet_init`.

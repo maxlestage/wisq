@@ -1245,6 +1245,22 @@ export function machine({
     globals,
     blocks,
     known,
+    /// **Lire la mémoire de l'invité à une adresse invitée**, à travers les
+    /// tables de pages quand elles sont en service — le même lecteur que la
+    /// traduction emploie pour aller chercher ses fenêtres d'octets, et pas un
+    /// second qui pourrait en différer.
+    ///
+    /// **Il refuse plutôt que de rendre des zéros.** Une page absente donne
+    /// `null`, et un appelant qui prendrait un `null` pour un zéro dirait
+    /// « le compteur vaut 0 » là où la vérité est « je n'ai pas pu regarder ».
+    /// Le témoin de faute et CR2 sont remis comme ils étaient : regarder ne
+    /// doit rien changer à ce que la machine croit.
+    ///
+    /// Elle existe parce que le pilote de mesure ne savait dire **aucune**
+    /// valeur de la mémoire invitée pendant qu'il tournait. #264 a cherché
+    /// pourquoi `preempt_count` dérive à `inet_init` sans jamais pouvoir lire
+    /// `preempt_count`.
+    read,
     /// **Peindre l'image de l'invité dans un tampon que le dessinateur accepte.**
     ///
     /// **Ce n'est pas une recopie, c'est une conversion**, et c'est tout
