@@ -15448,3 +15448,113 @@ raisonnement et trouvée fausse. Un `scripts/boot-reference.sh` qui démarre le
 même noyau et la même racine sous QEMU dans la forme de notre machine — et qui
 **refuse franchement** quand QEMU n'est pas là, plutôt que de se taire — est une
 tranche à part entière, et elle est proposée, pas prise.
+
+## #265 — la forme qui porte l'état par processeur entre dans l'oracle, et les deux cœurs Rust y répondent juste
+
+*Les miroirs restent à 2528 : aucune fonction de test n'est ajoutée. L'oracle,
+lui, passe de 526 à 533 formes et de 13 220 à 13 388 cas.*
+
+#264 avait établi que le déséquilibre de `preempt_count` est le nôtre, qu'il
+est dans la lignée Rust, et que la forme qui porte tout l'état par processeur de
+Linux — **GS + RIP-relatif + lecture-modification-écriture** — n'était jugée par
+rien. Cette tranche la fait juger.
+
+### Les sept formes
+
+Celles que le noyau emploie vraiment sur son compteur de préemption, avec leur
+compte dans l'image de référence :
+
+| forme | octets | dans le noyau |
+|---|---|---|
+| `incl %gs:…(%rip)` | `65 ff 05` | 1 710 |
+| `decl %gs:…(%rip)` | `65 ff 0d` | 1 901 |
+| `addl $imm32, %gs:…(%rip)` | `65 81 05` | 130 |
+| `addl %ecx, %gs:…(%rip)` | `65 01 /r` | 1 |
+| `cmpxchgl %ecx, %gs:…(%rip)` | `65 0f b1` | 6 |
+| `andl $imm32, %gs:…(%rip)` | `65 81 25` | 19 |
+| `orl $imm32, %gs:…(%rip)` | `65 81 0d` | 1 |
+
+### Le déplacement n'est plus compté à la main
+
+L'adresse effective vaut `base_du_segment + (rip_après + déplacement)`, et
+l'oracle pose la base du segment sur la fenêtre de données : viser l'octet `n`
+demande `n - (CODE + longueur)`. La longueur dépend de la forme, et l'unique
+cas qui existait portait la sienne **en dur** — « huit octets », avec le
+commentaire « mesurée sur l'assembleur et pas devinée ».
+
+Un compte à la main qui se trompe d'un octet ici **ne fait pas fauter** : le
+déplacement reste dans la fenêtre, l'instruction touche l'octet d'à côté, et
+l'oracle grave fidèlement un cas qui n'est pas celui qu'on croyait écrire.
+`aim_at_window` demande donc la longueur à l'assembleur, pour les huit formes
+d'un coup. La ligne de #250 en sort **mot pour mot identique** : la valeur
+codée en dur était juste, c'est sa nature qui ne l'était pas.
+
+### La garde, et ce qu'elle a attrapé du premier coup
+
+Comparer la longueur d'essai à la longueur réelle n'aurait rien prouvé : une
+forme relative au pointeur d'instruction encode **toujours** son déplacement
+sur quatre octets, donc les deux seraient égales quoi qu'il arrive — une garde
+incapable de refuser. C'est donc **objdump** qui résout l'adresse, par son
+propre calcul, et qu'on compare au nôtre.
+
+Elle a refusé à sa première exécution :
+
+```
+incl %gs:{}(%rip) vise 0xffffffffd000000c d'après objdump, et
+0xffffffffd0000004 d'après le calcul
+```
+
+Les formes sont assemblées à la suite, donc objdump juge chacune depuis son
+décalage dans la section, et c'est ce décalage qu'il fallait retrancher. La
+garde a rattrapé mon cadrage, pas une faute de silicium — c'est exactement ce
+qu'on lui demande, et elle a prouvé du même coup qu'elle sait refuser.
+
+Le verdict du silicium le confirme dans les données : pour `incl`, la fenêtre
+rendue est `10 11 12 13 **15** 15 16 17…` — l'octet 4, parti de `0x14`, vaut
+`0x15`. L'instruction a touché l'octet visé, et pas son voisin.
+
+### Et les deux cœurs Rust passent
+
+```
+every_accepted_instruction_matches_the_silicon                        ok
+what_the_emitter_produces_matches_the_silicon_under_javascriptcore    ok
+```
+
+**La piste de #264 est donc fausse.** Le `add %esi,%gs:…(%rip)` unique
+d'`__local_bh_enable_ip + 28`, et ses six sœurs, s'exécutent juste dans
+l'interpréteur comme dans l'émetteur, sur les vingt-quatre états de l'oracle.
+#264 l'écrivait « piste, pas conclusion » ; c'était la bonne prudence, et la
+mesure vient de la retirer.
+
+**Sabotage, parce qu'un test qui passe sans rien exécuter ment.** Un seul octet
+changé dans un seul cas de `incl %gs:…(%rip)` — l'octet 4 de la fenêtre remis à
+`0x14`, comme si l'instruction n'avait rien fait — fait tomber les deux, et on
+peut les nommer : `every_accepted_instruction_matches_the_silicon`
+(`x86_oracle.rs:448`) et
+`what_the_emitter_produces_matches_the_silicon_under_javascriptcore`
+(`x86_wasm.rs:604`). L'oracle a été restauré et la restauration vérifiée par
+`diff`, pas par confiance.
+
+### Une nuance que #264 laissait entendre, et qui est fausse
+
+#264 notait « le corpus non plus : zéro de ses 9 225 formes ne commence par
+65 ». C'est vrai, et **ce n'est pas un défaut** : le corpus se fabrique en
+désassemblant de vrais binaires **utilisateur** — `/bin/ls`, `bash`, la libc —
+et l'espace utilisateur atteint ses variables de fil par `%fs:`, pas par
+`%gs:`. Le préfixe GS est un mécanisme de noyau ; c'est l'oracle qui le porte,
+et c'est le bon endroit.
+
+### Ce qui reste, pour #266
+
+La dérive de `preempt_count` n'est donc pas une erreur d'arithmétique sur ces
+formes-là. Ce qui n'a pas encore été regardé, dans l'ordre de ce qui est propre
+à l'émetteur :
+
+1. **La coupe des régions et le retour de main.** L'émetteur découpe et rend la
+   main ; l'interpréteur Swift, non. C'est la différence de structure la plus
+   large entre l'accusé et les témoins.
+2. **La délivrance d'interruption pendant le chemin de softirq.**
+   `handle_softirqs` rouvre les interruptions autour de sa boucle d'actions, et
+   notre machine a un 8259 et une horloge depuis #221 et #222.
+3. **Une autre instruction du chemin**, qui changerait le flot plutôt que le
+   compte.

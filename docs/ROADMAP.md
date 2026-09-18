@@ -11787,3 +11787,45 @@ sens propre.
 racine sous QEMU dans la forme de notre machine et refuse franchement quand QEMU
 manque. Quatre fois cette séance, « est-ce le nôtre ? » a été tranché par le
 raisonnement et mal tranché.
+
+## #265 — la forme qui porte l'état par processeur est jugée, et les deux cœurs Rust y répondent juste
+
+Les miroirs restent à 2528 : aucune fonction de test n'est ajoutée. L'oracle
+passe de **526 à 533 formes** et de 13 220 à 13 388 cas. Détail dans
+[`JOURNAL.md`](JOURNAL.md).
+
+**Ce qui entre** : les sept formes **GS + RIP-relatif +
+lecture-modification-écriture** que le noyau emploie sur son compteur de
+préemption — `incl` (1 710 fois), `decl` (1 901), `addl $imm32` (130),
+`addl %reg` (1), `cmpxchgl %reg` (6), `andl $imm32` (19), `orl $imm32` (1).
+Jusqu'ici l'oracle jugeait GS + absolu + modification, et GS + relatif +
+lecture ; jamais les trois ensemble.
+
+**Le déplacement cesse d'être compté à la main.** Il dépend de la longueur de
+l'instruction, et se tromper d'un octet ne fait pas fauter : l'instruction
+touche l'octet d'à côté et l'oracle grave un cas qui n'est pas celui qu'on
+croyait écrire. `aim_at_window` demande la longueur à l'assembleur, et fait
+**résoudre la cible par objdump** pour la comparer au calcul — une garde qui
+peut refuser, et qui a refusé à sa première exécution en rattrapant un décalage
+de section. La ligne de #250 en sort mot pour mot identique.
+
+**Et les deux cœurs Rust passent.** `every_accepted_instruction_matches_the_silicon`
+et `what_the_emitter_produces_matches_the_silicon_under_javascriptcore`, tous
+deux verts sur les nouvelles lignes ; sabotage-vérifiés, un octet suffit à les
+faire tomber tous les deux.
+
+**La piste de #264 est donc fausse.** Le `add %esi,%gs:…(%rip)` unique
+d'`__local_bh_enable_ip` et ses six sœurs s'exécutent juste. #264 l'écrivait
+« piste, pas conclusion » ; la mesure vient de la retirer.
+
+**Une nuance de #264 corrigée** : « zéro des 9 225 formes du corpus ne commence
+par 65 » est vrai mais n'est pas un défaut — le corpus se fabrique sur de vrais
+binaires **utilisateur**, qui atteignent leurs variables de fil par `%fs:`. GS
+est un mécanisme de noyau, et c'est l'oracle qui le porte.
+
+**#266, ce qui reste** : la dérive n'est pas une erreur d'arithmétique sur ces
+formes. Dans l'ordre de ce qui est propre à l'émetteur — la coupe des régions
+et le retour de main (le témoin Swift, lui, ne coupe pas) ; la délivrance
+d'interruption pendant `handle_softirqs`, qui rouvre les interruptions autour
+de sa boucle ; une autre instruction du chemin, qui changerait le flot plutôt
+que le compte.
