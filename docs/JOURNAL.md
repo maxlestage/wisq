@@ -14543,3 +14543,143 @@ après le trailer ne provoque plus la plainte, et c'est celle dont viennent les
 chiffres ci-dessus. Ce n'est pas un défaut de wisq : `declare_ramdisk` déclare
 la taille exacte du fichier, pas une taille arrondie. Noté dans la recette pour
 qui refera la mesure.
+
+## #258 — l'espace utilisateur tourne, et c'est un bit qui manquait
+
+Quatre instructions de `/init` se sont exécutées. C'est la première fois, et ce
+n'est pas RIP tout seul qui le dit — ce sont leurs **effets** :
+
+| ce que l'instruction fait | registre attendu | mesuré |
+| --- | --- | --- |
+| `mov $0x2,%rax` — `SYS_open` | 2 | `0x2` |
+| `lea 0x28(%rip),%rdi` → `chemin` | 0x401036 | `0x401036` |
+| `mov $0x1,%rsi` — `O_WRONLY` | 1 | `0x1` |
+| `xor %rdx,%rdx` | 0 | `0x0` |
+
+`0x401036` est l'adresse que `objdump` donne pour l'étiquette `chemin` du
+programme. Un `lea` relatif à RIP qui tombe juste, en anneau trois, sur une page
+que le noyau vient de cartographier à la demande.
+
+La machine s'arrête à `0x401018` — le `syscall`, cinquième instruction, `0f 05`.
+
+### Les deux défauts, et ils allaient ensemble
+
+**Le premier : personne ne délivrait de faute de page pour un chargement
+d'instruction.** #257 laissait la machine à `0x401000`, le point d'entrée de
+`/init`, sur « aucune page derrière l'adresse ». L'hôte constatait qu'il ne
+savait pas lire les octets et s'arrêtait. Or le texte d'un programme est
+cartographié **à la demande** : la première page arrive parce que le processeur
+faute dessus. `install` rendait `UNMAPPED`, `run` nommait l'arrêt, et personne
+ne passait par `deliver`.
+
+**Le second : le code d'erreur d'une faute de page était toujours zéro.** Le
+module range « code d'erreur zéro, plus un » et l'hôte soustrayait un. Zéro veut
+dire « une lecture du noyau sur une page absente » — et le **bit 2** dit que
+l'accès vient de l'espace utilisateur. C'est *le* bit que Linux regarde pour
+trancher entre « une page manque à un programme, je la lui pose » et « le noyau
+est parti dans le décor, j'affiche un oops ».
+
+Le cœur Swift l'avait payé au lot 7, et le journal le porte encore : premier
+programme jamais lancé, `Oops: 0010`, `Kernel panic — not syncing: Attempted to
+kill init!`. Et la phrase qui va avec : « le programme n'avait rien fait de mal,
+on avait juste oublié de dire qu'il était le programme ».
+
+Corriger le premier sans le second aurait donné une délivrance qui mène à un
+oops — un bouchon complaisant, qui aurait eu l'air de marcher jusqu'à ce que le
+noyau tue `/init`. Les deux sont la même tranche.
+
+### Le bit 4, et pourquoi il reste éteint
+
+Le manuel réserve le bit de chargement d'instruction : « set to 0 if
+CR4.SMEP = 0 and either CR4.PAE = 0 or IA32_EFER.NXE = 0 ». En mode long PAE est
+toujours posé, donc la condition se réduit à SMEP ou NXE. Cette machine n'arme
+ni l'un ni l'autre — son propre noyau le dit au démarrage, « Notice: NX (Execute
+Disable) protection missing in CPU! ».
+
+Le poser d'office aurait été une infidélité **silencieuse** : un noyau qui
+distingue les deux causes agirait sur un bit que le silicium ne lui aurait pas
+donné. La condition est donc écrite, et **éprouvée dans les deux sens** — le
+même chargement, avec NXE, avec SMEP, et sans ni l'un ni l'autre.
+
+### La garde de double faute, et le sabotage qui l'a trouvée nue
+
+Délivrer une faute de chargement ouvre un piège : si la porte mène à une adresse
+que les tables ne portent pas non plus, la boucle faute, délivre, refaute — et
+rend « tours épuisés », un relevé qui ne dit pas ce qui manque. Sur le silicium
+c'est une double faute.
+
+La garde compte les chargements fautifs **d'affilée**, et retombe dès qu'une
+région s'installe : un noyau qui cartographie à la demande en enchaîne autant
+que le programme a de pages, mais entre chacun une région s'installe.
+
+**Et la remise à zéro n'était tenue par rien.** Le dixième sabotage l'a dit :
+l'enlever ne faisait tomber aucun test, parce qu'aucun montage ne délivrait
+*deux* chargements fautifs séparés par une région installée. Il a fallu un
+gestionnaire qui refaute et qui compte ses passages — l'arrêt est le même des
+deux côtés, c'est le nombre de passages qui tranche. **Une assertion sur l'arrêt
+aurait eu l'air d'une garde sans en être une.**
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le chargement fautif s'arrête au lieu d'être délivré | quatre tests |
+| CR2 n'est pas posé sur l'adresse illisible | le chargement en anneau trois |
+| le bit utilisateur n'est jamais posé | le code d'erreur, le bit 4 |
+| le bit utilisateur est posé d'office | le code d'erreur, **et #194** |
+| le bit de chargement est posé sans condition | la règle du manuel |
+| le bit de chargement n'est jamais posé | la règle du manuel |
+| SMEP seul ne suffit plus | la règle du manuel |
+| le chemin de donnée ne passe plus par le composeur | le code d'erreur |
+| aucune garde de double faute | la double faute, la remise à zéro |
+| le compteur ne retombe jamais | la remise à zéro |
+
+Dix pour dix, restauration vérifiée par `diff`.
+
+### Un montage qui a coûté deux faux départs
+
+**Servir des modules préconstruits ne marche pas ici.** Un module porte son
+créneau **gravé** : l'émetteur pose ses blocs à l'emplacement qu'on lui a donné.
+Or le créneau dépend du nombre de blocs que la région précédente a posés, et un
+`jmp *%rax` en pose deux là où une lecture n'en pose qu'un. Le gestionnaire
+était compilé pour l'emplacement 1 et installé au 2 — « la région à 69632 n'a
+posé aucun bloc à l'emplacement 2 ». Le protocole de #254 est ce qui tient :
+les octets vivent en mémoire invitée, l'hôte passe la fenêtre qu'il a lue **par
+les tables**, et `x86-translate` traduit pour l'emplacement demandé.
+
+**Et j'ai patché la mauvaise fonction.** Un `str.replace(old, new, 1)` sur un
+motif que trois pilotes de ce fichier partagent mot pour mot a atterri dans le
+test de l'`int3`. Restauré depuis `HEAD` fonction par fonction, puis appliqué en
+isolant d'abord le texte de `tss_driver`. **Un remplacement « le premier qui
+correspond » sur un fichier de onze mille lignes n'est pas une édition, c'est un
+tirage au sort.**
+
+### La mesure
+
+| | #257 | #258 |
+| --- | --- | --- |
+| régions traduites | 11 946 | **11 989** |
+| tours | 2 333 398 | 2 333 575 |
+| RIP à l'arrêt | `0x401000` — le point d'entrée | **`0x401018` — le `syscall`** |
+| CR2 | `0xffff88800ffff000` | **`0x401000`** |
+| arrêt | « aucune page derrière l'adresse » | « refusée » |
+| anneau | 3 | 3 |
+
+CR2 à `0x401000` est la trace de la faute délivrée ; `rip 0x401018` est ce que
+le noyau a rendu après avoir posé la page.
+
+### Ce que ça montre, et ce que ça ne montre pas
+
+**Ce que ça montre, et c'est nouveau :** un programme d'espace utilisateur
+exécute des instructions sous wisq, sur une page que le noyau lui a
+cartographiée en réponse à une faute que wisq lui a délivrée.
+
+**Ce que ça ne montre pas :** la marque de `/init` n'apparaît toujours pas. Elle
+s'imprime par un `write`, donc par un appel système, et `syscall` — `0f 05` —
+n'est pas produite par l'émetteur. Quatre instructions, ce n'est pas un
+programme qui tourne ; c'est un programme qui a commencé.
+
+### Le mur suivant, nommé par l'arrêt lui-même
+
+**#259 — `syscall` et `sysret`, produites par l'émetteur et exécutées pour de
+vrai.** Les quatre MSR sont déjà rangés depuis #205 — STAR, LSTAR, CSTAR,
+SYSCALL_MASK — et le dépôt le dit : « lus par rien : `syscall` n'est pas
+produite ». Le cœur Swift les fait depuis #129, et c'est encore un oracle écrit.
