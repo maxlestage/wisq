@@ -59,13 +59,17 @@ public struct X86BootLoader {
     /// dans le pixel.
     ///
     /// **Quel pilote ramasse ensuite dépend du noyau invité, pas de nous.**
-    /// Ce commentaire disait jusqu'à #260 que le chemin moderne — `sysfb`,
-    /// puis `simpledrm` ou `simplefb` — « s'accroche à `VIDEO_TYPE_VLFB` ».
-    /// C'était faux deux fois : `sysfb` accepte `VIDEO_TYPE_EFI` tout autant,
-    /// et le noyau de référence mesuré (Alpine 6.6.134-0-lts) ne porte ni
-    /// `simpledrm` ni `simplefb` — son seul pilote de tampon est `efifb`.
-    /// Voir #260 dans le JOURNAL : aucune déclaration n'atteint les deux
-    /// familles de pilotes, et le choix est une direction ouverte.
+    /// `sysfb` accepte `VIDEO_TYPE_EFI` tout autant que `VIDEO_TYPE_VLFB` ;
+    /// ce commentaire l'a nié jusqu'à #260, et c'était faux.
+    ///
+    /// #260 l'a ensuite remplacé par autre chose de faux — « le noyau de
+    /// référence ne porte ni `simpledrm` ni `simplefb` » — tiré de chaînes
+    /// absentes de `vmlinux`. #261 l'a défait : `ext4` et `virtio_blk` en sont
+    /// absents aussi, parce que ce sont des **modules**. Le témoin du
+    /// 6 septembre 2026, dans `X86BootAttemptTests`, montre `simpledrm` se
+    /// lier sous `VLFB` sur ce même noyau. **La valeur d'ici est la bonne** ;
+    /// ce qu'une mesure sans modules ne peut pas atteindre, c'est le pilote
+    /// qui en est un.
     ///
     /// Le format est **XRGB8888**, quatre octets par pixel : c'est celui que
     /// `simpledrm` accepte sans conversion, et celui que Core Graphics et
@@ -134,6 +138,10 @@ public struct X86BootLoader {
     /// et la mesure le démentit. Sous `VIDEO_TYPE_EFI` le noyau de référence
     /// relit ces champs un par un et les rend
     /// (`efifb: mode is 1024x768x32, linelength=4096`).
+    ///
+    /// C'est bien la valeur à écrire : le témoin du 6 septembre 2026 montre
+    /// `simpledrm` se lier derrière elle sur le noyau de référence. #260 avait
+    /// conclu l'inverse d'une lecture de chaînes ; voir #261.
     public static let videoTypeLinearFramebuffer: UInt8 = 0x23
 
     public static let e820CountOffset = 0x1E8

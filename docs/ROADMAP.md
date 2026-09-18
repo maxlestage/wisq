@@ -11533,6 +11533,15 @@ Le compte passe à 2526 : deux tests, onze sabotages, onze chutes nommées.
 
 ## #260 — l'écran déclaré n'atteint aucun pilote de ce noyau, et la phrase qui l'interdisait d'essayer
 
+> **CORRIGÉ PAR #261, et sur son point central.** Le titre dit « le pilote qui
+> n'existe pas » : il existe. `simpledrm` est un **module** de ce noyau, et le
+> dépôt portait déjà le témoin — 6 septembre 2026, même noyau — où il se lie
+> sous `VLFB`. Tout ce qui suit et qui repose sur « ce noyau ne porte qu'un
+> pilote de tampon » est faux, y compris la direction posée à Maxime, qui est
+> retirée. Les trois mesures restent justes ; c'est leur lecture qui ne
+> l'était pas. Lire #261 avant cette entrée.
+
+
 **C'est une mesure, et elle commence par une erreur de ma part.** J'ai annoncé
 un défaut nommé sur la foi d'une ligne de la mesure de #259 —
 `Console: colour dummy device 80x25` — alors que **cette mesure ne demandait
@@ -11591,3 +11600,47 @@ honnêtement ; ou lire le noyau qu'on nous donne et déclarer le couple qu'il sa
 lier, la seule route qui couvre les deux et la seule qui soit une heuristique.
 
 Le compte passe à 2527 : un test, quatre sabotages, quatre chutes nommées.
+
+## #261 — « la chaîne est absente » n'est pas « le pilote manque », et #260 en avait conclu le contraire
+
+**Le défaut est à moi, et il a un commit.** #260 affirme que le noyau de
+référence ne porte qu'un pilote de tampon, `efifb`, parce que `simpledrm`,
+`simplefb` et `vesafb` sont absents des chaînes de `vmlinux`. L'inférence est
+invalide, et une commande le montre : `ext4`, `btrfs`, `xfs`, `virtio_blk`,
+`virtio_net`, `nvme`, `usbcore` et `overlay` en sont **tous** absents aussi.
+Ce sont des **modules**, et le noyau porte tout le chargeur — `vermagic`,
+`module_layout`, « Unknown symbol », « module verification failed ». Une chaîne
+absente de `vmlinux` dit « pas intégré », jamais « pas supporté ».
+
+**Le témoin était dans le dépôt depuis douze jours.** Le 6 septembre 2026, sur
+le même noyau (6.6.134-0-lts, Alpine 3.20), avec `WISQ_PC_DISPLAY=1024x768` et
+l'`initramfs-lts` d'Alpine, `X86BootAttemptTests` a relevé
+`[drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0` puis
+`fb0: simpledrmdrmfb frame buffer device` — sous `VLFB` + unités de 64 Kio, la
+déclaration du dépôt. Et #136 a pour sujet un module chargé sous wisq : le dépôt
+savait que les modules se chargent.
+
+**Les trois mesures de #260 sont justes ; leur lecture ne l'était pas.** Mon
+initramfs fait cinq kibioctets et ne porte aucun module. Sans modules, le seul
+pilote de tampon atteignable est l'intégré, `efifb`, qui exige
+`VIDEO_TYPE_EFI` — et l'écran ne s'y lie que parce que `lfb_size`
+sous-déclare, ce qui détourne `sysfb` du chemin moderne. Le tableau mesurait le
+montage.
+
+**La direction posée à Maxime est retirée.** Sa prémisse — aucune déclaration
+n'atteint les deux familles — est fausse : `VLFB` + unités les atteint toutes
+les deux. Il n'y a pas de fourche, et rien n'attend sa parole sur ce point.
+
+Corrigés : `kernel_image.rs`, le doc et le commentaire de
+`the_video_type_and_the_size_unit_are_one_pair`, `X86BootLoader.swift` (deux
+endroits), et les entrées #260 du JOURNAL et d'ici, qui portent maintenant un
+avertissement en tête.
+
+**Pas de test nouveau, et c'est délibéré.** Rien dans le code n'était faux ;
+`the_video_type_and_the_size_unit_are_one_pair` reste juste et tient toujours le
+couple. Tenir « ce noyau porte `simpledrm` en module » demanderait les modules
+d'Alpine, que ce conteneur n'a pas — et l'assertion écrite sans eux ne pourrait
+pas échouer.
+
+**La règle à retenir** : avant de conclure d'une absence, chercher la même
+absence là où l'on sait que la chose est présente. `ext4` aurait suffi.

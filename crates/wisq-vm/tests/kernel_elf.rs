@@ -292,8 +292,10 @@ fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
     // noyau décale `lfb_size` de seize bits.** Ce qui était écrit ici jusqu'à
     // #260 — « sans quoi tout le reste est ignoré », et « le chemin moderne,
     // `sysfb` puis `simpledrm`, s'accroche à cette valeur » — était faux deux
-    // fois : `sysfb` accepte `VIDEO_TYPE_EFI` tout autant, et le noyau de
-    // référence ne porte pas `simpledrm` du tout. Le couple type + unité est
+    // fois : `sysfb` accepte `VIDEO_TYPE_EFI` tout autant, et le chemin qu'il
+    // prend ne dépend pas que du type. En revanche ce noyau **porte bien**
+    // `simpledrm`, en module — #260 avait conclu le contraire de chaînes
+    // absentes de `vmlinux`, et #261 l'a défait. Le couple type + unité est
     // tenu par `the_video_type_and_the_size_unit_are_one_pair`, juste après.
     assert_eq!(byte(0x0f), 0x23, "orig_video_isVGA : un cadre linéaire");
     assert_eq!(word(0x12), 1024, "lfb_width");
@@ -380,9 +382,10 @@ fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
 /// Changer l'un des deux champs sans l'autre ne donne donc pas un écran un peu
 /// faux : cela envoie le noyau chez un autre pilote, ou chez aucun.
 ///
-/// **Mesuré (#260)** — trois démarrages du noyau de référence, Alpine
-/// 6.6.134-0-lts, à travers l'émetteur, qui ne diffèrent que par ces deux
-/// champs :
+/// **Mesuré (#260, relu par #261)** — trois démarrages du noyau de référence,
+/// Alpine 6.6.134-0-lts, à travers l'émetteur, avec un initramfs de cinq
+/// kibioctets qui **ne porte aucun module**, et qui ne diffèrent que par ces
+/// deux champs :
 ///
 /// | déclaration | ce que le noyau en fait |
 /// |---|---|
@@ -390,23 +393,33 @@ fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
 /// | `EFI` + unités de 64 Kio | `sysfb: VRAM smaller than advertised`, puis `fb0: EFI VGA frame buffer device` |
 /// | `EFI` + octets | `Console: colour dummy device 80x25`, aucun `fb0` |
 ///
-/// Ce noyau ne porte **qu'un** pilote de tampon, `efifb`, et `efifb` ne se lie
-/// qu'au périphérique `efi-framebuffer`, que `sysfb` ne pose que si le chemin
-/// `simple-framebuffer` a refusé. D'où la deuxième ligne : l'écran y marche
-/// **parce que** la taille est fausse. Ce n'est pas une conduite à garder —
-/// c'est la raison de ne jamais changer un de ces deux champs sans l'autre.
+/// **Sans modules, le seul pilote de tampon atteignable est celui qui est
+/// intégré : `efifb`.** Et `efifb` ne se lie qu'au périphérique
+/// `efi-framebuffer`, que `sysfb` ne pose que si le chemin
+/// `simple-framebuffer` a refusé — il refuse ici sur la taille. D'où la
+/// deuxième ligne, et sa forme désagréable : l'écran y marche **parce que** la
+/// taille est fausse.
 ///
-/// La colonne qui manque — un noyau portant `simplefb` ou `simpledrm` — est
-/// **déduite du chemin de code, pas mesurée** : aucun noyau de ce genre n'a
-/// tourné ici. Là, c'est `VLFB` + unités qui se lierait, et `EFI` + unités qui
-/// ne se lierait pas. Aucun couple n'atteint les deux familles.
+/// **Ce tableau mesure le montage, pas le noyau — et #260 l'a mal lu.** Il en
+/// avait conclu que ce noyau ne portait qu'`efifb`, parce que `simpledrm`,
+/// `simplefb` et `vesafb` sont absents des chaînes de `vmlinux`. L'inférence
+/// est invalide : `ext4`, `virtio_blk`, `nvme` et `usbcore` en sont absents
+/// aussi, parce qu'Alpine en fait des **modules**. Le témoin du 6 septembre
+/// 2026, dans `Tests/WisqVMTests/X86BootAttemptTests.swift`, montre
+/// `[drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0` sur **ce même
+/// noyau**, avec l'initramfs d'Alpine et ses modules. `VLFB` + unités est donc
+/// la bonne déclaration ; ce qui manquait à la mesure de #260, ce sont les
+/// modules.
 ///
-/// Le commentaire que cette tranche a corrigé disait l'inverse : « sans
+/// Reste ce que la mesure établit vraiment, et qui vaut d'être su : **un
+/// démarrage sans modules n'a pas d'écran**, à moins de déclarer `EFI` — au
+/// prix d'une taille fausse.
+///
+/// Le commentaire que #260 a corrigé, lui, était bien faux : « sans
 /// `VIDEO_TYPE_VLFB`, tout le reste est ignoré ». La mesure montre le noyau
 /// relire les champs suivants un par un sous `VIDEO_TYPE_EFI` — `efifb: mode is
 /// 1024x768x32, linelength=4096` et `Truecolor: size=8:8:8:8, shift=24:16:8:0`
-/// sont les octets de wisq, rendus. C'était la phrase qui interdisait d'essayer
-/// la valeur qui marche.
+/// sont les octets de wisq, rendus.
 #[test]
 fn the_video_type_and_the_size_unit_are_one_pair() {
     use wisq_vm::desktop::Screen;
