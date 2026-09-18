@@ -11753,9 +11753,27 @@ dans ce noyau, dont **un seul `add` d'un registre** — `__local_bh_enable_ip +
 28`, sur le chemin qui s'ouvre au moment exact de la dérive. Piste, pas
 conclusion.
 
-**En attente** : la comparaison avec le cœur Swift (`X86BootAttemptTests` sur
-les mêmes fichiers) tournait encore. S'il ne produit pas l'avertissement, la
-divergence est dans la lignée Rust ; s'il le produit, elle est ailleurs.
+**Le cœur Swift ne le produit pas.** 213 secondes en release,
+2 689 863 007 instructions retirées, verdict imprimé. Il passe `inet_init`
+exactement comme QEMU — `UDP-Lite hash table entries…` puis
+`NET: Registered PF_UNIX/PF_LOCAL`, rien entre les deux — et `preemption
+imbalance` n'apparaît **nulle part** dans son journal. Trois témoins silencieux,
+un seul accusé : **la divergence est dans la lignée Rust, et le cœur Swift est
+l'oracle.**
+
+**Pourquoi rien ne l'avait attrapée.** Les 4 057 touches à `preempt_count` de ce
+noyau sont toutes en RIP-relatif préfixé GS, et 3 768 sont des
+lectures-modifications-écritures. L'oracle porte quinze formes préfixées GS :
+**GS + absolu + RMW** (`incq %gs:0x30`, `addq %rax,%gs:0x28`) et **GS +
+RIP-relatif + lecture** (`movq %gs:…(%rip),%rax`). La combinaison des deux —
+**GS + RIP-relatif + RMW, sur 32 bits** — n'est jugée par rien, et le corpus
+n'en porte aucune (zéro de ses 9 225 formes ne commence par `65`). C'est la
+forme qui porte tout l'état par processeur de Linux.
+
+**#265, la tranche suivante** : poser ces formes dans l'oracle
+(`scripts/build-x86-oracle.py`, contre le vrai silicium — cette machine-ci en
+est un) et voir lequel des trois cœurs tombe. Le test avant le correctif, au
+sens propre.
 
 **Proposé, pas pris** : `scripts/boot-reference.sh`, qui démarre un noyau et une
 racine sous QEMU dans la forme de notre machine et refuse franchement quand QEMU

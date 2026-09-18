@@ -15360,12 +15360,69 @@ Le noyau n'imprime pas les deux valeurs dans cet avertissement-là ; le vidage d
 registres du `WARN` donne `R13 = 0` (le compte d'avant) mais `RAX` a déjà été
 écrasé quand la trace sort.
 
-**Ce que le cœur Swift en dit.** La comparaison a été lancée — `swift test
---filter X86BootAttemptTests` avec `WISQ_PC_KERNEL` et `WISQ_PC_INITRD` sur les
-mêmes fichiers — et tournait encore au moment d'écrire. Elle n'est **pas**
-comptée ici. Si le cœur Swift ne produit pas l'avertissement, la divergence est
-dans la lignée Rust et le cœur Swift sert d'oracle ; s'il le produit aussi, elle
-est partagée par les trois cœurs, et le montage entre en cause.
+**Quelle instruction perd le compte** — voir plus bas : le chemin est nommé, le
+trou dans l'oracle aussi, mais pas encore l'octet.
+
+### Le cœur Swift ne le produit pas
+
+`swift test -c release --filter X86BootAttemptTests` sur les mêmes fichiers,
+213 secondes, **2 689 863 007 instructions retirées**, un test exécuté, verdict
+imprimé — la suite a bien tourné, et c'est vérifié au verdict et non au filtre.
+
+Le contrôle d'abord : le cœur Swift a-t-il dépassé `inet_init` ? Oui, et il y va
+exactement comme QEMU :
+
+```
+[   32.528108] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes, linear)
+[   32.550804] NET: Registered PF_UNIX/PF_LOCAL protocol family
+```
+
+Rien entre les deux. Et `preemption imbalance` n'apparaît **nulle part** dans
+son journal — aucun `initcall`, pas seulement `inet_init`.
+
+Trois témoins, donc, et un seul accusé :
+
+| machine | `inet_init` |
+|---|---|
+| QEMU 8.2.2, forme ordinaire | silencieux |
+| QEMU 8.2.2, forme de notre machine | silencieux |
+| cœur Swift (interpréteur) | silencieux, partout |
+| **émetteur WebAssembly (lignée Rust)** | **déséquilibré** |
+
+**La divergence est dans la lignée Rust, et le cœur Swift est l'oracle.**
+
+### Pourquoi rien ne l'avait attrapée : la forme n'est jugée nulle part
+
+Les 4 057 touches à `preempt_count` de ce noyau sont **toutes** en RIP-relatif
+préfixé GS, et **3 768** d'entre elles sont des lectures-modifications-écritures
+(`incl`, `decl`, `addl`, `add`, `andl`, `orl`, `cmpxchg`). Seules 289 sont des
+lectures.
+
+L'oracle porte 526 formes d'instruction. Quinze portent le préfixe GS :
+
+```
+445  movq %gs:0x10, %rax              454  incq %gs:0x30
+448  movq %rax, %gs:0x18              455  andl $0x0F0F0F0F, %gs:0x8
+453  addq %rax, %gs:0x28              468  movq %gs:-805306360(%rip), %rax
+…
+```
+
+Il y a donc **GS + absolu + lecture-modification-écriture** (`incq %gs:0x30`,
+`addq %rax,%gs:0x28`, `andl $…,%gs:0x8`), et **GS + RIP-relatif + lecture**
+(`movq %gs:…(%rip),%rax`, le cas posé exprès dont `x86.rs` parle).
+
+**La combinaison des deux — GS + RIP-relatif + lecture-modification-écriture,
+sur 32 bits — n'est jugée par rien.** Le corpus n'en porte aucune non plus :
+sur ses 9 225 formes, **zéro** ne commence par `65`.
+
+C'est exactement la forme qui porte tout l'état par processeur de Linux. Elle
+traverse le démarrage 3 768 fois pour le seul `preempt_count`, et aucun juge ne
+l'a jamais regardée.
+
+**#265 : poser ces formes dans l'oracle, et voir lequel des trois cœurs tombe.**
+Le test avant le correctif, au sens propre : les lignes de l'oracle se
+fabriquent contre le vrai silicium (`scripts/build-x86-oracle.py`), et cette
+machine-ci est un x86-64.
 
 ### Ce que cette mesure ajoute au dépôt comme méthode
 
