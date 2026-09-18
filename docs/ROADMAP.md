@@ -11712,6 +11712,52 @@ mesure porte `initcall inet_init+0x0/0x560 returned with preemption imbalance`
 et un `WARNING` à `init/main.c:1263`. Le noyau compare lui-même `preempt_count`
 avant et après l'`initcall` — deux nombres qui devraient s'accorder. Personne ne
 l'a lu. Premier pas : le cœur Swift produit-il le même avertissement ?
+> **#264 l'a lu.** Le déséquilibre est bien le nôtre — QEMU passe `inet_init`
+> sans un mot, y compris dans la forme de notre machine — et il tombe à la
+> première exécution de softirq de la vie de la machine, à l'intérieur
+> d'`inet_init`.
 
 **Ce que ça ne montre pas** : rien n'a été affiché. Ni `busybox`, ni un module,
 ni `simpledrm`. « Jusqu'en anneau trois » n'est pas « jusqu'à un bureau ».
+
+## #264 — le déséquilibre de `preempt_count` est le nôtre, et il tombe au premier softirq
+
+**Mesure, pas tranche.** Aucun code ne change ; les miroirs restent à 2528.
+Détail complet dans [`JOURNAL.md`](JOURNAL.md).
+
+**Est-ce le nôtre ?** Oui, et c'est mesuré. Le même noyau (Alpine
+`6.6.134-0-lts`) et la même racine (`initramfs-lts` d'Alpine v3.20) sous QEMU
+8.2.2 en TCG passent `inet_init` sans un mot : `UDP-Lite hash table entries…`
+puis directement `NET: Registered PF_UNIX/PF_LOCAL`. Second passage dans la
+forme de notre machine — `nolapic noapic acpi=off pci=off`, le noyau confirmant
+`APIC: Keep in PIC mode(8259)` et `PCI: System does not support PCI` — même
+silence. wisq, lui, glisse un `WARNING` entre ces deux lignes.
+
+**Où.** Le relevé de traductions montre que `do_softirq.part.0`, `__do_softirq`,
+`handle_softirqs` et `tasklet_action` ne sont demandés **qu'une fois**, à la
+traduction 6117 sur 10 929, depuis `inet_register_protosw + 131` : la première
+exécution de softirq de la vie de la machine tombe à l'intérieur d'`inet_init`.
+`_raw_spin_unlock_bh` et `__local_bh_enable_ip` tournaient depuis la traduction
+2153 sans jamais prendre cette branche. Le seul `initcall` qui déséquilibre le
+compte est le seul pendant lequel ce chemin s'ouvre.
+
+**Deux pistes écartées par la mesure, pas par l'argument.** Ce n'est pas une
+action de softirq : `handle_softirqs` crie « huh, entered softirq … with
+preempt_count … » quand une action déséquilibre, la phrase est bien compilée
+dans cette image (`strings` la trouve), et aucun journal ne la porte. Ce n'est
+pas un changement de pile : `__do_softirq` tient ici en `xor %edi,%edi ; jmp
+handle_softirqs`.
+
+**Ce qui reste à nommer** : l'instruction. `preempt_count` est touché 4 057 fois
+dans ce noyau, dont **un seul `add` d'un registre** — `__local_bh_enable_ip +
+28`, sur le chemin qui s'ouvre au moment exact de la dérive. Piste, pas
+conclusion.
+
+**En attente** : la comparaison avec le cœur Swift (`X86BootAttemptTests` sur
+les mêmes fichiers) tournait encore. S'il ne produit pas l'avertissement, la
+divergence est dans la lignée Rust ; s'il le produit, elle est ailleurs.
+
+**Proposé, pas pris** : `scripts/boot-reference.sh`, qui démarre un noyau et une
+racine sous QEMU dans la forme de notre machine et refuse franchement quand QEMU
+manque. Quatre fois cette séance, « est-ce le nôtre ? » a été tranché par le
+raisonnement et mal tranché.
