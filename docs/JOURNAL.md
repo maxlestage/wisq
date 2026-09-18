@@ -14683,3 +14683,105 @@ programme qui tourne ; c'est un programme qui a commencé.
 vrai.** Les quatre MSR sont déjà rangés depuis #205 — STAR, LSTAR, CSTAR,
 SYSCALL_MASK — et le dépôt le dit : « lus par rien : `syscall` n'est pas
 produite ». Le cœur Swift les fait depuis #129, et c'est encore un oracle écrit.
+
+## #259 — deux appels système servis par le vrai noyau, et `/init` va jusqu'à sa dernière instruction
+
+`/init` a fini. Pas quatre instructions : **toutes**. Et ce ne sont pas des
+adresses qui le disent, c'est ce que le noyau a répondu.
+
+Le programme, tel qu'`objdump` le donne, et ce qu'il laisse derrière lui :
+
+| instruction | ce qu'elle fait | mesuré |
+| --- | --- | --- |
+| `mov $0x2,%rax` … `syscall` | `open("/dev/console", O_WRONLY)` | — |
+| `mov %rax,%rdi` | le descripteur rendu | **`rdi = 0x3`** |
+| `lea 0x18(%rip),%rsi` | l'adresse de la marque | `rsi = 0x401043` |
+| `mov $0xb,%rdx` … `syscall` | `write(3, marque, 11)` | **`rax = 0xb`** |
+| `jmp boucle` | s'endormir | `rip = 0x401034` |
+
+**`rdi = 3` et `rax = 11` sont les réponses du noyau, pas des coïncidences.**
+Un `open` raté rendrait un errno négatif ; un `write` raté aussi. Trois est un
+descripteur — le premier libre après stdin, stdout, stderr. Onze est le nombre
+d'octets de la marque, compté par le noyau. `rcx = 0x401034` est l'adresse de
+retour du second appel, et `rip` y est : le programme tourne dans son `jmp -2`,
+ce qui est exactement ce qu'il est écrit pour faire. L'arrêt « sur place » est
+donc le programme, pas la machine.
+
+### Le défaut, et l'oracle qui l'attendait depuis #129
+
+`0f 05` n'était décodée par personne — aucun `Op` ne l'attendait. Les quatre
+MSR étaient rangés depuis #205 et le dépôt le disait en deux endroits : « lus
+par rien : `syscall` n'est pas produite ».
+
+L'oracle, lui, était écrit : `Sources/WisqVM/X86SystemCalls.swift`, à #129,
+avec ses pièges au prix où ils ont été payés.
+
+| ce que l'oracle savait | ce que ça coûte de l'ignorer |
+| --- | --- |
+| RCX porte l'adresse de la **suite** | le programme boucle sur son propre appel, à l'infini et sans un mot |
+| **la pile ne change pas** | le noyau travaille sur une pile qu'il croit encore devoir aller chercher |
+| les sélecteurs d'entrée sont **forcés** à l'anneau zéro | un programme choisirait son privilège en écrivant un MSR |
+| le retour prend **+16** pour le code, **+8** pour la pile | la main rendue sous un segment 32 bits |
+| R11 porte les drapeaux, et le retour les y reprend | le programme reprend avec les drapeaux du noyau |
+
+### Ce que l'interpréteur Rust ne fait pas, et pourquoi
+
+Il les **refuse par leur nom**, avec `rdmsr`, `swapgs` et `ltr` : son `Cpu` ne
+modélise ni segments ni MSR. C'est le cœur de l'oracle matériel, et un
+`syscall` dans le harnais entrerait dans le noyau de l'**hôte** au lieu de
+répondre — le cœur Swift le dit déjà : « c'est le second endroit du cœur qui ne
+soit pas prouvé contre la machine, après la division par zéro ». Les implémenter
+là, ce serait inventer un état que rien ne pourrait démentir.
+
+### Le décodage refuse une forme, et c'est le fond de l'affaire
+
+`0f 07` **sans** REX.W est le retour vers le mode compatibilité. Le lire comme
+`sysretq` rendrait la main sous un segment de code 32 bits, et le programme
+exécuterait ses propres octets comme s'ils voulaient dire autre chose. Le
+décodeur exige donc le préfixe, et six voisines restent muettes.
+
+### Onze sabotages, et quatre assertions qui ne pouvaient pas échouer
+
+Sept sont tombés du premier coup. **Quatre ont survécu**, et chacun nommait un
+trou du test, pas du code :
+
+| survivant | ce qui manquait au test |
+| --- | --- |
+| `SS` d'entrée sans ses huit | personne ne lisait SS dans le noyau |
+| R11 jamais écrit | personne n'assertait sa valeur |
+| le retour ne force pas le RPL | avec `0x23`, `exit + 16` porte **déjà** l'anneau trois : le forcer ou l'oublier donne le même nombre |
+| les drapeaux pas relus dans R11 | personne ne lisait les drapeaux **rendus** |
+
+Le troisième est le plus instructif : la valeur que Linux met vraiment dans STAR
+rend la garde vacuous. Le montage prend donc `0x20`, où le décalage donne
+`0x30` et où c'est le processeur qui ajoute l'anneau — **la vraie valeur du
+noyau était celle qui cachait le défaut.** Même chose à l'entrée : `0x13` au
+lieu de `0x10`, pour que masquer le RPL porte quelque chose.
+
+Après ces quatre corrections, onze sur onze, restauration vérifiée par `diff`.
+
+### La mesure
+
+| | #258 | #259 |
+| --- | --- | --- |
+| régions traduites | 11 989 | **12 113** |
+| tours | 2 333 575 | 2 334 242 |
+| RIP à l'arrêt | `0x401018` — le premier `syscall` | **`0x401034` — le `jmp` final** |
+| arrêt | « refusée » | « sur place » — c'est la boucle du programme |
+| appels système servis | 0 | **2** |
+
+### Ce que ça ne montre pas
+
+**La marque n'apparaît pas sur la console, et ce n'est pas un échec du
+`write`.** `rax = 11` est la réponse du noyau. Le journal dit où les octets sont
+allés : « Console: colour dummy device 80x25 », « printk: console [tty0]
+enabled ». `/dev/console` résout vers tty0, un périphérique muet ; le port série
+que le pilote capture est `earlycon`, pas tty0. Les onze octets ont été écrits
+dans un périphérique qui n'affiche rien.
+
+**Et quarante octets d'assembleur ne sont pas un système.** Ce programme fait
+deux appels et s'endort. Ce qui est établi est que la porte fonctionne dans les
+deux sens : un programme d'anneau trois entre dans le noyau, le noyau le sert,
+et la main revient au bon endroit avec les bons drapeaux. Un vrai `/init` — un
+shell, `busybox` — en demandera des centaines d'autres, et chacune peut buter
+sur une instruction ou un service qui manque.
