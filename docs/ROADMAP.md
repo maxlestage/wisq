@@ -11904,3 +11904,43 @@ main qu'aux bords de région et aux coupes ; une forme praticable est de relever
 à chaque retour de main dont le RIP tombe dans l'intervalle d'un symbole nommé,
 par la carte des symboles que le pilote charge déjà. Plus d'une réponse se
 défend.
+
+## #267 — l'émetteur comptait ses refus, les imprimait, et ne leur reprochait rien
+
+Miroirs inchangés à **2529** : aucune fonction de test de plus, trois
+assertions dans un test qui existait. Détail dans [`JOURNAL.md`](JOURNAL.md).
+
+**Comment il s'est trouvé.** Une tranche antérieure avait comparé les gardes de
+l'oracle **dans deux langages** et en avait tiré la règle : comparer les
+énoncés, pas les verdicts. Elle portait sur l'interpréteur Rust et le cœur
+Swift. **Le troisième cœur n'y était pas** — l'émetteur, celui que #263, #264
+et #266 accusent.
+
+**Le manque.** `x86_oracle.rs` porte `assert!(refused.is_empty())` et dit
+lui-même que c'est « la borne la plus dure qu'il puisse porter ».
+`x86_wasm.rs` comptait ses refus dans un entier, les imprimait, et n'avait
+**aucune assertion dessus**. Ses deux planchers écrits à la main valaient
+13 210 et 13 040 quand le corpus portait 13 220 cas ; il en porte 13 388, soit
+**178 cas de jeu** — plus que les 168 cas de la famille que #265 venait
+d'ajouter.
+
+**La mesure.** En faisant refuser à l'émetteur les sept formes GS +
+RIP-relatif + lecture-modification-écriture de #265, le test tombait à 13 052
+cas jugés, imprimait « 168 refusés » — et **restait vert**.
+
+**Ce que la tranche pose.** Aucun refus, les formes nommées ; la somme exacte
+contre `oracle.cases.len()` plutôt qu'un plancher qui vieillit ; et le retour
+de main légitime seulement là où le module ne peut pas savoir — un saut ou un
+appel indirect, jugé sur les octets. Les deux remplacements sont vérifiés par
+sabotage, chacun sur son scénario, et l'ancien plancher passait dans les deux.
+
+**Une accusation fausse évitée.** 168 cas rendus à l'hôte, et les sept formes
+de #265 pèsent exactement 168 cas. Avant de l'écrire, je suis allé chercher
+lesquelles : ce sont les sept sauts et appels **indirects**. L'affirmation de
+#265 tient. Règle de #261, troisième fois.
+
+**Ce qui reste, petit et nommé.** `x86_oracle.rs` porte encore
+`checked > 13140`, et `X86OracleTests.swift` `cases.count > 13_140` et
+`instructions.count > 200`, quand le corpus vaut 13 388 cas et 533 formes. Ce
+ne sont pas des trous — les deux tests portent une garde dure par ailleurs —
+mais les dériver du fichier est une tranche à part.

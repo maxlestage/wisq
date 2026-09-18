@@ -389,7 +389,12 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
     }
     jobs.push_str("],\"jobs\":[");
     let mut emitted = 0usize;
-    let mut refused = 0usize;
+    // **Quelles formes l'émetteur refuse, et pas seulement combien.** Le
+    // compte seul ne peut rien reprocher : une famille qui passe de « traduite »
+    // à « refusée » sort du total au lieu d'y échouer. C'est exactement ce que
+    // le jumeau `x86_oracle.rs` dit de son propre cliquet — « la borne la plus
+    // dure qu'il puisse porter » — et ce côté-ci ne la portait pas.
+    let mut refused: Vec<String> = Vec::new();
     #[allow(clippy::type_complexity)]
     type Wanted = (
         u64,
@@ -415,7 +420,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         // lui-même les blocs atteignables : linéariser les octets reviendrait à
         // ignorer les sauts tout en prétendant les traduire.
         let Some(module) = Module::region(bytes, CODE, 0) else {
-            refused += cases.len();
+            refused.push(format!("{mnemonic} ({} cas)", cases.len()));
             continue;
         };
         let path = scratch.join(format!("m{index}.wasm"));
@@ -598,7 +603,8 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 
     println!(
         "x86 → WebAssembly : {checked} cas passés sous JavaScriptCore ({emitted} modules), \
-         {refused} refusés par l'émetteur, {handed_back} rendus à l'hôte"
+         {} refusés par l'émetteur, {handed_back} rendus à l'hôte",
+        refused.len()
     );
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(
@@ -612,32 +618,66 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    // **Le plancher monte avec chaque famille traduite.** Il ne dit pas
-    // « c'est assez » : il dit « ne recule pas ». Après les décalages, les
-    // transferts, les rotations simples et `lea`, la mémoire a ajouté
-    // cinquante-trois instructions et quatre programmes entiers ; la pile en
-    // a ajouté trois, et le même nombre doit tomber des deux côtés — ce
-    // harnais et celui du silicium comptent 9168 cas, pas l'un 9168 et
-    // l'autre 9144.
-    // Le plancher porte sur **les deux ensemble** : un cas rendu à l'hôte
-    // reste un cas que l'émetteur a compilé et fait tourner. La somme est
-    // exactement le compte de l'interpréteur, et c'est ce qui garde le signal
-    // qui a déjà servi une fois — un écart entre les deux cœurs.
+    // **Le cliquet le plus dur : aucun refus.** Le jumeau `x86_oracle.rs`
+    // l'écrit de son côté — « c'est la borne la plus dure qu'il puisse
+    // porter, et elle ne peut plus que se relâcher ». Ce côté-ci comptait ses
+    // refus, les imprimait, et ne leur reprochait rien. Mesuré : en refusant
+    // les sept formes GS + RIP-relatif + lecture-modification-écriture que
+    // #265 a posées, l'émetteur tombait à 13 052 cas jugés sur 13 220, et ce
+    // test restait **vert** — les deux planchers d'alors, `checked +
+    // handed_back > 13210` et `checked > 13040`, laissaient passer 178 cas de
+    // jeu quand la famille n'en pesait que 168.
     assert!(
-        checked + handed_back > 13210,
-        "l'émetteur ne couvre plus que {checked} cas : la couverture a reculé"
+        refused.is_empty(),
+        "l'émetteur refuse maintenant {} formes au lieu d'aucune : quelque \
+         chose qu'il savait traduire ne se traduit plus\n{}",
+        refused.len(),
+        refused.join("\n")
     );
-    // **Et un plancher sur les cas réellement jugés, pas seulement sur la
-    // somme.** La somme seule laisserait une famille repasser de « comparée »
-    // à « rendue » sans que rien ne tombe : le total ne bouge pas, et pourtant
-    // le silicium ne juge plus rien de cette famille. La boucle du `rep` a fait
-    // monter ce compte de 12836 à 12980, puis les conseils au cache et les
-    // barrières mémoire de 12980 à 13052 ; c'est lui qui ne doit pas
-    // redescendre.
+    // **Et la somme est exacte, pas un plancher.** Un plancher écrit à la main
+    // prend du retard sur le corpus dès la tranche suivante : celui-ci valait
+    // 13 210 quand l'oracle portait 13 220 cas, et l'oracle en porte
+    // maintenant 13 388. L'ancre est le fichier lui-même, qui grandit tout
+    // seul. Un cas rendu à l'hôte reste un cas que l'émetteur a compilé et
+    // fait tourner ; ce qui ne doit jamais arriver, c'est qu'un cas de
+    // l'oracle ne soit ni jugé ni rendu.
+    assert_eq!(
+        checked + handed_back,
+        oracle.cases.len(),
+        "{} cas de l'oracle ne sont ni jugés contre le silicium ni rendus à \
+         l'hôte : ils ont disparu du champ du test",
+        oracle.cases.len() - checked - handed_back
+    );
+    // **Et le retour de main n'est légitime que là où le module ne peut pas
+    // savoir.** Un plancher sur `checked` voulait attraper une famille qui
+    // repasse de « comparée » à « rendue » ; il le faisait par un nombre, donc
+    // mal. La règle vraie est celle que le commentaire du retour de main
+    // énonce déjà : le module rend la main quand la cible lui échappe — un
+    // saut ou un appel **indirect**. Toute autre forme qui rendrait la main
+    // sortirait du champ du silicium sans raison, et c'est ce qu'on refuse
+    // ici. Le critère porte sur les octets — un `ff` dont le champ `reg` du
+    // ModRM vaut 2 (appel) ou 4 (saut) — et pas sur le nom, pour la raison
+    // que le filtre du `rep` juste en dessous a déjà payée.
+    let unexpected: Vec<&String> = gave_up
+        .iter()
+        .filter(|(id, _)| {
+            !oracle.instructions.get(id).is_some_and(|(code, _, _)| {
+                code.windows(2)
+                    .any(|pair| pair[0] == 0xff && matches!((pair[1] >> 3) & 7, 2 | 4))
+            })
+        })
+        .map(|(_, name)| name)
+        .collect();
     assert!(
-        checked > 13040,
-        "seuls {checked} cas sont jugés contre le silicium : une famille est \
-         repassée derrière un retour de main"
+        unexpected.is_empty(),
+        "{} formes rendent la main sans porter de saut ni d'appel indirect : \
+         elles sont sorties du champ du silicium\n{}",
+        unexpected.len(),
+        unexpected
+            .iter()
+            .map(|n| format!("  {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     // **`rep` ne peut plus rendre la main, et ce n'est pas une question de

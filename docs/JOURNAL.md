@@ -15817,3 +15817,144 @@ Inchangé depuis #265, et #266 T1 en a retiré un candidat :
    délivre d'interruption matérielle ;
 3. **une autre instruction du chemin**, qui changerait le flot plutôt que le
    compte.
+
+## #267 — l'émetteur comptait ses refus, les imprimait, et ne leur reprochait rien
+
+Miroirs inchangés à **2529** : aucune fonction de test de plus. Trois
+assertions entrent dans un test qui existait, et deux planchers écrits à la
+main en sortent.
+
+### Comment il s'est trouvé : comparer deux énoncés, pas deux verdicts
+
+Trois cœurs rejouent `Tests/Fixtures/x86-oracle.tsv`, et les trois étaient
+verts. Une tranche antérieure avait déjà comparé **deux** de leurs gardes — le
+plancher Rust à 13 140 contre le plancher Swift à 5 000 — et en avait tiré la
+règle :
+
+> « Quand la même règle est écrite deux fois dans deux langages, comparer les
+> deux **énoncés**, pas seulement leurs verdicts. »
+
+Cette comparaison portait sur l'interpréteur Rust et le cœur Swift. **Le
+troisième n'y était pas** — et c'est l'émetteur, celui que #263, #264 et #266
+accusent.
+
+Le jumeau `crates/wisq-vm/tests/x86_oracle.rs` porte ceci, et le dit lui-même :
+
+> « Un plancher sur les cas vérifiés ne voit pas une instruction qui passe de
+> « juste » à « refusée » : elle **sort du compte** au lieu d'y échouer. Un
+> sabotage l'a montré […] **C'est la borne la plus dure qu'il puisse porter**,
+> et elle ne peut plus que se relâcher. »
+>
+>     assert!(refused.is_empty(), …)
+
+`crates/wisq-vm/tests/x86_wasm.rs` comptait ses refus dans un `usize`, les
+imprimait dans sa ligne de relevé — et **n'avait aucune assertion dessus**. Le
+mode de défaillance que son jumeau documente noir sur blanc était grand ouvert
+sur le cœur le plus suspect.
+
+### Les planchers avaient pris du retard sur le corpus
+
+| | valeur | corpus au moment de l'écriture | corpus aujourd'hui | jeu |
+| --- | --- | --- | --- | --- |
+| `checked + handed_back > 13210` | 13 210 | 13 220 cas | **13 388** | **178 cas** |
+| `checked > 13040` | 13 040 | 13 052 jugés | 13 220 | **180 cas** |
+
+Un plancher écrit à la main est juste le jour où on l'écrit. #265 a ajouté
+sept formes — 168 cas — et n'a touché à aucun des deux. Le jeu dépassait
+désormais la famille entière.
+
+### La mesure : le sabotage passait vert
+
+État intact, relevé du test lui-même :
+
+```
+x86 → WebAssembly : 13220 cas passés sous JavaScriptCore (533 modules),
+                    0 refusés par l'émetteur, 168 rendus à l'hôte
+```
+
+**Sabotage A** — `Module::region` refuse les sept formes GS + RIP-relatif +
+lecture-modification-écriture que #265 a posées *pour attraper la dérive* :
+
+```
+13052 cas passés (526 modules), 168 refusés, 168 rendus à l'hôte
+checked + handed_back = 13220 > 13210   ✓ le plancher tient
+checked                = 13052 > 13040   ✓ le plancher tient
+test result: ok
+```
+
+**Vert.** La famille entière disparaît du champ du silicium, le test l'imprime
+— « 168 refusés » — et ne le reproche à personne.
+
+### Ce que j'ai cru d'abord, et le contrôle qui l'a démenti
+
+168 cas rendus à l'hôte ; les sept formes de #265 pèsent exactement 168 cas.
+J'ai cru un instant que #265 avait publié une affirmation fausse — que
+l'émetteur ne jugeait aucune de ses sept formes. **Avant de l'écrire, je suis
+allé chercher lesquelles**, par une sonde jetable qui imprime `gave_up` :
+
+```
+509 un saut indirect par registre                           515 …par registre, et son retour
+510 un saut indirect par la mémoire                         512 un appel indirect par la mémoire
+511 un saut indirect par une table déplacée                 514 …dont la cible est sur la pile
+513 un saut indirect relatif au pointeur d'instruction
+```
+
+Ce sont les sauts et appels **indirects** — sept formes elles aussi, d'où la
+coïncidence du nombre. **L'affirmation de #265 tient** : ses sept formes sont
+bien jugées contre le silicium. C'est la règle de #261 pour la troisième fois,
+et elle a évité une accusation fausse dans un journal.
+
+### Ce que la tranche pose : trois gardes, dont deux dérivées
+
+1. **Aucun refus**, et les formes nommées. `refused` porte des noms, plus un
+   compte. C'est le cliquet du jumeau, enfin des deux côtés.
+2. **La somme est exacte, pas un plancher** :
+   `assert_eq!(checked + handed_back, oracle.cases.len())`. L'ancre est le
+   fichier, qui grandit tout seul — un plancher écrit à la main prend du
+   retard dès la tranche suivante, et celui-là en avait pris.
+3. **Le retour de main n'est légitime que là où le module ne peut pas savoir.**
+   L'ancien `checked > 13040` voulait attraper une famille qui repasse de
+   « comparée » à « rendue » ; il le faisait par un nombre, donc mal. La règle
+   vraie est celle que le code énonce déjà : le module rend la main quand la
+   cible lui échappe — un saut ou un appel **indirect**. Le critère porte sur
+   les octets (`ff` dont le champ `reg` du ModRM vaut 2 ou 4), pas sur le nom,
+   pour la raison que le filtre du `rep` juste en dessous avait déjà payée.
+
+### Sabotage, les deux fois, chacun sur son scénario
+
+| sabotage | ancienne garde | nouvelle garde |
+| --- | --- | --- |
+| l'émetteur refuse les sept formes GS de #265 | **passe** (13052 > 13040) | **tombe** — garde 1, les sept nommées |
+| `cmpxchg` décode comme `ud2`, donc huit formes rendent la main sans être indirectes | **passe** (13094 > 13040) | **tombe** — garde 3, les huit nommées |
+
+Le second relevé :
+
+```
+13094 cas passés (533 modules), 0 refusés, 294 rendus à l'hôte
+8 formes rendent la main sans porter de saut ni d'appel indirect :
+  cmpxchgq %rcx, %rdx        lock cmpxchgq %rcx, 24(%rsi)
+  cmpxchgl %ecx, %edx        cmpxchgl %ecx, %gs:-805306352(%rip)
+  cmpxchgw %cx, %dx          …
+```
+
+La garde 1 reste muette (0 refusé) et la garde 2 aussi (13 094 + 294 = 13 388) :
+**seule celle qui devait parler parle.** Restauration des deux sabotages
+vérifiée par `diff`.
+
+### Ce que la garde 2 tient, et ce qu'elle ne tient pas — il faut le dire
+
+Aucune mutation de l'émetteur ne l'atteint sans déclencher la garde 1 d'abord :
+un cas ni jugé ni rendu suppose que le harnais l'ait perdu, pas que l'émetteur
+ait mal traduit. Ce n'est donc **pas un cliquet sabotable** ; c'est une ancre,
+et sa valeur est de ne pas pouvoir vieillir — ce qui est exactement ce que son
+prédécesseur avait fait.
+
+### Et deux planchers qui restent écrits à la main
+
+`x86_oracle.rs` porte encore `checked > 13140` et `X86OracleTests.swift`
+`cases.count > 13_140` et `instructions.count > 200`, quand le corpus vaut
+13 388 cas et 533 formes. **Ce ne sont pas des trous** : les deux tests portent
+par ailleurs une garde dure — `refused.is_empty()` d'un côté,
+`agreed == cases.count == casSeen` de l'autre. Mais ils diront un jour ce que
+l'émetteur disait hier. Les dériver du fichier, comme la garde 2 ci-dessus, est
+une tranche à part et elle est petite.
