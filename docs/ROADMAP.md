@@ -10737,6 +10737,12 @@ Pour un cadre de 1024 × 768 en XRGB8888, le noyau lisait donc
 `drivers/firmware/sysfb_simplefb.c`, conditionné à `VIDEO_TYPE_VLFB`, que ce
 chargeur annonce.
 
+> **Ce « conditionné à » est plus lourd qu'il n'y paraît — voir #260.** Le type
+> et l'unité sont un seul couple : changer l'un sans l'autre n'écrit pas un
+> écran un peu faux, cela envoie le noyau chez un autre pilote, ou chez aucun.
+> C'est mesuré depuis, et tenu par
+> `the_video_type_and_the_size_unit_are_one_pair`.
+
 **Aucun symptôme, et c'est le point.** La seule vérification du noyau sur ce
 champ est `if (length > size)` : une VRAM surdéclarée la passe toujours. Le
 défaut n'était pas visible parce qu'il n'était pas bruyant — il rendait
@@ -11524,3 +11530,64 @@ cachait le défaut.** Le montage prend `0x20` à la sortie et `0x13` à l'entré
 pour que les deux masquages portent quelque chose.
 
 Le compte passe à 2526 : deux tests, onze sabotages, onze chutes nommées.
+
+## #260 — l'écran déclaré n'atteint aucun pilote de ce noyau, et la phrase qui l'interdisait d'essayer
+
+**C'est une mesure, et elle commence par une erreur de ma part.** J'ai annoncé
+un défaut nommé sur la foi d'une ligne de la mesure de #259 —
+`Console: colour dummy device 80x25` — alors que **cette mesure ne demandait
+aucun écran** : sans `WISQ_SCREEN`, aucun `screen_info` n'est écrit, et c'est ce
+que rapporte une machine qui n'en a pas. La sonde censée le confirmer n'avait
+même pas tourné : `1024x768@0x8000000` n'est pas la syntaxe, et le pilote refuse
+— la conduite que #250 avait posée. Le détail est dans le JOURNAL, à sa place.
+
+### Ce que les trois mesures établissent
+
+Trois démarrages qui ne diffèrent que par deux champs de `screen_info` :
+
+| déclaration | Alpine 6.6.134-0-lts |
+| --- | --- |
+| `VLFB` + unités de 64 Kio — l'état du dépôt | muet, aucun `fb0` |
+| `EFI` + unités de 64 Kio | **`fb0: EFI VGA frame buffer device`** |
+| `EFI` + octets | muet, aucun `fb0` |
+
+Le seul pilote de tampon de ce noyau est `efifb` — `simplefb`, `simpledrm`,
+`vesafb` et `vga16fb` sont absents de l'image. `efifb` ne se lie qu'au
+périphérique `efi-framebuffer`, que `sysfb` ne pose **que si** le chemin
+`simple-framebuffer` a refusé, et il refuse ici sur la taille. **L'écran de la
+deuxième ligne marche parce que le champ est faux.**
+
+### Le défaut nommé, corrigé
+
+Quatre endroits — le chargeur Rust, son test, et deux fois le chargeur Swift —
+affirmaient que sans `VIDEO_TYPE_VLFB` « le noyau ignore tout le reste de
+`screen_info` », et nommaient `simpledrm` comme « le chemin moderne ». Faux deux
+fois : la mesure montre le noyau relire ces champs un par un sous
+`VIDEO_TYPE_EFI`, et ce noyau ne porte pas `simpledrm`. **C'était la phrase qui
+interdisait d'essayer la valeur qui marche.** Quatrième miroir du même couple,
+comme #244.
+
+`the_video_type_and_the_size_unit_are_one_pair` refait la règle du noyau sur le
+type que la page déclare vraiment, et borne la taille des deux côtés. Quatre
+sabotages, aucun survivant ; celui qui compte est l'édition plausible — changer
+l'octet et mettre à jour l'assertion littérale qu'on voit rougir — et c'est le
+nouveau test qui la refuse.
+
+### La direction, en attente
+
+**Aucune déclaration n'atteint les deux familles de pilotes.** La colonne d'un
+noyau à `simplefb`/`simpledrm` est déduite du chemin de code, **pas mesurée** :
+
+| déclaration | noyau à `efifb` seul (mesuré) | noyau à `simplefb`/`simpledrm` (déduit) |
+| --- | --- | --- |
+| `VLFB` + unités | muet | se lie |
+| `EFI` + unités | se lie, par le refus du chemin moderne | muet |
+| `EFI` + octets | muet | se lie |
+
+L'état du dépôt n'est donc pas un défaut : c'est un des deux choix qui couvrent
+la même famille. Trois routes pour Maxime — ne rien changer et embarquer un
+noyau à `simpledrm` ; déclarer `EFI` + octets, le même couvert écrit
+honnêtement ; ou lire le noyau qu'on nous donne et déclarer le couple qu'il sait
+lier, la seule route qui couvre les deux et la seule qui soit une heuristique.
+
+Le compte passe à 2527 : un test, quatre sabotages, quatre chutes nommées.
