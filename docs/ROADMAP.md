@@ -11863,4 +11863,44 @@ n'est pas une découverte, c'est ce que la limite documentée produit — vérif
 avant d'être annoncé.
 
 **T2** : mesurer, maintenant qu'on peut — `WISQ_WATCH=gs:2e7c8` sur le noyau de
-référence, et lire la trajectoire du compteur autour d'`inet_init`.
+référence, et lire la trajectoire du compteur autour d'`inet_init`. *Fait* —
+voir « #266 T2 » plus bas.
+
+## #266 T2 — la mesure autour d'`inet_init`, et la lecture fausse qu'elle a produite
+
+Docs seulement. Miroirs inchangés à **2529**. Détail dans
+[`JOURNAL.md`](JOURNAL.md).
+
+**Ce que l'instrument de T1 a mesuré.** La course longue reproduit #263 à
+l'identique, avertissement compris. La course courte (600 000 tours, battement
+3 000) situe `inet_init` du battement **552 000** au battement **585 000**, et
+l'avertissement `initcall inet_init+0x0/0x560 returned with preemption
+imbalance` dans le battement **588 000**, avec `%rbx = ffffffff82b0b110`. À
+l'entrée d'`inet_init` le compte est **0** ; à sa sortie l'avertissement dit
+qu'il ne l'est pas. Et **le premier softirq de la machine tombe dans le
+battement 552 000 → 555 000**, celui-là même où le compteur quitte 0 pour 2 :
+les deux faits de #264 coïncident dans un seul relevé. Le compte prend les
+valeurs 0 à 4 sur la fenêtre.
+
+**Une limite de l'instrument** : `gs:2e7c8` ne désigne `preempt_count` qu'une
+fois la zone par processeur posée. Avant le tour ≈ 87 000, la fenêtre lit autre
+chose — visible aux 28 premiers relevés, tous à `0x1`.
+
+**Et une lecture fausse, écrite puis défaite par son contrôle.** J'avais écrit
+que le compteur « n'y revient plus une seule fois » après le premier softirq.
+Sur la course longue il repasse par zéro **41 %** des relevés après le pivot
+(46 sur 113) contre **12 %** avant (2 sur 17) — l'inverse. Les deux courses ne
+mesurent pas deux conduites : elles échantillonnent deux endroits.
+
+**Ce que cela commande.** Un échantillonnage à tour fixe ne peut pas distinguer
+« légitimement non nul au milieu d'une fonction » de « dérivé ». `preempt_count`
+n'est tenu de valoir zéro qu'**aux frontières d'initcall**, là où
+`do_one_initcall` le compare. Le battement est tombé sur l'entrée d'`inet_init`
+par chance, pas par construction.
+
+**T3, question de direction pour Maxime** : faire tirer le guet aux frontières
+de `do_one_initcall` plutôt qu'à des tours arbitraires. L'émetteur ne rend la
+main qu'aux bords de région et aux coupes ; une forme praticable est de relever
+à chaque retour de main dont le RIP tombe dans l'intervalle d'un symbole nommé,
+par la carte des symboles que le pilote charge déjà. Plus d'une réponse se
+défend.
