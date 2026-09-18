@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::{ALWAYS_ONE, WRITABLE_FLAGS, ZF};
+use wisq_vm::x86::{ALWAYS_ONE, IF, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, EFER_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON,
     FPU_CONTROL_SLOT, FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT,
@@ -11226,6 +11226,256 @@ fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
          d'instruction : le gestionnaire lui-même n'est pas cartographié",
         "et le troisième chargement, lui, n'a rien installé entre-temps : la \
          garde le nomme : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le tour complet d'un appel système, sous JavaScriptCore.**
+///
+/// C'est la tranche #259, et le mur vient de #258 : la machine s'arrêtait à
+/// `0x401018` — le `syscall` de `/init`, `0f 05`, cinquième instruction du
+/// programme. Ni le décodeur ni l'émetteur ne la connaissaient.
+///
+/// **L'oracle est `Sources/WisqVM/X86SystemCalls.swift`**, écrit à #129, et
+/// ses commentaires portent les pièges déjà payés. Ce test les reprend un par
+/// un, parce qu'aucun d'eux ne se voit sur le chemin heureux :
+///
+/// | ce que le test tient | ce qui casse sans ça |
+/// | --- | --- |
+/// | le noyau a tourné | la région de `/init` était refusée entière |
+/// | **RSP n'a pas bougé** | le noyau travaillerait sur une pile qu'il croit encore devoir aller chercher |
+/// | RCX porte l'adresse de la **suite** | le programme boucle sur son propre appel, à l'infini et sans un mot |
+/// | IF est éteint **dans** le noyau | il serait interrompu avant d'avoir sa propre pile |
+/// | le retour rend l'anneau **trois** | `exit + 16` pour le code, `exit + 8` pour la pile |
+/// | l'instruction d'après le `syscall` tourne | le retour n'atterrirait nulle part |
+///
+/// **La pagination n'est pas montée, et c'est exprès** : un appel système ne
+/// touche ni descripteur ni table — tout passe par les registres et les quatre
+/// MSR. Ajouter des tables ici, ce serait ajouter des raisons de rougir qui
+/// n'ont rien à voir.
+#[test]
+fn a_system_call_enters_the_kernel_keeps_the_stack_and_comes_back_to_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const KERNEL: u64 = 0x1_1000;
+    const USER_STACK: u64 = 0x2_8000;
+    /// Les sélecteurs de Linux. `STAR` porte celui de l'entrée en bits 47:32
+    /// et celui du **retour** en bits 63:48 ; `0x23` est `__USER32_CS`, et
+    /// c'est de lui que le processeur déduit `0x33` (+16) et `0x2b` (+8).
+    /// **Et il porte un RPL, exprès.** `0x13`, pas `0x10` : c'est le
+    /// processeur qui force l'anneau zéro à l'entrée, et le laisser au noyau
+    /// reviendrait à laisser un programme choisir son privilège en écrivant
+    /// un MSR. Avec `0x10`, masquer ou ne pas masquer donnerait le même
+    /// nombre, et l'assertion n'aurait rien à tenir.
+    const ENTRY_SELECTOR: u64 = 0x13;
+    /// Ce que le noyau doit **lire** dans CS : le même sélecteur, RPL éteint.
+    const KERNEL_CODE: u64 = 0x10;
+    /// **Et il n'en porte pas, exprès.** Linux y met `0x23`, dont `+16`
+    /// donne `0x33` — RPL trois **déjà** compris, si bien que forcer le RPL ou
+    /// l'oublier donnerait le même nombre. `0x20` sépare les deux : le
+    /// décalage donne `0x30`, et c'est le processeur qui ajoute l'anneau.
+    const EXIT_SELECTOR: u64 = 0x20;
+    const USER_CODE: u64 = 0x33;
+    const USER_STACK_SELECTOR: u64 = 0x2b;
+    const WITNESS: u64 = 0x0DEC_0DED_5011_CA11;
+    /// Ce que le programme écrit **après** son appel : la preuve que le retour
+    /// atterrit sur l'instruction suivante et pas ailleurs.
+    const RESUMED: u32 = 7;
+
+    // **Le programme, en anneau trois.**
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x0f, 0x05]); // syscall
+    let after = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x9c]); // pushfq — les drapeaux rendus
+    program.extend_from_slice(&[0x5e]); // pop %rsi
+    program.extend_from_slice(&[0x48, 0xc7, 0xc2]); // mov $RESUMED,%rdx
+    program.extend_from_slice(&RESUMED.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+
+    // **Le noyau, en anneau zéro.** Il note la pile qu'il a trouvée et les
+    // drapeaux qu'il a reçus — les deux choses qu'un cœur trop zélé abîme —
+    // puis rend la main.
+    let mut kernel: Vec<u8> = Vec::new();
+    kernel.extend_from_slice(&[0x8c, 0xc8]); // mov %cs,%eax — l'anneau reçu
+    kernel.extend_from_slice(&[0x8c, 0xd5]); // mov %ss,%ebp — et sa pile
+    kernel.extend_from_slice(&[0x49, 0x89, 0xe0]); // mov %rsp,%r8
+    kernel.extend_from_slice(&[0x9c]); // pushfq
+    kernel.extend_from_slice(&[0x41, 0x59]); // pop %r9
+    kernel.extend_from_slice(&[0x48, 0xbb]); // movabs $WITNESS,%rbx
+    kernel.extend_from_slice(&WITNESS.to_le_bytes());
+    kernel.extend_from_slice(&[0x48, 0x0f, 0x07]); // sysretq
+
+    let scratch = std::env::temp_dir().join(format!("wisq-syscall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut placed = String::new();
+    for (name, bytes, at) in [
+        ("programme.bin", &program[..], BASE),
+        ("noyau.bin", &kernel[..], KERNEL),
+    ] {
+        let path = scratch.join(name);
+        std::fs::write(&path, bytes).expect(name);
+        placed.push_str(&format!(
+            "new Uint8Array(vm.memory.buffer).set(readFileSync({:?}), {at});\n",
+            path.to_string_lossy()
+        ));
+    }
+
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+{placed}
+// **Les quatre MSR, comme un noyau les pose.** STAR porte les deux sélecteurs,
+// LSTAR la cible, et le masque dit ce qu'il faut éteindre en entrant.
+vm.globals[{syscall}].value =
+  (BigInt({exitSelector}) << 48n) | (BigInt({entrySelector}) << 32n);
+vm.globals[{syscall} + 1].value = BigInt({kernel});
+vm.globals[{syscall} + 3].value = BigInt({interruptFlag});
+// **SCE, le bit qui ouvre la porte.** Sans lui l'instruction n'existe pas.
+vm.globals[{efer}].value |= 1n;
+
+// L'anneau trois, et des drapeaux qui portent IF pour que le masque ait
+// quelque chose à éteindre.
+vm.globals[{segment} + 1].value = BigInt({userCode});
+vm.globals[{segment} + 2].value = BigInt({userStackSelector});
+vm.globals[4].value = BigInt({userStack});
+vm.globals[{rflags}].value = BigInt({interruptFlag}) | 2n;
+vm.globals[{rip}].value = {base}n;
+
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("arret " + why.stopped);
+console.log("rbx 0x" + lire(3).toString(16));
+console.log("rcx 0x" + lire(1).toString(16));
+console.log("rdx " + lire(2).toString());
+console.log("rsp 0x" + lire(4).toString(16));
+console.log("r8 0x" + lire(8).toString(16));
+console.log("noyau-cs 0x" + (lire(0) & 0xffffn).toString(16));
+console.log("noyau-ss 0x" + (lire(5) & 0xffffn).toString(16));
+console.log("programme-if " + ((lire(6) & BigInt({interruptFlag})) !== 0n ? "allume" : "eteint"));
+console.log("noyau-if " + ((lire(9) & BigInt({interruptFlag})) !== 0n ? "allume" : "eteint"));
+console.log("r11 0x" + lire(11).toString(16));
+console.log("cs 0x" + (lire({segment} + 1) & 0xffffn).toString(16));
+console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            placed = placed,
+            pages = PAGES,
+            syscall = SYSCALL_SLOT,
+            efer = EFER_SLOT,
+            segment = SEGMENT_SLOT,
+            rflags = RFLAGS_SLOT,
+            rip = RIP_SLOT,
+            base = BASE,
+            kernel = KERNEL,
+            entrySelector = ENTRY_SELECTOR,
+            exitSelector = EXIT_SELECTOR,
+            userCode = USER_CODE,
+            userStackSelector = USER_STACK_SELECTOR,
+            userStack = USER_STACK,
+            interruptFlag = IF,
+        ),
+    )
+    .expect("le pilote");
+
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| line_of(&text, name);
+    assert_eq!(
+        line("rbx "),
+        format!("0x{WITNESS:x}"),
+        "**le noyau a tourné** : `syscall` a sauté sur LSTAR au lieu de faire \
+         refuser la région : {text}"
+    );
+    assert_eq!(
+        line("r8 "),
+        format!("0x{USER_STACK:x}"),
+        "**et il a trouvé la pile du programme** : `syscall` ne change pas de \
+         pile, c'est au noyau de le faire. Un cœur qui la changerait ferait \
+         travailler le noyau sur une pile qu'il croit encore devoir aller \
+         chercher : {text}"
+    );
+    assert_eq!(
+        line("noyau-cs "),
+        format!("0x{KERNEL_CODE:x}"),
+        "**et son CS porte l'anneau zéro**, alors que STAR porte 0x13 : c'est \
+         le processeur qui force le RPL, pas le noyau. Un cœur qui recopie \
+         sans masquer laisserait un programme choisir son privilège en \
+         écrivant un MSR : {text}"
+    );
+    assert_eq!(
+        line("noyau-ss "),
+        "0x18",
+        "**et son SS est celui de l'entrée plus huit**, RPL éteint : \
+         `0x13 + 8` masqué donne `0x18`, `__KERNEL_DS`. Oublier les huit \
+         donnerait au noyau la pile du code : {text}"
+    );
+    assert_eq!(
+        line("r11 "),
+        format!("0x{:x}", IF | ALWAYS_ONE),
+        "**R11 porte les drapeaux tels que l'appel les a pris** — c'est de là \
+         que le retour les reprendra : {text}"
+    );
+    assert_eq!(
+        line("programme-if "),
+        "allume",
+        "**et le programme les retrouve** : le retour les relit dans R11, pas \
+         dans ce que le noyau a laissé — qui tournait IF éteint : {text}"
+    );
+    assert_eq!(
+        line("rcx "),
+        format!("0x{after:x}"),
+        "**RCX porte l'adresse de la suite, pas celle du `syscall`** — la \
+         confondre ferait boucler le programme sur son propre appel, à \
+         l'infini et sans rien signaler : {text}"
+    );
+    assert_eq!(
+        line("noyau-if "),
+        "eteint",
+        "**IF est éteint dans le noyau** : c'est le masque qui le dit, et \
+         c'est ce qui l'empêche d'être interrompu avant d'avoir sa propre \
+         pile : {text}"
+    );
+    assert_eq!(
+        line("rdx "),
+        RESUMED.to_string(),
+        "**l'instruction d'après le `syscall` a tourné** : le `sysretq` a \
+         rendu la main là où RCX pointait : {text}"
+    );
+    assert_eq!(
+        line("cs "),
+        format!("0x{USER_CODE:x}"),
+        "et le retour rend l'anneau **trois** : `exit + 16` pour le code, \
+         RPL à trois : {text}"
+    );
+    assert_eq!(
+        line("ss "),
+        format!("0x{USER_STACK_SELECTOR:x}"),
+        "et `exit + 8` pour la pile : se tromper de décalage rendrait la main \
+         sous un segment 32 bits : {text}"
+    );
+    assert_eq!(
+        line("arret "),
+        UD2_SANS_PORTE,
+        "et l'arrêt final est le `ud2` du programme, après son retour : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
