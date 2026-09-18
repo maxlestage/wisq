@@ -288,9 +288,13 @@ fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
         "le cadre, réservé : le noyau le lit, ne l'alloue jamais"
     );
 
-    // **`VIDEO_TYPE_VLFB`, sans quoi tout le reste est ignoré.** Le chemin
-    // moderne — `sysfb`, puis `simpledrm` — s'accroche à cette valeur et ne
-    // regarde même pas les champs suivants si elle n'y est pas.
+    // **`VIDEO_TYPE_VLFB` : un cadre linéaire, et le seul type pour lequel le
+    // noyau décale `lfb_size` de seize bits.** Ce qui était écrit ici jusqu'à
+    // #260 — « sans quoi tout le reste est ignoré », et « le chemin moderne,
+    // `sysfb` puis `simpledrm`, s'accroche à cette valeur » — était faux deux
+    // fois : `sysfb` accepte `VIDEO_TYPE_EFI` tout autant, et le noyau de
+    // référence ne porte pas `simpledrm` du tout. Le couple type + unité est
+    // tenu par `the_video_type_and_the_size_unit_are_one_pair`, juste après.
     assert_eq!(byte(0x0f), 0x23, "orig_video_isVGA : un cadre linéaire");
     assert_eq!(word(0x12), 1024, "lfb_width");
     assert_eq!(word(0x14), 768, "lfb_height");
@@ -365,6 +369,95 @@ fn the_zero_page_reserves_and_describes_the_screen_it_declares() {
     assert!(
         stray.is_empty(),
         "des octets écrits hors des champs voulus : {stray:x?}"
+    );
+}
+
+/// **Le type vidéo et l'unité de `lfb_size` sont un seul couple, et c'est le
+/// couple qui choisit le pilote.**
+///
+/// `sysfb_create_simplefb` décale la taille de seize bits **pour ce seul
+/// type** : `if (si->orig_video_isVGA == VIDEO_TYPE_VLFB) size <<= 16;`.
+/// Changer l'un des deux champs sans l'autre ne donne donc pas un écran un peu
+/// faux : cela envoie le noyau chez un autre pilote, ou chez aucun.
+///
+/// **Mesuré (#260)** — trois démarrages du noyau de référence, Alpine
+/// 6.6.134-0-lts, à travers l'émetteur, qui ne diffèrent que par ces deux
+/// champs :
+///
+/// | déclaration | ce que le noyau en fait |
+/// |---|---|
+/// | `VLFB` + unités de 64 Kio | `Console: colour dummy device 80x25`, aucun `fb0` |
+/// | `EFI` + unités de 64 Kio | `sysfb: VRAM smaller than advertised`, puis `fb0: EFI VGA frame buffer device` |
+/// | `EFI` + octets | `Console: colour dummy device 80x25`, aucun `fb0` |
+///
+/// Ce noyau ne porte **qu'un** pilote de tampon, `efifb`, et `efifb` ne se lie
+/// qu'au périphérique `efi-framebuffer`, que `sysfb` ne pose que si le chemin
+/// `simple-framebuffer` a refusé. D'où la deuxième ligne : l'écran y marche
+/// **parce que** la taille est fausse. Ce n'est pas une conduite à garder —
+/// c'est la raison de ne jamais changer un de ces deux champs sans l'autre.
+///
+/// La colonne qui manque — un noyau portant `simplefb` ou `simpledrm` — est
+/// **déduite du chemin de code, pas mesurée** : aucun noyau de ce genre n'a
+/// tourné ici. Là, c'est `VLFB` + unités qui se lierait, et `EFI` + unités qui
+/// ne se lierait pas. Aucun couple n'atteint les deux familles.
+///
+/// Le commentaire que cette tranche a corrigé disait l'inverse : « sans
+/// `VIDEO_TYPE_VLFB`, tout le reste est ignoré ». La mesure montre le noyau
+/// relire les champs suivants un par un sous `VIDEO_TYPE_EFI` — `efifb: mode is
+/// 1024x768x32, linelength=4096` et `Truecolor: size=8:8:8:8, shift=24:16:8:0`
+/// sont les octets de wisq, rendus. C'était la phrase qui interdisait d'essayer
+/// la valeur qui marche.
+#[test]
+fn the_video_type_and_the_size_unit_are_one_pair() {
+    use wisq_vm::desktop::Screen;
+    use wisq_vm::kernel_image::zero_page_with_screen;
+    const RAM: u64 = 64 * 1024 * 1024;
+    /// Le sommet de ce que le chargeur a posé : au-dessous, le noyau.
+    const FLOOR: u64 = 0x0100_0000;
+    /// `VIDEO_TYPE_VLFB` — **le seul** type pour lequel le noyau décale.
+    const VLFB: u8 = 0x23;
+    // 800 × 600 × 4 fait 1 920 000 octets, que 64 Kio ne divise pas : l'arrondi
+    // vers le haut de #250 porte quelque chose ici, ce que 1024 × 768 — quarante-huit
+    // blocs tout juste — ne demanderait pas.
+    let screen = Screen {
+        base: 0x0200_0000,
+        width: 800,
+        height: 600,
+    };
+    let page = zero_page_with_screen(RAM, 0x9800, screen, FLOOR).expect("un écran descriptible");
+
+    let kind = page[0x0f];
+    let word = |at: usize| u16::from_le_bytes(page[at..at + 2].try_into().unwrap());
+    let dword = |at: usize| u32::from_le_bytes(page[at..at + 4].try_into().unwrap());
+
+    // La règle du noyau, refaite sur le type que la page déclare vraiment — et
+    // non sur celui qu'on croit qu'elle déclare.
+    let advertised = if kind == VLFB {
+        u64::from(dword(0x1c)) << 16
+    } else {
+        u64::from(dword(0x1c))
+    };
+    let needed = u64::from(word(0x14)) * u64::from(word(0x24));
+    assert!(
+        needed <= advertised,
+        "type 0x{kind:02x} : le noyau refuserait le cadre sur son propre \
+         « VRAM smaller than advertised » — {needed} octets demandés contre \
+         {advertised} annoncés. Sous ce type, l'unité de `lfb_size` est {}.",
+        if kind == VLFB {
+            "le bloc de 64 Kio"
+        } else {
+            "l'octet"
+        }
+    );
+    // Et pas trop non plus. Annoncer beaucoup plus que le cadre passe la garde
+    // du noyau **en silence**, et c'est exactement ce qui détourne le chemin
+    // moderne vers l'ancien : une taille trop petite fait refuser
+    // `simple-framebuffer`, une taille trop grande le fait accepter.
+    let slack = if kind == VLFB { 0x1_0000 } else { 1 };
+    assert!(
+        advertised < needed + slack,
+        "type 0x{kind:02x} : {advertised} octets annoncés pour un cadre de \
+         {needed} — l'unité de `lfb_size` ne correspond pas au type déclaré"
     );
 }
 
