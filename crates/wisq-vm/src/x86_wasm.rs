@@ -453,10 +453,15 @@ pub const TASK_SLOT: usize = EFER_SLOT + 1;
 /// que `syscall` éteint). `syscall_init` les écrit tous les quatre, et c'est
 /// sur le premier que le noyau Alpine s'arrêtait « sur place ».
 ///
-/// **Ce que ces nombres ne sont pas** : rien ne les lit. `syscall` n'est pas
-/// produite ; accepter l'écriture dit « on la range », pas « on l'applique »,
-/// comme pour les registres de contrôle. Le jour où `syscall` sera produite,
-/// c'est ici qu'elle prendra sa cible.
+/// **Et depuis #259, `syscall` les lit.** Trois des quatre : STAR pour ses
+/// deux sélecteurs — celui de l'entrée en bits 47:32, celui du **retour** en
+/// bits 63:48 —, LSTAR pour la cible, et le masque pour les drapeaux à
+/// éteindre. CSTAR reste rangé sans être lu : ce cœur ne fait pas tourner le
+/// mode compatibilité, et `0f 07` sans REX.W est refusé au décodage plutôt que
+/// confondu avec `sysretq`.
+///
+/// Ce paragraphe disait « rien ne les lit », et c'était vrai jusqu'à ce que la
+/// mesure de #258 s'arrête sur le `syscall` de `/init`.
 pub const SYSCALL_SLOT: usize = TASK_SLOT + 1;
 pub const SYSCALL_COUNT: usize = 4;
 
@@ -1702,6 +1707,8 @@ impl Module {
                         | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
+                        | Op::SystemCall
+                        | Op::SystemReturn
                         | Op::Undefined
                 ) {
                     continue;
@@ -1792,6 +1799,8 @@ impl Module {
                     Op::Return
                     | Op::FarReturn
                     | Op::InterruptReturn
+                    | Op::SystemCall
+                    | Op::SystemReturn
                     | Op::JumpIndirect
                     | Op::CallIndirect => survey.perhaps += 1,
                     _ => {}
@@ -1860,6 +1869,8 @@ impl Module {
                             | Op::Return
                             | Op::FarReturn
                             | Op::InterruptReturn
+                            | Op::SystemCall
+                            | Op::SystemReturn
                             | Op::Undefined
                     )
                 });
@@ -1979,6 +1990,8 @@ impl Module {
                         | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
+                        | Op::SystemCall
+                        | Op::SystemReturn
                         | Op::Undefined
                 );
                 let displacement = step.imm as i64;
@@ -1998,11 +2011,17 @@ impl Module {
                         | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
+                        | Op::SystemReturn
                         | Op::Undefined
                 );
                 let jumps = !matches!(
                     step.op,
-                    Op::Return | Op::FarReturn | Op::InterruptReturn | Op::Undefined
+                    Op::Return
+                        | Op::FarReturn
+                        | Op::InterruptReturn
+                        | Op::SystemCall
+                        | Op::SystemReturn
+                        | Op::Undefined
                 );
                 steps.push(step);
                 if !ends {
@@ -2229,6 +2248,131 @@ impl Module {
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(16).op(code::I64_ADD);
+                });
+                Self::resolve(starts, body, shape);
+            }
+            Op::SystemCall => {
+                // **`syscall` : entrer dans le noyau sans passer par l'IDT.**
+                //
+                // C'est le mur que #258 a nommé avec une adresse : la machine
+                // s'arrêtait à `0x401018`, cinquième instruction de `/init`.
+                // L'oracle est `Sources/WisqVM/X86SystemCalls.swift`, écrit à
+                // #129, et ses commentaires portent les pièges déjà payés.
+                //
+                // **RCX porte l'adresse de la suite, pas celle du `syscall`.**
+                // La confondre ferait boucler le programme sur son propre
+                // appel, à l'infini et sans rien signaler.
+                //
+                // **Et la pile ne change pas.** RSP reste celui du programme ;
+                // c'est au noyau de le remplacer, d'où le `swapgs` en tête de
+                // son gestionnaire. Un cœur qui la changerait ici ferait
+                // travailler le noyau sur une pile qu'il croit encore devoir
+                // aller chercher.
+                body.store(Self::slot(1), |b| {
+                    b.constant(base.wrapping_add(after as u64));
+                });
+                body.store(Self::slot(11), |b| {
+                    b.load(RFLAGS_SLOT);
+                });
+                // Les drapeaux que le noyau a demandé d'effacer. Le masque est
+                // à lui : il y met au moins le bit d'interruption, pour ne pas
+                // être interrompu avant d'avoir sa propre pile. WebAssembly
+                // n'a pas de négation, d'où le `xor` avec tous les bits.
+                body.store(RFLAGS_SLOT, |b| {
+                    b.load(RFLAGS_SLOT)
+                        .load(SYSCALL_SLOT + 3)
+                        .constant(u64::MAX)
+                        .op(code::I64_XOR)
+                        .op(code::I64_AND)
+                        .constant(ALWAYS_ONE)
+                        .op(code::I64_OR);
+                });
+                // **Les sélecteurs sont forcés à l'anneau zéro**, quel que
+                // soit ce que le noyau a écrit dans STAR. C'est le processeur
+                // qui le fait ; le laisser au noyau reviendrait à laisser un
+                // programme choisir son privilège en écrivant un MSR — ce
+                // qu'il ne peut pas faire, mais un cœur qui recopie sans
+                // masquer ne le saurait pas. `0xfffc` fait les deux d'un
+                // coup : les seize bits du sélecteur, et le RPL à zéro.
+                let entry = |b: &mut Body| {
+                    b.load(SYSCALL_SLOT).constant(32).op(code::I64_SHR_U);
+                };
+                body.store(Self::segment_slot(Segment::Cs), |b| {
+                    entry(b);
+                    b.constant(0xfffc).op(code::I64_AND);
+                });
+                body.store(Self::segment_slot(Segment::Ss), |b| {
+                    entry(b);
+                    b.constant(0xffff)
+                        .op(code::I64_AND)
+                        .constant(8)
+                        .op(code::I64_ADD)
+                        .constant(0xfffc)
+                        .op(code::I64_AND);
+                });
+                body.store(RIP_SLOT, |b| {
+                    b.load(SYSCALL_SLOT + 1);
+                });
+                Self::resolve(starts, body, shape);
+            }
+            Op::SystemReturn => {
+                // **`sysretq` : rendre la main au programme.**
+                //
+                // **Le retour ne repasse pas par où l'entrée est venue.**
+                // `STAR` porte un second sélecteur pour ça, et le processeur y
+                // ajoute **seize** pour le code et **huit** pour la pile —
+                // parce qu'un noyau range, dans cet ordre, le code 32 bits
+                // puis le code 64 bits de l'espace utilisateur. Se tromper de
+                // décalage rendrait la main sous un segment 32 bits, et le
+                // programme exécuterait ses propres octets comme s'ils
+                // voulaient dire autre chose.
+                //
+                // **Le RPL est posé à trois**, lui : c'est un retour vers
+                // l'anneau trois, et c'est le processeur qui l'impose.
+                //
+                // **Une infidélité, nommée.** Le cœur Swift rend
+                // `R11 & ~(RF|NT)`, donc y compris les bits que le silicium
+                // tient pour réservés ; ici le masque est `WRITABLE_FLAGS`
+                // privé de ces deux-là, ce qui est **plus strict**. Aucune
+                // instruction que cet émetteur produise ne peut voir la
+                // différence — `pushfq` masque aussi — et l'écrire vaut mieux
+                // que de la laisser se découvrir.
+                const RESUME: u64 = 1 << 16;
+                const NESTED: u64 = 1 << 14;
+                body.store(RIP_SLOT, |b| {
+                    b.load(Self::slot(1));
+                });
+                body.store(RFLAGS_SLOT, |b| {
+                    b.load(Self::slot(11))
+                        .constant(WRITABLE_FLAGS & !(RESUME | NESTED))
+                        .op(code::I64_AND)
+                        .constant(ALWAYS_ONE)
+                        .op(code::I64_OR);
+                });
+                let exit = |b: &mut Body| {
+                    b.load(SYSCALL_SLOT)
+                        .constant(48)
+                        .op(code::I64_SHR_U)
+                        .constant(0xffff)
+                        .op(code::I64_AND);
+                };
+                body.store(Self::segment_slot(Segment::Cs), |b| {
+                    exit(b);
+                    b.constant(16)
+                        .op(code::I64_ADD)
+                        .constant(0xffff)
+                        .op(code::I64_AND)
+                        .constant(3)
+                        .op(code::I64_OR);
+                });
+                body.store(Self::segment_slot(Segment::Ss), |b| {
+                    exit(b);
+                    b.constant(8)
+                        .op(code::I64_ADD)
+                        .constant(0xffff)
+                        .op(code::I64_AND)
+                        .constant(3)
+                        .op(code::I64_OR);
                 });
                 Self::resolve(starts, body, shape);
             }
@@ -3077,6 +3221,8 @@ impl Module {
                 | Op::CallIndirect
                 | Op::FarReturn
                 | Op::InterruptReturn
+                | Op::SystemCall
+                | Op::SystemReturn
                 | Op::Undefined
         ) {
             return None;
@@ -4024,6 +4170,9 @@ impl Module {
                 Op::PortIn | Op::PortOut => unreachable!(
                     "une entrée-sortie n'est pas un calcul : `translate` la détourne vers `port`"
                 ),
+                Op::SystemCall | Op::SystemReturn => unreachable!(
+                    "l'appel système change le bloc : `translate` le rend au compilateur de région"
+                ),
                 Op::ReadTimestamp
                 | Op::ReadTimestampAndProcessor
                 | Op::CpuId
@@ -4431,8 +4580,8 @@ impl Module {
     fn carry_and_overflow(step: &Decoded, _mask: u64, sign: u64, b: &mut Body) {
         let shift_to = |bit: u64| bit.trailing_zeros() as u64;
         match step.op {
-            Op::FarReturn | Op::InterruptReturn => {
-                unreachable!("un retour lointain ou d'interruption change le bloc : `translate` le rend au compilateur de région")
+            Op::FarReturn | Op::InterruptReturn | Op::SystemCall | Op::SystemReturn => {
+                unreachable!("un retour lointain, d'interruption ou d'appel système change le bloc : `translate` le rend au compilateur de région")
             }
             Op::PortIn | Op::PortOut => {
                 unreachable!(

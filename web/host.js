@@ -171,7 +171,11 @@ export const SLOTS = {
   task: 53,
   /// **Les quatre registres de l'appel système** : STAR, LSTAR, CSTAR,
   /// SYSCALL_MASK, dans l'ordre de leurs numéros. Rangés par `wrmsr`, rendus
-  /// par `rdmsr`, lus par rien : `syscall` n'est pas produite.
+  /// par `rdmsr`, et **lus par `syscall` depuis #259** — trois des quatre :
+  /// les deux sélecteurs de STAR, la cible de LSTAR, le masque. CSTAR reste
+  /// rangé sans être lu, ce cœur ne faisant pas tourner le mode
+  /// compatibilité. C'est le module qui les lit, pas l'hôte : l'appel système
+  /// ne repasse pas par ici.
   syscall: 54,
   syscallCount: 4,
   /// **Le mot de contrôle du coprocesseur**, et son mot d'état juste après.
