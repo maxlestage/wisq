@@ -15034,3 +15034,85 @@ et reste. Écrire ici un test pour « le noyau porte `simpledrm` en module »
 demanderait un initramfs avec les modules d'Alpine, que ce conteneur n'a pas —
 et l'écrire sans, ce serait fabriquer une assertion qui ne peut pas échouer,
 exactement ce que les sabotages de cette session passent leur temps à trouver.
+
+## #262 — deux heures à 99,8 % de processeur, sans une ligne
+
+Cette tranche est née d'un fait, pas d'une relecture : une mesure lancée à
+`WISQ_TURNS=40000000` sur la vraie racine d'Alpine a tourné **deux heures à
+99,8 % de processeur, 2,6 Gio résidents, sans imprimer une seule ligne.**
+Impossible, pendant tout ce temps, de dire si la machine avançait ou tournait en
+rond — la question exacte que #229 a appris à poser.
+
+### Où était le silence
+
+Deux candidats, et **un seul était coupable** :
+
+| candidat | verdict |
+| --- | --- |
+| le pilote JavaScript n'imprime rien dans sa boucle de tours | **vrai** — `arret`, `marche`, `retours`, `derniers`, `cases`, `serie` sortent tous *après* la boucle |
+| `kernel-entry` collecte par `Command::output()`, qui bufferise | **faux** |
+
+Le second, je l'avais écrit dans la tâche avant de regarder. `kernel-entry`
+**lit déjà la sortie de l'enfant ligne à ligne pendant qu'il tourne**, et son
+commentaire dit exactement pourquoi : « un relevé qui n'arriverait qu'à la fin
+ne dirait pas si la machine avance encore ». Le côté Rust était juste depuis le
+début. C'est la quatrième fois de la session qu'une vérification change la
+réponse — mais la première où je vérifie **avant** d'écrire la correction.
+
+### Ce qui bat, et à quel rythme
+
+Le pilote imprime maintenant, **dans** sa boucle, le tour, l'adresse, le dernier
+tour où une adresse a été neuve, et le nombre d'adresses distinctes. Ce sont les
+compteurs de #229, rendus vivants au lieu d'attendre la fin.
+
+La période vient de `Progress::beat`, **côté Rust** — pas du JavaScript — pour
+que le pilote et le test qui la tient ne puissent pas en prendre deux
+différentes, la même raison que `tail`. Deux bornes tirent en sens contraire :
+
+- **jamais un déluge** : deux cents lignes au plus, quel que soit le budget,
+  sinon le relevé noie ses propres lignes de traduction ;
+- **jamais muet** : au-delà de cent mille tours — le seuil où l'on commence à se
+  demander si ça avance — au moins une vingtaine de lignes.
+
+Un plancher de 1024 tours garde les relevés courts tranquilles : à mille tours,
+la machine a fini avant qu'on ait eu le temps de se poser la question.
+
+### Mesuré
+
+Relevé de cent mille tours, `beat` = 1024, **97 lignes**, toutes avant la
+conclusion :
+
+```
+tour  1024 sur 100000 : 0xffffffff81092a90 —  836 adresses distinctes, la dernière neuve au tour 1014
+tour 99328 sur 100000 : 0xffffffff81ba4810 — 1225 adresses distinctes, la dernière neuve au tour 87069
+```
+
+Ces deux lignes disent d'un coup d'œil ce que le relevé final mettait cent mille
+tours à dire : la machine ouvrait encore du terrain au tour 87 069, et douze
+mille tours plus tard elle n'en ouvrait plus.
+
+### Trois sabotages, trois chutes nommées
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| le plancher retiré (`QUIET.max` sauté) | « une période nulle ne bat jamais » — et en JavaScript `tour % 0` vaut `NaN`, donc le relevé serait muet **sans le dire** |
+| le plafond de lignes relâché (deux millions) | « 976 lignes de progrès pour 1 000 000 tours : le relevé noierait ses propres traductions » |
+| le plancher trop haut (2³⁰) | « 0 lignes pour 100000 tours : c'est le silence que #262 a payé deux heures » |
+
+Restauration vérifiée par `diff`.
+
+### Ce que le test ne tient pas, et pourquoi
+
+**Que la ligne soit émise *dans* la boucle.** Le test tient la cadence — la
+décision, le nombre, ce qui peut dériver — mais pas la place de l'appel. La
+juger demanderait de faire tourner Bun sur un noyau, ce qu'un test unitaire ne
+fait pas. L'écrire comme une recherche de chaîne dans le gabarit serait la
+fausse garde que #98 a nommée. C'est donc le relevé lui-même qui l'établit, et
+il est cité ci-dessus.
+
+### Une garde qui a fait son travail
+
+Le premier essai a échoué, et bien : `x86-translate` datait d'avant mon édition,
+et le pilote a refusé de mesurer plutôt que de faire tourner un décodeur périmé
+— « il décoderait le jeu d'instructions d'avant ». C'est la famille de #168, et
+elle m'a attrapé.
