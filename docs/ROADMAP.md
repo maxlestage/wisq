@@ -11644,3 +11644,33 @@ pas échouer.
 
 **La règle à retenir** : avant de conclure d'une absence, chercher la même
 absence là où l'on sait que la chose est présente. `ext4` aurait suffi.
+
+## #262 — le relevé dit où il en est pendant qu'il y est
+
+**Constaté, pas supposé** : une mesure à `WISQ_TURNS=40000000` a tourné **deux
+heures à 99,8 % de processeur sans imprimer une ligne**. Rien ne permettait de
+dire si la machine avançait ou tournait en rond — la question de #229, dont les
+compteurs n'arrivaient qu'à la fin.
+
+Une seule des deux causes était réelle : le pilote JavaScript n'imprimait rien
+dans sa boucle de tours. La seconde — « `kernel-entry` bufferise » — était
+fausse : il lit déjà la sortie ligne à ligne pendant que l'enfant tourne, et son
+commentaire le dit depuis #219.
+
+Le pilote imprime désormais, **dans** la boucle, le tour, l'adresse nommée, le
+dernier tour neuf et le compte d'adresses distinctes. La période vient de
+`Progress::beat`, côté Rust, pour que le gabarit et le test n'en prennent pas
+deux différentes : **jamais plus de deux cents lignes**, **jamais moins d'une
+vingtaine au-delà de cent mille tours**, et un plancher de 1024 qui laisse les
+relevés courts tranquilles.
+
+Mesuré : cent mille tours, 97 lignes, toutes avant la conclusion, et on lit d'un
+coup d'œil que la dernière adresse neuve est au tour 87 069 sur 100 000.
+
+Trois sabotages, trois chutes nommées — période nulle, déluge, silence.
+
+**Ce que ça ne tient pas** : que l'appel soit dans la boucle. Le test tient la
+cadence ; la place, seul un vrai relevé la montre, et il est cité dans le
+JOURNAL. Une recherche de chaîne dans le gabarit serait la fausse garde de #98.
+
+Le compte passe à 2528 : un test, trois sabotages, trois chutes nommées.
