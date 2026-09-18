@@ -372,8 +372,20 @@ pub fn zero_page_with_screen(
 
     let mut page = zero_page(ram, command_line);
 
-    // `VIDEO_TYPE_VLFB`. **Sans cette valeur, tout le reste est ignoré** : le
-    // noyau ne regarde même pas les champs suivants.
+    // `VIDEO_TYPE_VLFB`. **Ce champ et `lfb_size`, quelques lignes plus bas,
+    // sont un seul couple** : `sysfb_create_simplefb` décale la taille de seize
+    // bits pour ce seul type — `if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
+    // size <<= 16;`. Changer l'un sans l'autre n'écrit pas un écran un peu
+    // faux : cela envoie le noyau chez un autre pilote, ou chez aucun. Le
+    // couple est tenu par `the_video_type_and_the_size_unit_are_one_pair`.
+    //
+    // **Ce que cette valeur n'est pas : la condition pour que le reste soit
+    // lu.** Le commentaire d'ici l'a affirmé jusqu'à #260 — « sans cette
+    // valeur, tout le reste est ignoré » — et la mesure le démentit : sous
+    // `VIDEO_TYPE_EFI`, le noyau de référence relit ces champs un par un et les
+    // rend (`efifb: mode is 1024x768x32, linelength=4096`). Quel type déclarer
+    // dépend du pilote que porte le noyau invité, et c'est une direction
+    // ouverte — voir #260 dans le JOURNAL.
     page[0x0f] = 0x23;
     let width = u16::try_from(screen.width).expect("borné juste au-dessus");
     let height = u16::try_from(screen.height).expect("borné juste au-dessus");

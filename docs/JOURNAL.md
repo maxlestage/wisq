@@ -13724,6 +13724,12 @@ lui-même, dans `drivers/firmware/sysfb_simplefb.c` :
 chargeur annonce `VIDEO_TYPE_VLFB` ; il écrivait donc 3 145 728 là où le noyau
 lisait **206 158 430 208** octets de VRAM pour un cadre de trois mégaoctets.
 
+> **La condition sur `orig_video_isVGA` porte plus que l'unité — voir #260.**
+> Ces deux champs sont un couple, et c'est le couple qui choisit le pilote.
+> #260 mesure les trois combinaisons sur le noyau de référence : deux la
+> rendent muette, et la seule qui lie un tampon le fait **parce que** la taille
+> y est fausse.
+
 **Pourquoi ça ne s'était jamais vu, et c'est le cœur de l'affaire.** La seule
 vérification du noyau sur ce champ est un `>`. Une VRAM surdéclarée la passe
 toujours : le défaut ne produit aucun symptôme, il **désarme une garde**. Plus
@@ -14785,3 +14791,138 @@ deux sens : un programme d'anneau trois entre dans le noyau, le noyau le sert,
 et la main revient au bon endroit avec les bons drapeaux. Un vrai `/init` — un
 shell, `busybox` — en demandera des centaines d'autres, et chacune peut buter
 sur une instruction ou un service qui manque.
+
+## #260 — l'écran déclaré, le pilote qui n'existe pas, et une preuve que j'avais fabriquée
+
+Cette entrée commence par une erreur, parce que c'est la partie utile.
+
+### Ce que j'ai affirmé, et qui ne tenait pas
+
+J'ai annoncé un défaut nommé — « wisq déclare le seul parfum de tampon que ce
+noyau ne peut pas lier » — sur la foi d'une ligne lue dans la mesure de #259 :
+`Console: colour dummy device 80x25`. **Cette mesure ne demandait aucun écran.**
+Elle ne posait pas `WISQ_SCREEN`, donc aucun `screen_info` n'était écrit, et
+« dummy device » est simplement ce que rapporte une machine sans écran. Le
+défaut était déduit d'une mesure qui ne portait pas sur la question.
+
+Et la sonde censée le confirmer **n'a jamais tourné** :
+`WISQ_SCREEN=1024x768@0x8000000` n'est pas la syntaxe attendue — c'est
+`largeur x hauteur`, la base étant calculée en haut de la RAM — et le pilote
+refuse au lieu de continuer en silence, exactement la conduite que #250 avait
+posée. Le refus était correct ; c'est ma lecture qui ne l'était pas.
+
+Deux leçons, et la seconde est la vraie. **Une ligne de journal ne devient une
+preuve que si la mesure demandait la chose sur laquelle on l'interroge.** Et
+**une sonde dont on n'a pas lu le code de sortie n'est pas une sonde.**
+
+### Les trois mesures, refaites
+
+Trois démarrages du noyau de référence à travers l'émetteur — Alpine
+6.6.134-0-lts, 256 Mio, `WISQ_SCREEN=1024x768` —, qui ne diffèrent que par deux
+champs de `screen_info` :
+
+| déclaration | ce que le noyau en fait |
+| --- | --- |
+| `VLFB` + unités de 64 Kio — l'état du dépôt | `Console: colour dummy device 80x25`, aucun `fb0` |
+| `EFI` + unités de 64 Kio | `sysfb: VRAM smaller than advertised`, puis `efifb: framebuffer at 0xfd00000, using 3072k, total 3072k`, `mode is 1024x768x32, linelength=4096`, `Console: switching to colour frame buffer device 128x48`, **`fb0: EFI VGA frame buffer device`** |
+| `EFI` + octets | `Console: colour dummy device 80x25`, aucun `fb0` |
+
+Dans les trois cas la réservation e820 est honorée —
+`BIOS-e820: [mem 0x000000000fd00000-0x000000000fffffff] reserved` — et la
+machine va jusqu'au même point, `/init` à `rip 0x401034`. Seul le tampon change.
+
+Et le noyau porte la réponse dans ses propres chaînes. Les cinq noms de
+périphériques que `sysfb.c` peut poser sont là, un exemplaire chacun :
+`simple-framebuffer`, `vesa-framebuffer`, `efi-framebuffer`,
+`platform-framebuffer`, `vga-framebuffer`. Des **pilotes**, il n'en reste qu'un :
+
+| pilote | occurrences dans l'image |
+| --- | --- |
+| `efifb` (`drivers/video/fbdev/efifb.c`) | 25 |
+| `simplefb`, `simpledrm`, `vesafb`, `vga16fb` | **0** |
+
+D'où la deuxième ligne du tableau, et sa forme désagréable : `efifb` ne se lie
+qu'au périphérique `efi-framebuffer`, que `sysfb` ne pose **que si** le chemin
+`simple-framebuffer` a refusé — et il refuse ici parce que la taille annoncée
+est trop petite. **L'écran y marche parce que le champ est faux.** Corriger
+l'unité sans changer le type éteint l'écran ; corriger les deux l'éteint aussi.
+
+### Le défaut nommé
+
+Quatre endroits affirmaient la même chose, et elle est fausse :
+
+| fichier | ce qui était écrit |
+| --- | --- |
+| `crates/wisq-vm/src/kernel_image.rs` | « Sans cette valeur, tout le reste est ignoré : le noyau ne regarde même pas les champs suivants. » |
+| `crates/wisq-vm/tests/kernel_elf.rs` | « sans quoi tout le reste est ignoré » ; « le chemin moderne — `sysfb`, puis `simpledrm` — s'accroche à cette valeur » |
+| `Sources/WisqVM/X86BootLoader.swift` (×2) | « le chemin moderne — `sysfb`, puis `simpledrm` ou `simplefb` — s'accroche à `VIDEO_TYPE_VLFB` » ; « Sans cette valeur […] le noyau ignore tout le reste de `screen_info` et démarre sans écran. » |
+
+Faux deux fois. `sysfb` lit `VIDEO_TYPE_EFI` tout autant — la mesure montre le
+noyau rendre les octets de wisq un par un, `mode is 1024x768x32,
+linelength=4096` et `Truecolor: size=8:8:8:8, shift=24:16:8:0`. Et le noyau de
+référence ne porte ni `simpledrm` ni `simplefb`, les deux pilotes que ces
+commentaires nomment comme « le chemin moderne ».
+
+C'est la famille de défauts que ce dépôt passe son temps à corriger — une
+limite honnête écrite une fois, restée assez longtemps pour devenir une
+garantie — mais sous une forme pire : **c'était la phrase qui interdisait
+d'essayer la valeur qui marche.** Quatrième miroir du même couple, comme #244.
+
+### Ce qui le tient maintenant
+
+`the_video_type_and_the_size_unit_are_one_pair` refait la règle du noyau —
+`if (si->orig_video_isVGA == VIDEO_TYPE_VLFB) size <<= 16;` — **sur le type que
+la page déclare vraiment**, et borne la taille des deux côtés. Les trois
+assertions littérales qui existaient tenaient chaque champ séparément ; aucune
+ne tenait le couple.
+
+Quatre sabotages, aucun survivant, et le partage est celui qu'on voulait :
+
+| sabotage | ce qui tombe |
+| --- | --- |
+| type → `EFI`, **et le littéral du vieux test mis à jour derrière** | `the_video_type_and_the_size_unit_are_one_pair` |
+| unité → octets, seule | le nouveau test + `..._reserves_and_describes_the_screen_it_declares` |
+| le couple `EFI` + octets, **cohérent** | les deux tests à littéraux — le nouveau **passe** |
+| unités × 4 | le nouveau test, sur sa borne du haut |
+
+La première ligne est celle qui compte : c'est l'édition plausible — quelqu'un
+change l'octet et met à jour l'assertion qu'il voit rougir — et c'est le
+nouveau test qui la refuse. La troisième aussi : le couple `EFI` cohérent est
+accepté par le nouveau test, parce que ce test tient la **cohérence**, pas le
+choix. Le choix n'est pas à lui.
+
+### La direction, et pourquoi je ne l'ai pas prise
+
+Aucune déclaration n'atteint les deux familles de pilotes :
+
+| déclaration | noyau à `efifb` seul (mesuré) | noyau à `simplefb`/`simpledrm` (déduit du chemin de code) |
+| --- | --- | --- |
+| `VLFB` + unités de 64 Kio | muet | se lie |
+| `EFI` + unités de 64 Kio | se lie, **par le refus du chemin moderne** | muet |
+| `EFI` + octets | muet | se lie |
+
+La colonne de droite est **déduite, pas mesurée** : aucun noyau de ce genre n'a
+tourné ici. Il faudrait en trouver un pour la tenir.
+
+Donc l'état du dépôt n'est pas un défaut : c'est un des deux choix qui couvrent
+la même famille, et le noyau de référence se trouve dans la colonne qu'il ne
+couvre pas. Changer l'octet ne corrige rien, cela déplace le silence. Trois
+routes, et c'est à Maxime de trancher :
+
+1. **Ne rien changer** et choisir le noyau qu'on embarque — un noyau à
+   `simpledrm`, ce que font les distributions récentes.
+2. **Déclarer `EFI` + octets** : le même couvert, écrit honnêtement, et l'écran
+   ne dépend plus d'un champ faux.
+3. **Lire le noyau qu'on nous donne.** wisq analyse déjà l'image pour y trouver
+   l'entrée, les segments et la ligne de commande ; elle peut y chercher quel
+   pilote de tampon s'y trouve et déclarer le couple que ce noyau sait lier.
+   C'est la seule route qui couvre les deux familles, et c'est une heuristique
+   sur le binaire de l'invité — du poids, pas une évidence.
+
+### Ce que ça ne montre pas
+
+**Personne n'a vu un pixel.** `fb0: EFI VGA frame buffer device` dit que le
+noyau a lié un pilote et bascule sa console dessus ; rien ici ne lit le contenu
+du cadre, et la vue qui devrait le peindre n'est pas dans la boucle de cette
+mesure. La suite de cette question est une image affichée, pas une ligne de
+journal.
