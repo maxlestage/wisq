@@ -15419,6 +15419,22 @@ C'est exactement la forme qui porte tout l'état par processeur de Linux. Elle
 traverse le démarrage 3 768 fois pour le seul `preempt_count`, et aucun juge ne
 l'a jamais regardée.
 
+### Et la phrase qui a creusé le trou est dans le dépôt
+
+`scripts/build-x86-oracle.py`, au-dessus du seul cas GS + RIP-relatif :
+
+> « **Personne n'écrit ça** — un noyau atteint ses variables par cœur par un
+> déplacement absolu »
+
+La seconde moitié est vraie aux trois quarts. La première est fausse. Sur les
+**33 382** instructions préfixées GS du noyau de référence, **8 559 sont en
+RIP-relatif** — une sur quatre. Et pour `preempt_count`, c'est 4 057 sur 4 057.
+
+Croyant la forme introuvable, on n'en a gravé qu'un seul cas, **et une
+lecture**. C'est très exactement pour cela que GS + RIP-relatif + RMW n'a jamais
+eu de juge. Le commentaire est corrigé ici ; les cas manquants sont #265, parce
+que les graver est une tranche et non une phrase.
+
 **#265 : poser ces formes dans l'oracle, et voir lequel des trois cœurs tombe.**
 Le test avant le correctif, au sens propre : les lignes de l'oracle se
 fabriquent contre le vrai silicium (`scripts/build-x86-oracle.py`), et cette

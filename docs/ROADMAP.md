@@ -11770,6 +11770,14 @@ RIP-relatif + lecture** (`movq %gs:…(%rip),%rax`). La combinaison des deux —
 n'en porte aucune (zéro de ses 9 225 formes ne commence par `65`). C'est la
 forme qui porte tout l'état par processeur de Linux.
 
+**Et la phrase qui a creusé le trou est dans le dépôt.**
+`scripts/build-x86-oracle.py` écrivait, au-dessus du seul cas GS + RIP-relatif :
+« personne n'écrit ça — un noyau atteint ses variables par cœur par un
+déplacement absolu ». Sur les 33 382 instructions préfixées GS du noyau de
+référence, **8 559 sont en RIP-relatif**, une sur quatre ; et pour
+`preempt_count`, 4 057 sur 4 057. Croyant la forme introuvable, on n'en a gravé
+qu'un cas, et une lecture. Le commentaire est corrigé ; les cas sont #265.
+
 **#265, la tranche suivante** : poser ces formes dans l'oracle
 (`scripts/build-x86-oracle.py`, contre le vrai silicium — cette machine-ci en
 est un) et voir lequel des trois cœurs tombe. Le test avant le correctif, au
