@@ -23,6 +23,25 @@ enum Snapshot {
     /// read as garbage.
     static let magic = Array("WISQSNP".utf8) + [UInt8(1)]
 
+    /// **La marque de la pile x87, en queue d'un instantané x86.**
+    ///
+    /// Des machines sont déjà sauvées sur des téléphones, et la pile x87
+    /// s'est ajoutée après elles. Elle se lit donc comme le disque se lit
+    /// depuis #144 — en queue, et son absence veut dire « un instantané
+    /// d'avant », pas « un instantané abîmé ». Mais le disque est déjà en
+    /// queue : « il reste des octets » ne suffit plus à dire lequel des deux
+    /// vient, d'où cette marque, posée devant la pile.
+    ///
+    /// **Ce qui pourrait la tromper, et c'est dit plutôt que tu.** Un
+    /// instantané d'avant, avec un disque, commence sa section disque par
+    /// `deviceFeaturesSelect` et `driverFeaturesSelect` — deux mots de
+    /// trente-deux bits que le pilote invité écrit, et qu'un pilote réel met à
+    /// zéro ou à un. Pour que la marque se confonde avec eux, il faudrait un
+    /// invité qui y ait écrit exactement `0x51534957` et `0x3738785F`. La
+    /// lecture exige en plus que la section entière tienne derrière, de sorte
+    /// qu'une confusion refuse au lieu de rendre n'importe quoi.
+    static let x87Section: UInt64 = 0x3738_785F_5153_4957  // « WISQ_x87 »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
@@ -152,6 +171,21 @@ enum Snapshot {
         /// already saved on people's phones, so their absence is read as
         /// "no disk" rather than as damage.
         var isAtEnd: Bool { at == bytes.count }
+
+        /// Les huit prochains octets valent-ils cette marque, sans les
+        /// prendre ?
+        ///
+        /// Deux sections facultatives se suivent maintenant en queue d'un
+        /// instantané x86, et « il reste des octets » ne dit plus laquelle
+        /// vient. Regarder sans consommer est ce qui permet de trancher tout
+        /// en laissant un instantané d'avant se lire comme il se lisait.
+        func peeks(_ mark: UInt64) -> Bool {
+            guard at + 8 <= bytes.count else { return false }
+            let seen = Array(bytes[at..<(at + 8)]).withUnsafeBytes {
+                UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self))
+            }
+            return seen == mark
+        }
 
         /// Refuses trailing bytes: a snapshot with something after its last
         /// section is one this build does not fully understand.
