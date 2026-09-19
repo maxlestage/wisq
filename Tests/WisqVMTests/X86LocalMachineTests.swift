@@ -251,6 +251,21 @@ final class X86SnapshotTests: XCTestCase {
         machine.core.x87Control = 0x0300
         machine.core.x87Status = 0x1234
         machine.core.mxcsr = 0x1DC0
+        // **La pile que ces trois mots décrivent.** Le mot de contrôle, le
+        // mot d'état — qui contient TOP — et MXCSR étaient sauvés depuis
+        // toujours ; les huit registres de quatre-vingts bits et le mot
+        // d'étiquettes ne l'étaient pas. Une machine reprise au milieu d'un
+        // calcul flottant revenait avec un état qui annonce une pile pleine,
+        // des étiquettes qui la disent vide, et des registres à zéro : trois
+        // descriptions de la même pile, toutes les trois en désaccord.
+        for index in 0..<8 {
+            machine.core.x87[index] = X86Extended(
+                significand: 0xF000_0000_0000_0000 + UInt64(index),
+                signExponent: UInt16(0x4000 + index))
+        }
+        // 0xFFFF est « les huit vides », c'est-à-dire la valeur de départ :
+        // une autre valeur est ce qui distingue « relu » de « jamais écrit ».
+        machine.core.x87Tags = 0x1B4E
         for index in 0..<16 {
             machine.core.setVector(index,
                                    0x7000_0000_0000_0000 + UInt64(index),
@@ -324,6 +339,13 @@ final class X86SnapshotTests: XCTestCase {
         XCTAssertEqual(core.x87Control, 0x0300)
         XCTAssertEqual(core.x87Status, 0x1234)
         XCTAssertEqual(core.mxcsr, 0x1DC0)
+        for index in 0..<8 {
+            XCTAssertEqual(core.x87[index].significand,
+                           0xF000_0000_0000_0000 + UInt64(index), "mantisse x87 \(index)")
+            XCTAssertEqual(core.x87[index].signExponent,
+                           UInt16(0x4000 + index), "signe et exposant x87 \(index)")
+        }
+        XCTAssertEqual(core.x87Tags, 0x1B4E, "le mot d'étiquettes x87")
         for index in 0..<16 {
             XCTAssertEqual(core.vector(index).low,
                            0x7000_0000_0000_0000 + UInt64(index), "xmm\(index) bas")

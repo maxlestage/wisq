@@ -16631,3 +16631,72 @@ m'arrange » — vrai dans un cœur qui émule un processeur, où le débordemen
 l'inverse : le débordement est exactement ce qu'on cherche à attraper. Le même
 fichier a les deux usages à quelques lignes d'écart, et c'est ce voisinage qui
 rend la faute facile.
+
+## #275 — le témoin que j'ai écrit ce matin doublait un témoin qui existait
+
+**Sur quelle autorisation.** Aucune nouvelle. C'est la suite de l'autorisation
+permanente de Maxime (« Continue de tout faire », « fusionne dès que c'est
+vert »), et le défaut corrigé ici est **le mien**, introduit trois tranches plus
+tôt dans la même session.
+
+### Comment il s'est découvert
+
+Après #274, en fouillant une piste voisine : « les trente champs de
+`X86LegacyDevices` sont-ils tenus par un aller-retour ? ». Un `grep -c
+"snapshot\|restore"` sur `X86LegacyDevicesTests.swift` a rendu **0**, et j'étais
+sur le point d'écrire « un champ de périphérique sur trente est tenu ».
+
+Le contrôle de #261 l'a arrêté : avant de conclure d'une absence, chercher la
+même absence là où on *sait* que la chose est présente. `X86LocalMachineTests
+.swift` contenait `restore(` — et, dedans, une seconde classe,
+`X86SnapshotTests`, dont `testEveryFieldComesBack` assertionne les trente champs
+de périphérique un par un, après restauration.
+
+Ce qui retourne le constat contre moi : #272, écrit deux heures plus tôt, avait
+ouvert un fichier de 224 lignes sur la phrase « l'instantané x86 [n'a] jamais
+subi la même mesure ». Il l'avait subie. J'avais cherché le témoin par **son
+nom** — `SnapshotFieldWitnessTests` ne nomme pas l'x86, donc il n'existe pas —
+au lieu de le chercher par **ce qu'il assertionne**.
+
+### Ce que la duplication valait
+
+Pas une impression : un script qui extrait de chaque témoin les champs
+réellement assertionnés, puis les diffe. Vingt-deux champs en commun ; quatorze
+que l'ancien seul tenait (les périphériques hérités, la RAM) ; **deux** que le
+nouveau seul tenait — la pile `x87[0…8]` et `x87Tags`. Cent trente lignes pour
+deux champs.
+
+Le fond de #272 tenait donc : ces deux champs-là étaient bien le trou, et le
+témoin préexistant l'avait aussi. C'est le cadrage qui était faux, et le prix,
+un doublon.
+
+### Ce qui a été fait
+
+Les deux champs ont rejoint les vingt-deux autres dans `marked()` et
+`testEveryFieldComesBack`. Le fichier de #272 ne garde que ce qui parle du
+**format** — la marque, la reprise d'un instantané d'avant, et le cas « d'avant
+avec un disque » qu'un sabotage survécu avait révélé — et s'appelle maintenant
+`X86SnapshotX87SectionTests.swift`. Son en-tête porte la phrase fausse corrigée
+et ce qu'elle a coûté.
+
+Deux sabotages ont établi que la consolidation ne perd rien, plutôt que de
+l'affirmer : sans l'écriture de la section x87, `testEveryFieldComesBack` tombe
+avec dix-sept rouges nommés ; sans la marque, le cas « d'avant avec un disque »
+tombe. Ce second sabotage tuait le binaire en #272, sur une allocation
+délirante ; il rend maintenant un `corrupt` propre, parce que #273 a posé le
+plafond entre-temps.
+
+### Ce que ça apprend
+
+**Chercher une garde par son nom, c'est ne pas la chercher.** C'est #261 sous un
+autre habit : là-bas, « la chaîne est absente » ne voulait pas dire « le pilote
+est absent » ; ici, « le fichier qui porte ce nom ne parle pas de l'x86 » ne
+voulait pas dire « rien ne tient l'x86 ». La bonne question n'est jamais « quel
+fichier s'appelle comme ça » mais « qu'est-ce qui assertionne ce que je cherche »
+— ici, un `grep` sur `restore(`, pas sur `FieldWitness`.
+
+Et le corollaire, celui qui coûte : **le premier réflexe quand on croit un
+comportement non tenu doit être de chercher le test, pas d'en écrire un.** Un
+test écrit à côté d'un test existant n'ajoute pas de garantie, il ajoute une
+deuxième description de la même chose — ce dont `VirtioQueue.swift` se méfie en
+tête de fichier, et qui divergera à la première correction.
