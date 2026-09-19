@@ -16700,3 +16700,75 @@ comportement non tenu doit être de chercher le test, pas d'en écrire un.** Un
 test écrit à côté d'un test existant n'ajoute pas de garantie, il ajoute une
 deuxième description de la même chose — ce dont `VirtioQueue.swift` se méfie en
 tête de fichier, et qui divergera à la première correction.
+
+## #276 — sept portes gardent une PR, le site en annonçait six
+
+**Sur quelle autorisation.** Aucune nouvelle : la même autorisation permanente de
+Maxime. La tranche sort de l'axe qui restait au journal — « les chiffres de
+`site/src/content.ts` que rien ne garde ».
+
+### Ce que l'axe a donné, et ce qu'il n'a pas donné
+
+Il faut le dire dans cet ordre, parce que la trouvaille n'est pas là où je la
+cherchais. `claims.test.ts` est **déjà** exemplaire sur les deux chiffres non
+gardés : il les nomme, il écrit pourquoi le remède est une décision de politique
+et pas un test, il refuse qu'un cinquième chiffre passe en silence, et il refuse
+qu'une entrée de sa liste survive au chiffre qu'elle décrit. Rien à corriger là.
+
+Et il porte déjà, noir sur blanc, la « direction » que j'avais proposée à Maxime
+une heure plus tôt sur le noyau récupéré en best effort : « une exécution peut
+démarrer zéro noyau et rester verte. Rendre ça rouge est la même nature de
+décision ». Je l'avais présentée comme une trouvaille ; le dépôt la connaissait
+et l'avait écrite mieux que moi. Ce qui reste de neuf dans ce que j'ai dit est
+l'**échelle** — pas un chiffre publié, mais onze tests Swift, deux tests Rust,
+le banc et la comparaison des deux cœurs — et c'est tout.
+
+### Le défaut, lui, était dans le chiffre qui *était* gardé
+
+`test("the CI gate count matches the workflow")` lisait `ci.yml`, y comptait cinq
+jobs, ajoutait un pour GitGuardian, et exigeait six. Le site disait six. Vert.
+
+Sauf qu'une PR porte sept portes. `site.yml` se déclenche sur `pull_request`
+sans filtre de chemin, et pose « Build site ». La garde ne l'a jamais compté.
+
+**Et le signe était sous mes yeux depuis une heure.** Dans la liste des checks de
+la PR #410 que j'avais lue pour fusionner, « Build site » portait un identifiant
+d'exécution différent des cinq autres — 35444512822 contre 35444512827. Deux
+exécutions veulent dire deux workflows, donc deux fichiers, donc un compte qui ne
+peut pas sortir d'un seul. Je l'avais vu sans le lire.
+
+### Ce qui a été fait
+
+La garde ne nomme plus de fichier : elle parcourt `.github/workflows/`, retient
+ceux dont le **bloc `on:`** porte `pull_request` — le bloc seul, pour qu'une
+mention en commentaire ne compte pas — et somme leurs jobs. Le chiffre publié
+passe de six à sept, dans les deux langues.
+
+Deux sabotages, dans cet ordre : retirer le déclencheur de `site.yml` (rouge,
+6 contre 7 — la garde lit bien ce fichier), puis ajouter un job à `site.yml`
+(rouge, 8 contre 7 — elle suit les jobs et pas seulement les fichiers).
+
+### La prémisse que le premier sabotage a corrigée
+
+Mon premier jet exigeait « au moins deux workflows gardent une PR », avec pour
+message « aucun workflow ne se déclenche sur pull_request ». Sous le sabotage il
+en restait un, et le rouge annonçait « aucun ». Un rouge qui se trompe sur sa
+propre cause, dans un dépôt qui en fait un principe ailleurs. Et la borne
+encodait la disposition du jour plutôt qu'une invariante : fusionner les deux
+workflows est légitime et aurait rougi pour rien. La prémisse est devenue « au
+moins un », ce qu'elle doit tenir — qu'un changement de format ne laisse pas la
+garde comparer zéro à zéro — et l'arithmétique porte le reste.
+
+C'est le deuxième sabotage de la journée qui apprend quelque chose en
+**survivant à moitié** plutôt qu'en tombant : celui de #272 avait révélé #273,
+celui-ci a révélé que mon propre rouge mentait.
+
+### Ce que ça apprend
+
+Même famille que #247 (« la garde du site ne regarde pas là où vivent les
+chiffres ») et #62 (« la garde de la maison ne couvre qu'un de ses quatre
+appelants ») : **une garde qui lit un seul des endroits où vit son sujet**. Et
+le remède est celui que #275 venait d'écrire sous un autre angle, ce qui fait
+deux fois dans la même session : ancrer la garde sur **ce qu'elle cherche** —
+tout fichier qui se déclenche sur `pull_request` — plutôt que sur **le nom**
+qu'on avait en tête en l'écrivant.
