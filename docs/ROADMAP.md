@@ -12085,3 +12085,55 @@ avait *perdu* l'envoi de fichiers depuis la v0.4.0. La règle de #261 — cherch
 la même absence là où on sait que la chose est présente — a montré en une ligne
 que la branche `master` locale de ce conteneur datait du 24 août. Ce n'était
 pas une régression, c'était mon dépôt.
+
+## #272 — l'instantané x86 sauvait les mots qui décrivent la pile x87, pas la pile
+
+**Le défaut.** `X86Machine.snapshot()` écrivait `x87Control`, `x87Status` et
+`mxcsr` ; ni les huit registres de quatre-vingts bits de la pile x87, ni le mot
+d'étiquettes. Comme `x87Status` porte TOP, une machine reprise revenait avec un
+état qui annonce une pile, des étiquettes à « toutes vides » et des registres à
+zéro — trois descriptions de la même pile, toutes en désaccord. Le chemin est
+celui de l'application : `LocalVMModel` appelle `machine.snapshot()` en passant
+en arrière-plan et `machine.restore()` au retour.
+
+**Pourquoi personne ne l'avait vu.** `SnapshotFieldWitnessTests` pose la bonne
+question depuis #96 — mais pour la machine **rv32**, et pour elle seule : elle
+ne nomme pas l'x86 une fois. L'instantané x86 a gagné quatre sections depuis
+sans jamais subir cette mesure.
+
+**La mesure.** `X86SnapshotFieldWitnessTests` : une machine dont chaque champ
+sauvé porte une valeur distincte et non nulle, l'instantané, la reprise, une
+assertion par champ. Rouge sur l'état d'avant, **vingt échecs, tous x87** ; tout
+le reste du cœur revient. La pile et ses étiquettes sont le seul trou.
+
+**La correction.** La section s'ajoute **en queue et derrière une marque**
+(`Snapshot.x87Section`, plus `Reader.peeks` qui regarde sans consommer), parce
+que des machines sont déjà sauvées sur des téléphones et que le disque occupe
+déjà la queue : « il reste des octets » ne suffit plus à dire lequel des deux
+vient.
+
+**Cinq sabotages, et le cinquième a survécu** : remplacer la vérification de la
+marque par « il reste des octets » laissait tout vert, la machine témoin n'ayant
+pas de disque. La marque ne sert que là où les deux divergent — un instantané
+d'avant **avec** un disque —, et c'est maintenant un test.
+
+**Ce que ce test a trouvé en tombant, et qui part en #273.** Il ne tombe pas
+proprement : il tue le binaire.
+
+```
+Fatal error: failed to allocate 72340172838076705 bytes of memory with alignment 8
+ 10  VirtioBlock.restored(from:keeping:) at Sources/WisqVM/VirtioBlock.swift:506:31
+ 11  X86Machine.restore(_:)              at Sources/WisqVM/X86Machine.swift:457
+```
+
+`0x0101010101010101`, les octets de l'image lus comme une longueur, alloués
+sans plafond. Un instantané corrompu ou tronqué tue donc le processus au lieu
+de faire échouer `restore`, qui promet l'inverse et sur lequel `LocalVMModel`
+compte (`try? machine.restore(saved)` existe pour retomber sur le démarrage du
+noyau). Famille de #84 et #87. **Tranche suivante.**
+
+**La leçon.** Une garde écrite pour une machine ne couvre pas sa voisine, même
+quand la question est identique : ce n'est pas la garde qui a vieilli, c'est le
+périmètre qu'elle n'a jamais eu. Et un sabotage qui survit vaut mieux qu'un
+sabotage qui tombe — celui-ci a montré que la marque n'était tenue par rien,
+puis a fait sortir un défaut sans rapport avec la pile x87.
