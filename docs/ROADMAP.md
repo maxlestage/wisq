@@ -12266,3 +12266,56 @@ instantané et redemande ses champs » — un `grep` sur `restore(`, pas sur
 `FieldWitness`. Le coût a été 130 lignes qui en doublaient d'autres, soit
 exactement ce dont `VirtioQueue.swift` se méfie en tête de fichier : « deux
 descriptions du même protocole, à diverger dès la première correction ».
+
+## #276 — la garde comptait les portes d'un seul des deux fichiers qui en posent
+
+**Le défaut.** Le site annonce « 7 portes CI bloquantes » — il annonçait 6. La
+garde de `site/tests/claims.test.ts` lisait `.github/workflows/ci.yml`, y
+comptait cinq jobs, ajoutait un pour GitGuardian, et trouvait six. Vert des deux
+côtés, et faux : une pull request en porte **sept**. `site.yml` se déclenche sur
+`pull_request` **sans filtre de chemin** — délibérément, son en-tête explique
+pourquoi — et pose « Build site ». Personne ne le comptait.
+
+**L'ironie, écrite plutôt que tue.** Ce test tourne **dans le job qu'il
+oubliait**. `site.yml` est l'endroit où `bun test` s'exécute ; des deux fichiers
+qui gardent une PR, le seul que la garde ne regardait pas était celui qui la fait
+tourner.
+
+**La mesure.** Les checks réels de la PR #410, lus dans son état GitHub : `Rust
+(agent + cœur VM)`, `Cœur (Linux)`, `Cœur (Apple)`, `App iOS`, `Lint` (les cinq
+de `ci.yml`, run 35444512827), `Build site` (`site.yml`, run **35444512822** —
+un autre identifiant, et c'est ce qui le trahit), `GitGuardian Security Checks`.
+Sept. `release.yml` part sur une étiquette et `testflight.yml` à la demande :
+aucun des deux ne garde une PR, vérifié sur leurs blocs `on:`.
+
+**La correction.** La garde ne nomme plus un fichier : elle parcourt
+`.github/workflows/`, garde ceux dont le bloc `on:` — et le bloc seul, pour
+qu'un « pull_request » en commentaire ne compte pas — porte `pull_request`, et
+somme leurs jobs. Ajouter ou retirer un workflow qui garde une PR fait bouger le
+compte tout seul. Le `+ 1` reste GitGuardian, qui ne vient d'aucun fichier d'ici.
+
+**Les deux sabotages.**
+
+- Retirer `pull_request` du `on:` de `site.yml` : rouge, « Expected: 6, Received:
+  7 » — la garde lit bien ce fichier.
+- Ajouter un second job à `site.yml` : rouge, « Expected: 8, Received: 7 » — elle
+  suit bien les jobs, et pas seulement les fichiers.
+
+**Une prémisse corrigée en route.** Le premier jet exigeait `gating.length > 1`,
+et son message disait « aucun workflow ne se déclenche sur pull_request ». Sous
+le premier sabotage il en restait **un**, et le rouge annonçait donc « aucun » là
+où il y en avait un — un rouge qui ment sur sa cause, ce que ce dépôt reproche
+partout ailleurs. Et `> 1` encode la disposition du jour (deux fichiers) plutôt
+qu'une invariante : une consolidation légitime des deux workflows aurait rougi
+pour rien. La prémisse est donc `> 0` — elle tient ce qu'elle doit tenir, qu'un
+changement de format ne fasse pas passer la garde en comparant zéro à zéro — et
+c'est l'arithmétique qui porte le reste.
+
+**La leçon.** Même famille que #247 et #62 : une garde qui lit **un** des
+endroits où vit son sujet. Le signe qui la trahissait était à portée de main et
+je ne l'avais pas lu — deux identifiants d'exécution différents dans la liste des
+checks d'une même PR veulent dire deux workflows, donc deux fichiers, donc un
+compte qui ne peut pas sortir d'un seul. Et le remède général est celui que #275
+vient d'écrire sous un autre angle : ancrer une garde sur **ce qu'elle cherche**
+(tout fichier qui se déclenche sur `pull_request`) plutôt que sur **un nom**
+qu'on a en tête au moment de l'écrire.

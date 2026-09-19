@@ -138,12 +138,43 @@ describe("advertised claims match the repository", () => {
   // What the site still claims about a version — the one in the footer — is
   // checked against the changelog in build.test.ts.
 
-  test("the CI gate count matches the workflow", () => {
-    const workflow = readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
-    // Count two-space keys only after the `jobs:` line — `on:` has children at
-    // the same indentation and would otherwise be counted as jobs.
-    const jobsSection = workflow.slice(workflow.indexOf("\njobs:"));
-    const jobs = jobsSection.match(/^ {2}[a-z][\w-]*:$/gm)?.length ?? 0;
+  /// **Une porte est une porte, quel que soit le fichier qui la pose.**
+  ///
+  /// Cette garde ne lisait que `ci.yml`, et ajoutait un pour GitGuardian. Elle
+  /// comptait donc cinq jobs plus un, soit six, et le site annonçait six :
+  /// vert des deux côtés. Mais une pull request en porte **sept** — `site.yml`
+  /// se déclenche sur `pull_request` sans filtre de chemin, et pose « Build
+  /// site ». Personne ne le comptait.
+  ///
+  /// L'ironie vaut d'être écrite plutôt que tue : ce test-ci **tourne dans le
+  /// job qu'il oubliait**. `site.yml` est l'endroit où `bun test` s'exécute, et
+  /// c'est le seul des deux fichiers que la garde ne regardait pas.
+  ///
+  /// D'où la forme : on ne nomme plus un fichier, on cherche **tous** ceux qui
+  /// se déclenchent sur `pull_request`. Ajouter un workflow qui garde une
+  /// PR — ou en retirer un — fait bouger le compte tout seul. Le `+ 1` reste
+  /// GitGuardian, qui ne vient d'aucun fichier d'ici.
+  test("the CI gate count matches every workflow that gates a pull request", () => {
+    const directory = join(repoRoot, ".github/workflows");
+    let jobs = 0;
+    const gating: string[] = [];
+    for (const name of readdirSync(directory).filter((f) => /\.ya?ml$/.test(f))) {
+      const workflow = readFileSync(join(directory, name), "utf8");
+      // Le bloc `on:` seul : d'une ligne `on:` en colonne zéro jusqu'à la
+      // prochaine clé de premier niveau. Chercher « pull_request » dans le
+      // fichier entier compterait un workflow qui n'en parle qu'en commentaire.
+      const opens = workflow.match(/^on:\n(?:[ \t].*\n|\n)*/m);
+      if (!opens || !/^\s+pull_request:?\s*$/m.test(opens[0])) continue;
+      gating.push(name);
+      // Count two-space keys only after the `jobs:` line — `on:` has children
+      // at the same indentation and would otherwise be counted as jobs.
+      const jobsSection = workflow.slice(workflow.indexOf("\njobs:"));
+      jobs += jobsSection.match(/^ {2}[a-z][\w-]*:$/gm)?.length ?? 0;
+    }
+    // Une garde qui ne trouverait aucun workflow passerait en comparant zéro à
+    // zéro le jour où le format change. Elle doit en trouver, et les nommer.
+    expect(gating.length, "aucun workflow ne se déclenche sur pull_request").toBeGreaterThan(0);
+    expect(jobs, `jobs comptés dans ${gating.join(", ") || "aucun fichier"}`).toBeGreaterThan(0);
     // The site counts GitGuardian alongside our own jobs.
     expect(claimedValue(/gates|portes/)).toBe(jobs + 1);
   });
