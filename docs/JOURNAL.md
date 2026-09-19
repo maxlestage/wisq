@@ -16344,3 +16344,112 @@ Ses lignes sont des commandes ; ses chiffres sont des préparatifs ; sa release
 est celle qu'on ira télécharger. Le dépôt garde depuis longtemps les chiffres
 du site, ceux des READMEs, ceux d'`ARCHITECTURE.md` — trois documents qu'on
 **lit**. Le seul qu'on **exécute** n'était gardé par rien.
+
+## #272 — l'instantané x86 sauvait le mot d'état du FPU, et pas la pile qu'il décrit
+
+`X86Machine.snapshot()` écrivait `x87Control`, `x87Status` et `mxcsr`. Il
+n'écrivait ni les huit registres de quatre-vingts bits de la pile x87, ni le
+mot d'étiquettes qui dit lesquels sont vivants.
+
+Le mot d'état porte **TOP**, le sommet de pile. À la reprise, il revenait tel
+quel ; les étiquettes retombaient à `0xFFFF`, c'est-à-dire « tous vides » ; et
+les huit registres à zéro. Trois descriptions de la même pile, toutes les
+trois en désaccord. Un `fxsave` juste après la reprise — `X86FloatingPointState`
+lit précisément ces champs-là — aurait écrit dans la mémoire de l'invité une
+image qui ne ressemble à rien de ce qu'il avait sauvé.
+
+Le commentaire posé juste au-dessus des XMM, dans le même `snapshot()`, dit
+pourquoi eux sont sauvés : « un programme qui tourne en anneau trois en a le
+milieu d'une comparaison de chaîne à l'instant où l'on passe en
+arrière-plan ». L'argument vaut mot pour mot pour la pile x87, que #131 a
+construite contre le vrai silicium.
+
+### Comment il s'est trouvé, et pourquoi il n'avait pas été vu
+
+`SnapshotFieldWitnessTests`, la garde de #96, pose exactement la bonne
+question — « chaque champ que l'instantané porte, mis dedans puis ressorti ».
+Elle la pose pour la machine **rv32**, et pour elle seule : elle ne nomme pas
+l'x86 une seule fois. L'instantané x86 a grandi depuis (le registre de tâche,
+les seize XMM, le port série, le disque) sans jamais subir cette mesure.
+
+`Tests/WisqVMTests/X86SnapshotFieldWitnessTests.swift` la lui fait subir : une
+machine dont **chaque champ sauvé porte une valeur distincte et non nulle**,
+l'instantané, la reprise, et une assertion par champ. Elle est rouge sur
+l'état d'avant, et le relevé est net — **vingt échecs, tous x87** :
+
+```
+la mantisse du registre x87 0 n'est pas revenue      ("0" ≠ "17293822569102704641")
+le signe et l'exposant du registre x87 0 …           ("0" ≠ "16384")
+…
+le mot d'étiquettes x87 n'est pas revenu             ("65535" ≠ "6990")
+```
+
+Tout le reste revient : les seize registres, les drapeaux, RIP, les comptes,
+les seize registres de contrôle, les huit de débogage, les MSR, les six
+sélecteurs, les deux tables, le registre de tâche, les trois mots du FPU, les
+trente-deux mots des XMM, la file d'entrée. La pile x87 et ses étiquettes sont
+le **seul** trou du cœur.
+
+### Pourquoi la section est en queue, derrière une marque
+
+Des machines sont déjà sauvées sur des téléphones. Déplacer un octet les
+perdrait, donc la pile s'ajoute en queue et son absence se lit « un instantané
+d'avant », exactement comme le disque depuis #144. Mais le disque est déjà en
+queue : « il reste des octets » ne suffit plus à dire lequel des deux vient.
+D'où `Snapshot.x87Section`, une marque de huit octets, et `Reader.peeks`, qui
+regarde sans consommer.
+
+### Le sabotage, et celui qui a survécu
+
+| sabotage | ce qui tombe |
+|---|---|
+| on écrit « pile vide » au lieu des vraies étiquettes | « le mot d'étiquettes x87 n'est pas revenu » |
+| on lit les étiquettes et on les jette | le même, plus le test dédié |
+| on lit la mantisse et on la jette | « la mantisse du registre x87 0 … », et les sept autres |
+| plus de marque du tout | « l'instantané ne porte pas la marque de la pile x87 » |
+| **on lit la section sans vérifier la marque** | **rien — trois tests verts** |
+
+Le cinquième a survécu, et c'est la partie de cette tranche qui valait le
+détour. La machine témoin n'a **pas de disque** : dans ce cas « il reste des
+octets » et « la marque est là » disent la même chose, et la marque — la seule
+chose que cette tranche ajoute au format — n'était tenue par rien.
+
+Elle ne sert que là où les deux divergent : un instantané **d'avant**, **avec
+un disque**. `testAnOlderSnapshotWithADiskIsNotReadAsAnX87Stack` construit ce
+cas en découpant la section de cent huit octets d'un instantané neuf, et
+refait tomber le cinquième sabotage.
+
+### Ce que ce sabotage a trouvé en tombant, et qui n'est pas cette tranche
+
+Il ne tombe pas proprement : il **tue le binaire de test**.
+
+```
+Fatal error: failed to allocate 72340172838076705 bytes of memory with alignment 8
+ 10  VirtioBlock.restored(from:keeping:) at Sources/WisqVM/VirtioBlock.swift:506:31
+ 11  X86Machine.restore(_:)              at Sources/WisqVM/X86Machine.swift:457
+```
+
+72 340 172 838 076 705, c'est `0x0101010101010101` : les octets de l'image
+disque lus comme une longueur. `VirtioBlock.restored` convertit cette longueur
+en `Int` — il y a un `Int(exactly:)` — puis alloue, **sans plafond**. Un
+instantané corrompu ou tronqué fait donc mourir le processus au lieu de faire
+échouer `restore`, alors que `restore` promet le contraire en toutes lettres
+(« Tout ou rien : une lecture qui échoue laisse la machine telle qu'elle
+était ») et que `LocalVMModel` s'appuie dessus : `try? machine.restore(saved)`
+existe pour retomber sur le démarrage du noyau quand l'instantané est mauvais.
+Avec ce plantage, l'application meurt au lieu de démarrer.
+
+C'est un **second défaut, indépendant de celui-ci**, et de la famille de #84 et
+#87 — « la plus grosse allocation du programme n'a aucun plafond ». Une tranche
+par PR : il part en #273, et il est écrit ici pour qu'il ne se reperde pas.
+
+### Ce que ça apprend
+
+**Une garde écrite pour une machine ne couvre pas sa voisine, même quand la
+question est la même.** #96 a posé la bonne question au bon endroit ; l'x86 est
+arrivé après, a grandi de quatre sections, et personne n'a reposé la question.
+Ce n'est pas la garde qui a vieilli, c'est le périmètre qu'elle n'a jamais eu.
+
+**Et un sabotage qui survit vaut mieux qu'un sabotage qui tombe** : celui-ci a
+montré que la marque n'était tenue par rien, puis, en le rendant tenu, a fait
+sortir un défaut qui n'a rien à voir avec la pile x87.

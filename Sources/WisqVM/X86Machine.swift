@@ -309,9 +309,9 @@ public final class X86Machine: @unchecked Sendable {
 
     // MARK: - Sauver et rendre
 
-    /// La machine entière en octets : les registres, l'état système, le
-    /// contrôleur d'interruptions, l'horloge, ce qui attend d'être tapé, et la
-    /// RAM.
+    /// La machine entière en octets : les registres, l'état système, la pile
+    /// x87 et les registres XMM, le contrôleur d'interruptions, l'horloge, ce
+    /// qui attend d'être tapé, et la RAM.
     ///
     /// **Pas la sortie console** : elle est déjà partie au rappel et appartient
     /// à qui dessine le terminal, pas à la machine.
@@ -365,6 +365,23 @@ public final class X86Machine: @unchecked Sendable {
         lock.unlock()
         writer.blob(queued)
         writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: ramSize))
+        // **La pile x87, derrière sa marque.** Le mot de contrôle, le mot
+        // d'état et MXCSR sont écrits plus haut depuis toujours ; les huit
+        // registres qu'ils décrivent et le mot d'étiquettes ne l'étaient pas.
+        // Une machine reprise au milieu d'un calcul flottant revenait donc
+        // avec un état qui annonce une pile, des étiquettes qui la disent
+        // vide, et des registres à zéro — trois descriptions de la même pile,
+        // toutes les trois en désaccord.
+        //
+        // Elle arrive **en queue et derrière une marque** plutôt qu'à sa place
+        // naturelle, pour la raison qui a mis le disque là : des machines sont
+        // déjà sauvées sur des téléphones, et déplacer un octet les perdrait.
+        writer.u64(Snapshot.x87Section)
+        for register in core.x87 {
+            writer.u64(register.significand)
+            writer.u32(UInt32(register.signExponent))
+        }
+        writer.u32(UInt32(core.x87Tags))
         // **Le disque en dernier, et seulement s'il y en a un.** Son absence
         // est ce qui distingue un instantané d'avant le disque, et la reprise
         // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
@@ -415,6 +432,22 @@ public final class X86Machine: @unchecked Sendable {
         restored.devices = try read(&reader)
         restored.serialInput = try reader.blob()
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+        // La pile x87, si la marque est là. Son absence veut dire « un
+        // instantané d'avant cette section », pas « un instantané abîmé » :
+        // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
+        // déjà. Si la marque est là, ce qui suit doit tenir en entier — un
+        // lecteur qui manque d'octets refuse plutôt que de rendre la moitié
+        // d'une pile.
+        if reader.peeks(Snapshot.x87Section) {
+            _ = try reader.u64()
+            for index in 0..<8 {
+                let significand = try reader.u64()
+                let signExponent = UInt16(truncatingIfNeeded: try reader.u32())
+                restored.x87[index] = X86Extended(significand: significand,
+                                                  signExponent: signExponent)
+            }
+            restored.x87Tags = UInt16(truncatingIfNeeded: try reader.u32())
+        }
         // Le disque, s'il reste des octets. Construit à part et posé tout à la
         // fin : une lecture qui échoue ici laisse à la machine le disque
         // qu'elle avait, plutôt qu'un disque à moitié repris.
