@@ -11974,3 +11974,34 @@ même amputation fait maintenant tomber les trois, chacun en se nommant.
 document. Se méfier du moment où une tranche **remplace** une garde au lieu
 d'en ajouter une — demander laquelle des deux questions l'ancienne posait, et
 qui la pose maintenant.
+
+## #269 — le tableau français décrivait un wisq purement distant
+
+Miroirs inchangés à **2529**. Détail dans [`JOURNAL.md`](JOURNAL.md).
+
+**Le défaut.** Les deux READMEs portent le même tableau de comparaison avec
+UTM SE. **Trois des quatre lignes communes du français décrivaient wisq comme
+purement distant** — exécution « sur l'hôte » point final, vitesse « limitée par
+le réseau », App Store « client réseau classique » — six lignes sous un
+paragraphe qui, dans le même fichier, annonce les deux machines interprétées qui
+démarrent un vrai noyau sur le téléphone.
+
+**Et une cinquième ligne que l'anglais n'a jamais eue** : « Autonomie —
+décodage d'image seulement ». Fausse depuis que l'émulation locale a embarqué,
+et non mesurée : aucune mesure de batterie n'existe dans le dépôt, vérifié par
+`grep` sur cinq répertoires. Elle est retirée, pas traduite.
+
+**La garde, écrite avant la correction.** `site/tests/claims.test.ts` lisait
+déjà les deux fichiers, mais seulement pour le compte de tests. Le contenu d'une
+cellule ne se compare pas d'une langue à l'autre ; le **nombre de lignes**, si.
+Le nouveau test tombe sur l'état d'avant — `Expected: 4, Received: 5` — et deux
+sabotages le font mordre, chacun sur une assertion différente.
+
+**Ce qu'il ne tient pas** : ce que les cellules affirment. Deux tableaux de même
+hauteur peuvent mentir chacun de son côté, et celui-ci l'a fait sur trois lignes
+avec la bonne hauteur.
+
+**Le signe** : un document traduit est deux documents. #115 avait déjà corrigé
+« phrase fausse, nombre faux, lignes manquantes » dans ces mêmes fichiers ; la
+divergence est revenue par le seul endroit sans garde. Personne ne relit la
+version qu'il ne parle pas — il faut un invariant mécanique entre les deux.
