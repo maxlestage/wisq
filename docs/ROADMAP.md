@@ -12319,3 +12319,60 @@ compte qui ne peut pas sortir d'un seul. Et le remède général est celui que #
 vient d'écrire sous un autre angle : ancrer une garde sur **ce qu'elle cherche**
 (tout fichier qui se déclenche sur `pull_request`) plutôt que sur **un nom**
 qu'on a en tête au moment de l'écrire.
+
+## #277 — le guide envoyait le lecteur vers la seule liste qui ne suit pas le travail
+
+**Le défaut, et il est de #271, donc de ce matin.** Le guide d'installation dit
+au lecteur où regarder ce qui a été fait depuis la dernière release. #271 —
+dont le sujet était précisément « trois chiffres du guide que rien ne tenait » —
+y a écrit une quatrième affirmation, non tenue elle aussi, et fausse :
+
+> la section `[Unreleased]` du `CHANGELOG.md` dit quoi — c'est la seule liste de
+> ce dépôt qui se tienne à jour toute seule, parce que c'est là qu'on l'écrit en
+> travaillant.
+
+**La mesure.** `git log <dernière touche du CHANGELOG>..origin/master` : **194
+commits**. Entrées dans `[Unreleased]` : **une**. Plus haut numéro de tranche
+nommé : `docs/ROADMAP.md` **410**, `docs/JOURNAL.md` **410**, `[Unreleased]`
+**zéro**. Ce qu'on écrit en travaillant, ce sont la feuille de route et le
+journal — une entrée par tranche, les six d'aujourd'hui comprises. Le
+`CHANGELOG` s'écrit au moment de publier.
+
+**Le piège, pour la cinquième fois de la journée.** `git log …..master` a
+d'abord rendu **0**, ce qui est impossible. Le `master` local date du 24 août ;
+on travaille contre `origin/master`. Ne jamais comparer contre `master` tout
+court dans ce dépôt.
+
+**La correction.** Le paragraphe nomme maintenant `docs/ROADMAP.md` en premier,
+`docs/JOURNAL.md` à côté, dit que `[Unreleased]` retarde **et pourquoi** — elle
+s'écrit en publiant — avec le chiffre daté, et donne `git log v0.4.0..master`
+pour la liste brute.
+
+**Deux gardes, et la seconde a dû être refaite deux fois.**
+
+1. *Le guide ne promet pas qu'une liste se tient à jour toute seule.* Aucune
+   liste d'ici ne le fait : elles sont tenues par des gardes, ou elles dérivent.
+2. *Le guide mène avec la liste qui suit réellement le travail.* On prend le
+   plus grand numéro que chaque document nomme — un proxy grossier, dont le seul
+   travail est de dire lequel est en avance — et on exige que le guide nomme
+   celui-là **en premier**.
+
+   **Premier jet : la garde cherchait le nom dans tout le fichier.** Elle
+   passait, parce que `docs/ROADMAP.md` apparaît déjà dans le tableau de la
+   section 5, à propos d'une limite de reconnexion. Restreinte au paragraphe.
+
+   **Deuxième jet : `toContain` sur le paragraphe.** Elle passait encore, et
+   pour pire : le paragraphe corrigé nomme les **deux** documents — il faut bien
+   dire lequel retarde — donc rien ne pouvait plus la faire tomber. D'où la
+   forme positionnelle, qui se sabote : en écrivant « #9999 » dans
+   `[Unreleased]`, le rouge devient « le guide met ROADMAP.md avant
+   CHANGELOG.md, alors que c'est CHANGELOG.md qui suit le travail ».
+
+**La leçon.** #271 corrigeait des affirmations non tenues et en a posé une de
+plus, dans le même paragraphe, sans la mesurer — la même faute que #275 sous un
+troisième habit. Ce qui la rend évitable est mécanique : **une tranche qui
+corrige des affirmations doit mesurer celles qu'elle écrit**, avec la même
+exigence que celles qu'elle remplace. Et le corollaire, sur les gardes cette
+fois : une garde écrite en même temps que la phrase qu'elle garde tend à épouser
+cette phrase plutôt que la question. Il a fallu deux sabotages pour l'en
+décoller.
