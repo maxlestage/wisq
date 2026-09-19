@@ -352,7 +352,7 @@ public final class VirtioBlock: @unchecked Sendable {
         // d'apprendre qu'il a demandé trop loin.
         let span = payload.reduce(UInt64(0)) { $0 + UInt64($1.length) }
         let beyond = (kind == 0 || kind == 1)
-            && sector &* 512 &+ span > sectors &* 512
+            && Self.beyondTheDisk(sector: sector, span: span, sectors: sectors)
         guard !beyond else { refused &+= 1; return }
         switch kind {
         case 0:  // lecture
@@ -463,6 +463,44 @@ public final class VirtioBlock: @unchecked Sendable {
         } else {
             writer.u64(Self.contentLivesElsewhere)
         }
+    }
+
+    /// **La requête sort-elle du disque ?** Posée à part parce qu'elle se lit
+    /// mal et se teste bien.
+    ///
+    /// Elle était écrite `sector &* 512 &+ span > sectors &* 512`, en
+    /// arithmétique **enveloppante**, et `sector` est lu dans la mémoire de
+    /// l'invité : il le choisit entièrement. Avec `span` = 512 × 8 388 607 —
+    /// un descripteur de presque quatre gibioctets, ce qu'un champ de
+    /// trente-deux bits permet — et `sector` = 2⁵⁵ − 8 388 607, la somme
+    /// retombe **à zéro**, donc « pas au-delà », et la requête passe.
+    ///
+    /// **Ce que ça ne faisait pas.** Rien n'était écrit au mauvais endroit :
+    /// les deux réserves bornent l'écriture chez elles
+    /// (`MemoryDiskStore.range`, `DiskStore.inRange`) et refusent. Vérifié
+    /// avant d'écrire cette phrase.
+    ///
+    /// **Ce que ça faisait quand même.** Le chemin d'écriture alloue
+    /// `Int(buffer.length)` octets *avant* d'appeler la réserve. Un invité qui
+    /// choisit ce couple faisait donc demander quatre gibioctets à un
+    /// téléphone, puis recopier octet par octet, pour une requête qui finissait
+    /// refusée. Ce n'est pas une corruption, c'est une dépense que l'invité
+    /// commande.
+    ///
+    /// **Et c'est pourquoi l'allocation n'a pas besoin de son propre plafond** :
+    /// le débordement rendu impossible, `span` est bornée par la taille du
+    /// disque, donc chaque `length` de la chaîne l'est aussi.
+    static func beyondTheDisk(sector: UInt64, span: UInt64, sectors: UInt64) -> Bool {
+        let (start, startOverflowed) = sector.multipliedReportingOverflow(by: 512)
+        guard !startOverflowed else { return true }
+        let (end, endOverflowed) = start.addingReportingOverflow(span)
+        guard !endOverflowed else { return true }
+        // La capacité, elle, vient du disque réel : elle ne peut pas déborder.
+        // On le vérifie plutôt que de le supposer, et un disque impossible ne
+        // refuse rien de plus qu'avant.
+        let (capacity, capacityOverflowed) = sectors.multipliedReportingOverflow(by: 512)
+        guard !capacityOverflowed else { return false }
+        return end > capacity
     }
 
     /// La marque, à la place de la longueur de l'image : aucune image n'a

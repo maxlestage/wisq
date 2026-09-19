@@ -12172,3 +12172,40 @@ plafond.
 se lit pourtant comme une validation — même famille que #67, #84 et #87. Et une
 garde placée après l'allocation qu'elle protège ne protège rien : `reader.ram`
 faisait son travail, trop tard.
+
+## #274 — le garde-fou du bout du disque débordait, et l'invité choisit le secteur
+
+**Le défaut.** `sector &* 512 &+ span > sectors &* 512` : arithmétique
+enveloppante, et `sector` vient de la mémoire de l'invité. Avec
+`span` = 512 × 8 388 607 et `sector` = 2⁵⁵ − 8 388 607, la somme retombe à zéro
+et la requête passe.
+
+**Ce que ça ne fait pas** — vérifié avant de l'écrire : rien n'est écrit au
+mauvais endroit, les deux réserves bornent l'écriture chez elles. **Ce que ça
+fait quand même** : le chemin d'écriture alloue `Int(buffer.length)` avant
+d'appeler la réserve, donc quatre gibioctets demandés à un téléphone et une
+recopie octet par octet, pour une requête qui finira refusée.
+
+**La correction.** Le prédicat est extrait — `VirtioBlock.beyondTheDisk` — et
+écrit avec `multipliedReportingOverflow` / `addingReportingOverflow` : un
+débordement répond « au-delà ». Le débordement impossible, `span` est bornée
+par la taille du disque, donc chaque `length` l'est aussi et l'allocation n'a
+pas besoin d'un plafond de plus.
+
+**Le témoin juge l'arithmétique, pas l'allocation** : un test qui demanderait
+vraiment quatre gibioctets ne serait pas un test qu'on fait tourner (#172). Le
+prédicat est extrait d'abord **à arithmétique inchangée**, le rouge est obtenu,
+puis la correction. Deux sabotages, chacun de son côté : l'arithmétique
+enveloppante fait tomber le cas du débordement, `>=` fait tomber « le dernier
+secteur, tout juste ».
+
+**La leçon.** Un opérateur enveloppant dans un garde-fou retourne le garde
+contre lui-même. `&+` et `&*` ont leur place dans un cœur qui émule un
+processeur — le débordement y *est* le comportement à reproduire — et n'en ont
+aucune dans une vérification de borne, où il est ce qu'on cherche à attraper.
+Le même fichier a les deux usages à quelques lignes d'écart.
+
+**Deux marches qu'il a fallu ne pas sauter** : le contrôle de #261, qui a montré
+que le garde existait (j'allais écrire qu'il n'y en avait pas) ; et le test
+avant la correction, que j'avais commencé par enfreindre avant de revenir en
+arrière.
