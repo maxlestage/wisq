@@ -16534,3 +16534,100 @@ et #87, et elle revient parce qu'elle se lit comme une validation.
 
 Et **une garde placée après l'allocation qu'elle protège ne protège rien**.
 `reader.ram` faisait bien son travail ; il le faisait trop tard.
+
+## #274 — le garde-fou du bout du disque était en arithmétique enveloppante, et c'est l'invité qui choisit le secteur
+
+```swift
+let span = payload.reduce(UInt64(0)) { $0 + UInt64($1.length) }
+let beyond = (kind == 0 || kind == 1) && sector &* 512 &+ span > sectors &* 512
+guard !beyond else { refused &+= 1; return }
+```
+
+`&*` et `&+` enveloppent, et `sector` est lu dans la mémoire de l'invité : il le
+choisit entièrement. Avec `span` = 512 × 8 388 607 — un descripteur de presque
+quatre gibioctets, ce qu'un champ de trente-deux bits permet — et
+`sector` = 2⁵⁵ − 8 388 607, la somme retombe **à zéro**. Zéro n'est pas au-delà
+du disque : la requête passe.
+
+### Ce que ça fait, et ce que ça ne fait pas
+
+**Ça n'écrit rien au mauvais endroit.** Les deux réserves bornent l'écriture
+chez elles — `MemoryDiskStore.range` et `DiskStore.inRange` — et refusent.
+Vérifié avant d'écrire la phrase : c'était le moment de se tromper en annonçant
+une corruption.
+
+**Mais le chemin d'écriture alloue avant d'appeler la réserve** :
+`var bytes = [UInt8](repeating: 0, count: Int(buffer.length))`, puis une
+recopie octet par octet depuis la mémoire invitée. Un invité qui choisit ce
+couple fait donc demander quatre gibioctets à un téléphone, et tourner des
+millions de fois, pour une requête qui finira refusée. Ce n'est pas une
+corruption : c'est une dépense que l'invité commande.
+
+### Le témoin juge l'arithmétique, pas l'allocation
+
+Un test qui demanderait vraiment quatre gibioctets pour montrer le défaut
+serait un test qu'on ne peut pas faire tourner — et le dépôt a déjà écrit, en
+#172, ce que vaut une garde qui se transforme en chronomètre. Le prédicat est
+donc **extrait** :
+
+```swift
+static func beyondTheDisk(sector: UInt64, span: UInt64, sectors: UInt64) -> Bool
+```
+
+et jugé pour lui-même. L'extraction se fait d'abord **à arithmétique
+inchangée** — sinon le rouge ne prouverait rien — et le témoin tombe dessus :
+
+```
+XCTAssertTrue failed - une requête de quatre gibioctets à un secteur
+astronomique sur un disque de 64 secteurs est au-delà du disque, quoi qu'en
+dise une addition qui enveloppe
+```
+
+Le témoin vérifie d'abord sa propre prémisse — `sector &* 512 &+ span == 0` —
+parce qu'un témoin qui ne fait pas déborder la somme ne teste rien.
+
+### La correction, et ce qu'elle rend inutile
+
+`multipliedReportingOverflow` et `addingReportingOverflow` : un débordement
+répond « au-delà », ce qui est la réponse sûre. La capacité est calculée de la
+même façon, et son débordement répond « pas au-delà » — elle vient du disque
+réel, donc ce cas n'existe pas, mais on le vérifie plutôt que de le supposer.
+
+**Et c'est pourquoi l'allocation du chemin d'écriture n'a pas besoin de son
+propre plafond** : le débordement rendu impossible, `span` est bornée par la
+taille du disque, donc chaque `length` de la chaîne l'est aussi. Une garde bien
+placée en économise une seconde.
+
+### Les sabotages
+
+| sabotage | ce qui tombe |
+|---|---|
+| retour à l'arithmétique enveloppante | « … quoi qu'en dise une addition qui enveloppe » |
+| la comparaison finale devient `>=` | « le dernier secteur, tout juste » |
+
+Chacun de son côté : le premier montre que la correction sert, le second qu'elle
+ne refuse pas ce qui tient.
+
+### Comment il s'est trouvé, et la marche qu'il a fallu ne pas sauter
+
+En cherchant la forme de #273 ailleurs — une longueur lue, convertie, allouée.
+Le premier relevé donnait `VirtioBlock:378`, une allocation depuis un champ de
+descripteur, et j'étais prêt à écrire qu'aucun garde ne la couvrait. Le contrôle
+de #261 : lire les lignes d'avant. Le garde existe, trois lignes plus haut. Ce
+n'est qu'en le lisant qu'on voit ce qui cloche vraiment, et ce n'est pas
+l'absence — c'est l'arithmétique.
+
+Puis une seconde marche, faillie aussi : j'ai **corrigé avant d'écrire le
+test**. Revenu en arrière, extrait le prédicat sans y toucher, écrit le témoin,
+vu le rouge, et seulement ensuite corrigé. Un test écrit après une correction
+ne prouve que la correction ; écrit avant, il prouve le défaut.
+
+### Ce que ça apprend
+
+**Un opérateur enveloppant dans un garde-fou retourne le garde contre
+lui-même.** `&+` et `&*` disent « je sais que ça peut déborder et ça
+m'arrange » — vrai dans un cœur qui émule un processeur, où le débordement
+*est* le comportement à reproduire. Dans une vérification de borne, c'est
+l'inverse : le débordement est exactement ce qu'on cherche à attraper. Le même
+fichier a les deux usages à quelques lignes d'écart, et c'est ce voisinage qui
+rend la faute facile.
