@@ -190,4 +190,80 @@ final class X86DiskSnapshotTests: XCTestCase {
         XCTAssertTrue(machine.disk === disk, "le disque d'avant est toujours là")
         XCTAssertEqual(machine.disk?.served, served, "et il n'a pas été remplacé")
     }
+
+    // MARK: - Une longueur d'image que personne n'a écrite
+
+    /// **Un instantané abîmé doit faire échouer la reprise, pas tuer
+    /// l'application.**
+    ///
+    /// `restore` le promet en toutes lettres — « tout ou rien : une lecture qui
+    /// échoue laisse la machine telle qu'elle était » — et `LocalVMModel` s'y
+    /// fie : `try? machine.restore(saved)` existe pour retomber sur le
+    /// démarrage du noyau quand l'instantané est mauvais. Un plantage fait
+    /// mourir l'application au lieu de démarrer.
+    ///
+    /// **D'où ça vient.** Le sabotage de #272 a fait lire les octets d'une
+    /// image comme la longueur de cette image, et le binaire de test est mort
+    /// dessus :
+    ///
+    /// ```
+    /// Fatal error: failed to allocate 72340172838076705 bytes of memory
+    ///  10  VirtioBlock.restored(from:keeping:)  VirtioBlock.swift:506
+    /// ```
+    ///
+    /// 72 340 172 838 076 705 est `0x0101010101010101`. La longueur passait un
+    /// `Int(exactly:)` — qui ne refuse que ce qui dépasse `Int` — puis était
+    /// allouée telle quelle.
+    ///
+    /// **Le témoin.** L'instantané d'une machine avec un disque porte cette
+    /// longueur deux fois de suite, à huit octets d'écart : celle que lit
+    /// `VirtioBlock`, puis celle que `Snapshot.Reader.ram` relit pour elle-même.
+    /// Le test les trouve par cette forme — et vérifie qu'il les a trouvées
+    /// avant de toucher quoi que ce soit —, écrase la première, et exige un
+    /// refus.
+    func testAnAbsurdImageLengthIsRefusedRatherThanAllocated() throws {
+        var bytes = [UInt8](Self.machine(withDisk: true).snapshot())
+        let declared = UInt64(Self.image().count)
+        let at = try XCTUnwrap(Self.imageLengthOffset(declaring: declared, in: bytes),
+                               "la longueur d'image n'a pas été retrouvée dans l'instantané")
+        for (offset, byte) in withUnsafeBytes(of: UInt64(0x0101_0101_0101_0101).littleEndian,
+                                              { [UInt8]($0) }).enumerated() {
+            bytes[at + offset] = byte
+        }
+
+        let machine = Self.machine(withDisk: false)
+        XCTAssertThrowsError(try machine.restore(Data(bytes)),
+                             "une longueur d'image absurde doit être refusée") { error in
+            XCTAssertEqual(error as? Snapshot.Failure, .corrupt,
+                           "le refus doit dire « instantané abîmé »")
+        }
+        XCTAssertNil(machine.disk, "un refus ne doit pas laisser un disque à moitié repris")
+    }
+
+    /// Le contrôle de l'autre côté : une image que le plafond laisse passer se
+    /// reprend, et c'est ce que le reste de ce fichier vérifie déjà. Celui-ci
+    /// dit la même chose du plafond lui-même, pour qu'un plafond descendu trop
+    /// bas se voie ici plutôt que dans une bibliothèque de quelqu'un.
+    func testTheCeilingLeavesRoomForADiskTheAppCanActuallyHold() {
+        XCTAssertGreaterThanOrEqual(
+            VirtioBlock.maximumEmbeddedImageBytes, 1 << 30,
+            "le plafond des images embarquées est descendu sous le gibioctet")
+        XCTAssertLessThan(
+            VirtioBlock.maximumEmbeddedImageBytes, Int(UInt32.max) * 4,
+            "un plafond aussi haut ne refuse plus rien qu'une machine puisse allouer")
+    }
+
+    /// Les deux copies de la longueur, à huit octets d'écart. Rend `nil` si la
+    /// forme n'est pas là : un témoin qui écraserait des octets au hasard
+    /// prouverait n'importe quoi.
+    private static func imageLengthOffset(declaring length: UInt64, in bytes: [UInt8]) -> Int? {
+        let needle = withUnsafeBytes(of: length.littleEndian) { [UInt8]($0) }
+        guard bytes.count >= 16 else { return nil }
+        for start in 0...(bytes.count - 16)
+        where Array(bytes[start..<(start + 8)]) == needle
+            && Array(bytes[(start + 8)..<(start + 16)]) == needle {
+            return start
+        }
+        return nil
+    }
 }

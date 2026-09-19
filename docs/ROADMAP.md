@@ -12137,3 +12137,38 @@ quand la question est identique : ce n'est pas la garde qui a vieilli, c'est le
 périmètre qu'elle n'a jamais eu. Et un sabotage qui survit vaut mieux qu'un
 sabotage qui tombe — celui-ci a montré que la marque n'était tenue par rien,
 puis a fait sortir un défaut sans rapport avec la pile x87.
+
+## #273 — la longueur d'image d'un instantané était allouée sans plafond
+
+**Le défaut.** `VirtioBlock.restored` lisait la longueur de l'image disque
+embarquée, la passait par `Int(exactly:)` puis l'allouait. Une longueur abîmée
+— `0x0101010101010101`, les octets de l'image lus comme un nombre — est un
+`malloc` de soixante-douze pétaoctets et un processus mort. `X86Machine.restore`
+promet l'inverse, et `LocalVMModel` s'y fie (`try?` existe pour retomber sur le
+démarrage du noyau) : l'application mourait au lieu de démarrer, et à chaque
+lancement tant que le fichier restait.
+
+**Atteignable sans rien saboter** : le témoin écrase la longueur dans
+l'instantané d'une vraie machine à disque, et le binaire meurt sur du source
+intact (`signal code 6`).
+
+**La correction.** `VirtioBlock.maximumEmbeddedImageBytes`, deux gibioctets —
+`KernelMemory.leftToTheDevice`, la ligne que le dépôt trace déjà — vérifié
+**avant** l'allocation. Seules les images en mémoire s'embarquent ; un disque à
+fichier écrit `contentLivesElsewhere` et n'est pas concerné.
+
+**Pourquoi un nombre et pas une borne déduite** : les images sont écrites avec
+les suites de zéros repliées, donc deux gibioctets de zéros tiennent en une
+quarantaine d'octets. Aucune borne structurelle n'existe, et c'est écrit dans le
+code plutôt que laissé à deviner.
+
+**Sabotages.** La comparaison retournée refuse un disque légitime — rouge
+propre et nommé. Le plafond retiré fait mourir le binaire : irréductible, c'est
+l'état d'avant, et la preuve positive est le refus propre obtenu avec le
+plafond.
+
+**La leçon.** Une conversion qui réussit n'est pas une valeur acceptable :
+`Int(exactly:)` répond à « ça tient dans un `Int` », pas à « ça a du sens », et
+se lit pourtant comme une validation — même famille que #67, #84 et #87. Et une
+garde placée après l'allocation qu'elle protège ne protège rien : `reader.ram`
+faisait son travail, trop tard.
