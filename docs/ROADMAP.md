@@ -12376,3 +12376,72 @@ exigence que celles qu'elle remplace. Et le corollaire, sur les gardes cette
 fois : une garde écrite en même temps que la phrase qu'elle garde tend à épouser
 cette phrase plutôt que la question. Il a fallu deux sabotages pour l'en
 décoller.
+
+## #278 — un job vert ne disait pas si les tests avaient tourné
+
+**Ce que #277 avait laissé ouvert, et qui n'était pas un défaut.** `ci.yml`
+récupère le noyau rv32 de test en « best effort » — `curl … || true` —, et
+l'en-tête de l'étape l'assume : une image absente doit faire sauter un test,
+pas casser la construction. `site/tests/claims.test.ts:173` le dit déjà, et en
+tire la bonne conclusion : durcir est une **décision de politique**, parce que
+ça met la CI à la merci d'un téléchargement tiers.
+
+**Ce qui n'était écrit nulle part, c'est l'échelle.** Si ce téléchargement
+échoue : onze tests Swift sautent — les quatre différentiels et les deux
+d'accord d'instantané compris —, les tests Rust `boot.rs` et `snapshot.rs`
+sautent, le banc sort en `exit 0` et `scripts/test-rust-core.sh` se contente
+d'un `::warning::`. Le job reste **vert**, et rien ne le distingue d'une
+exécution complète.
+
+**La troisième issue, celle qui ne prend pas la décision.** Ni laisser, ni
+durcir : rendre la dégradation **visible**. `scripts/report-skipped.sh` relit le
+journal de `swift test` à la toute fin du job « Cœur (Linux) » et écrit dans le
+résumé ce qui a sauté et pourquoi. Il ne refuse rien et sort toujours avec
+zéro — un instrument de diagnostic qui casse ce qu'il mesure est une faute que
+ce dépôt a déjà payée.
+
+**Nommer, pas compter.** « 11 sautés » se lit aussi bien comme une panne réseau
+que comme une suite disparue du binaire. C'est la leçon que `scripts/test-app.sh`
+avait déjà payée pour l'iPhone simulé, et ce script suit sa forme : extraire à la
+fin, nommer les suites, pousser dans `$GITHUB_STEP_SUMMARY`.
+
+**Ce qui tient le relevé.** `site/tests/skipped-report.test.ts`, six tests, avec
+de vrais journaux recopiés d'exécutions plutôt qu'inventés. Deux sabotages :
+
+- compter sans nommer → les deux tests qui exigent le nom de la suite et la
+  raison tombent ;
+- reconnaître n'importe quelle ligne portant « skipped » → le contre-cas tombe,
+  celui qui refuse de prendre `testSkippedFramesAreCounted` pour un test sauté.
+
+**Un premier jet du deuxième sabotage n'a rien prouvé.** Il remplaçait le motif
+par quelque chose qui ne correspondait à rien du tout : les deux tests de
+nommage tombaient — faute de sortie — et le contre-cas, lui, passait encore.
+Un sabotage qui fait tomber les mauvais tests ne dit rien sur celui qu'on
+visait, et il ressemble pourtant à un succès.
+
+**Et une bêtise de langage, notée parce qu'elle se reproduira.** La première
+version nommait ses variables `sautés` et `relevé`. Bash n'accepte pas d'accent
+dans un identifiant : le script sortait en 127 sur `command not found`, avec le
+nom mutilé en octets UTF-8 dans le message. Dans un dépôt dont les commentaires
+sont en français, la frontière est là — les commentaires en français, les
+identifiants en ASCII.
+
+**Ce que le relevé a dit dès sa première exécution, et qui n'était pas prévu.**
+La discussion portait sur l'image de noyau. Le relevé, lancé sur `verify.sh`, a
+rendu **25 sautés sur 2063**, et les a ventilés :
+
+| raison | tests |
+|---|---|
+| `WISQ_LINUX_IMAGE` — image Linux absente | **11** |
+| `WISQ_RDP_HOST` — aucun serveur RDP | **8** |
+| `WISQ_PC_KERNEL` — noyau PC absent | **3** |
+| `WISQ_SPICE_HOST` — aucun serveur SPICE | **2** |
+| `WISQ_X86_CORPUS` — corpus absent | **1** |
+
+Les onze annoncés sont confirmés par la mesure. Les **quatorze autres** ne
+l'étaient nulle part : aucune des quatre variables n'est posée par un workflow —
+vérifié, zéro occurrence dans `.github/workflows/` —, donc ces quatorze tests
+sautent à **chaque** exécution de la CI, toujours, et rien ne le disait. Ce
+n'est pas un défaut : un test qui veut un vrai serveur RDP ne peut pas tourner
+sur un coureur. C'est exactement ce qu'un relevé sert à rendre visible, et il
+l'a fait au premier tour.
