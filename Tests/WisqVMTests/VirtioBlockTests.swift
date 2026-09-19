@@ -270,4 +270,55 @@ final class VirtioBlockTests: XCTestCase {
         device.write(0x050, 4, 0, memory)
         XCTAssertEqual(device.served, 0)
     }
+
+    // MARK: - Le garde-fou du bout du disque
+
+    /// **Le garde-fou est en arithmétique enveloppante, et l'invité choisit le
+    /// numéro de secteur.**
+    ///
+    /// `sector &* 512 &+ span > sectors &* 512` : les deux opérateurs
+    /// enveloppent, et `sector` est lu dans la mémoire de l'invité. Il suffit
+    /// donc de choisir un secteur dont le produit par 512 complète `span` à
+    /// deux puissance soixante-quatre pour que la somme retombe à zéro, donc
+    /// « pas au-delà », et que la requête passe.
+    ///
+    /// `span` = 4 294 966 784, soit 512 × 8 388 607 : un descripteur de presque
+    /// quatre gibioctets, ce qu'un champ de trente-deux bits permet.
+    /// `sector` = 2⁵⁵ − 8 388 607, dont le produit par 512 vaut
+    /// 2⁶⁴ − 4 294 966 784.
+    ///
+    /// **Ce que ça ne fait pas, et c'est vérifié** : rien n'est écrit au
+    /// mauvais endroit. `MemoryDiskStore.range` et `DiskStore.inRange` bornent
+    /// l'écriture chez elles et refusent. **Ce que ça fait quand même** : le
+    /// chemin d'écriture alloue `Int(buffer.length)` octets *avant* d'appeler
+    /// la réserve, donc quatre gibioctets demandés à un téléphone pour une
+    /// requête qui finira refusée — une dépense que l'invité commande.
+    ///
+    /// Ce test juge l'arithmétique et pas l'allocation : un test qui
+    /// demanderait vraiment quatre gibioctets pour montrer le défaut serait un
+    /// test qu'on ne peut pas faire tourner.
+    func testTheEndOfDiskGuardCannotBeWrappedPast() {
+        let span: UInt64 = 512 * 8_388_607
+        let sector: UInt64 = (1 << 55) - 8_388_607
+        XCTAssertEqual(sector &* 512 &+ span, 0,
+                       "le témoin ne vaut rien si la somme ne retombe pas à zéro")
+        XCTAssertTrue(
+            VirtioBlock.beyondTheDisk(sector: sector, span: span, sectors: 64),
+            "une requête de quatre gibioctets à un secteur astronomique sur un " +
+            "disque de 64 secteurs est au-delà du disque, quoi qu'en dise une " +
+            "addition qui enveloppe")
+    }
+
+    /// Le contrôle : le garde-fou doit continuer à laisser passer ce qui tient.
+    /// Un garde qui refuse tout refuse aussi le travail.
+    func testTheEndOfDiskGuardStillLetsAnOrdinaryRequestThrough() {
+        XCTAssertFalse(VirtioBlock.beyondTheDisk(sector: 0, span: 512, sectors: 64),
+                       "le premier secteur d'un disque de 64")
+        XCTAssertFalse(VirtioBlock.beyondTheDisk(sector: 63, span: 512, sectors: 64),
+                       "le dernier secteur, tout juste")
+        XCTAssertTrue(VirtioBlock.beyondTheDisk(sector: 64, span: 512, sectors: 64),
+                      "un secteur de trop")
+        XCTAssertTrue(VirtioBlock.beyondTheDisk(sector: 63, span: 1024, sectors: 64),
+                      "le dernier secteur, et un de plus qu'il n'y a")
+    }
 }
