@@ -16057,3 +16057,85 @@ supprimer — alors que la conclusion juste était de le **tenir à jour**. Se
 méfier du moment où une tranche remplace une garde au lieu d'en ajouter une :
 demander laquelle des deux questions l'ancienne posait, et qui la pose
 maintenant.
+
+## #269 — le tableau français décrivait un wisq qui ne fait que du distant, six lignes sous un paragraphe qui dit le contraire
+
+Miroirs inchangés à **2529** : `testCount()` ne parcourt que `Tests/*.swift` et
+`crates/*.rs`, donc un test ajouté au site ne le bouge pas — vérifié dans le
+fichier avant d'y toucher.
+
+### Ce que les deux READMEs disaient de wisq
+
+Les deux portent le même tableau de comparaison avec UTM SE. Le paragraphe
+juste au-dessus, dans **les deux** fichiers, annonce les deux machines
+interprétées qui démarrent un vrai noyau **sur le téléphone**, vingt et une
+familles d'architectures reconnues, la RISC-V en moins d'une seconde. Puis le
+tableau :
+
+| | `README.md` | `README.fr.md` |
+| --- | --- | --- |
+| Exécution | « on the host — **or a purpose-built local interpreter** » | « la VM tourne sur l'hôte » |
+| Vitesse | « network-bound (remote), **~0.3 s to a Linux login prompt (local)** » | « limitée par le réseau, pas par le CPU » |
+| App Store | « network client **+ interpreter, both clean** » | « client réseau classique » |
+| Licence | identique | identique |
+| **Autonomie** | *absente* | « l'émulation vide la batterie \| **décodage d'image seulement** » |
+
+**Trois des quatre lignes communes décrivaient un wisq purement distant** — la
+version d'avant le bureau local. Un lecteur francophone lit le paragraphe, puis
+lit six lignes plus bas que l'exécution se fait sur l'hôte, point final.
+
+### La cinquième ligne était pire qu'absente
+
+`Autonomie` n'existe pas côté anglais, et ce qu'elle affirme — wisq ne fait que
+du décodage d'image — **a cessé d'être vrai le jour où l'émulation locale a
+embarqué**. C'est aussi une affirmation sur la batterie, et **aucune mesure de
+batterie n'existe dans ce dépôt** : les seules occurrences du mot parlent d'une
+session muette ou d'un cœur épinglé, jamais d'une autonomie chiffrée. Vérifié
+par `grep` sur `docs/`, `crates/`, `Sources/`, `Tests/` et `scripts/` avant de
+conclure.
+
+Elle est donc retirée plutôt que traduite vers l'anglais. Une affirmation sans
+mesure ne se répare pas en la recopiant dans une seconde langue.
+
+### La garde, écrite avant la correction
+
+`site/tests/claims.test.ts` lisait déjà les deux READMEs — mais seulement pour
+y vérifier le compte de tests. Rien ne regardait le tableau.
+
+Le contenu d'une cellule ne se compare pas d'une langue à l'autre. **Le nombre
+de lignes, si** — et c'est l'invariant le moins cher qui aurait attrapé
+exactement ce qui s'est passé : une ligne ajoutée d'un côté, trois laissées en
+arrière de l'autre.
+
+    les deux READMEs portent un tableau de comparaison de même hauteur
+    → Expected: 4   Received: 5   AVANT la correction
+
+Le test tombe sur l'état d'avant, ce qui est la seule preuve qui compte.
+
+### Deux sabotages, chacun sur son assertion
+
+| sabotage | ce qui parle |
+| --- | --- |
+| une ligne retirée du tableau **anglais** | le plancher : `Expected: > 3, Received: 3` |
+| une ligne retirée du tableau **français** | l'égalité : `Expected: 4, Received: 3` |
+
+Le premier ne prouvait pas l'égalité — c'est le plancher qui mordait. Il fallait
+saboter l'autre côté pour la voir refuser. Restaurations vérifiées par `diff`,
+et la correction réappliquée depuis l'état d'origine plutôt que par-dessus le
+sabotage.
+
+### Ce que cette garde ne tient pas, et il faut le dire
+
+Elle ne lit pas ce que les cellules affirment. **Deux tableaux de même hauteur
+peuvent mentir chacun de son côté**, et celui-ci a menti pendant des mois avec
+la bonne hauteur sur trois lignes. Elle tient qu'une ligne ajoutée ou retirée
+d'un seul côté rougisse — ce que rien ne tenait.
+
+### Le signe à retenir
+
+**Un document traduit est deux documents.** #115 avait déjà corrigé « phrase
+fausse, nombre faux, lignes manquantes » dans ces mêmes fichiers, et la
+divergence est revenue par le seul endroit qui n'avait pas reçu de garde. Quand
+une affirmation vit en deux langues, ce n'est pas la traduction qu'il faut
+relire : c'est un invariant mécanique qu'il faut poser entre les deux, parce que
+personne ne relit la version qu'il ne parle pas.
