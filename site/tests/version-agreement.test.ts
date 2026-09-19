@@ -251,4 +251,85 @@ describe("le guide d'installation ne nomme que la release du jour", () => {
   test("le guide nomme bien au moins une release", () => {
     expect(versionsNamed().length).toBeGreaterThan(0);
   });
+
+  /// **Le guide envoie le lecteur vers une liste ; laquelle suit le travail ?**
+  ///
+  /// #271 a corrigé trois chiffres dérivés de ce guide et en a écrit un
+  /// quatrième, faux : que la section `[Unreleased]` du `CHANGELOG.md` « est la
+  /// seule liste de ce dépôt qui se tienne à jour toute seule, parce que c'est
+  /// là qu'on l'écrit en travaillant ». Mesuré en #277 : **194 commits** depuis
+  /// la dernière modification du `CHANGELOG.md`, et **une** entrée dans
+  /// `[Unreleased]`. Ce qu'on écrit en travaillant, ce sont `docs/ROADMAP.md`
+  /// et `docs/JOURNAL.md`, une entrée par tranche.
+  ///
+  /// **Comment on décide laquelle, sans figer la réponse du jour.** On prend le
+  /// plus grand numéro que chaque document nomme — un proxy grossier de
+  /// fraîcheur, et c'est assez : son seul travail est de dire lequel des deux
+  /// est en avance. Le guide doit nommer celui-là. Si quelqu'un se remet à
+  /// écrire le `CHANGELOG` à chaque tranche, ce test bascule et réclame que le
+  /// guide suive.
+  test("le guide envoie vers la liste qui suit réellement le travail", () => {
+    const changelog = read("CHANGELOG.md");
+    const opens = changelog.indexOf("## [Unreleased]");
+    expect(opens, "le CHANGELOG ne porte plus de section [Unreleased]")
+      .toBeGreaterThanOrEqual(0);
+    const next = changelog.indexOf("\n## [", opens + 1);
+    const unreleased = changelog.slice(opens, next < 0 ? undefined : next);
+
+    const highest = (text: string) =>
+      [...text.matchAll(/#(\d{2,4})\b/g)]
+        .map((found) => Number(found[1]))
+        .reduce((best, seen) => Math.max(best, seen), 0);
+
+    const inRoadmap = highest(read("docs/ROADMAP.md"));
+    const inChangelog = highest(unreleased);
+    // Une garde qui ne trouverait de numéro nulle part comparerait zéro à zéro.
+    expect(inRoadmap, "la feuille de route ne nomme plus aucune tranche")
+      .toBeGreaterThan(0);
+
+    // **Le paragraphe, pas le fichier.** Le premier jet cherchait le nom dans
+    // tout le guide, et passait : « docs/ROADMAP.md » y apparaît déjà dans le
+    // tableau de la section 5, à propos d'une limite de reconnexion. Une garde
+    // qu'une mention sans rapport satisfait n'en est pas une.
+    const guide = read("docs/TESTER-UBUNTU.md");
+    const opensAt = guide.indexOf("Ce qui a été fait depuis");
+    expect(opensAt, "le guide ne dit plus où regarder ce qui a suivi la release")
+      .toBeGreaterThanOrEqual(0);
+    const closesAt = guide.indexOf("\n\n", opensAt);
+    const paragraph = guide.slice(opensAt, closesAt < 0 ? undefined : closesAt);
+
+    // **Et l'ordre, pas la présence.** Le paragraphe corrigé nomme les DEUX
+    // documents — il faut bien dire lequel retarde et pourquoi — donc un
+    // `toContain` passerait quel que soit le sens des données : une garde que
+    // rien ne peut faire tomber. Ce qui se tient, c'est que le guide **mène**
+    // avec la liste en avance ; si l'autre passe devant, il faut le réécrire.
+    const [freshest, behind] =
+      inRoadmap > inChangelog
+        ? ["ROADMAP.md", "CHANGELOG.md"]
+        : ["CHANGELOG.md", "ROADMAP.md"];
+    const leads = paragraph.indexOf(freshest);
+    const trails = paragraph.indexOf(behind);
+    expect(
+      leads,
+      `${freshest} suit le travail (elle nomme ` +
+        `${Math.max(inRoadmap, inChangelog)}, ${behind} nomme ` +
+        `${Math.min(inRoadmap, inChangelog)}) et le guide ne la nomme pas`,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      trails < 0 || leads < trails,
+      `le guide met ${behind} avant ${freshest}, alors que c'est ` +
+        `${freshest} qui suit le travail`,
+    ).toBe(true);
+  });
+
+  /// **Et la phrase elle-même, parce qu'elle était fausse.**
+  ///
+  /// Aucune liste de ce dépôt ne se tient à jour toute seule : elles sont
+  /// tenues par des gardes, ou elles dérivent. Une page qui promet le
+  /// contraire enlève au lecteur la seule raison qu'il aurait de vérifier.
+  test("le guide ne promet pas qu'une liste se tient à jour toute seule", () => {
+    expect(read("docs/TESTER-UBUNTU.md")).not.toMatch(
+      /se t(?:ient|ienne) à jour tout(?:e)? seul/,
+    );
+  });
 });

@@ -16772,3 +16772,67 @@ le remède est celui que #275 venait d'écrire sous un autre angle, ce qui fait
 deux fois dans la même session : ancrer la garde sur **ce qu'elle cherche** —
 tout fichier qui se déclenche sur `pull_request` — plutôt que sur **le nom**
 qu'on avait en tête en l'écrivant.
+
+## #277 — j'ai écrit ce matin, dans le guide, une affirmation que ma propre tranche aurait dû interdire
+
+**Sur quelle autorisation.** La même autorisation permanente. Le défaut corrigé
+est le mien, posé dans #271 ce matin, six tranches plus tôt.
+
+### Ce que #271 a écrit
+
+Son sujet était : « le seul document qu'on suit pour installer wisq portait
+trois chiffres, et aucun n'était tenu ». Elle a corrigé les trois. Et dans le
+même paragraphe, elle en a écrit un quatrième :
+
+> la section `[Unreleased]` du `CHANGELOG.md` dit quoi — c'est la seule liste de
+> ce dépôt qui se tienne à jour toute seule, parce que c'est là qu'on l'écrit en
+> travaillant.
+
+Mesuré aujourd'hui : **194 commits** depuis la dernière modification du
+`CHANGELOG.md`, **une** entrée dans `[Unreleased]`, **zéro** numéro de tranche
+qu'elle nomme — contre **410** pour `docs/ROADMAP.md` et autant pour
+`docs/JOURNAL.md`. Le guide envoyait donc le testeur vers le seul des trois
+documents qui ne répond pas à sa question.
+
+### Le contrôle qui a servi en route
+
+`git log <dernière touche>..master` a rendu **0**, ce qui ne peut pas être vrai
+quand master porte six tranches du jour. Le `master` local date du 24 août ;
+tout se compare contre `origin/master`. C'est la cinquième fois que ce piège se
+présente, et la deuxième fois aujourd'hui.
+
+### Les deux gardes, et pourquoi la seconde a dû être refaite deux fois
+
+La première est simple : le guide ne promet plus qu'une liste se tient à jour
+toute seule. Aucune ne le fait ici — elles sont tenues par des gardes, ou elles
+dérivent.
+
+La seconde devait tenir la **question** plutôt que la phrase : quel document
+suit réellement le travail, et le guide y envoie-t-il ?
+
+- **Premier jet** : chercher `ROADMAP.md` dans le guide. Vert — le nom figure
+  déjà dans le tableau de la section 5, à propos d'une limite de reconnexion.
+  Une garde qu'une mention sans rapport satisfait.
+- **Deuxième jet** : la même chose, restreinte au paragraphe. Vert encore, et
+  pour pire : le paragraphe corrigé nomme les **deux** documents, puisqu'il faut
+  bien dire lequel retarde et pourquoi. Plus rien ne pouvait la faire tomber.
+- **Troisième jet** : l'ordre. Le guide doit **mener** avec celui qui est en
+  avance. Sabotée en écrivant « #9999 » dans `[Unreleased]`, elle rougit :
+  « le guide met ROADMAP.md avant CHANGELOG.md, alors que c'est CHANGELOG.md
+  qui suit le travail ».
+
+### Ce que ça apprend
+
+**Une tranche qui corrige des affirmations non tenues doit mesurer celles
+qu'elle écrit.** #271 a appliqué à trois chiffres une exigence qu'elle n'a pas
+appliquée à sa propre phrase, dans le même paragraphe. C'est #275 sous un
+troisième habit : là-bas je cherchais un témoin par son nom, ici j'écrivais une
+affirmation sans la peser. Le point commun est le relâchement de l'attention
+juste après l'effort — on vient de vérifier, donc on croit vérifier encore.
+
+Et sur les gardes : **une garde écrite en même temps que la phrase qu'elle
+garde épouse cette phrase plutôt que la question.** Les deux premiers jets
+étaient verts contre le texte que je venais d'écrire, et c'est exactement ce
+qu'on leur demandait de ne pas être. Il a fallu deux sabotages pour les en
+décoller, et le troisième jet ne tient plus un mot mais une relation entre deux
+nombres — ce qui est la seule forme qui survit à une réécriture du paragraphe.
