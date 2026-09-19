@@ -16453,3 +16453,84 @@ Ce n'est pas la garde qui a vieilli, c'est le périmètre qu'elle n'a jamais eu.
 **Et un sabotage qui survit vaut mieux qu'un sabotage qui tombe** : celui-ci a
 montré que la marque n'était tenue par rien, puis, en le rendant tenu, a fait
 sortir un défaut qui n'a rien à voir avec la pile x87.
+
+## #273 — un instantané abîmé tuait l'application au lieu de la faire démarrer
+
+`VirtioBlock.restored` lisait la longueur de l'image disque embarquée, la
+passait par `Int(exactly:)` — qui ne refuse que ce qui dépasse `Int` — et
+l'allouait. Sans plafond.
+
+```
+Fatal error: failed to allocate 72340172838076705 bytes of memory with alignment 8
+ 10  VirtioBlock.restored(from:keeping:) at Sources/WisqVM/VirtioBlock.swift:506
+ 11  X86Machine.restore(_:)              at Sources/WisqVM/X86Machine.swift:457
+```
+
+**Ce que ça coûte.** `X86Machine.restore` promet en toutes lettres « tout ou
+rien : une lecture qui échoue laisse la machine telle qu'elle était », et
+`LocalVMModel` s'y fie : `try? machine.restore(saved)` existe pour retomber sur
+le démarrage du noyau quand l'instantané est mauvais. Un plantage n'est pas un
+échec qu'on rattrape — l'application meurt au lieu de démarrer, et elle meurt
+à chaque lancement tant que le fichier est là.
+
+**Il est atteignable sans rien saboter.** Le témoin prend l'instantané d'une
+vraie machine à disque, y écrase la longueur d'image, et rend le fichier à une
+machine neuve. Le binaire de test est mort dessus, `signal code 6`, sur du code
+source intact. C'est la différence entre un défaut trouvé par un sabotage et un
+défaut qu'un sabotage a seulement montré du doigt : celui-ci se reproduit avec
+un fichier.
+
+### Où le témoin trouve la longueur
+
+Une machine à disque écrit sa longueur **deux fois de suite** : celle que
+`VirtioBlock` lit pour allouer, puis celle que `Snapshot.Reader.ram` relit pour
+elle-même. Le test cherche ce couple — deux fois la même valeur, à huit octets
+d'écart — et refuse de toucher quoi que ce soit s'il ne le trouve pas. Écraser
+des octets au hasard prouverait n'importe quoi.
+
+### Le plafond, et pourquoi il est écrit à la main
+
+`VirtioBlock.maximumEmbeddedImageBytes = Int(KernelMemory.leftToTheDevice)`,
+soit deux gibioctets — la ligne que le dépôt trace déjà pour ce qu'il
+s'autorise à demander à l'appareil.
+
+On voudrait une borne **déduite** plutôt qu'un nombre : borner l'image par ce
+qui reste à lire dans l'instantané. C'est faux, et il vaut mieux le dire que le
+découvrir. Les images et la RAM sont écrites avec les suites de zéros repliées :
+une image de deux gibioctets entièrement nulle tient en une quarantaine
+d'octets. Aucune borne structurelle n'existe. Un plafond, donc, et nommé.
+
+Seule une image **en mémoire** s'embarque, vérifié avant d'y toucher : un
+disque à fichier écrit `contentLivesElsewhere` (`UInt64.max`) et la reprise
+rebranche son store. Un vrai disque de six gigaoctets ne passe pas par ce
+chemin et n'est donc pas concerné par le plafond.
+
+### L'ordre, qui est tout le défaut
+
+`reader.ram` refuse bien une taille qui ne correspond pas — mais **après**
+qu'on a demandé les octets. Entre la longueur lue et cette vérification, il y a
+un `malloc` de plusieurs exaoctets. Le plafond n'ajoute pas une vérification
+qui manquait : il en déplace une avant l'allocation.
+
+### Les sabotages
+
+- **la comparaison retournée** (`<=` → `>=`) : un disque légitime est refusé —
+  `testAQueueInFlightResumesWhereItStopped : threw error "corrupt"`. C'est le
+  sabotage propre, celui qui montre que le plafond ne refuse pas tout.
+- **le plafond retiré** : le binaire meurt. Ce n'est pas un rouge propre, et ça
+  ne peut pas l'être — c'est exactement l'état d'avant la correction, dont la
+  trace est plus haut. Le dépôt a une règle là-dessus : une mutation qui plante
+  au lieu d'échouer est un test à redimensionner. Ici elle est irréductible : le
+  défaut **est** le plantage, et la preuve positive est le refus propre que le
+  témoin obtient une fois le plafond en place.
+
+### Ce que ça apprend
+
+**Une conversion qui réussit n'est pas une valeur acceptable.**
+`Int(exactly:)` répond à « est-ce que ça tient dans un `Int` », pas à « est-ce
+que ça a du sens ». La forme `guard let count = Int(exactly: x)` a l'air d'une
+garde complète et n'en est qu'une moitié — c'est la même famille que #67, #84
+et #87, et elle revient parce qu'elle se lit comme une validation.
+
+Et **une garde placée après l'allocation qu'elle protège ne protège rien**.
+`reader.ram` faisait bien son travail ; il le faisait trop tard.

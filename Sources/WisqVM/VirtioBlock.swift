@@ -469,6 +469,22 @@ public final class VirtioBlock: @unchecked Sendable {
     /// cette taille.
     static let contentLivesElsewhere = UInt64.max
 
+    /// **Ce qu'une image embarquée dans un instantané a le droit de peser.**
+    ///
+    /// Seule une image tenue en mémoire s'embarque — un disque à fichier écrit
+    /// `contentLivesElsewhere` et rebranche son store. Une image en mémoire a
+    /// donc été un `[UInt8]` que l'application a su tenir ; deux gibioctets est
+    /// déjà au-delà de ce qu'un téléphone porte, et c'est la même ligne que
+    /// `KernelMemory.leftToTheDevice` trace pour la RAM d'un invité.
+    ///
+    /// **Pourquoi un nombre écrit à la main, et pas une borne déduite.** On
+    /// voudrait borner par ce qui reste à lire dans l'instantané, et ce serait
+    /// faux : la RAM et les images sont écrites avec les suites de zéros
+    /// repliées, donc une image de deux gibioctets entièrement nulle tient en
+    /// une quarantaine d'octets. Aucune borne structurelle n'existe ; il faut
+    /// un plafond, et il faut qu'il soit dit.
+    static let maximumEmbeddedImageBytes = Int(KernelMemory.leftToTheDevice)
+
     /// Le périphérique tel qu'il était. Construit plutôt que rempli sur place :
     /// une reprise qui échoue en chemin ne doit pas laisser derrière elle un
     /// disque à moitié rangé, et la machine ne prend celui-ci qu'une fois
@@ -502,7 +518,16 @@ public final class VirtioBlock: @unchecked Sendable {
         if length == Self.contentLivesElsewhere {
             if let kept { device.store = kept }
         } else {
-            guard let count = Int(exactly: length) else { throw Snapshot.Failure.corrupt }
+            // **Le plafond vient avant l'allocation, et c'est tout l'ordre du
+            // problème.** `Int(exactly:)` ne refuse que ce qui dépasse `Int` ;
+            // `reader.ram` refuse bien une taille qui ne correspond pas, mais
+            // il la refuse *après* qu'on a demandé les octets. Entre les deux,
+            // une longueur abîmée est un `malloc` de plusieurs exaoctets et un
+            // processus mort.
+            guard let count = Int(exactly: length),
+                  count <= Self.maximumEmbeddedImageBytes else {
+                throw Snapshot.Failure.corrupt
+            }
             var image = [UInt8](repeating: 0, count: count)
             try image.withUnsafeMutableBytes { try reader.ram($0) }
             device.store = MemoryDiskStore(image: image)
