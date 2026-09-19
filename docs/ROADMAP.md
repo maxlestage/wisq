@@ -12489,3 +12489,48 @@ mauvaise garde : il a écrit un bon instrument et l'a branché à un seul endroi
 ce qui produit le même résultat — les autres restent exactement où ils étaient,
 **et on croit la question réglée**. C'est la troisième fois en cinq tranches que
 cette faute prend un costume neuf.
+
+### Ce que la première exécution a dit, et que la tranche n'avait pas prévu
+
+Le job « Cœur (Apple) » est passé vert, et son résumé a écrit :
+
+> Aucun test sauté : les 1965 ont tourné.
+
+Sur une exécution dont XCTest disait lui-même « with 36 tests skipped ».
+
+**Il y a deux XCTest, et ils n'écrivent pas la même ligne.** Lu dans le journal
+brut, pas deviné :
+
+| | ce que XCTest écrit |
+|---|---|
+| Linux, swift-corelibs | `LinuxBootTests.testFoo : Test skipped - …` |
+| Apple | `/chemin/F.swift:26: -[Mod.LinuxBootTests testFoo] : Test skipped - …` |
+
+Le motif de #278 exigeait `NOM.NOM` immédiatement avant « : ». Un `]` n'en est
+pas un : zéro correspondance, donc « aucun test sauté ». **Un bouchon
+complaisant** — pire que le silence qu'il remplaçait, parce qu'il affirme.
+
+Deux corrections, donc. Le motif lit les deux formes. Et surtout, le relevé
+confronte désormais son propre compte à celui que XCTest tient lui-même
+(`with N tests skipped`) : tant qu'ils s'accordent, la liste est complète ;
+quand ils divergent, il écrit qu'il est aveugle plutôt que de faire semblant.
+C'est la méthode du dépôt — comparer deux nombres qui devraient s'accorder —
+posée à l'intérieur de l'outil, et c'est elle qui aurait attrapé ce défaut le
+jour même.
+
+**Et la confrontation a trouvé un troisième trou, à sa première exécution
+réelle.** Sur `verify.sh`, XCTest annonçait **26** sautés et le relevé en
+nommait **25**. Le manquant :
+
+```
+JPEGTests.testQualityIsClampedIntoTheSpecRange : Test skipped: required false
+value but got true - pas de décodeur JPEG ici
+```
+
+`XCTSkip("raison")` écrit « skipped **-** raison » ; `XCTSkipIf(cond, "raison")`
+écrit « skipped **:** le texte de l'assertion - raison ». Deux-points, pas
+tiret. Ce saut-là n'était compté **ni avant ni après #278** — personne ne
+l'aurait vu, et ce n'est pas une relecture qui l'a sorti : c'est la comparaison
+de deux nombres, faite par l'outil lui-même, dans la demi-heure qui a suivi son
+écriture. Après élargissement du motif : 26 nommés sur 26 annoncés, et la note
+se tait.

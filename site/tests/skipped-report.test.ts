@@ -233,3 +233,105 @@ describe("le relevé est branché partout où la suite tourne", () => {
     );
   });
 });
+
+/// **Le relevé a menti sur le job Apple, et c'est ce PR qui l'y a branché.**
+///
+/// #279 a câblé `report-skipped.sh` sur « Cœur (Apple) ». Le job est passé vert
+/// et le résumé a écrit « Aucun test sauté : les 1965 ont tourné », sur une
+/// exécution dont XCTest disait lui-même « with 36 tests skipped ».
+///
+/// La cause, lue dans le journal brut plutôt que devinée : **il y a deux
+/// XCTest, et ils n'écrivent pas la même ligne.**
+///
+/// | | ce que XCTest écrit |
+/// |---|---|
+/// | Linux (swift-corelibs) | `LinuxBootTests.testFoo : Test skipped - …` |
+/// | Apple | `/chemin/F.swift:26: -[Mod.LinuxBootTests testFoo] : Test skipped - …` |
+///
+/// Le motif exigeait `NOM.NOM` immédiatement avant « : ». Un `]` n'en est pas
+/// un, donc zéro correspondance, donc « aucun test sauté » — **un bouchon
+/// complaisant**, pire que le silence qu'il remplaçait : il affirme.
+///
+/// La leçon vaut plus que la correction. La garde écrite plus haut vérifie que
+/// le script est **appelé** partout ; elle ne vérifiait pas qu'il dise vrai
+/// là où on l'appelle. Brancher un instrument dans un endroit neuf, c'est
+/// aussi le confronter à ce que cet endroit produit vraiment.
+///
+/// D'où la seconde correction, qui est la méthode du dépôt posée dans l'outil :
+/// **XCTest compte lui-même ses sautés**, et le relevé compare son propre
+/// compte à celui-là. Tant qu'ils s'accordent, la liste est complète ; quand
+/// ils divergent, le relevé le dit au lieu de faire semblant. C'est cette
+/// comparaison-là, et pas une relecture, qui aurait attrapé le défaut le jour
+/// même.
+
+/// Extrait réel du job « Cœur (Apple) » 105947042286, run 35461863660.
+const POMME = `/Users/runner/work/wisq/wisq/Tests/WisqVMTests/KernelImageKindTests.swift:26: -[WisqVMTests.KernelImageKindTests testTheRealKernelIsRecognisedAsOne] : Test skipped - image Linux absente : définir WISQ_LINUX_IMAGE pour ce test
+Test Case '-[WisqVMTests.KernelImageKindTests testTheRealKernelIsRecognisedAsOne]' skipped (0.001 seconds).
+/Users/runner/work/wisq/wisq/Tests/WisqAgentTests/PairingTests.swift:41: -[WisqAgentTests.PairingTests testPairingLinksNeverOfferLoopback] : Test skipped - wisq-agent absent : lancez \`cargo build --release\` d'abord
+Test Case '-[WisqAgentTests.PairingTests testPairingLinksNeverOfferLoopback]' skipped (0.002 seconds).
+\t Executed 1965 tests, with 2 tests skipped and 0 failures (0 unexpected) in 494.453 (494.805) seconds
+`;
+
+describe("le relevé lit les deux XCTest", () => {
+  /// La régression elle-même : cette entrée rendait « Aucun test sauté ».
+  test("nomme les tests sautés dans la forme Apple", () => {
+    const { summary } = run(POMME);
+    expect(summary).not.toContain("Aucun test sauté");
+    expect(summary).toContain("**2 sauté(s) sur 1965.**");
+    expect(summary).toContain("testTheRealKernelIsRecognisedAsOne");
+    expect(summary).toContain("testPairingLinksNeverOfferLoopback");
+    expect(summary).toContain("image Linux absente");
+    expect(summary).toContain("wisq-agent absent");
+  });
+
+  /// Et il ne crie pas quand les deux comptes s'accordent : une note de
+  /// désaccord qui s'affiche toujours n'est plus une note.
+  test("ne signale aucun désaccord quand les comptes s'accordent", () => {
+    expect(run(POMME).summary).not.toContain("pas d'accord");
+  });
+
+  /// **La garde qui aurait attrapé le défaut du jour.** XCTest annonce des
+  /// sautés, le lecteur n'en reconnaît aucun : le relevé doit le dire, pas
+  /// écrire « aucun test sauté ».
+  test("dit qu'il est aveugle quand XCTest compte plus que lui", () => {
+    const inconnu = `Test Case 'Quelque.chose' was SKIPPED for a reason we cannot parse
+\t Executed 1965 tests, with 36 tests skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
+`;
+    const { summary } = run(inconnu);
+    expect(summary).not.toContain("Aucun test sauté");
+    expect(summary).toContain("**36 sauté(s) sur 1965, et le relevé n'a pu en nommer aucun.**");
+    expect(summary).toContain("pas d'accord");
+    expect(summary).toContain("**36**");
+    expect(summary).toContain("**0**");
+  });
+
+  /// **Et la troisième forme, que la note de désaccord a trouvée elle-même.**
+  ///
+  /// Sur la première exécution de `verify.sh` après la correction ci-dessus,
+  /// XCTest annonçait **26** sautés et le relevé en nommait **25**. La note a
+  /// parlé, et le manquant était `JPEGTests.testQualityIsClampedIntoTheSpecRange` :
+  ///
+  ///     : Test skipped: required false value but got true - pas de décodeur JPEG ici
+  ///
+  /// `XCTSkip("raison")` écrit « skipped - raison » ; `XCTSkipIf(cond, "raison")`
+  /// écrit « skipped: <le texte de l'assertion> - raison ». Deux-points, pas
+  /// tiret. Ce saut-là n'était compté **ni avant ni après** #278 — c'est la
+  /// comparaison des deux comptes qui l'a sorti, pas une relecture, et elle l'a
+  /// fait à sa toute première exécution réelle.
+  test("nomme aussi un saut venu de XCTSkipIf", () => {
+    const log = `/w/Tests/WisqRemoteTests/JPEGTests.swift:34: JPEGTests.testQualityIsClampedIntoTheSpecRange : Test skipped: required false value but got true - pas de décodeur JPEG ici
+\t Executed 2063 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
+`;
+    const { summary } = run(log);
+    expect(summary).toContain("**1 sauté(s) sur 2063.**");
+    expect(summary).toContain("testQualityIsClampedIntoTheSpecRange");
+    expect(summary).toContain("pas de décodeur JPEG ici");
+    expect(summary).not.toContain("pas d'accord");
+  });
+
+  /// Et même aveugle, il ne casse pas le job qu'il observe.
+  test("sort avec zéro même quand il ne comprend pas le journal", () => {
+    expect(run(`\t Executed 10 tests, with 3 tests skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
+`).code).toBe(0);
+  });
+});
