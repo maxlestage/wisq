@@ -12209,3 +12209,60 @@ Le même fichier a les deux usages à quelques lignes d'écart.
 que le garde existait (j'allais écrire qu'il n'y en avait pas) ; et le test
 avant la correction, que j'avais commencé par enfreindre avant de revenir en
 arrière.
+
+## #275 — un témoin de champs écrit à côté d'un témoin de champs qui existait
+
+**Le défaut, et il est de ce matin.** #272 a ajouté
+`X86SnapshotFieldWitnessTests.swift`, 224 lignes, en l'ouvrant sur : « `Snapshot
+FieldWitnessTests` pose cette question depuis #96 — mais pour la machine rv32,
+et pour elle seule : il n'y nomme pas l'x86 une seule fois. L'instantané x86 a
+grandi depuis […] sans jamais subir la même mesure. » La première phrase est
+vraie. La conclusion est fausse : `X86SnapshotTests.testEveryFieldComesBack`,
+dans `X86LocalMachineTests.swift`, **est** cette mesure, et l'était déjà.
+
+**Ce que la duplication valait, comptée plutôt qu'affirmée.** Un script a
+extrait les champs que chacun des deux témoins assertionne :
+
+| | champs |
+|---|---|
+| assertés par les deux | 22 — registres, drapeaux, RIP, retired, idled, halted, pagination, CR×16, DR×8, FS/GS_BASE, segments×6, bases et limites de tables, TSS×3, mots x87 de contrôle et d'état, MXCSR, XMM, file série |
+| par l'ancien seul | 14 — les treize champs de `X86LegacyDevices` et la RAM |
+| par le nouveau seul | **2** — la pile `x87[0…8]` et `x87Tags` |
+
+Cent trente lignes pour deux champs, et l'ancien en tenait quatorze de plus.
+
+**La tranche.** Les deux champs vont là où vivent les vingt-deux autres :
+`marked()` pose la pile et le mot d'étiquettes, `testEveryFieldComesBack` les
+redemande. Le fichier de #272 perd ses deux tests de champs et garde ce qui
+parle réellement du **format** — la marque `Snapshot.x87Section`, la reprise
+d'un instantané d'avant, et le cas « d'avant **avec un disque** » qu'un sabotage
+survécu avait révélé. Il s'appelle désormais `X86SnapshotX87SectionTests.swift`,
+et son en-tête dit ce que #272 avait écrit de faux.
+
+**Un petit gain au passage.** Les deux témoins coupent l'instantané à la marque ;
+le helper exige maintenant qu'elle y apparaisse **une fois et une seule**, au
+lieu de prendre la première venue. Une seconde occurrence tombée par hasard dans
+la RAM ou l'image du disque ferait couper au mauvais endroit et rougir sur le
+format alors que le format va bien.
+
+**Les deux sabotages, parce que consolider n'est pas perdre.**
+
+- **S1** — retirer l'écriture de la section x87 de `snapshot()` :
+  `testEveryFieldComesBack` tombe avec **17 rouges nommés** (« mantisse x87 0 »…
+  « le mot d'étiquettes x87 »). La capacité de détection a déménagé entière.
+- **S2** — remplacer `reader.peeks(Snapshot.x87Section)` par `!reader.isAtEnd` :
+  `testAnOlderSnapshotWithADiskIsNotReadAsAnX87Stack` tombe. Et il tombe
+  **proprement**, sur `corrupt` — en #272 le même sabotage tuait le binaire sur
+  une allocation de 72 340 172 838 076 705 octets. C'est le plafond de #273 qui
+  a transformé un plantage en refus ; les trois tranches se tiennent.
+
+**La leçon, et c'est #261 sous un autre habit.** #261 disait : avant de conclure
+d'une absence, chercher la même absence là où on *sait* que la chose est
+présente. #275 dit le même mot pour les gardes : **chercher un témoin par son
+nom, c'est ne pas le chercher.** `SnapshotFieldWitnessTests.swift` ne nomme pas
+l'x86 ; le témoin de l'x86 s'appelle `X86SnapshotTests`. La bonne recherche
+n'était pas « quel fichier porte ce nom » mais « quel test restaure un
+instantané et redemande ses champs » — un `grep` sur `restore(`, pas sur
+`FieldWitness`. Le coût a été 130 lignes qui en doublaient d'autres, soit
+exactement ce dont `VirtioQueue.swift` se méfie en tête de fichier : « deux
+descriptions du même protocole, à diverger dès la première correction ».
