@@ -16836,3 +16836,55 @@ garde épouse cette phrase plutôt que la question.** Les deux premiers jets
 qu'on leur demandait de ne pas être. Il a fallu deux sabotages pour les en
 décoller, et le troisième jet ne tient plus un mot mais une relation entre deux
 nombres — ce qui est la seule forme qui survit à une réécriture du paragraphe.
+
+## #278 — rendre visible ce qu'on a choisi de ne pas rendre bloquant
+
+**Sur quelle autorisation.** Maxime a répondu « Continue » alors que j'avais
+posé trois options sur le noyau de test récupéré en best effort et dit « rien
+sans son mot ». J'ai lu ce « Continue » comme le feu vert pour la plus petite et
+la plus réversible des trois — l'option (c), rendre visible sans rendre
+bloquant — et je l'ai écrit dans la réponse plutôt que de le supposer en
+silence. Les questions vraiment architecturales — la coupe des régions, les XMM
+de l'émetteur, #146, #167 — attendent toujours un vrai arbitrage.
+
+### Ce que la tranche fait, et ce qu'elle refuse de faire
+
+Elle ne durcit rien. Faire rougir la CI parce qu'un serveur tiers n'a pas
+répondu reste la décision que personne n'a prise. Elle ajoute un relevé, en
+dernière étape du job « Cœur (Linux) », qui dit ce qui a sauté et pourquoi — et
+qui le dit en **nommant** les suites.
+
+### Trois choses apprises en l'écrivant
+
+**Un sabotage peut faire tomber les mauvais tests.** Mon premier essai pour
+casser la reconnaissance a produit un motif qui ne correspondait à rien : les
+deux tests de nommage sont tombés faute de sortie, et le contre-cas — celui que
+je visais — est resté vert. Vu de loin, « des tests sont tombés » ressemble à un
+sabotage réussi. Il faut lire **lesquels**, et vérifier que ce sont ceux dont on
+prétendait mesurer la force.
+
+**Bash n'accepte pas d'accent dans un nom de variable.** `sautés=…` sort en 127
+sur `command not found`, avec le nom rendu en octets UTF-8. Le dépôt écrit ses
+commentaires en français ; la frontière s'arrête aux identifiants.
+
+**Et la question posée deux fois n'était nouvelle qu'à moitié.** Le constat sur
+le best effort était déjà dans `claims.test.ts` avec la même conclusion ; ce que
+j'y ajoutais était l'échelle — onze tests Swift, deux Rust, le banc, la
+comparaison des cœurs — et c'est cette échelle, pas le constat, qui justifiait
+d'agir. Le dire dans cet ordre, plutôt que de présenter le tout comme une
+trouvaille, est ce que #277 venait d'apprendre.
+
+### Ce que l'outil a trouvé en se lançant
+
+La discussion portait sur l'image de noyau et ses onze tests. Le relevé, dès sa
+première exécution, en a compté **25 sur 2063** et les a ventilés par raison :
+onze pour l'image — le chiffre annoncé, donc confirmé par la mesure —, mais
+aussi huit faute de serveur RDP, trois faute de noyau PC, deux faute de serveur
+SPICE, un faute de corpus. Aucune de ces quatre variables n'est posée par un
+workflow : ces quatorze-là sautent à chaque exécution de la CI, depuis toujours,
+et personne ne les avait énumérés.
+
+Ce n'est pas un défaut — un test qui veut un vrai serveur RDP ne tournera pas
+sur un coureur GitHub. C'est la démonstration que l'instrument valait la peine :
+il a nommé, au premier tour, quatre familles de silence que la conversation qui
+l'a fait naître ne soupçonnait pas.

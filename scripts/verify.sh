@@ -117,7 +117,16 @@ echo "==> Running the core tests"
 # `DifferentialBootTests` read the variable *or* fall back to the well-known
 # path themselves, so both runs came back with the same single skip. Adding it
 # would have looked like closing a hole and closed none.
-WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test
+# **Et la sortie est gardée, parce qu'un test sauté ne mesure rien.** Le
+# paragraphe ci-dessus dit *combien* sautent ici aujourd'hui ; ce qu'il ne
+# pouvait pas dire, c'est *lesquels*, ni que le compte change avec ce qui est
+# posé sur la machine. `report-skipped.sh` les nomme, ici comme sur la CI.
+# `pipefail` est déjà posé en tête de ce script : le code de `swift test`
+# traverse le `tee`.
+swiftJournal="$(mktemp)"
+trap 'rm -f "$swiftJournal"' EXIT
+WISQ_AGENT_BINARY="$PWD/target/release/wisq-agent" swift test 2>&1 | tee "$swiftJournal"
+./scripts/report-skipped.sh "$swiftJournal"
 
 # The manifest tells anyone without cargo to set this, and CI builds it to check
 # the sentence is worth printing. A fallback nothing compiles is a fallback that
