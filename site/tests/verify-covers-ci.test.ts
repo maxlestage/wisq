@@ -149,6 +149,10 @@ const GATES: Record<string, Verdict> = {
   },
   "core › Benchmark (boot to prompt)": { verify: /wisq-bench/ },
   "core › Les deux cœurs, comparés sur le même noyau": { verify: /test-rust-core\.sh/ },
+  // Le relevé de ce qui a sauté tourne aux deux endroits, et c'est voulu : sans
+  // image de noyau, `verify.sh` saute les mêmes tests que la CI, et un
+  // contributeur a autant besoin de le savoir qu'un job.
+  "core › Ce qui a sauté, et pourquoi": { verify: /report-skipped\.sh/ },
 
   // --- ci.yml, job « core-apple » ---------------------------------------------
   "core-apple › Test (mode langage Swift 6)": {
