@@ -16888,3 +16888,31 @@ Ce n'est pas un défaut — un test qui veut un vrai serveur RDP ne tournera pas
 sur un coureur GitHub. C'est la démonstration que l'instrument valait la peine :
 il a nommé, au premier tour, quatre familles de silence que la conversation qui
 l'a fait naître ne soupçonnait pas.
+
+### Le rouge que #278 s'est donné, et ce qu'il a montré au passage
+
+La CI a refusé le premier jet, sur l'étape même que la tranche modifie :
+
+```
+shell: sh -e {0}
+… set: Illegal option -o pipefail
+```
+
+GitHub lance une étape avec `sh -e {0}` par défaut, et `sh` est dash dans
+l'image Swift : `set -o pipefail` n'existe pas. J'avais retiré cette ligne de
+`verify.sh` — où elle était redondante, le script étant en bash et `pipefail`
+déjà posé en tête — et je l'avais ajoutée dans `ci.yml`, où le shell ne la
+connaît pas. Reproduit avant correction : `sh -e -c 'set -o pipefail'` sort en 2,
+`bash -e -c` passe. La correction est `shell: bash` sur cette étape, et bash est
+bien là — `report-skipped.sh` a tourné en CI par son propre shebang.
+
+**Ce que `pipefail` protège, et pourquoi on ne le retire pas.** Sans lui, `tee`
+rendrait son propre code de sortie et un `swift test` rouge donnerait une étape
+verte. Retirer la ligne aurait rendu le job vert sur une suite rouge — très
+exactement le silence que cette tranche existe pour corriger.
+
+**Et le relevé s'est comporté comme conçu dans le rouge.** L'étape suivante a
+tourné (`if: always()`), n'a pas trouvé de journal, a écrit « usage : … » et est
+sortie avec zéro. Elle n'a rien aggravé, ce qui était la première exigence : un
+instrument de diagnostic ne casse pas ce qu'il observe, y compris quand ce qu'il
+observe est déjà cassé.
