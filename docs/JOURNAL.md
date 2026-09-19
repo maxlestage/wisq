@@ -16232,3 +16232,115 @@ un cache disque froid après la lecture des 13 388 lignes. **Deux passages
 suivants : `9 pass, 1 fail`, la seule défaillance étant ma garde neuve.** Je
 n'ai pas introduit de fragilité, et je ne l'ai pas classée « flake » sans le
 vérifier.
+
+## #271 — le seul document qu'on suit pour installer wisq portait trois chiffres, et aucun n'était tenu
+
+`docs/TESTER-UBUNTU.md` est la page que quelqu'un ouvre pour mettre wisq sur
+un iPhone et piloter une VM depuis un PC sous Ubuntu. C'est le seul document
+du dépôt dont on **fait** ce qu'il dit, ligne par ligne, avec un terminal
+ouvert à côté. Il portait trois chiffres, et les trois avaient dérivé.
+
+**Un.** « Demande un compte développeur payant et **quatre** secrets de dépôt,
+décrits dans l'en-tête de `.github/workflows/testflight.yml`. » L'étape
+« Refuser tôt » du workflow en exige **trois** — l'émetteur de la clé App
+Store Connect, son identifiant, son `.p8` — et le workflow en connaît **six**.
+Quatre ne correspond à rien aujourd'hui. Le plus intéressant est qu'il ne
+correspondait pas non plus à ce qu'un lecteur en comprend le jour où il a été
+écrit : à ce moment-là l'en-tête nommait quatre secrets, dont trois exigés,
+et la phrase disait « demande quatre ». Le chiffre comptait les noms ; la
+phrase promettait des obligations. Puis #311 a ajouté le certificat, #313 l'a
+rendu facultatif, l'en-tête est passé à six, et la phrase n'a pas bougé —
+parce qu'un chiffre dans une phrase n'a pas de compilateur.
+
+**Deux.** « Attention à la date : la dernière release, v0.3.0, est du 24 août
+et **n'a pas** le canal display SPICE complet, l'envoi de fichiers,
+l'extinction par l'agent ni la machine suspendue. » La dernière release est la
+**v0.4.0, du 5 septembre** — quinze jours d'écart sur la ligne même qui dit
+« attention à la date ». Et les quatre absences énumérées sont toutes dans la
+v0.4.0 : `FILE_XFER` y est, l'état `starting` y est, l'arrêt par l'agent y
+est. L'avertissement envoyait chercher « une release plus récente » que la
+plus récente.
+
+**Trois, et c'est le plus coûteux.** La ligne d'installation conseillait
+`--from-source` — donc : installer Rust, compiler — avec sa raison : « le
+binaire de la release v0.3.0 est en retard sur le démon d'aujourd'hui (l'état
+`starting`, libvirt injoignable distingué d'une VM introuvable) ». Les deux
+raisons nommées sont dans la v0.4.0. Mieux :
+
+```
+$ git diff --stat v0.4.0 origin/master -- crates/wisq-agent Cargo.lock Cargo.toml
+$
+```
+
+**Rien.** Le démon publié par la release et le démon de master sont le même
+programme, sources et verrou de dépendances compris ; `wisq-agent` ne dépend
+d'aucun crate du dépôt, donc rien ne peut le faire diverger par en dessous.
+Le guide faisait installer une chaîne Rust pour reconstruire à l'identique un
+binaire déjà publié pour Linux x86-64 et aarch64.
+
+### Le contrôle, cinquième fois
+
+La première comparaison que j'ai lancée a répondu que **master** n'avait pas
+l'envoi de fichiers et que la **v0.4.0** l'avait. Une application qui perd une
+fonctionnalité entre une release et sa branche principale : voilà le genre de
+phrase qu'on a envie d'écrire vite. Le contrôle de #261 — chercher la même
+absence là où on **sait** que la chose est présente — a répondu en une ligne :
+`git rev-parse master` donne un commit du 24 août. La branche `master` locale
+de ce conteneur n'a jamais été mise à jour, parce qu'on travaille toujours
+contre `origin/master`. Ce n'était pas une régression, c'était mon dépôt. La
+règle a maintenant payé cinq fois.
+
+### Ce qui garde ces trois chiffres
+
+Neuf tests, dont trois qui portent la règle et six qui montrent que les
+lecteurs peuvent tomber.
+
+Dans `site/tests/version-agreement.test.ts`, le fichier de #108 — « les six
+endroits qui énoncent la version » — le guide devient le **huitième** endroit.
+Et son en-tête dit maintenant pourquoi il n'y était pas : ce fichier a été
+écrit à propos de la **procédure de release**, et un guide ne fait pas partie
+de la procédure. C'est exactement par là qu'il a dérivé. *La version pourrit à
+l'endroit que la procédure ne touche pas.*
+
+Une place ne suffisait pas : le guide nommait `v0.3.0` **deux** fois, et un
+lecteur qui prend la première occurrence n'aurait pas vu la seconde. La règle
+est donc plus large — **aucun numéro de release nommé dans le guide n'a le
+droit d'être un autre que le plus récent** —, et un second test lit la date du
+`CHANGELOG` pour la version du jour, la dit en français, et exige que le guide
+la porte.
+
+Dans `site/tests/claims.test.ts`, le compte de secrets est lu **chez celui qui
+refuse** : les lignes `missing="$missing …"` de l'étape « Refuser tôt ». Pas
+les noms de l'en-tête, pas les `secrets.` du fichier — ce sans quoi l'envoi
+sort en une ligne. C'est la question que se pose quelqu'un qui prépare son
+compte, et c'est la seule qui ait une réponse mécanique.
+
+### Les sabotages
+
+Six, un par garde, et chacun nomme sa victime :
+
+| sabotage | ce qui tombe |
+|---|---|
+| la dernière release redevient `v0.3.0` | la place `le guide d'installation`, **et** « chaque version nommée » |
+| une seconde version ailleurs (`git diff v0.2.0 master`) | « chaque version nommée » **seule** — la place, elle, voit toujours la bonne |
+| la date recule d'un jour | « le guide date cette release comme le CHANGELOG la date » |
+| le guide réannonce « quatre secrets de dépôt » | « le compte annoncé est celui que Refuser tôt exige » |
+| le **workflow** cesse d'exiger le `.p8` | le même test — le compte vient bien de lui, il n'est pas écrit en dur |
+| le guide ne nomme plus aucune release | trois tests, dont « le guide nomme bien au moins une release » |
+
+Le deuxième est celui qui compte : il montre que la seconde garde couvre ce
+que la première ne peut pas voir, au lieu de la répéter.
+
+### Ce que ça apprend
+
+**Un chiffre peut être juste le jour où on l'écrit et faux le lendemain sans
+que rien n'ait changé en lui.** « Quatre » comptait les secrets nommés dans un
+en-tête ; la phrase, elle, parlait de ce qu'il faut fournir. Les deux
+coïncidaient par hasard. Quand l'en-tête a grandi, le hasard a cessé. On ne
+garde pas le nombre : on garde **la question**, en la posant à ce qui refuse.
+
+**Et un document qu'on suit avec un terminal ouvert n'est pas de la prose.**
+Ses lignes sont des commandes ; ses chiffres sont des préparatifs ; sa release
+est celle qu'on ira télécharger. Le dépôt garde depuis longtemps les chiffres
+du site, ceux des READMEs, ceux d'`ARCHITECTURE.md` — trois documents qu'on
+**lit**. Le seul qu'on **exécute** n'était gardé par rien.
