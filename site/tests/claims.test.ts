@@ -307,3 +307,86 @@ describe("the roadmap page states the present, and every number in it is account
     }
   });
 });
+
+/// **Le guide dit combien de secrets préparer, et le workflow dit lesquels.**
+///
+/// `docs/TESTER-UBUNTU.md` annonçait « quatre secrets de dépôt, décrits dans
+/// l'en-tête de `.github/workflows/testflight.yml` ». Le workflow en exigeait
+/// trois et en connaissait six. Le compte était juste le jour où il a été
+/// écrit — quatre secrets nommés, dont trois exigés — et il n'a bougé ni
+/// quand le certificat est arrivé (#311), ni quand il est redevenu facultatif
+/// (#313), parce qu'un chiffre dans une phrase n'a pas de compilateur.
+///
+/// Ce qui compte pour quelqu'un qui prépare son compte, c'est **ce sans quoi
+/// l'envoi refuse** : les secrets que l'étape « Refuser tôt » déclare
+/// manquants. Le reste est facultatif et le workflow le dit lui-même, dans le
+/// résumé d'exécution. Le nombre est donc lu là, chez celui qui refuse.
+describe("le guide annonce le nombre de secrets que le workflow exige", () => {
+  const NUMBERS = [
+    "zéro", "un", "deux", "trois", "quatre", "cinq",
+    "six", "sept", "huit", "neuf", "dix",
+  ];
+
+  /// Les secrets sans lesquels « Refuser tôt » sort en 1, lus chez lui. Un
+  /// lecteur qui ne trouve rien renverrait zéro, et zéro se compare très bien
+  /// à zéro : il refuse plutôt.
+  function required(): string[] {
+    const flow = readFileSync(
+      join(repoRoot, ".github", "workflows", "testflight.yml"),
+      "utf8",
+    );
+    const found = [...flow.matchAll(/missing="\$missing ([A-Z0-9_]+)"/g)].map(
+      (match) => match[1]!,
+    );
+    if (found.length === 0) {
+      throw new Error(
+        "testflight.yml ne déclare plus aucun secret manquant dans « Refuser " +
+          "tôt » : c'est le motif qui a cessé de correspondre, ou l'étape qui " +
+          "a cessé d'exiger quoi que ce soit.",
+      );
+    }
+    return found;
+  }
+
+  /// Le nombre que le guide annonce, en toutes lettres, et un refus s'il n'y
+  /// en a plus : la phrase peut disparaître d'une réécriture, et une garde qui
+  /// ne trouve plus sa phrase ne garde rien.
+  function announced(): string {
+    const guide = readFileSync(join(repoRoot, "docs", "TESTER-UBUNTU.md"), "utf8");
+    const found = guide.replace(/\s+/g, " ").match(/(\p{L}+) secrets de dépôt/u);
+    if (!found) {
+      throw new Error(
+        "docs/TESTER-UBUNTU.md ne dit plus combien de secrets de dépôt " +
+          "préparer. Si la phrase a changé de forme, corrigez ce lecteur ; si " +
+          "elle a disparu, retirez ce test plutôt que de le laisser vide.",
+      );
+    }
+    return found[1]!;
+  }
+
+  test("le compte annoncé est celui que « Refuser tôt » exige", () => {
+    const needed = required();
+    expect(
+      announced(),
+      `le guide annonce « ${announced()} secrets de dépôt » alors que ` +
+        `« Refuser tôt » en exige ${needed.length} : ${needed.join(", ")}. ` +
+        `C'est la liste qu'on prépare avant de lancer un envoi.`,
+    ).toBe(NUMBERS[needed.length]);
+  });
+
+  /// Les deux lecteurs peuvent tomber, et on le montre.
+  test("le lecteur du guide refuse un texte qui n'annonce aucun compte", () => {
+    const guide = readFileSync(join(repoRoot, "docs", "TESTER-UBUNTU.md"), "utf8");
+    expect(guide).toMatch(/secrets de dépôt/);
+    expect(() => {
+      const found = "rien de tel ici".match(/(\p{L}+) secrets de dépôt/u);
+      if (!found) throw new Error("ne dit plus combien de secrets");
+      return found[1];
+    }).toThrow(/ne dit plus combien de secrets/);
+  });
+
+  test("le lecteur du workflow trouve bien les secrets exigés", () => {
+    expect(required().length).toBeGreaterThan(0);
+    for (const secret of required()) expect(secret).toMatch(/^[A-Z0-9_]+$/);
+  });
+});

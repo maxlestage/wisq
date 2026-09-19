@@ -16,8 +16,11 @@ de la plus confortable à la plus dépannée :
   Actions → *TestFlight* → *Run workflow*) construit, signe et envoie ; le
   traitement par Apple prend quelques minutes, puis le build apparaît dans
   l'application TestFlight de l'iPhone. Demande un compte développeur payant
-  et quatre secrets de dépôt, décrits dans l'en-tête de
-  `.github/workflows/testflight.yml`.
+  et trois secrets de dépôt — la clé App Store Connect : son émetteur, son
+  identifiant, et le contenu de son `.p8`. Ce sont les trois sans lesquels
+  l'étape « Refuser tôt » sort en une ligne. Trois autres existent, tous
+  facultatifs, et le workflow dit lui-même dans son résumé ce qu'il fait sans
+  eux ; l'en-tête de `.github/workflows/testflight.yml` les décrit tous.
 - **Avec un Mac et Xcode** — iPhone branché en USB, mode développeur activé,
   puis `./scripts/install-ios.sh` (voir le script pour `--team`). Une app
   signée avec un compte personnel gratuit expire au bout de sept jours ;
@@ -25,10 +28,10 @@ de la plus confortable à la plus dépannée :
 - **L'IPA non signée** que chaque release publie
   (`wisq-vX.Y.Z-unsigned.ipa`), installée avec AltStore ou Sideloadly, qui la
   signent avec votre identifiant Apple. Attention à la date : la dernière
-  release, v0.3.0, est du 24 août et **n'a pas** le canal display SPICE
-  complet, l'envoi de fichiers, l'extinction par l'agent ni la machine
-  suspendue. Pour essayer ce qui est décrit ici par cette voie, il faut une
-  release plus récente.
+  release est la v0.4.0, du 5 septembre. Ce qui a été fait depuis n'y est pas,
+  et la section `[Unreleased]` du `CHANGELOG.md` dit quoi — c'est la seule
+  liste de ce dépôt qui se tienne à jour toute seule, parce que c'est là qu'on
+  l'écrit en travaillant.
 
 ## 2. L'hôte Ubuntu : libvirt et une VM invitée avec SPICE
 
@@ -168,14 +171,23 @@ de l'éteindre après. Sans lui, wisq fonctionne — il faut juste que la VM soi
 déjà démarrée, et le port se saisit à la main.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --from-source --service
+curl -fsSL https://raw.githubusercontent.com/maxlestage/wisq/master/scripts/install.sh | sh -s -- --service
 ```
 
-`--from-source` construit le démon depuis master avec Rust (installez
-`rustup.rs` d'abord) : le binaire de la release v0.3.0 est en retard sur le
-démon d'aujourd'hui (l'état `starting`, libvirt injoignable distingué d'une VM
-introuvable). `--service` l'installe en service systemd utilisateur ; le jeton
-et le lien d'appairage se lisent dans `journalctl --user -u wisq-agent`.
+Sans `--from-source`, le script prend le binaire publié par la dernière
+release : rien à construire, pas de Rust à installer. Cette voie donne
+exactement le démon de master tant que le démon n'a pas bougé depuis la
+release, et la question se tranche en une seconde :
+
+```sh
+git diff v0.4.0 master -- crates/wisq-agent Cargo.lock
+```
+
+Un diff vide veut dire que la voie courte suffit ; il était vide le
+19 septembre. `--from-source` construit depuis master avec Rust (installez
+`rustup.rs` d'abord), et c'est ce qu'il faut le jour où ce diff rend quelque
+chose. `--service` l'installe en service systemd utilisateur ; le jeton et le
+lien d'appairage se lisent dans `journalctl --user -u wisq-agent`.
 
 Pour un premier contact sans aucune VM : `wisq-agent --demo` sert deux
 machines factices avec de vraies transitions d'état.
