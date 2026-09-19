@@ -21,7 +21,7 @@
 /// une panne réseau que comme une suite disparue du binaire.
 
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -100,5 +100,136 @@ describe("le relevé des tests sautés", () => {
   /// écrite plutôt que sous-entendue : rendre visible, pas bloquant.
   test("sort avec zéro même quand des tests ont sauté", () => {
     expect(run(ABSENT).code).toBe(0);
+  });
+});
+
+/// **Et l'asymétrie que ce relevé s'est lui-même créée.**
+///
+/// #278 a branché le relevé sur « Cœur (Linux) », le job qui lance la suite. Il
+/// n'est pas le seul à la lancer. Mesuré sur le run 35459310059 — la fusion de
+/// #278 elle-même, donc la première exécution de l'instrument :
+///
+/// | job | exécutés | sautés | le job le dit ? |
+/// |---|---|---|---|
+/// | `core` — Cœur (Linux) | 2063 | 14 | oui |
+/// | `core-apple` — Cœur (Apple) | 1965 | **36** | **non** |
+///
+/// Trente-six, et le commentaire au-dessus de ce `swift test` en annonçait
+/// « around fifteen ». Personne ne les a jamais nommés : ni le ROADMAP, ni le
+/// JOURNAL, ni le résumé du job. Le troisième endroit qui lance la suite est
+/// `release.yml`, juste avant de publier — celui où l'on aimerait le moins
+/// l'ignorer.
+///
+/// Un instrument branché sur un seul des endroits qu'il concerne laisse les
+/// autres exactement là où ils étaient, **et donne en prime l'impression que la
+/// question est réglée**. C'est la faute de #276 dans un autre costume : une
+/// garde qui lit un des endroits où vit son sujet n'en est pas une.
+///
+/// D'où une garde sur la règle et non sur la liste : **tout job qui lance
+/// `swift test` lance `report-skipped.sh`**. Écrite ainsi elle couvre le
+/// workflow qu'on ajoutera demain, ce qu'une entrée par job ne ferait pas.
+
+/// Les commentaires retirés d'abord, et ce n'est pas un détail : `ci.yml`
+/// contient cinq fois « swift test » dont **quatre en commentaire**, et deux
+/// d'entre elles sont dans `core-apple` — le job que cette garde doit accuser.
+/// Une recherche sur le texte brut l'aurait déclaré couvert.
+function withoutComments(body: string): string {
+  return body
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+}
+
+/// Le texte de chaque job, séparé. **La séparation est le cœur de la garde** :
+/// un lecteur qui rendrait le fichier entier comme un seul job le déclarerait
+/// couvert dès qu'un seul de ses jobs porte le relevé — très exactement l'état
+/// que cette garde existe pour refuser. Le test de prémisse plus bas l'exige.
+function jobsOf(path: string): { name: string; body: string }[] {
+  const jobs: { name: string; body: string[] }[] = [];
+  let inJobs = false;
+  for (const line of readFileSync(join(repoRoot, path), "utf8").split("\n")) {
+    if (/^jobs:\s*$/.test(line)) {
+      inJobs = true;
+      continue;
+    }
+    if (!inJobs) continue;
+    // Une clé revenue à la colonne zéro referme le bloc des jobs.
+    if (/^\S/.test(line)) {
+      inJobs = false;
+      continue;
+    }
+    const head = /^ {2}([\w-]+):\s*$/.exec(line);
+    if (head) {
+      jobs.push({ name: head[1]!, body: [] });
+      continue;
+    }
+    jobs.at(-1)?.body.push(line);
+  }
+  return jobs.map(({ name, body }) => ({ name, body: withoutComments(body.join("\n")) }));
+}
+
+/// Le répertoire, pas une liste écrite à la main. Une liste aurait encodé la
+/// disposition d'aujourd'hui, et le workflow ajouté demain serait passé à
+/// travers sans un mot.
+const WORKFLOWS = readdirSync(join(repoRoot, ".github", "workflows"))
+  .filter((name) => /\.ya?ml$/.test(name))
+  .sort()
+  .map((name) => `.github/workflows/${name}`);
+
+function jobsRunningTheSuite(): { workflow: string; job: string; body: string }[] {
+  return WORKFLOWS.flatMap((workflow) =>
+    jobsOf(workflow)
+      .filter((job) => job.body.includes("swift test"))
+      .map((job) => ({ workflow, job: job.name, body: job.body })),
+  );
+}
+
+describe("le relevé est branché partout où la suite tourne", () => {
+  /// La garde. Un job qui lance la suite sans dire ce qu'elle a sauté est vert
+  /// sans avoir répondu à la question.
+  test("tout job qui lance « swift test » lance aussi report-skipped.sh", () => {
+    const muets = jobsRunningTheSuite()
+      .filter(({ body }) => !body.includes("report-skipped.sh"))
+      .map(({ workflow, job }) => `${workflow} › ${job}`);
+    expect(
+      muets,
+      "ces jobs lancent la suite et ne disent pas ce qu'elle a sauté : un vert " +
+        "n'y distingue pas une suite qui a tourné d'une suite qui a été sautée",
+    ).toEqual([]);
+  });
+
+  /// **Prémisse, et pas décoration.** Zéro job trouvé satisfait l'assertion
+  /// ci-dessus sans rien avoir lu : c'est la façon dont cette garde peut mentir.
+  test("le lecteur trouve bien des jobs qui lancent la suite", () => {
+    expect(jobsRunningTheSuite().length).toBeGreaterThan(0);
+  });
+
+  /// **Et la séparation des jobs, tenue pour elle-même.** Si `jobsOf` rendait
+  /// le fichier d'un bloc, `ci.yml` n'aurait qu'un job, il contiendrait à la
+  /// fois la suite et le relevé, et la garde passerait au vert en ayant laissé
+  /// `core-apple` muet. Deux faits l'interdisent : plusieurs jobs, et au moins
+  /// un qui ne lance pas la suite.
+  test("les jobs sont lus séparément, pas d'un bloc", () => {
+    const jobs = jobsOf(".github/workflows/ci.yml");
+    expect(jobs.length, "ci.yml devrait rendre plusieurs jobs").toBeGreaterThan(2);
+    const running = jobs.filter((job) => job.body.includes("swift test"));
+    expect(running.length, "aucun job de ci.yml ne lance la suite").toBeGreaterThan(0);
+    expect(
+      running.length,
+      "tous les jobs de ci.yml lancent la suite : le lecteur ne les sépare pas",
+    ).toBeLessThan(jobs.length);
+  });
+
+  /// **Les commentaires ne comptent pas comme du travail.** `core-apple` parle
+  /// de `swift test` dans ses commentaires ; si `withoutComments` cessait de
+  /// mordre, un job pourrait être accusé — ou disculpé — sur une phrase.
+  test("une mention en commentaire ne vaut ni accusation ni acquittement", () => {
+    expect(withoutComments("  # swift test\n  run: echo bonjour")).not.toContain("swift test");
+    expect(withoutComments("  # report-skipped.sh\n  run: swift test")).not.toContain(
+      "report-skipped.sh",
+    );
+    expect(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")).toContain(
+      "# l'échec de `swift test`",
+    );
   });
 });

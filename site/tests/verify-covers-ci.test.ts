@@ -160,6 +160,11 @@ const GATES: Record<string, Verdict> = {
       "c'est le même `swift test`, sur macOS, pour le code derrière `canImport` — " +
       "ImageIO et Security n'existent pas sur Linux, donc rien à lancer ici",
   },
+  // Le relevé, lui, se lance partout : `verify.sh` saute les mêmes tests qu'un
+  // job, et un contributeur a autant besoin de le savoir. Que ce soit le
+  // troisième endroit où ce motif apparaît est le sujet même de la tranche qui
+  // l'a ajouté ici.
+  "core-apple › Ce qui a sauté, et pourquoi": { verify: /report-skipped\.sh/ },
 
   // --- ci.yml, job « lint » ---------------------------------------------------
   "lint › Install SwiftLint": { absent: "installe l'outil ; verify.sh dit comment l'obtenir" },

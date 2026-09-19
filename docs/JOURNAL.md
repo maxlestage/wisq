@@ -16916,3 +16916,65 @@ tourné (`if: always()`), n'a pas trouvé de journal, a écrit « usage : … »
 sortie avec zéro. Elle n'a rien aggravé, ce qui était la première exigence : un
 instrument de diagnostic ne casse pas ce qu'il observe, y compris quand ce qu'il
 observe est déjà cassé.
+
+## #279 — l'instrument de la veille était borgne, et c'est lui qui l'a montré
+
+Rien n'était rouge ce matin, et aucun défaut n'était nommé. Trois chasses de la
+veille étaient revenues vides. La seule méthode qui ait jamais produit une
+trouvaille ici est de **comparer deux nombres qui devraient s'accorder**, alors
+j'ai cherché où en trouver deux — et le relevé fusionné une heure plus tôt en
+offrait précisément une paire : il avait dit « 14 sur 2063 » pour le job Linux,
+donc l'autre job qui lance la même suite devait dire quelque chose de
+comparable.
+
+**Ma première prémisse était fausse, et je l'ai dite avant de la corriger.**
+J'ai supposé que `core` était une matrice à deux entrées, Linux et Apple.
+`sed` sur le fichier : `core:` porte `name: Cœur (Linux)` et
+`runs-on: ubuntu-latest`, et `core-apple:` est un job séparé, sur
+`macos-latest`. #278 n'avait donc instrumenté qu'un des deux — ce qui, au lieu
+d'invalider la comparaison, la rendait intéressante.
+
+Le journal brut du job Apple, sur le run de la fusion de #278 :
+
+```
+Executed 1965 tests, with 36 tests skipped and 0 failures
+```
+
+Contre 14 sur 2063 côté Linux. Et le commentaire posé juste au-dessus de ce
+`swift test` annonçait « Expect around fifteen skipped ». La différence
+d'exécutés s'explique — `WISQ_SWIFT_CORE=1` retire `WisqVMRust` et ses tests,
+c'est écrit là —, mais les sautés, non : personne ne les avait comptés depuis
+que la phrase avait été écrite.
+
+**Le piège que la garde a failli tomber dedans.** Ma première idée était de
+chercher `swift test` et `report-skipped.sh` dans le texte de chaque job.
+`ci.yml` contient cinq fois « swift test », dont **quatre en commentaire**, et
+deux de ces quatre sont dans `core-apple`. Avec un filtre de commentaires
+absent, la garde aurait quand même accusé `core-apple` — par chance, pour la
+mauvaise raison — et aurait pu acquitter demain un job dont le relevé ne serait
+mentionné qu'en prose. D'où `withoutComments`, et un test qui la tient.
+
+**Le sabotage qui valait le plus cher, et qui n'était pas celui que je visais.**
+Quatre mutations, chacune tombée sur son propre test :
+
+| mutation | test tombé |
+|---|---|
+| `core-apple` perd son relevé | la garde, nommant `ci.yml › core-apple` |
+| `release.yml` perd son relevé | la garde, nommant `release.yml › test` |
+| `withoutComments` rendue neutre | « une mention en commentaire ne vaut ni accusation ni acquittement » |
+| `jobsOf` rend le fichier d'un bloc | « les jobs sont lus séparément, pas d'un bloc » |
+
+La quatrième est celle qui compte. Avec `jobsOf` effondré en un seul job,
+`ci.yml` contient à la fois la suite et le relevé, donc **la garde principale
+passe au vert** en ayant laissé `core-apple` muet. Neuf tests sur dix passaient.
+Une garde qui se fie à un découpage doit tenir le découpage pour lui-même, et
+pas seulement son verdict — mesurer l'acte, pas son empreinte.
+
+**Et la leçon, qui est la même que #276 sous un habit neuf.** #278 n'a pas
+écrit une mauvaise garde. Il a écrit un bon instrument et l'a branché à un seul
+endroit. Le résultat est identique à celui d'une garde borgne : les autres
+endroits restent exactement où ils étaient, avec en prime la conviction que la
+question est traitée. Ce que je retiens, pour la prochaine fois qu'une tranche
+ajoute un instrument : **la dernière étape n'est pas « est-ce qu'il marche »,
+c'est « combien d'endroits le méritent, et combien en ont un »**. La réponse se
+compte, elle ne se suppose pas.

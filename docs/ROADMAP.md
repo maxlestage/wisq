@@ -12445,3 +12445,47 @@ sautent à **chaque** exécution de la CI, toujours, et rien ne le disait. Ce
 n'est pas un défaut : un test qui veut un vrai serveur RDP ne peut pas tourner
 sur un coureur. C'est exactement ce qu'un relevé sert à rendre visible, et il
 l'a fait au premier tour.
+
+## #279 — l'instrument de #278 n'était branché que sur un des trois endroits qui lancent la suite
+
+#278 a donné à la CI un relevé de ce qu'elle saute, et l'a câblé sur le job
+« Cœur (Linux) ». La tranche s'est arrêtée là parce que la question de départ
+portait sur l'image de noyau, qui est un sujet du job Linux. Elle n'a jamais
+demandé **qui d'autre lance la suite**.
+
+Trois jobs la lancent. Mesuré sur le run 35459310059 — la fusion de #278
+elle-même, donc la toute première exécution de l'instrument :
+
+| job | exécutés | sautés | le job le disait ? |
+|---|---|---|---|
+| `core` — Cœur (Linux) | 2063 | 14 | oui |
+| `core-apple` — Cœur (Apple) | 1965 | **36** | **non** |
+| `release.yml › test` | — | — | **non** |
+
+Trente-six sautés sur le job Apple, plus du double du Linux, et **personne ne
+les a jamais nommés** : ni le ROADMAP, ni le JOURNAL, ni le résumé du job. Pis,
+le commentaire écrit juste au-dessus de ce `swift test` affirmait « Expect
+around fifteen skipped ». Un facteur 2,4 sur une affirmation que le dépôt
+portait et que rien ne vérifiait — la forme exacte de défaut que ce dépôt
+cherche, trouvée cette fois par l'instrument construit la veille pour autre
+chose.
+
+Le troisième endroit est `release.yml`, qui lance la suite juste avant de
+publier : celui où un saut silencieux coûte le plus cher.
+
+**La forme de la correction, et pourquoi ce n'est pas une liste.** Ajouter une
+entrée par job aurait réparé aujourd'hui et laissé passer le workflow de
+demain. La garde porte donc sur la règle : *tout job qui lance `swift test`
+lance `report-skipped.sh`*. Elle parcourt le répertoire `.github/workflows/`
+plutôt qu'une liste écrite à la main, découpe chaque fichier par job, et retire
+les commentaires avant de chercher — `ci.yml` contient cinq fois « swift test »
+dont **quatre en commentaire**, et deux d'entre elles sont dans `core-apple`,
+le job même que la garde doit accuser. Une recherche sur le texte brut l'aurait
+déclaré couvert.
+
+**Ce que #276 avait déjà dit, et que #278 a refait le lendemain.** Une garde qui
+lit un des endroits où vit son sujet n'en est pas une. #278 n'a pas écrit une
+mauvaise garde : il a écrit un bon instrument et l'a branché à un seul endroit,
+ce qui produit le même résultat — les autres restent exactement où ils étaient,
+**et on croit la question réglée**. C'est la troisième fois en cinq tranches que
+cette faute prend un costume neuf.
