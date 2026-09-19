@@ -98,7 +98,20 @@ jobs:
       - name: Build (mode langage Swift 6)
         run: swift build
       - name: Test
-        run: swift test
+        # La sortie est gardée dans un fichier plutôt que seulement regardée
+        # passer : l'étape « Ce qui a sauté » la relit à la toute fin. Sans ça,
+        # les lignes « Test skipped » se noient dans le journal, et un job vert
+        # ne dit pas si les tests ont tourné.
+        # `shell: bash`, et c'est la correction d'un rouge : GitHub lance une
+        # étape avec `sh -e {0}` par défaut, et `sh` est dash dans cette image —
+        # `set -o pipefail` y répond « Illegal option » et l'étape sort en 2
+        # avant d'avoir lancé un seul test. Sans `pipefail`, le `tee` avalerait
+        # l'échec de `swift test` et le job serait vert sur une suite rouge, ce
+        # qui est très exactement le genre de silence que cette tranche corrige.
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
           # Without this the cross-language tests skip loudly instead of
@@ -132,6 +145,21 @@ jobs:
           scripts/test-rust-core.sh
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+      - name: Ce qui a sauté, et pourquoi
+        # **En dernier, et toujours.** Le noyau de test est récupéré en « best
+        # effort » plus haut : si ce téléchargement échoue, onze tests Swift
+        # sautent — les quatre différentiels et les deux d'accord d'instantané
+        # compris —, les deux tests Rust de démarrage sautent, le banc sort en
+        # zéro et la comparaison des cœurs se contente d'un `::warning::`. Le
+        # job reste vert et rien ne le distingue d'une exécution complète.
+        #
+        # Ce relevé ne refuse rien : rendre la CI rouge parce qu'un serveur
+        # tiers n'a pas répondu est une décision qui n'a pas été prise. Il rend
+        # la dégradation visible, ce qui manquait. Et il nomme les suites
+        # plutôt que de les compter — « 11 sautés » se lit aussi bien comme une
+        # panne réseau que comme une suite disparue du binaire.
+        if: always()
+        run: scripts/report-skipped.sh "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
 
   core-apple:
     name: Cœur (Apple)
