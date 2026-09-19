@@ -12032,3 +12032,56 @@ Elle lit donc le fichier, pas une constante.
 
 **Ce qu'elle ne tient pas** : le nombre, pas ce qu'on en dit. Le second nombre
 faux, « jugés contre les trois », n'est attrapable par aucune garde mécanique.
+
+## #271 — le guide d'installation annonçait une release vieille de quinze jours, et un compte de secrets qui ne correspondait à rien
+
+**Le défaut.** `docs/TESTER-UBUNTU.md` — la page qu'on suit, terminal ouvert,
+pour installer wisq et piloter une VM depuis un iPhone — portait trois chiffres
+dérivés :
+
+1. « quatre secrets de dépôt » : l'étape « Refuser tôt » du workflow TestFlight
+   en exige **trois**, et le workflow en connaît **six** ;
+2. « la dernière release, v0.3.0, est du 24 août » : c'est la **v0.4.0, du
+   5 septembre**, et les quatre absences que l'avertissement lui reprochait y
+   sont toutes ;
+3. la ligne d'installation conseillait `--from-source` parce que « le binaire
+   de la release est en retard sur le démon d'aujourd'hui » — alors que
+   `git diff v0.4.0 origin/master -- crates/wisq-agent Cargo.lock Cargo.toml`
+   **ne rend rien**. Le conseil faisait installer Rust pour reconstruire à
+   l'identique un binaire déjà publié.
+
+**La correction.** Les trois chiffres remis d'aplomb, l'énumération périmée
+remplacée par un pointeur vers `[Unreleased]` du `CHANGELOG.md` — la seule
+liste du dépôt qui se tienne à jour toute seule —, et la ligne d'installation
+ramenée à la voie courte, avec la commande qui dit en une seconde le jour où
+`--from-source` redevient nécessaire.
+
+**Ce qui les tient.** Neuf tests de site (300 → 309), trois qui portent la
+règle et six qui montrent que les lecteurs peuvent tomber :
+
+- `site/tests/version-agreement.test.ts` prend le guide comme **huitième**
+  endroit qui énonce la version, et pose en plus deux règles qu'une place ne
+  peut pas porter : *aucun* numéro de release nommé dans le guide n'a le droit
+  d'être un autre que le plus récent, et la date que le guide donne à cette
+  release est celle que le `CHANGELOG` lui donne, dite en français ;
+- `site/tests/claims.test.ts` lit le compte de secrets **chez celui qui
+  refuse** — les lignes `missing="$missing …"` — et exige que le guide
+  l'annonce en toutes lettres.
+
+Six sabotages, chacun nommant sa victime ; le plus utile est celui qui glisse
+une **seconde** version ailleurs dans le guide : seule la garde large tombe,
+ce qui montre qu'elle couvre ce que la place ne voit pas.
+
+**La leçon.** Ce fichier de gardes a été écrit à propos de la *procédure de
+release* ; un guide ne fait pas partie de la procédure, donc il n'y était pas —
+et c'est précisément pour ça qu'il a dérivé. **La version pourrit à l'endroit
+que la procédure ne touche pas.** Et un chiffre peut être juste le jour où on
+l'écrit et faux le lendemain sans avoir bougé : « quatre » comptait des noms,
+la phrase parlait d'obligations, les deux coïncidaient par hasard. On garde la
+question, pas le nombre.
+
+**Le contrôle, cinquième fois.** La première comparaison disait que master
+avait *perdu* l'envoi de fichiers depuis la v0.4.0. La règle de #261 — chercher
+la même absence là où on sait que la chose est présente — a montré en une ligne
+que la branche `master` locale de ce conteneur datait du 24 août. Ce n'était
+pas une régression, c'était mon dépôt.

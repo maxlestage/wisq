@@ -1,4 +1,11 @@
-/// The seven places that state this project's version, read and compared.
+/// The eight places that state this project's version, read and compared.
+///
+/// **The eighth was found drifted, not in principle.** `docs/TESTER-UBUNTU.md`
+/// is the page someone follows to install wisq, and it announced `v0.3.0` as
+/// the newest release for the fortnight after `v0.4.0` shipped. It was never
+/// in this list because this file was written about the *release procedure*,
+/// and a guide is not part of it — which is exactly how it drifted: nothing
+/// bumps a document that the procedure does not touch.
 ///
 /// `0.3.0` appears in the changelog, in two Cargo manifests, in the Xcode
 /// project's `MARKETING_VERSION`, twice in the site, and in the Homebrew
@@ -95,6 +102,12 @@ const PLACES: [name: string, path: string, pattern: RegExp, consequence: string]
     "la première entrée de la page des versions",
   ],
   [
+    "le guide d'installation",
+    "docs/TESTER-UBUNTU.md",
+    /la dernière\s+release[^.]*?v(\d+\.\d+\.\d+)/,
+    "la release que quelqu'un ira chercher pour installer l'application",
+  ],
+  [
     "le tag de la formule Homebrew",
     "Formula/wisq-agent.rb",
     /tag: "v(\d+\.\d+\.\d+)"/,
@@ -125,7 +138,7 @@ describe("every place that states the version states the same one", () => {
 describe("the readers can fail", () => {
   /// The failure this file is most exposed to, and the reason every reader
   /// throws: a pattern that stops matching returns nothing, nothing equals
-  /// nothing, and six green assertions would mean six files nobody read.
+  /// nothing, and seven green assertions would mean seven files nobody read.
   test.each(PLACES)("%s is actually found in its file", (_name, path, pattern) => {
     expect(stated(path, pattern)).toMatch(/^\d+\.\d+\.\d+$/);
   });
@@ -138,7 +151,7 @@ describe("the readers can fail", () => {
 
   /// `[Unreleased]` has no date, and must not be read as a release: every
   /// commit after a release would otherwise look like a new version, and the
-  /// six assertions above would demand that all seven files be bumped for it.
+  /// seven assertions above would demand that all eight files be bumped for it.
   test("the unreleased section is not a version", () => {
     expect(read("CHANGELOG.md")).toContain("## [Unreleased]");
     expect(releasedVersions()).not.toContain("Unreleased");
@@ -158,5 +171,84 @@ describe("the readers can fail", () => {
         `${versions[index - 1]} devrait être plus récent que ${versions[index]}`,
       ).toBeGreaterThan(rank(versions[index]!));
     }
+  });
+});
+
+/// **Le guide n'énonce pas qu'un numéro : il énonce une date, et il peut
+/// nommer la version plus d'une fois.** Les deux ont dérivé ensemble — « la
+/// dernière release, v0.3.0, est du 24 août » quand le CHANGELOG disait
+/// 0.4.0 du 5 septembre, et un second « v0.3.0 » quinze lignes plus bas que
+/// la première entrée de `PLACES` n'aurait pas vu.
+///
+/// La règle est donc plus large qu'une place : **aucun numéro de release
+/// nommé dans le guide n'a le droit d'être un autre que le plus récent.** Le
+/// jour où le guide aura une raison d'en nommer un ancien, ce test le dira,
+/// et c'est là qu'on décidera — pas en silence.
+describe("le guide d'installation ne nomme que la release du jour", () => {
+  /// Les mois en toutes lettres, parce que c'est ainsi qu'un guide écrit une
+  /// date, et que `2026-09-05` dans une phrase française serait le genre de
+  /// concession qu'un lecteur paie pour qu'un test soit plus facile à écrire.
+  const MONTHS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+  ];
+
+  /// La date du CHANGELOG pour une version donnée, dite comme le guide la dit.
+  function dateOf(version: string): string {
+    const escaped = version.replace(/\./g, "\\.");
+    const found = read("CHANGELOG.md").match(
+      new RegExp(`^## \\[${escaped}\\] — (\\d{4})-(\\d{2})-(\\d{2})`, "m"),
+    );
+    if (!found) throw new Error(`CHANGELOG.md ne date plus la ${version}`);
+    const day = Number(found[3]);
+    return `${day === 1 ? "1er" : day} ${MONTHS[Number(found[2]) - 1]}`;
+  }
+
+  /// Tous les numéros de release que le guide nomme, et un refus si aucun :
+  /// un lecteur qui ne trouve rien compare rien à rien et passe.
+  function versionsNamed(): string[] {
+    const found = [...read("docs/TESTER-UBUNTU.md").matchAll(/v(\d+\.\d+\.\d+)/g)].map(
+      (match) => match[1]!,
+    );
+    if (found.length === 0) {
+      throw new Error(
+        "docs/TESTER-UBUNTU.md ne nomme plus aucune release. Si c'est voulu, " +
+          "c'est ce test qu'il faut retirer — pas le laisser ne rien garder.",
+      );
+    }
+    return found;
+  }
+
+  test("chaque version nommée dans le guide est la plus récente", () => {
+    const newest = releasedVersions()[0]!;
+    for (const version of versionsNamed()) {
+      expect(
+        version,
+        `docs/TESTER-UBUNTU.md nomme la v${version} alors que la dernière ` +
+          `release est la v${newest}. C'est le document qu'on suit pour ` +
+          `installer wisq : il envoie chercher la mauvaise.`,
+      ).toBe(newest);
+    }
+  });
+
+  test("le guide date cette release comme le CHANGELOG la date", () => {
+    const newest = releasedVersions()[0]!;
+    const said = dateOf(newest);
+    expect(
+      read("docs/TESTER-UBUNTU.md"),
+      `le guide ne dit pas « ${said} », la date que le CHANGELOG donne à la ` +
+        `v${newest}. Une release datée d'un autre jour que le sien se lit ` +
+        `comme un avertissement sur la fraîcheur de ce qu'on installe.`,
+    ).toContain(said);
+  });
+
+  /// Les deux lecteurs ci-dessus peuvent tomber, et on le montre plutôt que
+  /// de l'affirmer : c'est la règle de ce fichier.
+  test("le lecteur de dates refuse une version que le CHANGELOG ne date pas", () => {
+    expect(() => dateOf("9.9.9")).toThrow(/ne date plus la 9\.9\.9/);
+  });
+
+  test("le guide nomme bien au moins une release", () => {
+    expect(versionsNamed().length).toBeGreaterThan(0);
   });
 });
