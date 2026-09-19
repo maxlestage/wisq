@@ -72,6 +72,37 @@ describe("advertised claims match the repository", () => {
     expect(Number(found[1])).toBe(testCount());
   });
 
+  /// **Le corpus matériel est compté par le fichier, pas par la mémoire.**
+  ///
+  /// `docs/ARCHITECTURE.md` est le document qu'on lit pour savoir ce qui
+  /// existe, et il annonce la taille de `Tests/Fixtures/x86-oracle.tsv`. Ce
+  /// nombre grandit à chaque tranche qui pose des formes : il valait 13 220
+  /// quand #265 en a ajouté 168, et le document est resté derrière. Rien ne le
+  /// surveillait — `claims.test.ts` lisait les deux READMEs et `content.ts`,
+  /// jamais celui-là.
+  ///
+  /// L'ancre est le fichier lui-même, qui se compte tout seul, donc cette garde
+  /// ne peut pas prendre de retard. Ce qu'elle ne tient pas : le reste de la
+  /// phrase. Elle vérifie le nombre, pas ce qu'on en dit.
+  test("ARCHITECTURE.md annonce le vrai nombre de cas de l'oracle", () => {
+    const fixture = readFileSync(
+      join(repoRoot, "Tests/Fixtures/x86-oracle.tsv"),
+      "utf8",
+    );
+    const cases = fixture.split("\n").filter((line) => line.startsWith("cas\t")).length;
+    expect(cases).toBeGreaterThan(1000);
+    const text = readFileSync(join(repoRoot, "docs/ARCHITECTURE.md"), "utf8");
+    // Le français groupe les milliers par une espace — « 13 388 ». On aplatit
+    // les blancs puis on recolle les groupes, pour que la garde juge le nombre
+    // et pas la typographie ni la coupure de ligne.
+    const flat = text.replace(/\s+/g, " ").replace(/(\d) (?=\d{3}\b)/g, "$1");
+    const at = flat.indexOf("cas relevés");
+    if (at < 0) {
+      throw new Error("ARCHITECTURE.md ne porte plus la phrase du corpus matériel");
+    }
+    expect(flat.slice(Math.max(0, at - 24), at)).toContain(String(cases));
+  });
+
   /// **Le même tableau, dans deux langues, et une seule des deux à jour.**
   ///
   /// Les deux READMEs portent le tableau de comparaison avec UTM SE. Le
