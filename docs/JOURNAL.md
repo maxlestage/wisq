@@ -16139,3 +16139,96 @@ divergence est revenue par le seul endroit qui n'avait pas reçu de garde. Quand
 une affirmation vit en deux langues, ce n'est pas la traduction qu'il faut
 relire : c'est un invariant mécanique qu'il faut poser entre les deux, parce que
 personne ne relit la version qu'il ne parle pas.
+
+## #270 — le document qu'on lit pour savoir ce qui existe annonçait un corpus de 168 cas trop petit
+
+Miroirs inchangés à **2529** ; tests du site 299 → **300**.
+
+### D'abord : l'accusation que j'ai failli publier
+
+En relisant `docs/ARCHITECTURE.md`, un titre de section m'a arrêté — « **Le côté
+x86-64 a trois cœurs, et l'application n'en utilise qu'un** » — et le paragraphe
+qui dit **« Rien de cela n'est branché. […] aucun chemin n'appelle
+l'émetteur. »** Le lot 8 a livré `LocalDesktop`, `DesktopBridge`,
+`DesktopTranslator`, `web/host.js`, le canvas, et neuf tests qui les jugent de
+bout en bout dans un iPhone simulé. J'étais prêt à écrire que la phrase était
+devenue fausse.
+
+**Le contrôle de #261 l'a arrêtée.** Avant de conclure d'une absence, aller
+chercher la même absence là où on *sait* que la chose est présente :
+
+```
+App/ contient       : 1 fichier — App/WisqApp.swift
+App/ référence      : ni X86Machine, ni LocalDesktop
+X86Machine vit dans : Sources/WisqUI/ViewModels/LocalVMModel.swift
+                      Sources/WisqUI/Views/WebKitBenchView.swift
+LocalDesktop        : aucun appelant hors sa propre définition
+```
+
+Mon premier `grep` sur `App/` et `Sources/` ne prouvait rien : l'interface ne
+vit pas dans `App/`. Et quand on regarde là où elle vit, `WisqUI` atteint bien
+`X86Machine` et **n'atteint pas** `LocalDesktop`. Les neuf tests tournent
+*hébergés par* l'application, ce qui est un appelant de test, pas un chemin de
+produit.
+
+**La phrase du document est donc vraie**, et j'ai évité d'inscrire une
+accusation fausse dans un journal. Quatrième fois que cette règle paie.
+
+### Le défaut, lui, est trois lignes plus haut
+
+```
+13 220 cas relevés sur un vrai processeur, dont 13 052 jugés contre les trois
+sans un écart.
+```
+
+La fixture en porte **13 388**. Et « 13 052 jugés contre les trois » attribue
+aux trois cœurs un compte qui n'a jamais été que celui de l'émetteur : les deux
+autres jugent tout. Deux nombres faux dans la phrase dont le seul travail est de
+dire à un arrivant que le corpus est partagé.
+
+**Rien ne surveillait ce fichier.** `site/tests/claims.test.ts` lit les deux
+READMEs et `site/src/content.ts` ; `ARCHITECTURE.md` n'y apparaît pas.
+
+### La garde, écrite avant la correction, et dérivée
+
+Le compte se lit dans la fixture. La garde le compte et exige qu'il soit dans
+le document, juste avant « cas relevés » — les blancs aplatis d'abord, pour
+juger le nombre et non la typographie française ni la coupure de ligne.
+
+    ARCHITECTURE.md annonce le vrai nombre de cas de l'oracle
+    → Expected to contain: "13388"   Received: "x86-oracle.tsv` — 13220 "
+
+Elle tombe sur l'état d'avant.
+
+### Deux sabotages, et c'est le second qui compte
+
+| sabotage | ce que la garde dit |
+| --- | --- |
+| le document ment (13 388 → 13 400) | `Expected "13388", Received "… — 13400 "` |
+| **la fixture grandit d'un cas, le document ne suit pas** | `Expected "13389", Received "… — 13388 "` |
+
+Le premier montre seulement qu'elle lit le document. **Le second montre qu'elle
+lit le fichier** : l'attente a bougé toute seule. C'est ce qui la distingue d'un
+nombre écrit à la main, et c'est exactement la leçon que #268 a payée — sauf
+qu'ici la dérivation est la bonne, parce que la question posée est « le document
+dit-il ce que le fichier contient », pas « le fichier a-t-il maigri ».
+
+Restauration de la fixture vérifiée par `diff`, compte relu : 13 388.
+
+### Ce que cette garde ne tient pas
+
+Elle vérifie **le nombre, pas ce qu'on en dit**. La phrase pourrait porter
+13 388 et se tromper sur tout le reste — c'était d'ailleurs le cas du second
+nombre, « 13 052 jugés contre les trois », qu'aucune garde mécanique
+n'attrapera. Et elle dépend de la présence de « cas relevés » : si la phrase
+disparaît, elle lève une erreur nommée plutôt que de passer en silence.
+
+### Une rougeur à ne pas confondre avec un défaut
+
+Au premier passage, `the test count is the real one` a mis 10,9 s et dépassé son
+délai. C'est la rougeur rare que le fichier documente lui-même — « a rare red
+with a known cause, written down here, is the better trade » — provoquée ici par
+un cache disque froid après la lecture des 13 388 lignes. **Deux passages
+suivants : `9 pass, 1 fail`, la seule défaillance étant ma garde neuve.** Je
+n'ai pas introduit de fragilité, et je ne l'ai pas classée « flake » sans le
+vérifier.

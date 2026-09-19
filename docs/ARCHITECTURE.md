@@ -244,9 +244,14 @@ de toucher à ce côté-là :
 | `crates/wisq-vm/src/x86_wasm.rs` | Rust | **traduit** une région en module WebAssembly |
 
 Les trois lisent le même corpus matériel, `Tests/Fixtures/x86-oracle.tsv` —
-13 220 cas relevés sur un vrai processeur, dont 13 052 jugés contre les trois
-sans un écart. Oublier le troisième a déjà rougi la CI une fois : ce qui touche
-au décodage ou au calcul d'adresse doit être porté partout à la fois.
+13 388 cas relevés sur un vrai processeur, et les trois les rejouent sans un
+écart. L'interpréteur Rust et le cœur Swift les jugent **tous** ; l'émetteur en
+juge 13 220 contre le silicium et **rend les 168 autres à l'hôte** — les sauts
+et appels indirects, qu'il compile mais dont il ne peut pas prédire la cible.
+Un cas rendu n'est pas un cas faux : c'est un cas non jugé, et depuis #267 le
+test refuse qu'une autre famille sorte du champ par ce chemin. Oublier le
+troisième cœur a déjà rougi la CI une fois : ce qui touche au décodage ou au
+calcul d'adresse doit être porté partout à la fois.
 
 **Pourquoi un traducteur, alors que l'interprétation est le choix assumé
 au-dessus.** Le paragraphe qui précède reste vrai — iOS n'accorde de mémoire

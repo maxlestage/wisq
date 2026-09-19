@@ -12005,3 +12005,30 @@ avec la bonne hauteur.
 « phrase fausse, nombre faux, lignes manquantes » dans ces mêmes fichiers ; la
 divergence est revenue par le seul endroit sans garde. Personne ne relit la
 version qu'il ne parle pas — il faut un invariant mécanique entre les deux.
+
+## #270 — ARCHITECTURE.md annonçait un corpus de 168 cas trop petit
+
+Miroirs inchangés à **2529** ; tests du site 299 → **300**. Détail dans
+[`JOURNAL.md`](JOURNAL.md).
+
+**L'accusation évitée.** Le document dit « Rien de cela n'est branché […] aucun
+chemin n'appelle l'émetteur », et le lot 8 a livré `LocalDesktop`,
+`DesktopBridge` et neuf tests qui les jugent dans un iPhone simulé. J'allais
+écrire que la phrase était fausse. Le contrôle de #261 l'a arrêtée : `App/` ne
+contient **qu'un** fichier et ne référence ni `X86Machine` ni `LocalDesktop` ;
+l'interface vit dans `Sources/WisqUI/`, qui atteint le premier et **pas** le
+second. La phrase est vraie — les neuf tests sont un appelant de test, pas un
+chemin de produit. Quatrième fois que cette règle paie.
+
+**Le défaut, trois lignes plus haut** : « 13 220 cas relevés […] dont 13 052
+jugés contre les trois » quand la fixture en porte **13 388** — et « 13 052
+jugés contre les trois » attribue aux trois cœurs un compte qui n'a jamais été
+que celui de l'émetteur. Rien ne surveillait ce fichier.
+
+**La garde, dérivée.** Elle compte les lignes `cas` de la fixture et exige ce
+nombre devant « cas relevés ». Deux sabotages : le document qui ment, et — le
+décisif — **la fixture qui grandit d'un cas**, où l'attente bouge toute seule.
+Elle lit donc le fichier, pas une constante.
+
+**Ce qu'elle ne tient pas** : le nombre, pas ce qu'on en dit. Le second nombre
+faux, « jugés contre les trois », n'est attrapable par aucune garde mécanique.
