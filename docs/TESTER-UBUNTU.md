@@ -29,9 +29,12 @@ de la plus confortable à la plus dépannée :
   (`wisq-vX.Y.Z-unsigned.ipa`), installée avec AltStore ou Sideloadly, qui la
   signent avec votre identifiant Apple. Attention à la date : la dernière
   release est la v0.4.0, du 5 septembre. Ce qui a été fait depuis n'y est pas,
-  et la section `[Unreleased]` du `CHANGELOG.md` dit quoi — c'est la seule
-  liste de ce dépôt qui se tienne à jour toute seule, parce que c'est là qu'on
-  l'écrit en travaillant.
+  et c'est `docs/ROADMAP.md` qui le dit — une entrée par tranche, écrite en
+  travaillant — avec `docs/JOURNAL.md` à côté pour le récit de chacune et
+  l'autorisation qui l'a ouverte. La section `[Unreleased]` du `CHANGELOG.md`
+  ne le dit **pas** : elle s'écrit au moment de publier, pas en travaillant, et
+  elle avait 194 commits de retard au 19 septembre. Pour la liste brute et
+  exhaustive, `git log v0.4.0..master`.
 
 ## 2. L'hôte Ubuntu : libvirt et une VM invitée avec SPICE
 
