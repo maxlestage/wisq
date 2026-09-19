@@ -53,7 +53,19 @@ jobs:
           . "$HOME/.cargo/env"
           cargo build --release -p wisq-vm
       - run: swift build
-      - run: swift test
+      - name: Test
+        # Le troisième endroit qui lance la suite, et celui où l'on aimerait le
+        # moins ignorer un saut : ce job garde une publication. `shell: bash`
+        # parce que ce job tourne dans le conteneur `swift:6.3`, où le
+        # `sh -e {0}` par défaut est dash et refuse `set -o pipefail` — le rouge
+        # exact que #278 a payé sur le job Linux de `ci.yml`.
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
+      - name: Ce qui a sauté, et pourquoi
+        if: always()
+        run: scripts/report-skipped.sh "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
 
   test-rust:
     name: Tests Rust (gate)

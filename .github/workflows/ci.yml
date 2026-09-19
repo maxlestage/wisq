@@ -178,17 +178,33 @@ jobs:
       # The same argument the app job already makes for `WisqUI`: a platform
       # the compiler never sees is a platform the tests never covered.
       - name: Test (mode langage Swift 6)
-        # Expect around fifteen skipped, and they are the expected ones rather
-        # than a hole: the `WisqAgentTests` and `LinuxBootTests` cases need the
-        # agent binary and the Linux test kernel, which this job deliberately
-        # does not fetch — the Linux job runs them with both. The odd one out is
-        # `testTheShippedEncryptorRefusesWhereThereIsNoRSA`, skipped here
-        # precisely *because* there is RSA on Apple; Linux is where it runs.
+        # **« Une quinzaine de sautés » : mesuré, c'est trente-six.** Le chiffre
+        # écrit ici valait affirmation et personne ne l'avait vérifié. Sur le run
+        # 35459310059 — la fusion de #278, donc la première exécution du relevé —
+        # ce job a rendu « Executed 1965 tests, with 36 tests skipped » quand le
+        # job Linux en rendait 14 sur 2063.
+        #
+        # Le raisonnement derrière le chiffre, lui, tient : `WisqAgentTests` et
+        # `LinuxBootTests` veulent le binaire de l'agent et l'image de noyau, que
+        # ce job ne récupère délibérément pas — le job Linux les lance avec les
+        # deux —, et `testTheShippedEncryptorRefusesWhereThereIsNoRSA` saute ici
+        # précisément *parce qu'*il y a RSA sur Apple. Ce qui manquait n'était
+        # pas le raisonnement, c'était le relevé. L'étape qui clôt ce job nomme
+        # les trente-six, et c'est elle qui aura raison la prochaine fois — pas
+        # ce commentaire.
+        #
+        # `pipefail` n'est pas décoratif : sans lui `tee` rendrait son propre
+        # code et un `swift test` rouge donnerait une étape verte. `shell: bash`
+        # non plus — c'est le rouge que #278 a payé sur le job Linux, où le
+        # `sh -e {0}` par défaut est dash et ne connaît pas `pipefail`.
         #
         # What this job adds over Linux is the other direction:
         # `testDecodesARealJPEG` and its neighbours, which need ImageIO and had
         # never executed in CI before this job existed.
-        run: swift test
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
         env:
           # No Rust core here: this job is for the protocol and platform layers,
           # and the two interpreters are already compared on Linux.
@@ -203,6 +219,13 @@ jobs:
           # affirmaient que ce job-ci les jugeait. Le vert venait de ce qu'il
           # ne les compilait pas.
           WISQ_SWIFT_CORE: '1'
+
+      - name: Ce qui a sauté, et pourquoi
+        # `always()` : un job rouge est justement celui où l'on veut savoir ce
+        # qui n'a pas tourné. Le script sort toujours en zéro — il rend visible,
+        # il ne bloque pas.
+        if: always()
+        run: scripts/report-skipped.sh "${RUNNER_TEMP:-/tmp}/wisq-swift-test.log"
 
       # **Et l'autre moitié, celle que la variable ci-dessus enlève : elle est
       # jugée ailleurs, et il a fallu deux jours pour savoir où.**
