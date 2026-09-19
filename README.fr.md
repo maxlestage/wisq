@@ -19,11 +19,10 @@ wisq se place face à UTM sur deux fronts à la fois :
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
-| Exécution | émulation locale QEMU, interprétée | la VM tourne sur l'hôte |
-| Vitesse | très lente (pas de JIT sur iOS) | limitée par le réseau, pas par le CPU |
-| Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau classique |
+| Exécution | émulation locale QEMU, interprétée | sur l'hôte — ou un interpréteur local écrit pour ça |
+| Vitesse | très lente (pas de JIT sur iOS) | limitée par le réseau (distant), ~0,3 s jusqu'à une invite Linux (local, voir plus bas) |
+| Conformité App Store | zone grise, dépendante de la règle 4.7 | client réseau + interpréteur, les deux propres |
 | Licence | GPL (QEMU) | pas de QEMU dedans, donc pas de copyleft à porter |
-| Autonomie | l'émulation vide la batterie | décodage d'image seulement |
 
 ## Vitesse
 

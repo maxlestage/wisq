@@ -72,6 +72,35 @@ describe("advertised claims match the repository", () => {
     expect(Number(found[1])).toBe(testCount());
   });
 
+  /// **Le même tableau, dans deux langues, et une seule des deux à jour.**
+  ///
+  /// Les deux READMEs portent le tableau de comparaison avec UTM SE. Le
+  /// contenu d'une cellule ne se compare pas d'une langue à l'autre — mais le
+  /// NOMBRE DE LIGNES, oui, et c'est l'invariant le moins cher qui aurait
+  /// attrapé ce qui s'est passé : le tableau anglais a gagné le mode local et
+  /// le français est resté à l'époque où wisq ne faisait que du distant, avec
+  /// en plus une ligne « Autonomie » que l'anglais n'a jamais eue. Quatre
+  /// lignes contre cinq, et les deux fichiers se contredisaient.
+  ///
+  /// Ce que cette garde ne tient pas, et il faut le dire : elle ne lit pas ce
+  /// que les cellules affirment. Deux tableaux de même hauteur peuvent mentir
+  /// chacun de son côté. Elle tient qu'une ligne ajoutée ou retirée d'un seul
+  /// côté rougisse, ce que rien ne tenait.
+  test("les deux READMEs portent un tableau de comparaison de même hauteur", () => {
+    const rows = (file: string) => {
+      const text = readFileSync(join(repoRoot, file), "utf8");
+      const table = text.match(/^\| \| UTM SE.*?(?=\n\n)/ms);
+      if (!table) throw new Error(`${file} ne porte plus de tableau UTM SE`);
+      return table[0]
+        .split("\n")
+        .filter((line) => line.startsWith("|") && !/^\|\s*\|/.test(line) && !/^\|-/.test(line));
+    };
+    const english = rows("README.md");
+    const french = rows("README.fr.md");
+    expect(english.length).toBeGreaterThan(3);
+    expect(french.length).toBe(english.length);
+  });
+
   // Two tests lived here, both about the releases page: that every version it
   // listed had a dated changelog entry, and that it carried a section for
   // each. The page is gone, and with it the restated content that could rot.
