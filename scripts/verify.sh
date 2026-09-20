@@ -209,7 +209,7 @@ if [[ "${1:-}" == "--app" ]]; then
     echo "--app requires macOS; the UI layer is UIKit." >&2
     exit 1
   fi
-  # **La version épinglée, mise en tête du PATH.** `Wisq.xcodeproj/project.pbxproj`
+  # **La version épinglée, mise en tête du PATH.** `Wisq ‣.xcodeproj/project.pbxproj`
   # et `App/Info.plist` sont commités et la CI compare ce qu'elle engendre à ce
   # que le dépôt porte. Régénérer ici avec un autre XcodeGen produirait un rouge
   # en CI qui ne dit rien de ce qu'on vient d'écrire — c'est arrivé, sur
@@ -222,7 +222,7 @@ if [[ "${1:-}" == "--app" ]]; then
 
   echo "==> Building the iOS app for the simulator"
   xcodebuild build \
-    -project Wisq.xcodeproj \
+    -project "Wisq ‣.xcodeproj" \
     -scheme Wisq \
     -destination 'generic/platform=iOS Simulator' \
     CODE_SIGNING_ALLOWED=NO

@@ -334,7 +334,7 @@ jobs:
           xcodegen generate
           # **Ce que la CI vient de fabriquer doit être ce que le dépôt porte.**
           #
-          # `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
+          # `Wisq ‣.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
           # `xcodegen generate` **et** commités : sans eux, un dépôt fraîchement
           # cloné n'a pas de projet à ouvrir, et XcodeGen n'est pas dans Xcode.
           # Le prix de ce choix est la dérive — quelqu'un modifie `project.yml`,
@@ -353,7 +353,7 @@ jobs:
           # engendrés suivent, soit le numéro épinglé a changé sans qu'on
           # régénère. Dans les deux cas la correction est la même : lancer
           # `xcodegen generate` et committer le résultat avec le changement.
-          if ! git diff --exit-code -- Wisq.xcodeproj/project.pbxproj App/Info.plist; then
+          if ! git diff --exit-code -- "Wisq ‣.xcodeproj/project.pbxproj" App/Info.plist; then
             echo "::error::les fichiers engendrés par xcodegen ne sont pas ceux du dépôt."
             echo "::error::lancer « xcodegen generate » et committer le résultat."
             exit 1
@@ -375,7 +375,7 @@ jobs:
         # image may drop from one release to the next.
         run: |
           xcodebuild build \
-            -project Wisq.xcodeproj \
+            -project "Wisq ‣.xcodeproj" \
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
@@ -393,7 +393,7 @@ jobs:
           WISQ_SWIFT_CORE: "1"
         run: |
           xcodebuild build \
-            -project Wisq.xcodeproj \
+            -project "Wisq ‣.xcodeproj" \
             -scheme Wisq \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/derived-swift-core" \
@@ -403,7 +403,7 @@ jobs:
         # validated on every PR so cutting a release cannot surprise us.
         run: |
           xcodebuild build \
-            -project Wisq.xcodeproj \
+            -project "Wisq ‣.xcodeproj" \
             -scheme Wisq \
             -configuration Release \
             -destination 'generic/platform=iOS' \

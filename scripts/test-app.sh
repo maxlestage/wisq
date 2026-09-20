@@ -13,7 +13,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# **La version épinglée, mise en tête du PATH.** `Wisq.xcodeproj/project.pbxproj`
+# **La version épinglée, mise en tête du PATH.** `Wisq ‣.xcodeproj/project.pbxproj`
 # et `App/Info.plist` sont commités et la CI compare ce qu'elle engendre à ce
 # que le dépôt porte. Régénérer ici avec un autre XcodeGen produirait un rouge
 # en CI qui ne dit rien de ce qu'on vient d'écrire — c'est arrivé, sur
@@ -68,7 +68,7 @@ mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
 # garde en arrière-plan.
 set +e
 xcodebuild test \
-  -project Wisq.xcodeproj \
+  -project "Wisq ‣.xcodeproj" \
   -scheme Wisq \
   -destination "id=${udid%% *}" \
   CODE_SIGNING_ALLOWED=NO > "$sortie" 2>&1 &

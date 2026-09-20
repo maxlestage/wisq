@@ -17053,3 +17053,43 @@ ASCII, et je ne pouvais pas régénérer le plist ici. Question : XcodeGen écri
 l'UTF-8 brut ou des entités XML ? Plutôt que de parier, chercher la même chose
 là où je sais qu'elle est présente — le plist commité porte déjà « réseau » avec
 son é, non échappé. C'est la règle de #261, et elle a servi une cinquième fois.
+
+## #281 — « identique » ne veut rien dire si l'outil n'a rien écrit
+
+La tranche demandait un renommage. Elle a surtout demandé de ne pas deviner
+trois fois de suite.
+
+**Premier refus de deviner.** Le pbxproj porte le nom du projet, je ne pouvais
+pas le régénérer, et je ne savais pas si XcodeGen écrit un ‣ brut ou une
+séquence `\U2023` — aucun précédent non-ASCII dans le fichier. Plutôt que de
+parier et de faire payer un cycle rouge à la CI : construire XcodeGen 2.46.0
+depuis les sources avec la chaîne Swift du conteneur. Cent vingt-deux secondes,
+et la question disparaît.
+
+**La faute, et elle est jolie.** Avant de m'en servir j'ai voulu vérifier que ce
+binaire écrit comme celui de macOS. J'ai lancé `xcodegen generate` sur le projet
+inchangé, comparé avec `git diff --exit-code`, lu « identique », et conclu.
+C'était une preuve fabriquée par moi-même : l'outil sortait en **1** sur
+« Couldn't find current username » **sans rien écrire**, et je comparais donc le
+fichier commité avec lui-même. Ce qui m'a sauvé n'est pas de la méfiance, c'est
+un détail matériel — le dossier renommé n'apparaissait pas, et la date de
+`Wisq.xcodeproj` était celle du 10 septembre.
+
+Refait comme il faut : supprimer le bundle, régénérer, constater qu'il est
+réécrit (la ligne « Writing project… », absente lors de l'échec), **puis**
+comparer. Identique. La leçon tient en une ligne que ce dépôt écrit déjà :
+mesurer l'acte, pas son empreinte. Un `diff` vide ne dit pas que deux choses
+s'accordent ; il dit qu'on n'a rien regardé de neuf.
+
+**Un sabotage survivant, gardé pour ce qu'il apprend.** Remettre la liste de
+`check-generated-project.sh` en chaîne ne faisait tomber aucun test. La raison
+est instructive : le parcours la coupe en `Wisq`, `‣.xcodeproj/project.pbxproj`
+et `App/Info.plist`, et chacun de ces morceaux est une sous-chaîne de la ligne
+que le script cherche. Les trois `case` s'accordent, la garde est verte, et elle
+n'a rien comparé. C'est l'assertion satisfaite par un autre chemin, en vrai, sur
+du code que je venais d'écrire.
+
+**Et la sixième fois pour la règle de #261.** L'inventaire des appels a commencé
+par une recherche qui n'a rendu aucune ligne de `.github/` — alors que j'y avais
+lu la veille le `git diff --exit-code -- Wisq.xcodeproj/…`. Chercher la chose là
+où on sait qu'elle est a récupéré huit appels dans quatre workflows.

@@ -2,7 +2,7 @@
 #
 # **XcodeGen à la version que le dépôt a utilisée pour engendrer.**
 #
-# `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
+# `Wisq ‣.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
 # `xcodegen generate` et commités, et la CI compare ce qu'elle vient
 # d'engendrer à ce que le dépôt porte. Cette comparaison ne veut dire quelque
 # chose que si les deux côtés lancent le **même** XcodeGen.
