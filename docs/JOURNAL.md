@@ -17027,3 +17027,29 @@ nombres qui devraient s'accorder » a produit toutes les vraies trouvailles
 depuis des mois, et c'était à chaque fois moi qui allais les chercher. Là, le
 relevé le fait tout seul, à chaque job, et il le dira la prochaine fois qu'un
 format changera sans prévenir.
+
+## #280 — une demande de trois mots, et la garde qui ne voyait pas les valeurs
+
+« Ajoute wisq ‣ seulement à l'application. » Trois lectures possibles de
+*l'application* : la barre de navigation, le nom sous l'icône, les deux. Elles
+mènent à des travaux différents, alors j'ai demandé plutôt que deviné — Maxime
+a choisi le nom sous l'icône.
+
+**Le réflexe qui a payé, et qui est écrit dans le dépôt depuis longtemps** :
+avant de toucher `App/Info.plist`, regarder qui l'écrit. `project.yml` porte le
+commentaire qui répond : `xcodegen generate` écrase ce fichier. Éditer le plist
+seul aurait été effacé à la génération suivante — la faute est déjà arrivée ici,
+elle est documentée, et la relire coûtait trente secondes.
+
+**Ce que la tranche a trouvé sans le chercher.** La garde du plist compare les
+clés et **avoue dans son propre commentaire** qu'elle ne voit pas les valeurs.
+Je changeais précisément une valeur. Ce n'est pas un défaut caché : il est écrit
+noir sur blanc, personne ne l'avait refermé, et il fallait une tranche qui passe
+par là pour que ça devienne concret. La garde ajoutée ne referme pas tout — elle
+tient ce nom-là, des deux côtés, et le reste attend toujours XcodeGen.
+
+**Et une inférence que j'ai vérifiée au lieu de la poser.** Le ‣ n'est pas
+ASCII, et je ne pouvais pas régénérer le plist ici. Question : XcodeGen écrit-il
+l'UTF-8 brut ou des entités XML ? Plutôt que de parier, chercher la même chose
+là où je sais qu'elle est présente — le plist commité porte déjà « réseau » avec
+son é, non échappé. C'est la règle de #261, et elle a servi une cinquième fois.

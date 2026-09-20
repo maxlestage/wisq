@@ -71,7 +71,11 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDevelopmentRegion: fr
-        CFBundleDisplayName: wisq
+        # Le nom sous l'icône, et dans le sélecteur d'applications. Le ‣ est
+        # U+2023, TRIANGULAR BULLET : une marque, pas une coquille. iOS
+        # tronque les noms longs sur l'écran d'accueil — celui-ci fait six
+        # caractères, il passe entier.
+        CFBundleDisplayName: wisq ‣
         NSHumanReadableCopyright: >-
           Designed and developed by Maxime Nathan Lestage.
           Copyright 2026 Maxime Nathan Lestage. All rights reserved.

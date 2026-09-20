@@ -12534,3 +12534,38 @@ l'aurait vu, et ce n'est pas une relecture qui l'a sorti : c'est la comparaison
 de deux nombres, faite par l'outil lui-même, dans la demi-heure qui a suivi son
 écriture. Après élargissement du motif : 26 nommés sur 26 annoncés, et la note
 se tait.
+
+## #280 — le nom sous l'icône porte la marque, et la valeur est enfin tenue
+
+Demande de Maxime : « Ajoute wisq ‣ seulement à l'application ». Le ‣ est
+U+2023, TRIANGULAR BULLET. « Seulement à l'application » est tenu à la lettre :
+la marque ne vit que dans `CFBundleDisplayName`, et une recherche sur tout le
+dépôt le vérifie — ni les READMEs, ni `site/src`, ni les documents ne la
+portent.
+
+**Ce que la tranche a dû apprendre avant d'écrire une ligne.** `App/Info.plist`
+n'est pas tenu à la main : `xcodegen generate` l'écrit depuis le bloc
+`info.properties` de `project.yml`, et `project.yml` le dit déjà dans ses
+propres commentaires. La source de vérité est donc la spec ; le plist commité
+est un artefact que `scripts/check-generated-project.sh` régénère et compare
+par `git diff --exit-code`, sur macOS.
+
+**Et le trou que la tranche a trouvé en s'y engageant.** La garde
+`site/tests/info-plist.test.ts` compare les *clés* des deux fichiers et écrit
+franchement ce qu'elle ne voit pas : « une chaîne changée dans `project.yml` et
+non régénérée passe ici ». Or ce changement-ci **est** un changement de valeur :
+il était, en l'état, invisible à cette suite. Modifier la spec sans régénérer le
+plist aurait livré une application dont le nom d'écran d'accueil serait resté
+l'ancien, sans un rouge de ce côté.
+
+La garde ajoutée lit le nom **des deux côtés** et exige qu'ils s'accordent —
+c'est la leçon de #276, le sujet vivant à deux endroits. Bun ne peut pas lancer
+XcodeGen, donc pas de comparaison octet pour octet ; mais une valeur scalaire se
+lit des deux côtés sans lui, et c'est tout ce qu'il faut pour tenir ce nom-là.
+Le reste des valeurs demeure hors de portée de cette suite, et le commentaire de
+la garde continue de le dire.
+
+**Une chose lue plutôt que supposée** : le plist commité porte déjà de
+l'UTF-8 brut — « réseau », avec son é, non échappé. XcodeGen n'entité-ise pas,
+donc le ‣ s'écrit tel quel, et l'édition à la main du plist a la même forme que
+ce que l'outil produirait. La CI Apple le vérifie pour de vrai.
