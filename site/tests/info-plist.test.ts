@@ -78,9 +78,16 @@ test("le schéma d'URL déclaré est bien celui des liens d'appairage", () => {
   expect(daemon).toContain("wisq://agent");
 });
 
-/** Ce que `git ls-files` connaît, sous la racine donnée. */
+/// Ce que `git ls-files` connaît, sous la racine donnée.
+///
+/// **`core.quotePath=false` n'est pas décoratif.** Depuis que le bundle
+/// s'appelle « Wisq ‣.xcodeproj », git échappe le non-ASCII dans sa sortie et
+/// rend `"Wisq \342\200\243.xcodeproj/project.pbxproj"` — guillemets
+/// compris. Une garde qui lit cette sortie cherchait alors un chemin qui n'y
+/// figure jamais, et rougissait sur un dépôt parfaitement sain. Mesuré en
+/// renommant : c'est le premier chemin non-ASCII que ce dépôt porte.
 function tracked(path: string): string {
-  return execFileSync("git", ["ls-files", path], {
+  return execFileSync("git", ["-c", "core.quotePath=false", "ls-files", path], {
     cwd: new URL("../..", import.meta.url).pathname,
     encoding: "utf8",
   });
@@ -89,18 +96,18 @@ function tracked(path: string): string {
 test("les deux sorties de XcodeGen sont suivies, et rien d'autre du projet", () => {
   // Ce test disait le contraire : `App/Info.plist` ne devait PAS être suivi,
   // pour que personne ne l'édite en croyant que ça sert. La raison était
-  // bonne et la conséquence ne l'était pas — sans `Wisq.xcodeproj` ni
+  // bonne et la conséquence ne l'était pas — sans `Wisq ‣.xcodeproj` ni
   // `Info.plist` dans le dépôt, il faut XcodeGen pour avoir quoi que ce soit
   // à ouvrir, et XcodeGen n'est pas dans Xcode. Les deux fichiers sont donc
   // suivis, et ce qui remplace l'exclusion est le test d'à côté : ils doivent
   // dire la même chose que `project.yml`.
   expect(tracked("App/")).toContain("App/Info.plist");
-  expect(tracked("Wisq.xcodeproj/")).toContain("Wisq.xcodeproj/project.pbxproj");
+  expect(tracked("Wisq ‣.xcodeproj/")).toContain("Wisq ‣.xcodeproj/project.pbxproj");
 
   // La ré-inclusion du .gitignore ne laisse entrer que le fichier de projet :
   // l'espace de travail et le schéma sont des états d'éditeur, pas la spec.
-  expect(tracked("Wisq.xcodeproj/")).not.toContain("xcworkspace");
-  expect(tracked("Wisq.xcodeproj/")).not.toContain("xcscheme");
+  expect(tracked("Wisq ‣.xcodeproj/")).not.toContain("xcworkspace");
+  expect(tracked("Wisq ‣.xcodeproj/")).not.toContain("xcscheme");
 
   // Le catalogue d'icônes reste dehors : c'est un binaire, et
   // `scripts/build-app-icon.sh` le dessine depuis le code du site.

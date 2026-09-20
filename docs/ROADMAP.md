@@ -12569,3 +12569,34 @@ la garde continue de le dire.
 l'UTF-8 brut — « réseau », avec son é, non échappé. XcodeGen n'entité-ise pas,
 donc le ‣ s'écrit tel quel, et l'édition à la main du plist a la même forme que
 ce que l'outil produirait. La CI Apple le vérifie pour de vrai.
+
+## #281 — le projet Xcode s'appelle « Wisq ‣ », et le dépôt apprend l'espace
+
+Demande de Maxime : renommer le projet iPhone. La clé `name` de `project.yml`
+passe à `Wisq ‣` ; XcodeGen en tire le nom du bundle, qui devient
+`Wisq ‣.xcodeproj`. **Uniquement le projet** : la cible reste `Wisq`, donc
+`PRODUCT_NAME`, `Wisq.app` et `CFBundleName` ne bougent pas.
+
+**Ce que le renommage introduit vraiment** n'est pas le nom, c'est l'espace.
+Quatorze appels dans neuf fichiers passaient le bundle nu à un shell — quatre
+workflows, quatre scripts, deux documents — et l'un d'eux,
+`check-generated-project.sh`, portait sa liste de fichiers engendrés comme une
+**chaîne délimitée par l'espace**. La garde ajoutée porte sur la règle : le
+chemin du bundle n'est jamais passé nu.
+
+**Trois choses apprises en mesurant, chacune une correction :**
+
+| ce qui a été mesuré | conséquence |
+|---|---|
+| `xcodegen` n'est pas dans ce conteneur (binaire macOS) | XcodeGen 2.46.0 **construit depuis les sources sur Linux** en 122 s |
+| Il échoue sans `USER` : « Couldn't find current username », sortie **1**, **rien d'écrit** | `USER=root LOGNAME=root xcodegen generate` |
+| `git ls-files` **échappe le non-ASCII** par défaut | `-c core.quotePath=false` dans la garde qui lit sa sortie |
+
+**Et une vérification que j'avais bâclée.** Avant de me servir du XcodeGen
+construit ici, j'ai voulu prouver qu'il écrit comme celui de macOS : j'ai
+régénéré le projet inchangé et comparé — « identique ». C'était vide : l'outil
+avait échoué sans rien écrire, donc je comparais le fichier commité **avec
+lui-même**. Refait en supprimant le bundle d'abord : cette fois l'outil écrit
+pour de vrai, et le résultat est bien identique octet pour octet. Le renommage
+change tous les identifiants d'objets du pbxproj — XcodeGen les dérive du nom —
+et cette équivalence est ce qui garantit que la CI produira les mêmes.

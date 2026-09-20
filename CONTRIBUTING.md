@@ -35,7 +35,7 @@ committed:
 ```sh
 brew install xcodegen
 xcodegen generate
-open Wisq.xcodeproj
+open "Wisq ‣.xcodeproj"
 ```
 
 ## The landing page
