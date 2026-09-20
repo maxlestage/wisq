@@ -155,3 +155,44 @@ test("le plist commité et project.yml déclarent exactement les mêmes clés", 
     expect(properties).toContain(key);
   }
 });
+
+/// **Le nom sous l'icône, et le trou que la garde ci-dessus avoue.**
+///
+/// Le test précédent compare les *clés* des deux fichiers et écrit noir sur
+/// blanc ce qu'il ne voit pas : « une chaîne changée dans `project.yml` et non
+/// régénérée passe ici ». Or c'est exactement la forme du changement qu'on
+/// vient de faire — `CFBundleDisplayName` passe de « wisq » à « wisq ‣ ». Sans
+/// ce qui suit, oublier de régénérer le plist aurait livré une application
+/// dont le nom d'écran d'accueil serait resté l'ancien, sans un rouge.
+///
+/// Bun ne peut pas lancer XcodeGen, donc pas de comparaison octet pour octet —
+/// c'est le travail de `scripts/check-generated-project.sh`, sur macOS. Mais
+/// une valeur scalaire, Bun sait la lire des deux côtés, et c'est tout ce
+/// qu'il faut pour tenir *ce* nom-là. La garde porte donc sur l'accord des
+/// deux fichiers, pas sur un seul : c'est la leçon de #276, et le nom vit aux
+/// deux endroits.
+function displayName(source: "spec" | "plist"): string {
+  if (source === "spec") {
+    const found = /^ {8}CFBundleDisplayName: (.+)$/m.exec(appProperties());
+    expect(found, "project.yml ne déclare plus CFBundleDisplayName").not.toBeNull();
+    return found![1]!.trim();
+  }
+  const plist = readFileSync(new URL("../../App/Info.plist", import.meta.url), "utf8");
+  const found = /<key>CFBundleDisplayName<\/key>\s*<string>([^<]*)<\/string>/.exec(plist);
+  expect(found, "le plist commité ne porte plus CFBundleDisplayName").not.toBeNull();
+  return found![1]!;
+}
+
+test("le nom sous l'icône est le même dans project.yml et dans le plist commité", () => {
+  expect(
+    displayName("plist"),
+    "le plist commité a été engendré depuis un autre project.yml : relancer `xcodegen generate`",
+  ).toBe(displayName("spec"));
+});
+
+test("le nom sous l'icône porte la marque", () => {
+  // Le caractère est U+2023, TRIANGULAR BULLET — pas U+25B8, pas un « > ».
+  // Écrit par son point de code plutôt que collé, pour que la garde survive à
+  // un éditeur qui normaliserait le fichier.
+  expect(displayName("spec")).toBe(`wisq ‣`);
+});
