@@ -94,7 +94,7 @@ sont vérifiées que par le job macOS de la CI.
 ```sh
 brew install xcodegen
 xcodegen generate
-open Wisq.xcodeproj
+open "Wisq ‣.xcodeproj"
 ```
 
 Les tests du cœur tournent sans Xcode, y compris sur Linux — la couche UI est

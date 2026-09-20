@@ -12,7 +12,7 @@
 set -eu
 
 [ "$(uname -s)" = "Darwin" ] || { echo "ce script exige macOS avec Xcode" >&2; exit 1; }
-# **La version épinglée, mise en tête du PATH.** `Wisq.xcodeproj/project.pbxproj`
+# **La version épinglée, mise en tête du PATH.** `Wisq ‣.xcodeproj/project.pbxproj`
 # et `App/Info.plist` sont commités et la CI compare ce qu'elle engendre à ce
 # que le dépôt porte. Régénérer ici avec un autre XcodeGen produirait un rouge
 # en CI qui ne dit rien de ce qu'on vient d'écrire — c'est arrivé, sur
@@ -30,7 +30,7 @@ xcodegen generate
 
 echo "==> Compilation signée pour l'appareil"
 # shellcheck disable=SC2086
-xcodebuild -project Wisq.xcodeproj -scheme Wisq -configuration Release \
+xcodebuild -project "Wisq ‣.xcodeproj" -scheme Wisq -configuration Release \
   -destination 'generic/platform=iOS' \
   -derivedDataPath .build/ios \
   -allowProvisioningUpdates \

@@ -1,5 +1,5 @@
 # La source de vérité du projet Xcode. `xcodegen generate` en produit deux
-# fichiers — `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` — et **les
+# fichiers — `Wisq ‣.xcodeproj/project.pbxproj` et `App/Info.plist` — et **les
 # deux sont commités**.
 #
 # Ils ne l'étaient pas : le raisonnement écrit ici disait qu'un `.pbxproj` généré
@@ -44,7 +44,7 @@
 #     scripts/build-app-icon.sh
 #
 # Sans lui le projet s'ouvre et la construction s'arrête sur l'icône absente.
-name: Wisq
+name: Wisq ‣
 options:
   bundleIdPrefix: app.wisq
   deploymentTarget:

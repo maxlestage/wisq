@@ -2,7 +2,7 @@
 #
 # **Ce que la CI fabrique doit être ce que le dépôt porte.**
 #
-# `Wisq.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
+# `Wisq ‣.xcodeproj/project.pbxproj` et `App/Info.plist` sont écrits par
 # `xcodegen generate` **et** commités. Ce choix a une raison — sans eux, un
 # dépôt fraîchement cloné n'a pas de projet à ouvrir, et XcodeGen n'est pas
 # dans Xcode — et un prix : un fichier engendré sous suivi peut diverger de sa
@@ -56,7 +56,10 @@ grief() {
 # Les deux fichiers qu'`xcodegen generate` écrit et que le dépôt porte. Écrits
 # ici plutôt que devinés : c'est la liste que la comparaison doit couvrir, et
 # un troisième fichier engendré un jour devra passer par là.
-generated="Wisq.xcodeproj/project.pbxproj App/Info.plist"
+# **Un tableau, pas une chaîne.** Le bundle porte maintenant une espace
+# (« Wisq ‣.xcodeproj ») : une liste délimitée par l'espace la couperait en
+# deux chemins qui n'existent pas, et la comparaison porterait sur rien.
+generated=("Wisq ‣.xcodeproj/project.pbxproj" "App/Info.plist")
 
 # **Le numéro, et le script qui le pose.** Les deux sont nommés ici plutôt que
 # répétés dans la boucle : c'est la paire que la règle désigne.
@@ -96,7 +99,7 @@ for flow in "$flows"/*.yml; do
     grief "$name régénère le projet et ne compare pas : une dérive y passerait sans un rouge"
     continue
   fi
-  for file in $generated; do
+  for file in "${generated[@]}"; do
     case "$comparison" in
       *"$file"*) ;;
       *) grief "$name compare, mais pas $file : ce fichier-là pourrait diverger" ;;
