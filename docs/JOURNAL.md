@@ -17093,3 +17093,45 @@ du code que je venais d'écrire.
 par une recherche qui n'a rendu aucune ligne de `.github/` — alors que j'y avais
 lu la veille le `git diff --exit-code -- Wisq.xcodeproj/…`. Chercher la chose là
 où on sait qu'elle est a récupéré huit appels dans quatre workflows.
+
+## #282 — la garde que mon propre commentaire acquittait
+
+Tranche ouverte sans défaut en réserve. Plutôt que de me taire une troisième
+fois à un réveil de la routine, j'ai repris la seule méthode qui a produit des
+trouvailles ici : deux nombres qui devraient s'accorder. Apple annonce 1965
+tests, Linux 2063, alors que `WisqUI` est *exclu* sous Linux — donc Apple
+devrait en avoir plus, pas moins.
+
+**La première hypothèse est morte en cinq minutes, et bien.** Le commentaire de
+`core-apple` nomme déjà la cause : `WISQ_SWIFT_CORE=1` retire `WisqVMRust`
+**et sa cible de tests**. Rien à corriger. Mais la question sous-jacente
+restait : quel code vit derrière une garde que plus aucun job ne compile ? Et
+en la posant, le vrai sujet est apparu à côté — pas une garde absente, un
+relevé qui ne compare rien.
+
+**Ce que le journal réel a dit, et que je n'avais pas demandé.** En cherchant
+un échantillon honnête pour les fixtures, le relevé publié par « App iOS » a
+montré une suite sur douze **sans sa ligne de compte**. Deux explications
+possibles, et je n'avais pas le droit de choisir : ou XCTest n'écrit pas cette
+ligne pour une suite d'un seul test, ou le motif la manque. Deux minutes de
+mesure — un paquet de deux classes, l'une d'un test, sous la chaîne Swift
+d'ici — et la réponse est écrite : `Executed 1 test,` au singulier. Le total du
+bundle, 47, est la somme exacte des neuf classes y compris ce test unique ;
+il avait donc bien tourné. C'est l'extraction qui l'avait perdu.
+
+**Et le sabotage a attrapé une faute que je venais d'écrire.** La garde qui
+tient la règle « tout ce qui lance `xcodebuild test` lance aussi le relevé »
+cherchait le nom du script dans le fichier. Retirer l'appel de `test-app.sh`
+n'a fait tomber **aucun test** : le commentaire que je venais d'écrire au-dessus
+de l'appel, pour expliquer l'appel, nomme le script. L'assertion était
+satisfaite par un autre chemin que celui qu'elle prétend mesurer — troisième
+rencontre de cette faute, et la première où c'est mon propre commentaire qui
+acquitte. #279 avait déjà la réponse, `withoutComments()` ; elle s'appelle ici
+`sansCommentaires`.
+
+Six sabotages, six chutes après correction, chacune sur le test visé, fichier
+vérifié par `diff` après chaque restauration.
+
+**Et la troisième fois pour le faux rouge de la garde de licence.** Un échec
+par dépassement de délai dans la suite complète ; seule, elle passe 16/16 et le
+script tourne en 0,13 s. C'est la charge, pas un défaut.
