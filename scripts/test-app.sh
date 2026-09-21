@@ -52,7 +52,7 @@ trap 'rm -f "$sortie"' EXIT
 # Les mesures survivent au script, dans un fichier que la CI relit à la toute
 # fin : `xcodebuild` écrit ensuite des milliers de lignes de compilation, et
 # ce qui est au milieu d'un log de cette taille est introuvable en pratique.
-mesuresFichier="${RUNNER_TEMP:-/tmp}/wisq-mesures-app.txt"
+# C'est `report-app-suites.sh`, plus bas, qui l'écrit.
 # **Un fichier, pas un tube.** `xcodebuild | tee` ne se termine pas : les
 # démons du simulateur héritent du bout écrivain du tube et le gardent ouvert
 # après la fin des tests, donc `tee` attend une fin de fichier qui ne vient
@@ -92,26 +92,18 @@ fi
 # Ce que les sondes ont mesuré, et si elles ont seulement tourné : un test
 # sauté ne mesure rien, et « vert » ne doit pas se lire « répondu ».
 #
-# **Les suites sont nommées, pas seulement comptées.** Un relevé qui dit
-# « 12 tests exécutés » ne dit pas *lesquels* : le 7 septembre, une suite
-# entière a été déplacée ici et rien dans ce relevé n'aurait permis de vérifier
-# qu'elle avait bien tourné plutôt que d'avoir disparu du bundle. Un nombre
-# seul se lit aussi bien comme une réussite que comme une absence.
-mesures=$(grep -E "^(WebKit|pont|Metal|bureau) [^:]*: |Executed [0-9]+ tests|Test Suite '[A-Za-z]+' (passed|failed)" "$sortie" | tail -40 || true)
-if [ -n "$mesures" ]; then
-  echo "==> Mesures"
-  echo "$mesures"
-  printf '%s\n' "$mesures" > "$mesuresFichier"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    {
-      echo "### Ce que l'iPhone simulé a mesuré"
-      echo ""
-      echo '```'
-      echo "$mesures"
-      echo '```'
-    } >> "$GITHUB_STEP_SUMMARY"
-  fi
-fi
+# **Les suites sont nommées, et confrontées à ce que la spec déclare.** Un
+# relevé qui dit « 12 tests exécutés » ne dit pas *lesquels* : le 7 septembre,
+# une suite entière a été déplacée ici et rien dans ce relevé n'aurait permis
+# de vérifier qu'elle avait bien tourné plutôt que d'avoir disparu du bundle.
+# Les nommer répondait à la première moitié de cette phrase seulement — une
+# suite retirée de `project.yml` aurait fait un relevé **plus court**, et vert.
+# `report-app-suites.sh` tient les deux moitiés : il nomme, et il confronte la
+# liste à celle que `project.yml` déclare. Il reçoit le code de `xcodebuild`
+# pour ne pas accuser des suites qu'une exécution rouge n'a pas eu le temps de
+# lancer.
+"$(dirname "$0")/report-app-suites.sh" "$sortie" "$issue"
+
 [ "$issue" -eq 0 ] || exit "$issue"
 
 echo "==> La couche application est vérifiée, pas seulement compilée."

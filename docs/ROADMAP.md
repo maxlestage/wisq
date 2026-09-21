@@ -12600,3 +12600,48 @@ lui-même**. Refait en supprimant le bundle d'abord : cette fois l'outil écrit
 pour de vrai, et le résultat est bien identique octet pour octet. Le renommage
 change tous les identifiants d'objets du pbxproj — XcodeGen les dérive du nom —
 et cette équivalence est ce qui garantit que la CI produira les mêmes.
+
+## #282 — le relevé de l'iPhone simulé nommait ce qui avait tourné, jamais ce qui aurait dû
+
+#278 a posé la règle **« nommer, pas compter »** : « 11 sautés » se lit aussi
+bien comme une panne réseau **que comme une suite disparue du binaire**. Le
+relevé de « App iOS » nommait bien ses suites depuis, et ne répondait pourtant
+qu'à la première moitié de cette phrase. Nommer ce qui a tourné ne dit pas ce
+qui **aurait dû** tourner : une suite retirée de `scheme.testTargets`, un
+fichier sorti de `sources`, une classe renommée — le relevé aurait été
+simplement **plus court**, et le job vert.
+
+**Trois défauts, tous mesurés sur le journal réel** du job « App iOS »
+106133490635 (la fusion de #416), pas déduits :
+
+| | ce que la mesure a montré |
+|---|---|
+| le singulier | `OversizedKernelRefusalTests` rend son verdict **sans sa ligne de compte**, seule des douze. Elle n'a qu'un test, XCTest écrit alors `Executed 1 test` — sans `s` — et le motif exigeait `tests`. `report-skipped.sh` écrivait déjà `tests?` ; celui-ci non. |
+| la coupe | le bloc extrait fait **34 lignes** sur un `tail -40`. Trois suites de plus et le relevé se mettait à couper **par la tête**, en silence. |
+| la comparaison | rien ne confrontait les **douze** suites déclarées à celles qui avaient rendu un verdict. |
+
+**Ce qui est ajouté.** `scripts/report-app-suites.sh` reprend l'extraction —
+motif élargi au singulier et aux noms de classe portant un chiffre, plus de
+coupe — et ajoute la comparaison que ce dépôt fait partout ailleurs : deux
+listes qui devraient s'accorder. Les suites attendues sont **lues de
+`project.yml`** (la scheme nomme ses cibles, les cibles nomment leurs sources,
+les sources portent leurs classes), jamais écrites en dur, parce qu'une liste
+en dur vieillit au premier ajout.
+
+**Il refuse, là où `report-skipped.sh` se contente de montrer.** La différence
+n'est pas d'humeur : un test qui saute parce qu'un serveur tiers n'a pas
+répondu n'est pas un défaut du dépôt, tandis qu'une suite déclarée qui ne rend
+aucun verdict en est un à tous les coups. Il ne refuse toutefois **que si
+`xcodebuild` a réussi** — sur une exécution déjà rouge le journal est partiel,
+et ajouter un faux coupable rend le vrai plus difficile à lire.
+
+**L'hypothèse, écrite pour le jour où elle tombera.** Le script suppose que
+toutes les classes de ces deux répertoires tournent sur un iPhone simulé. C'est
+vrai aujourd'hui, vérifié : les seules gardes de compilation y sont
+`#if os(iOS)`, `#if canImport(WebKit)` et `#if canImport(Metal)`, vraies toutes
+les trois sur un simulateur. Une classe posée derrière une garde fausse serait
+accusée à tort, et il faudrait alors apprendre les gardes à ce script.
+
+`site/tests/app-suites.test.ts`, sept tests, sur deux journaux **réels** : le
+relevé publié par « App iOS » pour #416, et la sortie d'un paquet de deux
+classes lancé sous la chaîne Swift du conteneur, qui établit le singulier.
