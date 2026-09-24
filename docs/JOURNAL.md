@@ -17135,3 +17135,55 @@ vérifié par `diff` après chaque restauration.
 **Et la troisième fois pour le faux rouge de la garde de licence.** Un échec
 par dépassement de délai dans la suite complète ; seule, elle passe 16/16 et le
 script tourne en 0,13 s. C'est la charge, pas un défaut.
+
+## #283 — une tautologie sur `min`, écrite par moi, attrapée par le sabotage
+
+La demande était claire et la carte du code l'était moins. Trois mesures avant
+d'écrire une ligne, parce que chacune pouvait faire de la tranche autre chose.
+
+**La première a tué la solution évidente.** Monter le plafond à 16 Gio ne peut
+pas être une constante changée : `KernelMemory` compte en `UInt32`, et seize
+gibioctets n'y entrent pas. L'élargissement en `UInt64` n'est donc pas un
+nettoyage qu'on aurait pu remettre, c'est la tranche.
+
+**La deuxième a désigné le vrai défaut.** Le plafond de 2 Gio est un fait
+d'adressage rv32, et `ceiling` l'appliquait à tous les cœurs. En cherchant
+pourquoi la ligne `omarchy` — un ISO, donc x86-64 — le subissait, les deux
+lecteurs sont apparus : `IsoBoot.decide` lit le noyau *dedans* et répond
+x86-64 ; `KernelImageKind.identify` lit l'image et répond `.discImage`, sans
+architecture. Deux verdicts sur le même fichier, et c'est la liste qui avait
+tort.
+
+**La troisième a évité un faux refus.** J'allais plafonner la machine PC à
+3,5 Gio, parce que `attachDisplay` refuse au-delà de `displayBase`. Vérifié
+avant de l'écrire : **aucun chemin de l'application n'attache d'écran à cette
+machine** — seuls deux tests le font, et le bureau local passe ailleurs. Le
+plafond de 3,5 Gio aurait été une borne inventée sur une lecture rapide.
+
+**Et la faute, qui est à moi.** J'avais écrit une garde sur le bornage du
+démarrage :
+
+```swift
+let asked = min(chosen, GuestArchitecture.Core.riscv32.maximumRAMSize)
+XCTAssertLessThanOrEqual(asked, UInt64(LinuxMachine.maximumRAMSize))
+```
+
+C'est vrai quoi que fasse le démarrage. Ce n'est pas une assertion sur le
+programme, c'est une tautologie sur `min` — et elle avait l'air d'une garde. Je
+l'ai vue en cherchant quoi saboter : il n'y avait rien à saboter, parce qu'elle
+ne mesurait rien. Le bornage vit maintenant dans `KernelMemory.askedOf`, une
+fonction nommée que `WisqVM` expose et que le coureur Linux juge, et le test
+**construit la machine et y charge un noyau** — c'est le refus
+`ramSizeUnsupported` qu'on veut ne jamais voir, donc c'est lui qu'il faut aller
+chercher. Saboté dans les deux sens : bornage retiré → le rv32 refuse le noyau ;
+bornage écrasé au rv32 → la machine PC perd sa mémoire.
+
+Quatrième rencontre de cette faute dans ce dépôt, deuxième fois de suite sur du
+code que je venais d'écrire.
+
+**Et l'outillage, perdu deux fois.** Le conteneur a redémarré : la chaîne Swift
+et la bibliothèque du cœur Rust avaient disparu de `/tmp`. Refaites — trois
+gibioctets et une construction `cargo`. Au passage, `scripts/verify.sh` cite
+encore « swiftlint_linux.zip » dans son message d'aide : cette archive n'existe
+plus, elle s'appelle `swiftlint_linux_amd64.zip`, et le lien envoie vers un 404.
+Défaut nommé, d'un autre sujet, laissé hors de cette tranche.

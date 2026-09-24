@@ -231,7 +231,11 @@ public final class LocalVMModel {
         // le plafond du téléphone, lui, ne change pas. Quand les deux ne se
         // rencontrent pas, on le dit au lieu de démarrer une machine trop
         // petite qui échouerait sans expliquer pourquoi.
-        var machineRAM = Int(ramSize)
+        // Le réglage est une préférence ; l'adressage est un fait. Le bornage
+        // vit dans `KernelMemory.askedOf`, qui dit pourquoi — et qui, vivant
+        // dans `WisqVM`, est jugé par un test sur le coureur qui ne coûte
+        // rien, ce que ce fichier ne peut pas être.
+        var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
         if core == .x86_64 {
             machineRAM = max(machineRAM, X86Machine.minimumRAMSize)
             if machineRAM > Int(roomNow) {

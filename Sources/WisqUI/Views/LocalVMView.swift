@@ -59,7 +59,9 @@ struct LocalVMListView: View {
                             }
                             .buttonStyle(.plain)
                             Spacer(minLength: 12)
-                            KernelMemoryMenu(kernel: kernel) { forgotten in
+                            KernelMemoryMenu(
+                                kernel: kernel, core: kinds[kernel]?.core
+                            ) { forgotten in
                                 note = Self.note(forgotten: forgotten)
                                     .map { Note(text: $0, symbol: "memorychip") }
                                 storage = KernelLibrary.storageReport()
@@ -94,7 +96,7 @@ struct LocalVMListView: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
-                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(LinuxMachine.defaultRAMSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et l'émulateur ne peut pas dépasser \(KernelMemory.describe(LinuxMachine.maximumRAMSize)) — la mémoire de l'invité commence à 0x80000000 et son processeur adresse en 32 bits. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
+                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
                     Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
                 }
             }
@@ -330,22 +332,43 @@ private struct KernelDiskMenu: View {
 /// Linux, ce que ce fichier ne peut pas être.
 private struct KernelMemoryMenu: View {
     let kernel: URL
+    /// **Le cœur de ce noyau, quand le fichier l'a dit.**
+    ///
+    /// C'est lui qui décide du plafond : deux gibioctets pour le rv32, où
+    /// c'est un fait d'adressage, et seize pour la machine PC. Sans ce
+    /// paramètre le curseur bornait tout le monde au plafond du rv32 — un
+    /// noyau x86-64 tenu à 2 Gio par la contrainte d'une autre architecture.
+    ///
+    /// `nil` est une permission et non un doute, comme partout ailleurs pour
+    /// `KernelImageKind` : un fichier que personne n'a lu reçoit le plus grand
+    /// plafond, et c'est le démarrage qui borne pour de vrai, cœur en main.
+    ///
+    /// **Un ISO arrive ici avec `nil`, et c'est le cas qui a motivé la
+    /// tranche.** `KernelImageKind.identify` lit l'image et répond
+    /// `.discImage`, qui n'a pas d'architecture ; `IsoBoot.decide` lit le
+    /// noyau *dedans* et répond x86-64. Les deux ne disaient pas la même
+    /// chose, et c'est la liste qui avait tort.
+    let core: GuestArchitecture.Core?
     /// Combien de machines sauvegardées le changement a coûté, pour le dire.
     let onChange: (Int) -> Void
 
-    @State private var size: UInt32
+    @State private var size: UInt64
 
-    init(kernel: URL, onChange: @escaping (Int) -> Void) {
+    init(kernel: URL, core: GuestArchitecture.Core?, onChange: @escaping (Int) -> Void) {
         self.kernel = kernel
+        self.core = core
         self.onChange = onChange
-        _size = State(initialValue: KernelMemory.size(forKernel: kernel.lastPathComponent))
+        _size = State(initialValue: KernelMemory.size(
+            forKernel: kernel.lastPathComponent, ceiling: KernelMemory.ceiling(for: core)))
     }
 
     /// Les paliers que cet appareil autorise. Calculés une fois : le curseur
     /// glisse sur leurs *indices*, pas sur des octets, ce qui lui fait sauter
     /// de puissance de deux en puissance de deux plutôt que de proposer des
     /// tailles intermédiaires qu'aucune machine n'a jamais.
-    private var steps: [UInt32] { KernelMemory.offered(ceiling: KernelMemory.ceiling) }
+    private var steps: [UInt64] {
+        KernelMemory.offered(ceiling: KernelMemory.ceiling(for: core))
+    }
 
     var body: some View {
         let steps = self.steps

@@ -2,6 +2,16 @@ import XCTest
 
 @testable import WisqVM
 
+/// **Les deux faits de `LinuxMachine`, en soixante-quatre bits.**
+///
+/// `KernelMemory` compte maintenant en `UInt64` — seize gibioctets n'entrent
+/// pas dans trente-deux bits — et `LinuxMachine` compte toujours en `UInt32`,
+/// parce que son adressage s'arrête là. La conversion vit ici plutôt que de
+/// comparer `KernelMemory.defaultSize` à lui-même : les deux côtés doivent
+/// rester deux côtés, sans quoi l'assertion ne mesurerait plus leur accord.
+private let referenceMachine = UInt64(LinuxMachine.defaultRAMSize)
+private let riscvLimit = UInt64(LinuxMachine.maximumRAMSize)
+
 /// Le réglage de mémoire, tel qu'il survit à un lancement et à un changement
 /// de téléphone.
 final class KernelMemoryTests: XCTestCase {
@@ -20,7 +30,7 @@ final class KernelMemoryTests: XCTestCase {
     /// Un premier lancement : rien d'enregistré, donc la machine de référence.
     func testWithNothingRecordedAKernelGetsTheReferenceMachine() {
         XCTAssertEqual(
-            KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+            KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: folder.appendingPathComponent(KernelMemory.fileName).path),
@@ -33,7 +43,7 @@ final class KernelMemoryTests: XCTestCase {
         XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), 256 << 20)
         XCTAssertEqual(
             KernelMemory.size(forKernel: "autre-noyau", in: folder),
-            LinuxMachine.defaultRAMSize,
+            referenceMachine,
             "le réglage d'un noyau ne doit pas s'appliquer à un autre")
     }
 
@@ -41,8 +51,8 @@ final class KernelMemoryTests: XCTestCase {
     /// fichier qui ne contient que les écarts au défaut reste lisible.
     func testGoingBackToTheDefaultRemovesTheEntry() {
         KernelMemory.setSize(128 << 20, forKernel: "Image", in: folder)
-        KernelMemory.setSize(LinuxMachine.defaultRAMSize, forKernel: "Image", in: folder)
-        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+        KernelMemory.setSize(referenceMachine, forKernel: "Image", in: folder)
+        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: folder.appendingPathComponent(KernelMemory.fileName).path),
@@ -54,7 +64,7 @@ final class KernelMemoryTests: XCTestCase {
         KernelMemory.setSize(128 << 20, forKernel: "Image", in: folder)
         KernelMemory.setSize(256 << 20, forKernel: "garde", in: folder)
         KernelMemory.forget(kernel: "Image", in: folder)
-        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
         XCTAssertEqual(
             KernelMemory.size(forKernel: "garde", in: folder), 256 << 20,
             "oublier un noyau ne doit pas emporter les autres")
@@ -80,12 +90,12 @@ final class KernelMemoryTests: XCTestCase {
     /// provenance est un défaut, pas une donnée à encoder.
     func testAnUnofferedSizeIsRefusedOnBothSides() throws {
         KernelMemory.setSize(1_000_000, forKernel: "Image", in: folder)
-        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
 
         // Et écrit à la main dans le fichier, il est ignoré à la lecture.
         let url = folder.appendingPathComponent(KernelMemory.fileName)
         try Data(#"{"Image":1000000}"#.utf8).write(to: url)
-        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
     }
 
     /// Un fichier illisible se lit comme « aucun choix », pas comme une panne :
@@ -94,7 +104,7 @@ final class KernelMemoryTests: XCTestCase {
     func testAnUnreadableFileReadsAsNoChoices() throws {
         let url = folder.appendingPathComponent(KernelMemory.fileName)
         try Data("ceci n'est pas du JSON".utf8).write(to: url)
-        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.size(forKernel: "Image", in: folder), referenceMachine)
     }
 
     /// Le plafond **de repli** : un huitième de la mémoire physique, borné par
@@ -116,27 +126,32 @@ final class KernelMemoryTests: XCTestCase {
         // et c'est le plancher qui rattrape, à la machine de référence.
         XCTAssertEqual(
             KernelMemory.ceiling(availableBytes: nil, physicalMemory: 2048 << 20),
-            LinuxMachine.defaultRAMSize)
+            referenceMachine)
         // 6 Go — un téléphone récent : le huitième fait 768 Mo, et la règle de
         // l'appareil en laisserait 4 Gio, donc c'est bien le huitième qui
         // décide. Les deux bornes existent vraiment, chacune son tour.
         XCTAssertEqual(
             KernelMemory.ceiling(availableBytes: nil, physicalMemory: 6144 << 20), 768 << 20)
-        // 16 Go — un iPad : le huitième fait 2 Gio, exactement ce que le
-        // processeur 32 bits de l'invité peut adresser. Le plafond était écrit
-        // « un gibioctet » et coïncidait donc avec cette limite par accident,
-        // ce qui faisait passer une contrainte d'architecture pour un choix.
+        // 16 Go — un iPad : le huitième fait 2 Gio, et la règle de l'appareil
+        // en laisserait quatorze. C'est donc le huitième qui décide.
+        //
+        // **Ce test disait autrefois « la limite d'architecture tient ».** Sans
+        // cœur nommé, elle est maintenant celle de la machine PC — seize
+        // gibioctets — donc ce qu'on mesure ici est bien la fraction, et plus
+        // l'adressage du rv32 par accident. La borne d'architecture a son
+        // propre test, par cœur.
         XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16384 << 20), LinuxMachine.maximumRAMSize)
-        // 64 Go — un Mac : le huitième ferait 8 Gio, la limite tient.
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16384 << 20), 2048 << 20)
+        // 64 Go — un Mac : le huitième fait 8 Gio, et la règle de l'appareil
+        // en laisserait soixante-deux. Le huitième encore.
         XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 65536 << 20), LinuxMachine.maximumRAMSize)
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 65536 << 20), 8192 << 20)
         // Le plancher : un huitième de 256 Mo vaut 32 Mo, la référence gagne.
-        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 256 << 20), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 256 << 20), referenceMachine)
         // Et jamais nul, même sur une valeur absurde.
-        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 0), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 0), referenceMachine)
         // Monotone.
-        var previous: UInt32 = 0
+        var previous: UInt64 = 0
         for gigabytes in [1, 2, 3, 4, 6, 8, 12, 16, 32] {
             let limit = KernelMemory.ceiling(availableBytes: nil, physicalMemory: UInt64(gigabytes) << 30)
             XCTAssertGreaterThanOrEqual(limit, previous, "\(gigabytes) Go")
@@ -152,7 +167,7 @@ final class KernelMemoryTests: XCTestCase {
             let offered = KernelMemory.offered(ceiling: limit)
             XCTAssertFalse(offered.isEmpty, "\(physical >> 20) Mo physiques")
             XCTAssertTrue(
-                offered.contains(LinuxMachine.defaultRAMSize),
+                offered.contains(referenceMachine),
                 "la machine de référence doit toujours être proposée")
             for size in offered {
                 XCTAssertLessThanOrEqual(size, limit)
@@ -167,10 +182,13 @@ final class KernelMemoryTests: XCTestCase {
     /// encore au moment où le fichier arrive. Refuser sur le défaut refuserait
     /// un fichier importé exprès pour tourner plus grand.
     func testTheImportCeilingIsTheLargestMachineTheDeviceAllows() {
-        for limit in [64 << 20, 256 << 20, 1024 << 20] as [UInt32] {
+        for limit in [64 << 20, 256 << 20, 1024 << 20] as [UInt64] {
             XCTAssertEqual(
                 KernelMemory.maximumImportableImageBytes(ceiling: limit),
-                LinuxMachine.maximumKernelImageBytes(forRAMSize: limit),
+                // Le chargeur rv32 compte en trente-deux bits, et les trois
+                // plafonds de cette boucle y tiennent — c'est le sujet du test
+                // voisin que de vérifier ce qui arrive au-delà.
+                LinuxMachine.maximumKernelImageBytes(forRAMSize: UInt32(limit)),
                 "\(limit >> 20) Mo")
         }
         // Et il est strictement plus large que le plafond du défaut dès que
@@ -178,15 +196,21 @@ final class KernelMemoryTests: XCTestCase {
         // puisque le fichier serait refusé avant d'être réglé.
         XCTAssertGreaterThan(
             KernelMemory.maximumImportableImageBytes(ceiling: 256 << 20),
-            KernelMemory.maximumImportableImageBytes(ceiling: LinuxMachine.defaultRAMSize))
+            KernelMemory.maximumImportableImageBytes(ceiling: referenceMachine))
     }
 
     /// Et chaque taille offerte fait vraiment une machine qui démarre : une
     /// liste de nombres qu'aucune machine n'accepte serait un réglage décoratif.
     func testEveryOfferedSizeBuildsAMachineThatAcceptsAKernel() throws {
+        // **Ce test bâtit de vraies machines rv32**, dont la RAM se compte en
+        // trente-deux bits : le réglage, lui, en compte soixante-quatre depuis
+        // que la machine PC peut recevoir seize gibioctets. La conversion est
+        // sûre ici et seulement ici, parce que le plafond passé — un
+        // gibioctet — est bien en dessous de ce que le rv32 adresse.
         for size in KernelMemory.offered(ceiling: 1024 << 20) {
-            let machine = LinuxMachine(ramSize: size) { _ in }
-            XCTAssertEqual(machine.ramSize, size)
+            let ram = UInt32(size)
+            let machine = LinuxMachine(ramSize: ram) { _ in }
+            XCTAssertEqual(machine.ramSize, ram)
             XCTAssertGreaterThan(machine.maximumKernelImageBytes, 0, "\(size >> 20) Mo")
             XCTAssertNoThrow(
                 try machine.load(kernelImage: Data([0x13, 0x00, 0x00, 0x00])),
@@ -197,7 +221,7 @@ final class KernelMemoryTests: XCTestCase {
             let tree = try DeviceTree.read(machine.deviceTreeHandedToTheGuest)
             XCTAssertEqual(
                 tree.root.child("memory@80000000")?.property("reg"),
-                .cells([0, 0x8000_0000, 0, size - UInt32(RV32DeviceTree.memoryTopReserve)]),
+                .cells([0, 0x8000_0000, 0, ram - UInt32(RV32DeviceTree.memoryTopReserve)]),
                 "\(size >> 20) Mo : l'invité doit apprendre la taille choisie")
         }
     }
@@ -313,21 +337,37 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
         XCTAssertNoThrow(try atTheLimit.load(kernelImage: image))
     }
 
-    /// Rien de ce que l'application propose ne peut dépasser cette limite —
-    /// ni la liste des choix, ni le plafond de l'appareil le plus généreux.
-    func testNothingOfferedCanExceedIt() {
-        for size in KernelMemory.choices {
-            XCTAssertLessThanOrEqual(size, LinuxMachine.maximumRAMSize)
-        }
-        XCTAssertEqual(
-            KernelMemory.choices.last, LinuxMachine.maximumRAMSize,
-            "le dernier palier doit être la limite, sinon elle est inatteignable")
+    /// **Rien de ce qu'on propose à un noyau rv32 ne peut dépasser cette
+    /// limite** — et c'est maintenant une question de cœur, non de liste.
+    ///
+    /// Ce test disait autrefois « ni la liste des choix, ni le plafond de
+    /// l'appareil le plus généreux », et cette formulation était le défaut que
+    /// la tranche #283 corrige : elle imposait l'adressage du rv32 à *toutes*
+    /// les architectures, donc aussi à la machine PC, que rien n'y oblige. La
+    /// liste des paliers monte désormais à seize gibioctets ; ce qui doit
+    /// rester borné, c'est ce qu'on **offre à ce cœur-là**.
+    func testNothingOfferedToTheRISCVCanExceedIt() {
         for physical: UInt64 in [8 << 30, 16 << 30, 64 << 30, .max / 2] {
-            XCTAssertLessThanOrEqual(
-                KernelMemory.ceiling(availableBytes: nil, physicalMemory: physical),
-                LinuxMachine.maximumRAMSize,
-                "\(physical >> 30) Gio physiques")
+            let limit = KernelMemory.ceiling(
+                availableBytes: nil, physicalMemory: physical, core: .riscv32)
+            XCTAssertLessThanOrEqual(limit, riscvLimit, "\(physical >> 30) Gio physiques")
+            for size in KernelMemory.offered(ceiling: limit) {
+                XCTAssertLessThanOrEqual(
+                    size, riscvLimit,
+                    "\(KernelMemory.describe(size)) offert à un cœur rv32")
+            }
         }
+        // Et la limite reste **atteignable** : un appareil assez grand doit
+        // pouvoir donner à un noyau rv32 son dernier octet adressable, sinon
+        // le plafond serait décoratif.
+        XCTAssertEqual(
+            KernelMemory.ceiling(
+                availableBytes: 20 << 30, physicalMemory: 32 << 30, core: .riscv32),
+            riscvLimit,
+            "le dernier octet adressable doit rester atteignable")
+        XCTAssertTrue(
+            KernelMemory.choices.contains(riscvLimit),
+            "deux gibioctets doit rester un palier de la liste")
     }
 
     /// Et un appareil assez grand atteint vraiment les gigaoctets : c'est
@@ -335,7 +375,7 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
     func testALargeDeviceReachesGibibytes() {
         XCTAssertEqual(KernelMemory.ceiling(availableBytes: nil, physicalMemory: 8 << 30), 1024 << 20)
         XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16 << 30), LinuxMachine.maximumRAMSize)
+            KernelMemory.ceiling(availableBytes: nil, physicalMemory: 16 << 30), riscvLimit)
         XCTAssertTrue(
             KernelMemory.offered(ceiling: KernelMemory.ceiling(availableBytes: nil, physicalMemory: 8 << 30))
                 .contains(1024 << 20))
@@ -351,7 +391,7 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
         XCTAssertEqual(KernelMemory.describe(512 << 20), "512 Mo")
         XCTAssertEqual(KernelMemory.describe(1024 << 20), "1 Gio")
         XCTAssertEqual(KernelMemory.describe(1536 << 20), "1,5 Gio")
-        XCTAssertEqual(KernelMemory.describe(LinuxMachine.maximumRAMSize), "2 Gio")
+        XCTAssertEqual(KernelMemory.describe(riscvLimit), "2 Gio")
         for size in KernelMemory.choices {
             XCTAssertFalse(
                 KernelMemory.describe(size).hasPrefix("1024"),
@@ -368,8 +408,10 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
 /// `os_proc_available_memory()` rend ce que l'application peut encore allouer
 /// avant que le système ne la tue.
 final class SystemBudgetCeilingTests: XCTestCase {
-    private func ceiling(available: UInt64?, physical: UInt64 = 8 << 30) -> UInt32 {
-        KernelMemory.ceiling(availableBytes: available, physicalMemory: physical)
+    private func ceiling(available: UInt64?, physical: UInt64 = 8 << 30,
+                         core: GuestArchitecture.Core? = nil) -> UInt64 {
+        KernelMemory.ceiling(
+            availableBytes: available, physicalMemory: physical, core: core)
     }
 
     /// Ce que le système laisse, moins ce que l'application garde pour elle.
@@ -383,10 +425,25 @@ final class SystemBudgetCeilingTests: XCTestCase {
     }
 
     /// Un téléphone qui a beaucoup de place donne beaucoup — c'est le point de
-    /// la demande — mais jamais plus que ce que le processeur peut adresser.
+    /// la demande — mais jamais plus que ce que le **cœur nommé** peut
+    /// adresser.
+    ///
+    /// La borne était écrite `riscvLimit` sans cœur, donc elle s'appliquait
+    /// aussi à une machine PC : c'est le défaut de la tranche #283. Ici, avec
+    /// le cœur, elle redevient ce qu'elle dit être.
     func testAGenerousDeviceGivesGibibytesButNeverPastTheArchitecture() {
-        XCTAssertEqual(ceiling(available: 3 << 30), LinuxMachine.maximumRAMSize)
-        XCTAssertEqual(ceiling(available: 64 << 30), LinuxMachine.maximumRAMSize)
+        // Huit gibioctets physiques : la règle de l'appareil en laisse six, et
+        // le système dit ce qu'on lui fait dire. Un cœur rv32 s'arrête à son
+        // dernier octet adressable.
+        XCTAssertEqual(ceiling(available: 3 << 30, core: .riscv32), riscvLimit)
+        XCTAssertEqual(ceiling(available: 64 << 30, core: .riscv32), riscvLimit)
+        // La même place, à une machine PC : elle va plus haut, et c'est la
+        // règle de l'appareil — six gibioctets sur huit physiques — qui borne.
+        XCTAssertEqual(ceiling(available: 64 << 30, core: .x86_64), 6 << 30)
+        XCTAssertGreaterThan(
+            ceiling(available: 64 << 30, core: .x86_64),
+            ceiling(available: 64 << 30, core: .riscv32),
+            "sans quoi le plafond par cœur ne servirait à rien")
         XCTAssertGreaterThanOrEqual(ceiling(available: 2 << 30), 1024 << 20)
     }
 
@@ -394,11 +451,11 @@ final class SystemBudgetCeilingTests: XCTestCase {
     /// elle a toujours marché, et un plancher qui la rendrait impossible
     /// transformerait une contrainte passagère en panne permanente.
     func testATightDeviceStillOffersTheReferenceMachine() {
-        XCTAssertEqual(ceiling(available: 300 << 20), LinuxMachine.defaultRAMSize)
-        XCTAssertEqual(ceiling(available: 0), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(ceiling(available: 300 << 20), referenceMachine)
+        XCTAssertEqual(ceiling(available: 0), referenceMachine)
         // Et la soustraction ne déborde pas quand la réserve est plus grande
         // que ce qui reste.
-        XCTAssertEqual(ceiling(available: 1), LinuxMachine.defaultRAMSize)
+        XCTAssertEqual(ceiling(available: 1), referenceMachine)
     }
 
     /// Là où le système ne dit rien, la fraction reprend la main — et donne un
@@ -414,7 +471,7 @@ final class SystemBudgetCeilingTests: XCTestCase {
     /// La règle est **monotone** : plus le téléphone laisse de place, plus la
     /// machine peut être grande. C'est ce qu'un curseur promet en glissant.
     func testMoreRoomIsNeverLessMachine() {
-        var previous: UInt32 = 0
+        var previous: UInt64 = 0
         for megabytes in [0, 128, 256, 512, 1024, 2048, 4096, 8192] {
             let limit = ceiling(available: UInt64(megabytes) << 20)
             XCTAssertGreaterThanOrEqual(limit, previous, "\(megabytes) Mo disponibles")
@@ -451,11 +508,16 @@ final class DeviceMarginCeilingTests: XCTestCase {
     /// réponse du système qui décide, comme prévu.
     func testOnALargePhoneTheSystemAnswerIsTheBindingOne() {
         let physical: UInt64 = 12 << 30
-        // Le système dit 3 Gio libres : c'est lui qui borne, pas la règle.
+        // Le système dit 3 Gio libres : c'est lui qui borne, pas la règle des
+        // deux gibioctets — qui laisserait dix. Trois gibioctets moins les 256
+        // Mio que l'application garde pour elle, arrondis au palier du
+        // dessous : deux gibioctets. **Sans cœur nommé** le plafond
+        // d'architecture est le plus grand, donc c'est bien la réponse du
+        // système qu'on mesure ici, et plus l'adressage du rv32 par accident.
         XCTAssertEqual(
             KernelMemory.ceiling(availableBytes: 3 << 30, physicalMemory: physical),
-            LinuxMachine.maximumRAMSize,
-            "3 Gio moins la réserve dépasse encore la limite d'architecture")
+            (3 << 30) - KernelMemory.roomForTheAppItself,
+            "3 Gio moins la réserve de l'application")
         // Le système dit 600 Mo libres : lui encore, et bien plus bas.
         XCTAssertEqual(
             KernelMemory.ceiling(availableBytes: 600 << 20, physicalMemory: physical),
@@ -478,7 +540,7 @@ final class DeviceMarginCeilingTests: XCTestCase {
         for physical: UInt64 in [2 << 30, 1 << 30, 0] {
             XCTAssertEqual(
                 KernelMemory.ceiling(availableBytes: 8 << 30, physicalMemory: physical),
-                LinuxMachine.defaultRAMSize,
+                referenceMachine,
                 "\(physical >> 30) Gio physiques")
         }
     }
@@ -489,6 +551,129 @@ final class DeviceMarginCeilingTests: XCTestCase {
         // Un appareil de 4 Gio en laisse exactement 2 à la machine.
         XCTAssertEqual(
             KernelMemory.ceiling(availableBytes: 64 << 30, physicalMemory: 4 << 30),
-            LinuxMachine.maximumRAMSize)
+            riscvLimit)
+    }
+}
+
+/// **Le plafond est celui de l'architecture, pas celui du rv32.**
+///
+/// Demande de Maxime : « je souhaite 16go max mais l'utilisateur peut en
+/// choisir moins ». Avant cette tranche, `ceiling` bornait *tous* les noyaux à
+/// `riscvLimit` — deux gibioctets — qui n'est pas un goût mais
+/// un fait d'adressage rv32 : la RAM de l'invité commence à `0x8000_0000` et son
+/// hart adresse en trente-deux bits. Une machine x86-64 n'a pas cette
+/// contrainte, et se voyait pourtant refuser la même chose.
+///
+/// Le défaut se lisait dans la capture : une ligne `omarchy-4.0.2.iso`, dont le
+/// noyau interne est x86-64, tenue à 2 Gio.
+final class PerCoreMemoryCeilingTests: XCTestCase {
+    /// Chaque cœur dit son propre plafond, et les deux diffèrent.
+    func testEachCoreNamesItsOwnLimit() {
+        XCTAssertEqual(
+            GuestArchitecture.Core.riscv32.maximumRAMSize,
+            UInt64(LinuxMachine.maximumRAMSize),
+            "le rv32 est borné par son adressage, pas par un choix")
+        XCTAssertEqual(
+            GuestArchitecture.Core.x86_64.maximumRAMSize, 16 << 30,
+            "le plafond demandé pour la machine PC")
+        XCTAssertGreaterThan(
+            GuestArchitecture.Core.x86_64.maximumRAMSize,
+            GuestArchitecture.Core.riscv32.maximumRAMSize,
+            "sans quoi cette tranche n'a pas de sujet")
+    }
+
+    /// Sur un appareil assez grand, une machine PC dépasse les deux
+    /// gibioctets — et une machine rv32 non.
+    func testAGenerousDeviceReachesSixteenForThePCAndTwoForTheRISCV() {
+        // Assez grand pour que ni la règle de l'appareil ni celle du moment ne
+        // mordent : 32 Gio physiques, rien d'autre en mémoire.
+        let physical: UInt64 = 32 << 30
+        let pc = KernelMemory.ceiling(
+            availableBytes: 20 << 30, physicalMemory: physical, core: .x86_64)
+        XCTAssertEqual(pc, 16 << 30, "la machine PC doit atteindre le plafond demandé")
+
+        let riscv = KernelMemory.ceiling(
+            availableBytes: 20 << 30, physicalMemory: physical, core: .riscv32)
+        XCTAssertEqual(
+            riscv, UInt64(LinuxMachine.maximumRAMSize),
+            "le rv32 reste à son dernier octet adressable")
+    }
+
+    /// **Et l'utilisateur peut en choisir moins** : les paliers en dessous sont
+    /// tous offerts, pas seulement le plus grand.
+    func testTheUserCanPickLess() {
+        let offered = KernelMemory.offered(
+            ceiling: KernelMemory.ceiling(
+                availableBytes: 20 << 30, physicalMemory: 32 << 30, core: .x86_64))
+        for size: UInt64 in [64 << 20, 256 << 20, 1024 << 20, 2 << 30, 4 << 30, 8 << 30, 16 << 30] {
+            XCTAssertTrue(
+                offered.contains(size),
+                "\(KernelMemory.describe(size)) doit être proposable")
+        }
+        XCTAssertEqual(offered.first, KernelMemory.choices.first, "le plus petit palier reste")
+    }
+
+    /// Le téléphone borne avant l'architecture, et c'est lui qui gagne.
+    ///
+    /// La règle de Maxime — deux gibioctets de moins que l'appareil — plafonne
+    /// un iPhone de douze gibioctets à dix, donc **16 Gio n'est pas offert sur
+    /// le téléphone d'aujourd'hui**. C'est voulu : le réglage ne promet pas ce
+    /// que l'appareil ne peut pas tenir.
+    func testThePhoneStillBindsBeforeTheArchitecture() {
+        let twelve = KernelMemory.ceiling(
+            availableBytes: 11 << 30, physicalMemory: 12 << 30, core: .x86_64)
+        XCTAssertLessThanOrEqual(twelve, 10 << 30, "douze gibioctets en laissent dix")
+        XCTAssertFalse(
+            KernelMemory.offered(ceiling: twelve).contains(16 << 30),
+            "16 Gio ne doit pas être proposé là où il ne tient pas")
+        XCTAssertTrue(
+            KernelMemory.offered(ceiling: twelve).contains(8 << 30),
+            "mais 8 Gio, oui")
+    }
+
+    /// Un fichier que personne n'a reconnu garde la permission du dépôt —
+    /// `unknown` est une permission, pas un doute — donc le plus grand
+    /// plafond. C'est le démarrage qui borne ensuite, cœur connu.
+    func testAnUnknownCoreGetsTheLargestCeiling() {
+        let unknown = KernelMemory.ceiling(
+            availableBytes: 20 << 30, physicalMemory: 32 << 30, core: nil)
+        XCTAssertEqual(unknown, 16 << 30)
+    }
+
+    /// **La garde qui empêche le réglage de mentir**, et la machine qu'elle
+    /// protège, construite pour de vrai.
+    ///
+    /// Le premier jet de ce test était vide : il asserait
+    /// `min(réglage, plafond) <= plafond`, vrai quoi que fasse le démarrage —
+    /// une tautologie sur `min`, pas une mesure. Il passe maintenant par
+    /// `KernelMemory.askedOf`, la fonction que le démarrage appelle, **et** il
+    /// charge un noyau dans la machine qui en sort : c'est le refus
+    /// `ramSizeUnsupported` qu'on veut ne jamais voir, donc c'est lui qu'il
+    /// faut aller chercher.
+    func testEveryChoiceBuildsARISCVMachineThatAcceptsAKernel() throws {
+        let image = Data([0x13, 0x00, 0x00, 0x00])
+        for chosen in KernelMemory.choices {
+            let asked = KernelMemory.askedOf(.riscv32, setting: chosen)
+            XCTAssertLessThanOrEqual(
+                UInt64(asked), UInt64(LinuxMachine.maximumRAMSize),
+                "\(KernelMemory.describe(chosen)) : borné à l'adressage")
+            let machine = LinuxMachine(ramSize: UInt32(asked)) { _ in }
+            XCTAssertNoThrow(
+                try machine.load(kernelImage: image),
+                "\(KernelMemory.describe(chosen)) : la machine doit accepter un noyau")
+        }
+        // Et la machine PC reçoit ce qu'on lui a réglé, sans rabotage : sans
+        // cette moitié, borner tout le monde à deux gibioctets passerait.
+        XCTAssertEqual(
+            KernelMemory.askedOf(.x86_64, setting: 16 << 30), 16 << 30,
+            "une machine PC ne doit pas être bornée par l'adressage du rv32")
+        XCTAssertEqual(KernelMemory.askedOf(.x86_64, setting: 8 << 30), 8 << 30)
+    }
+
+    /// Les seize gibioctets se lisent en gibioctets, et pas en mébioctets.
+    func testSixteenGibibytesReadsAsSuch() {
+        XCTAssertEqual(KernelMemory.describe(16 << 30), "16 Gio")
+        XCTAssertEqual(KernelMemory.describe(8 << 30), "8 Gio")
+        XCTAssertEqual(KernelMemory.describe(2 << 30), "2 Gio")
     }
 }
