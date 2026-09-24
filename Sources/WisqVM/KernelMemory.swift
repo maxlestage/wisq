@@ -22,25 +22,31 @@ import os
 /// image, and the digest is only available after.
 public enum KernelMemory {
     /// The reference machine, and what a kernel with no choice recorded gets.
-    public static let defaultSize = LinuxMachine.defaultRAMSize
+    public static let defaultSize = UInt64(LinuxMachine.defaultRAMSize)
 
     /// The sizes offered, smallest first.
     ///
     /// Powers of two from a quarter of the reference machine to the largest
-    /// machine the architecture allows. 16 MB is below the reference and
-    /// deliberately kept: the kernels this emulator was built for are a few
-    /// megabytes, and someone measuring how little a guest needs is doing
-    /// something legitimate. The list is filtered by `ceiling(physicalMemory:)`
-    /// before it is shown.
+    /// machine any core allows. 16 MB is below the reference and deliberately
+    /// kept: the kernels this emulator was built for are a few megabytes, and
+    /// someone measuring how little a guest needs is doing something
+    /// legitimate. The list is filtered by `ceiling` before it is shown.
     ///
-    /// The top of the list is `LinuxMachine.maximumRAMSize`, which is not a
-    /// taste: guest RAM starts at `0x8000_0000` and the hart addresses memory
-    /// with thirty-two bits, so two gibibytes is the last byte it can own.
-    /// Verified against the real kernel — 2 GiB boots to its login prompt, in
-    /// about 120 million instructions instead of 46.
-    public static let choices: [UInt32] = [
+    /// **Le haut de la liste n'est plus le plafond du rv32.** Il l'a été, et
+    /// c'était un défaut : `LinuxMachine.maximumRAMSize` — deux gibioctets —
+    /// est un fait d'adressage rv32, et il bornait *aussi* les noyaux x86-64,
+    /// que rien n'y oblige. Une ligne `omarchy-4.0.2.iso`, dont le noyau
+    /// interne est x86-64, se voyait tenue à 2 Gio pour la contrainte d'une
+    /// autre architecture. Le haut de la liste est maintenant
+    /// `GuestArchitecture.Core.largestRAMSize`, et c'est `ceiling(…, core:)`
+    /// qui redescend au plafond du cœur qu'on lui nomme.
+    ///
+    /// Les deux gibioctets restent un palier, et vérifiés contre le vrai
+    /// noyau : 2 Gio démarre jusqu'à son invite de connexion, en cent vingt
+    /// millions d'instructions au lieu de quarante-six.
+    public static let choices: [UInt64] = [
         16 << 20, 32 << 20, 64 << 20, 128 << 20, 256 << 20, 512 << 20,
-        1024 << 20, LinuxMachine.maximumRAMSize,
+        1024 << 20, 2 << 30, 4 << 30, 8 << 30, 16 << 30,
     ]
 
     /// What the app must keep for itself, next to the guest's RAM.
@@ -91,7 +97,8 @@ public enum KernelMemory {
     /// fallback for the platforms that do not publish the first number —
     /// macOS and Linux — where an eighth of physical memory remains the best
     /// available guess.
-    public static func ceiling(availableBytes: UInt64?, physicalMemory: UInt64) -> UInt32 {
+    public static func ceiling(availableBytes: UInt64?, physicalMemory: UInt64,
+                               core: GuestArchitecture.Core? = nil) -> UInt64 {
         // What the moment allows: the system's own answer, less the room the
         // app needs beside the guest. Where nothing answers, the fraction.
         let now = availableBytes.map { $0 > roomForTheAppItself ? $0 - roomForTheAppItself : 0 }
@@ -100,9 +107,13 @@ public enum KernelMemory {
         // own memory. Subtracted with a floor, because a device smaller than
         // the margin would otherwise wrap.
         let device = physicalMemory > leftToTheDevice ? physicalMemory - leftToTheDevice : 0
-        // And what the architecture allows, which is not negotiable.
-        let capped = min(min(now, device), UInt64(LinuxMachine.maximumRAMSize))
-        return UInt32(max(capped, UInt64(defaultSize)))
+        // Et ce que l'architecture permet, qui ne se négocie pas — celle du
+        // cœur qu'on nous nomme, ou la plus généreuse quand personne n'a lu le
+        // fichier. Voir `Core.maximumRAMSize` : pour le rv32 c'est un fait
+        // d'adressage, pour la machine PC un choix.
+        let architecture = core?.maximumRAMSize ?? GuestArchitecture.Core.largestRAMSize
+        let capped = min(min(now, device), architecture)
+        return max(capped, defaultSize)
     }
 
     /// The same, from what this device says about itself right now.
@@ -111,10 +122,14 @@ public enum KernelMemory {
     /// other apps in memory is not the answer on a phone that just launched,
     /// and a setting that offered yesterday's number would be offering a
     /// crash.
-    public static var ceiling: UInt32 {
+    public static var ceiling: UInt64 { ceiling(for: nil) }
+
+    /// The same, for a named core. `nil` is "nobody read the file".
+    public static func ceiling(for core: GuestArchitecture.Core?) -> UInt64 {
         ceiling(
             availableBytes: systemAvailableMemory,
-            physicalMemory: ProcessInfo.processInfo.physicalMemory)
+            physicalMemory: ProcessInfo.processInfo.physicalMemory,
+            core: core)
     }
 
     /// How many bytes the system says this app may still allocate, or nil
@@ -136,7 +151,7 @@ public enum KernelMemory {
     }
 
     /// The sizes worth offering on this device: the choices up to the ceiling.
-    public static func offered(ceiling limit: UInt32) -> [UInt32] {
+    public static func offered(ceiling limit: UInt64) -> [UInt64] {
         choices.filter { $0 <= limit }
     }
 
@@ -151,8 +166,28 @@ public enum KernelMemory {
     /// The boot path asks a different and stricter question — does this image
     /// fit in the machine this kernel is set to run — and both are right for
     /// their moment.
-    public static func maximumImportableImageBytes(ceiling limit: UInt32 = ceiling) -> Int {
-        LinuxMachine.maximumKernelImageBytes(forRAMSize: limit)
+    public static func maximumImportableImageBytes(ceiling limit: UInt64 = ceiling) -> Int {
+        // Ce plafond-là est celui du chargeur rv32 : l'image est copiée dans
+        // la RAM de l'invité, sous l'arbre de périphériques, et cette RAM est
+        // adressée en trente-deux bits. Un plafond plus grand — celui d'une
+        // machine PC — n'a donc rien à y dire, et le borner ici évite de
+        // convertir une valeur qui ne tiendrait pas.
+        LinuxMachine.maximumKernelImageBytes(
+            forRAMSize: riscvMachine(holding: limit))
+    }
+
+    /// La machine rv32 qu'on obtient d'un réglage, dans le type que son
+    /// chargeur emploie.
+    ///
+    /// **Le chargeur rv32 compte en `UInt32`, et c'est un fait, pas une
+    /// étourderie** : la RAM de l'invité commence à `0x8000_0000` et son
+    /// processeur adresse en trente-deux bits. Depuis que le réglage compte en
+    /// `UInt64` pour atteindre les seize gibioctets de la machine PC, tout ce
+    /// qui parle au chargeur rv32 doit franchir cette marche — et la franchir
+    /// **au même endroit**, sinon le refus d'un noyau trop grand et la phrase
+    /// qui l'explique tombent sur deux nombres différents.
+    public static func riscvMachine(holding size: UInt64) -> UInt32 {
+        UInt32(clamping: askedOf(.riscv32, setting: size))
     }
 
     /// What a kernel is set to run with. `defaultSize` when nothing is
@@ -163,16 +198,40 @@ public enum KernelMemory {
     /// dies on launch because a file remembers a choice the hardware cannot
     /// meet is worse than one that quietly runs smaller.
     public static func size(forKernel kernel: String, in directory: URL? = nil,
-                            ceiling limit: UInt32 = ceiling) -> UInt32 {
+                            ceiling limit: UInt64 = ceiling) -> UInt64 {
         guard let recorded = recorded(in: directory)[kernel] else { return defaultSize }
         guard choices.contains(recorded) else { return defaultSize }
         return min(recorded, limit)
     }
 
+    /// **La mémoire qu'on demande vraiment à une machine de ce cœur.**
+    ///
+    /// Le réglage est une préférence ; l'adressage est un fait. Le curseur peut
+    /// porter seize gibioctets — c'est le plafond de la machine PC — et une
+    /// machine rv32 ne peut pas en recevoir plus de deux : sa RAM commence à
+    /// `0x8000_0000` et son hart adresse en trente-deux bits. Sans ce bornage,
+    /// un réglage pris au plus grand plafond se ferait refuser au chargement
+    /// (`LinuxMachineError.ramSizeUnsupported`) — sur un nombre que
+    /// l'application a elle-même proposé, ce qui n'est pas une faute de celui
+    /// qui l'a glissé.
+    ///
+    /// Ce n'est jamais visible pour un noyau reconnu : le curseur d'un noyau
+    /// rv32 ne propose pas au-delà de son plafond. Ça l'est pour un fichier que
+    /// personne n'a lu, qui part sur le cœur historique avec un réglage pris
+    /// sur le plus grand plafond.
+    ///
+    /// **Une fonction plutôt qu'un `min` en ligne**, et c'est le sujet : un
+    /// test sur `min(réglage, plafond) <= plafond` est une tautologie sur
+    /// `min`, vraie quoi que fasse le démarrage. Nommer l'acte le rend
+    /// mesurable — et saboter cette fonction fait bien tomber un test.
+    public static func askedOf(_ core: GuestArchitecture.Core, setting: UInt64) -> Int {
+        Int(min(setting, core.maximumRAMSize))
+    }
+
     /// Records a choice. Returns silently when the size is not one we offer:
     /// the caller is a picker built from `offered`, and a value from anywhere
     /// else is a bug rather than something to encode.
-    public static func setSize(_ size: UInt32, forKernel kernel: String,
+    public static func setSize(_ size: UInt64, forKernel kernel: String,
                                in directory: URL? = nil) {
         guard choices.contains(size) else { return }
         var all = recorded(in: directory)
@@ -205,7 +264,7 @@ public enum KernelMemory {
     /// mémoire" without a figure is a dead end — the reader cannot tell
     /// whether to close one app or change the setting.
     public static func notEnoughRoomExplanation(
-        requested: UInt32, ceiling limit: UInt32, name: String
+        requested: UInt64, ceiling limit: UInt64, name: String
     ) -> String {
         """
         \(name) est réglé sur \(describe(requested)) de mémoire, et ce \
@@ -223,7 +282,7 @@ public enum KernelMemory {
     /// how a setting that reaches a gibibyte gets mistaken for one that stops
     /// at megabytes. Powers of two, and the abbreviation says so, because the
     /// rest of wisq counts memory that way.
-    public static func describe(_ bytes: UInt32) -> String {
+    public static func describe(_ bytes: UInt64) -> String {
         guard bytes >= 1024 << 20 else { return "\(bytes >> 20) Mo" }
         let gibibytes = Double(bytes) / Double(1024 << 20)
         let format = gibibytes == gibibytes.rounded() ? "%.0f Gio" : "%.1f Gio"
@@ -250,15 +309,15 @@ public enum KernelMemory {
     /// recorded" rather than as a failure: the worst outcome is that every
     /// kernel runs at the reference size, which is what it did before this
     /// setting existed.
-    private static func recorded(in directory: URL?) -> [String: UInt32] {
+    private static func recorded(in directory: URL?) -> [String: UInt64] {
         guard let url = url(in: directory),
               let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([String: UInt32].self, from: data)
+              let decoded = try? JSONDecoder().decode([String: UInt64].self, from: data)
         else { return [:] }
         return decoded
     }
 
-    private static func write(_ all: [String: UInt32], in directory: URL?) {
+    private static func write(_ all: [String: UInt64], in directory: URL?) {
         guard let url = url(in: directory) else { return }
         if all.isEmpty {
             try? FileManager.default.removeItem(at: url)

@@ -17135,3 +17135,96 @@ vérifié par `diff` après chaque restauration.
 **Et la troisième fois pour le faux rouge de la garde de licence.** Un échec
 par dépassement de délai dans la suite complète ; seule, elle passe 16/16 et le
 script tourne en 0,13 s. C'est la charge, pas un défaut.
+
+## #283 — une tautologie sur `min`, écrite par moi, attrapée par le sabotage
+
+La demande était claire et la carte du code l'était moins. Trois mesures avant
+d'écrire une ligne, parce que chacune pouvait faire de la tranche autre chose.
+
+**La première a tué la solution évidente.** Monter le plafond à 16 Gio ne peut
+pas être une constante changée : `KernelMemory` compte en `UInt32`, et seize
+gibioctets n'y entrent pas. L'élargissement en `UInt64` n'est donc pas un
+nettoyage qu'on aurait pu remettre, c'est la tranche.
+
+**La deuxième a désigné le vrai défaut.** Le plafond de 2 Gio est un fait
+d'adressage rv32, et `ceiling` l'appliquait à tous les cœurs. En cherchant
+pourquoi la ligne `omarchy` — un ISO, donc x86-64 — le subissait, les deux
+lecteurs sont apparus : `IsoBoot.decide` lit le noyau *dedans* et répond
+x86-64 ; `KernelImageKind.identify` lit l'image et répond `.discImage`, sans
+architecture. Deux verdicts sur le même fichier, et c'est la liste qui avait
+tort.
+
+**La troisième a évité un faux refus.** J'allais plafonner la machine PC à
+3,5 Gio, parce que `attachDisplay` refuse au-delà de `displayBase`. Vérifié
+avant de l'écrire : **aucun chemin de l'application n'attache d'écran à cette
+machine** — seuls deux tests le font, et le bureau local passe ailleurs. Le
+plafond de 3,5 Gio aurait été une borne inventée sur une lecture rapide.
+
+**Et la faute, qui est à moi.** J'avais écrit une garde sur le bornage du
+démarrage :
+
+```swift
+let asked = min(chosen, GuestArchitecture.Core.riscv32.maximumRAMSize)
+XCTAssertLessThanOrEqual(asked, UInt64(LinuxMachine.maximumRAMSize))
+```
+
+C'est vrai quoi que fasse le démarrage. Ce n'est pas une assertion sur le
+programme, c'est une tautologie sur `min` — et elle avait l'air d'une garde. Je
+l'ai vue en cherchant quoi saboter : il n'y avait rien à saboter, parce qu'elle
+ne mesurait rien. Le bornage vit maintenant dans `KernelMemory.askedOf`, une
+fonction nommée que `WisqVM` expose et que le coureur Linux juge, et le test
+**construit la machine et y charge un noyau** — c'est le refus
+`ramSizeUnsupported` qu'on veut ne jamais voir, donc c'est lui qu'il faut aller
+chercher. Saboté dans les deux sens : bornage retiré → le rv32 refuse le noyau ;
+bornage écrasé au rv32 → la machine PC perd sa mémoire.
+
+Quatrième rencontre de cette faute dans ce dépôt, deuxième fois de suite sur du
+code que je venais d'écrire.
+
+**Et l'outillage, perdu deux fois.** Le conteneur a redémarré : la chaîne Swift
+et la bibliothèque du cœur Rust avaient disparu de `/tmp`. Refaites — trois
+gibioctets et une construction `cargo`. Au passage, `scripts/verify.sh` cite
+encore « swiftlint_linux.zip » dans son message d'aide : cette archive n'existe
+plus, elle s'appelle `swiftlint_linux_amd64.zip`, et le lien envoie vers un 404.
+Défaut nommé, d'un autre sujet, laissé hors de cette tranche.
+
+## #283 bis — trois lignes que seule la CI d'Apple pouvait refuser
+
+`verify.sh` avait rendu 0, les cinq sabotages étaient tombés, et la tranche
+était rouge. « App iOS » l'a dit en une ligne : *Cannot convert value of type
+'UInt64' to expected argument type 'UInt32'*, trois fois, dans
+`LocalVMModel.swift`.
+
+**Ce n'est pas une surprise, c'est la forme de ce dépôt.** `WisqUI` vit derrière
+`#if os(iOS)` : le coureur Linux ne le compile pas, donc aucune des vérifications
+locales — pas même celle qui construit tout le cœur en mode Swift 6 — ne pouvait
+voir ces appels. Élargir un type dans `WisqVM` est exactement l'espèce de
+changement dont les conséquences tombent toutes du côté que Linux ne lit pas, et
+je l'ai traitée comme une tranche ordinaire.
+
+Les trois appels franchissaient une marche sans le dire : le chargeur rv32 prend
+un `UInt32`, parce que la RAM de l'invité commence à `0x8000_0000` et que son
+processeur adresse en trente-deux bits. Le réglage, lui, compte désormais en
+`UInt64`. La marche existe donc pour de bon ; ce qui manquait, c'était un seul
+endroit où la franchir — `KernelMemory.riscvMachine(holding:)`, bâtie sur
+l'`askedOf` de #283 plutôt qu'à côté, et que `maximumImportableImageBytes`
+emploie maintenant au lieu de son écrêtage recopié.
+
+**Et le refus nommait la mauvaise machine.** L'un des trois appels passait le
+*réglage* à la phrase qui explique qu'un noyau est trop grand, alors que le
+refus, lui, se jugeait sur la machine écrêtée. Tant que les deux nombres étaient
+égaux, personne ne l'aurait vu ; depuis #283 ils divergent au-delà de deux
+gibioctets. La correction de type a donc emporté un défaut de sens que le
+compilateur, seul, avait signalé par accident.
+
+Trois tests neufs sur le coureur Linux — la marche n'écrête jamais au-delà de
+l'adressage, le plus gros noyau importable tient à l'octet près dans la machine
+qui le ferait tourner, un plafond de seize gibioctets n'agrandit pas la limite
+rv32 — et trois sabotages : troncature au lieu d'écrêtage (la machine tombe à
+zéro octet et le chargeur meurt), import jugé sur la machine de référence,
+écrêtage rabattu sur le défaut. Chacun sur le test prévu.
+
+**Ce que je retiens.** Un élargissement de type dans `WisqVM` n'est pas terminé
+quand `verify.sh` rend 0 : il faut relire à la main **chaque** appel venu de
+`WisqUI`, puisque rien d'ici ne le fera. Je l'ai fait après coup, sur les vingt
+appels que `grep` rend, et il n'en restait pas d'autre.

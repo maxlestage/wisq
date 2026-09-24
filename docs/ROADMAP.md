@@ -12645,3 +12645,61 @@ accusée à tort, et il faudrait alors apprendre les gardes à ce script.
 `site/tests/app-suites.test.ts`, sept tests, sur deux journaux **réels** : le
 relevé publié par « App iOS » pour #416, et la sortie d'un paquet de deux
 classes lancé sous la chaîne Swift du conteneur, qui établit le singulier.
+
+## #283 — le plafond de mémoire est celui de l'architecture, et il monte à 16 Gio
+
+Demande de Maxime, capture à l'appui : « je souhaite 16go max mais l'utilisateur
+peut en choisir moins ». Le curseur s'arrêtait à 2 Gio, et le texte de l'écran
+en donnait la raison — « l'émulateur ne peut pas dépasser 2 Gio — la mémoire de
+l'invité commence à 0x80000000 et son processeur adresse en 32 bits ».
+
+**Cette raison est vraie, et elle ne concernait pas la machine de la capture.**
+`0x8000_0000 + 2 Gio == 2^32` est le dernier octet qu'un hart rv32 peut posséder
+— un fait, pas un goût, et `LinuxMachine` refuse au-delà. Mais `ceiling` prenait
+ce nombre comme **le** plafond d'architecture, pour tous les cœurs, et le
+bornait donc aussi à un noyau x86-64, dont la RAM part de zéro et dont les
+registres font soixante-quatre bits.
+
+**Le défaut, et c'est la signature du dépôt — deux choses qui devraient
+s'accorder et divergent :**
+
+| qui lit | ce qu'il rend pour `omarchy-4.0.2.iso` |
+|---|---|
+| `IsoBoot.decide`, au démarrage | le `kind` du noyau **extrait** de l'image → `.x86_64` |
+| `KernelImageKind.identify`, dans la liste | l'image elle-même → `.discImage`, sans architecture |
+
+La ligne héritait donc du plafond rv32 pour la contrainte d'une architecture qui
+n'était pas la sienne.
+
+**Ce que la tranche pose :**
+
+- `GuestArchitecture.Core.maximumRAMSize` — un plafond par cœur. Pour le rv32
+  c'est le fait d'adressage ; pour la machine PC c'est le choix de Maxime, seize
+  gibioctets. Et `largestRAMSize`, écrit comme un maximum sur les cas plutôt
+  qu'en dur, pour ce qu'on offre à un fichier que personne n'a lu.
+- `KernelMemory` passe de `UInt32` à `UInt64`. **Obligatoire, pas cosmétique** :
+  seize gibioctets valent 17 179 869 184, et `UInt32` s'arrête à 4 294 967 295.
+- Les paliers gagnent 2, 4, 8 et 16 Gio. « L'utilisateur peut en choisir
+  moins » est tenu par un test qui les nomme tous.
+- `KernelMemory.askedOf(_:setting:)` — la mémoire qu'on **demande** vraiment à
+  une machine de ce cœur. Le démarrage passe par là.
+- Le curseur reçoit le cœur de sa ligne, lu de `kinds[kernel]?.core`, que la vue
+  tenait déjà.
+
+**Trois bornes subsistent, et il faut les dire :**
+
+| borne | valeur | conséquence |
+|---|---|---|
+| la règle de Maxime — deux gibioctets de moins que l'appareil | un iPhone de 12 Gio en autorise **10** | **16 Gio ne s'offre pas sur le téléphone d'aujourd'hui** ; il faudrait 18 Gio de RAM |
+| `os_proc_available_memory()` moins les 256 Mio de l'application | ce qui est libre à l'instant | c'est souvent elle qui mord la première |
+| `X86Machine.displayBase` (0xE000_0000) | 3,5 Gio **si un écran est attaché** | vérifié : aucun chemin de l'application n'attache d'écran à cette machine, seuls deux tests le font. Le refus `wouldOverlapMemory` reste pour le jour où l'un le fera |
+
+Le réglage ne promet donc pas ce que l'appareil ne peut pas tenir, et c'est
+voulu : sur un téléphone de douze gibioctets le curseur monte à 8 Gio, pas à 16.
+
+**Quatre tests dont la prémisse est remplacée, réorientés plutôt qu'affaiblis.**
+Ils affirmaient « rien de ce que l'application propose ne peut dépasser cette
+limite » sans nommer de cœur — la formulation qui *était* le défaut. Ce qui doit
+rester tenu, c'est que rien d'offert **à un cœur rv32** ne dépasse son
+adressage, et que cette limite reste **atteignable** : les deux sont maintenant
+des assertions séparées.
