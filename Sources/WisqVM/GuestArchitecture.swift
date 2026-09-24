@@ -101,6 +101,51 @@ public struct GuestArchitecture: Hashable, Sendable {
             }
         }
 
+        /// **La plus grande machine que ce cœur peut recevoir.**
+        ///
+        /// Deux nombres de natures différentes, et c'est le sujet : l'un est un
+        /// fait, l'autre un choix.
+        ///
+        /// Pour le rv32 c'est un **fait d'adressage**. La RAM de l'invité
+        /// commence à `0x8000_0000` et son hart adresse en trente-deux bits :
+        /// deux gibioctets tombent exactement sur le dernier octet possible,
+        /// `0x8000_0000 + 2 Gio == 2^32`. Un octet de plus n'a nulle part où
+        /// vivre, et `LinuxMachine` le refuse — mesuré : une machine de trois
+        /// gibioctets se chargeait sans se plaindre puis ne produisait rien.
+        ///
+        /// Pour la machine PC c'est un **choix**, celui de Maxime : seize
+        /// gibioctets. Rien dans le cœur x86-64 ne s'y oppose — sa RAM part de
+        /// zéro et ses registres font soixante-quatre bits. La seule borne
+        /// matérielle qui existe de ce côté est ailleurs et ne concerne pas ce
+        /// réglage : `X86Machine.attachDisplay` refuse au-delà de
+        /// `displayBase` (0xE000_0000), parce que le cadre s'y pose et que la
+        /// RAM le recouvrirait. Aucun chemin de l'application n'attache
+        /// d'écran à cette machine aujourd'hui — vérifié, seuls deux tests le
+        /// font — et ce refus-là reste là pour le jour où l'un le fera.
+        ///
+        /// **Ce plafond n'est pas ce que l'appareil offrira.** `KernelMemory`
+        /// prend le plus petit de celui-ci, de ce que le système dit libre, et
+        /// de la règle de Maxime — deux gibioctets de moins que la mémoire du
+        /// téléphone. Un iPhone de douze gibioctets en autorise donc dix, et
+        /// seize ne s'offre pas encore.
+        public var maximumRAMSize: UInt64 {
+            switch self {
+            case .riscv32: return UInt64(LinuxMachine.maximumRAMSize)
+            case .x86_64: return 16 << 30
+            }
+        }
+
+        /// Le plus grand plafond qu'un cœur de wisq accorde.
+        ///
+        /// Ce qu'on offre à un fichier dont personne n'a lu l'architecture.
+        /// `unknown` est une permission et non un doute — c'est déjà la règle
+        /// de `KernelImageKind` —, et c'est le démarrage qui borne pour de
+        /// vrai, cœur en main. Écrit comme un maximum sur les cas plutôt qu'en
+        /// dur : un troisième cœur l'élargirait sans qu'on y pense.
+        public static var largestRAMSize: UInt64 {
+            [Core.riscv32, .x86_64].map(\.maximumRAMSize).max() ?? 0
+        }
+
         // **Il y avait ici `availableInTheApp`**, et son absence est le sujet
         // de ce changement.
         //
