@@ -231,7 +231,11 @@ public final class LocalVMModel {
         // le plafond du téléphone, lui, ne change pas. Quand les deux ne se
         // rencontrent pas, on le dit au lieu de démarrer une machine trop
         // petite qui échouerait sans expliquer pourquoi.
-        var machineRAM = Int(ramSize)
+        // Le réglage est une préférence ; l'adressage est un fait. Le bornage
+        // vit dans `KernelMemory.askedOf`, qui dit pourquoi — et qui, vivant
+        // dans `WisqVM`, est jugé par un test sur le coureur qui ne coûte
+        // rien, ce que ce fichier ne peut pas être.
+        var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
         if core == .x86_64 {
             machineRAM = max(machineRAM, X86Machine.minimumRAMSize)
             if machineRAM > Int(roomNow) {
@@ -294,10 +298,16 @@ public final class LocalVMModel {
         if core == .riscv32,
             let size = try? FileManager.default.attributesOfItem(
             atPath: bootURL.path)[.size] as? Int,
-            size > LinuxMachine.maximumKernelImageBytes(forRAMSize: ramSize) {
+            size > LinuxMachine.maximumKernelImageBytes(
+                forRAMSize: KernelMemory.riscvMachine(holding: ramSize)) {
             _ = life.guestFinished()
+            // La machine que le noyau aura vraiment, pas le réglage : les deux
+            // ne coïncident plus depuis que le réglage peut monter au-delà de
+            // ce que le rv32 adresse, et annoncer le second ferait nommer au
+            // refus une machine sur laquelle il n'a rien jugé.
             finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent, ramSize: ramSize))
+                size: size, name: kernelURL.lastPathComponent,
+                ramSize: KernelMemory.riscvMachine(holding: ramSize)))
             self.machine = nil
             runFinished = nil
             return
@@ -752,7 +762,7 @@ public enum KernelLibrary {
                 throw KernelImportError.tooLarge(
                     LinuxMachine.tooLargeExplanation(
                         size: size, name: source.lastPathComponent,
-                        ramSize: KernelMemory.ceiling))
+                        ramSize: KernelMemory.riscvMachine(holding: KernelMemory.ceiling)))
             }
         }
         if FileManager.default.fileExists(atPath: destination.path) {
