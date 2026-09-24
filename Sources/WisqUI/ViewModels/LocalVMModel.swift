@@ -298,10 +298,16 @@ public final class LocalVMModel {
         if core == .riscv32,
             let size = try? FileManager.default.attributesOfItem(
             atPath: bootURL.path)[.size] as? Int,
-            size > LinuxMachine.maximumKernelImageBytes(forRAMSize: ramSize) {
+            size > LinuxMachine.maximumKernelImageBytes(
+                forRAMSize: KernelMemory.riscvMachine(holding: ramSize)) {
             _ = life.guestFinished()
+            // La machine que le noyau aura vraiment, pas le réglage : les deux
+            // ne coïncident plus depuis que le réglage peut monter au-delà de
+            // ce que le rv32 adresse, et annoncer le second ferait nommer au
+            // refus une machine sur laquelle il n'a rien jugé.
             finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent, ramSize: ramSize))
+                size: size, name: kernelURL.lastPathComponent,
+                ramSize: KernelMemory.riscvMachine(holding: ramSize)))
             self.machine = nil
             runFinished = nil
             return
@@ -756,7 +762,7 @@ public enum KernelLibrary {
                 throw KernelImportError.tooLarge(
                     LinuxMachine.tooLargeExplanation(
                         size: size, name: source.lastPathComponent,
-                        ramSize: KernelMemory.ceiling))
+                        ramSize: KernelMemory.riscvMachine(holding: KernelMemory.ceiling)))
             }
         }
         if FileManager.default.fileExists(atPath: destination.path) {

@@ -670,6 +670,55 @@ final class PerCoreMemoryCeilingTests: XCTestCase {
         XCTAssertEqual(KernelMemory.askedOf(.x86_64, setting: 8 << 30), 8 << 30)
     }
 
+    /// **La marche vers le chargeur rv32, qui compte en `UInt32`.**
+    ///
+    /// Ce n'est pas une étourderie de type : la RAM de l'invité commence à
+    /// `0x8000_0000` et son processeur adresse en trente-deux bits. Depuis que
+    /// le réglage compte en `UInt64`, tout ce qui parle à ce chargeur doit
+    /// franchir cette marche, et la franchir au même endroit — la CI d'Apple a
+    /// refusé trois appels qui ne la franchissaient pas, dans un fichier que
+    /// le coureur Linux ne compile jamais.
+    func testWhatCrossesIntoTheRISCVLoaderIsAlwaysWithinItsAddressing() throws {
+        let image = Data([0x13, 0x00, 0x00, 0x00])
+        for chosen in KernelMemory.choices + [16 << 30, UInt64.max] {
+            let ram = KernelMemory.riscvMachine(holding: chosen)
+            XCTAssertLessThanOrEqual(UInt64(ram), riscvLimit, KernelMemory.describe(chosen))
+            let machine = LinuxMachine(ramSize: ram) { _ in }
+            XCTAssertNoThrow(
+                try machine.load(kernelImage: image),
+                "\(KernelMemory.describe(chosen)) : la machine doit accepter un noyau")
+        }
+        // Et ce qui tient passe entier : la marche est un plafond, pas un rabot.
+        XCTAssertEqual(KernelMemory.riscvMachine(holding: 256 << 20), 256 << 20)
+        XCTAssertEqual(UInt64(KernelMemory.riscvMachine(holding: riscvLimit)), riscvLimit)
+    }
+
+    /// **Le plus gros noyau qu'on accepte d'importer tient dans la machine qui
+    /// le ferait tourner** — à l'octet près, des deux côtés.
+    func testTheLargestImportableImageFitsTheMachineThatWouldRunIt() throws {
+        let plafond: UInt64 = 64 << 20
+        let ram = KernelMemory.riscvMachine(holding: plafond)
+        let largest = KernelMemory.maximumImportableImageBytes(ceiling: plafond)
+        XCTAssertGreaterThan(largest, 0)
+        XCTAssertNoThrow(
+            try LinuxMachine(ramSize: ram) { _ in }
+                .load(kernelImage: Data(repeating: 0x13, count: largest)),
+            "ce que l'import accepte, la machine doit le charger")
+        XCTAssertThrowsError(
+            try LinuxMachine(ramSize: ram) { _ in }
+                .load(kernelImage: Data(repeating: 0x13, count: largest + 1)),
+            "un octet de plus et elle ne le peut plus : c'est bien la même limite")
+    }
+
+    /// Et au-delà de l'adressage rv32, la marche décide : un plafond de seize
+    /// gibioctets ne rend pas une image importable plus grande qu'à deux.
+    func testABiggerCeilingDoesNotGrowTheRISCVImportLimit() {
+        XCTAssertEqual(
+            KernelMemory.maximumImportableImageBytes(ceiling: 16 << 30),
+            KernelMemory.maximumImportableImageBytes(ceiling: riscvLimit))
+        XCTAssertGreaterThan(KernelMemory.maximumImportableImageBytes(ceiling: 16 << 30), 0)
+    }
+
     /// Les seize gibioctets se lisent en gibioctets, et pas en mébioctets.
     func testSixteenGibibytesReadsAsSuch() {
         XCTAssertEqual(KernelMemory.describe(16 << 30), "16 Gio")

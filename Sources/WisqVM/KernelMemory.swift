@@ -173,7 +173,21 @@ public enum KernelMemory {
         // machine PC — n'a donc rien à y dire, et le borner ici évite de
         // convertir une valeur qui ne tiendrait pas.
         LinuxMachine.maximumKernelImageBytes(
-            forRAMSize: UInt32(clamping: min(limit, UInt64(LinuxMachine.maximumRAMSize))))
+            forRAMSize: riscvMachine(holding: limit))
+    }
+
+    /// La machine rv32 qu'on obtient d'un réglage, dans le type que son
+    /// chargeur emploie.
+    ///
+    /// **Le chargeur rv32 compte en `UInt32`, et c'est un fait, pas une
+    /// étourderie** : la RAM de l'invité commence à `0x8000_0000` et son
+    /// processeur adresse en trente-deux bits. Depuis que le réglage compte en
+    /// `UInt64` pour atteindre les seize gibioctets de la machine PC, tout ce
+    /// qui parle au chargeur rv32 doit franchir cette marche — et la franchir
+    /// **au même endroit**, sinon le refus d'un noyau trop grand et la phrase
+    /// qui l'explique tombent sur deux nombres différents.
+    public static func riscvMachine(holding size: UInt64) -> UInt32 {
+        UInt32(clamping: askedOf(.riscv32, setting: size))
     }
 
     /// What a kernel is set to run with. `defaultSize` when nothing is
