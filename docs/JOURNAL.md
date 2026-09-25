@@ -17294,6 +17294,17 @@ universel macOS, donc `install-xcodegen.sh` ne sert à rien ici ; mais le paquet
 Swift se construit avec la chaîne du conteneur en deux minutes et demie, presets
 compris (SwiftPM les copie dans le bundle du module).
 
+**Et tout cela était déjà écrit.** Rectification, ajoutée après coup et qui est
+le vrai enseignement de cette moitié-là : #281 avait mesuré exactement ces
+quatre choses — XcodeGen construit depuis les sources en cent vingt-deux
+secondes, l'échec sans `$USER` qui sort en 1 **sans rien écrire**, le nom du
+dossier qui entre dans le projet, et la vérification bâclée qui compare le
+fichier commité avec lui-même. Son entrée au journal s'intitule « *« identique »
+ne veut rien dire si l'outil n'a rien écrit* ». Je l'ai refaite en entier, faute
+d'avoir relu ce fichier avant d'ouvrir la tranche — la première règle de la
+routine, pas la dernière. Ce qui suit est donc une redécouverte, pas une
+trouvaille, et le seul fait neuf est que je l'ai payée deux fois.
+
 **Le témoin d'abord, et il a failli mentir deux fois.** Avant de faire confiance
 à ce binaire, je l'ai fait engendrer sur `master`, où la réponse doit être
 « aucun écart ».
@@ -17320,3 +17331,42 @@ s'accorder — et elle ne demande pas XcodeGen : lire les `sources` de la spec e
 les `PBXFileReference` du projet suffirait à attraper exactement ce rouge-ci,
 sur le coureur Linux, avant la CI. Proposé plutôt que fait : c'est un troisième
 sujet dans une tranche qui en a déjà deux.
+
+## #285 — la garde qui manquait, et la leçon qu'il a fallu payer deux fois
+
+Tranche ouverte sur un défaut nommé la veille et laissé hors de #284 : rien en
+local ne confronte les sources déclarées par `project.yml` aux références de
+`project.pbxproj`. Elle a commencé par me rendre une leçon plutôt qu'un défaut.
+
+**Relire la ROADMAP avant d'ouvrir une tranche n'est pas une politesse.** Je
+suis allé y chercher s'il existait un précédent à cette garde. Ce que j'y ai
+trouvé est #281, qui avait déjà mesuré tout ce que j'avais « découvert »
+quelques heures plus tôt sur XcodeGen : la construction depuis les sources en
+cent vingt-deux secondes, l'échec sans `$USER` **sans rien écrire**, le nom du
+dossier qui entre dans le projet, et — le plus cuisant — la même vérification
+bâclée, sous un titre qui la nomme : « *« identique » ne veut rien dire si
+l'outil n'a rien écrit* ». J'ai refait ces quatre pas un par un, en les prenant
+pour des trouvailles. L'entrée de #284 bis a été corrigée pour le dire.
+
+**Et je l'ai refait une troisième fois dans la même heure.** Pour prouver que la
+nouvelle garde attrape le vrai rouge, j'ai cloné le dépôt et demandé le commit
+d'avant la régénération. Le `checkout` a échoué — la branche avait été
+réécrite, l'objet n'était pas dans le clone — et la garde, lancée sur `master`,
+a rendu 0. J'allais lire ce 0 comme « elle n'attrape rien ». Un code de sortie
+qui répond à une question qu'on n'a pas posée. État refait autrement, à partir
+du projet d'avant et du fichier de test présent : elle refuse, nomme
+`IsoDeletionTests.swift`, et dit de régénérer — le rouge de la CI, en un
+dixième de seconde et sans XcodeGen.
+
+**Ce que la garde compare, et ce qu'elle avoue.** Le projet référence ses
+fichiers par nom de base ; reconstruire les chemins demanderait un analyseur de
+pbxproj. La comparaison porte donc sur les noms, dans les deux sens — un fichier
+ajouté manque au projet, un fichier supprimé y traîne — et **deux fichiers
+déclarés qui porteraient le même nom sont refusés**, parce que la question
+n'aurait plus de réponse unique. C'est la seule façon trouvée pour qu'elle ne
+s'affaiblisse pas en silence le jour où le dépôt grandit.
+
+Six sabotages, six chutes, chacune sur le test prévu : les deux sens de la
+comparaison, la détection des doublons, le nom du bundle lu de la spec plutôt
+qu'écrit en dur, la racine absente, la spec sans `sources:` qui s'acquitterait
+toute seule.

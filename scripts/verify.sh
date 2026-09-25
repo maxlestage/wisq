@@ -29,6 +29,15 @@ echo "==> Licence (rien ne doit en annoncer une)"
 echo "==> Projet Xcode (la CI compare ce qu'elle engendre)"
 ./scripts/check-generated-project.sh > /dev/null
 
+# Et le projet lui-même, pas seulement la règle qui l'encadre. Le voisin
+# ci-dessus vérifie que tout workflow régénérant compare aussi ; il ne
+# régénère rien, donc un `project.pbxproj` périmé n'était visible que de la CI
+# d'Apple. Un fichier de test ajouté à l'application a coûté ce cycle-là le
+# 25 septembre. La comparaison ne demande pas XcodeGen : les noms sous les
+# `sources:` de la spec contre les `path = …` du projet.
+echo "==> Sources du projet (la spec et le projet engendré s'accordent)"
+./scripts/check-project-sources.sh > /dev/null
+
 # CI runs this one and this script did not — the third time this file has had
 # exactly that bug, after SwiftLint and after the Rust gates, both recorded
 # above. It takes two seconds and it guards the one failure nobody here can
