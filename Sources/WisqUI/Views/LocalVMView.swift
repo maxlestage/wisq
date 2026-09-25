@@ -82,16 +82,21 @@ struct LocalVMListView: View {
                             }
                         }
                     }
-                    .swipeActions {
-                        Button(role: .destructive) {
-                            KernelLibrary.delete(kernel)
-                            reloadLibrary()
-                            note = nil
-                            storage = KernelLibrary.storageReport()
-                        } label: {
-                            Label("Supprimer", systemImage: "trash")
-                        }
+                }
+                // **La suppression était là, et elle ne se trouvait pas.**
+                // C'était un `.swipeActions` sur la ligne ; or la ligne finit
+                // par le curseur de mémoire, qui prend cent trente points à
+                // droite — là même où un balayage vers la gauche commence — et
+                // qui avale les glissements horizontaux. Un `.onDelete` garde
+                // le balayage et ajoute le bouton « Modifier » de la barre :
+                // un chemin visible, qui ne dispute rien au curseur.
+                .onDelete { positions in
+                    for kernel in positions.map({ kernels[$0] }) {
+                        KernelLibrary.delete(kernel)
                     }
+                    reloadLibrary()
+                    note = nil
+                    storage = KernelLibrary.storageReport()
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
@@ -118,6 +123,11 @@ struct LocalVMListView: View {
                             "dont machines sauvegardées",
                             value: LocalStorage.describe(bytes: storage.savedMachineBytes))
                     }
+                    if storage.unpackedIsoBytes > 0 {
+                        LabeledContent(
+                            "dont image d'installation déballée",
+                            value: LocalStorage.describe(bytes: storage.unpackedIsoBytes))
+                    }
                     if storage.orphanedCount > 0 {
                         Button {
                             let freed = KernelLibrary.freeOrphanedMachines()
@@ -134,7 +144,7 @@ struct LocalVMListView: View {
                 } header: {
                     Text("Stockage")
                 } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension.")
+                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension. Une image d'installation laisse en plus son noyau et son initramfs déballés à côté : ils repartent avec elle quand vous la supprimez, et le démarrage suivant les ressort de toute façon.")
                 }
             }
 
@@ -162,6 +172,14 @@ struct LocalVMListView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Fermer", action: onClose)
+            }
+            // Le chemin visible vers la suppression. Il ne s'affiche que
+            // lorsqu'il y a quelque chose à supprimer : un « Modifier » sur
+            // une liste vide n'ouvre que du vide.
+            if !kernels.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    EditButton()
+                }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button {

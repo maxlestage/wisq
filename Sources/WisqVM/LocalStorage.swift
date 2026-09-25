@@ -82,14 +82,30 @@ public enum LocalStorage {
         public let orphanedBytes: Int
         public let orphanedCount: Int
 
+        /// Ce qu'une image d'installation a laissé déballé.
+        ///
+        /// Un noyau et un initramfs sortis de l'ISO au dernier démarrage. Ils
+        /// ne sont sous aucune entrée, et ce n'est pas un oubli : le dossier
+        /// est partagé, le démarrage suivant le refait à neuf pour une autre
+        /// image, et rien dedans ne dit de laquelle il vient. L'attribuer à un
+        /// noyau serait une attribution inventée.
+        ///
+        /// Ils étaient invisibles jusqu'ici, et une image qu'on supprimait les
+        /// laissait derrière elle : des dizaines de mébioctets que le relevé
+        /// ne montrait pas et qu'aucun geste ne pouvait reprendre.
+        public let unpackedIsoBytes: Int
+
         /// Nothing at all — what a first launch has, and what a view can hold
         /// before it has looked.
         public static let empty = Report(entries: [], orphanedBytes: 0, orphanedCount: 0)
 
-        public init(entries: [Entry], orphanedBytes: Int, orphanedCount: Int) {
+        public init(
+            entries: [Entry], orphanedBytes: Int, orphanedCount: Int, unpackedIsoBytes: Int = 0
+        ) {
             self.entries = entries
             self.orphanedBytes = orphanedBytes
             self.orphanedCount = orphanedCount
+            self.unpackedIsoBytes = unpackedIsoBytes
         }
 
         /// The entry for one kernel, or nil when the library has none.
@@ -97,7 +113,9 @@ public enum LocalStorage {
             entries.first { $0.kernel == kernel }
         }
 
-        public var total: Int { entries.reduce(orphanedBytes) { $0 + $1.total } }
+        public var total: Int {
+            entries.reduce(orphanedBytes + unpackedIsoBytes) { $0 + $1.total }
+        }
         public var savedMachineBytes: Int {
             entries.reduce(orphanedBytes) { $0 + $1.savedMachineBytes }
         }
@@ -107,7 +125,9 @@ public enum LocalStorage {
     ///
     /// `writes` is where the disk overlays live; nil counts none, which is
     /// what a library with no disk has.
-    public static func report(kernels: URL, machines: URL, writes: URL? = nil) -> Report {
+    public static func report(
+        kernels: URL, machines: URL, writes: URL? = nil, unpackedIso: URL? = nil
+    ) -> Report {
         let manager = FileManager.default
         let names = (try? manager.contentsOfDirectory(atPath: kernels.path))?.sorted() ?? []
 
@@ -134,7 +154,8 @@ public enum LocalStorage {
                 $0.total == $1.total ? $0.kernel < $1.kernel : $0.total > $1.total
             },
             orphanedBytes: orphans.reduce(0) { $0 + size(of: machines.appendingPathComponent($1)) },
-            orphanedCount: orphans.count)
+            orphanedCount: orphans.count,
+            unpackedIsoBytes: bytes(inFolder: unpackedIso))
     }
 
     /// Removes the machines saved from kernels the library no longer holds,
@@ -154,6 +175,58 @@ public enum LocalStorage {
             try? manager.removeItem(at: url)
         }
         return freed
+    }
+
+    /// Où une image d'installation est déballée, à partir du stockage que
+    /// l'application connaît.
+    ///
+    /// **Ici et pas dans `IsoBoot`**, bien que ce soit lui qui écrive dedans.
+    /// `IsoBoot` vit dans `WisqVMRust`, que ce module-ci ne voit pas, et c'est
+    /// ce relevé qui doit compter le dossier. Deux littéraux « iso » dans deux
+    /// modules seraient deux vérités, et celle qui compte se serait tue le
+    /// jour où celle qui écrit aurait changé : `IsoBoot.folder(in:)` appelle
+    /// celle-ci.
+    ///
+    /// `nil` veut dire « l'endroit habituel », comme partout ailleurs ici.
+    public static func unpackedIsoFolder(in storage: URL?) -> URL? {
+        guard let base = storage ?? (try? SuspendedMachine.directory()) else { return nil }
+        return base.appendingPathComponent("iso", isDirectory: true)
+    }
+
+    /// Jette ce qu'une image a laissé déballé, et dit ce que ça a rendu.
+    ///
+    /// **Rien n'est perdu.** `IsoBoot.unpack` efface ce dossier avant d'écrire,
+    /// à chaque démarrage d'image : il ne porte jamais que le déballage du
+    /// dernier amorçage, et le prochain le refera. Ce qui part ici aurait été
+    /// réécrit de toute façon.
+    @discardableResult
+    public static func discardUnpackedIso(_ folder: URL?) -> Int {
+        guard let folder else { return 0 }
+        let freed = bytes(inFolder: folder)
+        try? FileManager.default.removeItem(at: folder)
+        return freed
+    }
+
+    /// Ce que porte un dossier, fichier par fichier.
+    ///
+    /// Les dossiers eux-mêmes ne comptent pas : un répertoire a une taille sur
+    /// le disque — quatre kibioctets ici, soixante-quatre octets sur APFS — et
+    /// l'additionner ferait dire au relevé deux nombres différents selon la
+    /// plateforme pour les mêmes fichiers.
+    static func bytes(inFolder folder: URL?) -> Int {
+        guard let folder,
+              let walk = FileManager.default.enumerator(atPath: folder.path)
+        else { return 0 }
+        var total = 0
+        for case let entry as String in walk {
+            let url = folder.appendingPathComponent(entry)
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  let size = attributes[.size] as? Int
+            else { continue }
+            total += size
+        }
+        return total
     }
 
     /// A file's size, or zero when it has none to report.

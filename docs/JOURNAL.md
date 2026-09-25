@@ -17228,3 +17228,95 @@ zéro octet et le chargeur meurt), import jugé sur la machine de référence,
 quand `verify.sh` rend 0 : il faut relire à la main **chaque** appel venu de
 `WisqUI`, puisque rien d'ici ne le fera. Je l'ai fait après coup, sur les vingt
 appels que `grep` rend, et il n'en restait pas d'autre.
+
+## #284 — le dossier partagé que personne ne possédait
+
+« Il faut la possibilité de supprimer l'iso. » Le geste existait déjà. C'est en
+cherchant *pourquoi* il ne se trouvait pas que la vraie moitié est apparue, et
+elle n'était pas celle qu'on m'avait nommée.
+
+**Ce que la lecture a rendu.** `IsoBoot.unpack` efface son dossier et le refait
+à chaque démarrage d'image. Conclusion facile : c'est un cache, donc il n'y a
+rien à faire. C'est faux dans un sens précis — il n'est refait **que** si l'on
+redémarre une image. Supprimez la dernière ISO de la bibliothèque et son noyau
+déballé reste là pour toujours, sans plus rien pour le réécrire ni personne pour
+le nommer. Des octets à la fois invisibles et indélébiles.
+
+**Le dossier n'appartient à personne, et c'est structurel.** Il est unique pour
+toute la bibliothèque : rien dedans ne dit de quelle image il vient. Il ne peut
+donc pas être compté sous une entrée sans inventer une attribution, et il ne
+peut pas être effacé « avec son image » sans admettre qu'on efface parfois celui
+d'une autre. Les deux choix sont dans le code, écrits comme tels : un champ à
+part dans le relevé, et une suppression qui assume d'emporter le déballage de la
+dernière image démarrée, puisque le prochain démarrage le refera.
+
+**La garde qui ne pouvait pas tomber.** `bytes(inFolder:)` saute les
+répertoires, parce qu'un répertoire a une taille sur le disque — 4096 octets
+ici, 64 sur APFS — et que l'additionner ferait dire au relevé deux nombres
+différents selon la plateforme. J'avais écrit la garde, puis cherché quoi
+saboter : rien ne tombait, parce qu'aucun test n'avait de sous-dossier. Un test
+de plus, avec un `efi/BOOTX64` dedans ; le sabotage rend alors 11 596 au lieu de
+7500, soit exactement les deux répertoires du conteneur. La garde existait
+avant ; ce qui manquait, c'était de quoi la faire échouer.
+
+**Deux modules, une seule vérité.** Le nom du dossier vivait chez celui qui
+écrit (`IsoBoot`, `WisqVMRust`) et il fallait qu'il serve à celui qui compte
+(`LocalStorage`, `WisqVM`) — or le second ne voit pas le premier. Le nom est
+donc descendu dans `WisqVM`, et `IsoBoot.folder(in:)` l'appelle. Le test qui
+tient cela compare les deux portes ; il attrape la divergence, pas la
+duplication, et c'est la divergence qui fait le mal.
+
+**Ce qui n'est pas mesuré ici, et je le nomme.** Le passage de `.swipeActions` à
+`.onDelete` + « Modifier » repose sur un raisonnement — un `Slider` de cent
+trente points à droite de la ligne avale le balayage qui commence là — que rien
+dans ce dépôt ne peut exécuter. La CI d'Apple compile la vue ; aucune suite ne
+la touche. Les six sabotages de cette tranche portent tous sur la moitié
+stockage ; la moitié geste n'en a aucun, et dire « vérifié » de l'ensemble
+serait une phrase de trop.
+
+## #284 bis — le projet Xcode engendré, et une garde qui ne regarde pas ce qu'elle nomme
+
+Ajouter un fichier de test à l'application change le projet Xcode engendré.
+`Wisq ‣.xcodeproj/project.pbxproj` est commité, la CI le régénère et compare :
+« les fichiers engendrés par xcodegen ne sont pas ceux du dépôt ». Rouge mérité.
+
+**Ce que `verify.sh` en avait dit : rien, et pour une raison qui vaut d'être
+écrite.** Son étape « Projet Xcode » lance `check-generated-project.sh`, qui
+vérifie que **tout workflow régénérant compare aussi** — une garde sur la garde.
+Elle ne régénère pas elle-même et ne compare rien. Donc aucune vérification
+locale ne peut voir un `project.pbxproj` périmé : la seule qui le voie est la
+CI. Ce n'est pas un bogue du script, c'est le sujet qu'il traite ; mais son nom
+dans le relevé de `verify.sh` — « Projet Xcode (la CI compare ce qu'elle
+engendre) » — se lit comme une vérification du projet, et je l'ai lu ainsi.
+
+**XcodeGen tourne sur Linux, et il engendre pareil.** Le binaire publié est un
+universel macOS, donc `install-xcodegen.sh` ne sert à rien ici ; mais le paquet
+Swift se construit avec la chaîne du conteneur en deux minutes et demie, presets
+compris (SwiftPM les copie dans le bundle du module).
+
+**Le témoin d'abord, et il a failli mentir deux fois.** Avant de faire confiance
+à ce binaire, je l'ai fait engendrer sur `master`, où la réponse doit être
+« aucun écart ».
+
+- Premier essai : « IDENTIQUE ». Faux. `xcodegen` avait rendu 1 —
+  « Couldn't find current username », `$USER` est vide dans ce conteneur — donc
+  rien n'avait été écrit, et l'absence d'écart était l'absence de génération.
+  C'est la forme exacte du piège que ce dépôt nomme depuis #261, rencontré ici
+  pour la huitième fois : conclure d'une absence sans vérifier qu'on a bien
+  regardé.
+- Deuxième essai, avec `USER` posé : écart réel, mais dû au clone. Le nom du
+  répertoire entre dans le projet — le groupe « Packages » porte le nom du
+  dossier —, et `App/Assets.xcassets`, engendré par `build-app-icon.sh` et non
+  suivi, manquait. Un clone dans un dossier nommé `wisq` avec les assets
+  recopiés : **aucun écart**.
+
+Le témoin valant quelque chose, la régénération dans le dépôt rend quatre
+insertions, toutes `IsoDeletionTests`, sans un octet d'en-tête déplacé.
+
+**Le défaut nommé, laissé hors de cette tranche.** Rien en local ne confronte
+les fichiers sources de `project.yml` à ce que `project.pbxproj` référence.
+C'est pourtant la comparaison habituelle de ce dépôt — deux listes qui devraient
+s'accorder — et elle ne demande pas XcodeGen : lire les `sources` de la spec et
+les `PBXFileReference` du projet suffirait à attraper exactement ce rouge-ci,
+sur le coureur Linux, avant la CI. Proposé plutôt que fait : c'est un troisième
+sujet dans une tranche qui en a déjà deux.

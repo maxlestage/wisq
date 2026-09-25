@@ -124,7 +124,7 @@ final class IsoBootTests: XCTestCase {
         case .failure(let refusal):
             XCTAssertEqual(refusal, .cannotExtractKernel("/boot/vmlinuz-virt"))
         }
-        XCTAssertEqual(onDisk(), [])
+        XCTAssertEqual(onDisk(), [String]())
     }
 
     /// Ce qui n'est pas une image, et ce qui n'en porte aucune recette,
@@ -211,6 +211,37 @@ final class IsoBootTests: XCTestCase {
 
         let none = IsoBoot.explanation(.noRecipe, name: "quelconque.iso")
         XCTAssertTrue(none.contains("quelconque.iso"), none)
+    }
+
+    /// **Ce que le déballage écrit est exactement ce que le relevé compte, et
+    /// exactement ce que la suppression reprend.**
+    ///
+    /// Les trois vivent dans deux modules : `IsoBoot` écrit, `LocalStorage`
+    /// compte et jette. Aucun des deux ne peut voir l'autre se tromper, et le
+    /// défaut qui a ouvert cette tranche était précisément là — l'image
+    /// supprimée laissait derrière elle un noyau et un initramfs que rien
+    /// n'énumérait et que rien n'effaçait.
+    func testWhatTheUnpackingWritesIsWhatTheReportCountsAndTheDeletionTakesBack() throws {
+        let image = try IsoGravure().write()
+        defer { try? FileManager.default.removeItem(at: image) }
+        _ = try plan(IsoBoot.unpack(image, into: folder, ceiling: 1 << 20))
+
+        // Une bibliothèque vide à côté : ce qu'on mesure est le déballage seul.
+        let library = folder.deletingLastPathComponent()
+            .appendingPathComponent("bibliotheque-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: library) }
+
+        let written = IsoGravure.kernel.count + IsoGravure.initramfs.count
+        let report = LocalStorage.report(
+            kernels: library, machines: library, unpackedIso: folder)
+        XCTAssertEqual(report.unpackedIsoBytes, written)
+
+        XCTAssertEqual(LocalStorage.discardUnpackedIso(folder), written)
+        XCTAssertEqual(onDisk(), [])
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: folder.path),
+            "le dossier est parti avec ce qu'il portait, pas seulement vidé")
     }
 }
 
@@ -439,6 +470,17 @@ final class IsoBootFolderTests: XCTestCase {
             XCTAssertEqual(
                 boot.kernel.deletingLastPathComponent().lastPathComponent, "iso")
         }
+    }
+
+    /// **Les deux modules nomment le même dossier**, parce que c'est la même
+    /// fonction qui le donne. Un second littéral « iso » dans `IsoBoot` serait
+    /// une deuxième vérité, et celle qui compte les octets se tairait le jour
+    /// où celle qui les écrit changerait.
+    func testTheUnpackingFolderIsTheOneTheReportLooksAt() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-base-\(UUID().uuidString)", isDirectory: true)
+        XCTAssertEqual(IsoBoot.folder(in: base), LocalStorage.unpackedIsoFolder(in: base))
+        XCTAssertEqual(IsoBoot.folder(in: nil), LocalStorage.unpackedIsoFolder(in: nil))
     }
 }
 

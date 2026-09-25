@@ -782,7 +782,8 @@ public enum KernelLibrary {
               let machines = try? SuspendedMachine.directory()
         else { return .empty }
         return LocalStorage.report(
-            kernels: kernels, machines: machines, writes: try? LocalDisk.writesDirectory())
+            kernels: kernels, machines: machines, writes: try? LocalDisk.writesDirectory(),
+            unpackedIso: LocalStorage.unpackedIsoFolder(in: machines))
     }
 
     /// Takes back the space held by machines saved from kernels that are no
@@ -797,11 +798,13 @@ public enum KernelLibrary {
 
     /// Removes a kernel, and everything the app remembered about it.
     ///
-    /// Quatre choses, pas une : le fichier, la mémoire qu'il était réglé à
-    /// prendre, le disque qu'on lui avait donné, et toute machine sauvegardée
-    /// à partir de lui. Sans les trois dernières, un fichier réimporté sous le
-    /// même nom hériterait en silence de réglages que son propriétaire a
-    /// supprimés, et un instantané resterait là que plus personne ne lira.
+    /// Cinq choses, pas une : le fichier, la mémoire qu'il était réglé à
+    /// prendre, le disque qu'on lui avait donné, toute machine sauvegardée à
+    /// partir de lui, et — si c'était une image d'installation — ce qu'elle
+    /// avait laissé déballé. Sans les quatre dernières, un fichier réimporté
+    /// sous le même nom hériterait en silence de réglages que son propriétaire
+    /// a supprimés, un instantané resterait là que plus personne ne lira, et
+    /// une image emporterait son nom en laissant ses octets.
     ///
     /// **Et le fichier supprimé pouvait être le disque d'un autre.** On oublie
     /// donc aussi ce nom-là partout où il servait de disque — mais **pas** les
@@ -809,7 +812,26 @@ public enum KernelLibrary {
     /// du disque, pas son chemin, et il reste donc parfaitement reprenable.
     public static func delete(_ url: URL) {
         let name = url.lastPathComponent
+        // **Une image d'installation emporte son déballage.** Le noyau et
+        // l'initramfs qu'elle avait laissés dans `iso/` n'appartiennent à
+        // aucune entrée — le dossier est partagé — donc rien d'autre ne les
+        // efface. Sans cette ligne, supprimer l'image laissait derrière elle
+        // des octets à la fois invisibles et impossibles à reprendre.
+        //
+        // Lu **avant** l'effacement : après, le fichier ne peut plus dire ce
+        // qu'il était. Et seulement pour une image : jeter le déballage en
+        // supprimant un noyau ordinaire ne coûterait rien, mais ce serait dire
+        // quelque chose de faux sur ce qui vient de partir.
+        let wasAnImage: Bool
+        if case .discImage = KernelImageKind.identify(fileAt: url) {
+            wasAnImage = true
+        } else {
+            wasAnImage = false
+        }
         try? FileManager.default.removeItem(at: url)
+        if wasAnImage {
+            LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
+        }
         KernelMemory.forget(kernel: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
