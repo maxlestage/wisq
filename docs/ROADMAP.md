@@ -12743,3 +12743,29 @@ garde le balayage et ajoute le bouton « Modifier » de la barre : un chemin
 visible, qui ne dispute rien au curseur. Cette moitié-là n'a pas de test : la
 CI d'Apple la compile, aucune suite ne la touche, et je le dis plutôt que de
 faire croire le contraire.
+
+## #285 — la spec et le projet engendré, confrontés sur le coureur Linux
+
+`scripts/check-project-sources.sh`, plus une étape dans `verify.sh` et sept
+tests dans `site/tests/project-sources.test.ts`.
+
+**Le trou, mesuré plutôt que craint.** `check-generated-project.sh` porte, malgré
+son nom, un autre sujet : que **tout workflow qui régénère compare aussi**. Il ne
+régénère rien. Un `project.pbxproj` périmé n'était donc visible que de la CI
+d'Apple — et l'a été le 25 septembre, quand `IsoDeletionTests.swift` est entré
+dans `Tests/WisqUITests` sans que le projet suive. Un cycle complet pour une
+comparaison de deux listes.
+
+| ce qui est comparé | d'où ça vient |
+|---|---|
+| les `.swift` sous chaque `sources: - path:` | `project.yml`, lu au moment du contrôle |
+| les `path = ….swift` | `<name>.xcodeproj/project.pbxproj`, le nom venant de la spec |
+
+Les deux sens comptent : un fichier ajouté manque au projet, un fichier supprimé
+y traîne et Xcode échoue sur un chemin qui n'existe plus.
+
+**Ce qu'elle ne tient pas est dans la garde, pas dans ma tête.** Le projet
+référence par nom de base, donc la comparaison porte sur les noms ; **deux
+fichiers déclarés de même nom sont refusés**, faute de quoi elle s'affaiblirait
+sans prévenir. Elle ne remplace pas la régénération de la CI, qui compare octet
+pour octet — elle attrape le cas qui arrive, là où il coûte le moins.
