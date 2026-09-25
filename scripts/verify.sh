@@ -75,9 +75,13 @@ else
 
     macOS :  brew install swiftlint
     Linux :  binaire depuis https://github.com/realm/SwiftLint/releases
-             (l'archive « swiftlint_linux.zip »), puis mis sur le PATH.
-             Il lui faut libsourcekitdInProc.so, qui est dans la toolchain
-             Swift ; ce script s'en occupe une fois le binaire trouvé.
+             — l'archive porte l'architecture depuis la 0.60.0 :
+             « swiftlint_linux_amd64.zip » ou « swiftlint_linux_arm64.zip ».
+             (Jusqu'à la 0.59.0 il n'y en avait qu'une, « swiftlint_linux.zip » ;
+             ce nom-là renvoie un 404 sur les versions récentes.)
+             Puis mis sur le PATH. Il lui faut libsourcekitdInProc.so, qui est
+             dans la toolchain Swift ; ce script s'en occupe une fois le
+             binaire trouvé.
 EOF
 fi
 

@@ -12769,3 +12769,28 @@ référence par nom de base, donc la comparaison porte sur les noms ; **deux
 fichiers déclarés de même nom sont refusés**, faute de quoi elle s'affaiblirait
 sans prévenir. Elle ne remplace pas la régénération de la CI, qui compare octet
 pour octet — elle attrape le cas qui arrive, là où il coûte le moins.
+
+## #286 — l'aide de `verify.sh` envoyait les contributeurs Linux sur un 404
+
+Une ligne, mais mesurée avant d'être réécrite. `scripts/verify.sh`, quand
+SwiftLint manque, disait où le prendre : « l'archive `swiftlint_linux.zip` ».
+Cette archive n'existe plus.
+
+**Ce n'était pas une coquille : le nom a vieilli.** Mesuré tag par tag, sur les
+releases de SwiftLint :
+
+| version | `swiftlint_linux.zip` | `swiftlint_linux_amd64.zip` |
+|---|---|---|
+| 0.55.1 → 0.59.0 | **200** | 404 |
+| 0.60.0 → 0.65.1 | **404** | **200** |
+
+L'archive Linux unique a été scindée par architecture à la 0.60.0, et
+`swiftlint_linux_arm64.zip` existe depuis autant. L'aide nomme donc les deux et
+dit à partir de quand — un contributeur sur un Linux arm64 aurait pris la
+mauvaise sinon.
+
+**Et cette correction n'a pas de garde, ce qui se dit plutôt que se cache.** La
+seule vérification possible est un appel réseau, et les suites de ce dépôt sont
+hermétiques. La CI, elle, pose SwiftLint par `brew` sur macOS : aucune seconde
+liste à confronter à celle-ci. Ce qui tient cette ligne est la mesure
+ci-dessus, refaite le jour où quelqu'un la soupçonnera.

@@ -17370,3 +17370,31 @@ Six sabotages, six chutes, chacune sur le test prévu : les deux sens de la
 comparaison, la détection des doublons, le nom du bundle lu de la spec plutôt
 qu'écrit en dur, la racine absente, la spec sans `sources:` qui s'acquitterait
 toute seule.
+
+## #286 — une instruction qui vieillit sans que rien ne rougisse
+
+Défaut nommé trois fois dans les tranches précédentes, et repoussé trois fois au
+motif qu'il n'avait « pas de sujet où se loger ». C'est une mauvaise raison : un
+défaut nommé se corrige, et son sujet est lui-même.
+
+**La mesure a changé ce que la correction dit.** J'allais écrire « coquille :
+l'archive s'appelle `swiftlint_linux_amd64.zip` ». En sondant les releases tag
+par tag, la vérité est autre : `swiftlint_linux.zip` existe jusqu'à la 0.59.0
+incluse et disparaît à la 0.60.0, remplacée par une archive **par
+architecture**. L'aide n'était pas fausse quand elle a été écrite ; elle a
+vieilli. Deux conséquences que la version « coquille » aurait manquées : il faut
+nommer les deux architectures, et dire depuis quand — sans quoi un contributeur
+sur un Linux arm64 prend `amd64` et obtient un binaire qui ne démarre pas.
+
+**Ce que la tranche laisse sans garde, et pourquoi.** Rien dans ce dépôt ne peut
+vérifier cette ligne hors-ligne : la CI pose SwiftLint par `brew` sur macOS,
+donc il n'y a pas de seconde liste à confronter, et une suite qui appellerait
+GitHub cesserait d'être hermétique. La correction repose sur une mesure datée,
+pas sur une garde — c'est le cas rare où ce dépôt accepte cela, et il vaut mieux
+l'écrire que laisser croire à une protection qui n'existe pas.
+
+**Vérifié quand même, sur l'acte.** Le texte vit dans une branche qui ne
+s'exécute que si `swiftlint` manque du PATH. `verify.sh` relancé avec un PATH
+qui l'exclut : la branche s'affiche, et elle affiche bien les deux archives.
+Lire le heredoc dans l'éditeur n'aurait dit que ce qu'il contient, pas qu'on
+l'atteint.
