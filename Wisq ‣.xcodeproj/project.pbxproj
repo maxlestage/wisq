@@ -17,6 +17,7 @@
 		5E755EA9B7CC8A29445B7240 /* WisqApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA6A1EBDD6861A1CB10497D1 /* WisqApp.swift */; };
 		68A582EC43EEB75FABFD29B4 /* OversizedKernelRefusalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDDED6E188F491D56AED136 /* OversizedKernelRefusalTests.swift */; };
 		80FA1C461D774974B6B4D3B6 /* DiskLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2864F50817369FF2BFE80A2E /* DiskLibraryTests.swift */; };
+		8E5B99838DD7C2EC7ED03DF2 /* IsoDeletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8103E833D91F33A15E08D072 /* IsoDeletionTests.swift */; };
 		912121449C12DD15431D5186 /* KernelMemoryNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBC52CE587875729F2C106B /* KernelMemoryNoteTests.swift */; };
 		9164D5292138EDDC7991F8B6 /* LocalDesktopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CE051C07D18179C53D67E6D /* LocalDesktopTests.swift */; };
 		9603FAC6B464637F15179E23 /* RefusalTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 651340557E4AC066FC3601EB /* RefusalTextTests.swift */; };
@@ -51,6 +52,7 @@
 		651340557E4AC066FC3601EB /* RefusalTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefusalTextTests.swift; sourceTree = "<group>"; };
 		6C88FF95EBCE3D633BE2B978 /* WisqUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		75DE4B6976CAF93776267242 /* ConnectionFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFileImportTests.swift; sourceTree = "<group>"; };
+		8103E833D91F33A15E08D072 /* IsoDeletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IsoDeletionTests.swift; sourceTree = "<group>"; };
 		936C3369437325C05E218C3C /* WebKitJITProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitJITProbeTests.swift; sourceTree = "<group>"; };
 		DA6A1EBDD6861A1CB10497D1 /* WisqApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WisqApp.swift; sourceTree = "<group>"; };
 		DAC4761BC4521ABE2586FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -150,6 +152,7 @@
 			children = (
 				75DE4B6976CAF93776267242 /* ConnectionFileImportTests.swift */,
 				2864F50817369FF2BFE80A2E /* DiskLibraryTests.swift */,
+				8103E833D91F33A15E08D072 /* IsoDeletionTests.swift */,
 				2DBC52CE587875729F2C106B /* KernelMemoryNoteTests.swift */,
 				43A9385C55B394D504E15599 /* LocalVMModelTests.swift */,
 				0FB3E0172B02D225DF6C964B /* MachineLibrarySecretsTests.swift */,
@@ -277,6 +280,7 @@
 			files = (
 				0A8767B9EBFB97AEA5BA7DCD /* ConnectionFileImportTests.swift in Sources */,
 				80FA1C461D774974B6B4D3B6 /* DiskLibraryTests.swift in Sources */,
+				8E5B99838DD7C2EC7ED03DF2 /* IsoDeletionTests.swift in Sources */,
 				912121449C12DD15431D5186 /* KernelMemoryNoteTests.swift in Sources */,
 				446846957BEE4C49DB916AA8 /* LocalVMModelTests.swift in Sources */,
 				B4BD48B406268B2C4B699E91 /* MachineLibrarySecretsTests.swift in Sources */,

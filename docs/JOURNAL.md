@@ -17273,3 +17273,50 @@ dans ce dépôt ne peut exécuter. La CI d'Apple compile la vue ; aucune suite n
 la touche. Les six sabotages de cette tranche portent tous sur la moitié
 stockage ; la moitié geste n'en a aucun, et dire « vérifié » de l'ensemble
 serait une phrase de trop.
+
+## #284 bis — le projet Xcode engendré, et une garde qui ne regarde pas ce qu'elle nomme
+
+Ajouter un fichier de test à l'application change le projet Xcode engendré.
+`Wisq ‣.xcodeproj/project.pbxproj` est commité, la CI le régénère et compare :
+« les fichiers engendrés par xcodegen ne sont pas ceux du dépôt ». Rouge mérité.
+
+**Ce que `verify.sh` en avait dit : rien, et pour une raison qui vaut d'être
+écrite.** Son étape « Projet Xcode » lance `check-generated-project.sh`, qui
+vérifie que **tout workflow régénérant compare aussi** — une garde sur la garde.
+Elle ne régénère pas elle-même et ne compare rien. Donc aucune vérification
+locale ne peut voir un `project.pbxproj` périmé : la seule qui le voie est la
+CI. Ce n'est pas un bogue du script, c'est le sujet qu'il traite ; mais son nom
+dans le relevé de `verify.sh` — « Projet Xcode (la CI compare ce qu'elle
+engendre) » — se lit comme une vérification du projet, et je l'ai lu ainsi.
+
+**XcodeGen tourne sur Linux, et il engendre pareil.** Le binaire publié est un
+universel macOS, donc `install-xcodegen.sh` ne sert à rien ici ; mais le paquet
+Swift se construit avec la chaîne du conteneur en deux minutes et demie, presets
+compris (SwiftPM les copie dans le bundle du module).
+
+**Le témoin d'abord, et il a failli mentir deux fois.** Avant de faire confiance
+à ce binaire, je l'ai fait engendrer sur `master`, où la réponse doit être
+« aucun écart ».
+
+- Premier essai : « IDENTIQUE ». Faux. `xcodegen` avait rendu 1 —
+  « Couldn't find current username », `$USER` est vide dans ce conteneur — donc
+  rien n'avait été écrit, et l'absence d'écart était l'absence de génération.
+  C'est la forme exacte du piège que ce dépôt nomme depuis #261, rencontré ici
+  pour la huitième fois : conclure d'une absence sans vérifier qu'on a bien
+  regardé.
+- Deuxième essai, avec `USER` posé : écart réel, mais dû au clone. Le nom du
+  répertoire entre dans le projet — le groupe « Packages » porte le nom du
+  dossier —, et `App/Assets.xcassets`, engendré par `build-app-icon.sh` et non
+  suivi, manquait. Un clone dans un dossier nommé `wisq` avec les assets
+  recopiés : **aucun écart**.
+
+Le témoin valant quelque chose, la régénération dans le dépôt rend quatre
+insertions, toutes `IsoDeletionTests`, sans un octet d'en-tête déplacé.
+
+**Le défaut nommé, laissé hors de cette tranche.** Rien en local ne confronte
+les fichiers sources de `project.yml` à ce que `project.pbxproj` référence.
+C'est pourtant la comparaison habituelle de ce dépôt — deux listes qui devraient
+s'accorder — et elle ne demande pas XcodeGen : lire les `sources` de la spec et
+les `PBXFileReference` du projet suffirait à attraper exactement ce rouge-ci,
+sur le coureur Linux, avant la CI. Proposé plutôt que fait : c'est un troisième
+sujet dans une tranche qui en a déjà deux.
