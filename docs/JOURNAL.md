@@ -17228,3 +17228,48 @@ zéro octet et le chargeur meurt), import jugé sur la machine de référence,
 quand `verify.sh` rend 0 : il faut relire à la main **chaque** appel venu de
 `WisqUI`, puisque rien d'ici ne le fera. Je l'ai fait après coup, sur les vingt
 appels que `grep` rend, et il n'en restait pas d'autre.
+
+## #284 — le dossier partagé que personne ne possédait
+
+« Il faut la possibilité de supprimer l'iso. » Le geste existait déjà. C'est en
+cherchant *pourquoi* il ne se trouvait pas que la vraie moitié est apparue, et
+elle n'était pas celle qu'on m'avait nommée.
+
+**Ce que la lecture a rendu.** `IsoBoot.unpack` efface son dossier et le refait
+à chaque démarrage d'image. Conclusion facile : c'est un cache, donc il n'y a
+rien à faire. C'est faux dans un sens précis — il n'est refait **que** si l'on
+redémarre une image. Supprimez la dernière ISO de la bibliothèque et son noyau
+déballé reste là pour toujours, sans plus rien pour le réécrire ni personne pour
+le nommer. Des octets à la fois invisibles et indélébiles.
+
+**Le dossier n'appartient à personne, et c'est structurel.** Il est unique pour
+toute la bibliothèque : rien dedans ne dit de quelle image il vient. Il ne peut
+donc pas être compté sous une entrée sans inventer une attribution, et il ne
+peut pas être effacé « avec son image » sans admettre qu'on efface parfois celui
+d'une autre. Les deux choix sont dans le code, écrits comme tels : un champ à
+part dans le relevé, et une suppression qui assume d'emporter le déballage de la
+dernière image démarrée, puisque le prochain démarrage le refera.
+
+**La garde qui ne pouvait pas tomber.** `bytes(inFolder:)` saute les
+répertoires, parce qu'un répertoire a une taille sur le disque — 4096 octets
+ici, 64 sur APFS — et que l'additionner ferait dire au relevé deux nombres
+différents selon la plateforme. J'avais écrit la garde, puis cherché quoi
+saboter : rien ne tombait, parce qu'aucun test n'avait de sous-dossier. Un test
+de plus, avec un `efi/BOOTX64` dedans ; le sabotage rend alors 11 596 au lieu de
+7500, soit exactement les deux répertoires du conteneur. La garde existait
+avant ; ce qui manquait, c'était de quoi la faire échouer.
+
+**Deux modules, une seule vérité.** Le nom du dossier vivait chez celui qui
+écrit (`IsoBoot`, `WisqVMRust`) et il fallait qu'il serve à celui qui compte
+(`LocalStorage`, `WisqVM`) — or le second ne voit pas le premier. Le nom est
+donc descendu dans `WisqVM`, et `IsoBoot.folder(in:)` l'appelle. Le test qui
+tient cela compare les deux portes ; il attrape la divergence, pas la
+duplication, et c'est la divergence qui fait le mal.
+
+**Ce qui n'est pas mesuré ici, et je le nomme.** Le passage de `.swipeActions` à
+`.onDelete` + « Modifier » repose sur un raisonnement — un `Slider` de cent
+trente points à droite de la ligne avale le balayage qui commence là — que rien
+dans ce dépôt ne peut exécuter. La CI d'Apple compile la vue ; aucune suite ne
+la touche. Les six sabotages de cette tranche portent tous sur la moitié
+stockage ; la moitié geste n'en a aucun, et dire « vérifié » de l'ensemble
+serait une phrase de trop.
