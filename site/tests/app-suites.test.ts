@@ -119,6 +119,24 @@ function sansCommentaires(chemin: string): string {
     .join("\n");
 }
 
+/// Les suites qui ont rendu un verdict **dans ce journal-ci**, lues du journal
+/// et non d'une liste tenue à côté. Une liste écrite à la main aurait à être
+/// mise à jour à chaque suite ajoutée à l'application, et ce qu'elle
+/// prétendrait mesurer — que le relevé nomme ce qui a tourné — n'a rien à voir
+/// avec ce qui est déclaré aujourd'hui.
+function suitesDuJournal(journal: string): string[] {
+  return [...journal.matchAll(/Test Suite '([A-Za-z_][A-Za-z0-9_]*)' (?:passed|failed)/g)].map(
+    (trouvaille) => trouvaille[1],
+  );
+}
+
+/// Les suites que le relevé accuse, lues de sa sortie.
+function suitesAccusees(sortie: string): string[] {
+  return [...sortie.matchAll(/::error::([A-Za-z_][A-Za-z0-9_]*) n'a rendu aucun verdict\./g)].map(
+    (trouvaille) => trouvaille[1],
+  );
+}
+
 function sans(journal: string, suite: string): string {
   return journal
     .split("\n")
@@ -127,26 +145,45 @@ function sans(journal: string, suite: string): string {
 }
 
 describe("le relevé de l'iPhone simulé", () => {
-  test("sur le vrai journal, les douze suites déclarées rendent un verdict", () => {
-    const { out, exit } = run(POMME);
-    expect(out).not.toContain("::error::");
-    expect(exit).toBe(0);
-    for (const suite of [
-      "ConnectionFileImportTests",
-      "DiskLibraryTests",
-      "KernelMemoryNoteTests",
-      "LocalDesktopTests",
-      "LocalVMModelTests",
-      "MachineLibrarySecretsTests",
-      "MetalCompilerProbeTests",
-      "OversizedKernelRefusalTests",
-      "PartialLibraryBannerTests",
-      "RefusalTextTests",
-      "StorageLineTests",
-      "WebKitJITProbeTests",
-    ]) {
+  test("sur le vrai journal, chaque suite qui a tourné est nommée, et aucune n'est accusée", () => {
+    const { out } = run(POMME);
+    for (const suite of suitesDuJournal(POMME)) {
       expect(out, `${suite} doit être nommée`).toContain(suite);
+      expect(out, `${suite} a rendu son verdict : elle ne doit pas être accusée`).not.toContain(
+        `::error::${suite} n'a rendu aucun verdict.`,
+      );
     }
+    expect(suitesDuJournal(POMME).length, "un journal sans suite ne mesurerait rien").toBe(12);
+  });
+
+  /// **Et le journal complété est accepté.** Le test ci-dessus ne peut plus
+  /// exiger un code de sortie nul : `POMME` est un journal **daté**, recopié
+  /// du job 106133490635, et toute suite déclarée depuis y manque forcément.
+  /// Exiger zéro dessus revenait à interdire d'ajouter une suite à
+  /// l'application sans rougir — la garde de #282 s'est d'ailleurs déclenchée
+  /// sur la première qui est arrivée.
+  ///
+  /// Ce qu'on tient ici est donc l'aller-retour : on demande au script quelles
+  /// suites lui manquent, on leur donne un verdict de la même forme que les
+  /// autres, et il doit alors accepter. Les noms viennent de sa propre
+  /// sortie ; rien n'est réécrit dans le journal mesuré, et aucune liste n'est
+  /// tenue à la main à côté de `project.yml`.
+  test("un journal où toutes les suites déclarées ont répondu est accepté", () => {
+    const manquantes = suitesAccusees(run(POMME).out);
+    const complet =
+      POMME +
+      manquantes
+        .map(
+          (suite) =>
+            `Test Suite '${suite}' passed at 2026-09-20 19:26:06.644.\n` +
+            "\t Executed 1 test, with 0 failures (0 unexpected) in 0.001 (0.001) seconds\n",
+        )
+        .join("");
+
+    const { out, exit } = run(complet);
+    expect(out, out).not.toContain("::error::");
+    expect(exit).toBe(0);
+    expect(out).toContain("ont toutes rendu un verdict");
   });
 
   /// La garde elle-même. Une suite qui disparaît du bundle ne se voit pas dans

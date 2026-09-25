@@ -12703,3 +12703,43 @@ limite » sans nommer de cœur — la formulation qui *était* le défaut. Ce qu
 rester tenu, c'est que rien d'offert **à un cœur rv32** ne dépasse son
 adressage, et que cette limite reste **atteignable** : les deux sont maintenant
 des assertions séparées.
+
+## #284 — supprimer l'image, et que ça emporte ce qu'elle avait déballé
+
+Demande de Maxime, en une phrase : « Il faut la possibilité de supprimer
+l'iso ». Deux moitiés, un seul sujet — le geste ne se trouvait pas, et quand il
+se trouvait il ne prenait pas tout.
+
+**La moitié invisible, celle qui coûtait des octets.** Une ISO ne démarre pas
+telle quelle : `IsoBoot` en sort un noyau et un initramfs dans
+`<stockage>/iso/`, et c'est de là que la machine part. Ce dossier est
+**partagé** — un seul pour toute la bibliothèque, refait à neuf à chaque
+démarrage d'image — donc rien dedans ne dit de quelle image il vient, et
+personne ne l'effaçait :
+
+| avant | après |
+|---|---|
+| `KernelLibrary.delete` emportait quatre choses | cinq : la cinquième est le déballage, si le fichier était une image |
+| `LocalStorage.report` énumérait trois dossiers | quatre : `iso/` en fait partie |
+| les octets déballés étaient invisibles **et** indélébiles | ils se lisent dans « Stockage » et partent avec leur image |
+
+**Le nom du dossier a changé de module.** Il vivait dans `IsoBoot`
+(`WisqVMRust`), qui écrit dedans ; il vit maintenant dans
+`LocalStorage.unpackedIsoFolder(in:)` (`WisqVM`), parce que c'est ce module qui
+doit le compter et que `WisqVM` ne voit pas `WisqVMRust`. `IsoBoot.folder(in:)`
+l'appelle. Deux littéraux « iso » auraient été deux vérités, et celle qui compte
+se serait tue le jour où celle qui écrit aurait changé.
+
+**Et la suppression reste conditionnelle.** Jeter le déballage à chaque
+suppression ne coûterait rien — le démarrage suivant le refait de toute façon —
+mais dirait quelque chose de faux sur ce qui vient de partir. Le genre du
+fichier est lu **avant** l'effacement, puisqu'après il ne peut plus rien dire.
+
+**La moitié visible, qui ne se juge pas d'ici.** Le geste existait : un
+`.swipeActions` sur la ligne. Or la ligne finit par le curseur de mémoire, cent
+trente points à droite — là même où un balayage vers la gauche commence — et un
+`Slider` avale les glissements horizontaux. Remplacé par un `.onDelete`, qui
+garde le balayage et ajoute le bouton « Modifier » de la barre : un chemin
+visible, qui ne dispute rien au curseur. Cette moitié-là n'a pas de test : la
+CI d'Apple la compile, aucune suite ne la touche, et je le dis plutôt que de
+faire croire le contraire.

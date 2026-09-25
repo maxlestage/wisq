@@ -134,9 +134,14 @@ public enum IsoBoot {
     /// ce dépôt : `SuspendedMachine` traite son `directory` de la même façon,
     /// et deux conventions pour la même chose seraient une occasion de plus de
     /// se tromper.
+    ///
+    /// **Le nom du dossier vit dans `LocalStorage`, pas ici.** C'est ce module
+    /// qui écrit dedans, mais c'est l'autre qui compte ses octets et qui les
+    /// jette quand l'image est supprimée — et `WisqVM` ne voit pas `WisqVMRust`.
+    /// Un littéral « iso » de chaque côté serait deux vérités ; celle qui
+    /// compte se tairait le jour où celle qui écrit changerait.
     public static func folder(in storage: URL?) -> URL? {
-        guard let base = storage ?? (try? SuspendedMachine.directory()) else { return nil }
-        return base.appendingPathComponent("iso", isDirectory: true)
+        LocalStorage.unpackedIsoFolder(in: storage)
     }
 
     /// Regarde le fichier choisi ; déballe si c'est une image amorçable.
