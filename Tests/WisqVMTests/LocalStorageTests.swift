@@ -9,11 +9,12 @@ import XCTest
 /// donc un noyau réglé à un gibioctet peut laisser derrière lui un fichier
 /// cent fois plus gros que le noyau lui-même.
 final class LocalStorageTests: XCTestCase {
+    private var root: URL!
     private var kernels: URL!
     private var machines: URL!
 
     override func setUpWithError() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("wisq-stockage-\(UUID().uuidString)", isDirectory: true)
         kernels = root.appendingPathComponent("kernels", isDirectory: true)
         machines = root.appendingPathComponent("machines", isDirectory: true)
@@ -22,7 +23,7 @@ final class LocalStorageTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: kernels.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: root)
     }
 
     private func writeKernel(_ name: String, bytes: Int) throws -> Data {
@@ -164,6 +165,117 @@ final class LocalStorageTests: XCTestCase {
         XCTAssertEqual(LocalStorage.describe(bytes: 1024 << 20), "1,0 Gio")
         // Une taille négative n'existe pas ; elle ne doit pas s'afficher.
         XCTAssertEqual(LocalStorage.describe(bytes: -5), "0 o")
+    }
+
+    // MARK: - Ce qu'une image d'installation laisse déballé
+
+    /// Le dossier où `IsoBoot` déballe, avec deux fichiers de tailles connues.
+    @discardableResult
+    private func unpackSomething(kernel: Int, initrd: Int) throws -> URL {
+        let folder = try XCTUnwrap(LocalStorage.unpackedIsoFolder(in: root))
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(repeating: 0x7F, count: kernel)
+            .write(to: folder.appendingPathComponent("vmlinuz"))
+        try Data(repeating: 0x5A, count: initrd)
+            .write(to: folder.appendingPathComponent("initramfs"))
+        return folder
+    }
+
+    /// **Le relevé compte ce que l'image a laissé déballé.**
+    ///
+    /// C'étaient des octets invisibles : un noyau et un initramfs sortis de
+    /// l'ISO au dernier démarrage, dans un dossier que rien n'énumérait. Le
+    /// total les ignorait, donc personne ne pouvait savoir qu'ils étaient là.
+    func testTheReportCountsWhatAnImageLeftUnpacked() throws {
+        _ = try writeKernel("installation.iso", bytes: 100)
+        let folder = try unpackSomething(kernel: 3000, initrd: 4000)
+
+        let report = LocalStorage.report(
+            kernels: kernels, machines: machines, unpackedIso: folder)
+        XCTAssertEqual(report.unpackedIsoBytes, 7000)
+        XCTAssertEqual(report.total, 7100, "le déballage compte dans le total")
+    }
+
+    /// Et sans déballage — le cas de tous les autres appels — il ne s'invente
+    /// rien.
+    func testWithNothingUnpackedTheReportSaysZero() throws {
+        _ = try writeKernel("Image", bytes: 100)
+        let report = LocalStorage.report(kernels: kernels, machines: machines)
+        XCTAssertEqual(report.unpackedIsoBytes, 0)
+        XCTAssertEqual(report.total, 100)
+    }
+
+    /// **Le dossier n'appartient à aucun noyau**, et le relevé ne le range pas
+    /// sous celui qui porte son nom. Il est partagé : le démarrage suivant le
+    /// refait à neuf pour une autre image, donc l'attribuer serait mentir.
+    func testTheUnpackedFolderIsNotChargedToAnyKernel() throws {
+        _ = try writeKernel("installation.iso", bytes: 100)
+        let folder = try unpackSomething(kernel: 3000, initrd: 4000)
+
+        let report = LocalStorage.report(
+            kernels: kernels, machines: machines, unpackedIso: folder)
+        XCTAssertEqual(report.entries.count, 1)
+        XCTAssertEqual(report.entries[0].total, 100, "l'entrée ne porte que son fichier")
+    }
+
+    /// **Un dossier à l'intérieur est parcouru, pas compté.** Un répertoire a
+    /// une taille sur le disque — quatre kibioctets ici, soixante-quatre
+    /// octets sur APFS — et l'additionner ferait dire au relevé deux nombres
+    /// différents selon la plateforme pour les mêmes fichiers.
+    func testADirectoryInsideTheUnpackingIsWalkedButNotCounted() throws {
+        let folder = try unpackSomething(kernel: 3000, initrd: 4000)
+        let inside = folder.appendingPathComponent("efi", isDirectory: true)
+        try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
+        try Data(repeating: 0x01, count: 500).write(to: inside.appendingPathComponent("BOOTX64"))
+
+        let report = LocalStorage.report(
+            kernels: kernels, machines: machines, unpackedIso: folder)
+        XCTAssertEqual(
+            report.unpackedIsoBytes, 7500,
+            "les trois fichiers, et rien pour les deux dossiers qui les portent")
+    }
+
+    /// **Jeter le déballage rend exactement ce qu'il pesait**, et le dossier
+    /// n'est plus là.
+    func testDiscardingTheUnpackedImageTakesBackItsBytes() throws {
+        let folder = try unpackSomething(kernel: 3000, initrd: 4000)
+
+        XCTAssertEqual(LocalStorage.discardUnpackedIso(folder), 7000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+
+        // Deux fois de suite ne rend rien de plus, et n'échoue pas : c'est le
+        // cas de toute suppression qui suit une autre.
+        XCTAssertEqual(LocalStorage.discardUnpackedIso(folder), 0)
+        XCTAssertEqual(LocalStorage.discardUnpackedIso(nil), 0)
+    }
+
+    /// Et il n'emporte rien d'autre : les noyaux et les machines sauvegardées
+    /// vivent à côté, dans le même dossier parent.
+    func testDiscardingTheUnpackedImageLeavesTheLibraryAlone() throws {
+        let image = try writeKernel("Image", bytes: 100)
+        try saveMachine(for: image, named: "Image", bytes: 2000)
+        let folder = try unpackSomething(kernel: 3000, initrd: 4000)
+
+        LocalStorage.discardUnpackedIso(folder)
+
+        let after = LocalStorage.report(
+            kernels: kernels, machines: machines, unpackedIso: folder)
+        XCTAssertEqual(after.unpackedIsoBytes, 0)
+        XCTAssertEqual(after.entries.count, 1)
+        XCTAssertEqual(after.entries[0].kernelBytes, 100)
+        XCTAssertEqual(after.entries[0].savedMachineBytes, 2000)
+    }
+
+    /// **`nil` veut dire « l'endroit habituel »**, comme partout ailleurs ici,
+    /// et le nom du dossier est celui que `IsoBoot` emploie — la même fonction
+    /// le donne aux deux, pour qu'il n'y ait pas deux vérités.
+    func testTheUnpackedFolderSitsBesideTheSavedMachines() throws {
+        let named = try XCTUnwrap(LocalStorage.unpackedIsoFolder(in: root))
+        XCTAssertEqual(named.lastPathComponent, "iso")
+        XCTAssertEqual(named.deletingLastPathComponent().standardizedFileURL,
+                       root.standardizedFileURL)
+        XCTAssertNotNil(LocalStorage.unpackedIsoFolder(in: nil),
+                        "sans dossier donné, il en trouve un quand même")
     }
 }
 
