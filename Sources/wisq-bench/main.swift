@@ -33,9 +33,12 @@ guard let image = try? Data(contentsOf: URL(fileURLWithPath: imagePath)) else {
 // guest only idles, and idling is cheap to make look fast.
 let marker = argument("--until") ?? "buildroot login:"
 
-// Construction cost is not a footnote on a phone: it is 64 MB of guest RAM
-// being obtained, and whether those pages become resident up front decides
-// both how long the tap-to-boot delay is and how much memory the app holds.
+// Construction cost is not a footnote on a phone: it is the guest's RAM being
+// obtained, and whether those pages become resident up front decides both how
+// long the tap-to-boot delay is and how much memory the app holds. The size is
+// `KernelMemory.defaultSize` and it is printed from there: since the choice
+// became a setting, a sentence naming one size would be a sentence to keep in
+// step with a constant.
 let allocStart = DispatchTime.now().uptimeNanoseconds
 
 let counter = OutputCounter()
@@ -58,7 +61,8 @@ let banner = counter.sawBanner ? "oui" : "NON"
 
 print(String(format: "instructions : %.1f M retirées (budget %.0f M)",
              Double(retired) / 1e6, Double(budget) / 1e6))
-print(String(format: "construction : %.1f ms (64 Mo de RAM invitée)", allocMs))
+print(String(format: "construction : %.1f ms (%@ de RAM invitée)",
+             allocMs, KernelMemory.describe(KernelMemory.defaultSize)))
 print(String(format: "durée        : %.3f s", elapsed))
 print(String(format: "débit        : %.1f MIPS", mips))
 let reached = counter.reached(marker) ? "atteint" : "PAS ATTEINT"
@@ -116,7 +120,7 @@ final class OutputCounter: @unchecked Sendable {
 // compare, saute, lit et écrit la mémoire, appelle et revient. C'est le
 // mélange qu'un noyau exécute, pas celui qui flatte un interprète.
 
-func measureX86() {
+func measureX86(rv32Mips: Double) {
     // Un programme assemblé une fois pour toutes, octet pour octet — les mêmes
     // formes que le corpus de la tranche 2 a validées.
     //
@@ -192,9 +196,20 @@ func measureX86() {
 
     print("")
     print("x86-64 (lot 7, tranche 3b)")
-    print("  ce cœur-ci est en Swift ; les 161 MIPS ci-dessus sont ceux du cœur")
-    print("  rv32 en Rust. Comparer les deux chiffres directement serait comparer")
-    print("  deux langages autant que deux architectures.")
+    // **Ce paragraphe disait deux choses fausses**, et c'est la garde
+    // `site/tests/frozen-figures.test.ts` qui l'a sorti. Il annonçait « les
+    // 161 MIPS ci-dessus » — un nombre gelé, alors que la ligne juste au-dessus
+    // en imprime un mesuré — et les attribuait au cœur rv32 **en Rust**. Ce banc
+    // ne dépend que de `WisqVM` : le débit ci-dessus est celui du cœur rv32 en
+    // **Swift**. Le cœur Rust a son propre banc, et il était là sans que rien ne
+    // le lance.
+    print(String(format: "  le débit rv32 ci-dessus — %.1f MIPS — est celui du cœur Swift :",
+                 rv32Mips))
+    print("  ce banc ne dépend que de WisqVM. Le cœur rv32 en Rust, celui que")
+    print("  l'application embarque, a le sien, et c'est lui qu'il faut citer :")
+    print("      cargo run --release --bin wisq-bench-rs")
+    print("  Le cœur mesuré ci-dessous est x86-64, en Swift : le comparer au rv32")
+    print("  compare deux architectures autant que deux implémentations.")
     print(String(format: "  instructions : %.1f M retirées", Double(executed) / 1_000_000))
     print(String(format: "  durée        : %.3f s", seconds))
     print(String(format: "  débit        : %.1f MIPS", mips))
@@ -212,4 +227,4 @@ func measureX86() {
     }
 }
 
-measureX86()
+measureX86(rv32Mips: mips)

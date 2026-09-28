@@ -158,7 +158,31 @@ WISQ_SWIFT_CORE=1 swift build
 # stops reaching its prompt, and that failure belongs here too. Conditional on
 # the image, like CI's own step: absent, it says so rather than failing.
 if [ -f "${WISQ_LINUX_IMAGE:-/tmp/wisq-test-linux-image/Image}" ]; then
-  echo "==> Banc : démarrage jusqu'à l'invite"
+  # **Le cœur que l'application embarque, en premier.** `wisq-bench-rs` double
+  # le banc Swift « down to the wording », dit son propre en-tête — et rien ne
+  # le lançait, ni ici ni en CI. Le débit publié est celui de ce cœur-là : le
+  # mesurer ailleurs était citer un chiffre d'août.
+  #
+  # **L'ordre est mesuré, pas esthétique.** `wisq-bench` enchaîne sur un banc
+  # x86 de quarante secondes ; le lancer avant celui-ci mettait cette charge
+  # entre les deux démarrages rv32, et le premier relevé a rendu 146,6 MIPS pour
+  # le cœur Swift contre 118,3 pour le Rust — l'inverse de ce que dix passages
+  # au repos donnent. Les deux mesures rv32 sont donc adjacentes, à une seconde
+  # l'une de l'autre. C'est la leçon que `resolved.rs` imprime déjà : les
+  # valeurs absolues bougent avec la charge, c'est le rapport qui tient, et il
+  # ne tient que si les deux termes sont pris dans les mêmes conditions.
+  # Les deux construits d'abord, les deux lancés ensuite : une compilation
+  # Swift de cinquante secondes entre les deux mesures est la même charge, sous
+  # un autre nom, que le banc x86 qu'on vient d'écarter.
+  echo "==> Bancs : construction des deux avant de mesurer l'un ou l'autre"
+  cargo build --release --bin wisq-bench-rs
+  swift build -c release --product wisq-bench
+
+  echo "==> Banc : démarrage jusqu'à l'invite, cœur Rust — celui qui embarque"
+  WISQ_LINUX_IMAGE="${WISQ_LINUX_IMAGE:-/tmp/wisq-test-linux-image/Image}" \
+    ./target/release/wisq-bench-rs
+
+  echo "==> Banc : le même démarrage, cœur Swift (puis le banc x86)"
   WISQ_LINUX_IMAGE="${WISQ_LINUX_IMAGE:-/tmp/wisq-test-linux-image/Image}" \
     swift run -c release wisq-bench
 else

@@ -29,7 +29,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "Around 160 million guest instructions a second, reaching a Linux login prompt after 44.6 million instructions — roughly a quarter of a second. That figure comes from an x86_64 Linux container, not from a phone: no iPhone has been in that measurement loop, and an A-series core is a different machine.",
+        "A Linux login prompt after 44.6 million guest instructions — the same count every run, on either core, because the machine's clock advances with instructions rather than with wall time. How long that takes belongs to the host: the Rust core the app ships boots it in 0.24 to 0.33 s, which is 137 to 187 million instructions a second — the low end on a modest x86_64 Linux container, the high end on the machine CI runs on, which prints both cores' figures at the end of every run. No iPhone has been in that loop, and an A-series core is a different machine. The benchmark those numbers come from lives in the repository, and CI runs it on every change.",
     },
 
     { kind: "h2", text: "What can the local machine actually run?" },
@@ -133,7 +133,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Environ 160 millions d'instructions invitées par seconde, avec une invite de connexion Linux atteinte après 44,6 millions d'instructions — de l'ordre du quart de seconde. Ce chiffre vient d'un conteneur Linux x86_64, pas d'un téléphone : aucun iPhone n'est passé par cette boucle de mesure, et un cœur A-series est une autre machine.",
+        "Une invite de connexion Linux après 44,6 millions d'instructions invitées — le même compte à chaque exécution, sur l'un ou l'autre cœur, parce que l'horloge de la machine avance avec les instructions et non avec le temps réel. Combien de temps cela prend appartient à l'hôte : le cœur Rust que l'application embarque le démarre en 0,24 à 0,33 s, soit 137 à 187 millions d'instructions par seconde — le bas sur un conteneur Linux x86_64 modeste, le haut sur la machine où tourne la CI, qui imprime les chiffres des deux cœurs à la fin de chaque exécution. Aucun iPhone n'est passé par cette boucle, et un cœur A-series est une autre machine. Le banc dont ces nombres sortent vit dans le dépôt, et la CI le lance à chaque changement.",
     },
 
     { kind: "h2", text: "Que peut réellement faire tourner la machine locale ?" },
