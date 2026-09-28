@@ -17829,3 +17829,55 @@ la garde est faible, **ou la mutation n'en est pas une**. Les deux se sont
 produites dans la même heure, et la seconde ressemblait exactement à la
 première. Un sabordage qui survit n'a rien prouvé tant qu'on n'a pas vérifié que
 le texte muté est bien différent de ce que la garde lit.
+
+## #291 — trois sabordages survivants dans la même journée, et la même forme les trois fois
+
+Le site est tenu depuis #290, donc le crible est passé au dernier texte
+auto-descriptif que personne n'avait relu : `docs/DEMARRAGE.md`, six cent
+quarante lignes sur ce qui manque pour qu'un noyau démarre.
+
+**Son corps est exemplaire.** Chaque chiffre porte sa date et sa commande ;
+plusieurs paragraphes disent quelle version antérieure ils corrigent — « une
+version antérieure annonçait 34, dans 19 régions », « une version antérieure
+disait l'émetteur tient 247 MIPS ». Le crible des nombres y est déjà passé.
+
+**Et sa tête décrit un état que son corps réfute.** Elle annonçait la couverture
+à 9980 sur 10 116 quand le corps dit vingt lignes plus bas que le compteur est
+saturé à 10 116 sur 10 116 ; elle annonçait qu'« il manque deux mécanismes
+entiers, la pagination et les interruptions » quand la section des interruptions
+liste la délivrance d'une faute de page comme existante ; et la section « le mur
+a un nom, et ce sont deux instructions » tenait toujours, cent lignes au-dessus
+d'un « **le premier mur est franchi** ».
+
+C'est la **troisième copie**. #247 avait corrigé l'en-tête de `x86_wasm.rs` — qui
+raconte lui-même avoir porté la phrase fausse « pendant les deux tranches qui ont
+suivi celle qui l'a rendue fausse » — et la page du site. Personne n'avait relu
+ce document-ci. La leçon de #289 s'applique telle quelle, deux jours plus tard,
+sur la copie qu'elle n'avait pas nommée.
+
+### Les trois survivants, et ils se ressemblent
+
+1. **L'interdiction de phrase ne trouvait rien.** « deux mécanismes entiers » est
+   coupé par un retour à la ligne dans un document enveloppé à quatre-vingts
+   colonnes, et `includes` sur le texte brut ne le voyait pas. La garde passait
+   sur la ligne même qu'elle visait. Les blancs sont normalisés maintenant.
+2. **Le paragraphe historique n'a pas de forme nommée.** Après réécriture, la
+   garde refusait encore : la phrase qui raconte le refus d'alors et celle qui
+   nomme les deux formes étaient dans deux paragraphes différents. Corrigé en
+   nommant les formes là où le refus est raconté — ce qui est aussi plus juste :
+   à l'époque, les deux formes refusaient.
+3. **Le fondement de l'interdiction était une mention, pas une définition.** Le
+   lecteur cherchait le nom du test n'importe où dans un `.rs` ; renommer le test
+   laissait la garde verte, parce que `x86_wasm.rs` cite ce nom deux fois dans
+   ses commentaires. Il cherche `fn <nom>(` maintenant.
+
+### Le signe à retenir
+
+Les trois sont la même erreur : **une assertion satisfaite par un autre chemin
+que celui qu'elle prétend mesurer**. Elle est nommée dans le filet, je l'ai
+citée dans deux tranches d'affilée, et je l'ai commise trois fois dans la
+troisième — chaque fois en écrivant un **lecteur**, pas une assertion. La règle
+utile est plus étroite que « mesurer l'acte » : quand une garde lit un fichier
+pour y trouver quelque chose, se demander **ce qui d'autre, dans ce fichier,
+pourrait contenir ce que je cherche** — un commentaire, une autre phrase, un
+retour à la ligne au mauvais endroit.
