@@ -17648,6 +17648,15 @@ La réponse du dépôt existait : « Ce qui a sauté » et « Ce que l'iPhone si
 mesuré » sont en dernier pour cette raison. Le banc a maintenant la sienne — les
 deux sorties gardées dans un fichier, republiées en avant-dernière étape.
 
+**Et j'ai poussé rouge.** La chaîne était
+`bun test 2>&1 | tail -4 && git commit && git push` : `tail` sort avec 0, donc le
+`&&` a enchaîné sur deux tests en échec. Le piège du code de sortie masqué par un
+tuyau, celui-là même que le filet nomme en première ligne, dans ma propre
+commande. Les deux rouges étaient `verify-covers-ci.test.ts` — une garde que je
+ne connaissais pas et qui exige que **chaque étape de la CI soit classée** :
+lancée par `verify.sh`, ou absente avec sa raison. La nouvelle étape est absente
+avec la sienne, et corrigée dans la foulée.
+
 ### Le trou était dans les tests, pas dans le code
 
 J'avais écrit la commande sur la page — « `cargo run --release --bin
