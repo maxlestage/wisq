@@ -17524,3 +17524,178 @@ est exactement ce qui a produit cette tranche.
 Une leçon écrite dans un commentaire n'est pas une leçon appliquée. Celle-ci
 était exacte, datée, et posée juste au-dessus du code qui la contredisait. En
 relire une, c'est se demander : **est-ce que la garde en dessous la respecte ?**
+
+## #288 — l'instrument dormait à côté du chiffre qu'il aurait réfuté
+
+Tranche ouverte sur la dette que #287 a rendue visible : quatre pages du site
+avouées non tenues. `faq.ts` d'abord, la plus petite — six chiffres. Elle en
+portait douze à la fin, et la moitié du travail n'était pas sur la page.
+
+**Le chiffre, et ses cinq versions.** « Environ 160 millions d'instructions par
+seconde » sur la page des questions ; 157 au tableau du lot 8 ; 161 gravé dans un
+`print` du banc ; 162 et 163 au CHANGELOG et à la page des versions ; 170 au
+CHANGELOG, dans la même entrée que 162. Cinq nombres, et il a fallu lire
+lesquels parlaient du cœur Rust et lesquels du Swift pour s'apercevoir que
+**le banc lui-même se trompait**.
+
+### Ce que le banc disait de lui-même
+
+```
+print("  ce cœur-ci est en Swift ; les 161 MIPS ci-dessus sont ceux du cœur")
+print("  rv32 en Rust. …")
+```
+
+La ligne juste au-dessus imprime un débit mesuré. Celle-ci en annonce un autre,
+gelé, et l'attribue au cœur Rust — alors que `wisq-bench` ne dépend que de
+`WisqVM` et mesure le cœur **Swift**. C'est le mode que ce journal avait nommé :
+« un banc qui mesure deux termes et en grave un troisième publie un nombre dont
+personne ne vérifiera jamais la provenance ». La consigne qui en sortait —
+chercher les constantes numériques **dans le code des instruments** — n'avait
+jamais été outillée. Elle l'est : `site/tests/frozen-figures.test.ts`.
+
+Elle a trouvé trois défauts et deux lignes voulues. Les trois : le 161, et
+**les deux bancs qui imprimaient « 64 Mo de RAM invitée » en dur** alors que la
+constante est à une ligne de là — `DEFAULT_RAM_SIZE` est même déjà importée dans
+le fichier Rust qui la recopie en toutes lettres. Depuis #283 la taille est un
+réglage ; une phrase qui nomme une taille est une phrase à tenir en pas avec une
+constante.
+
+Les deux voulues sont les meilleures exceptions qu'on pouvait espérer : elles
+sont dans `resolved.rs`, et **toutes les deux mettent en garde contre les
+nombres gelés**. L'une dit que ses propres nanosecondes bougent de 125 à 190
+selon les jours et qu'il faut lire le rapport. L'autre raconte le 247 qui était
+gravé et ne l'est plus.
+
+### Le banc que personne ne lançait
+
+`crates/wisq-vm/src/bin/bench.rs` : « Deliberately the same shape as the Swift
+`wisq-bench`, down to the wording, because the only useful comparison between
+two implementations is one where nothing but the implementation differs. »
+Écrit, soigné, expliqué — et **absent de la CI, de `verify.sh` et de tous les
+documents**. Le débit que le site publie est celui du cœur que l'application
+embarque, c'est-à-dire précisément celui que ce binaire mesure. Il était cité de
+mémoire pendant que son instrument dormait dans le dépôt.
+
+Les deux bancs tournent maintenant à la suite, même noyau, même job. Et une
+garde dit le fil : une provenance qui cite une commande promet qu'elle se
+relance, donc la CI doit nommer l'instrument cité.
+
+### Ce que ça donne comme chiffres
+
+Cinq passages par cœur, sur ce conteneur, sur le noyau que la CI télécharge :
+
+| cœur | durée | débit |
+|---|---|---|
+| rv32 en Rust | 0,271 – 0,326 s | 136,9 – 164,7 MIPS |
+| rv32 en Swift | 0,352 – 0,470 s | 94,9 – 126,6 MIPS |
+
+**44,6 M d'instructions exactement**, dix fois sur dix, sur les deux cœurs.
+C'est le seul nombre de la série qui ne dépende pas de la machine, et c'est
+maintenant celui que la page met en avant. « Environ 160 » n'était pas faux :
+c'était le haut de la fourchette, atteint deux fois sur cinq, publié comme un
+point.
+
+**Et j'ai failli publier le même genre d'erreur dans l'autre sens.** J'avais
+écrit que le rapport entre les deux cœurs était de 1,3 ici contre 1,05 au
+CHANGELOG d'août. Faux : mes deux fourchettes viennent de deux séries prises à
+des moments différents, exactement le défaut que cette tranche corrige, commis
+sur ses propres mesures. Le couple adjacent que `verify.sh` produit maintenant —
+les deux démarrages à huit millièmes l'un de l'autre — donne **137,0 contre
+133,6**, soit 1,03. Le chiffre d'août tient ; c'est ma comparaison qui ne tenait
+pas. Deux séries ne se soustraient pas parce qu'elles sont dans le même
+tableau.
+
+### Le câblage s'est trompé d'ordre, et c'est son propre journal qui l'a dit
+
+Premier `verify.sh` complet après le branchement : cœur Swift **146,6 MIPS**,
+cœur Rust **118,3**. L'inverse des dix passages au repos. Rien n'avait changé
+dans les cœurs — `wisq-bench` enchaîne sur un banc x86 de quarante secondes, et
+je l'avais mis en premier. La charge tombait entre les deux démarrages rv32.
+
+Le premier correctif ne suffisait pas : en remettant le banc Rust devant, c'est
+la **compilation** du banc Swift — cinquante secondes — qui s'est installée
+entre les deux mesures. Les deux sont donc construits avant que l'un ou l'autre
+ne démarre. La même charge revient sous un autre nom tant qu'on ne se demande
+pas « qu'est-ce qui tourne entre mes deux termes ? ».
+
+Deux choses à en retenir. La première est que la comparaison que je venais
+d'ajouter ne comparait rien : deux mesures séparées par quarante secondes de
+calcul saturé ne sont pas prises dans les mêmes conditions, et c'est **exactement
+ce que `resolved.rs` imprime à ses lecteurs** depuis des mois. La seconde est que
+je ne l'ai pas vu en écrivant le câblage ; je l'ai vu en lisant la sortie. Le
+journal d'une exécution dit des choses que la relecture du script ne dit pas.
+
+### Et un troisième, que seule la CI pouvait dire
+
+`cargo: not found`, code 127, sur le job « Cœur (Linux) ». Ce conteneur-là n'a
+pas `cargo` sur son PATH — rustup l'installe dans `$HOME/.cargo` et l'étape
+voisine source déjà cet environnement, ce que la mienne ne faisait pas. Les 2 082
+tests Swift étaient passés juste avant ; c'est l'avant-dernière étape qui est
+tombée. `verify.sh` ne pouvait pas le voir : ici, `cargo` est sur le PATH.
+
+Troisième défaut de cette tranche, et le troisième de la même famille — un
+environnement supposé au lieu d'être nommé.
+
+### Et le relevé était illisible là où on le lit
+
+Le job vert, j'ai voulu voir ce que les deux bancs avaient imprimé. L'API des
+journaux ne sert que la **fin** d'un job — c'est écrit dans le filet, payé une
+fois déjà — et les deux relevés sont des milliers de lignes plus haut, derrière
+une suite Swift complète. Mesurés à chaque exécution, et introuvables : le
+défaut même que cette tranche corrige, reproduit dans son propre câblage.
+
+La réponse du dépôt existait : « Ce qui a sauté » et « Ce que l'iPhone simulé a
+mesuré » sont en dernier pour cette raison. Le banc a maintenant la sienne — les
+deux sorties gardées dans un fichier, republiées en avant-dernière étape.
+
+**Et j'ai poussé rouge.** La chaîne était
+`bun test 2>&1 | tail -4 && git commit && git push` : `tail` sort avec 0, donc le
+`&&` a enchaîné sur deux tests en échec. Le piège du code de sortie masqué par un
+tuyau, celui-là même que le filet nomme en première ligne, dans ma propre
+commande. Les deux rouges étaient `verify-covers-ci.test.ts` — une garde que je
+ne connaissais pas et qui exige que **chaque étape de la CI soit classée** :
+lancée par `verify.sh`, ou absente avec sa raison. La nouvelle étape est absente
+avec la sienne, et corrigée dans la foulée.
+
+### Ce que la republication a appris tout de suite
+
+Première exécution avec l'étape en place, lisible depuis l'API : **186,6 MIPS**
+pour le cœur Rust et 171,4 pour le Swift, à vingt millièmes de seconde d'écart.
+Deux enseignements immédiats.
+
+Le rapport est de **1,09** — proche du 1,05 d'août, loin du 1,3 que mes deux
+séries séparées suggéraient. Deux machines indépendantes disent maintenant la
+même chose, et ce que disaient mes séries était un artefact.
+
+Et la page était **fausse sur la provenance** : j'avais écrit « sur le conteneur
+Linux x86_64 de la CI » une fourchette mesurée dans ce conteneur-ci, qui est plus
+lent. La CI démarre en 0,239 s là où j'obtenais 0,271 au mieux. La phrase dit
+maintenant 0,24 à 0,33 s et 137 à 187 MIPS, en nommant les deux machines — et la
+borne haute vient d'un journal que n'importe qui peut ouvrir, ce qui est mieux
+qu'une mesure faite une fois par moi. Le relevé aura donc corrigé la prose de la
+tranche qui l'a créé, dans l'heure.
+
+### Le trou était dans les tests, pas dans le code
+
+J'avais écrit la commande sur la page — « `cargo run --release --bin
+wisq-bench-rs` le refait ». `render.test.tsx` l'a refusée : aucune page ne donne
+de quoi installer ou construire le projet, `cargo run` et `cargo build` sont dans
+sa liste. C'est une décision, elle est tenue, et je ne l'avais pas vue. La page
+dit donc que le banc vit dans le dépôt et que la CI le lance ; la commande vit
+dans la provenance, qui est faite pour ça.
+
+### Et le noyau de test, enfin présent
+
+Onze tests Swift et les deux bancs sautaient depuis toujours dans ce conteneur,
+faute d'image. Le `curl` de la CI rend ici 378 octets de JSON — le proxy refuse
+les dépôts hors périmètre — et il faut passer par `add_repo` puis un clone de
+`cnlohr/mini-rv32ima-images`. L'image est alors à l'endroit que tout le monde
+attend, et `verify.sh` devient beaucoup moins muet.
+
+### Le signe à retenir
+
+Une consigne écrite sans outil se perd. Celle-ci — « chercher les constantes
+numériques dans le code des instruments » — était juste, consignée, et n'avait
+jamais rien refusé. Le corollaire est plus dur : **un instrument qui existe sans
+être lancé est pire qu'un instrument absent**, parce que sa présence dans le
+dépôt fait croire que le chiffre a été refait.

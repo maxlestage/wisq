@@ -415,6 +415,74 @@ const accounted = new Map<string, Map<string, string>>([
       ],
     ]),
   ],
+  [
+    "faq.ts",
+    new Map([
+      [
+        "44.6",
+        "le compte d'instructions jusqu'à l'invite de connexion, et il est " +
+          "**déterministe** : l'horloge de la machine avance avec les " +
+          "instructions retirées, pas avec le temps réel. Dix passages — cinq " +
+          "par cœur — ont rendu 44,6 M exactement. Imprimé par les deux bancs, " +
+          "`swift run -c release wisq-bench` et " +
+          "`cargo run --release --bin wisq-bench-rs`, que la CI lance tous les deux.",
+      ],
+      [
+        "44,6",
+        "le même compte dans l'autre langue : la page est écrite deux fois, et " +
+          "la virgule décimale en fait un jeton distinct.",
+      ],
+      [
+        "0.24",
+        "le démarrage le plus rapide observé : 0,239 s, sur la machine où tourne " +
+          "la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui republie " +
+          "les deux relevés à la fin de chaque exécution de " +
+          "`cargo run --release --bin wisq-bench-rs`.",
+      ],
+      ["0,24", "le même nombre dans l'autre langue."],
+      [
+        "0.33",
+        "le plus lent : 0,326 s, sur cinq passages du même banc dans un " +
+          "conteneur de développement modeste. C'est une durée d'hôte, pas une " +
+          "propriété de wisq — le compte d'instructions au-dessus est le même " +
+          "partout, le temps qu'il prend appartient à la machine.",
+      ],
+      ["0,33", "le même nombre dans l'autre langue."],
+      [
+        "137",
+        "le débit du plus lent de ces passages, 136,9 MIPS. La page annonçait " +
+          "« environ 160 » comme un point ; deux machines suffisent à montrer " +
+          "pourquoi un point ne tient pas.",
+      ],
+      [
+        "187",
+        "le débit du plus rapide, 186,6 MIPS, relevé par la CI et republié en " +
+          "fin de job. La borne haute vient donc d'un journal que n'importe qui " +
+          "peut ouvrir, et non d'une mesure faite une fois.",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : les deux gibioctets de " +
+          "`LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32 — sa RAM " +
+          "commence à 0x80000000 et son processeur adresse en 32 bits.",
+      ],
+      [
+        "32",
+        "ce n'est pas une mesure : les 32 bits de rv32ima, l'architecture de la " +
+          "machine locale.",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure : `LinuxMachine.defaultRAMSize`, ce qu'un noyau " +
+          "reçoit quand personne n'a touché au curseur.",
+      ],
+      [
+        "0.2",
+        "ce n'est pas une mesure : le `2` de `omarchy-4.0.2.iso`, le nom de " +
+          "fichier que la commande d'exemple montre.",
+      ],
+    ]),
+  ],
   ["index.ts", new Map()],
   ["offline.ts", new Map()],
 ]);
@@ -432,7 +500,6 @@ const notLookedAt = new Map<string, string[]>([
     "docs.ts",
     ["0", "1", "2", "2048", "3.8", "512", "5900", "5901", "64", "7442", "8250"],
   ],
-  ["faq.ts", ["0.2", "160", "2", "32", "44,6", "44.6", "64"]],
   ["privacy.ts", ["1"]],
 ]);
 
@@ -513,6 +580,43 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
         `les chiffres de « ${page} » ont bougé depuis l'aveu. Mets la liste à ` +
           `jour — ou, mieux, tiens la page et sors-la de cette liste.`,
       ).toEqual(confessed);
+    }
+  });
+
+  /// **Une provenance qui cite une commande promet qu'elle se relance.** C'est
+  /// la moitié la plus fragile d'un chiffre publié : `faq.ts` annonçait un débit
+  /// dont l'instrument existait — `wisq-bench-rs`, qui double le banc Swift
+  /// « down to the wording » selon son propre en-tête — et que **rien ne
+  /// lançait**, ni la CI, ni `verify.sh`, ni un document. Le chiffre était donc
+  /// cité de mémoire pendant que sa commande dormait dans le dépôt.
+  ///
+  /// La commande ne va pas sur la page : `render.test.tsx` interdit `cargo run`
+  /// et `cargo build` sur le site, et c'est une décision — le site décrit wisq,
+  /// il ne le distribue pas. Elle vit donc ici, dans la provenance, et ce test
+  /// dit les deux sens : la provenance la cite, et la CI la lance.
+  const citedInstruments = new Map([
+    ["swift run -c release wisq-bench", "swift run -c release wisq-bench"],
+    ["cargo run --release --bin wisq-bench-rs", "wisq-bench-rs"],
+  ]);
+
+  test("un instrument cité par une provenance est lancé par la CI", () => {
+    const workflow = readFileSync(
+      join(repoRoot, ".github", "workflows", "ci.yml"),
+      "utf8",
+    );
+    const provenance = [...accounted.values()]
+      .flatMap((page) => [...page.values()])
+      .join("\n");
+    for (const [command, needle] of citedInstruments) {
+      expect(
+        provenance.includes(command),
+        `aucune provenance ne cite « ${command} » ; l'entrée ne couvre rien.`,
+      ).toBe(true);
+      expect(
+        workflow.includes(needle),
+        `une provenance cite « ${command} » et ci.yml ne nomme pas « ${needle} » : ` +
+          `le chiffre serait cité sans que rien ne le refasse.`,
+      ).toBe(true);
     }
   });
 
