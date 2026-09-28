@@ -17636,6 +17636,18 @@ tombée. `verify.sh` ne pouvait pas le voir : ici, `cargo` est sur le PATH.
 Troisième défaut de cette tranche, et le troisième de la même famille — un
 environnement supposé au lieu d'être nommé.
 
+### Et le relevé était illisible là où on le lit
+
+Le job vert, j'ai voulu voir ce que les deux bancs avaient imprimé. L'API des
+journaux ne sert que la **fin** d'un job — c'est écrit dans le filet, payé une
+fois déjà — et les deux relevés sont des milliers de lignes plus haut, derrière
+une suite Swift complète. Mesurés à chaque exécution, et introuvables : le
+défaut même que cette tranche corrige, reproduit dans son propre câblage.
+
+La réponse du dépôt existait : « Ce qui a sauté » et « Ce que l'iPhone simulé a
+mesuré » sont en dernier pour cette raison. Le banc a maintenant la sienne — les
+deux sorties gardées dans un fichier, republiées en avant-dernière étape.
+
 ### Le trou était dans les tests, pas dans le code
 
 J'avais écrit la commande sur la page — « `cargo run --release --bin

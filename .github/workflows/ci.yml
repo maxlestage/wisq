@@ -157,8 +157,15 @@ jobs:
           # mesures est la même charge, sous un autre nom, que le banc x86.
           cargo build --release --bin wisq-bench-rs
           swift build -c release --product wisq-bench
-          ./target/release/wisq-bench-rs
-          swift run -c release wisq-bench
+          # Gardé : le journal d'un job ne se lit que par sa fin, et ces
+          # lignes-ci sont au milieu. Une étape plus bas les republie.
+          {
+            echo "cœur Rust — celui que l'application embarque"
+            ./target/release/wisq-bench-rs
+            echo ""
+            echo "cœur Swift"
+            swift run -c release wisq-bench
+          } 2>&1 | tee "${RUNNER_TEMP:-/tmp}/wisq-bench.log"
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
       - name: Les deux cœurs, comparés sur le même noyau
@@ -172,6 +179,26 @@ jobs:
           scripts/test-rust-core.sh
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+      - name: Ce que les deux bancs ont mesuré
+        # **Avant-dernière, et pour la même raison que l'étape d'après.**
+        # L'API des journaux ne sert que la fin d'un job : les deux relevés sont
+        # imprimés des milliers de lignes plus haut, donc illisibles là où on
+        # les lit. Un chiffre mesuré à chaque exécution et introuvable dans le
+        # journal est un chiffre jeté — le défaut même que cette tranche corrige.
+        if: always()
+        run: |
+          log="${RUNNER_TEMP:-/tmp}/wisq-bench.log"
+          if [ ! -f "$log" ]; then
+            echo "pas de relevé : le banc n'a pas tourné (image absente ?)"
+            exit 0
+          fi
+          echo "### Démarrage jusqu'à l'invite, les deux cœurs"
+          echo ""
+          echo "Même noyau, même machine, construits avant d'être lancés."
+          echo ""
+          echo '```'
+          grep -E '^(cœur|instructions|construction|durée|débit|repère)' "$log" || cat "$log"
+          echo '```'
       - name: Ce qui a sauté, et pourquoi
         # **En dernier, et toujours.** Le noyau de test est récupéré en « best
         # effort » plus haut : si ce téléchargement échoue, onze tests Swift
