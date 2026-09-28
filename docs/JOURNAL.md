@@ -17657,6 +17657,24 @@ ne connaissais pas et qui exige que **chaque étape de la CI soit classée** :
 lancée par `verify.sh`, ou absente avec sa raison. La nouvelle étape est absente
 avec la sienne, et corrigée dans la foulée.
 
+### Ce que la republication a appris tout de suite
+
+Première exécution avec l'étape en place, lisible depuis l'API : **186,6 MIPS**
+pour le cœur Rust et 171,4 pour le Swift, à vingt millièmes de seconde d'écart.
+Deux enseignements immédiats.
+
+Le rapport est de **1,09** — proche du 1,05 d'août, loin du 1,3 que mes deux
+séries séparées suggéraient. Deux machines indépendantes disent maintenant la
+même chose, et ce que disaient mes séries était un artefact.
+
+Et la page était **fausse sur la provenance** : j'avais écrit « sur le conteneur
+Linux x86_64 de la CI » une fourchette mesurée dans ce conteneur-ci, qui est plus
+lent. La CI démarre en 0,239 s là où j'obtenais 0,271 au mieux. La phrase dit
+maintenant 0,24 à 0,33 s et 137 à 187 MIPS, en nommant les deux machines — et la
+borne haute vient d'un journal que n'importe qui peut ouvrir, ce qui est mieux
+qu'une mesure faite une fois par moi. Le relevé aura donc corrigé la prose de la
+tranche qui l'a créé, dans l'heure.
+
 ### Le trou était dans les tests, pas dans le code
 
 J'avais écrit la commande sur la page — « `cargo run --release --bin

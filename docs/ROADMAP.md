@@ -12937,6 +12937,14 @@ dit son propre en-tête — et il n'apparaissait ni dans la CI, ni dans
 le même noyau, dans le même job : le rapport entre les deux cœurs est mesuré à
 chaque changement au lieu d'être cité d'août.
 
+**Et la CI le dit d'elle-même, maintenant.** Le journal d'un job ne se lit que
+par sa fin : une étape avant-dernière republie les deux relevés. Première
+exécution — **186,6 MIPS** pour le Rust, 171,4 pour le Swift, à vingt millièmes
+d'écart, soit 1,09. Le coureur est plus rapide que ce conteneur, et c'est pour ça
+que la page annonce **0,24 à 0,33 s et 137 à 187 MIPS** en nommant les deux
+machines : la borne haute sort d'un journal public, la basse d'un conteneur
+modeste.
+
 **L'ordre des deux bancs est mesuré, pas esthétique.** Le premier câblage
 lançait le banc Swift d'abord — qui enchaîne sur un banc x86 de quarante
 secondes —, ce qui mettait cette charge entre les deux démarrages rv32. Le

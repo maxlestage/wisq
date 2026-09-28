@@ -433,31 +433,32 @@ const accounted = new Map<string, Map<string, string>>([
           "la virgule décimale en fait un jeton distinct.",
       ],
       [
-        "0.27",
-        "le plus rapide de cinq passages du cœur Rust sur le conteneur de la CI, " +
-          "`cargo run --release --bin wisq-bench-rs` — 0,271 s. C'est une durée " +
-          "d'hôte, pas une propriété de wisq : le compte d'instructions au-dessus " +
-          "est le même partout, le temps qu'il prend appartient à la machine.",
+        "0.24",
+        "le démarrage le plus rapide observé : 0,239 s, sur la machine où tourne " +
+          "la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui republie " +
+          "les deux relevés à la fin de chaque exécution de " +
+          "`cargo run --release --bin wisq-bench-rs`.",
       ],
-      ["0,27", "le même nombre dans l'autre langue."],
+      ["0,24", "le même nombre dans l'autre langue."],
       [
         "0.33",
-        "le plus lent des mêmes cinq passages — 0,326 s. Publier la fourchette " +
-          "plutôt qu'un point est ce que la tranche de `roadmap.ts` a appris : " +
-          "un débit publié comme un point est un débit qu'une relance contredit.",
+        "le plus lent : 0,326 s, sur cinq passages du même banc dans un " +
+          "conteneur de développement modeste. C'est une durée d'hôte, pas une " +
+          "propriété de wisq — le compte d'instructions au-dessus est le même " +
+          "partout, le temps qu'il prend appartient à la machine.",
       ],
       ["0,33", "le même nombre dans l'autre langue."],
       [
         "137",
-        "le débit du plus lent de ces cinq passages, 136,9 MIPS. La page " +
-          "annonçait « environ 160 » comme un point : c'est le haut de la " +
-          "fourchette, atteint deux fois sur cinq.",
+        "le débit du plus lent de ces passages, 136,9 MIPS. La page annonçait " +
+          "« environ 160 » comme un point ; deux machines suffisent à montrer " +
+          "pourquoi un point ne tient pas.",
       ],
       [
-        "165",
-        "le débit du plus rapide, 164,7 MIPS. Les deux bornes viennent de la " +
-          "même série, sur la même machine, le même noyau — refaites par la " +
-          "commande que la page publie.",
+        "187",
+        "le débit du plus rapide, 186,6 MIPS, relevé par la CI et republié en " +
+          "fin de job. La borne haute vient donc d'un journal que n'importe qui " +
+          "peut ouvrir, et non d'une mesure faite une fois.",
       ],
       [
         "2",
