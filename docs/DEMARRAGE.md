@@ -1,14 +1,25 @@
 # Ce qui manque pour qu'un noyau démarre
 
-Ce document existe parce qu'un chiffre a cessé d'être une réponse. Cinq tranches
-de travail ont porté la couverture du traducteur de **9949 à 9980 régions
-d'entrée sur 10 116**, et les refus nommés de **40 à 9**. C'est réel, c'est
-mesuré, et ça ne rapproche pas d'un noyau qui démarre.
+Ce document existe parce qu'un chiffre a cessé d'être une réponse. La couverture
+du traducteur est **saturée** — 10 116 régions d'entrée sur 10 116, zéro refus —
+et un compteur qui ne peut plus baisser ne dit plus si le décodeur progresse. La
+section suivante dit où regarder à la place.
 
-Ce qui manque n'est plus une liste d'instructions à produire. Ce sont **deux
-mécanismes entiers** : la pagination et les interruptions. Ce document dit
-lesquels, ce qu'ils coûteraient, et — surtout — ce qui est mesuré ici par
-opposition à ce qui est encore une supposition.
+**Et les deux mécanismes que ce document annonçait entièrement absents ne le sont
+plus.** La pagination est là dans la forme confinée, celle que l'application
+exécute : quatre niveaux de tables derrière un tampon de traduction, `invlpg`
+qui le vide, une faute de page délivrée à l'invité. Les interruptions sont là
+pour l'entrée logicielle et pour les fautes : l'IDT est lue, `iretq` est produit,
+une `#GP` part sur un MSR inconnu. Ce qui manque tient maintenant en une ligne du
+tableau plus bas — **la délivrance d'une interruption de matériel** — et le reste
+de ce document dit ce que chaque pièce a coûté.
+
+**Les paragraphes écrits devant un mur depuis franchi le disent.** Ce document a
+gardé « le mur a un nom, et ce sont deux instructions » pendant plusieurs
+tranches après que la forme confinée ait accepté ces deux instructions ; c'est la
+troisième copie de cette affirmation, et les deux autres avaient été corrigées.
+Ce qui est mesuré ici porte donc sa date et sa commande, et ce qui est encore une
+supposition est nommé comme telle.
 
 ## D'abord : ce que le chiffre veut dire, et ce qu'il ne veut pas dire
 
@@ -99,15 +110,26 @@ reproduit. Le rapport, lui, tient sous toutes : c'est l'ordre de grandeur qui
 portait l'argument, pas les six chiffres significatifs. `crates/wisq-vm/src/census.rs`
 fixe désormais les deux bandes, et six tests tiennent ce qu'elles comptent.
 
-### Le mur a un nom, et ce sont deux instructions
+### Le mur avait un nom, et il est tombé
 
 Écrire CR3 pose la racine des tables de pages ; écrire CR0 allume la pagination.
-Ce sont exactement les deux instructions que la dernière tranche a **refusées**,
-et le refus est honnête : les accepter ferait croire au noyau qu'il pagine, et la
-panne tomberait bien plus loin que sa cause.
+Ce sont les deux instructions que la tranche qui a écrit ce paragraphe
+**refusait dans la forme libre comme dans la confinée**, et le refus était
+honnête : les accepter sans marcher les tables
+aurait fait croire au noyau qu'il pagine, et la panne serait tombée loin de sa
+cause.
 
-**Le refus honnête et le mur sont la même chose.** Il n'y a pas de demi-mesure
-ici : soit on marche les tables, soit on ment.
+**Les deux mises en forme n'en font plus la même chose.** La forme **confinée** —
+celle que l'application exécute — les **accepte** : une adresse invitée traverse
+alors quatre niveaux de tables derrière le tampon de traduction. La forme
+**libre** les refuse toujours, faute de traduction derrière. C'est la seule
+divergence d'acceptation entre les deux formes de tout l'émetteur, et
+`only_the_confined_form_accepts_the_write_that_drives_paging` la tient des deux
+côtés.
+
+**Ce paragraphe a dit le contraire plus longtemps que l'en-tête de l'émetteur**,
+qui porte la même correction et raconte l'avoir portée en retard. Trois copies de
+la même affirmation, deux corrigées : celle-ci était la troisième.
 
 ### Ce que ça coûterait, et ce qui n'est pas mesuré
 
@@ -492,17 +514,18 @@ l'utilisateur apporte est la sienne.
 
 ## L'ordre que je propose
 
-1. **La sonde de coût**, avant toute décision : le repli contre le tampon de
-   traduction, sous JavaScriptCore, sur la même boucle.
-2. **La marche des tables et son tampon**, si le chiffre le permet — et si le
-   chiffre ne le permet pas, ce document doit dire pourquoi plutôt que le
-   contourner.
-3. **Écrire CR3 et CR0**, qui cessent alors d'être des mensonges.
-4. **Le timer, la délivrance et `iret`** — le deuxième mur, une fois le premier
-   franchi.
+1. ~~**La sonde de coût**~~ — faite : le repli contre le tampon de traduction,
+   sous JavaScriptCore, sur la même boucle. Le relevé est plus haut.
+2. ~~**La marche des tables et son tampon**~~ — faite, dans la forme confinée.
+3. ~~**Écrire CR3 et CR0**~~ — faits dans la forme confinée, qui traduit derrière ;
+   la forme libre les refuse encore, et c'est la seule divergence des deux.
+4. **Le timer, la délivrance et `iret`** — en partie : le 8254 compte, l'IDT est
+   lue, `iretq` est produit, et les fautes sont délivrées. Reste **la délivrance
+   d'une interruption de matériel**, la dernière ligne du tableau plus haut.
 
 Chaque étape par sa propre tranche, chacune avec sa sonde avant son code, et
-chacune sabotée avant d'être crue.
+chacune sabotée avant d'être crue. Les trois premières ont suivi cet ordre ; ce
+qui n'a pas suivi, c'est la relecture de cette liste après chacune.
 
 ### Où poser la délivrance : mesuré
 

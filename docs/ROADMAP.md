@@ -13067,3 +13067,37 @@ certificat épinglé par le lien d'appairage — est nommé à part.
 
 Reste ce que ces gardes ne tiennent pas, et c'est écrit dedans : la justesse de
 la prose autour du nombre.
+
+## #291 — le document du démarrage annonçait un mur franchi cent lignes plus bas
+
+`docs/DEMARRAGE.md` a pour sujet « ce qui manque pour qu'un noyau démarre ». Son
+corps est tenu avec soin : chaque chiffre porte sa date et sa commande, et
+plusieurs paragraphes disent quelle version antérieure ils corrigent. Trois
+passages, eux, décrivaient un état dépassé — et le même fichier les réfute.
+
+| ce qu'il disait | ce que le même fichier dit ailleurs |
+|---|---|
+| en tête : « 9949 à 9980 régions d'entrée sur 10 116 », « les refus nommés de 40 à 9 » | « ce chiffre est saturé […] 10 116 sur 10 116, zéro refus », vingt lignes plus bas |
+| en tête : « il manque **deux mécanismes entiers** : la pagination et les interruptions » | « la délivrance d'une faute de page **existe** », `invlpg` vide le tampon, l'IDT est lue, `iretq` est produit |
+| « le mur a un nom, et ce sont deux instructions […] soit on marche les tables, soit on ment » | « **le premier mur est franchi** », section « où poser la délivrance » |
+| la liste « l'ordre que je propose », étapes 1 à 3 | les trois sont faites, et la section d'après le dit |
+
+**C'est la troisième copie de la même affirmation.** #247 avait corrigé l'en-tête
+de `x86_wasm.rs` — qui raconte même l'avoir porté en retard, « à trois mille
+lignes du code qui l'implémente » — et la page du site. Ce document n'avait pas
+été relu. La leçon de #289, mot pour mot : une garde qui tient deux copies sur
+trois laisse la troisième dériver, et personne ne le voit parce que les deux
+gardées s'accordent.
+
+`site/tests/stale-claims.test.ts` tient deux affirmations nommées, chacune parce
+qu'un test nommé la contredit :
+
+- « deux mécanismes entiers » est interdit tant que
+  `a_page_fault_is_delivered_to_the_guest_and_iretq_resumes_the_faulting_instruction`
+  existe ;
+- un paragraphe qui parle de CR0 ou CR3 **et** d'un refus doit dire de quelle
+  mise en forme il parle — la confinée les accepte et traverse quatre niveaux de
+  tables, la libre les refuse encore —, tant que
+  `only_the_confined_form_accepts_the_write_that_drives_paging` existe.
+
+Ce qu'elle ne tient pas est écrit dedans : le reste du document.
