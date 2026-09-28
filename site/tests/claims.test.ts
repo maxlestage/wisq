@@ -483,6 +483,81 @@ const accounted = new Map<string, Map<string, string>>([
       ],
     ]),
   ],
+  [
+    "docs.ts",
+    new Map([
+      [
+        "3.8",
+        "ce n'est pas une mesure : la version de RFB que le client parle — " +
+          "`Sources/WisqRemote/VNC/VNCSession.swift` écrit « RFB 003.008 » sur " +
+          "le fil, et RFB.swift porte les constantes de la RFC 6143.",
+      ],
+      [
+        "5900",
+        "ce n'est pas une mesure : la base des ports VNC, dont l'écran :1 fait " +
+          "5901. C'est aussi `RemoteProtocol.defaultPort` pour VNC et pour " +
+          "SPICE, et ce dernier a été mesuré plutôt que supposé — libvirt " +
+          "alloue depuis 5900 vers le haut, pas depuis 5930.",
+      ],
+      [
+        "5901",
+        "ce n'est pas une mesure : 5900 plus l'écran :1, dans la commande " +
+          "d'exemple comme dans la phrase qui l'explique.",
+      ],
+      [
+        "7442",
+        "ce n'est pas une mesure : le port par défaut du démon — " +
+          "`crates/wisq-agent/src/main.rs`, `let mut port: u16 = 7442` — et la " +
+          "ligne d'exemple reprend le format que le démon imprime vraiment " +
+          "(« wisq-agent en écoute sur le port {bound} »).",
+      ],
+      [
+        "8250",
+        "ce n'est pas une mesure : le modèle d'UART de la machine rv32 — " +
+          "`RV32DeviceTree.swift` le place à 0x1000_0000 et passe " +
+          "`earlycon=uart8250,mmio` au noyau. Le 16550 que la page des versions " +
+          "mentionne est l'autre machine, la x86-64.",
+      ],
+      [
+        "512",
+        "ce n'est pas une mesure : `DiskStore.sectorSize`, la taille d'un " +
+          "secteur — la couche d'écriture tasse les secteurs touchés à " +
+          "512 octets chacun.",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure : `LinuxMachine.defaultRAMSize`, ce qu'un " +
+          "noyau reçoit quand personne n'a touché au curseur.",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : les deux gibioctets de " +
+          "`LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32.",
+      ],
+      [
+        "1998",
+        "ce n'est pas une mesure : l'année où Microsoft a publié la clé qui " +
+          "signe les certificats de la sécurité historique de RDP. C'est la " +
+          "raison pour laquelle cette sécurité n'authentifie pas le serveur, et " +
+          "`RDPSession.swift` le dit au même endroit que le code qui la parle.",
+      ],
+      [
+        "2048",
+        "ce n'est pas une mesure : les mégaoctets d'un `qemu-system-x86_64 -m " +
+          "2048` d'exemple. La commande est celle du lecteur sur sa machine, " +
+          "pas une propriété de wisq.",
+      ],
+      [
+        "1",
+        "ce n'est pas une mesure : l'écran `:1` de la même commande d'exemple.",
+      ],
+      [
+        "0",
+        "ce n'est pas une mesure : l'écran `:0` que `x11vnc -display :0` " +
+          "expose, dans la seconde ligne du même exemple.",
+      ],
+    ]),
+  ],
   ["index.ts", new Map()],
   ["offline.ts", new Map()],
 ]);
@@ -495,10 +570,6 @@ const notLookedAt = new Map<string, string[]>([
     "architecture.ts",
     ["0", "0,1", "0,22", "0.1", "0.22", "16", "194", "2 000", "2,7", "2.7",
       "3", "32", "33", "36,7", "36.7", "47", "50", "8", "9"],
-  ],
-  [
-    "docs.ts",
-    ["0", "1", "2", "2048", "3.8", "512", "5900", "5901", "64", "7442", "8250"],
   ],
   ["privacy.ts", ["1"]],
 ]);
