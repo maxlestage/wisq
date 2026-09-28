@@ -17699,3 +17699,66 @@ numériques dans le code des instruments » — était juste, consignée, et n'a
 jamais rien refusé. Le corollaire est plus dur : **un instrument qui existe sans
 être lancé est pire qu'un instrument absent**, parce que sa présence dans le
 dépôt fait croire que le chiffre a été refait.
+
+## #289 — un sabordage a survécu, et c'est ce qui a rendu la garde juste
+
+Deuxième page de la dette de #287. `docs.ts` porte douze chiffres et ils tiennent
+tous : RFB 003.008 est bien ce que `VNCSession` écrit sur le fil, 512 est
+`DiskStore.sectorSize`, 8250 est l'UART que `RV32DeviceTree` place à
+0x1000_0000 — le 16550 que la page des versions mentionne est l'autre machine,
+la x86-64, et ce n'est donc pas une contradiction. Même la ligne d'exemple du
+démon reprend le format qu'il imprime vraiment.
+
+**C'est la prose qui était fausse.** « wisq parle deux protocoles de console »,
+dans les deux langues, pendant que la page d'accueil du même site annonçait trois
+clients. Six endroits du dépôt s'accordent contre elle : l'énum, `isImplemented`,
+le `ForEach` du sélecteur, `RemoteSession`, treize fichiers sous
+`Sources/WisqRemote/RDP/`, et les tableaux des deux README.
+
+### La leçon était déjà écrite, une couche plus haut
+
+`isImplemented` porte ce commentaire :
+
+> This is a **label**, and `SessionFactory.makeSession` is the fact. They were
+> two hand-kept lists and they had drifted apart […] the editor offered « SPICE
+> (bientôt) » about a protocol the factory has been building sessions for since
+> lot 5.
+
+Exactement le même défaut, attrapé et gardé par `ImplementedProtocolsTests`. **Le
+site était la troisième liste tenue à la main**, et rien ne la rapprochait des
+deux autres. Une garde qui tient deux listes sur trois laisse la troisième
+dériver, et personne ne le remarque parce que les deux gardées s'accordent.
+
+### Mon propre lecteur lisait trop
+
+La garde extrait les noms du `displayName` de l'énum. Première version : découpe
+à partir de `var displayName` jusqu'à la fin du fichier. Elle a annoncé **quatre**
+protocoles dont « TLS » — un `return` d'une propriété plus bas. Un lecteur trop
+gourmand ne se distingue pas d'un lecteur juste tant que personne ne compte ce
+qu'il a lu, donc les cases de l'énum sont relues séparément et les deux comptes
+doivent s'accorder. Le sabordage qui ajoute un `displayName` sans case déclarée
+fait tomber cette vérification.
+
+### Et un sabordage a SURVÉCU
+
+Premier sabordage : retirer « RDP » de la phrase qui liste les protocoles. La
+garde est restée verte. Le motif : elle demandait que le nom apparaisse **quelque
+part dans la moitié de langue**, et l'occurrence de la phrase suivante suffisait.
+C'est l'assertion qui a l'air d'une garde — elle mesurait une empreinte et non
+l'acte.
+
+Elle découpe maintenant le **paragraphe qui annonce le compte** et exige que
+celui-là nomme les trois. Rejoué en retirant toutes les mentions du paragraphe :
+elle tombe. Un sabordage qui survit n'est pas une perte de temps, c'est le seul
+moment où l'on apprend ce que la garde tient vraiment — et ici il a fallu deux
+tentatives pour s'apercevoir que la deuxième aussi était satisfaite par un autre
+chemin.
+
+### Le signe à retenir
+
+**Une garde qui tient deux listes sur trois fait croire que la question est
+close.** `ImplementedProtocolsTests` rapproche l'étiquette et la fabrique, et
+cette paire s'accordait parfaitement pendant que la vitrine disait autre chose.
+Chercher, pour chaque garde de cohérence, **quelle troisième copie de la même
+affirmation vit ailleurs** — et dans ce dépôt, la troisième copie est presque
+toujours dans `site/src`.

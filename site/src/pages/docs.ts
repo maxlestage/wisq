@@ -14,7 +14,7 @@ export const docsEn: Doc = {
     {
       kind: "p",
       text:
-        "wisq speaks two console protocols. RFB 3.8 — VNC — reaches anything that exposes a VNC console: QEMU, libvirt, VirtualBox, Proxmox, a Raspberry Pi running x11vnc, a Mac sharing its screen. SPICE reaches what libvirt hosts usually publish instead, and carries more: sound both ways, the clipboard, and its own image codecs.",
+        "wisq speaks three console protocols. RFB 3.8 — VNC — reaches anything that exposes a VNC console: QEMU, libvirt, VirtualBox, Proxmox, a Raspberry Pi running x11vnc, a Mac sharing its screen. SPICE reaches what libvirt hosts usually publish instead, and carries more: sound both ways, the clipboard, and its own image codecs. RDP reaches Windows guests, and it comes with a caveat worth reading before you rely on it: wisq speaks RDP's historic security and nothing else yet, which does not authenticate the server — the certificate is signed by a key Microsoft published in 1998. A host that demands NLA or TLS is refused by name rather than worked around, and the clipboard and sound travel on virtual channels wisq does not open.",
     },
     {
       kind: "code",
@@ -141,7 +141,7 @@ export const docsFr: Doc = {
     {
       kind: "p",
       text:
-        "wisq parle deux protocoles de console. RFB 3.8 — VNC — atteint tout ce qui expose une console VNC : QEMU, libvirt, VirtualBox, Proxmox, un Raspberry Pi sous x11vnc, un Mac qui partage son écran. SPICE atteint ce que les hôtes libvirt publient plutôt d'habitude, et transporte davantage : le son dans les deux sens, le presse-papiers, et ses propres codecs d'image.",
+        "wisq parle trois protocoles de console. RFB 3.8 — VNC — atteint tout ce qui expose une console VNC : QEMU, libvirt, VirtualBox, Proxmox, un Raspberry Pi sous x11vnc, un Mac qui partage son écran. SPICE atteint ce que les hôtes libvirt publient plutôt d'habitude, et transporte davantage : le son dans les deux sens, le presse-papiers, et ses propres codecs d'image. RDP atteint les invités Windows, avec une réserve à lire avant de s'y fier : wisq parle la sécurité historique de RDP et rien d'autre pour l'instant, laquelle n'authentifie pas le serveur — le certificat est signé par une clé que Microsoft a publiée en 1998. Un hôte qui exige NLA ou TLS est refusé par son nom plutôt que contourné, et le presse-papiers comme le son voyagent sur des canaux virtuels que wisq n'ouvre pas.",
     },
     {
       kind: "code",

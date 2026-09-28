@@ -12978,3 +12978,48 @@ trou dans les tests avant de le combler, encore une fois.
 
 `faq.ts` passe des pages avouées aux pages tenues : douze chiffres, chacun avec
 sa ligne. Restent trois avouées — `architecture.ts`, `docs.ts`, `privacy.ts`.
+
+## #289 — la page d'accueil disait trois clients, le guide en disait deux
+
+Suite de la dette de #287 : `docs.ts` était l'une des trois pages avouées. Ses
+douze chiffres tiennent tous — mais la prose autour, non.
+
+Le guide annonçait « wisq parle **deux** protocoles de console » et n'en nommait
+que deux, dans les deux langues. Au même moment `content.ts`, la page d'accueil,
+annonçait « **trois** clients écrits à la main — VNC, SPICE et RDP », et
+`roadmap.ts` disait de RDP qu'il était « désormais le seul protocole de console
+que wisq ne parle pas », avec « une ébauche délibérée qui refuse au lieu de faire
+semblant ». `Package.swift` portait « SPICE and RDP (planned) ».
+
+**Ce que le code dit.** `RemoteProtocol` déclare `vnc`, `spice`, `rdp` ;
+`isImplemented` rend `true` pour les trois ; `MachineEditorView` fait un
+`ForEach` sur `allCases`, donc le sélecteur les propose ; `RemoteSession`
+construit une `RDPSession` ; et `Sources/WisqRemote/RDP/` porte **treize
+fichiers** — BER, MCS, échange de clés, licence, capacités, bitmaps RLE, entrées,
+partage, crypto. Les tableaux des deux README le disent ligne par ligne : cette
+liste est « faite », NLA/CredSSP, les canaux virtuels, le curseur et la retaille
+sont « à faire ». `ARCHITECTURE.md` nomme les mêmes manques.
+
+Donc quatre affirmations fausses dans trois fichiers, contredites par six
+endroits qui, eux, s'accordent. Le guide dit trois maintenant, et la réserve qui
+va avec : wisq ne parle que la sécurité historique de RDP, laquelle
+n'authentifie pas le serveur — la clé qui signe ces certificats a été publiée par
+Microsoft en 1998 —, un hôte qui exige NLA ou TLS est refusé par son nom, et le
+presse-papiers comme le son voyagent sur des canaux que wisq n'ouvre pas.
+
+**Le même défaut existait une couche plus haut, et il avait été gardé.** Le
+commentaire de `isImplemented` raconte que cette propriété et
+`SessionFactory.makeSession` étaient « deux listes tenues à la main qui avaient
+divergé » : l'éditeur annonçait « SPICE (bientôt) » pour un protocole que la
+fabrique construisait depuis le lot 5. `ImplementedProtocolsTests` a été écrit
+pour ça. **Le site était la troisième liste tenue à la main**, et personne ne
+l'avait rapprochée des deux autres.
+
+`site/tests/protocols.test.ts` le fait : la liste vient de `displayName`, le
+paragraphe qui annonce le compte doit nommer chacun, et le nombre écrit en mots
+doit s'accorder — dans les deux langues. Ce qu'elle ne tient pas est écrit
+dedans : ce que chaque protocole *fait*. Que RDP ne parle que la sécurité
+historique est porté par le tableau des README, et ce tableau n'est pas tenu.
+
+`docs.ts` passe des pages avouées aux pages tenues : douze chiffres, chacun avec
+sa ligne. Restent `architecture.ts` et `privacy.ts`.

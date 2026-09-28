@@ -60,7 +60,7 @@ export const roadmapEn: Doc = {
         {
           term: "RDP",
           detail:
-            "The one that matters for Windows guests, and now the only console protocol wisq does not speak. Larger than SPICE by a good margin, and worth doing only properly — the client carries a deliberate stub that refuses rather than pretending.",
+            "The one that matters for Windows guests, and wisq speaks it: negotiation, MCS, key exchange, licensing, capabilities, RLE bitmaps and input, against a real xrdp. What is missing is named rather than half-built. NLA/CredSSP — so a host that demands it is refused by name instead of failing in the middle of a handshake, and the only security wisq speaks does not authenticate the server. TLS, which would mean starting it inside a socket already open, something this transport cannot do today. And the virtual channels: the clipboard, sound, the remote cursor, resizing mid-session.",
         },
         {
           term: "More agent backends",
@@ -161,7 +161,7 @@ export const roadmapFr: Doc = {
         {
           term: "RDP",
           detail:
-            "Celui qui compte pour les invités Windows, et désormais le seul protocole de console que wisq ne parle pas. Nettement plus gros que SPICE, et à ne faire que bien — le client porte une ébauche délibérée qui refuse au lieu de faire semblant.",
+            "Celui qui compte pour les invités Windows, et wisq le parle : négociation, MCS, échange de clés, licence, capacités, bitmaps RLE et entrées, contre un vrai xrdp. Ce qui manque est nommé plutôt qu'à moitié fait. NLA/CredSSP — un hôte qui l'exige est donc refusé par son nom au lieu d'échouer au milieu d'une poignée de main, et la seule sécurité que wisq parle n'authentifie pas le serveur. TLS, qui demanderait de le démarrer dans une socket déjà ouverte, ce que ce transport ne sait pas faire aujourd'hui. Et les canaux virtuels : le presse-papiers, le son, le curseur distant, la retaille en cours de session.",
         },
         {
           term: "D'autres backends d'agent",
