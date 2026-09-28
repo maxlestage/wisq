@@ -17464,6 +17464,13 @@ juste après la construction musl, et dans le job Rust juste après le `ls -l`.
 Le chiffre du démon n'est donc plus une mesure datée qui se périmera comme les
 trois précédentes : il rougit le jour où il cesse d'être vrai.
 
+**Le premier tour de CI a payé la granularité.** Le coureur a construit
+1 770 192 octets, ce conteneur 1 778 384 : 8 192 d'écart entre deux
+constructions de la même source. Les deux font 1,8 Mo, la garde passe. Épingler
+l'octet aurait été rouge immédiatement, sur un binaire sain — et je l'aurais lu
+comme un défaut du démon au lieu d'un défaut de la garde. La décimale n'est pas
+une tolérance molle : c'est la précision de ce qui est publié.
+
 Deux choix écrits dedans plutôt que supposés. Chaque lecteur refuse **zéro
 occurrence autant que deux** — un motif qui ne trouve rien ressemble à un accord,
 et c'est exactement le trou mesuré sur la garde des versions. Et la taille

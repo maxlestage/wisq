@@ -12861,6 +12861,13 @@ quand son motif trouve zéro occurrence **ou deux** : un lecteur qui ne lit rien
 ne se distingue pas d'un lecteur qui lit la bonne chose tant que les deux côtés
 de la comparaison sont vides.
 
+**Et la granularité est mesurée, pas choisie.** La première exécution en CI a
+rendu **1 770 192 octets** là où ce conteneur en donne 1 778 384 — 8 192 d'écart
+entre deux constructions de la même source, versions de rustc et des dépendances.
+Les deux font 1,8 Mo. Une garde épinglant l'octet exact aurait donc été rouge dès
+son premier tour, sur un binaire sain ; la comparaison porte sur le chiffre
+publié, à la décimale, qui est aussi ce qu'un lecteur du site peut refaire.
+
 `site/tests/agent-size.test.ts` le regarde refuser sur des arbres fabriqués, avec
 un binaire de taille choisie — huit tests, et la suite reste hermétique : le job
 « Build site » ne construit pas le démon, donc ce qu'elle tient est l'autre

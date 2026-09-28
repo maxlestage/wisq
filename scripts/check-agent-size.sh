@@ -24,6 +24,14 @@
 # posée dès que le démon a grossi : 1 778 384 octets font 1,8 Mo et 1,7 Mio. Un
 # chiffre publié dont l'unité se lit de deux façons n'est pas un chiffre publié.
 #
+# **La décimale est la bonne granularité, et c'est mesuré.** Deux constructions
+# de la même source ne rendent pas le même nombre d'octets : ce conteneur donne
+# 1 778 384, le coureur de la CI 1 770 192 — 8 192 octets d'écart, versions de
+# rustc et des dépendances. Une garde qui épinglerait l'octet exact aurait été
+# rouge dès sa première exécution en CI, pour un binaire parfaitement sain. La
+# comparaison porte donc sur le chiffre publié, à la décimale, qui est aussi ce
+# qu'un lecteur du site peut vérifier.
+#
 # **Il prend une racine**, comme ses voisins, et c'est ce qui le rend éprouvable :
 # `site/tests/agent-size.test.ts` le regarde refuser sur des arbres fabriqués,
 # avec un binaire de taille choisie. Une garde qui n'a jamais refusé est une
