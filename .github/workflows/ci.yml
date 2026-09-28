@@ -148,6 +148,11 @@ jobs:
             echo "image Linux absente : banc ignoré"
             exit 0
           fi
+          # `cargo` n'est pas sur le PATH de ce conteneur : rustup l'installe
+          # dans $HOME/.cargo, et l'étape voisine source déjà cet environnement.
+          # Sans cette ligne, `cargo: not found` et un 127 — mesuré, sur le
+          # premier tour de CI de cette tranche.
+          . "$HOME/.cargo/env"
           # Les deux construits d'abord : une compilation Swift entre les deux
           # mesures est la même charge, sous un autre nom, que le banc x86.
           cargo build --release --bin wisq-bench-rs

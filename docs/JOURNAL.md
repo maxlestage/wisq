@@ -17625,6 +17625,17 @@ ce que `resolved.rs` imprime à ses lecteurs** depuis des mois. La seconde est q
 je ne l'ai pas vu en écrivant le câblage ; je l'ai vu en lisant la sortie. Le
 journal d'une exécution dit des choses que la relecture du script ne dit pas.
 
+### Et un troisième, que seule la CI pouvait dire
+
+`cargo: not found`, code 127, sur le job « Cœur (Linux) ». Ce conteneur-là n'a
+pas `cargo` sur son PATH — rustup l'installe dans `$HOME/.cargo` et l'étape
+voisine source déjà cet environnement, ce que la mienne ne faisait pas. Les 2 082
+tests Swift étaient passés juste avant ; c'est l'avant-dernière étape qui est
+tombée. `verify.sh` ne pouvait pas le voir : ici, `cargo` est sur le PATH.
+
+Troisième défaut de cette tranche, et le troisième de la même famille — un
+environnement supposé au lieu d'être nommé.
+
 ### Le trou était dans les tests, pas dans le code
 
 J'avais écrit la commande sur la page — « `cargo run --release --bin
