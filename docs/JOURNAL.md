@@ -17881,3 +17881,55 @@ utile est plus étroite que « mesurer l'acte » : quand une garde lit un fichie
 pour y trouver quelque chose, se demander **ce qui d'autre, dans ce fichier,
 pourrait contenir ce que je cherche** — un commentaire, une autre phrase, un
 retour à la ligne au mauvais endroit.
+
+## #292 — trois audits propres, et un artefact que j'ai failli publier
+
+Réveil sans rouge et sans dette : le site est tenu depuis #290, le document du
+démarrage depuis #291. Le crible est donc passé au dernier texte
+auto-descriptif que personne n'avait relu, `docs/TESTER-UBUNTU.md`, et à la
+ligne de commande de l'agent — le chemin du bureau, qui est la priorité énoncée.
+
+**Trois comparaisons, trois propres.**
+
+1. Les faits de release du guide : « la dernière release est la v0.4.0, du
+   5 septembre ». `git tag --sort=-creatordate` donne bien v0.4.0, datée du
+   5 septembre 2026.
+2. Les drapeaux de `wisq-agent bureau` : **dix analysés, dix annoncés** par son
+   `--help`, à l'identique. Et pour le démon lui-même, **six contre six**. Deux
+   listes tenues à la main qui s'accordent — c'est la comparaison qui a produit
+   toutes les trouvailles de cette série, et ici elle ne rend rien. Le guide ne
+   cite que six des dix, ce qui est le droit d'un guide.
+3. Le compte de commits que le guide publie : « elle avait 194 commits de retard
+   au 19 septembre ». Aujourd'hui **213**, croissance cohérente avec les tranches
+   d'entre-temps. Le chiffre est daté et il tient.
+
+### L'artefact, et ce qui l'a arrêté
+
+Le point 3 a d'abord rendu **59**. Trois fois moins que 194, sur un compteur qui
+ne peut que monter — donc soit le dépôt avait été réécrit, soit le guide était
+faux d'une façon spectaculaire. J'ai commencé à l'écrire comme une trouvaille.
+
+Ce qui l'a arrêté est la règle de #261 : avant de conclure d'un nombre, vérifier
+l'instrument là où l'on connaît la réponse. `git rev-list --count origin/master`
+rendait **59 au total** pour un dépôt de deux cent quatre-vingt-onze tranches.
+Le clone est superficiel, et `git rev-list` compte alors la profondeur du clone
+en **ne signalant rien**. Après `git fetch --depth=500` : 455 au total, 213
+depuis la balise.
+
+C'est la même famille que « `verify.sh` sort avec 0 sans la chaîne Swift » et
+que « `swift test --filter` sans correspondance sort avec 0 » : une commande qui
+répond un nombre plausible au lieu de dire qu'elle ne sait pas. Le fait est écrit
+là où il mord — dans le guide, à côté de la commande qu'il recommande — plutôt
+que dans ce journal seul.
+
+### Ce que cette tranche ne fait pas
+
+Aucune garde. Rien dans le dépôt ne compte l'histoire, donc il n'y a pas de
+seconde liste à confronter ; ce qui tient la ligne ajoutée est la mesure
+ci-dessus, refaite par `test -f .git/shallow`. C'est le cas rare que #286 a
+nommé, et il vaut mieux l'écrire que laisser croire à une protection.
+
+**Le signe à retenir.** Un audit propre est un résultat, pas un échec — et il
+faut le consigner, sinon la tranche suivante le refera. Les trois ci-dessus sont
+closes : les deux surfaces de la ligne de commande de l'agent s'accordent, et les
+chiffres datés du guide de test tiennent.
