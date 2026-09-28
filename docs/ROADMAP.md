@@ -12883,3 +12883,90 @@ rv32 plafonne à `LinuxMachine.maximumRAMSize`, deux gibioctets. Le chiffre est
 resté juste comme défaut et faux comme phrase. Corrigé dans les deux langues sur
 `content.ts`, `docs.ts` et `faq.ts` — et **la garde ne tient pas ça**, ce qui
 est écrit dans son en-tête : elle compte des nombres, pas la prose autour.
+
+## #288 — le débit publié avait un instrument, et personne ne le lançait
+
+`faq.ts` répondait à « à quelle vitesse va la machine locale ? » par « environ
+160 millions d'instructions par seconde ». Un point, sans commande. En cherchant
+d'où il venait, le dépôt en portait **cinq pour la même grandeur** :
+
+| valeur | où | quel cœur |
+|---|---|---|
+| 157 MIPS | `docs/ROADMAP.md`, tableau du lot 8 | rv32 en Rust |
+| 160 | `site/src/pages/faq.ts` | « la machine locale » |
+| 161 | **gravé dans un `print` de `Sources/wisq-bench/main.swift`** | attribué au Rust |
+| 162 / 163 | CHANGELOG et `releases.ts` | rv32 en **Swift** |
+| 170 | CHANGELOG, la même entrée que 162 | rv32 en Rust |
+
+**Le noyau de test est récupérable, et ça change tout.** Le conteneur ne l'avait
+jamais : les onze tests Swift qui en dépendent sautaient, le banc aussi. L'image
+est celle que la CI télécharge (`cnlohr/mini-rv32ima-images`,
+`linux-6.1.14-rv32nommu-cnl-1.zip`, SHA-256 `5f596134…`) et elle tient dans
+`/tmp/wisq-test-linux-image/Image`. Mesuré, cinq passages par cœur, même noyau,
+même machine :
+
+| cœur | durée | débit |
+|---|---|---|
+| rv32 en Rust — celui que l'application embarque | 0,271 – 0,326 s | **136,9 – 164,7 MIPS** |
+| rv32 en Swift | 0,352 – 0,470 s | **94,9 – 126,6 MIPS** |
+
+**Ces deux lignes ne se comparent pas, et c'est le piège de la tranche.** Ce sont
+deux séries prises à des moments différents ; leur rapport apparent, 1,3, est
+pour partie l'état de la machine. Le seul couple comparable est celui que
+`verify.sh` produit maintenant, les deux démarrages à huit millièmes de seconde
+l'un de l'autre : **137,0 MIPS pour le Rust contre 133,6 pour le Swift**, soit
+1,03 — ce qui rejoint le 170 contre 162 du CHANGELOG d'août, mesuré de la même
+façon, bien mieux que le 1,3. Les fourchettes disent ce qu'une machine rend ; le
+couple adjacent dit ce que les deux cœurs valent l'un par rapport à l'autre.
+
+Et **44,6 M d'instructions exactement**, dans les dix passages, sur les deux
+cœurs : l'horloge de la machine avance avec les instructions retirées, pas avec
+le temps réel, donc ce compte-là est un fait et pas une mesure d'hôte. C'est ce
+que la page publie maintenant, avec la fourchette et sans le point.
+
+**Le banc se trompait de cœur.** `Sources/wisq-bench/main.swift` imprimait, une
+ligne sous le débit qu'il venait de calculer, « les 161 MIPS ci-dessus sont ceux
+du cœur rv32 en Rust ». Deux erreurs : le nombre était gelé, et le banc ne dépend
+que de `WisqVM` — il mesure le cœur **Swift**. Quiconque lisait le journal de la
+CI créditait donc le cœur Rust du débit du Swift.
+
+**Et le cœur Rust avait son banc, que rien ne lançait.**
+`crates/wisq-vm/src/bin/bench.rs` double le banc Swift « down to the wording »,
+dit son propre en-tête — et il n'apparaissait ni dans la CI, ni dans
+`verify.sh`, ni dans un document. Les deux tournent maintenant à la suite, sur
+le même noyau, dans le même job : le rapport entre les deux cœurs est mesuré à
+chaque changement au lieu d'être cité d'août.
+
+**L'ordre des deux bancs est mesuré, pas esthétique.** Le premier câblage
+lançait le banc Swift d'abord — qui enchaîne sur un banc x86 de quarante
+secondes —, ce qui mettait cette charge entre les deux démarrages rv32. Le
+relevé a rendu **146,6 MIPS au cœur Swift contre 118,3 au Rust**, l'inverse de
+ce que dix passages au repos donnent. Les deux mesures rv32 sont donc
+adjacentes maintenant — et les deux bancs sont **construits avant** que l'un ou
+l'autre ne mesure, parce qu'une compilation Swift de cinquante secondes entre
+les deux est la même charge sous un autre nom. C'est la leçon que
+`resolved.rs` imprime déjà à ses lecteurs : les valeurs absolues bougent avec la
+charge, c'est le rapport qui tient, et il ne tient que si les deux termes sont
+pris dans les mêmes conditions.
+
+**Deux gardes, et ce qu'elles ne tiennent pas.**
+
+- `site/tests/frozen-figures.test.ts` refuse qu'un instrument **imprime** une
+  mesure gelée. Elle ne connaît que les unités qu'elle liste, et ne lit que les
+  lignes imprimées : un en-tête qui cite un chiffre historique est légitime, et
+  c'est même ainsi qu'un banc explique pourquoi il existe. Deux exceptions, les
+  deux dans `resolved.rs`, et les deux **avertissent contre** les nombres gelés
+  — l'une dit que ses propres nanosecondes bougent de 125 à 190 selon les jours,
+  l'autre raconte le 247 qui était gravé et ne l'est plus.
+- Une provenance qui cite une commande promet qu'elle se relance : la CI doit
+  nommer l'instrument cité. C'est le fil qui manquait entre le chiffre publié et
+  le binaire qui dormait.
+
+**La commande ne va pas sur la page, et c'est un test qui l'a dit.**
+`render.test.tsx` interdit `cargo run` et `cargo build` sur le site : le site
+décrit wisq, il ne le distribue pas. La page dit donc que le banc vit dans le
+dépôt et que la CI le lance ; la commande vit dans la provenance. Chercher le
+trou dans les tests avant de le combler, encore une fois.
+
+`faq.ts` passe des pages avouées aux pages tenues : douze chiffres, chacun avec
+sa ligne. Restent trois avouées — `architecture.ts`, `docs.ts`, `privacy.ts`.

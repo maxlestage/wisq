@@ -30,9 +30,12 @@ fn main() {
         std::process::exit(2);
     };
 
-    // Construction cost is not a footnote on a phone: it is 64 MB of guest RAM
+    // Construction cost is not a footnote on a phone: it is the guest's RAM
     // being obtained, and whether those pages become resident up front decides
-    // both the tap-to-boot delay and how much memory the app holds.
+    // both the tap-to-boot delay and how much memory the app holds. The size is
+    // printed from `DEFAULT_RAM_SIZE`, which this file already imports: a
+    // sentence naming one size would be a sentence to keep in step with a
+    // constant.
     let alloc_start = Instant::now();
 
     let console = Arc::new(Mutex::new(Console::default()));
@@ -76,7 +79,10 @@ fn main() {
         retired as f64 / 1e6,
         budget as f64 / 1e6
     );
-    println!("construction : {alloc_ms:.1} ms (64 Mo de RAM invitée)");
+    println!(
+        "construction : {alloc_ms:.1} ms ({} Mo de RAM invitée)",
+        DEFAULT_RAM_SIZE >> 20
+    );
     println!("durée        : {elapsed:.3} s");
     println!("débit        : {mips:.1} MIPS");
     println!(
