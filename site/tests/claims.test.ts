@@ -84,6 +84,71 @@ describe("advertised claims match the repository", () => {
   /// L'ancre est le fichier lui-même, qui se compte tout seul, donc cette garde
   /// ne peut pas prendre de retard. Ce qu'elle ne tient pas : le reste de la
   /// phrase. Elle vérifie le nombre, pas ce qu'on en dit.
+  /// **La couture entre le Swift et le Rust, comptée plutôt que citée.**
+  ///
+  /// `site/src/pages/architecture.ts` annonçait « un C ABI de **sept**
+  /// fonctions ». `crates/wisq-vm/src/ffi.rs` en exporte trente et une : la
+  /// couture a grossi avec le disque, les instantanés, l'ISO, le bureau et
+  /// l'émetteur x86, et la phrase est restée à la poignée du début.
+  ///
+  /// **Et la garde des chiffres ne pouvait pas le voir** : elle compte les
+  /// nombres écrits en **chiffres**, et celui-ci était écrit en lettres. Une
+  /// règle générale sur les nombres en lettres ne tient pas — en français « un »
+  /// et « une » sont des articles avant d'être des nombres, et ils sont sur
+  /// toutes les pages. Ce qui tient, c'est une garde nommée pour une
+  /// affirmation nommée, comme celle du compte de tests juste au-dessus. La
+  /// page écrit donc le nombre en chiffres, et ce test le compare au code.
+  function exportedCFunctions(): { names: string[]; files: string[] } {
+    const names = new Set<string>();
+    const files = new Set<string>();
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) {
+          walk(path);
+        } else if (entry.endsWith(".rs")) {
+          for (const found of readFileSync(path, "utf8").matchAll(
+            /pub (?:unsafe )?extern "C" fn (\w+)/g,
+          )) {
+            names.add(found[1]);
+            files.add(path);
+          }
+        }
+      }
+    };
+    walk(join(repoRoot, "crates"));
+    return { names: [...names].sort(), files: [...files].sort() };
+  }
+
+  test("la page d'architecture annonce le vrai nombre de fonctions du C ABI", () => {
+    const { names: exported, files } = exportedCFunctions();
+    // Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+    expect(exported.length, "aucune fonction `extern \"C\"` trouvée").toBeGreaterThan(5);
+    // La page dit aussi « dans un seul fichier », et c'est vérifiable.
+    expect(
+      files.length,
+      `la page dit « dans un seul fichier » et l'ABI est exportée depuis ${files.length} : ` +
+        `${files.join(", ")}`,
+    ).toBe(1);
+
+    const page = readFileSync(
+      join(import.meta.dir, "..", "src", "pages", "architecture.ts"),
+      "utf8",
+    );
+    for (const [language, pattern] of [
+      ["en", /a C ABI of (\d+) functions/],
+      ["fr", /une ABI C de (\d+) fonctions/],
+    ] as const) {
+      const found = page.match(pattern);
+      expect(found, `la moitié ${language} n'annonce plus le compte du C ABI`).not.toBeNull();
+      expect(
+        Number(found![1]),
+        `la moitié ${language} annonce ${found![1]} fonctions et `
+          + `crates/ en exporte ${exported.length} : ${exported.join(", ")}`,
+      ).toBe(exported.length);
+    }
+  });
+
   test("ARCHITECTURE.md annonce le vrai nombre de cas de l'oracle", () => {
     const fixture = readFileSync(
       join(repoRoot, "Tests/Fixtures/x86-oracle.tsv"),
@@ -558,21 +623,124 @@ const accounted = new Map<string, Map<string, string>>([
       ],
     ]),
   ],
+  [
+    "architecture.ts",
+    new Map([
+      [
+        "2.7",
+        "mesuré au travail d'interpréteur de la 0.2.0 et consigné au CHANGELOG " +
+          "avec son raisonnement : le fichier de registres sorti du tableau " +
+          "Swift, parce que l'optimiseur rechargeait le tampon après chaque " +
+          "appel opaque. Ne se refait pas sans défaire le changement ; le " +
+          "banc, lui, existe toujours (`swift run -c release wisq-bench`).",
+      ],
+      ["2,7", "le même nombre dans l'autre langue."],
+      [
+        "8",
+        "deux lectures dans la même page, et les deux tiennent : le « +8 % » de " +
+          "l'extension de signe sans branchement (CHANGELOG 0.2.0), et le vert " +
+          "à 8 du format de pixel — `RFB.swift`, `greenShift: 8`.",
+      ],
+      [
+        "47",
+        "« loads et stores font 47 % d'un boot Linux », CHANGELOG 0.2.0, dans " +
+          "la même entrée que le +8 % qu'elle justifie.",
+      ],
+      [
+        "33",
+        "la borne basse de « construction 33–194 ms », CHANGELOG 0.2.0 : le coût " +
+          "d'obtenir la RAM invitée avant qu'elle ne soit mappée au lieu " +
+          "d'effacée.",
+      ],
+      ["194", "la borne haute de la même mesure, même entrée."],
+      [
+        "0.1",
+        "ce que la construction coûte depuis — « moins de 0,1 ms ». Les deux " +
+          "bancs l'impriment encore à chaque exécution, ligne « construction », " +
+          "et la CI les lance tous les deux.",
+      ],
+      ["0,1", "le même nombre dans l'autre langue."],
+      [
+        "9",
+        "**mesure orpheline.** Les trois tentatives annulées — opcodes froids " +
+          "sortis de la ligne à 9 %, réécriture inconditionnelle des registres " +
+          "à 3 %, table de dispatch plus dense sans gain — ont été écrites " +
+          "directement sur cette page en #232 et **nulle part ailleurs** : ni " +
+          "CHANGELOG, ni journal, ni banc. Elles ne se refont pas sans refaire " +
+          "les trois refactorisations. Publiées comme un rapport daté, et c'est " +
+          "dit ici plutôt que laissé croire à une mesure relançable.",
+      ],
+      ["3", "la deuxième des trois tentatives annulées ci-dessus, même statut."],
+      [
+        "32",
+        "ce n'est pas une mesure : les 32 bits par pixel que le client demande " +
+          "au serveur RFB — `RFB.swift`, `bitsPerPixel: 32`.",
+      ],
+      [
+        "16",
+        "ce n'est pas une mesure : `redShift: 16` dans le même format de pixel.",
+      ],
+      [
+        "0",
+        "ce n'est pas une mesure : `blueShift: 0`, la troisième composante du " +
+          "même format.",
+      ],
+      [
+        "2 000",
+        "les deux mille lignes de console de la mesure quadratique, " +
+          "CHANGELOG 0.2.0 : re-dériver le texte visible à chaque arrivée est " +
+          "un travail proportionnel à tout l'historique.",
+      ],
+      [
+        "36.7",
+        "ce que ces deux mille lignes coûtaient, même entrée. Le montage qui " +
+          "l'a produit n'existe plus — c'est le comportement qui a été " +
+          "supprimé —, donc le nombre est daté et non relançable.",
+      ],
+      ["36,7", "le même nombre dans l'autre langue."],
+      [
+        "0.22",
+        "ce que les mêmes deux mille lignes coûtent depuis, même entrée.",
+      ],
+      ["0,22", "le même nombre dans l'autre langue."],
+      [
+        "50",
+        "ce n'est pas une mesure : `InputTiming.pressReleaseGap`, " +
+          "`Duration.milliseconds(50)` dans `Sources/WisqCore/Settings.swift`, " +
+          "avec la raison écrite à côté — un invité qui échantillonne les " +
+          "entrées sur un timer ne voit rien d'un clic plus court.",
+      ],
+      [
+        "31",
+        "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
+          "« la page d'architecture annonce le vrai nombre de fonctions du " +
+          "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
+          "écrit en lettres — ce qui la faisait échapper au balayage des " +
+          "chiffres pendant que la couture passait de sept à trente et une.",
+      ],
+    ]),
+  ],
+  // La réserve sur le transport ne porte plus « version 1 » : elle disait le
+  // clair comme une fatalité alors que c'est un défaut, et le numéro de
+  // version n'ajoutait rien qu'un chiffre à tenir.
+  ["privacy.ts", new Map()],
   ["index.ts", new Map()],
   ["offline.ts", new Map()],
 ]);
 
 /// Les pages que rien ne relit. L'entrée porte **la liste exacte** des chiffres
 /// qu'elles publient : ça n'affirme rien sur leur vérité, ça interdit seulement
-/// qu'un chiffre y bouge sans que quelqu'un le voie. Chacune attend sa tranche.
-const notLookedAt = new Map<string, string[]>([
-  [
-    "architecture.ts",
-    ["0", "0,1", "0,22", "0.1", "0.22", "16", "194", "2 000", "2,7", "2.7",
-      "3", "32", "33", "36,7", "36.7", "47", "50", "8", "9"],
-  ],
-  ["privacy.ts", ["1"]],
-]);
+/// qu'un chiffre y bouge sans que quelqu'un le voie.
+///
+/// **Elle est vide, et c'est une fin plutôt qu'un oubli.** Les quatre pages qui
+/// y figuraient — `architecture.ts`, `docs.ts`, `faq.ts`, `privacy.ts` — ont eu
+/// chacune sa tranche, et chacune a rendu quelque chose : un démon trois fois
+/// plus lourd qu'annoncé, un débit dont l'instrument dormait dans le dépôt, un
+/// guide qui comptait deux protocoles sur trois, une couture de sept fonctions
+/// devenue trente et une, une réserve de confidentialité qui donnait le clair
+/// pour une fatalité. Le mécanisme reste : une page ajoutée entre ici, ou elle
+/// est tenue.
+const notLookedAt = new Map<string, string[]>([]);
 
 /// Les pages dont les chiffres relèvent d'une autre garde, nommée. Le récit des
 /// versions est le seul cas : ce qu'il publie est ce qu'une version **a
