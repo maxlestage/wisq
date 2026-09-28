@@ -13101,3 +13101,35 @@ qu'un test nommé la contredit :
   `only_the_confined_form_accepts_the_write_that_drives_paging` existe.
 
 Ce qu'elle ne tient pas est écrit dedans : le reste du document.
+
+## #292 — trois audits propres, et `git rev-list` qui compte la profondeur du clone
+
+Réveil sans rouge et sans dette. Le crible est passé au dernier texte
+auto-descriptif jamais relu, `docs/TESTER-UBUNTU.md`, et aux deux surfaces de
+ligne de commande de l'agent — le chemin du bureau.
+
+**Trois comparaisons, trois propres, et elles sont closes :**
+
+| ce qui a été confronté | résultat |
+|---|---|
+| « la dernière release est la v0.4.0, du 5 septembre » contre `git tag --sort=-creatordate` | juste |
+| les drapeaux que `wisq-agent bureau` **analyse** contre ceux que son `--help` **annonce** | **dix contre dix**, à l'identique |
+| les mêmes deux listes pour le démon lui-même | **six contre six** |
+| « 194 commits de retard au 19 septembre » contre l'histoire | 213 aujourd'hui, croissance cohérente |
+
+**Et un artefact que la règle de #261 a arrêté.** Le dernier point a d'abord rendu
+**59** — trois fois moins que 194, sur un compteur qui ne peut que monter. Avant
+de l'écrire comme une trouvaille, l'instrument a été vérifié là où la réponse est
+connue : `git rev-list --count origin/master` rendait 59 **au total**, pour un
+dépôt de deux cent quatre-vingt-onze tranches. Le clone est superficiel, et
+`git rev-list` compte alors sa profondeur **sans rien signaler**. Après
+`git fetch --depth=500` : 455 au total, 213 depuis la balise.
+
+Même famille que « `verify.sh` sort avec 0 sans la chaîne Swift » et
+« `swift test --filter` sans correspondance sort avec 0 » : une commande qui rend
+un nombre plausible au lieu de dire qu'elle ne sait pas. Le fait est écrit dans le
+guide, à côté de la commande qu'il recommande.
+
+**Sans garde, et c'est dit** : rien dans le dépôt ne compte l'histoire, donc il
+n'y a pas de seconde liste à confronter. Ce qui tient la ligne ajoutée est la
+mesure ci-dessus, refaite par `test -f .git/shallow`.
