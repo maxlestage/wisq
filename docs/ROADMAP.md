@@ -13023,3 +13023,47 @@ historique est porté par le tableau des README, et ce tableau n'est pas tenu.
 
 `docs.ts` passe des pages avouées aux pages tenues : douze chiffres, chacun avec
 sa ligne. Restent `architecture.ts` et `privacy.ts`.
+
+## #290 — la couture annonçait sept fonctions, elle en a trente et une
+
+Dernières pages de la dette de #287 : `architecture.ts` et `privacy.ts`. La
+liste des pages avouées est **vide** désormais — chacune des quatre a rendu
+quelque chose.
+
+**Un chiffre écrit en lettres échappe au balayage.** La page d'architecture
+annonçait « une ABI C de **sept** fonctions », dans les deux langues.
+`crates/wisq-vm/src/ffi.rs` en exporte **trente et une** : la couture a grossi
+avec le disque, les instantanés, l'ISO, le bureau et l'émetteur x86, pendant que
+la phrase restait à la poignée du début. La garde des chiffres ne pouvait pas le
+voir — elle compte les nombres écrits en chiffres.
+
+Et une règle générale sur les nombres en lettres **ne tient pas** : en français
+« un » et « une » sont des articles avant d'être des nombres, et ils sont sur
+toutes les pages. Ce qui tient est une garde nommée pour une affirmation
+nommée, comme celle du compte de tests : le test recompte les `pub extern "C"
+fn` de `crates/` et exige que la page annonce ce nombre — écrit en chiffres,
+maintenant, donc visible du balayage aussi. Il tient au passage le « dans un
+seul fichier » de la même phrase : un deuxième fichier exportateur le fait
+rougir.
+
+**Une mesure orpheline, et c'est écrit.** Les trois tentatives annulées de la
+même page — opcodes froids sortis de la ligne à 9 %, réécriture inconditionnelle
+des registres à 3 %, table de dispatch plus dense sans gain — ont été écrites
+directement sur le site en #232 et **nulle part ailleurs** : ni CHANGELOG, ni
+journal, ni banc. Les chiffres de la table au-dessus, eux, sont au CHANGELOG
+0.2.0 avec leur raisonnement. La différence n'est pas la mesurabilité, c'est la
+trace : les trois annulées sont publiées comme un rapport daté, et leur
+provenance le dit au lieu de laisser croire à une mesure relançable.
+
+**Et la page de confidentialité donnait le clair pour une fatalité.** Elle
+disait « la version 1 parle à vos machines en clair », à plat, avec « utilisez
+un réseau de confiance ou un tunnel ». Or `MachineEditorView` porte un sélecteur
+**Chiffrement** qui parcourt `TransportSecurity.allCases` — aucun, TLS, TLS
+épinglé par empreinte —, `NetworkByteStream` porte les trois, et `Machine`
+garde le choix. Le clair est le **défaut**, pas la limite. Quelqu'un pouvait
+lire cette page et monter un tunnel là où deux touches suffisaient. C'est
+corrigé dans les deux langues, et le démon hôte — qui parle TLS avec un
+certificat épinglé par le lien d'appairage — est nommé à part.
+
+Reste ce que ces gardes ne tiennent pas, et c'est écrit dedans : la justesse de
+la prose autour du nombre.
