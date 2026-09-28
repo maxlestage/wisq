@@ -172,7 +172,13 @@ let package = Package(
         // Byte transport (TCP/TLS) built on Network.framework.
         .target(name: "WisqNet", dependencies: ["WisqCore", "CZlib"]),
 
-        // Remote desktop protocols: RFB/VNC (implemented), SPICE and RDP (planned).
+        // Remote desktop protocols: RFB/VNC, SPICE and RDP, all three built and
+        // all three offered by the app — `RemoteProtocol.allCases` is what the
+        // editor's picker iterates, and `ImplementedProtocolsTests` walks it
+        // through the factory. This comment said « SPICE and RDP (planned) »
+        // long after both landed; what is still missing on the RDP side is
+        // NLA/CredSSP, TLS and the virtual channels, and the READMEs' tables
+        // say so line by line.
         .target(name: "WisqRemote", dependencies: ["WisqCore", "WisqNet"]),
 
         // Local Linux VMs: an interpreted rv32ima machine. Foundation only, so
