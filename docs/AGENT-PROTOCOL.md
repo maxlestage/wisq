@@ -216,11 +216,20 @@ Le démon est en **Rust** (`crates/wisq-agent`), le client en **Swift** — ils
 n'ont pas les mêmes contraintes. Le démon s'installe sur un NAS ou un portable
 et n'a ni interface ni framework de plateforme : rien qui justifie d'embarquer
 un runtime de langage. Statiquement lié au runtime Swift il pesait 58 Mo pour
-servir quatre routes ; il en fait aujourd'hui **1,7 Mo** en un seul fichier
+servir quatre routes ; il en fait aujourd'hui **1,8 Mo** en un seul fichier
 statique (musl) qui tourne sur n'importe quel Linux, Alpine compris — mesuré
 sur le binaire que la release publie, TLS et appairage compris. Ce paragraphe
 a longtemps dit « moins de 600 Ko » : c'était vrai avant que le démon
 n'apprenne le TLS, et personne n'avait re-mesuré.
+
+Ce chiffre-là est **tenu**, désormais, et pas seulement daté :
+`scripts/check-agent-size.sh` compare le binaire construit aux huit textes qui
+annoncent sa taille — les deux langues de la page « protocole » du site, ce
+paragraphe, les deux README, le guide de contribution, le commentaire de
+`Package.swift` et celui du workflow de release —
+et la CI le lance là où elle construit déjà ce binaire. Le Mo est décimal
+(10^6 octets) : la question ne se posait pas tant que les deux lectures
+donnaient le même chiffre, et elle s'est posée dès que le démon a grossi.
 
 Zéro dépendance, délibérément. Un programme qu'on installe par un `curl | sh`
 est un programme dont on hérite les dépendances, et le protocole ci-dessus est

@@ -122,7 +122,7 @@ let rustCoreProducts: [Product] = rustCoreEnabled
 // The host agent is no longer here: it moved to Rust (crates/wisq-agent), because
 // a daemon with no interface and no platform framework had no reason to carry a
 // language runtime — statically linked it was a 58 MB download to serve four
-// routes, and it is now 454 KB. What stays on this side is the client that talks
+// routes, and it is now 1.8 MB. What stays on this side is the client that talks
 // to it, and a test that runs the real Rust binary against that client, so the
 // two halves of the protocol cannot drift apart unnoticed.
 #if os(iOS)

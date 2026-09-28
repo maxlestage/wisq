@@ -12794,3 +12794,85 @@ seule vérification possible est un appel réseau, et les suites de ce dépôt s
 hermétiques. La CI, elle, pose SwiftLint par `brew` sur macOS : aucune seconde
 liste à confronter à celle-ci. Ce qui tient cette ligne est la mesure
 ci-dessus, refaite le jour où quelqu'un la soupçonnera.
+
+## #287 — le site publiait un démon trois fois plus léger qu'il n'est, et rien ne lisait cette page
+
+`site/src/pages/protocol.ts` annonçait, dans les deux langues, un démon de
+**582 Ko**. Mesuré le 28 septembre 2026, le binaire que la release publie :
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+sudo apt-get install -y musl-tools        # la seule dépendance C du démon (ring)
+cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
+stat -c %s target/x86_64-unknown-linux-musl/release/wisq-agent
+```
+
+**1 778 384 octets**, soit **1,8 Mo** — trois fois le chiffre publié. Le binaire
+est bien celui de la release : `static-pie linked`, `stripped`, et `--help`
+répond sous `env -i`.
+
+**Et l'unité a dû être tranchée.** « Mo » et « MB » valent 10^6 octets ; le
+mébioctet s'écrit Mio. La question ne se posait pas le 2 septembre — 1 737 424
+octets font 1,7 dans les deux lectures — et elle s'est posée dès que le démon a
+grossi : 1 778 384 octets font **1,8 Mo** et 1,7 Mio. Le document portait donc
+un chiffre juste sous une lecture et faux sous l'autre. Les huit textes disent
+maintenant 1,8, et l'unité est écrite dans la garde.
+
+Le nombre avait été vrai. `docs/AGENT-PROTOCOL.md` porte depuis le 2 septembre
+2026 la correction du même chiffre, avec sa raison écrite : « c'était vrai avant
+que le démon n'apprenne le TLS ; personne n'avait re-mesuré ». Ce jour-là, la
+passe sur les textes auto-descriptifs se déclarait close « site, READMEs,
+ARCHITECTURE, AGENT-PROTOCOL ». Le site n'avait pas suivi, et `Package.swift`
+portait un troisième chiffre encore — **454 Ko**, d'avant le TLS *et* d'avant
+l'appairage. En cherchant qui d'autre l'annonce, cinq textes de plus le
+faisaient : les deux README, `CONTRIBUTING.md`, le commentaire du workflow de
+release, et la page du site comptant double puisqu'elle est écrite deux fois.
+**Huit textes au présent pour trois valeurs** — un nombre faux vit rarement à un
+seul endroit, et celui-ci vivait à huit.
+
+**Pourquoi personne ne l'a vu : la garde disait ce qu'elle ne vérifiait pas,
+jamais où elle ne regardait pas.** La tranche qui a balayé `roadmap.ts` en a
+tiré la phrase — « une garde devrait dire non seulement ce qu'elle ne vérifie
+pas, mais **où elle ne regarde pas** » — et n'a tenu qu'une page sur neuf.
+
+`claims.test.ts` énonce maintenant le périmètre. Chaque page de `src/pages/` est
+dans **une** des trois listes, et la garde refuse le reste :
+
+| liste | ce qu'elle promet | pages |
+|---|---|---|
+| tenue | chaque nombre porte la commande qui le refait, ou la raison pour laquelle ce n'en est pas une mesure | `roadmap.ts`, `protocol.ts`, `index.ts`, `offline.ts` |
+| avouée | rien ne la relit ; la liste exacte de ses chiffres est gelée, donc aucun n'y bouge en silence | `architecture.ts`, `docs.ts`, `faq.ts`, `privacy.ts` |
+| déléguée | une autre garde s'en occupe, **nommée**, et un test vérifie qu'elle lit vraiment le fichier | `releases.ts` → `version-agreement.test.ts` |
+
+`releases.ts` reste hors du compte des provenances à dessein : c'est le registre
+des versions publiées, ses mesures sont datées par la version qui les a
+annoncées, et les rafraîchir réécrirait le registre au lieu de le corriger.
+
+**Le chiffre du démon, lui, n'est plus daté : il est tenu.** La CI construisait
+déjà ce binaire à chaque PR — job Rust, `cargo build --release --target
+x86_64-unknown-linux-musl -p wisq-agent` — et en imprimait la taille par un
+`ls -l` que personne ne lisait. C'est la onzième façon de se tromper consignée
+au JOURNAL : un instrument qui connaît la réponse à une question posée
+ailleurs. `scripts/check-agent-size.sh` est le fil entre les deux. Il lit les
+huit textes au présent qui annoncent cette taille — les deux langues de la page
+du site, `docs/AGENT-PROTOCOL.md`, les deux README, `CONTRIBUTING.md`, le
+commentaire de `Package.swift`, celui de `release.yml` — et refuse si l'un d'eux s'écarte du binaire. Chaque lecteur lève
+quand son motif trouve zéro occurrence **ou deux** : un lecteur qui ne lit rien
+ne se distingue pas d'un lecteur qui lit la bonne chose tant que les deux côtés
+de la comparaison sont vides.
+
+`site/tests/agent-size.test.ts` le regarde refuser sur des arbres fabriqués, avec
+un binaire de taille choisie — huit tests, et la suite reste hermétique : le job
+« Build site » ne construit pas le démon, donc ce qu'elle tient est l'autre
+moitié du défaut, les huit textes qui se contredisent entre eux. La taille
+aarch64 reste une mesure datée : elle demanderait une chaîne croisée que rien
+ici n'a le droit de supposer présente, et c'est écrit dans la garde.
+
+**Une trouvaille que le compteur de nombres n'aurait pas pu faire.** En relisant
+les pages pour dresser ces listes : six phrases décrivent la machine locale avec
+« 64 Mo de RAM », point. Depuis #283 la taille est un réglage — le curseur vit
+dans `LocalVMView`, `KernelMemory.choices` va de 16 Mio à 16 Gio, et le cœur
+rv32 plafonne à `LinuxMachine.maximumRAMSize`, deux gibioctets. Le chiffre est
+resté juste comme défaut et faux comme phrase. Corrigé dans les deux langues sur
+`content.ts`, `docs.ts` et `faq.ts` — et **la garde ne tient pas ça**, ce qui
+est écrit dans son en-tête : elle compte des nombres, pas la prose autour.
