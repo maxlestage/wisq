@@ -119,7 +119,7 @@ const en: Copy = {
       body:
         "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — around 160 million guest instructions a second. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak. And the machine survives iOS: set aside when the screen locks, it resumes your shell right where it was. An x86-64 core stands beside it, running a stock Alpine kernel and its init.",
       points: [
-        "rv32ima core, 64 MB, 8250 UART, CLINT timer",
+        "rv32ima core, 64 MB by default and up to 2 GB, 8250 UART, CLINT timer",
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
         "A disk on /dev/vda for either machine — a filesystem or installer image you import, of any size, read in place; what the guest writes goes into a layer beside it that survives suspension and restarts, and the file you imported never changes. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so",
         "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images",
@@ -244,7 +244,7 @@ const fr: Copy = {
       body:
         "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — environ 160 millions d'instructions invitées par seconde. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak. Et la machine survit à iOS : mise de côté quand l'écran se verrouille, elle reprend votre shell là où il était. Un cœur x86-64 l'accompagne, qui fait tourner un noyau Alpine standard et son init.",
       points: [
-        "Cœur rv32ima, 64 Mo, UART 8250, minuteur CLINT",
+        "Cœur rv32ima, 64 Mo par défaut et jusqu'à 2 Go, UART 8250, minuteur CLINT",
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
         "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, lue sur place ; ce que l'invité écrit va dans une couche à côté qui survit aux suspensions et aux redémarrages, et le fichier importé ne change jamais. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit",
         "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images",

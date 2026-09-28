@@ -89,7 +89,7 @@ export const protocolEn: Doc = {
     {
       kind: "p",
       text:
-        "The daemon is Rust, the client is Swift. They do not have the same constraints: a program with no interface and no platform framework has no reason to carry a language runtime. Statically linked against Swift's it was a 58 MB download to serve four routes; it is now 582 KB, one static binary that runs on any Linux including Alpine.",
+        "The daemon is Rust, the client is Swift. They do not have the same constraints: a program with no interface and no platform framework has no reason to carry a language runtime. Statically linked against Swift's it was a 58 MB download to serve four routes; it is now 1.8 MB, one static binary that runs on any Linux including Alpine.",
     },
     {
       kind: "p",
@@ -191,7 +191,7 @@ export const protocolFr: Doc = {
     {
       kind: "p",
       text:
-        "Le démon est en Rust, le client en Swift. Ils n'ont pas les mêmes contraintes : un programme sans interface ni framework de plateforme n'a aucune raison d'embarquer un runtime de langage. Statiquement lié à celui de Swift, il pesait 58 Mo pour servir quatre routes ; il en fait 582 Ko, un seul fichier statique qui tourne sur n'importe quel Linux, Alpine compris.",
+        "Le démon est en Rust, le client en Swift. Ils n'ont pas les mêmes contraintes : un programme sans interface ni framework de plateforme n'a aucune raison d'embarquer un runtime de langage. Statiquement lié à celui de Swift, il pesait 58 Mo pour servir quatre routes ; il en fait 1,8 Mo, un seul fichier statique qui tourne sur n'importe quel Linux, Alpine compris.",
     },
     {
       kind: "p",
