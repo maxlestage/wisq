@@ -138,7 +138,7 @@ the UI and the remote-desktop client — Apple-shaped work on
 Network.framework. Rust holds the parts that are neither: a daemon with no
 interface, and an interpreter that is pure computation over a byte array.
 Neither has a reason to carry a language runtime, and the daemon's download
-went from 58 MB to 1.7 MB by not carrying one.
+went from 58 MB to 1.8 MB by not carrying one.
 
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is

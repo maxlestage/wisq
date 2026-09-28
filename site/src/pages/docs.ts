@@ -70,7 +70,7 @@ export const docsEn: Doc = {
     {
       kind: "p",
       text:
-        "The local machine is an interpreted RISC-V computer — one rv32ima hart, 64 MB of RAM, an 8250 UART, a CLINT timer. It boots a real Linux kernel to a login prompt in a fraction of a second, with no network and no host.",
+        "The local machine is an interpreted RISC-V computer — one rv32ima hart, 64 MB of RAM by default and up to 2 GB if you ask for it, an 8250 UART, a CLINT timer. It boots a real Linux kernel to a login prompt in a fraction of a second, with no network and no host.",
     },
     {
       kind: "ol",
@@ -197,7 +197,7 @@ export const docsFr: Doc = {
     {
       kind: "p",
       text:
-        "La machine locale est un ordinateur RISC-V interprété — un hart rv32ima, 64 Mo de RAM, un UART 8250, un minuteur CLINT. Elle amène un vrai noyau Linux jusqu'à l'invite de connexion en une fraction de seconde, sans réseau et sans hôte.",
+        "La machine locale est un ordinateur RISC-V interprété — un hart rv32ima, 64 Mo de RAM par défaut et jusqu'à 2 Go si vous le demandez, un UART 8250, un minuteur CLINT. Elle amène un vrai noyau Linux jusqu'à l'invite de connexion en une fraction de seconde, sans réseau et sans hôte.",
     },
     {
       kind: "ol",
