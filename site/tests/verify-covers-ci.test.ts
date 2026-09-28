@@ -149,6 +149,16 @@ const GATES: Record<string, Verdict> = {
   },
   "core › Benchmark (boot to prompt)": { verify: /wisq-bench/ },
   "core › Les deux cœurs, comparés sur le même noyau": { verify: /test-rust-core\.sh/ },
+  // Republication des deux relevés, et elle n'a de sens que dans un job.
+  // `verify.sh` imprime les mêmes lignes dans un terminal qu'on lit en entier ;
+  // l'API des journaux de GitHub, elle, ne sert que la **fin** d'un job, et les
+  // bancs tournent des milliers de lignes plus haut. C'est la même raison qui a
+  // mis « Ce qui a sauté » et « Ce que l'iPhone simulé a mesuré » en dernier.
+  "core › Ce que les deux bancs ont mesuré": {
+    absent:
+      "relit le fichier que le banc a laissé, parce qu'un journal de job ne se " +
+      "lit que par sa fin ; dans un terminal, verify.sh imprime déjà ces lignes",
+  },
   // Le relevé de ce qui a sauté tourne aux deux endroits, et c'est voulu : sans
   // image de noyau, `verify.sh` saute les mêmes tests que la CI, et un
   // contributeur a autant besoin de le savoir qu'un job.

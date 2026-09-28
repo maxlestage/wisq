@@ -130,12 +130,42 @@ jobs:
         # It boots a real kernel in the release configuration and prints the
         # throughput, so a regression is visible in the log, and a guest that
         # stops reaching its prompt fails the job outright.
+        #
+        # **Les deux cœurs, pas un.** `wisq-bench-rs` existait, doublait celui-ci
+        # « down to the wording » selon son propre en-tête, et n'était lancé par
+        # rien — ni ici, ni dans `verify.sh`, ni dans un document. Le débit que le
+        # site publie est celui du cœur Rust, celui que l'application embarque :
+        # il était donc cité de mémoire pendant que son instrument dormait dans
+        # le dépôt.
+        #
+        # **L'ordre est mesuré, pas esthétique.** `wisq-bench` enchaîne sur un
+        # banc x86 de quarante secondes ; le mettre en premier plaçait cette
+        # charge entre les deux démarrages rv32, et le relevé donnait 146,6 MIPS
+        # au cœur Swift contre 118,3 au Rust — l'inverse de dix passages au
+        # repos. Les deux mesures rv32 sont adjacentes pour cette raison.
         run: |
           if [ ! -f /tmp/wisq-test-linux-image/Image ]; then
             echo "image Linux absente : banc ignoré"
             exit 0
           fi
-          swift run -c release wisq-bench
+          # `cargo` n'est pas sur le PATH de ce conteneur : rustup l'installe
+          # dans $HOME/.cargo, et l'étape voisine source déjà cet environnement.
+          # Sans cette ligne, `cargo: not found` et un 127 — mesuré, sur le
+          # premier tour de CI de cette tranche.
+          . "$HOME/.cargo/env"
+          # Les deux construits d'abord : une compilation Swift entre les deux
+          # mesures est la même charge, sous un autre nom, que le banc x86.
+          cargo build --release --bin wisq-bench-rs
+          swift build -c release --product wisq-bench
+          # Gardé : le journal d'un job ne se lit que par sa fin, et ces
+          # lignes-ci sont au milieu. Une étape plus bas les republie.
+          {
+            echo "cœur Rust — celui que l'application embarque"
+            ./target/release/wisq-bench-rs
+            echo ""
+            echo "cœur Swift"
+            swift run -c release wisq-bench
+          } 2>&1 | tee "${RUNNER_TEMP:-/tmp}/wisq-bench.log"
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
       - name: Les deux cœurs, comparés sur le même noyau
@@ -149,6 +179,26 @@ jobs:
           scripts/test-rust-core.sh
         env:
           WISQ_LINUX_IMAGE: /tmp/wisq-test-linux-image/Image
+      - name: Ce que les deux bancs ont mesuré
+        # **Avant-dernière, et pour la même raison que l'étape d'après.**
+        # L'API des journaux ne sert que la fin d'un job : les deux relevés sont
+        # imprimés des milliers de lignes plus haut, donc illisibles là où on
+        # les lit. Un chiffre mesuré à chaque exécution et introuvable dans le
+        # journal est un chiffre jeté — le défaut même que cette tranche corrige.
+        if: always()
+        run: |
+          log="${RUNNER_TEMP:-/tmp}/wisq-bench.log"
+          if [ ! -f "$log" ]; then
+            echo "pas de relevé : le banc n'a pas tourné (image absente ?)"
+            exit 0
+          fi
+          echo "### Démarrage jusqu'à l'invite, les deux cœurs"
+          echo ""
+          echo "Même noyau, même machine, construits avant d'être lancés."
+          echo ""
+          echo '```'
+          grep -E '^(cœur|instructions|construction|durée|débit|repère)' "$log" || cat "$log"
+          echo '```'
       - name: Ce qui a sauté, et pourquoi
         # **En dernier, et toujours.** Le noyau de test est récupéré en « best
         # effort » plus haut : si ce téléchargement échoue, onze tests Swift
