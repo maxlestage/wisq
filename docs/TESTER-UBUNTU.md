@@ -34,7 +34,11 @@ de la plus confortable à la plus dépannée :
   l'autorisation qui l'a ouverte. La section `[Unreleased]` du `CHANGELOG.md`
   ne le dit **pas** : elle s'écrit au moment de publier, pas en travaillant, et
   elle avait 194 commits de retard au 19 septembre. Pour la liste brute et
-  exhaustive, `git log v0.4.0..master`.
+  exhaustive, `git log v0.4.0..master` — **mais pas dans un clone superficiel** :
+  là, `git rev-list --count v0.4.0..master` rend la profondeur du clone et non
+  l'histoire, sans rien signaler. Mesuré dans le conteneur d'une session :
+  59 commits annoncés, 213 après un `git fetch --depth=500`. Le vérifier d'abord,
+  par `test -f .git/shallow`.
 
 ## 2. L'hôte Ubuntu : libvirt et une VM invitée avec SPICE
 
