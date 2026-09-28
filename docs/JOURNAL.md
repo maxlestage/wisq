@@ -17398,3 +17398,129 @@ s'exécute que si `swiftlint` manque du PATH. `verify.sh` relancé avec un PATH
 qui l'exclut : la branche s'affiche, et elle affiche bien les deux archives.
 Lire le heredoc dans l'éditeur n'aurait dit que ce qu'il contient, pas qu'on
 l'atteint.
+
+## #287 — la garde avait écrit la leçon, et ne se l'était pas appliquée
+
+Réveil de routine, rien de rouge, rien d'ouvert. Le filet dit alors de chercher
+deux nombres qui devraient s'accorder. Départ : les deux moitiés du protocole de
+l'agent — les quatre routes servies par `service.rs` contre les quatre que
+`AgentClient` construit, puis les deux listes blanches d'identifiants écrites
+dans deux langues. **Les deux comparaisons sont propres** ; la seule asymétrie
+est que le client rogne les blancs avant d'envoyer, donc le démon ne voit jamais
+ce que lui refuserait.
+
+C'est le document d'à côté qui a rendu la prise. `docs/AGENT-PROTOCOL.md` porte
+**1,7 Mo** pour le démon ; `site/src/pages/protocol.ts` porte **582 Ko** ;
+`Package.swift` porte **454 Ko**. Trois chiffres, un binaire.
+
+Et en cherchant qui d'autre le dit — « un nombre faux vit rarement à un seul
+endroit », c'est écrit dans ce journal au 2 septembre — cinq textes de plus :
+les deux README (1,7), `CONTRIBUTING.md` (582 Ko), le commentaire du workflow
+de release (1,7), et la page du site comptant pour deux puisqu'elle est écrite
+dans les deux langues. **Huit textes au présent, trois valeurs.**
+
+**Mesuré plutôt que arbitré**, comme le 2 septembre : 1 778 384 octets,
+x86_64 musl, release, `--help` répondant sous `env -i`. Le site et le manifeste
+étaient d'avant le TLS — et le second d'avant l'appairage en plus.
+
+Le document, lui, avait raison **sous une lecture et une seule**. « Mo » vaut
+10^6 octets, le mébioctet s'écrit Mio, et 1 778 384 octets font 1,8 Mo ou
+1,7 Mio. Le 2 septembre les deux lectures donnaient 1,7 et la question ne se
+posait pas ; elle s'est posée en grossissant. Un chiffre publié dont l'unité se
+lit de deux façons n'est pas un chiffre publié — les huit textes disent 1,8, et
+l'unité est écrite là où la comparaison se fait.
+
+### Ce que ça dit de la garde, et c'est le vrai sujet
+
+Le 15 septembre, la tranche qui a balayé `roadmap.ts` a trouvé cinq chiffres
+faux et écrit son signe à retenir :
+
+> Une garde devrait dire non seulement ce qu'elle ne vérifie pas, mais **où elle
+> ne regarde pas**.
+
+Elle a ensuite écrit une garde qui lit **une page sur neuf** et ne dit nulle part
+que les huit autres existent. La leçon était juste, consignée, et non appliquée
+à l'endroit même où elle venait d'être apprise — à trente lignes de la phrase.
+
+Le périmètre est maintenant énoncé, et il ne peut plus croître en silence : une
+page ajoutée n'est dans aucune des trois listes et la garde la refuse ; un
+chiffre ajouté à une page avouée change sa liste et la garde la refuse aussi ;
+une délégation dont la garde nommée ne lit pas le fichier est refusée. L'aveu
+n'est pas une vérification — c'est une dette, tenue à jour de force, et les
+quatre pages avouées attendent chacune leur tranche.
+
+### Le nombre était produit à chaque CI, et jeté
+
+Le job Rust construit exactement ce binaire à chaque PR et en imprime la taille
+par un `ls -l`. La onzième façon de se tromper, telle qu'elle est écrite au
+JOURNAL : « un instrument qui parse une valeur sans jamais la dire tient la
+réponse à une question que le dépôt pose ailleurs, sans savoir qu'il la pose ».
+Ici l'instrument disait la valeur — et personne n'écoutait, ce qui revient au
+même.
+
+`scripts/check-agent-size.sh` relie les deux : le binaire construit contre les
+huit textes au présent qui annoncent sa taille. Il est branché dans `verify.sh`
+juste après la construction musl, et dans le job Rust juste après le `ls -l`.
+Le chiffre du démon n'est donc plus une mesure datée qui se périmera comme les
+trois précédentes : il rougit le jour où il cesse d'être vrai.
+
+**Le premier tour de CI a payé la granularité.** Le coureur a construit
+1 770 192 octets, ce conteneur 1 778 384 : 8 192 d'écart entre deux
+constructions de la même source. Les deux font 1,8 Mo, la garde passe. Épingler
+l'octet aurait été rouge immédiatement, sur un binaire sain — et je l'aurais lu
+comme un défaut du démon au lieu d'un défaut de la garde. La décimale n'est pas
+une tolérance molle : c'est la précision de ce qui est publié.
+
+Deux choix écrits dedans plutôt que supposés. Chaque lecteur refuse **zéro
+occurrence autant que deux** — un motif qui ne trouve rien ressemble à un accord,
+et c'est exactement le trou mesuré sur la garde des versions. Et la taille
+aarch64 reste hors garde : la vérifier demanderait une chaîne croisée qu'aucune
+suite d'ici n'a le droit de supposer présente, ce qui est dit dans la garde au
+lieu d'être laissé croire.
+
+### Neuf sabordages, chacun nommant son test
+
+| mutation | test qui tombe |
+|---|---|
+| une page neuve dans `src/pages/` | `toute page de src/pages est tenue, avouée non tenue, ou nommée hors sujet` |
+| une entrée pour une page inexistante | `rien ne subsiste dans les trois listes pour une page que le site n'a plus` |
+| la provenance de `7442` retirée | `aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient` |
+| une provenance pour un nombre absent | `rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus` |
+| « 160 » → « 161 » sur `faq.ts` | `l'aveu d'une page non tenue est à jour, chiffre par chiffre` |
+| `version-agreement.test.ts` ne nomme plus `releases.ts` | `la garde nommée pour une page hors sujet lit vraiment cette page` |
+
+Et trois sur la garde de la taille, dont la suite est elle-même un harnais de
+refus — sept arbres fabriqués, avec un binaire de la longueur voulue :
+
+| mutation | test qui tombe |
+|---|---|
+| la comparaison remplacée par `if false` | les trois tests d'arbre fabriqué qui attendent un refus |
+| `count -ne 1` affaibli en `count -gt 1` | `une phrase qui change de forme est refusée, pas ignorée` |
+| le mégaoctet calculé en 1 048 576 | les quatre tests qui dépendent du nombre mesuré |
+
+Chaque restauration vérifiée par `diff`. Le cinquième de la première table n'a
+pas eu besoin d'être joué pour convaincre : la correction de « 64 Mo » l'a fait
+tomber toute seule, avant que je ne pense à le saborder.
+
+**Et l'hermétisme de la nouvelle suite est prouvé, pas supposé.** Le job
+« Build site » ne construit pas le démon ; un test qui lançait la garde sur le
+vrai dépôt y serait rouge. Le binaire a donc été déplacé hors de l'arbre et la
+suite relancée : huit tests, zéro échec, binaire remis et taille revérifiée.
+
+### Et la trouvaille que cette garde ne pouvait pas faire
+
+En dressant les listes, six phrases du site décrivent la machine locale avec
+« 64 Mo de RAM » comme si c'était sa taille. Depuis #283 c'est son défaut : le
+curseur existe dans `LocalVMView`, et le rv32 monte jusqu'à deux gibioctets.
+**Mon propre changement a rendu le site faux et je ne l'avais pas regardé.**
+
+Aucun compteur de nombres ne voit ça : le chiffre est le bon, c'est la phrase
+qui ment. C'est écrit dans l'en-tête de la garde, à l'endroit où elle dit ce
+qu'elle ne tient pas — parce qu'une garde qu'on croit plus large qu'elle n'est
+est exactement ce qui a produit cette tranche.
+
+### Le signe à retenir
+
+Une leçon écrite dans un commentaire n'est pas une leçon appliquée. Celle-ci
+était exacte, datée, et posée juste au-dessus du code qui la contredisait. En
+relire une, c'est se demander : **est-ce que la garde en dessous la respecte ?**

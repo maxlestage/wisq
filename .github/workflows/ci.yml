@@ -40,6 +40,10 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
           ls -l target/x86_64-unknown-linux-musl/release/wisq-agent
           env -i target/x86_64-unknown-linux-musl/release/wisq-agent --help > /dev/null
+          # Le `ls -l` ci-dessus imprimait la taille du binaire à chaque
+          # exécution et personne ne la lisait, pendant que cinq textes du
+          # dépôt l'annonçaient — dont trois qui se contredisaient.
+          ./scripts/check-agent-size.sh
       - uses: actions/upload-artifact@v7
         with:
           name: agent-linux-ci

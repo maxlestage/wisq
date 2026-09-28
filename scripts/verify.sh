@@ -106,6 +106,12 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
   echo "==> L'agent, statique (musl), et il démarre sans environnement"
   cargo build --release --target x86_64-unknown-linux-musl -p wisq-agent
   env -i target/x86_64-unknown-linux-musl/release/wisq-agent --help > /dev/null
+
+  # Le binaire est là : autant lui demander ce qu'il pèse, puisque huit textes
+  # du dépôt l'annoncent. Il était construit ici depuis toujours et sa taille
+  # jetée à la ligne suivante.
+  echo "==> La taille du démon, et les textes qui l'annoncent"
+  ./scripts/check-agent-size.sh
 else
   cat <<'EOF'
 ==> Cible musl absente — et la CI, elle, construira l'agent statiquement.

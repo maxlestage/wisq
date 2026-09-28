@@ -274,66 +274,255 @@ describe("advertised claims match the repository", () => {
 /// chacun une ligne qui dit d'où il vient. La justification est le produit :
 /// une liste de commandes relançables, et un refus net dès qu'un nombre
 /// apparaît sans la sienne.
-describe("the roadmap page states the present, and every number in it is accounted for", () => {
-  /// Chaque entrée dit **comment on la refait**, ou pourquoi ce n'est pas une
-  /// mesure. Une entrée qui ne saurait dire ni l'un ni l'autre n'a rien à faire
-  /// sur une page qui parle au présent.
-  const accounted = new Map([
-    [
-      "10 116",
-      "les régions d'entrée atteintes par un `call` du noyau Alpine : " +
-        "`cargo run -p wisq-vm --release --example coverage -- <noyau>`. " +
-        "Pas tenu par la CI — l'étape récupère l'image en best effort.",
-    ],
-    [
-      "17",
-      "les régions compilées portant un octet illisible, même commande, même " +
-        "relevé. Elles se comptent dans la même ligne que les 10 116.",
-    ],
-    [
-      "9660",
-      "ce n'est pas une mesure : c'est le numéro de la norme ISO des " +
-        "systèmes de fichiers de disque optique.",
-    ],
-  ]);
+///
+/// **Et la garde écrite ce jour-là ne disait pas non plus où elle ne regardait
+/// pas.** Le signe à retenir de cette tranche tenait pourtant en une phrase :
+/// « une garde devrait dire non seulement ce qu'elle ne vérifie pas, mais **où
+/// elle ne regarde pas** ». Elle lisait une page sur neuf, et les huit autres
+/// ont continué de publier des chiffres que rien ne relisait. L'une d'elles,
+/// `protocol.ts`, annonçait un démon de **582 Ko** dans les deux langues : le
+/// binaire musl que la release publie en fait **1 778 384 octets**, soit trois
+/// fois plus. Le nombre avait été vrai — avant que le démon n'apprenne le TLS
+/// et l'appairage — et `docs/AGENT-PROTOCOL.md` avait été corrigé le
+/// 2 septembre 2026 sur exactement ce point. La page du site ne l'avait pas
+/// appris, parce que personne ne la lisait.
+///
+/// Le périmètre est donc énoncé ici, page par page, et il ne peut plus croître
+/// en silence. Toute page de `src/pages/` est dans **une** des trois listes :
+/// tenue — chacun de ses nombres porte une ligne qui dit d'où il vient —,
+/// avouée non tenue avec la liste exacte des chiffres qu'elle publie, ou
+/// nommée hors sujet avec la garde qui s'en occupe, et la garde en question
+/// doit vraiment lire le fichier. Une page ajoutée n'est dans aucune des
+/// trois, et elle est refusée ; un chiffre ajouté à une page avouée change sa
+/// liste, et il est refusé aussi. L'aveu n'est pas une vérification : c'est
+/// une dette, tenue à jour de force.
+///
+/// **Ce que rien ici ne tient, et il faut le dire : la prose autour du
+/// nombre.** « 64 Mo de RAM » est resté juste comme chiffre et faux comme
+/// phrase le jour où la taille de la machine est devenue un réglage — aucun
+/// compteur de nombres ne voit ça, et ce n'est pas un compteur qui l'a trouvé.
+const pagesDirectory = join(import.meta.dir, "..", "src", "pages");
 
-  test("no number appears on the roadmap page without a line saying where it comes from", () => {
-    const page = readFileSync(
-      join(import.meta.dir, "..", "src", "pages", "roadmap.ts"),
-      "utf8",
-    );
-    // Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à
-    // un mot ni à un trait d'union : « x86-64 » et « rv32ima » ne sont pas des
-    // chiffres publiés, « 10 116 » en est un.
-    const numbers = page.match(/(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g) ?? [];
-    for (const raw of numbers) {
-      const number = raw.trim();
+/// Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à un
+/// mot ni à un trait d'union : « x86-64 » et « rv32ima » ne sont pas des
+/// chiffres publiés, « 10 116 » en est un.
+const publishedNumber = /(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g;
+
+function pageFiles(): string[] {
+  return readdirSync(pagesDirectory)
+    .filter((name) => name.endsWith(".ts"))
+    .sort();
+}
+
+function figuresOn(page: string): string[] {
+  const text = readFileSync(join(pagesDirectory, page), "utf8");
+  return [
+    ...new Set((text.match(publishedNumber) ?? []).map((raw) => raw.trim())),
+  ].sort();
+}
+
+/// Les pages tenues. Chaque entrée dit **comment on refait le nombre**, ou
+/// pourquoi ce n'est pas une mesure. Une entrée qui ne saurait dire ni l'un ni
+/// l'autre n'a rien à faire sur une page qui parle au présent.
+const accounted = new Map<string, Map<string, string>>([
+  [
+    "roadmap.ts",
+    new Map([
+      [
+        "10 116",
+        "les régions d'entrée atteintes par un `call` du noyau Alpine : " +
+          "`cargo run -p wisq-vm --release --example coverage -- <noyau>`. " +
+          "Pas tenu par la CI — l'étape récupère l'image en best effort.",
+      ],
+      [
+        "17",
+        "les régions compilées portant un octet illisible, même commande, même " +
+          "relevé. Elles se comptent dans la même ligne que les 10 116.",
+      ],
+      [
+        "9660",
+        "ce n'est pas une mesure : c'est le numéro de la norme ISO des " +
+          "systèmes de fichiers de disque optique.",
+      ],
+    ]),
+  ],
+  [
+    "protocol.ts",
+    new Map([
+      [
+        "0.1",
+        "ce n'est pas une mesure : la seconde moitié de l'adresse de bouclage " +
+          "127.0.0.1, que le découpage en nombres sépare de la première.",
+      ],
+      [
+        "127.0",
+        "ce n'est pas une mesure : la première moitié de la même adresse de " +
+          "bouclage, celle que le démon refuse d'annoncer dans un lien.",
+      ],
+      [
+        "1.1",
+        "ce n'est pas une mesure : la version de HTTP que le démon parle — " +
+          "`crates/wisq-agent/src/http.rs`, « A minimal HTTP/1.1 server on the " +
+          "standard library ».",
+      ],
+      [
+        "13",
+        "ce n'est pas une mesure : le `13` de `debian-13`, la VM que sert le " +
+          "backend de démonstration — `crates/wisq-agent/src/backend.rs`, " +
+          "`Vm::new(\"debian-13\", \"Debian 13\", State::Stopped)`.",
+      ],
+      [
+        "404",
+        "ce n'est pas une mesure : le code que `Service::handle` rend pour un " +
+          "identifiant inconnu ou invalide — `crates/wisq-agent/src/service.rs`.",
+      ],
+      [
+        "426",
+        "ce n'est pas une mesure : `426 Upgrade Required`, ce que le démon " +
+          "répond à un client en HTTP clair — `crates/wisq-agent/src/http.rs`, " +
+          "et `assert!(reply.starts_with(\"HTTP/1.1 426\"))` dans le même fichier.",
+      ],
+      [
+        "5901",
+        "ce n'est pas une mesure : le port de console de la VM de " +
+          "démonstration (`running_port: 5901` dans `backend.rs`), qui est " +
+          "aussi l'écran VNC :1, soit 5900 + 1.",
+      ],
+      [
+        "7442",
+        "ce n'est pas une mesure : le port par défaut du démon — " +
+          "`crates/wisq-agent/src/main.rs`, `let mut port: u16 = 7442`.",
+      ],
+      [
+        "58",
+        "historique, et non relançable : le démon d'avant, lié statiquement au " +
+          "runtime Swift, pesait 58 Mo. Ce binaire n'existe plus — le nombre " +
+          "est daté, consigné au CHANGELOG, et il est publié comme un avant.",
+      ],
+      [
+        "1.8",
+        "tenu, pas seulement mesuré : `scripts/check-agent-size.sh` compare " +
+          "cette phrase au binaire que la CI construit déjà dans son job Rust " +
+          "(`cargo build --release --target x86_64-unknown-linux-musl " +
+          "-p wisq-agent`), avec les quatre autres textes qui annoncent la même " +
+          "taille. 1 778 384 octets le 28 septembre 2026, soit 1,8 Mo décimaux.",
+      ],
+      [
+        "1,8",
+        "le même nombre dans l'autre langue : la page est écrite deux fois, et " +
+          "la virgule décimale en fait un jeton distinct. Tenu par la même " +
+          "garde, qui lit les deux phrases séparément.",
+      ],
+    ]),
+  ],
+  ["index.ts", new Map()],
+  ["offline.ts", new Map()],
+]);
+
+/// Les pages que rien ne relit. L'entrée porte **la liste exacte** des chiffres
+/// qu'elles publient : ça n'affirme rien sur leur vérité, ça interdit seulement
+/// qu'un chiffre y bouge sans que quelqu'un le voie. Chacune attend sa tranche.
+const notLookedAt = new Map<string, string[]>([
+  [
+    "architecture.ts",
+    ["0", "0,1", "0,22", "0.1", "0.22", "16", "194", "2 000", "2,7", "2.7",
+      "3", "32", "33", "36,7", "36.7", "47", "50", "8", "9"],
+  ],
+  [
+    "docs.ts",
+    ["0", "1", "2", "2048", "3.8", "512", "5900", "5901", "64", "7442", "8250"],
+  ],
+  ["faq.ts", ["0.2", "160", "2", "32", "44,6", "44.6", "64"]],
+  ["privacy.ts", ["1"]],
+]);
+
+/// Les pages dont les chiffres relèvent d'une autre garde, nommée. Le récit des
+/// versions est le seul cas : ce qu'il publie est ce qu'une version **a
+/// annoncé**, et rafraîchir ces nombres réécrirait le registre au lieu de le
+/// corriger. Ses numéros de version, eux, sont tenus ailleurs — et le test
+/// ci-dessous vérifie que l'ailleurs en question lit vraiment ce fichier.
+const heldElsewhere = new Map([
+  [
+    "releases.ts",
+    {
+      guard: "version-agreement.test.ts",
+      why:
+        "le registre des versions publiées : ses mesures sont datées par la " +
+        "version qui les a annoncées et ne se rafraîchissent pas, ses numéros " +
+        "de version sont comparés aux sept fichiers qui les portent.",
+    },
+  ],
+]);
+
+describe("les pages du site publient des nombres, et le périmètre de ce qui les relit est écrit", () => {
+  test("toute page de src/pages est tenue, avouée non tenue, ou nommée hors sujet", () => {
+    for (const page of pageFiles()) {
+      const listed =
+        Number(accounted.has(page)) +
+        Number(notLookedAt.has(page)) +
+        Number(heldElsewhere.has(page));
       expect(
-        accounted.has(number),
-        `la page de feuille de route publie « ${number} » et rien ne dit d'où ` +
-          `il vient. Ajoute-le à \`accounted\` avec la commande qui le refait, ` +
-          `ou avec la raison pour laquelle ce n'est pas une mesure.`,
-      ).toBe(true);
+        listed,
+        `« ${page} » n'est dans aucune des trois listes — ou dans plusieurs. ` +
+          `Une page publiée se tient, s'avoue, ou se délègue à une garde ` +
+          `nommée : elle ne passe pas en silence.`,
+      ).toBe(1);
     }
   });
 
-  /// La liste ne survit pas à ce qu'elle décrit — même règle que pour
-  /// `notHeld` : une justification pour un nombre retiré de la page se lit
-  /// comme une garde qui couvre quelque chose, alors qu'elle ne couvre rien.
-  test("nothing lingers in the accounted list for a number the page no longer carries", () => {
-    const page = readFileSync(
-      join(import.meta.dir, "..", "src", "pages", "roadmap.ts"),
-      "utf8",
-    );
-    const numbers = new Set(
-      (page.match(/(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g) ?? []).map((n) =>
-        n.trim(),
-      ),
-    );
-    for (const number of accounted.keys()) {
+  test("rien ne subsiste dans les trois listes pour une page que le site n'a plus", () => {
+    const present = new Set(pageFiles());
+    for (const page of [
+      ...accounted.keys(),
+      ...notLookedAt.keys(),
+      ...heldElsewhere.keys(),
+    ]) {
+      expect(present.has(page), `« ${page} » n'existe plus`).toBe(true);
+    }
+  });
+
+  test("aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient", () => {
+    for (const [page, provenance] of accounted) {
+      for (const number of figuresOn(page)) {
+        expect(
+          provenance.has(number),
+          `« ${page} » publie « ${number} » et rien ne dit d'où il vient. ` +
+            `Ajoute-le avec la commande qui le refait, ou avec la raison pour ` +
+            `laquelle ce n'est pas une mesure.`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus", () => {
+    for (const [page, provenance] of accounted) {
+      const published = new Set(figuresOn(page));
+      for (const number of provenance.keys()) {
+        expect(
+          published.has(number),
+          `« ${number} » n'est plus sur ${page} ; sa justification ne couvre rien.`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("l'aveu d'une page non tenue est à jour, chiffre par chiffre", () => {
+    for (const [page, confessed] of notLookedAt) {
       expect(
-        numbers.has(number),
-        `« ${number} » n'est plus sur la page ; sa justification ne couvre rien.`,
+        figuresOn(page),
+        `les chiffres de « ${page} » ont bougé depuis l'aveu. Mets la liste à ` +
+          `jour — ou, mieux, tiens la page et sors-la de cette liste.`,
+      ).toEqual(confessed);
+    }
+  });
+
+  test("la garde nommée pour une page hors sujet lit vraiment cette page", () => {
+    for (const [page, { guard }] of heldElsewhere) {
+      const source = readFileSync(join(import.meta.dir, guard), "utf8");
+      expect(
+        source.includes(`src/pages/${page}`),
+        `« ${page} » est délégué à ${guard}, qui ne nomme pas ce fichier : ` +
+          `la délégation ne couvre rien.`,
       ).toBe(true);
     }
   });

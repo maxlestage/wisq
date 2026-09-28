@@ -36,7 +36,7 @@ export const faqEn: Doc = {
     {
       kind: "p",
       text:
-        "A real Linux kernel with a real shell, on a 32-bit RISC-V machine with no MMU and 64 MB of RAM. That is a working Unix — busybox, shell scripts, a compiler if you build one in. It is not a desktop, and it will not run anything compiled for x86 or ARM.",
+        "A real Linux kernel with a real shell, on a 32-bit RISC-V machine with no MMU and 64 MB of RAM by default, raisable to 2 GB. That is a working Unix — busybox, shell scripts, a compiler if you build one in. It is not a desktop, and it will not run anything compiled for x86 or ARM.",
     },
 
     { kind: "h2", text: "Can the local machine keep files?" },
@@ -140,7 +140,7 @@ export const faqFr: Doc = {
     {
       kind: "p",
       text:
-        "Un vrai noyau Linux avec un vrai shell, sur une machine RISC-V 32 bits sans MMU et 64 Mo de RAM. C'est un Unix qui fonctionne — busybox, scripts shell, un compilateur si vous en intégrez un. Ce n'est pas un bureau, et cela n'exécutera rien de compilé pour x86 ou ARM.",
+        "Un vrai noyau Linux avec un vrai shell, sur une machine RISC-V 32 bits sans MMU et 64 Mo de RAM par défaut, qu'on peut monter à 2 Go. C'est un Unix qui fonctionne — busybox, scripts shell, un compilateur si vous en intégrez un. Ce n'est pas un bureau, et cela n'exécutera rien de compilé pour x86 ou ARM.",
     },
 
     { kind: "h2", text: "La machine locale peut-elle garder des fichiers ?" },
