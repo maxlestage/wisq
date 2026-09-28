@@ -71,7 +71,7 @@ export const privacyEn: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "One honest caveat about the app, repeated from the questions page because it belongs here too: version 1 speaks to your machines in the clear. That traffic is between you and your own hardware, but on an untrusted network it is readable. Use a network you trust or a tunnel you already run.",
+        "One honest caveat about the app: plain TCP is a machine's default transport, so it speaks to that machine in the clear, and on an untrusted network that traffic is readable. It is a default, not a limit — the editor offers TLS, and TLS pinned to a certificate fingerprint, machine by machine, and it says under the picker which one a given machine will get. The host agent is a separate matter and speaks TLS on its own: a self-signed certificate whose SHA-256 travels in the pairing link and is pinned by the app.",
     },
 
     { kind: "h2", text: "Changes, and how to ask" },
@@ -154,7 +154,7 @@ export const privacyFr: Doc = {
       kind: "note",
       tone: "warn",
       text:
-        "Une réserve honnête sur l'application, reprise de la page des questions parce qu'elle a sa place ici aussi : la version 1 parle à vos machines en clair. Ce trafic est entre vous et votre propre matériel, mais il est lisible sur un réseau non fiable. Utilisez un réseau de confiance ou un tunnel que vous exploitez déjà.",
+        "Une réserve honnête sur l'application : le TCP en clair est le transport par défaut d'une machine, et sur un réseau non fiable ce trafic est lisible. C'est un défaut, pas une limite — l'éditeur propose TLS, et TLS épinglé par empreinte de certificat, machine par machine, et il dit sous le sélecteur ce qu'une machine donnée obtiendra. Le démon hôte est un cas à part et parle TLS de lui-même : un certificat auto-signé dont l'empreinte SHA-256 voyage dans le lien d'appairage et que l'application épingle.",
     },
 
     { kind: "h2", text: "Changements, et comment demander" },

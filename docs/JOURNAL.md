@@ -17762,3 +17762,70 @@ cette paire s'accordait parfaitement pendant que la vitrine disait autre chose.
 Chercher, pour chaque garde de cohérence, **quelle troisième copie de la même
 affirmation vit ailleurs** — et dans ce dépôt, la troisième copie est presque
 toujours dans `site/src`.
+
+## #290 — deux sabordages survivants, et la même leçon qu'hier
+
+Dernière tranche de la dette ouverte par #287. Deux pages, deux trouvailles, et
+deux sabordages qui ont survécu avant que les gardes ne tiennent quelque chose.
+
+### Sept, écrit en lettres
+
+`architecture.ts` annonçait « une ABI C de sept fonctions ». `ffi.rs` en exporte
+trente et une. Le balayage des chiffres du site — celui de #287 — ne pouvait pas
+le voir : il compte les nombres écrits en chiffres.
+
+J'ai d'abord voulu l'étendre aux nombres en lettres. **Mesuré avant d'écrire** :
+sur les neuf pages, les mots comptés en français sont `un`, `une`, `deux`,
+`trois`… et `un`/`une` sont des articles sur chaque page. Une règle générale
+noierait la garde sous des faux positifs qu'on finirait par inscrire en bloc
+dans une liste d'exceptions — c'est-à-dire par la désarmer. Ce qui tient est une
+garde nommée pour une affirmation nommée, comme le compte de tests : recompter
+les `pub extern "C" fn` et exiger que la page dise ce nombre. La page l'écrit en
+chiffres, donc le balayage le voit aussi.
+
+### Une mesure qui n'existe nulle part
+
+La même page publie trois tentatives d'optimisation annulées — 9 %, 3 %, et une
+sans gain. Cherché dans le CHANGELOG, la feuille de route, le journal,
+`git log -S` : elles n'apparaissent **qu'ici**, écrites directement sur le site
+en #232. Les chiffres de la table juste au-dessus, eux, sont au CHANGELOG 0.2.0
+avec leur raisonnement. La différence n'est pas qu'une mesure soit relançable et
+l'autre non — aucune des deux ne l'est sans défaire le changement. La différence
+est la **trace**. Leur provenance le dit maintenant, mot pour mot, plutôt que de
+laisser un lecteur croire qu'une commande existe.
+
+### Le clair donné pour une fatalité
+
+`privacy.ts` : « la version 1 parle à vos machines en clair […] utilisez un
+réseau de confiance ou un tunnel que vous exploitez déjà ». L'éditeur a un
+sélecteur **Chiffrement** depuis longtemps — aucun / TLS / TLS épinglé par
+empreinte — et `NetworkByteStream` porte les trois modes. Le clair est le
+défaut, pas la limite.
+
+C'est la page où se tromper coûte le plus cher : quelqu'un pouvait la lire et
+monter un tunnel là où deux touches suffisaient. Corrigé dans les deux langues,
+avec le démon hôte nommé à part puisqu'il parle TLS de lui-même.
+
+### Les deux survivants
+
+**Premier.** La garde demandait que la réserve « en clair » nomme TLS. Retirer
+la phrase sur les machines la laissait verte : la phrase suivante, celle sur le
+démon hôte, dit « TLS » elle aussi. Exactement le défaut de #289 — une assertion
+satisfaite par un autre chemin — vingt-quatre heures plus tard, dans une garde
+que j'écrivais en connaissant l'histoire. La lecture s'arrête maintenant là où le
+sujet change, et le sabordage tombe.
+
+**Second, et il était de mon fait.** Pour vérifier que le lecteur des modes
+refuse quand il ne lit rien, j'ai renommé `TransportSecurity` en
+`TransportSecurityRenamed` : la garde est restée verte. Le motif cherché,
+`enum TransportSecurity`, est un **préfixe** du nouveau nom. La mutation n'avait
+pas muté. Rejouée avec `WireSecurity`, la garde tombe en disant « ne déclare plus
+de cases ».
+
+### Le signe à retenir
+
+Un « SURVÉCU » a deux causes possibles et il faut les séparer avant de conclure :
+la garde est faible, **ou la mutation n'en est pas une**. Les deux se sont
+produites dans la même heure, et la seconde ressemblait exactement à la
+première. Un sabordage qui survit n'a rien prouvé tant qu'on n'a pas vérifié que
+le texte muté est bien différent de ce que la garde lit.

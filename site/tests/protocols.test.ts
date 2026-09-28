@@ -146,3 +146,65 @@ test("la liste vient vraiment du code, et elle n'est pas vide", () => {
   expect(names.length).toBeGreaterThanOrEqual(2);
   expect(names).toContain("RDP");
 });
+
+/// **La page qui prévient du clair doit dire que le chiffrement existe.**
+///
+/// `privacy.ts` portait « la version 1 parle à vos machines en clair », à plat.
+/// `MachineEditorView` a pourtant un sélecteur « Chiffrement » qui parcourt
+/// `TransportSecurity.allCases` — aucun, TLS, TLS épinglé par empreinte —, et
+/// `NetworkByteStream` porte les trois. Le clair est le **défaut**, pas la
+/// seule possibilité, et c'est sur la page de confidentialité que la nuance
+/// compte le plus : quelqu'un pouvait lire ça et monter un tunnel là où deux
+/// touches suffisaient.
+///
+/// Ce test tient la moitié qu'une liste peut tenir : tant que
+/// `TransportSecurity` offre autre chose que `none`, la réserve doit nommer
+/// TLS. Ce qu'il ne tient pas, c'est la justesse du reste de la phrase.
+function securityModes(): string[] {
+  const source = readFileSync(
+    join(repoRoot, "Sources", "WisqCore", "RemoteProtocol.swift"),
+    "utf8",
+  );
+  const head = source.slice(source.indexOf("enum TransportSecurity"));
+  const block = head.slice(0, head.indexOf("\n    public var"));
+  return [...new Set([...block.matchAll(/^ {4}case (\w+)$/gm)].map((m) => m[1]))];
+}
+
+test("la réserve sur le clair nomme le chiffrement que l'application propose", () => {
+  const modes = securityModes();
+  expect(modes, "TransportSecurity ne déclare plus de cases").toContain("none");
+  const encrypted = modes.filter((mode) => mode !== "none");
+  if (encrypted.length === 0) return;
+
+  const page = readFileSync(join(repoRoot, "site", "src", "pages", "privacy.ts"), "utf8");
+  const split = page.indexOf("export const privacyFr");
+  expect(split, "privacy.ts ne porte plus deux moitiés nommées").toBeGreaterThan(0);
+
+  // **Ce qui est mesuré est la phrase sur la machine, pas le paragraphe.** Un
+  // premier sabordage a SURVÉCU : en retirant TLS de la partie « transport
+  // d'une machine », la phrase d'après — celle sur le démon hôte, qui parle
+  // TLS aussi — satisfaisait l'assertion. La tranche voisine a payé le même
+  // défaut la veille : une assertion sur un paragraphe se laisse contenter par
+  // un autre chemin. La lecture s'arrête donc là où le sujet change.
+  for (const [language, half, agent] of [
+    ["en", page.slice(0, split), "The host agent"],
+    ["fr", page.slice(split), "Le démon hôte"],
+  ] as const) {
+    const warning = half.match(/[^"]*(in the clear|en clair)[^"]*/);
+    expect(warning, `la moitié ${language} ne parle plus du trafic en clair`).not.toBeNull();
+    const cut = warning![0].indexOf(agent);
+    expect(
+      cut,
+      `la réserve ${language} ne passe plus au démon hôte (« ${agent} ») : ` +
+        `la découpe ne sait plus où le sujet change.`,
+    ).toBeGreaterThan(0);
+    const aboutMachines = warning![0].slice(0, cut);
+    expect(
+      aboutMachines.includes("TLS"),
+      `la moitié ${language} prévient du trafic en clair vers vos machines sans ` +
+        `dire que l'application propose ${encrypted.join(" et ")} : le clair est ` +
+        `le défaut, pas la seule possibilité. (Le démon hôte, lui, est nommé ` +
+        `après et ne compte pas pour cette phrase.)`,
+    ).toBe(true);
+  }
+});
