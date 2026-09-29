@@ -18061,3 +18061,65 @@ j'aurais cru mesurer la frappe.
 Quand une garde juge une famille, demander ce qu'elle laisse **hors** de la
 famille. Trois tests d'ABI excellents, et onze fonctions dehors : chacun
 regardait bien ce qu'il regardait, et personne ne comptait.
+
+## #295 — cinq nombres du bureau que rien ne tenait, et la faute de #293 refaite dans ma propre garde
+
+La question qui a produit #294 — « qu'est-ce que cette garde laisse **hors** de
+sa famille ? » — se repose partout. Cette fois un cran plus haut : l'ABI C est
+désormais exercée en entier, mais l'application l'atteint-elle en entier ?
+
+**D'abord deux fausses pistes, écartées proprement.** Swift n'appelle que 29 des
+31 fonctions. `wisq_vm_load` est délibéré, l'en-tête le dit : elle reste pour un
+appelant sans arbre à lui, et Swift en a un. `wisq_x86_guest_pages` n'a
+simplement pas encore d'hôte — la forme confinée reçoit ses pages en argument.
+Ni l'une ni l'autre n'est un défaut.
+
+**Puis `web/host.js`.** Trente et une constantes recopiées de l'émetteur, dans un
+fichier qui ne peut pas les importer. Un test les compare, et son en-tête dit :
+« une répétition que rien ne compare finit toujours par mentir — celle-ci est
+comparée ». Ses propres commentaires avouent deux fois le contraire : `rflags`
+est entré dans `SLOTS` sans comparaison, puis EFER après lui. Deux rattrapages,
+et **aucun des deux n'a posé la question suivante** : combien en reste-t-il
+dehors ?
+
+Sept. Et pas lues — mesurées, en perturbant chaque valeur : `fault` et `stop`
+font tomber une cinquantaine de tests chacune, par leur effet. Les cinq autres —
+`translate`, `translateCount`, `tlbEntry`, `tlbSlots`, `tlbPages` — laissent
+**tout le crate au vert**. `tlbSlots` divisé par deux : 116 + 86 + 31 + … tests,
+zéro rouge.
+
+**Ce n'est pas un fichier d'atelier.** `crates/wisq-vm/src/desktop.rs` embarque
+`web/host.js` par `include_str!` dans la page que l'application charge dans son
+`WKWebView`. Ces cinq nombres partent sur l'appareil. Un tampon de traduction
+que l'hôte indexe autrement que le module ne fait aucun bruit : il ne trouve
+jamais ce qu'il y a rangé, la région retombe sur le chemin lent, et le bureau
+est simplement plus lent sans que personne ne sache pourquoi.
+
+### Ma propre garde a échoué au sabordage, exactement comme #293
+
+La première version cherchait `value("…")` n'importe où dans la source du test.
+J'ai remplacé l'assertion par le commentaire « on comparait `value("tlbSlots")`
+ici autrefois » : **verte**.
+
+C'est mot pour mot la faute de #293 — une assertion satisfaite par l'empreinte
+au lieu de l'acte — et je venais de l'écrire dans le commentaire de la garde de
+#294, en toutes lettres, la veille. Savoir nommer une faute ne suffit pas à ne
+pas la commettre ; il faut la *tirer dessus*. Seul le sabordage l'a dit.
+
+La garde exige maintenant une ligne qui **est** une assertion : une ligne de
+commentaire ne compte pas, et l'appel doit ouvrir la ligne ou suivre
+`assert_eq!(`.
+
+### Le compte
+
+Neuf sabordages, neuf attrapés après resserrement : les sept constantes une à
+une, la comparaison supprimée, et la comparaison changée en mention. Chaque
+restauration vérifiée par `diff` vide.
+
+### Le signe à retenir
+
+Deux avocats d'un même fichier avaient déjà rattrapé une entrée oubliée, chacun
+en écrivant dans son commentaire que c'était arrivé. Écrire « c'est arrivé »
+deux fois sans jamais compter le reste, c'est traiter le symptôme à chaque fois
+qu'il se montre. **Le troisième rattrapage doit être un compteur, pas un
+troisième rattrapage.**

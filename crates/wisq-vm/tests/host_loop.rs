@@ -220,6 +220,179 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         format!("1 << {}", TABLE_SLOTS.trailing_zeros()),
         "le nombre de cases"
     );
+    // **Les deux témoins que la région pose pour rendre la main**, et qui
+    // n'étaient comparés qu'*en effet*. Perturber l'un ou l'autre fait tomber
+    // une cinquantaine de tests — parce que la boucle lit alors la mauvaise
+    // globale et que le harnais s'en aperçoit, pas parce qu'une ligne
+    // constatait le désaccord. Un effet qui rougit est une bonne nouvelle ;
+    // il ne dit pas *quoi* a bougé, et il ne survivra pas forcément au
+    // prochain remaniement du harnais.
+    assert_eq!(value("fault"), FAULT_SLOT.to_string(), "le témoin de faute");
+    assert_eq!(
+        value("stop"),
+        wisq_vm::x86_wasm::STOP_SLOT.to_string(),
+        "le témoin d'arrêt"
+    );
+    // **Les trois cases de la demande de traduction.** L'hôte y lit l'adresse
+    // qu'une région n'a pas su résoudre seule ; une case fausse lui ferait
+    // traduire autre chose que ce qui a été demandé, et la région repasserait
+    // indéfiniment par lui sur la même adresse. Rien ne s'arrête : ça ralentit.
+    assert_eq!(
+        value("translate"),
+        wisq_vm::x86_wasm::TRANSLATE_SLOT.to_string(),
+        "la première case de la demande de traduction"
+    );
+    assert_eq!(
+        value("translateCount"),
+        wisq_vm::x86_wasm::TRANSLATE_COUNT.to_string(),
+        "le nombre de cases de la demande"
+    );
+    // **Le tampon de traduction, ses trois nombres.** C'est la découverte de
+    // cette tranche : `tlbSlots` divisé par deux laissait *tout* le crate au
+    // vert. L'hôte et le module indexent alors le même tampon avec deux
+    // formules différentes — l'hôte range une entrée là où le module ne
+    // regarde pas — et personne ne le voit, parce que le module retombe
+    // simplement sur le chemin lent. Un défaut muet qui ne coûte que de la
+    // vitesse, sur l'appareil, et `desktop.rs` embarque ce fichier tel quel
+    // dans la page que charge la vue.
+    assert_eq!(
+        value("tlbSlots"),
+        wisq_vm::x86_wasm::TLB_SLOTS.to_string(),
+        "le nombre d'entrées du tampon de traduction"
+    );
+    assert_eq!(
+        value("tlbEntry"),
+        wisq_vm::x86_wasm::TLB_ENTRY.to_string(),
+        "la taille d'une entrée du tampon"
+    );
+    assert_eq!(
+        value("tlbPages"),
+        wisq_vm::x86_wasm::TLB_PAGES.to_string(),
+        "les pages qu'occupe le tampon"
+    );
+}
+
+/// **Et le périmètre de cette répétition, que rien ne comptait.**
+///
+/// Le test au-dessus compare des constantes nommées une par une, et son
+/// histoire est écrite dans ses propres commentaires : `rflags` est entré dans
+/// `SLOTS` sans comparaison, puis EFER après lui, dans un fichier dont
+/// l'en-tête affirme que la répétition est comparée. Deux aveux, deux
+/// rattrapages — et aucun des deux n'a posé la question suivante : **combien
+/// d'entrées de `SLOTS` restent dehors ?**
+///
+/// Il en restait sept, et cinq d'entre elles ne sont tenues par rien du tout.
+/// Mesuré plutôt que lu : en perturbant chaque valeur dans `web/host.js` et en
+/// relançant tout le crate, `fault` et `stop` font tomber une cinquantaine de
+/// tests chacune — par leur effet, pas par une comparaison — tandis que
+/// `translate`, `translateCount`, `tlbEntry`, `tlbSlots` et `tlbPages`
+/// laissent les 116 + 86 + 31 + … tests du crate au vert. `tlbSlots` divisé
+/// par deux : rien.
+///
+/// Ce n'est pas un fichier de plus. `crates/wisq-vm/src/desktop.rs` embarque
+/// `web/host.js` par `include_str!` dans la page que l'application charge dans
+/// son `WKWebView` : ces nombres partent sur l'appareil. Un tampon de
+/// traduction que l'hôte indexe autrement que le module ne fait pas de bruit —
+/// il ne trouve simplement jamais ce qu'il y a rangé.
+///
+/// **Ce que cette garde tient.** Le périmètre, et rien d'autre : chaque clé de
+/// `SLOTS` est comparée quelque part par le test au-dessus. Elle ne juge pas
+/// la justesse d'une comparaison — c'est le sabordage qui le fait — mais elle
+/// interdit qu'une constante entre dans `SLOTS` sans que personne ne la
+/// confronte, ce qui est arrivé trois fois.
+#[test]
+fn every_number_the_view_repeats_is_compared_somewhere() {
+    let root = workspace_root();
+    let host = std::fs::read_to_string(root.join("web/host.js")).expect("host.js");
+
+    // Les clés de `SLOTS`, prises entre sa déclaration et l'accolade qui la
+    // ferme. Deux espaces d'indentation exactement : les clés imbriquées d'un
+    // objet intérieur en auraient quatre et ne sont pas des cases.
+    let start = host
+        .find("export const SLOTS")
+        .expect("host.js déclare SLOTS");
+    let end = start
+        + host[start..]
+            .find("\n};")
+            .expect("la déclaration de SLOTS se ferme");
+    let mut declared = std::collections::BTreeSet::new();
+    for line in host[start..end].lines() {
+        let Some(rest) = line.strip_prefix("  ") else {
+            continue;
+        };
+        let Some(name) = rest.split(':').next() else {
+            continue;
+        };
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|it| it.is_ascii_alphanumeric() || it == '_')
+        {
+            declared.insert(name.to_string());
+        }
+    }
+    assert!(
+        declared.len() >= 31,
+        "SLOTS ne déclare plus que {} cases : la lecture s'est cassée ou la \
+         surface a reculé",
+        declared.len()
+    );
+
+    // Ce que le test au-dessus confronte, lu dans sa propre source. Une
+    // deuxième liste écrite à la main ici serait une troisième copie, et c'est
+    // précisément le défaut qu'on répare.
+    let mine = std::fs::read_to_string(root.join("crates/wisq-vm/tests/host_loop.rs"))
+        .expect("cette source");
+    //
+    // **Un nom cité ne vaut pas un nom comparé.** La première version de cette
+    // garde cherchait `value("…")` n'importe où dans le fichier, et un
+    // sabordage l'a montrée creuse : remplacer l'assertion par le commentaire
+    // « on comparait value("tlbSlots") ici autrefois » la laissait verte.
+    // C'est mot pour mot la faute de #293. Seule compte donc une ligne qui
+    // *est* une assertion : une ligne de commentaire ne compte pas, et
+    // l'appel doit ouvrir la ligne ou suivre immédiatement `assert_eq!(`.
+    let mut compared = std::collections::BTreeSet::new();
+    let needle = "value(\"";
+    for line in mine.lines() {
+        let line = line.trim();
+        if line.starts_with("//") {
+            continue;
+        }
+        if !(line.starts_with(needle) || line.starts_with("assert_eq!(")) {
+            continue;
+        }
+        let mut at = 0;
+        while let Some(found) = line[at..].find(needle) {
+            let from = at + found + needle.len();
+            let Some(close) = line[from..].find('"') else {
+                break;
+            };
+            compared.insert(line[from..from + close].to_string());
+            at = from + close;
+        }
+    }
+
+    // Vide, et volontairement. Les trente et une cases ont toutes une
+    // constante jumelle côté Rust ; le jour où l'une n'en aura pas, son nom
+    // s'écrira ici avec la raison, et non dans un silence.
+    let unpaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    let missing: Vec<&String> = declared
+        .difference(&compared)
+        .filter(|name| !unpaired.contains(*name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} cases de SLOTS que rien ne confronte à la constante Rust qu'elles \
+         recopient :\n{}\nUne répétition que rien ne compare finit toujours par \
+         mentir — c'est l'en-tête du test au-dessus qui le dit.",
+        missing.len(),
+        missing
+            .iter()
+            .map(|name| format!("  {name}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 /// **La machine tourne dans la vue, et l'application ne fait que traduire.**
