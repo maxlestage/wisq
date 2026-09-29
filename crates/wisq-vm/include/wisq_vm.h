@@ -8,10 +8,17 @@
  * no type at all — bytes in, bytes out, and four numbers.
  *
  * This header is hand-written rather than generated, and that is a
- * liability unless something checks it: `tests/abi.c` compiles against
- * this header, links the real static library and boots a kernel through
- * it. A signature that drifts from src/ffi.rs fails that test rather
- * than crashing on a phone.
+ * liability unless something checks it. Four C programs under `tests/abi/`
+ * compile against this header and link the real static library: main.c boots
+ * a kernel, x86.c translates a region, disk.c attaches a disk and queues
+ * keystrokes, iso.c reads a disc image. A signature that drifts from
+ * src/ffi.rs fails one of them rather than crashing on a phone.
+ *
+ * "Something checks it" was true of twenty of these declarations and false of
+ * eleven — the disk family, the load that takes a tree, the keystroke queue —
+ * and nothing said which. `every_declared_function_is_exercised_from_c` in
+ * tests/abi.rs now names any declaration no C program calls, so a function
+ * added here without a caller fails on the commit that adds it.
  *
  * Threading contract: `wisq_vm_run` blocks and must be called from one
  * thread at a time for a given machine. `wisq_vm_send` and `wisq_vm_stop`
