@@ -13133,3 +13133,31 @@ guide, à côté de la commande qu'il recommande.
 **Sans garde, et c'est dit** : rien dans le dépôt ne compte l'histoire, donc il
 n'y a pas de seconde liste à confronter. Ce qui tient la ligne ajoutée est la
 mesure ci-dessus, refaite par `test -f .git/shallow`.
+
+## #293 — le README français ne disait pas que l'agent parle TLS
+
+Les deux README sont deux documents, pas une traduction : le tableau des
+composants est plus fin en français — vingt-cinq lignes contre vingt — et c'est
+délibéré. Confronter les **états** annoncés ne rend rien : dix-neuf « done » et
+un « roadmap » d'un côté, vingt-quatre « fait » et un « à faire » de l'autre, et
+dans les deux cas c'est la même ligne qui n'est pas faite (RDP : NLA/CredSSP,
+canaux virtuels, curseur, retaille).
+
+Confronter les **capacités**, oui. Le README anglais dit deux fois que l'agent
+parle TLS — un paragraphe (« The agent speaks TLS by default: a self-signed
+certificate whose SHA-256 fingerprint travels in the pairing link, pinned by the
+app ») et une ligne de tableau (« Agent TLS | done »). **Le français ne le dit
+nulle part** : ses deux seules occurrences de TLS sont la ligne générique du
+transport et la carte des modules. Le démon a `tls.rs` depuis la 0.3, le lien
+d'appairage porte `fp=`, `AgentClient` épingle — et le lecteur francophone lisait
+un document d'où une fonction de sécurité livrée était absente.
+
+Deuxième prise, dans le même tableau : « Linux local : émulateur rv32ima
+**Swift** », une ligne sous « Cœur Rust par défaut, comparé instruction par
+instruction au cœur Swift en CI ». L'anglais ne nomme pas de langage à cet
+endroit, et c'est le bon choix : ce qui embarque est le cœur Rust.
+
+`site/tests/readmes.test.ts` tient une capacité nommée : ce qui prouve qu'elle
+existe dans le code, et un motif par langue qui prouve que chaque README la
+nomme. Rien de plus — elle ne compare pas les tableaux, ne compte pas les lignes
+et ne juge pas la granularité, trois choses qui diffèrent à dessein.
