@@ -55,6 +55,10 @@ mesuré contre un vrai serveur : il ouvre une session, négocie ses capacités e
 peint l'écran. Il ne parle pas encore NLA, donc pas encore aux Windows
 modernes, qui l'exigent par défaut (voir `docs/ROADMAP.md`).
 
+L'agent parle TLS par défaut : un certificat auto-signé dont l'empreinte SHA-256
+voyage dans le lien d'appairage, épinglée par l'application — aucune autorité à
+opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
+
 | Composant | État |
 |---|---|
 | Modèle de données, persistance, trousseau | fait |
@@ -76,11 +80,12 @@ modernes, qui l'exigent par défaut (voir `docs/ROADMAP.md`).
 | Agent hôte : démon `wisq-agent` (virsh + mode démo), testé bout-à-bout | fait |
 | App ↔ agent : démarrage de la VM à la connexion, import des VM d'un agent | fait |
 | Appairage `wisq://` (QR via qrencode), découverte Bonjour | fait |
+| TLS de l'agent | fait |
 | Éteindre une VM distante depuis le téléphone : ACPI poli, puis le cordon si l'invité ne répond pas | fait |
 | SPICE : envoi d'un fichier du téléphone vers l'invité (canal agent) | fait |
 | Machine locale suspendue et reprise par instantané — le shell revient où il était | fait |
 | Cœur Rust par défaut, comparé instruction par instruction au cœur Swift en CI | fait |
-| Linux local : émulateur rv32ima Swift, boot d'un vrai noyau, terminal | fait |
+| Linux local : émulateur rv32ima, boot d'un vrai noyau, terminal | fait |
 | Un disque pour le PC local : on apporte une image, l'invité la voit sur `/dev/vda` | fait |
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
