@@ -17933,3 +17933,46 @@ nommé, et il vaut mieux l'écrire que laisser croire à une protection.
 faut le consigner, sinon la tranche suivante le refera. Les trois ci-dessus sont
 closes : les deux surfaces de la ligne de commande de l'agent s'accordent, et les
 chiffres datés du guide de test tiennent.
+
+## #293 — la troisième copie, cette fois c'est une langue
+
+Réveil sans dette. La comparaison restée en suspens depuis #289 : les tableaux
+de composants des deux README, que rien ne rapproche — la garde existante ne
+tient que le tableau de comparaison du haut, et seulement sa hauteur.
+
+**Les états s'accordent.** Dix-neuf « done » et un « roadmap » en anglais,
+vingt-quatre « fait » et un « à faire » en français, et dans les deux cas la
+ligne non faite est la même. La granularité diffère — le français découpe VNC en
+quatre lignes là où l'anglais en met deux — et c'est légitime : ce sont deux
+documents.
+
+**Les capacités, non.** L'anglais annonce « Agent TLS | done » et le détaille en
+prose ; le français ne mentionne le TLS de l'agent **nulle part**. Ses deux
+occurrences du mot sont la ligne générique du transport et la carte des modules.
+
+C'est encore la troisième copie — le motif de #289, #290 et #291 — mais sous une
+forme que je n'avais pas cherchée : pas trois fichiers, **deux langues du même
+fichier**. Et c'est encore une fonction de sécurité, comme la réserve de
+`privacy.ts` en #290. Deux fois de suite, ce qui manquait au lecteur était ce
+qui protège son trafic.
+
+**Et une ligne qui nomme le mauvais cœur** : « émulateur rv32ima Swift », une
+ligne sous « Cœur Rust par défaut ». Le tableau se contredisait à une ligne de
+distance.
+
+### Ce que la garde tient, et pourquoi si peu
+
+Une capacité nommée : un fichier qui prouve qu'elle existe, un motif par langue
+qui prouve que chaque document la nomme. Pas les tableaux, pas les hauteurs, pas
+la granularité. La tentation était de comparer les lignes deux à deux ; elle
+aurait produit une garde fausse dès la première ligne, puisque les deux tableaux
+ne découpent pas pareil **à dessein**. Une garde qui exige une correspondance que
+les auteurs ont délibérément rompue ne tient rien : elle force à défaire un
+choix.
+
+### Le signe à retenir
+
+Quand une affirmation vit à plusieurs endroits, compter les endroits **avant** de
+conclure qu'ils sont tous corrigés. Trois fois cette semaine la troisième copie
+était ailleurs qu'on ne la cherchait : dans un document oublié (#291), sur une
+page du site (#289), et ici dans l'autre langue du même document.
