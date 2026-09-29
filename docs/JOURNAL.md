@@ -17976,3 +17976,88 @@ Quand une affirmation vit à plusieurs endroits, compter les endroits **avant** 
 conclure qu'ils sont tous corrigés. Trois fois cette semaine la troisième copie
 était ailleurs qu'on ne la cherchait : dans un document oublié (#291), sur une
 page du site (#289), et ici dans l'autre langue du même document.
+
+## #294 — onze déclarations que personne n'appelait, et #261 deux fois de suite
+
+Réveil sans dette. J'ai cherché la forme qui trouve tout — deux nombres qui
+devraient s'accorder — du côté de l'ABI C : trente et une fonctions déclarées à
+la main dans `include/wisq_vm.h`, trente et une exportées par `src/ffi.rs`, et
+l'en-tête qui affirme en toutes lettres qu'un programme C les confronte.
+
+**Les trois cœurs, d'abord, et ils vont bien.** Les trois harnais de l'oracle —
+Swift, Rust, l'émetteur sous JavaScriptCore — exigent tous le corpus entier :
+13 388 cas, 533 formes, et celui de l'émetteur vérifie même une **somme exacte**
+plutôt qu'un plancher. Rien à corriger là.
+
+**Puis deux fois la règle de #261, à dix minutes d'intervalle.**
+
+La première : j'avais compté les appels dans `tests/abi/main.c` et conclu que
+22 fonctions sur 31 n'étaient jugées par rien. Faux. Il y a **trois** programmes
+C, pas un — `main.c`, `x86.c`, `iso.c` — et le vrai trou était de onze. J'allais
+publier le double.
+
+La seconde : constatant que `disk_served` et `disk_refused` valent tous deux zéro
+dans mon programme, j'ai écrit que rien ne les distinguait. Faux aussi.
+`Tests/WisqVMRustTests/DifferentialDiskTests.swift` exige `served == 1` et
+`refused == 0`, **à travers ce même en-tête**. Ce n'était pas absent, c'était
+ailleurs — en Swift, pas en Rust, et je n'avais cherché qu'en Rust.
+
+Chercher la même absence là où on sait la chose présente : deux fois, ça a
+changé la conclusion.
+
+### Ce qui restait vraiment dehors
+
+Onze déclarations qu'aucun programme C n'appelait : les neuf du disque,
+`wisq_vm_load_with_tree`, `wisq_vm_send`. Plus `wisq_desktop_tlb_pages`, que
+l'en-tête demande pourtant à un hôte d'additionner aux deux autres — `x86.c`
+lisait les deux premières et jamais la troisième.
+
+Encore la troisième copie, donc, et encore une famille entière : le disque a été
+ajouté à l'ABI sans son programme de conformité, et rien ne l'a dit pendant
+tout ce temps parce que **rien ne comptait le périmètre**. Les trois tests
+existants jugeaient chacun bien leur famille ; aucun ne disait combien de
+l'en-tête restait dehors.
+
+Et l'en-tête l'affirmait quand même : « a signature that drifts from src/ffi.rs
+fails that test rather than crashing on a phone ». Vrai pour vingt fonctions,
+faux pour onze. Il nommait au passage `tests/abi.c`, un fichier qui n'existe pas.
+
+### La garde, et ce qu'elle ne tient pas
+
+`every_declared_function_is_exercised_from_c` lit l'en-tête et **tous** les `.c`
+du dossier avec la même fonction — une déclaration C a exactement la forme d'un
+appel — et exige que la différence soit vide. Commentaires et chaînes retirés
+d'abord : `fprintf(stderr, "ABI: wisq_vm_snapshot a échoué")` nomme sans
+appeler, et une garde satisfaite par l'empreinte au lieu de l'acte est
+précisément ce qui a survécu six sabordages la semaine dernière.
+
+Elle tient le **périmètre**, pas le contrat : un appel dont personne ne regarde
+le résultat la passerait. C'est écrit dans son en-tête, parce qu'une garde qui
+laisse croire qu'elle tient plus qu'elle ne tient est pire que pas de garde.
+
+### Le sabordage, huit sur huit
+
+Quatre contre l'implémentation Rust — `send` rendu inerte, `bytes_written` à
+zéro, `tlb_pages` à zéro, `has_disk` toujours vrai — et chacun tombe en nommant
+sa vérification. Trois contre la garde : l'appel supprimé, l'appel transformé en
+**mention dans un commentaire**, l'appel transformé en **chaîne de caractères**.
+Les trois tombent, et les deux derniers sont ceux qui comptaient : ils prouvent
+qu'elle mesure l'acte. Un contre l'en-tête lui-même — deux arguments échangés
+dans la déclaration de `wisq_vm_attach_disk` — et la compilation refuse.
+
+Les huit restaurés, vérifiés par `diff` vide à chaque fois.
+
+### Une vérification qui aurait pu ne rien mesurer
+
+`wisq_vm_send` ne rend rien. « Elle n'a pas planté » n'est pas une vérification,
+alors j'ai pris deux instantanés autour de la frappe et exigé qu'ils diffèrent —
+l'instantané porte les touches en attente. Puis j'ai fait ce qu'il fallait
+faire : deux instantanés **sans** frappe. Identiques, 248 octets contre 248. Si
+elles avaient différé, mon assertion aurait été satisfaite par le bruit et
+j'aurais cru mesurer la frappe.
+
+### Le signe à retenir
+
+Quand une garde juge une famille, demander ce qu'elle laisse **hors** de la
+famille. Trois tests d'ABI excellents, et onze fonctions dehors : chacun
+regardait bien ce qu'il regardait, et personne ne comptait.
