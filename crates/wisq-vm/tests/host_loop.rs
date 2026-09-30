@@ -11652,3 +11652,99 @@ console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **Le vocabulaire du pont, tenu ailleurs que dans un simulateur.**
+///
+/// La page que l'application charge parle à l'application par deux messages,
+/// `traduire` et `arrêt`, et chacun porte des champs nommés. Les deux moitiés
+/// de ce contrat vivent dans deux langages qui ne peuvent pas s'importer :
+/// `wisq_vm::desktop` engendre le JavaScript, `DesktopBridge.request(from:)`
+/// le lit en Swift. Les deux jeux de noms sont donc recopiés à la main.
+///
+/// Jusqu'ici, une seule chose les confrontait : `LocalDesktopTests`, dans un
+/// iPhone simulé, sur la CI Apple. C'est une bonne épreuve — elle juge le
+/// bureau entier — mais c'est la plus lente et la plus lointaine, et elle ne
+/// dit pas *quel* nom a bougé : elle dit que le bureau ne démarre plus.
+/// Renommer `octets` d'un côté seulement ne casse rien à la compilation, ni
+/// ici ni là-bas.
+///
+/// Cette garde ne remplace pas l'épreuve de bout en bout ; elle nomme la
+/// divergence en une seconde, au lieu de la laisser se montrer par une panne.
+#[test]
+fn the_page_and_the_swift_reader_use_the_same_words() {
+    let root = workspace_root();
+    // **La page engendrée, pas sa source.** C'est ce texte-là qui part dans la
+    // vue ; lire `desktop.rs` jugerait un gabarit, avec ses accolades
+    // doublées et ses branches non prises.
+    let page = wisq_vm::desktop::driver(1, 0x1000, "wisq", None);
+    // Les commentaires du JavaScript nomment ces messages en prose. Une garde
+    // satisfaite par une phrase au lieu d'un envoi est une garde creuse —
+    // #295 l'a appris à ses dépens sur ce même dépôt.
+    let page = strip_line_comments(&page);
+
+    let swift = std::fs::read_to_string(root.join("Sources/WisqVMRust/DesktopBridge.swift"))
+        .expect("le lecteur Swift");
+
+    let quoted_after = |text: &str, needle: &str| -> std::collections::BTreeSet<String> {
+        let mut found = std::collections::BTreeSet::new();
+        let mut at = 0;
+        while let Some(hit) = text[at..].find(needle) {
+            let from = at + hit + needle.len();
+            if let Some(close) = text[from..].find('"') {
+                found.insert(text[from..from + close].to_string());
+                at = from + close;
+            } else {
+                break;
+            }
+        }
+        found
+    };
+
+    let sent = quoted_after(&page, "kind: \"");
+    let accepted = quoted_after(&swift, "case \"");
+    assert!(
+        !sent.is_empty() && !accepted.is_empty(),
+        "lecture vide : {} envoyés, {} acceptés — l'extraction s'est cassée",
+        sent.len(),
+        accepted.len()
+    );
+    assert_eq!(
+        sent, accepted,
+        "la page et le lecteur Swift ne parlent pas des mêmes messages.\n  \
+         la page envoie : {sent:?}\n  Swift accepte  : {accepted:?}"
+    );
+
+    // Et les champs que Swift **exige**. Un nom changé d'un seul côté ne
+    // casse aucune compilation : Swift lèverait `missingField` sur un
+    // dictionnaire où le champ existe, sous un autre nom.
+    let required = quoted_after(&swift, "body[\"");
+    assert!(
+        required.len() >= 6,
+        "Swift ne lit plus que {} champs : l'extraction s'est cassée",
+        required.len()
+    );
+    let unsent: Vec<&String> = required
+        .iter()
+        .filter(|name| name.as_str() != "kind" && !page.contains(name.as_str()))
+        .collect();
+    assert!(
+        unsent.is_empty(),
+        "Swift exige des champs que la page n'envoie jamais : {unsent:?}"
+    );
+}
+
+/// Retire les commentaires `//` d'un texte JavaScript, ligne par ligne.
+///
+/// Suffisant ici : la page engendrée n'a pas de commentaire de bloc, et une
+/// occurrence de `//` dans une chaîne — une URL — n'y apparaît pas. Un
+/// découpage plus savant serait une seconde implémentation à tenir.
+fn strip_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
