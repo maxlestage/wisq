@@ -77,7 +77,7 @@ public enum DesktopBridge {
             }
             return .translate(
                 id: id,
-                address: try address(body["address"]),
+                address: try address(body["address"], field: "address"),
                 slot: UInt32(slot),
                 code: code
             )
@@ -85,15 +85,32 @@ public enum DesktopBridge {
             guard let why = body["stopped"] as? String else {
                 throw Unreadable.missingField("stopped")
             }
-            return .stopped(why: why, at: try address(body["at"]))
+            return .stopped(why: why, at: try address(body["at"], field: "at"))
         default:
             throw Unreadable.unknownKind(kind)
         }
     }
 
-    private static func address(_ value: Any?) throws -> UInt64 {
+    /// Une adresse de soixante-quatre bits, arrivée en texte.
+    ///
+    /// **`field` n'est pas décoratif.** Les deux genres de demande portent
+    /// chacun une adresse, et elles ne s'appellent pas pareil : `address`
+    /// pour « traduire », `at` pour « arrêt ». Cette fonction nommait
+    /// `address` dans les deux cas, donc un « arrêt » sans son `at` répondait
+    /// « il manque address » — un champ que ce message ne porte pas.
+    ///
+    /// Ce n'est pas une coquille de confort : `Unreadable` ne se lève que
+    /// lorsque les deux moitiés de la page ont divergé, et c'est le seul
+    /// moment où quelqu'un lit ce nom. Il envoyait chercher ailleurs
+    /// exactement quand il fallait chercher juste.
+    ///
+    /// Les deux autres refus gardent leur nom : `addressIsNotText` et
+    /// `addressIsNotANumber` décrivent la **forme** attendue — une adresse en
+    /// texte — et elle est la même pour les deux champs. Seul celui qui
+    /// prétend nommer un champ devait le nommer correctement.
+    private static func address(_ value: Any?, field: String) throws -> UInt64 {
         guard let text = value as? String else {
-            if value == nil { throw Unreadable.missingField("address") }
+            if value == nil { throw Unreadable.missingField(field) }
             throw Unreadable.addressIsNotText
         }
         guard let address = UInt64(text) else { throw Unreadable.addressIsNotANumber(text) }

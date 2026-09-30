@@ -18123,3 +18123,74 @@ en écrivant dans son commentaire que c'était arrivé. Écrire « c'est arrivé
 deux fois sans jamais compter le reste, c'est traiter le symptôme à chaque fois
 qu'il se montre. **Le troisième rattrapage doit être un compteur, pas un
 troisième rattrapage.**
+
+## #296 — trois audits propres, trois fois #261, et un diagnostic qui désignait un champ absent
+
+Réveil sans dette. J'ai promené la question de #294 — « qu'est-ce que cette
+garde laisse hors de sa famille ? » — sur trois frontières que je n'avais pas
+examinées. Les trois sont propres, et les trois m'ont fait écrire une conclusion
+fausse avant que la vérification ne la corrige.
+
+**Les routes de l'agent.** Le document en décrit quatre, le démon en sert
+quatre, elles s'accordent. Rien.
+
+**Les fonctions de `web/host.js`.** Quatre exportées, deux jamais nommées dans
+`host_loop.rs` — j'ai failli les déclarer non tenues. `hostPages` est en fait
+comparée dans `webkit_probe.rs`, et `tableBucket` n'est utilisée que par le
+fichier lui-même. Rien.
+
+**Les constantes de `WebKitBench.swift`.** Cinq sur quinze semblaient hors
+comparaison, dont un **module** entier, `moduleBase64`. J'ai cru tenir une
+asymétrie : deux modules embarqués comparés aux octets de l'émetteur, le
+troisième non. Faux. Les trois sont comparés, dans une boucle sur un tableau
+que mon extraction — un `grep` sur la forme d'appel `literal(&text, "…")` — ne
+pouvait pas voir. Et l'assertion que j'avais lue comme un `assert_eq!` était un
+`assert_ne!` : j'avais conclu sur un fragment tronqué. Les quatre constantes
+qui restent sont des choix de la sonde, sans jumelle Rust. Rien.
+
+**Trois fois de suite, mon instrument était le problème.** Je cherche une forme
+d'appel par `grep` ; le code réel boucle sur un tableau, vit dans un autre
+fichier, ou dans l'autre langage. La règle de #261 — chercher la même absence
+là où on sait la chose présente — a changé la conclusion **à chaque fois**. Une
+absence relevée par `grep` n'est pas une absence : c'est une absence *dans une
+orthographe*.
+
+### Ce qui n'était pas propre
+
+Le pont du bureau. Ses deux vocabulaires s'accordent, eux aussi — mais son
+**diagnostic** se trompait de nom.
+
+Les deux genres de message portent chacun une adresse, et elles ne s'appellent
+pas pareil : `address` pour « traduire », `at` pour « arrêt ». Le lecteur les
+passait tous deux par une fonction qui écrivait `address` en dur. Un « arrêt »
+sans son `at` répondait donc « il manque `address` » — un champ que ce message
+ne porte pas.
+
+Et `Unreadable` ne se lève **que** lorsque les deux moitiés de la page ont
+divergé : c'est le seul moment où quelqu'un lit ce nom. Il envoyait chercher
+ailleurs exactement quand il fallait chercher juste. La ligne du tableau de
+refus qui l'aurait montré manquait : des six champs des deux genres, `at` était
+le seul non couvert, et c'était celui qui mentait.
+
+### Et une garde à la place d'un simulateur
+
+Le vocabulaire du pont — deux genres, six champs — est recopié à la main dans
+deux langages qui ne peuvent pas s'importer. Une seule chose le confrontait :
+`LocalDesktopTests`, dans un iPhone simulé, sur la CI Apple. C'est une bonne
+épreuve, mais c'est la plus lente et la plus lointaine, et elle ne dit pas
+*quel* nom a bougé — elle dit que le bureau ne démarre plus.
+
+La nouvelle garde lit la **page engendrée**, pas sa source : c'est ce texte-là
+qui part dans la vue. Et elle retire les commentaires du JavaScript d'abord,
+parce que #295 venait de m'apprendre, par sabordage, qu'une garde se laisse
+satisfaire par une phrase. Le sabordage « le genre part, une mention reste en
+commentaire » est celui que j'ai écrit exprès pour ça, et il tombe.
+
+Sept sabordages, sept attrapés. Chaque restauration vérifiée par `diff`.
+
+### Le signe à retenir
+
+Une épreuve de bout en bout et une comparaison de noms ne font pas le même
+travail. La première dit que ça ne marche plus ; la seconde dit ce qui a bougé.
+Avoir la première n'est pas une raison de se passer de la seconde, surtout
+quand elle coûte une seconde et l'autre un tour de CI Apple.

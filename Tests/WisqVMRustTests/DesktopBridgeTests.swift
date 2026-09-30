@@ -148,6 +148,13 @@ final class DesktopBridgeTests: XCTestCase {
                 .missingField("slot")
             ),
             (["kind": "arrêt", "at": "16"], .missingField("stopped")),
+            // **Le seul champ des deux genres qu'aucune ligne ne couvrait**,
+            // et c'est celui qui se trompait de nom. `at` manquant faisait
+            // dire « il manque address » — un champ que le message « arrêt »
+            // ne porte pas. Ce diagnostic n'existe que pour un cas : les deux
+            // moitiés de la page ont divergé. Il envoyait chercher ailleurs
+            // exactement quand il fallait chercher juste.
+            (["kind": "arrêt", "stopped": "refusée"], .missingField("at")),
         ]
         for (body, expected) in refused {
             XCTAssertThrowsError(try DesktopBridge.request(from: body), "\(body)") { why in
