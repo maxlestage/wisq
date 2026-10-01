@@ -18194,3 +18194,99 @@ Une épreuve de bout en bout et une comparaison de noms ne font pas le même
 travail. La première dit que ça ne marche plus ; la seconde dit ce qui a bougé.
 Avoir la première n'est pas une raison de se passer de la seconde, surtout
 quand elle coûte une seconde et l'autre un tour de CI Apple.
+
+## #297 — la dernière ligne du tableau est tombée : une interruption qui vient du dehors
+
+Maxime a débloqué la direction en une phrase — « Continue il faut que ça
+fonctionne » — et la pièce à prendre était nommée depuis quatre tranches : la
+délivrance d'une interruption de matériel, la dernière ligne du tableau des
+interruptions de `docs/DEMARRAGE.md`, celle qui disait « n'existe pas ».
+
+**Ce qui la distingue des quatre délivrances déjà là.** Une faute de page, un
+`int n`, un `ud2`, un MSR inconnu : toutes naissent de l'instruction que
+l'invité vient d'exécuter, et le module les signale en rendant la main. Celle-ci
+ne naît de personne. L'invité s'arrête sur un `hlt`, il n'a plus rien à faire,
+et c'est **le temps qui passe** qui le réveille.
+
+### Le point de délivrance n'a pas changé d'une ligne
+
+`DEMARRAGE.md` l'avait prédit, et je l'ai vérifié plutôt que de le croire :
+
+> « Une interruption de matériel passerait par le même chemin, avec un vecteur
+> qui vient d'un contrôleur plutôt que du témoin ; **ce qui manque est la
+> ligne, pas le point**. »
+
+Exact. `deliver` lit la porte, pose le cadre, change de pile si l'anneau baisse,
+éteint `IF` sur une porte d'interruption — tout était là. La tranche a posé ce
+qui manquait **autour** de lui : un compteur qui lève, un contrôleur qui route,
+une boucle qui demande la permission.
+
+### Les trois pièces
+
+**Le 8254 lève.** Le canal zéro est le seul des trois câblé sur IRQ0. Un tour de
+roue, une ligne — et pas plus : un seul bit de requête existe dans le 8259, donc
+deux tours passés sous masque n'en font pas deux. C'est ce que perd la puce, et
+le garder aurait inventé des interruptions.
+
+**Le 8259 route.** Registre de requête, registre de **service**, priorité par
+ordre de bit, fin d'interruption spécifique et non spécifique, cascade sur la
+ligne deux, et le choix par OCW3 du registre que le port de commande rend. Le
+registre de service est celui qui compte : sans lui, un gestionnaire serait
+réinterrompu par la même ligne à son premier `sti`, indéfiniment.
+
+**La boucle injecte**, et consulte `IF`. Un `cli` suivi d'un `hlt` est un arrêt
+définitif, comme sur le silicium.
+
+### Le trou que j'ai failli laisser
+
+Les deux premiers tests passaient avec un budget d'un mébi-cycle, et à ce rythme
+un tic est **déjà** en attente quand l'invité s'arrête. Ils ne disaient donc
+rien du cas qui compte : le tic qui n'arrivera que plus tard. Avec mille
+vingt-quatre cycles, la machine se figeait sur le premier `hlt` — le réveil
+dépendait de mon budget et non du temps.
+
+Un `hlt` que le matériel peut encore réveiller attend donc, l'horloge avançant
+sans qu'aucune région ne tourne. « Peut encore » est une question à part entière,
+et la confondre avec « est prête maintenant » fige une machine ou fait tourner
+la boucle à vide : compteur chargé, mode descendu, coup unique pas déjà tiré,
+ligne démasquée, ligne pas en service.
+
+### Deux tests que j'ai ajoutés parce que deux mutations survivaient
+
+Le masque et `cli` n'étaient exercés par aucun des trois premiers tests — IRQ0 y
+est démasquée et `sti` y est toujours posé. Un hôte qui aurait ignoré l'un ou
+l'autre serait passé. Deux tests de plus, et les huit mutations tombent.
+
+### Ce que le test a trouvé, et que je n'avais pas prévu
+
+J'attendais deux délivrances dans le test de l'acquittement. La machine en a
+rendu **trente et une**. Ce n'est pas le contrôleur : l'horloge de l'invité
+avance d'un budget entier par tour de boucle, soit environ une milliseconde,
+pendant que la cadence programmée est d'une milliseconde aussi. **Chaque tour
+porte un tic.** Un invité y passe l'essentiel de son temps dans son gestionnaire
+d'horloge.
+
+Le commentaire du budget disait « elle n'est calibrée contre rien — cette
+machine n'a ni PIT ni HPET à quoi se comparer ». Le 8254 compte contre cette
+horloge-là, et depuis que sa ligne est délivrée, c'est la **cadence vue par
+l'invité** qui en dépend. La limite est écrite là où elle se produit.
+
+### Et une affirmation déjà fausse avant moi
+
+`x86.rs` disait de `cli`, `sti` et `hlt` : « les trois sont refusées par
+l'émetteur, nommément ». Son propre voisin le démentait dans son nom —
+`the_halt_loop_of_a_real_kernel_translates_and_names_its_stop` — et il est vert.
+Mesuré avant d'être corrigé, pas lu.
+
+Sept commentaires au futur sont passés au présent, et les deux affirmations de
+`DEMARRAGE.md` sont désormais **interdites** par `stale-claims.test.ts`, chacune
+adossée au test qui la contredit. Sabordage : la phrase remise, la garde tombe
+en la nommant.
+
+### Le signe à retenir
+
+Une prédiction écrite dans le dépôt vaut d'être vérifiée avant d'être suivie, et
+celle-ci était juste. Mais le trou de cette tranche n'était pas dans la pièce
+prédite : il était dans le **gréage** du test, qui rendait vrai par accident ce
+que le code ne tenait pas. Trois tests verts ne disaient rien du cas réel parce
+qu'un budget généreux le masquait.
