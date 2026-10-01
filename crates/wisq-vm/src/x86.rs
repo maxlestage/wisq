@@ -801,11 +801,13 @@ pub enum Op {
     /// (`sti`). Un noyau les écrit partout : autour de chaque section
     /// critique, et une dernière fois avant de s'arrêter pour de bon.
     ///
-    /// **Décodées, pas produites.** Le poser dans RFLAGS serait presque juste
-    /// — un bit, à la même place que le drapeau de direction juste au-dessus —
-    /// et c'est ce qui le rend dangereux : rien ne délivre d'interruption, donc
-    /// un module qui accepte `sti` prétendrait en attendre. Un refus nommé vaut
-    /// mieux qu'une machine qui a l'air d'écouter.
+    /// **Produites, et le drapeau sert.** Ce commentaire a dit « décodées, pas
+    /// produites », et qu'un module acceptant `sti` « prétendrait attendre une
+    /// interruption que rien ne délivre ». Les deux moitiés sont tombées : la
+    /// production depuis que l'émetteur pose le bit dans RFLAGS, la délivrance
+    /// depuis que le 8254 lève IRQ0 et que la boucle hôte l'injecte. `IF` est
+    /// maintenant **consulté** : une interruption de matériel n'est délivrée
+    /// que s'il est posé, et c'est tout l'objet d'un `cli`.
     InterruptFlag(bool),
     /// **`F4` : arrêter le processeur jusqu'à la prochaine interruption.**
     ///
@@ -902,9 +904,10 @@ pub enum Op {
     /// les couper.
     PushFlags,
     /// **`9D` : dépiler RFLAGS.** La moitié qui le rend. Elle peut rallumer le
-    /// drapeau d'interruption sans jamais nommer `sti`, et c'est ce qui
-    /// l'empêche d'être produite tant que rien ne délivre d'interruption : un
-    /// module qui accepte `popf` accepte un `sti` déguisé.
+    /// drapeau d'interruption sans jamais nommer `sti` — un `sti` déguisé,
+    /// disait ce commentaire pour expliquer qu'elle ne soit pas produite. Le
+    /// déguisement n'en est plus un : la boucle hôte lit `IF` dans RFLAGS au
+    /// moment de délivrer, sans se demander qui l'y a posé.
     PopFlags,
     /// **`movs` : de la mémoire vers la mémoire, RSI vers RDI.** Avec `repeat`,
     /// c'est le `memcpy` d'un noyau — 949 des 1 092 régions que le compilateur
@@ -5341,10 +5344,15 @@ mod tests {
     /// « coupe les interruptions, arrête-toi, et recommence » — la boucle
     /// d'arrêt d'un noyau qui n'a plus rien à faire.
     ///
-    /// **Décoder n'est pas exécuter, et ici l'écart est entier** : rien ne
-    /// délivre d'interruption, donc un `hlt` produit serait un arrêt
-    /// définitif déguisé en attente. Les trois sont refusées par l'émetteur,
-    /// nommément.
+    /// **Ce test lit les octets ; l'émetteur les produit tous les trois.** Ce
+    /// commentaire disait le contraire — « les trois sont refusées par
+    /// l'émetteur, nommément » — et c'était vrai quand il a été écrit. Le
+    /// voisin `the_halt_loop_of_a_real_kernel_translates_and_names_its_stop`
+    /// le démentait déjà dans son nom.
+    ///
+    /// Et l'arrêt n'est plus « définitif déguisé en attente » : un `hlt` que
+    /// le 8254 peut encore réveiller attend pour de bon, et celui que personne
+    /// ne peut réveiller se nomme.
     #[test]
     fn the_interrupt_flag_and_the_halt_are_read() {
         for (byte, op) in [

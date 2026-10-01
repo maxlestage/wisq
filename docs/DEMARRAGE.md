@@ -10,9 +10,12 @@ plus.** La pagination est là dans la forme confinée, celle que l'application
 exécute : quatre niveaux de tables derrière un tampon de traduction, `invlpg`
 qui le vide, une faute de page délivrée à l'invité. Les interruptions sont là
 pour l'entrée logicielle et pour les fautes : l'IDT est lue, `iretq` est produit,
-une `#GP` part sur un MSR inconnu. Ce qui manque tient maintenant en une ligne du
-tableau plus bas — **la délivrance d'une interruption de matériel** — et le reste
-de ce document dit ce que chaque pièce a coûté.
+une `#GP` part sur un MSR inconnu. **Et la dernière ligne de ce tableau est
+tombée** : le canal zéro du 8254 lève IRQ0, le 8259 la route, la boucle hôte
+l'injecte quand `IF` est posé, et un `hlt` que le matériel peut encore réveiller
+attend au lieu de se figer. Ce document a annoncé cette ligne comme « ce qui
+manque » assez longtemps pour que la phrase mérite d'être datée plutôt que
+retirée ; le reste dit ce que chaque pièce a coûté.
 
 **Les paragraphes écrits devant un mur depuis franchi le disent.** Ce document a
 gardé « le mur a un nom, et ce sont deux instructions » pendant plusieurs
@@ -290,7 +293,7 @@ pour une économie qu'aucune des trois mesures ne voit.
 | --- | --- |
 | `lidt` / `sidt` — la table est rangée et rendue, **et l'IDT est lue** | **produit** |
 | `cli` / `sti` — le drapeau d'interruption | **produits** |
-| `hlt` — attendre une interruption | **produit** : un arrêt nommé, tant que rien ne réveille |
+| `hlt` — attendre une interruption | **produit** : il **attend** quand le matériel peut encore le réveiller — `IF` posé, la ligne démasquée et pas en service, un compteur chargé dans un mode descendu — et il s'arrête en se nommant sinon, ce que fait aussi le silicium |
 | `popf` — qui peut rallumer le drapeau sans nommer `sti` | **produit** |
 | `iretq` — le retour d'interruption, cinq mots | **produit** ; `iretd` décodé et refusé en étant nommé |
 | `int`, `int3` — l'entrée logicielle | **produits** : le témoin porte le vecteur, RIP est déjà après, et l'hôte délivre — sans code d'erreur |
@@ -307,7 +310,8 @@ pour une économie qu'aucune des trois mesures ne voit.
 | `wrmsr` / `rdmsr` — les registres spécifiques au modèle | **produits** pour huit numéros : FS_BASE, GS_BASE, KERNEL_GS_BASE, EFER, et les quatre de l'appel système (STAR, LSTAR, CSTAR, SYSCALL_MASK), rangés et rendus ; tout autre numéro est une **`#GP(0)` délivrée à l'invité**, RIP sur l'instruction, comme sur le silicium — la table d'exceptions du noyau la rattrape ; sans porte, un arrêt nommé qui **porte le numéro** |
 | la délivrance d'une **faute de page** | **existe**, dans `web/host.js` : porte, cadre, IF, témoin effacé |
 | la délivrance d'une **faute de protection générale** sur un MSR inconnu | **existe**, par le même chemin : code d'erreur nul, RIP sur l'instruction ; c'est le gestionnaire du noyau qui avance ou non |
-| la délivrance d'une **interruption de matériel** | n'existe pas |
+| la délivrance d'une **interruption de matériel** | **existe**, et c'est la seule qui ne vienne pas de l'instruction qu'on vient d'exécuter : le canal zéro du 8254 lève IRQ0 à chaque tour de roue, le 8259 maître la route par priorité et par masque, la boucle hôte l'injecte entre deux instructions si `IF` est posé, et la ligne entre en **service** jusqu'à son acquittement. Cinq tests : le réveil d'un `hlt`, le refus d'une seconde délivrance non acquittée, la réouverture par la fin d'interruption, l'attente d'un tic qui n'est pas encore venu, et les deux refus — ligne masquée, `cli` |
+| ce qui n'est **pas** modélisé du 8259 | la rotation des priorités, le masquage spécial, la lecture du masque par polling. Linux n'en demande aucun ; un noyau qui le ferait serait servi faux, pas refusé. Et la cascade est tenue pour câblée sur la ligne deux au lieu d'être lue dans ICW3 |
 
 **Vérifié plutôt qu'affirmé** : `cc` se décode en vecteur trois, `cd 80` en
 vecteur `0x80`, et un `cd` coupé de son octet rend `None` plutôt qu'un vecteur
@@ -484,9 +488,13 @@ Trois choses, et aucune n'est petite :
 2. **Un point de délivrance.** Il **existe** pour la faute de page : `deliver`
    dans `web/host.js`, appelé par la boucle quand une région pose le témoin —
    il lit la porte, pose le cadre du mode long sur la pile de l'invité, éteint
-   IF pour une porte d'interruption, et saute. Une interruption de matériel
-   passerait par le même chemin, avec un vecteur qui vient d'un contrôleur
-   plutôt que du témoin ; ce qui manque est la ligne, pas le point.
+   IF pour une porte d'interruption, et saute. Ce paragraphe disait qu'« une
+   interruption de matériel passerait par le même chemin, avec un vecteur qui
+   vient d'un contrôleur plutôt que du témoin ; ce qui manque est la ligne, pas
+   le point ». C'est exactement ce qui a été fait, et la prédiction tenait :
+   `deliver` n'a pas changé d'une ligne. La ligne manquante a été posée autour
+   de lui — un compteur qui la lève, un contrôleur qui la route, une boucle qui
+   demande à `IF` la permission.
 3. **`iretq`, et la pile de retour.** **Produit.** Il dépile RIP, CS, RFLAGS,
    RSP et SS dans cet ordre, laisse le code d'erreur au gestionnaire, et pose
    RIP sur lui-même avant sa première lecture pour qu'une faute sur le cadre
@@ -519,9 +527,11 @@ l'utilisateur apporte est la sienne.
 2. ~~**La marche des tables et son tampon**~~ — faite, dans la forme confinée.
 3. ~~**Écrire CR3 et CR0**~~ — faits dans la forme confinée, qui traduit derrière ;
    la forme libre les refuse encore, et c'est la seule divergence des deux.
-4. **Le timer, la délivrance et `iret`** — en partie : le 8254 compte, l'IDT est
-   lue, `iretq` est produit, et les fautes sont délivrées. Reste **la délivrance
-   d'une interruption de matériel**, la dernière ligne du tableau plus haut.
+4. ~~**Le timer, la délivrance et `iret`**~~ — fait : le 8254 compte **et lève
+   IRQ0**, le 8259 la route, l'IDT est lue, `iretq` est produit, les fautes
+   **et les interruptions de matériel** sont délivrées, et un `hlt` que le
+   matériel peut réveiller attend. C'était « en partie » depuis quatre
+   tranches.
 
 Chaque étape par sa propre tranche, chacune avec sa sonde avant son code, et
 chacune sabotée avant d'être crue. Les trois premières ont suivi cet ordre ; ce

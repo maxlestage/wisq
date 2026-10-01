@@ -36,6 +36,10 @@ const STOPS = {
   6n: "arrêtée sur lldt : une table de descripteurs locale non nulle, sans table globale où la trouver",
   7n: "arrêtée sur une écriture dans un registre de débogage : cette machine n'a pas de points d'arrêt matériels",
 };
+/// **`STOP_HALTED`** : l'invité s'est arrêté sur un `hlt`. Nommé ici parce que
+/// la boucle en décide — un `hlt` qu'une interruption peut encore réveiller
+/// attend — et pas seulement parce qu'elle le raconte.
+const STOP_HALTED = 1n;
 /// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
 /// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
 const STOP_INTERRUPT = 0x100n;
@@ -142,8 +146,9 @@ export const SLOTS = {
   fault: 50,
   /// **Le témoin d'arrêt, et sa raison.** Zéro tant que la machine tourne ;
   /// sinon un nombre qui dit **pourquoi** — le module le pose et rend la main,
-  /// plutôt que de faire refuser la région entière. C'est ici que la délivrance
-  /// d'une interruption viendra effacer le `hlt`.
+  /// plutôt que de faire refuser la région entière. Ce commentaire annonçait
+  /// « c'est ici que la délivrance d'une interruption viendra effacer le
+  /// `hlt` » : elle l'efface.
   stop: 51,
   /// **`IA32_EFER`**, le quatrième MSR que le module modélise. Un vrai noyau le
   /// lit, y pose SCE et NX, et le réécrit ; c'est sur ce `rdmsr` qu'Alpine
@@ -386,11 +391,18 @@ const NOBODY_THERE = 0xff;
 /// d'IRQ0 ; sans IRQ0, pas d'horloge ; sans horloge, `calibrate_delay` tourne
 /// sur lui-même. Tout ce mur tenait à huit bits qui se relisent.
 ///
-/// **Ce qui n'est pas modélisé, et qui se verra le jour où ça manquera** : les
-/// registres de requête et de service, la priorité, la fin d'interruption.
-/// Rien n'en a besoin tant qu'aucune ligne ne monte — et le jour où une ligne
-/// montera, c'est la tranche de la délivrance qui les écrira, avec le test qui
-/// les exige.
+/// **Ce qui est modélisé depuis que des lignes montent** : le registre de
+/// requête, celui de service, la priorité par ordre de bit, la fin
+/// d'interruption spécifique et non spécifique, la cascade sur la ligne deux,
+/// et le choix par OCW3 du registre que le port de commande rend. Ce
+/// paragraphe annonçait « la tranche de la délivrance qui les écrira, avec le
+/// test qui les exige » ; cinq tests les exigent.
+///
+/// **Ce qui ne l'est toujours pas, et c'est nommé** : la rotation des
+/// priorités, que Linux ne demande jamais ; le mode de masquage spécial ; et
+/// la lecture du registre de masquage par polling. Un noyau qui les
+/// emploierait serait servi faux, pas refusé — c'est la limite à lever le jour
+/// où elle se verra.
 ///
 /// **Une infidélité assumée, et nommée** : un vrai 8259 efface son masque en
 /// recevant ICW1. Celui-ci ne le fait pas. Aucun invité ne peut le voir — Linux
@@ -460,6 +472,20 @@ function counter() {
     writeHigh: false,
     /// Le compte figé par une commande de verrou, ou `null`.
     latched: null,
+    /// **Combien de tours de roue ont déjà fait monter une ligne.**
+    ///
+    /// Un seul bit de requête existe dans le 8259 : deux tours passés
+    /// pendant qu'une interruption était masquée ou en service n'en font pas
+    /// deux, ils en font une. C'est ce que fait la puce, et la garder ici
+    /// évite l'arithmétique inverse — compter les tours manqués pour les
+    /// rejouer — qui inventerait des interruptions que le silicium perd.
+    raised: 0n,
+    /// **Un compteur que personne n'a programmé n'a pas de période.** Sans ce
+    /// témoin, le mode zéro d'un compteur neuf — `mode: 0`, diviseur nul,
+    /// donc soixante-cinq mille cinq cent trente-six — ferait monter IRQ0 tout
+    /// seul dès que l'horloge aurait assez avancé, avant qu'aucun noyau
+    /// n'ait parlé à la puce.
+    loaded: false,
   };
 }
 
@@ -471,6 +497,29 @@ const PIC_SLAVE = 0xa0;
 const PIC_INIT = 0x10;
 /// Et le bit d'ICW1 qui annonce un quatrième mot.
 const PIC_WANTS_ICW4 = 0x01;
+/// **Les deux autres mots du port de commande**, distingués par les bits 3 et
+/// 4 : OCW2 les a tous les deux à zéro, OCW3 porte le bit 3, ICW1 le bit 4.
+const PIC_WORD = 0x18;
+const PIC_IS_OCW3 = 0x08;
+/// **OCW2 : la fin d'interruption.** Le bit 5 dit « acquitte », le bit 6 dit
+/// « celle que je nomme » plutôt que « la plus prioritaire en service ».
+///
+/// **La rotation des priorités n'est pas modélisée**, et c'est nommé plutôt
+/// que tu : les bits 7 d'OCW2 la demandent, Linux ne la demande jamais — il
+/// envoie `0x20` sur le maître, et `0x20` sur les deux pour une ligne de
+/// l'esclave. Un noyau qui la demanderait serait acquitté sans être tourné.
+const PIC_EOI = 0x20;
+const PIC_SPECIFIC = 0x40;
+/// **OCW3 : lequel des deux registres le port de commande rendra.** `0x0a`
+/// pour la requête, `0x0b` pour le service. Linux s'en sert dans sa détection
+/// d'interruption fantôme, et lire le mauvais registre lui ferait prendre une
+/// vraie interruption pour une fantôme.
+const PIC_READ_SERVICE = 0x01;
+/// **Le numéro de la ligne où l'esclave est câblé sur le maître.** Deux sur un
+/// PC, et ICW3 le dit ; nous le tenons pour acquis plutôt que de lire ICW3,
+/// parce qu'aucune machine d'ici n'en câble une autre — et c'est écrit là où
+/// ICW3 est reçu.
+const PIC_CASCADE = 2;
 
 /// Un contrôleur au repos : tout masqué, aucune base, aucune initialisation en
 /// cours. C'est l'état d'un 8259 avant qu'un noyau ne lui parle.
@@ -489,6 +538,19 @@ function controller() {
     expects: 0,
     /// ICW1 a-t-il annoncé un ICW4 ?
     wantsFour: false,
+    /// **Le registre de requête**, un bit par ligne qui a monté et qui attend.
+    /// Une ligne y entre quand un périphérique la lève et en sort quand la
+    /// délivrance la prend.
+    request: 0,
+    /// **Le registre de service**, un bit par ligne délivrée et pas encore
+    /// acquittée. C'est lui qui rend un 8259 *imbriqué* : tant qu'une ligne y
+    /// est, aucune ligne de priorité inférieure ou égale ne peut être
+    /// délivrée. Sans lui, un gestionnaire serait réinterrompu par la même
+    /// ligne à son premier `sti`, indéfiniment.
+    service: 0,
+    /// Lequel des deux le port de commande rend, posé par OCW3. La puce sort
+    /// de RESET sur le registre de requête.
+    reads: "request",
   };
 }
 
@@ -576,6 +638,10 @@ export function machine({
     chip.openedAt = now();
     chip.latched = null;
     chip.readHigh = false;
+    // La roue repart de zéro avec le diviseur : les tours d'avant
+    // appartenaient à une autre période.
+    chip.raised = 0n;
+    chip.loaded = true;
   };
   /// **La sortie du canal deux**, celle que le port du portillon rend au bit
   /// cinq. En mode zéro elle monte quand le compte atteint zéro, et c'est le
@@ -601,6 +667,120 @@ export function machine({
     }
     return null;
   };
+
+  /// **Ce que le canal zéro a fait monter depuis le dernier regard.**
+  ///
+  /// Le canal zéro est le seul des trois câblé sur IRQ0 — le un n'est câblé
+  /// nulle part sur un PC et le deux va au haut-parleur. Appelée à chaque
+  /// tour de la boucle hôte, avant de regarder s'il y a quelque chose à
+  /// délivrer : c'est le temps qui passe qui lève cette ligne, et le temps
+  /// n'avance qu'entre deux tours.
+  ///
+  /// **Les modes sont ceux que `countOf` descend déjà**, et pas un de plus :
+  /// deux et six rechargent, donc une ligne par tour de roue ; zéro est un
+  /// coup unique, donc une ligne quand le compte atteint zéro. Les modes
+  /// un, trois, quatre, cinq et sept ne sont descendus nulle part ici — les
+  /// faire lever une ligne serait les deviner.
+  const raise8254 = () => {
+    const chip = pits[0];
+    if (!chip.loaded) return;
+    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return;
+    const reload = BigInt(chip.reload === 0 ? 0x10000 : chip.reload);
+    const steps = stepsOf(chip);
+    const turns = chip.mode === 0 ? (steps >= reload ? 1n : 0n) : steps / reload;
+    if (turns > chip.raised) {
+      chip.raised = turns;
+      pics.master.request |= 1;
+    }
+  };
+
+  /// Le numéro de la ligne de plus haute priorité parmi celles-ci, ou `-1`.
+  /// La priorité d'un 8259 est l'ordre des bits : zéro d'abord.
+  const highest = (bits) => {
+    for (let at = 0; at < 8; at++) {
+      if (bits & (1 << at)) return at;
+    }
+    return -1;
+  };
+
+  /// **Ce qu'une puce est prête à délivrer**, ou `-1`.
+  ///
+  /// Trois conditions, et il en faut les trois : la ligne a monté, elle n'est
+  /// pas masquée, et aucune ligne de priorité supérieure ou égale n'est déjà
+  /// en service. La troisième est le mode imbriqué, celui qu'ICW4 demande et
+  /// que tout noyau x86 suppose.
+  const readyOn = (chip) => {
+    const ready = chip.request & ~chip.mask & 0xff;
+    if (ready === 0) return -1;
+    const at = highest(ready);
+    const serving = chip.service === 0 ? 8 : highest(chip.service);
+    return at < serving ? at : -1;
+  };
+
+  /// **La ligne que la machine doit prendre maintenant**, ou `null`.
+  ///
+  /// La sortie de l'esclave est câblée sur la ligne deux du maître : elle
+  /// monte tant que l'esclave a quelque chose de prêt, et retombe sinon.
+  /// L'écrire dans le registre de requête du maître plutôt que de le
+  /// contourner est ce qui fait que la priorité et le masque du maître
+  /// s'appliquent à l'esclave — ce qu'ils font sur la puce.
+  const pendingIrq = () => {
+    const below = readyOn(pics.slave);
+    if (below >= 0) pics.master.request |= 1 << PIC_CASCADE;
+    else pics.master.request &= ~(1 << PIC_CASCADE);
+    const above = readyOn(pics.master);
+    if (above < 0) return null;
+    if (above !== PIC_CASCADE) {
+      return { line: above, slave: false, vector: (pics.master.base + above) & 0xff };
+    }
+    // La ligne deux du maître n'existe que par l'esclave : sans lui, personne
+    // ne l'a levée et il n'y a rien à délivrer.
+    if (below < 0) return null;
+    return { line: below, slave: true, vector: (pics.slave.base + below) & 0xff };
+  };
+
+  /// **Une interruption peut-elle encore venir ?**
+  ///
+  /// La question se pose sur un `hlt` : l'invité ne fera plus rien de
+  /// lui-même, donc tout ce qui pourrait le réveiller doit déjà être en
+  /// place. Quatre choses peuvent manquer, et chacune suffit à ce qu'un `hlt`
+  /// soit définitif — ce qu'un vrai processeur fait aussi, il se fige.
+  ///
+  /// **Ce n'est pas `pendingIrq`**, qui dit si une ligne est prête *à cet
+  /// instant* ; celle-ci dit si une ligne peut le devenir. Les confondre
+  /// ferait soit figer une machine que le matériel allait réveiller, soit
+  /// tourner jusqu'à épuisement des tours sur une machine que rien ne
+  /// réveillera.
+  const wakeable = () => {
+    const chip = pits[0];
+    // Un compteur que personne n'a programmé, ou dans un mode dont la
+    // descente n'est pas modélisée, ne fera rien monter.
+    if (!chip.loaded) return false;
+    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return false;
+    // Le mode zéro est un coup unique : tiré, il ne tirera plus.
+    if (chip.mode === 0 && chip.raised > 0n) return false;
+    // Et la ligne elle-même : masquée, ou en service sans acquittement, elle
+    // ne réveillera personne — l'invité arrêté n'ira ni la démasquer ni
+    // l'acquitter.
+    if (pics.master.mask & 1) return false;
+    if (pics.master.service & 1) return false;
+    return true;
+  };
+
+  /// Prendre la ligne : elle sort de la requête et entre en service.
+  ///
+  /// **Une ligne de l'esclave en met deux en service**, la sienne et la deux
+  /// du maître — et il faudra donc deux acquittements, ce que Linux envoie.
+  const takeIrq = (what) => {
+    const chip = what.slave ? pics.slave : pics.master;
+    chip.request &= ~(1 << what.line);
+    chip.service |= 1 << what.line;
+    if (what.slave) {
+      pics.master.request &= ~(1 << PIC_CASCADE);
+      pics.master.service |= 1 << PIC_CASCADE;
+    }
+  };
+
   env.out = (port, value, width) => {
     const at = Number(port);
     if (at === SERIAL) {
@@ -672,13 +852,31 @@ export function machine({
     if (chosen !== null) {
       const octet = Number(value & 0xffn);
       if (!chosen.data) {
-        // **Le port de commande.** Le bit d'initialisation ouvre la séquence ;
-        // tout le reste — fin d'interruption, choix du registre à lire — n'a
-        // aucun effet tant qu'aucune ligne ne monte, et est ignoré en le
-        // disant plutôt qu'en le taisant.
+        // **Le port de commande porte trois mots**, et les bits 3 et 4 disent
+        // lequel. Ce commentaire disait que tout sauf l'initialisation « n'a
+        // aucun effet tant qu'aucune ligne ne monte » : c'était vrai, et une
+        // ligne monte maintenant.
         if (octet & PIC_INIT) {
           chosen.chip.expects = 2;
           chosen.chip.wantsFour = (octet & PIC_WANTS_ICW4) !== 0;
+          return;
+        }
+        if ((octet & PIC_WORD) === PIC_IS_OCW3) {
+          chosen.chip.reads =
+            octet & PIC_READ_SERVICE ? "service" : "request";
+          return;
+        }
+        // **OCW2, et la fin d'interruption.** Sans le bit d'acquittement, le
+        // mot ne demande qu'une rotation de priorités, qui n'est pas
+        // modélisée : il ne fait donc rien, et le dire vaut mieux que de le
+        // taire.
+        if (octet & PIC_EOI) {
+          const line =
+            octet & PIC_SPECIFIC ? octet & 0x07 : highest(chosen.chip.service);
+          // Un acquittement sans rien en service est ce qu'un noyau envoie
+          // pour une interruption fantôme. Il ne doit pas effacer la ligne
+          // zéro par accident — d'où le refus de `-1`.
+          if (line >= 0) chosen.chip.service &= ~(1 << line);
         }
         return;
       }
@@ -692,8 +890,12 @@ export function machine({
           chosen.chip.expects = 3;
           return;
         case 3:
-          // ICW3, le câblage de la cascade. Rien ici ne le consulte : il n'y a
-          // qu'une machine, et l'esclave ne lève rien.
+          // **ICW3, le câblage de la cascade.** Tenu pour acquis plutôt que
+          // lu : la ligne deux, celle de tous les PC. Ce commentaire disait
+          // « rien ici ne le consulte, l'esclave ne lève rien » — la cascade
+          // est consultée maintenant, à `PIC_CASCADE`, mais elle vient de la
+          // constante et non de ce mot. Un noyau qui câblerait l'esclave
+          // ailleurs serait routé de travers, et ce serait silencieux.
           chosen.chip.expects = chosen.chip.wantsFour ? 4 : 0;
           return;
         case 4:
@@ -734,10 +936,19 @@ export function machine({
     const chosen = controllerAt(at);
     if (chosen !== null) {
       // Le port de données rend le masque — c'est toute la sonde du noyau. Le
-      // port de commande rendrait le registre de requête ou celui de service ;
-      // les deux sont vides tant qu'aucune ligne ne monte, et zéro est alors
-      // la réponse vraie, pas un bouchon.
-      return BigInt(chosen.data ? chosen.chip.mask : 0);
+      // port de commande rend celui des deux registres qu'OCW3 a choisi.
+      //
+      // Ce commentaire disait « les deux sont vides tant qu'aucune ligne ne
+      // monte, et zéro est alors la réponse vraie ». Une ligne monte
+      // maintenant, donc zéro serait devenu un bouchon — et le plus
+      // trompeur des bouchons, puisque Linux lit le registre de service pour
+      // trancher entre une vraie interruption et une fantôme.
+      if (chosen.data) return BigInt(chosen.chip.mask);
+      // La requête est regardée avec la ligne de l'esclave déjà reportée sur
+      // la deux du maître, comme la puce la présente.
+      pendingIrq();
+      return BigInt(
+        chosen.chip.reads === "service" ? chosen.chip.service : chosen.chip.request);
     }
     return BigInt(NOBODY_THERE);
   };
@@ -1400,12 +1611,21 @@ export function machine({
         //
         // **Le budget entier est ajouté, même quand la région rend la main
         // avant de l'épuiser.** L'horloge avance donc trop vite quand les
-        // régions s'enchaînent souvent. C'est assumé : elle n'est calibrée
-        // contre rien — cette machine n'a ni PIT ni HPET à quoi se comparer —
-        // et les deux propriétés qui comptent tiennent, elle ne recule jamais
-        // et elle ne stagne jamais. Savoir ce qui a vraiment été consommé
-        // demanderait au module de l'écrire, donc un coût par bloc : ce qu'on
-        // cherche justement à éviter.
+        // régions s'enchaînent souvent. Les deux propriétés qui comptaient
+        // tiennent toujours — elle ne recule jamais, elle ne stagne jamais —
+        // et savoir ce qui a vraiment été consommé demanderait au module de
+        // l'écrire, donc un coût par bloc : ce qu'on cherche à éviter.
+        //
+        // **Mais ce n'est plus sans conséquence, et c'est mesuré.** Ce
+        // commentaire disait « elle n'est calibrée contre rien — cette machine
+        // n'a ni PIT ni HPET à quoi se comparer ». Le 8254 compte contre cette
+        // horloge-là, et depuis que sa ligne est délivrée, c'est la **cadence
+        // vue par l'invité** qui en dépend : un budget d'un mébi-cycle vaut
+        // environ une milliseconde de temps invité par tour, donc un tic de
+        // mille hertz à *chaque* tour. Un invité y passe l'essentiel de son
+        // temps dans son gestionnaire d'horloge.
+        // `an_end_of_interrupt_lets_the_next_tick_through` l'a trouvé en
+        // rendant trente et une délivrances là où j'en attendais deux.
         globals[SLOTS.tsc].value = BigInt.asIntN(
           64, globals[SLOTS.tsc].value + budget);
         // **Une faute de page est délivrée à l'invité, ici.** La région a posé
@@ -1427,11 +1647,13 @@ export function machine({
           }
           continue;
         }
-        // **Un `hlt` s'arrête, et l'arrêt se nomme.** Continuer la boucle
-        // ferait tourner l'invité dans le `jmp -2` qui suit toujours un `hlt`,
-        // et l'écran dirait « ça tourne » d'une machine qui attend une
-        // interruption que rien ne produit. La délivrance d'une **interruption**
-        // viendra effacer ce témoin-là, au même endroit que celle de la faute.
+        // **Un `hlt` attend, ou s'arrête, et l'arrêt se nomme.** Ce
+        // commentaire disait que continuer la boucle ferait tourner l'invité
+        // « dans le `jmp -2` qui suit toujours un `hlt` », faute d'une
+        // interruption que rien ne produisait. Quelque chose en produit : le
+        // témoin est effacé par la délivrance, plus bas, au même endroit que
+        // celui de la faute. Ce qui reste nommé est le `hlt` que personne ne
+        // peut plus réveiller.
         const stop = globals[SLOTS.stop].value;
         // **Une interruption logicielle n'arrête pas la machine : elle est
         // délivrée.** Le module a posé RIP après l'`int`, c'est l'adresse qui
@@ -1476,6 +1698,68 @@ export function machine({
             globals[SLOTS.stop].value = stop;
             return { stopped: why, at: rip() };
           }
+          continue;
+        }
+        // **Et voici l'interruption qui vient du dehors.**
+        //
+        // Les quatre délivrances au-dessus sont synchrones : l'instruction que
+        // l'invité vient d'exécuter les a causées, et le module les signale en
+        // rendant la main. Celle-ci n'a causé personne. Le temps a passé, le
+        // canal zéro du 8254 a fini un tour, le 8259 a routé la ligne, et
+        // l'invité est interrompu entre deux instructions.
+        //
+        // **Trois choses doivent être vraies, et elles sont vérifiées dans cet
+        // ordre** : le temps a avancé (il l'a fait juste au-dessus), une ligne
+        // est prête, et l'invité accepte d'être interrompu. La troisième est
+        // `IF` dans RFLAGS : un noyau l'éteint pour ses sections critiques, et
+        // le forcer serait précisément le défaut qu'un `cli` existe pour
+        // empêcher.
+        //
+        // **Le `hlt` s'efface.** C'est écrit depuis #204 à la case du témoin :
+        // « c'est ici que la délivrance d'une interruption viendra effacer le
+        // hlt ». Un `hlt` dont RIP est déjà après l'instruction reprend donc
+        // là où il s'était arrêté, ce qui est exactement ce qu'un noyau
+        // attend de sa boucle d'oisiveté.
+        //
+        // **Rien n'est pris avant que la porte ne soit trouvée.** `takeIrq`
+        // met la ligne en service, et une ligne en service qu'aucun
+        // gestionnaire n'a vue ne serait jamais acquittée : la ligne serait
+        // morte pour le reste de la vie de la machine. L'ordre est donc
+        // délivrer d'abord, prendre ensuite.
+        raise8254();
+        const open =
+          (BigInt.asUintN(64, globals[SLOTS.rflags].value) & INTERRUPT_FLAG) !== 0n;
+        // **Un `hlt` que le matériel peut encore réveiller attend.**
+        //
+        // Sans ça, le réveil dépendrait du **budget** et non du temps : avec
+        // un budget d'un mébi-cycle un tic est déjà là quand l'invité
+        // s'arrête, avec mille cycles il faut quatre-vingt-trois tours de
+        // roue pour l'atteindre, et la machine se figerait entre les deux.
+        // L'horloge avance donc ici, sans qu'aucune région ne tourne — c'est
+        // exactement ce que fait un processeur arrêté.
+        //
+        // **Bornée, et c'est une borne et non une estimation.** `pendingIrq`
+        // ne peut rendre `null` indéfiniment que si `wakeable` a menti ;
+        // l'attente s'arrête quand même, et le `hlt` se nomme comme avant.
+        if (stop === STOP_HALTED && open && wakeable()) {
+          const step = budget === 0n ? 1n : budget;
+          let patience = 1 << 20;
+          while (pendingIrq() === null && patience-- > 0) {
+            globals[SLOTS.tsc].value = BigInt.asIntN(
+              64, globals[SLOTS.tsc].value + step);
+            raise8254();
+          }
+        }
+        const waiting = pendingIrq();
+        if (waiting !== null && open) {
+          const was = globals[SLOTS.stop].value;
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(waiting.vector, 0n, "une interruption de matériel");
+          if (why !== null) {
+            globals[SLOTS.stop].value = was;
+            return { stopped: why, at: rip() };
+          }
+          takeIrq(waiting);
           continue;
         }
         if (stop !== 0n) {

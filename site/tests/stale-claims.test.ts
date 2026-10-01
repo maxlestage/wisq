@@ -78,6 +78,29 @@ const refused = new Map([
         "plus bas.",
     },
   ],
+  [
+    "la délivrance d'une **interruption de matériel** | n'existe pas",
+    {
+      document: "docs/DEMARRAGE.md",
+      test: "a_timer_interrupt_wakes_a_halted_guest_once_until_it_is_acknowledged",
+      why:
+        "la dernière ligne du tableau des interruptions disait que la " +
+        "délivrance d'une interruption de matériel n'existe pas. Le canal zéro " +
+        "du 8254 lève IRQ0, le 8259 la route, la boucle hôte l'injecte, et " +
+        "cinq tests le tiennent.",
+    },
+  ],
+  [
+    "Reste **la délivrance d'une interruption de matériel**",
+    {
+      document: "docs/DEMARRAGE.md",
+      test: "a_halt_waits_for_a_tick_that_has_not_come_yet",
+      why:
+        "la liste des quatre étapes gardait celle-ci « en partie ». Elle est " +
+        "faite, et un `hlt` que le matériel peut réveiller attend au lieu de " +
+        "se figer.",
+    },
+  ],
 ]);
 
 test("aucun document ne porte une affirmation qu'un test nommé contredit", () => {
