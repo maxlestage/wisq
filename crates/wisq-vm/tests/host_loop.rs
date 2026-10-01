@@ -11653,6 +11653,407 @@ console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// **Une interruption de matériel, du 8254 jusqu'au gestionnaire de l'invité.**
+///
+/// Tout ce qui précède cette tranche délivrait des interruptions **synchrones** :
+/// une faute de page, un `int n`, un `ud2`, un MSR inconnu. Toutes naissent de
+/// l'instruction que l'invité vient d'exécuter, et le module les signale en
+/// rendant la main. Aucune ne vient du dehors.
+///
+/// Celle-ci vient du dehors, et c'est la différence qui compte : l'invité
+/// s'arrête sur un `hlt` — il n'a plus rien à faire — et c'est le **temps qui
+/// passe** qui le réveille. Sans elle, `web/host.js` l'écrivait noir sur blanc
+/// à deux endroits : « rien ne délivre d'interruption », et l'horloge de
+/// l'invité ne bougeait pas de tout un démarrage.
+///
+/// Le programme fait ce qu'un noyau fait, dans cet ordre : il charge une IDT,
+/// pose une pile, programme le canal zéro du 8254 en cadence périodique,
+/// initialise le 8259 maître avec la base de vecteur `0x30`, démasque IRQ0 et
+/// rien d'autre, puis `sti` et `hlt`.
+///
+/// **Le gestionnaire ne renvoie pas de fin d'interruption**, et c'est voulu :
+/// il compte son passage dans `%r15` — un registre que `iretq` ne restaure
+/// pas — et sort. La machine retombe alors sur un second `hlt`, et le second
+/// réveil **ne doit pas avoir lieu** : IRQ0 est en service, le registre de
+/// service le dit, et un 8259 en mode imbriqué ne redélivre pas tant qu'on ne
+/// l'a pas acquitté. C'est la moitié qui fait de ce test une garde plutôt
+/// qu'une mise en scène : sans registre de service, le compteur dirait deux.
+#[test]
+fn a_timer_interrupt_wakes_a_halted_guest_once_until_it_is_acknowledged() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(&bun, TimerSetup::default());
+    assert_eq!(
+        seen.handled, 1,
+        "le gestionnaire a tourné une fois et une seule : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.frame, seen.after_first_halt,
+        "le cadre porte l'instruction où l'invité reprendra, celle d'après le hlt : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.stopped, "arrêtée sur hlt",
+        "le second hlt n'est pas réveillé : IRQ0 est en service, non acquittée : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.rip, seen.after_second_halt,
+        "et la machine s'arrête sur le second hlt, pas sur le premier : {}",
+        seen.text
+    );
+}
+
+/// **Et la fin d'interruption rouvre la ligne.**
+///
+/// Le même programme, au gestionnaire près : il écrit `0x20` sur le port de
+/// commande du maître — la fin d'interruption non spécifique, celle que Linux
+/// envoie — avant son `iretq`.
+///
+/// **Deux tests plutôt qu'un, et la raison est le sabordage.** Un seul test
+/// qui compterait « au moins une » délivrance serait satisfait par une
+/// implémentation qui délivre toujours, et un seul qui compterait « exactement
+/// une » serait satisfait par une implémentation qui délivre une fois pour
+/// toutes. Les deux ensemble ne laissent passer ni l'une ni l'autre.
+///
+/// **Pourquoi « plus d'une » et pas un compte exact.** J'attendais deux — un
+/// réveil par `hlt` — et la machine en a rendu trente et un. Ce n'est pas le
+/// contrôleur : c'est que l'horloge de l'invité avance d'un budget entier par
+/// tour de boucle, soit environ une milliseconde, pendant que la cadence
+/// programmée ici est d'une milliseconde aussi. **Chaque tour porte donc un
+/// tic**, et une ligne acquittée est redélivrée au tour suivant. Le nombre
+/// dépend du budget et du diviseur, pas du 8259 ; ce qui dépend du 8259, et
+/// c'est tout ce que ce test exige, est qu'il y en ait eu **plus d'une**.
+#[test]
+fn an_end_of_interrupt_lets_the_next_tick_through() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            acknowledge: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert!(
+        seen.handled > 1,
+        "acquittée, la ligne rouvre : {} délivrance(s) seulement\n{}",
+        seen.handled,
+        seen.text
+    );
+}
+
+/// **Un `hlt` qui peut encore être réveillé attend ; il ne s'arrête pas.**
+///
+/// Les deux tests au-dessus tournent avec un budget d'un mébi-cycle, et à ce
+/// rythme un tic est déjà en attente à l'instant où l'invité s'arrête. Ils ne
+/// disent donc rien du cas qui compte pour une vraie machine : l'invité
+/// s'arrête, et le tic n'arrivera que **plus tard**.
+///
+/// Ici le budget vaut mille vingt-quatre cycles — environ un microseconde de
+/// temps invité par tour de boucle, contre une cadence d'une milliseconde.
+/// Quatre-vingt-trois tours de roue séparent l'arrêt du réveil. Un hôte qui
+/// s'arrêterait au premier `hlt` faute de tic en attente rendrait le réveil
+/// dépendant de son propre budget plutôt que du temps qui passe : la machine
+/// se figerait pour de bon alors que le matériel allait la réveiller.
+///
+/// **Et l'attente est bornée, et conditionnelle.** Un `hlt` pris avec `IF`
+/// éteint, ou dont la ligne est masquée, ou dont la ligne est en service sans
+/// acquittement, ne peut être réveillé par personne — un invité arrêté n'ira
+/// ni rallumer `IF`, ni démasquer, ni acquitter. Celui-là s'arrête, et c'est
+/// ce que le premier des trois tests exige sur son second `hlt`.
+#[test]
+fn a_halt_waits_for_a_tick_that_has_not_come_yet() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            budget: 1024,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.handled, 1,
+        "l'invité arrêté a attendu le tic au lieu de se figer : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.rip, seen.after_second_halt,
+        "et il est reparti : la machine s'arrête sur le second hlt : {}",
+        seen.text
+    );
+}
+
+struct TimerRun {
+    handled: u64,
+    frame: u64,
+    rip: u64,
+    stopped: String,
+    after_first_halt: u64,
+    after_second_halt: u64,
+    text: String,
+}
+
+/// Le programme des deux tests au-dessus. `acknowledge` décide si le
+/// gestionnaire envoie la fin d'interruption avant son `iretq`.
+/// **Une ligne masquée n'est pas délivrée**, et c'est le masque qui le dit.
+///
+/// Le même programme, au masque près : `0xff` au lieu de `0xfe`. Le 8254
+/// compte, la ligne monte, le registre de requête la porte — et rien ne
+/// sort. Sans cette garde, un hôte qui ignorerait le masque passerait les
+/// quatre autres tests : IRQ0 y est démasquée, donc le masque n'y est
+/// jamais consulté pour refuser.
+#[test]
+fn a_masked_line_is_not_delivered() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            mask: 0xff,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.handled, 0,
+        "une ligne masquée ne réveille personne : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.rip, seen.after_first_halt,
+        "et la machine s'arrête sur le premier hlt, définitivement : {}",
+        seen.text
+    );
+}
+
+/// **`cli` tient aussi, et c'est tout l'objet d'un `cli`.**
+///
+/// Le même programme avec `cli` à la place de `sti`. Un noyau éteint `IF`
+/// pour ses sections critiques ; délivrer quand même serait exactement le
+/// défaut que l'instruction existe pour empêcher — et, comme pour le masque,
+/// aucun des quatre autres tests ne le verrait, puisque tous font `sti`.
+///
+/// L'arrêt est alors définitif, et il doit l'être : un invité arrêté
+/// interruptions éteintes n'ira pas les rallumer. C'est ce que fait le
+/// silicium.
+#[test]
+fn a_guest_that_disabled_interrupts_is_not_woken() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            enable: false,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.handled, 0,
+        "interruptions éteintes, rien n'est délivré : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.stopped, "arrêtée sur hlt",
+        "et l'arrêt est définitif, comme sur le silicium : {}",
+        seen.text
+    );
+}
+
+/// Ce que les cinq tests font varier dans le même programme.
+struct TimerSetup {
+    /// Le gestionnaire envoie-t-il la fin d'interruption avant son `iretq` ?
+    acknowledge: bool,
+    /// Combien l'horloge de l'invité avance par tour de boucle hôte.
+    budget: u64,
+    /// Le masque écrit sur le maître. `0xfe` démasque IRQ0 et rien d'autre.
+    mask: u8,
+    /// `sti` avant le `hlt`, ou `cli` ?
+    enable: bool,
+}
+
+impl Default for TimerSetup {
+    fn default() -> Self {
+        Self {
+            acknowledge: false,
+            budget: 1 << 20,
+            mask: 0xfe,
+            enable: true,
+        }
+    }
+}
+
+fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
+    let TimerSetup {
+        acknowledge,
+        budget,
+        mask,
+        enable,
+    } = setup;
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = 0x1_1000;
+    const IDT: u64 = 0x1_2000;
+    const IDT_POINTER: u64 = 0x1_3000;
+    const STACK: u64 = 0xf000;
+    /// La base de vecteur que ce noyau-ci donne au maître. Celle de Linux, pas
+    /// celle des manuels : `0x30` et non `0x20`.
+    const PIC_BASE: u64 = 0x30;
+
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff]); // xor %r15,%r15
+                                                    // Le 8254, canal zéro, accès bas-puis-haut, mode deux : la cadence.
+                                                    // Le diviseur est court — cent pas — pour que la roue tourne plusieurs
+                                                    // fois par tour de boucle hôte, comme celle d'un vrai noyau tourne
+                                                    // plusieurs fois par tranche d'exécution.
+    for (value, port) in [
+        (0x34u8, 0x43u8),
+        (100, 0x40),
+        (0, 0x40),
+        // Le 8259 maître : ICW1 avec un quatrième mot, la base de vecteur,
+        // le câblage de la cascade, le mode 8086, puis le masque.
+        (0x11, 0x20),
+        (PIC_BASE as u8, 0x21),
+        (0x04, 0x21),
+        (0x01, 0x21),
+        // Le masque, que les tests font varier : la garde doit tenir *une*
+        // ligne, pas n'importe laquelle.
+        (mask, 0x21),
+    ] {
+        program.extend_from_slice(&[0xb0, value]); // mov $value,%al
+        program.extend_from_slice(&[0xe6, port]); // out %al,$port
+    }
+    program.push(if enable { 0xfb } else { 0xfa }); // sti ou cli
+    program.push(0xf4); // hlt
+    let after_first_halt = BASE + program.len() as u64;
+    program.push(0xf4); // hlt
+    let after_second_halt = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+
+    let mut handler: Vec<u8> = vec![0x49, 0x83, 0xc7, 0x01]; // add $1,%r15
+    if acknowledge {
+        handler.extend_from_slice(&[0xb0, 0x20]); // mov $0x20,%al
+        handler.extend_from_slice(&[0xe6, 0x20]); // out %al,$0x20
+    }
+    handler.extend_from_slice(&[0x48, 0xcf]); // iretq
+
+    let scratch = std::env::temp_dir().join(format!(
+        "wisq-host-irq0-{}-{budget}-{mask}-{}-{}",
+        u8::from(acknowledge),
+        u8::from(enable),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (name, bytes, at, slot) in [
+        ("programme.wasm", &program[..], BASE, 0u32),
+        ("gestionnaire.wasm", &handler[..], HANDLER, 1),
+        (
+            "premier.wasm",
+            &program[(after_first_halt - BASE) as usize..],
+            after_first_halt,
+            2,
+        ),
+        (
+            "second.wasm",
+            &program[(after_second_halt - BASE) as usize..],
+            after_second_halt,
+            3,
+        ),
+    ] {
+        let module = Module::resolving(bytes, at, 0, slot, PAGES)
+            .unwrap_or_else(|| panic!("{name} se traduit"));
+        let path = scratch.join(name);
+        std::fs::write(&path, &module).expect(name);
+        served.push_str(&format!(
+            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const porte = (offset) => [
+  (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n),
+  BigInt(offset) >> 32n,
+];
+const [bas, haut] = porte({handler});
+vue.setBigUint64({idt} + {vector} * 16, bas, true);
+vue.setBigUint64({idt} + {vector} * 16 + 8, haut, true);
+vue.setUint16({idtPointer}, 256 * 16 - 1, true);
+vue.setBigUint64({idtPointer} + 2, {idt}n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: {budget}n, rounds: 32 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("recus " + lire(15));
+console.log("rip " + lire({rip}));
+console.log("cadre-rip " + vue.getBigUint64({stack} - 8 * 5, true).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            handler = HANDLER,
+            idt = IDT,
+            idtPointer = IDT_POINTER,
+            stack = STACK,
+            vector = PIC_BASE,
+            // **Assez pour que la roue du 8254 tourne au moins une fois par
+            // tour de boucle.** Cent pas à 1 193 182 Hz valent environ
+            // quatre-vingt-quatre mille pas d'horloge à un gigahertz ; un
+            // mébi-pas en vaut douze tours de roue. Un budget trop court
+            // rendrait le test vert ou rouge selon l'arithmétique du 8254
+            // plutôt que selon la délivrance.
+            budget = budget,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |name: &str| line(name).parse::<u64>().expect("un nombre");
+    TimerRun {
+        handled: number("recus "),
+        frame: number("cadre-rip "),
+        rip: number("rip "),
+        stopped: line("arret "),
+        after_first_halt,
+        after_second_halt,
+        text: text.clone(),
+    }
+}
+
 /// **Le vocabulaire du pont, tenu ailleurs que dans un simulateur.**
 ///
 /// La page que l'application charge parle à l'application par deux messages,

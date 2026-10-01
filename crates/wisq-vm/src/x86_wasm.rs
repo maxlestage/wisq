@@ -3630,10 +3630,12 @@ impl Module {
             return Some(());
         }
         // **Le drapeau d'interruption : un bit, comme celui de direction.**
-        // `cli` et `sti` ne font rien de plus sur le silicium, et le produire
-        // ne prétend pas que les interruptions marchent — rien ne délivre
-        // encore. Ce que ça change est qu'une région ne se fait plus refuser
-        // pour eux.
+        // `cli` et `sti` ne font rien de plus sur le silicium. Ce commentaire
+        // ajoutait que le produire « ne prétend pas que les interruptions
+        // marchent — rien ne délivre encore » ; quelque chose délivre
+        // maintenant, et ce bit est ce qu'il consulte. Un `cli` suivi d'un
+        // `hlt` est donc un arrêt définitif, et c'est ce que le silicium en
+        // fait aussi.
         if let Op::InterruptFlag(set) = step.op {
             body.store(RFLAGS_SLOT, |b| {
                 if set {
@@ -5932,11 +5934,14 @@ impl Module {
             // elle demanderait une descente de pile de deux, ce que ce chemin
             // ne fait pas ; `translate` la laisse donc au refus.
             //
-            // **`popf` reste refusé, et l'asymétrie est le sujet.** Lire
-            // RFLAGS ne peut rien allumer ; l'écrire peut rallumer le drapeau
-            // d'interruption sans jamais nommer `sti`, et rien ne délivre
-            // d'interruption. Un module qui accepte `popf` accepte un `sti`
-            // déguisé.
+            // **`popf` reste refusé, et l'asymétrie n'a plus la même raison.**
+            // Lire RFLAGS ne peut rien allumer ; l'écrire peut tout allumer
+            // d'un coup — `IF`, mais aussi le pas-à-pas, le drapeau imbriqué,
+            // l'alignement. Ce commentaire ne retenait que `IF`, « et rien ne
+            // délivre d'interruption » ; la délivrance existe, et `IF` n'est
+            // donc plus l'argument. Ce qui reste est qu'un `popf` produit
+            // écrirait dans RFLAGS des bits dont aucun n'est modélisé ici,
+            // et le refus les nomme un par un plutôt que de les perdre.
             Op::PushFlags => {
                 body.store(Body::scratch(0), |b| {
                     b.load(RFLAGS_SLOT);
