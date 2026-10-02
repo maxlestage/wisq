@@ -178,8 +178,14 @@ fn the_zero_page_declares_the_ram_and_names_its_loader() {
 ///
 /// Après ces deux lignes, la machine avançait encore mais **le port série
 /// était muet**, et le silence ressemblait à un arrêt. C'est un défaut du
-/// montage de mesure, pas du noyau : `web/host.js` n'écoute que `0x3f8`, et
-/// `tty0` n'y écrit rien.
+/// montage de mesure, pas du noyau : l'hôte n'a pas d'écran de texte, et
+/// `tty0` n'écrit pas sur le port série.
+///
+/// **« `web/host.js` n'écoute que `0x3f8` » disait cette phrase**, et c'était
+/// vrai jusqu'à #305 : l'hôte y tient maintenant les huit registres du 16550 et
+/// lève IRQ4. Ça ne change rien à ce que ce test mesure — `tty0` est un écran,
+/// pas une liaison série, et aucun registre du port ne le ferait parler — mais
+/// une raison périmée laissée dans un commentaire se fait recopier.
 ///
 /// **Ce que `keep_bootcon` a fait apparaître, six lignes, mesurées** :
 ///

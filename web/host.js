@@ -354,22 +354,50 @@ async function answered(ask, patience) {
   });
 }
 
-/// **Le port série, et le strict nécessaire d'un 16550.**
+/// **Le port série : le 16550 tel que le pilote 8250 le sonde.**
 ///
 /// C'est par là qu'un noyau Linux parle avant d'avoir le moindre pilote : le
-/// tout premier `printk` sort en `0x3f8`, un octet à la fois. Rien d'autre du
-/// composant n'est implémenté, et c'est délibéré — mais deux registres ne
-/// peuvent pas manquer, parce qu'un noyau *attend* sur eux :
+/// tout premier `printk` sort en `0x3f8`, un octet à la fois.
 ///
-/// - `0x3f8` en écriture est le registre d'émission. L'octet part.
-/// - `0x3fd` en lecture est le registre d'état de ligne. Le noyau y tourne en
-///   boucle jusqu'à voir « l'émetteur est libre » avant chaque caractère. Un
-///   zéro rendu là ne perdrait pas un octet : il pendrait la machine pour
-///   toujours, sur une boucle correcte.
+/// **Ce bloc disait « rien d'autre du composant n'est implémenté, et c'est
+/// délibéré ».** Deux registres suffisaient en effet à `printk`, qui prend le
+/// port directement : l'émission en `0x3f8`, et l'état de ligne en `0x3fd` où
+/// le noyau tourne en boucle jusqu'à voir « l'émetteur est libre » — un zéro
+/// rendu là ne perdrait pas un octet, il pendrait la machine pour toujours sur
+/// une boucle correcte.
+///
+/// **Ce n'était pas vrai du tty.** Un `write` de l'espace utilisateur passe par
+/// le pilote complet, et le pilote ne croit à un port que s'il le trouve :
+/// quatre questions, et une seule sans réponse lui suffit pour conclure « there
+/// is nothing here ». #304 a mesuré le bout de cette chaîne — l'espace
+/// utilisateur s'exécute, son premier `write` rend −EIO — et a conclu qu'il
+/// restait une direction à trancher. **La direction était tranchée** :
+/// `Sources/WisqVM/X86SerialPort.swift` modélise la puce entière, onze tests
+/// Swift la tiennent, et son propre commentaire raconte la même mesure. Ce qui
+/// restait était la troisième forme de #289 — deux copies qui s'accordent, une
+/// qui dérive — et la copie qui dérivait était celle que l'application embarque.
+///
+/// Les huit registres, aux décalages de `0x3f8` :
+///
+/// | | en écriture | en lecture |
+/// | --- | --- | --- |
+/// | 0 | l'émission, ou l'octet bas du diviseur derrière `DLAB` | la réception, ou le même octet |
+/// | 1 | l'autorisation d'interruption, ou l'octet haut du diviseur | la même chose |
+/// | 2 | le contrôle de la FIFO | l'identification de la cause |
+/// | 3 | le format, dont `DLAB` au bit sept | la même chose |
+/// | 4 | le contrôle du modem, dont la boucle au bit quatre | la même chose |
+/// | 5 | — | l'état de la ligne |
+/// | 6 | — | l'état du modem |
+/// | 7 | le brouillon | le brouillon |
 const SERIAL = 0x3f8;
-const SERIAL_STATUS = SERIAL + 5;
+/// **Le dernier des huit.** Tout l'intervalle appartient à la puce : un port de
+/// l'intervalle qui tomberait dans le vide se lirait `0xff`, « il n'y a
+/// personne », et ferait échouer la sonde sur la seule question qui
+/// manquerait.
+const SERIAL_LAST = SERIAL + 7;
 /// Émetteur vide **et** registre d'émission vide : les deux bits que la boucle
-/// d'attente d'un noyau consulte.
+/// d'attente d'un noyau consulte. Le bit zéro, « un octet attend d'être lu »,
+/// s'y ajoute quand il y en a un.
 const TRANSMITTER_IDLE = 0x60;
 /// **Ce que rend un port où il n'y a personne.** Un vrai PC laisse le bus
 /// flotter, et le lecteur voit tous les bits à un. Rendre zéro ferait croire à
@@ -669,6 +697,162 @@ export function machine({
   // que l'invité compte dans son gestionnaire, est le témoin d'en face de
   // `delivrees`.
   const materiel = { delivrees: 0n, premiere: null };
+  /// **Le 16550, celui que le pilote sonde.**
+  ///
+  /// L'état est celui de `X86SerialPort.swift`, champ pour champ et nom pour
+  /// nom : ce qui diverge entre deux cœurs se paie en #289, et un champ qui
+  /// n'existe que d'un côté est déjà une divergence.
+  const uart = {
+    /// IER : réception (bit 0), émission (bit 1), état de ligne (2), modem (3).
+    interruptEnable: 0,
+    /// FCR : le bit 0 active la FIFO, et c'est lui que l'identification répète
+    /// dans ses deux bits hauts — « 16550A ».
+    fifoControl: 0,
+    /// LCR : le bit 7 (`DLAB`) fait apparaître le diviseur à la place du
+    /// tampon d'émission et de l'autorisation.
+    lineControl: 0,
+    /// MCR : le bit 4 met la puce en boucle sur elle-même.
+    modemControl: 0,
+    /// SCR : aucun rôle, sinon garder ce qu'on y met. C'est ce qui distingue un
+    /// 16450 d'un 8250.
+    scratch: 0,
+    /// Le diviseur de bauds. Douze pour 115 200.
+    divisor: 0,
+    /// L'émission a quelque chose à dire : levée quand on l'autorise ou qu'un
+    /// octet part — le transmetteur est vide aussitôt, ici —, acquittée par la
+    /// lecture du registre d'identification.
+    transmitPending: false,
+    /// Ce qui est arrivé et que l'invité n'a pas encore lu.
+    ///
+    /// **Rien ne tape encore.** La boucle hôte n'a pas d'entrée série, et la
+    /// seule chose qui remplisse cette file est la boucle de test du modem, où
+    /// l'octet émis revient par la réception. C'est par elle que passe la
+    /// deuxième question de la sonde, donc le chemin est emprunté — et non
+    /// défensif.
+    input: [],
+  };
+  const dlab = () => (uart.lineControl & 0x80) !== 0;
+  const loopback = () => (uart.modemControl & 0x10) !== 0;
+  /// **La ligne quatre demande.** Réception avant émission, comme sur la puce.
+  const serialInterrupting = () => {
+    if ((uart.interruptEnable & 0x01) !== 0 && uart.input.length > 0) return true;
+    return (uart.interruptEnable & 0x02) !== 0 && uart.transmitPending;
+  };
+  const serialWrite = (offset, octet) => {
+    switch (offset) {
+      case 0:
+        if (dlab()) {
+          uart.divisor = (uart.divisor & 0xff00) | octet;
+          return;
+        }
+        // Un `out %ax, %dx` vers l'émetteur écrit deux caractères sur un vrai
+        // 16550 seulement avec la FIFO ; ici l'octet bas suffit, et le dire est
+        // plus honnête que de faire semblant.
+        //
+        // En boucle, l'octet revient par la réception au lieu de sortir : c'est
+        // tout l'objet de la boucle, et un hôte qui le laisserait sortir
+        // ferait apparaître la sonde du pilote dans la console.
+        if (loopback()) uart.input.push(octet);
+        else if (serial) serial(octet);
+        uart.transmitPending = true;
+        return;
+      case 1: {
+        if (dlab()) {
+          uart.divisor = (uart.divisor & 0x00ff) | (octet << 8);
+          return;
+        }
+        const was = uart.interruptEnable;
+        uart.interruptEnable = octet & 0x0f;
+        // Autoriser l'émission sur un transmetteur vide la lève : c'est le
+        // test que `serial8250_do_startup` fait deux fois, et s'il ne revient
+        // rien la seconde fois le pilote installe un minuteur de secours au
+        // lieu de compter sur l'interruption.
+        if ((octet & 0x02) !== 0 && (was & 0x02) === 0) uart.transmitPending = true;
+        return;
+      }
+      case 2:
+        uart.fifoControl = octet;
+        return;
+      case 3:
+        uart.lineControl = octet;
+        return;
+      case 4:
+        uart.modemControl = octet & 0x1f;
+        return;
+      case 7:
+        uart.scratch = octet;
+        return;
+      default:
+        // Cinq et six — l'état de la ligne, l'état du modem — sont en lecture
+        // seule sur la puce. Les ranger ferait croire à un invité qu'il peut
+        // se répondre à lui-même.
+        return;
+    }
+  };
+  const serialRead = (offset) => {
+    switch (offset) {
+      case 0:
+        if (dlab()) return uart.divisor & 0xff;
+        return uart.input.length === 0 ? 0 : uart.input.shift();
+      case 1:
+        if (dlab()) return (uart.divisor >> 8) & 0xff;
+        return uart.interruptEnable;
+      case 2: {
+        // L'identification : la cause la plus prioritaire, bit 0 à zéro quand
+        // il y en a une, et la FIFO dans les deux bits hauts.
+        const fifo = (uart.fifoControl & 0x01) !== 0 ? 0xc0 : 0;
+        if ((uart.interruptEnable & 0x01) !== 0 && uart.input.length > 0) return fifo | 0x04;
+        if ((uart.interruptEnable & 0x02) !== 0 && uart.transmitPending) {
+          uart.transmitPending = false;
+          return fifo | 0x02;
+        }
+        return fifo | 0x01;
+      }
+      case 3:
+        return uart.lineControl;
+      case 4:
+        return uart.modemControl;
+      case 5:
+        return TRANSMITTER_IDLE | (uart.input.length === 0 ? 0 : 1);
+      case 6:
+        // En boucle, les sorties reviennent sur les entrées : DTR → DSR,
+        // RTS → CTS, OUT1 → RI, OUT2 → DCD. Le pilote écrit
+        // `LOOP | OUT2 | RTS` et attend `DCD | CTS`. Sinon, un câble branché :
+        // porteuse, prêt, libre d'émettre — un terminal ouvert sans `CLOCAL`
+        // attendrait la porteuse indéfiniment.
+        if (!loopback()) return 0xb0;
+        return (
+          ((uart.modemControl & 0x01) !== 0 ? 0x20 : 0)
+          | ((uart.modemControl & 0x02) !== 0 ? 0x10 : 0)
+          | ((uart.modemControl & 0x04) !== 0 ? 0x40 : 0)
+          | ((uart.modemControl & 0x08) !== 0 ? 0x80 : 0)
+        );
+      default:
+        // Sept, le brouillon — et rien d'autre : l'appelant borne le décalage à
+        // l'intervalle de la puce. Cette branche est là parce qu'un `switch`
+        // sans elle rendrait `undefined`, que `BigInt` refuse ; ce n'est pas un
+        // modèle de port, c'est la totalité d'une fonction.
+        return uart.scratch;
+    }
+  };
+  /// **La ligne quatre, à niveau et non à front** : la demande suit la
+  /// condition, dans les deux sens, comme `serviceInterrupts` le fait du côté
+  /// Swift. Une demande qui resterait après que le pilote a tout acquitté
+  /// serait délivrée pour rien, et le pilote lirait « rien en attente » dans
+  /// l'identification.
+  ///
+  /// **Elle n'entre pas dans `wakeable`, et c'est raisonné plutôt que
+  /// recopié.** Du côté Swift, `devicesArmed` compte le port parmi ce qui peut
+  /// réveiller une machine arrêtée, et c'est juste là-bas : `serialInput` est
+  /// rempli du dehors, par une frappe. Ici rien ne tape, donc la condition du
+  /// port ne change **que** par une écriture de l'invité — et un invité arrêté
+  /// n'écrit pas. L'y mettre ferait tourner la boucle d'attente du `hlt`
+  /// jusqu'au bout de sa patience, un mébi-tour, sur une ligne qui ne montera
+  /// jamais. Le jour où une entrée série existera, les deux iront ensemble.
+  const raiseSerial = () => {
+    if (serialInterrupting()) pics.master.request |= 0x10;
+    else pics.master.request &= ~0x10;
+  };
   /// Le contrôleur qu'un port désigne, et si c'est son port de **données**.
   /// `null` quand le port n'est celui d'aucun des deux.
   const controllerAt = (at) => {
@@ -796,11 +980,8 @@ export function machine({
 
   env.out = (port, value, width) => {
     const at = Number(port);
-    if (at === SERIAL) {
-      // Un `out %ax, %dx` vers l'émetteur écrit deux caractères sur un vrai
-      // 16550 seulement avec la FIFO ; ici l'octet bas suffit, et le dire est
-      // plus honnête que de faire semblant.
-      if (serial) serial(Number(value & 0xffn));
+    if (at >= SERIAL && at <= SERIAL_LAST) {
+      serialWrite(at - SERIAL, Number(value & 0xffn));
       return;
     }
     if (at === PIT_GATE) {
@@ -929,7 +1110,7 @@ export function machine({
   env.in = (port, width) => {
     void width;
     const at = Number(port);
-    if (at === SERIAL_STATUS) return BigInt(TRANSMITTER_IDLE);
+    if (at >= SERIAL && at <= SERIAL_LAST) return BigInt(serialRead(at - SERIAL));
     if (at === PIT_GATE) {
       return BigInt(gatePort | (outTwo() ? PIT_OUT_TWO : 0));
     }
@@ -1548,6 +1729,7 @@ export function machine({
     /// **Combien d'interruptions de matériel l'hôte a délivrées, et où l'invité
     /// était à la première.** Lecture ; rien ne se décide dessus.
     materiel,
+    uart,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       // **Combien de chargements d'instruction ont fauté d'affilée**, sans
@@ -1754,6 +1936,7 @@ export function machine({
         // morte pour le reste de la vie de la machine. L'ordre est donc
         // délivrer d'abord, prendre ensuite.
         raise8254();
+        raiseSerial();
         const open =
           (BigInt.asUintN(64, globals[SLOTS.rflags].value) & INTERRUPT_FLAG) !== 0n;
         // **Un `hlt` que le matériel peut encore réveiller attend.**

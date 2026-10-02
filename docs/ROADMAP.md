@@ -13089,16 +13089,28 @@ lignes du code qui l'implémente » — et la page du site. Ce document n'avait 
 trois laisse la troisième dériver, et personne ne le voit parce que les deux
 gardées s'accordent.
 
-`site/tests/stale-claims.test.ts` tient deux affirmations nommées, chacune parce
-qu'un test nommé la contredit :
+`site/tests/stale-claims.test.ts` tient **quatre** affirmations nommées — ce
+paragraphe en annonçait deux, et il en annonçait deux quand il y en avait déjà
+trois —, chacune parce qu'un test nommé la contredit :
 
 - « deux mécanismes entiers » est interdit tant que
   `a_page_fault_is_delivered_to_the_guest_and_iretq_resumes_the_faulting_instruction`
   existe ;
-- un paragraphe qui parle de CR0 ou CR3 **et** d'un refus doit dire de quelle
-  mise en forme il parle — la confinée les accepte et traverse quatre niveaux de
-  tables, la libre les refuse encore —, tant que
-  `only_the_confined_form_accepts_the_write_that_drives_paging` existe.
+- « la délivrance d'une **interruption de matériel** n'existe pas » l'est tant
+  que `a_timer_interrupt_wakes_a_halted_guest_once_until_it_is_acknowledged`
+  existe ;
+- « Reste **la délivrance d'une interruption de matériel** » — la liste des
+  étapes qui gardait celle-ci « en partie » — l'est tant que
+  `a_halt_waits_for_a_tick_that_has_not_come_yet` existe ;
+- « l'hôte ne modélise du 16550 que l'émission à scrutation » l'est depuis #305,
+  tant que `the_host_answers_the_probe_the_eight_two_fifty_driver_makes` existe :
+  les huit registres sont dans `web/host.js` et la ligne quatre monte.
+
+Et une cinquième règle, qui ne porte pas sur une phrase mais sur une forme : un
+paragraphe qui parle de CR0 ou CR3 **et** d'un refus doit dire de quelle mise en
+forme il parle — la confinée les accepte et traverse quatre niveaux de tables, la
+libre les refuse encore —, tant que
+`only_the_confined_form_accepts_the_write_that_drives_paging` existe.
 
 Ce qu'elle ne tient pas est écrit dedans : le reste du document.
 

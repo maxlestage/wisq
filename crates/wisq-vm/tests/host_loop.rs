@@ -4181,6 +4181,237 @@ console.log("ou " + why.at.toString(16));
     assert_eq!(seen("arret"), UD2_SANS_PORTE);
     assert_eq!(seen("ou"), format!("{:x}", BASE + 10), "sur le `ud2`");
 }
+/// **Le port série de l'hôte n'était pas la puce que le pilote sonde.**
+///
+/// `Sources/WisqVM/X86SerialPort.swift` modélise le 16550 entier depuis que
+/// la mesure a montré pourquoi il le fallait : sous QEMU le noyau écrit
+/// « ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A », sous
+/// wisq cette ligne manquait, et sans elle `/dev/console` n'existe pour
+/// personne en espace utilisateur. Onze tests Swift tiennent cette sonde,
+/// étape par étape.
+///
+/// **`web/host.js` en tenait deux registres**, et c'est l'hôte sur lequel le
+/// bureau tourne. #304 a mesuré la conséquence jusqu'au bout — l'espace
+/// utilisateur s'exécute, son premier `write` rend −EIO — et a conclu que
+/// c'était « une frontière documentée, pas un défaut ». **C'était faux** : la
+/// frontière avait déjà été franchie, décidée et gardée dans l'autre cœur. Ce
+/// qui restait n'était pas une direction à trancher mais la troisième forme de
+/// #289, celle où deux copies s'accordent et la troisième dérive — sauf qu'ici
+/// la copie qui dérive est celle que l'application embarque.
+///
+/// Ce test pose les quatre questions d'`autoconfig` (`8250_port.c`) dans
+/// l'ordre où le pilote les pose, **à travers des instructions `in` et `out`
+/// de l'invité** et non en appelant le modèle : c'est le routage du port
+/// autant que le modèle qui est jugé, et le routage était la moitié
+/// manquante.
+#[test]
+fn the_host_answers_the_probe_the_eight_two_fifty_driver_makes() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = Vec::new();
+    // Chaque étape : poser le port dans `dx`, écrire, relire dans `al` — rax
+    // effacé d'abord, pour que ce qui reste soit l'octet du port et rien de ce
+    // qui traînait —, puis ranger le résultat dans un registre à soi.
+    for (port, written, keep) in [
+        // L'autorisation d'interruption doit se relire : c'est le premier test
+        // du pilote, et celui qu'un port absent échoue.
+        (0x3f9u16, 0x0fu8, [0x48u8, 0x89, 0xc3]), // → %rbx
+        // La boucle de test du modem : `LOOP | OUT2 | RTS` écrit, `DCD | CTS`
+        // attendu en retour.
+        (0x3fc, 0x1a, [0x48, 0x89, 0xc1]), // le MCR, puis le MSR ci-dessous
+        // Le registre de brouillon n'a pas d'autre rôle que de garder.
+        (0x3ff, 0xa5, [0x48, 0x89, 0xc6]), // → %rsi
+        // La FIFO activée, l'identification doit dire « 16550A ».
+        (0x3fa, 0x01, [0x48, 0x89, 0xc7]), // → %rdi
+    ] {
+        program.extend_from_slice(&[0x66, 0xba]); // mov $port,%dx
+        program.extend_from_slice(&port.to_le_bytes());
+        program.extend_from_slice(&[0xb0, written]); // mov $written,%al
+        program.push(0xee); // out %al,%dx
+        if port == 0x3fc {
+            // Le modem s'écrit en `0x3fc` et se relit en `0x3fe` : c'est le
+            // seul couple de la sonde dont l'écriture et la lecture ne sont pas
+            // au même port.
+            program.extend_from_slice(&[0x66, 0xba, 0xfe, 0x03]); // mov $0x3fe,%dx
+        }
+        program.extend_from_slice(&[0x31, 0xc0]); // xor %eax,%eax
+        program.push(0xec); // in %dx,%al
+        program.extend_from_slice(&keep);
+    }
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let scratch = std::env::temp_dir().join(format!("wisq-host-probe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la sonde se traduit");
+    let path = scratch.join("sonde.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+let said = "";
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+  serial: byte => {{ said += String.fromCharCode(byte); }},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("autorisation " + lire(3));
+console.log("modem " + lire(1));
+console.log("brouillon " + lire(6));
+console.log("identification " + lire(7));
+console.log("dit " + said.length);
+console.log("arret " + why.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let number = |name: &str| -> u64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(
+        number("autorisation "),
+        0x0f,
+        "l'autorisation se relit, sinon « there's nothing here » : {text}"
+    );
+    assert_eq!(
+        number("modem ") & 0xf0,
+        0x90,
+        "en boucle, RTS revient en CTS et OUT2 en DCD : {text}"
+    );
+    assert_eq!(
+        number("brouillon "),
+        0xa5,
+        "le brouillon garde ce qu'on y met : {text}"
+    );
+    // **0xc2 et non 0xc1**, et le chiffre entier est exigé plutôt que ses deux
+    // bits hauts : la FIFO dit « 16550A » (0xc0) *et* l'émission est en attente
+    // (0x02), parce que l'étape précédente a autorisé l'émission sur un
+    // transmetteur vide. Le pilote compte sur cet enchaînement — c'est lui qui
+    // lui dit que l'interruption d'émission fonctionne.
+    assert_eq!(
+        number("identification "),
+        0xc2,
+        "« 16550A », et l'émission en attente depuis que l'autorisation l'a levée : {text}"
+    );
+    assert_eq!(
+        number("dit "),
+        0,
+        "et la sonde entière n'a pas fait sortir un seul caractère : {text}"
+    );
+}
+
+/// **Le diviseur de bauds sortait sur la ligne, en caractères.**
+///
+/// `DLAB`, le bit sept du registre de format, fait apparaître le diviseur à la
+/// place du tampon d'émission et de l'autorisation. Un hôte qui ne modélise
+/// pas `DLAB` prend l'octet bas du diviseur pour un caractère à émettre et
+/// l'envoie — douze pour 115 200 bauds, soit un saut de page au milieu de la
+/// console, suivi d'un NUL pour l'octet haut.
+///
+/// **Pourquoi personne ne l'avait vu.** `earlycon=uart8250,io,0x3f8` sans
+/// vitesse ne programme pas le diviseur, et c'est la seule console que ce
+/// noyau avait jamais ouverte ; le pilote complet, celui qui l'écrit, ne
+/// s'installait pas faute de trouver la puce. Le défaut était réel et
+/// inatteignable — et il devenait atteignable au moment exact où la sonde
+/// ci-dessus se met à répondre. C'est la raison d'être de ce test : la
+/// correction qui fait passer l'autre ouvre la porte à celui-ci.
+#[test]
+fn a_divisor_written_behind_dlab_does_not_go_out_as_a_character() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = Vec::new();
+    for (port, written) in [
+        (0x3fbu16, 0x80u8), // DLAB levé
+        (0x3f8, 0x0c),      // l'octet bas du diviseur : douze
+        (0x3f9, 0x00),      // l'octet haut
+        (0x3fb, 0x03),      // DLAB retombé, huit bits sans parité
+        (0x3f8, b'A'),      // et maintenant, un vrai caractère
+    ] {
+        program.extend_from_slice(&[0x66, 0xba]); // mov $port,%dx
+        program.extend_from_slice(&port.to_le_bytes());
+        program.extend_from_slice(&[0xb0, written]); // mov $written,%al
+        program.push(0xee); // out %al,%dx
+    }
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let scratch = std::env::temp_dir().join(format!("wisq-host-dlab-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("dlab.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+let said = [];
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+  serial: byte => {{ said.push(byte); }},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+console.log("sorti " + said.join(","));
+console.log("diviseur " + vm.uart.divisor);
+console.log("arret " + why.stopped);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let line = |name: &str| -> String {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        line("sorti "),
+        "65",
+        "un seul caractère est sorti, le « A » : {text}"
+    );
+    assert_eq!(
+        line("diviseur "),
+        "12",
+        "et le diviseur est arrivé où il devait, 115 200 bauds : {text}"
+    );
+}
 
 /// **Et une machine vraiment bloquée doit être nommée.**
 ///
@@ -12226,7 +12457,109 @@ fn a_guest_that_disabled_interrupts_is_not_woken() {
     );
 }
 
-/// Ce que les cinq tests font varier dans le même programme.
+/// **La ligne quatre arrive jusqu'au processeur, et elle n'y arrivait pas.**
+///
+/// C'est la moitié du défaut de #304 que les deux gardes du port ne couvrent
+/// pas : un modèle de registres exact mais qui ne lève aucune ligne laisse le
+/// pilote poser ses octets dans un tampon et attendre qu'on vienne les
+/// chercher. Le `write` rend alors −EIO, ce que la mesure a lu dans la panique
+/// du noyau — `exitcode=0x0000fb00`, soit `0xfb`, soit −5.
+///
+/// Le programme arme l'émission sur un transmetteur vide, démasque la
+/// **quatre** seule, puis s'arrête. Rien n'a besoin que le temps passe : la
+/// condition est déjà vraie quand l'invité s'arrête, et c'est exactement ce
+/// que le pilote attend de son démarrage.
+///
+/// Le pendant Swift est `testTheTransmitInterruptReachesTheHandlerOnLineFour`,
+/// et il passait **avant** cette tranche. C'est la mesure de l'écart : la même
+/// garde, dans deux langages, et une seule des deux copies la tenait.
+#[test]
+fn arming_the_transmit_interrupt_brings_line_four_to_the_processor() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            transmit: true,
+            // La quatre démasquée, et la zéro non : si l'horloge pouvait
+            // délivrer, ce test ne dirait pas qui a délivré.
+            mask: 0xef,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.requested & 0x10,
+        0x10,
+        "la ligne quatre a monté : le registre de requête du maître vaut {:#x}\n{}",
+        seen.requested,
+        seen.text
+    );
+    assert_eq!(
+        seen.delivered, seen.handled,
+        "l'hôte et l'invité comptent la même chose : {} contre {}\n{}",
+        seen.delivered, seen.handled, seen.text
+    );
+    assert_eq!(
+        seen.delivered, 1,
+        "non acquittée, il y en a eu une : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.landed,
+        Some(seen.after_first_halt),
+        "elle est tombée là où l'invité s'était arrêté : {}",
+        seen.text
+    );
+}
+
+/// **Et rien ne monte tant que personne n'a armé.**
+///
+/// Le même montage, la même ligne démasquée, et l'autorisation d'interruption
+/// laissée à zéro. Sans cette garde, un hôte qui lèverait la quatre dès que le
+/// transmetteur est vide — ce qu'il est toujours, ici — passerait le test
+/// au-dessus : la ligne monterait pour la bonne raison par accident.
+///
+/// **Elle peut tomber, et c'est mesuré.** La condition du port retirée de
+/// `raiseSerial` — `pics.master.request |= 0x10` sans rien demander —, ce test
+/// voit la ligne monter et la délivrance avoir lieu. C'est le contraire de ce
+/// qui est arrivé aux deux gardes de #299, dont le refus ne refusait rien
+/// parce que leur mise en scène n'atteignait pas ce qu'elles prétendaient
+/// tenir.
+#[test]
+fn line_four_stays_down_while_nothing_has_armed_the_transmit_interrupt() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            transmit: false,
+            mask: 0xef,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.requested & 0x10,
+        0,
+        "rien n'a armé, donc rien ne demande : {:#x}\n{}",
+        seen.requested,
+        seen.text
+    );
+    assert_eq!(seen.delivered, 0, "et rien n'est délivré : {}", seen.text);
+    assert_eq!(
+        seen.handled, 0,
+        "l'invité n'a rien compté non plus : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.stopped, "arrêtée sur hlt",
+        "la machine dort, et c'est définitif : {}",
+        seen.text
+    );
+}
+
+/// Ce que les sept tests font varier dans le même programme.
 struct TimerSetup {
     /// Le gestionnaire envoie-t-il la fin d'interruption avant son `iretq` ?
     acknowledge: bool,
@@ -12254,6 +12587,13 @@ struct TimerSetup {
     /// gigahertz, soit onze tours de roue à diviseur cent — largement plus
     /// qu'un, et le test exige le registre de requête plutôt que ce compte.
     warp: u64,
+    /// **L'invité arme-t-il l'interruption d'émission du port série ?**
+    ///
+    /// Quand il le fait, c'est la ligne **quatre** qui monte et non la zéro, et
+    /// la porte attendue est celle du vecteur `0x34`. Le 8254 est programmé
+    /// quand même — le masque le tient à l'écart —, parce qu'un montage qui
+    /// changerait deux choses à la fois ne dirait pas laquelle a délivré.
+    transmit: bool,
 }
 
 impl Default for TimerSetup {
@@ -12264,6 +12604,7 @@ impl Default for TimerSetup {
             mask: 0xfe,
             enable: true,
             warp: 0,
+            transmit: false,
         }
     }
 }
@@ -12275,6 +12616,7 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
         mask,
         enable,
         warp,
+        transmit,
     } = setup;
     const PAGES: u32 = 4;
     const BASE: u64 = 0x1_0000;
@@ -12313,6 +12655,13 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
     ] {
         program.extend_from_slice(&[0xb0, value]); // mov $value,%al
         program.extend_from_slice(&[0xe6, port]); // out %al,$port
+    }
+    if transmit {
+        // L'autorisation d'interruption du 16550 est en `0x3f9`, hors de portée
+        // d'un port immédiat : il faut passer par `dx`.
+        program.extend_from_slice(&[0x66, 0xba, 0xf9, 0x03]); // mov $0x3f9,%dx
+        program.extend_from_slice(&[0xb0, 0x02]); // mov $0x02,%al — l'émission
+        program.push(0xee); // out %al,%dx
     }
     program.push(if enable { 0xfb } else { 0xfa }); // sti ou cli
     program.push(0xf4); // hlt
@@ -12426,7 +12775,10 @@ console.log("requete " + vm.pics.master.request);
             idt = IDT,
             idtPointer = IDT_POINTER,
             stack = STACK,
-            vector = PIC_BASE,
+            // **La porte du vecteur que la ligne choisie donne**, et non celle
+            // d'IRQ0 : une porte installée ailleurs ferait rendre « aucune IDT
+            // ne porte le vecteur » — vrai, et muet sur ce qui est jugé.
+            vector = PIC_BASE + if transmit { 4 } else { 0 },
             // **Assez pour que la roue du 8254 tourne au moins une fois par
             // tour de boucle.** Cent pas à 1 193 182 Hz valent environ
             // quatre-vingt-quatre mille pas d'horloge à un gigahertz ; un
