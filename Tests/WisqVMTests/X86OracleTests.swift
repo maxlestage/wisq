@@ -40,6 +40,17 @@ final class X86OracleTests: XCTestCase {
         let after: State
         /// La fenêtre de mémoire après coup, ou nil quand elle n'a pas bougé.
         let memory: [UInt8]?
+        /// **La fenêtre de pile, à la même enseigne**, et le champ que ce
+        /// harnais sautait.
+        ///
+        /// Le corpus en porte une pour chacun de ses cas, les deux harnais
+        /// Rust la comparent, et celui-ci la **posait** — il y a un
+        /// commentaire sur `stackPristine` qui explique pourquoi il a fallu la
+        /// poser — sans jamais la relever. Prendre la peine d'écrire le motif
+        /// que le silicium avait sous la pile, puis ne pas regarder ce que le
+        /// cœur en a fait, c'est la moitié qui restait de l'asymétrie que le
+        /// champ d'en dessous nomme.
+        let stack: [UInt8]?
         /// **RSP, RBP, RSI et RDI.** Les quatre seuls registres que le corpus
         /// autorise à bouger — le générateur vérifie que les autres ne bougent
         /// pas — et donc les quatre seuls qu'il relève.
@@ -130,9 +141,12 @@ final class X86OracleTests: XCTestCase {
             case "segment" where field.count >= 3 && field[1] == "gs":
                 fixture.gsBase = number(2)
             case "cas" where field.count >= 13:
-                var window: [UInt8]?
-                if field[7] != "-" {
-                    let hex = field[7]
+                // « - » veut dire « telle qu'on l'avait posée », pour les deux
+                // fenêtres. Une fonction plutôt que deux copies : le champ de
+                // la pile a été sauté une fois, autant ne pas lui donner son
+                // propre chemin de lecture.
+                let octets: (Substring) -> [UInt8]? = { hex in
+                    guard hex != "-" else { return nil }
                     var bytes: [UInt8] = []
                     var index = hex.startIndex
                     while index < hex.endIndex {
@@ -140,13 +154,14 @@ final class X86OracleTests: XCTestCase {
                         bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
                         index = next
                     }
-                    window = bytes
+                    return bytes
                 }
                 fixture.cases.append(Case(
                     instruction: Int(field[1]) ?? -1, state: Int(field[2]) ?? -1,
                     after: State(rax: number(3), rcx: number(4),
                                  rdx: number(5), flags: number(6)),
-                    memory: window,
+                    memory: octets(field[7]),
+                    stack: octets(field[8]),
                     pointers: (number(9), number(10), number(11), number(12))))
             default:
                 continue
@@ -272,7 +287,17 @@ final class X86OracleTests: XCTestCase {
                 && after.rdx == item.after.rdx
             let window = memory.dump(Self.dataAddress, Self.windowSize)
             let sameMemory = window == (item.memory ?? Self.pristine)
-            if sameFlags && sameRegisters && sameMemory && untouched && samePointers {
+            // **Et la fenêtre de pile, que ce harnais posait sans la lire.**
+            // Cent vingt-huit octets de part et d'autre du sommet : en dessous
+            // ce qu'un `push` écrit, au-dessus ce qu'un `pop` relit. Un cœur
+            // qui écrirait son `push` un octet à côté laisse les trois
+            // registres, les drapeaux, les quatre pointeurs et la fenêtre de
+            // données exactement justes.
+            let below = memory.dump(Self.stackTop - UInt64(Self.windowSize),
+                                    Self.windowSize * 2)
+            let sameStack = below == (item.stack ?? Self.stackPristine)
+            if sameFlags && sameRegisters && sameMemory && sameStack
+                && untouched && samePointers {
                 agreed += 1
             } else {
                 byInstruction[program.text, default: 0] += 1
@@ -287,7 +312,8 @@ final class X86OracleTests: XCTestCase {
                         + "      wisq       : rax \(hex(after.rax)) rcx \(hex(after.rcx)) "
                         + "rdx \(hex(after.rdx)) drapeaux \(hex(after.flags))"
                         + (untouched ? "" : "\n      et il a écrit dans un registre témoin")
-                        + (sameMemory ? "" : "\n      et la mémoire diffère")
+                        + (sameMemory ? "" : "\n      et la fenêtre de données diffère")
+                        + (sameStack ? "" : "\n      et la fenêtre de pile diffère")
                         + (samePointers
                             ? ""
                             : "\n      processeur : rsp \(hex(item.pointers.0)) "
