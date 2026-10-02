@@ -18290,3 +18290,101 @@ celle-ci était juste. Mais le trou de cette tranche n'était pas dans la pièce
 prédite : il était dans le **gréage** du test, qui rendait vrai par accident ce
 que le code ne tenait pas. Trois tests verts ne disaient rien du cas réel parce
 qu'un budget généreux le masquait.
+
+## #298 — ma tranche d'hier avait cassé le démarrage du vrai noyau, et c'est la mesure qui l'a dit
+
+#297 a posé la délivrance d'une interruption de matériel, verte sur cinq tests
+et neuf sabordages. Le lendemain j'ai fait ce que j'aurais dû faire avant de la
+déclarer finie : **lancer le vrai noyau à travers**.
+
+Il faut un noyau x86 pour ça, et il n'y en avait pas dans le conteneur. Le
+netboot d'Alpine en porte un — onze mébioctets, accessible — mais sa carte de
+symboles n'y est pas, et le dépôt avertit qu'il faut **exactement** la version
+exécutée. Le dépôt principal est passé à 6.6.142 pendant que le netboot est
+resté en 6.6.134 : une carte de la mauvaise version serait pire que pas de
+carte. Donc le **paquet**, qui porte les deux appariés. Et le `vmlinux.bin`
+décompressé est un ELF **dépouillé** — pas de `.symtab` —, ce qui ferme la voie
+courte.
+
+### L'A/B, même arbre, même noyau, même carte
+
+| | sans la montée d'IRQ0 | avec |
+| --- | --- | --- |
+| console | **217 lignes** | **77** |
+| arrêt | `refusée` à `__d_lookup + 96` | `tours épuisés` |
+| figé sur | — | `irq_entries_start + 256`, **950 000 retours** |
+| dernière adresse neuve | tour 239 891 / 239 892 | tour 46 930 / 1 000 000 |
+
+Ma tranche de la veille avait fait régresser le démarrage de 217 lignes à 77.
+Le noyau recevait bien ses interruptions — il était dans le stub d'entrée — et
+n'en sortait plus.
+
+### Le mécanisme, et il était écrit dans mon propre commentaire
+
+La répartition d'un module décrémente son budget d'un par **bloc** appelé. Une
+région qui rend la main avant — une coupe, un arrêt, une faute — en a consommé
+une fraction. L'hôte ajoutait le budget **entier** à l'horloge de l'invité.
+
+Tant que rien ne délivrait, le seul symptôme était une horloge trop rapide, et
+le dépôt l'avait assumé par écrit depuis longtemps. Depuis que le 8254 lève
+IRQ0, cette horloge décide **quand l'invité est interrompu** : il entre dans son
+gestionnaire d'horloge, y traverse des dizaines de régions, chacune un tour,
+chacune une milliseconde de temps invité — et à sa sortie plusieurs tics sont
+déjà dus. Il y rentre aussitôt. Une famine.
+
+**J'avais écrit la cause moi-même**, dans le journal de #297 : « chaque tour
+porte un tic, un invité y passe l'essentiel de son temps dans son gestionnaire
+d'horloge ». J'ai noté le fait et manqué sa conséquence — il n'y passe pas
+l'essentiel de son temps, il n'en sort jamais.
+
+### La correction, et ce qu'elle a coûté
+
+`run` était typé `(i64) -> ()`. Il rend maintenant **ce qui reste du budget**,
+et l'hôte avance l'horloge de la différence. Ça ne coûte rien : la locale existe
+déjà et se décrémente déjà. Le prix est ailleurs — la forme des modules change,
+donc les trois modules embarqués en base64 dans `WebKitBench.swift` sont
+régénérés, ce que leur propre garde a exigé en nommant la commande.
+
+**C'est un compte de blocs, pas d'instructions.** L'horloge de l'invité tourne
+donc plus lentement qu'un gigahertz annoncé, et c'est le bon sens de l'erreur :
+une horloge lente laisse l'invité travailler, une horloge rapide l'affame. Et
+l'étalonnage n'en souffre pas, puisqu'il mesure le **rapport** entre le 8254 et
+cette horloge, et que le 8254 compte contre elle. Le noyau annonce toujours
+« tsc: Detected 999.989 MHz processor ».
+
+### Ce que la mesure dit après
+
+| | console | horodatées | **valeurs distinctes** | jusqu'à |
+| --- | --- | --- | --- | --- |
+| sans la ligne | 217 | 215 | 1 | 0,000000 |
+| avec, horloge au budget | 77 | 75 | 1 | 0,000000 |
+| avec, horloge au travail | **132** | 130 | **2** | **0,003333** |
+
+**L'horloge de l'invité bouge pour la première fois.** Le journal de #266 l'avait
+relevée à **une seule valeur** sur tout un démarrage — 224 lignes horodatées,
+toutes `0.000000` — et l'avait nommée comme la conséquence de l'absence de
+délivrance. Elle en était bien la conséquence.
+
+### Et le mur suivant, nommé
+
+132 reste sous 217 : la délivrance coûte encore de la portée. Et l'arrêt a
+changé de nature — ce n'est plus une boucle, c'est un **plantage** :
+
+> `une faute pendant la délivrance d'une faute de page : la pile où le cadre
+> s'écrit n'est pas cartographiée`, RIP à `0x10000a6`
+
+`0x10000a6` est une adresse **physique** — le noyau est chargé à `0x1000000`,
+donc c'est son entrée précoce. Le harnais la nomme `startup_64 + 22` en
+rapprochant les bits bas d'un symbole virtuel, ce qui est trompeur : le contrôle
+est parti ailleurs, pas revenu au début. C'est la prochaine chose à chercher.
+
+### Le signe à retenir
+
+**Une tranche verte sur ses propres tests n'est pas une tranche qui marche.**
+Cinq tests, neuf sabordages, sept vérifications de CI — et le vrai noyau allait
+trois fois moins loin. Ce que la CI juge du bureau, ce sont des programmes de
+quelques instructions écrits pour la circonstance ; le seul juge de « est-ce que
+ça marche » est le noyau qu'un utilisateur ferait tourner. Il n'est pas dans la
+CI parce qu'il demande un noyau de trente-cinq mébioctets et deux minutes ; ça
+n'excuse pas de ne pas le lancer avant de dire qu'une tranche du bureau est
+finie.

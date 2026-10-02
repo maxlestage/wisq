@@ -2599,20 +2599,32 @@ impl Module {
         let paging = mask.is_some();
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-        // Types : un bloc rend l'indice du suivant ; `run` prend un budget ;
-        // puis les deux que l'hôte prête. `out` prend le port, la valeur et la
-        // largeur en octets, et ne rend rien ; `in` prend le port et la
-        // largeur, et rend ce que le périphérique a répondu.
+        // Types : un bloc rend l'indice du suivant ; `run` prend un budget **et
+        // rend ce qu'il en reste** ; puis les deux que l'hôte prête. `out`
+        // prend le port, la valeur et la largeur en octets, et ne rend rien ;
+        // `in` prend le port et la largeur, et rend ce que le périphérique a
+        // répondu.
+        //
+        // **Pourquoi `run` rend quelque chose, depuis cette tranche.** Le
+        // budget est décrémenté d'un par bloc appelé ; ce qu'il en reste est
+        // donc, à la soustraction près, le travail que la région a fait. Sans
+        // lui l'hôte ne pouvait qu'ajouter le budget **entier** à l'horloge de
+        // l'invité, y compris quand la région rendait la main après trois
+        // blocs — et depuis que le 8254 lève IRQ0, cette horloge décide quand
+        // l'invité est interrompu. Un vrai noyau n'en sortait plus : 217 lignes
+        // de console sans la ligne, 77 avec. Le rendre ne coûte rien : la
+        // locale existe déjà et se décrémente déjà.
         section(
             1,
             vec![
-                0x06, //
+                0x07, //
                 0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
                 0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
                 0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
                 0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
                 0x60, 0x01, 0x7e, 0x01, 0x7f, // 4 : (i64) -> i32, la marche
                 0x60, 0x01, 0x7f, 0x01, 0x7e, // 5 : (i32) -> i64, les débuts
+                0x60, 0x01, 0x7e, 0x01, 0x7e, // 6 : (i64) -> i64, `run`
             ],
             &mut module,
         );
@@ -2699,8 +2711,9 @@ impl Module {
         unsigned(count as u64 + 2 + u64::from(paging), &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
         // ensuite la marche quand il y en a une, du type quatre ; puis la
-        // boucle de répartition, du type un ; et l'accesseur des débuts en
-        // dernier, du type cinq.
+        // boucle de répartition, du type **six** — `(i64) -> i64`, le budget
+        // et ce qu'il en reste ; et l'accesseur des débuts en dernier, du type
+        // cinq.
         //
         // **La marche est placée après les blocs, et c'est ce qui coûte le
         // moins.** Devant, elle décalerait tous les indices de bloc, donc la
@@ -2710,7 +2723,7 @@ impl Module {
         if paging {
             functions.push(0x04);
         }
-        functions.push(0x01);
+        functions.push(0x06);
         // **Et l'accesseur des débuts de blocs, tout à la fin.** Après `run`
         // pour la même raison que la marche est après les blocs : ce qui est
         // ajouté en queue ne décale l'indice de personne.
@@ -2871,6 +2884,8 @@ impl Module {
             0x00,      //     recommencer
             code::END, //   fin de la boucle
             code::END, // fin du bloc
+            0x20,
+            0x00,      // ce qu'il reste du budget : le travail non fait
             code::END, // fin de la fonction
         ]);
         unsigned(dispatch.len() as u64, &mut code_section);
