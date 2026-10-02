@@ -5995,8 +5995,32 @@ impl Module {
                     b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
                 });
             }
+            // **La destination se range en dernier, et c'est `pop %rsp` qui
+            // l'exige.** Le symétrique du commentaire de `push` juste au-dessus,
+            // et il manquait.
+            //
+            // Tout autre `pop` fait deux choses indépendantes : charger huit
+            // octets depuis le sommet, et remonter RSP de huit. Quand la
+            // destination **est** RSP, elles ne sont plus indépendantes : la
+            // valeur chargée gagne, et le processeur ne la remonte pas ensuite.
+            // Ranger la destination d'abord puis relire sa case pour y ajouter
+            // huit rendait donc `pop %rsp` égal à la valeur dépilée **plus
+            // huit** — et comme la case est la même, l'addition écrasait le
+            // chargement.
+            //
+            // Ce n'est pas une instruction rare. `call_on_irqstack`, par quoi
+            // tout noyau x86 fait tourner ses gestionnaires d'interruption sur
+            // la pile d'IRQ, restaure la sienne par un `popq %rsp` : huit
+            // octets de trop, et le `ret` de `common_interrupt` dépile le R15
+            // sauvé de l'invité au lieu de son adresse de retour. Sur le vrai
+            // noyau Alpine, `0x9000` et une oops.
+            //
+            // **L'ordre d'ici est correct dans les deux cas** : la case de
+            // travail garde la valeur, RSP remonte depuis son ancienne valeur,
+            // puis la destination reçoit — et quand la destination est RSP,
+            // elle écrase la remontée, exactement comme le silicium.
             Op::Pop => {
-                body.store(Self::slot(step.dst), |b| {
+                body.store(Body::scratch(0), |b| {
                     b.load(Self::slot(4));
                     b.guest();
                     b.op(code::I64_LOAD);
@@ -6005,6 +6029,9 @@ impl Module {
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                });
+                body.store(Self::slot(step.dst), |b| {
+                    b.load(Body::scratch(0));
                 });
             }
             _ => {

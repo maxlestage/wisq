@@ -18510,3 +18510,145 @@ que rien** : elle occupe la place. Et la question qui l'a révélée n'était pa
 de *mesurer* quelque chose à côté que la mise en scène a refusé de se tenir
 debout. Le sabordage systématique aurait trouvé la même chose ; il ne l'avait
 pas trouvée, parce que #297 avait sabordé `readyOn` sur un programme démasqué.
+
+## #300 — tout le mur du bureau tenait dans un « + 8 » : `pop %rsp` remontait la pile après l'avoir chargée
+
+Le plantage à `0x9000` que #297 avait introduit et que #298 et #299 n'avaient
+pas su nommer est **trouvé, corrigé, et mesuré sur le vrai noyau**. C'est trois
+lignes dans l'émetteur.
+
+### Ce que l'instrument de #299 a rendu possible
+
+#299 a fait dire à l'hôte ce qu'il délivre. La première ligne de son relevé a
+démenti mon inférence de la veille :
+
+```
+materiel 2 delivree(s), la premiere a 0xffffffff81053c60 (apply_alternatives)
+```
+
+**Deux** délivrances dans tout le démarrage, et la première sur l'adresse
+d'entrée exacte d'`apply_alternatives`. Une seule interruption comptait. À
+partir de là, trois sondes de mesure — jetables, jamais commises — ont fermé
+l'enquête :
+
+1. **La trace des tours après la délivrance.** `raw_irqentry_exit_cond_resched`,
+   puis `0x9000`, puis `asm_exc_page_fault`. Le gestionnaire va jusqu'au bout
+   de son chemin de retour.
+2. **Le cadre et la pile à l'instant où RIP tombe sur `0x9000`.** Le cadre est
+   **intact** — `RIP=0xffffffff81053c60`, `RFLAGS=0x246`, `RSP` et `SS`
+   corrects — et RSP vaut `pt_regs + 8` tandis que RIP vaut exactement le mot
+   de `pt_regs + 0`. Un `ret` a dépilé le **R15 sauvé de l'invité** et y a
+   sauté. L'adresse de retour de `call common_interrupt`, un mot plus bas,
+   n'avait pas été consommée.
+3. **RSP à chaque région.** La pile passe de `0xffffffff82403df8` (pile d'init)
+   à `0xffffc90000003ff0` (pile d'IRQ) : c'est `call_on_irqstack`. Et au retour
+   dans `common_interrupt`, RSP vaut `…3ff8` — la pile d'IRQ **plus huit**, au
+   lieu de la pile d'init rechargée.
+
+`call_on_irqstack` sauve l'ancienne pile *dans* la nouvelle et la restaure par
+un **`popq %rsp`**. Le voilà.
+
+### Le défaut, et pourquoi il n'avait rien d'exotique
+
+```rust
+Op::Pop => {
+    body.store(Self::slot(step.dst), /* dst = [rsp] */);
+    body.store(Self::slot(4), /* rsp = rsp + 8 */);
+}
+```
+
+Tout autre `pop` fait deux choses indépendantes : charger huit octets, et
+remonter RSP de huit. Quand la destination **est** RSP, elles ne le sont plus —
+la valeur chargée gagne, et le processeur ne la remonte pas ensuite. Ranger la
+destination d'abord puis **relire cette même case** pour y ajouter huit rendait
+`pop %rsp` égal à la valeur dépilée plus huit.
+
+La correction est l'ordre de `Op::Push`, qui l'avait depuis toujours et le
+disait en commentaire — « `push %rsp` empile la valeur d'avant la descente ».
+Case de travail, puis RSP, puis la destination : quand la destination est RSP,
+elle écrase la remontée, exactement comme le silicium.
+
+### Les trois cœurs, et le seul qui avait tort
+
+| cœur | `pop %rsp` | pourquoi |
+| --- | --- | --- |
+| interpréteur Rust (`x86.rs`) | **juste** | `self.pop()` s'évalue avant l'écriture dans `regs[dst]` |
+| cœur Swift (`X86CoreDispatch`) | **juste** | `try pop(size)` s'évalue avant `write`, et `X86CoreExecution.pop` le dit en commentaire |
+| émetteur WebAssembly | **faux** | deux écritures de case dans le mauvais ordre |
+
+C'est #289 à la lettre : **deux copies gardées laissent dériver la
+troisième** — et la troisième était celle qui fait tourner le bureau.
+
+### Pourquoi l'oracle matériel ne pouvait pas le voir
+
+533 formes, 13 388 cas, trois cœurs jugés dessus. Il compare **RAX, RCX, RDX et
+les drapeaux** — pas RSP. Deux formes seulement touchent la pile (`50 51 5a 59`,
+et un cadre complet avec `leave`), et aucune ne dépile dans RSP. Un défaut qui
+ne bouge que RSP lui est invisible **par construction**, et aucun sabordage de
+l'oracle ne l'aurait trouvé.
+
+C'est à écrire noir sur blanc parce que c'est une limite d'instrument, pas un
+oubli de corpus : élargir la fenêtre comparée à RSP est une direction, et elle
+n'est pas prise ici.
+
+### Les gardes, et ce qu'elles tiennent
+
+Quatre tests, un couple par cœur comparable :
+
+- `popping_into_the_stack_pointer_does_not_advance_it_afterwards` —
+  **différentiel** : les mêmes octets dans l'émetteur sous JavaScriptCore et
+  dans l'interpréteur Rust, et le même RSP exigé des deux. Comparer deux cœurs
+  entre eux vaut mieux que les comparer tous deux à un nombre que j'écrirais.
+- `pushing_the_stack_pointer_pushes_the_value_from_before_the_descent` —
+  l'autre moitié, qui était déjà juste. Sans elle, remettre l'ordre naïf dans
+  `push` ne ferait tomber que le vrai noyau, qui n'est pas dans la CI.
+- les deux mêmes en Swift, sur `X86MachineTests`.
+
+Le test de `pop` est tombé avant la correction, sur le nombre attendu :
+**57 352 au lieu de 57 344**.
+
+Et quatre sabordages, chacun nommant ce qui tombe : l'ancien ordre de `Op::Pop`
+fait tomber le test différentiel ; un `push` qui relit RSP après la descente
+fait tomber son couple ; l'écriture avant la remontée dans la répartition
+Swift fait tomber `testPopping…` (6152 contre 6144) ; un `push` Swift qui
+empile la valeur d'après la descente fait tomber `testPushing…` (20216 contre
+20224).
+
+**Un cinquième sabordage était invalide, et c'est à noter.** J'avais d'abord
+mis la remontée de `X86CoreExecution.pop` dans un `defer` en croyant inverser
+l'ordre : un `defer` s'exécute à la sortie de la fonction, donc **avant** que
+l'appelant n'écrive. La séquence était inchangée, le test passait, et j'aurais
+pu en conclure « la garde ne tient rien ». Un sabordage qui ne change pas le
+comportement ne prouve rien — ni dans un sens ni dans l'autre.
+
+### Ce que le vrai noyau dit après
+
+| | avant | après |
+| --- | --- | --- |
+| console | 132 lignes | **191** |
+| régions traduites | 1 962 | **8 787** |
+| arrêt | `faute pendant la délivrance d'une faute de page` | **tours épuisés** |
+| dernière adresse neuve | tour 46 930 | tour **299 404 sur 300 000** |
+| interruptions délivrées | 2 | **17** |
+| valeurs d'horloge distinctes | 1 | **7**, jusqu'à 0,053333 s |
+
+Plus de plantage, plus de panique. Le noyau enregistre ses ordonnanceurs d'E/S
+et son pilote 8250 — il est dans ses `initcalls` —, et il s'arrête parce que le
+budget de tours s'épuise, en ouvrant encore du terrain neuf à 99,8 % du budget.
+
+### Le signe à retenir
+
+**Le mur mesurait trois lignes, et il a fallu quatre tranches pour l'atteindre.**
+Pas parce qu'il était profond, mais parce que chaque tranche cherchait au mauvais
+endroit : #297 l'a posé, #298 a corrigé une vraie horloge et cru avoir fini,
+#299 a corrigé deux vraies gardes et nommé le symptôme. Ce qui a changé, à
+chaque fois, c'est un **instrument** : la ligne qui nomme les délivrances, la
+trace des tours, le cadre lu à l'instant du saut, RSP à chaque région. Aucune
+n'a survécu dans le dépôt sauf la première — et c'est la première qui a défait
+mon inférence.
+
+Et une asymétrie dans deux arms voisins d'un même `match`, dont l'un porte un
+commentaire expliquant précisément le piège que l'autre n'évite pas, est un
+défaut qu'on peut **lire**. Je l'ai lu après trois sondes et une course de
+quatre minutes. La prochaine fois : quand deux cas symétriques n'ont pas le même
+soin, regarder là d'abord.
