@@ -656,6 +656,19 @@ export function machine({
   /// Les deux contrôleurs de cette machine. Exposés plus bas en lecture, pour
   /// que le relevé puisse dire ce qu'ils tiennent ; rien ne se décide dessus.
   const pics = { master: controller(), slave: controller() };
+  // **Ce que l'hôte a délivré du dehors, et où l'invité était à la première.**
+  //
+  // Les interruptions synchrones se lisent dans le relevé : le module rend la
+  // main, et l'arrêt porte leur nom. Celles du matériel s'injectent entre deux
+  // instructions, sans que rien ne rende la main pour elles — donc sans que
+  // rien ne les nomme. Sur le vrai noyau il a fallu les déduire d'une ligne de
+  // traduction, `irq_entries_start + 256`, et vérifier à la main que ce
+  // décalage est bien le stub du vecteur `0x30`. L'hôte le savait.
+  //
+  // **Les deux nombres sont comparés**, et pas seulement imprimés : `handled`,
+  // que l'invité compte dans son gestionnaire, est le témoin d'en face de
+  // `delivrees`.
+  const materiel = { delivrees: 0n, premiere: null };
   /// Le contrôleur qu'un port désigne, et si c'est son port de **données**.
   /// `null` quand le port n'est celui d'aucun des deux.
   const controllerAt = (at) => {
@@ -1532,6 +1545,9 @@ export function machine({
     pics,
     /// Les trois compteurs du 8254, au même titre et pour la même raison.
     pits,
+    /// **Combien d'interruptions de matériel l'hôte a délivrées, et où l'invité
+    /// était à la première.** Lecture ; rien ne se décide dessus.
+    materiel,
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       // **Combien de chargements d'instruction ont fauté d'affilée**, sans
@@ -1764,6 +1780,11 @@ export function machine({
         const waiting = pendingIrq();
         if (waiting !== null && open) {
           const was = globals[SLOTS.stop].value;
+          // **Lue avant la délivrance**, parce que c'est elle qui compte : le
+          // cadre empilé la porte, et `deliver` met RIP sur la porte. Lue
+          // après, elle dirait l'adresse du gestionnaire — vraie, et sans
+          // intérêt, puisque l'IDT la donne déjà.
+          const from = rip();
           globals[SLOTS.stop].value = 0n;
           const why = deliver(waiting.vector, 0n, "une interruption de matériel");
           if (why !== null) {
@@ -1771,6 +1792,12 @@ export function machine({
             return { stopped: why, at: rip() };
           }
           takeIrq(waiting);
+          // **Comptée après, pas avant.** Une délivrance refusée — pas d'IDT,
+          // pas de porte, pas de pile — n'est pas une délivrance, et la
+          // compter ferait dire au relevé qu'une interruption est passée là
+          // où la machine s'est arrêtée de ne pas pouvoir la passer.
+          materiel.delivrees += 1n;
+          if (materiel.premiere === null) materiel.premiere = from;
           continue;
         }
         if (stop !== 0n) {
