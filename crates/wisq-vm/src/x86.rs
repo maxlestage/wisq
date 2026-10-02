@@ -4255,12 +4255,32 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 // qu'un noyau appelle par pointeur de fonction et saute par
                 // table, ce qui en fait la forme dominante et non l'exception.
                 //
-                // **Huit octets, toujours, et sans REX.** En mode 64 bits ces
-                // trois formes ont une taille d'opérande forcée : les traiter
-                // en trente-deux bits tronquerait chaque pointeur à sa moitié
-                // basse, ce qui donne une adresse dans la page zéro plutôt
-                // qu'une faute franche.
+                // **Huit octets par défaut, et sans REX.** En mode 64 bits ces
+                // trois formes ont une taille d'opérande de soixante-quatre
+                // sans qu'on la demande : les traiter en trente-deux bits
+                // tronquerait chaque pointeur à sa moitié basse, ce qui donne
+                // une adresse dans la page zéro plutôt qu'une faute franche.
+                //
+                // **Mais « forcée » n'était vrai que pour deux des trois.**
+                // Ce commentaire disait « huit octets, toujours » et le code le
+                // faisait : `0x66` était ignoré pour les trois. C'est juste
+                // pour `/2` et `/4` — un appel et un saut indirects ont bien
+                // une taille forcée que le préfixe ne change pas. Pour `/6`,
+                // le manuel dit autre chose : « la taille d'opérande de PUSH
+                // ne peut pas être de trente-deux bits en mode 64 bits ; elle
+                // peut être de seize avec le préfixe 66H ». Et le silicium le
+                // dit aussi — l'oracle de pile rend RSP à `0x30002ffe` pour
+                // `66 ff f5`, soit une descente de **deux**, là où ce décodeur
+                // annonçait huit.
+                //
+                // `width(false)` rend donc la réponse : `Word` quand `0x66` est
+                // là sans REX.W, `Qword` sinon — REX.W l'emporte sur `0x66`,
+                // comme le manuel le dit aussi. Seul `/6` la consulte.
                 2 | 4 | 6 if opcode == 0xff => {
+                    let pushed = match (reg & 0b111, prefixes.width(false)) {
+                        (6, Width::Word) => Width::Word,
+                        _ => Width::Qword,
+                    };
                     return Some(Decoded {
                         op: match reg & 0b111 {
                             2 => Op::CallIndirect,
@@ -4270,8 +4290,8 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                         dst: rm,
                         length: at,
                         memory: field.memory,
-                        ..Decoded::nothing(Width::Qword)
-                    })
+                        ..Decoded::nothing(pushed)
+                    });
                 }
                 _ => return None,
             };
