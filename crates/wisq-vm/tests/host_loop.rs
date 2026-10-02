@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wisq_vm::x86::{ALWAYS_ONE, IF, WRITABLE_FLAGS, ZF};
+use wisq_vm::x86::{Cpu, GuestMemory, Step, ALWAYS_ONE, IF, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, EFER_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON,
     FPU_CONTROL_SLOT, FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT,
@@ -8989,6 +8989,127 @@ fn drive(bun: &Path, program: &[u8], base: u64, pages: u32, name: &str, extra: &
 /// seule façon de partir d'un état que le programme lui-même n'aurait pas pu
 /// écrire.
 #[allow(clippy::too_many_arguments)]
+/// **`pop %rsp` ne remonte pas la pile après l'avoir chargée**, et l'émetteur
+/// la remontait.
+///
+/// Tout autre `pop` fait deux choses : il charge huit octets depuis le sommet,
+/// et il remonte RSP de huit. Quand la destination **est** RSP, la valeur
+/// chargée gagne — le processeur ne la remonte pas ensuite. L'émetteur rangeait
+/// la valeur dans la case de RSP, puis **relisait cette case** pour y ajouter
+/// huit : `pop %rsp` rendait la valeur dépilée *plus huit*.
+///
+/// **Ce n'est pas une instruction exotique.** `call_on_irqstack` — par quoi
+/// tout noyau x86 fait tourner ses gestionnaires d'interruption sur la pile
+/// d'IRQ — sauve sa pile dans la nouvelle, puis la restaure par un
+/// `popq %rsp`. Huit octets de trop, et le gestionnaire revient sur une pile
+/// décalée : le `ret` de `common_interrupt` dépile alors le R15 sauvé de
+/// l'invité au lieu de son adresse de retour, et part dedans. Sur le vrai
+/// noyau Alpine c'était `0x9000` — la page de démarrage que le harnais y pose
+/// —, une oops `BUG: unable to handle page fault for address 0000000000009000`
+/// avec `apply_alternatives` en tête de trace, et 132 lignes de console au lieu
+/// de 217. Tout le mur de #297 et #298 tient dans ce `+ 8`.
+///
+/// **Pourquoi personne ne l'avait vu, et c'est mesurable.** L'oracle matériel
+/// juge les trois cœurs x86 sur 533 formes, et il compare **RAX, RCX, RDX et
+/// les drapeaux** — pas RSP. Deux de ses formes seulement touchent la pile
+/// (`50 51 5a 59`, et un cadre complet avec `leave`) et aucune ne dépile dans
+/// RSP. Un défaut qui ne bouge que RSP lui est invisible par construction.
+///
+/// **Les deux cœurs d'à côté ont raison, et c'est pour ça que ce test les met
+/// face à face.** `wisq_vm::x86` fait `self.pop()` avant d'écrire dans
+/// `regs[dst]`, donc l'incrément précède l'écriture ; `X86CoreExecution.pop`
+/// en Swift fait pareil et le dit en commentaire. Comparer l'émetteur à
+/// l'interpréteur sur les mêmes octets est plus fort que les comparer tous
+/// deux à un nombre que j'écrirais ici.
+#[test]
+fn popping_into_the_stack_pointer_does_not_advance_it_afterwards() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    const SAVED: u64 = 0xe000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0x48, 0xc7, 0xc0, 0x00, 0xe0, 0x00, 0x00, // mov $SAVED,%rax
+        0x48, 0x89, 0x04, 0x24, // mov %rax,(%rsp)
+        0x5c, // pop %rsp
+        0x48, 0x89, 0xe3, // mov %rsp,%rbx — le témoin, que le pilote imprime
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "pop-rsp", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        SAVED.to_string(),
+        "l'émetteur : la valeur dépilée est le nouveau RSP, pas elle plus huit\n{text}"
+    );
+    assert_eq!(
+        stack_after(&program[..program.len() - 2], BASE),
+        SAVED,
+        "et l'interpréteur Rust dit la même chose sur les mêmes octets"
+    );
+}
+
+/// **Et `push %rsp` empile la valeur d'avant la descente**, l'autre moitié du
+/// même couple.
+///
+/// L'émetteur a raison ici, et son commentaire le dit : la valeur part dans une
+/// case de travail **avant** que RSP ne baisse. C'est précisément l'asymétrie
+/// qui rend le défaut d'à côté lisible — un `push` réfléchi, un `pop` qui ne
+/// l'avait pas été. Sans cette garde, remettre l'ordre naïf dans `push` ne
+/// ferait tomber que le vrai noyau, qui n'est pas dans la CI.
+#[test]
+fn pushing_the_stack_pointer_pushes_the_value_from_before_the_descent() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    const TOP: u64 = 0xf000;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $TOP,%rsp
+        0x54, // push %rsp
+        0x5b, // pop %rbx — ce qui vient d'être empilé
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "push-rsp", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        TOP.to_string(),
+        "l'émetteur : c'est RSP d'avant le push qui est empilé\n{text}"
+    );
+    assert_eq!(
+        stack_after(&program[..program.len() - 2], BASE),
+        TOP,
+        "et la pile revient où elle était, dans l'interpréteur Rust aussi"
+    );
+}
+
+/// RSP après avoir déroulé ces octets dans l'interpréteur Rust, depuis `base`.
+///
+/// Le programme n'est pas rangé en mémoire : `step` décode depuis la tranche
+/// qu'on lui donne. La mémoire n'est là que pour la pile.
+fn stack_after(program: &[u8], base: u64) -> u64 {
+    let mut cpu = Cpu {
+        memory: GuestMemory {
+            base: 0,
+            bytes: vec![0; 0x2_0000],
+        },
+        ..Default::default()
+    };
+    cpu.rip = base;
+    while (cpu.rip.wrapping_sub(base) as usize) < program.len() {
+        let at = cpu.rip.wrapping_sub(base) as usize;
+        assert_ne!(
+            cpu.step(&program[at..]),
+            Step::Unknown,
+            "l'interpréteur Rust connaît chacun de ces octets"
+        );
+        assert!(!cpu.faulted, "et aucun n'a fauté");
+    }
+    cpu.regs[4]
+}
+
 fn drive_with(
     bun: &Path,
     program: &[u8],
