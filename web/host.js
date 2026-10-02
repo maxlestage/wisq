@@ -1598,7 +1598,10 @@ export function machine({
           }
           unfetchable = 0;
         }
-        region.run(budget);
+        // **Ce que la région a laissé du budget**, donc ce qu'elle en a
+        // consommé. La répartition le décrémente d'un par bloc appelé ; elle
+        // le rend depuis la tranche de la famine d'horloge.
+        const left = BigInt.asUintN(64, BigInt(region.run(budget)));
         // **Le temps de l'invité avance ici, et pas dans le module.**
         //
         // Le faire dans le module coûterait un ajout par bloc, payé partout et
@@ -1616,18 +1619,26 @@ export function machine({
         // et savoir ce qui a vraiment été consommé demanderait au module de
         // l'écrire, donc un coût par bloc : ce qu'on cherche à éviter.
         //
-        // **Mais ce n'est plus sans conséquence, et c'est mesuré.** Ce
-        // commentaire disait « elle n'est calibrée contre rien — cette machine
-        // n'a ni PIT ni HPET à quoi se comparer ». Le 8254 compte contre cette
-        // horloge-là, et depuis que sa ligne est délivrée, c'est la **cadence
-        // vue par l'invité** qui en dépend : un budget d'un mébi-cycle vaut
-        // environ une milliseconde de temps invité par tour, donc un tic de
-        // mille hertz à *chaque* tour. Un invité y passe l'essentiel de son
-        // temps dans son gestionnaire d'horloge.
-        // `an_end_of_interrupt_lets_the_next_tick_through` l'a trouvé en
-        // rendant trente et une délivrances là où j'en attendais deux.
+        // **Et c'est pour cela que l'horloge avance du travail fait.** Le
+        // budget entier était ajouté, même quand la région rendait la main
+        // après trois blocs. Tant que rien ne délivrait d'interruption, le
+        // seul symptôme était une horloge trop rapide, assumée par écrit.
+        // Depuis que le 8254 lève IRQ0, cette horloge décide **quand l'invité
+        // est interrompu** — et un vrai noyau n'en sortait plus : il entre
+        // dans son gestionnaire d'horloge, y traverse des dizaines de régions,
+        // chacune un tour, chacune une milliseconde, et à sa sortie plusieurs
+        // tics sont dus. Mesuré sur Alpine : 217 lignes de console sans la
+        // ligne IRQ0, **77** avec, et 950 000 retours de main sur
+        // `irq_entries_start + 256`.
+        //
+        // **C'est un compte de blocs, pas d'instructions**, et l'horloge de
+        // l'invité tourne donc plus lentement qu'un gigahertz annoncé. C'est
+        // le bon sens de l'erreur : une horloge lente laisse l'invité
+        // travailler, une horloge rapide l'affame. Et l'étalonnage n'en
+        // souffre pas — il mesure le **rapport** entre le 8254 et cette
+        // horloge, et le 8254 compte contre elle.
         globals[SLOTS.tsc].value = BigInt.asIntN(
-          64, globals[SLOTS.tsc].value + budget);
+          64, globals[SLOTS.tsc].value + (budget - left));
         // **Une faute de page est délivrée à l'invité, ici.** La région a posé
         // le témoin, CR2, et rendu la main avec RIP sur l'instruction fautive
         // — qui n'a rien fait, donc qui se rejoue. Le témoin porte le code
