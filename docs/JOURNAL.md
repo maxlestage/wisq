@@ -18581,6 +18581,17 @@ troisième** — et la troisième était celle qui fait tourner le bureau.
 
 ### Pourquoi l'oracle matériel ne pouvait pas le voir
 
+> **Faux, et démenti par #301 plus bas.** L'oracle arithmétique déclare **deux
+> fenêtres**, dont celle de la pile, et chacun de ses cas porte RSP, RBP, RSI et
+> RDI — que `x86_wasm.rs` compare depuis toujours. Ce qui manquait n'était pas
+> le témoin mais la **forme** : aucun de ses 533 programmes ne dépile dans RSP.
+> Et un second corpus, `x86-stack-oracle.tsv`, contient `pop %rsp` et relève
+> les seize registres — il n'était lu que par le cœur Swift. La phrase qui suit
+> reste écrite parce que c'est elle qui a été commise, et parce que la manière
+> de se tromper vaut le fait : j'ai conclu d'un `grep` sur les mnémoniques sans
+> chercher où je savais RSP comparé. C'est la règle de #261, manquée sur ma
+> propre tranche.
+
 533 formes, 13 388 cas, trois cœurs jugés dessus. Il compare **RAX, RCX, RDX et
 les drapeaux** — pas RSP. Deux formes seulement touchent la pile (`50 51 5a 59`,
 et un cadre complet avec `leave`), et aucune ne dépile dans RSP. Un défaut qui
@@ -18652,3 +18663,110 @@ commentaire expliquant précisément le piège que l'autre n'évite pas, est un
 défaut qu'on peut **lire**. Je l'ai lu après trois sondes et une course de
 quatre minutes. La prochaine fois : quand deux cas symétriques n'ont pas le même
 soin, regarder là d'abord.
+
+## #301 — la raison que #300 s'était donnée était fausse, et le corpus qu'elle disait inexistant a trouvé un défaut en un tour
+
+#300 a corrigé `pop %rsp` et s'est expliqué pourquoi personne ne l'avait vu :
+« l'oracle compare RAX, RCX, RDX et les drapeaux — pas RSP », « invisible par
+construction ». **Les deux phrases sont fausses**, et c'est en cherchant un
+initramfs que je suis tombé sur `scripts/build-x86-stack-oracle.py`.
+
+### Ce qui est vrai
+
+| | ce que #300 a dit | ce qui est |
+| --- | --- | --- |
+| témoins du corpus arithmétique | RAX, RCX, RDX, drapeaux | **plus RSP, RBP, RSI, RDI, et deux fenêtres dont celle de la pile** |
+| pourquoi il a manqué `pop %rsp` | le témoin est trop étroit | **aucune de ses 533 formes ne dépile dans RSP** |
+| existe-t-il un oracle qui le couvre | « invisible par construction » | **oui** : `x86-stack-oracle.tsv`, 81 formes, 648 cas, seize registres relevés, et `5c` en est la forme 30 |
+| qui le lit | — | **le cœur Swift, et lui seul** |
+
+Donc le fait réel, et il est meilleur que celui que j'avais écrit : **des trois
+cœurs x86, le seul jugé par un oracle de pile est le seul des trois qui avait
+raison.** Ce n'est pas une limite d'instrument, c'est un trou de couverture
+entre cœurs — et il se referme.
+
+**Comment je me suis trompé**, parce que c'est la partie réutilisable. J'ai
+`grep`é le corpus pour des mnémoniques de pile, trouvé deux programmes, lu
+l'en-tête « état … rax rcx rdx drapeaux », et conclu. Je n'ai pas fait le
+contrôle que ma propre règle de #261 exige : **chercher la même mesure là où je
+sais la chose présente.** Le champ `pointers` de `Case` l'était, à quarante
+lignes de ce que je lisais, avec un commentaire qui dit mot pour mot pourquoi il
+existe. Une phrase fausse écrite avec aplomb dans un journal est pire qu'une
+phrase absente, et #300 porte maintenant le démenti au-dessus d'elle.
+
+### Et le corpus a trouvé un défaut à son premier tour
+
+Branché sur l'émetteur, il rend **seize écarts sur 648 cas**, une seule famille :
+
+```
+pushw %bp (forme ff /6) : rsp attendu 30002ffe, obtenu 30002ff8
+pushw (%rsi)            : rsp attendu 30002ffe, obtenu 30002ff8
+```
+
+Le processeur descend la pile de **deux** ; l'émetteur de **huit**, et il
+écrivait huit octets là où il en faut deux.
+
+**La cause est dans le décodeur partagé, pas dans l'émetteur.** `66 ff f5` était
+décodé `width = Qword` : le groupe 5 forçait soixante-quatre pour `/2`, `/4`
+**et** `/6`, avec son commentaire — « huit octets, toujours, et sans REX ». Ce
+qui est juste pour un appel et un saut indirects, dont la taille est bien forcée,
+et faux pour `push` : le manuel dit que sa taille « ne peut pas être de
+trente-deux bits en mode 64 bits ; elle peut être de seize avec le préfixe
+66H ». Le silicium le dit aussi, dans le corpus : `0x30002ffe`.
+
+Le décodeur dit donc la vérité, et le chemin de pile de l'émetteur **refuse**
+seize bits — ce que les formes courtes (`66 50`, `66 55`, `66 58`, `66 5d`,
+`66 8f 06`) faisaient déjà, par un décodage qui les laissait tomber. Le refus
+n'ajoute rien : il ferme une inégalité. Une descente de deux serait un ajout, et
+aucun noyau x86-64 n'empile en seize bits.
+
+**Et un second commentaire faux, trouvé en mesurant.** Celui de `Op::PushFlags`
+affirmait que la forme à deux octets « n'est pas produite » et que « `translate`
+la laisse au refus ». `66 9c` était **produit** : `translate` envoyait les cinq
+opérations de pile au même endroit sans regarder la largeur. Le refus que la
+phrase décrivait existe depuis cette tranche-ci, pas depuis celle qui l'a
+écrite.
+
+### Ce que le relevé dit maintenant, et ce qu'il laisse dehors
+
+**552 cas jugés sur 552, zéro rendu, zéro écart.** Les 96 qui manquent sont
+douze formes refusées, et le plancher les nomme :
+
+- les six familles de seize bits et leurs `popw` — refusées à dessein ;
+- **trois `pop` de soixante-quatre bits par la forme `8f /0`** —
+  `pop %rax`, `pop %rbp`, `pop (%rsi)`. Pas une largeur qui manque : un
+  **opcode** que l'émetteur ne produit pas du tout. Un noyau dépile par `5d`,
+  donc ça ne l'a jamais arrêté. C'est un trou nommé, et il reste ouvert.
+
+### Ce qui reste ouvert, nommé plutôt que corrigé en silence
+
+**L'interpréteur Rust empile toujours huit octets pour un `push` de seize.**
+Son `fn push` écrit `Width::Qword` en dur. Le décodeur lui annonce maintenant
+`Word` et il n'en fait rien — même conduite qu'avant, mais le mensonge a changé
+de place. Rien ne le garde : `x86_oracle.rs` ne lit que le corpus arithmétique.
+Le brancher sur le corpus de pile, et rendre `push`/`pop` conscients de leur
+largeur, c'est la tranche d'après — et c'est à ce moment-là, pas avant, que le
+troisième cœur sera tenu.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le décodeur ignore `0x66` pour `/6` | les seize écarts reviennent |
+| le chemin de pile ne regarde plus la largeur | les seize écarts reviennent |
+| le pilote ne rend que huit registres | **les deux** oracles, par « aucun résultat rendu » |
+
+Le troisième mérite son mot : `results` acceptait n'importe quelle longueur de
+liste **en silence** — une liste de huit était simplement ignorée, donc un
+pilote qui aurait cessé d'en rendre aurait vidé la comparaison sans rien dire.
+Le compte est maintenant une condition. C'est la même faute que celle que ce
+dépôt a déjà nommée trois fois : une assertion satisfaite par un autre chemin.
+
+### Le signe à retenir
+
+**Quand on explique pourquoi un défaut n'a pas été vu, cette explication est
+elle-même une affirmation, et elle se vérifie comme les autres.** #300 a trouvé
+un vrai défaut, l'a corrigé, l'a mesuré sur le vrai noyau — et s'est trompé sur
+la seule phrase que personne n'allait aller vérifier, parce qu'elle expliquait
+plutôt qu'elle n'affirmait. Le contrôle qui l'aurait défaite est celui que ce
+dépôt écrit partout : chercher la même mesure là où on la sait présente.

@@ -4061,6 +4061,29 @@ impl Module {
             step.op,
             Op::Push | Op::Pop | Op::Leave | Op::PushFlags | Op::PopFlags
         ) {
+            // **Seize bits sur la pile : refusé, et c'était déjà la règle pour
+            // la moitié des formes.**
+            //
+            // En mode long, `push` et `pop` descendent la pile de huit sans
+            // préfixe, et de **deux** avec `0x66`. Ce chemin-ci ne sait
+            // descendre que de huit : il écrivait donc huit octets là où le
+            // processeur en écrit deux, et rendait RSP huit octets plus bas au
+            // lieu de deux.
+            //
+            // Mesuré par le corpus de pile, à son premier tour : `pushw %bp`
+            // par la forme `ff /6` et `pushw (%rsi)` rendaient `0x30002ff8`
+            // là où le silicium rend `0x30002ffe`. Seize cas sur six cent
+            // quarante-huit, et deux formes.
+            //
+            // **Les formes courtes étaient déjà refusées** — `66 50`, `66 55`,
+            // `66 58`, `66 5d`, `66 8f 06` —, donc le refus ne décide rien de
+            // nouveau : il étend aux formes longues ce que les courtes font, et
+            // ferme l'inégalité plutôt que de l'implémenter. Une descente de
+            // deux serait un ajout, pas une correction, et aucun noyau x86-64
+            // n'empile en seize bits.
+            if step.width == Width::Word {
+                return None;
+            }
             Self::stack(step, body);
             return Some(());
         }
@@ -5948,6 +5971,15 @@ impl Module {
             // octets. La forme à deux octets existe et n'est pas produite —
             // elle demanderait une descente de pile de deux, ce que ce chemin
             // ne fait pas ; `translate` la laisse donc au refus.
+            //
+            // **Et ce paragraphe a été faux pendant tout ce temps.** `66 9c`
+            // était **produit**, mesuré : `translate` envoyait les cinq
+            // opérations de pile ici sans regarder la largeur, donc `pushfw`
+            // descendait de huit. Le refus que la phrase ci-dessus décrit
+            // existe depuis la tranche qui a branché le corpus de pile, pas
+            // depuis celle qui l'a écrite. Un commentaire qui décrit l'inverse
+            // du code est pire qu'un commentaire absent : celui qui le lit ne
+            // va pas vérifier.
             //
             // **`popf` reste refusé, et l'asymétrie n'a plus la même raison.**
             // Lire RFLAGS ne peut rien allumer ; l'écrire peut tout allumer
