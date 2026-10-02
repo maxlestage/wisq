@@ -11897,6 +11897,76 @@ fn a_halt_waits_for_a_tick_that_has_not_come_yet() {
     );
 }
 
+/// **L'hôte délivrait des interruptions sans jamais en nommer une.**
+///
+/// Ce n'est pas une absence théorique : elle a coûté un diagnostic entier.
+/// Le vrai noyau Alpine plante à `0x9000` depuis que #297 délivre IRQ0, et
+/// pour savoir *quand* la première interruption était tombée il a fallu la
+/// déduire d'une ligne de traduction — `irq_entries_start + 256` apparaissant
+/// entre deux autres —, puis vérifier à la main que ce décalage est bien le
+/// stub du vecteur `0x30` sur un noyau qui aligne ses stubs à seize octets.
+/// Une déduction en trois pas, sur un relevé de deux mille lignes, pour un
+/// fait que l'hôte connaissait exactement.
+///
+/// C'est la leçon de #229 à l'envers. Là-bas le pilote **imprimait deux
+/// compteurs sous un seul mot** ; ici il n'en imprimait aucun. Les deux
+/// pannes se corrigent au même endroit : ce que l'hôte fait, la vue le nomme.
+///
+/// **Deux nombres, et les deux sont comparés.** Le compte, et l'adresse où
+/// l'invité était quand la première est tombée — celle qui, sur le vrai
+/// noyau, aurait dit en un mot « dans `apply_returns`, pendant que le noyau
+/// réécrit son propre texte ».
+///
+/// **Le témoin d'en face.** `handled` est ce que l'**invité** a compté, dans
+/// `%r15`, depuis son gestionnaire ; `delivered` est ce que l'**hôte** dit
+/// avoir délivré. Les deux doivent s'accorder, et c'est ce qui donne au
+/// compteur sa valeur de garde : un compteur qui ne serait comparé qu'à
+/// lui-même ne garderait rien.
+///
+/// **Et la seconde course n'est pas une redite.** Sans elle, un compteur
+/// figé à un passerait : la première course en attend exactement une. Acquittée,
+/// la ligne rouvre et il y en a plusieurs — le compte doit suivre.
+#[test]
+fn the_host_names_the_hardware_interrupts_it_delivered_and_where_they_landed() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let once = timer_interrupt(&bun, TimerSetup::default());
+    assert_eq!(
+        once.delivered, once.handled,
+        "l'hôte et l'invité comptent la même chose : {} contre {}\n{}",
+        once.delivered, once.handled, once.text
+    );
+    assert_eq!(
+        once.delivered, 1,
+        "et non acquittée, il y en a eu une : {}",
+        once.text
+    );
+    assert_eq!(
+        once.landed,
+        Some(once.after_first_halt),
+        "elle est tombée là où l'invité s'était arrêté, pas dans le gestionnaire : {}",
+        once.text
+    );
+    let several = timer_interrupt(
+        &bun,
+        TimerSetup {
+            acknowledge: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        several.delivered, several.handled,
+        "acquittée, les deux témoins s'accordent encore : {} contre {}\n{}",
+        several.delivered, several.handled, several.text
+    );
+    assert!(
+        several.delivered > 1,
+        "et le compte suit la ligne qui rouvre, il n'est pas figé à un : {}",
+        several.text
+    );
+}
+
 struct TimerRun {
     handled: u64,
     frame: u64,
@@ -11904,6 +11974,14 @@ struct TimerRun {
     stopped: String,
     after_first_halt: u64,
     after_second_halt: u64,
+    /// Ce que **l'hôte** dit avoir délivré du dehors, et où l'invité était à la
+    /// première. Le témoin d'en face de `handled`, qui est ce que l'**invité**
+    /// a compté.
+    delivered: u64,
+    landed: Option<u64>,
+    /// Le registre de requête du maître à la fin. Il distingue « rien n'a
+    /// monté » de « ça a monté et rien n'est sorti ».
+    requested: u64,
     text: String,
 }
 
@@ -11916,6 +11994,21 @@ struct TimerRun {
 /// sort. Sans cette garde, un hôte qui ignorerait le masque passerait les
 /// quatre autres tests : IRQ0 y est démasquée, donc le masque n'y est
 /// jamais consulté pour refuser.
+///
+/// **Et ce paragraphe était faux, mesuré plutôt que relu.** Le masque
+/// supprimé de `readyOn` — `chip.request & 0xff` au lieu de
+/// `chip.request & ~chip.mask & 0xff` —, ce test **passait encore**. La
+/// ligne ne montait jamais : l'invité s'arrête au premier `hlt`, et l'hôte
+/// n'avance son horloge pendant un arrêt que si la ligne est réveillable, ce
+/// qu'une ligne masquée interdit. Horloge figée, roue immobile, aucune
+/// requête — et un refus qui ne refusait rien. Une garde qui ne peut pas
+/// tomber est pire qu'absente : celle-ci affirmait en plus, par écrit, être
+/// la seule à tenir le masque.
+///
+/// `warp` fait passer le temps entre deux courses, et la **première**
+/// assertion est maintenant que la ligne a monté. C'est elle qui donne aux
+/// deux autres leur sens : sans elle, `handled == 0` se lirait aussi bien
+/// « rien n'a monté », ce qui est précisément ce qui se passait.
 #[test]
 fn a_masked_line_is_not_delivered() {
     let Some(bun) = bun() else {
@@ -11925,17 +12018,36 @@ fn a_masked_line_is_not_delivered() {
         &bun,
         TimerSetup {
             mask: 0xff,
+            warp: 1_000_000,
             ..TimerSetup::default()
         },
     );
     assert_eq!(
-        seen.handled, 0,
-        "une ligne masquée ne réveille personne : {}",
+        seen.requested & 1,
+        1,
+        "la ligne a monté : le registre de requête du maître vaut {:#x}\n{}",
+        seen.requested,
         seen.text
     );
     assert_eq!(
-        seen.rip, seen.after_first_halt,
-        "et la machine s'arrête sur le premier hlt, définitivement : {}",
+        seen.handled, 0,
+        "et masquée, elle ne réveille personne : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.delivered, 0,
+        "l'hôte le dit aussi de son côté : {}",
+        seen.text
+    );
+    // **Et l'arrêt est définitif.** C'était écrit comme `rip ==
+    // after_first_halt` ; avec deux courses ce nombre ne dit plus rien de la
+    // délivrance — la seconde course reprend *après* le premier `hlt` parce
+    // que l'hôte l'a reprise là, pas parce que quelque chose a réveillé
+    // l'invité. Ce qui le dit est le nom de l'arrêt, et les deux comptes
+    // au-dessus.
+    assert_eq!(
+        seen.stopped, "arrêtée sur hlt",
+        "et l'arrêt est définitif : {}",
         seen.text
     );
 }
@@ -11950,6 +12062,12 @@ fn a_masked_line_is_not_delivered() {
 /// L'arrêt est alors définitif, et il doit l'être : un invité arrêté
 /// interruptions éteintes n'ira pas les rallumer. C'est ce que fait le
 /// silicium.
+///
+/// **Et il ne gardait rien non plus**, pour la même raison que son voisin
+/// masqué : `IF` éteint rend la ligne non réveillable, donc l'horloge de
+/// l'hôte ne bouge pas pendant l'arrêt, donc la roue ne tourne pas, donc
+/// rien ne monte. `warp` fait passer le temps, et la première assertion est
+/// que la ligne a monté.
 #[test]
 fn a_guest_that_disabled_interrupts_is_not_woken() {
     let Some(bun) = bun() else {
@@ -11959,12 +12077,25 @@ fn a_guest_that_disabled_interrupts_is_not_woken() {
         &bun,
         TimerSetup {
             enable: false,
+            warp: 1_000_000,
             ..TimerSetup::default()
         },
     );
     assert_eq!(
+        seen.requested & 1,
+        1,
+        "la ligne a monté : le registre de requête du maître vaut {:#x}\n{}",
+        seen.requested,
+        seen.text
+    );
+    assert_eq!(
         seen.handled, 0,
         "interruptions éteintes, rien n'est délivré : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.delivered, 0,
+        "l'hôte le dit aussi de son côté : {}",
         seen.text
     );
     assert_eq!(
@@ -11984,6 +12115,24 @@ struct TimerSetup {
     mask: u8,
     /// `sti` avant le `hlt`, ou `cli` ?
     enable: bool,
+    /// **De combien l'horloge de l'invité saute entre deux courses**, ou zéro
+    /// pour n'en faire qu'une.
+    ///
+    /// Il existe parce que les deux tests de refus — ligne masquée, `cli` — ne
+    /// gardaient rien sans lui, et c'est mesuré : le masque supprimé de
+    /// `readyOn`, `a_masked_line_is_not_delivered` passait encore. La raison
+    /// est que la ligne ne montait **jamais**. L'invité s'arrête au premier
+    /// `hlt`, et l'hôte n'avance l'horloge pendant un arrêt que si la ligne
+    /// est réveillable — ce qu'une ligne masquée, ou `IF` éteint, interdit par
+    /// construction. Horloge figée, roue immobile, rien à refuser.
+    ///
+    /// Faire sauter l'horloge entre deux courses est le plus court chemin pour
+    /// que le temps ait passé : la roue tourne, le registre de requête porte
+    /// la ligne, et le refus porte alors sur quelque chose. **Un million de
+    /// pas d'horloge** valent 1 193 pas du 8254 à 1 193 182 Hz contre un
+    /// gigahertz, soit onze tours de roue à diviseur cent — largement plus
+    /// qu'un, et le test exige le registre de requête plutôt que ce compte.
+    warp: u64,
 }
 
 impl Default for TimerSetup {
@@ -11993,6 +12142,7 @@ impl Default for TimerSetup {
             budget: 1 << 20,
             mask: 0xfe,
             enable: true,
+            warp: 0,
         }
     }
 }
@@ -12003,6 +12153,7 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
         budget,
         mask,
         enable,
+        warp,
     } = setup;
     const PAGES: u32 = 4;
     const BASE: u64 = 0x1_0000;
@@ -12056,39 +12207,51 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
     }
     handler.extend_from_slice(&[0x48, 0xcf]); // iretq
 
-    let scratch = std::env::temp_dir().join(format!(
-        "wisq-host-irq0-{}-{budget}-{mask}-{}-{}",
-        u8::from(acknowledge),
-        u8::from(enable),
-        std::process::id()
-    ));
+    // **Un répertoire par appel, et non un par réglage.** Il était nommé
+    // d'après le réglage, donc deux tests du même réglage, lancés en
+    // parallèle par `cargo test`, se supprimaient leurs modules l'un l'autre.
+    // Ça n'était arrivé à personne tant qu'aucun réglage ne se répétait ; le
+    // premier qui s'est répété a produit un test vert seul et rouge en suite.
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-irq0-{}-{course}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // **Chaque adresse servie à toute case que l'hôte peut demander, et non à
+    // une case devinée.** Les quatre modules portaient les cases 0, 1, 2 et 3 —
+    // l'ordre où une course unique les réclame. Deux courses ne réclament pas
+    // dans cet ordre : la première s'arrête sur le `hlt` sans avoir posé de
+    // gestionnaire, donc la seconde réclame la suite à la case **un** et non
+    // deux, et le pilote rendait `null` — lu « refusée », pour un module qui
+    // existe. Une prédiction de case est de toute façon un pari sur le nombre
+    // de blocs que l'émetteur découpe ; mieux vaut n'en faire aucun.
+    const SERVED_SLOTS: u32 = 17;
     let mut served = String::new();
-    for (name, bytes, at, slot) in [
-        ("programme.wasm", &program[..], BASE, 0u32),
-        ("gestionnaire.wasm", &handler[..], HANDLER, 1),
+    for (name, bytes, at) in [
+        ("programme", &program[..], BASE),
+        ("gestionnaire", &handler[..], HANDLER),
         (
-            "premier.wasm",
+            "premier",
             &program[(after_first_halt - BASE) as usize..],
             after_first_halt,
-            2,
         ),
         (
-            "second.wasm",
+            "second",
             &program[(after_second_halt - BASE) as usize..],
             after_second_halt,
-            3,
         ),
     ] {
-        let module = Module::resolving(bytes, at, 0, slot, PAGES)
-            .unwrap_or_else(|| panic!("{name} se traduit"));
-        let path = scratch.join(name);
-        std::fs::write(&path, &module).expect(name);
-        served.push_str(&format!(
-            "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
-            path.to_string_lossy()
-        ));
+        for slot in 0..SERVED_SLOTS {
+            let module = Module::resolving(bytes, at, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("{name} se traduit"));
+            let path = scratch.join(format!("{name}-{slot}.wasm"));
+            std::fs::write(&path, &module).unwrap_or_else(|_| panic!("{name}-{slot}"));
+            served.push_str(&format!(
+                "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+                path.to_string_lossy()
+            ));
+        }
     }
     let driver = scratch.join("d.mjs");
     std::fs::write(
@@ -12115,12 +12278,24 @@ vue.setBigUint64({idt} + {vector} * 16 + 8, haut, true);
 vue.setUint16({idtPointer}, 256 * 16 - 1, true);
 vue.setBigUint64({idtPointer} + 2, {idt}n, true);
 vm.globals[{rip}].value = {base}n;
-const why = await vm.run({{ budget: {budget}n, rounds: 32 }});
+let why = await vm.run({{ budget: {budget}n, rounds: 32 }});
+// **Le temps qui passe, quand l'arrêt ne le laisse pas passer.** Un invité
+// arrêté dont la ligne n'est pas réveillable fige l'horloge de l'hôte ; sans
+// ce saut, une ligne masquée ne monterait jamais et son refus ne refuserait
+// rien.
+if ({warp}n > 0n) {{
+  vm.globals[{tsc}].value = BigInt.asIntN(
+    64, BigInt.asUintN(64, vm.globals[{tsc}].value) + {warp}n);
+  why = await vm.run({{ budget: {budget}n, rounds: 32 }});
+}}
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
 console.log("arret " + why.stopped);
 console.log("recus " + lire(15));
 console.log("rip " + lire({rip}));
 console.log("cadre-rip " + vue.getBigUint64({stack} - 8 * 5, true).toString());
+console.log("delivrees " + vm.materiel.delivrees);
+console.log("atterrie " + (vm.materiel.premiere === null ? "aucune" : vm.materiel.premiere));
+console.log("requete " + vm.pics.master.request);
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             pages = PAGES,
@@ -12138,6 +12313,8 @@ console.log("cadre-rip " + vue.getBigUint64({stack} - 8 * 5, true).toString());
             // rendrait le test vert ou rouge selon l'arithmétique du 8254
             // plutôt que selon la délivrance.
             budget = budget,
+            warp = warp,
+            tsc = wisq_vm::x86_wasm::TSC_SLOT,
         ),
     )
     .expect("le pilote");
@@ -12158,6 +12335,15 @@ console.log("cadre-rip " + vue.getBigUint64({stack} - 8 * 5, true).toString());
         stopped: line("arret "),
         after_first_halt,
         after_second_halt,
+        delivered: number("delivrees "),
+        // **« Aucune » plutôt que zéro.** Une adresse nulle est une adresse ;
+        // la prendre pour « il n'y en a pas eu » est l'erreur que le lecteur
+        // de mémoire de l'hôte refuse déjà par `null`.
+        landed: match line("atterrie ").as_str() {
+            "aucune" => None,
+            value => Some(value.parse::<u64>().expect("une adresse")),
+        },
+        requested: number("requete "),
         text: text.clone(),
     }
 }
