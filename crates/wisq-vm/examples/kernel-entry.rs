@@ -857,6 +857,14 @@ console.log("retours " + [...retours.entries()]
   .map(([at, n]) => n + " fois 0x" + at.toString(16))
   .join(" ; "));
 console.log("derniers " + derniers.map((at) => "0x" + at.toString(16)).join(" ; "));
+// **Les interruptions venues du dehors, et où la première est tombée.** Les
+// synchrones se lisent dans les traductions et dans l'arrêt ; celles-ci
+// s'injectent entre deux instructions et ne font rendre la main à personne.
+// Sans cette ligne, savoir *quand* la première est tombée demandait de
+// repérer la traduction du stub d'entrée au milieu de deux mille lignes.
+console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
+  + (vm.materiel.premiere === null
+      ? ", aucune" : ", la premiere a 0x" + vm.materiel.premiere.toString(16)));
 // **Et ce que l'hôte sait de chacune** : l'emplacement qu'il lui a donné à
 // l'installation, et ce que la case de la correspondance tient — l'adresse
 // rangée et l'indice. Une adresse installée dont la case porte une autre

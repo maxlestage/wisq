@@ -18388,3 +18388,125 @@ quelques instructions écrits pour la circonstance ; le seul juge de « est-ce q
 CI parce qu'il demande un noyau de trente-cinq mébioctets et deux minutes ; ça
 n'excuse pas de ne pas le lancer avant de dire qu'une tranche du bureau est
 finie.
+
+## #299 — deux gardes de refus qui ne pouvaient pas tomber, et l'instrument qui a corrigé mon diagnostic en une ligne
+
+Cette tranche part d'une enquête, pas d'une idée : le vrai noyau Alpine plante
+à `0x9000` depuis que #297 délivre IRQ0, et j'ai voulu savoir **quand** la
+première interruption tombait.
+
+### La question n'avait pas de réponse lisible, et c'est le défaut
+
+L'hôte délivre des interruptions de matériel et **n'en nommait aucune**. Les
+synchrones se lisent dans le relevé — le module rend la main, l'arrêt porte
+leur nom ; celles du dehors s'injectent entre deux instructions et ne font
+rendre la main à personne. Pour savoir quand la première était tombée il a
+fallu repérer `irq_entries_start + 256` au milieu de deux mille lignes de
+traductions, puis vérifier à la main que ce décalage est bien le stub du
+vecteur `0x30` sur un noyau qui aligne ses stubs à **seize** octets — j'avais
+d'abord lu `0x40`, en supposant huit. Trois pas de déduction pour un fait que
+l'hôte connaissait exactement.
+
+C'est #229 à l'envers. Là-bas le pilote **imprimait deux compteurs sous un seul
+mot** ; ici il n'en imprimait aucun. La correction est au même endroit : **ce
+que l'hôte fait, la vue le nomme.** Deux nombres, le compte et l'adresse où
+l'invité était à la première, et les deux sont comparés — `handled`, que
+l'invité compte dans `%r15` depuis son gestionnaire, est le témoin d'en face.
+
+### Et la ligne a corrigé mon diagnostic du premier coup
+
+J'avais inféré, de l'ordre des traductions, que l'interruption tombait
+**pendant `apply_returns`**, c'est-à-dire pendant que le noyau réécrit son
+propre texte. Le relevé dit autre chose :
+
+```
+materiel 2 delivree(s), la premiere a 0xffffffff81053c60 (apply_alternatives)
+```
+
+**Deux** délivrances dans tout le démarrage — pas un flot — et la première
+tombe exactement sur **l'adresse d'entrée d'`apply_alternatives`**, la fonction
+dont le même relevé dit qu'elle n'a jamais été traduite (vérifié par l'adresse
+et non par le nom, avec `apply_returns` comme contrôle : une occurrence contre
+zéro). Donc : le `call apply_alternatives` passe, l'hôte délivre IRQ0 avant que
+la première instruction n'y tourne, le gestionnaire s'exécute en entier — cent
+régions, jusqu'à `raw_irqentry_exit_cond_resched` — et la traduction suivante
+est `asm_exc_page_fault`. **Entre l'`iretq` du gestionnaire et la première
+instruction d'`apply_alternatives`, le contrôle part à `0x9000`**, qui est
+l'adresse où le harnais pose la page zéro et qui n'est plus cartographiée à ce
+stade (`PGD 0 P4D 0`). Le cadre empilé porte pourtant la bonne adresse : c'est
+ce que `premiere`, lue **avant** `deliver`, dit noir sur blanc.
+
+Ce qui reste à chercher est donc beaucoup plus étroit qu'hier, et nommé : non
+pas « le noyau plante quelque part après une délivrance », mais « le retour
+d'une interruption délivrée à `0xffffffff81053c60` ne rend pas la main à
+`0xffffffff81053c60` ». L'instrument manquant valait un diagnostic faux.
+
+### Les deux gardes qui ne pouvaient pas tomber
+
+En voulant prouver que le compteur compte des **délivrances** et non des
+**montées**, j'ai écrit un test à masque `0xff` qui exige que la ligne ait
+monté. Il est tombé sur sa première assertion : `requete 0`. La ligne ne monte
+jamais.
+
+La raison est structurelle. L'invité s'arrête au premier `hlt` ; l'hôte
+n'avance son horloge pendant un arrêt que si la ligne est **réveillable** — ce
+qu'une ligne masquée, ou `IF` éteint, interdit par construction. Horloge figée,
+roue immobile, aucune requête.
+
+Donc les deux tests de refus de #297 ne refusaient rien. Mesuré, pas relu : le
+masque supprimé de `readyOn` — `chip.request & 0xff` au lieu de
+`chip.request & ~chip.mask & 0xff` —, `a_masked_line_is_not_delivered`
+**passait encore**. Et sa propre documentation affirmait le contraire : « sans
+cette garde, un hôte qui ignorerait le masque passerait les quatre autres
+tests ». Une garde qui ne peut pas tomber est pire qu'absente ; celle-ci
+affirmait en plus, par écrit, être la seule à tenir le masque. Même chose pour
+`a_guest_that_disabled_interrupts_is_not_woken` et son `cli`.
+
+Le réglage gagne donc un **saut d'horloge** entre deux courses : un million de
+pas valent 1 193 pas du 8254 à 1 193 182 Hz contre un gigahertz, soit onze
+tours de roue à diviseur cent. Le temps a passé, la roue a tourné, le registre
+de requête porte la ligne — et la **première** assertion des deux tests est
+maintenant qu'elle a monté. C'est elle qui donne aux autres leur sens : sans
+elle, `handled == 0` se lit aussi bien « rien n'a monté », ce qui était
+exactement le cas.
+
+### Deux défauts du harnais trouvés en passant, tous deux par une chute
+
+**Le répertoire de travail était nommé d'après le réglage.** Deux tests du même
+réglage, lancés en parallèle par `cargo test`, se supprimaient leurs modules
+l'un l'autre : vert seul, rouge en suite. Personne ne l'avait vu tant qu'aucun
+réglage ne se répétait. Un compteur d'appels le referme.
+
+**Et les quatre modules étaient servis à une case devinée** — 0, 1, 2, 3,
+l'ordre où une course unique les réclame. Deux courses ne réclament pas dans cet
+ordre : la première s'arrête sur le `hlt` sans avoir posé de gestionnaire, donc
+la seconde réclame la suite à la case **un**, le pilote rendait `null`, et la
+machine disait « refusée » pour un module qui existe. Une prédiction de case est
+de toute façon un pari sur le découpage en blocs de l'émetteur ; il n'y en a
+plus.
+
+### Le sabordage
+
+Cinq, et chacun nomme ce qui tombe — sans quoi une suite rouge ne prouve rien
+de la garde qu'on croit tenir :
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le masque ignoré dans `readyOn` | `a_masked_line_is_not_delivered` |
+| `IF` ignoré à la délivrance | `a_guest_that_disabled_interrupts_is_not_woken` |
+| compté à la montée, dans `raise8254` | les deux refus **et** le test du compte |
+| l'adresse lue **après** `deliver` | le test du compte |
+| le compte figé à un | le test du compte |
+
+Et le vrai noyau après : **132 lignes, 1962 régions, 100 785 tours, même
+arrêt** — identique au relevé d'avant. L'instrument ne change pas ce qu'il
+mesure.
+
+### Le signe à retenir
+
+**Une garde dont la mise en scène ne peut pas atteindre son refus garde moins
+que rien** : elle occupe la place. Et la question qui l'a révélée n'était pas
+« cette garde est-elle solide ? » — je ne me la posais pas. C'est en essayant
+de *mesurer* quelque chose à côté que la mise en scène a refusé de se tenir
+debout. Le sabordage systématique aurait trouvé la même chose ; il ne l'avait
+pas trouvée, parce que #297 avait sabordé `readyOn` sur un programme démasqué.
