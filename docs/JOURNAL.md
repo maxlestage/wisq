@@ -18928,3 +18928,131 @@ dans aucun compte.** Les 13 388 cas étaient « vérifiés », le relevé le dis
 et un huitième de ce que le fichier offrait n'était pas regardé. Ce qui l'a
 trouvé n'est pas une relecture : c'est d'être allé voir *pourquoi* trois harnais
 sur un même corpus rendent trois comptes différents.
+
+## #304 — le bureau fait tourner de l'espace utilisateur, et sa première écriture rend −EIO
+
+Docs seulement : aucune ligne de code, aucun test de plus, miroirs inchangés à
+**2574**. Ce que cette tranche dépose est une mesure — quatre courses du vrai
+noyau et un initramfs fabriqué à la main — et le mur suivant, nommé par un
+numéro d'erreur plutôt que par une conjecture.
+
+### Pourquoi la question se posait
+
+Depuis #300 le noyau ne meurt plus : il s'arrête sur son budget de tours en
+tournant dans ses minuteries. La course longue de #300 a plafonné à 11 161
+adresses distinctes et n'ouvrait plus de terrain — **parce qu'il n'avait pas de
+racine**. « Est-ce que desktop marche bien » ne se décide pas là ; il se décide
+à l'espace utilisateur.
+
+### L'initramfs, et pourquoi il tient en six cents octets
+
+Le conteneur n'a ni `busybox` ni `cpio`. L'`/init` est donc un ELF statique
+**écrit à la main**, 197 octets, trois instructions utiles :
+
+```
+mov $1,%eax ; mov $1,%edi ; lea msg(%rip),%rsi ; mov $len,%edx ; syscall
+mov $34,%eax ; syscall          ← pause(), pour que le noyau ne panique pas
+```
+
+et l'archive est un `newc` de quatre entrées, assemblée et **relue par son
+propre analyseur** plutôt que supposée bonne : `init` en 0755, `dev` en
+répertoire, `dev/console` en **caractère 5:1** — sans quoi `console_on_rootfs`
+n'ouvrirait aucun descripteur pour `/init` —, et le `TRAILER!!!`. Le même
+binaire, lancé dans le conteneur, imprime son message et sort avec 44 : la
+sonde est calibrée avant d'être posée.
+
+La recette est ici parce que le conteneur est éphémère et que la refabriquer
+coûte une demi-heure.
+
+### Ce que la machine fait, mesuré
+
+| | sans initramfs | avec |
+| --- | --- | --- |
+| console | 191 lignes | **222** |
+| régions traduites | 8 787 | **12 093** |
+| interruptions délivrées | 17 | **321** |
+| temps invité atteint | 0,053 s | **1,07 s** |
+| arrêt | tours épuisés | **`arrêtée sur hlt`**, à `pv_native_safe_halt + 15` |
+
+Le journal série porte **`Run /init as init process`**, puis une seconde
+entière de temps invité, `clocksource: Switched to clocksource tsc`, et la
+machine s'endort dans la boucle d'oisiveté du noyau — exactement ce que fait un
+noyau dont l'`init` est bloqué dans `pause()`.
+
+**Et l'espace utilisateur s'est bien exécuté.** Ce n'est pas une déduction
+depuis la console : l'hôte a réclamé **deux régions en anneau trois**,
+
+```
+traduction 11803 … la machine réclame 0x400078   ← l'entrée de /init
+traduction 11896 … la machine réclame 0x400090   ← l'octet APRÈS le syscall
+```
+
+avec **quatre-vingt-treize régions noyau entre les deux** — tout le chemin
+`syscall` → `write` → tty → pilote série. `0x400090` est l'instruction qui suit
+le `syscall` : l'appel est parti et il est revenu.
+
+### Le message n'est pas sorti, et le noyau dit pourquoi
+
+Zéro octet sur le fil : pas de NUL, aucun caractère de contrôle en trop, la
+série relue entière ne contient pas le mot. Donc le `write` a rendu une erreur.
+
+**Laquelle, sans instrumenter l'émulateur.** Un second `/init` sort avec le
+code de retour du `write` — `mov %eax,%edi ; mov $60,%eax ; syscall` — et c'est
+la panique du noyau qui l'imprime :
+
+```
+Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000fb00
+```
+
+`0xfb` vaut 251, soit **−5** en octet signé : `write` a rendu **−EIO**.
+
+### La cause, et elle est écrite dans l'hôte
+
+`web/host.js` modélise **deux** registres du 16550, et le dit :
+
+- `0x3f8` en écriture, le registre d'émission ;
+- `0x3fd` en lecture, qui rend « l'émetteur est libre ».
+
+« Rien d'autre du composant n'est implémenté, et c'est délibéré. » Or les deux
+chemins d'écriture du noyau ne sont pas le même :
+
+- le **`printk`** passe par la console à scrutation — il lit `0x3fd`, écrit
+  `0x3f8`. C'est tout ce qu'on voit depuis le premier jour ;
+- un **`write` de l'espace utilisateur** passe par le tty :
+  `serial8250_start_tx` arme l'interruption d'émission dans l'IER (`0x3f9`, que
+  l'hôte ne modélise pas) et attend **IRQ4**. Rien ne la lève — le 8259 de
+  l'hôte n'a que le 8254 sur IRQ0 — donc le démarrage du port côté pilote
+  n'aboutit pas, et le tty rend −EIO.
+
+**Le noyau ne se fait pas berner : il refuse franchement.** C'est la posture que
+ce dépôt veut d'un bouchon — refuser ce qu'on ne peut pas honorer — et c'est
+pour ça que ce n'est **pas** un défaut. C'est une frontière documentée que
+l'espace utilisateur vient d'atteindre.
+
+### Ce qui se décide, et qui ne s'engage pas seul
+
+Rendre visible ce que l'espace utilisateur écrit demande deux choses, et les
+deux sont des directions :
+
+1. **Modéliser l'émission du 16550 par interruption** : l'IER (`0x3f9`), l'IIR
+   (`0x3fa`), et IRQ4 levée quand l'émetteur est libre et que le bit THRI est
+   armé. C'est une seconde ligne d'interruption, et #297 a montré ce que coûte
+   la première.
+2. **Nommer une console sur le série dans la ligne de commande.** Mesuré :
+   `console=ttyS0` ajouté à `MONTAGE_COMMAND_LINE` fait bien apparaître
+   « printk: console [ttyS0] enabled », et `/dev/console` sort alors par le fil
+   — mais chaque ligne est **doublée**, 367 contre 222, parce que `keep_bootcon`
+   garde la console précoce sur le même port. La forme juste est probablement
+   `console=ttyS0` **à la place** de `keep_bootcon`, et ça se mesure.
+
+Le deuxième point ne sert à rien sans le premier : avec `console=ttyS0` seul, le
+`write` rend toujours −EIO. C'est vérifié, pas supposé.
+
+### Le signe à retenir
+
+**Le code de retour d'un appel système se lit dans la panique du noyau.** Je
+m'apprêtais à instrumenter l'hôte pour savoir ce que `write` avait rendu ; un
+`/init` de quatorze octets qui sort avec `%eax` l'a dit à travers un mécanisme
+que le noyau fournit déjà. Une sonde qui n'entre pas dans ce qu'elle mesure ne
+peut pas le casser — c'est la deuxième des trois façons de se tromper de ma
+propre liste, évitée pour une fois.
