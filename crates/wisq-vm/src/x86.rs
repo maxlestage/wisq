@@ -1576,14 +1576,14 @@ impl Cpu {
                     };
                     value
                 };
-                self.push(value);
+                self.push(value, instruction.width);
             }
             Op::Pop => {
                 let Some(value) = self.pop() else { return };
                 self.regs[instruction.dst as usize] = value;
             }
             Op::Call => {
-                self.push(after);
+                self.push(after, Width::Qword);
                 if self.faulted {
                     return;
                 }
@@ -1599,7 +1599,7 @@ impl Cpu {
                     self.faulted = true;
                     return;
                 };
-                self.push(after);
+                self.push(after, Width::Qword);
                 if self.faulted {
                     return;
                 }
@@ -1908,15 +1908,35 @@ impl Cpu {
         }
     }
 
-    fn push(&mut self, value: u64) {
-        let top = self.regs[4].wrapping_sub(8);
-        if self.write_memory(top, Width::Qword, value).is_err() {
+    /// **La largeur, et pourquoi elle est un paramètre depuis #302.**
+    ///
+    /// Huit octets était écrit en dur, et c'est juste pour tout ce qui empile
+    /// une adresse — `call`, la délivrance, `pushfq`. Ça ne l'est pas pour un
+    /// `push` de **seize bits** : `66 ff f5` descend la pile de deux, et le
+    /// silicium le dit dans le corpus de pile — RSP à `0x30002ffe`, pas
+    /// `0x30002ff8`. Seize cas sur 648, deux formes, et aucun oracle que ce
+    /// cœur-ci lisait ne pouvait le voir avant qu'on l'y branche.
+    fn push(&mut self, value: u64, width: Width) {
+        let top = self.regs[4].wrapping_sub(width as u64);
+        if self.write_memory(top, width, value).is_err() {
             self.faulted = true;
             return;
         }
         self.regs[4] = top;
     }
 
+    /// **Et le pendant garde ses huit octets, parce que rien ne peut lui en
+    /// demander deux.** Le décodeur refuse `0x66` sur `58..5f` — `if
+    /// !prefixes.operand_size`, juste là — et ne connaît pas du tout le groupe
+    /// `8f /0` : aucun `pop` de seize bits n'arrive ici. Lui donner une
+    /// largeur, et préserver les bits hauts de la destination, serait du code
+    /// que rien n'exerce — le sabordage l'a montré, l'écraser entièrement ne
+    /// faisait tomber aucun des 116 tests. Le jour où le décodeur apprendra
+    /// ces formes, le corpus de pile les jugera, et c'est ce jour-là que la
+    /// largeur aura un sens ici.
+    ///
+    /// L'ordre, lui, compte déjà : il lit **avant** de remonter, et c'est ce
+    /// qui fait que `pop %rsp` rend la valeur dépilée et non elle plus huit.
     fn pop(&mut self) -> Option<u64> {
         let Ok(value) = self.read_memory(self.regs[4], Width::Qword) else {
             self.faulted = true;

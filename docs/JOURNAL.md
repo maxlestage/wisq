@@ -18770,3 +18770,93 @@ un vrai défaut, l'a corrigé, l'a mesuré sur le vrai noyau — et s'est tromp�
 la seule phrase que personne n'allait aller vérifier, parce qu'elle expliquait
 plutôt qu'elle n'affirmait. Le contrôle qui l'aurait défaite est celui que ce
 dépôt écrit partout : chercher la même mesure là où on la sait présente.
+
+## #302 — le troisième cœur tenu sur la pile, et une branche que j'allais commettre sans que rien ne l'exerce
+
+#301 a laissé une chose ouverte et nommée : « l'interpréteur Rust empile
+toujours huit octets pour un `push` de seize, et rien ne le garde puisque
+`x86_oracle.rs` ne lit que le corpus arithmétique ». Cette tranche-ci ferme les
+deux moitiés.
+
+### Le corpus de pile, branché sur le dernier des trois cœurs
+
+Le jumeau de ce que #301 a fait pour l'émetteur, en plus court parce qu'il n'y
+a pas de pilote JavaScript : les seize registres comparés, les deux fenêtres, et
+le sommet de pile posé par le harnais comme le corpus le demande.
+
+Il a rendu **seize écarts à son premier tour**, les mêmes deux formes que chez
+l'émetteur et pour la même raison :
+
+```
+pushw (%rsi)            : rsp attendu 30002ffe, obtenu 30002ff8
+pushw %bp (forme ff /6) : rsp attendu 30002ffe, obtenu 30002ff8
+```
+
+`fn push` écrivait `Width::Qword` en dur. Elle prend sa largeur maintenant — et
+c'est tout, parce que le reste était déjà juste : la valeur est lue avant que
+RSP ne bouge, donc `push %rsp` empile la bonne, et `pop` lit avant de remonter,
+donc `pop %rsp` rend la valeur dépilée.
+
+### Et une branche que j'allais commettre sans que rien ne l'exerce
+
+J'avais aussi rendu `pop` conscient de sa largeur, avec la préservation des
+bits hauts qu'un dépilement de deux octets demande — le cœur Swift la fait et
+la commente. **Le sabordage l'a défaite** : écraser le registre entier ne
+faisait tomber aucun des 116 tests du paquet.
+
+La raison est dans le décodeur, à deux lignes de là : `0x58..=0x5f if
+!prefixes.operand_size`. Un `pop` de seize bits **ne peut pas arriver** dans ce
+cœur, et le groupe `8f /0` n'y est pas décodé du tout. J'avais donc écrit du
+code juste que rien ne pouvait exécuter, et une branche jamais prise est
+l'endroit exact où un défaut s'installe — le dépôt le dit déjà ailleurs, mot
+pour mot.
+
+Je l'ai retirée. `pop` garde ses huit octets, avec le pourquoi écrit sur elle :
+le jour où le décodeur apprendra ces formes, le corpus de pile les jugera, et
+c'est ce jour-là que la largeur aura un sens ici. **Ce qui fait la différence
+entre « défensif » et « mort » n'est pas la justesse du code, c'est l'existence
+d'un chemin qui l'atteint.**
+
+### Le relevé
+
+**568 cas jugés sur 648, zéro écart.** Les 80 restants sont dix formes que le
+décodeur refuse, et le plancher les nomme : les `push`/`pop` **courts** de
+seize bits, et **tout le groupe `8f /0`** — y compris en soixante-quatre bits.
+Ce dernier n'est pas une largeur qui manque mais un opcode entier ; l'émetteur
+a le même trou, et aucun noyau ne dépile par là.
+
+L'interpréteur juge **seize cas de plus** que l'émetteur (552), parce que
+l'émetteur refuse en plus les `pushw` qu'il ne sait pas descendre de deux. Les
+deux sont justes là où ils agissent ; ils ne couvrent pas la même étendue, et
+les deux planchers le disent chacun chez soi.
+
+### Où en sont les trois cœurs, maintenant
+
+| cœur | corpus arithmétique | corpus de pile |
+| --- | --- | --- |
+| interpréteur Rust | oui | **oui, depuis cette tranche** |
+| émetteur WebAssembly | oui | **oui, depuis #301** |
+| cœur Swift | oui | oui, depuis qu'il existe |
+
+La leçon de #289 — *deux copies gardées laissent dériver la troisième* — avait
+une forme de plus que je n'avais pas vue : ce n'est pas seulement le **code**
+qui existe en trois exemplaires, c'est aussi ce **qui le juge**. Un corpus lu
+par un cœur sur trois est la même asymétrie, et elle a coûté quatre tranches.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| `push` redescend toujours de huit | le nouveau test, par les seize écarts |
+| le corpus n'est plus lu (toutes les formes refusées) | le nouveau test, plancher à **0** sur 648 |
+| le dépilement court écrase tout le registre | **rien** — et c'est ce qui a fait retirer la branche |
+
+### Une bêtise à ne pas refaire
+
+Entre deux sabordages j'ai écrit `git checkout -- crates/wisq-vm/tests/x86_oracle.rs`
+pour défaire une mutation. Le fichier n'était pas commis : la commande a effacé
+les deux cents lignes du test avec elle. Rien n'était perdu pour de bon — la
+correction vivait dans un autre fichier et le texte était à portée —, mais la
+règle du dépôt sur la restauration disait déjà la bonne manière : **restaurer
+depuis une copie prise avant le sabordage, et vérifier par `diff`.** `git
+checkout` n'est pas cette copie quand le travail n'est pas encore commis.

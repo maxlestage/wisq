@@ -490,3 +490,243 @@ fn every_accepted_instruction_matches_the_silicon() {
         refused.join("\n")
     );
 }
+
+/// **Le corpus de pile, et pourquoi ce fichier-ci ne le lisait pas.**
+///
+/// `Tests/Fixtures/x86-stack-oracle.tsv` relève **les seize registres**, là où
+/// le corpus arithmétique n'en relève que sept — RAX, RCX, RDX, et les quatre
+/// pointeurs qu'il autorise à bouger. Il contient `5c` (`pop %rsp`) et `54`
+/// (`push %rsp`), que l'autre ne contient pas.
+///
+/// Il n'était lu que par le cœur Swift. #300 a payé ça d'un `pop %rsp` faux
+/// dans l'émetteur et de tout le mur du bureau ; #301 l'a branché sur
+/// l'émetteur et y a trouvé `pushw` du premier coup. L'interpréteur Rust était
+/// le dernier des trois à ne pas être tenu — et il portait le même défaut.
+struct StackOracle {
+    states: HashMap<String, ([u64; 16], u64)>,
+    instructions: HashMap<String, (Vec<u8>, u64, String)>,
+    cases: Vec<StackCase>,
+    windows: Vec<(u64, Vec<u8>)>,
+}
+
+struct StackCase {
+    instruction: String,
+    state: String,
+    regs: [u64; 16],
+    flags: u64,
+    data: Option<Vec<u8>>,
+    stack: Option<Vec<u8>>,
+}
+
+fn read_stack_oracle() -> StackOracle {
+    let path = oracle_path()
+        .parent()
+        .expect("le répertoire des fixtures")
+        .join("x86-stack-oracle.tsv");
+    let text = std::fs::read_to_string(&path).expect("Tests/Fixtures/x86-stack-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut instructions = HashMap::new();
+    let mut cases = Vec::new();
+    let sixteen = |fields: &[&str], from: usize| -> [u64; 16] {
+        let mut regs = [0u64; 16];
+        for (slot, value) in regs.iter_mut().enumerate() {
+            *value = hex(fields[from + slot]);
+        }
+        regs
+    };
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            "état" if f.len() == 19 => {
+                states.insert(f[1].to_string(), (sixteen(&f, 2), hex(f[18])));
+            }
+            "instr" if f.len() == 5 => {
+                instructions.insert(f[1].to_string(), (bytes(f[2]), hex(f[3]), f[4].to_string()));
+            }
+            "cas" if f.len() == 22 => cases.push(StackCase {
+                instruction: f[1].to_string(),
+                state: f[2].to_string(),
+                regs: sixteen(&f, 3),
+                flags: hex(f[19]),
+                data: match f[20] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+                stack: match f[21] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 8, "les huit états du corpus de pile");
+    assert_eq!(instructions.len(), 81, "ses quatre-vingt-une formes");
+    assert_eq!(cases.len(), 648, "et ses six cent quarante-huit cas");
+    // **Les fenêtres viennent du fichier qui les déclare**, et non de ce code :
+    // le corpus de pile ne les porte pas, le corpus arithmétique si, et les
+    // deux partagent les mêmes à l'octet près. Les reconstruire ici
+    // comparerait le résultat du cœur à un motif que j'aurais écrit.
+    let windows = read_oracle().windows;
+    assert_eq!(
+        windows
+            .iter()
+            .map(|(at, w)| (*at, w.len()))
+            .collect::<Vec<_>>(),
+        vec![(0x3000_1000u64, 64usize), (0x3000_2fc0, 128)],
+        "les deux fenêtres que les deux corpus partagent"
+    );
+    StackOracle {
+        states,
+        instructions,
+        cases,
+        windows,
+    }
+}
+
+/// **Le sommet de pile que le harnais pose**, comme le pilote du corpus, comme
+/// le test Swift et comme celui de l'émetteur : le corpus ne le porte pas en
+/// entrée, « pour qu'un cas qui déborde n'écrase pas le harnais ».
+const STACK_TOP: u64 = 0x3000_3000;
+
+/// Les noms des seize registres, pour qu'un écart dise « rsp » et non « 4 ».
+const STACK_REGISTER_NAMES: [&str; 16] = [
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
+
+/// **Le plancher du corpus de pile pour l'interpréteur**, mesuré et non
+/// souhaité.
+///
+/// 568 cas jugés sur 648, zéro écart. Les 80 qui manquent sont dix formes que
+/// le **décodeur** ne décode pas, et le relevé les nomme quand le plancher
+/// tombe :
+///
+/// - les formes **courtes** de seize bits — `66 50`, `66 55`, `66 68`,
+///   `66 58`, `66 5d` — refusées à dessein par `if !prefixes.operand_size` ;
+///   les formes longues (`ff /6`), elles, sont décodées et désormais justes ;
+/// - **tout le groupe `8f /0`** — `pop (%rsi)`, `pop %rax`, `pop %rbp`,
+///   `popw %bp` —, y compris en soixante-quatre bits. Pas une largeur qui
+///   manque : un opcode entier. Un noyau dépile par `5d`, donc ça ne l'a
+///   jamais arrêté ; c'est un trou nommé, et l'émetteur a le même.
+///
+/// L'interpréteur en juge **seize de plus** que l'émetteur (552), parce que
+/// l'émetteur refuse en plus les `pushw` qu'il ne sait pas descendre de deux.
+/// Les deux sont justes là où ils agissent ; ils ne couvrent simplement pas la
+/// même étendue.
+const STACK_CASES_FLOOR: usize = 568;
+
+/// **L'interpréteur Rust jugé sur le corpus de pile, les seize registres
+/// comparés.** Le jumeau de `every_accepted_instruction_matches_the_silicon`,
+/// sur l'autre corpus, et le troisième cœur enfin tenu sur la pile.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus() {
+    let oracle = read_stack_oracle();
+    let mut checked = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    let mut wrong: Vec<String> = Vec::new();
+
+    for case in &oracle.cases {
+        let (program, mask, mnemonic) = &oracle.instructions[&case.instruction];
+        let (before, before_flags) = oracle.states[&case.state];
+        if !decodes_everywhere(program) {
+            if !refused.contains(mnemonic) {
+                refused.push(mnemonic.clone());
+            }
+            continue;
+        }
+        let mut regs = before;
+        regs[4] = STACK_TOP;
+        let mut cpu = Cpu {
+            regs,
+            memory: span(&oracle.windows),
+            ..Default::default()
+        };
+        let mut flags = Flags::default();
+        flags.write(before_flags);
+        cpu.flags = flags;
+        cpu.rip = CODE;
+
+        let mut steps = 0usize;
+        let mut ran_out = false;
+        while (cpu.rip.wrapping_sub(CODE) as usize) < program.len() {
+            if steps == BUDGET {
+                ran_out = true;
+                break;
+            }
+            steps += 1;
+            let at = cpu.rip.wrapping_sub(CODE) as usize;
+            if cpu.step(&program[at..]) == Step::Unknown {
+                ran_out = true;
+                break;
+            }
+        }
+        if ran_out {
+            if !refused.contains(mnemonic) {
+                refused.push(mnemonic.clone());
+            }
+            continue;
+        }
+        checked += 1;
+
+        let expected = span(&[
+            (
+                oracle.windows[0].0,
+                case.data
+                    .clone()
+                    .unwrap_or_else(|| oracle.windows[0].1.clone()),
+            ),
+            (
+                oracle.windows[1].0,
+                case.stack
+                    .clone()
+                    .unwrap_or_else(|| oracle.windows[1].1.clone()),
+            ),
+        ]);
+        let mut notes: Vec<String> = Vec::new();
+        if cpu.faulted {
+            notes.push("le cœur a fauté".to_string());
+        }
+        for (slot, name) in STACK_REGISTER_NAMES.iter().enumerate() {
+            if cpu.regs[slot] != case.regs[slot] {
+                notes.push(format!(
+                    "{name} attendu {:x}, obtenu {:x}",
+                    case.regs[slot], cpu.regs[slot]
+                ));
+            }
+        }
+        if (cpu.flags.read() & mask) != (case.flags & mask) {
+            notes.push(format!(
+                "drapeaux attendus {:x}, obtenus {:x} (masque {mask:x})",
+                case.flags & mask,
+                cpu.flags.read() & mask
+            ));
+        }
+        if cpu.memory.bytes != expected.bytes {
+            notes.push("la mémoire diffère (fenêtre de données ou de pile)".to_string());
+        }
+        if !notes.is_empty() && wrong.len() < 20 {
+            wrong.push(format!(
+                "{mnemonic} [état {}] : {}",
+                case.state,
+                notes.join(" ; ")
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) entre l'interpréteur et le silicium sur le corpus de pile :\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        checked >= STACK_CASES_FLOOR,
+        "l'interpréteur ne juge plus que {checked} cas de pile sur {} ; \
+         formes refusées : {refused:?}",
+        oracle.cases.len()
+    );
+}
