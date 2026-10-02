@@ -19024,12 +19024,26 @@ chemins d'écriture du noyau ne sont pas le même :
   l'hôte n'a que le 8254 sur IRQ0 — donc le démarrage du port côté pilote
   n'aboutit pas, et le tty rend −EIO.
 
+> **Faux, et démenti par #305 juste en dessous.** La frontière avait déjà été
+> franchie : `Sources/WisqVM/X86SerialPort.swift` modélise le 16550 entier et
+> lève la ligne quatre, onze tests Swift le tiennent, et son commentaire
+> d'en-tête raconte la *même* mesure que cette tranche-ci. Ce n'était donc pas
+> un bouchon honnête mais la troisième forme de #289 — deux modèles de machine,
+> un seul à jour —, et la copie en retard était celle que l'application
+> embarque. La phrase qui suit est conservée parce que l'erreur était dans le
+> classement, pas dans la mesure.
+
 **Le noyau ne se fait pas berner : il refuse franchement.** C'est la posture que
 ce dépôt veut d'un bouchon — refuser ce qu'on ne peut pas honorer — et c'est
 pour ça que ce n'est **pas** un défaut. C'est une frontière documentée que
 l'espace utilisateur vient d'atteindre.
 
 ### Ce qui se décide, et qui ne s'engage pas seul
+
+> **Le premier point n'était pas une direction**, et #305 l'a corrigé sans rien
+> demander : il était déjà tranché dans le cœur Swift. Le second, lui, en reste
+> une — il touche à la ligne de commande de montage, donc à ce que toute machine
+> démarre.
 
 Rendre visible ce que l'espace utilisateur écrit demande deux choses, et les
 deux sont des directions :
@@ -19056,3 +19070,158 @@ m'apprêtais à instrumenter l'hôte pour savoir ce que `write` avait rendu ; un
 que le noyau fournit déjà. Une sonde qui n'entre pas dans ce qu'elle mesure ne
 peut pas le casser — c'est la deuxième des trois façons de se tromper de ma
 propre liste, évitée pour une fois.
+
+## #305 — la conclusion de #304 était fausse : le port série entier existait déjà, dans l'autre cœur
+
+Hier, #304 a mesuré jusqu'au bout pourquoi le premier `write` de l'espace
+utilisateur rend −EIO, l'a écrit proprement, et a conclu : « **ce n'est pas un
+défaut**. C'est une frontière documentée que l'espace utilisateur vient
+d'atteindre », puis a rangé la suite parmi les directions à soumettre — « une
+seconde ligne d'interruption, et #297 a montré ce que coûte la première ».
+
+C'était faux. La frontière avait déjà été franchie, décidée, implémentée et
+gardée. Pas ailleurs dans le projet : **dans l'autre cœur du même émulateur**.
+
+### Ce que la règle de #261 a trouvé en un `grep`
+
+La règle dit : *avant de conclure d'une absence, chercher la même absence là où
+on sait que la chose est présente*. #304 a conclu de l'absence d'un 16550 dans
+`web/host.js` qu'il restait une direction à trancher. Elle n'a pas cherché le
+16550 ailleurs.
+
+Il est là : `Sources/WisqVM/X86SerialPort.swift`, cent vingt-deux lignes. L'IER,
+le FCR, le LCR, le MCR, le brouillon, le diviseur derrière `DLAB`, la boucle de
+test du modem, l'identification de la cause, l'émission en attente — et
+`serialInterrupting`, câblé sur la **ligne quatre** du 8259 par
+`serviceInterrupts`, sérialisé dans l'instantané de la machine, compté dans
+`devicesArmed`. Onze tests le tiennent, dans `X86SerialPortTests.swift`, un par
+étape de la sonde du pilote.
+
+**Et son commentaire d'en-tête raconte la même mesure que #304**, mot pour mot
+le même symptôme :
+
+> Mais sous QEMU il écrit aussi « ttyS0 at I/O 0x3f8 (irq = 4,
+> base_baud = 115200) is a 16550A », et sous wisq cette ligne manquait : le
+> pilote avait sondé le port, ne l'avait pas trouvé, et ne l'avait donc jamais
+> **enregistré** comme terminal. `/dev/console` n'existait pour personne en
+> espace utilisateur.
+
+Deux diagnostics identiques, à des mois d'intervalle, et le second a proposé de
+soumettre à Maxime une direction que le premier avait déjà tranchée.
+
+### Donc ce n'était pas une direction, c'était #289 pour la troisième fois
+
+La leçon de #289 est qu'une garde qui tient deux copies sur trois laisse la
+troisième dériver, et que personne ne le voit parce que les deux gardées
+s'accordent. Ici il n'y a pas trois copies du périphérique mais **deux**, et il
+faut le dire précisément parce que le réflexe « il y a trois cœurs » ne
+s'applique pas aux périphériques : l'interpréteur Rust **refuse** `in` et `out`
+par un arrêt nommé, délibérément, et n'a donc aucun modèle de 8259, de 8254 ni
+de 16550. Les deux modèles de machine sont le cœur Swift et `web/host.js`.
+
+Et la copie qui dérivait est **celle que l'application embarque**. Le bureau
+local tourne sous `web/host.js` ; `LocalDesktopTests` le juge de bout en bout
+dans un iPhone simulé. Le cœur Swift, qui avait le port entier, est celui que
+rien ne fait démarrer sur l'appareil.
+
+### Quatre gardes, et ce qu'elles valent
+
+Toutes les quatre jugent `web/host.js` sous JavaScriptCore, **à travers des
+instructions `in` et `out` de l'invité** et non en appelant le modèle : le
+routage du port était la moitié manquante, et une garde qui appellerait
+`serialRead` directement l'aurait laissée dehors.
+
+| garde | ce qu'elle tient | ce qui la fait tomber |
+| --- | --- | --- |
+| `the_host_answers_the_probe_the_eight_two_fifty_driver_makes` | les quatre questions d'`autoconfig`, dans l'ordre | l'autorisation qui ne se relit plus ; la boucle du modem qui ne reflète plus rien |
+| `a_divisor_written_behind_dlab_does_not_go_out_as_a_character` | `DLAB` à l'écriture | `dlab()` ignoré : le diviseur sort en caractères |
+| `arming_the_transmit_interrupt_brings_line_four_to_the_processor` | IRQ4 jusqu'à la porte `0x34` | `raiseSerial` qui ne lève jamais |
+| `line_four_stays_down_while_nothing_has_armed_the_transmit_interrupt` | et rien tant que personne n'a armé | `raiseSerial` qui lève sans condition |
+
+**Les cinq sabotages tombent**, chacun sur le test nommé, et l'arbre a été
+restauré depuis une copie prise avant et vérifié par `diff` à chaque tour. Le
+premier état mesuré, avant la correction, était que les **quatre** registres
+sondés rendaient `0xff` : l'hôte répondait « il n'y a personne » à chacune des
+quatre questions du pilote.
+
+### Le défaut latent que la correction a rendu atteignable
+
+Le diviseur de bauds s'écrit derrière `DLAB`, aux deux mêmes ports que le tampon
+d'émission et l'autorisation. Un hôte sans `DLAB` prend l'octet bas pour un
+caractère et l'envoie : douze — un saut de page — puis un NUL.
+
+Personne ne l'avait vu, et la raison est précise :
+`earlycon=uart8250,io,0x3f8` **sans vitesse** ne programme pas le diviseur, et
+c'était la seule console que ce noyau eût jamais ouverte ; le pilote complet,
+celui qui l'écrit, ne s'installait pas faute de trouver la puce. Le défaut était
+réel et inatteignable — et il devenait atteignable au moment exact où la sonde
+se met à répondre. C'est la seule raison pour laquelle sa garde est dans la même
+tranche que l'autre : la correction qui fait passer la première ouvre la porte à
+la seconde.
+
+### Une divergence assumée avec le cœur Swift, et elle est raisonnée
+
+`devicesArmed`, du côté Swift, compte le port série parmi ce qui peut réveiller
+une machine arrêtée. C'est juste là-bas : `serialInput` est rempli **du dehors**,
+par une frappe. `raiseSerial` n'entre pas dans le `wakeable` de l'hôte, et ce
+n'est pas un oubli : ici rien ne tape, donc la condition du port ne change que
+par une écriture de l'invité — et un invité arrêté n'écrit pas. L'y mettre
+ferait tourner la boucle d'attente du `hlt` jusqu'au bout de sa patience, un
+mébi-tour, sur une ligne qui ne montera jamais. C'est exactement la panne que
+l'expérience de livraison plafonnée avait produite. Le jour où une entrée série
+existera, les deux iront ensemble.
+
+### Ce que le vrai noyau fait maintenant, mesuré
+
+Sans initramfs, le même noyau Alpine 6.6.142, le même `MONTAGE_COMMAND_LINE` :
+
+| | avant (#300) | après |
+| --- | --- | --- |
+| lignes de console | 191 | **346** |
+| régions traduites | 8 787 | **10 572** |
+| interruptions délivrées | 17 | **2 868** |
+| `ttyS0` enregistré | non | **oui** |
+| arrêt | tours épuisés, sans avoir atteint `execve` | panique mémoire dans `kernel_execve` |
+
+Et les deux lignes qui n'étaient jamais apparues :
+
+```
+[    0.053333] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.053333] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+```
+
+`irq = 4`, `is a 16550A` : la puce que le pilote cherchait, au vecteur qu'il lui
+donne. La console n'est **pas** dédoublée — la ligne de commande n'a pas changé,
+et le tty n'est pas une console ; les 346 lignes viennent de ce que le noyau va
+plus loin, pas de ce qu'il se répète.
+
+La panique finale — `System is deadlocked on memory`, dans le `kernel_execve` du
+*usermode helper* — est celle d'un noyau à soixante-quatre mébioctets **sans
+racine**. Elle n'a rien à voir avec le port, et c'est un endroit où ce noyau
+n'était jamais arrivé.
+
+### Ce qui n'est pas mesuré, et pourquoi c'est dit plutôt que supposé
+
+**Le `write` de l'espace utilisateur n'a pas été refait.** L'initramfs de #304 —
+l'`/init` de cent quatre-vingt-dix-sept octets, l'archive `newc` de six cents —
+n'existe plus : le conteneur est éphémère, et sa recette est dans #304 pour
+exactement cette raison. Ce que cette tranche prouve est que le pilote trouve la
+puce, l'enregistre comme terminal, et que la ligne quatre monte jusqu'à sa
+porte. Que `write` rende maintenant le nombre d'octets écrits plutôt que −EIO est
+**probable et non mesuré**, et le dire ainsi coûte moins qu'une affirmation à
+démentir demain.
+
+### Le signe à retenir
+
+**Une conclusion est une affirmation, et la règle de #261 s'y applique comme
+aux autres.** #304 n'a pas conclu trop vite sur une mesure : ses mesures sont
+toutes justes, et la chaîne qu'elle décrit — `syscall`, tty,
+`serial8250_start_tx`, IRQ4 absente, −EIO — est exacte jusqu'au dernier maillon.
+C'est la phrase d'après qui était fausse, celle qui range le reste parmi les
+directions. Une tranche qui mesure bien et classe mal laisse le travail à
+terre, et le classement est la partie que rien ne vérifie.
+
+C'est aussi la deuxième fois en six tranches que je corrige une phrase de ma
+propre tranche de la veille : #301 avait corrigé #300. Les deux fois, ce qui a
+démenti n'était pas une relecture mais un `grep` dans le dépôt — et les deux
+fois, la chose que je disais absente était là.
