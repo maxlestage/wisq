@@ -3621,9 +3621,20 @@ console.log("ebx " + lire(3));
 /// `--example deliver-probe` a désigné pour la délivrance des interruptions,
 /// et pour la même raison.
 ///
-/// **Ce que ce test tient** : deux exécutions du même programme, avec deux
-/// budgets différents, ne rendent pas la même heure. Avant cette tranche elles
-/// rendaient exactement la même — le compteur ne connaissait que ses lectures.
+/// **Ce que ce test tient** : deux programmes au **même** budget, dont l'un
+/// tourne et l'autre s'arrête aussitôt, ne rendent pas la même heure. Ni l'un
+/// ni l'autre ne lit l'horloge dans la boucle qu'il exécute, donc ce qui la
+/// fait avancer est bien le travail.
+///
+/// **Ce qu'il tenait avant, et pourquoi ça a changé.** Il comparait deux
+/// **budgets** sur le même programme, et exigeait que l'écart soit exactement
+/// celui des budgets. C'était vrai, et c'était la mesure du défaut : l'hôte
+/// ajoutait le budget entier même quand la région rendait la main après trois
+/// blocs. Depuis que le 8254 lève IRQ0, cette horloge décide quand l'invité est
+/// interrompu, et ce sur-comptage l'affamait — 217 lignes de console sans la
+/// ligne, 77 avec. L'hôte ajoute maintenant ce qui a été **consommé**, donc
+/// deux budgets sur le même programme rendent la même heure : l'ancienne
+/// assertion mesurait le défaut, pas la propriété.
 #[test]
 fn the_guest_clock_advances_with_the_work_the_host_let_through() {
     let Some(bun) = bun() else {
@@ -3686,21 +3697,43 @@ console.log(BigInt.asUintN(64, vm.globals[{tsc}].value).toString());
             .expect("une heure lisible")
     };
 
-    let small = read(64);
-    let large = read(1024);
+    const BUDGET: u64 = 1024;
+    let brief = read(BUDGET);
+    // **Le même budget, et une boucle qui le dépense.** `eb fe` saute sur
+    // lui-même : la répartition appelle un bloc par tour jusqu'à épuisement,
+    // donc le budget est consommé en entier. Ce programme ne lit **jamais**
+    // l'horloge, et c'est ce qui fait de l'écart une mesure du travail et non
+    // des lectures.
+    let busy = {
+        let looping = [0xebu8, 0xfe];
+        let module = Module::resolving(&looping, BASE, 0, 0, PAGES).expect("la boucle se traduit");
+        std::fs::write(&path, &module).expect("le module");
+        read(BUDGET)
+    };
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(
-        large > small,
-        "deux budgets différents doivent rendre deux heures différentes — \
-         petit {small}, grand {large} : l'horloge ne connaît que ses lectures"
+        busy > brief,
+        "au même budget, une boucle qui tourne doit rendre une heure plus \
+         avancée qu'un programme qui s'arrête aussitôt — courte {brief}, \
+         longue {busy} : l'horloge ne compte pas le travail"
     );
-    // **L'écart est exactement la différence des budgets**, et le dire vaut
-    // mieux qu'une simple inégalité : une horloge qui avancerait d'un montant
-    // arbitraire passerait l'inégalité tout en étant fausse.
-    assert_eq!(
-        large - small,
-        1024 - 64,
-        "un tour a laissé passer un budget : l'écart doit être celui des budgets"
+    // **Et la boucle a dépensé son budget**, ce qui distingue « l'horloge
+    // compte quelque chose » de « l'horloge compte le travail » : une horloge
+    // qui avancerait d'un montant arbitraire passerait l'inégalité.
+    assert!(
+        busy >= BUDGET,
+        "une boucle qui ne rend la main qu'au budget épuisé doit avoir dépensé \
+         ses {BUDGET} blocs, pas {busy}"
+    );
+    // **Et le programme court porte exactement ses deux contributions**, ce qui
+    // vaut mieux qu'une borne floue : le pas que le module ajoute pour son
+    // propre `rdtsc`, plus le bloc qu'il a consommé. Les deux se nomment,
+    // donc aucune ne peut disparaître sans que ce test le dise.
+    let step = wisq_vm::x86_wasm::TSC_STEP;
+    assert!(
+        brief >= step && brief < step + 20,
+        "le programme court doit valoir le pas du `rdtsc` ({step}) plus une \
+         poignée de blocs, pas {brief} — et surtout pas le budget {BUDGET}"
     );
 }
 
@@ -11651,6 +11684,81 @@ console.log("ss 0x" + (lire({segment} + 2) & 0xffffn).toString(16));
         "et l'arrêt final est le `ud2` du programme, après son retour : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **L'horloge de l'invité avance du travail fait, pas du budget offert.**
+///
+/// La répartition d'un module décrémente son budget d'un par **bloc** appelé,
+/// et s'arrête quand il tombe à zéro. Une région qui rend la main avant —
+/// une coupe, un arrêt, une faute — en a donc consommé une fraction. L'hôte
+/// ajoutait quand même le budget **entier** à l'horloge.
+///
+/// **Ce n'était pas une approximation, c'était une famine.** Tant que rien ne
+/// délivrait d'interruption, le seul symptôme était une horloge trop rapide,
+/// et le dépôt l'avait assumé par écrit. Depuis que le 8254 lève IRQ0, cette
+/// horloge décide **quand l'invité est interrompu** : un noyau qui entre dans
+/// son gestionnaire d'horloge y traverse des dizaines de régions, chacune un
+/// tour de boucle, chacune une milliseconde de temps invité — si bien qu'à sa
+/// sortie plusieurs tics sont déjà dus, et il y rentre aussitôt. Mesuré sur le
+/// vrai noyau d'Alpine : 217 lignes de console sans la ligne IRQ0, **77** avec,
+/// et neuf cent cinquante mille retours de main sur `irq_entries_start + 256`.
+///
+/// La répartition rend maintenant ce qui reste de son budget, et l'hôte avance
+/// l'horloge de la différence. C'est un compte de **blocs**, pas
+/// d'instructions : l'horloge de l'invité tourne donc plus lentement que ce
+/// qu'un gigahertz annoncé laisse croire. C'est le bon sens de l'erreur — une
+/// horloge lente laisse l'invité travailler, une horloge rapide l'affame — et
+/// l'étalonnage n'en souffre pas, puisqu'il mesure le **rapport** entre le
+/// 8254 et cette horloge-là, et que le 8254 compte contre elle.
+#[test]
+fn the_guest_clock_advances_by_the_work_done_not_by_the_budget_offered() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // Deux instructions, un bloc, puis un `ud2` sans porte : un seul tour de
+    // boucle hôte, et une poignée de blocs consommés sur le budget offert.
+    let program = [
+        0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00, // movq $42,%rax
+        0x0f, 0x0b, // ud2 — l'arrêt, sans porte
+    ];
+    // Le budget est celui de `drive_with` : mille blocs offerts, et ce
+    // programme n'en consomme qu'une poignée avant son `ud2`.
+    const BUDGET: u64 = 1000;
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "horloge-du-travail",
+        "",
+        &format!(
+            "console.log(\"horloge \" + BigInt.asUintN(64, vm.globals[{}].value).toString());\n",
+            wisq_vm::x86_wasm::TSC_SLOT
+        ),
+    );
+    let clock: u64 = text
+        .lines()
+        .find_map(|line| line.strip_prefix("horloge "))
+        .unwrap_or_else(|| panic!("le pilote doit dire l'horloge : {text}"))
+        .trim()
+        .parse()
+        .expect("un nombre");
+    assert!(
+        clock > 0,
+        "l'horloge doit avancer : un invité dont le temps stagne attend pour \
+         toujours une durée qui ne vient pas ({clock})\n{text}"
+    );
+    // Le plafond est large exprès : ce qui est en jeu n'est pas le compte exact
+    // de blocs — il change avec l'émetteur — mais qu'il soit **du travail** et
+    // non le budget. Un vingtième suffit à le dire, et ne se casse pas au
+    // premier bloc de plus.
+    assert!(
+        clock < BUDGET / 20,
+        "l'horloge a avancé de {clock} sur un budget de {BUDGET} : elle compte \
+         le budget offert et non les blocs consommés\n{text}"
+    );
 }
 
 /// **Une interruption de matériel, du 8254 jusqu'au gestionnaire de l'invité.**
