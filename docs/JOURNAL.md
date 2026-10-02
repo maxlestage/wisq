@@ -18860,3 +18860,71 @@ correction vivait dans un autre fichier et le texte était à portée —, mais 
 règle du dépôt sur la restauration disait déjà la bonne manière : **restaurer
 depuis une copie prise avant le sabordage, et vérifier par `diff`.** `git
 checkout` n'est pas cette copie quand le travail n'est pas encore commis.
+
+## #303 — le harnais Swift posait la fenêtre de pile et ne la relevait jamais
+
+Rien n'était rouge, aucune PR n'était ouverte, et aucun défaut nommé n'attendait.
+J'ai donc appliqué la méthode que ce dépôt dit être la seule à avoir produit de
+vraies trouvailles — **comparer deux nombres qui devraient s'accorder** — aux
+trois comptes que #301 et #302 viennent de produire sur le corpus de pile : 648
+pour le cœur Swift, 568 pour l'interpréteur Rust, 552 pour l'émetteur.
+
+Les deux différences ont une raison nommée, et c'est en allant la vérifier chez
+le cœur Swift que le vrai trou est apparu — ailleurs.
+
+### Ce que le corpus donnait et que personne ne lisait
+
+Le corpus arithmétique porte, pour chacun de ses 13 388 cas, **deux** fenêtres :
+`<mémoire>` en champ 7 et `<pile>` en champ 8. Les deux harnais Rust comparent
+les deux depuis longtemps.
+
+`Tests/WisqVMTests/X86OracleTests.swift` :
+
+- **posait** le motif de la fenêtre de pile, avec un commentaire qui explique
+  pourquoi il a fallu le poser — « ce harnais ne la posait pas : la pile partait
+  de zéros là où le processeur avait un motif » ;
+- ne **parsait pas** le champ 8 : son `Case` n'avait pas de champ pour lui ;
+- ne la **relevait** donc jamais. `memory.dump(dataAddress, windowSize)`, et
+  rien d'autre.
+
+Prendre la peine d'écrire sous la pile le motif exact que le silicium avait, et
+ne pas regarder ce que le cœur en a fait.
+
+### Et la moitié précédente du même trou était documentée à côté
+
+Le champ `pointers` du même `Case` porte ceci, écrit par la tranche qui l'a
+ajouté :
+
+> « Ce harnais ne les comparait pas, alors que les deux harnais Rust le font
+> depuis longtemps. C'était une asymétrie réelle : un `leave` qui dépile avant
+> de reprendre RBP […] laisse RAX, RCX, RDX, les drapeaux et la fenêtre de
+> données exactement justes. »
+
+La même asymétrie, le même fichier, et sa moitié « fenêtre de pile » est restée
+ouverte à côté de la leçon. C'est #289 une fois de plus, dans sa forme la plus
+gênante : **la correction d'une asymétrie peut en laisser une moitié debout**,
+et le commentaire qui la nomme ne la ferme pas.
+
+### Ce que ça trouve, et ce que ça garde
+
+**Rien.** 13 388 cas sur 13 388, zéro désaccord : le cœur Swift écrivait déjà sa
+pile exactement comme le processeur. C'est de la couverture neuve, pas un défaut
+trouvé, et le dire est le minimum — un garde qu'on ajoute et dont on laisse
+croire qu'il a attrapé quelque chose est pire qu'un garde absent.
+
+Ce qu'il garde, le sabordage le dit : un octet griffonné huit octets **sous** le
+sommet de pile, que rien ne relit jamais, fait tomber **144 cas** — et chacun
+d'eux ne porte qu'une note, « et la fenêtre de pile diffère ». Les trois
+registres, les drapeaux, les quatre pointeurs et la fenêtre de données restaient
+tous justes. Avant cette tranche, ce sabordage passait en entier.
+
+Le compte de tests ne bouge pas : un témoin de plus dans un test existant, pas
+un test de plus. Les miroirs restent à **2574**.
+
+### Le signe à retenir
+
+**Un corpus qui donne plus que ce qu'un harnais lit est un trou qui ne se voit
+dans aucun compte.** Les 13 388 cas étaient « vérifiés », le relevé le disait,
+et un huitième de ce que le fichier offrait n'était pas regardé. Ce qui l'a
+trouvé n'est pas une relecture : c'est d'être allé voir *pourquoi* trois harnais
+sur un même corpus rendent trois comptes différents.
