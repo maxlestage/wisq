@@ -149,9 +149,15 @@ for (const unit of job.jobs) {
     const rip = BigInt.asUintN(64, slots[job.ripSlot].value);
     out[test.id] = {
       unfinished: rip >= BigInt(base) && rip < BigInt(end),
-      // Quatre valeurs, puis les quatre pointeurs : RSP, RBP, RSI, RDI.
-      regs: [0, 1, 2, job.flagsSlot, 4, 5, 6, 7]
+      // **Les seize registres, puis les drapeaux.** Le pilote en rendait huit
+      // — RAX, RCX, RDX, les drapeaux, puis RSP, RBP, RSI, RDI —, parce que le
+      // corpus arithmétique n'autorise que ces quatre pointeurs à bouger. Le
+      // corpus de pile en autorise seize, et pour la raison qui l'a fait
+      // naître : quand on cherche quel registre se fait corrompre, on ne peut
+      // pas décider d'avance lequel regarder.
+      regs: [...Array(16).keys()]
         .map(s => BigInt.asUintN(64, slots[s].value).toString(16)),
+      flags: BigInt.asUintN(64, slots[job.flagsSlot].value).toString(16),
       // « - » veut dire « la mémoire est telle qu'elle était », comme dans le
       // corpus. Rendre le motif entier dirait la même chose en cent fois plus.
       memory: same(seen, reference) ? "-"
@@ -538,7 +544,7 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
         // registres seront **importés** au lieu d'être définis par le module,
         // le harnais pourra recompiler depuis la nouvelle adresse et
         // poursuivre, comme le fera l'application.
-        if raw.6 {
+        if raw.unfinished {
             handed_back += 1;
             // L'identifiant d'un cas est « instruction|état » ; c'est la
             // première moitié qui retrouve les octets dans le corpus.
@@ -547,13 +553,14 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
             continue;
         }
         let got = (
-            raw.0,
-            raw.1,
-            raw.2,
-            raw.3,
-            raw.5.clone().unwrap_or_else(|| pristine_span.clone()),
+            raw.regs[0],
+            raw.regs[1],
+            raw.regs[2],
+            raw.flags,
+            raw.memory.clone().unwrap_or_else(|| pristine_span.clone()),
         );
-        let pointers = raw.4;
+        // Les quatre seuls pointeurs que ce corpus-ci autorise à bouger.
+        let pointers = (raw.regs[4], raw.regs[5], raw.regs[6], raw.regs[7]);
         checked += 1;
         // **La fenêtre compte autant que les registres.** Une écriture au
         // mauvais endroit laisse les trois registres justes.
@@ -742,16 +749,20 @@ fn what_the_emitter_produces_matches_the_silicon_under_javascriptcore() {
 /// deux fenêtres et l'intervalle entre elles, le résultat a grossi et la
 /// recherche est devenue quadratique — le test tournait plus de dix minutes
 /// sans rien vérifier de plus.
-#[allow(clippy::type_complexity)]
-type Produced = (
-    u64,
-    u64,
-    u64,
-    u64,
-    (u64, u64, u64, u64),
-    Option<Vec<u8>>,
-    bool,
-);
+/// **Un enregistrement nommé plutôt qu'un n-uplet.** Il portait sept positions
+/// anonymes, lues par `raw.0` à `raw.6` ; avec seize registres au lieu de
+/// quatre, les positions cessent d'être lisibles — et une position qu'on lit
+/// de travers est une comparaison qui ne compare pas ce qu'elle annonce.
+struct Produced {
+    /// Les seize registres, dans l'ordre du processeur : RAX, RCX, RDX, RBX,
+    /// RSP, RBP, RSI, RDI, puis R8 à R15.
+    regs: [u64; 16],
+    flags: u64,
+    /// L'étendue des deux fenêtres, ou rien quand elle n'a pas bougé.
+    memory: Option<Vec<u8>>,
+    /// Le module a-t-il rendu la main au lieu de finir ?
+    unfinished: bool,
+}
 
 fn results(text: &str) -> HashMap<String, Produced> {
     let mut out = HashMap::new();
@@ -772,6 +783,19 @@ fn results(text: &str) -> HashMap<String, Produced> {
             .split(',')
             .map(|piece| hex(piece.trim().trim_matches('"')))
             .collect();
+        // Les drapeaux suivent la liste des registres, et ils en sortent :
+        // les seize cases sont des registres, celle-ci n'en est pas une.
+        let flags_key = "\"flags\":\"";
+        let Some(flags_at) = body[end..]
+            .find(flags_key)
+            .map(|i| i + end + flags_key.len())
+        else {
+            break;
+        };
+        let Some(flags_end) = body[flags_at..].find('"').map(|i| i + flags_at) else {
+            break;
+        };
+        let flags = hex(&body[flags_at..flags_end]);
         let memory_key = "\"memory\":\"";
         let Some(start) = body[end..]
             .find(memory_key)
@@ -786,23 +810,377 @@ fn results(text: &str) -> HashMap<String, Produced> {
             "-" => None,
             hexadecimal => Some(bytes(hexadecimal)),
         };
-        if values.len() == 8 {
+        // **Seize, pas huit, et le refus est volontaire.** Le pilote en rendait
+        // huit et ce test-ci les acceptait en silence : une liste d'une autre
+        // longueur était simplement ignorée, donc un pilote qui aurait cessé
+        // d'en rendre aurait vidé la comparaison sans rien dire. Le compte est
+        // maintenant une condition, et `results` rend un enregistrement.
+        if values.len() == 16 {
+            let mut regs = [0u64; 16];
+            regs.copy_from_slice(&values);
             out.insert(
                 id,
-                (
-                    values[0],
-                    values[1],
-                    values[2],
-                    values[3],
-                    (values[4], values[5], values[6], values[7]),
+                Produced {
+                    regs,
+                    flags,
                     memory,
                     unfinished,
-                ),
+                },
             );
         }
         rest = &body[stop..];
     }
     out
+}
+
+/// **L'émetteur jugé sur le corpus de pile, les seize registres comparés.**
+///
+/// Le jumeau de `what_the_emitter_produces_matches_the_silicon_under_javascriptcore`,
+/// sur l'autre corpus. Même pilote, même hôte, même manière de ne pas reprocher
+/// à un module ce qu'il n'a pas prétendu faire — un module qui rend la main est
+/// un cas **non jugé**, pas un cas faux, et le relevé nomme lesquels.
+///
+/// Ce qui change : les seize registres au lieu de sept, parce que c'est ce que
+/// ce corpus relève. `pop %rsp` et `push %rsp` en sont les formes 30 et 4.
+#[test]
+fn what_the_emitter_produces_matches_the_silicon_on_the_stack_corpus() {
+    let Some(bun) = bun() else {
+        panic!(
+            "Bun est absent : l'émetteur ne serait vérifié par rien. \
+             Ce test refuse de passer en silence."
+        );
+    };
+    let oracle = read_stack_oracle();
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-stack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("driver.js");
+    std::fs::write(&driver, DRIVER).expect("le pilote");
+
+    let mut by_instruction: Vec<(String, Vec<&StackCase>)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for case in &oracle.cases {
+        match seen.get(&case.instruction) {
+            Some(&at) => by_instruction[at].1.push(case),
+            None => {
+                seen.insert(case.instruction.clone(), by_instruction.len());
+                by_instruction.push((case.instruction.clone(), vec![case]));
+            }
+        }
+    }
+
+    let (span_at, pristine_span) = span(&oracle.windows);
+    let mut jobs = format!(
+        "{{\"pages\":{GUEST_PAGES},\"globals\":{GLOBAL_COUNT},\"ripSlot\":{RIP_SLOT},\
+         \"flagsSlot\":{RFLAGS_SLOT},\"gsSlot\":{GS_SLOT},\"gsBase\":\"0\",\
+         \"span\":{{\"at\":{span_at},\"length\":{}}},\"windows\":[",
+        pristine_span.len()
+    );
+    for (index, (at, pattern)) in oracle.windows.iter().enumerate() {
+        if index > 0 {
+            jobs.push(',');
+        }
+        jobs.push_str(&format!("{{\"at\":{at},\"pristine\":\""));
+        for byte in pattern {
+            jobs.push_str(&format!("{byte:02x}"));
+        }
+        jobs.push_str("\"}");
+    }
+    jobs.push_str("],\"jobs\":[");
+
+    let mut emitted = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    let mut expected: HashMap<String, (&StackCase, u64, String)> = HashMap::new();
+    for (index, (instruction, cases)) in by_instruction.iter().enumerate() {
+        let (bytes, defined, mnemonic) = &oracle.instructions[instruction];
+        let Some(module) = Module::region(bytes, CODE, 0) else {
+            refused.push(format!("{mnemonic} ({} cas)", cases.len()));
+            continue;
+        };
+        let path = scratch.join(format!("s{index}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        if emitted > 0 {
+            jobs.push(',');
+        }
+        emitted += 1;
+        jobs.push_str(&format!(
+            "{{\"module\":{:?},\"length\":{},\"cases\":[",
+            path.to_string_lossy(),
+            bytes.len()
+        ));
+        for (position, case) in cases.iter().enumerate() {
+            let (regs, flags) = oracle.states[&case.state];
+            let id = format!("{}|{}", case.instruction, case.state);
+            if position > 0 {
+                jobs.push(',');
+            }
+            let mut written = String::new();
+            for (slot, value) in regs.iter().enumerate() {
+                // **Le sommet de pile est posé par le harnais, pas par le
+                // corpus.** « Le pilote pose lui-même le sommet de pile, pour
+                // qu'un cas qui déborde n'écrase pas le harnais ; le corpus ne
+                // le porte donc pas en entrée. » La case 4 d'un état porte un
+                // remplissage, et la prendre pour une adresse fait sortir le
+                // premier `push` de la mémoire — c'est ce qui est arrivé.
+                let value = if slot == 4 { STACK_TOP } else { *value };
+                written.push_str(&format!("\"{slot}\":\"{value:x}\","));
+            }
+            jobs.push_str(&format!(
+                "{{\"id\":{id:?},\"regs\":{{{written}\"{RFLAGS_SLOT}\":\"{flags:x}\"}}}}"
+            ));
+            expected.insert(id, (case, *defined, mnemonic.clone()));
+        }
+        jobs.push_str("]}");
+    }
+    jobs.push_str("]}");
+
+    let job_path = scratch.join("jobs.json");
+    std::fs::write(&job_path, &jobs).expect("les travaux");
+    let result_path = scratch.join("out.json");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .arg(&job_path)
+        .arg(&result_path)
+        .output()
+        .expect("bun doit démarrer");
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé un module émis :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&result_path).expect("le résultat");
+    let produced = results(&text);
+
+    let mut checked = 0usize;
+    let mut handed_back = 0usize;
+    let mut gave_up: std::collections::BTreeSet<String> = Default::default();
+    let mut wrong: Vec<String> = Vec::new();
+    for (id, (case, mask, mnemonic)) in &expected {
+        let Some(raw) = produced.get(id) else {
+            wrong.push(format!("{mnemonic} : aucun résultat rendu pour {id}"));
+            continue;
+        };
+        if raw.unfinished {
+            handed_back += 1;
+            gave_up.insert(mnemonic.clone());
+            continue;
+        }
+        checked += 1;
+        let want_span = span(&[
+            (
+                oracle.windows[0].0,
+                case.data
+                    .clone()
+                    .unwrap_or_else(|| oracle.windows[0].1.clone()),
+            ),
+            (
+                oracle.windows[1].0,
+                case.stack
+                    .clone()
+                    .unwrap_or_else(|| oracle.windows[1].1.clone()),
+            ),
+        ])
+        .1;
+        let got_span = raw.memory.clone().unwrap_or_else(|| pristine_span.clone());
+        // **Le masque ne porte que sur les drapeaux.** Un registre n'a pas de
+        // bit « indéfini » : l'architecture le définit ou l'instruction n'y
+        // touche pas, et dans les deux cas le silicium et l'émetteur doivent
+        // tomber sur la même valeur.
+        let mut notes: Vec<String> = Vec::new();
+        for (slot, name) in STACK_REGISTER_NAMES.iter().enumerate() {
+            if raw.regs[slot] != case.regs[slot] {
+                notes.push(format!(
+                    "{name} attendu {:x}, obtenu {:x}",
+                    case.regs[slot], raw.regs[slot]
+                ));
+            }
+        }
+        if (raw.flags & mask) != (case.flags & mask) {
+            notes.push(format!(
+                "drapeaux attendus {:x}, obtenus {:x} (masque {mask:x})",
+                case.flags & mask,
+                raw.flags & mask
+            ));
+        }
+        if got_span != want_span {
+            notes.push("la mémoire diffère (fenêtre de données ou de pile)".to_string());
+        }
+        if !notes.is_empty() {
+            wrong.push(format!("{mnemonic} [{id}] : {}", notes.join(" ; ")));
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) entre l'émetteur et le silicium sur le corpus de pile :\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // **Un plancher, et il nomme ce qui sort du champ.** Un corpus qui
+    // rétrécirait en silence — une forme qui passe de « traduite » à
+    // « refusée » — sortirait du total au lieu d'y échouer.
+    assert_eq!(
+        checked + handed_back,
+        expected.len(),
+        "chaque cas est soit jugé soit rendu : {checked} jugés, {handed_back} rendus"
+    );
+    assert!(
+        checked >= STACK_CASES_FLOOR,
+        "l'émetteur ne juge plus que {checked} cas de pile sur {} ; \
+         rendus par : {:?} ; formes refusées : {:?}",
+        expected.len(),
+        gave_up,
+        refused
+    );
+}
+
+/// Les noms des seize registres, dans l'ordre du processeur — pour qu'un écart
+/// dise « rsp » et non « registre 4 ».
+const STACK_REGISTER_NAMES: [&str; 16] = [
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
+
+/// **Le sommet de pile que le harnais pose**, comme le pilote du corpus et
+/// comme le test Swift qui le lit déjà : `0x30003000`, soit soixante-quatre
+/// octets au-dessus du début de la fenêtre de pile.
+const STACK_TOP: u64 = 0x3000_3000;
+
+/// **Le plancher du corpus de pile, mesuré et non souhaité.**
+///
+/// 552 cas jugés, zéro rendu, zéro écart — sur 648 que porte le fichier. Les
+/// 96 qui manquent sont douze formes que l'émetteur **refuse**, et le relevé
+/// les nomme quand le plancher tombe :
+///
+/// - les familles de seize bits — `pushw %ax`, `pushw %bp`, `pushw $0x1234`,
+///   `pushw (%rsi)`, `pushw %bp` par `ff /6`, et les `popw` correspondants.
+///   Refusées à dessein : ce chemin ne sait pas descendre la pile de deux, et
+///   l'étendre serait un ajout, pas une correction ;
+/// - **trois `pop` de soixante-quatre bits par la forme `8f /0`** —
+///   `pop %rax`, `pop %rbp`, `pop (%rsi)`. Celles-là ne sont pas une largeur
+///   qui manque mais un **opcode** que l'émetteur ne produit pas ; un noyau
+///   dépile par `5d` et compagnie, donc ça ne l'a jamais arrêté. C'est un trou
+///   nommé, pas une décision.
+const STACK_CASES_FLOOR: usize = 552;
+
+/// **Le second corpus, celui de la pile, et pourquoi l'émetteur ne le lisait
+/// pas.**
+///
+/// `Tests/Fixtures/x86-stack-oracle.tsv` existe depuis qu'un comptage a montré
+/// que le corpus arithmétique *contient* de la pile sans la **relever** assez
+/// large : il n'autorise que RSP, RBP, RSI et RDI à bouger, donc il ne compare
+/// que ceux-là. Le corpus de pile relève **les seize registres**, « pour la
+/// raison qui l'a fait naître : quand on cherche quel registre se fait
+/// corrompre, on ne peut pas décider d'avance lequel regarder ».
+///
+/// Il n'était lu que par le cœur Swift. Résultat mesuré : des trois cœurs x86,
+/// le seul jugé par un oracle de pile est **le seul qui avait raison** sur
+/// `pop %rsp` — voir #300, où ce défaut de l'émetteur a coûté quatre tranches
+/// et tout le mur du bureau.
+///
+/// **Et la raison que #300 a écrite était fausse.** Son journal dit que
+/// l'oracle « compare RAX, RCX, RDX et les drapeaux — pas RSP », et que le
+/// défaut lui est « invisible par construction ». Non : le corpus arithmétique
+/// déclare **deux fenêtres**, dont celle de la pile, et chacun de ses cas porte
+/// RSP, RBP, RSI et RDI, que ce fichier-ci compare depuis toujours. Ce qui
+/// manquait n'était pas le témoin, c'était la **forme** — aucun de ses 533
+/// programmes ne dépile dans RSP. J'ai conclu d'un `grep` sur les mnémoniques
+/// sans chercher où je savais RSP comparé : la règle de #261, manquée sur ma
+/// propre tranche.
+///
+/// **Les deux fenêtres viennent du fichier**, et c'est pour ça qu'elles sont
+/// lues dans le corpus arithmétique : le corpus de pile ne les déclare pas, et
+/// les reconstruire en Rust comparerait le résultat de l'émetteur à un motif
+/// que j'aurais écrit. Les deux fichiers portent les mêmes — même adresse,
+/// même longueur, même octet — et le test l'exige plutôt que de le supposer.
+struct StackOracle {
+    states: HashMap<String, ([u64; 16], u64)>,
+    instructions: HashMap<String, (Vec<u8>, u64, String)>,
+    cases: Vec<StackCase>,
+    windows: Vec<(u64, Vec<u8>)>,
+}
+
+struct StackCase {
+    instruction: String,
+    state: String,
+    regs: [u64; 16],
+    flags: u64,
+    data: Option<Vec<u8>>,
+    stack: Option<Vec<u8>>,
+}
+
+fn read_stack_oracle() -> StackOracle {
+    let text =
+        std::fs::read_to_string(workspace_root().join("Tests/Fixtures/x86-stack-oracle.tsv"))
+            .expect("Tests/Fixtures/x86-stack-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut instructions = HashMap::new();
+    let mut cases = Vec::new();
+    let sixteen = |fields: &[&str], from: usize| -> [u64; 16] {
+        let mut regs = [0u64; 16];
+        for (slot, value) in regs.iter_mut().enumerate() {
+            *value = hex(fields[from + slot]);
+        }
+        regs
+    };
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            // `état <indice> <seize registres> <drapeaux>`
+            "état" if f.len() == 19 => {
+                states.insert(f[1].to_string(), (sixteen(&f, 2), hex(f[18])));
+            }
+            // `instr <indice> <octets> <masque> <mnémonique>`
+            "instr" if f.len() == 5 => {
+                instructions.insert(f[1].to_string(), (bytes(f[2]), hex(f[3]), f[4].to_string()));
+            }
+            // `cas <instr> <état> <seize registres> <drapeaux> <données> <pile>`
+            "cas" if f.len() == 22 => cases.push(StackCase {
+                instruction: f[1].to_string(),
+                state: f[2].to_string(),
+                regs: sixteen(&f, 3),
+                flags: hex(f[19]),
+                data: match f[20] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+                stack: match f[21] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 8, "les huit états du corpus de pile");
+    assert_eq!(instructions.len(), 81, "ses quatre-vingt-une formes");
+    assert_eq!(cases.len(), 648, "et ses six cent quarante-huit cas");
+    // Les fenêtres, lues là où elles sont déclarées, et exigées identiques.
+    let windows = read_oracle().windows;
+    assert_eq!(
+        windows
+            .iter()
+            .map(|(at, w)| (*at, w.len()))
+            .collect::<Vec<_>>(),
+        vec![(0x3000_1000u64, 64usize), (0x3000_2fc0, 128)],
+        "les deux fenêtres que les deux corpus partagent"
+    );
+    StackOracle {
+        states,
+        instructions,
+        cases,
+        windows,
+    }
 }
 
 /// Un garde-fou sur la largeur : elle vient du décodeur et sert d'index.
