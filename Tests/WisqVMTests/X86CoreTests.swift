@@ -200,6 +200,49 @@ final class X86MachineTests: XCTestCase {
         XCTAssertEqual(core.registers[0], 1)
     }
 
+    /// **`pop %rsp` ne remonte pas la pile après l'avoir chargée.**
+    ///
+    /// La valeur dépilée *est* le nouveau RSP ; l'incrément de huit que tout
+    /// autre `pop` applique est écrasé par elle. Ce cœur-ci a raison par
+    /// construction — `try pop(size)` s'évalue avant que `write` ne range le
+    /// résultat, et `X86CoreExecution.pop` le dit en commentaire. Le test
+    /// existe parce que **l'émetteur WebAssembly avait tort**, dans le même
+    /// dépôt et pour la même instruction : il rangeait la valeur dans RSP puis
+    /// la relisait pour y ajouter huit.
+    ///
+    /// Ce n'est pas une instruction exotique. `call_on_irqstack`, par quoi tout
+    /// noyau x86 fait tourner ses gestionnaires d'interruption sur la pile
+    /// d'IRQ, restaure la sienne par un `popq %rsp` — et huit octets de trop
+    /// faisaient que le `ret` du gestionnaire dépilait un mot de pile sauvé et
+    /// partait dedans. C'est la signature exacte de `X86FaultingPushTests`,
+    /// vue dans un autre cœur.
+    ///
+    /// **L'oracle matériel ne pouvait pas la voir** : il compare RAX, RCX, RDX
+    /// et les drapeaux, et aucun de ses 533 programmes ne dépile dans RSP.
+    func testPoppingIntoTheStackPointerDoesNotAdvanceItAfterwards() throws {
+        var core = try machine([0x5C, 0xF4])  // pop %rsp ; hlt
+        let top = core.registers[4]
+        let saved: UInt64 = 0x1800
+        try core.memory?.write(top, 8, saved)
+        _ = try core.run(budget: 10)
+        XCTAssertEqual(
+            core.registers[4], saved,
+            "la valeur dépilée est le nouveau RSP, pas elle plus huit")
+    }
+
+    /// **Et `push %rsp` empile la valeur d'avant la descente**, l'autre moitié
+    /// du même couple. Lire RSP après l'avoir baissé empilerait une adresse
+    /// huit octets trop basse, et `call_on_irqstack` sauverait la mauvaise.
+    func testPushingTheStackPointerPushesTheValueFromBeforeTheDescent() throws {
+        var core = try machine([0x54, 0x5B, 0xF4])  // push %rsp ; pop %rbx ; hlt
+        let top = core.registers[4]
+        _ = try core.run(budget: 10)
+        XCTAssertEqual(
+            core.registers[3], top,
+            "c'est RSP d'avant le push qui est empilé")
+        XCTAssertEqual(core.registers[4], top, "et la pile revient où elle était")
+    }
+
     /// Le budget est une borne, pas un vœu : une boucle infinie s'arrête.
     func testTheBudgetStopsAnEndlessLoop() throws {
         var core = try machine([0xEB, 0xFE])  // jmp .  — le saut sur soi-même
