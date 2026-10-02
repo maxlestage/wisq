@@ -23,10 +23,16 @@
 /// troisième dériver**, et personne ne le voit parce que les deux gardées
 /// s'accordent.
 ///
-/// **Ce que cette garde ne tient pas** : le reste du document. Elle refuse deux
-/// affirmations nommées, chacune parce qu'un test nommé la contredit, et elle
-/// vérifie que ce test existe encore — une exception dont le motif a disparu ne
-/// garde rien.
+/// **Ce que cette garde ne tient pas** : le reste du document. Elle refuse
+/// **quatre** affirmations nommées, chacune parce qu'un test nommé la contredit,
+/// et elle vérifie que ce test existe encore — une exception dont le motif a
+/// disparu ne garde rien.
+///
+/// **Ce chiffre disait « deux » alors qu'il y en avait trois**, et le même
+/// chiffre est faux dans `docs/ROADMAP.md`. Une garde contre les affirmations
+/// périmées qui compte mal les siennes est précisément sa propre matière : rien
+/// ne tient ce nombre, il se compte à la main, et il est écrit à deux endroits
+/// — la forme exacte de #289.
 
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -88,6 +94,20 @@ const refused = new Map([
         "délivrance d'une interruption de matériel n'existe pas. Le canal zéro " +
         "du 8254 lève IRQ0, le 8259 la route, la boucle hôte l'injecte, et " +
         "cinq tests le tiennent.",
+    },
+  ],
+  [
+    "l'hôte ne modélise du 16550 que l'émission à scrutation",
+    {
+      document: "docs/DEMARRAGE.md",
+      test: "the_host_answers_the_probe_the_eight_two_fifty_driver_makes",
+      why:
+        "le tableau disait que l'hôte ne tient du port série que l'émission " +
+        "à scrutation de `printk`, et en concluait que le −EIO du premier " +
+        "`write` était une frontière et non un défaut. Les huit registres y " +
+        "sont depuis #305, `DLAB` compris, et la ligne quatre monte : le " +
+        "noyau imprime « ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) " +
+        "is a 16550A ».",
     },
   ],
   [
