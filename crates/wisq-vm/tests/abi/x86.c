@@ -253,7 +253,7 @@ int main(void) {
      * elle refuse un nom qu'on ne peut pas recoller dans du JavaScript. */
     uint8_t *page = NULL;
     size_t page_len = 0;
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq", 0, 0, 0, &page, &page_len) == 0,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", 0, 0, 0, 0, &page, &page_len) == 0,
           "la page du bureau se construit");
     if (page != NULL) {
         check(page_len > 1000, "et elle porte plus que son squelette");
@@ -272,14 +272,14 @@ int main(void) {
 
     uint8_t *unsafe_name = (uint8_t *)1;
     size_t unsafe_len = 1;
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq; alert(1)", 0, 0, 0,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq; alert(1)", 0, 0, 0, 0,
                             &unsafe_name, &unsafe_len) == -1,
           "un nom de canal qui porte du code est refusé");
     check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
           "et le refus laisse les sorties tranquilles");
-    check(wisq_desktop_page(3, GUEST_BASE, "wisq", 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_page(3, GUEST_BASE, "wisq", 0, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "une RAM qui n'est pas une puissance de deux aussi");
-    check(wisq_desktop_page(1, GUEST_BASE, NULL, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_page(1, GUEST_BASE, NULL, 0, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "un nom nul est refusé plutôt que déréférencé");
 
     /* **Le cadre traverse le C ABI, et son refus aussi.** Une RAM d'une page
@@ -289,7 +289,7 @@ int main(void) {
      * sur ce bord afficherait la table des blocs tout en la détruisant. */
     uint8_t *framed = NULL;
     size_t framed_len = 0;
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 64, 64,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 64, 64, 0,
                             &framed, &framed_len) == 0,
           "un cadre qui tient dans la RAM donne une page");
     if (framed != NULL) {
@@ -306,14 +306,56 @@ int main(void) {
         check(framed_len > page_len, "et elle est plus longue que celle sans cadre");
         wisq_x86_free_module(framed, framed_len);
     }
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE + 4096, 128, 128,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE + 4096, 128, 128, 0,
                             &unsafe_name, &unsafe_len) == -1,
           "un cadre qui déborderait sur la correspondance est refusé");
     check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
           "et ce refus-là non plus ne touche pas aux sorties");
-    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 0, 64,
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", GUEST_BASE, 0, 64, 0,
                             &unsafe_name, &unsafe_len) == -1,
           "un cadre sans largeur n'est pas un cadre");
+
+    /* **La page zéro, et RSI qui la désigne.** Un noyau x86-64 entré sans
+     * `boot_params` n'a pas de carte e820 : il s'arrête muet dans `extend_brk`.
+     * L'application pose ces quatre kibioctets et passe leur adresse comme
+     * `boot_at` ; le pilote met alors RSI dessus. */
+    uint64_t boot_at = wisq_desktop_boot_page_at();
+    check(boot_at != 0, "la page zéro a une adresse");
+    uint8_t *zero = NULL;
+    size_t zero_len = 0;
+    check(wisq_desktop_boot_page(1024, NULL, &zero, &zero_len) == 0,
+          "la ligne par défaut donne une page zéro");
+    check(zero_len == 4096, "une page, pas un octet de plus");
+    if (zero != NULL) {
+        /* Deux entrées e820 : sans elles le noyau croit n'avoir aucune RAM. */
+        check(zero[0x1e8] == 2, "et elle déclare la carte mémoire");
+        wisq_x86_free_module(zero, zero_len);
+    }
+    check(wisq_desktop_boot_page(3, NULL, &unsafe_name, &unsafe_len) == -1,
+          "une RAM qui n'est pas une puissance de deux est refusée");
+    check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
+          "et ce refus-là non plus ne touche pas aux sorties");
+
+    /* Une ligne plus longue que la place qu'elle a dans la page est refusée
+     * plutôt que tronquée : le noyau accepterait sans rien dire une ligne
+     * coupée au milieu d'un paramètre. */
+    char trop[4096];
+    memset(trop, 'x', sizeof trop - 1);
+    trop[sizeof trop - 1] = 0;
+    check(wisq_desktop_boot_page(1024, trop, &unsafe_name, &unsafe_len) == -1,
+          "une ligne de commande qui ne tient pas est refusée");
+
+    /* Et la page du pilote accepte l'adresse : c'est elle qui pose RSI. */
+    uint8_t *amorcee = NULL;
+    size_t amorcee_len = 0;
+    check(wisq_desktop_page(1, GUEST_BASE, "wisq", 0, 0, 0, boot_at,
+                            &amorcee, &amorcee_len) == 0,
+          "une page qui amorce un noyau se construit");
+    if (amorcee != NULL) {
+        check(amorcee_len > page_len,
+              "et elle est plus longue que celle qui ne pose que RIP");
+        wisq_x86_free_module(amorcee, amorcee_len);
+    }
 
     /* La correspondance occupe une place que l'hôte doit ajouter à la RAM.
      * Zéro voudrait dire qu'il n'a rien à ajouter, et le module piégerait au
