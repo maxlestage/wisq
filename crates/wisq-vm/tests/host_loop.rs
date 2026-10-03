@@ -14253,3 +14253,75 @@ fn an_image_that_would_overwrite_the_archive_is_refused() {
         "une archive sans octet n'occupe aucune adresse"
     );
 }
+
+/// **Un cadre d'un autre tour de masque bâtit la même page zéro.**
+///
+/// `web/host.js` **replie** l'adresse du cadre avant de peindre —
+/// `BigInt(screen.base) & BigInt(base - 1)`, aux deux endroits qui le lisent.
+/// C'est donc l'adresse *repliée* que le noyau doit recevoir : sinon il croit
+/// son écran ailleurs que là où la vue le peint, et `simpledrm` écrit dans une
+/// mémoire que personne n'affiche.
+///
+/// **Et `boot_page_with_screen` ne la repliait pas.** Elle passait `screen` tel
+/// quel à `kernel_image::zero_page_with_screen`, qui refuse une base au-delà de
+/// ce que `lfb_base` — un `u32` — sait porter. Un bureau dont l'écran vit à une
+/// adresse de noyau, c'est-à-dire **tous** ceux de `LocalDesktopTests`, ne
+/// pouvait donc pas bâtir sa page du tout.
+///
+/// **Pourquoi rien ne l'avait vu** : le dépôt de cette page était inatteignable
+/// (voir le journal de #313), donc `boot_page_with_screen` n'était jamais
+/// appelée avec une vraie adresse invitée. Le premier appel réel l'a trouvé.
+///
+/// L'assertion porte sur l'**égalité octet par octet** des deux pages plutôt
+/// que sur le champ `lfb_base` : elle ne dépend d'aucun décalage, et elle
+/// attrape aussi l'entrée e820 qui réserve le cadre.
+#[test]
+fn a_screen_from_another_turn_of_the_mask_builds_the_same_page() {
+    use wisq_vm::desktop::{boot_page_with_screen, Screen, COMMAND_LINE};
+    const PAGES: u32 = 1; // une page : la RAM des tests hébergés
+    let ram = u64::from(PAGES) * 65536;
+    // Au-dessus du sommet de la page zéro, comme le plancher l'exige.
+    let folded = Screen {
+        base: 0xC000,
+        width: 32,
+        height: 16,
+    };
+    // La même, à l'adresse où vivent les noyaux — celle que `LocalDesktopTests`
+    // emploie, et qui ne tient pas dans un `u32`.
+    let raw = Screen {
+        base: 0x0100_0000_0000_C000,
+        width: 32,
+        height: 16,
+    };
+    assert_eq!(
+        raw.base & (ram - 1),
+        folded.base,
+        "le repli désigne le même octet"
+    );
+
+    let attendue = boot_page_with_screen(PAGES, COMMAND_LINE, Some(folded))
+        .expect("un cadre replié tient au-dessus de la page zéro");
+    let obtenue = boot_page_with_screen(PAGES, COMMAND_LINE, Some(raw))
+        .expect("et la même, désignée par une adresse d'un autre tour de masque");
+    assert_eq!(
+        obtenue, attendue,
+        "repliée, c'est le même cadre : la page doit être identique octet par octet"
+    );
+
+    // **Et le refus garde son sens** : un cadre qui, *replié*, tomberait sous le
+    // sommet de la page zéro est toujours refusé. Sans cette assertion, replier
+    // pourrait vouloir dire « tout accepter ».
+    assert!(
+        boot_page_with_screen(
+            PAGES,
+            COMMAND_LINE,
+            Some(Screen {
+                base: 0x0100_0000_0000_9000,
+                width: 32,
+                height: 16
+            })
+        )
+        .is_err(),
+        "replié, ce cadre écraserait la page zéro"
+    );
+}

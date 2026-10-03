@@ -255,12 +255,30 @@ pub fn boot_page_with_screen(
         return boot_page(pages, command_line);
     };
     let page = boot_page(pages, command_line)?;
+    let ram = u64::from(pages) * 65536;
+    // **L'adresse du cadre est repliée avant d'être dite au noyau**, et ce
+    // n'est pas une précaution : `web/host.js` la replie aux deux endroits qui
+    // la lisent — `BigInt(screen.base) & BigInt(base - 1)` — donc c'est
+    // l'adresse repliée qui désigne les octets que la vue peint réellement. Un
+    // noyau à qui on donnerait l'adresse brute croirait son écran ailleurs, et
+    // `simpledrm` écrirait dans une mémoire que personne n'affiche.
+    //
+    // **Et sans ce repli, le bureau ne pouvait pas bâtir sa page du tout** :
+    // `lfb_base` est un `u32`, donc une adresse de noyau — celle de tous les
+    // bureaux de `LocalDesktopTests` — était refusée. Rien ne l'avait vu parce
+    // que le dépôt de cette page était inatteignable ; le premier appel réel
+    // l'a trouvé.
+    let screen = Screen {
+        base: screen.base & (ram - 1),
+        width: screen.width,
+        height: screen.height,
+    };
     // Le plancher : le premier octet que le cadre a le droit d'occuper.
     let floor = crate::kernel_image::ZERO_PAGE_AT + page.len() as u64;
     let inside =
         (crate::kernel_image::COMMAND_LINE_AT - crate::kernel_image::ZERO_PAGE_AT) as usize;
     match crate::kernel_image::zero_page_with_screen(
-        u64::from(pages) * 65536,
+        ram,
         crate::kernel_image::COMMAND_LINE_AT as u32,
         screen,
         floor,
@@ -284,12 +302,14 @@ pub fn boot_page_with_screen(
             // sont plus fins que ceux que `Refusal` sait porter ; ce qui compte
             // pour l'appelant est qu'il soit refusé, et son `Display` le dit.
             other => {
-                let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+                let bytes = u64::from(screen.width).saturating_mul(u64::from(screen.height)) * 4;
                 let _ = other;
+                // `screen.base` est déjà replié ici, donc le nom du champ dit
+                // vrai : c'est l'adresse qui a été jugée.
                 Refusal::ScreenDoesNotFit {
                     folded: screen.base,
                     bytes,
-                    ram: u64::from(pages) * 65536,
+                    ram,
                 }
             }
         }),

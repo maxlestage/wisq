@@ -20310,6 +20310,49 @@ code correct est désactivée dans la journée.
 arrivée. Douze tranches de mesures, trois tranches de correctifs, et la première
 assertion qui **relit** a trouvé que rien n'était jamais arrivé.
 
+### Et le code mort en cachait un second : le cadre n'était pas replié
+
+Rendre le dépôt atteignable a immédiatement fait tomber un test de #312 —
+`testAnImageOverTheMachinesOwnRegionsIsRefused`, vert aux deux passages
+précédents. Le premier message était l'`InvalidTransition` nu que ce dépôt
+connaît et dont la règle écrite est « une relance, une seule ». La relance a
+rendu **un autre message**, et c'était le bon :
+
+```
+LocalDesktopTests.swift:523: caught error:
+  "imageDoesNotFit(folded: 72057594037977088, bytes: 0, ram: 65536)"
+```
+
+`72057594037977088` est `0x0100_0000_0000_C000` : l'adresse de l'écran, **non
+repliée**. `boot_page_with_screen` la passait telle quelle à
+`kernel_image::zero_page_with_screen`, qui refuse une base au-delà de ce que
+`lfb_base` — un `u32` — sait porter. **Un bureau dont l'écran vit à une adresse
+de noyau ne pouvait pas bâtir sa page du tout.** C'est le cas de tous ceux de
+`LocalDesktopTests`.
+
+`desktop::page` replie, `placement` replie, `declare_initramfs` replie.
+`boot_page_with_screen` était la seule qui ne repliait pas — et c'est la seule
+que rien n'appelait avec une vraie adresse invitée, puisque son appelant était
+inatteignable. **Le code mort cachait le défaut du code qu'il n'appelait pas.**
+
+Et c'est l'adresse repliée qui est juste, pas un compromis : `web/host.js`
+replie aux deux endroits qui lisent le cadre —
+`BigInt(screen.base) & BigInt(base - 1)` — donc c'est elle qui désigne les
+octets que la vue peint. Un noyau à qui on donnerait l'adresse brute croirait
+son écran ailleurs, et `simpledrm` écrirait dans une mémoire que personne
+n'affiche.
+
+La garde porte sur l'**égalité octet par octet** des deux pages, pas sur le
+champ `lfb_base` : elle ne dépend d'aucun décalage, et elle attrape aussi
+l'entrée e820 qui réserve le cadre. Et une seconde assertion tient le sens
+inverse — un cadre qui, *replié*, tomberait sur la page zéro est toujours
+refusé — sans quoi « replier » pourrait vouloir dire « tout accepter ».
+
+**La relance a servi à ce qu'elle doit servir.** Pas à espérer un vert : à
+obtenir un second message. Le premier était celui d'une intermittence connue, le
+second nommait un défaut réel. C'est exactement ce qui s'était passé le
+8 septembre, et c'est pour ça que la règle est « une relance, et elle se note ».
+
 ### L'aller-retour que cette tranche a payé, et la garde qui le rend impossible
 
 La première poussée de #313 a rendu « App iOS » **rouge**, sur une erreur de

@@ -2632,6 +2632,30 @@ pas établi : deux messages différents sont sortis du même commit. La course,
 elle, est nommée et corrigée. Les passages suivants diront si l'autre message
 revient — et si oui, il faudra le chercher ailleurs que dans `load()`.
 
+### Et il est revenu : 3 octobre, PR #448
+
+`InvalidTransition` nu, sur `testAnImageOverTheMachinesOwnRegionsIsRefused`,
+quatrième occurrence. Relance faite, une seule, comme la règle l'écrit.
+
+**Et cette fois le diff peut l'atteindre, ce qui vaut d'être dit plutôt que
+tu.** Les trois occurrences d'avant étaient sur des tests qu'il était *mesuré*
+que la PR ne touchait pas. Celle-ci non : #313 rend atteignable le dépôt de la
+page zéro, donc ce test fait désormais un aller-retour `callAsyncJavaScript`
+**de plus** pendant `load()`, sur une vue fraîchement créée — exactement la
+zone où l'intermittence vit. Deux lectures tiennent :
+
+- l'intermittence connue, qui frappe un quatrième test sans égard au code ;
+- le même défaut, dont ma fenêtre s'est élargie d'un appel.
+
+Rien ne les sépare pour l'instant, et l'honnêteté est de ne pas choisir. Ce qui
+*est* mesuré : le même passage a rendu `testTheDesktopTellsTheKernelWhereItsRootIs`
+**vert**, et il dépose une page zéro **et** une archive — donc deux
+allers-retours de plus que celui qui a échoué. Un mécanisme qui tiendrait au
+nombre d'appels prédit l'inverse de ce qu'on observe.
+
+Ce qui resterait à décider n'a pas bougé, et c'est une **direction**, pas un
+défaut : une seule vue pour toute la suite, ou vivre avec la relance comptée.
+
 ### La boucle ne rendait jamais la main
 
 Trouvé en dessinant le canvas, pas en relisant du code : `vm.run()` n'attend
