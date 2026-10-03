@@ -19917,3 +19917,80 @@ jusqu'à l'espace utilisateur qui parle, et pas une n'a demandé si le chemin de
 l'application portait les mêmes amorces. La question tenait dans un `grep` sur
 deux fichiers qui devraient s'accorder — « ce qui a produit toutes les vraies
 trouvailles », mot pour mot ce que la routine répète à chaque réveil.
+
+## #311 — le bureau à écran tendait au noyau une carte où le cadre est libre
+
+La routine réécrite par #310 porte une règle : *à chaque chose que le montage
+de mesure a, demander ce que le bureau en a*. Elle a tiré une fois, et elle a
+trouvé en un `grep`.
+
+### Ce que #310 a laissé
+
+#310 a donné au bureau sa page zéro, et l'a bâtie avec `kernel_image::zero_page`
+— celle d'une machine **sans cadre**. Or `desktop::page` accepte un `Screen`
+depuis le lot 8, et le montage, lui, appelle `zero_page_with_screen` quand
+`WISQ_SCREEN` en demande un. Cette seconde fonction fait **deux** choses de plus,
+et les deux manquaient :
+
+1. elle écrit `screen_info` — `VIDEO_TYPE_VLFB`, les dimensions, la profondeur,
+   `lfb_base`, `lfb_size` en unités de 64 Kio, la longueur de ligne, l'ordre des
+   couleurs. Sans ça le noyau ne sait pas qu'il y a un écran, et `simpledrm` ne
+   se lie à rien : un bureau qui a un cadre dans la vue et rien dans l'invité ;
+2. elle **réserve le cadre dans la carte e820**, en type 2. Son propre
+   commentaire dit pourquoi, et c'est le défaut qui compte :
+
+> **L'écran, réservé.** L'allocateur ne consulte que cette carte ; sans
+> l'entrée, deux écritures se disputeraient les mêmes pages, et le bureau se
+> corromprait sous des causes sans rapport.
+
+Un bureau à écran qui amorçait un noyau lui tendait donc une carte où le cadre
+est de la mémoire **libre**. Le noyau la distribue à qui demande, l'invité peint
+par-dessus, et la corruption n'a aucun rapport visible avec sa cause. C'est la
+pire des deux formes : silencieuse.
+
+### Le plancher, et ce qu'il ne protège pas
+
+`zero_page_with_screen` prend un `floor` — le premier octet que le cadre a le
+droit d'occuper. Le montage y passe le sommet de ce qu'il a chargé. Le bureau,
+lui, bâtit sa page **avant** que l'application ne pose l'image du noyau : son
+étendue n'est pas connue à cet instant.
+
+Le plancher du bureau est donc le **sommet de sa page zéro**, et c'est le
+minimum certainement juste : au-dessous vivent la page et sa ligne de commande,
+et un cadre posé là les écraserait avec les pixels du bureau — en emportant la
+carte mémoire que le noyau vient d'y lire. Un cadre qui chevaucherait l'**image
+du noyau** reste une faute de l'appelant que rien ne refuse encore. **C'est dit
+plutôt que caché**, et c'est la tranche suivante : `LocalDesktop.place` est le
+seul chemin par lequel des octets entrent, donc le bon endroit pour refuser.
+
+### Le sabotage qui a survécu, et le trou qu'il a montré
+
+Quatre mutations, trois tombées du premier coup. La quatrième —
+« la ligne de commande n'est pas remise dans la page à écran » — a **survécu**,
+et l'instrument avait raison : la seule garde sur la ligne portait sur le chemin
+**sans** cadre.
+
+`zero_page_with_screen` part de `zero_page` et ne connaît pas la ligne, donc
+elle est remise après coup. Un chemin qui l'oublierait rendrait une page sans
+console précoce, et **le bureau à écran démarrerait muet** — exactement le défaut
+de #310, réintroduit pour le seul cas qui a un écran, et par la tranche qui
+venait de le corriger.
+
+L'assertion manquante est écrite, avec sa raison. Le sabotage tombe maintenant.
+C'est la deuxième fois en deux jours qu'un sabotage trouve une garde absente
+plutôt qu'une garde fausse — et c'est pour ça qu'on le fait.
+
+### Ce que ça ne prouve pas
+
+Comme #310 : rien n'a été mesuré dans un iPhone, et `LocalDesktop.swift` est
+sous `canImport(WebKit)` — seul `swiftlint --strict` en a vérifié la syntaxe ici,
+le typage n'a lieu que sur la CI Apple. Ce qui est mesuré est la page : elle
+déclare l'écran, elle le réserve, elle porte sa ligne, et elle refuse un cadre
+qui écraserait ce qui est dessous.
+
+### Le signe à retenir
+
+**Une règle écrite dans la routine a trouvé un défaut au premier réveil.** Elle
+y est entrée parce que #310 l'avait payée ; elle a rendu #311 en un `grep`. Une
+leçon qui reste dans un journal se relit quand on pense à la relire ; la même
+leçon dans le texte qui réveille se relit à chaque réveil.
