@@ -19513,3 +19513,136 @@ déjà la copie, pour une autre raison — « une vue sur `memory.buffer` se dé
 si la mémoire grandit, et l'invité peut la réécrire pendant l'aller-retour vers
 l'application ». Il la jetait. Trois semaines de question ouverte attendaient
 une mesure qui tenait dans « ne pas jeter cette copie, et la relire à la fin ».
+
+## #308 — oui, la machine exécute du code périmé : cent vingt mille fois par démarrage, et voilà pourquoi elle s'en tire
+
+#307 a mesuré que 1 397 régions sur 12 249 voient leurs octets changer après
+leur traduction, et a écrit noir sur blanc ce qu'elle ne pouvait pas dire :
+« elle dit que la fenêtre a changé après la traduction ; elle ne dit pas que la
+région a **tourné** après le changement ». C'est la seule limite qui séparait
+« un fil » de « la machine exécute du code faux ».
+
+Elle est levée. La réponse est oui.
+
+### L'octet comparé, et pourquoi ce n'est pas un compromis
+
+**Entrer dans une région, c'est exécuter l'instruction qui est à son entrée.**
+Si cet octet-là a changé depuis la traduction, la toute première instruction
+exécutée diffère de celle qui a été traduite — sans discussion, et sans qu'il
+faille savoir quels blocs la suite atteint. C'est le test le plus net qui
+existe, pas une approximation faute de mieux : comparer la fenêtre entière à
+chaque entrée coûterait quatre kibioctets sur le chemin le plus chaud du
+programme pour une réponse **moins** nette, puisqu'un octet changé dans un bloc
+jamais atteint ne prouve rien.
+
+**Et c'est un plancher.** Une région dont le deuxième bloc a été patché tourne
+aussi du code périmé et n'est pas comptée. Le nombre sous-déclare ; il ne lève
+jamais de fausse alerte.
+
+`WISQ_VEILLE=1` l'allume. Éteint, la boucle n'y paie qu'un test de booléen, et
+c'est éteint par défaut : les relevés des tranches précédentes ont été pris
+sans, et en allumer un en silence rendrait incomparables des mesures que ce
+journal met côte à côte.
+
+### Ce que la machine fait, mesuré
+
+| | |
+| --- | --- |
+| entrées dans une région dont l'octet d'entrée avait changé | **120 420** |
+| régions distinctes concernées | **51** |
+
+Et la course est la même que celle de #307 à l'octet près — 12 249 régions,
+7 515 interruptions, 1 397 fenêtres changées, 498 au décalage zéro, le message
+de l'espace utilisateur présent. **51 sur 498** : la veille ne déclare pas
+tout, et les deux instruments s'accordent — elle ne peut toucher que des
+régions dont le *premier* octet a bougé, et c'est un sous-ensemble strict.
+
+Les onze premières, et le compte par interruption saute aux yeux :
+
+| région | entrées |
+| --- | --- |
+| `sched_clock_noinstr` | 33 788 |
+| `idr_get_free` | 10 360 |
+| `profile_tick` | 7 511 |
+| `calc_global_load_tick` | 7 506 |
+| `__handle_irq_event_percpu` | 7 500 |
+| `note_interrupt` | 7 499 |
+| `irqentry_exit` | 7 499 |
+| `common_interrupt` | 7 499 |
+| `irqentry_enter` | 7 492 |
+| `__common_interrupt` | 7 492 |
+| `radix_tree_iter_replace` | 4 580 |
+
+**Sept mille cinq cents, c'est une fois par interruption délivrée** — il y en a
+eu 7 515. Le chemin d'entrée et de sortie d'interruption de ce noyau tourne
+donc **entièrement en traduction périmée**, du premier tic à la fin de la
+course.
+
+### Pourquoi elle s'en tire, et c'est mesuré octet par octet
+
+Trois familles, et le relevé donne les deux octets plutôt que de les laisser
+déduire — « cent vingt mille entrées périmées » ne dit pas si la machine s'en
+sort, `0xf3` contre `0x66` le dit.
+
+| l'octet traduit | celui qui est là | régions | entrées | ce que c'est |
+| --- | --- | --- | --- | --- |
+| `f3` | `66` | 33 | **110 513** | `endbr64` contre le `nop` de cinq octets qui l'a remplacé |
+| `e8` | `0f` | 17 | 7 300 | un `call` de cinq octets contre le `nop` de cinq octets |
+| `e9` | `eb` | 1 | 2 607 | un `jmp` long contre le même saut en court |
+
+**Quatre-vingt-douze pour cent des entrées périmées exécutent un `endbr64` là
+où le noyau avait mis un `nop`.** Sur une machine sans IBT — et celle-ci n'en a
+pas —, `endbr64` *est* un `nop`. Le troisième cas est un saut long au lieu du
+même saut court : même cible, même effet, un octet de plus.
+
+**Le deuxième est le seul où le code périmé *fait* quelque chose.** Un octet
+d'entrée de fonction qui passe de `e8` à un `nop` de cinq octets est le crochet
+que `ftrace` retire au démarrage : la traduction périmée **fait donc l'appel
+que le noyau avait supprimé**. Il aboutit dans `__fentry__`, dont le corps ne
+fait rien tant que rien ne trace — un aller-retour, et pas un bit d'état
+changé. (La cible n'est pas décodée ici ; ce qui l'est, c'est la position —
+le premier octet d'une fonction — et c'est là que Linux pose ce crochet.)
+
+Les dix-sept sont des fonctions ordinaires, et le compte dit assez qu'aucune
+n'est sur un chemin critique : `extract_entropy` 2 530, `pcpu_*` 3 290 au
+total, `record_print_text` 102, `data_push_tail` une fois.
+
+### Ce que ça établit
+
+**Le bureau ne marche pas malgré l'absence du défaut : il marche malgré le
+défaut.** Cent vingt mille exécutions de code périmé par démarrage, dont tout
+le chemin d'interruption, et pas un effet observable — parce que les correctifs
+que Linux applique à ce stade sont des équivalences dans les deux sens. #307
+l'avait supposé des familles qu'elle voyait ; #308 le mesure sur les régions
+qui **tournent**, ce qui n'est pas la même population et ce qui est la seule
+qui compte.
+
+Et ça borne le risque au lieu de le laisser vague : ce qui mordrait est un
+correctif qui **ajoute** du travail — un `static_call` activé après coup, un
+module chargé, une atténuation posée tard, une alternative qui remplace un
+`nop` par une instruction nécessaire. Trois des quatre sites de cette forme
+relevés par #307 sont sur le chemin des *softirq*, et aucun des trois n'est
+dans les 51 : ils n'ont pas tourné après leur changement **sur cette course**.
+Ce n'est pas une garantie, c'est une mesure.
+
+### Ce que ça ne change pas
+
+La correction reste une direction — quatre formes dans le journal, et c'est
+Maxime qui tranche. Ce qui a changé en deux tranches : on ne demande plus
+« est-ce que ça arrive ? » (#307 : onze fois sur cent) ni « est-ce que ça
+tourne ? » (#308 : cent vingt mille fois), mais seulement **quelle forme
+donner au correctif**, en sachant ce qu'il coûte de ne pas le poser.
+
+### Le signe à retenir
+
+**Une limite écrite se lève ; une limite tue se périme.** #307 a fini par une
+section « ce que `revoir` ne dit pas », avec le mécanisme du second instrument
+et son coût. Il a suffi de la relire pour écrire #308 — et le coût redouté,
+« un test sur le chemin le plus chaud », s'est réduit à un booléen éteint par
+défaut dès qu'on a cherché *quel* octet comparer plutôt que *comment* comparer
+la fenêtre.
+
+Et un contrôle mal posé ressemble exactement à une trouvaille : la garde
+négative de cette tranche est d'abord tombée en nommant `0x11000`. L'instrument
+avait raison — à une page de décalage, la région B réécrivait sa **propre**
+entrée. C'est le montage qui était faux, pas la mesure.

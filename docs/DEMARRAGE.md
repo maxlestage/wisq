@@ -418,8 +418,21 @@ Trois choses, et aucune n'est petite :
    de retour au lieu du `ret`, l'`endbr64` au lieu du nop, l'appel à
    `__fentry__` au lieu du nop, le `lock` au lieu du préfixe inopérant. Quatre
    sites vont dans l'autre sens, trois sur le chemin des *softirq*. Ce que la
-   mesure **ne** dit pas, et c'est écrit : si la région a tourné après le
+   mesure ne disait pas, et c'était écrit : si la région a tourné après le
    changement.
+
+   **#308 l'a dit** : oui, et **120 420 fois** par démarrage, sur
+   **51 régions** — tout le chemin d'entrée et de sortie d'interruption, une
+   fois par interruption délivrée. La machine s'en tire pour une raison mesurée
+   octet par octet : 110 513 de ces entrées exécutent un `endbr64` là où le
+   noyau avait mis un `nop` — et sans IBT, `endbr64` *est* un `nop` —, 7 300
+   font l'appel au crochet `ftrace` que le noyau avait retiré, un aller-retour
+   sans effet, et 2 607 prennent un `jmp` long au lieu du même saut en court.
+   **Le bureau ne marche donc pas parce que le défaut est absent, mais malgré
+   lui.** Ce qui mordrait est un correctif qui *ajoute* du travail ; aucun des
+   quatre sites de cette forme relevés par #307 n'a tourné après son changement
+   sur cette course — c'est une mesure, pas une garantie. `WISQ_VEILLE=1`
+   l'allume ; éteint, la boucle n'y paie qu'un test de booléen.
 
    **Et le mur d'après n'était pas davantage une instruction manquante** : à
    `do_one_initcall + 673` se trouve un `ud2` que Linux exécute **exprès**.

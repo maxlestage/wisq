@@ -591,6 +591,10 @@ export function machine({
   // grandit devant chaque région qui en a besoin (voir `HEADROOM`).
   regions = 4096,
   patience = 30000,
+  // **Compter les régions qui tournent après que leurs octets ont bougé**, ou
+  // non. Éteint, la boucle n'y paie qu'un test de booléen ; allumé, une
+  // lecture d'un octet par entrée de région. Voir `surveillees`.
+  surveiller = false,
 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
@@ -697,6 +701,26 @@ export function machine({
   // que l'invité compte dans son gestionnaire, est le témoin d'en face de
   // `delivrees`.
   const materiel = { delivrees: 0n, premiere: null };
+  /// **Les régions qui ont *tourné* après que leurs octets ont bougé.**
+  ///
+  /// #307 a mesuré que 1 397 régions sur 12 249 voient leur fenêtre changer
+  /// après leur traduction, et n'a pas pu dire si l'une d'elles a tourné
+  /// ensuite. C'est cette limite-là, écrite là-bas, que ceci lève — et c'est
+  /// la seule qui sépare « un fil » de « la machine exécute du code faux ».
+  ///
+  /// **L'octet comparé est celui de l'entrée, et ce n'est pas un compromis** :
+  /// entrer dans une région, c'est exécuter l'instruction qui y est. Si cet
+  /// octet a changé, la toute première instruction exécutée diffère de celle
+  /// qui a été traduite, sans qu'il faille savoir quels blocs la suite
+  /// atteint. Comparer la fenêtre entière à chaque entrée coûterait quatre
+  /// kibioctets sur le chemin le plus chaud du programme pour une réponse
+  /// moins nette.
+  ///
+  /// **Et c'est un plancher, pas une estimation.** Une région dont le
+  /// deuxième bloc a été patché tourne aussi du code périmé et n'est pas
+  /// comptée ici. Le compte sous-déclare ; il ne lève jamais de fausse
+  /// alerte.
+  const surveillees = { entrees: 0n, regions: new Map() };
   /// **Le 16550, celui que le pilote sonde.**
   ///
   /// L'état est celui de `X86SerialPort.swift`, champ pour champ et nom pour
@@ -1736,6 +1760,7 @@ export function machine({
     /// **Combien d'interruptions de matériel l'hôte a délivrées, et où l'invité
     /// était à la première.** Lecture ; rien ne se décide dessus.
     materiel,
+    surveillees,
     uart,
     /// **Les régions dont les octets ont bougé sous elles.**
     ///
@@ -1859,6 +1884,32 @@ export function machine({
         // **Ce que la région a laissé du budget**, donc ce qu'elle en a
         // consommé. La répartition le décrémente d'un par bloc appelé ; elle
         // le rend depuis la tranche de la famine d'horloge.
+        // **Un octet, et seulement si on surveille.** `read` est employé plutôt
+        // qu'une lecture directe parce qu'il remet le témoin de faute et CR2
+        // comme il les a trouvés : une sonde qui laisserait une faute
+        // derrière elle ferait prendre à l'invité, plus tard, une faute que
+        // *l'hôte* a causée en mesurant.
+        if (surveiller && region.lu !== undefined) {
+          const octet = read(here, 1);
+          if (octet !== null && octet[0] !== region.lu[0]) {
+            surveillees.entrees += 1n;
+            // **Les deux octets, pas seulement le compte.** « Cent vingt mille
+            // entrées périmées » ne dit pas si la machine s'en tire ou non ;
+            // `f3` contre `66` — un `endbr64` contre un `nop` — le dit. Les
+            // garder coûte une entrée de table par région, pas par entrée.
+            const vu = surveillees.regions.get(here);
+            if (vu === undefined) {
+              surveillees.regions.set(here, {
+                entrees: 1,
+                lu: region.lu[0],
+                maintenant: octet[0],
+              });
+            } else {
+              vu.entrees += 1;
+              vu.maintenant = octet[0];
+            }
+          }
+        }
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
         // **Le temps de l'invité avance ici, et pas dans le module.**
         //
