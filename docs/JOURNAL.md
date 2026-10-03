@@ -20683,3 +20683,212 @@ garde qui en exerce une passe pour les tenir toutes les deux. C'est la variante
 par **paire** du signe de #313 — une région nouvelle hérite des assertions de sa
 voisine et pas de sa couverture — et le remède est le même : saboter chaque
 moitié séparément.
+
+## #317 — le corpus de chaîne ne jugeait qu'un cœur sur trois, et compter les corpus a montré que le site en annonçait neuf quand il y en a dix
+
+La série mécanique des sept tranches précédentes était épuisée : la question
+« à chaque chose que le montage de mesure a, demander ce que le bureau en a » a
+rendu six défauts d'affilée, et il n'en restait pas de septième. Cette
+tranche-ci vient d'ailleurs, et d'un **comptage**, comme presque tout ce qui a
+marché depuis #300.
+
+### Le comptage
+
+`Tests/Fixtures/` porte **onze** fichiers de corpus, 40 232 lignes en tout :
+**dix oracles matériels** — produits en exécutant chaque forme sur un vrai
+processeur — et le corpus de **décodage**, qui n'est pas un oracle puisqu'il ne
+porte pas de résultat. Lesquels des dix jugent quel cœur :
+
+| corpus | cœur Swift | cœurs Rust |
+| --- | --- | --- |
+| `x86-oracle.tsv` | oui | **oui** |
+| `x86-stack-oracle.tsv` | oui | **oui** |
+| les **huit** autres | oui | **non** |
+
+Et la feuille de route l'avait écrit à l'avance, avant que l'émetteur
+n'existe : « un émetteur de WebAssembly […] avec le même corpus d'oracles
+matériels que le cœur Swift — les neuf corpus existent déjà et ne demandent
+qu'à juger un troisième cœur ». L'émetteur est arrivé en n'en lisant qu'un, la
+pile est venue avec #301 et #302, et les neuf sont restés.
+
+**La première règle a payé une fois de plus** : la phrase ci-dessus était dans
+`docs/ROADMAP.md` avant que je ne cherche, et c'est elle qui dit que ce trou
+n'est pas une invention pour prolonger une série.
+
+### Pourquoi les chaînes avant les huit autres
+
+Parce que c'est la classe que l'application exécute le plus tôt et le plus
+souvent : `copy_to_user` et `copy_from_user` sont des `rep movsq` et des
+`rep movsb`, le `memset` d'une table de pages est un `rep stos`, et **les deux
+cœurs Rust les traduisent** — `Op::StringMove` et `Op::StringStore`, avec leur
+boucle de répétition. Ce que le silicium en dit n'était comparé à rien du côté
+du cœur que le bureau fait tourner.
+
+Et la mesure qui le dit tient dans un `grep` : `rep [a-z]*` rend **zéro** dans
+`x86-oracle.tsv` comme dans `x86-stack-oracle.tsv`. Les deux corpus branchés ne
+contiennent pas une seule instruction de chaîne.
+
+### Ce que ça a trouvé dans les cœurs : rien
+
+**144 cas jugés de chaque côté, zéro écart.** L'émetteur sous JavaScriptCore et
+l'interpréteur Rust rendent exactement ce que le processeur a rendu, sur les
+dix-huit formes de `movs` et de `stos` du corpus, dans les quatre états en
+avant et les quatre en arrière.
+
+Les deux branchements précédents avaient rendu **seize écarts chacun à leur
+premier tour** — #301 pour l'émetteur sur la pile, #302 pour l'interpréteur.
+Celui-ci n'en rend aucun, et **c'est le résultat**, pas une déception : les
+quatre sabotages par cœur montrent que la garde mordrait.
+
+### Le défaut, et il est dans le harnais
+
+Le premier tour de l'interpréteur a rendu vingt écarts, tous avec « le cœur a
+fauté », et tous sur les quatre états **en arrière**. La cause n'était pas
+l'instruction : une chaîne en arrière **descend sous l'adresse de la fenêtre**.
+`rep movsw` depuis l'état 4 part de `0x30001018` et finit RSI à `0x30000ff8` —
+le silicium le dit, c'est dans le fichier. Ma mémoire d'essai ne couvrait que
+les soixante-quatre octets de la fenêtre, donc le cœur fautait sur une lecture
+parfaitement légitime.
+
+C'est la **troisième fois** que ce corpus casse un harnais sur une chaîne en
+arrière. La première l'a écrite en toutes lettres : « en essayant les chaînes en
+arrière, c'est le harnais qui plantait, pas l'instruction ; l'ABI exige que le
+drapeau de direction soit effacé à la sortie de toute fonction, et le `memcpy`
+du pilote partait à l'envers ». L'arène est maintenant celle du test Swift à
+l'octet près — seize kibioctets depuis `0x30000000` — et le commentaire dit
+pourquoi.
+
+### Le trou nommé, et ce qu'il coûte
+
+Des 376 cas du fichier, **232 sortent du jugement** : `lods`, `cmps` et `scas`,
+toutes largeurs, avec et sans `rep`. Ce ne sont pas des largeurs qui manquent,
+c'est que le **décodeur Rust ne les décode pas du tout** — l'émetteur et
+l'interpréteur refusent les mêmes vingt-huit formes, pour la même raison.
+
+Le cœur Swift, lui, les juge toutes les 376. Donc : trois familles dont le
+comportement est vérifié contre du vrai silicium d'un côté, et refusées de
+l'autre — exactement la forme du `8f /0` du corpus de pile, « un trou nommé,
+pas une décision ». Les étendre serait un **ajout**, pas une correction, et ça
+ne s'est jamais vu arrêter un démarrage : le noyau d'Alpine atteint l'espace
+utilisateur sans elles.
+
+Les deux planchers sont **mesurés** et nomment ce qui sort du champ quand ils
+tombent : 144 cas de chaîne pour l'émetteur, 144 pour l'interpréteur.
+
+### Le défaut nommé, et c'est le comptage qui l'a sorti
+
+Compter les corpus pour écrire ce qui précède a montré autre chose : **le site
+annonce « neuf corpus matériels », et il y en a dix.** **Sept** copies, quatre
+fichiers, les deux langues :
+
+| fichier | ce qu'il disait |
+| --- | --- |
+| `site/src/content.ts` | « Neuf corpus matériels tiennent ce cœur » / « Nine hardware corpora hold that core » |
+| `site/src/pages/roadmap.ts` | « Neuf corpus matériels le tiennent » / « Nine hardware corpora hold it » |
+| `site/src/pages/releases.ts` | « tenu par neuf corpus matériels » / « held by nine hardware corpora », suivi de l'énumération des neuf |
+| `CHANGELOG.md` | « held by nine hardware corpora », même énumération |
+
+**Et la septième est la source des trois autres.** La page des versions dit
+elle-même qu'elle est « tirée du journal des modifications ». Corriger le site
+sans corriger `CHANGELOG.md` aurait laissé la faute là d'où elle revient à la
+prochaine version — la forme de #289 dans l'autre sens : tenir les copies et
+pas l'original. Je ne l'ai vue qu'en cherchant la même phrase hors de
+`site/`, ce qui est la règle de #261 appliquée à mon propre correctif.
+
+**Et ce n'est pas seulement périmé.** Le dixième corpus — l'arrondi x87 — est
+entré le 5 septembre à 11 h 15 (#202) ; la phrase a été écrite le même jour à
+0 h 01 (#195). Elle était donc vraie onze heures. Mais le tag `v0.4.0` est posé
+à 23 h 05 le même jour, et `git cat-file -e v0.4.0:Tests/Fixtures/x86-x87-rounding-oracle.tsv`
+répond : **la version que la note décrit en portait dix**. La note est fausse
+sur son propre sujet, et elle l'est restée un mois.
+
+**Pourquoi aucune garde ne l'a vu, et c'est la partie qui compte.**
+`site/tests/claims.test.ts` compte les **nombres** d'une page et exige une
+provenance pour chacun — c'est la garde la plus sévère du dépôt sur ce
+chapitre. Un nombre écrit **en lettres** n'en est pas un pour elle. C'est le
+même angle mort que la clef de `Map` en double de #312 : la garde existait,
+elle ne pouvait pas voir ça. Et c'est la forme de #289, pour la énième fois —
+sauf qu'ici les **six** copies s'accordaient, donc même la comparaison entre
+copies ne pouvait rien dire.
+
+La garde écrite pour ça compte les oracles par le **répertoire**, sous deux
+conditions plutôt qu'une — l'en-tête doit nommer le silicium comme référence,
+et le script qui a fabriqué le fichier doit exister sous son nom —, puis
+compare le mot de chaque page au compte, dans les deux langues. Elle exige
+aussi d'en trouver **six** : une page qui cesserait de l'annoncer rendrait la
+boucle muette, ce qui est exactement comment ce nombre a dérivé.
+
+**Ce qu'elle ne tient pas, et par sa forme plutôt que par une liste** : la même
+note dit « assez rare pour survivre à neuf corpus ». Celle-là **date un
+défaut** au lieu d'inventorier les corpus — neuf était le compte le jour où ce
+défaut a survécu —, et elle ne dit pas « corpus matériels », donc le motif ne
+l'attrape pas.
+
+### Le sabordage
+
+Quatre par cœur, les mêmes quatre, et chacun nomme une garde **présente** —
+pour une fois, aucun survivant ne nomme de garde absente.
+
+| sabordage | émetteur | interpréteur |
+| --- | --- | --- |
+| le pas ne regarde plus le drapeau de direction | 64 écarts | 20 (plafond du relevé) |
+| `movs` lit RDI au lieu de RSI | 64 écarts | 20 |
+| la chaîne salit RBX au passage | 128 écarts | 20 |
+| la répétition consomme deux du compte | 64 écarts | 20 |
+
+Et trois pour la garde du compte de corpus :
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| une seule des six copies retombe à « neuf » | la garde nomme la page et liste les dix fichiers |
+| une page cesse d'annoncer le nombre | « plus aucune page n'annonce le nombre de corpus matériels » |
+| un fichier nommé `-oracle.tsv` sans fabricant | « x86-leurre-oracle.tsv n'a pas de fabricant » |
+| la source (`CHANGELOG.md`) retombe à « nine » | la garde la nomme, elle aussi |
+| l'exclusion de `docs/JOURNAL.md` est retirée | le journal tombe — donc l'exclusion est **portante**, et non décorative |
+
+Le troisième mérite son mot : il ne tombe que parce que le harnais porte le
+**témoin** du test Swift — `0xAAAA_AAAA_AAAA_AAAA + numéro` dans les neuf
+registres qu'aucune chaîne ne doit toucher. Sans lui, un cœur qui écrirait dans
+R12 au passage traverserait les 144 cas sans un mot : le corpus ne relève que
+RAX, RCX, RSI, RDI, les drapeaux et la fenêtre.
+
+### Un piège de lecture de plus, et il était dans le fichier
+
+Le compte de départ de RCX est le **seul champ décimal** du corpus ; tous les
+autres sont hexadécimaux. Le lire avec la même fonction que ses voisins donne
+50 pour « 32 » et 22 pour « 16 » : le `rep movsb` sortirait de sa demi-fenêtre,
+et l'écart serait mis sur le dos du cœur. Le lecteur Swift le lit déjà en
+décimal, et c'est de lui que vient la forme de ces deux lecteurs-là.
+
+### Le signe à retenir
+
+**Un corpus qu'on branche n'est pas une formalité, et un résultat nul est un
+résultat.** Deux branchements sur trois ont rendu seize écarts ; celui-ci n'en
+rend aucun, et la seule façon de le dire honnêtement est de montrer que la
+garde mord — quatre sabotages par cœur, pas un argument. L'inverse, conclure
+« rien à trouver » d'un test vert qu'on n'a pas éprouvé, est la faute que ce
+dépôt a déjà nommée : une assertion qui a l'air d'une garde.
+
+**Et le harnais est la partie fausse jusqu'à preuve du contraire.** Trois fois
+sur trois, ce corpus-ci a commencé par casser le montage qui venait le lire, et
+jamais le cœur.
+
+**Le vrai défaut de la tranche n'est pas là où elle regardait.** Elle a été
+ouverte pour juger un cœur et elle a trouvé un chiffre faux sur le site — en
+comptant, pas en cherchant. Compter ce qu'on croit savoir est ce qui a produit
+presque tout le travail depuis #300, et ça vient de recommencer : **1925 contre
+1992, 12 cas contre 14, et maintenant neuf corpus contre dix.**
+
+**Un nombre écrit en lettres échappe à toutes les gardes de ce dépôt**, et la
+garde écrite ici ne tient que celui-là. Donc : les quantités en lettres des
+pages ont été relevées, et pas supposées — un `grep` sur les mots de « deux » à
+« vingt » dans `content.ts` et `src/pages/`. La plupart portent leur propre
+liste et se vérifient toutes seules (« Trois clients […] VNC, SPICE et RDP »,
+« trois protocoles de console » suivis des trois), ou décrivent au lieu de
+dénombrer (« quatorze octets », « seize registres »).
+
+**Une seule reste sans garde et sans liste : « Quatre routes derrière un jeton
+porteur », sur la page du protocole.** Je ne l'ai pas vérifiée — compter les
+routes du démon demande de lire son routeur, et ce n'est pas la tranche. Elle
+est nommée ici plutôt que laissée implicite, ce qui est la seule chose honnête
+à faire d'une mesure qu'on n'a pas prise.

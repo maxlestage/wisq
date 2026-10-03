@@ -33,7 +33,7 @@ export const roadmapEn: Doc = {
         {
           term: "The x86-64 core",
           detail:
-            "It runs a stock Alpine kernel and its init — four billion instructions, with no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images. Nine hardware corpora hold it, and the reference is not a specification read wrong: it is a real processor, asked what it produced.",
+            "It runs a stock Alpine kernel and its init — four billion instructions, with no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images. Ten hardware corpora hold it, and the reference is not a specification read wrong: it is a real processor, asked what it produced.",
         },
         {
           term: "A virtual disk for the local machine",
@@ -134,7 +134,7 @@ export const roadmapFr: Doc = {
         {
           term: "Le cœur x86-64",
           detail:
-            "Il fait tourner un noyau Alpine standard et son init — quatre milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images. Neuf corpus matériels le tiennent, et la référence n'est pas une spécification lue de travers : c'est un vrai processeur, à qui l'on demande ce qu'il a produit.",
+            "Il fait tourner un noyau Alpine standard et son init — quatre milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images. Dix corpus matériels le tiennent, et la référence n'est pas une spécification lue de travers : c'est un vrai processeur, à qui l'on demande ce qu'il a produit.",
         },
         {
           term: "Un disque virtuel pour la machine locale",
