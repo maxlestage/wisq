@@ -373,29 +373,84 @@ int main(void) {
     const uint64_t RAM = (uint64_t)RAM_PAGES * 65536;
     const uint64_t FRAME_BYTES = 64 * 64 * 4;
     const uint64_t FRAME = RAM - FRAME_BYTES;
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1,
                                  0x100000, 0x100000) == 0,
           "une image entre la page zéro et le cadre est posable");
-    check(wisq_desktop_placement(3, 0, 0, 0, 1, 0x100000, 16) == 1,
+    check(wisq_desktop_placement(3, 0, 0, 0, 0, 0, 1, 0x100000, 16) == 1,
           "une RAM qui n'est pas une puissance de deux est refusée ici aussi");
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, 0, RAM + 1) == 2,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1, 0, RAM + 1) == 2,
           "une image plus grande que la RAM ne tient nulle part");
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1,
                                  0x100000, UINT64_MAX) == 2,
           "et une taille qui enroulerait l'addition est refusée, pas acceptée");
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, boot_at, 16) == 3,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1, boot_at, 16) == 3,
           "une image sur la page zéro écraserait la carte mémoire du noyau");
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, boot_at, 16) == 0,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 0, boot_at, 16) == 0,
           "mais sans noyau à amorcer, il n'y a pas de page zéro à protéger");
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, FRAME, 16) == 4,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1, FRAME, 16) == 4,
           "une image dans le cadre serait repeinte à la première image");
-    check(wisq_desktop_placement(RAM_PAGES, 0, 0, 0, 1, FRAME, 16) == 0,
+    check(wisq_desktop_placement(RAM_PAGES, 0, 0, 0, 0, 0, 1, FRAME, 16) == 0,
           "et sans cadre déclaré, le haut de la RAM est libre");
     /* Et l'adresse se replie : la RAM d'un invité confiné est adressée par un
      * masque, donc `boot_at` d'un autre tour désigne la même page zéro. */
-    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1,
                                  boot_at + RAM * 3, 16) == 3,
           "repliée, c'est la même page zéro");
+
+    /* **L'archive, troisième région que la machine se donne à elle-même.** Le
+     * noyau la déballe pour s'en faire une racine ; une image posée dessus la
+     * lui donne corrompue, et le symptôme est un cpio « invalid magic » qui ne
+     * nomme pas sa cause. */
+    const uint64_t ARCHIVE = 0x200000;
+    const uint64_t ARCHIVE_BYTES = 4096;
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, ARCHIVE, ARCHIVE_BYTES,
+                                 1, ARCHIVE, 16) == 5,
+          "une image dans l'archive donnerait au noyau une racine corrompue");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, ARCHIVE, ARCHIVE_BYTES,
+                                 1, ARCHIVE - 16, 16) == 0,
+          "et son voisin immédiat passe, à l'octet près");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, 0, 1, ARCHIVE, 16) == 0,
+          "sans archive déclarée, cette adresse est de la RAM comme une autre");
+
+    /* **Et la page sait dire où est cette racine.** Sans les deux champs, le
+     * noyau meurt dans `prepare_namespace` sur « VFS: Unable to mount root fs
+     * on unknown-block(0,0) ». */
+    uint8_t *racine = NULL;
+    size_t racine_len = 0;
+    check(wisq_desktop_boot_page(RAM_PAGES, NULL, FRAME, 64, 64,
+                                 &racine, &racine_len) == 0,
+          "une page à écran se bâtit");
+    if (racine != NULL) {
+        check(wisq_desktop_declare_initramfs(racine, racine_len, RAM_PAGES, FRAME, 64, 64,
+                                             ARCHIVE, ARCHIVE_BYTES) == 0,
+              "une archive entre la page zéro et le cadre est déclarable");
+        /* Les deux champs, en petit-boutien, là où le noyau les lit. */
+        check(racine[0x218] == 0x00 && racine[0x219] == 0x00
+              && racine[0x21a] == 0x20 && racine[0x21b] == 0x00,
+              "ramdisk_image porte l'adresse de l'archive");
+        check(racine[0x21c] == 0x00 && racine[0x21d] == 0x10
+              && racine[0x21e] == 0x00 && racine[0x21f] == 0x00,
+              "et ramdisk_size sa taille");
+        /* Et la page n'a pas été rebâtie : la carte e820 est toujours là. */
+        check(racine[0x1e8] == 3, "la carte garde ses trois entrées");
+        /* Les trois refus. */
+        check(wisq_desktop_declare_initramfs(racine, racine_len, RAM_PAGES, FRAME, 64, 64,
+                                             ARCHIVE, 0) == 2,
+              "une archive de zéro octet n'est pas une racine");
+        check(wisq_desktop_declare_initramfs(racine, racine_len, RAM_PAGES, FRAME, 64, 64,
+                                             boot_at, 16) == 3,
+              "une archive sur la page zéro l'écraserait");
+        check(wisq_desktop_declare_initramfs(racine, racine_len, RAM_PAGES, FRAME, 64, 64,
+                                             FRAME, 16) == 3,
+              "et une archive dans le cadre serait repeinte");
+        check(wisq_desktop_declare_initramfs(racine, racine_len, 3, 0, 0, 0,
+                                             ARCHIVE, ARCHIVE_BYTES) == 1,
+              "une RAM qui n'est pas une puissance de deux est refusée ici aussi");
+        check(wisq_desktop_declare_initramfs(NULL, 0, RAM_PAGES, 0, 0, 0,
+                                             ARCHIVE, ARCHIVE_BYTES) == -1,
+              "et une page nulle n'est pas une page");
+        wisq_x86_free_module(racine, racine_len);
+    }
 
     /* Et la page du pilote accepte l'adresse : c'est elle qui pose RSI. */
     uint8_t *amorcee = NULL;

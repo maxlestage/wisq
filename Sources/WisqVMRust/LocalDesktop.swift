@@ -44,6 +44,17 @@ public final class LocalDesktop {
         /// Ça ne ressemble pas à une écriture perdue, ça ressemble à un noyau
         /// qui se corrompt tout seul.
         case imageWouldOverwriteTheFrame(folded: Int, bytes: Int, frame: Int)
+        /// **L'image écraserait l'archive initramfs.** C'est la mémoire que le
+        /// noyau déballe pour s'en faire une racine : des octets posés dessus
+        /// la lui donnent corrompue, et le symptôme est un cpio « invalid
+        /// magic » qui ne nomme pas sa cause.
+        case imageWouldOverwriteTheArchive(folded: Int, bytes: Int, archive: Int)
+        /// **L'archive n'a pas pu être déclarée au noyau.** Sans les deux
+        /// champs de la page zéro, il traverse tous ses `initcall`, arrive dans
+        /// `prepare_namespace`, et meurt sur « VFS: Unable to mount root fs on
+        /// unknown-block(0,0) » — une panique qui ne dit pas que l'archive
+        /// était là, à côté, jamais nommée.
+        case theRootCouldNotBeDeclared(DesktopTranslator.Declared)
         /// La machine s'est arrêtée mais n'a pas dit pourquoi : le message
         /// d'arrêt n'est jamais arrivé. C'est un défaut de pont, pas une issue.
         case stopWasNeverAnnounced
@@ -99,6 +110,11 @@ public final class LocalDesktop {
     /// kibioctets dans leur RAM et leur ferait lire dans RSI une adresse qu'ils
     /// n'attendent pas.
     private let bootsAKernel: Bool
+    /// L'archive que le noyau déballera, et où l'application veut qu'elle
+    /// soit. `nil` pour un démarrage sans racine — ce qui est le cas de tout ce
+    /// qui est jugé sur ses registres, et c'était le cas du bureau entier
+    /// jusqu'ici.
+    private let initramfs: DesktopTranslator.Initramfs?
     private let channel = "wisq"
     private let web: WKWebView
     private let handler: Channel
@@ -129,7 +145,8 @@ public final class LocalDesktop {
         pages: UInt32,
         entry: UInt64,
         screen: DesktopTranslator.Screen? = nil,
-        bootsAKernel: Bool = false
+        bootsAKernel: Bool = false,
+        initramfs: DesktopTranslator.Initramfs? = nil
     ) throws {
         guard pages > 0, pages & (pages - 1) == 0 else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
@@ -172,6 +189,7 @@ public final class LocalDesktop {
         self.entry = entry
         self.screen = screen
         self.bootsAKernel = bootsAKernel
+        self.initramfs = initramfs
         let settings = WKWebViewConfiguration()
         handler = Channel()
         settings.userContentController.add(handler, name: channel)
@@ -269,6 +287,72 @@ public final class LocalDesktop {
         //
         // `wisqRun` est posé **en dernier** par le pilote, et un test Rust le
         // tient : sa présence veut donc dire que tout le reste est monté.
+        // **Et ce qui suit doit être atteint.** La boucle d'attente est une
+        // méthode à part *pour cette raison* : écrite en ligne, chacune de ses
+        // sorties était un `return`, et tout ce qui venait après — le dépôt de
+        // la page zéro, ajouté par #310 — n'a **jamais été exécuté**. Trois
+        // tranches l'ont cru posée. Rien ne l'a vu parce qu'aucun test ne
+        // relisait la page ; #313 en a écrit un, et il l'a trouvé au premier
+        // passage.
+        let said = try await driverIsUp(patience: patience)
+
+        // **La page zéro est posée ici, et pas par l'appelant.** Elle n'est pas
+        // de ses données : c'est la machine qui en a besoin, l'application ne
+        // la lit jamais, et la lui faire poser lui demanderait de connaître une
+        // adresse que le pilote connaît déjà. L'ordre est imposé — la RAM de
+        // l'invité n'existe qu'une fois le pilote monté, donc après l'attente
+        // ci-dessus et avant tout `run`.
+        guard bootsAKernel else { return }
+        // **Et un bureau qui amorce un noyau exige un verdict lisible.** Quand
+        // la question elle-même a échoué, le chargement réussit quand même —
+        // c'est écrit plus haut, et un instrument qui casse ce qu'il mesure ne
+        // mesure rien. Mais sans pilote confirmé, la page zéro ne peut pas être
+        // posée : venir au monde sans elle, en silence, est exactement le
+        // défaut que #310 croyait avoir corrigé.
+        guard said == Self.ready else {
+            throw Failure.thePageNeverCameUp(said)
+        }
+
+        // **L'écran va dans la page zéro, pas seulement dans la vue.** Sans lui
+        // le noyau ne sait pas qu'il y a un cadre, et — pire — sa carte e820
+        // décrit ces pages comme **libres** : l'allocateur les distribue, et le
+        // bureau se corrompt sous des causes sans rapport.
+        guard var zero = DesktopTranslator.bootPage(pages: pages, screen: screen) else {
+            throw Failure.imageDoesNotFit(
+                folded: Int(clamping: screen?.base ?? 0),
+                bytes: 0,
+                ram: Int(clamping: UInt64(pages) * 65536)
+            )
+        }
+        // **La racine est déclarée dans la page avant qu'elle ne soit posée.**
+        // Sans ces deux champs, le noyau traverse tous ses `initcall` et meurt
+        // dans `prepare_namespace` — avec l'archive dans sa RAM, à côté, jamais
+        // nommée.
+        if let initramfs {
+            let verdict = DesktopTranslator.declareInitramfs(
+                in: &zero, pages: pages, screen: screen, initramfs: initramfs
+            )
+            guard verdict == .declared else {
+                throw Failure.theRootCouldNotBeDeclared(verdict)
+            }
+        }
+        // **Par `deposit` et non par `place`.** La page zéro est précisément ce
+        // que `place` refuse désormais d'écraser ; la poser par lui serait un
+        // refus de l'application contre elle-même. Et l'archive est dans le
+        // même cas depuis qu'elle est protégée.
+        let ram = Int(pages) * 65536
+        try await deposit(zero, at: Int(DesktopTranslator.bootPageAddress & UInt64(ram - 1)))
+        if let initramfs {
+            try await deposit(initramfs.bytes, at: Int(initramfs.at & UInt64(ram - 1)))
+        }
+    }
+
+    /// **Attend que le pilote soit monté, et rend son dernier verdict.**
+    ///
+    /// Séparée de `settle` parce que chacune de ses sorties est un `return` :
+    /// en ligne, elle emportait tout ce qui la suivait. C'est ce qui a rendu le
+    /// dépôt de la page zéro inatteignable pendant trois tranches.
+    private func driverIsUp(patience: TimeInterval) async throws -> String {
         let installed = Date().addingTimeInterval(patience)
         while true {
             do {
@@ -283,11 +367,14 @@ public final class LocalDesktop {
                 )
                 pageVerdict = value as? String ?? "la page n'a pas répondu lisiblement"
             } catch {
-                pageVerdict = "la page n'a pas pu être interrogée : \(error)"
-                return
+                let why = "la page n'a pas pu être interrogée : \(error)"
+                pageVerdict = why
+                return why
             }
-            guard let said = pageVerdict else { return }
-            if said == Self.ready { return }
+            guard let said = pageVerdict else {
+                return "la page n'a pas rendu de verdict"
+            }
+            if said == Self.ready { return said }
             // **Un script qui a levé ne s'installera pas en attendant.** Seul
             // « pas encore fini » vaut d'être réessayé ; tout autre verdict est
             // une panne, et la retenir jusqu'au délai la rendrait plus lente
@@ -295,32 +382,6 @@ public final class LocalDesktop {
             if said != Self.stillInstalling { throw Failure.thePageNeverCameUp(said) }
             if Date() >= installed { throw Failure.thePageNeverCameUp(said) }
             try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        // **La page zéro est posée ici, et pas par l'appelant.** Elle n'est pas
-        // de ses données : c'est la machine qui en a besoin, l'application ne
-        // la lit jamais, et la lui faire poser lui demanderait de connaître une
-        // adresse que le pilote connaît déjà. L'ordre est imposé — la RAM de
-        // l'invité n'existe qu'une fois le pilote monté, donc après la boucle
-        // ci-dessus et avant tout `run`.
-        if bootsAKernel {
-            // **L'écran va dans la page zéro, pas seulement dans la vue.**
-            // Sans lui le noyau ne sait pas qu'il y a un cadre, et — pire — sa
-            // carte e820 décrit ces pages comme **libres** : l'allocateur les
-            // distribue, et le bureau se corrompt sous des causes sans
-            // rapport.
-            guard let zero = DesktopTranslator.bootPage(pages: pages, screen: screen) else {
-                throw Failure.imageDoesNotFit(
-                    folded: Int(clamping: screen?.base ?? 0),
-                    bytes: 0,
-                    ram: Int(clamping: UInt64(pages) * 65536)
-                )
-            }
-            // **Par `deposit` et non par `place`.** La page zéro est
-            // précisément ce que `place` refuse désormais d'écraser ; la poser
-            // par lui serait un refus de l'application contre elle-même.
-            let ram = Int(pages) * 65536
-            try await deposit(zero, at: Int(DesktopTranslator.bootPageAddress & UInt64(ram - 1)))
         }
     }
 
@@ -372,7 +433,7 @@ public final class LocalDesktop {
         // faute d'arithmétique y resterait invisible partout ailleurs. Les
         // nombres du message, eux, sont ceux que cette fonction a déjà.
         switch DesktopTranslator.placement(
-            pages: pages, screen: screen, boots: bootsAKernel,
+            pages: pages, screen: screen, initramfs: initramfs, boots: bootsAKernel,
             at: address, bytes: UInt64(image.count)
         ) {
         case .placeable:
@@ -386,6 +447,12 @@ public final class LocalDesktop {
                 folded: folded,
                 bytes: image.count,
                 frame: Int(clamping: (screen?.base ?? 0) & UInt64(ram - 1))
+            )
+        case .wouldOverwriteTheArchive:
+            throw Failure.imageWouldOverwriteTheArchive(
+                folded: folded,
+                bytes: image.count,
+                archive: Int(clamping: (initramfs?.at ?? 0) & UInt64(ram - 1))
             )
         // Celui-ci est refusé à la construction, donc il ne peut pas arriver
         // ici — mais le ranger sous un autre refus donnerait un message qui
