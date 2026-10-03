@@ -655,6 +655,63 @@ final class LocalDesktopTests: XCTestCase {
         }
     }
 
+    // MARK: - Reprendre
+
+    /// **Un bureau peut être relancé, et le second tour rend *son* verdict.**
+    ///
+    /// Deux défauts en un, et les deux de la même famille que les cinq
+    /// précédentes : le montage de mesure borne ses exécutions par
+    /// `WISQ_ROUNDS` et `WISQ_TURNS` — c'est ce qui lui permet de lancer un
+    /// noyau un moment, regarder, et relancer — et le pilote du bureau
+    /// appelait `vm.run()` **sans argument**.
+    ///
+    /// Et `handler.stopped` était posé à l'arrivée du message d'arrêt et
+    /// **jamais** remis à zéro : un second `run()` sortait aussitôt de sa
+    /// boucle d'attente et rendait l'arrêt du **premier**.
+    ///
+    /// **Ce test voit les deux parce que les deux raisons diffèrent.** Le
+    /// premier tour, borné à un seul, s'arrête sur `tours épuisés` ; le second,
+    /// sans borne, finit la chaîne et s'arrête sur son `ud2`. Avec le verdict
+    /// périmé, la garde croisée de `run()` jette « la machine rend X et poste
+    /// Y » — un message qui accuse le pont pour un défaut de comptabilité.
+    ///
+    /// **Et RDX dit que la machine a continué** plutôt que de repartir : un à
+    /// la fin du premier tour, deux à la fin du second. Un bureau qui
+    /// redémarrerait à chaque appel passerait les deux assertions de verdict et
+    /// pas celles-là.
+    ///
+    /// **Pourquoi `program()` et pas un anneau sur lui-même** : mesuré sous
+    /// Bun, un `inc %rdx ; jmp .` rend `sur place`, et l'hôte a raison — un
+    /// anneau d'un seul bloc y tourne en interne et revient toujours à la même
+    /// adresse. Ce qui fait avancer RIP entre deux tours bornés, c'est de
+    /// **changer de région**, et `program()` en a deux.
+    func testADesktopCanBeResumedAndTheSecondRunReportsItsOwnStop() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        try await desktop.place(program(), at: base)
+
+        let first = try await desktop.run(rounds: 1, budget: 64)
+        XCTAssertEqual(
+            first.why, "tours épuisés",
+            "un tour borné s'arrête sur sa borne, pas sur le `ud2`"
+        )
+        // Hissé hors de l'assertion : `XCTAssertEqual` prend une autoclosure,
+        // qui accepte `try` mais **pas** `await`. La septième règle de
+        // `scripts/check-whitespace.sh`, écrite en #313 après que la leçon en
+        // commentaire ne m'ait pas arrêté, l'a attrapé ici en local.
+        let afterFirst = try await desktop.global(2)
+        XCTAssertEqual(afterFirst, 1, "une seule région a couru")
+
+        let second = try await desktop.run()
+        XCTAssertEqual(
+            second.why, Self.ud2SansPorte,
+            "le second tour finit la chaîne et rend **son** verdict"
+        )
+        XCTAssertEqual(second.at, base + 0x103, "et il dit où")
+        let afterSecond = try await desktop.global(2)
+        XCTAssertEqual(afterSecond, 2, "la machine a continué au lieu de repartir")
+    }
+
     // MARK: - La console
 
     /// **Ce que l'invité écrit sur son port série arrive à l'application.**

@@ -14572,3 +14572,233 @@ console.log("fini");
         text: text.clone(),
     }
 }
+
+/// **Le pilote accepte qu'on borne une exécution, et la machine reprend où elle
+/// s'est arrêtée.**
+///
+/// `machine().run()` prend `{ budget, rounds }` depuis le début, et le montage
+/// de mesure s'en sert : `WISQ_ROUNDS` et `WISQ_TURNS` sont ce qui permet de
+/// lancer un noyau un moment, regarder, et relancer. **Le pilote du bureau
+/// appelait `vm.run()` sans argument**, donc l'application n'avait aucun moyen
+/// de borner une exécution ni d'observer entre deux.
+///
+/// Sixième défaut de la même famille : le montage l'a, le bureau ne l'a pas.
+///
+/// **Ce que ce test tient** : qu'un tour borné s'arrête sur `tours épuisés`, et
+/// qu'un second appel **continue** — RDX avance au lieu de repartir de zéro.
+/// Une machine qui redémarrerait à chaque appel passerait la première
+/// assertion et pas la seconde.
+#[test]
+fn the_driver_takes_a_bounded_run_and_the_machine_picks_up_where_it_stopped() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    // **Deux régions, jointes par un saut indirect**, la même forme que les
+    // tests hébergés emploient : chacune incrémente RDX, la seconde s'arrête
+    // sur `ud2`.
+    //
+    // **Un anneau sur lui-même ne conviendrait pas**, et c'est mesuré : un
+    // `inc %rdx ; jmp .` rend `sur place`, parce que l'hôte refuse à raison un
+    // anneau d'un seul bloc dont le budget s'épuise sur son point de départ —
+    // il y tourne en interne et revient toujours à la même adresse. Ce qui
+    // fait avancer RIP entre deux tours, c'est de **changer de région**.
+    let seen = desktop_bounded(&bun, 1, "1, 64", "");
+    assert_eq!(
+        seen.first, "tours épuisés",
+        "un tour borné s'arrête sur son budget : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.rdx_first, 1,
+        "un seul tour : une seule région a couru — {}",
+        seen.text
+    );
+    // **Et le second tour, sans borne, va jusqu'à l'arrêt franc.** Deux raisons
+    // d'arrêt *différentes* : c'est ce qui rend ce test capable de voir un
+    // verdict périmé, et pas seulement une machine qui n'a pas tourné.
+    assert_eq!(
+        seen.second,
+        "une instruction indéfinie (ud2) sans porte : aucune IDT ne porte le vecteur 6",
+        "le second tour finit la chaîne et s'arrête sur son `ud2` : {}",
+        seen.text
+    );
+    assert!(
+        seen.rdx_second > seen.rdx_first,
+        "et il a **continué** plutôt que de repartir : {} puis {} — {}",
+        seen.rdx_first,
+        seen.rdx_second,
+        seen.text
+    );
+}
+
+/// **Et le budget borne une région, pas seulement le nombre de tours.**
+///
+/// Les deux bornes ne font pas la même chose : `rounds` compte les régions
+/// qu'on laisse courir, `budget` les cycles qu'on laisse à **chacune**. Une
+/// garde qui n'emploierait que la première ne dirait rien de la seconde — et
+/// c'est exactement ce qu'un sabotage a montré : retirer le passage du budget
+/// ne faisait tomber aucun test, parce qu'avec un seul tour la région s'arrête
+/// de toute façon au bout d'une région.
+///
+/// Ici la première région porte **512** `inc %rdx` d'affilée. Avec un seul tour
+/// et soixante-quatre cycles, RDX doit rester bien en dessous de 512 : c'est le
+/// budget, et rien d'autre, qui l'a arrêtée en plein milieu.
+#[test]
+fn a_tight_budget_stops_a_region_before_its_end() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    let seen = desktop_bounded(&bun, 512, "1, 64", "0, 64");
+    assert_eq!(
+        seen.rdx_first, 64,
+        "le budget a coupé la région à son soixante-quatrième bloc : {}",
+        seen.text
+    );
+
+    // **Et zéro tour n'exécute rien**, ce qui est l'autre bord de la même
+    // borne : `rounds` est honoré jusqu'à son extrême, pas seulement au-dessus
+    // de un.
+    assert_eq!(
+        seen.rdx_second, seen.rdx_first,
+        "zéro tour ne fait rien tourner : {}",
+        seen.text
+    );
+
+    // **La reprise, elle, est tenue par le test voisin** et pas ici : relancer
+    // *en plein milieu* d'une région demanderait au harnais un module pour
+    // cette adresse-là, et il n'en porte que deux. Le dire vaut mieux que
+    // d'écrire une assertion que la limite du gréement rendrait fausse.
+}
+
+struct DesktopBounded {
+    first: String,
+    second: String,
+    rdx_first: u64,
+    rdx_second: u64,
+    text: String,
+}
+
+/// Le pilote, exécuté deux fois avec un budget serré.
+fn desktop_bounded(bun: &Path, incs: usize, un: &str, deux: &str) -> DesktopBounded {
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x0100_0000_0000_1000;
+    const SUITE: u64 = BASE + 0x100;
+    // La première : `incs` fois `inc %rdx`, puis `mov $SUITE,%rax` et
+    // `jmp *%rax` — un saut que l'émetteur ne peut pas résoudre à la
+    // traduction, donc une seconde région à demander.
+    // **`inc %rdx` suivi d'un `jmp` sur l'instruction d'après**, et le saut
+    // n'est pas décoratif : le budget borne les **blocs**, pas les
+    // instructions. Mesuré — 512 `inc` d'affilée sont un seul bloc, et la
+    // région les exécute tous quel que soit le budget. Un `eb 00` ferme le
+    // bloc sans rien faire d'autre, donc c'est lui qui rend le budget
+    // observable.
+    let mut first: Vec<u8> = Vec::new();
+    for _ in 0..incs {
+        first.extend_from_slice(&[0x48, 0xff, 0xc2, 0xeb, 0x00]);
+    }
+    first.extend_from_slice(&[0x48, 0xb8]);
+    first.extend_from_slice(&SUITE.to_le_bytes());
+    first.extend_from_slice(&[0xff, 0xe0]);
+    // La seconde : `inc %rdx` puis `ud2`.
+    let second: Vec<u8> = vec![0x48, 0xff, 0xc2, 0x0f, 0x0b];
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-page-bounded-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    for (name, region, at) in [("un", &first, BASE), ("deux", &second, SUITE)] {
+        for slot in 0..6u32 {
+            let module = Module::resolving(region, at, 0, slot, PAGES)
+                .expect("l'émetteur doit compiler la région");
+            let path = scratch.join(format!("bounded-{name}-{slot}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            catalogue.push_str(&format!("[\"{at}:{slot}\",{:?}],", path.to_string_lossy()));
+        }
+    }
+    let loaded = format!("[\"{BASE}\",{first:?}],[\"{SUITE}\",{second:?}],");
+
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None, None);
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None, None).expect("la page");
+    assert!(
+        page.contains(&driver_source),
+        "la page doit porter exactement ce pilote"
+    );
+
+    let harness = scratch.join("d.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+import {{ readFileSync }} from "fs";
+const catalogue = new Map([{catalogue}]);
+const posé = new Map([{loaded}]);
+globalThis.window = globalThis;
+globalThis.webkit = {{
+  messageHandlers: {{
+    wisq: {{
+      postMessage: note => {{
+        if (note.kind !== "traduire") return;
+        setTimeout(() => {{
+          const path = catalogue.get(note.address + ":" + note.slot);
+          const octets = path === undefined ? null : [...readFileSync(path)];
+          window.wisqTranslated(note.id, octets);
+        }}, 0);
+      }},
+    }},
+  }},
+}};
+
+{driver}
+
+for (const [adresse, octets] of posé) {{
+  const at = Number(BigInt(adresse) & BigInt({pages} * 65536 - 1));
+  new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
+}}
+// **Deux tours bornés**, et le second doit reprendre où le premier s'est
+// arrêté. Huit tours plutôt qu'un : le premier peut être dépensé à demander la
+// traduction, et une garde qui dépendrait de ça mesurerait le pont, pas la
+// reprise.
+const un = await window.wisqRun({un});
+console.log("un " + un);
+console.log("rdxun " + window.wisqMachine.globals[2].value.toString());
+const deux = await window.wisqRun({deux});
+console.log("deux " + deux);
+console.log("rdxdeux " + window.wisqMachine.globals[2].value.toString());
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            driver = driver_source,
+            pages = PAGES,
+            un = un,
+            deux = deux,
+        ),
+    )
+    .expect("le harnais");
+    let text = run_driver(bun, &harness);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le harnais doit aller au bout : {text}"
+    );
+    let line = |prefix: &str| -> String {
+        text.lines()
+            .find_map(|l| l.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("le harnais doit dire « {prefix} » : {text}"))
+            .trim()
+            .to_string()
+    };
+    let number = |prefix: &str| -> u64 { line(prefix).parse().expect("un nombre") };
+    DesktopBounded {
+        first: line("un "),
+        second: line("deux "),
+        rdx_first: number("rdxun "),
+        rdx_second: number("rdxdeux "),
+        text: text.clone(),
+    }
+}

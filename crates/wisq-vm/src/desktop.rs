@@ -852,9 +852,26 @@ vm.globals[SLOTS.rip].value = {entry}n;
 {amorce}
 window.wisqMachine = vm;
 {painting}
-window.wisqRun = async () => {{
+// **Le pilote accepte qu'on borne une exécution, et c'est ce qui permet de
+// reprendre.** `machine().run()` prend `{{ rounds, budget }}` depuis le début
+// et le montage de mesure s'en sert — `WISQ_ROUNDS` et `WISQ_TURNS` sont ce
+// qui lui permet de lancer un noyau un moment, regarder, et relancer. Ce
+// pilote appelait `vm.run()` **sans argument** : l'application ne pouvait ni
+// borner ni observer entre deux.
+//
+// **Les deux sont facultatifs, et omis veut dire « les défauts de l'hôte ».**
+// Un pilote qui imposerait ses propres bornes les dédoublerait, et la copie
+// qui mentirait serait celle que personne ne lit.
+//
+// `budget` arrive en nombre et repart en `BigInt` : l'hôte compte les cycles
+// en soixante-quatre bits, et un `Number` ne traverse pas la frontière des
+// entiers sans perdre ses bits de poids fort.
+window.wisqRun = async (tours, budget) => {{
   window.wisqAfficher();
-  const why = await vm.run();
+  const bornes = {{}};
+  if (tours !== undefined && tours !== null) bornes.rounds = Number(tours);
+  if (budget !== undefined && budget !== null) bornes.budget = BigInt(budget);
+  const why = await vm.run(bornes);
   // **Cesser peint une dernière fois.** Sans ça, la dernière image montrée
   // serait celle d'avant l'arrêt : on regarderait un écran qui n'est pas
   // l'état dans lequel la machine s'est arrêtée.
