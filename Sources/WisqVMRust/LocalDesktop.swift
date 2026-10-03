@@ -503,6 +503,54 @@ public final class LocalDesktop {
         }
     }
 
+    /// **Ce que l'invité a dit sur son port série depuis la dernière fois.**
+    ///
+    /// `web/host.js` modélise le 16550 depuis #305 et appelle son rappel
+    /// `serial` pour chaque octet émis sur `0x3f8`. Le pilote du bureau n'en
+    /// passait aucun : le noyau écrivait tout son journal de démarrage, le
+    /// modèle recevait chaque octet, et **tous étaient jetés**. C'est par ce
+    /// chemin que le montage de mesure a relevé les 242 lignes d'un démarrage
+    /// Alpine et le `WISQ-USERSPACE-OK` de #306.
+    ///
+    /// **La lecture vide le tampon**, et c'est le contrat : sans ça
+    /// l'application relirait tout le journal à chaque appel, et il doublerait
+    /// de longueur à chaque lecture.
+    ///
+    /// **`lost` n'est pas décoratif.** Le tampon de la page est borné — un
+    /// invité qui parle sans fin est le cas normal, pas un cas tordu — et ce
+    /// qui est jeté est compté. Une console qui perd des octets en silence
+    /// mentirait sur ce que l'invité a dit.
+    public struct Console: Equatable, Sendable {
+        public let octets: Data
+        public let lost: Int
+    }
+
+    public func console() async throws -> Console {
+        let said: Any?
+        do {
+            said = try await web.callAsyncJavaScript(
+                """
+                const lu = window.wisqConsole();
+                return [lu.octets, lu.perdus];
+                """,
+                arguments: [:], in: nil, contentWorld: .page
+            )
+        } catch {
+            throw refuse(error)
+        }
+        // **Le verdict est lu, pas supposé.** Une page à moitié montée rendrait
+        // autre chose, et le prendre pour une console vide ferait croire à
+        // l'application que l'invité n'a rien dit.
+        guard let pair = said as? [Any], pair.count == 2,
+              let encoded = pair[0] as? String,
+              let lost = pair[1] as? Int,
+              let octets = Data(base64Encoded: encoded)
+        else {
+            throw Failure.script("la console n'a pas répondu lisiblement : \(said ?? "rien")")
+        }
+        return Console(octets: octets, lost: lost)
+    }
+
     /// **Relire la mémoire de l'invité**, à l'adresse repliée.
     ///
     /// Le miroir de `place`, et il porte la même borne : la correspondance vit

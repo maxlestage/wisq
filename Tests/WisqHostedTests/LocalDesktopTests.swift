@@ -655,6 +655,63 @@ final class LocalDesktopTests: XCTestCase {
         }
     }
 
+    // MARK: - La console
+
+    /// **Ce que l'invité écrit sur son port série arrive à l'application.**
+    ///
+    /// `web/host.js` modélise le 16550 depuis #305 et appelle son rappel
+    /// `serial` pour chaque octet émis sur `0x3f8` — c'est par là que le
+    /// montage de mesure a relevé les 242 lignes d'un démarrage Alpine et le
+    /// `WISQ-USERSPACE-OK` de #306. **Le pilote du bureau n'en passait aucun**,
+    /// donc tous les octets étaient jetés.
+    ///
+    /// **Ce que ce test ajoute à son jumeau sous Bun** : la traversée dans un
+    /// vrai WebKit. Que le pilote tamponne est tenu en Rust ; que les octets
+    /// arrivent *en Swift*, à travers `callAsyncJavaScript` et un base64, ne
+    /// l'est qu'ici.
+    func testWhatTheGuestWritesOnItsSerialPortReachesTheApplication() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+
+        // `mov $0x3f8,%edx`, puis quatre fois `mov $octet,%al ; out %al,%dx`,
+        // puis `ud2` — un arrêt qui se nomme.
+        var program = Data([0xBA, 0xF8, 0x03, 0x00, 0x00])
+        for octet in Array("WISQ".utf8) {
+            program.append(contentsOf: [0xB0, octet, 0xEE])
+        }
+        program.append(contentsOf: [0x0F, 0x0B])
+        try await desktop.place(program, at: base)
+
+        let stopped = try await desktop.run()
+        XCTAssertEqual(stopped.why, Self.ud2SansPorte, "le `ud2` arrête la machine")
+
+        let said = try await desktop.console()
+        XCTAssertEqual(
+            String(decoding: said.octets, as: UTF8.self), "WISQ",
+            "les quatre octets que l'invité a émis ont traversé le pont"
+        )
+        XCTAssertEqual(said.lost, 0, "et rien n'a été perdu")
+
+        // **Et une seconde lecture ne les rend pas deux fois.** Un tampon qui
+        // ne se vide pas ferait doubler le journal à chaque lecture.
+        let again = try await desktop.console()
+        XCTAssertEqual(again.octets, Data(), "le tampon est vidé par la lecture")
+        XCTAssertEqual(again.lost, 0)
+    }
+
+    /// **Et un invité qui n'a rien dit rend une console vide, pas une panne.**
+    ///
+    /// C'est ce qui donne son sens au test ci-dessus : une console qui
+    /// refuserait quand il n'y a rien à lire obligerait l'appelant à deviner la
+    /// différence entre « rien dit » et « cassé ».
+    func testADesktopThatSaidNothingHasAnEmptyConsole() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        let said = try await desktop.console()
+        XCTAssertEqual(said.octets, Data())
+        XCTAssertEqual(said.lost, 0)
+    }
+
     /// **Et les deux refus ne sont pas inconditionnels** — c'est ce qui leur
     /// donne leur sens. Un bureau jugé sur ses registres n'a ni page zéro ni
     /// cadre : lui interdire ces adresses serait un refus sans objet, et un

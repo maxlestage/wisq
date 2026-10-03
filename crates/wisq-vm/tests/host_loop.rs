@@ -14325,3 +14325,250 @@ fn a_screen_from_another_turn_of_the_mask_builds_the_same_page() {
         "replié, ce cadre écraserait la page zéro"
     );
 }
+
+/// **Ce que l'invité écrit sur son port série arrive à l'application.**
+///
+/// `web/host.js` accepte un rappel `serial` depuis #305 et l'appelle pour
+/// **chaque octet** que l'invité émet — c'est par là que le montage de mesure
+/// a relevé les 242 lignes d'un démarrage Alpine, le
+/// `ttyS0 at I/O 0x3f8 (irq = 4) is a 16550A`, et le `WISQ-USERSPACE-OK` de
+/// #306.
+///
+/// **`desktop::driver` n'en passait aucun.** Un `grep serial` sur
+/// `src/desktop.rs` ne rendait rien. Le bureau faisait donc tourner un noyau
+/// qui écrit tout son journal sur `0x3f8`, le modèle 16550 recevait chaque
+/// octet, et **tous étaient jetés**. Cinquième défaut de la même famille que
+/// #310, #311, #313 et #314 : le montage l'a, le bureau ne l'a pas.
+///
+/// **Pourquoi la console se *tire* et ne se *pousse* pas, dans cette tranche.**
+/// Un `postMessage` par octet ferait des dizaines de milliers de
+/// sérialisations pour un seul démarrage. Le pilote tamponne donc, et
+/// `wisqConsole()` vide le tampon quand on le lui demande — exactement la forme
+/// de `wisqPaint`, et pour la même raison écrite là-bas : un test qui
+/// attendrait que la page veuille bien parler n'aurait rien à attendre.
+/// Pousser pour qu'une interface voie le noyau démarrer *en direct* est une
+/// direction, pas ce défaut.
+#[test]
+fn what_the_guest_writes_on_its_serial_port_reaches_the_application() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    // `mov $0x3f8,%edx`, puis quatre fois `mov $octet,%al ; out %al,%dx`, puis
+    // `ud2` — un arrêt qui se nomme.
+    let mut program: Vec<u8> = vec![0xba, 0xf8, 0x03, 0x00, 0x00];
+    for octet in b"WISQ" {
+        program.extend_from_slice(&[0xb0, *octet, 0xee]);
+    }
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let seen = desktop_console(&bun, &program);
+    assert_eq!(
+        seen.console, "WISQ",
+        "les quatre octets que l'invité a émis sont sortis : {}",
+        seen.text
+    );
+    assert_eq!(seen.lost, 0, "et rien n'a été perdu : {}", seen.text);
+    // **Et un second appel ne les rend pas deux fois.** Un tampon qui ne se
+    // vide pas ferait croire à l'application que l'invité répète tout ce qu'il
+    // a déjà dit — et le journal d'un démarrage doublerait à chaque lecture.
+    assert_eq!(
+        seen.again, "",
+        "le tampon est vidé par la lecture : {}",
+        seen.text
+    );
+}
+
+/// **Un invité qui parle sans fin ne fait pas fuir la page, et ce qu'il perd
+/// est compté.**
+///
+/// Le tampon de la console est borné, et il doit l'être : une console qui
+/// défile est ce que fait un noyau, pas un cas tordu. Sans borne, la page
+/// grossirait jusqu'à ce que la vue meure — et le symptôme serait un processus
+/// de contenu tué par le système, très loin de sa cause.
+///
+/// **Mais ce qui est jeté est compté**, et c'est ce que ce test tient. Une
+/// console qui perdrait des octets en silence mentirait sur ce que l'invité a
+/// dit : l'application croirait avoir tout lu. Sans cette garde, `perdus`
+/// serait un ornement — un compteur que rien n'exerce, donc un compteur qu'on
+/// ne saurait pas faux.
+///
+/// Les nombres sont exacts et pas approchés, parce que c'est le seul moyen de
+/// distinguer « la borne tient » de « la borne tient à peu près » : le tampon
+/// garde 65 536 octets, jette la **moitié** quand il est plein, et l'invité en
+/// émet 70 000. Donc 32 768 perdus, et 37 232 restants.
+#[test]
+fn a_guest_that_never_stops_talking_does_not_grow_the_page_without_bound() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    // `mov $0x3f8,%edx` ; `mov $70000,%ecx` ; boucle : `mov $'A',%al` ;
+    // `out %al,%dx` ; `dec %ecx` ; `jnz boucle` ; `ud2`.
+    let program: Vec<u8> = vec![
+        0xba, 0xf8, 0x03, 0x00, 0x00, // mov $0x3f8,%edx
+        0xb9, 0x70, 0x11, 0x01, 0x00, // mov $70000,%ecx
+        0xb0, 0x41, // mov $'A',%al
+        0xee, // out %al,%dx
+        0xff, 0xc9, // dec %ecx
+        0x75, 0xf9, // jnz -7
+        0x0f, 0x0b, // ud2
+    ];
+    let seen = desktop_console(&bun, &program);
+    assert_eq!(
+        seen.lost, 32768,
+        "la moitié du tampon plein est jetée, une fois : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.console.len(),
+        37232,
+        "et ce qui reste est ce que l'invité a dit en dernier : {}",
+        seen.text
+    );
+    assert!(
+        seen.console.bytes().all(|octet| octet == b'A'),
+        "et c'est bien ce qu'il a émis : {}",
+        seen.text
+    );
+}
+
+struct DesktopConsole {
+    console: String,
+    again: String,
+    lost: u64,
+    text: String,
+}
+
+/// Le pilote de la page, exécuté, avec un invité qui **écrit** sur `0x3f8`.
+fn desktop_console(bun: &Path, program: &[u8]) -> DesktopConsole {
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x0100_0000_0000_1000;
+    let program = program.to_vec();
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-page-console-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    for slot in 0..6u32 {
+        let module = Module::resolving(&program, BASE, 0, slot, PAGES)
+            .expect("l'émetteur doit compiler la région");
+        let path = scratch.join(format!("console-{slot}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        catalogue.push_str(&format!(
+            "[\"{BASE}:{slot}\",{:?}],",
+            path.to_string_lossy()
+        ));
+    }
+    let loaded = format!("[\"{BASE}\",{program:?}],");
+
+    // Le pilote tel que la page le porte, extrait plutôt que réécrit.
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None, None);
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None, None).expect("la page");
+    assert!(
+        page.contains(&driver_source),
+        "la page doit porter exactement ce pilote"
+    );
+
+    let harness = scratch.join("d.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+import {{ readFileSync }} from "fs";
+const catalogue = new Map([{catalogue}]);
+const posé = new Map([{loaded}]);
+globalThis.window = globalThis;
+globalThis.webkit = {{
+  messageHandlers: {{
+    wisq: {{
+      postMessage: note => {{
+        if (note.kind === "arrêt") return;
+        setTimeout(() => {{
+          const path = catalogue.get(note.address + ":" + note.slot);
+          const octets = path === undefined ? null : [...readFileSync(path)];
+          window.wisqTranslated(note.id, octets);
+        }}, 0);
+      }},
+    }},
+  }},
+}};
+
+{driver}
+
+for (const [adresse, octets] of posé) {{
+  const at = Number(BigInt(adresse) & BigInt({pages} * 65536 - 1));
+  new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
+}}
+const why = await window.wisqRun();
+console.log("arret " + why);
+const lu = window.wisqConsole();
+console.log("console " + lu.octets);
+console.log("perdus " + lu.perdus);
+console.log("encore " + window.wisqConsole().octets);
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            driver = driver_source,
+            pages = PAGES,
+        ),
+    )
+    .expect("le harnais");
+    let text = run_driver(bun, &harness);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le harnais doit aller au bout : {text}"
+    );
+    let base64 = |prefix: &str| -> String {
+        let encoded = text
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("le harnais doit dire « {prefix} » : {text}"))
+            .trim()
+            .to_string();
+        if encoded.is_empty() {
+            return String::new();
+        }
+        // Le décodage est écrit ici plutôt qu'emprunté : une dépendance de plus
+        // pour seize octets de test ne se justifie pas.
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = 0u32;
+        let mut held = 0u32;
+        let mut out = Vec::new();
+        for glyph in encoded.bytes() {
+            if glyph == b'=' {
+                break;
+            }
+            let value = ALPHABET
+                .iter()
+                .position(|candidate| *candidate == glyph)
+                .unwrap_or_else(|| panic!("base64 attendu, vu « {encoded} »"));
+            bits = (bits << 6) | value as u32;
+            held += 6;
+            if held >= 8 {
+                held -= 8;
+                out.push((bits >> held) as u8);
+            }
+        }
+        String::from_utf8(out).expect("de l'UTF-8")
+    };
+    let console = base64("console ");
+    let again = base64("encore ");
+    let lost = text
+        .lines()
+        .find_map(|line| line.strip_prefix("perdus "))
+        .expect("le harnais doit dire « perdus »")
+        .trim()
+        .parse::<u64>()
+        .expect("un nombre");
+    DesktopConsole {
+        console,
+        again,
+        lost,
+        text: text.clone(),
+    }
+}
