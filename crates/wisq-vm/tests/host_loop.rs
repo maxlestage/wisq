@@ -13078,3 +13078,186 @@ console.log("fini");
         text: text.clone(),
     }
 }
+
+/// **#307 a mesuré que 1 397 régions voient leurs octets changer après leur
+/// traduction. Elle n'a pas pu dire si l'une d'elles a *tourné* ensuite.**
+///
+/// C'est la limite que cette tranche-là a écrite plutôt que devinée, et c'est
+/// la seule qui sépare « un fil » de « la machine exécute du code faux ».
+///
+/// `surveiller: true` la lève, et le choix de l'octet comparé n'est pas un
+/// compromis : **entrer dans une région, c'est exécuter l'instruction qui est à
+/// son entrée**. Si l'octet y a changé, la toute première instruction exécutée
+/// diffère de celle qui a été traduite — sans discussion possible, et sans
+/// qu'il faille savoir quels blocs la suite atteint. Comparer la fenêtre
+/// entière à chaque entrée coûterait quatre kibioctets sur le chemin le plus
+/// chaud du programme pour une réponse moins nette.
+///
+/// **Ce que ça sous-déclare, et c'est un plancher, pas une estimation** : une
+/// région dont le deuxième bloc a été patché tourne aussi du code périmé et
+/// n'est pas comptée ici. Le compte est donc une borne inférieure, jamais une
+/// fausse alerte.
+///
+/// Le montage : la région A saute dans B, B réécrit le premier octet de A,
+/// puis saute dans A. L'hôte réentre donc dans A **après** que ses octets ont
+/// bougé — ce qui ne peut pas arriver dans une seule région, puisqu'un saut
+/// interne au module ne repasse pas par l'hôte.
+#[test]
+fn a_region_that_runs_after_its_first_byte_changed_is_counted() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = watched(&bun, 0);
+    assert!(
+        seen.entries >= 1,
+        "A est réentrée après que B a réécrit son premier octet : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.regions,
+        vec![WATCH_BASE],
+        "et c'est A qui est nommée, elle seule : {}",
+        seen.text
+    );
+}
+
+/// **Et une réécriture hors de toute entrée de région ne compte rien.**
+///
+/// Le même montage au déplacement près : B écrit **deux** pages plus loin. Les
+/// deux régions sont réempruntées autant de fois, et aucune n'a changé sous
+/// elle. Sans cette garde, un compteur qui s'incrémenterait à chaque entrée
+/// passerait celle du dessus.
+///
+/// **Le déplacement a d'abord été `0x1000`, et le contrôle est tombé** : à une
+/// page, B écrit sur sa **propre** entrée, et l'instrument l'a nommée —
+/// 69 632, soit `0x11000`. Il avait raison ; c'est le contrôle qui était mal
+/// posé. Noté parce qu'une garde qui tombe sur un montage fautif ressemble
+/// exactement à une garde qui trouve un défaut.
+#[test]
+fn a_region_reentered_without_changing_is_not_counted() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = watched(&bun, 0x2000);
+    assert_eq!(
+        seen.entries, 0,
+        "rien n'a changé sous une entrée de région : {}",
+        seen.text
+    );
+    assert!(
+        seen.regions.is_empty(),
+        "et rien n'est nommé : {}",
+        seen.text
+    );
+}
+
+const WATCH_BASE: u64 = 0x1_0000;
+
+struct Watched {
+    entries: u64,
+    regions: Vec<u64>,
+    text: String,
+}
+
+/// Les deux régions, et où B écrit. `shift` nul met l'écriture sur l'entrée de
+/// A ; `0x1000` la met deux pages plus loin, hors de toute entrée.
+fn watched(bun: &Path, shift: i64) -> Watched {
+    const PAGES: u32 = 2;
+    let first = WATCH_BASE;
+    let second = WATCH_BASE + 0x1000;
+    let target = (WATCH_BASE as i64 + shift) as u64;
+
+    // A : `jmp second`.
+    let mut a: Vec<u8> = vec![0xe9];
+    a.extend_from_slice(&((second as i64 - (first as i64 + 5)) as i32).to_le_bytes());
+
+    // B : `movb $0xcc, target(%rip)` puis `jmp first`.
+    let mut b: Vec<u8> = vec![0xc6, 0x05];
+    b.extend_from_slice(&((target as i64 - (second as i64 + 7)) as i32).to_le_bytes());
+    b.push(0xcc);
+    b.push(0xe9);
+    b.extend_from_slice(&((first as i64 - (second as i64 + 12)) as i32).to_le_bytes());
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-veille-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    // **Chaque adresse servie à toute case que l'hôte peut demander.** Prédire
+    // la case est un pari sur le nombre de blocs que l'émetteur découpe, et ce
+    // pari a déjà coûté un diagnostic en #299.
+    const SERVED_SLOTS: u32 = 17;
+    let mut served = String::new();
+    for (name, bytes, at) in [("a", &a[..], first), ("b", &b[..], second)] {
+        for slot in 0..SERVED_SLOTS {
+            let module = Module::resolving(bytes, at, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("{name} se traduit"));
+            let path = scratch.join(format!("{name}-{slot}.wasm"));
+            std::fs::write(&path, &module).unwrap_or_else(|_| panic!("{name}-{slot}"));
+            served.push_str(&format!(
+                "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+                path.to_string_lossy()
+            ));
+        }
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+  surveiller: true,
+}});
+vm.globals[{rip}].value = {first}n;
+const why = await vm.run({{ budget: 4n, rounds: 64 }});
+console.log("arret " + why.stopped);
+console.log("entrees " + vm.surveillees.entrees);
+for (const [adresse, quoi] of vm.surveillees.regions) {{
+  console.log("veille " + adresse + " " + quoi.entrees
+    + " " + quoi.lu + " " + quoi.maintenant);
+}}
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            first = first,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le pilote doit aller au bout : {text}"
+    );
+    let entries = text
+        .lines()
+        .find_map(|line| line.strip_prefix("entrees "))
+        .expect("le pilote doit dire « entrees »")
+        .trim()
+        .parse::<u64>()
+        .expect("un nombre");
+    Watched {
+        entries,
+        regions: text
+            .lines()
+            .filter_map(|line| line.strip_prefix("veille "))
+            .map(|rest| {
+                rest.split_whitespace()
+                    .next()
+                    .expect("une adresse")
+                    .parse::<u64>()
+                    .expect("un nombre")
+            })
+            .collect(),
+        text: text.clone(),
+    }
+}
