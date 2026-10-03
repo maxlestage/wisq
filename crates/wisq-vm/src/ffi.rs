@@ -541,6 +541,10 @@ pub unsafe extern "C" fn wisq_desktop_page(
     screen_base: u64,
     screen_width: u32,
     screen_height: u32,
+    // **Où l'application a posé la page zéro, ou zéro quand elle n'en a pas.**
+    // Un noyau entré sans `boot_params` s'arrête muet dans `extend_brk` ; un
+    // programme jugé sur ses registres, lui, n'en a pas et n'en veut pas.
+    boot_at: u64,
     out_bytes: *mut *mut u8,
     out_len: *mut usize,
 ) -> c_int {
@@ -559,11 +563,61 @@ pub unsafe extern "C" fn wisq_desktop_page(
             height: screen_height,
         })
     };
-    let Ok(page) = desktop::page(pages, entry, name, screen) else {
+    let boot = if boot_at == 0 { None } else { Some(boot_at) };
+    let Ok(page) = desktop::page(pages, entry, name, screen, boot) else {
         return -1;
     };
     hand_back(page.into_bytes(), out_bytes, out_len);
     0
+}
+
+/// **La page zéro que le bureau tend au noyau, ligne de commande comprise.**
+///
+/// Un noyau x86-64 entré sans `boot_params` n'a pas de carte e820 : il s'arrête
+/// muet dans `extend_brk` à sa 1067ᵉ région. L'application pose ces quatre
+/// kibioctets à `wisq_desktop_boot_page_at()` et passe cette adresse à
+/// `wisq_desktop_page` comme `boot_at` ; le pilote met alors RSI dessus.
+///
+/// `command_line` peut être nul : la ligne mesurée par défaut est employée.
+/// Rend 0 et quatre kibioctets, ou -1 si la RAM n'est pas une puissance de deux
+/// ou si la ligne ne tient pas dans la page. Le tampon se libère par
+/// `wisq_x86_free_module`.
+///
+/// # Safety
+/// `command_line`, when non-null, must be a valid NUL-terminated string, and
+/// `out_bytes` and `out_len` must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_desktop_boot_page(
+    pages: u32,
+    command_line: *const c_char,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let line = if command_line.is_null() {
+        desktop::COMMAND_LINE
+    } else {
+        match std::ffi::CStr::from_ptr(command_line).to_str() {
+            Ok(text) => text,
+            Err(_) => return -1,
+        }
+    };
+    let Ok(page) = desktop::boot_page(pages, line) else {
+        return -1;
+    };
+    hand_back(page, out_bytes, out_len);
+    0
+}
+
+/// Où la page zéro du bureau doit être posée dans la RAM de l'invité.
+///
+/// Écrit ici plutôt que du côté de l'application : le pilote y met RSI, et deux
+/// copies du nombre divergeraient en silence.
+#[no_mangle]
+pub extern "C" fn wisq_desktop_boot_page_at() -> u64 {
+    crate::kernel_image::ZERO_PAGE_AT
 }
 
 /// Ce que la correspondance occupe **au-dessus** de la RAM de l'invité, en

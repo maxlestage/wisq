@@ -711,12 +711,14 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "31",
+        "33",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
           "écrit en lettres — ce qui la faisait échapper au balayage des " +
-          "chiffres pendant que la couture passait de sept à trente et une.",
+          "chiffres pendant que la couture passait de sept à trente et une. " +
+          "Trente et une à trente-trois en #310 : la page zéro du bureau et " +
+          "son adresse, que le pilote met dans RSI.",
       ],
     ]),
   ],

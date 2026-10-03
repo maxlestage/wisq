@@ -72,6 +72,21 @@ public final class LocalDesktop {
     /// Le cadre que la page peindra, ou `nil` pour une machine qu'on juge sur
     /// ses registres. Un démarrage sans écran est un cas réel.
     private let screen: DesktopTranslator.Screen?
+    /// **Ce bureau amorce-t-il un vrai noyau ?**
+    ///
+    /// Quand oui, `load` pose la page zéro dans la RAM de l'invité et le
+    /// pilote met RSI dessus. Un noyau x86-64 entré sans `boot_params` n'a pas
+    /// de carte e820 : il retombe sur les 640 kibioctets du repli BIOS-88,
+    /// memblock n'a rien, et il s'arrête dans `extend_brk` à sa 1067ᵉ région —
+    /// **muet**, puisque sans ligne de commande il n'a pas de console précoce
+    /// non plus.
+    ///
+    /// **Et c'est faux par défaut**, parce que ce n'est pas gratuit : tous les
+    /// programmes jugés sur leurs registres — ceux des tests, et ceux des bancs
+    /// — n'ont pas de `boot_params`, et leur en poser un écrirait quatre
+    /// kibioctets dans leur RAM et leur ferait lire dans RSI une adresse qu'ils
+    /// n'attendent pas.
+    private let bootsAKernel: Bool
     private let channel = "wisq"
     private let web: WKWebView
     private let handler: Channel
@@ -101,7 +116,8 @@ public final class LocalDesktop {
     public init(
         pages: UInt32,
         entry: UInt64,
-        screen: DesktopTranslator.Screen? = nil
+        screen: DesktopTranslator.Screen? = nil,
+        bootsAKernel: Bool = false
     ) throws {
         guard pages > 0, pages & (pages - 1) == 0 else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
@@ -143,6 +159,7 @@ public final class LocalDesktop {
         self.pages = pages
         self.entry = entry
         self.screen = screen
+        self.bootsAKernel = bootsAKernel
         let settings = WKWebViewConfiguration()
         handler = Channel()
         settings.userContentController.add(handler, name: channel)
@@ -178,7 +195,8 @@ public final class LocalDesktop {
         // ci-dessous. Ce `guard` ne peut donc plus se déclencher, et c'est dit
         // plutôt que caché derrière un refus qui nommerait la mauvaise cause.
         guard let page = DesktopTranslator.page(
-            pages: pages, entry: entry, channel: channel, screen: screen
+            pages: pages, entry: entry, channel: channel, screen: screen,
+            boot: bootsAKernel ? DesktopTranslator.bootPageAddress : nil
         ) else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
         }
@@ -265,6 +283,19 @@ public final class LocalDesktop {
             if said != Self.stillInstalling { throw Failure.thePageNeverCameUp(said) }
             if Date() >= installed { throw Failure.thePageNeverCameUp(said) }
             try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // **La page zéro est posée ici, et pas par l'appelant.** Elle n'est pas
+        // de ses données : c'est la machine qui en a besoin, l'application ne
+        // la lit jamais, et la lui faire poser lui demanderait de connaître une
+        // adresse que le pilote connaît déjà. L'ordre est imposé — la RAM de
+        // l'invité n'existe qu'une fois le pilote monté, donc après la boucle
+        // ci-dessus et avant tout `run`.
+        if bootsAKernel {
+            guard let zero = DesktopTranslator.bootPage(pages: pages) else {
+                throw Failure.ramIsNotAPowerOfTwo(pages)
+            }
+            try await place(zero, at: DesktopTranslator.bootPageAddress)
         }
     }
 
