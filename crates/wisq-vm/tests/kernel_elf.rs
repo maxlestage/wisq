@@ -12,7 +12,10 @@
 //! Lire ces segments était fait à la main dans l'exemple, donc tenu par rien.
 //! Ici, sur un ELF construit pour la circonstance : un outil de diagnostic qui
 //! se trompe de segment ne rend pas une erreur, il rend un résultat.
-use wisq_vm::kernel_image::{loads, MONTAGE_COMMAND_LINE};
+use wisq_vm::kernel_image::{
+    loads, montage_command_line, CommandLineRefusal, COMMAND_LINE_AT, MONTAGE_COMMAND_LINE,
+    MONTAGE_COMMAND_LINE_ROOM, ZERO_PAGE_AT,
+};
 
 /// Un ELF64 minimal : l'en-tête, puis `count` en-têtes de programme.
 fn elf(entry: u64, headers: &[(u32, u64, u64, u64, u64, u64)]) -> Vec<u8> {
@@ -230,6 +233,166 @@ fn the_mount_keeps_the_boot_console_on_the_port_the_host_listens_to() {
             .any(|arg| arg == "keep_bootcon"),
         "et la garder après que `tty0` s'enregistre, sans quoi le noyau se tait \
          au milieu de son démarrage : « {MONTAGE_COMMAND_LINE} »"
+    );
+}
+
+/// **Une mesure devait éditer une constante gardée pour nommer une console.**
+///
+/// #305 a rendu au port série les huit registres du 16550 et la ligne quatre ;
+/// #306 a mesuré ce que l'espace utilisateur en fait. La mesure qui comptait —
+/// le message de `/init` sort-il du fil ? — demandait `console=ttyS0` dans la
+/// ligne de commande, et il n'y avait aucun moyen de le demander : la ligne est
+/// une constante, tenue par le test au-dessus, et la mesure a donc été prise
+/// sur une édition **non commise** de cette constante. C'est la pire forme
+/// d'instrument : celui qui n'existe pas dans le dépôt, qu'il faut refabriquer
+/// de mémoire, et dont rien ne dit s'il a été remis en place.
+///
+/// `WISQ_CMDLINE` le demande maintenant, comme `WISQ_RAM` demande la RAM. La
+/// ligne gardée ne bouge pas ; ce qui s'y ajoute est séparé par une espace et
+/// **refusé** quand il ne tiendrait pas où le montage le pose.
+#[test]
+fn the_mount_command_line_is_untouched_when_a_measurement_adds_nothing() {
+    for nothing in [None, Some(""), Some("   "), Some("\t")] {
+        assert_eq!(
+            montage_command_line(nothing).as_deref(),
+            Ok(MONTAGE_COMMAND_LINE),
+            "rien à ajouter doit rendre la ligne gardée, à l'octet près : {nothing:?}"
+        );
+    }
+}
+
+/// Et ce qu'on ajoute s'ajoute : une espace, puis le fragment, et la ligne
+/// gardée intacte devant.
+///
+/// **L'espace est exigée.** Sans elle, `console=ttyS0` collé à `keep_bootcon`
+/// donnerait `keep_bootconconsole=ttyS0` — un paramètre que le noyau ignore
+/// en silence, et une mesure qui rendrait exactement ce qu'elle rendait sans.
+/// C'est le défaut que ce test existe pour empêcher, et il est muet par nature.
+#[test]
+fn a_measurement_can_name_a_console_without_touching_the_guarded_line() {
+    let line = montage_command_line(Some("console=ttyS0")).expect("elle tient");
+    assert_eq!(line, format!("{MONTAGE_COMMAND_LINE} console=ttyS0"));
+    assert!(
+        line.split_whitespace().any(|arg| arg == "keep_bootcon"),
+        "et la ligne gardée est toujours là, entière : « {line} »"
+    );
+    assert!(
+        line.split_whitespace().any(|arg| arg == "console=ttyS0"),
+        "le fragment est un argument à lui, pas un suffixe : « {line} »"
+    );
+    // Les blancs autour du fragment sont à l'enveloppe, pas au noyau : une
+    // variable d'environnement en porte souvent un.
+    assert_eq!(
+        montage_command_line(Some("  console=ttyS0  ")).expect("elle tient"),
+        line,
+        "les blancs autour ne font pas une autre ligne"
+    );
+}
+
+/// **Et une ligne qui ne tiendrait pas est refusée, avec le nombre.**
+///
+/// Le montage pose la ligne à `0x800` dans la page zéro elle-même, donc elle a
+/// la fin de cette page pour elle et rien de plus. Tronquer donnerait au noyau
+/// une ligne coupée au milieu d'un paramètre ; déborder écraserait ce qui suit
+/// la page. Un refus nommé est la seule réponse qui ne mente pas.
+///
+/// **La place est dérivée des deux adresses, pas écrite une seconde fois.**
+/// C'est la leçon de #289 : un nombre écrit à deux endroits dérive, et celui-ci
+/// dépend de l'endroit où le montage pose la ligne.
+#[test]
+fn a_command_line_that_would_not_fit_where_the_mount_puts_it_is_refused() {
+    assert_eq!(
+        MONTAGE_COMMAND_LINE_ROOM,
+        4096 - (COMMAND_LINE_AT - ZERO_PAGE_AT) as usize - 1,
+        "la place est ce qui reste de la page zéro après l'endroit où la ligne \
+         est posée, moins l'octet nul qui la termine"
+    );
+    // **Et c'est aussi la limite du noyau**, à un octet près : `COMMAND_LINE_SIZE`
+    // vaut 2048 sur x86-64. Les deux coïncident, et c'est une coïncidence qu'il
+    // vaut mieux écrire que découvrir.
+    assert_eq!(MONTAGE_COMMAND_LINE_ROOM, 2047);
+
+    let room = MONTAGE_COMMAND_LINE_ROOM;
+    let juste = "x".repeat(room - MONTAGE_COMMAND_LINE.len() - 1);
+    assert!(
+        montage_command_line(Some(&juste)).is_ok(),
+        "une ligne qui remplit la place exactement passe"
+    );
+    let un_de_trop = "x".repeat(room - MONTAGE_COMMAND_LINE.len());
+    assert_eq!(
+        montage_command_line(Some(&un_de_trop)),
+        Err(CommandLineRefusal::TooLong {
+            bytes: room + 1,
+            room,
+        }),
+        "un octet de plus est refusé, et le refus porte les deux nombres"
+    );
+    assert_eq!(
+        montage_command_line(Some("console=ttyS0\0keep_bootcon")),
+        Err(CommandLineRefusal::EmbeddedNul),
+        "un nul au milieu couperait la ligne là, sans rien signaler"
+    );
+}
+
+/// **Un fragment qui ne fait qu'ajouter ne refait pas la mesure de #306.**
+///
+/// La forme mesurée est `console=ttyS0` **à la place** de `keep_bootcon` : les
+/// deux ensemble font écrire les deux consoles sur le même port et dédoublent
+/// chaque ligne, 367 contre 222. Un `WISQ_CMDLINE` qui n'ajoutait que rendait
+/// donc l'autre forme — celle qui a servi — inatteignable, et c'est exactement
+/// le défaut que cette tranche-ci reproche à #304 : un instrument qui ne refait
+/// pas la mesure dont il porte le nom.
+///
+/// Un `-` devant un argument l'enlève.
+#[test]
+fn a_measurement_can_take_an_argument_out_as_well_as_put_one_in() {
+    assert_eq!(
+        montage_command_line(Some("-keep_bootcon console=ttyS0")).expect("elle tient"),
+        "earlycon=uart8250,io,0x3f8 console=ttyS0",
+        "la forme que #306 a mesurée, et qui ne dédouble rien"
+    );
+    // L'ordre dans le fragment n'a pas d'importance : le retrait porte sur la
+    // ligne gardée, l'ajout vient après elle.
+    assert_eq!(
+        montage_command_line(Some("console=ttyS0 -keep_bootcon")).expect("elle tient"),
+        "earlycon=uart8250,io,0x3f8 console=ttyS0"
+    );
+    assert_eq!(
+        montage_command_line(Some("-keep_bootcon")).expect("elle tient"),
+        "earlycon=uart8250,io,0x3f8",
+        "et un retrait seul laisse la ligne sans espace en trop"
+    );
+}
+
+/// **Et un retrait qui n'enlève rien est refusé.**
+///
+/// C'est la garde qui compte des deux : `-keepbootcon`, `-keep-bootcon`,
+/// `-keep_bootcon=1` sont trois fautes de frappe plausibles, et chacune
+/// laisserait la ligne **inchangée**. La mesure rendrait alors ce qu'elle
+/// rendait sans le fragment, et ce serait lu comme un résultat. C'est la
+/// troisième fois dans ce dépôt qu'un instrument muet est le vrai danger.
+#[test]
+fn taking_out_an_argument_that_is_not_there_is_refused() {
+    for typo in [
+        "-keepbootcon",
+        "-keep-bootcon",
+        "-keep_bootcon=1",
+        "-console=ttyS0",
+    ] {
+        assert_eq!(
+            montage_command_line(Some(typo)),
+            Err(CommandLineRefusal::NothingToRemove {
+                argument: typo[1..].to_string(),
+            }),
+            "« {typo} » n'enlève rien et doit être refusé plutôt que subi"
+        );
+    }
+    // Et un `-` seul ne désigne aucun argument.
+    assert_eq!(
+        montage_command_line(Some("-")),
+        Err(CommandLineRefusal::NothingToRemove {
+            argument: String::new(),
+        })
     );
 }
 
