@@ -797,7 +797,57 @@ const translate = (address, slot, code) => new Promise(settle => {{
   }});
 }});
 
-const vm = machine({{ translate, pages: {pages}{declared} }});
+// **La console de l'invité, et pourquoi elle est tamponnée.**
+//
+// `host.js` appelle `serial` pour **chaque octet** que l'invité émet sur
+// `0x3f8`. Un `postMessage` par octet ferait des dizaines de milliers de
+// sérialisations pour un seul démarrage — le journal d'un noyau Alpine fait
+// 242 lignes. Les octets s'accumulent donc ici, et l'application les tire
+// quand elle veut par `wisqConsole()`.
+//
+// **Tirer plutôt que pousser, dans cette tranche.** C'est la forme de
+// `wisqPaint`, et pour la raison écrite là-bas : un test qui attendrait que la
+// page veuille bien parler n'aurait rien à attendre. Pousser pour qu'une
+// interface voie le noyau démarrer *en direct* est une autre tranche.
+const CONSOLE_KEEP = 1 << 16;
+let consoleOctets = [];
+let consolePerdus = 0;
+const serial = octet => {{
+  // **Un tampon sans borne est une fuite**, et un invité qui parle sans fin en
+  // est la cause normale, pas un cas tordu : une console qui défile est ce que
+  // fait un noyau. Ce qui est jeté est **compté**, parce qu'une console qui
+  // perd des octets en silence ment sur ce que l'invité a dit.
+  //
+  // La moitié part d'un coup plutôt qu'un `shift()` par octet : `shift()` est
+  // linéaire, donc un invité bavard ralentirait à mesure qu'il parle.
+  if (consoleOctets.length >= CONSOLE_KEEP) {{
+    const jetes = consoleOctets.length >> 1;
+    consoleOctets = consoleOctets.slice(jetes);
+    consolePerdus += jetes;
+  }}
+  consoleOctets.push(octet);
+}};
+
+// **Rend ce que l'invité a dit depuis la dernière fois, et vide le tampon.**
+//
+// Le vider est le contrat : sans ça l'application relirait tout le journal à
+// chaque appel, et il doublerait de longueur à chaque lecture.
+//
+// Les octets traversent en base64 — une seule chaîne plutôt que des milliers
+// de nombres à emballer — et par tranches, parce que passer soixante-quatre
+// kibioctets à `String.fromCharCode` en une fois dépasse la pile d'arguments.
+window.wisqConsole = () => {{
+  let binaire = "";
+  for (let at = 0; at < consoleOctets.length; at += 4096) {{
+    binaire += String.fromCharCode.apply(null, consoleOctets.slice(at, at + 4096));
+  }}
+  const perdus = consolePerdus;
+  consoleOctets = [];
+  consolePerdus = 0;
+  return {{ octets: btoa(binaire), perdus }};
+}};
+
+const vm = machine({{ translate, serial, pages: {pages}{declared} }});
 vm.globals[SLOTS.rip].value = {entry}n;
 {amorce}
 window.wisqMachine = vm;
