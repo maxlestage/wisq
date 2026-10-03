@@ -770,6 +770,84 @@ pub unsafe extern "C" fn wisq_desktop_declare_initramfs(
     }
 }
 
+/// **Un segment `PT_LOAD`, tel que C le voit.**
+///
+/// Les cinq nombres sont ceux de `kernel_image::Load`, dans le même ordre, et
+/// `repr(C)` le rend lisible de l'autre côté. Recopier la structure plutôt que
+/// la partager serait deux copies à garder d'accord ; ne pas la recopier du
+/// tout obligerait l'appelant à cinq appels par segment.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WisqKernelLoad {
+    pub offset: u64,
+    pub virtual_address: u64,
+    pub physical_address: u64,
+    pub file_size: u64,
+    pub memory_size: u64,
+}
+
+/// **Le point d'entrée et les segments chargeables d'un noyau ELF64.**
+///
+/// Sans ça l'application ne peut pas démarrer un vrai noyau : elle n'a aucun
+/// moyen d'apprendre où poser l'image ni par où l'exécution commence, et les
+/// deux — l'`entry` de `wisq_desktop_page` et les adresses auxquelles elle
+/// pose — viennent d'ici. `kernel_image::loads` lit des ELF depuis #304 et le
+/// montage de mesure s'en sert ; **le bureau ne pouvait pas**, parce que rien
+/// ne l'exposait. C'est la même famille que #310, #311 et #313.
+///
+/// **Le lecteur n'est pas réécrit ici.** C'est `kernel_image::loads`, celui que
+/// le montage emploie et que ses propres tests tiennent. En écrire un second
+/// serait #289 par construction — et la distinction qui coûte cher, les deux
+/// tailles d'un segment, est déjà prise là-bas.
+///
+/// **On demande deux fois** : une fois avec `capacity == 0` pour apprendre le
+/// compte, puis avec un tableau de cette taille. Le premier appel n'est pas
+/// perdu — l'entrée et le compte sont posés quand même.
+///
+/// - `0` : lu, et les `out_count` segments ont été écrits ;
+/// - `1` : ce n'est pas un ELF64 que ce lecteur accepte, ou un pointeur nul ;
+/// - `2` : lu, mais `capacity` était trop petit — rien n'a été écrit.
+///
+/// # Safety
+/// `image` must be valid for reading `len` bytes, `out_entry` and `out_count`
+/// valid for writing, and `out_loads`, when non-null, valid for writing
+/// `capacity` elements.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_kernel_loads(
+    image: *const u8,
+    len: usize,
+    out_entry: *mut u64,
+    out_loads: *mut WisqKernelLoad,
+    capacity: usize,
+    out_count: *mut usize,
+) -> c_int {
+    if image.is_null() || out_entry.is_null() || out_count.is_null() {
+        return 1;
+    }
+    let bytes = std::slice::from_raw_parts(image, len);
+    let Some((entry, segments)) = crate::kernel_image::loads(bytes) else {
+        return 1;
+    };
+    // **L'entrée et le compte sont posés avant la question de la place.** C'est
+    // ce qui rend le premier appel utile : l'appelant alloue en sachant, au
+    // lieu de deviner puis réessayer.
+    *out_entry = entry;
+    *out_count = segments.len();
+    if out_loads.is_null() || capacity < segments.len() {
+        return 2;
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        *out_loads.add(index) = WisqKernelLoad {
+            offset: segment.offset,
+            virtual_address: segment.virtual_address,
+            physical_address: segment.physical_address,
+            file_size: segment.file_size,
+            memory_size: segment.memory_size,
+        };
+    }
+    0
+}
+
 /// Ce que la correspondance occupe **au-dessus** de la RAM de l'invité, en
 /// pages. L'hôte doit l'ajouter à la taille de la mémoire qu'il crée.
 #[no_mangle]

@@ -2294,6 +2294,21 @@ mémoire de l'invité l'a trouvé au premier passage, en #313. Le compilateur Sw
 ne dit rien de cette forme (mesuré), donc la huitième règle de
 `scripts/check-whitespace.sh` la refuse désormais.
 
+**Et il sait lire le noyau depuis #314.** `kernel_image::loads` — le point
+d'entrée et les segments `PT_LOAD` d'un ELF64 — existait depuis #304 et n'était
+appelé que par le montage de mesure et ses propres tests : rien ne l'exposait au
+C ABI, donc l'application n'avait aucun moyen d'apprendre où poser une image ni
+par où l'exécution commence. `wisq_kernel_loads` et `RustKernelImage` traversent
+les cinq champs, et les deux distinctions qui coûtent cher sont vérifiées des
+deux côtés : les deux tailles d'un segment (l'écart est le BSS, cinq mébioctets
+sur le vmlinux d'Alpine) et les deux adresses (pour le texte d'un noyau x86-64
+elles diffèrent de `__START_KERNEL_map`, et poser à la mauvaise ne démarre pas
+du tout).
+
+**Ce qui reste est une direction, pas un défaut** : rien dans l'application
+n'appelle encore `LocalDesktop`. Un écran où l'utilisateur choisit un noyau et le
+voit démarrer appartient à Maxime ; les pièces sont posées.
+
 **Et le bureau dit maintenant où est cette racine.** `declare_initramfs` écrit
 les deux champs — `ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — que le
 montage de mesure écrit depuis #304 et que le bureau n'écrivait pas. Sans eux, le
