@@ -3321,16 +3321,36 @@ porte sur le **cœur**, pas sur l'affichage.
    fois, avec le même corpus d'oracles matériels que le cœur Swift — les neuf
    corpus existent déjà et ne demandent qu'à juger un troisième cœur.
 
-   > **Où en est cette phrase, trois corpus plus tard (#317).**
+   > **Où en est cette phrase, quatre corpus plus tard (#318).**
    > `Tests/Fixtures/` porte **dix** oracles matériels, plus le corpus de
-   > décodage qui n'en est pas un. Les cœurs Rust lisent **trois** oracles :
-   > l'arithmétique, la pile (#301 pour l'émetteur, #302 pour l'interpréteur)
-   > et les chaînes (#317, les deux cœurs d'un coup). Il en reste **sept** que
-   > seul le cœur Swift juge : flottants, SIMD, XMM, x87, arrondis x87, FXSAVE
-   > et branchements. Chacun se branche comme les trois premiers — un lecteur,
-   > un harnais, un plancher mesuré — et les deux premiers branchements ont
-   > rendu seize écarts chacun ; le troisième, aucun. Ce n'est donc ni une
-   > formalité ni une promesse de défaut.
+   > décodage qui n'en est pas un. Les cœurs Rust lisent **quatre** oracles :
+   > l'arithmétique, la pile (#301 pour l'émetteur, #302 pour l'interpréteur),
+   > les chaînes (#317, les deux cœurs d'un coup) et les branchements (#318,
+   > de même). Les deux premiers branchements ont rendu seize écarts chacun ;
+   > les deux suivants, aucun — mais #318 a nommé un défaut que son harnais a
+   > dû changer de forme pour voir.
+   >
+   > **Les six qui restent, et pourquoi cinq d'entre eux ne se branchent
+   > pas.** Mesuré en #318, un `Module::region` par forme : des 46 formes du
+   > corpus flottant, des 128 du SSE2 entier, des 58 des registres XMM, des 67
+   > de la pile x87 et des 8 des arrondis x87, les cœurs Rust en décodent
+   > **zéro**. Ils ne font ni virgule flottante ni vectoriel. Ces cinq corpus
+   > sont au cœur Swift par nécessité, et les brancher demanderait d'écrire les
+   > instructions d'abord — c'est-à-dire un ajout, pas un branchement.
+   >
+   > **Et le sixième, FXSAVE, ne se branche pas non plus, pour la même raison
+   > d'un cran plus loin.** Son corpus ne porte pas de formes : chaque cas est
+   > une image de 512 octets chargée par `fxrstor` puis réécrite par `fxsave`,
+   > dont 416 octets comparés. Or le `fxsave` de l'émetteur est tenu par
+   > `fxsave_writes_the_state_the_machine_has_and_zero_for_what_it_has_not`, et
+   > son nom dit le reste : « aucun registre x87 n'est occupé », les 412 octets
+   > qui suivent l'en-tête sont écrits **à zéro**. Il n'y a pas d'état derrière.
+   >
+   > **Donc l'axe du branchement de corpus est fini côté Rust.** Quatre
+   > branchés, six hors de portée tant que la virgule flottante et le vectoriel
+   > n'existent pas dans ces cœurs — et les écrire est une **direction**, pas
+   > une tranche : c'est le cinquième lot, celui de la bascule, et ça se décide,
+   > ça ne se corrige pas.
    >
    > **Et ce que le branchement des chaînes a mesuré en passant** : des 376 cas
    > du corpus, 232 sortent du jugement des cœurs Rust, parce que le décodeur
@@ -3339,6 +3359,18 @@ porte sur le **cœur**, pas sur l'affichage.
    > nommé, comme le `8f /0` du corpus de pile : les étendre serait un ajout,
    > pas une correction, et le noyau d'Alpine atteint l'espace utilisateur sans
    > elles.
+   >
+   > **Celui que le branchement a trouvé, lui, est à corriger (#318).** Des 630
+   > cas, 50 sortent du jugement : `loope`, `loopne`, les deux `jrcxz` et `ret`
+   > qui jette ses arguments. Le décodeur partagé a une branche pour `0xe2`
+   > (`loop`) et **aucune** pour `0xe0`, `0xe1`, `0xe3` et `0xc2` — un des
+   > quatre opcodes d'une même famille implémenté et trois oubliés, là où le
+   > cœur Swift les porte tous. Et ce n'est pas un rendu de main : le module
+   > rend la main à l'adresse de l'instruction, l'hôte demande une région qui
+   > commence là, l'émetteur refuse, et **la machine s'arrête**. Les deux
+   > planchers passeront de 580 à 630 quand les quatre arriveront ; la garde
+   > existe déjà, c'est ce qui rend cette correction vérifiable dès sa première
+   > ligne.
 3. Un tampon d'affichage pour l'invité (`virtio-gpu` ou une VGA linéaire) et sa
    vue. Sans lui, il n'y a pas de bureau à montrer, quelle que soit la vitesse.
 4. La bascule : le cœur WebAssembly quand le `WKWebView` compile, l'interpréteur
