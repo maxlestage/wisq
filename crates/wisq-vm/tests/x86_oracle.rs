@@ -1016,3 +1016,222 @@ fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus() {
         oracle.cases.len()
     );
 }
+
+/// **Le corpus de branchement, et pourquoi ce fichier-ci ne le lisait pas.**
+///
+/// `Tests/Fixtures/x86-branch-oracle.tsv` est né d'un comptage : le chargeur
+/// dynamique de l'invité contient « 4 659 `jmp`, 4 436 `call`, 1 851 `ret` et
+/// près de neuf mille sauts conditionnels », et les corpus figés d'alors n'en
+/// portaient aucune forme. Il ne jugeait que le cœur Swift.
+///
+/// **Chaque cas est un programme**, pas une instruction : chaque bras écrit une
+/// marque dans RAX — `a1` pris, `b2` tombé à côté, `c3` jamais entré dans la
+/// boucle —, et RSP dit que la pile est revenue là où elle était.
+struct BranchOracle {
+    /// L'état d'entrée n'est **que** les drapeaux : c'est tout ce qu'une
+    /// condition lit.
+    states: HashMap<String, u64>,
+    programs: HashMap<String, (Vec<u8>, String)>,
+    cases: Vec<BranchCase>,
+}
+
+struct BranchCase {
+    program: String,
+    state: String,
+    rax: u64,
+    rcx: u64,
+    rdx: u64,
+    rsp: u64,
+    flags: u64,
+}
+
+/// L'adresse où pointe RSI, et dont les deux formes indirectes par la mémoire
+/// se servent — elles y **écrivent** leur cible avant de la lire, donc son
+/// contenu de départ n'entre pas dans le résultat.
+const BRANCH_WINDOW_AT: u64 = 0x3000_1000;
+
+/// **Le plancher du corpus de branchement pour l'interpréteur**, mesuré.
+///
+/// 580 cas sur 630. Les 50 qui manquent sont cinq formes que le **décodeur**
+/// ne décode pas : `loope` (`0xe1`), `loopne` (`0xe0`), les deux `jrcxz`
+/// (`0xe3`) et `ret` qui jette ses arguments (`0xc2`). `loop` (`0xe2`), lui,
+/// est décodé — un des quatre opcodes d'une même famille implémenté et trois
+/// oubliés. Le cœur Swift les porte tous. Le relevé les nomme quand ce plancher
+/// tombe, et il passera à 630 le jour où les quatre arriveront.
+const BRANCH_CASES_FLOOR: usize = 580;
+
+fn read_branch_oracle() -> BranchOracle {
+    let path = oracle_path()
+        .parent()
+        .expect("le répertoire des fixtures")
+        .join("x86-branch-oracle.tsv");
+    let text = std::fs::read_to_string(&path).expect("Tests/Fixtures/x86-branch-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut programs = HashMap::new();
+    let mut cases = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            // `état <indice> <drapeaux>`
+            "état" if f.len() == 3 => {
+                states.insert(f[1].to_string(), hex(f[2]));
+            }
+            // `instr <indice> <octets> <nom>`
+            "instr" if f.len() == 4 => {
+                programs.insert(f[1].to_string(), (bytes(f[2]), f[3].to_string()));
+            }
+            // `cas <instr> <état> <rax> <rcx> <rdx> <rsp> <drapeaux>`
+            "cas" if f.len() == 8 => cases.push(BranchCase {
+                program: f[1].to_string(),
+                state: f[2].to_string(),
+                rax: hex(f[3]),
+                rcx: hex(f[4]),
+                rdx: hex(f[5]),
+                rsp: hex(f[6]),
+                flags: hex(f[7]),
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 10, "les dix états de drapeaux du corpus");
+    assert_eq!(programs.len(), 63, "ses soixante-trois programmes");
+    assert_eq!(cases.len(), 630, "et ses six cent trente cas");
+    BranchOracle {
+        states,
+        programs,
+        cases,
+    }
+}
+
+/// **L'interpréteur Rust jugé sur le corpus de branchement.** Le jumeau de
+/// `every_accepted_instruction_matches_the_silicon_on_the_string_corpus`, sur le
+/// quatrième corpus — et, comme lui, un refus est **compté et nommé** plutôt
+/// qu'ignoré.
+///
+/// **L'arène, et non une fenêtre.** Le programme vit à `CODE`, la pile descend
+/// depuis `0x30003000` et RSI pointe `0x30001000` : il faut une mémoire qui
+/// couvre les trois. Seize kibioctets depuis `CODE`, comme le test Swift.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus() {
+    let oracle = read_branch_oracle();
+    let mut checked = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    let mut wrong: Vec<String> = Vec::new();
+
+    for case in &oracle.cases {
+        let (program, name) = &oracle.programs[&case.program];
+        let flags = oracle.states[&case.state];
+        if !decodes_everywhere(program) {
+            if !refused.contains(name) {
+                refused.push(name.clone());
+            }
+            continue;
+        }
+        // **Le témoin d'abord**, puis les trois registres que le test Swift
+        // pose : RAX à zéro pour qu'une marque soit lisible, le sommet de pile,
+        // et RSI sur la fenêtre des formes indirectes par la mémoire.
+        let mut regs = [0u64; 16];
+        for (slot, value) in regs.iter_mut().enumerate() {
+            *value = string_witness(slot);
+        }
+        regs[0] = 0;
+        regs[4] = STACK_TOP;
+        regs[6] = BRANCH_WINDOW_AT;
+        let mut cpu = Cpu {
+            regs,
+            memory: GuestMemory {
+                base: CODE,
+                bytes: vec![0; 0x4000],
+            },
+            ..Default::default()
+        };
+        let mut written = Flags::default();
+        written.write(flags);
+        cpu.flags = written;
+        cpu.rip = CODE;
+
+        let end = CODE + program.len() as u64;
+        let mut steps = 0usize;
+        let mut ran_out = false;
+        // **Un programme entier, jusqu'à ce qu'on en sorte par le bas**, et un
+        // budget qui borne les boucles : un cœur qui saute mal pourrait tourner
+        // sans fin, et un test qui pend n'est pas un test qui échoue.
+        while cpu.rip >= CODE && cpu.rip < end {
+            if steps == 512 {
+                ran_out = true;
+                break;
+            }
+            steps += 1;
+            let at = cpu.rip.wrapping_sub(CODE) as usize;
+            if cpu.step(&program[at..]) == Step::Unknown {
+                ran_out = true;
+                break;
+            }
+        }
+        if ran_out {
+            if !refused.contains(name) {
+                refused.push(name.clone());
+            }
+            continue;
+        }
+        checked += 1;
+
+        let mut notes: Vec<String> = Vec::new();
+        if cpu.faulted {
+            notes.push("le cœur a fauté".to_string());
+        }
+        for (slot, want, label) in [
+            (0usize, case.rax, "rax"),
+            (1, case.rcx, "rcx"),
+            (2, case.rdx, "rdx"),
+            (4, case.rsp, "rsp"),
+        ] {
+            if cpu.regs[slot] != want {
+                notes.push(format!(
+                    "{label} attendu {want:x}, obtenu {:x}",
+                    cpu.regs[slot]
+                ));
+            }
+        }
+        for slot in STRING_WATCHED {
+            if cpu.regs[slot] != string_witness(slot) {
+                notes.push(format!(
+                    "{} a bougé : {:x} au lieu du témoin {:x}",
+                    STACK_REGISTER_NAMES[slot],
+                    cpu.regs[slot],
+                    string_witness(slot)
+                ));
+            }
+        }
+        if (cpu.flags.read() & STRING_FLAGS) != case.flags {
+            notes.push(format!(
+                "drapeaux attendus {:x}, obtenus {:x} (masque {STRING_FLAGS:x})",
+                case.flags,
+                cpu.flags.read() & STRING_FLAGS
+            ));
+        }
+        if !notes.is_empty() && wrong.len() < 20 {
+            wrong.push(format!(
+                "{name} [état {}] : {}",
+                case.state,
+                notes.join(" ; ")
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) entre l'interpréteur et le silicium sur le corpus de branchement :\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        checked >= BRANCH_CASES_FLOOR,
+        "l'interpréteur ne juge plus que {checked} cas de branchement sur {} ; \
+         formes refusées : {refused:?}",
+        oracle.cases.len()
+    );
+}

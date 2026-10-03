@@ -3950,3 +3950,507 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_string_corpus() {
 
 /// **Le plancher du corpus de chaîne, à mesurer.**
 const STRING_CASES_FLOOR: usize = 144;
+
+/// **Le quatrième corpus branché sur l'émetteur : les branchements.**
+///
+/// `Tests/Fixtures/x86-branch-oracle.tsv` est né d'un comptage sans appel : le
+/// chargeur dynamique de l'invité contient « **4 659 `jmp`, 4 436 `call`,
+/// 1 851 `ret` et près de neuf mille sauts conditionnels** », et les quatre
+/// corpus figés d'alors n'en portaient **aucune forme** — les trois que le
+/// corpus arithmétique contient y sont par accident.
+///
+/// **Et c'est le corpus qui juge le plus directement ce que cet émetteur
+/// est.** Il ne traduit pas des instructions, il traduit des **blocs de
+/// base** : un `jmp` est l'endroit où un bloc se ferme, une condition est un
+/// choix entre deux adresses, un `ret` est un retour à l'hôte ou un saut
+/// interne. Mesure : des 63 formes du corpus, l'émetteur en traduit **63**.
+/// Rien ne les comparait au silicium.
+///
+/// Ce que le corpus prouve, et que le corpus arithmétique ne pouvait pas :
+/// **où un branchement atterrit** — le signe du déplacement, le fait qu'il se
+/// compte depuis la **fin** de l'instruction et non son début, les deux
+/// largeurs, le saut en arrière, et le retour. Le tableau des conditions, lui,
+/// était déjà tenu par les seize `setcc` et les seize `cmovcc` du corpus
+/// arithmétique.
+///
+/// **Chaque cas est un programme, pas une instruction.** Un saut ne se lit pas
+/// dans un registre : chaque bras écrit une marque dans RAX — `a1` pris,
+/// `b2` tombé à côté, `c3` jamais entré dans la boucle — et c'est la marque,
+/// au bout, qui dit par où l'on est passé. RSP dit que la pile est revenue.
+struct BranchOracle {
+    /// L'état d'entrée n'est **que** les drapeaux : c'est tout ce qu'une
+    /// condition lit.
+    states: HashMap<String, u64>,
+    programs: HashMap<String, (Vec<u8>, String)>,
+    cases: Vec<BranchCase>,
+}
+
+struct BranchCase {
+    program: String,
+    state: String,
+    rax: u64,
+    rcx: u64,
+    rdx: u64,
+    rsp: u64,
+    flags: u64,
+}
+
+/// **La fenêtre que les deux formes indirectes par la mémoire utilisent**, et
+/// pourquoi elle est à zéro plutôt qu'au motif du corpus arithmétique.
+///
+/// Le corpus de branchement ne déclare **aucune** fenêtre, et le test Swift qui
+/// le lit depuis toujours fait tourner ses programmes dans une arène de seize
+/// kibioctets remplie de zéros. Les deux seules formes qui touchent la mémoire
+/// — « jmp par la mémoire » et « call par la mémoire et ret » — **écrivent
+/// avant de lire** : `lea 0xc(%rip),%rdx ; mov %rdx,(%rsi) ; jmp *(%rsi)`. Ce
+/// qu'il y avait là avant ne peut donc pas changer le résultat, et des zéros
+/// sont ce que l'autre cœur a eu.
+const BRANCH_WINDOW_AT: u64 = 0x3000_1000;
+const BRANCH_WINDOW_BYTES: usize = 64;
+
+/// **Le plancher du corpus de branchement, mesuré et non souhaité.**
+///
+/// 580 cas jugés sur 630, zéro écart. Les 50 qui manquent sont **cinq formes
+/// où la machine s'arrête net**, et le relevé les nomme quand le plancher
+/// tombe : `loope`, `loopne`, les deux `jrcxz` et `ret` qui jette ses
+/// arguments.
+///
+/// **Ce n'est pas un rendu de main, c'est un cul-de-sac.** Un rendu de main est
+/// une conduite juste — le module dit où reprendre et l'hôte compile la région
+/// qui commence là —, et les quatre formes indirectes du corpus le font et sont
+/// jugées jusqu'au bout par ce test. Ces cinq-là rendent la main à une adresse
+/// où l'émetteur **refuse de commencer une région** : l'hôte n'a rien à
+/// compiler et la machine reste là.
+///
+/// **La cause est dans le décodeur partagé, et elle est mesurée** : `decode`
+/// (`crates/wisq-vm/src/x86.rs`) a une branche pour `0xe2` — `loop`, avec son
+/// commentaire — et **aucune** pour `0xe0` (`loopne`), `0xe1` (`loope`),
+/// `0xe3` (`jrcxz`) ni `0xc2` (`ret imm16`). Les deux cœurs Rust en héritent.
+/// Le cœur Swift, lui, les porte tous — `X86CoreDispatch.swift` les décide dans
+/// les mêmes `case` que `loop` et `ret` — et le silicium les couvre ici par
+/// cinquante cas.
+///
+/// Ce n'est donc pas une largeur qui manque ni une frontière tracée : c'est
+/// **un des quatre opcodes d'une même famille implémenté et trois oubliés**.
+/// Nommé plutôt que corrigé dans cette tranche-ci, parce que la garde doit
+/// exister avant le correctif : ce plancher passera de 580 à 630 le jour où les
+/// quatre arriveront, et chacune de leurs dix formes sera jugée contre le
+/// silicium dès la première ligne écrite.
+const BRANCH_CASES_FLOOR: usize = 580;
+
+fn read_branch_oracle() -> BranchOracle {
+    let text =
+        std::fs::read_to_string(workspace_root().join("Tests/Fixtures/x86-branch-oracle.tsv"))
+            .expect("Tests/Fixtures/x86-branch-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut programs = HashMap::new();
+    let mut cases = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            // `état <indice> <drapeaux>`
+            "état" if f.len() == 3 => {
+                states.insert(f[1].to_string(), hex(f[2]));
+            }
+            // `instr <indice> <octets> <nom>`
+            "instr" if f.len() == 4 => {
+                programs.insert(f[1].to_string(), (bytes(f[2]), f[3].to_string()));
+            }
+            // `cas <instr> <état> <rax> <rcx> <rdx> <rsp> <drapeaux>`
+            "cas" if f.len() == 8 => cases.push(BranchCase {
+                program: f[1].to_string(),
+                state: f[2].to_string(),
+                rax: hex(f[3]),
+                rcx: hex(f[4]),
+                rdx: hex(f[5]),
+                rsp: hex(f[6]),
+                flags: hex(f[7]),
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 10, "les dix états de drapeaux du corpus");
+    assert_eq!(programs.len(), 63, "ses soixante-trois programmes");
+    assert_eq!(cases.len(), 630, "et ses six cent trente cas");
+    BranchOracle {
+        states,
+        programs,
+        cases,
+    }
+}
+
+/// **Le pilote de ce corpus-ci enchaîne les régions, et c'est le sujet.**
+///
+/// Le pilote partagé de ce fichier instancie **un** module par forme et le
+/// lance une fois. Il suffit pour une instruction, et il ne suffit pas ici : sur
+/// les 630 cas, **90 rendent la main à l'hôte au milieu du programme** — les
+/// quatre formes indirectes (`jmp *%rdx`, `jmp *(%rsi)`, `call *%rdx`,
+/// `call *(%rsi)`), `ret` qui jette ses arguments, `loope`, `loopne` et les deux
+/// `jrcxz`. Rendre la main est la **conduite juste** : le module ne connaît pas
+/// l'adresse d'une cible indirecte à la traduction, donc il dit où reprendre et
+/// l'hôte compile la région qui commence là.
+///
+/// **Mais un cas qui rend la main est un cas que personne ne juge**, et c'est
+/// précisément l'état d'un rendu de main qui porte le risque : un `call *%rdx`
+/// qui rendrait la main **sans avoir empilé son adresse de retour** laisserait
+/// l'hôte reprendre à la bonne adresse avec une pile fausse, et le `ret` du bout
+/// retomberait n'importe où. Un sabotage l'a confirmé : retirer cette descente
+/// de pile fait tomber vingt cas, et ces vingt-là n'étaient jugés par rien.
+///
+/// Ce pilote est donc celui de `the_host_loop_chains_regions_and_keeps_the_machine`
+/// appliqué au corpus : une table d'adresse vers module, et une boucle qui
+/// répartit sur RIP jusqu'à ce que l'exécution quitte le programme. Les modules
+/// sont émis **pour chaque décalage du programme qui se traduit**, parce que
+/// l'adresse où un saut indirect atterrit n'est connue qu'à l'exécution — et une
+/// adresse sans module est dite « perdue » plutôt que comptée comme une fin,
+/// sans quoi un harnais troué ressemblerait à un cœur juste.
+const BRANCH_DRIVER: &str = r#"
+const fs = require("fs");
+const job = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const memory = new WebAssembly.Memory({ initial: job.pages });
+const slots = [];
+const imports = { env: { mem: memory, out: () => undefined, in: () => 0n } };
+for (let slot = 0; slot < job.globals; slot++) {
+  slots.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
+  imports.env["g" + slot] = slots[slot];
+}
+const guest = new Uint8Array(memory.buffer);
+const u = slot => BigInt.asUintN(64, slots[slot].value);
+const lines = [];
+for (const unit of job.jobs) {
+  const cache = new Map();
+  for (const [at, path] of unit.modules) {
+    const bytes = fs.readFileSync(path);
+    cache.set(BigInt(at), new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports.run);
+  }
+  const entry = BigInt(job.entry), end = BigInt(unit.end);
+  for (const test of unit.cases) {
+    for (const global of slots) { global.value = 0n; }
+    guest.fill(0, job.window.at, job.window.at + job.window.length);
+    for (const [slot, value] of Object.entries(test.regs)) {
+      slots[Number(slot)].value = BigInt("0x" + value);
+    }
+    slots[job.ripSlot].value = entry;
+    let steps = 0, lost = "", stalled = false;
+    while (true) {
+      const at = u(job.ripSlot);
+      if (at < entry || at >= end) { break; }
+      if (steps >= job.steps) { stalled = true; break; }
+      const run = cache.get(at);
+      // **Une adresse sans module est un cul-de-sac, pas une fin.**
+      if (run === undefined) { lost = at.toString(16); break; }
+      try {
+        run(BigInt(job.budget));
+      } catch (error) {
+        throw new Error(test.id + " @" + at.toString(16) + " : " + error.message);
+      }
+      steps++;
+    }
+    // **Une ligne par cas, séparée par des tabulations, et non du JSON.** Ce
+    // paquet n'a pas de lecteur de JSON, et les trois autres pilotes de ce
+    // fichier en lisent un à la main en cherchant des sous-chaînes. Une ligne de
+    // champs se lit sans ambiguïté : les identifiants de cas ne portent ni
+    // tabulation ni retour à la ligne, et c'est **vérifié** côté Rust avant
+    // d'écrire les travaux.
+    lines.push([
+      test.id,
+      lost,
+      stalled ? "bloque" : "-",
+      [...Array(16).keys()].map(s => u(s).toString(16)).join(","),
+      u(job.flagsSlot).toString(16),
+    ].join("\t"));
+  }
+}
+fs.writeFileSync(process.argv[3], lines.join("\n"));
+"#;
+
+/// Ce que le pilote enchaîneur rend pour un cas.
+struct Chained {
+    regs: [u64; 16],
+    flags: u64,
+    lost: String,
+    stalled: bool,
+}
+
+/// Le relevé du pilote enchaîneur : une ligne par cas, cinq champs séparés par
+/// des tabulations.
+///
+/// **Seize registres, et le refus est volontaire** — la leçon du corpus de
+/// pile : une liste d'une autre longueur viderait la comparaison en silence, et
+/// un pilote qui cesserait d'en rendre ne se ferait pas remarquer.
+fn chained(text: &str) -> HashMap<String, Chained> {
+    let mut out = HashMap::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(f.len(), 5, "cinq champs par ligne : {line}");
+        let raw: Vec<&str> = f[3].split(',').collect();
+        assert_eq!(
+            raw.len(),
+            16,
+            "le pilote doit rendre seize registres : {line}"
+        );
+        let mut regs = [0u64; 16];
+        for (slot, value) in raw.iter().enumerate() {
+            regs[slot] = u64::from_str_radix(value, 16).expect("un registre hexadécimal");
+        }
+        out.insert(
+            f[0].to_string(),
+            Chained {
+                regs,
+                flags: hex(f[4]),
+                lost: f[1].to_string(),
+                stalled: f[2] == "bloque",
+            },
+        );
+    }
+    out
+}
+
+/// **L'émetteur jugé sur le corpus de branchement, jusqu'au bout du
+/// programme.**
+///
+/// Les registres comparés sont ceux que le corpus relève — RAX, RCX, RDX, RSP
+/// et les drapeaux — plus le **témoin** du test Swift dans les neuf qu'aucun
+/// programme ne doit toucher.
+#[test]
+fn what_the_emitter_produces_matches_the_silicon_on_the_branch_corpus() {
+    let Some(bun) = bun() else {
+        panic!(
+            "Bun est absent : l'émetteur ne serait vérifié par rien. \
+             Ce test refuse de passer en silence."
+        );
+    };
+    let oracle = read_branch_oracle();
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-branch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("driver.js");
+    std::fs::write(&driver, BRANCH_DRIVER).expect("le pilote");
+
+    let mut by_program: Vec<(String, Vec<&BranchCase>)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for case in &oracle.cases {
+        match seen.get(&case.program) {
+            Some(&at) => by_program[at].1.push(case),
+            None => {
+                seen.insert(case.program.clone(), by_program.len());
+                by_program.push((case.program.clone(), vec![case]));
+            }
+        }
+    }
+
+    let mut units = String::new();
+    let mut expected: HashMap<String, (&BranchCase, String)> = HashMap::new();
+    let mut translated = 0usize;
+    for (index, (program, cases)) in by_program.iter().enumerate() {
+        let (program_bytes, name) = &oracle.programs[program];
+        // **Un module par décalage qui se traduit.** L'hôte, lui, compile la
+        // région qui commence là où on lui rend la main ; comme cette adresse
+        // dépend de l'exécution, le harnais les prépare toutes. Un décalage qui
+        // tombe au milieu d'une instruction ne se traduit pas, et c'est sans
+        // conséquence : l'exécution n'y atterrit jamais.
+        let mut listing = String::new();
+        for offset in 0..program_bytes.len() {
+            let Some(module) = Module::region(&program_bytes[offset..], CODE + offset as u64, 0)
+            else {
+                continue;
+            };
+            let path = scratch.join(format!("b{index}-{offset}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            if offset == 0 {
+                translated += 1;
+            }
+            if !listing.is_empty() {
+                listing.push(',');
+            }
+            listing.push_str(&format!(
+                "[{},{:?}]",
+                CODE + offset as u64,
+                path.to_string_lossy()
+            ));
+        }
+        if index > 0 {
+            units.push(',');
+        }
+        units.push_str(&format!(
+            "{{\"name\":{name:?},\"end\":{},\"modules\":[{listing}],\"cases\":[",
+            CODE + program_bytes.len() as u64
+        ));
+        for (position, case) in cases.iter().enumerate() {
+            let flags = oracle.states[&case.state];
+            let id = format!("{}|{}", case.program, case.state);
+            // Le relevé du pilote est en lignes de champs séparés par des
+            // tabulations : un identifiant qui en porterait une couperait une
+            // ligne en deux, et le cas disparaîtrait du relevé au lieu
+            // d'échouer. C'est dit dans le pilote, donc c'est vérifié ici.
+            assert!(
+                !id.contains('\t') && !id.contains('\n'),
+                "un identifiant de cas ne peut porter ni tabulation ni retour à la ligne : {id:?}"
+            );
+            if position > 0 {
+                units.push(',');
+            }
+            let mut written = String::new();
+            for slot in 0..16usize {
+                // Ce que le test Swift pose, à l'identique : RAX à zéro pour
+                // qu'une marque soit lisible, le sommet de pile, et RSI sur la
+                // fenêtre dont les deux formes indirectes par la mémoire se
+                // servent.
+                let value = match slot {
+                    0 => 0,
+                    4 => STACK_TOP,
+                    6 => BRANCH_WINDOW_AT,
+                    other => string_witness(other),
+                };
+                written.push_str(&format!("\"{slot}\":\"{value:x}\","));
+            }
+            units.push_str(&format!(
+                "{{\"id\":{id:?},\"regs\":{{{written}\"{RFLAGS_SLOT}\":\"{flags:x}\"}}}}"
+            ));
+            expected.insert(id, (case, name.clone()));
+        }
+        units.push_str("]}");
+    }
+    assert_eq!(
+        translated, 63,
+        "l'émetteur traduisait les soixante-trois programmes du corpus"
+    );
+
+    // **Deux budgets, et le second est le sujet du second tour.**
+    //
+    // À 1024 blocs par reprise, une région courte va jusqu'au bout d'un trait :
+    // ce qu'elle écrit dans RIP **en chemin** n'est jamais relu, parce que la
+    // répartition interne se fait par indice de bloc. Un sabotage l'a montré —
+    // faire reprendre le bras non pris d'un saut conditionnel **un octet trop
+    // loin** laissait les 580 cas verts. C'est la garde absente que ce
+    // survivant a nommée : rien n'arrêtait une région en vol.
+    //
+    // À **un** bloc par reprise, la machine s'arrête à chaque bloc et l'hôte
+    // repart de l'adresse qu'on lui a laissée. Le même programme doit finir au
+    // même endroit, et une adresse fausse d'un octet tombe au milieu d'une
+    // instruction, où l'émetteur refuse de commencer une région : le relevé la
+    // dit « perdue » et nomme l'adresse.
+    for budget in [1024u32, 1] {
+        let jobs = format!(
+            "{{\"pages\":{GUEST_PAGES},\"globals\":{GLOBAL_COUNT},\"ripSlot\":{RIP_SLOT},\
+             \"flagsSlot\":{RFLAGS_SLOT},\"entry\":{CODE},\"steps\":512,\"budget\":{budget},\
+             \"window\":{{\"at\":{BRANCH_WINDOW_AT},\"length\":{BRANCH_WINDOW_BYTES}}},\
+             \"jobs\":[{units}]}}"
+        );
+        let job_path = scratch.join(format!("jobs-{budget}.json"));
+        std::fs::write(&job_path, &jobs).expect("les travaux");
+        let result_path = scratch.join(format!("out-{budget}.txt"));
+        let output = Command::new(&bun)
+            .arg("run")
+            .arg(&driver)
+            .arg(&job_path)
+            .arg(&result_path)
+            .output()
+            .expect("bun doit démarrer");
+        assert!(
+            output.status.success(),
+            "budget {budget} : JavaScriptCore a refusé un module, ou un module a fauté :\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = std::fs::read_to_string(&result_path).expect("le résultat");
+        let produced = chained(&text);
+
+        let mut checked = 0usize;
+        let mut untranslatable = 0usize;
+        let mut stuck: std::collections::BTreeSet<String> = Default::default();
+        let mut wrong: Vec<String> = Vec::new();
+        for (id, (case, name)) in &expected {
+            let Some(raw) = produced.get(id) else {
+                wrong.push(format!("{name} : aucun résultat rendu pour {id}"));
+                continue;
+            };
+            // **Une adresse sans module n'est pas un harnais troué, et c'est la
+            // mesure qui le dit.** Le harnais émet un module pour *chaque*
+            // décalage du programme qui se traduit ; une adresse qui n'en a pas
+            // est donc une adresse où l'émetteur **refuse** de commencer une
+            // région. L'hôte, dans ce cas, n'a rien à compiler et la machine
+            // s'arrête là : le cas n'est pas faux, il est **hors jugement**, et
+            // le relevé nomme la forme.
+            if !raw.lost.is_empty() {
+                untranslatable += 1;
+                stuck.insert(format!("{name} (à {})", raw.lost));
+                continue;
+            }
+            let mut notes: Vec<String> = Vec::new();
+            if raw.stalled {
+                notes.push("cinq cent douze reprises sans sortir du programme".to_string());
+            }
+            for (slot, want, label) in [
+                (0usize, case.rax, "rax"),
+                (1, case.rcx, "rcx"),
+                (2, case.rdx, "rdx"),
+                (4, case.rsp, "rsp"),
+            ] {
+                if raw.regs[slot] != want {
+                    notes.push(format!(
+                        "{label} attendu {want:x}, obtenu {:x}",
+                        raw.regs[slot]
+                    ));
+                }
+            }
+            for slot in STRING_WATCHED {
+                if raw.regs[slot] != string_witness(slot) {
+                    notes.push(format!(
+                        "{} a bougé : {:x} au lieu du témoin {:x}",
+                        STACK_REGISTER_NAMES[slot],
+                        raw.regs[slot],
+                        string_witness(slot)
+                    ));
+                }
+            }
+            if (raw.flags & STRING_FLAGS) != case.flags {
+                notes.push(format!(
+                    "drapeaux attendus {:x}, obtenus {:x} (masque {STRING_FLAGS:x})",
+                    case.flags,
+                    raw.flags & STRING_FLAGS
+                ));
+            }
+            if notes.is_empty() {
+                checked += 1;
+            } else {
+                wrong.push(format!("{name} [{id}] : {}", notes.join(" ; ")));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "budget {budget} : {} écart(s) entre l'émetteur et le silicium sur \
+             le corpus de branchement :\n{}",
+            wrong.len(),
+            wrong
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // **Chaque cas est soit jugé soit nommé**, et les deux comptes doivent
+        // couvrir le fichier : un cas qui disparaîtrait du relevé — un
+        // identifiant coupé, un pilote qui cesse d'écrire — sortirait des deux.
+        assert_eq!(
+            checked + untranslatable,
+            expected.len(),
+            "budget {budget} : {checked} jugés, {untranslatable} hors jugement, sur {}",
+            expected.len()
+        );
+        assert!(
+            checked >= BRANCH_CASES_FLOOR,
+            "budget {budget} : l'émetteur ne juge plus que {checked} cas de branchement \
+             sur {} ; formes où la machine s'arrête : {stuck:?}",
+            expected.len()
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
