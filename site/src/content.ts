@@ -123,7 +123,7 @@ const en: Copy = {
         "Boots a stock Linux 6.1 nommu kernel to a login prompt",
         "A disk on /dev/vda for either machine — a filesystem or installer image you import, of any size, read in place; what the guest writes goes into a layer beside it that survives suspension and restarts, and the file you imported never changes. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so",
         "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images",
-        "Nine hardware corpora hold that core: the reference is a real processor, asked what it produced",
+        "Ten hardware corpora hold that core: the reference is a real processor, asked what it produced",
         "Entirely offline — no server, no network",
         "CI boots that kernel on every commit, as a test",
       ],
@@ -169,7 +169,7 @@ const en: Copy = {
   facts: {
     title: "Built to be trusted",
     items: [
-      { value: "2614", label: "tests" },
+      { value: "2616", label: "tests" },
       { value: "7", label: "blocking CI gates" },
       { value: "0", label: "warnings, strict concurrency" },
       { value: "1", label: "real kernel booted per CI run" },
@@ -248,7 +248,7 @@ const fr: Copy = {
         "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite",
         "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, lue sur place ; ce que l'invité écrit va dans une couche à côté qui survit aux suspensions et aux redémarrages, et le fichier importé ne change jamais. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit",
         "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images",
-        "Neuf corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit",
+        "Dix corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit",
         "Entièrement hors ligne — aucun serveur, aucun réseau",
         "La CI démarre ce noyau à chaque commit, comme test",
       ],
@@ -289,7 +289,7 @@ const fr: Copy = {
   facts: {
     title: "Fait pour inspirer confiance",
     items: [
-      { value: "2614", label: "tests" },
+      { value: "2616", label: "tests" },
       { value: "7", label: "portes CI bloquantes" },
       { value: "0", label: "avertissement, concurrence stricte" },
       { value: "1", label: "vrai noyau démarré par exécution CI" },

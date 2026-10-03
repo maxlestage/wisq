@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { copy } from "../src/content";
 
@@ -166,6 +166,118 @@ describe("advertised claims match the repository", () => {
       throw new Error("ARCHITECTURE.md ne porte plus la phrase du corpus matériel");
     }
     expect(flat.slice(Math.max(0, at - 24), at)).toContain(String(cases));
+  });
+
+  /// **Combien de corpus matériels tiennent le cœur — et le nombre est écrit
+  /// en mots, donc invisible au compteur de nombres.**
+  ///
+  /// Trois pages l'annoncent, dans les deux langues, et les **six** copies
+  /// disaient « neuf » alors que `Tests/Fixtures/` en porte **dix**. Le
+  /// dixième — l'arrondi x87 — est arrivé onze heures après la phrase, le jour
+  /// même, et il est **dans** la version 0.4.0 que la note annonce : la note
+  /// est donc fausse sur la version qu'elle décrit, et pas seulement périmée.
+  ///
+  /// **Pourquoi aucune garde ne l'a vu.** Le compteur de ce fichier compte les
+  /// *chiffres* et exige une provenance pour chacun ; un nombre écrit en
+  /// lettres n'en est pas un pour lui. Même angle mort que la clef de `Map` en
+  /// double de #312 : la garde existait, et ne pouvait pas voir ça.
+  ///
+  /// **Ce que cette garde ne tient pas, et pourquoi.** La même note dit
+  /// « assez rare pour survivre à neuf corpus », et « survive nine corpora » :
+  /// celles-là **datent un défaut** au lieu d'inventorier les corpus — neuf
+  /// était le compte le jour où ce défaut a survécu. Elles ne sont pas exclues
+  /// par une liste mais par leur forme : elles ne disent pas « corpus
+  /// matériels ».
+  const FRENCH_NUMBERS = [
+    "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
+    "neuf", "dix", "onze", "douze", "treize", "quatorze",
+  ];
+  const ENGLISH_NUMBERS = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+  ];
+
+  /// Les oracles matériels, comptés par le répertoire et non par la mémoire.
+  ///
+  /// **Deux conditions, pas une.** Un fichier nommé « oracle » qui ne viendrait
+  /// pas d'un processeur gonflerait le compte : l'en-tête doit nommer le
+  /// silicium comme référence, et le script qui l'a fabriqué doit exister, sous
+  /// le nom du fichier. Les dix en ont un chacun.
+  function hardwareOracles(): string[] {
+    const dir = join(repoRoot, "Tests/Fixtures");
+    const found: string[] = [];
+    for (const entry of readdirSync(dir).sort()) {
+      if (!entry.endsWith("-oracle.tsv")) continue;
+      const head = readFileSync(join(dir, entry), "utf8").slice(0, 200);
+      expect(
+        head,
+        `${entry} ne nomme pas le processeur comme référence : ce n'est pas un oracle matériel`,
+      ).toContain("le vrai processeur");
+      const builder = join(repoRoot, "scripts", `build-${entry.replace(/\.tsv$/, "")}.py`);
+      expect(existsSync(builder), `${entry} n'a pas de fabricant : ${builder}`).toBe(true);
+      found.push(entry);
+    }
+    return found;
+  }
+
+  test("les pages annoncent le vrai nombre de corpus matériels, dans les deux langues", () => {
+    const oracles = hardwareOracles();
+    // Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+    expect(oracles.length, "aucun oracle matériel trouvé").toBeGreaterThan(5);
+
+    // **Les copies ET leur source.** La page des versions est « tirée du
+    // journal des modifications » : corriger le site sans corriger
+    // `CHANGELOG.md` laisse la faute à l'endroit d'où elle revient. C'est la
+    // forme de #289 dans l'autre sens — tenir les copies et pas l'original.
+    //
+    // **`docs/JOURNAL.md` est exclu, et par son sujet** : il *cite* les six
+    // phrases fausses dans le tableau de la tranche qui les a corrigées. Une
+    // garde qui refuserait au journal de dire ce qui était faux lui
+    // interdirait de tenir le registre.
+    const sources: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (entry.endsWith(".ts") || entry.endsWith(".tsx")) sources.push(path);
+      }
+    };
+    walk(join(import.meta.dir, "..", "src"));
+    for (const entry of readdirSync(join(repoRoot, "docs"))) {
+      if (entry.endsWith(".md") && entry !== "JOURNAL.md") {
+        sources.push(join(repoRoot, "docs", entry));
+      }
+    }
+    for (const entry of ["CHANGELOG.md", "README.md", "README.fr.md"]) {
+      sources.push(join(repoRoot, entry));
+    }
+
+    let seen = 0;
+    for (const path of sources) {
+      const text = readFileSync(path, "utf8");
+      for (const [words, pattern] of [
+        [FRENCH_NUMBERS, /([\p{L}]+) corpus matériels/gu],
+        [ENGLISH_NUMBERS, /([\p{L}]+) hardware corpora/giu],
+      ] as const) {
+        for (const found of text.matchAll(pattern)) {
+          seen += 1;
+          const said = found[1].toLowerCase();
+          expect(
+            words.indexOf(said),
+            `${path} écrit « ${found[0]} », un mot qui n'est pas un nombre de cette liste`,
+          ).toBeGreaterThanOrEqual(0);
+          expect(
+            said,
+            `${path} annonce « ${found[0]} » et Tests/Fixtures/ en porte ` +
+              `${oracles.length} : ${oracles.join(", ")}`,
+          ).toBe(words[oracles.length]);
+        }
+      }
+    }
+    // **Et la garde se garde elle-même.** Si les pages cessaient de dire la
+    // phrase, cette boucle ne vérifierait plus rien en silence — c'est
+    // exactement comment ce nombre a dérivé un mois durant.
+    expect(seen, "plus aucune page n'annonce le nombre de corpus matériels").toBe(7);
   });
 
   /// **Le même tableau, dans deux langues, et une seule des deux à jour.**

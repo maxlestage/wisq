@@ -273,11 +273,11 @@ break APIs.
 
 ### Added
 - **A second local architecture: an x86-64 core that runs a stock Alpine
-  kernel and its initramfs.** The core is held by nine hardware corpora — the
+  kernel and its initramfs.** The core is held by ten hardware corpora — the
   reference is this machine's own processor, asked what it produced for the
   same bytes on the same state: arithmetic, XMM, strings, stack, branches,
-  SSE2 integer, scalar float, the x87 stack and the 512-byte FXSAVE area, over
-  24 000 cases. Measured on the same kernel and initramfs as QEMU: zero
+  SSE2 integer, scalar float, the x87 stack, x87 rounding at both edges and the
+  512-byte FXSAVE area, over 24 000 cases. Measured on the same kernel and initramfs as QEMU: zero
   segfaults, zero non-canonical addresses, zero of 27 413 ring transitions
   returning a corrupted stack. Getting there took the defects below, each
   found by measurement rather than by reading the code.
