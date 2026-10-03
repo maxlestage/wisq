@@ -19040,10 +19040,15 @@ l'espace utilisateur vient d'atteindre.
 
 ### Ce qui se décide, et qui ne s'engage pas seul
 
-> **Le premier point n'était pas une direction**, et #305 l'a corrigé sans rien
-> demander : il était déjà tranché dans le cœur Swift. Le second, lui, en reste
-> une — il touche à la ligne de commande de montage, donc à ce que toute machine
-> démarre.
+> **Aucun des deux n'était une direction, et #305 puis #306 les ont corrigés
+> sans rien demander.** Le premier était déjà tranché dans le cœur Swift. Le
+> second, cette correction-ci l'a d'abord dit « toujours une direction, puisqu'il
+> touche à ce que toute machine démarre » — **faux aussi**, et pour la troisième
+> fois par la même négligence : `MONTAGE_COMMAND_LINE` est la ligne du *montage
+> de mesure*, employée par `examples/kernel-entry.rs` et sa garde, et par rien
+> que l'application fasse démarrer. #306 l'a rendue réglable par `WISQ_CMDLINE`
+> sans y toucher. Ce qui reste une direction est ce que l'application donnera au
+> noyau le jour où elle aura une ligne à elle.
 
 Rendre visible ce que l'espace utilisateur écrit demande deux choses, et les
 deux sont des directions :
@@ -19225,3 +19230,156 @@ C'est aussi la deuxième fois en six tranches que je corrige une phrase de ma
 propre tranche de la veille : #301 avait corrigé #300. Les deux fois, ce qui a
 démenti n'était pas une relecture mais un `grep` dans le dépôt — et les deux
 fois, la chose que je disais absente était là.
+
+## #306 — l'espace utilisateur parle, et l'instrument qui l'a prouvé n'existait pas dans le dépôt
+
+#305 a rendu au port série de l'hôte ses huit registres et sa ligne quatre.
+Cette tranche mesure ce que l'espace utilisateur en fait, et dépose les deux
+instruments qui ont rendu la mesure coûteuse — parce qu'ils n'étaient nulle
+part.
+
+### Ce que la mesure dit, et c'est net
+
+Le `/init` de la sonde fait deux appels système : `write(1, …, 18)` puis
+`exit(%eax)`. Le second est tout le dispositif : le code de retour d'un appel
+système se lit **dans la panique du noyau**.
+
+| | #304 (avant #305) | #306, `keep_bootcon` | #306, `console=ttyS0` |
+| --- | --- | --- | --- |
+| ce que `write` rend | `exitcode=0x0000fb00` → **−EIO** | `exitcode=0x00001200` → **18** | `exitcode=0x00001200` → **18** |
+| le message sur le fil | non | **non** | **oui** |
+| lignes de console | 222 | 240 | 242 |
+| régions traduites | 12 093 | 12 064 | 12 249 |
+| interruptions délivrées | 321 | 7 174 | 7 515 |
+
+**`0x12` vaut dix-huit**, le nombre exact d'octets que la sonde a demandé à
+écrire. Le −EIO de #304 est tombé, et il est tombé pour la raison que #305
+avait nommée : le pilote trouve la puce, l'enregistre, et la ligne quatre vient
+chercher les octets.
+
+Et le relevé, avec une console nommée sur le série :
+
+```
+[    0.076666] Run /init as init process
+WISQ-USERSPACE-OK
+[    0.076666] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00001200
+```
+
+La ligne est **entre** le lancement de `/init` et la panique. C'est l'espace
+utilisateur qui parle, et c'est la première fois.
+
+### Le détour qui a failli passer pour un défaut
+
+Sans `console=ttyS0`, `write` rend **18 et le message ne sort pas**. Deux faits
+qui ont l'air de se contredire, et la tentation était de chercher un octet perdu
+dans l'hôte.
+
+La règle de #261 a tranché avant : avant de conclure de l'absence du message que
+quelque chose l'avait mangé, chercher ce qui est présent. Le relevé nomme ses
+consoles, et il n'en nomme que deux — `bootconsole [uart8250]` et
+`console [tty0]`. **Jamais `console [ttyS0]`.** `console_on_rootfs` ouvre
+`/dev/console`, qui est la console *préférée* ; c'est `tty0`, l'écran de texte
+factice, qui existe même sans écran et qui n'écrit nulle part. Les dix-huit
+octets ont donc été acceptés, comptés, et jetés — par le noyau, correctement, et
+sans que l'hôte y soit pour rien.
+
+### Et la conjecture de #304 est vérifiée
+
+#304 avait écrit : « La forme juste est probablement `console=ttyS0` **à la
+place** de `keep_bootcon`, et ça se mesure. » Mesuré :
+
+- `keep_bootcon console=ttyS0` — ce que #304 avait essayé — **dédouble** chaque
+  ligne, 367 contre 222, parce que les deux consoles écrivent sur le même port ;
+- `console=ttyS0` **sans** `keep_bootcon` : **242 lignes contre 240**, et trois
+  lignes de `printk` répétées contre une — des répétitions du noyau lui-même, pas
+  des doubles. Aucun dédoublement.
+
+La bascule est visible dans le relevé : `printk: bootconsole [uart8250]
+disabled`. Elle était le défaut que `keep_bootcon` existait pour empêcher — le
+noyau se taisait au milieu de son démarrage — et elle ne l'est plus, parce que
+ce qui prend le relais fonctionne maintenant.
+
+### Ce que la tranche dépose, et pourquoi
+
+**`scripts/build-userspace-probe.py`.** La recette de la sonde de #304 était en
+prose dans le journal, avec cette phrase : « La recette est ici parce que le
+conteneur est éphémère et que la refabriquer coûte une demi-heure. » Le
+conteneur a été remplacé, et la refabriquer a coûté une demi-heure. La prose
+disait *quoi* — « un ELF statique écrit à la main, 197 octets », « un `newc` de
+quatre entrées » — et pas *quels octets* : le déplacement du `lea`, la taille du
+nom qui compte son nul, les deux complétions à quatre, `/dev/console` en
+caractère 5:1. **Une recette qu'il faut retraduire n'est pas un instrument.**
+
+Le script se calibre lui-même : il lance le `/init` dans le conteneur et exige
+qu'il imprime son message et sorte avec dix-huit, et il relit son archive par
+son propre analyseur. Une sonde non calibrée qui ne dit rien ne distingue pas
+« le noyau n'a pas écrit » de « la sonde ne sait pas écrire ».
+
+**`WISQ_CMDLINE`.** La mesure qui compte demandait `console=ttyS0`, et il n'y
+avait aucun moyen de le demander : la ligne est une constante, tenue par un
+test, et la mesure a donc été prise sur une **édition non commise** de cette
+constante. C'est la pire forme d'instrument — celui qui n'existe pas dans le
+dépôt, qu'il faut refabriquer de mémoire, et dont rien ne dit s'il a été remis
+en place. La ligne gardée ne bouge pas ; ce qui s'y ajoute passe par
+`montage_command_line`, et trois gardes le tiennent :
+
+- rien à ajouter rend la ligne gardée **à l'octet près** ;
+- ce qu'on ajoute est séparé par une espace — sans elle,
+  `keep_bootconconsole=ttyS0` est un paramètre que le noyau ignore en silence, et
+  la mesure rendrait exactement ce qu'elle rendait sans ;
+- une ligne qui ne tiendrait pas où le montage la pose est **refusée**, avec les
+  deux nombres.
+
+**Et il enlève, pas seulement il ajoute** — ce qui n'était pas prévu, et a été
+trouvé en exerçant l'instrument qu'on venait d'écrire. La forme que #306 a
+mesurée est `console=ttyS0` *à la place* de `keep_bootcon` ; un
+`WISQ_CMDLINE` qui n'ajoutait que rendait cette forme-là inatteignable, et
+produisait l'autre — celle qui dédouble. **Un instrument qui ne refait pas la
+mesure dont il porte le nom est exactement le défaut que cette tranche reproche
+à la recette en prose de #304.** Un `-` devant un argument l'enlève, donc
+`WISQ_CMDLINE="-keep_bootcon console=ttyS0"` rend la ligne mesurée.
+
+Et le refus qui compte des trois est celui-là : **un retrait qui n'enlève rien
+est refusé**. `-keepbootcon`, `-keep-bootcon`, `-keep_bootcon=1` sont trois
+fautes de frappe plausibles, et chacune laisserait la ligne inchangée — la
+mesure rendrait ce qu'elle rendait sans le fragment, et ce serait lu comme un
+résultat. Les cinq gardes tombent toutes contre la forme naïve, chacune nommée.
+
+**Et la place est dérivée, pas réécrite.** Le montage pose la ligne à `0x800`
+dans la page zéro elle-même, donc elle a la fin de cette page et rien de plus :
+`4096 − 0x800 − 1`, soit 2047 — à un octet près la limite du noyau lui-même,
+`COMMAND_LINE_SIZE`. Les deux adresses étaient des `const` dans le `main` du
+montage ; elles sont maintenant à côté de la page zéro, et un test tient la
+déduction au lieu de réécrire le nombre.
+
+**Un fait adjacent, écrit là où il se vérifie** : la page zéro porte la table
+e820 à `0x2d0`, et un noyau en accepte cent vingt-huit entrées, soit jusqu'à
+`0xcd0`. Le montage n'en déclare que deux, donc la table finit à `0x2f8` et
+`0x800` est largement au-delà. Une page qui déclarerait plus de quarante-trois
+entrées écraserait sa ligne de commande avec sa propre table, en silence. Ce
+n'est pas un défaut aujourd'hui ; c'est une borne, et elle est maintenant
+écrite dans le commentaire de `COMMAND_LINE_AT`.
+
+### Ce qui reste, et ce qui n'est plus une direction
+
+`MONTAGE_COMMAND_LINE` est la ligne **du montage de mesure** —
+`examples/kernel-entry.rs` et sa garde, et rien d'autre : ce n'est pas ce que
+l'application fait démarrer. #304 l'avait rangée parmi les directions à
+soumettre à Maxime ; c'était la même erreur de classement que pour le 16550, et
+pour la même raison — la conclusion n'avait pas été confrontée à l'endroit où la
+constante est employée. Nommer une console dans la ligne du montage ne décide
+rien pour personne, et `WISQ_CMDLINE` fait que ça ne décide même plus pour le
+montage.
+
+Ce qui reste une direction, et qui ne s'engage pas seul : **ce que
+l'application, elle, donnera au noyau**. Le bureau n'a pas encore de ligne de
+commande à lui ; le jour où il en aura une, qu'elle nomme une console sur le
+série est un choix visible par tout utilisateur, et c'est celui de Maxime.
+
+### Le signe à retenir
+
+**Une recette en prose se périme comme un chiffre, et plus vite.** Le journal de
+ce dépôt est plein de nombres datés qu'une commande permet de revérifier ; la
+sonde de #304 était la première chose qu'il décrivait sans donner le moyen de la
+refaire. La phrase qui l'accompagnait — « la refabriquer coûte une demi-heure » —
+était exacte, et elle était la raison de ne pas s'arrêter là.
