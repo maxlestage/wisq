@@ -83,6 +83,33 @@ pub enum Refusal {
         frame: u64,
         frame_bytes: u64,
     },
+    /// **Une archive de zéro octet.** Le noyau lirait une racine qui n'existe
+    /// pas : `ramdisk_size` à zéro et `ramdisk_image` renseigné décrivent une
+    /// archive vide, qu'il tente quand même de déballer.
+    InitramfsHasNoBytes,
+    /// **L'archive n'est pas là où le noyau pourrait la lire.** Trois bornes la
+    /// tiennent, et aucune des trois ne se voit à l'exécution si elle est
+    /// franchie : le sommet de la page zéro au-dessous, la base du cadre (ou le
+    /// bout de la RAM) au-dessus, et la largeur de `ramdisk_image` — un `u32`,
+    /// dont le demi-haut vit dans `ext_ramdisk_image` que cette page n'écrit
+    /// pas. Tronquer donnerait au noyau une autre archive, à une autre adresse.
+    InitramfsDoesNotFit {
+        at: u64,
+        bytes: u64,
+        floor: u64,
+        ceiling: u64,
+    },
+    /// **L'image écraserait l'archive.** C'est la mémoire que le noyau déballe
+    /// pour s'en faire une racine : des octets posés dessus la lui donnent
+    /// corrompue, et le symptôme est un cpio « invalid magic » qui ne nomme pas
+    /// sa cause. Troisième région que la machine se donne à elle-même, après la
+    /// page zéro et le cadre.
+    ImageWouldOverwriteTheArchive {
+        at: u64,
+        bytes: u64,
+        archive: u64,
+        archive_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -111,6 +138,29 @@ impl std::fmt::Display for Refusal {
                 out,
                 "une image de {bytes} octets posée à {at} tombe dans le cadre, qui occupe \
                  {frame_bytes} octets à {frame}"
+            ),
+            Self::InitramfsHasNoBytes => {
+                write!(out, "une archive de zéro octet n'est pas une racine")
+            }
+            Self::InitramfsDoesNotFit {
+                at,
+                bytes,
+                floor,
+                ceiling,
+            } => write!(
+                out,
+                "une archive de {bytes} octets à {at} sort de ce qui lui est laissé, de \
+                 {floor} à {ceiling}"
+            ),
+            Self::ImageWouldOverwriteTheArchive {
+                at,
+                bytes,
+                archive,
+                archive_bytes,
+            } => write!(
+                out,
+                "une image de {bytes} octets posée à {at} tombe dans l'archive, qui occupe \
+                 {archive_bytes} octets à {archive}"
             ),
             Self::RamIsNotAPowerOfTwo(pages) => write!(
                 out,
@@ -205,12 +255,30 @@ pub fn boot_page_with_screen(
         return boot_page(pages, command_line);
     };
     let page = boot_page(pages, command_line)?;
+    let ram = u64::from(pages) * 65536;
+    // **L'adresse du cadre est repliée avant d'être dite au noyau**, et ce
+    // n'est pas une précaution : `web/host.js` la replie aux deux endroits qui
+    // la lisent — `BigInt(screen.base) & BigInt(base - 1)` — donc c'est
+    // l'adresse repliée qui désigne les octets que la vue peint réellement. Un
+    // noyau à qui on donnerait l'adresse brute croirait son écran ailleurs, et
+    // `simpledrm` écrirait dans une mémoire que personne n'affiche.
+    //
+    // **Et sans ce repli, le bureau ne pouvait pas bâtir sa page du tout** :
+    // `lfb_base` est un `u32`, donc une adresse de noyau — celle de tous les
+    // bureaux de `LocalDesktopTests` — était refusée. Rien ne l'avait vu parce
+    // que le dépôt de cette page était inatteignable ; le premier appel réel
+    // l'a trouvé.
+    let screen = Screen {
+        base: screen.base & (ram - 1),
+        width: screen.width,
+        height: screen.height,
+    };
     // Le plancher : le premier octet que le cadre a le droit d'occuper.
     let floor = crate::kernel_image::ZERO_PAGE_AT + page.len() as u64;
     let inside =
         (crate::kernel_image::COMMAND_LINE_AT - crate::kernel_image::ZERO_PAGE_AT) as usize;
     match crate::kernel_image::zero_page_with_screen(
-        u64::from(pages) * 65536,
+        ram,
         crate::kernel_image::COMMAND_LINE_AT as u32,
         screen,
         floor,
@@ -234,12 +302,14 @@ pub fn boot_page_with_screen(
             // sont plus fins que ceux que `Refusal` sait porter ; ce qui compte
             // pour l'appelant est qu'il soit refusé, et son `Display` le dit.
             other => {
-                let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+                let bytes = u64::from(screen.width).saturating_mul(u64::from(screen.height)) * 4;
                 let _ = other;
+                // `screen.base` est déjà replié ici, donc le nom du champ dit
+                // vrai : c'est l'adresse qui a été jugée.
                 Refusal::ScreenDoesNotFit {
                     folded: screen.base,
                     bytes,
-                    ram: u64::from(pages) * 65536,
+                    ram,
                 }
             }
         }),
@@ -267,6 +337,75 @@ pub fn boot_page(pages: u32, command_line: &str) -> Result<Vec<u8>, Refusal> {
     page[inside..inside + command_line.len()].copy_from_slice(command_line.as_bytes());
     page[inside + command_line.len()] = 0;
     Ok(page)
+}
+
+/// **Dire au noyau du bureau où est sa racine.**
+///
+/// `kernel_image::declare_ramdisk` existe depuis #304 et le montage de mesure
+/// l'appelle quand `WISQ_INITRAMFS` en demande une. #306 a mesuré ce qu'elle
+/// donne : `WISQ-USERSPACE-OK` sur le fil, entre `Run /init as init process` et
+/// la panique. **Le bureau ne l'appelait pas.** Sans les deux champs —
+/// `ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — le noyau traverse tous
+/// ses `initcall`, arrive dans `prepare_namespace`, et meurt sur « VFS: Unable
+/// to mount root fs on unknown-block(0,0) ». C'est l'échec que #304 a corrigé
+/// **dans le montage seulement**.
+///
+/// **La page n'est pas rebâtie, deux champs sont écrits.** C'est la leçon de
+/// #311 : un chemin qui repart de `zero_page` perd ce que l'autre y avait mis.
+/// Et c'est aussi ce que `declare_ramdisk` dit de lui-même — l'écran et
+/// l'archive sont deux champs sans rapport, et une fonction qui poserait les
+/// deux ensemble se dédoublerait au premier cas qui n'en veut qu'un.
+///
+/// **Les deux bornes viennent d'ici et pas de l'appelant.** Le montage passe le
+/// sommet de ce qu'il a chargé ; le bureau ne le connaît pas — l'application
+/// pose l'image du noyau *après* que cette page est bâtie. Le plancher est donc
+/// le **sommet de la page zéro**, le minimum certainement juste : au-dessous
+/// vivent la page et sa ligne de commande, et une archive posée là les
+/// écraserait avec le cpio. Le plafond est la **base du cadre** quand il y en a
+/// un, le bout de la RAM sinon : une archive peut tenir dans la mémoire et
+/// déborder sur l'écran, exactement le piège que #251 a payé pour le cadre.
+///
+/// Qu'une archive chevauche l'**image du noyau** est refusé de l'autre côté,
+/// par `placement`, au moment où les octets entrent — comme pour le cadre
+/// depuis #312.
+pub fn declare_initramfs(
+    page: &mut [u8],
+    pages: u32,
+    screen: Option<Screen>,
+    initramfs: crate::kernel_image::Ramdisk,
+) -> Result<(), Refusal> {
+    if pages == 0 || !pages.is_power_of_two() {
+        return Err(Refusal::RamIsNotAPowerOfTwo(pages));
+    }
+    let ram = u64::from(pages) * 65536;
+    // Le premier octet que l'archive a le droit d'occuper : le sommet de la
+    // page, lu sur la page qu'on nous donne plutôt que posé en constante.
+    let floor = crate::kernel_image::ZERO_PAGE_AT + page.len() as u64;
+    let ceiling = match screen {
+        None => ram,
+        Some(screen) => screen.base & (ram - 1),
+    };
+    // **Repliée, comme toutes les adresses invitées de ce module.** Et c'est
+    // l'adresse *repliée* qui est écrite dans la page : le noyau lira la même
+    // que celle où l'application a posé les octets.
+    let folded = crate::kernel_image::Ramdisk {
+        at: initramfs.at & (ram - 1),
+        bytes: initramfs.bytes,
+    };
+    match crate::kernel_image::declare_ramdisk(page, folded, floor, ceiling) {
+        Ok(()) => Ok(()),
+        Err(crate::kernel_image::RamdiskRefusal::Empty) => Err(Refusal::InitramfsHasNoBytes),
+        // Les trois autres disent la même chose au bureau : l'archive n'est pas
+        // là où le noyau pourrait la lire. Les nombres des deux bornes sont
+        // plus utiles à l'appelant que la distinction entre elles, et le
+        // `Display` les dit.
+        Err(_) => Err(Refusal::InitramfsDoesNotFit {
+            at: folded.at,
+            bytes: folded.bytes,
+            floor,
+            ceiling,
+        }),
+    }
 }
 
 /// **Ce que l'appelant n'a pas le droit d'écrire, et pourquoi.**
@@ -297,6 +436,7 @@ pub fn boot_page(pages: u32, command_line: &str) -> Result<Vec<u8>, Refusal> {
 pub fn placement(
     pages: u32,
     screen: Option<Screen>,
+    initramfs: Option<crate::kernel_image::Ramdisk>,
     boots: bool,
     at: u64,
     bytes: u64,
@@ -345,6 +485,20 @@ pub fn placement(
                 bytes,
                 frame,
                 frame_bytes,
+            });
+        }
+    }
+    if let Some(archive) = initramfs {
+        let at = archive.at & (ram - 1);
+        // Une archive de zéro octet n'occupe rien — `declare_initramfs` l'a
+        // déjà refusée, et refuser ici au nom d'une archive qui n'en est pas
+        // une serait un refus sans objet.
+        if archive.bytes > 0 && folded < at.saturating_add(archive.bytes) && at < folded + bytes {
+            return Err(Refusal::ImageWouldOverwriteTheArchive {
+                at: folded,
+                bytes,
+                archive: at,
+                archive_bytes: archive.bytes,
             });
         }
     }

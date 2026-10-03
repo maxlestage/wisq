@@ -14,7 +14,7 @@ export const architectureEn: Doc = {
     {
       kind: "p",
       text:
-        "Everything is Rust except the phone app, which is hybrid. The host daemon and the RISC-V interpreter are Rust — a program with no interface, and a loop over a byte array; neither has a reason to carry a language runtime. The app is the exception because it has to be: the interface, the touch model and the remote desktop client are built on UIKit and Network.framework, which belong to the platform they target. So the app is a Swift shell around a Rust core, and the seam between them is a C ABI of 34 functions, all declared in one file.",
+        "Everything is Rust except the phone app, which is hybrid. The host daemon and the RISC-V interpreter are Rust — a program with no interface, and a loop over a byte array; neither has a reason to carry a language runtime. The app is the exception because it has to be: the interface, the touch model and the remote desktop client are built on UIKit and Network.framework, which belong to the platform they target. So the app is a Swift shell around a Rust core, and the seam between them is a C ABI of 35 functions, all declared in one file.",
     },
     {
       kind: "p",
@@ -107,7 +107,7 @@ export const architectureFr: Doc = {
     {
       kind: "p",
       text:
-        "Tout est en Rust sauf l'application mobile, qui est hybride. Le démon hôte et l'interpréteur RISC-V sont en Rust — un programme sans interface, et une boucle sur un tableau d'octets ; ni l'un ni l'autre n'a de raison d'embarquer un runtime de langage. L'application fait exception parce qu'elle le doit : l'interface, le modèle tactile et le client de bureau distant reposent sur UIKit et Network.framework, qui appartiennent à la plateforme qu'ils visent. C'est donc une coquille Swift autour d'un cœur Rust, et la couture entre les deux est une ABI C de 34 fonctions, toutes déclarées dans un seul fichier.",
+        "Tout est en Rust sauf l'application mobile, qui est hybride. Le démon hôte et l'interpréteur RISC-V sont en Rust — un programme sans interface, et une boucle sur un tableau d'octets ; ni l'un ni l'autre n'a de raison d'embarquer un runtime de langage. L'application fait exception parce qu'elle le doit : l'interface, le modèle tactile et le client de bureau distant reposent sur UIKit et Network.framework, qui appartiennent à la plateforme qu'ils visent. C'est donc une coquille Swift autour d'un cœur Rust, et la couture entre les deux est une ABI C de 35 fonctions, toutes déclarées dans un seul fichier.",
     },
     {
       kind: "p",

@@ -555,6 +555,106 @@ final class LocalDesktopTests: XCTestCase {
         }
     }
 
+    /// **Le bureau dit au noyau où est sa racine, et l'archive y est.**
+    ///
+    /// `kernel_image::declare_ramdisk` existe depuis #304 et le montage de
+    /// mesure l'appelle ; #306 a mesuré ce qu'elle donne —
+    /// `WISQ-USERSPACE-OK` sur le fil. **Le bureau ne l'appelait pas.** Sans les
+    /// deux champs, le noyau traverse tous ses `initcall`, arrive dans
+    /// `prepare_namespace`, et meurt sur « VFS: Unable to mount root fs on
+    /// unknown-block(0,0) » — avec l'archive dans sa RAM, à côté, jamais nommée.
+    ///
+    /// **Les trois choses sont relues dans la mémoire de l'invité**, et c'est ce
+    /// qui distingue ce test d'un test de `desktop::declare_initramfs` : que les
+    /// champs soient écrits est tenu en Rust, que la page et l'archive arrivent
+    /// *dans la vue* ne l'est qu'ici.
+    func testTheDesktopTellsTheKernelWhereItsRootIs() async throws {
+        // Une page de RAM. La page zéro se replie à 0x9000, l'archive est au-
+        // dessus de son sommet — au-dessous, elle écraserait la carte mémoire.
+        let archive = Data((0..<64).map { UInt8(($0 &* 7 &+ 3) & 0xff) })
+        let at = base + 0xA000
+        let desktop = try LocalDesktop(
+            pages: 1,
+            entry: base,
+            bootsAKernel: true,
+            initramfs: .init(bytes: archive, at: at)
+        )
+        try await desktop.load()
+
+        /// Les champs de `boot_params` sont petit-boutiens. Recomposés octet par
+        /// octet plutôt que par un `loadUnaligned` : ce qui est vérifié est
+        /// l'ordre des octets tel que le noyau le lit, et une lecture typée le
+        /// supposerait au lieu de le dire.
+        func little(_ data: Data, _ offset: Int) -> UInt32 {
+            var value: UInt32 = 0
+            for index in (0..<4).reversed() {
+                value = value << 8 | UInt32(data[data.startIndex + offset + index])
+            }
+            return value
+        }
+
+        let page = try await desktop.read(4096, at: DesktopTranslator.bootPageAddress)
+        XCTAssertEqual(page.count, 4096, "une page, pas un octet de plus")
+        XCTAssertEqual(
+            little(page, 0x218), 0xB000,
+            "ramdisk_image porte l'adresse repliée de l'archive"
+        )
+        XCTAssertEqual(little(page, 0x21C), 64, "et ramdisk_size sa taille")
+
+        // **Et la page n'a pas été rebâtie** : la ligne de commande vit à 0x800
+        // de son début, et un chemin qui repartirait de zéro l'aurait perdue.
+        // C'est la leçon de #311, et elle est tenue plutôt que relue.
+        XCTAssertEqual(page[page.startIndex + 0x800], UInt8(ascii: "e"),
+                       "la ligne de commande commence toujours par earlycon")
+        XCTAssertEqual(page[page.startIndex + 0x1E8], 2,
+                       "et la carte mémoire garde ses deux entrées")
+
+        // **Les octets de l'archive sont vraiment là.** Des champs justes qui
+        // désignent de la mémoire vide donneraient au noyau un cpio
+        // « invalid magic », et ce test passerait sans eux.
+        // Hissé hors de l'assertion, comme à la ligne 231 de ce fichier :
+        // `XCTAssertEqual` prend une autoclosure, qui accepte `try` mais
+        // **pas** `await`. La leçon y était déjà écrite, et seule « App iOS »
+        // compile ce fichier — `swift build` ne le voit pas.
+        let relu = try await desktop.read(64, at: at)
+        XCTAssertEqual(
+            relu, archive,
+            "l'archive est dans la RAM de l'invité, à l'adresse déclarée"
+        )
+
+        // **Et elle est protégée comme les deux autres régions.**
+        do {
+            try await desktop.place(Data(count: 16), at: at)
+            XCTFail("une image dans l'archive doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(
+                failure,
+                .imageWouldOverwriteTheArchive(folded: 0xB000, bytes: 16, archive: 0xB000)
+            )
+        }
+        // Son voisin immédiat passe, à l'octet près.
+        try await desktop.place(Data(count: 16), at: at - 16)
+    }
+
+    /// **Une racine que le noyau ne pourrait pas lire est refusée à l'ouverture,
+    /// pas découverte à la panique.** Une archive posée sur la page zéro
+    /// écraserait la carte mémoire que le noyau vient d'y lire ; le refus tombe
+    /// dans `load()`, avec un nom.
+    func testARootTheKernelCouldNotReadIsRefusedWhenTheDesktopComesUp() async throws {
+        let desktop = try LocalDesktop(
+            pages: 1,
+            entry: base,
+            bootsAKernel: true,
+            initramfs: .init(bytes: Data(count: 64), at: DesktopTranslator.bootPageAddress)
+        )
+        do {
+            try await desktop.load()
+            XCTFail("une archive sur la page zéro doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(failure, .theRootCouldNotBeDeclared(.archiveDoesNotFit))
+        }
+    }
+
     /// **Et les deux refus ne sont pas inconditionnels** — c'est ce qui leur
     /// donne leur sens. Un bureau jugé sur ses registres n'a ni page zéro ni
     /// cadre : lui interdire ces adresses serait un refus sans objet, et un

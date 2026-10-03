@@ -227,6 +227,12 @@ public enum DesktopTranslator {
         case imageDoesNotFit
         case wouldOverwriteTheBootPage
         case wouldOverwriteTheFrame
+        /// **L'image écraserait l'archive initramfs.** Troisième région que la
+        /// machine se donne à elle-même : le noyau la déballe pour s'en faire
+        /// une racine, et des octets posés dessus la lui donnent corrompue —
+        /// avec, pour symptôme, un cpio « invalid magic » qui ne nomme pas sa
+        /// cause.
+        case wouldOverwriteTheArchive
         /// Un code que cette version ne connaît pas. Le taire le ferait passer
         /// pour « posable », qui est exactement le mauvais sens par défaut.
         case unknown(Int32)
@@ -237,6 +243,7 @@ public enum DesktopTranslator {
     public static func placement(
         pages: UInt32,
         screen: Screen? = nil,
+        initramfs: Initramfs? = nil,
         boots: Bool,
         at: UInt64,
         bytes: UInt64
@@ -244,6 +251,7 @@ public enum DesktopTranslator {
         let verdict = wisq_desktop_placement(
             pages,
             screen?.base ?? 0, screen?.width ?? 0, screen?.height ?? 0,
+            initramfs?.at ?? 0, UInt64(initramfs?.bytes.count ?? 0),
             boots ? 1 : 0,
             at, bytes
         )
@@ -253,6 +261,74 @@ public enum DesktopTranslator {
         case 2: return .imageDoesNotFit
         case 3: return .wouldOverwriteTheBootPage
         case 4: return .wouldOverwriteTheFrame
+        case 5: return .wouldOverwriteTheArchive
+        default: return .unknown(verdict)
+        }
+    }
+
+    /// **L'archive que le noyau déballe pour s'en faire une racine**, et où
+    /// l'application l'a posée.
+    ///
+    /// Les octets et l'adresse voyagent ensemble parce que les deux sont
+    /// nécessaires et qu'aucun n'est déductible de l'autre : la page zéro dit
+    /// au noyau **où** chercher, et c'est l'application qui a décidé où — elle
+    /// seule sait jusqu'où va l'image qu'elle a chargée.
+    public struct Initramfs: Equatable, Sendable {
+        public let bytes: Data
+        public let at: UInt64
+
+        public init(bytes: Data, at: UInt64) {
+            self.bytes = bytes
+            self.at = at
+        }
+    }
+
+    /// Ce que la page répond quand on lui dit où est la racine.
+    public enum Declared: Equatable, Sendable {
+        case declared
+        case ramIsNotAPowerOfTwo
+        /// Le noyau lirait une racine qui n'existe pas.
+        case archiveHasNoBytes
+        /// **Pas là où le noyau pourrait la lire.** Trois bornes la tiennent et
+        /// aucune ne se voit à l'exécution si elle est franchie : le sommet de
+        /// la page zéro au-dessous, la base du cadre (ou le bout de la RAM)
+        /// au-dessus, et la largeur de `ramdisk_image`.
+        case archiveDoesNotFit
+        /// Un code que cette version ne connaît pas, ou une page trop courte.
+        case unknown(Int32)
+    }
+
+    /// **Dire au noyau où est sa racine.**
+    ///
+    /// Sans les deux champs que ça écrit — `ramdisk_image` à `0x218`,
+    /// `ramdisk_size` à `0x21c` — le noyau traverse tous ses `initcall`, arrive
+    /// dans `prepare_namespace`, et meurt sur « VFS: Unable to mount root fs on
+    /// unknown-block(0,0) ». Le montage de mesure le fait depuis #304 ; le
+    /// bureau ne le faisait pas.
+    ///
+    /// **La page est modifiée sur place, pas rebâtie** : un chemin qui
+    /// repartirait de zéro perdrait la ligne de commande et la carte e820 que
+    /// `bootPage` y a mises. C'est la leçon de #311.
+    public static func declareInitramfs(
+        in page: inout Data,
+        pages: UInt32,
+        screen: Screen? = nil,
+        initramfs: Initramfs
+    ) -> Declared {
+        let verdict = page.withUnsafeMutableBytes { raw -> Int32 in
+            guard let base = raw.baseAddress else { return -1 }
+            return wisq_desktop_declare_initramfs(
+                base.assumingMemoryBound(to: UInt8.self), raw.count,
+                pages,
+                screen?.base ?? 0, screen?.width ?? 0, screen?.height ?? 0,
+                initramfs.at, UInt64(initramfs.bytes.count)
+            )
+        }
+        switch verdict {
+        case 0: return .declared
+        case 1: return .ramIsNotAPowerOfTwo
+        case 2: return .archiveHasNoBytes
+        case 3: return .archiveDoesNotFit
         default: return .unknown(verdict)
         }
     }

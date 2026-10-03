@@ -2272,16 +2272,36 @@ vraie limite du conteneur, et elle ne tient plus qu'à un framework Apple.
 par tranches de 48 Kio — un chemin assumé et cher, qu'un gestionnaire de schéma
 remplacerait, et qui ne se mesure que sur un appareil.
 
-**`place` tient trois bornes et n'en tenait qu'une.** La fin de la RAM, au-dessus
+**`place` tient quatre bornes et n'en tenait qu'une.** La fin de la RAM, au-dessus
 de laquelle vit la correspondance, était gardée depuis le lot 8. Les deux autres
 sont les régions que la machine se donne à elle-même, et l'appelant les écrasait
 sans qu'un mot ne le dise : la **page zéro** que le noyau lit avant sa première
-instruction (#310), et le **cadre** que la vue repeint à chaque image (#311). Le
-verdict est `desktop::placement`, en Rust et non en Swift, parce que c'est là que
-vit le risque — le pliage par masque et deux additions qui peuvent déborder, dont
-une qui *accepterait* en enroulant. Et la page zéro n'est intouchable que si le
-bureau amorce un noyau : un refus sans objet apprend aux appelants à contourner
-les refus.
+instruction (#310), le **cadre** que la vue repeint à chaque image (#311), et
+l'**archive initramfs** que le noyau déballe pour s'en faire une racine (#313).
+Le verdict est `desktop::placement`, en Rust et non en Swift, parce que c'est là
+que vit le risque — le pliage par masque et deux additions qui peuvent déborder,
+dont une qui *accepterait* en enroulant. Et aucune des trois n'est intouchable
+inconditionnellement : la page zéro ne l'est que si le bureau amorce un noyau, le
+cadre que si un écran est déclaré, l'archive que si une racine l'est. Un refus
+sans objet apprend aux appelants à contourner les refus.
+
+**Et ces trois dépôts n'avaient jamais tourné.** Le code que #310 a écrit pour
+poser la page zéro vivait **sous une boucle `while true` dont chaque sortie est
+un `return`** : inatteignable. #311 et #312 ont bâti dessus en le croyant posé,
+et les deux tranches étaient vertes — les tests vérifiaient que la page *se
+construit*, jamais qu'elle **arrive**. Le premier test qui la relit dans la
+mémoire de l'invité l'a trouvé au premier passage, en #313. Le compilateur Swift
+ne dit rien de cette forme (mesuré), donc la huitième règle de
+`scripts/check-whitespace.sh` la refuse désormais.
+
+**Et le bureau dit maintenant où est cette racine.** `declare_initramfs` écrit
+les deux champs — `ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — que le
+montage de mesure écrit depuis #304 et que le bureau n'écrivait pas. Sans eux, le
+noyau traverse tous ses `initcall`, arrive dans `prepare_namespace` et meurt sur
+« VFS: Unable to mount root fs on unknown-block(0,0) », avec l'archive dans sa
+RAM, à côté, jamais nommée. La page est modifiée **sur place** : un chemin qui
+repartirait de `zero_page` perdrait la ligne de commande et la carte e820, ce qui
+est la leçon de #311.
 
 ### Les pixels : c'est la vue qui peint
 
@@ -2611,6 +2631,30 @@ le posant en premier, le test tombe.
 pas établi : deux messages différents sont sortis du même commit. La course,
 elle, est nommée et corrigée. Les passages suivants diront si l'autre message
 revient — et si oui, il faudra le chercher ailleurs que dans `load()`.
+
+### Et il est revenu : 3 octobre, PR #448
+
+`InvalidTransition` nu, sur `testAnImageOverTheMachinesOwnRegionsIsRefused`,
+quatrième occurrence. Relance faite, une seule, comme la règle l'écrit.
+
+**Et cette fois le diff peut l'atteindre, ce qui vaut d'être dit plutôt que
+tu.** Les trois occurrences d'avant étaient sur des tests qu'il était *mesuré*
+que la PR ne touchait pas. Celle-ci non : #313 rend atteignable le dépôt de la
+page zéro, donc ce test fait désormais un aller-retour `callAsyncJavaScript`
+**de plus** pendant `load()`, sur une vue fraîchement créée — exactement la
+zone où l'intermittence vit. Deux lectures tiennent :
+
+- l'intermittence connue, qui frappe un quatrième test sans égard au code ;
+- le même défaut, dont ma fenêtre s'est élargie d'un appel.
+
+Rien ne les sépare pour l'instant, et l'honnêteté est de ne pas choisir. Ce qui
+*est* mesuré : le même passage a rendu `testTheDesktopTellsTheKernelWhereItsRootIs`
+**vert**, et il dépose une page zéro **et** une archive — donc deux
+allers-retours de plus que celui qui a échoué. Un mécanisme qui tiendrait au
+nombre d'appels prédit l'inverse de ce qu'on observe.
+
+Ce qui resterait à décider n'a pas bougé, et c'est une **direction**, pas un
+défaut : une seule vue pour toute la suite, ou vivre avec la relance comptée.
 
 ### La boucle ne rendait jamais la main
 
@@ -10444,7 +10488,15 @@ budget de tours le coupe en pleine marche : dernière adresse neuve au tour
 ### Ce que ça ne tranche pas
 
 À 256 Mio le budget redevient le facteur limitant. Savoir jusqu'où le noyau irait
-demande un budget plus grand, pas plus de mémoire — et la question d'après, celle
+demande un budget plus grand, pas plus de mémoire.
+
+> **La direction a été prise depuis, et deux fois.** #304 a donné un initramfs
+> au montage de mesure et #306 a mesuré ce qu'il donne — `WISQ-USERSPACE-OK` sur
+> le fil. #313 l'a donné au **bureau de l'application**, qui ne le déclarait pas.
+> Ce qui suit reste écrit pour ce qu'il dit du moment où il a été écrit : la
+> question était alors ouverte.
+
+Et la question d'après, celle
 de l'espace utilisateur, demande un initramfs, ce qui est une **direction** et
 non un défaut.
 

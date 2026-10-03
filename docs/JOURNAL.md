@@ -19763,6 +19763,14 @@ quatre fois cette semaine sans la lancer. La commande fait une seconde.
 
 ## #310 — tout ce que douze tranches ont mesuré se passait dans le montage : le bureau de l'application ne posait que RIP
 
+> **#313 a trouvé que le correctif de cette tranche n'a jamais tourné.** Le code
+> qui dépose la page zéro a bien été écrit ici, et il a été écrit **sous une
+> boucle `while true` dont chaque sortie est un `return`** : il était
+> inatteignable. #311 et #312 ont bâti dessus en le croyant posé. Le diagnostic
+> de cette entrée reste juste — le bureau ne posait que RIP — et son correctif
+> n'a commencé à s'exécuter qu'en #313. Ce qui l'a trouvé est le premier test
+> qui **relit la page** au lieu de vérifier qu'elle a été construite.
+
 Maxime a dit « fais tout » sur les trois décisions que je lui avais soumises.
 Deux se sont dissoutes à la lecture, et la troisième n'était pas celle que
 j'avais nommée.
@@ -20140,3 +20148,260 @@ n'est pas la première fois dans ce dépôt — #261 disait de chercher la même
 absence là où on *sait* que la chose est présente. Ici, c'est la variante par
 égalité : deux clés identiques pour deux raisons différentes, et aucun test ne
 pouvait le voir. Ce qui l'a trouvé est d'avoir **changé** l'un des deux.
+
+## #313 — le bureau avait une page zéro, un écran et une ligne de commande, et pas de racine : son noyau mourait dans `prepare_namespace`
+
+La routine porte depuis #310 une règle : *à chaque chose que le montage de mesure
+a, demander ce que le bureau en a*. Elle a trouvé #311 en un `grep`, et elle
+vient d'en trouver une troisième.
+
+`kernel_image::declare_ramdisk` existe depuis #304, et le montage l'appelle
+quand `WISQ_INITRAMFS` demande une archive. #306 a mesuré ce qu'elle donne :
+`WISQ-USERSPACE-OK` sur le fil, `exitcode=0x00001200` — dix-huit octets écrits
+par un `/init` de 171 octets, entre `Run /init as init process` et la panique.
+
+**Le bureau de l'application ne l'appelait pas.** Sans les deux champs —
+`ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — le noyau n'a aucun moyen
+d'apprendre qu'une archive est posée dans sa RAM. Il traverse tous ses
+`initcall`, arrive dans `prepare_namespace`, et meurt sur « VFS: Unable to mount
+root fs on unknown-block(0,0) ». **Avec l'archive dans sa mémoire, à côté,
+jamais nommée.**
+
+C'est la troisième fois de suite que la même question rend le même genre de
+défaut : #310 la page zéro, #311 l'écran réservé dans la carte, #313 la racine.
+Toutes trois corrigées **dans le montage seulement**, douze tranches durant.
+
+### La page est modifiée sur place, et c'est la leçon de #311
+
+Deux champs sont écrits, et c'est tout. Un chemin qui repartirait de `zero_page`
+perdrait la ligne de commande et la carte e820 — c'est exactement le sabotage qui
+a survécu en #311, et il a suffi à écrire ici l'assertion qui le tient : après
+avoir déclaré la racine, la ligne est toujours à `0x800` et la carte porte
+toujours ses trois entrées.
+
+`declare_ramdisk` le dit déjà de lui-même, et sa raison vaut d'être relue :
+l'écran et l'archive sont deux champs de `boot_params` sans rapport l'un avec
+l'autre, et « une fonction qui poserait les deux ensemble se dédoublerait au
+premier cas qui n'en veut qu'un ».
+
+### Les deux bornes viennent du bureau, pas de l'appelant
+
+Le montage passe le sommet de ce qu'il a chargé. Le bureau ne le connaît pas :
+l'application pose l'image du noyau **après** que cette page est bâtie. Donc,
+comme pour le plancher du cadre en #311 :
+
+- le **plancher** est le sommet de la page zéro, le minimum certainement juste —
+  au-dessous vivent la page et sa ligne de commande, et une archive posée là les
+  écraserait avec le cpio ;
+- le **plafond** est la base du cadre quand il y en a un, le bout de la RAM
+  sinon. Une archive peut tenir dans la mémoire et déborder sur l'écran,
+  exactement le piège que #251 a payé pour le cadre lui-même.
+
+Et la troisième borne n'est pas une adresse : `ramdisk_image` et `ramdisk_size`
+sont des `u32`, dont le demi-haut vit dans `ext_ramdisk_image` /
+`ext_ramdisk_size` que cette page n'écrit pas. Une RAM de huit gibioctets laisse
+donc des adresses parfaitement valides et **indescriptibles** ; tronquer
+donnerait au noyau une autre archive, à une autre adresse, sans rien signaler.
+
+### La quatrième région protégée, et pourquoi elle est dans cette tranche
+
+#312 a refusé qu'une image de l'appelant écrase la page zéro ou le cadre.
+Ajouter une **troisième** région que la machine se donne à elle-même sans
+l'ajouter à ce refus aurait été réintroduire sciemment le défaut que #312 venait
+de fermer. `placement` prend donc l'archive, et le refus a son nom :
+`ImageWouldOverwriteTheArchive`. Le symptôme qu'il évite est un cpio
+« invalid magic » — un message qui ne nomme pas sa cause, et que ce dépôt a déjà
+lu une fois : #257 l'a relevé en passant, « rootfs image is not initramfs
+(invalid magic at start of compressed archive) », **après** que le noyau avait
+déballé `/init` quand même. Là, la cause était le bourrage de zéros que `cpio`
+met après son `TRAILER!!!`, et ce n'était pas un défaut ; ici, ce serait une
+image de l'appelant, et le message serait le même.
+
+> **Vérifié, pas invoqué.** J'avais d'abord écrit #296. Invoquer le dépôt est une
+> affirmation, et celle-là se vérifie comme un nombre : c'est #257.
+
+Côté Swift, `load()` déclare la racine **avant** de poser la page, puis dépose
+l'archive par `deposit` et non par `place` : l'archive est désormais ce que
+`place` refuse d'écraser, et la poser par lui serait l'application refusant
+contre elle-même. C'est le même raccord que #312 a fait pour la page zéro.
+
+### Trois sabotages ont survécu, et les trois nommaient une garde absente
+
+Huit mutations. Cinq sont tombées du premier coup. **Trois ont survécu**, et
+aucune des trois n'était un mauvais sabotage :
+
+| mutation survivante | la garde qui manquait |
+|---|---|
+| l'adresse de l'archive n'est pas repliée dans `declare_initramfs` | aucun test Rust ne donnait une adresse d'un autre tour de masque — tous les miens étaient déjà repliés |
+| `placement` ne replie pas l'adresse de l'**archive** | mon assertion de repliage portait sur l'adresse de l'**image**, et les deux se ressemblent assez pour qu'on les confonde en relisant |
+| une archive de zéro octet n'est plus distinguée dans `placement` | rien ne vérifiait qu'une archive sans octet n'occupe aucune adresse |
+
+Les trois assertions sont écrites, avec leur raison *et* la mention du sabotage
+qui les a trouvées. Les trois mutations tombent maintenant.
+
+**C'est la troisième tranche de suite où un sabotage trouve un trou plutôt qu'une
+erreur**, et ce n'est plus une coïncidence : quand on ajoute une région qui
+ressemble à une région déjà gardée, on recopie ses assertions en changeant un
+nom — et on oublie celle qui portait sur l'autre moitié de la comparaison.
+
+### Ce que ça ne prouve pas
+
+**Aucun noyau n'a démarré par ce chemin.** Ce qui est tenu ici est que la page
+porte les deux champs, que l'archive arrive dans la mémoire de la vue à l'adresse
+déclarée, et que les bornes refusent. Que le noyau *déballe* cette archive est
+mesuré par le montage depuis #306 et par rien d'ici : le bureau demanderait les
+35 Mio du noyau Alpine portés dans un simulateur.
+
+**Et le branchement Swift n'est tenu que par la CI Apple**, comme en #312 : deux
+tests hébergés, qui ne tournent que sur « App iOS ». Le vert sera lu par nom dans
+le journal brut.
+
+### Ce que le premier test qui relit la page a trouvé : #310 n'avait jamais tourné
+
+« App iOS » a rendu quatorze cas au lieu de douze, et **mes deux nouveaux tests
+ont échoué**. Pas sur l'archive : sur **tout**. La page zéro relue dans la
+mémoire de l'invité était entièrement à zéro — `ramdisk_image` à 0, la ligne de
+commande à 0, la carte e820 à 0 — et l'archive relue était bien de 64 octets,
+tous nuls.
+
+Rien n'avait jamais été écrit. Voici pourquoi :
+
+```swift
+let installed = Date().addingTimeInterval(patience)
+while true {
+    …
+    if said == Self.ready { return }        // ← chaque sortie est un return
+    if said != Self.stillInstalling { throw … }
+    …
+}
+
+// Et tout ceci est inatteignable.
+if bootsAKernel {
+    …
+    try await deposit(zero, at: …)
+}
+```
+
+Le dépôt de la page zéro, **écrit par #310**, vit sous une boucle qui ne tombe
+jamais à travers. Il n'a jamais été exécuté. #311 a ajouté l'écran dans cette
+page, #312 a changé `place` en `deposit` pour lui — les deux ont bâti sur du
+code mort, et les deux tranches sont vertes.
+
+**Rien ne pouvait le voir.** Les tests hébergés d'alors vérifiaient que la page
+*se construit* — ce qui est tenu en Rust — jamais qu'elle **arrive**. Et le
+compilateur Swift est muet là-dessus : mesuré, `swiftc -typecheck` sur la forme
+minimale ne rend rien, ni en typage ni en compilation complète, donc un
+`-warnings-as-errors` ne l'aurait pas attrapé non plus.
+
+La boucle d'attente est devenue une méthode à elle, `driverIsUp`, qui **rend**
+son verdict ; `settle` l'appelle puis dépose. Et un bureau qui amorce un noyau
+exige désormais un verdict lisible : sans pilote confirmé, la page zéro ne peut
+pas être posée, et venir au monde sans elle en silence est exactement le défaut
+que #310 croyait avoir corrigé.
+
+La **huitième** règle de `scripts/check-whitespace.sh` rend la forme impossible.
+Elle ne parle que des boucles `while true` **sans aucun `break`** — le code qui
+les suit est alors inatteignable, toujours, donc elle ne peut pas rendre de faux
+positif. Elle est conservatrice dans l'autre sens (un `break` de `switch`
+imbriqué la fait taire), et c'est le bon sens à rater : une garde qui refuse du
+code correct est désactivée dans la journée.
+
+**Le signe.** Un test qui vérifie qu'une chose *se construit* ne dit rien de son
+arrivée. Douze tranches de mesures, trois tranches de correctifs, et la première
+assertion qui **relit** a trouvé que rien n'était jamais arrivé.
+
+### Et le code mort en cachait un second : le cadre n'était pas replié
+
+Rendre le dépôt atteignable a immédiatement fait tomber un test de #312 —
+`testAnImageOverTheMachinesOwnRegionsIsRefused`, vert aux deux passages
+précédents. Le premier message était l'`InvalidTransition` nu que ce dépôt
+connaît et dont la règle écrite est « une relance, une seule ». La relance a
+rendu **un autre message**, et c'était le bon :
+
+```
+LocalDesktopTests.swift:523: caught error:
+  "imageDoesNotFit(folded: 72057594037977088, bytes: 0, ram: 65536)"
+```
+
+`72057594037977088` est `0x0100_0000_0000_C000` : l'adresse de l'écran, **non
+repliée**. `boot_page_with_screen` la passait telle quelle à
+`kernel_image::zero_page_with_screen`, qui refuse une base au-delà de ce que
+`lfb_base` — un `u32` — sait porter. **Un bureau dont l'écran vit à une adresse
+de noyau ne pouvait pas bâtir sa page du tout.** C'est le cas de tous ceux de
+`LocalDesktopTests`.
+
+`desktop::page` replie, `placement` replie, `declare_initramfs` replie.
+`boot_page_with_screen` était la seule qui ne repliait pas — et c'est la seule
+que rien n'appelait avec une vraie adresse invitée, puisque son appelant était
+inatteignable. **Le code mort cachait le défaut du code qu'il n'appelait pas.**
+
+Et c'est l'adresse repliée qui est juste, pas un compromis : `web/host.js`
+replie aux deux endroits qui lisent le cadre —
+`BigInt(screen.base) & BigInt(base - 1)` — donc c'est elle qui désigne les
+octets que la vue peint. Un noyau à qui on donnerait l'adresse brute croirait
+son écran ailleurs, et `simpledrm` écrirait dans une mémoire que personne
+n'affiche.
+
+La garde porte sur l'**égalité octet par octet** des deux pages, pas sur le
+champ `lfb_base` : elle ne dépend d'aucun décalage, et elle attrape aussi
+l'entrée e820 qui réserve le cadre. Et une seconde assertion tient le sens
+inverse — un cadre qui, *replié*, tomberait sur la page zéro est toujours
+refusé — sans quoi « replier » pourrait vouloir dire « tout accepter ».
+
+**La relance a servi à ce qu'elle doit servir.** Pas à espérer un vert : à
+obtenir un second message. Le premier était celui d'une intermittence connue, le
+second nommait un défaut réel. C'est exactement ce qui s'était passé le
+8 septembre, et c'est pour ça que la règle est « une relance, et elle se note ».
+
+### L'aller-retour que cette tranche a payé, et la garde qui le rend impossible
+
+La première poussée de #313 a rendu « App iOS » **rouge**, sur une erreur de
+compilation de mon diff :
+
+```
+LocalDesktopTests.swift:616:23: error: 'async' call in an autoclosure that
+does not support concurrency
+            try await desktop.read(64, at: at), archive,
+```
+
+`XCTAssertEqual` prend ses arguments en **autoclosure**, qui accepte `try` mais
+pas `await`. Et **la leçon était déjà écrite en commentaire dans ce fichier
+même**, à la ligne 231 :
+
+> Hissé hors de l'assertion : `XCTAssertEqual` prend une autoclosure, qui
+> accepte `try` mais **pas** `await`.
+
+Elle ne m'a pas arrêté. Ce qui rend ça possible est la portée de `swift build` :
+`Tests/WisqHostedTests` n'appartient qu'au projet Xcode, pas au paquet, donc
+**rien sur cette machine ne compile ces fichiers**. Seule « App iOS » les voit,
+quinze minutes plus tard.
+
+Le correctif d'une ligne — hisser l'appel dans un `let` — ne vaut rien seul : il
+laisse la prochaine fois intacte. La septième règle de
+`scripts/check-whitespace.sh` la rend impossible. Ce script existe exactement
+pour ça, et son en-tête le dit depuis le début : « les règles au niveau du texte
+que SwiftLint impose, vérifiées sans SwiftLint… à cause d'un aller-retour que ça
+épargne ». Il porte déjà une règle qui n'est pas de SwiftLint, ajoutée pour la
+même raison — une garde de plateforme qui ne couvre pas la fin du fichier, dix
+minutes de CI pour l'apprendre.
+
+La portée de l'assertion est trouvée en équilibrant les parenthèses, **chaînes
+littérales retirées d'abord** : une parenthèse ouvrante dans un message
+déséquilibrerait le compte et emporterait les vingt lignes suivantes. Les deux
+sens sont tenus par un test de `site/tests/whitespace-guard.test.ts` — le texte
+exact qui a rougi la CI est refusé, et trois formes légitimes passent : l'appel
+hissé, une assertion multi-lignes suivie d'un `await`, et une assertion dans le
+`catch` d'un `do` qui en contient un. Sans le second test, la règle serait « une
+assertion qui a l'air d'une garde » : elle pourrait refuser tout.
+
+**Un commentaire n'est pas une garde.** C'est la seule chose à retenir de cet
+aller-retour, et elle vaut pour chaque leçon de ce journal qui n'a pas de test à
+son nom.
+
+### Le signe à retenir
+
+**Une région nouvelle qui ressemble à une région gardée hérite de ses assertions
+et pas de sa couverture.** Les trois sabotages survivants portent tous sur la
+moitié de la comparaison que la copie a laissée de côté. Le remède n'est pas de
+relire : c'est de saboter chaque moitié séparément, parce que c'est la seule
+chose qui distingue « j'ai une garde » de « j'ai une garde qui porte ».
