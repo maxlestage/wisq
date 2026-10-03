@@ -20504,3 +20504,91 @@ atteindre, n'est pas une fonctionnalité du produit.** Elle a tous les signes
 extérieurs d'une : des tests verts, une documentation, un vrai noyau qui démarre
 grâce à elle. Le `grep` qui compte n'est pas « est-ce testé » mais **« qui, en
 dehors des tests, peut l'appeler »**.
+
+## #315 — le bureau faisait tourner un noyau qui écrivait tout son journal, et jetait chaque octet
+
+Cinquième tour de la même question, cinquième défaut de la même forme.
+
+`web/host.js` accepte un rappel `serial` depuis #305 et l'appelle pour **chaque
+octet** que l'invité émet sur `0x3f8`. C'est par là que tout ce que douze
+tranches ont mesuré est sorti : les 191 lignes de #300, les 346 de #305 avec son
+`ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A`, les 242 de #306
+avec `WISQ-USERSPACE-OK` **entre** `Run /init as init process` et la panique.
+
+**`desktop::driver` n'en passait aucun.** Un `grep serial` sur `src/desktop.rs`
+ne rendait rien, et `LocalDesktop` n'avait pas de console. Le bureau faisait donc
+tourner un noyau qui écrit tout son journal de démarrage sur le port, le modèle
+16550 recevait chaque octet, et **tous étaient jetés**.
+
+C'est le défaut qui rend tous les autres invisibles : sans console, un noyau qui
+démarre dans l'application et un noyau qui ne démarre pas se ressemblent
+exactement.
+
+### Tirer, pas pousser — dans cette tranche
+
+Un `postMessage` par octet ferait des dizaines de milliers de sérialisations pour
+un seul démarrage. Le pilote tamponne, et `wisqConsole()` vide le tampon quand on
+le lui demande. C'est la forme de `wisqPaint`, et pour la raison écrite là-bas :
+**un test qui attendrait que la page veuille bien parler n'aurait rien à
+attendre.**
+
+Pousser pour qu'une interface voie le noyau démarrer *en direct* est une autre
+tranche, et elle appartient à la direction que Maxime n'a pas encore tranchée.
+
+**La lecture vide le tampon, et c'est le contrat.** Sans ça l'application
+relirait tout le journal à chaque appel, et il doublerait de longueur à chaque
+lecture. Un sabotage qui retire les deux lignes du vidage fait tomber la garde.
+
+### Le tampon est borné, et ce qu'il jette est compté
+
+Un tampon sans borne est une fuite, et un invité qui parle sans fin en est la
+cause **normale** : une console qui défile est ce que fait un noyau. Sans borne,
+la page grossirait jusqu'à ce que la vue meure, et le symptôme serait un
+processus de contenu tué par le système — très loin de sa cause.
+
+**Mais ce qui est jeté est compté.** Une console qui perdrait des octets en
+silence mentirait sur ce que l'invité a dit : l'application croirait avoir tout
+lu. Et sans la garde qui l'exerce, `perdus` serait un ornement — un compteur que
+rien ne touche, donc un compteur qu'on ne saurait pas faux.
+
+La garde fait parler un invité **70 000 fois** par une boucle `out` et vérifie
+les deux nombres **exactement** : 32 768 perdus, 37 232 restants. C'est le seul
+moyen de distinguer « la borne tient » de « la borne tient à peu près ».
+
+Et la moitié part d'un coup plutôt qu'un `shift()` par octet : `shift()` est
+linéaire, donc un invité bavard ralentirait à mesure qu'il parle.
+
+### Les sabotages
+
+| mutation | ce qui tombe |
+|---|---|
+| le pilote ne passe plus `serial` | les **deux** gardes |
+| la lecture ne vide plus le tampon | `what_the_guest_writes_on_its_serial_port_reaches_the_application` |
+| ce qui est jeté n'est plus compté | `a_guest_that_never_stops_talking_does_not_grow_the_page_without_bound` |
+| plus de borne du tout | idem |
+
+Chacune nomme la garde qui lui correspond, et la première les fait tomber toutes
+les deux — ce qui est juste : sans rappel, il n'y a pas de console.
+
+### Un piège de lecture, payé à nouveau
+
+J'ai lancé `cargo test --test host_loop "console\|never_stops\|serial_port"` en
+croyant à un filtre régulier. Résultat : **zéro test lancé, code de sortie 0**,
+« 119 filtered out ». C'est exactement le piège que la routine nomme pour
+`swift test --filter`, et il vaut aussi pour `cargo`. Le filtre n'est pas une
+garde ; le compte de tests lancés en est une.
+
+### Ce que ça ne prouve pas
+
+**Aucun vrai noyau n'a parlé par ce chemin.** Ce qui est tenu est qu'un invité
+qui écrit sur `0x3f8` est entendu — en Rust sous Bun, et en Swift dans un vrai
+WebKit. Que le journal d'un vmlinux de 35 Mio en sorte est mesuré par le montage
+depuis #300 et par rien d'ici.
+
+### Le signe à retenir
+
+**Le défaut qui cache les autres est celui qui coupe l'observation.** Douze
+tranches ont mesuré un noyau par sa console ; le bureau n'en avait pas, et
+personne ne l'a vu parce que l'absence d'une console ne ressemble à rien — elle
+ressemble à un silence, et un silence ressemble à une machine qui n'a pas
+démarré.
