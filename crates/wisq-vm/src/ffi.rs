@@ -657,13 +657,20 @@ pub extern "C" fn wisq_desktop_boot_page_at() -> u64 {
 /// - `1` : la RAM n'est pas une puissance de deux ;
 /// - `2` : l'image déborde de la RAM ;
 /// - `3` : elle écraserait la page zéro ;
-/// - `4` : elle tombe dans le cadre.
+/// - `4` : elle tombe dans le cadre ;
+/// - `5` : elle tombe dans l'archive initramfs.
 #[no_mangle]
 pub extern "C" fn wisq_desktop_placement(
     pages: u32,
     screen_base: u64,
     screen_width: u32,
     screen_height: u32,
+    // **L'archive, et `initramfs_bytes == 0` dit qu'il n'y en a pas.** C'est la
+    // troisième région que la machine se donne à elle-même : le noyau la
+    // déballe pour s'en faire une racine, et une image posée dessus la lui
+    // donnerait corrompue.
+    initramfs_at: u64,
+    initramfs_bytes: u64,
     boots: c_int,
     at: u64,
     bytes: u64,
@@ -677,16 +684,88 @@ pub extern "C" fn wisq_desktop_placement(
             height: screen_height,
         })
     };
-    match desktop::placement(pages, screen, boots != 0, at, bytes) {
+    let initramfs = if initramfs_bytes == 0 {
+        None
+    } else {
+        Some(crate::kernel_image::Ramdisk {
+            at: initramfs_at,
+            bytes: initramfs_bytes,
+        })
+    };
+    match desktop::placement(pages, screen, initramfs, boots != 0, at, bytes) {
         Ok(()) => 0,
         Err(desktop::Refusal::RamIsNotAPowerOfTwo(_)) => 1,
         Err(desktop::Refusal::ImageDoesNotFit { .. }) => 2,
         Err(desktop::Refusal::ImageWouldOverwriteTheBootPage { .. }) => 3,
         Err(desktop::Refusal::ImageWouldOverwriteTheFrame { .. }) => 4,
+        Err(desktop::Refusal::ImageWouldOverwriteTheArchive { .. }) => 5,
         // **Les autres refus ne peuvent pas venir d'ici**, et le dire par un
-        // code à part vaut mieux que les ranger sous l'un des quatre : un
+        // code à part vaut mieux que les ranger sous l'un des cinq : un
         // appelant qui verrait « déborde de la RAM » pour un nom de canal
         // chercherait au mauvais endroit.
+        Err(_) => -1,
+    }
+}
+
+/// **Dire au noyau du bureau où est sa racine.**
+///
+/// Sans les deux champs que cette fonction écrit — `ramdisk_image` à `0x218`,
+/// `ramdisk_size` à `0x21c` — le noyau traverse tous ses `initcall`, arrive
+/// dans `prepare_namespace`, et meurt sur « VFS: Unable to mount root fs on
+/// unknown-block(0,0) ». L'application pose les octets de l'archive elle-même ;
+/// ceci ne fait que les déclarer.
+///
+/// **La page est modifiée sur place, et pas rebâtie** : un chemin qui repartirait
+/// de zéro perdrait la ligne de commande et la carte e820 que
+/// `wisq_desktop_boot_page` y a mises.
+///
+/// Les deux bornes sont calculées ici : le sommet de la page zéro au-dessous, la
+/// base du cadre (ou le bout de la RAM) au-dessus.
+///
+/// - `0` : déclarée ;
+/// - `1` : la RAM n'est pas une puissance de deux ;
+/// - `2` : une archive de zéro octet n'est pas une racine ;
+/// - `3` : elle n'est pas là où le noyau pourrait la lire ;
+/// - `-1` : la page est nulle ou plus courte que quatre kibioctets.
+///
+/// # Safety
+/// `page` must be valid for reading and writing `page_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_desktop_declare_initramfs(
+    page: *mut u8,
+    page_len: usize,
+    pages: u32,
+    screen_base: u64,
+    screen_width: u32,
+    screen_height: u32,
+    at: u64,
+    bytes: u64,
+) -> c_int {
+    if page.is_null() || page_len < 4096 {
+        return -1;
+    }
+    let screen = if screen_width == 0 && screen_height == 0 {
+        None
+    } else {
+        Some(desktop::Screen {
+            base: screen_base,
+            width: screen_width,
+            height: screen_height,
+        })
+    };
+    let page = std::slice::from_raw_parts_mut(page, page_len);
+    match desktop::declare_initramfs(
+        page,
+        pages,
+        screen,
+        crate::kernel_image::Ramdisk { at, bytes },
+    ) {
+        Ok(()) => 0,
+        Err(desktop::Refusal::RamIsNotAPowerOfTwo(_)) => 1,
+        Err(desktop::Refusal::InitramfsHasNoBytes) => 2,
+        Err(desktop::Refusal::InitramfsDoesNotFit { .. }) => 3,
+        // Aucun autre refus ne peut venir d'ici ; le ranger sous l'un des trois
+        // enverrait l'appelant chercher au mauvais endroit.
         Err(_) => -1,
     }
 }
