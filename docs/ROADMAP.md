@@ -2305,6 +2305,19 @@ sur le vmlinux d'Alpine) et les deux adresses (pour le texte d'un noyau x86-64
 elles diffèrent de `__START_KERNEL_map`, et poser à la mauvaise ne démarre pas
 du tout).
 
+**Et depuis #315 il entend ce que l'invité dit.** `host.js` appelait son rappel
+`serial` pour chaque octet émis sur `0x3f8` depuis #305 ; `desktop::driver` n'en
+passait aucun, donc le noyau écrivait tout son journal de démarrage et **chaque
+octet était jeté**. C'est le défaut qui rendait tous les autres invisibles :
+sans console, un noyau qui démarre et un noyau qui ne démarre pas se ressemblent
+exactement. Le pilote tamponne, `LocalDesktop.console()` tire, le tampon est
+borné — un invité qui parle sans fin est le cas normal — et ce qu'il jette est
+compté, parce qu'une console qui perd des octets en silence mentirait.
+
+**Pousser la console** pour qu'une interface voie le noyau démarrer en direct est
+la suite naturelle, et elle va avec le branchement ci-dessous : les deux sont la
+même décision.
+
 **Ce qui reste est une direction, pas un défaut** : rien dans l'application
 n'appelle encore `LocalDesktop`. Un écran où l'utilisateur choisit un noyau et le
 voit démarrer appartient à Maxime ; les pièces sont posées.
