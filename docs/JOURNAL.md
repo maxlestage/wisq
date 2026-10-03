@@ -19386,6 +19386,15 @@ refaire. La phrase qui l'accompagnait — « la refabriquer coûte une demi-heur
 
 ## #307 — la traduction périmée arrive, onze fois sur cent, et le bureau démarre quand même pour une raison précise
 
+> **Faux, et corrigé par #309 plus bas : ces quatre formes n'existaient pas.**
+> Aucune n'était écrite nulle part dans le dépôt — `grep` sur « traduction
+> périmée » ne rend que cette tranche-ci et la suivante. L'affirmation venait de
+> mes propres notes de travail, et je l'ai propagée dans deux tranches
+> fusionnées et deux descriptions de requête. C'est la forme la plus bête de
+> #289 : une copie unique, prise pour une copie du dépôt. #309 écrit les formes
+> pour de bon. La phrase est conservée parce que la mesure qui suit, elle, est
+> juste.
+
 Le journal porte depuis des semaines quatre formes possibles de correction pour
 la traduction périmée, et **pas la seule chose qui déciderait entre elles** :
 est-ce que le cas se produit ? Il se produit. Mesuré.
@@ -19499,8 +19508,9 @@ possible.
 
 ### Ce que ça change pour la décision
 
-La correction reste une direction — quatre formes, dans le journal, et le choix
-appartient à Maxime. Ce qui n'est plus une inconnue est **l'urgence** : le cas
+La correction reste une direction — **les formes sont écrites par #309**, qui a
+dû commencer par constater qu'elles ne l'étaient pas — et le choix appartient à
+Maxime. Ce qui n'est plus une inconnue est **l'urgence** : le cas
 se produit onze fois sur cent, il touche le premier octet de cinq cents
 régions, et s'il n'a pas mordu c'est à cause de **ce que Linux patche**, pas
 parce que la péremption n'arrive pas. Un noyau d'une autre version, un module
@@ -19627,7 +19637,7 @@ Ce n'est pas une garantie, c'est une mesure.
 
 ### Ce que ça ne change pas
 
-La correction reste une direction — quatre formes dans le journal, et c'est
+La correction reste une direction — les formes sont écrites par #309 — et c'est
 Maxime qui tranche. Ce qui a changé en deux tranches : on ne demande plus
 « est-ce que ça arrive ? » (#307 : onze fois sur cent) ni « est-ce que ça
 tourne ? » (#308 : cent vingt mille fois), mais seulement **quelle forme
@@ -19646,3 +19656,107 @@ Et un contrôle mal posé ressemble exactement à une trouvaille : la garde
 négative de cette tranche est d'abord tombée en nommant `0x11000`. L'instrument
 avait raison — à une page de décalage, la région B réécrivait sa **propre**
 entrée. C'est le montage qui était faux, pas la mesure.
+
+## #309 — les quatre formes du correctif n'existaient pas, et les voici
+
+#307 et #308 s'ouvrent toutes deux sur « le journal porte depuis des semaines
+quatre formes possibles de correction pour la traduction périmée ». **C'est
+faux.** `grep` sur « traduction périmée » dans `docs/` ne rend que ces deux
+tranches-là ; aucune énumération n'existait, ni dans le journal, ni dans la
+feuille de route, ni dans un commentaire.
+
+L'affirmation venait de mes propres notes de travail, et je l'ai propagée dans
+deux tranches fusionnées, un commentaire de test et deux descriptions de
+requête — chaque fois en invoquant le dépôt comme source. C'est la forme la
+plus bête de #289 : non pas trois copies dont une dérive, mais **une copie
+unique prise pour une copie du dépôt**. Et c'est la quatrième fois en cinq
+tranches qu'une affirmation à moi tombe sur un `grep` : #305 a démenti #304,
+#306 a démenti la seconde moitié de #304, et celle-ci me démentit deux fois.
+
+**La correction est en place au-dessus des phrases**, qui sont conservées : ce
+qui était faux est la provenance, pas la mesure.
+
+### Les formes, écrites pour de bon
+
+Aucune n'est choisie ici : ce qui suit est ce qu'il y a à trancher, et les
+chiffres de #307 et #308 sont ce avec quoi trancher. Toutes partent du même
+fait : l'hôte garde `known`, une correspondance adresse → région installée, et
+rien ne la retire jamais.
+
+**1. Relire l'octet d'entrée à chaque entrée de région, et retraduire s'il a
+bougé.**
+C'est `surveiller` de #308, plus la retraduction. Mesuré : avec la relecture
+allumée, la course est **identique** — 12 249 régions, 7 515 interruptions, le
+même arrêt —, donc le coût est tolérable sur ce noyau-ci. Et ce que ça
+attrape est exactement ce que #308 a compté : les **120 420** entrées périmées,
+toutes, puisque la veille les a toutes vues. Ce que ça n'attrape pas : une
+région dont un bloc **intérieur** a été patché et dont l'entrée est intacte —
+#307 en dénombre 1 397 changées pour 498 au décalage zéro, donc la majorité des
+fenêtres changées ne seraient pas vues par là.
+
+**2. Comparer la fenêtre entière à chaque entrée de région.**
+Attrape les blocs intérieurs, et coûte quatre kibioctets de comparaison par
+entrée de région sur le chemin le plus chaud de la boucle. Non mesuré ; c'est
+la seule des cinq dont le coût est *a priori* inacceptable, et la seule que la
+mesure de #308 permet de récuser sans l'essayer, puisqu'un octet suffisait à
+voir cent vingt mille cas.
+
+**3. Que le module prévienne l'hôte quand une écriture tombe sur une page qui
+porte du code traduit.**
+C'était ma recommandation avant de mesurer. L'émetteur sait où il écrit ; une
+page marquée « porte du code » ferait rendre la main. Le coût est un test par
+écriture invitée — le chemin le plus chaud du programme, pire que le 2 — mais
+il est payé par **écriture** et non par **entrée**, et un noyau écrit moins
+souvent qu'il ne change de région. Non mesuré, et c'est la mesure qui manque
+pour la comparer au 1.
+
+**4. Protéger en écriture les pages qui portent du code traduit, et retraduire
+sur la faute.**
+C'est ce que font les émulateurs qui ont une MMU à disposition. Ici la
+pagination est celle de l'invité : le noyau est son propre maître des tables,
+et lui retirer le droit d'écrire sur son propre texte lui ferait prendre une
+faute que *l'hôte* a causée — exactement ce que `read` évite déjà en remettant
+le témoin de faute comme il l'a trouvé. Il faudrait donc un second niveau de
+protection que rien ici ne porte.
+
+**5. Ne rien faire, et le documenter.**
+C'est l'état actuel, et #307 avec #308 le rendent défendable pour la première
+fois : le bureau exécute du code périmé cent vingt mille fois par démarrage et
+rien n'en sort, parce que les correctifs de ce stade sont des équivalences —
+`endbr64` contre un `nop` à 92 %, un crochet `ftrace` sans effet, un saut long
+contre le même en court. Ce que ça parie : qu'aucun correctif n'**ajoute** du
+travail. Les quatre sites de cette forme que #307 a relevés n'ont pas tourné
+après leur changement sur cette course, et trois sont sur le chemin des
+*softirq*.
+
+### Ce que la mesure dit à qui tranchera
+
+- Le cas se produit : **1 397 régions sur 12 249**, 11,4 % (#307).
+- Il tourne : **120 420 entrées**, 51 régions, tout le chemin d'interruption,
+  une fois par interruption (#308).
+- Il ne mord pas aujourd'hui, et on sait pourquoi octet par octet (#308).
+- La forme 1 attrape tout ce qui a été observé tourner, et son coût est mesuré
+  nul sur ce noyau.
+- La forme 1 laisse passer ce qui n'a pas encore été observé : les blocs
+  intérieurs, 899 fenêtres changées hors du décalage zéro.
+
+### Une garde envisagée et récusée, sur mesure
+
+Les deux tranches corrigées renvoient maintenant à « #309 » pour les formes, et
+un renvoi peut pendre. La propriété est mécanique — tout `#NNN` cité doit
+désigner une tranche titrée —, donc tentante à garder. **Mesurée, elle ne tient
+pas par construction** : ce journal porte soixante tranches, de #250 à #309, et
+sur cent cinquante-trois numéros cités, **quatre-vingt-neuf** désignent des
+tranches plus anciennes que sa fenêtre. Une garde là-dessus refuserait
+quatre-vingt-neuf renvois légitimes le jour où on la pose.
+
+C'est noté parce qu'une garde écartée sans raison écrite se repropose, et parce
+que la raison est un nombre : quatre-vingt-neuf, pas « ça paraît risqué ».
+
+### Le signe à retenir
+
+**Invoquer le dépôt est une affirmation, et elle se vérifie comme les autres.**
+« C'est écrit dans le journal » a exactement le même statut que « l'hôte ne
+modélise que deux registres » ou que « le corpus ne compare pas RSP » : une
+phrase sur l'état du dépôt, vérifiable par une commande, et que j'ai écrite
+quatre fois cette semaine sans la lancer. La commande fait une seconde.

@@ -12924,9 +12924,10 @@ fn strip_line_comments(source: &str) -> String {
 /// machine vit. Si l'invité réécrit les octets d'où elle vient — et le noyau
 /// le fait sans arrêt : `text_poke_early`, `apply_alternatives`,
 /// `apply_returns` —, le module en table ne correspond plus à la mémoire, et
-/// c'est l'ancien code qui tourne. Le journal porte quatre formes possibles de
-/// correction depuis des semaines ; **ce qu'il ne porte pas est de savoir si le
-/// cas se produit**, ni où.
+/// c'est l'ancien code qui tourne. **Ce que le dépôt ne portait pas était de
+/// savoir si le cas se produit**, ni où — ni, d'ailleurs, les formes que le
+/// correctif pourrait prendre : ce commentaire disait que le journal en portait
+/// quatre, et c'était faux (#309).
 ///
 /// `vm.revoir()` répond, et ne coûte rien pendant la course : l'hôte garde la
 /// fenêtre qu'il a **lue** pour chaque région — celle-là même qu'il a passée au
