@@ -3,7 +3,7 @@
 /// `scripts/check-whitespace.sh` is the third and last of this repository's
 /// guard scripts, and it had the same hole as the other two: `verify.sh` runs
 /// it before every push, always against a tree where nothing is wrong, so none
-/// of its five rules had ever reported anything.
+/// of its rules had ever reported anything — five at the time, seven now.
 ///
 /// It is the mildest of the three and that is worth saying plainly. CI does not
 /// run it — CI runs `swiftlint --strict`, which covers the same rules — so a
@@ -115,6 +115,73 @@ describe("the formatting floor refuses each thing it names", () => {
     const contents = "// un mot d'abord\n#if canImport(Glibc)\nimport Foundation\n\nlet a = 1\n#endif\n";
     const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
     expect(code, `une garde correcte a été refusée :\n${output}`).toBe(0);
+  });
+
+  /// **Un `await` dans l'autoclosure d'une assertion**, et c'est le texte exact
+  /// qui a rendu « App iOS » rouge sur la PR de #313.
+  ///
+  /// `XCTAssertEqual` prend ses arguments en autoclosure, qui accepte `try`
+  /// mais pas `await`. Rien sur cette machine ne compile
+  /// `Tests/WisqHostedTests` — cette cible n'appartient qu'au projet Xcode, pas
+  /// au paquet — donc seule la CI Apple le voyait, quinze minutes plus tard.
+  ///
+  /// **Et la leçon était déjà écrite en commentaire** dans ce fichier de tests,
+  /// ce qui ne l'a pas empêchée de coûter l'aller-retour. Un commentaire n'est
+  /// pas une garde.
+  test("un await dans une assertion XCTest est refusé", () => {
+    const contents = [
+      "import XCTest",
+      "",
+      "final class A: XCTestCase {",
+      "    func testA() async throws {",
+      "        XCTAssertEqual(",
+      "            try await desktop.read(64, at: at), archive,",
+      "            \"l'archive est dans la RAM de l'invité\"",
+      "        )",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+    const { code, output } = run(tree({ "Tests/WisqHostedTests/A.swift": contents }));
+    expect(code, `la garde a accepté un await en autoclosure :\n${output}`).not.toBe(0);
+    expect(output).toContain("`await` dans l'autoclosure");
+    expect(output).toContain("Tests/WisqHostedTests/A.swift");
+  });
+
+  /// **Et les `await` qui ne sont pas dedans passent** — c'est ce qui donne son
+  /// sens au refus ci-dessus. Trois formes légitimes, toutes présentes dans ce
+  /// dépôt : l'appel hissé dans un `let`, une assertion sur plusieurs lignes
+  /// suivie d'un `await`, et une assertion dans le `catch` d'un `do` qui en
+  /// contient un.
+  ///
+  /// Le message porte aussi une parenthèse ouvrante : les chaînes littérales
+  /// sont retirées avant de compter, sans quoi elle déséquilibrerait la portée
+  /// et le contrôle emporterait les vingt lignes suivantes.
+  test("les await hors des assertions sont laissés tranquilles", () => {
+    const contents = [
+      "import XCTest",
+      "",
+      "final class A: XCTestCase {",
+      "    func testA() async throws {",
+      "        let relu = try await desktop.read(64, at: at)",
+      "        XCTAssertEqual(",
+      "            relu,",
+      "            archive,",
+      "            \"relu (et une parenthèse dans le message\"",
+      "        )",
+      "        let suite = try await desktop.read(64, at: at)",
+      "        XCTAssertTrue(suite.isEmpty)",
+      "        do {",
+      "            _ = try await desktop.read(1, at: at)",
+      "        } catch let failure as LocalDesktop.Failure {",
+      "            XCTAssertEqual(failure, .noFrameWasDeclared)",
+      "        }",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+    const { code, output } = run(tree({ "Tests/WisqHostedTests/A.swift": contents }));
+    expect(code, `des await légitimes ont été refusés :\n${output}`).toBe(0);
   });
 
   /// The file the old scope missed entirely. `App/` has no subdirectory, so

@@ -20248,6 +20248,51 @@ mesuré par le montage depuis #306 et par rien d'ici : le bureau demanderait les
 tests hébergés, qui ne tournent que sur « App iOS ». Le vert sera lu par nom dans
 le journal brut.
 
+### L'aller-retour que cette tranche a payé, et la garde qui le rend impossible
+
+La première poussée de #313 a rendu « App iOS » **rouge**, sur une erreur de
+compilation de mon diff :
+
+```
+LocalDesktopTests.swift:616:23: error: 'async' call in an autoclosure that
+does not support concurrency
+            try await desktop.read(64, at: at), archive,
+```
+
+`XCTAssertEqual` prend ses arguments en **autoclosure**, qui accepte `try` mais
+pas `await`. Et **la leçon était déjà écrite en commentaire dans ce fichier
+même**, à la ligne 231 :
+
+> Hissé hors de l'assertion : `XCTAssertEqual` prend une autoclosure, qui
+> accepte `try` mais **pas** `await`.
+
+Elle ne m'a pas arrêté. Ce qui rend ça possible est la portée de `swift build` :
+`Tests/WisqHostedTests` n'appartient qu'au projet Xcode, pas au paquet, donc
+**rien sur cette machine ne compile ces fichiers**. Seule « App iOS » les voit,
+quinze minutes plus tard.
+
+Le correctif d'une ligne — hisser l'appel dans un `let` — ne vaut rien seul : il
+laisse la prochaine fois intacte. La septième règle de
+`scripts/check-whitespace.sh` la rend impossible. Ce script existe exactement
+pour ça, et son en-tête le dit depuis le début : « les règles au niveau du texte
+que SwiftLint impose, vérifiées sans SwiftLint… à cause d'un aller-retour que ça
+épargne ». Il porte déjà une règle qui n'est pas de SwiftLint, ajoutée pour la
+même raison — une garde de plateforme qui ne couvre pas la fin du fichier, dix
+minutes de CI pour l'apprendre.
+
+La portée de l'assertion est trouvée en équilibrant les parenthèses, **chaînes
+littérales retirées d'abord** : une parenthèse ouvrante dans un message
+déséquilibrerait le compte et emporterait les vingt lignes suivantes. Les deux
+sens sont tenus par un test de `site/tests/whitespace-guard.test.ts` — le texte
+exact qui a rougi la CI est refusé, et trois formes légitimes passent : l'appel
+hissé, une assertion multi-lignes suivie d'un `await`, et une assertion dans le
+`catch` d'un `do` qui en contient un. Sans le second test, la règle serait « une
+assertion qui a l'air d'une garde » : elle pourrait refuser tout.
+
+**Un commentaire n'est pas une garde.** C'est la seule chose à retenir de cet
+aller-retour, et elle vaut pour chaque leçon de ce journal qui n'a pas de test à
+son nom.
+
 ### Le signe à retenir
 
 **Une région nouvelle qui ressemble à une région gardée hérite de ses assertions

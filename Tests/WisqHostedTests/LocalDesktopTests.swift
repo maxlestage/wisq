@@ -612,8 +612,13 @@ final class LocalDesktopTests: XCTestCase {
         // **Les octets de l'archive sont vraiment là.** Des champs justes qui
         // désignent de la mémoire vide donneraient au noyau un cpio
         // « invalid magic », et ce test passerait sans eux.
+        // Hissé hors de l'assertion, comme à la ligne 231 de ce fichier :
+        // `XCTAssertEqual` prend une autoclosure, qui accepte `try` mais
+        // **pas** `await`. La leçon y était déjà écrite, et seule « App iOS »
+        // compile ce fichier — `swift build` ne le voit pas.
+        let relu = try await desktop.read(64, at: at)
         XCTAssertEqual(
-            try await desktop.read(64, at: at), archive,
+            relu, archive,
             "l'archive est dans la RAM de l'invité, à l'adresse déclarée"
         )
 
