@@ -338,10 +338,42 @@ uint64_t wisq_desktop_boot_page_at(void);
  *   2  the image spills out of the RAM
  *   3  it would overwrite the zero page
  *   4  it lands in the frame
+ *   5  it lands in the initramfs archive
+ *
+ * The archive is optional too, and `initramfs_bytes == 0` says so.
  */
 int wisq_desktop_placement(uint32_t pages, uint64_t screen_base,
                            uint32_t screen_width, uint32_t screen_height,
+                           uint64_t initramfs_at, uint64_t initramfs_bytes,
                            int boots, uint64_t at, uint64_t bytes);
+
+/*
+ * Tell the desktop's kernel where its root is.
+ *
+ * Without the two fields this writes — `ramdisk_image` at 0x218 and
+ * `ramdisk_size` at 0x21c — the kernel walks every initcall, reaches
+ * `prepare_namespace`, and dies on "VFS: Unable to mount root fs on
+ * unknown-block(0,0)". The application places the archive's bytes itself; this
+ * only declares them.
+ *
+ * The page is modified in place, not rebuilt: a path starting from scratch
+ * would lose the command line and the e820 map `wisq_desktop_boot_page` put
+ * there.
+ *
+ * Both bounds are computed here: the top of the zero page below, the frame's
+ * base (or the end of the RAM) above.
+ *
+ *   0  declared
+ *   1  the RAM is not a power of two
+ *   2  an archive of zero bytes is not a root
+ *   3  it is not where the kernel could read it
+ *  -1  the page is null or shorter than four kibibytes
+ */
+int wisq_desktop_declare_initramfs(uint8_t *page, size_t page_len,
+                                   uint32_t pages, uint64_t screen_base,
+                                   uint32_t screen_width,
+                                   uint32_t screen_height, uint64_t at,
+                                   uint64_t bytes);
 
 /*
  * What the correspondence occupies *above* the guest's RAM, in pages. The host

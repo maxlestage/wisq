@@ -44,6 +44,17 @@ public final class LocalDesktop {
         /// Ça ne ressemble pas à une écriture perdue, ça ressemble à un noyau
         /// qui se corrompt tout seul.
         case imageWouldOverwriteTheFrame(folded: Int, bytes: Int, frame: Int)
+        /// **L'image écraserait l'archive initramfs.** C'est la mémoire que le
+        /// noyau déballe pour s'en faire une racine : des octets posés dessus
+        /// la lui donnent corrompue, et le symptôme est un cpio « invalid
+        /// magic » qui ne nomme pas sa cause.
+        case imageWouldOverwriteTheArchive(folded: Int, bytes: Int, archive: Int)
+        /// **L'archive n'a pas pu être déclarée au noyau.** Sans les deux
+        /// champs de la page zéro, il traverse tous ses `initcall`, arrive dans
+        /// `prepare_namespace`, et meurt sur « VFS: Unable to mount root fs on
+        /// unknown-block(0,0) » — une panique qui ne dit pas que l'archive
+        /// était là, à côté, jamais nommée.
+        case theRootCouldNotBeDeclared(DesktopTranslator.Declared)
         /// La machine s'est arrêtée mais n'a pas dit pourquoi : le message
         /// d'arrêt n'est jamais arrivé. C'est un défaut de pont, pas une issue.
         case stopWasNeverAnnounced
@@ -99,6 +110,11 @@ public final class LocalDesktop {
     /// kibioctets dans leur RAM et leur ferait lire dans RSI une adresse qu'ils
     /// n'attendent pas.
     private let bootsAKernel: Bool
+    /// L'archive que le noyau déballera, et où l'application veut qu'elle
+    /// soit. `nil` pour un démarrage sans racine — ce qui est le cas de tout ce
+    /// qui est jugé sur ses registres, et c'était le cas du bureau entier
+    /// jusqu'ici.
+    private let initramfs: DesktopTranslator.Initramfs?
     private let channel = "wisq"
     private let web: WKWebView
     private let handler: Channel
@@ -129,7 +145,8 @@ public final class LocalDesktop {
         pages: UInt32,
         entry: UInt64,
         screen: DesktopTranslator.Screen? = nil,
-        bootsAKernel: Bool = false
+        bootsAKernel: Bool = false,
+        initramfs: DesktopTranslator.Initramfs? = nil
     ) throws {
         guard pages > 0, pages & (pages - 1) == 0 else {
             throw Failure.ramIsNotAPowerOfTwo(pages)
@@ -172,6 +189,7 @@ public final class LocalDesktop {
         self.entry = entry
         self.screen = screen
         self.bootsAKernel = bootsAKernel
+        self.initramfs = initramfs
         let settings = WKWebViewConfiguration()
         handler = Channel()
         settings.userContentController.add(handler, name: channel)
@@ -309,18 +327,34 @@ public final class LocalDesktop {
             // carte e820 décrit ces pages comme **libres** : l'allocateur les
             // distribue, et le bureau se corrompt sous des causes sans
             // rapport.
-            guard let zero = DesktopTranslator.bootPage(pages: pages, screen: screen) else {
+            guard var zero = DesktopTranslator.bootPage(pages: pages, screen: screen) else {
                 throw Failure.imageDoesNotFit(
                     folded: Int(clamping: screen?.base ?? 0),
                     bytes: 0,
                     ram: Int(clamping: UInt64(pages) * 65536)
                 )
             }
+            // **La racine est déclarée dans la page avant qu'elle ne soit
+            // posée.** Sans ces deux champs, le noyau traverse tous ses
+            // `initcall` et meurt dans `prepare_namespace` — avec l'archive
+            // dans sa RAM, à côté, jamais nommée.
+            if let initramfs {
+                let verdict = DesktopTranslator.declareInitramfs(
+                    in: &zero, pages: pages, screen: screen, initramfs: initramfs
+                )
+                guard verdict == .declared else {
+                    throw Failure.theRootCouldNotBeDeclared(verdict)
+                }
+            }
             // **Par `deposit` et non par `place`.** La page zéro est
             // précisément ce que `place` refuse désormais d'écraser ; la poser
-            // par lui serait un refus de l'application contre elle-même.
+            // par lui serait un refus de l'application contre elle-même. Et
+            // l'archive est dans le même cas depuis qu'elle est protégée.
             let ram = Int(pages) * 65536
             try await deposit(zero, at: Int(DesktopTranslator.bootPageAddress & UInt64(ram - 1)))
+            if let initramfs {
+                try await deposit(initramfs.bytes, at: Int(initramfs.at & UInt64(ram - 1)))
+            }
         }
     }
 
@@ -372,7 +406,7 @@ public final class LocalDesktop {
         // faute d'arithmétique y resterait invisible partout ailleurs. Les
         // nombres du message, eux, sont ceux que cette fonction a déjà.
         switch DesktopTranslator.placement(
-            pages: pages, screen: screen, boots: bootsAKernel,
+            pages: pages, screen: screen, initramfs: initramfs, boots: bootsAKernel,
             at: address, bytes: UInt64(image.count)
         ) {
         case .placeable:
@@ -386,6 +420,12 @@ public final class LocalDesktop {
                 folded: folded,
                 bytes: image.count,
                 frame: Int(clamping: (screen?.base ?? 0) & UInt64(ram - 1))
+            )
+        case .wouldOverwriteTheArchive:
+            throw Failure.imageWouldOverwriteTheArchive(
+                folded: folded,
+                bytes: image.count,
+                archive: Int(clamping: (initramfs?.at ?? 0) & UInt64(ram - 1))
             )
         // Celui-ci est refusé à la construction, donc il ne peut pas arriver
         // ici — mais le ranger sous un autre refus donnerait un message qui

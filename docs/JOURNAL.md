@@ -20140,3 +20140,118 @@ n'est pas la première fois dans ce dépôt — #261 disait de chercher la même
 absence là où on *sait* que la chose est présente. Ici, c'est la variante par
 égalité : deux clés identiques pour deux raisons différentes, et aucun test ne
 pouvait le voir. Ce qui l'a trouvé est d'avoir **changé** l'un des deux.
+
+## #313 — le bureau avait une page zéro, un écran et une ligne de commande, et pas de racine : son noyau mourait dans `prepare_namespace`
+
+La routine porte depuis #310 une règle : *à chaque chose que le montage de mesure
+a, demander ce que le bureau en a*. Elle a trouvé #311 en un `grep`, et elle
+vient d'en trouver une troisième.
+
+`kernel_image::declare_ramdisk` existe depuis #304, et le montage l'appelle
+quand `WISQ_INITRAMFS` demande une archive. #306 a mesuré ce qu'elle donne :
+`WISQ-USERSPACE-OK` sur le fil, `exitcode=0x00001200` — dix-huit octets écrits
+par un `/init` de 171 octets, entre `Run /init as init process` et la panique.
+
+**Le bureau de l'application ne l'appelait pas.** Sans les deux champs —
+`ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — le noyau n'a aucun moyen
+d'apprendre qu'une archive est posée dans sa RAM. Il traverse tous ses
+`initcall`, arrive dans `prepare_namespace`, et meurt sur « VFS: Unable to mount
+root fs on unknown-block(0,0) ». **Avec l'archive dans sa mémoire, à côté,
+jamais nommée.**
+
+C'est la troisième fois de suite que la même question rend le même genre de
+défaut : #310 la page zéro, #311 l'écran réservé dans la carte, #313 la racine.
+Toutes trois corrigées **dans le montage seulement**, douze tranches durant.
+
+### La page est modifiée sur place, et c'est la leçon de #311
+
+Deux champs sont écrits, et c'est tout. Un chemin qui repartirait de `zero_page`
+perdrait la ligne de commande et la carte e820 — c'est exactement le sabotage qui
+a survécu en #311, et il a suffi à écrire ici l'assertion qui le tient : après
+avoir déclaré la racine, la ligne est toujours à `0x800` et la carte porte
+toujours ses trois entrées.
+
+`declare_ramdisk` le dit déjà de lui-même, et sa raison vaut d'être relue :
+l'écran et l'archive sont deux champs de `boot_params` sans rapport l'un avec
+l'autre, et « une fonction qui poserait les deux ensemble se dédoublerait au
+premier cas qui n'en veut qu'un ».
+
+### Les deux bornes viennent du bureau, pas de l'appelant
+
+Le montage passe le sommet de ce qu'il a chargé. Le bureau ne le connaît pas :
+l'application pose l'image du noyau **après** que cette page est bâtie. Donc,
+comme pour le plancher du cadre en #311 :
+
+- le **plancher** est le sommet de la page zéro, le minimum certainement juste —
+  au-dessous vivent la page et sa ligne de commande, et une archive posée là les
+  écraserait avec le cpio ;
+- le **plafond** est la base du cadre quand il y en a un, le bout de la RAM
+  sinon. Une archive peut tenir dans la mémoire et déborder sur l'écran,
+  exactement le piège que #251 a payé pour le cadre lui-même.
+
+Et la troisième borne n'est pas une adresse : `ramdisk_image` et `ramdisk_size`
+sont des `u32`, dont le demi-haut vit dans `ext_ramdisk_image` /
+`ext_ramdisk_size` que cette page n'écrit pas. Une RAM de huit gibioctets laisse
+donc des adresses parfaitement valides et **indescriptibles** ; tronquer
+donnerait au noyau une autre archive, à une autre adresse, sans rien signaler.
+
+### La quatrième région protégée, et pourquoi elle est dans cette tranche
+
+#312 a refusé qu'une image de l'appelant écrase la page zéro ou le cadre.
+Ajouter une **troisième** région que la machine se donne à elle-même sans
+l'ajouter à ce refus aurait été réintroduire sciemment le défaut que #312 venait
+de fermer. `placement` prend donc l'archive, et le refus a son nom :
+`ImageWouldOverwriteTheArchive`. Le symptôme qu'il évite est un cpio
+« invalid magic » — un message qui ne nomme pas sa cause, et que ce dépôt a déjà
+lu une fois : #257 l'a relevé en passant, « rootfs image is not initramfs
+(invalid magic at start of compressed archive) », **après** que le noyau avait
+déballé `/init` quand même. Là, la cause était le bourrage de zéros que `cpio`
+met après son `TRAILER!!!`, et ce n'était pas un défaut ; ici, ce serait une
+image de l'appelant, et le message serait le même.
+
+> **Vérifié, pas invoqué.** J'avais d'abord écrit #296. Invoquer le dépôt est une
+> affirmation, et celle-là se vérifie comme un nombre : c'est #257.
+
+Côté Swift, `load()` déclare la racine **avant** de poser la page, puis dépose
+l'archive par `deposit` et non par `place` : l'archive est désormais ce que
+`place` refuse d'écraser, et la poser par lui serait l'application refusant
+contre elle-même. C'est le même raccord que #312 a fait pour la page zéro.
+
+### Trois sabotages ont survécu, et les trois nommaient une garde absente
+
+Huit mutations. Cinq sont tombées du premier coup. **Trois ont survécu**, et
+aucune des trois n'était un mauvais sabotage :
+
+| mutation survivante | la garde qui manquait |
+|---|---|
+| l'adresse de l'archive n'est pas repliée dans `declare_initramfs` | aucun test Rust ne donnait une adresse d'un autre tour de masque — tous les miens étaient déjà repliés |
+| `placement` ne replie pas l'adresse de l'**archive** | mon assertion de repliage portait sur l'adresse de l'**image**, et les deux se ressemblent assez pour qu'on les confonde en relisant |
+| une archive de zéro octet n'est plus distinguée dans `placement` | rien ne vérifiait qu'une archive sans octet n'occupe aucune adresse |
+
+Les trois assertions sont écrites, avec leur raison *et* la mention du sabotage
+qui les a trouvées. Les trois mutations tombent maintenant.
+
+**C'est la troisième tranche de suite où un sabotage trouve un trou plutôt qu'une
+erreur**, et ce n'est plus une coïncidence : quand on ajoute une région qui
+ressemble à une région déjà gardée, on recopie ses assertions en changeant un
+nom — et on oublie celle qui portait sur l'autre moitié de la comparaison.
+
+### Ce que ça ne prouve pas
+
+**Aucun noyau n'a démarré par ce chemin.** Ce qui est tenu ici est que la page
+porte les deux champs, que l'archive arrive dans la mémoire de la vue à l'adresse
+déclarée, et que les bornes refusent. Que le noyau *déballe* cette archive est
+mesuré par le montage depuis #306 et par rien d'ici : le bureau demanderait les
+35 Mio du noyau Alpine portés dans un simulateur.
+
+**Et le branchement Swift n'est tenu que par la CI Apple**, comme en #312 : deux
+tests hébergés, qui ne tournent que sur « App iOS ». Le vert sera lu par nom dans
+le journal brut.
+
+### Le signe à retenir
+
+**Une région nouvelle qui ressemble à une région gardée hérite de ses assertions
+et pas de sa couverture.** Les trois sabotages survivants portent tous sur la
+moitié de la comparaison que la copie a laissée de côté. Le remède n'est pas de
+relire : c'est de saboter chaque moitié séparément, parce que c'est la seule
+chose qui distingue « j'ai une garde » de « j'ai une garde qui porte ».

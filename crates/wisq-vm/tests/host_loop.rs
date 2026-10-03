@@ -13731,7 +13731,7 @@ fn an_image_that_would_overwrite_what_is_not_the_callers_is_refused() {
     // cadre. Le cas qui passe est exigé — sans lui, un refus qui refuserait
     // tout passerait toutes les autres assertions.
     assert_eq!(
-        placement(PAGES, Some(screen), true, 0x10_0000, 0x10_0000),
+        placement(PAGES, Some(screen), None, true, 0x10_0000, 0x10_0000),
         Ok(()),
         "une image entre la page zéro et le cadre est posable"
     );
@@ -13744,16 +13744,19 @@ fn an_image_that_would_overwrite_what_is_not_the_callers_is_refused() {
     ] {
         assert!(
             matches!(
-                placement(PAGES, Some(screen), true, at, len),
+                placement(PAGES, Some(screen), None, true, at, len),
                 Err(Refusal::ImageWouldOverwriteTheBootPage { .. })
             ),
             "une image {pourquoi} écraserait la carte mémoire du noyau"
         );
     }
     // Et juste à côté, les deux voisins immédiats passent.
-    assert_eq!(placement(PAGES, Some(screen), true, zero - 16, 16), Ok(()));
     assert_eq!(
-        placement(PAGES, Some(screen), true, zero + 4096, 16),
+        placement(PAGES, Some(screen), None, true, zero - 16, 16),
+        Ok(())
+    );
+    assert_eq!(
+        placement(PAGES, Some(screen), None, true, zero + 4096, 16),
         Ok(())
     );
 
@@ -13761,7 +13764,7 @@ fn an_image_that_would_overwrite_what_is_not_the_callers_is_refused() {
     // Un programme jugé sur ses registres n'en a pas : lui interdire cette
     // adresse serait un refus sans objet.
     assert_eq!(
-        placement(PAGES, Some(screen), false, zero, 16),
+        placement(PAGES, Some(screen), None, false, zero, 16),
         Ok(()),
         "sans noyau à amorcer, il n'y a pas de page zéro à protéger"
     );
@@ -13774,21 +13777,21 @@ fn an_image_that_would_overwrite_what_is_not_the_callers_is_refused() {
     ] {
         assert!(
             matches!(
-                placement(PAGES, Some(screen), true, at, len),
+                placement(PAGES, Some(screen), None, true, at, len),
                 Err(Refusal::ImageWouldOverwriteTheFrame { .. })
             ),
             "une image {pourquoi} serait repeinte par l'invité à chaque image"
         );
     }
     assert_eq!(
-        placement(PAGES, Some(screen), true, screen.base - 16, 16),
+        placement(PAGES, Some(screen), None, true, screen.base - 16, 16),
         Ok(())
     );
 
     // **Sans cadre, le haut de la RAM est libre** — c'est ce qui donne son sens
     // au refus ci-dessus.
     assert_eq!(
-        placement(PAGES, None, true, screen.base, 16),
+        placement(PAGES, None, None, true, screen.base, 16),
         Ok(()),
         "aucun cadre déclaré, donc rien à protéger en haut"
     );
@@ -13822,7 +13825,7 @@ fn the_placement_folds_its_address_and_does_not_wrap() {
     // La même page zéro, désignée par une adresse d'un autre tour de masque.
     assert!(
         matches!(
-            placement(PAGES, Some(screen), true, zero + ram * 3, 16),
+            placement(PAGES, Some(screen), None, true, zero + ram * 3, 16),
             Err(Refusal::ImageWouldOverwriteTheBootPage { .. })
         ),
         "repliée, c'est la même page zéro"
@@ -13830,12 +13833,423 @@ fn the_placement_folds_its_address_and_does_not_wrap() {
 
     // Une taille qui enroulerait l'addition.
     assert!(
-        placement(PAGES, Some(screen), true, 0x10_0000, u64::MAX).is_err(),
+        placement(PAGES, Some(screen), None, true, 0x10_0000, u64::MAX).is_err(),
         "une taille qui enroule doit être refusée, pas acceptée par débordement"
     );
     // Et une image plus grande que la RAM, qui couvre donc tout.
     assert!(
-        placement(PAGES, Some(screen), true, 0, ram + 1).is_err(),
+        placement(PAGES, Some(screen), None, true, 0, ram + 1).is_err(),
         "une image plus grande que la RAM ne tient nulle part"
+    );
+}
+
+/// **Le bureau dit au noyau où est sa racine.**
+///
+/// `kernel_image::declare_ramdisk` existe depuis #304 et le montage de mesure
+/// l'appelle quand `WISQ_INITRAMFS` en demande une. #306 a mesuré ce qu'elle
+/// donne : `WISQ-USERSPACE-OK` sur le fil, entre
+/// `Run /init as init process` et la panique. **Le bureau de l'application ne
+/// l'appelait pas.**
+///
+/// Sans les deux champs — `ramdisk_image` à `0x218` et `ramdisk_size` à
+/// `0x21c` — le noyau n'a aucun moyen d'apprendre qu'une archive est posée dans
+/// sa RAM. Il traverse tous ses `initcall`, arrive dans `prepare_namespace`, et
+/// meurt sur « VFS: Unable to mount root fs on unknown-block(0,0) ». C'est
+/// l'échec exact que #304 a corrigé **dans le montage seulement** — la même
+/// forme que #310 et #311, trouvée par la même question.
+#[test]
+fn the_desktop_tells_the_kernel_where_its_root_is() {
+    use wisq_vm::desktop::{boot_page_with_screen, declare_initramfs, Screen, COMMAND_LINE};
+    use wisq_vm::kernel_image::Ramdisk;
+    const PAGES: u32 = 1024; // soixante-quatre mébioctets
+    let ram = u64::from(PAGES) * 65536;
+    let frame_bytes = 64u64 * 64 * 4;
+    let screen = Screen {
+        base: ram - frame_bytes,
+        width: 64,
+        height: 64,
+    };
+    let archive = Ramdisk {
+        at: 0x200_0000,
+        bytes: 652,
+    };
+
+    let mut page =
+        boot_page_with_screen(PAGES, COMMAND_LINE, Some(screen)).expect("une page à écran");
+    declare_initramfs(&mut page, PAGES, Some(screen), archive).expect("une archive descriptible");
+
+    assert_eq!(
+        u32::from_le_bytes(page[0x218..0x21c].try_into().unwrap()),
+        0x200_0000,
+        "le noyau lit l'adresse de son archive à 0x218"
+    );
+    assert_eq!(
+        u32::from_le_bytes(page[0x21c..0x220].try_into().unwrap()),
+        652,
+        "et sa taille à 0x21c"
+    );
+
+    // **Et le reste de la page est intact.** Deux champs sont écrits, et c'est
+    // tout : la leçon de #311 est qu'un chemin qui rebâtit la page perd ce que
+    // l'autre y avait mis. Celui-ci n'en rebâtit pas, et l'assertion le tient
+    // plutôt que de s'en remettre à la lecture.
+    let inside =
+        (wisq_vm::kernel_image::COMMAND_LINE_AT - wisq_vm::kernel_image::ZERO_PAGE_AT) as usize;
+    assert_eq!(
+        &page[inside..inside + COMMAND_LINE.len()],
+        COMMAND_LINE.as_bytes(),
+        "la ligne de commande est toujours là"
+    );
+    assert_eq!(page[inside + COMMAND_LINE.len()], 0, "et toujours terminée");
+    assert_eq!(
+        page[0x1e8], 3,
+        "et la carte porte toujours ses trois entrées"
+    );
+
+    // **Et l'adresse se replie, comme toutes les adresses invitées de ce
+    // module.** C'est l'adresse *repliée* qui doit être écrite dans la page :
+    // le noyau lira là où l'application a réellement posé les octets, puisque
+    // `LocalDesktop.deposit` replie lui aussi. Écrire l'adresse brute donnerait
+    // au noyau une archive **ailleurs** — et sur une machine de 64 Mio, une
+    // adresse d'un autre tour de masque sort du plafond, donc le refus
+    // remplacerait le démarrage.
+    //
+    // **Cette assertion manquait, et un sabotage l'a montrée.** Retirer le
+    // repliage ne faisait tomber aucun test : tous donnaient déjà des adresses
+    // repliées. C'est la troisième fois en trois tranches qu'un sabotage trouve
+    // une garde absente plutôt qu'une garde fausse.
+    let mut ailleurs =
+        boot_page_with_screen(PAGES, COMMAND_LINE, Some(screen)).expect("une page à écran");
+    declare_initramfs(
+        &mut ailleurs,
+        PAGES,
+        Some(screen),
+        Ramdisk {
+            at: archive.at + ram * 3,
+            bytes: archive.bytes,
+        },
+    )
+    .expect("repliée, c'est la même adresse");
+    assert_eq!(
+        u32::from_le_bytes(ailleurs[0x218..0x21c].try_into().unwrap()),
+        0x200_0000,
+        "l'adresse écrite est la repliée, pas la brute"
+    );
+}
+
+/// **Une archive que le noyau ne pourrait pas trouver est refusée.**
+///
+/// Les quatre refus ne sont pas décoratifs : `ramdisk_image` et `ramdisk_size`
+/// sont des `u32`, et le demi-haut de chacun vit dans `ext_ramdisk_image` /
+/// `ext_ramdisk_size`, que cette page n'écrit pas. Tronquer donnerait au noyau
+/// **une autre archive, à une autre adresse**, sans rien signaler.
+///
+/// Les deux bornes viennent d'ici et pas de l'appelant :
+///
+/// - le **plancher** est le sommet de la page zéro, le minimum certainement
+///   juste — au-dessous vivent la page et sa ligne de commande, et une archive
+///   posée là les écraserait avec le cpio ;
+/// - le **plafond** est la base du cadre quand il y en a un, le bout de la RAM
+///   sinon. Une archive peut tenir dans la mémoire et déborder sur l'écran,
+///   exactement le piège que #251 a payé pour le cadre lui-même.
+///
+/// **Le cas qui passe est exigé**, sans quoi un refus qui refuserait tout
+/// passerait toutes les autres assertions.
+#[test]
+fn an_initramfs_the_kernel_could_not_find_is_refused() {
+    use wisq_vm::desktop::{
+        boot_page_with_screen, declare_initramfs, Refusal, Screen, COMMAND_LINE,
+    };
+    use wisq_vm::kernel_image::{Ramdisk, ZERO_PAGE_AT};
+    const PAGES: u32 = 1024;
+    let ram = u64::from(PAGES) * 65536;
+    let frame_bytes = 64u64 * 64 * 4;
+    let screen = Screen {
+        base: ram - frame_bytes,
+        width: 64,
+        height: 64,
+    };
+    let page = |screen| boot_page_with_screen(PAGES, COMMAND_LINE, screen).expect("une page");
+
+    // Ce qui passe : entre le sommet de la page zéro et la base du cadre.
+    let mut sound = page(Some(screen));
+    assert_eq!(
+        declare_initramfs(
+            &mut sound,
+            PAGES,
+            Some(screen),
+            Ramdisk {
+                at: 0x20_0000,
+                bytes: 4096
+            }
+        ),
+        Ok(())
+    );
+
+    // **Vide** : le noyau lirait une archive qui n'existe pas.
+    let mut built = page(Some(screen));
+    assert!(matches!(
+        declare_initramfs(
+            &mut built,
+            PAGES,
+            Some(screen),
+            Ramdisk {
+                at: 0x20_0000,
+                bytes: 0
+            }
+        ),
+        Err(Refusal::InitramfsHasNoBytes)
+    ));
+
+    // **Sous le plancher** : sur la page zéro elle-même, et à cheval sur son
+    // sommet. À l'octet près des deux côtés.
+    for (at, bytes, pourquoi) in [
+        (ZERO_PAGE_AT, 16u64, "pile sur la page zéro"),
+        (ZERO_PAGE_AT + 4096 - 8, 16, "à cheval sur son sommet"),
+    ] {
+        let mut built = page(Some(screen));
+        assert!(
+            matches!(
+                declare_initramfs(&mut built, PAGES, Some(screen), Ramdisk { at, bytes }),
+                Err(Refusal::InitramfsDoesNotFit { .. })
+            ),
+            "une archive {pourquoi} écraserait la carte mémoire du noyau"
+        );
+    }
+    // Et juste au-dessus, ça passe.
+    let mut built = page(Some(screen));
+    assert_eq!(
+        declare_initramfs(
+            &mut built,
+            PAGES,
+            Some(screen),
+            Ramdisk {
+                at: ZERO_PAGE_AT + 4096,
+                bytes: 16
+            }
+        ),
+        Ok(())
+    );
+
+    // **Au-dessus du plafond** : dans le cadre, et à cheval sur sa base.
+    for (at, bytes, pourquoi) in [
+        (screen.base, 16u64, "pile dans le cadre"),
+        (screen.base - 8, 16, "à cheval sur sa base"),
+    ] {
+        let mut built = page(Some(screen));
+        assert!(
+            matches!(
+                declare_initramfs(&mut built, PAGES, Some(screen), Ramdisk { at, bytes }),
+                Err(Refusal::InitramfsDoesNotFit { .. })
+            ),
+            "une archive {pourquoi} serait repeinte par l'invité"
+        );
+    }
+    // **Et sans cadre, le haut de la RAM est à elle** — c'est ce qui donne son
+    // sens au refus ci-dessus.
+    let mut nu = page(None);
+    assert_eq!(
+        declare_initramfs(
+            &mut nu,
+            PAGES,
+            None,
+            Ramdisk {
+                at: screen.base,
+                bytes: 16
+            }
+        ),
+        Ok(()),
+        "aucun cadre déclaré, donc rien à protéger en haut"
+    );
+    // Mais le bout de la RAM reste une borne, cadre ou pas.
+    let mut nu = page(None);
+    assert!(matches!(
+        declare_initramfs(
+            &mut nu,
+            PAGES,
+            None,
+            Ramdisk {
+                at: ram - 8,
+                bytes: 16
+            }
+        ),
+        Err(Refusal::InitramfsDoesNotFit { .. })
+    ));
+
+    // **Au-delà de ce qu'un `u32` porte**, et ce n'est pas une hypothèse de
+    // laboratoire : `ramdisk_image` et `ramdisk_size` sont des `u32`, et le
+    // demi-haut de chacun vit dans `ext_ramdisk_image` / `ext_ramdisk_size`,
+    // que cette page n'écrit pas. Une RAM de huit gibioctets laisse donc des
+    // adresses parfaitement valides et **indescriptibles** : deux puissance
+    // trente-deux est au-dessus du plancher et sous le plafond, et c'est un
+    // refus qui le dit plutôt qu'une troncature.
+    const HUGE: u32 = 1 << 17; // huit gibioctets de pages de 64 Kio
+    let mut vaste = boot_page_with_screen(HUGE, COMMAND_LINE, None).expect("une page vaste");
+    assert!(matches!(
+        declare_initramfs(
+            &mut vaste,
+            HUGE,
+            None,
+            Ramdisk {
+                at: 1 << 32,
+                bytes: 4096
+            }
+        ),
+        Err(Refusal::InitramfsDoesNotFit { .. })
+    ));
+    // Et la même archive, un gibioctet plus bas, passe : c'est la largeur du
+    // champ qui refuse, pas la taille de la machine.
+    let mut vaste = boot_page_with_screen(HUGE, COMMAND_LINE, None).expect("une page vaste");
+    assert_eq!(
+        declare_initramfs(
+            &mut vaste,
+            HUGE,
+            None,
+            Ramdisk {
+                at: 1 << 31,
+                bytes: 4096
+            }
+        ),
+        Ok(())
+    );
+}
+
+/// **Et l'archive est protégée comme les deux autres régions.**
+///
+/// #312 a refusé qu'une image de l'appelant écrase la page zéro ou le cadre.
+/// Ajouter une **troisième** région que la machine se donne à elle-même sans
+/// l'ajouter à ce refus serait réintroduire sciemment le défaut que #312 vient
+/// de fermer : l'archive est de la mémoire que le noyau déballe au démarrage, et
+/// une image posée dessus la lui donnerait corrompue — avec, pour symptôme, un
+/// cpio « invalid magic » qui ne nomme pas sa cause.
+#[test]
+fn an_image_that_would_overwrite_the_archive_is_refused() {
+    use wisq_vm::desktop::{placement, Refusal, Screen};
+    use wisq_vm::kernel_image::Ramdisk;
+    const PAGES: u32 = 1024;
+    let ram = u64::from(PAGES) * 65536;
+    let screen = Screen {
+        base: ram - 4096,
+        width: 32,
+        height: 32,
+    };
+    let archive = Ramdisk {
+        at: 0x20_0000,
+        bytes: 4096,
+    };
+
+    // Ce qui passe, et il est exigé.
+    assert_eq!(
+        placement(
+            PAGES,
+            Some(screen),
+            Some(archive),
+            true,
+            0x10_0000,
+            0x10_0000
+        ),
+        Ok(()),
+        "une image sous l'archive est posable"
+    );
+
+    for (at, bytes, pourquoi) in [
+        (archive.at, 16u64, "pile dessus"),
+        (archive.at + archive.bytes - 1, 1, "son dernier octet"),
+        (archive.at - 8, 16, "à cheval sur son début"),
+    ] {
+        assert!(
+            matches!(
+                placement(PAGES, Some(screen), Some(archive), true, at, bytes),
+                Err(Refusal::ImageWouldOverwriteTheArchive { .. })
+            ),
+            "une image {pourquoi} donnerait au noyau une racine corrompue"
+        );
+    }
+    // Les deux voisins immédiats passent.
+    assert_eq!(
+        placement(
+            PAGES,
+            Some(screen),
+            Some(archive),
+            true,
+            archive.at - 16,
+            16
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        placement(
+            PAGES,
+            Some(screen),
+            Some(archive),
+            true,
+            archive.at + archive.bytes,
+            16
+        ),
+        Ok(())
+    );
+
+    // **Sans archive déclarée, cette adresse est de la RAM comme une autre.**
+    assert_eq!(
+        placement(PAGES, Some(screen), None, true, archive.at, 16),
+        Ok(()),
+        "aucune archive déclarée, donc rien à protéger là"
+    );
+
+    // Et l'adresse de l'**image** se replie, comme pour les deux autres régions.
+    assert!(matches!(
+        placement(
+            PAGES,
+            Some(screen),
+            Some(archive),
+            true,
+            archive.at + ram * 3,
+            16
+        ),
+        Err(Refusal::ImageWouldOverwriteTheArchive { .. })
+    ));
+
+    // **Et celle de l'archive aussi**, ce qui n'est pas la même assertion :
+    // l'appelant déclare son archive à une adresse invitée, qui peut venir d'un
+    // autre tour de masque exactement comme celle de l'image. Replier l'une
+    // sans l'autre laisse passer la même écriture sous un autre nom.
+    //
+    // **Un sabotage l'a montrée absente.** Retirer le repliage de l'adresse de
+    // l'archive ne faisait tomber aucun test : l'assertion ci-dessus replie
+    // l'image, pas l'archive, et les deux se ressemblent assez pour qu'on les
+    // confonde en relisant.
+    let ailleurs = Ramdisk {
+        at: archive.at + ram * 3,
+        bytes: archive.bytes,
+    };
+    assert!(
+        matches!(
+            placement(PAGES, Some(screen), Some(ailleurs), true, archive.at, 16),
+            Err(Refusal::ImageWouldOverwriteTheArchive { .. })
+        ),
+        "repliée, c'est la même archive"
+    );
+
+    // **Et une archive de zéro octet n'occupe rien.** `declare_initramfs` l'a
+    // déjà refusée ; refuser *ici* au nom d'une archive qui n'en est pas une
+    // serait un refus sans objet — et sans ce garde-fou, une taille nulle rend
+    // quand même vraie la comparaison d'intervalles pour toute image qui
+    // enjambe son adresse.
+    //
+    // **Un sabotage l'a montrée absente aussi.**
+    assert_eq!(
+        placement(
+            PAGES,
+            Some(screen),
+            Some(Ramdisk {
+                at: 0x10_0000 + 8,
+                bytes: 0
+            }),
+            true,
+            0x10_0000,
+            16
+        ),
+        Ok(()),
+        "une archive sans octet n'occupe aucune adresse"
     );
 }
