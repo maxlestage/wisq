@@ -293,12 +293,21 @@ int wisq_desktop_page(uint32_t pages, uint64_t entry, const char *channel,
  * kibibytes at `wisq_desktop_boot_page_at()` and passes that address to
  * `wisq_desktop_page` as `boot_at`; the driver then points RSI at it.
  *
- * `command_line` may be null, and the measured default is used. Returns 0 and
- * four kibibytes, or -1 when the RAM is not a power of two or the line does not
- * fit in the page. The buffer is freed by `wisq_x86_free_module`.
+ * `command_line` may be null, and the measured default is used.
+ *
+ * The frame is optional, and `screen_width == 0 && screen_height == 0` says so.
+ * A desktop that declares one must tell the kernel about it *and* reserve it in
+ * the e820 map: without that entry the allocator hands those pages out, and the
+ * desktop corrupts itself under unrelated causes.
+ *
+ * Returns 0 and four kibibytes, or -1 when the RAM is not a power of two, the
+ * line does not fit in the page, or the frame does not fit above it. The buffer
+ * is freed by `wisq_x86_free_module`.
  */
 int wisq_desktop_boot_page(uint32_t pages, const char *command_line,
-                           uint8_t **out_bytes, size_t *out_len);
+                           uint64_t screen_base, uint32_t screen_width,
+                           uint32_t screen_height, uint8_t **out_bytes,
+                           size_t *out_len);
 
 /*
  * Where the desktop's zero page must be placed in the guest's RAM. Written

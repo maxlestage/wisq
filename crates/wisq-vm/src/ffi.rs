@@ -590,6 +590,13 @@ pub unsafe extern "C" fn wisq_desktop_page(
 pub unsafe extern "C" fn wisq_desktop_boot_page(
     pages: u32,
     command_line: *const c_char,
+    // **L'écran, et `screen_width == 0 && screen_height == 0` dit qu'il n'y en
+    // a pas.** Un bureau qui en déclare un doit le dire au noyau *et* réserver
+    // le cadre dans la carte e820 : sans l'entrée, l'allocateur distribue ces
+    // pages, et le bureau se corrompt sous des causes sans rapport.
+    screen_base: u64,
+    screen_width: u32,
+    screen_height: u32,
     out_bytes: *mut *mut u8,
     out_len: *mut usize,
 ) -> c_int {
@@ -604,7 +611,16 @@ pub unsafe extern "C" fn wisq_desktop_boot_page(
             Err(_) => return -1,
         }
     };
-    let Ok(page) = desktop::boot_page(pages, line) else {
+    let screen = if screen_width == 0 && screen_height == 0 {
+        None
+    } else {
+        Some(desktop::Screen {
+            base: screen_base,
+            width: screen_width,
+            height: screen_height,
+        })
+    };
+    let Ok(page) = desktop::boot_page_with_screen(pages, line, screen) else {
         return -1;
     };
     hand_back(page, out_bytes, out_len);
