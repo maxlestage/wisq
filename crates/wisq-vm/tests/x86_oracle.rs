@@ -730,3 +730,289 @@ fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus() {
         oracle.cases.len()
     );
 }
+
+/// **Le corpus de chaîne, et pourquoi aucun cœur Rust ne le lisait.**
+///
+/// `Tests/Fixtures/x86-string-oracle.tsv` est né d'un comptage : sur les 389
+/// formes du corpus arithmétique, *aucune* n'était un `MOVS`, `STOS`, `SCAS`,
+/// `CMPS` ou `LODS`. La mesure tient encore, et dans les deux corpus que ce
+/// fichier lit : `grep -o "rep [a-z]*"` en rend **zéro**, sur l'arithmétique
+/// comme sur la pile. Les deux cœurs Rust n'avaient donc jamais été comparés
+/// au silicium sur une seule instruction de chaîne, alors que tous les deux en
+/// exécutent.
+///
+/// Ce n'est pas une classe accessoire : `copy_to_user` et `copy_from_user`
+/// sont des `rep movsq` et des `rep movsb`, et le `memset` d'une table de
+/// pages est un `rep stos`.
+///
+/// **Les deux branchements précédents ont rendu seize écarts chacun** — #301
+/// pour l'émetteur sur la pile, #302 pour ce cœur-ci. Un corpus qu'on branche
+/// n'est pas une formalité, et c'est la raison de brancher celui-là aussi.
+struct StringOracle {
+    /// `rax`, `rsi`, `rdi`, drapeaux. RCX n'y est pas : il vient de la forme,
+    /// parce que c'est le compte que la répétition consomme.
+    states: HashMap<String, (u64, u64, u64, u64)>,
+    instructions: HashMap<String, (Vec<u8>, u64, String)>,
+    cases: Vec<StringCase>,
+    window: (u64, Vec<u8>),
+}
+
+struct StringCase {
+    instruction: String,
+    state: String,
+    rax: u64,
+    rcx: u64,
+    rsi: u64,
+    rdi: u64,
+    flags: u64,
+    memory: Option<Vec<u8>>,
+}
+
+/// **Les drapeaux que ce corpus compare** : retenue, parité, auxiliaire, zéro,
+/// signe, débordement — le masque `X86Core.Flag.arithmetic` du cœur Swift, qui
+/// lit déjà ce fichier. Le corpus ne porte pas de colonne de masque, et il n'en
+/// a pas besoin : les treize valeurs distinctes qu'il enregistre sont toutes
+/// comprises dans ce masque, sans le drapeau de direction — qui est une
+/// **entrée** du cas — ni le bit réservé.
+const STRING_FLAGS: u64 = 0x8d5;
+
+/// **Le témoin des registres qu'aucune chaîne ne doit toucher**, celui de
+/// `X86StringOracleTests` à l'octet près.
+fn string_witness(slot: usize) -> u64 {
+    0xAAAA_AAAA_AAAA_AAAAu64.wrapping_add(slot as u64)
+}
+
+/// RBX et R8 à R15 : ceux que le test Swift relève. RAX, RCX, RSI et RDI sont
+/// justement ceux qu'une chaîne travaille.
+const STRING_WATCHED: [usize; 9] = [3, 8, 9, 10, 11, 12, 13, 14, 15];
+
+fn read_string_oracle() -> StringOracle {
+    let path = oracle_path()
+        .parent()
+        .expect("le répertoire des fixtures")
+        .join("x86-string-oracle.tsv");
+    let text = std::fs::read_to_string(&path).expect("Tests/Fixtures/x86-string-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut instructions = HashMap::new();
+    let mut cases = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            // `état <indice> <rax> <rsi> <rdi> <drapeaux>`
+            "état" if f.len() == 6 => {
+                states.insert(
+                    f[1].to_string(),
+                    (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])),
+                );
+            }
+            // `instr <indice> <octets> <RCX de départ> <mnémonique>`
+            //
+            // **Le compte est en décimal**, et c'est le seul champ du fichier à
+            // l'être : le lire en hexadécimal donnerait 50 pour « 32 » et 22
+            // pour « 16 », un `rep movsb` sortirait de sa demi-fenêtre, et
+            // l'écart serait mis sur le dos du cœur. Le lecteur Swift le lit
+            // déjà ainsi.
+            "instr" if f.len() == 5 => {
+                let count = f[3].parse::<u64>().expect("un compte décimal");
+                instructions.insert(f[1].to_string(), (bytes(f[2]), count, f[4].to_string()));
+            }
+            // `cas <instr> <état> <rax> <rcx> <rsi> <rdi> <drapeaux> <mémoire>`
+            "cas" if f.len() == 9 => cases.push(StringCase {
+                instruction: f[1].to_string(),
+                state: f[2].to_string(),
+                rax: hex(f[3]),
+                rcx: hex(f[4]),
+                rsi: hex(f[5]),
+                rdi: hex(f[6]),
+                flags: hex(f[7]),
+                memory: match f[8] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 8, "les huit états du corpus de chaîne");
+    assert_eq!(instructions.len(), 47, "ses quarante-sept formes");
+    assert_eq!(cases.len(), 376, "et ses trois cent soixante-seize cas");
+    // **La fenêtre vient du fichier qui la déclare**, pas de ce code : le
+    // corpus de chaîne ne la porte pas, le corpus arithmétique si, et le test
+    // Swift la reconstruit en 0x10 + i. Les trois doivent tomber d'accord, et
+    // ce test l'exige plutôt que de le supposer.
+    let window = read_oracle()
+        .windows
+        .into_iter()
+        .next()
+        .expect("la fenêtre de données du corpus arithmétique");
+    assert_eq!(
+        window.0, 0x3000_1000,
+        "l'adresse que l'en-tête du corpus dit"
+    );
+    assert_eq!(
+        window.1,
+        (0..64u8).map(|i| 0x10 + i).collect::<Vec<u8>>(),
+        "le motif que `X86StringOracleTests.pristine` pose"
+    );
+    StringOracle {
+        states,
+        instructions,
+        cases,
+        window,
+    }
+}
+
+/// **Le plancher du corpus de chaîne pour l'interpréteur**, à mesurer.
+const STRING_CASES_FLOOR: usize = 144;
+
+/// **L'interpréteur Rust jugé sur le corpus de chaîne.** Le jumeau de
+/// `every_accepted_instruction_matches_the_silicon_on_the_stack_corpus`, sur le
+/// troisième corpus — et, comme lui, le refus d'une forme est **compté et
+/// nommé** plutôt qu'ignoré.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus() {
+    let oracle = read_string_oracle();
+    let mut checked = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    let mut wrong: Vec<String> = Vec::new();
+
+    for case in &oracle.cases {
+        let (program, count, mnemonic) = &oracle.instructions[&case.instruction];
+        let (rax, rsi, rdi, flags) = oracle.states[&case.state];
+        if !decodes_everywhere(program) {
+            if !refused.contains(mnemonic) {
+                refused.push(mnemonic.clone());
+            }
+            continue;
+        }
+        // **Le témoin d'abord.** Un cœur qui lirait un registre que le corpus
+        // ne pose pas tomberait juste tant que ce registre vaut zéro.
+        let mut regs = [0u64; 16];
+        for (slot, value) in regs.iter_mut().enumerate() {
+            *value = string_witness(slot);
+        }
+        regs[0] = rax;
+        regs[1] = *count;
+        regs[4] = STACK_TOP;
+        regs[6] = rsi;
+        regs[7] = rdi;
+        // **L'arène, et non la fenêtre.** Une chaîne **en arrière** descend
+        // sous l'adresse de la fenêtre : `rep movsw` depuis l'état 4 part de
+        // `0x30001018` et finit RSI à `0x30000ff8`, le silicium le dit. Une
+        // mémoire limitée aux soixante-quatre octets faisait fauter le cœur sur
+        // les quatre états en arrière — et c'est le harnais qui plantait, pas
+        // l'instruction. Le même piège a déjà coûté un tour à ce corpus la
+        // première fois qu'il a été écrit : « l'ABI exige que le drapeau de
+        // direction soit effacé à la sortie de toute fonction, et le `memcpy`
+        // du pilote partait à l'envers ». L'arène est donc celle du test Swift,
+        // à l'octet près : seize kibioctets depuis `0x30000000`, la fenêtre
+        // posée à `0x30001000`, et des zéros partout ailleurs — ce que le
+        // silicium avait, puisque les cas en arrière lisent dessous et que leur
+        // résultat enregistré est fait de ces zéros-là.
+        let mut arena = GuestMemory {
+            base: CODE,
+            bytes: vec![0; 0x4000],
+        };
+        let at = (oracle.window.0 - CODE) as usize;
+        arena.bytes[at..at + oracle.window.1.len()].copy_from_slice(&oracle.window.1);
+        let mut cpu = Cpu {
+            regs,
+            memory: arena,
+            ..Default::default()
+        };
+        let mut written = Flags::default();
+        written.write(flags);
+        cpu.flags = written;
+        cpu.rip = CODE;
+
+        let mut steps = 0usize;
+        let mut ran_out = false;
+        while (cpu.rip.wrapping_sub(CODE) as usize) < program.len() {
+            if steps == BUDGET {
+                ran_out = true;
+                break;
+            }
+            steps += 1;
+            let at = cpu.rip.wrapping_sub(CODE) as usize;
+            if cpu.step(&program[at..]) == Step::Unknown {
+                ran_out = true;
+                break;
+            }
+        }
+        if ran_out {
+            if !refused.contains(mnemonic) {
+                refused.push(mnemonic.clone());
+            }
+            continue;
+        }
+        checked += 1;
+
+        let mut notes: Vec<String> = Vec::new();
+        if cpu.faulted {
+            notes.push("le cœur a fauté".to_string());
+        }
+        for (slot, want, name) in [
+            (0usize, case.rax, "rax"),
+            (1, case.rcx, "rcx"),
+            (6, case.rsi, "rsi"),
+            (7, case.rdi, "rdi"),
+        ] {
+            if cpu.regs[slot] != want {
+                notes.push(format!(
+                    "{name} attendu {want:x}, obtenu {:x}",
+                    cpu.regs[slot]
+                ));
+            }
+        }
+        for slot in STRING_WATCHED {
+            if cpu.regs[slot] != string_witness(slot) {
+                notes.push(format!(
+                    "{} a bougé : {:x} au lieu du témoin {:x}",
+                    STACK_REGISTER_NAMES[slot],
+                    cpu.regs[slot],
+                    string_witness(slot)
+                ));
+            }
+        }
+        if (cpu.flags.read() & STRING_FLAGS) != case.flags {
+            notes.push(format!(
+                "drapeaux attendus {:x}, obtenus {:x} (masque {STRING_FLAGS:x})",
+                case.flags,
+                cpu.flags.read() & STRING_FLAGS
+            ));
+        }
+        // **La fenêtre, pas l'arène** : le corpus n'enregistre que ces
+        // soixante-quatre octets, et exiger le reste comparerait le cœur à des
+        // octets que personne n'a relevés.
+        let want = case
+            .memory
+            .clone()
+            .unwrap_or_else(|| oracle.window.1.clone());
+        if cpu.memory.bytes[at..at + want.len()] != want[..] {
+            notes.push("la fenêtre de données diffère".to_string());
+        }
+        if !notes.is_empty() && wrong.len() < 20 {
+            wrong.push(format!(
+                "{mnemonic} [état {}] : {}",
+                case.state,
+                notes.join(" ; ")
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) entre l'interpréteur et le silicium sur le corpus de chaîne :\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        checked >= STRING_CASES_FLOOR,
+        "l'interpréteur ne juge plus que {checked} cas de chaîne sur {} ; \
+         formes refusées : {refused:?}",
+        oracle.cases.len()
+    );
+}

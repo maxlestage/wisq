@@ -3320,6 +3320,25 @@ porte sur le **cœur**, pas sur l'affichage.
 2. Un émetteur de WebAssembly, et le cœur x86 qui traduit un bloc de base à la
    fois, avec le même corpus d'oracles matériels que le cœur Swift — les neuf
    corpus existent déjà et ne demandent qu'à juger un troisième cœur.
+
+   > **Où en est cette phrase, trois corpus plus tard (#317).**
+   > `Tests/Fixtures/` porte **dix** oracles matériels, plus le corpus de
+   > décodage qui n'en est pas un. Les cœurs Rust lisent **trois** oracles :
+   > l'arithmétique, la pile (#301 pour l'émetteur, #302 pour l'interpréteur)
+   > et les chaînes (#317, les deux cœurs d'un coup). Il en reste **sept** que
+   > seul le cœur Swift juge : flottants, SIMD, XMM, x87, arrondis x87, FXSAVE
+   > et branchements. Chacun se branche comme les trois premiers — un lecteur,
+   > un harnais, un plancher mesuré — et les deux premiers branchements ont
+   > rendu seize écarts chacun ; le troisième, aucun. Ce n'est donc ni une
+   > formalité ni une promesse de défaut.
+   >
+   > **Et ce que le branchement des chaînes a mesuré en passant** : des 376 cas
+   > du corpus, 232 sortent du jugement des cœurs Rust, parce que le décodeur
+   > ne décode ni `lods`, ni `cmps`, ni `scas` — vingt-huit formes, toutes
+   > largeurs, avec et sans `rep`. Le cœur Swift les juge toutes. Un trou
+   > nommé, comme le `8f /0` du corpus de pile : les étendre serait un ajout,
+   > pas une correction, et le noyau d'Alpine atteint l'espace utilisateur sans
+   > elles.
 3. Un tampon d'affichage pour l'invité (`virtio-gpu` ou une VGA linéaire) et sa
    vue. Sans lui, il n'y a pas de bureau à montrer, quelle que soit la vitesse.
 4. La bascule : le cœur WebAssembly quand le `WKWebView` compile, l'interpréteur

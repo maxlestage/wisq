@@ -3597,3 +3597,356 @@ console.log("cr2 " + vm.globals[SLOTS.control + 1].value);
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **Le troisième corpus branché sur l'émetteur : les chaînes.**
+///
+/// `Tests/Fixtures/x86-string-oracle.tsv` est né d'un comptage — « sur les 389
+/// formes du corpus arithmétique, *aucune* n'était un `MOVS`, `STOS`, `SCAS`,
+/// `CMPS` ou `LODS` ; les dix-sept « movs » qu'on y trouvait étaient des
+/// `MOVSX` et des `CMOVS` » — et il juge le cœur Swift depuis : 47 formes,
+/// 376 cas, zéro désaccord.
+///
+/// **Il ne jugeait que lui**, et c'est la mesure qui le dit : des **dix**
+/// oracles matériels de `Tests/Fixtures/` — le onzième fichier est le corpus de
+/// décodage, qui ne porte pas de résultat — les cœurs Rust n'en lisaient que
+/// deux, `x86-oracle.tsv` et `x86-stack-oracle.tsv`. La feuille de route l'avait
+/// écrit à l'avance — « le même corpus d'oracles matériels que le cœur Swift ;
+/// les neuf corpus existent déjà et ne demandent qu'à juger un troisième
+/// cœur » — et l'émetteur est arrivé en n'en lisant qu'un.
+///
+/// **Pourquoi cette classe-ci avant les huit autres.** C'est celle que
+/// l'application exécute le plus tôt et le plus souvent : `copy_to_user` et
+/// `copy_from_user` sont des `rep movsq` et des `rep movsb`, le `memset` des
+/// tables de pages est un `rep stos`, et l'émetteur **les traduit** —
+/// `Op::StringMove` et `Op::StringStore`, avec leur boucle de répétition.
+/// Ce que le silicium en dit n'était comparé à rien du côté du cœur que le
+/// bureau fait tourner.
+///
+/// Les deux branchements précédents — #301 pour l'émetteur sur la pile, #302
+/// pour l'interpréteur — ont rendu **seize écarts chacun à leur premier
+/// tour**. Un corpus qu'on branche n'est pas une formalité.
+///
+/// Ce qui change par rapport au corpus de pile : RCX vient de la **forme** et
+/// non de l'état — c'est le compte que la répétition consomme, et le fichier
+/// l'écrit en **décimal**, seul champ du corpus à ne pas être hexadécimal. Les
+/// registres que nulle chaîne ne touche portent le témoin du test Swift, et le
+/// relevé dit lequel a bougé.
+struct StringOracle {
+    /// `rax`, `rsi`, `rdi`, drapeaux. RCX n'y est pas : il vient de la forme.
+    states: HashMap<String, (u64, u64, u64, u64)>,
+    /// Les octets, le RCX de départ, le mnémonique.
+    instructions: HashMap<String, (Vec<u8>, u64, String)>,
+    cases: Vec<StringCase>,
+    /// La fenêtre de données, lue là où elle est **déclarée**.
+    window: (u64, Vec<u8>),
+}
+
+struct StringCase {
+    instruction: String,
+    state: String,
+    rax: u64,
+    rcx: u64,
+    rsi: u64,
+    rdi: u64,
+    flags: u64,
+    memory: Option<Vec<u8>>,
+}
+
+/// **Les drapeaux que ce corpus compare**, et c'est le masque du cœur Swift :
+/// retenue, parité, auxiliaire, zéro, signe, débordement. Le drapeau de
+/// direction n'y est pas — il est une **entrée** du cas, pas un résultat — et
+/// les valeurs enregistrées dans le fichier le confirment : aucune ne porte
+/// 0x400, et aucune ne porte le bit réservé que tout RFLAGS traîne.
+const STRING_FLAGS: u64 = 0x8d5;
+
+/// **Le témoin des registres qu'aucune chaîne ne doit toucher**, identique à
+/// celui de `X86StringOracleTests` : un cœur qui écrirait dans R12 au passage
+/// ne le dirait nulle part ailleurs.
+fn string_witness(slot: usize) -> u64 {
+    0xAAAA_AAAA_AAAA_AAAAu64.wrapping_add(slot as u64)
+}
+
+/// RBX et R8 à R15. RAX, RCX, RSI et RDI sont justement ceux qu'une chaîne
+/// travaille ; RDX et RBP ne sont pas relevés par le fichier.
+const STRING_WATCHED: [usize; 9] = [3, 8, 9, 10, 11, 12, 13, 14, 15];
+
+fn read_string_oracle() -> StringOracle {
+    let text =
+        std::fs::read_to_string(workspace_root().join("Tests/Fixtures/x86-string-oracle.tsv"))
+            .expect("Tests/Fixtures/x86-string-oracle.tsv");
+    let mut states = HashMap::new();
+    let mut instructions = HashMap::new();
+    let mut cases = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            // `état <indice> <rax> <rsi> <rdi> <drapeaux>`
+            "état" if f.len() == 6 => {
+                states.insert(
+                    f[1].to_string(),
+                    (hex(f[2]), hex(f[3]), hex(f[4]), hex(f[5])),
+                );
+            }
+            // `instr <indice> <octets> <RCX de départ> <mnémonique>`
+            //
+            // **Le compte est en décimal.** Le lire en hexadécimal donnerait 50
+            // pour « 32 » et 22 pour « 16 » : un `rep movsb` sortirait de sa
+            // demi-fenêtre et l'écart serait mis sur le dos de l'émetteur. Le
+            // lecteur Swift le lit déjà ainsi, et c'est de lui que vient la
+            // forme de cette ligne.
+            "instr" if f.len() == 5 => {
+                let count = f[3].parse::<u64>().expect("un compte décimal");
+                instructions.insert(f[1].to_string(), (bytes(f[2]), count, f[4].to_string()));
+            }
+            // `cas <instr> <état> <rax> <rcx> <rsi> <rdi> <drapeaux> <mémoire>`
+            "cas" if f.len() == 9 => cases.push(StringCase {
+                instruction: f[1].to_string(),
+                state: f[2].to_string(),
+                rax: hex(f[3]),
+                rcx: hex(f[4]),
+                rsi: hex(f[5]),
+                rdi: hex(f[6]),
+                flags: hex(f[7]),
+                memory: match f[8] {
+                    "-" => None,
+                    hexadecimal => Some(bytes(hexadecimal)),
+                },
+            }),
+            _ => {}
+        }
+    }
+    assert_eq!(states.len(), 8, "les huit états du corpus de chaîne");
+    assert_eq!(instructions.len(), 47, "ses quarante-sept formes");
+    assert_eq!(cases.len(), 376, "et ses trois cent soixante-seize cas");
+    // **La fenêtre vient du fichier qui la déclare**, et non d'un motif écrit
+    // ici : le corpus de chaîne ne la déclare pas, le corpus arithmétique si,
+    // et le test Swift la reconstruit en 0x10 + i. Les trois doivent tomber
+    // d'accord, et ce test l'exige plutôt que de le supposer — c'est la leçon
+    // que le corpus de pile avait déjà payée.
+    let window = read_oracle()
+        .windows
+        .into_iter()
+        .next()
+        .expect("la fenêtre de données du corpus arithmétique");
+    assert_eq!(
+        window.0, 0x3000_1000,
+        "l'adresse que l'en-tête du corpus dit"
+    );
+    assert_eq!(
+        window.1,
+        (0..64u8).map(|i| 0x10 + i).collect::<Vec<u8>>(),
+        "le motif que `X86StringOracleTests.pristine` pose"
+    );
+    StringOracle {
+        states,
+        instructions,
+        cases,
+        window,
+    }
+}
+
+/// **L'émetteur jugé sur le corpus de chaîne.**
+///
+/// Le jumeau de `what_the_emitter_produces_matches_the_silicon_on_the_stack_corpus`,
+/// sur le troisième corpus. Même pilote, même hôte, même refus de reprocher à
+/// un module ce qu'il n'a pas prétendu faire.
+#[test]
+fn what_the_emitter_produces_matches_the_silicon_on_the_string_corpus() {
+    let Some(bun) = bun() else {
+        panic!(
+            "Bun est absent : l'émetteur ne serait vérifié par rien. \
+             Ce test refuse de passer en silence."
+        );
+    };
+    let oracle = read_string_oracle();
+    let scratch = std::env::temp_dir().join(format!("wisq-x86-string-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("driver.js");
+    std::fs::write(&driver, DRIVER).expect("le pilote");
+
+    let mut by_instruction: Vec<(String, Vec<&StringCase>)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for case in &oracle.cases {
+        match seen.get(&case.instruction) {
+            Some(&at) => by_instruction[at].1.push(case),
+            None => {
+                seen.insert(case.instruction.clone(), by_instruction.len());
+                by_instruction.push((case.instruction.clone(), vec![case]));
+            }
+        }
+    }
+
+    let (span_at, pristine_span) = span(std::slice::from_ref(&oracle.window));
+    let mut jobs = format!(
+        "{{\"pages\":{GUEST_PAGES},\"globals\":{GLOBAL_COUNT},\"ripSlot\":{RIP_SLOT},\
+         \"flagsSlot\":{RFLAGS_SLOT},\"gsSlot\":{GS_SLOT},\"gsBase\":\"0\",\
+         \"span\":{{\"at\":{span_at},\"length\":{}}},\"windows\":[{{\"at\":{},\"pristine\":\"",
+        pristine_span.len(),
+        oracle.window.0
+    );
+    for byte in &oracle.window.1 {
+        jobs.push_str(&format!("{byte:02x}"));
+    }
+    jobs.push_str("\"}],\"jobs\":[");
+
+    let mut emitted = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    let mut expected: HashMap<String, (&StringCase, String)> = HashMap::new();
+    for (index, (instruction, cases)) in by_instruction.iter().enumerate() {
+        let (bytes, count, mnemonic) = &oracle.instructions[instruction];
+        let Some(module) = Module::region(bytes, CODE, 0) else {
+            refused.push(format!("{mnemonic} ({} cas)", cases.len()));
+            continue;
+        };
+        let path = scratch.join(format!("c{index}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        if emitted > 0 {
+            jobs.push(',');
+        }
+        emitted += 1;
+        jobs.push_str(&format!(
+            "{{\"module\":{:?},\"length\":{},\"cases\":[",
+            path.to_string_lossy(),
+            bytes.len()
+        ));
+        for (position, case) in cases.iter().enumerate() {
+            let (rax, rsi, rdi, flags) = oracle.states[&case.state];
+            let id = format!("{}|{}", case.instruction, case.state);
+            if position > 0 {
+                jobs.push(',');
+            }
+            let mut written = String::new();
+            for slot in 0..16usize {
+                // **Le témoin d'abord, les quatre registres de l'état ensuite.**
+                // Un cœur qui lirait un registre que le corpus ne pose pas
+                // tomberait juste tant que ce registre vaut zéro ; le témoin le
+                // rend visible, et `STRING_WATCHED` le relève.
+                let value = match slot {
+                    0 => rax,
+                    1 => *count,
+                    4 => STACK_TOP,
+                    6 => rsi,
+                    7 => rdi,
+                    other => string_witness(other),
+                };
+                written.push_str(&format!("\"{slot}\":\"{value:x}\","));
+            }
+            jobs.push_str(&format!(
+                "{{\"id\":{id:?},\"regs\":{{{written}\"{RFLAGS_SLOT}\":\"{flags:x}\"}}}}"
+            ));
+            expected.insert(id, (case, mnemonic.clone()));
+        }
+        jobs.push_str("]}");
+    }
+    jobs.push_str("]}");
+
+    let job_path = scratch.join("jobs.json");
+    std::fs::write(&job_path, &jobs).expect("les travaux");
+    let result_path = scratch.join("out.json");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .arg(&job_path)
+        .arg(&result_path)
+        .output()
+        .expect("bun doit démarrer");
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé un module émis :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&result_path).expect("le résultat");
+    let produced = results(&text);
+
+    let mut checked = 0usize;
+    let mut handed_back = 0usize;
+    let mut gave_up: std::collections::BTreeSet<String> = Default::default();
+    let mut wrong: Vec<String> = Vec::new();
+    for (id, (case, mnemonic)) in &expected {
+        let Some(raw) = produced.get(id) else {
+            wrong.push(format!("{mnemonic} : aucun résultat rendu pour {id}"));
+            continue;
+        };
+        if raw.unfinished {
+            handed_back += 1;
+            gave_up.insert(mnemonic.clone());
+            continue;
+        }
+        checked += 1;
+        let mut notes: Vec<String> = Vec::new();
+        for (slot, want, name) in [
+            (0usize, case.rax, "rax"),
+            (1, case.rcx, "rcx"),
+            (6, case.rsi, "rsi"),
+            (7, case.rdi, "rdi"),
+        ] {
+            if raw.regs[slot] != want {
+                notes.push(format!(
+                    "{name} attendu {want:x}, obtenu {:x}",
+                    raw.regs[slot]
+                ));
+            }
+        }
+        for slot in STRING_WATCHED {
+            if raw.regs[slot] != string_witness(slot) {
+                notes.push(format!(
+                    "{} a bougé : {:x} au lieu du témoin {:x}",
+                    STACK_REGISTER_NAMES[slot],
+                    raw.regs[slot],
+                    string_witness(slot)
+                ));
+            }
+        }
+        if (raw.flags & STRING_FLAGS) != case.flags {
+            notes.push(format!(
+                "drapeaux attendus {:x}, obtenus {:x} (masque {STRING_FLAGS:x})",
+                case.flags,
+                raw.flags & STRING_FLAGS
+            ));
+        }
+        let want = case
+            .memory
+            .clone()
+            .unwrap_or_else(|| oracle.window.1.clone());
+        let got = raw.memory.clone().unwrap_or_else(|| pristine_span.clone());
+        if got != want {
+            notes.push("la fenêtre de données diffère".to_string());
+        }
+        if !notes.is_empty() {
+            wrong.push(format!("{mnemonic} [{id}] : {}", notes.join(" ; ")));
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) entre l'émetteur et le silicium sur le corpus de chaîne :\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert_eq!(
+        checked + handed_back,
+        expected.len(),
+        "chaque cas est soit jugé soit rendu : {checked} jugés, {handed_back} rendus"
+    );
+    assert!(
+        checked >= STRING_CASES_FLOOR,
+        "l'émetteur ne juge plus que {checked} cas de chaîne sur {} ; \
+         rendus par : {:?} ; formes refusées : {:?}",
+        expected.len(),
+        gave_up,
+        refused
+    );
+}
+
+/// **Le plancher du corpus de chaîne, à mesurer.**
+const STRING_CASES_FLOOR: usize = 144;
