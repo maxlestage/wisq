@@ -19760,3 +19760,160 @@ que la raison est un nombre : quatre-vingt-neuf, pas « ça paraît risqué ».
 modélise que deux registres » ou que « le corpus ne compare pas RSP » : une
 phrase sur l'état du dépôt, vérifiable par une commande, et que j'ai écrite
 quatre fois cette semaine sans la lancer. La commande fait une seconde.
+
+## #310 — tout ce que douze tranches ont mesuré se passait dans le montage : le bureau de l'application ne posait que RIP
+
+Maxime a dit « fais tout » sur les trois décisions que je lui avais soumises.
+Deux se sont dissoutes à la lecture, et la troisième n'était pas celle que
+j'avais nommée.
+
+### Les deux qui n'existaient pas
+
+**« Desserrer `leftToTheDevice = 2 << 30` ».** C'est **sa règle**, implémentée,
+documentée dans ses mots — « je veux pouvoir la gérer en étant deux giga plus
+petit que l'iPhone 17 Pro n'a de ram » —, et `KernelMemory.ceiling` prend le
+plus petit de ce que le système dit libre, de cette règle, et de ce que
+l'architecture permet. Un téléphone de seize gibioctets en autorise donc
+quatorze. Il n'y a **rien à desserrer** : le plafond x86 est à seize
+gibioctets, au-dessus de sa règle, pas en dessous.
+
+**« Donner au bureau une ligne de commande qui nomme une console ».**
+`X86BootLoader.defaultCommandLine` en a une depuis longtemps :
+`console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep`. Le chargeur Swift
+la pose, et `IsoBoot` y retombe.
+
+Les deux affirmations venaient de mes notes, comme les « quatre formes » de
+#309. **Quatrième et cinquième fois cette semaine**, et le remède est le même :
+une commande.
+
+### Et ce que la commande a trouvé
+
+La règle de #261, appliquée aux deux fichiers qui devraient s'accorder :
+
+```
+grep rsi crates/wisq-vm/examples/kernel-entry.rs   → présent
+grep rsi crates/wisq-vm/src/desktop.rs             → rien
+```
+
+`desktop::page` posait **RIP, et rien d'autre**. Pas de RSI, pas de page zéro,
+pas de ligne de commande.
+
+Un noyau x86-64 entré ainsi n'a pas de `boot_params` : la carte e820 est vide,
+il retombe sur les 640 kibioctets du repli BIOS-88, memblock n'a rien,
+`alloc_low_pages` finit dans `extend_brk` et `extend_brk` fait `BUG()`. Il
+s'arrête à sa **1067ᵉ région** — et **muet**, puisque sans ligne de commande il
+n'a pas de console précoce non plus. C'est exactement l'échec que le montage de
+mesure a été fait pour avoir d'abord ; il a été corrigé **dans le montage**, et
+nulle part ailleurs.
+
+**Donc tout ce que #297 à #308 ont mesuré se passe dans
+`examples/kernel-entry.rs`** : la carte mémoire, `earlycon`, les sept mille
+interruptions, `ttyS0 at I/O 0x3f8`, l'espace utilisateur qui dit
+`WISQ-USERSPACE-OK`, les cent vingt mille entrées périmées. Le bureau de
+l'application, lui, n'en atteignait pas la première ligne. Et
+`LocalDesktopTests` passe ses dix tests sans le voir, parce qu'elle juge des
+programmes écrits à la main et la plomberie — pas un vrai noyau.
+
+### Ce que la tranche pose, et ce qu'elle ne réécrit pas
+
+**Un seul bloc de quatre kibioctets, à une seule adresse.** La ligne de commande
+vit **dans** la page zéro, à `0x800` de son début — c'est là que le montage la
+pose (`COMMAND_LINE_AT − ZERO_PAGE_AT`) et c'est là que le champ `0x228` la
+désigne. `LocalDesktop.place` savait déjà poser des octets à une adresse
+repliée ; il n'a rien eu à apprendre.
+
+**Et la page zéro n'est pas réécrite.** C'est `kernel_image::zero_page`, celle
+que le montage emploie et que ses propres tests tiennent. En écrire une
+troisième — après le Rust et `X86BootLoader` — aurait été #289 par
+construction, dans la tranche qui vient d'en corriger deux.
+
+**La ligne du bureau est mesurée, pas choisie par analogie** :
+
+```
+earlycon=uart8250,io,0x3f8 console=ttyS0
+```
+
+`earlycon` sur le port que `web/host.js` écoute, `console=ttyS0` parce que #306
+a mesuré que sans elle `/dev/console` est `tty0` — l'écran factice, qui accepte
+les octets et les jette — et **sans** `keep_bootcon` parce que #306 a mesuré
+que les deux ensemble dédoublent chaque ligne, 367 contre 222.
+
+### Quatre gardes, et ce qu'elles mesurent
+
+Deux font tourner **le pilote que l'application chargera**, extrait et non
+réécrit, et jugent ce que l'**invité** a vu : le programme est
+`mov %rsi,%rdx ; ud2`, et l'assertion porte sur RDX. Une assertion sur la
+globale que l'hôte a écrite se contenterait de l'empreinte ; celle-ci mesure
+l'acte.
+
+| garde | ce qui la fait tomber |
+| --- | --- |
+| l'invité lit sa page zéro dans RSI | RSI jamais posé ; **RDI au lieu de RSI** |
+| sans page zéro, RSI reste nul | RSI posé dans tous les cas |
+| la page déclare la RAM et porte la ligne dedans | la ligne qui n'entre pas dans la page |
+| une ligne qui ne tient pas est refusée | la troncature silencieuse |
+
+**Les cinq sabotages tombent**, chacun sur la garde nommée, et celui du mauvais
+registre est celui qui compte : `vm.globals[7]` au lieu de `[6]` pose RDI, le
+noyau lit zéro dans RSI, et **rien ne le dirait** sans une garde sur ce que
+l'invité a lu.
+
+### Et une garde du dépôt qui a fait son travail
+
+`every_declared_function_is_exercised_from_c` a refusé les deux nouvelles
+fonctions du C ABI tant qu'aucun programme C ne les appelait : « une signature
+écrite à la main que rien n'exerce n'est pas vérifiée : elle est crue ». Elles
+sont exercées, refus compris.
+
+### Ce que ça ne prouve pas, et c'est dit
+
+**Rien de ceci n'a été mesuré dans un iPhone.** `LocalDesktopTests` tourne dans
+un simulateur et ne démarre pas de vrai noyau : il lui faudrait l'image de
+trente-cinq mébioctets. Cette tranche rend le démarrage **possible** depuis
+l'application ; elle ne prouve pas qu'il aboutit là-bas. Ce qu'elle prouve est
+que le pilote pose RSI sur une page zéro qui déclare la bonne RAM et porte la
+bonne ligne — et que l'invité le lit.
+
+Et `Sources/WisqVMRust/LocalDesktop.swift` est sous `canImport(WebKit)` : sous
+Linux, seul `swiftlint --strict` en a vérifié la syntaxe. Le typage n'a lieu
+que sur la CI Apple.
+
+### Et le code de sortie que j'ai lu n'était pas le bon, pour la troisième fois
+
+`verify.sh` a été lancé comme ceci :
+
+```
+cargo fmt --all && echo "fmt ok" && git add -A && ./scripts/verify.sh > log 2>&1; echo "CODE DE SORTIE RÉEL = $?"
+```
+
+Le `;` fait que le statut de la commande entière est celui de l'`echo`, donc
+**zéro quoi qu'il arrive** — et c'est ce zéro que j'ai lu dans la notification
+de tâche au lieu de la ligne que j'avais justement écrite pour ça.
+`verify.sh` avait échoué : il n'a jamais imprimé `==> OK`, et la suite du site
+disait `1 fail`.
+
+Ce qu'elle refusait est un **chiffre miroir** de la même famille que le compte
+de tests : la page d'architecture annonçait « une ABI C de 31 fonctions », et
+`crates/` en exporte maintenant **33**. La garde les compte elle-même, dans les
+deux langues du site, et elle a tenu.
+
+**Et elle en a appelé une seconde.** Le site tient aussi une liste de
+**provenance** — pour chaque nombre publié, d'où il vient —, et cette liste
+porte le nombre lui-même comme clef. « 31 » n'étant plus sur la page, la garde
+a refusé : « sa justification ne couvre rien ». Deux chiffres à suivre pour un
+seul changement, et les deux tenus par des tests qui comptent plutôt que de
+citer. C'est la machinerie de #289 qui tourne dans le bon sens.
+
+C'est le troisième exemplaire de la même erreur de lecture dans ce journal —
+après le `grep` qui masquait un code 101 et le `head` qui masquait l'échec d'une
+assertion Python. La règle était écrite ; ce qui manquait est de **lire la ligne
+plutôt que le verdict de l'enveloppe**.
+
+### Le signe à retenir
+
+**Un montage de mesure qui va plus loin que le produit est une dette, pas une
+avance.** Douze tranches ont poussé le vrai noyau d'un plantage à `0x9000`
+jusqu'à l'espace utilisateur qui parle, et pas une n'a demandé si le chemin de
+l'application portait les mêmes amorces. La question tenait dans un `grep` sur
+deux fichiers qui devraient s'accorder — « ce qui a produit toutes les vraies
+trouvailles », mot pour mot ce que la routine répète à chaque réveil.

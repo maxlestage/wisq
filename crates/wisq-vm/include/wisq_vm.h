@@ -272,13 +272,40 @@ int wisq_x86_emit_resolving(const uint8_t *code, size_t len, uint64_t base, size
  * overflow the guest's RAM is refused — the correspondence lives just above it,
  * so such a frame would display the block table while destroying it.
  *
+ * `boot_at` is where the application placed the zero page, or 0 when it has
+ * none: the driver then points RSI at it, which is how a x86-64 kernel finds
+ * its e820 map, its command line and its initramfs. A program judged on its
+ * registers has no `boot_params` and wants none.
+ *
  * Returns 0 and the page in UTF-8, or -1 when the RAM is not a power of two,
  * the channel name cannot be pasted safely, or the frame does not fit.
  */
 int wisq_desktop_page(uint32_t pages, uint64_t entry, const char *channel,
                       uint64_t screen_base, uint32_t screen_width,
-                      uint32_t screen_height, uint8_t **out_bytes,
-                      size_t *out_len);
+                      uint32_t screen_height, uint64_t boot_at,
+                      uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * The zero page the desktop hands the kernel, command line included.
+ *
+ * A x86-64 kernel entered without `boot_params` has no e820 map: it stops mute
+ * in `extend_brk` at its 1067th region. The application places these four
+ * kibibytes at `wisq_desktop_boot_page_at()` and passes that address to
+ * `wisq_desktop_page` as `boot_at`; the driver then points RSI at it.
+ *
+ * `command_line` may be null, and the measured default is used. Returns 0 and
+ * four kibibytes, or -1 when the RAM is not a power of two or the line does not
+ * fit in the page. The buffer is freed by `wisq_x86_free_module`.
+ */
+int wisq_desktop_boot_page(uint32_t pages, const char *command_line,
+                           uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * Where the desktop's zero page must be placed in the guest's RAM. Written
+ * here rather than in the application: the driver points RSI at it, and two
+ * copies of the number would drift in silence.
+ */
+uint64_t wisq_desktop_boot_page_at(void);
 
 /*
  * What the correspondence occupies *above* the guest's RAM, in pages. The host
