@@ -184,6 +184,62 @@ describe("the formatting floor refuses each thing it names", () => {
     expect(code, `des await légitimes ont été refusés :\n${output}`).toBe(0);
   });
 
+  /// **Du code après une boucle `while true` qui ne rompt jamais**, et c'est la
+  /// forme exacte qui a rendu le dépôt de la page zéro inatteignable pendant
+  /// trois tranches — #310 l'a écrit, #311 et #312 l'ont cru posé.
+  ///
+  /// **Le compilateur Swift est muet là-dessus**, mesuré et non supposé :
+  /// `swiftc -typecheck` sur la forme minimale ne rend rien, ni en typage ni
+  /// en compilation complète. Un `-warnings-as-errors` ne l'aurait pas
+  /// attrapé. Cette règle est la seule chose qui le voit.
+  test("du code après un while true sans break est refusé", () => {
+    const contents = [
+      "import Foundation",
+      "",
+      "func attend(_ vrai: Bool) throws {",
+      "    while true {",
+      "        if vrai { return }",
+      "        if !vrai { throw CancellationError() }",
+      "    }",
+      "    print(\"jamais atteint\")",
+      "}",
+      "",
+    ].join("\n");
+    const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
+    expect(code, `la garde a accepté du code inatteignable :\n${output}`).not.toBe(0);
+    expect(output).toContain("code inatteignable");
+    expect(output).toContain("Sources/WisqCore/A.swift");
+  });
+
+  /// **Et les deux formes correctes passent** — c'est ce qui donne son sens au
+  /// refus ci-dessus, et sans quoi la règle pourrait refuser toute boucle
+  /// infinie. Une boucle qui rompt laisse ce qui suit atteignable ; une boucle
+  /// que rien ne suit est une attente légitime.
+  test("un while true qui rompt, ou que rien ne suit, est laissé tranquille", () => {
+    const contents = [
+      "import Foundation",
+      "",
+      "func attend(_ vrai: Bool) throws -> String {",
+      "    var verdict = \"\"",
+      "    while true {",
+      "        if vrai { break }",
+      "        if !vrai { throw CancellationError() }",
+      "    }",
+      "    verdict = \"atteint\"",
+      "    return verdict",
+      "}",
+      "",
+      "func rien(_ vrai: Bool) -> Never {",
+      "    while true {",
+      "        _ = vrai",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+    const { code, output } = run(tree({ "Sources/WisqCore/A.swift": contents }));
+    expect(code, `des boucles légitimes ont été refusées :\n${output}`).toBe(0);
+  });
+
   /// The file the old scope missed entirely. `App/` has no subdirectory, so
   /// `App/**/*.swift` matched nothing and this file was never read — while
   /// `.swiftlint.yml` lists `App` and CI checks it on every commit.

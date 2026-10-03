@@ -2285,6 +2285,15 @@ inconditionnellement : la page zéro ne l'est que si le bureau amorce un noyau, 
 cadre que si un écran est déclaré, l'archive que si une racine l'est. Un refus
 sans objet apprend aux appelants à contourner les refus.
 
+**Et ces trois dépôts n'avaient jamais tourné.** Le code que #310 a écrit pour
+poser la page zéro vivait **sous une boucle `while true` dont chaque sortie est
+un `return`** : inatteignable. #311 et #312 ont bâti dessus en le croyant posé,
+et les deux tranches étaient vertes — les tests vérifiaient que la page *se
+construit*, jamais qu'elle **arrive**. Le premier test qui la relit dans la
+mémoire de l'invité l'a trouvé au premier passage, en #313. Le compilateur Swift
+ne dit rien de cette forme (mesuré), donc la huitième règle de
+`scripts/check-whitespace.sh` la refuse désormais.
+
 **Et le bureau dit maintenant où est cette racine.** `declare_initramfs` écrit
 les deux champs — `ramdisk_image` à `0x218`, `ramdisk_size` à `0x21c` — que le
 montage de mesure écrit depuis #304 et que le bureau n'écrivait pas. Sans eux, le

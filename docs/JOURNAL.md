@@ -19763,6 +19763,14 @@ quatre fois cette semaine sans la lancer. La commande fait une seconde.
 
 ## #310 — tout ce que douze tranches ont mesuré se passait dans le montage : le bureau de l'application ne posait que RIP
 
+> **#313 a trouvé que le correctif de cette tranche n'a jamais tourné.** Le code
+> qui dépose la page zéro a bien été écrit ici, et il a été écrit **sous une
+> boucle `while true` dont chaque sortie est un `return`** : il était
+> inatteignable. #311 et #312 ont bâti dessus en le croyant posé. Le diagnostic
+> de cette entrée reste juste — le bureau ne posait que RIP — et son correctif
+> n'a commencé à s'exécuter qu'en #313. Ce qui l'a trouvé est le premier test
+> qui **relit la page** au lieu de vérifier qu'elle a été construite.
+
 Maxime a dit « fais tout » sur les trois décisions que je lui avais soumises.
 Deux se sont dissoutes à la lecture, et la troisième n'était pas celle que
 j'avais nommée.
@@ -20247,6 +20255,60 @@ mesuré par le montage depuis #306 et par rien d'ici : le bureau demanderait les
 **Et le branchement Swift n'est tenu que par la CI Apple**, comme en #312 : deux
 tests hébergés, qui ne tournent que sur « App iOS ». Le vert sera lu par nom dans
 le journal brut.
+
+### Ce que le premier test qui relit la page a trouvé : #310 n'avait jamais tourné
+
+« App iOS » a rendu quatorze cas au lieu de douze, et **mes deux nouveaux tests
+ont échoué**. Pas sur l'archive : sur **tout**. La page zéro relue dans la
+mémoire de l'invité était entièrement à zéro — `ramdisk_image` à 0, la ligne de
+commande à 0, la carte e820 à 0 — et l'archive relue était bien de 64 octets,
+tous nuls.
+
+Rien n'avait jamais été écrit. Voici pourquoi :
+
+```swift
+let installed = Date().addingTimeInterval(patience)
+while true {
+    …
+    if said == Self.ready { return }        // ← chaque sortie est un return
+    if said != Self.stillInstalling { throw … }
+    …
+}
+
+// Et tout ceci est inatteignable.
+if bootsAKernel {
+    …
+    try await deposit(zero, at: …)
+}
+```
+
+Le dépôt de la page zéro, **écrit par #310**, vit sous une boucle qui ne tombe
+jamais à travers. Il n'a jamais été exécuté. #311 a ajouté l'écran dans cette
+page, #312 a changé `place` en `deposit` pour lui — les deux ont bâti sur du
+code mort, et les deux tranches sont vertes.
+
+**Rien ne pouvait le voir.** Les tests hébergés d'alors vérifiaient que la page
+*se construit* — ce qui est tenu en Rust — jamais qu'elle **arrive**. Et le
+compilateur Swift est muet là-dessus : mesuré, `swiftc -typecheck` sur la forme
+minimale ne rend rien, ni en typage ni en compilation complète, donc un
+`-warnings-as-errors` ne l'aurait pas attrapé non plus.
+
+La boucle d'attente est devenue une méthode à elle, `driverIsUp`, qui **rend**
+son verdict ; `settle` l'appelle puis dépose. Et un bureau qui amorce un noyau
+exige désormais un verdict lisible : sans pilote confirmé, la page zéro ne peut
+pas être posée, et venir au monde sans elle en silence est exactement le défaut
+que #310 croyait avoir corrigé.
+
+La **huitième** règle de `scripts/check-whitespace.sh` rend la forme impossible.
+Elle ne parle que des boucles `while true` **sans aucun `break`** — le code qui
+les suit est alors inatteignable, toujours, donc elle ne peut pas rendre de faux
+positif. Elle est conservatrice dans l'autre sens (un `break` de `switch`
+imbriqué la fait taire), et c'est le bon sens à rater : une garde qui refuse du
+code correct est désactivée dans la journée.
+
+**Le signe.** Un test qui vérifie qu'une chose *se construit* ne dit rien de son
+arrivée. Douze tranches de mesures, trois tranches de correctifs, et la première
+assertion qui **relit** a trouvé que rien n'était jamais arrivé.
 
 ### L'aller-retour que cette tranche a payé, et la garde qui le rend impossible
 
