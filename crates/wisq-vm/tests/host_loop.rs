@@ -13523,3 +13523,172 @@ fn a_boot_page_that_would_not_fit_is_refused() {
         "la RAM du bureau est une puissance de deux, ici comme dans la page"
     );
 }
+
+/// **Un bureau qui déclare un écran ne le disait pas à son noyau.**
+///
+/// #310 a donné au bureau sa page zéro, et l'a bâtie avec `zero_page` — celle
+/// d'une machine **sans cadre**. Or `desktop::page` accepte un `Screen` depuis
+/// le lot 8, et `zero_page_with_screen` fait deux choses de plus que sa
+/// voisine :
+///
+/// - elle écrit `screen_info` — type vidéo, dimensions, profondeur, `lfb_base`,
+///   `lfb_size` en unités de 64 Kio, longueur de ligne, ordre des couleurs —
+///   sans quoi le noyau ne sait pas qu'il y a un écran et `simpledrm` ne se lie
+///   à rien ;
+/// - elle **réserve le cadre dans la carte e820**, en type 2. Son propre
+///   commentaire dit pourquoi : « l'allocateur ne consulte que cette carte ;
+///   sans l'entrée, deux écritures se disputeraient les mêmes pages, et le
+///   bureau se corromprait sous des causes sans rapport ».
+///
+/// Un bureau à écran qui amorce un noyau lui tendait donc une carte où le cadre
+/// est de la mémoire **libre**. Le noyau la distribue, l'invité peint par
+/// dessus, et la corruption n'a aucun rapport visible avec sa cause. C'est la
+/// même négligence que #310, trouvée par la règle que #310 a inscrite dans la
+/// routine : à chaque chose que le montage de mesure a, demander ce que le
+/// bureau en a.
+#[test]
+fn a_desktop_with_a_screen_tells_the_kernel_about_it_and_reserves_it() {
+    use wisq_vm::desktop::Screen;
+    const PAGES: u32 = 1024; // soixante-quatre mébioctets
+    let ram = u64::from(PAGES) * 65536;
+    // Un cadre en haut de la RAM, comme le montage le pose.
+    let bytes = 1024u64 * 768 * 4;
+    let screen = Screen {
+        base: ram - bytes,
+        width: 1024,
+        height: 768,
+    };
+    let page = wisq_vm::desktop::boot_page_with_screen(
+        PAGES,
+        wisq_vm::desktop::COMMAND_LINE,
+        Some(screen),
+    )
+    .expect("la page zéro avec écran");
+    assert_eq!(page.len(), 4096);
+
+    // **L'écran est déclaré.** `VIDEO_TYPE_VLFB`, et les champs que
+    // `sysfb_create_simplefb` relit un par un.
+    assert_eq!(page[0x0f], 0x23, "VIDEO_TYPE_VLFB");
+    assert_eq!(
+        u16::from_le_bytes(page[0x12..0x14].try_into().unwrap()),
+        1024
+    );
+    assert_eq!(
+        u16::from_le_bytes(page[0x14..0x16].try_into().unwrap()),
+        768
+    );
+    assert_eq!(u16::from_le_bytes(page[0x16..0x18].try_into().unwrap()), 32);
+    assert_eq!(
+        u64::from(u32::from_le_bytes(page[0x18..0x1c].try_into().unwrap())),
+        screen.base,
+        "lfb_base"
+    );
+    assert_eq!(
+        u16::from_le_bytes(page[0x24..0x26].try_into().unwrap()),
+        1024 * 4,
+        "la longueur d'une ligne, en octets"
+    );
+
+    // **Et il est réservé.** Trois entrées au lieu de deux, la troisième de
+    // type 2 — réservée —, exactement sur le cadre.
+    assert_eq!(page[0x1e8], 3, "deux entrées de RAM, et le cadre");
+    let at = 0x2d0 + 2 * 20;
+    assert_eq!(
+        u64::from_le_bytes(page[at..at + 8].try_into().unwrap()),
+        screen.base
+    );
+    assert_eq!(
+        u64::from_le_bytes(page[at + 8..at + 16].try_into().unwrap()),
+        bytes
+    );
+    assert_eq!(
+        u32::from_le_bytes(page[at + 16..at + 20].try_into().unwrap()),
+        2,
+        "type 2 : réservée. Libre, le noyau la distribuerait."
+    );
+
+    // **Et la ligne de commande y est toujours.** `zero_page_with_screen` part
+    // de `zero_page` et ne la connaît pas, donc elle est remise après coup ; un
+    // chemin qui l'oublierait rendrait une page sans console précoce, et le
+    // bureau à écran démarrerait **muet** — le défaut de #310, réintroduit pour
+    // le seul cas qui a un écran.
+    //
+    // **Cette assertion existe parce qu'un sabotage a survécu sans elle** :
+    // « la ligne n'est pas remise dans la page à écran » passait, puisque la
+    // seule garde sur la ligne portait sur le chemin sans cadre.
+    let offset =
+        (wisq_vm::kernel_image::COMMAND_LINE_AT - wisq_vm::kernel_image::ZERO_PAGE_AT) as usize;
+    let line = wisq_vm::desktop::COMMAND_LINE.as_bytes();
+    assert_eq!(
+        &page[offset..offset + line.len()],
+        line,
+        "la page à écran porte la ligne de commande, elle aussi"
+    );
+    assert_eq!(page[offset + line.len()], 0, "le noyau lit jusqu'au nul");
+    assert_eq!(
+        u64::from(u32::from_le_bytes(page[0x228..0x22c].try_into().unwrap())),
+        wisq_vm::kernel_image::COMMAND_LINE_AT,
+        "et le champ qui la désigne"
+    );
+
+    // Sans écran, rien de tout ça — et c'est la garde qui donne son sens à
+    // l'autre : une page qui déclarerait un cadre inexistant enverrait
+    // `simpledrm` peindre dans de la RAM ordinaire.
+    let sans = wisq_vm::desktop::boot_page_with_screen(PAGES, wisq_vm::desktop::COMMAND_LINE, None)
+        .expect("la page zéro sans écran");
+    assert_eq!(sans[0x1e8], 2, "deux entrées, et rien de plus");
+    assert_eq!(sans[0x0f], 0, "aucun type vidéo annoncé");
+}
+
+/// **Et un écran dont on ne pourrait pas parler au noyau est refusé**, pas
+/// arrondi.
+///
+/// Les refus viennent de `zero_page_with_screen` et traversent tels quels :
+/// un cadre sans surface, un cadre qui déborde de la RAM déclarée, un cadre
+/// posé **sous** la page zéro — qui l'écraserait avec les pixels du bureau.
+#[test]
+fn a_screen_the_kernel_could_not_be_told_about_is_refused() {
+    use wisq_vm::desktop::{Refusal, Screen};
+    const PAGES: u32 = 1024;
+    let ram = u64::from(PAGES) * 65536;
+    for (screen, pourquoi) in [
+        (
+            Screen {
+                base: 0x1_0000,
+                width: 0,
+                height: 768,
+            },
+            "un cadre sans largeur n'a pas de surface",
+        ),
+        (
+            Screen {
+                base: ram - 4096,
+                width: 1024,
+                height: 768,
+            },
+            "un cadre qui déborde de la RAM décrirait de la mémoire absente",
+        ),
+        (
+            // Sous la page zéro : le cadre l'écraserait, et avec elle la carte
+            // mémoire que le noyau vient de lire.
+            Screen {
+                base: 0x1000,
+                width: 16,
+                height: 16,
+            },
+            "un cadre sous la page zéro l'écraserait",
+        ),
+    ] {
+        assert!(
+            matches!(
+                wisq_vm::desktop::boot_page_with_screen(
+                    PAGES,
+                    wisq_vm::desktop::COMMAND_LINE,
+                    Some(screen)
+                ),
+                Err(Refusal::ScreenDoesNotFit { .. }) | Err(Refusal::ScreenHasNoSurface { .. })
+            ),
+            "{pourquoi} : {screen:?}"
+        );
+    }
+}

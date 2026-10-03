@@ -292,8 +292,17 @@ public final class LocalDesktop {
         // l'invité n'existe qu'une fois le pilote monté, donc après la boucle
         // ci-dessus et avant tout `run`.
         if bootsAKernel {
-            guard let zero = DesktopTranslator.bootPage(pages: pages) else {
-                throw Failure.ramIsNotAPowerOfTwo(pages)
+            // **L'écran va dans la page zéro, pas seulement dans la vue.**
+            // Sans lui le noyau ne sait pas qu'il y a un cadre, et — pire — sa
+            // carte e820 décrit ces pages comme **libres** : l'allocateur les
+            // distribue, et le bureau se corrompt sous des causes sans
+            // rapport.
+            guard let zero = DesktopTranslator.bootPage(pages: pages, screen: screen) else {
+                throw Failure.imageDoesNotFit(
+                    folded: Int(clamping: screen?.base ?? 0),
+                    bytes: 0,
+                    ram: Int(clamping: UInt64(pages) * 65536)
+                )
             }
             try await place(zero, at: DesktopTranslator.bootPageAddress)
         }

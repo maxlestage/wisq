@@ -323,7 +323,7 @@ int main(void) {
     check(boot_at != 0, "la page zéro a une adresse");
     uint8_t *zero = NULL;
     size_t zero_len = 0;
-    check(wisq_desktop_boot_page(1024, NULL, &zero, &zero_len) == 0,
+    check(wisq_desktop_boot_page(1024, NULL, 0, 0, 0, &zero, &zero_len) == 0,
           "la ligne par défaut donne une page zéro");
     check(zero_len == 4096, "une page, pas un octet de plus");
     if (zero != NULL) {
@@ -331,8 +331,28 @@ int main(void) {
         check(zero[0x1e8] == 2, "et elle déclare la carte mémoire");
         wisq_x86_free_module(zero, zero_len);
     }
-    check(wisq_desktop_boot_page(3, NULL, &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_boot_page(3, NULL, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "une RAM qui n'est pas une puissance de deux est refusée");
+    check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
+          "et ce refus-là non plus ne touche pas aux sorties");
+
+    /* **L'écran déclaré au noyau, et réservé dans sa carte.** Sans l'entrée
+     * e820, l'allocateur distribue les pages du cadre et le bureau se corrompt
+     * sous des causes sans rapport. Trois entrées au lieu de deux, et la
+     * troisième en type 2. */
+    uint8_t *avec_ecran = NULL;
+    size_t avec_ecran_len = 0;
+    check(wisq_desktop_boot_page(1024, NULL, 64 * 1024 * 1024 - 64 * 64 * 4,
+                                 64, 64, &avec_ecran, &avec_ecran_len) == 0,
+          "un cadre qui tient au-dessus de la page zéro est accepté");
+    if (avec_ecran != NULL) {
+        check(avec_ecran[0x1e8] == 3, "deux entrées de RAM, et le cadre");
+        check(avec_ecran[0x0f] == 0x23, "et le type vidéo est annoncé");
+        wisq_x86_free_module(avec_ecran, avec_ecran_len);
+    }
+    check(wisq_desktop_boot_page(1024, NULL, 0x1000, 16, 16,
+                                 &unsafe_name, &unsafe_len) == -1,
+          "un cadre sous la page zéro l'écraserait, et est refusé");
     check(unsafe_name == (uint8_t *)1 && unsafe_len == 1,
           "et ce refus-là non plus ne touche pas aux sorties");
 
@@ -342,7 +362,7 @@ int main(void) {
     char trop[4096];
     memset(trop, 'x', sizeof trop - 1);
     trop[sizeof trop - 1] = 0;
-    check(wisq_desktop_boot_page(1024, trop, &unsafe_name, &unsafe_len) == -1,
+    check(wisq_desktop_boot_page(1024, trop, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "une ligne de commande qui ne tient pas est refusée");
 
     /* Et la page du pilote accepte l'adresse : c'est elle qui pose RSI. */

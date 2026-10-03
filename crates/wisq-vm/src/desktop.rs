@@ -126,6 +126,80 @@ pub const COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8 console=ttyS0";
 /// que c'est là que le montage la pose et que le champ `0x228` l'y désigne. Le
 /// bureau a donc **un seul bloc de quatre kibioctets** à poser, à une seule
 /// adresse — et `LocalDesktop.place` sait déjà le faire.
+/// **La même, avec l'écran que le bureau déclare.**
+///
+/// #310 a donné au bureau sa page zéro et l'a bâtie avec `zero_page` — celle
+/// d'une machine **sans cadre**. Or `page` accepte un `Screen` depuis le lot 8,
+/// et `zero_page_with_screen` fait deux choses de plus :
+///
+/// - elle écrit `screen_info`, sans quoi le noyau ne sait pas qu'il y a un
+///   écran et `simpledrm` ne se lie à rien ;
+/// - elle **réserve le cadre dans la carte e820**, en type 2. Son commentaire
+///   dit pourquoi : « l'allocateur ne consulte que cette carte ; sans l'entrée,
+///   deux écritures se disputeraient les mêmes pages, et le bureau se
+///   corromprait sous des causes sans rapport ».
+///
+/// Un bureau à écran qui amorçait un noyau lui tendait donc une carte où le
+/// cadre est de la mémoire **libre**.
+///
+/// **Le plancher est le sommet de la page zéro**, et c'est le minimum
+/// certainement juste : au-dessous vivent la page et sa ligne de commande, et
+/// un cadre posé là les écraserait avec les pixels du bureau — en emportant la
+/// carte mémoire que le noyau vient d'y lire. Ce plancher ne protège **pas**
+/// l'image du noyau : elle est posée par l'application *après* que cette page
+/// est bâtie, donc son étendue n'est pas connue ici. Un cadre qui chevaucherait
+/// l'image est une faute de l'appelant que rien ne refuse encore ; c'est dit
+/// plutôt que caché.
+pub fn boot_page_with_screen(
+    pages: u32,
+    command_line: &str,
+    screen: Option<Screen>,
+) -> Result<Vec<u8>, Refusal> {
+    let Some(screen) = screen else {
+        return boot_page(pages, command_line);
+    };
+    let page = boot_page(pages, command_line)?;
+    // Le plancher : le premier octet que le cadre a le droit d'occuper.
+    let floor = crate::kernel_image::ZERO_PAGE_AT + page.len() as u64;
+    let inside =
+        (crate::kernel_image::COMMAND_LINE_AT - crate::kernel_image::ZERO_PAGE_AT) as usize;
+    match crate::kernel_image::zero_page_with_screen(
+        u64::from(pages) * 65536,
+        crate::kernel_image::COMMAND_LINE_AT as u32,
+        screen,
+        floor,
+    ) {
+        // **La ligne est remise dedans**, parce que `zero_page_with_screen`
+        // part de `zero_page` et ne la connaît pas. Une seule écriture, au même
+        // décalage que l'autre chemin : deux endroits qui la posent
+        // divergeraient.
+        Ok(mut built) => {
+            built[inside..inside + command_line.len()].copy_from_slice(command_line.as_bytes());
+            built[inside + command_line.len()] = 0;
+            Ok(built)
+        }
+        Err(why) => Err(match why {
+            crate::kernel_image::ScreenRefusal::Empty => Refusal::ScreenHasNoSurface {
+                width: screen.width,
+                height: screen.height,
+            },
+            // Tous les autres disent la même chose au bureau : le cadre ne
+            // tient pas là où on le veut. Les nombres du refus de `kernel_image`
+            // sont plus fins que ceux que `Refusal` sait porter ; ce qui compte
+            // pour l'appelant est qu'il soit refusé, et son `Display` le dit.
+            other => {
+                let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+                let _ = other;
+                Refusal::ScreenDoesNotFit {
+                    folded: screen.base,
+                    bytes,
+                    ram: u64::from(pages) * 65536,
+                }
+            }
+        }),
+    }
+}
+
 pub fn boot_page(pages: u32, command_line: &str) -> Result<Vec<u8>, Refusal> {
     if pages == 0 || !pages.is_power_of_two() {
         return Err(Refusal::RamIsNotAPowerOfTwo(pages));
