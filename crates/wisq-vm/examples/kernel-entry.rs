@@ -706,6 +706,10 @@ fn main() {
     // sans réclamer une seule adresse, et deux mesures — 4096 et 16384 tours
     // de traduction — finissaient au même octet de `__pud_alloc`, parce que
     // ce nombre-ci était écrit en dur. `WISQ_TURNS=65536` va voir plus loin.
+    // **Compter les régions qui tournent après avoir changé sous elles.**
+    // Éteint par défaut : ça coûte une lecture d'un octet par entrée de
+    // région, et les relevés d'avant ont été pris sans.
+    let veille = std::env::var("WISQ_VEILLE").is_ok_and(|value| value != "0");
     let turns: usize = std::env::var("WISQ_TURNS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -759,6 +763,13 @@ const plafond = {rounds};
 let serie = "";
 const vm = machine({{
   serial: (octet) => {{ serie += String.fromCharCode(octet); }},
+  // **`WISQ_VEILLE=1` compte les régions qui tournent après que leur premier
+  // octet a bougé.** Éteint par défaut, parce que ça coûte la lecture d'un
+  // octet par entrée de région — sur le chemin le plus chaud de la boucle —,
+  // et parce que les relevés des tranches précédentes ont été pris sans : en
+  // allumer un en silence rendrait incomparables des mesures que le journal
+  // met côte à côte.
+  surveiller: {veille},
   // **Le pilote va chercher l'émetteur au lieu d'attendre le tour suivant.**
   //
   // `x86-translate` rend les octets d'une région en quelques millisecondes.
@@ -919,6 +930,14 @@ for (const quoi of revu.changees) {{
   if (quoi.decalage === "0") aZero += 1;
 }}
 console.log("perimees-au-debut " + aZero);
+console.log("veille-entrees " + vm.surveillees.entrees);
+console.log("veille-regions " + vm.surveillees.regions.size);
+for (const [adresse, quoi] of [...vm.surveillees.regions.entries()]
+  .sort((a, b) => b[1].entrees - a[1].entrees)) {{
+  console.log("veille 0x" + adresse.toString(16) + " " + quoi.entrees
+    + " lu 0x" + quoi.lu.toString(16)
+    + " maintenant 0x" + quoi.maintenant.toString(16));
+}}
 console.log("perimees-familles " + [...familles.entries()]
   .sort((a, b) => b[1] - a[1]).map(([clef, n]) => clef + "=" + n).join(" "));
 // **Toutes celles dont l'octet lu était un `nop`, et les vingt-quatre
@@ -1005,6 +1024,7 @@ console.log("controle " + controle
                 turns = turns,
                 beat = Progress::beat(turns),
                 rounds = rounds,
+                veille = veille,
                 translator = translator.to_string_lossy(),
                 pages = pages,
                 rip = RIP_SLOT,
