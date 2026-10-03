@@ -2314,6 +2314,16 @@ exactement. Le pilote tamponne, `LocalDesktop.console()` tire, le tampon est
 borné — un invité qui parle sans fin est le cas normal — et ce qu'il jette est
 compté, parce qu'une console qui perd des octets en silence mentirait.
 
+**Et depuis #316 il peut borner une exécution et la reprendre.** `vm.run()`
+prend `{ rounds, budget }` depuis le début — c'est `WISQ_ROUNDS` et
+`WISQ_TURNS` du côté du montage — et le pilote l'appelait sans argument.
+`LocalDesktop.run(rounds:budget:)` les passe, et `handler.stopped` est effacé
+avant de relancer : il était posé à l'arrivée du message et jamais remis à zéro,
+donc un second `run()` rendait l'arrêt du premier. Deux mesures prises en
+écrivant les gardes : un anneau d'un seul bloc rend `sur place` (l'hôte a
+raison, il y tourne en interne), et le budget borne les **blocs**, pas les
+instructions — 512 `inc` d'affilée sont un seul bloc.
+
 **Pousser la console** pour qu'une interface voie le noyau démarrer en direct est
 la suite naturelle, et elle va avec le branchement ci-dessous : les deux sont la
 même décision.

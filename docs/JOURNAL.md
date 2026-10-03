@@ -20592,3 +20592,94 @@ tranches ont mesuré un noyau par sa console ; le bureau n'en avait pas, et
 personne ne l'a vu parce que l'absence d'une console ne ressemble à rien — elle
 ressemble à un silence, et un silence ressemble à une machine qui n'a pas
 démarré.
+
+## #316 — un bureau ne pouvait ni borner une exécution ni être relancé, et le second tour rendait le verdict du premier
+
+Sixième tour de la même question, et elle rend deux défauts d'un coup — qui ne
+valent rien séparément.
+
+### Ce que le montage a et que le bureau n'avait pas
+
+`machine().run()` prend `{ rounds, budget }` depuis le début, et le montage de
+mesure s'en sert : `WISQ_ROUNDS` et `WISQ_TURNS` sont ce qui lui permet de
+lancer un noyau **un moment**, regarder, et relancer. C'est comme ça que les
+relevés de #300 à #308 ont été pris.
+
+Le pilote du bureau appelait `vm.run()` **sans argument**. L'application ne
+pouvait donc ni borner une exécution ni observer entre deux.
+
+### Et le verdict du tour d'avant
+
+`handler.stopped` était posé à l'arrivée du message d'arrêt et **jamais remis à
+zéro**. Un second `run()` sortait aussitôt de sa boucle d'attente et rendait
+l'arrêt du **premier** :
+
+- quand les deux raisons se ressemblent, un verdict périmé en silence ;
+- quand elles diffèrent, la garde croisée jette
+  « la machine rend X et poste Y » — un message qui **accuse le pont** pour un
+  défaut de comptabilité à trois lignes de là.
+
+**Rien ne l'avait vu parce qu'aucun test n'appelait `run()` deux fois.** Quatre
+appels dans quatre tests, un chacun. C'est la même forme que #313 : le second
+appel n'était exercé par rien.
+
+Les deux défauts vont ensemble, et c'est pour ça qu'ils sont dans la même
+tranche : borner une exécution ne sert à rien si on ne peut pas reprendre, et
+reprendre ne se vérifie pas si le second verdict est celui du premier.
+
+### Trois choses mesurées en écrivant les gardes, et pas une devinée
+
+**1. Un anneau sur lui-même rend `sur place`, et l'hôte a raison.** Mon premier
+programme était `inc %rdx ; jmp .`, et le premier tour borné a rendu
+`sur place` au lieu de `tours épuisés`. Ce n'est pas un défaut : un anneau d'un
+seul bloc y tourne **en interne** et revient toujours à la même adresse, et
+l'hôte le distingue d'une machine bloquée en exécutant un bloc de plus. Ce qui
+fait avancer RIP entre deux tours bornés, c'est de **changer de région**.
+
+**2. Le budget borne les blocs, pas les instructions.** La garde du budget a
+d'abord rendu **512** là où elle attendait moins : 512 `inc %rdx` d'affilée sont
+**un seul bloc**, et la région les exécute tous quel que soit le budget. Un
+`jmp` sur l'instruction suivante — `eb 00`, qui ne fait rien d'autre que fermer
+le bloc — rend le budget observable : RDX vaut alors **exactement 64** pour un
+budget de 64.
+
+**3. Et un sabotage a survécu avant ça.** Retirer le passage du budget ne faisait
+tomber aucun test, parce qu'avec un seul tour la région s'arrête de toute façon
+au bout d'une région : `rounds` suffisait. Les deux bornes ne font pas la même
+chose, et une garde qui n'emploie que la première ne dit rien de la seconde.
+C'est la cinquième fois en quatre tranches qu'un survivant nomme une garde
+**absente**.
+
+### Les sabotages
+
+| mutation | ce qui tombe |
+|---|---|
+| les bornes sont ignorées (l'état d'avant) | `the_driver_takes_a_bounded_run_and_the_machine_picks_up_where_it_stopped` |
+| le budget n'est plus passé | `a_tight_budget_stops_a_region_before_its_end` |
+| une borne absente devient zéro au lieu du défaut | `the_driver_takes_a_bounded_run_…` |
+| le budget passe en `Number` au lieu de `BigInt` | les **deux** |
+
+### Et la septième règle de #313 m'a attrapé
+
+En écrivant le test hébergé j'ai posé `XCTAssertEqual(try await desktop.global(2), 1)`
+— un `await` dans une autoclosure, le défaut exact qui avait rougi « App iOS »
+en #313. **La règle l'a dit en local**, en une seconde, au lieu de quinze
+minutes de CI. C'est la première fois qu'une de ces gardes de texte rattrape son
+auteur, et c'est pour ça qu'elles existent.
+
+### Ce que ça ne prouve pas
+
+**Le correctif du verdict périmé n'est tenu que par la CI Apple.** Les deux
+bornes sont vérifiées ici, sous Bun, sur le vrai pilote ; que `handler.stopped`
+soit effacé avant de relancer ne l'est que par le test hébergé, et il ne tourne
+que sur « App iOS ». Un `run()` qui oublierait de l'effacer compile ici sans un
+mot.
+
+### Le signe à retenir
+
+**Deux bornes qui se ressemblent ne se gardent pas d'une seule assertion.**
+`rounds` et `budget` arrivent par le même appel, dans le même objet, et une
+garde qui en exerce une passe pour les tenir toutes les deux. C'est la variante
+par **paire** du signe de #313 — une région nouvelle hérite des assertions de sa
+voisine et pas de sa couverture — et le remède est le même : saboter chaque
+moitié séparément.
