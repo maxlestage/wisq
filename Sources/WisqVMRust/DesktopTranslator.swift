@@ -177,16 +177,29 @@ public enum DesktopTranslator {
     /// `nil` prend la ligne de commande mesurée par défaut : `earlycon` sur le
     /// port que l'hôte écoute, et `console=ttyS0` sans `keep_bootcon`, qui est
     /// la forme que #306 a mesurée comme sortant sans dédoubler.
-    public static func bootPage(pages: UInt32, commandLine: String? = nil) -> Data? {
+    ///
+    /// **Et l'écran doit y être quand le bureau en déclare un.** La page le dit
+    /// alors au noyau — `screen_info`, sans quoi `simpledrm` ne se lie à rien —
+    /// et **réserve le cadre dans la carte e820**. Sans cette entrée,
+    /// l'allocateur distribue les pages du cadre : deux écritures se disputent
+    /// les mêmes, et le bureau se corrompt sous des causes sans rapport.
+    public static func bootPage(
+        pages: UInt32,
+        commandLine: String? = nil,
+        screen: Screen? = nil
+    ) -> Data? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
+        let base = screen?.base ?? 0
+        let width = screen?.width ?? 0
+        let height = screen?.height ?? 0
         let ok: Int32
         if let commandLine {
             ok = commandLine.withCString { line in
-                wisq_desktop_boot_page(pages, line, &out, &length)
+                wisq_desktop_boot_page(pages, line, base, width, height, &out, &length)
             }
         } else {
-            ok = wisq_desktop_boot_page(pages, nil, &out, &length)
+            ok = wisq_desktop_boot_page(pages, nil, base, width, height, &out, &length)
         }
         return claim(ok, out, length)
     }
