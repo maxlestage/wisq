@@ -20892,3 +20892,168 @@ porteur », sur la page du protocole.** Je ne l'ai pas vérifiée — compter le
 routes du démon demande de lire son routeur, et ce n'est pas la tranche. Elle
 est nommée ici plutôt que laissée implicite, ce qui est la seule chose honnête
 à faire d'une mesure qu'on n'a pas prise.
+
+## #318 — le corpus qui juge ce que l'émetteur **est** ne le jugeait pas, et quatre opcodes d'une même famille manquent au décodeur
+
+#317 a laissé un axe compté et nommé : dix oracles matériels, trois lus par les
+cœurs Rust, sept qui ne jugent que le cœur Swift. Cette tranche-ci prend le
+suivant — et le choix n'est pas un goût, c'est une mesure.
+
+### Quel corpus, et pourquoi celui-là
+
+Pour chacun des sept restants, combien de ses formes les cœurs Rust
+pourraient-ils juger ? Un `Module::region` par forme, et le compte :
+
+| corpus | formes | cas | traduites par l'émetteur |
+| --- | --- | --- | --- |
+| branchements | 63 | 630 | **63** |
+| flottant scalaire | 46 | 4 554 | 0 |
+| SSE2 entier | 128 | 3 840 | 0 |
+| registres XMM | 58 | 928 | 0 |
+| pile x87 | 67 | 3 618 | 0 |
+| arrondis x87 | 8 | 448 | 0 |
+
+**Cinq des six ne jugeraient rien.** Les cœurs Rust ne font pas de virgule
+flottante ni de vectoriel : zéro forme décodée, zéro traduite. Ces corpus-là
+sont au cœur Swift par nécessité, pas par négligence, et les brancher
+demanderait d'écrire les instructions d'abord. Le sixième traduit **tout**.
+
+Et c'est aussi celui qui juge le plus directement ce que cet émetteur **est** :
+il ne traduit pas des instructions, il traduit des **blocs de base**. Un `jmp`
+est l'endroit où un bloc se ferme, une condition un choix entre deux adresses,
+un `ret` un retour à l'hôte ou un saut interne. Ce que le corpus prouve, et que
+le corpus arithmétique ne pouvait pas : **où un branchement atterrit** — le
+signe du déplacement, le fait qu'il se compte depuis la **fin** de l'instruction
+et non son début, les deux largeurs, le saut en arrière, le retour.
+
+### Le harnais a dû changer de forme, et c'est le sujet
+
+Le pilote partagé instancie **un** module par forme et le lance une fois. Ici
+ça ne suffit pas : sur les 630 cas, **90 rendent la main à l'hôte au milieu du
+programme** — les quatre formes indirectes, `ret imm16`, `loope`, `loopne` et
+les deux `jrcxz`. Rendre la main est la conduite juste, et c'est exactement
+pour ça que ces 90 cas étaient le risque : **un cas qui rend la main est un cas
+que personne ne juge**, et l'état d'un rendu de main est ce qui porte le
+danger. Un `call *%rdx` qui rendrait la main **sans avoir empilé son adresse de
+retour** laisserait l'hôte reprendre à la bonne adresse avec une pile fausse.
+
+Le pilote de ce corpus enchaîne donc les régions comme l'hôte le fait : une
+table d'adresse vers module, et une boucle qui répartit sur RIP jusqu'à ce que
+l'exécution quitte le programme. Un module est émis **pour chaque décalage qui
+se traduit**, parce que l'adresse où un saut indirect atterrit n'est connue
+qu'à l'exécution.
+
+Résultat : **580 cas jugés de chaque côté, zéro écart** — dont les 40 cas des
+quatre formes indirectes, que rien ne jugeait et dont le sabotage montre
+qu'elles sont tenues (retirer la descente de pile du `call` indirect fait
+tomber vingt cas).
+
+### Le défaut nommé : trois opcodes oubliés à côté d'un implémenté
+
+Les 50 cas qui restent hors jugement sont **cinq formes où la machine s'arrête
+net**, et ce n'est pas un rendu de main : c'est un cul-de-sac. Le module rend
+la main à l'adresse de l'instruction, l'hôte demande une région qui commence
+là, l'émetteur refuse — et il n'y a rien à exécuter.
+
+La cause est dans le **décodeur partagé**, et elle se lit en un `grep` :
+`decode` a une branche pour `0xe2` — `loop`, avec son commentaire — et
+**aucune** pour `0xe0` (`loopne`), `0xe1` (`loope`), `0xe3` (`jrcxz`) ni `0xc2`
+(`ret imm16`). Les deux cœurs Rust en héritent, et les deux planchers le
+disent : 580 chacun, les mêmes cinq formes nommées.
+
+Le cœur Swift, lui, les porte tous — `X86CoreDispatch.swift` les décide dans
+les mêmes `case` que `loop` et `ret` — et le silicium les couvre ici par
+cinquante cas. **Ce n'est donc pas une largeur qui manque ni une frontière
+tracée : c'est un des quatre opcodes d'une même famille implémenté et trois
+oubliés.** À la différence du `8f /0` du corpus de pile, qui est un opcode
+entier qu'aucun compilateur ne produit, `jrcxz` et `ret imm16` sortent
+d'assembleur écrit à la main — et un noyau en contient.
+
+**Nommé plutôt que corrigé ici, et l'ordre est voulu** : la garde doit exister
+avant le correctif. Les deux planchers passeront de 580 à 630 le jour où les
+quatre arriveront, et chacune de leurs dix formes sera jugée contre le silicium
+dès la première ligne écrite. C'est la tranche d'après.
+
+### Le survivant, et la garde qu'il a nommée
+
+Un sabotage a **survécu** au premier harnais : faire reprendre le bras non pris
+d'un saut conditionnel **un octet trop loin** laissait les 580 cas verts.
+
+La raison est juste, et elle vaut d'être écrite : la répartition interne d'une
+région se fait par **indice de bloc**, pas par adresse. Ce qu'une région écrit
+dans RIP en chemin n'est jamais relu — sauf si la machine s'arrête là. Avec un
+budget large, elle ne s'arrête jamais en vol.
+
+Le test fait donc **deux tours** : 1024 blocs par reprise, puis **un**. Au
+second, la machine s'arrête à chaque bloc et l'hôte repart de l'adresse qu'on
+lui a laissée ; le même programme doit finir au même endroit, et une adresse
+fausse d'un octet tombe au milieu d'une instruction, là où l'émetteur refuse de
+commencer une région. Le sabotage tombe alors, et il nomme le budget.
+
+C'est la cinquième fois qu'un survivant nomme une garde **absente** plutôt
+qu'une garde fausse.
+
+### Le sabordage
+
+| sabordage | émetteur | interpréteur |
+| --- | --- | --- |
+| le `call` indirect n'empile pas son retour | 20 écarts | 20 écarts |
+| le déplacement se compte depuis le début de l'instruction | tombe | 20 écarts |
+| le bras non pris reprend un octet trop loin | tombe **au budget 1** | — |
+| `loop` ne décrémente plus RCX | — | **le plancher** : 570 au lieu de 580, et `loop` apparaît dans les formes refusées |
+
+Le dernier mérite son mot : la mutation ne rend pas un mauvais résultat, elle
+**boucle** — et c'est le compte de cas jugés qui l'attrape, pas une assertion
+sur une valeur. « Le filtre n'est pas une garde ; le compte de tests lancés en
+est une », et ici c'est le compte de **cas** jugés.
+
+### Une erreur de ma part, et la règle qui a sauvé le fichier
+
+En réécrivant le test pour le second budget, j'ai cherché une ancre par
+`s.index("let job_path = …")` : elle a trouvé la **première** occurrence, dans
+le test du corpus de pile, et mon remplacement a emporté quatre cents lignes
+entre deux tests. Le fichier ne compilait plus, et rien dans `git` ne contenait
+la version corrigée.
+
+Ce qui l'a sauvé est la règle écrite : **restaurer depuis une copie prise
+avant**. La copie existait, prise avant la première ligne de cette tranche, et
+un `diff` contre `git show HEAD:` a montré qu'elle était identique avant que je
+ne l'écrase sur le fichier. Un `git checkout --` aurait fait la même chose
+ici — mais seulement parce que tout le travail perdu était celui que je venais
+d'écrire.
+
+**La leçon n'est pas « prendre une copie », elle est déjà écrite** : une ancre
+qui n'est pas unique n'est pas une ancre. Les remplacements de cette tranche
+vérifient tous `s.count(old) == 1` ; celui-là ne le pouvait pas, parce qu'il
+s'appuyait sur un `index` et non sur un motif complet.
+
+### Le signe à retenir
+
+**Un corpus qu'on branche demande d'abord : que fait l'hôte de ce que le module
+ne sait pas ?** Les trois corpus précédents ne posaient pas la question — une
+instruction s'exécute ou se refuse. Celui-ci a trois réponses, et elles ne se
+ressemblent pas : traduit et exécuté, **rendu à l'hôte qui reprend** (juste, et
+jamais jugé avant cette tranche), **rendu à l'hôte qui ne peut rien** (un
+cul-de-sac). Un harnais qui les confond compte le cul-de-sac comme une fin et
+rend vert un programme qui n'a pas tourné.
+
+### Et l'axe est fini, lui aussi
+
+Puisque cinq des six corpus restants ne décodent rien dans ces cœurs, la
+question se pose pour le sixième. **FXSAVE ne se branche pas non plus**, et
+d'un cran plus loin : son corpus ne porte pas de formes — chaque cas est une
+image de 512 octets chargée par `fxrstor` puis réécrite par `fxsave`, 416
+octets comparés — et le `fxsave` de l'émetteur est tenu par un test dont le nom
+dit tout, `fxsave_writes_the_state_the_machine_has_and_zero_for_what_it_has_not` :
+« aucun registre x87 n'est occupé », les 412 octets qui suivent l'en-tête sont
+écrits **à zéro**. Il n'y a pas d'état derrière à comparer.
+
+**Donc : quatre corpus branchés, six hors de portée.** L'axe ouvert par #301 et
+compté par #317 est terminé côté Rust. Ce qui le prolongerait — écrire la
+virgule flottante et le vectoriel dans ces deux cœurs — est une **direction**,
+pas une tranche, et elle appartient à Maxime : c'est le lot de la bascule, où
+le cœur WebAssembly prend la main quand `WKWebView` compile et l'interpréteur
+reste le filet.
+
+Reste donc, après celle-ci, **une** tranche nommée et mesurée : les quatre
+opcodes du décodeur, avec sa garde déjà en place.
