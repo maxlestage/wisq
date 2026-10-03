@@ -613,11 +613,44 @@ public final class LocalDesktop {
     }
 
     /// Fait tourner la machine jusqu'à ce qu'elle s'arrête, et dit pourquoi.
-    public func run(patience: TimeInterval = 5) async throws -> Stopped {
+    /// **`rounds` et `budget` bornent l'exécution, et `nil` prend les défauts de
+    /// l'hôte.**
+    ///
+    /// `machine().run()` les accepte depuis le début et le montage de mesure
+    /// s'en sert — `WISQ_ROUNDS` et `WISQ_TURNS` sont ce qui lui permet de
+    /// lancer un noyau un moment, regarder, et relancer. Le pilote du bureau
+    /// appelait `vm.run()` **sans argument** : l'application ne pouvait ni
+    /// borner une exécution ni observer entre deux.
+    ///
+    /// Les défauts ne sont pas recopiés ici : les redire serait deux copies à
+    /// garder d'accord, et celle qui mentirait serait celle que personne ne
+    /// lit.
+    public func run(
+        rounds: Int? = nil,
+        budget: UInt64? = nil,
+        patience: TimeInterval = 5
+    ) async throws -> Stopped {
+        // **Le verdict de la fois d'avant est effacé avant de relancer**, et
+        // c'est un défaut corrigé, pas une précaution. `handler.stopped` était
+        // posé à l'arrivée du message et **jamais** remis à zéro : un second
+        // `run()` sortait aussitôt de sa boucle d'attente et rendait l'arrêt du
+        // **premier**. Quand les deux raisons diffèrent, la garde croisée juste
+        // en dessous jetait un « la machine rend X et poste Y » qui désigne le
+        // pont ; quand elles se ressemblent, elle rendait un verdict périmé en
+        // silence. Rien ne l'avait vu parce qu'aucun test n'appelait `run()`
+        // deux fois.
+        handler.stopped = nil
         let returned: Any?
         do {
             returned = try await web.callAsyncJavaScript(
-                "return await window.wisqRun()", arguments: [:], in: nil, contentWorld: .page
+                "return await window.wisqRun(tours, budget)",
+                arguments: [
+                    "tours": rounds.map { $0 as Any } ?? NSNull(),
+                    // En nombre plutôt qu'en texte : le pilote le repasse en
+                    // `BigInt`, et c'est là que la largeur est rendue.
+                    "budget": budget.map { Double($0) as Any } ?? NSNull(),
+                ],
+                in: nil, contentWorld: .page
             )
         } catch {
             throw refuse(error)
