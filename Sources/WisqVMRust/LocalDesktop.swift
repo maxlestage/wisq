@@ -32,6 +32,18 @@ public final class LocalDesktop {
         /// qui vit juste au-dessus. Un refus vaut mieux qu'une machine qui
         /// saute n'importe où au premier changement de région.
         case imageDoesNotFit(folded: Int, bytes: Int, ram: Int)
+        /// **L'image écraserait la page zéro.** Le noyau y lit sa carte e820,
+        /// sa ligne de commande et son initramfs — avant d'exécuter une seule
+        /// de ses propres instructions. Sans ce refus, l'appelant retomberait
+        /// sur l'arrêt **muet** dans `extend_brk` que #310 a corrigé, cette
+        /// fois par sa propre faute et sans rien qui le nomme.
+        case imageWouldOverwriteTheBootPage(folded: Int, bytes: Int)
+        /// **L'image serait repeinte par l'invité.** Le cadre est de la mémoire
+        /// que la vue relit à chaque image : les octets posés là tiendraient
+        /// jusqu'au premier `simpledrm`, puis disparaîtraient sous les pixels.
+        /// Ça ne ressemble pas à une écriture perdue, ça ressemble à un noyau
+        /// qui se corrompt tout seul.
+        case imageWouldOverwriteTheFrame(folded: Int, bytes: Int, frame: Int)
         /// La machine s'est arrêtée mais n'a pas dit pourquoi : le message
         /// d'arrêt n'est jamais arrivé. C'est un défaut de pont, pas une issue.
         case stopWasNeverAnnounced
@@ -304,7 +316,11 @@ public final class LocalDesktop {
                     ram: Int(clamping: UInt64(pages) * 65536)
                 )
             }
-            try await place(zero, at: DesktopTranslator.bootPageAddress)
+            // **Par `deposit` et non par `place`.** La page zéro est
+            // précisément ce que `place` refuse désormais d'écraser ; la poser
+            // par lui serait un refus de l'application contre elle-même.
+            let ram = Int(pages) * 65536
+            try await deposit(zero, at: Int(DesktopTranslator.bootPageAddress & UInt64(ram - 1)))
         }
     }
 
@@ -327,6 +343,14 @@ public final class LocalDesktop {
     /// porterait un littéral de la taille de l'image, et un noyau fait des
     /// dizaines de mégaoctets.
     ///
+    /// **Trois endroits sont refusés, et il n'en tenait qu'un.** La fin de la
+    /// RAM, au-dessus de laquelle vit la correspondance, était gardée depuis le
+    /// lot 8. Les deux autres sont des régions que la machine se donne à
+    /// elle-même et que l'appelant écrasait sans que rien ne le dise : la
+    /// **page zéro**, que le noyau lit avant sa première instruction, et le
+    /// **cadre**, que la vue repeint à chaque image. C'est la faute que #311 a
+    /// nommée en finissant plutôt que de la cacher.
+    ///
     /// **Ce chemin coûte cher et c'est assumé pour l'instant** : quelques
     /// dizaines de mégaoctets à travers `evaluateJavaScript`, une fois par
     /// démarrage. Le remplacer par un gestionnaire de schéma que la page va
@@ -338,15 +362,51 @@ public final class LocalDesktop {
         // peu trop loin » : il écrirait dans la table que le module lit pour
         // trouver ses régions, et la machine sauterait n'importe où. C'est la
         // même borne que `host.js` pose sur sa lecture, et elle vaut aussi à
-        // l'écriture.
+        // l'écriture. Les deux autres refus sont au-dedans de cette borne.
         let ram = Int(pages) * 65536
         let folded = Int(address & UInt64(ram - 1))
-        // Écrit en **soustrayant** : `folded + image.count` déborderait pour une
-        // taille absurde, et Swift piégerait au lieu de refuser. `folded` est
-        // toujours plus petit que `ram`, donc la soustraction est sûre.
-        guard image.count <= ram - folded else {
+        // **Les trois refus viennent du Rust**, parce que c'est là que vit le
+        // risque : un pliage par masque et deux additions qui peuvent déborder.
+        // Ici, `folded + image.count` piégerait pour une taille absurde au lieu
+        // de refuser, et ce fichier n'est typé que sur `Cœur (Apple)` — une
+        // faute d'arithmétique y resterait invisible partout ailleurs. Les
+        // nombres du message, eux, sont ceux que cette fonction a déjà.
+        switch DesktopTranslator.placement(
+            pages: pages, screen: screen, boots: bootsAKernel,
+            at: address, bytes: UInt64(image.count)
+        ) {
+        case .placeable:
+            break
+        case .imageDoesNotFit:
             throw Failure.imageDoesNotFit(folded: folded, bytes: image.count, ram: ram)
+        case .wouldOverwriteTheBootPage:
+            throw Failure.imageWouldOverwriteTheBootPage(folded: folded, bytes: image.count)
+        case .wouldOverwriteTheFrame:
+            throw Failure.imageWouldOverwriteTheFrame(
+                folded: folded,
+                bytes: image.count,
+                frame: Int(clamping: (screen?.base ?? 0) & UInt64(ram - 1))
+            )
+        // Celui-ci est refusé à la construction, donc il ne peut pas arriver
+        // ici — mais le ranger sous un autre refus donnerait un message qui
+        // envoie chercher au mauvais endroit.
+        case .ramIsNotAPowerOfTwo:
+            throw Failure.ramIsNotAPowerOfTwo(pages)
+        // **Un code que ce côté-ci ne connaît pas est une dérive d'ABI, pas une
+        // faute de l'appelant.** Le taire le ferait passer pour « posable ».
+        case .unknown(let code):
+            throw Failure.script("verdict de placement inconnu : \(code)")
         }
+        try await deposit(image, at: folded)
+    }
+
+    /// **L'écriture elle-même**, à un décalage déjà replié et déjà jugé.
+    ///
+    /// Séparée de `place` parce que le bureau a **une** écriture à faire que la
+    /// garde de `place` refuse par construction : sa propre page zéro. Les
+    /// octets partent en base64, par tranches — une seule évaluation porterait
+    /// un littéral de la taille de l'image.
+    private func deposit(_ image: Data, at folded: Int) async throws {
         let chunk = 48 * 1024
         var written = 0
         while written < image.count {

@@ -59,6 +59,30 @@ pub enum Refusal {
     /// de plus. Tronquer donnerait au noyau une ligne coupée au milieu d'un
     /// paramètre — qu'il accepterait sans rien dire.
     CommandLineDoesNotFit { bytes: usize, room: usize },
+    /// **L'image de l'appelant déborderait de la RAM invitée.** Au-dessus vit
+    /// la correspondance adresse → indice : l'écriture n'irait pas « un peu
+    /// trop loin », elle irait dans la table que le module lit pour trouver ses
+    /// régions. C'est la borne que `LocalDesktop.place` tenait déjà en Swift ;
+    /// elle est ici pour que les trois refus soient rendus au même endroit,
+    /// par le même pliage.
+    ImageDoesNotFit { folded: u64, bytes: u64, ram: u64 },
+    /// **L'image écraserait la page zéro.** Le noyau y lit sa carte e820, sa
+    /// ligne de commande et son initramfs — avant d'exécuter une seule de ses
+    /// propres instructions. Une image posée dessus le renverrait exactement à
+    /// l'échec muet de `extend_brk` que #310 a corrigé, mais cette fois **par
+    /// la faute de l'appelant** et sans rien qui le nomme.
+    ImageWouldOverwriteTheBootPage { at: u64, bytes: u64 },
+    /// **L'image serait repeinte par l'invité.** Le cadre est de la mémoire que
+    /// la vue lit à chaque image et que le noyau croit à lui : des octets posés
+    /// là survivraient jusqu'au premier `simpledrm`, puis disparaîtraient sous
+    /// les pixels. Une panne de ce genre ne ressemble pas à une écriture
+    /// perdue, elle ressemble à un noyau qui se corrompt tout seul.
+    ImageWouldOverwriteTheFrame {
+        at: u64,
+        bytes: u64,
+        frame: u64,
+        frame_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -68,6 +92,25 @@ impl std::fmt::Display for Refusal {
                 out,
                 "la ligne de commande fait {bytes} octets et la page zéro ne lui en \
                  laisse que {room}"
+            ),
+            Self::ImageDoesNotFit { folded, bytes, ram } => write!(
+                out,
+                "une image de {bytes} octets posée à {folded} déborde d'une RAM de {ram}"
+            ),
+            Self::ImageWouldOverwriteTheBootPage { at, bytes } => write!(
+                out,
+                "une image de {bytes} octets posée à {at} écraserait la page zéro, où le \
+                 noyau lit sa carte mémoire"
+            ),
+            Self::ImageWouldOverwriteTheFrame {
+                at,
+                bytes,
+                frame,
+                frame_bytes,
+            } => write!(
+                out,
+                "une image de {bytes} octets posée à {at} tombe dans le cadre, qui occupe \
+                 {frame_bytes} octets à {frame}"
             ),
             Self::RamIsNotAPowerOfTwo(pages) => write!(
                 out,
@@ -147,9 +190,12 @@ pub const COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8 console=ttyS0";
 /// un cadre posé là les écraserait avec les pixels du bureau — en emportant la
 /// carte mémoire que le noyau vient d'y lire. Ce plancher ne protège **pas**
 /// l'image du noyau : elle est posée par l'application *après* que cette page
-/// est bâtie, donc son étendue n'est pas connue ici. Un cadre qui chevaucherait
-/// l'image est une faute de l'appelant que rien ne refuse encore ; c'est dit
-/// plutôt que caché.
+/// est bâtie, donc son étendue n'est pas connue ici.
+///
+/// Le chevauchement est donc refusé **de l'autre côté**, au moment où les
+/// octets entrent : `placement` le nomme, et `LocalDesktop.place` le rend à
+/// l'application. C'est le même recouvrement vu dans l'autre sens, et c'est le
+/// seul endroit où les deux étendues sont connues en même temps.
 pub fn boot_page_with_screen(
     pages: u32,
     command_line: &str,
@@ -221,6 +267,88 @@ pub fn boot_page(pages: u32, command_line: &str) -> Result<Vec<u8>, Refusal> {
     page[inside..inside + command_line.len()].copy_from_slice(command_line.as_bytes());
     page[inside + command_line.len()] = 0;
     Ok(page)
+}
+
+/// **Ce que l'appelant n'a pas le droit d'écrire, et pourquoi.**
+///
+/// `LocalDesktop.place` est le seul chemin par lequel des octets entrent dans
+/// la mémoire de l'invité depuis l'application. Il tenait **une** borne — la
+/// fin de la RAM, au-dessus de laquelle vit la correspondance — et laissait
+/// passer deux écritures qui détruisent la machine aussi sûrement :
+///
+/// - **la page zéro**, que le noyau lit avant sa première instruction ;
+/// - **le cadre**, que la vue repeint à chaque image.
+///
+/// #311 l'a dit en finissant : « un cadre qui chevaucherait l'image du noyau
+/// reste une faute de l'appelant que rien ne refuse encore ». Le refus est ici
+/// et pas de l'autre côté du pont parce que c'est ici que vit le risque — le
+/// pliage par masque et deux additions qui peuvent déborder. En Swift, un
+/// `Int` **piégerait** là où on veut un refus nommé, et `LocalDesktop.swift`
+/// n'est de surcroît typé que sur `Cœur (Apple)` : une faute d'arithmétique y
+/// resterait invisible sur cette machine.
+///
+/// **`boots` décide si la page zéro existe.** Un programme jugé sur ses
+/// registres n'en a pas ; lui interdire `0x9000` serait un refus sans objet, et
+/// un refus sans objet apprend aux appelants à contourner les refus.
+///
+/// **Les deux intervalles sont comparés demi-ouverts**, `a < b + lb &&
+/// b < a + la`, ce qui est juste à l'octet des deux côtés : un voisin immédiat
+/// passe, un chevauchement d'un seul octet tombe.
+pub fn placement(
+    pages: u32,
+    screen: Option<Screen>,
+    boots: bool,
+    at: u64,
+    bytes: u64,
+) -> Result<(), Refusal> {
+    if pages == 0 || !pages.is_power_of_two() {
+        return Err(Refusal::RamIsNotAPowerOfTwo(pages));
+    }
+    let ram = u64::from(pages) * 65536;
+    // **L'adresse se replie, parce que la RAM d'un invité confiné est adressée
+    // par un masque.** `0x1_0000_9000` et `0x9000` désignent le même octet sur
+    // une machine de 64 Mio ; comparer les adresses brutes laisserait passer la
+    // même écriture sous un autre nom.
+    let folded = at & (ram - 1);
+    // **Écrit en soustrayant**, comme le fait déjà `place` : `folded + bytes`
+    // enroulerait pour une taille proche du maximum, l'intervalle paraîtrait
+    // fini avant la page zéro, et l'image passerait. `folded` est toujours plus
+    // petit que `ram`, donc la soustraction est sûre.
+    if bytes > ram - folded {
+        return Err(Refusal::ImageDoesNotFit { folded, bytes, ram });
+    }
+    // Une image vide ne couvre aucun octet : elle n'écrase rien.
+    if bytes == 0 {
+        return Ok(());
+    }
+    if boots {
+        let zero = crate::kernel_image::ZERO_PAGE_AT;
+        if folded < zero + 4096 && zero < folded + bytes {
+            return Err(Refusal::ImageWouldOverwriteTheBootPage { at: folded, bytes });
+        }
+    }
+    if let Some(screen) = screen {
+        let frame = screen.base & (ram - 1);
+        // La même saturation que `page` emploie, et pour la même raison : deux
+        // dimensions de deux puissance trente et un donnent exactement deux
+        // puissance soixante-quatre, qui enroule à **zéro** en release — et un
+        // cadre de taille nulle ne protégerait plus rien.
+        let frame_bytes = u64::from(screen.width)
+            .saturating_mul(u64::from(screen.height))
+            .saturating_mul(4);
+        // Un cadre sans surface n'a rien à protéger. `page` l'a déjà refusé
+        // avant que la vue n'existe ; ici, le taire vaut mieux que refuser une
+        // écriture au nom d'un cadre qui n'en est pas un.
+        if frame_bytes > 0 && folded < frame.saturating_add(frame_bytes) && frame < folded + bytes {
+            return Err(Refusal::ImageWouldOverwriteTheFrame {
+                at: folded,
+                bytes,
+                frame,
+                frame_bytes,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// **La page complète, prête à être chargée dans un `WKWebView`.**

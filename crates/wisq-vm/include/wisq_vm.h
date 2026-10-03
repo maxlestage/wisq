@@ -317,6 +317,33 @@ int wisq_desktop_boot_page(uint32_t pages, const char *command_line,
 uint64_t wisq_desktop_boot_page_at(void);
 
 /*
+ * What the application may not write into the guest's RAM.
+ *
+ * It places its images through a single path; this says, before the first
+ * write, whether the image fits and whether it leaves alone the two regions the
+ * machine gives itself: the zero page the kernel reads before its first
+ * instruction, and the frame the view repaints on every image.
+ *
+ * `boots` says whether the zero page exists: a program judged on its registers
+ * has none, and forbidding it that address would be a refusal with no object.
+ * The frame is optional as everywhere else here, and
+ * `screen_width == 0 && screen_height == 0` says so.
+ *
+ * The verdict is a code rather than a boolean, because the caller tells the
+ * user something about it: "the image spills" and "the image lands on the zero
+ * page" are not fixed the same way.
+ *
+ *   0  placeable
+ *   1  the RAM is not a power of two
+ *   2  the image spills out of the RAM
+ *   3  it would overwrite the zero page
+ *   4  it lands in the frame
+ */
+int wisq_desktop_placement(uint32_t pages, uint64_t screen_base,
+                           uint32_t screen_width, uint32_t screen_height,
+                           int boots, uint64_t at, uint64_t bytes);
+
+/*
  * What the correspondence occupies *above* the guest's RAM, in pages. The host
  * adds it to the size of the memory it creates.
  */

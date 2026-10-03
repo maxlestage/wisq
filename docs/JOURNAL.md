@@ -19958,7 +19958,14 @@ lui, bâtit sa page **avant** que l'application ne pose l'image du noyau : son
 Le plancher du bureau est donc le **sommet de sa page zéro**, et c'est le
 minimum certainement juste : au-dessous vivent la page et sa ligne de commande,
 et un cadre posé là les écraserait avec les pixels du bureau — en emportant la
-carte mémoire que le noyau vient d'y lire. Un cadre qui chevaucherait l'**image
+carte mémoire que le noyau vient d'y lire.
+
+> **#312 l'a refusé.** La phrase qui suit était juste quand elle a été écrite et
+> ne l'est plus : `desktop::placement` nomme le recouvrement et
+> `LocalDesktop.place` le rend à l'application. C'est bien là que ça s'est
+> réglé, et dans le sens annoncé.
+
+Un cadre qui chevaucherait l'**image
 du noyau** reste une faute de l'appelant que rien ne refuse encore. **C'est dit
 plutôt que caché**, et c'est la tranche suivante : `LocalDesktop.place` est le
 seul chemin par lequel des octets entrent, donc le bon endroit pour refuser.
@@ -19994,3 +20001,142 @@ qui écraserait ce qui est dessous.
 y est entrée parce que #310 l'avait payée ; elle a rendu #311 en un `grep`. Une
 leçon qui reste dans un journal se relit quand on pense à la relire ; la même
 leçon dans le texte qui réveille se relit à chaque réveil.
+
+## #312 — `place` tenait une borne sur trois : l'application pouvait écraser la carte mémoire du noyau et le cadre, sans un mot
+
+`LocalDesktop.place` est le **seul** chemin par lequel des octets entrent dans
+la mémoire de l'invité depuis l'application. Il tenait une borne, et elle est
+bonne : la fin de la RAM, au-dessus de laquelle vit la correspondance adresse →
+indice. Un morceau à cheval sur ce bord n'écrit pas « un peu trop loin », il
+écrit dans la table que le module lit pour trouver ses régions.
+
+Deux autres écritures détruisent la machine aussi sûrement et passaient sans un
+mot. Ce ne sont pas des hypothèses : ce sont les deux régions que les tranches
+#310 et #311 viennent de donner au bureau.
+
+### Ce qui passait
+
+**La page zéro.** #310 l'a posée à `0x9000` : le noyau y lit sa carte e820, sa
+ligne de commande et son initramfs **avant d'exécuter une seule de ses propres
+instructions**. Une image posée dessus le renvoie exactement à l'arrêt muet dans
+`extend_brk` que #310 a corrigé — mais cette fois par la faute de l'appelant, et
+sans rien qui le nomme. Le symptôme est identique à celui d'un bureau qui ne
+poserait pas de page zéro du tout, ce qui est la pire forme de ressemblance.
+
+**Le cadre.** #311 l'a réservé dans la carte e820. C'est de la mémoire que la
+vue relit à chaque image : des octets posés là tiennent jusqu'au premier
+`simpledrm`, puis disparaissent sous les pixels. Ça ne ressemble pas à une
+écriture perdue, ça ressemble à un noyau qui se corrompt tout seul.
+
+C'est #311 qui l'a nommé en finissant, plutôt que de le cacher, et qui a dit où
+ça se règle. Le refus est là.
+
+### Pourquoi l'arithmétique est en Rust et pas en Swift
+
+Le refus est une comparaison de deux intervalles, et il y a trois façons de le
+rater :
+
+1. **ne pas replier.** La RAM d'un invité confiné est adressée par un masque :
+   `0x1_0000_9000` et `0x9000` désignent le même octet sur une machine de 64 Mio.
+   Un refus qui comparerait les adresses **brutes** laisserait passer exactement
+   la même écriture sous un autre nom ;
+2. **laisser l'addition enrouler.** `at + len` pour une taille proche du maximum
+   redevient petit : l'intervalle paraît fini avant la page zéro, et l'image
+   passe. Ce débordement **accepte** au lieu de refuser, qui est le mauvais sens
+   par défaut ;
+3. **laisser la surface du cadre enrouler.** Deux dimensions de deux puissance
+   trente et un donnent exactement deux puissance soixante-quatre, qui vaut
+   **zéro** en release — et un cadre de taille nulle ne protège plus rien. C'est
+   la faute que `desktop::page` évitait déjà, et pour la même raison.
+
+En Swift, la deuxième **piégerait** au lieu de refuser : un plantage n'est pas
+un refus. Et `LocalDesktop.swift` est sous `canImport(WebKit)` — il n'est typé
+que sur `Cœur (Apple)`, donc une faute d'arithmétique y resterait invisible sur
+cette machine et sur quatre des sept vérifications. Le verdict est donc en Rust,
+où il s'exécute à chaque `cargo test` ; Swift ne fait que le traduire en refus
+nommé, avec les nombres qu'il a déjà sous la main.
+
+La soustraction suit `place` plutôt que de l'inventer : `bytes > ram - folded`,
+avec `folded` toujours plus petit que `ram`. C'est la forme qui était déjà juste
+de l'autre côté.
+
+### `boots`, et pourquoi un refus sans objet est un défaut
+
+La page zéro n'est intouchable que si le bureau **amorce un noyau**. Un programme
+jugé sur ses registres n'en a pas, et `0x9000` est alors de la RAM comme une
+autre. Lui interdire cette adresse serait un refus sans objet — et un refus sans
+objet apprend aux appelants à contourner les refus. Deux assertions tiennent les
+deux sens, et un sabotage qui protège la page inconditionnellement tombe sur
+celle qui passe.
+
+Le même raisonnement pour le cadre : sans écran déclaré, le haut de la RAM est
+libre, et un test le vérifie. C'est ce qui donne son sens au refus de l'autre
+cas.
+
+### Le dépôt de la page zéro ne passe plus par la garde
+
+Le bureau a **une** écriture à faire que `place` refuse désormais par
+construction : sa propre page zéro, à la fin de `load()`. La poser par `place`
+serait l'application refusant contre elle-même. La boucle d'écriture est donc
+extraite dans un `deposit` privé, qui prend un décalage **déjà replié et déjà
+jugé** ; `place` est la garde, `deposit` est l'écriture. Vu en relisant l'appel
+de `load()`, pas en compilant — ce fichier ne compile pas ici.
+
+### Les sabotages
+
+Sept mutations, chacune nommant la garde qui tombe :
+
+| mutation | ce qui tombe |
+|---|---|
+| la page zéro n'est plus protégée | `an_image_that_would_overwrite_what_is_not_the_callers_is_refused` **et** `the_placement_folds_its_address_and_does_not_wrap` |
+| le cadre n'est plus protégé | `an_image_that_would_overwrite_…` |
+| les adresses brutes au lieu des repliées | `the_placement_folds_its_address_and_does_not_wrap` |
+| `folded.wrapping_add(bytes) > ram` au lieu de la soustraction | `the_placement_folds_…` |
+| la page zéro protégée même sans noyau | `an_image_that_would_overwrite_…` (le cas qui passe) |
+| les codes 3 et 4 échangés dans l'ABI | `the_c_header_matches_the_x86_translator` |
+| un doublon de clé de provenance | `aucun nombre n'a deux provenances dont une serait effacée` |
+
+Et deux gardes d'ABI ont tiré comme prévu avant que le programme C n'exerce la
+nouvelle fonction : `every_declared_function_is_exercised_from_c` refuse une
+signature écrite à la main que rien n'exerce.
+
+### Ce qu'un doublon de `Map` avalait en silence
+
+En portant la couture de trente-trois à **trente-quatre** fonctions, la
+provenance du compte du C ABI a dû changer de clé — et la clé `"33"` existait
+**deux fois** dans la même liste : une fois pour le compte du C ABI, une fois
+pour la borne basse de « construction 33–194 ms ». Une `Map` construite d'un
+littéral garde la **dernière** et jette l'autre, sans rien dire.
+
+Les deux tests de provenance passaient quand même : la page portait bien `33`, et
+une seule entrée suffisait à le justifier. La justification de l'autre nombre
+était perdue depuis #310, et rien ne pouvait le dire. **Les deux chiffres
+coïncidaient, et c'est la coïncidence qui cachait le trou.**
+
+`provenanceOf` remplace les cinq littéraux et **collecte** les doublons plutôt
+que de lever à l'importation : une exception ferait rougir tout le fichier sans
+nommer la cause, et « quelle garde tombe » est la question qu'on se posera. Le
+sabotage le montre dans les deux sens — avec la détection, le test nommé tombe ;
+sans elle, les vingt tests passent avec une justification effacée.
+
+### Ce que ça ne prouve pas
+
+**Le branchement Swift n'est tenu que par la CI Apple.** Le verdict est vérifié
+ici — par deux tests Rust, par le programme C, et par les sept sabotages — mais
+qu'il soit **appelé** par `place` ne l'est que par deux tests hébergés,
+`testAnImageOverTheMachinesOwnRegionsIsRefused` et
+`testWithoutAKernelOrAFrameTheSameTwoAddressesArePlaceable`, qui ne tournent que
+dans un simulateur iOS, sur « App iOS ». Un `place` qui ignorerait `placement`
+compile ici sans un mot. C'est la limite du conteneur, et elle est dite plutôt
+que cachée : le vert d'« App iOS » est lu par nom dans le journal brut, pas
+déduit d'une somme.
+
+Et comme #310 et #311 : rien n'a été mesuré dans un iPhone.
+
+### Le signe à retenir
+
+**Deux nombres qui coïncident cachent un trou dans la garde qui les tient.** Ce
+n'est pas la première fois dans ce dépôt — #261 disait de chercher la même
+absence là où on *sait* que la chose est présente. Ici, c'est la variante par
+égalité : deux clés identiques pour deux raisons différentes, et aucun test ne
+pouvait le voir. Ce qui l'a trouvé est d'avoir **changé** l'un des deux.

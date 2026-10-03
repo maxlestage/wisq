@@ -483,5 +483,87 @@ final class LocalDesktopTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - Ce que l'appelant n'a pas le droit d'écrire
+
+    /// **Les deux régions que la machine se donne à elle-même sont refusées.**
+    ///
+    /// `place` tenait **une** borne : la fin de la RAM, au-dessus de laquelle
+    /// vit la correspondance. Deux écritures détruisent la machine aussi
+    /// sûrement et passaient sans un mot :
+    ///
+    /// - la **page zéro**, où le noyau lit sa carte e820, sa ligne de commande
+    ///   et son initramfs *avant* sa première instruction. Une image posée
+    ///   dessus rend l'arrêt muet dans `extend_brk` que #310 a corrigé ;
+    /// - le **cadre**, que la vue relit à chaque image. Les octets y tiennent
+    ///   jusqu'au premier `simpledrm`, puis disparaissent sous les pixels — ce
+    ///   qui ne ressemble pas à une écriture perdue mais à un noyau qui se
+    ///   corrompt tout seul.
+    ///
+    /// **Le cas qui passe est exigé ici aussi**, et deux fois : une image entre
+    /// les deux régions, et les voisins immédiats des deux bords. Sans eux, un
+    /// `place` qui refuserait tout passerait tout le reste de ce test.
+    ///
+    /// **Et c'est jugé dans un vrai WebKit, pas sous Bun.** `place` est le seul
+    /// chemin par lequel des octets entrent, et c'est ici qu'il s'exécute : un
+    /// refus qui tomberait côté Rust mais ne serait pas branché de ce côté-ci
+    /// ne se verrait nulle part ailleurs — `LocalDesktop.swift` n'est même pas
+    /// typé sur Linux.
+    func testAnImageOverTheMachinesOwnRegionsIsRefused() async throws {
+        // Une page de RAM. La page zéro se replie à 0x9000, et le cadre est
+        // posé au-dessus d'elle — `boot_page_with_screen` refuserait un cadre
+        // en dessous, qui l'écraserait.
+        let frame = base + 0xB000
+        let desktop = try LocalDesktop(
+            pages: 1,
+            entry: base,
+            screen: .init(base: frame, width: 32, height: 16),
+            bootsAKernel: true
+        )
+        try await desktop.load()
+        let zero = DesktopTranslator.bootPageAddress
+        XCTAssertEqual(zero, 0x9000, "la page zéro est là où le montage la pose")
+
+        // **Ce qui passe** : entre les deux régions, et les deux voisins
+        // immédiats, à l'octet près.
+        try await desktop.place(Data(count: 16), at: base)
+        try await desktop.place(Data(count: 16), at: base + 0x7FF0)
+        try await desktop.place(Data(count: 16), at: base + 0x9000)
+        try await desktop.place(Data(count: 16), at: frame - 16)
+
+        // **Sur la page zéro.**
+        do {
+            try await desktop.place(Data(count: 16), at: zero)
+            XCTFail("une image sur la page zéro doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(
+                failure, .imageWouldOverwriteTheBootPage(folded: 0x9000, bytes: 16),
+                "et le refus dit où et combien"
+            )
+        }
+
+        // **Dans le cadre.**
+        do {
+            try await desktop.place(Data(count: 16), at: frame)
+            XCTFail("une image dans le cadre doit être refusée")
+        } catch let failure as LocalDesktop.Failure {
+            XCTAssertEqual(
+                failure,
+                .imageWouldOverwriteTheFrame(folded: 0xC000, bytes: 16, frame: 0xC000),
+                "et le refus nomme le cadre qui la repeindrait"
+            )
+        }
+    }
+
+    /// **Et les deux refus ne sont pas inconditionnels** — c'est ce qui leur
+    /// donne leur sens. Un bureau jugé sur ses registres n'a ni page zéro ni
+    /// cadre : lui interdire ces adresses serait un refus sans objet, et un
+    /// refus sans objet apprend aux appelants à les contourner.
+    func testWithoutAKernelOrAFrameTheSameTwoAddressesArePlaceable() async throws {
+        let desktop = try LocalDesktop(pages: 1, entry: base)
+        try await desktop.load()
+        try await desktop.place(Data(count: 16), at: DesktopTranslator.bootPageAddress)
+        try await desktop.place(Data(count: 16), at: base + 0xB000)
+    }
 }
 #endif

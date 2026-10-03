@@ -386,13 +386,35 @@ function figuresOn(page: string): string[] {
   ].sort();
 }
 
+/// **Une `Map` construite d'un littéral avale ses doublons en silence**, et ce
+/// dépôt l'a payé : la provenance du compte du C ABI et celle de la borne basse
+/// de « construction 33–194 ms » portaient toutes deux la clé `"33"`, parce que
+/// la couture faisait alors trente-trois fonctions. La seconde effaçait la
+/// première, et les deux tests ci-dessous passaient quand même — l'un parce que
+/// la page porte bien ce nombre, l'autre parce qu'une seule entrée restait.
+/// Vu en portant la couture à trente-quatre, pas en relisant.
+///
+/// Les doublons sont **collectés plutôt que levés** : une exception à
+/// l'importation ferait rougir tout le fichier sans nommer la cause, et
+/// « quelle garde tombe » est la question qu'on se posera.
+const duplicated: string[] = [];
+
+function provenanceOf(entries: [string, string][]): Map<string, string> {
+  const held = new Map<string, string>();
+  for (const [number, why] of entries) {
+    if (held.has(number)) duplicated.push(number);
+    held.set(number, why);
+  }
+  return held;
+}
+
 /// Les pages tenues. Chaque entrée dit **comment on refait le nombre**, ou
 /// pourquoi ce n'est pas une mesure. Une entrée qui ne saurait dire ni l'un ni
 /// l'autre n'a rien à faire sur une page qui parle au présent.
 const accounted = new Map<string, Map<string, string>>([
   [
     "roadmap.ts",
-    new Map([
+    provenanceOf([
       [
         "10 116",
         "les régions d'entrée atteintes par un `call` du noyau Alpine : " +
@@ -413,7 +435,7 @@ const accounted = new Map<string, Map<string, string>>([
   ],
   [
     "protocol.ts",
-    new Map([
+    provenanceOf([
       [
         "0.1",
         "ce n'est pas une mesure : la seconde moitié de l'adresse de bouclage " +
@@ -482,7 +504,7 @@ const accounted = new Map<string, Map<string, string>>([
   ],
   [
     "faq.ts",
-    new Map([
+    provenanceOf([
       [
         "44.6",
         "le compte d'instructions jusqu'à l'invite de connexion, et il est " +
@@ -550,7 +572,7 @@ const accounted = new Map<string, Map<string, string>>([
   ],
   [
     "docs.ts",
-    new Map([
+    provenanceOf([
       [
         "3.8",
         "ce n'est pas une mesure : la version de RFB que le client parle — " +
@@ -625,7 +647,7 @@ const accounted = new Map<string, Map<string, string>>([
   ],
   [
     "architecture.ts",
-    new Map([
+    provenanceOf([
       [
         "2.7",
         "mesuré au travail d'interpréteur de la 0.2.0 et consigné au CHANGELOG " +
@@ -711,14 +733,16 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "33",
+        "34",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
           "écrit en lettres — ce qui la faisait échapper au balayage des " +
           "chiffres pendant que la couture passait de sept à trente et une. " +
           "Trente et une à trente-trois en #310 : la page zéro du bureau et " +
-          "son adresse, que le pilote met dans RSI.",
+          "son adresse, que le pilote met dans RSI. Trente-quatre en #312 : " +
+          "`wisq_desktop_placement`, qui dit ce que l'application n'a pas le " +
+          "droit d'écrire dans la RAM de l'invité.",
       ],
     ]),
   ],
@@ -800,6 +824,15 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
         ).toBe(true);
       }
     }
+  });
+
+  test("aucun nombre n'a deux provenances dont une serait effacée", () => {
+    expect(
+      duplicated,
+      `ces nombres ont deux justifications dans la même liste, et la seconde ` +
+        `efface la première : ${duplicated.join(", ")}. Donne-leur deux clés, ` +
+        `ou fusionne les deux raisons dans une seule entrée.`,
+    ).toEqual([]);
   });
 
   test("rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus", () => {

@@ -365,6 +365,38 @@ int main(void) {
     check(wisq_desktop_boot_page(1024, trop, 0, 0, 0, &unsafe_name, &unsafe_len) == -1,
           "une ligne de commande qui ne tient pas est refusée");
 
+    /* **Ce que l'application n'a pas le droit d'écrire.** Elle pose ses images
+     * par un seul chemin ; les quatre codes sont le contrat que cet en-tête
+     * promet, donc ils sont vérifiés ici un par un. Une RAM de soixante-quatre
+     * mébioctets, un cadre de 64×64 en haut, et un noyau à amorcer. */
+    const uint32_t RAM_PAGES = 1024;
+    const uint64_t RAM = (uint64_t)RAM_PAGES * 65536;
+    const uint64_t FRAME_BYTES = 64 * 64 * 4;
+    const uint64_t FRAME = RAM - FRAME_BYTES;
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+                                 0x100000, 0x100000) == 0,
+          "une image entre la page zéro et le cadre est posable");
+    check(wisq_desktop_placement(3, 0, 0, 0, 1, 0x100000, 16) == 1,
+          "une RAM qui n'est pas une puissance de deux est refusée ici aussi");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, 0, RAM + 1) == 2,
+          "une image plus grande que la RAM ne tient nulle part");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+                                 0x100000, UINT64_MAX) == 2,
+          "et une taille qui enroulerait l'addition est refusée, pas acceptée");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, boot_at, 16) == 3,
+          "une image sur la page zéro écraserait la carte mémoire du noyau");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 0, boot_at, 16) == 0,
+          "mais sans noyau à amorcer, il n'y a pas de page zéro à protéger");
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1, FRAME, 16) == 4,
+          "une image dans le cadre serait repeinte à la première image");
+    check(wisq_desktop_placement(RAM_PAGES, 0, 0, 0, 1, FRAME, 16) == 0,
+          "et sans cadre déclaré, le haut de la RAM est libre");
+    /* Et l'adresse se replie : la RAM d'un invité confiné est adressée par un
+     * masque, donc `boot_at` d'un autre tour désigne la même page zéro. */
+    check(wisq_desktop_placement(RAM_PAGES, FRAME, 64, 64, 1,
+                                 boot_at + RAM * 3, 16) == 3,
+          "repliée, c'est la même page zéro");
+
     /* Et la page du pilote accepte l'adresse : c'est elle qui pose RSI. */
     uint8_t *amorcee = NULL;
     size_t amorcee_len = 0;

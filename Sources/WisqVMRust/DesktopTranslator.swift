@@ -208,6 +208,55 @@ public enum DesktopTranslator {
     /// pilote y met RSI, et deux copies du nombre divergeraient en silence.
     public static var bootPageAddress: UInt64 { wisq_desktop_boot_page_at() }
 
+    /// **Ce que l'application n'a pas le droit d'écrire dans la RAM invitée.**
+    ///
+    /// Elle pose ses images par un seul chemin — `LocalDesktop.place` — et il
+    /// tenait **une** borne : la fin de la RAM, au-dessus de laquelle vit la
+    /// correspondance. Deux écritures détruisent la machine aussi sûrement et
+    /// passaient : la **page zéro**, que le noyau lit avant sa première
+    /// instruction, et le **cadre**, que la vue repeint à chaque image.
+    ///
+    /// Le verdict vient du Rust et non d'ici, parce que c'est là que vit le
+    /// risque : un pliage par masque et deux additions qui peuvent déborder.
+    /// En Swift, un `Int` **piégerait** là où on veut un refus nommé — et ce
+    /// fichier n'est typé que sur `Cœur (Apple)`, donc une faute
+    /// d'arithmétique y resterait invisible partout ailleurs.
+    public enum Placement: Equatable, Sendable {
+        case placeable
+        case ramIsNotAPowerOfTwo
+        case imageDoesNotFit
+        case wouldOverwriteTheBootPage
+        case wouldOverwriteTheFrame
+        /// Un code que cette version ne connaît pas. Le taire le ferait passer
+        /// pour « posable », qui est exactement le mauvais sens par défaut.
+        case unknown(Int32)
+    }
+
+    /// `boots` dit si la page zéro existe : un programme jugé sur ses registres
+    /// n'en a pas, et lui interdire cette adresse serait un refus sans objet.
+    public static func placement(
+        pages: UInt32,
+        screen: Screen? = nil,
+        boots: Bool,
+        at: UInt64,
+        bytes: UInt64
+    ) -> Placement {
+        let verdict = wisq_desktop_placement(
+            pages,
+            screen?.base ?? 0, screen?.width ?? 0, screen?.height ?? 0,
+            boots ? 1 : 0,
+            at, bytes
+        )
+        switch verdict {
+        case 0: return .placeable
+        case 1: return .ramIsNotAPowerOfTwo
+        case 2: return .imageDoesNotFit
+        case 3: return .wouldOverwriteTheBootPage
+        case 4: return .wouldOverwriteTheFrame
+        default: return .unknown(verdict)
+        }
+    }
+
     // MARK: -
 
     /// Recopie ce que Rust a alloué et le lui rend aussitôt.
