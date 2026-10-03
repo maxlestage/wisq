@@ -152,6 +152,113 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 /// suffisait de ne pas lui couper la parole.
 pub const MONTAGE_COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8 keep_bootcon";
 
+/// **Où le montage pose la page zéro, et la ligne qu'elle désigne.**
+///
+/// Là où un chargeur les pose : sous le premier mégaoctet, hors du noyau. Le
+/// noyau les recopie chez lui dès `copy_bootdata`, donc l'endroit n'a pas à
+/// survivre. Sans cette page, la carte e820 est vide et le noyau s'arrête
+/// « sur place » dans `extend_brk` à sa 1067ᵉ région.
+///
+/// **Les deux étaient des `const` dans le `main` du montage**, et la place que
+/// la ligne a s'en déduit — donc il fallait les sortir pour qu'un test tienne
+/// la déduction au lieu de réécrire le nombre.
+pub const ZERO_PAGE_AT: u64 = 0x9000;
+
+/// La ligne de commande, posée **dans** la page zéro elle-même, à `0x800` de
+/// son début.
+///
+/// Ce n'est pas un hasard commode et ce n'est pas sans contrainte : la page
+/// porte la table e820 à `0x2d0`, et un noyau en accepte cent vingt-huit
+/// entrées, soit jusqu'à `0xcd0`. Le montage n'en déclare que **deux** — ce
+/// qui est sous le trou du premier mégaoctet, et le reste —, donc la table
+/// finit à `0x2f8` et `0x800` est largement au-delà. Une page qui déclarerait
+/// plus de quarante-trois entrées écraserait la ligne de commande avec sa
+/// propre table, en silence. Le fait est écrit ici parce que c'est ici qu'il
+/// se vérifie.
+pub const COMMAND_LINE_AT: u64 = 0x9800;
+
+/// **La place qu'a la ligne de commande là où le montage la pose** : de
+/// `0x800` au bout de la page, moins l'octet nul qui la termine.
+///
+/// Et c'est, à un octet près, la limite du noyau lui-même —
+/// `COMMAND_LINE_SIZE` vaut 2048 sur x86-64. Les deux coïncident ; l'écrire
+/// vaut mieux que de le redécouvrir.
+pub const MONTAGE_COMMAND_LINE_ROOM: usize = 4096 - (COMMAND_LINE_AT - ZERO_PAGE_AT) as usize - 1;
+
+/// Ce qu'une ligne de commande ne peut pas être, et pourquoi le montage la
+/// refuse plutôt que de la poser quand même.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandLineRefusal {
+    /// Plus longue que la place qu'elle a. Tronquer donnerait au noyau une
+    /// ligne coupée au milieu d'un paramètre — qu'il accepterait sans rien
+    /// dire —, et déborder écraserait ce qui suit la page.
+    TooLong { bytes: usize, room: usize },
+    /// Un octet nul au milieu. La ligne finirait là pour le noyau, et tout ce
+    /// qui suit serait perdu sans trace.
+    EmbeddedNul,
+    /// Un retrait qui n'enlève rien : l'argument nommé n'est pas dans la ligne.
+    ///
+    /// **C'est le refus qui compte des trois.** `-keepbootcon`,
+    /// `-keep-bootcon`, `-keep_bootcon=1` sont trois fautes de frappe
+    /// plausibles, et chacune laisserait la ligne **inchangée** : la mesure
+    /// rendrait ce qu'elle rendait sans le fragment, et ce serait lu comme un
+    /// résultat.
+    NothingToRemove { argument: String },
+}
+
+/// **La ligne que le montage donne au noyau, avec ce qu'une mesure y ajoute.**
+///
+/// `MONTAGE_COMMAND_LINE` est tenue par un test : la console précoce doit
+/// être sur le port que `web/host.js` écoute, et `keep_bootcon` doit y être.
+/// Une mesure qui veut autre chose — nommer une console sur le série, par
+/// exemple — n'avait donc aucun moyen de le demander, et #306 a été prise sur
+/// une édition **non commise** de cette constante. Un instrument qui n'existe
+/// pas dans le dépôt est à refabriquer de mémoire, et rien ne dit s'il a été
+/// remis en place.
+///
+/// L'espace de séparation est le point qui compte : `console=ttyS0` collé à
+/// `keep_bootcon` donne un paramètre que le noyau ignore en silence, et une
+/// mesure qui rend exactement ce qu'elle rendait sans.
+///
+/// **Un `-` devant un argument l'enlève**, et un retrait qui n'enlève rien est
+/// refusé. La forme que #306 a mesurée est `console=ttyS0` *à la place* de
+/// `keep_bootcon` : les deux ensemble font écrire les deux consoles sur le même
+/// port et dédoublent chaque ligne, 367 contre 222.
+pub fn montage_command_line(extra: Option<&str>) -> Result<String, CommandLineRefusal> {
+    if extra.is_some_and(|fragment| fragment.as_bytes().contains(&0)) {
+        return Err(CommandLineRefusal::EmbeddedNul);
+    }
+    // **Le retrait porte sur la ligne gardée, l'ajout vient après elle.** Un
+    // fragment qui ne ferait qu'ajouter ne saurait pas demander
+    // `console=ttyS0` *à la place* de `keep_bootcon` — les deux ensemble
+    // dédoublent chaque ligne de console —, et un instrument qui ne refait pas
+    // la mesure dont il porte le nom est le défaut que #306 reproche à #304.
+    let mut kept: Vec<&str> = MONTAGE_COMMAND_LINE.split_whitespace().collect();
+    let mut added: Vec<&str> = Vec::new();
+    for word in extra.unwrap_or_default().split_whitespace() {
+        if let Some(argument) = word.strip_prefix('-') {
+            let before = kept.len();
+            kept.retain(|&held| held != argument);
+            if kept.len() == before {
+                return Err(CommandLineRefusal::NothingToRemove {
+                    argument: argument.to_string(),
+                });
+            }
+        } else {
+            added.push(word);
+        }
+    }
+    kept.extend(added);
+    let line = kept.join(" ");
+    if line.len() > MONTAGE_COMMAND_LINE_ROOM {
+        return Err(CommandLineRefusal::TooLong {
+            bytes: line.len(),
+            room: MONTAGE_COMMAND_LINE_ROOM,
+        });
+    }
+    Ok(line)
+}
+
 /// **La page zéro qu'un chargeur doit écrire pour qu'un noyau connaisse sa
 /// RAM.** `struct boot_params`, quatre kibioctets, et cinq champs seulement.
 ///

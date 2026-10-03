@@ -49,7 +49,8 @@ use std::path::Path;
 
 use wisq_vm::desktop::Screen;
 use wisq_vm::kernel_image::{
-    declare_ramdisk, loads, zero_page, zero_page_with_screen, Ramdisk, MONTAGE_COMMAND_LINE,
+    declare_ramdisk, loads, montage_command_line, zero_page, zero_page_with_screen, Ramdisk,
+    COMMAND_LINE_AT, ZERO_PAGE_AT,
 };
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
@@ -487,8 +488,6 @@ fn main() {
     // s'arrête « sur place » dans `extend_brk` à sa 1067ᵉ région — c'est
     // écrit dans la feuille de route, et c'est ce que le montage a mesuré
     // tant qu'il n'en posait pas.
-    const ZERO_PAGE_AT: u64 = 0x9000;
-    const COMMAND_LINE_AT: u64 = 0x9800;
     let ram = u64::from(pages) * 65536;
     // **L'écran est facultatif, et il est éteint par défaut.** Les relevés des
     // tranches précédentes ont été pris sans, et en déclarer un en silence
@@ -554,13 +553,27 @@ fn main() {
     let page_path = scratch.join("zero-page.bin");
     std::fs::write(&page_path, &page).expect("la page zéro");
     placed.push((page_path, ZERO_PAGE_AT));
-    let mut line = MONTAGE_COMMAND_LINE.as_bytes().to_vec();
+    // **Ce qu'une mesure ajoute à la ligne gardée**, ou rien.
+    //
+    // `WISQ_CMDLINE=console=ttyS0` refait la mesure de #306. **Elle n'a pas été
+    // prise par là** : il n'y avait rien pour la demander, et elle a été prise
+    // sur une édition non commise de la constante. C'est ce que cette variable
+    // existe pour ne plus avoir à faire.
+    let asked = std::env::var("WISQ_CMDLINE").ok();
+    let command_line = match montage_command_line(asked.as_deref()) {
+        Ok(line) => line,
+        Err(why) => {
+            eprintln!("WISQ_CMDLINE refusé : {why:?}");
+            std::process::exit(1);
+        }
+    };
+    let mut line = command_line.as_bytes().to_vec();
     line.push(0);
     let line_path = scratch.join("cmdline.bin");
     std::fs::write(&line_path, &line).expect("la ligne de commande");
     placed.push((line_path, COMMAND_LINE_AT));
     println!(
-        "page zéro : 0x{ZERO_PAGE_AT:x}, e820 sur {} Mio, ligne « {MONTAGE_COMMAND_LINE} »",
+        "page zéro : 0x{ZERO_PAGE_AT:x}, e820 sur {} Mio, ligne « {command_line} »",
         u64::from(pages) / 16
     );
 
