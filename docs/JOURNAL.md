@@ -19383,3 +19383,133 @@ ce dépôt est plein de nombres datés qu'une commande permet de revérifier ; l
 sonde de #304 était la première chose qu'il décrivait sans donner le moyen de la
 refaire. La phrase qui l'accompagnait — « la refabriquer coûte une demi-heure » —
 était exacte, et elle était la raison de ne pas s'arrêter là.
+
+## #307 — la traduction périmée arrive, onze fois sur cent, et le bureau démarre quand même pour une raison précise
+
+Le journal porte depuis des semaines quatre formes possibles de correction pour
+la traduction périmée, et **pas la seule chose qui déciderait entre elles** :
+est-ce que le cas se produit ? Il se produit. Mesuré.
+
+### Ce que l'hôte ne remarquait pas
+
+Une région traduite reste dans la table de l'hôte aussi longtemps que la
+machine vit. Si l'invité réécrit les octets d'où elle vient, le module en table
+ne correspond plus à la mémoire, et c'est **l'ancien code** qui tourne. Et un
+noyau Linux réécrit son propre texte sans arrêt : `apply_returns`,
+`apply_alternatives`, `apply_seal_endbr`, `optimize_nops_inplace`,
+`arch_jump_label_transform`.
+
+`vm.revoir()` répond, **et ne coûte rien pendant la course**. L'hôte faisait
+déjà une copie de la fenêtre qu'il lit avant de traduire — `read`, à travers
+les tables de pages ; il la garde maintenant, et la relit à la fin par le même
+chemin. Aucun test sur le chemin d'une écriture, qui est le plus chaud du
+programme. **C'est délibéré** : la deuxième des trois façons de se tromper de
+ma propre liste est l'instrument de diagnostic qui casse ce qu'il mesure, et un
+contrôle par écriture aurait coûté une comparaison sur chaque `mov`.
+
+Et la comparaison porte sur la fenêtre **lue**, pas sur l'image ELF. Le pilote
+le savait déjà et le dit depuis #254 : 15 761 des 16 189 fenêtres traduites
+diffèrent du fichier, parce que le noyau a déjà patché. Comparer à l'image
+aurait répondu à une autre question.
+
+### Le compte, et le contrôle qui lui donne son sens
+
+| | régions |
+| --- | --- |
+| traduites | 12 249 |
+| **fenêtre changée après la traduction** | **1 397 — 11,4 %** |
+| dont au **décalage zéro**, le premier octet de la région | **498** |
+| plus relisibles à la fin | 2 597 |
+| intactes | **8 255** |
+
+**Les 8 255 intactes sont le contrôle**, et sans elles le chiffre ne vaudrait
+rien : un détecteur qui déclarerait tout aurait aussi rendu 1 397. Les 2 597
+illisibles sont comptées à part, et pas avec les périmées : une région que les
+tables ne portent plus à la fin — le texte d'initialisation est libéré, le CR3
+passe au PGD utilisateur — ne dit **rien** sur ses octets, et les confondre
+inventerait des défauts.
+
+Et la course est la même qu'en #306 à une région près — 12 249 contre 12 249,
+7 515 interruptions, le message de l'espace utilisateur présent. Garder les
+fenêtres ne perturbe donc pas ce qu'elles mesurent.
+
+### Pourquoi le bureau démarre quand même, et ce n'est pas de la chance
+
+Le relevé compte **toutes** les transitions d'octet, pas un échantillon — vingt-quatre
+noms montrent un motif, ils ne peuvent pas exclure qu'un cas sur mille soit
+d'une autre nature, et c'est justement ce cas-là qui déciderait de l'urgence.
+
+| transition | n | ce que le noyau fait |
+| --- | --- | --- |
+| `e9` → `c3` | 538 | `jmp __x86_return_thunk` → `ret` (`apply_returns`) |
+| `f3` → `66` | 400 | `endbr64` → nop de cinq octets (`apply_seal_endbr`) |
+| `e8` → `0f` | 263 | un `call` de cinq octets → un nop de cinq octets |
+| `f0` → `3e` | 60 | le préfixe `lock` → `ds`, inopérant : une seule UC |
+| `eb`/`e9` → `66`/`0f`/`eb` | 38 | un saut → un nop, ou un saut plus court |
+| `ff` → `e8`/`9c`/`fa`/`fb`/`48`/`66` | 54 | un appel indirect → sa forme directe (retpoline, paravirt) |
+| `e8` → `9c`/`fa`/`fb` | 24 | un appel → `pushf`, `cli`, `sti` (paravirt) |
+| `90` → `0f`/`66`/`00` | 15 | des `nop` d'un octet → un `nop` long, ou autre |
+| quatre singletons | 4 | non décodés |
+
+**Toutes les grandes familles vont dans le même sens, et c'est le sens
+conservateur.** La traduction périmée exécute ce que le noyau s'apprêtait à
+**retirer** : le détour par le thunk de retour au lieu du `ret` nu, le `endbr64`
+au lieu du nop, l'appel à `__fentry__` au lieu du nop, le `lock` au lieu du
+préfixe inopérant. Correct, simplement plus lent et plus prudent que ce que le
+noyau a demandé. **Voilà pourquoi personne ne l'a vu en trois cents tranches.**
+
+### Les quatre qui ne vont pas dans ce sens
+
+La forme qui mordrait est l'inverse : un `nop` remplacé par une instruction que
+le noyau vient de **poser**, et qu'une traduction périmée sauterait. Il y en a
+quinze, toutes nommées parce que ce sont les seules dont le nom décide de
+quelque chose. Onze sont `0x90` → `0x66`/`0x0f` : des `nop` d'un octet
+remplacés par un `nop` long — c'est `optimize_nops_inplace`, qui figure
+lui-même dans la liste, et c'est encore nop contre nop.
+
+**Quatre ne le sont pas**, et leur premier octet passe de `0x90` à `0x00` :
+
+```
+raise_softirq + 18          decalage 0   lu 0x90   maintenant 0x00
+raise_softirq + 27          decalage 0   lu 0x90   maintenant 0x00
+handle_softirqs + 296       decalage 0   lu 0x90   maintenant 0x00
+optimize_nops_inplace + 17  decalage 0   lu 0x90   maintenant 0x00
+```
+
+Trois des quatre sont sur le chemin des *softirq*, que cette machine parcourt
+sans arrêt — 7 515 interruptions délivrées sur la course. Et `0x00` n'est pas
+un `nop`.
+
+### Ce que `revoir` ne dit pas, et c'est la limite à écrire
+
+**Elle dit que la fenêtre a changé après la traduction ; elle ne dit pas que la
+région a tourné après le changement.** Les quatre sites ci-dessus sont donc un
+*fil*, pas un défaut constaté : la machine a tourné neuf cent mille tours
+correctement, donc soit ces régions ne sont pas réempruntées après le patch,
+soit l'écart y est sans effet. Trancher demande un second instrument — compter
+les entrées dans une région après que ses octets ont bougé —, et celui-là a un
+coût sur un chemin chaud. C'est écrit ici plutôt que deviné.
+
+Deuxième sur-déclaration, dite aussi : la fenêtre fait quatre kibioctets et une
+région s'arrête souvent avant. Un octet changé après la dernière instruction
+compte dans les 1 397 et n'invalide rien. C'est pour ça que le rapport donne le
+**décalage** — et que les 498 au décalage zéro valent plus que les 1 397 : au
+premier octet d'une région, le changement est dans le code, sans discussion
+possible.
+
+### Ce que ça change pour la décision
+
+La correction reste une direction — quatre formes, dans le journal, et le choix
+appartient à Maxime. Ce qui n'est plus une inconnue est **l'urgence** : le cas
+se produit onze fois sur cent, il touche le premier octet de cinq cents
+régions, et s'il n'a pas mordu c'est à cause de **ce que Linux patche**, pas
+parce que la péremption n'arrive pas. Un noyau d'une autre version, un module
+chargé, un `static_call` activé plus tard — et la direction du patch change.
+
+### Le signe à retenir
+
+**Un instrument qui ne coûte rien existait déjà, en pièces.** L'hôte faisait
+déjà la copie, pour une autre raison — « une vue sur `memory.buffer` se détache
+si la mémoire grandit, et l'invité peut la réécrire pendant l'aller-retour vers
+l'application ». Il la jetait. Trois semaines de question ouverte attendaient
+une mesure qui tenait dans « ne pas jeter cette copie, et la relire à la fin ».

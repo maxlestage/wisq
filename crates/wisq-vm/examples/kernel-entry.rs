@@ -898,6 +898,46 @@ const cases = [...retours.entries()]
       + " indice=" + indice;
   }});
 console.log("cases " + cases.join(" ; "));
+// **Les régions dont les octets ont bougé sous elles.** Zéro coût pendant la
+// course : l'hôte relit à la fin les fenêtres qu'il avait lues. Le décalage
+// compte autant que l'adresse — la fenêtre fait quatre kibioctets et une
+// région s'arrête souvent avant, donc un octet changé loin de son code ne
+// périme rien.
+const revu = vm.revoir();
+console.log("perimees " + revu.changees.length + " sur " + {rounds});
+console.log("illisibles " + revu.illisibles.length);
+// **Le compte par transition d'octet, sur toutes les régions et non sur un
+// échantillon.** Vingt-quatre noms montrent un motif ; ils ne peuvent pas
+// exclure qu'un cas sur mille soit d'une autre nature, et c'est justement ce
+// cas-là qui déciderait de l'urgence.
+const familles = new Map();
+let aZero = 0;
+for (const quoi of revu.changees) {{
+  const clef = "0x" + Number(quoi.lu).toString(16)
+    + "→0x" + Number(quoi.maintenant).toString(16);
+  familles.set(clef, (familles.get(clef) ?? 0) + 1);
+  if (quoi.decalage === "0") aZero += 1;
+}}
+console.log("perimees-au-debut " + aZero);
+console.log("perimees-familles " + [...familles.entries()]
+  .sort((a, b) => b[1] - a[1]).map(([clef, n]) => clef + "=" + n).join(" "));
+// **Toutes celles dont l'octet lu était un `nop`, et les vingt-quatre
+// premières des autres.** Les familles qui remplacent une instruction par une
+// forme plus courte ou par un `nop` ne peuvent que rendre la traduction
+// périmée *plus conservatrice* — elle exécute ce que le noyau allait retirer.
+// Celles qui remplacent un `nop` par une instruction sont de l'autre sens :
+// la traduction périmée **sauterait** ce que le noyau vient de poser. Ce sont
+// les seules dont le nom décide de quelque chose.
+const nops = revu.changees.filter((quoi) => Number(quoi.lu) === 0x90);
+console.log("perimees-depuis-nop " + nops.length);
+for (const quoi of nops.concat(
+  revu.changees.filter((quoi) => Number(quoi.lu) !== 0x90).slice(0, 24),
+)) {{
+  console.log("perimee 0x" + BigInt(quoi.adresse).toString(16)
+    + " decalage " + quoi.decalage
+    + " lu 0x" + Number(quoi.lu).toString(16)
+    + " maintenant 0x" + Number(quoi.maintenant).toString(16));
+}}
 console.log("serie " + JSON.stringify(serie));
 console.log("manquante " + (manquante === null ? "aucune" : "0x" + manquante.toString(16)));
 console.log("emplacement " + place);
