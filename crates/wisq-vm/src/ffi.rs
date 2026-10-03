@@ -636,6 +636,61 @@ pub extern "C" fn wisq_desktop_boot_page_at() -> u64 {
     crate::kernel_image::ZERO_PAGE_AT
 }
 
+/// **Ce que l'application n'a pas le droit d'écrire dans la RAM de l'invité.**
+///
+/// Elle pose ses images par un seul chemin ; celui-ci dit, avant la première
+/// écriture, si l'image tient et si elle laisse en paix les deux régions que la
+/// machine se donne à elle-même : la page zéro que le noyau lit avant sa
+/// première instruction, et le cadre que la vue repeint à chaque image.
+///
+/// `boots` dit si la page zéro existe : un programme jugé sur ses registres
+/// n'en a pas, et lui interdire cette adresse serait un refus sans objet. Le
+/// cadre est optionnel de la même façon que partout ailleurs ici —
+/// `screen_width == 0 && screen_height == 0` dit qu'il n'y en a pas.
+///
+/// **Le verdict est un code, pas un booléen**, parce que l'appelant en dit
+/// quelque chose à l'utilisateur : « l'image déborde » et « l'image tombe sur
+/// la page zéro » ne se corrigent pas pareil. Les quatre nombres sont fixés par
+/// l'en-tête et vérifiés depuis C :
+///
+/// - `0` : posable ;
+/// - `1` : la RAM n'est pas une puissance de deux ;
+/// - `2` : l'image déborde de la RAM ;
+/// - `3` : elle écraserait la page zéro ;
+/// - `4` : elle tombe dans le cadre.
+#[no_mangle]
+pub extern "C" fn wisq_desktop_placement(
+    pages: u32,
+    screen_base: u64,
+    screen_width: u32,
+    screen_height: u32,
+    boots: c_int,
+    at: u64,
+    bytes: u64,
+) -> c_int {
+    let screen = if screen_width == 0 && screen_height == 0 {
+        None
+    } else {
+        Some(desktop::Screen {
+            base: screen_base,
+            width: screen_width,
+            height: screen_height,
+        })
+    };
+    match desktop::placement(pages, screen, boots != 0, at, bytes) {
+        Ok(()) => 0,
+        Err(desktop::Refusal::RamIsNotAPowerOfTwo(_)) => 1,
+        Err(desktop::Refusal::ImageDoesNotFit { .. }) => 2,
+        Err(desktop::Refusal::ImageWouldOverwriteTheBootPage { .. }) => 3,
+        Err(desktop::Refusal::ImageWouldOverwriteTheFrame { .. }) => 4,
+        // **Les autres refus ne peuvent pas venir d'ici**, et le dire par un
+        // code à part vaut mieux que les ranger sous l'un des quatre : un
+        // appelant qui verrait « déborde de la RAM » pour un nom de canal
+        // chercherait au mauvais endroit.
+        Err(_) => -1,
+    }
+}
+
 /// Ce que la correspondance occupe **au-dessus** de la RAM de l'invité, en
 /// pages. L'hôte doit l'ajouter à la taille de la mémoire qu'il crée.
 #[no_mangle]
