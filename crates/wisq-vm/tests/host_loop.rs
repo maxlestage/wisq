@@ -4623,7 +4623,7 @@ fn the_driver_installs_wisq_run_last_of_all() {
             height: 16,
         }),
     ] {
-        let driver = wisq_vm::desktop::driver(1, 0x1000, "wisq", screen);
+        let driver = wisq_vm::desktop::driver(1, 0x1000, "wisq", screen, None);
         let run = driver
             .find("window.wisqRun =")
             .expect("le pilote installe `wisqRun`");
@@ -4707,8 +4707,8 @@ fn the_pages_driver_talks_to_the_application_and_runs_the_machine() {
 
     // Le pilote tel que la page le porte. Il est extrait plutôt que réécrit :
     // un test qui exécute une copie ne dit rien de l'original.
-    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None);
-    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None).expect("la page");
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None, None);
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None, None).expect("la page");
     assert!(
         page.contains(&driver_source),
         "la page doit porter exactement ce pilote"
@@ -4864,23 +4864,26 @@ console.log("fenetres " + fenêtres.join(","));
 fn the_page_refuses_what_it_cannot_paste_safely() {
     use wisq_vm::desktop::{page, Refusal, Screen};
     assert_eq!(
-        page(3, 0x1000, "wisq", None),
+        page(3, 0x1000, "wisq", None, None),
         Err(Refusal::RamIsNotAPowerOfTwo(3)),
         "la RAM d'un invité confiné est une puissance de deux"
     );
     assert_eq!(
-        page(0, 0x1000, "wisq", None),
+        page(0, 0x1000, "wisq", None, None),
         Err(Refusal::RamIsNotAPowerOfTwo(0))
     );
     for name in ["", "wisq; alert(1)", "wisq.autre", "wisq-2", "a b", "é"] {
         assert_eq!(
-            page(1, 0x1000, name, None),
+            page(1, 0x1000, name, None, None),
             Err(Refusal::ChannelIsNotAName(name.to_string())),
             "« {name} » ne peut pas être recollé dans du JavaScript"
         );
     }
     for name in ["wisq", "w", "canal2"] {
-        assert!(page(1, 0x1000, name, None).is_ok(), "« {name} » est un nom");
+        assert!(
+            page(1, 0x1000, name, None, None).is_ok(),
+            "« {name} » est un nom"
+        );
     }
 
     // **Le cadre, contre la même frontière que tout le reste de ce lot.** Une
@@ -4901,11 +4904,11 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
         "ce cadre doit remplir la RAM exactement, sinon le test ne borde rien"
     );
     assert!(
-        page(1, 0x1000, "wisq", Some(juste)).is_ok(),
+        page(1, 0x1000, "wisq", Some(juste), None).is_ok(),
         "un cadre qui remplit la RAM au dernier octet tient"
     );
     assert_eq!(
-        page(1, 0x1000, "wisq", Some(Screen { base: 4, ..juste })),
+        page(1, 0x1000, "wisq", Some(Screen { base: 4, ..juste }), None),
         Err(Refusal::ScreenDoesNotFit {
             folded: 4,
             bytes: ram,
@@ -4923,7 +4926,8 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
             Some(Screen {
                 base: ram * 7,
                 ..juste
-            })
+            }),
+            None
         )
         .is_ok(),
         "l'adresse du cadre se replie comme celle du code"
@@ -4938,7 +4942,8 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
                     base: 0,
                     width: creux.0,
                     height: creux.1,
-                })
+                }),
+                None
             ),
             Err(Refusal::ScreenHasNoSurface {
                 width: creux.0,
@@ -4967,7 +4972,8 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
                         base: 0,
                         width,
                         height
-                    })
+                    }),
+                    None
                 ),
                 Err(Refusal::ScreenDoesNotFit { .. })
             ),
@@ -4978,13 +4984,13 @@ fn the_page_refuses_what_it_cannot_paste_safely() {
     // **Le canvas est dans la page, et seulement quand un cadre est déclaré.**
     // Une page qui en porterait un sans cadre montrerait un rectangle vide que
     // rien ne peindrait.
-    let avec = page(1, 0x1000, "wisq", Some(juste)).expect("la page avec cadre");
+    let avec = page(1, 0x1000, "wisq", Some(juste), None).expect("la page avec cadre");
     assert!(
         avec.contains("<canvas id=\"wisqEcran\" width=\"128\" height=\"128\">"),
         "le canvas doit porter les dimensions du cadre"
     );
     assert!(avec.contains("window.wisqPaint"), "et de quoi le peindre");
-    let sans = page(1, 0x1000, "wisq", None).expect("la page sans cadre");
+    let sans = page(1, 0x1000, "wisq", None, None).expect("la page sans cadre");
     assert!(
         !sans.contains("<canvas"),
         "sans cadre, pas de canvas : {sans}"
@@ -5748,6 +5754,7 @@ fn the_pages_driver_paints_the_screen_while_the_machine_runs() {
             width: WIDTH,
             height: HEIGHT,
         }),
+        None,
     );
     let harness = scratch.join("e.mjs");
     std::fs::write(
@@ -6031,6 +6038,7 @@ fn a_page_that_cannot_install_itself_says_so() {
             width: 8,
             height: 8,
         }),
+        None,
     );
     let harness = scratch.join("p.mjs");
     std::fs::write(
@@ -12844,7 +12852,7 @@ fn the_page_and_the_swift_reader_use_the_same_words() {
     // **La page engendrée, pas sa source.** C'est ce texte-là qui part dans la
     // vue ; lire `desktop.rs` jugerait un gabarit, avec ses accolades
     // doublées et ses branches non prises.
-    let page = wisq_vm::desktop::driver(1, 0x1000, "wisq", None);
+    let page = wisq_vm::desktop::driver(1, 0x1000, "wisq", None, None);
     // Les commentaires du JavaScript nomment ces messages en prose. Une garde
     // satisfaite par une phrase au lieu d'un envoi est une garde creuse —
     // #295 l'a appris à ses dépens sur ce même dépôt.
@@ -13261,4 +13269,257 @@ console.log("fini");
             .collect(),
         text: text.clone(),
     }
+}
+
+/// **Le bureau de l'application ne pouvait pas démarrer un vrai noyau.**
+///
+/// Tout ce que #297 à #308 ont mesuré — la carte e820, la console précoce,
+/// `ttyS0`, l'espace utilisateur qui parle — se passe dans
+/// `examples/kernel-entry.rs`, le montage de mesure. Lui pose une page zéro à
+/// `0x9000`, une ligne de commande à `0x9800`, et **RSI dessus**.
+///
+/// `desktop::page` ne posait que RIP. Un noyau Linux entré ainsi n'a pas de
+/// `boot_params` : la carte e820 est vide, il retombe sur les 640 Kio du repli
+/// BIOS-88, et il s'arrête dans `extend_brk` à sa 1067ᵉ région — **muet**,
+/// puisque sans ligne de commande il n'a pas de console précoce non plus.
+/// C'est exactement l'échec que le montage a été fait pour avoir d'abord, et
+/// qui n'a été corrigé que dans le montage.
+///
+/// Le contrôle qui l'a établi : `grep rsi` sur les deux fichiers. Le montage en
+/// a une, la page n'en avait pas.
+///
+/// Ce test fait tourner **le pilote que l'application chargera**, pas une
+/// imitation, et il juge ce que l'**invité** a vu : le programme copie RSI dans
+/// RDX. Une assertion sur la globale que l'hôte a écrite se contenterait de
+/// l'empreinte ; celle-ci mesure l'acte.
+#[test]
+fn the_desktop_page_hands_the_kernel_its_boot_params() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    let seen = desktop_boot(&bun, Some(wisq_vm::kernel_image::ZERO_PAGE_AT));
+    assert_eq!(
+        seen.rdx,
+        wisq_vm::kernel_image::ZERO_PAGE_AT,
+        "l'invité a lu dans RSI l'adresse de sa page zéro : {}",
+        seen.text
+    );
+}
+
+/// **Et sans page zéro, RSI reste à zéro.**
+///
+/// C'est la garde qui donne son sens à l'autre : un pilote qui écrirait RSI
+/// dans tous les cas passerait celle du dessus. Les programmes jugés sur leurs
+/// registres — tous ceux de ce fichier — n'ont pas de `boot_params`, et leur en
+/// inventer un leur ferait lire une adresse que rien n'a posée.
+#[test]
+fn a_desktop_without_boot_params_leaves_rsi_alone() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : le pilote de la page ne serait vérifié par rien.");
+    };
+    let seen = desktop_boot(&bun, None);
+    assert_eq!(
+        seen.rdx, 0,
+        "rien n'a été posé, donc l'invité ne lit rien : {}",
+        seen.text
+    );
+}
+
+struct DesktopBoot {
+    rdx: u64,
+    text: String,
+}
+
+/// Le pilote de la page, exécuté, avec un invité qui **lit** RSI.
+fn desktop_boot(bun: &Path, boot: Option<u64>) -> DesktopBoot {
+    const PAGES: u32 = 1;
+    // La même adresse haute que le test voisin, et pour la même raison : un
+    // `Number` JavaScript perd ses bits au-delà de deux puissance cinquante-trois.
+    const BASE: u64 = 0x0100_0000_0000_1000;
+    // `mov %rsi,%rdx` puis `ud2` : ce que l'invité a vu, et un arrêt qui se nomme.
+    let program: Vec<u8> = vec![0x48, 0x89, 0xf2, 0x0f, 0x0b];
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-page-boot-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut catalogue = String::new();
+    for slot in 0..6u32 {
+        let module = Module::resolving(&program, BASE, 0, slot, PAGES)
+            .expect("l'émetteur doit compiler la région");
+        let path = scratch.join(format!("boot-{slot}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        catalogue.push_str(&format!(
+            "[\"{BASE}:{slot}\",{:?}],",
+            path.to_string_lossy()
+        ));
+    }
+    let loaded = format!("[\"{BASE}\",{program:?}],");
+
+    // Le pilote tel que la page le porte, extrait plutôt que réécrit.
+    let driver_source = wisq_vm::desktop::driver(PAGES, BASE, "wisq", None, boot);
+    let page = wisq_vm::desktop::page(PAGES, BASE, "wisq", None, boot).expect("la page");
+    assert!(
+        page.contains(&driver_source),
+        "la page doit porter exactement ce pilote"
+    );
+
+    let harness = scratch.join("d.mjs");
+    std::fs::write(
+        &harness,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+import {{ readFileSync }} from "fs";
+const catalogue = new Map([{catalogue}]);
+const posé = new Map([{loaded}]);
+globalThis.window = globalThis;
+globalThis.webkit = {{
+  messageHandlers: {{
+    wisq: {{
+      postMessage: note => {{
+        if (note.kind === "arrêt") return;
+        setTimeout(() => {{
+          const path = catalogue.get(note.address + ":" + note.slot);
+          const octets = path === undefined ? null : [...readFileSync(path)];
+          window.wisqTranslated(note.id, octets);
+        }}, 0);
+      }},
+    }},
+  }},
+}};
+
+{driver}
+
+for (const [adresse, octets] of posé) {{
+  const at = Number(BigInt(adresse) & BigInt({pages} * 65536 - 1));
+  new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
+}}
+const why = await window.wisqRun();
+console.log("arret " + why);
+console.log("rdx " + window.wisqMachine.globals[2].value.toString());
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            catalogue = catalogue,
+            loaded = loaded,
+            driver = driver_source,
+            pages = PAGES,
+        ),
+    )
+    .expect("le harnais");
+    let text = run_driver(bun, &harness);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le harnais doit aller au bout : {text}"
+    );
+    let rdx = text
+        .lines()
+        .find_map(|line| line.strip_prefix("rdx "))
+        .expect("le harnais doit dire « rdx »")
+        .trim()
+        .parse::<u64>()
+        .expect("un nombre");
+    DesktopBoot {
+        rdx,
+        text: text.clone(),
+    }
+}
+
+/// **La page zéro que le bureau tend au noyau, et ce qu'elle doit porter.**
+///
+/// Elle n'est pas réécrite ici : c'est `kernel_image::zero_page`, celle que le
+/// montage de mesure emploie depuis #257 et que ses propres tests tiennent.
+/// L'écrire une troisième fois — après le Rust et `X86BootLoader` — serait
+/// #289 par construction.
+///
+/// Ce que cette tranche ajoute est l'assemblage : la ligne de commande vit
+/// **dans** la page, à `0x800` de son début, parce que c'est là que le montage
+/// la pose (`COMMAND_LINE_AT − ZERO_PAGE_AT`) et que le champ `0x228` l'y
+/// désigne. Un seul bloc de quatre kibioctets à poser, une seule adresse.
+#[test]
+fn the_boot_page_declares_the_ram_and_carries_the_command_line_inside_itself() {
+    const PAGES: u32 = 1024; // soixante-quatre mébioctets
+    let page =
+        wisq_vm::desktop::boot_page(PAGES, wisq_vm::desktop::COMMAND_LINE).expect("la page zéro");
+    assert_eq!(page.len(), 4096, "une page, pas un octet de plus");
+
+    // Le champ qui dit au noyau où lire sa ligne de commande.
+    let pointer = u32::from_le_bytes(page[0x228..0x22c].try_into().unwrap());
+    assert_eq!(
+        u64::from(pointer),
+        wisq_vm::kernel_image::COMMAND_LINE_AT,
+        "la page désigne la ligne là où le bureau la pose"
+    );
+    // Et la ligne y est, terminée par un nul.
+    let offset =
+        (wisq_vm::kernel_image::COMMAND_LINE_AT - wisq_vm::kernel_image::ZERO_PAGE_AT) as usize;
+    let line = wisq_vm::desktop::COMMAND_LINE.as_bytes();
+    assert_eq!(&page[offset..offset + line.len()], line);
+    assert_eq!(page[offset + line.len()], 0, "le noyau lit jusqu'au nul");
+
+    // La carte e820 : deux entrées, celle sous le trou du premier mébioctet et
+    // tout le reste. C'est `zero_page` qui les écrit ; ce qui est vérifié ici
+    // est que le bureau lui a donné **sa** RAM et pas une autre.
+    assert_eq!(page[0x1e8], 2, "deux entrées");
+    let size = u64::from_le_bytes(page[0x2d0 + 20 + 8..0x2d0 + 20 + 16].try_into().unwrap());
+    assert_eq!(
+        size,
+        u64::from(PAGES) * 65536 - 0x10_0000,
+        "la seconde entrée couvre la RAM du bureau moins le premier mébioctet"
+    );
+    assert_eq!(page[0x210], 0xff, "un chargeur non enregistré");
+
+    // **Et la console est nommée sur le série.** C'est ce que #306 a mesuré :
+    // sans elle, `/dev/console` est l'écran factice, les octets de l'espace
+    // utilisateur sont acceptés et jetés, et `write` rend pourtant 18.
+    assert!(
+        wisq_vm::desktop::COMMAND_LINE
+            .split_whitespace()
+            .any(|argument| argument == "console=ttyS0"),
+        "la ligne du bureau doit nommer une console sur le série : « {} »",
+        wisq_vm::desktop::COMMAND_LINE
+    );
+}
+
+/// **Et ce qui ne tiendrait pas est refusé, avec le nombre.**
+///
+/// La page a la fin d'elle-même pour sa ligne : de `0x800` à `0x1000`, moins
+/// l'octet nul. Tronquer donnerait au noyau une ligne coupée au milieu d'un
+/// paramètre — qu'il accepterait sans rien dire. Et une RAM qui n'atteint pas
+/// la page la ferait poser dans la correspondance des blocs, qui vit juste
+/// au-dessus : l'invité peindrait sa table des blocs avec sa propre carte
+/// mémoire.
+#[test]
+fn a_boot_page_that_would_not_fit_is_refused() {
+    use wisq_vm::desktop::Refusal;
+    let room = 4096
+        - (wisq_vm::kernel_image::COMMAND_LINE_AT - wisq_vm::kernel_image::ZERO_PAGE_AT) as usize
+        - 1;
+    let juste = "x".repeat(room);
+    assert!(
+        wisq_vm::desktop::boot_page(1024, &juste).is_ok(),
+        "une ligne qui remplit la place exactement passe"
+    );
+    let un_de_trop = "x".repeat(room + 1);
+    assert_eq!(
+        wisq_vm::desktop::boot_page(1024, &un_de_trop),
+        Err(Refusal::CommandLineDoesNotFit {
+            bytes: room + 1,
+            room,
+        }),
+        "un octet de plus est refusé, et le refus porte les deux nombres"
+    );
+    // Une RAM d'une seule page de soixante-quatre kibioctets porte la page
+    // zéro ; rien de plus petit n'existe, et `pages` est déjà refusé hors
+    // puissance de deux. La garde porte donc sur la puissance de deux, comme
+    // ailleurs.
+    assert_eq!(
+        wisq_vm::desktop::boot_page(3, wisq_vm::desktop::COMMAND_LINE),
+        Err(Refusal::RamIsNotAPowerOfTwo(3)),
+        "la RAM du bureau est une puissance de deux, ici comme dans la page"
+    );
 }

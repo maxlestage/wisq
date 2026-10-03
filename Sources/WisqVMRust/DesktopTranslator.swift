@@ -148,7 +148,8 @@ public enum DesktopTranslator {
         pages: UInt32,
         entry: UInt64,
         channel: String,
-        screen: Screen? = nil
+        screen: Screen? = nil,
+        boot: UInt64? = nil
     ) -> String? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
@@ -156,6 +157,7 @@ public enum DesktopTranslator {
             wisq_desktop_page(
                 pages, entry, name,
                 screen?.base ?? 0, screen?.width ?? 0, screen?.height ?? 0,
+                boot ?? 0,
                 &out, &length
             )
         }
@@ -164,6 +166,34 @@ public enum DesktopTranslator {
         // ici serait un défaut de l'émetteur, pas une entrée à refuser.
         return String(data: bytes, encoding: .utf8)
     }
+
+    /// **La page zéro que le bureau tend au noyau**, ligne de commande comprise.
+    ///
+    /// Un noyau x86-64 entré sans `boot_params` n'a pas de carte e820 : il
+    /// s'arrête muet dans `extend_brk` à sa 1067ᵉ région. Ces quatre
+    /// kibioctets se posent à `bootPageAddress` par `LocalDesktop.place`, et
+    /// cette adresse se passe à `page(boot:)` — le pilote met alors RSI dessus.
+    ///
+    /// `nil` prend la ligne de commande mesurée par défaut : `earlycon` sur le
+    /// port que l'hôte écoute, et `console=ttyS0` sans `keep_bootcon`, qui est
+    /// la forme que #306 a mesurée comme sortant sans dédoubler.
+    public static func bootPage(pages: UInt32, commandLine: String? = nil) -> Data? {
+        var out: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        let ok: Int32
+        if let commandLine {
+            ok = commandLine.withCString { line in
+                wisq_desktop_boot_page(pages, line, &out, &length)
+            }
+        } else {
+            ok = wisq_desktop_boot_page(pages, nil, &out, &length)
+        }
+        return claim(ok, out, length)
+    }
+
+    /// Où la page zéro doit être posée. Lu du Rust plutôt que recopié : le
+    /// pilote y met RSI, et deux copies du nombre divergeraient en silence.
+    public static var bootPageAddress: UInt64 { wisq_desktop_boot_page_at() }
 
     // MARK: -
 

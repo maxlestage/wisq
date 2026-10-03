@@ -434,6 +434,17 @@ Trois choses, et aucune n'est petite :
    sur cette course — c'est une mesure, pas une garantie. `WISQ_VEILLE=1`
    l'allume ; éteint, la boucle n'y paie qu'un test de booléen.
 
+   **Et #310 a trouvé que tout ce qui précède se passait dans le montage.**
+   `desktop::page` — la page que l'application charge dans sa vue — ne posait
+   que **RIP** : ni RSI, ni page zéro, ni ligne de commande. Un noyau entré
+   ainsi s'arrête dans `extend_brk` à sa 1067ᵉ région, muet. Le bureau de
+   l'application pose maintenant une page zéro de quatre kibioctets, ligne de
+   commande comprise — `earlycon=uart8250,io,0x3f8 console=ttyS0`, la forme que
+   #306 a mesurée —, et le pilote met RSI dessus. Quatre gardes le tiennent,
+   dont deux qui exécutent le vrai pilote et jugent ce que l'**invité** a lu
+   dans RSI. **Non mesuré dans un iPhone** : `LocalDesktopTests` ne démarre pas
+   de vrai noyau, il lui faudrait l'image de trente-cinq mébioctets.
+
    **Et le mur d'après n'était pas davantage une instruction manquante** : à
    `do_one_initcall + 673` se trouve un `ud2` que Linux exécute **exprès**.
    `WARN()` compile en un appel à `__warn_printk` suivi d'un `ud2`, et son

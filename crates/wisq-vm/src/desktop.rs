@@ -54,11 +54,21 @@ pub enum Refusal {
     ScreenDoesNotFit { folded: u64, bytes: u64, ram: u64 },
     /// Un cadre sans surface n'est pas un cadre.
     ScreenHasNoSurface { width: u32, height: u32 },
+    /// **La ligne de commande ne tiendrait pas dans la page zéro.** Elle vit
+    /// dedans, à `0x800` de son début, donc elle a la fin de cette page et rien
+    /// de plus. Tronquer donnerait au noyau une ligne coupée au milieu d'un
+    /// paramètre — qu'il accepterait sans rien dire.
+    CommandLineDoesNotFit { bytes: usize, room: usize },
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CommandLineDoesNotFit { bytes, room } => write!(
+                out,
+                "la ligne de commande fait {bytes} octets et la page zéro ne lui en \
+                 laisse que {room}"
+            ),
             Self::RamIsNotAPowerOfTwo(pages) => write!(
                 out,
                 "la RAM d'un invité confiné doit être une puissance de deux de pages, pas {pages}"
@@ -80,11 +90,74 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// **La ligne de commande que le bureau donne au noyau.**
+///
+/// `earlycon` branche la console 8250 précoce sur `0x3f8` dès `setup_arch`,
+/// bien avant `console_init` ; `console=ttyS0` fait de ce port **la** console,
+/// donc celle que `/dev/console` ouvre pour `/init`.
+///
+/// **Les deux sont mesurés, pas choisis par analogie.** #306 a montré que sans
+/// `console=ttyS0` le `write` de l'espace utilisateur rend bien 18 — le nombre
+/// d'octets demandés — et que **le message ne sort pas** : `/dev/console` est
+/// alors `tty0`, l'écran de texte factice, qui accepte les octets et les jette.
+/// Et `keep_bootcon` n'y est **pas**, aussi par mesure : avec les deux, chaque
+/// ligne de `printk` sort deux fois (367 contre 222), parce que les deux
+/// consoles écrivent sur le même port. Sans lui, la bascule
+/// `bootconsole [uart8250] disabled` est sans perte depuis que #305 a rendu au
+/// port ses huit registres : 242 lignes contre 240.
+pub const COMMAND_LINE: &str = "earlycon=uart8250,io,0x3f8 console=ttyS0";
+
+/// **La page zéro que le bureau tend au noyau, ligne de commande comprise.**
+///
+/// Un noyau Linux entré sans `boot_params` n'a pas de carte e820 : il retombe
+/// sur les 640 kibioctets du repli BIOS-88, memblock n'a rien, et il s'arrête
+/// dans `extend_brk` à sa 1067ᵉ région — **muet**, puisque sans ligne de
+/// commande il n'a pas de console précoce non plus. C'est l'échec que le
+/// montage de mesure a eu d'abord, et qui n'avait été corrigé **que** dans le
+/// montage : `desktop::page` ne posait que RIP.
+///
+/// **La page n'est pas réécrite ici.** C'est `kernel_image::zero_page`, celle
+/// que le montage emploie et que ses propres tests tiennent. En écrire une
+/// troisième — après le Rust et `X86BootLoader` — serait #289 par
+/// construction.
+///
+/// Ce que cette fonction ajoute est l'assemblage : la ligne vit **dans** la
+/// page, à `COMMAND_LINE_AT − ZERO_PAGE_AT` de son début, soit `0x800`, parce
+/// que c'est là que le montage la pose et que le champ `0x228` l'y désigne. Le
+/// bureau a donc **un seul bloc de quatre kibioctets** à poser, à une seule
+/// adresse — et `LocalDesktop.place` sait déjà le faire.
+pub fn boot_page(pages: u32, command_line: &str) -> Result<Vec<u8>, Refusal> {
+    if pages == 0 || !pages.is_power_of_two() {
+        return Err(Refusal::RamIsNotAPowerOfTwo(pages));
+    }
+    let inside =
+        (crate::kernel_image::COMMAND_LINE_AT - crate::kernel_image::ZERO_PAGE_AT) as usize;
+    // La fin de la page, moins l'octet nul qui termine la ligne.
+    let room = 4096 - inside - 1;
+    if command_line.len() > room {
+        return Err(Refusal::CommandLineDoesNotFit {
+            bytes: command_line.len(),
+            room,
+        });
+    }
+    let mut page = crate::kernel_image::zero_page(
+        u64::from(pages) * 65536,
+        crate::kernel_image::COMMAND_LINE_AT as u32,
+    );
+    page[inside..inside + command_line.len()].copy_from_slice(command_line.as_bytes());
+    page[inside + command_line.len()] = 0;
+    Ok(page)
+}
+
 /// **La page complète, prête à être chargée dans un `WKWebView`.**
 ///
 /// - `pages` : la RAM de l'invité, en pages de 64 Kio, **puissance de deux**.
 /// - `entry` : l'adresse où la machine commence.
 /// - `channel` : le nom du gestionnaire de messages que l'application déclare.
+/// - `boot` : où l'application a posé la page zéro, ou `None` quand il n'y en
+///   a pas. Le pilote met alors RSI dessus — c'est par là qu'un noyau
+///   x86-64 lit sa carte e820, sa ligne de commande et son initramfs, et sans
+///   elle il s'arrête muet dans `extend_brk`. `boot_page` la fabrique.
 ///
 /// **Le pont est asynchrone, et c'est imposé, pas choisi.** Une vue ne peut pas
 /// appeler l'application et attendre : elle poste un message et reçoit la
@@ -119,6 +192,7 @@ pub fn page(
     entry: u64,
     channel: &str,
     screen: Option<Screen>,
+    boot: Option<u64>,
 ) -> Result<String, Refusal> {
     if pages == 0 || !pages.is_power_of_two() {
         return Err(Refusal::RamIsNotAPowerOfTwo(pages));
@@ -175,7 +249,7 @@ pub fn page(
          {HOST_SCRIPT}\n\
          {}\n\
          </script>\n",
-        driver(pages, entry, channel, screen)
+        driver(pages, entry, channel, screen, boot)
     ))
 }
 
@@ -251,7 +325,13 @@ window.wisqCesser = () => {{
 /// Séparé de la page pour qu'un test puisse l'exécuter sans HTML autour — un
 /// moteur JavaScript en ligne de commande n'a pas de `WKWebView`, mais il sait
 /// très bien bouchonner `window.webkit.messageHandlers`.
-pub fn driver(pages: u32, entry: u64, channel: &str, screen: Option<Screen>) -> String {
+pub fn driver(
+    pages: u32,
+    entry: u64,
+    channel: &str,
+    screen: Option<Screen>,
+    boot: Option<u64>,
+) -> String {
     // **Ce que la page fait de l'écran, et rien si elle n'en a pas.** Une
     // machine sans cadre est un cas réel — un démarrage jugé sur ses registres
     // n'a pas besoin d'être regardé — et un canvas qu'on peindrait pour rien
@@ -277,6 +357,26 @@ window.wisqCesser = () => {};
             ),
             painter(screen),
         ),
+    };
+    // **RSI, et seulement si l'application a posé une page zéro.**
+    //
+    // Le protocole de démarrage x86-64 de Linux passe l'adresse de
+    // `boot_params` dans RSI, et rien d'autre : le noyau lit par là sa carte
+    // e820, sa ligne de commande et son initramfs. Le montage de mesure le
+    // fait depuis #257 ; la page du bureau ne posait que RIP, et un noyau
+    // entré ainsi s'arrête muet dans `extend_brk` à sa 1067ᵉ région.
+    //
+    // **Le numéro six est le registre, pas un emplacement nommé.** `SLOTS` ne
+    // nomme que ce qui n'est pas un registre général — RIP, les drapeaux,
+    // l'horloge ; les seize registres sont les seize premières globales, dans
+    // l'ordre du codage x86 : rax, rcx, rdx, rbx, rsp, rbp, **rsi**, rdi.
+    //
+    // Et rien n'est écrit quand rien n'a été posé : les programmes jugés sur
+    // leurs registres n'ont pas de `boot_params`, et leur en inventer un leur
+    // ferait lire une adresse que personne n'a remplie.
+    let amorce = match boot {
+        None => String::new(),
+        Some(at) => format!("vm.globals[6].value = {at}n; // RSI : la page zéro\n"),
     };
     format!(
         r#"
@@ -343,6 +443,7 @@ const translate = (address, slot, code) => new Promise(settle => {{
 
 const vm = machine({{ translate, pages: {pages}{declared} }});
 vm.globals[SLOTS.rip].value = {entry}n;
+{amorce}
 window.wisqMachine = vm;
 {painting}
 window.wisqRun = async () => {{
