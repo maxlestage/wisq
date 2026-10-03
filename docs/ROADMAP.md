@@ -2272,6 +2272,17 @@ vraie limite du conteneur, et elle ne tient plus qu'à un framework Apple.
 par tranches de 48 Kio — un chemin assumé et cher, qu'un gestionnaire de schéma
 remplacerait, et qui ne se mesure que sur un appareil.
 
+**`place` tient trois bornes et n'en tenait qu'une.** La fin de la RAM, au-dessus
+de laquelle vit la correspondance, était gardée depuis le lot 8. Les deux autres
+sont les régions que la machine se donne à elle-même, et l'appelant les écrasait
+sans qu'un mot ne le dise : la **page zéro** que le noyau lit avant sa première
+instruction (#310), et le **cadre** que la vue repeint à chaque image (#311). Le
+verdict est `desktop::placement`, en Rust et non en Swift, parce que c'est là que
+vit le risque — le pliage par masque et deux additions qui peuvent déborder, dont
+une qui *accepterait* en enroulant. Et la page zéro n'est intouchable que si le
+bureau amorce un noyau : un refus sans objet apprend aux appelants à contourner
+les refus.
+
 ### Les pixels : c'est la vue qui peint
 
 Le réflexe aurait été un `LocalDesktop.pixels(…)` qui lit le cadre dans la

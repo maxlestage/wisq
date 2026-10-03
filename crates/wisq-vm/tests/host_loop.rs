@@ -13692,3 +13692,150 @@ fn a_screen_the_kernel_could_not_be_told_about_is_refused() {
         );
     }
 }
+
+/// **Rien ne refusait une image posée par-dessus la page zéro ou le cadre.**
+///
+/// `LocalDesktop.place` est le seul chemin par lequel des octets entrent dans
+/// la RAM de l'invité, et il ne vérifiait qu'une chose : que l'image tienne
+/// jusqu'au bout de la RAM. Or deux régions de cette RAM n'appartiennent pas à
+/// l'appelant :
+///
+/// - **la page zéro**, à `ZERO_PAGE_AT`, quatre kibioctets. Une image posée
+///   dessus écrase la carte e820 et la ligne de commande *avant* que le noyau
+///   ne les lise — il démarre alors comme si rien n'avait été posé, et c'est le
+///   défaut de #310 au centuple : silencieux et impossible à relier à sa cause ;
+/// - **le cadre**, quand le bureau en déclare un. #311 l'a fait réserver dans
+///   la carte e820 pour que le **noyau** ne le distribue pas ; ça n'empêche
+///   nullement l'**application** d'y écrire son image. Le noyau aurait alors son
+///   texte à l'endroit que l'invité repeint à chaque image.
+///
+/// **L'arithmétique est ici et pas en Swift**, parce que c'est là qu'est le
+/// risque — le repliement par masque, et des additions qui débordent — et
+/// parce que `LocalDesktop.swift` vit sous `canImport(WebKit)` : sous Linux,
+/// rien ne la ferait tomber. Un `Int` Swift piégerait là où un refus est
+/// attendu.
+#[test]
+fn an_image_that_would_overwrite_what_is_not_the_callers_is_refused() {
+    use wisq_vm::desktop::{placement, Refusal, Screen};
+    const PAGES: u32 = 1024; // soixante-quatre mébioctets
+    let ram = u64::from(PAGES) * 65536;
+    let zero = wisq_vm::kernel_image::ZERO_PAGE_AT;
+    let bytes = 64u64 * 64 * 4;
+    let screen = Screen {
+        base: ram - bytes,
+        width: 64,
+        height: 64,
+    };
+
+    // Ce qui passe : une image qui tient, au-dessus de la page zéro et sous le
+    // cadre. Le cas qui passe est exigé — sans lui, un refus qui refuserait
+    // tout passerait toutes les autres assertions.
+    assert_eq!(
+        placement(PAGES, Some(screen), true, 0x10_0000, 0x10_0000),
+        Ok(()),
+        "une image entre la page zéro et le cadre est posable"
+    );
+
+    // **Sur la page zéro.** À l'octet près, des deux côtés.
+    for (at, len, pourquoi) in [
+        (zero, 16u64, "pile dessus"),
+        (zero + 4095, 1, "son dernier octet"),
+        (zero - 8, 16, "à cheval sur son début"),
+    ] {
+        assert!(
+            matches!(
+                placement(PAGES, Some(screen), true, at, len),
+                Err(Refusal::ImageWouldOverwriteTheBootPage { .. })
+            ),
+            "une image {pourquoi} écraserait la carte mémoire du noyau"
+        );
+    }
+    // Et juste à côté, les deux voisins immédiats passent.
+    assert_eq!(placement(PAGES, Some(screen), true, zero - 16, 16), Ok(()));
+    assert_eq!(
+        placement(PAGES, Some(screen), true, zero + 4096, 16),
+        Ok(())
+    );
+
+    // **Et la page zéro n'est intouchable que si le bureau amorce un noyau.**
+    // Un programme jugé sur ses registres n'en a pas : lui interdire cette
+    // adresse serait un refus sans objet.
+    assert_eq!(
+        placement(PAGES, Some(screen), false, zero, 16),
+        Ok(()),
+        "sans noyau à amorcer, il n'y a pas de page zéro à protéger"
+    );
+
+    // **Sur le cadre.** À l'octet près aussi.
+    for (at, len, pourquoi) in [
+        (screen.base, 16u64, "pile dessus"),
+        (screen.base + bytes - 1, 1, "son dernier octet"),
+        (screen.base - 8, 16, "à cheval sur son début"),
+    ] {
+        assert!(
+            matches!(
+                placement(PAGES, Some(screen), true, at, len),
+                Err(Refusal::ImageWouldOverwriteTheFrame { .. })
+            ),
+            "une image {pourquoi} serait repeinte par l'invité à chaque image"
+        );
+    }
+    assert_eq!(
+        placement(PAGES, Some(screen), true, screen.base - 16, 16),
+        Ok(())
+    );
+
+    // **Sans cadre, le haut de la RAM est libre** — c'est ce qui donne son sens
+    // au refus ci-dessus.
+    assert_eq!(
+        placement(PAGES, None, true, screen.base, 16),
+        Ok(()),
+        "aucun cadre déclaré, donc rien à protéger en haut"
+    );
+}
+
+/// **Et l'adresse se replie, comme partout ailleurs dans ce lot.**
+///
+/// La RAM d'un invité confiné est adressée par un masque : `0x1_0000_9000` et
+/// `0x9000` désignent le même octet sur une machine de 64 Mio. Un refus qui
+/// comparerait les adresses **brutes** laisserait passer exactement la même
+/// écriture sous un autre nom — et c'est l'erreur que `place` évite déjà pour
+/// sa borne de RAM, donc celle qu'il faut éviter ici.
+///
+/// **Le débordement, aussi, et il *accepterait* au lieu de refuser.** Une taille
+/// proche du maximum additionnée à une adresse enroule : `at + len` redevient
+/// petit, l'intervalle paraît fini avant la page zéro, et l'image passe. C'est
+/// la même famille que le `largeur × hauteur × 4` de ce lot, trouvé en écrivant
+/// la garde deux fois.
+#[test]
+fn the_placement_folds_its_address_and_does_not_wrap() {
+    use wisq_vm::desktop::{placement, Refusal, Screen};
+    const PAGES: u32 = 1024;
+    let ram = u64::from(PAGES) * 65536;
+    let zero = wisq_vm::kernel_image::ZERO_PAGE_AT;
+    let screen = Screen {
+        base: ram - 4096,
+        width: 32,
+        height: 32,
+    };
+
+    // La même page zéro, désignée par une adresse d'un autre tour de masque.
+    assert!(
+        matches!(
+            placement(PAGES, Some(screen), true, zero + ram * 3, 16),
+            Err(Refusal::ImageWouldOverwriteTheBootPage { .. })
+        ),
+        "repliée, c'est la même page zéro"
+    );
+
+    // Une taille qui enroulerait l'addition.
+    assert!(
+        placement(PAGES, Some(screen), true, 0x10_0000, u64::MAX).is_err(),
+        "une taille qui enroule doit être refusée, pas acceptée par débordement"
+    );
+    // Et une image plus grande que la RAM, qui couvre donc tout.
+    assert!(
+        placement(PAGES, Some(screen), true, 0, ram + 1).is_err(),
+        "une image plus grande que la RAM ne tient nulle part"
+    );
+}
