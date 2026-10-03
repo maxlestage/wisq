@@ -376,6 +376,48 @@ int wisq_desktop_declare_initramfs(uint8_t *page, size_t page_len,
                                    uint64_t bytes);
 
 /*
+ * A loadable segment of an ELF64 kernel: where it lives, and what it carries.
+ *
+ * The two sizes are not the same thing, and confusing them is expensive.
+ * `file_size` is what the file carries; `memory_size` is what the segment
+ * occupies once loaded. The difference is BSS — zeroes the kernel expects and
+ * that no byte of the file describes. Alpine's vmlinux drags five mebibytes of
+ * it.
+ *
+ * `physical_address` is where a loader places the segment; `virtual_address` is
+ * where it was linked. For an x86-64 kernel's text the two differ by
+ * `__START_KERNEL_map`, and the startup code moves from one to the other.
+ */
+typedef struct {
+  uint64_t offset;
+  uint64_t virtual_address;
+  uint64_t physical_address;
+  uint64_t file_size;
+  uint64_t memory_size;
+} wisq_kernel_load;
+
+/*
+ * An ELF64 kernel's entry point and its loadable segments.
+ *
+ * Without this the application cannot boot a real kernel at all: it has no way
+ * to learn where the image goes or where execution starts, and both
+ * `wisq_desktop_page`'s `entry` and the addresses the application places at
+ * come from here. The measurement rig has read ELFs since #304; the desktop
+ * could not.
+ *
+ * Ask twice: once with `capacity == 0` to learn the count, then with an array
+ * of that size. `*out_entry` and `*out_count` are set whenever the image is
+ * read, so the first call is not wasted.
+ *
+ *   0  read, and `out_count` segments were written to `out_loads`
+ *   1  not an ELF64 this reader accepts, or a null pointer
+ *   2  read, but `capacity` was too small — nothing was written to `out_loads`
+ */
+int wisq_kernel_loads(const uint8_t *image, size_t len, uint64_t *out_entry,
+                      wisq_kernel_load *out_loads, size_t capacity,
+                      size_t *out_count);
+
+/*
  * What the correspondence occupies *above* the guest's RAM, in pages. The host
  * adds it to the size of the memory it creates.
  */

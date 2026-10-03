@@ -172,14 +172,70 @@ fn the_c_header_matches_the_x86_translator() {
         String::from_utf8_lossy(&compiled.stderr)
     );
 
-    let ran = Command::new(&out).output().expect("exécution");
+    // **L'ELF est gravé ici et son chemin passé au programme.** Le fabriquer en
+    // C demanderait un **second** constructeur d'ELF — il y en a déjà un dans
+    // `tests/kernel_elf.rs` — et deux copies d'un gréement finissent par ne
+    // plus décrire la même chose. C'est la même raison qui fait graver l'image
+    // ISO ici plutôt qu'en C.
+    //
+    // Celui-ci est délibérément plus pauvre que l'autre : trois en-têtes dont
+    // une `PT_NOTE`, et c'est tout. **Ce n'est pas le lecteur qu'il juge, c'est
+    // la frontière.**
+    let elf = std::env::temp_dir().join(format!("wisq-abi-elf-{}.bin", std::process::id()));
+    std::fs::write(&elf, forged_elf()).expect("graver l'ELF du programme d'ABI");
+    let ran = Command::new(&out).arg(&elf).output().expect("exécution");
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&elf);
     assert!(
         ran.status.success(),
         "le traducteur ne se comporte pas comme l'en-tête le promet :\n{}{}",
         String::from_utf8_lossy(&ran.stdout),
         String::from_utf8_lossy(&ran.stderr)
     );
+}
+
+/// **Un ELF64 minimal, pour que le programme C ait quelque chose à lire.**
+///
+/// Trois en-têtes de programme, dont une `PT_NOTE` qu'un lecteur naïf
+/// compterait comme chargeable, et un second segment qui porte du **BSS** —
+/// quatre cents octets qui existent en mémoire et pas dans le fichier. C'est
+/// la distinction qui coûte cher quand on la rate : confondre les deux tailles
+/// fait lire hors du fichier, ou laisser un trou là où le noyau attend des
+/// zéros.
+///
+/// Le fichier est **rempli jusqu'à ce que ses en-têtes annoncent**, parce que
+/// le lecteur refuse un ELF qui promet plus d'octets qu'il n'en porte — et un
+/// refus ici ressemblerait à une frontière cassée.
+fn forged_elf() -> Vec<u8> {
+    const ENTRY: u64 = 0x0100_0090;
+    let headers: [(u32, u64, u64, u64, u64, u64); 3] = [
+        (1, 0x1000, 0xffff_ffff_8100_0000, 0x0100_0000, 1000, 1000),
+        (4, 0x2000, 0, 0, 32, 32), // PT_NOTE : pas un segment à charger
+        (1, 0x3000, 0xffff_ffff_8240_0000, 0x0240_0000, 500, 900),
+    ];
+    let mut bytes = vec![0u8; 64];
+    bytes[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    bytes[4] = 2; // ELFCLASS64
+    bytes[5] = 1; // petit-boutien
+    bytes[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    bytes[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    bytes[24..32].copy_from_slice(&ENTRY.to_le_bytes());
+    bytes[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+    bytes[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+    bytes[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+    bytes[56..58].copy_from_slice(&(headers.len() as u16).to_le_bytes());
+    for (kind, offset, virtual_address, physical_address, file, memory) in headers {
+        let mut header = vec![0u8; 56];
+        header[0..4].copy_from_slice(&kind.to_le_bytes());
+        header[8..16].copy_from_slice(&offset.to_le_bytes());
+        header[16..24].copy_from_slice(&virtual_address.to_le_bytes());
+        header[24..32].copy_from_slice(&physical_address.to_le_bytes());
+        header[32..40].copy_from_slice(&file.to_le_bytes());
+        header[40..48].copy_from_slice(&memory.to_le_bytes());
+        bytes.extend_from_slice(&header);
+    }
+    bytes.resize(0x3000 + 500, 0);
+    bytes
 }
 
 /// **Ce que C voit du lecteur d'image de disque optique.**
