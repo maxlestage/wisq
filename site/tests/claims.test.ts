@@ -733,7 +733,7 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "35",
+        "36",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
@@ -744,7 +744,9 @@ const accounted = new Map<string, Map<string, string>>([
           "`wisq_desktop_placement`, qui dit ce que l'application n'a pas le " +
           "droit d'écrire dans la RAM de l'invité. Trente-cinq en #313 : " +
           "`wisq_desktop_declare_initramfs`, sans quoi le noyau du bureau " +
-          "meurt dans `prepare_namespace` avec sa racine à côté.",
+          "meurt dans `prepare_namespace` avec sa racine à côté. Trente-six en " +
+          "#314 : `wisq_kernel_loads`, le lecteur ELF que le montage de mesure " +
+          "emploie depuis #304 et que rien n'exposait à l'application.",
       ],
     ]),
   ],

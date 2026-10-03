@@ -84,7 +84,18 @@ static size_t global_entry(size_t slot, uint8_t *out) {
     return at;
 }
 
-int main(void) {
+/* **Le chemin d'un ELF forgé par le harnais, et il est exigé.**
+ *
+ * Le fabriquer ici demanderait un **second** constructeur d'ELF — il y en a
+ * déjà un dans `tests/kernel_elf.rs` — et deux copies d'un gréement finissent
+ * par ne plus décrire la même chose. C'est la même raison qui fait graver
+ * l'image ISO par le harnais plutôt qu'en C.
+ *
+ * **Sans argument, ce programme échoue, il ne saute pas.** Le harnais le passe
+ * toujours : son absence veut donc dire que le harnais a dérivé, et un saut
+ * silencieux laisserait la frontière non vérifiée en restant vert.
+ */
+int main(int argc, char **argv) {
     uint8_t *module = NULL;
     size_t len = 0;
 
@@ -450,6 +461,66 @@ int main(void) {
                                              ARCHIVE, ARCHIVE_BYTES) == -1,
               "et une page nulle n'est pas une page");
         wisq_x86_free_module(racine, racine_len);
+    }
+
+    /* **Le point d'entrée et les segments d'un noyau ELF.** Sans eux
+     * l'application ne peut pas démarrer un vrai noyau : elle n'a aucun moyen
+     * d'apprendre où poser l'image ni par où l'exécution commence. Le montage
+     * de mesure lit des ELF depuis #304 ; le bureau ne pouvait pas. */
+    check(argc >= 2, "le harnais passe le chemin de l'ELF forgé");
+    if (argc >= 2) {
+        FILE *fichier = fopen(argv[1], "rb");
+        check(fichier != NULL, "l'ELF forgé s'ouvre");
+        if (fichier != NULL) {
+            static uint8_t elf[1 << 16];
+            size_t elf_len = fread(elf, 1, sizeof elf, fichier);
+            fclose(fichier);
+            check(elf_len > 64, "et il porte au moins un en-tête");
+
+            /* **Premier appel, capacité nulle : on apprend le compte.** Et il
+             * n'est pas perdu — l'entrée et le compte sont posés quand même. */
+            uint64_t entree = 0;
+            size_t combien = 0;
+            check(wisq_kernel_loads(elf, elf_len, &entree, NULL, 0, &combien) == 2,
+                  "une capacité nulle dit le compte sans rien écrire");
+            check(entree == 0x01000090, "et le point d'entrée est déjà là");
+            check(combien == 2, "deux segments chargeables, la note n'en est pas un");
+
+            /* Second appel, avec la place qu'il faut. */
+            wisq_kernel_load segments[4];
+            memset(segments, 0xee, sizeof segments);
+            check(wisq_kernel_loads(elf, elf_len, &entree, segments, 4, &combien) == 0,
+                  "avec la place, les segments sont écrits");
+            check(combien == 2, "et le compte ne change pas");
+            check(segments[0].physical_address == 0x01000000,
+                  "le premier segment va là où le chargeur le pose");
+            check(segments[0].file_size == 1000, "et le fichier en porte mille octets");
+            /* **Les cinq champs sont vérifiés, pas trois.** Une transposition
+             * — `virtual_address` à la place de `physical_address`, par
+             * exemple — passerait toutes les assertions qui ne regardent que
+             * l'un des deux, et un chargeur poserait le noyau à l'adresse à
+             * laquelle il a été *lié* au lieu de celle où on le *pose*. Pour un
+             * x86-64 les deux diffèrent de `__START_KERNEL_map`. */
+            check(segments[0].offset == 0x1000, "le segment commence là dans le fichier");
+            check(segments[0].virtual_address == 0xffffffff81000000ULL,
+                  "et il a été lié bien plus haut que là où on le pose");
+            /* **Les deux tailles ne sont pas la même chose.** L'écart est le
+             * BSS : des zéros que le noyau attend et qu'aucun octet du fichier
+             * ne décrit. Les confondre fait lire hors du fichier, ou laisser un
+             * trou là où le noyau attend des zéros. */
+            check(segments[1].file_size == 500 && segments[1].memory_size == 900,
+                  "et le second porte quatre cents octets de BSS");
+            /* Rien au-delà du compte n'a été touché. */
+            check(segments[2].offset == 0xeeeeeeeeeeeeeeeeULL,
+                  "et rien n'est écrit au-delà des segments annoncés");
+
+            /* Ce qui n'est pas un ELF est refusé, pas deviné. */
+            check(wisq_kernel_loads((const uint8_t *)"MZ\x90\x00", 4, &entree, NULL, 0,
+                                    &combien) == 1,
+                  "ce qui n'est pas un ELF64 est refusé");
+            check(wisq_kernel_loads(NULL, 0, &entree, NULL, 0, &combien) == 1,
+                  "et un pointeur nul n'est pas une image");
+        }
     }
 
     /* Et la page du pilote accepte l'adresse : c'est elle qui pose RSI. */

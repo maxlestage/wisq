@@ -20405,3 +20405,102 @@ et pas de sa couverture.** Les trois sabotages survivants portent tous sur la
 moitié de la comparaison que la copie a laissée de côté. Le remède n'est pas de
 relire : c'est de saboter chaque moitié séparément, parce que c'est la seule
 chose qui distingue « j'ai une garde » de « j'ai une garde qui porte ».
+
+## #314 — le lecteur d'ELF existait, était testé, et l'application ne pouvait pas l'appeler
+
+Quatrième tour de la même question, et le quatrième défaut de la même forme : *à
+chaque chose que le montage de mesure a, demander ce que le bureau en a.*
+
+`kernel_image::loads` lit un ELF64 depuis #304 — son point d'entrée et ses
+segments `PT_LOAD`. `examples/kernel-entry.rs` s'en sert pour démarrer un vrai
+noyau Alpine jusqu'à l'espace utilisateur. **Rien ne l'exposait au-delà de la
+frontière C.** Un `grep` suffit à le dire : en dehors du montage et de ses
+propres tests, personne ne l'appelle.
+
+Donc l'application n'avait **aucun moyen** d'apprendre où poser une image de
+noyau ni par où l'exécution commence — et `LocalDesktop(entry:)` comme
+`place(_:at:)` exigent tous deux que l'appelant le sache déjà. Les trois
+tranches précédentes ont donné au bureau sa page zéro, son écran, ses refus et
+sa racine ; il lui manquait la chose la plus élémentaire : **lire le noyau**.
+
+### Les deux distinctions que cette frontière doit porter, et qui coûtent cher
+
+**Les deux tailles d'un segment.** `file_size` est ce que le fichier porte,
+`memory_size` ce que le segment occupe une fois chargé. L'écart est le BSS — des
+zéros que le noyau attend et qu'aucun octet du fichier ne décrit. Le vmlinux
+d'Alpine en traîne cinq mébioctets. Les confondre fait soit lire hors du
+fichier, soit laisser un trou là où le noyau attend des zéros.
+
+**Les deux adresses.** `physical_address` est celle à laquelle un chargeur pose
+le segment ; `virtual_address` celle à laquelle il a été lié. Pour le texte d'un
+noyau x86-64 les deux diffèrent de `__START_KERNEL_map`. Poser à la seconde ne
+produirait pas « un peu faux » : **rien ne démarrerait**.
+
+Les cinq champs sont donc vérifiés, pas trois — en C et en Swift. Une
+transposition passerait toute assertion qui ne regarde qu'un des deux membres
+d'une paire, et c'est exactement la famille d'erreur que les trois tranches
+précédentes ont payée en repliant une adresse sur quatre.
+
+### Demander deux fois, et pourquoi le premier appel n'est pas perdu
+
+`capacity == 0` apprend le compte sans rien écrire, et rend `2`. Mais `*out_entry`
+et `*out_count` sont posés **avant** la question de la place : l'appelant alloue
+en sachant, au lieu de deviner puis réessayer. Un sabotage qui déplace ces deux
+écritures après le refus fait tomber la garde C.
+
+Trois codes plutôt qu'un booléen, comme pour `wisq_desktop_placement` : « ce
+n'est pas un ELF » et « ton tableau est trop petit » ne se corrigent pas pareil,
+et un appelant qui verrait le même code chercherait au mauvais endroit.
+
+### L'ELF du programme C est gravé par le harnais
+
+Le fabriquer en C demanderait un **second** constructeur d'ELF — il y en a déjà
+un dans `tests/kernel_elf.rs`. C'est la raison exacte pour laquelle l'image ISO
+est gravée par le harnais et pas en C, et elle est écrite là-bas depuis des
+mois. Celui-ci est délibérément plus pauvre : trois en-têtes dont une `PT_NOTE`,
+et un second segment qui porte quatre cents octets de BSS. **Ce n'est pas le
+lecteur qu'il juge, c'est la frontière.**
+
+Et le programme **échoue** si le harnais ne lui passe pas le chemin, au lieu de
+sauter. Un saut silencieux laisserait la frontière non vérifiée en restant vert
+— c'est la forme même du défaut que ce dépôt traque ailleurs.
+
+### Le lecteur n'est pas réécrit en Swift, et c'est dit plutôt que supposé
+
+`Sources/WisqVM/KernelImageKind.swift` **reconnaît** un ELF — son magique, sa
+classe, sa machine — et ne lit pas ses segments. C'est la bonne répartition :
+deux lecteurs d'ELF finiraient par ne plus décrire le même fichier, et celui qui
+mentirait serait celui que personne ne lit. `RustKernelImage` ne fait que
+traverser.
+
+### Les sabotages
+
+Quatre mutations, toutes tombées sur la garde C :
+
+| mutation | ce qui tombe |
+|---|---|
+| `virtual_address` et `physical_address` transposés | `the_c_header_matches_the_x86_translator` |
+| les deux tailles échangées | idem |
+| une capacité nulle rend `0` au lieu de `2` | idem |
+| l'entrée et le compte posés seulement en cas de succès | idem |
+
+Et le rouge de départ était le bon : `undefined reference to wisq_kernel_loads`.
+L'exercice C a été écrit **avant** l'implémentation, donc le lien a échoué —
+c'est ce que « le test avant la correction » veut dire pour une frontière.
+
+### Ce que ça ne fait pas, et c'est une direction
+
+**Rien dans l'application n'appelle encore `LocalDesktop`** — seulement ses
+propres tests. Un `grep` sur `Sources/` et `App/` ne rend que deux commentaires.
+Brancher l'interface — un écran où l'utilisateur choisit un noyau et le voit
+démarrer — est une **direction**, pas un défaut nommé, et elle appartient à
+Maxime. Ce que #314 fait est de la rendre possible : la pièce qui manquait était
+celle-là, et elle n'était pas une pièce à écrire, seulement une pièce à exposer.
+
+### Le signe à retenir
+
+**Une fonction testée, correcte, et qu'aucun appelant hors des tests ne peut
+atteindre, n'est pas une fonctionnalité du produit.** Elle a tous les signes
+extérieurs d'une : des tests verts, une documentation, un vrai noyau qui démarre
+grâce à elle. Le `grep` qui compte n'est pas « est-ce testé » mais **« qui, en
+dehors des tests, peut l'appeler »**.
