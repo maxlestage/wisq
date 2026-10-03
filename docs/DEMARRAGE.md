@@ -406,6 +406,21 @@ Trois choses, et aucune n'est petite :
    `clocksource: jiffies`, `NET: Registered PF_NETLINK/PF_ROUTE`,
    `TCP: Hash tables configured`. Il en est aux **initcalls**.
 
+   **Et la question voisine, qui n'est pas celle-là, est mesurée depuis
+   #307** : le tampon d'adresses se vide, mais la **traduction** d'une région
+   déjà posée, elle, reste en table quoi que le noyau écrive dessous.
+   `vm.revoir()` relit à la fin les fenêtres que l'hôte avait lues —
+   gratuitement, la copie existait déjà — et compte : **1 397 régions sur
+   12 249, soit 11,4 %, ont vu leurs octets changer après leur traduction**,
+   dont 498 au premier octet. Le bureau démarre quand même parce que toutes
+   les grandes familles de correctifs vont dans le sens **conservateur** — la
+   traduction périmée exécute ce que le noyau s'apprêtait à retirer : le thunk
+   de retour au lieu du `ret`, l'`endbr64` au lieu du nop, l'appel à
+   `__fentry__` au lieu du nop, le `lock` au lieu du préfixe inopérant. Quatre
+   sites vont dans l'autre sens, trois sur le chemin des *softirq*. Ce que la
+   mesure **ne** dit pas, et c'est écrit : si la région a tourné après le
+   changement.
+
    **Et le mur d'après n'était pas davantage une instruction manquante** : à
    `do_one_initcall + 673` se trouve un `ud2` que Linux exécute **exprès**.
    `WARN()` compile en un appel à `__warn_printk` suivi d'un `ud2`, et son

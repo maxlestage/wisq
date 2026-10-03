@@ -12916,3 +12916,165 @@ fn strip_line_comments(source: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// **Une traduction périmée ne se voit nulle part, et personne ne sait si ça
+/// arrive.**
+///
+/// L'hôte garde une région traduite dans sa table aussi longtemps que la
+/// machine vit. Si l'invité réécrit les octets d'où elle vient — et le noyau
+/// le fait sans arrêt : `text_poke_early`, `apply_alternatives`,
+/// `apply_returns` —, le module en table ne correspond plus à la mémoire, et
+/// c'est l'ancien code qui tourne. Le journal porte quatre formes possibles de
+/// correction depuis des semaines ; **ce qu'il ne porte pas est de savoir si le
+/// cas se produit**, ni où.
+///
+/// `vm.revoir()` répond, et ne coûte rien pendant la course : l'hôte garde la
+/// fenêtre qu'il a **lue** pour chaque région — celle-là même qu'il a passée au
+/// traducteur, pas les octets du fichier ELF, qui diffèrent sur quinze mille
+/// fenêtres sur seize mille —, et la relit à la fin par le même chemin, tables
+/// de pages comprises.
+///
+/// **Ce que ça sur-déclare, et c'est dit plutôt que caché** : la fenêtre fait
+/// quatre kibioctets et une région s'arrête souvent avant. Un octet changé
+/// après la dernière instruction compte ici et n'invalide rien. Le rapport
+/// donne donc le **décalage**, pas seulement l'adresse : c'est ce qui permet de
+/// trancher ensuite.
+#[test]
+fn a_region_whose_bytes_changed_under_it_is_named_when_the_host_looks_again() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // `movb $0x90, 0xf9(%rip)` écrit à l'adresse d'après l'instruction plus
+    // 0xf9, soit BASE + 0x100 : dans sa propre fenêtre, et loin de son code.
+    let program = [
+        0xc6, 0x05, 0xf9, 0x00, 0x00, 0x00, 0x90, // movb $0x90, 0xf9(%rip)
+        0x0f, 0x0b, // ud2 — la machine s'arrête là, et le dit
+    ];
+    let seen = revisit(&bun, &program, BASE, PAGES);
+    assert_eq!(
+        seen.changed,
+        vec![(BASE, 0x100, 0x00, 0x90)],
+        "une seule fenêtre a changé, et le rapport dit où : {}",
+        seen.text
+    );
+    assert!(
+        seen.unreadable.is_empty(),
+        "et rien n'est devenu illisible : {}",
+        seen.text
+    );
+}
+
+/// **Et une écriture hors de toute fenêtre traduite ne nomme rien.**
+///
+/// C'est la garde qui donne son sens à l'autre : sans elle, un `revoir` qui
+/// déclarerait toutes les régions à chaque fois passerait le test au-dessus.
+/// Le programme est le même à un déplacement près — BASE + 0x2000, dans la RAM
+/// et hors des quatre kibioctets lus.
+#[test]
+fn a_write_outside_every_translated_window_is_not_named() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    // `movb $0x90, 0x1ff9(%rip)` → BASE + 0x2000.
+    let program = [
+        0xc6, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0x90, // movb $0x90, 0x1ff9(%rip)
+        0x0f, 0x0b, // ud2
+    ];
+    let seen = revisit(&bun, &program, BASE, PAGES);
+    assert!(
+        seen.changed.is_empty(),
+        "l'écriture est hors fenêtre, donc rien n'a périmé : {}",
+        seen.text
+    );
+    assert!(
+        seen.unreadable.is_empty(),
+        "et rien n'est devenu illisible : {}",
+        seen.text
+    );
+}
+
+/// Ce que `vm.revoir()` a rendu : les fenêtres qui ont changé, et celles que
+/// l'hôte ne peut plus relire.
+struct Revisit {
+    /// Adresse de la région, décalage du premier octet qui diffère, l'octet lu
+    /// à la traduction, celui qu'il y a maintenant.
+    changed: Vec<(u64, u64, u64, u64)>,
+    unreadable: Vec<u64>,
+    text: String,
+}
+
+fn revisit(bun: &Path, program: &[u8], base: u64, pages: u32) -> Revisit {
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-revoir-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(program, base, 0, 0, pages).expect("le programme se traduit");
+    let path = scratch.join("p.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const vu = vm.revoir();
+console.log("arret " + why.stopped);
+for (const quoi of vu.changees) {{
+  console.log("changee " + quoi.adresse + " " + quoi.decalage
+    + " " + quoi.lu + " " + quoi.maintenant);
+}}
+for (const adresse of vu.illisibles) console.log("illisible " + adresse);
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = pages,
+            rip = RIP_SLOT,
+            base = base,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le pilote doit aller au bout : {text}"
+    );
+    let numbers = |line: &str| -> Vec<u64> {
+        line.split_whitespace()
+            .skip(1)
+            .map(|word| word.parse::<u64>().expect("un nombre"))
+            .collect()
+    };
+    Revisit {
+        changed: text
+            .lines()
+            .filter(|line| line.starts_with("changee "))
+            .map(|line| {
+                let values = numbers(line);
+                assert_eq!(values.len(), 4, "« changee » porte quatre nombres : {line}");
+                (values[0], values[1], values[2], values[3])
+            })
+            .collect(),
+        unreadable: text
+            .lines()
+            .filter(|line| line.starts_with("illisible "))
+            .map(|line| numbers(line)[0])
+            .collect(),
+        text: text.clone(),
+    }
+}
