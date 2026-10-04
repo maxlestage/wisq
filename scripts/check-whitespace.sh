@@ -31,7 +31,7 @@
 # un chronomètre, pas une garde — c'est écrit dans ce test, et ça restait vrai.
 #
 # **Pourquoi perl et pas awk.** Sept des huit règles sont lignes à lignes et
-# `awk` les ferait. La sixième — exactement un saut de ligne à la fin — demande
+# `awk` les ferait. La première — exactement un saut de ligne à la fin — demande
 # de voir le dernier octet du fichier, et `awk` ne distingue pas un dernier
 # enregistrement terminé par un saut de ligne d'un qui ne l'est pas. C'est la
 # règle qui coûtait trois sous-processus par fichier à elle seule.

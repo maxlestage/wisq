@@ -3,7 +3,7 @@
 /// `scripts/check-whitespace.sh` is the third and last of this repository's
 /// guard scripts, and it had the same hole as the other two: `verify.sh` runs
 /// it before every push, always against a tree where nothing is wrong, so none
-/// of its rules had ever reported anything — five at the time, seven now.
+/// of its rules had ever reported anything — five at the time, eight now.
 ///
 /// It is the mildest of the three and that is worth saying plainly. CI does not
 /// run it — CI runs `swiftlint --strict`, which covers the same rules — so a
@@ -429,6 +429,121 @@ describe("the formatting floor accepts what it must not refuse", () => {
     /// nuls et l'égalité serait vraie pour la mauvaise raison.
     expect(few).toBeGreaterThan(0);
     expect(many, `2 fichiers → ${few} commandes, 60 → ${many}`).toBe(few);
+  });
+
+  /// **Le plancher ne savait pas combien de refus il porte.**
+  ///
+  /// Deux phrases, une par fichier, sur la même chose, et écrites dans le
+  /// **même** commit (#313) : l'en-tête de la garde annonce ses règles en
+  /// lettres, l'en-tête de ce fichier aussi, et les deux mots ne disaient pas
+  /// le même nombre — huit là-bas, sept ici. Le compte, lui, se lit : la garde
+  /// porte huit `report(`, un par refus qu'elle sait émettre, et c'est bien ce
+  /// sens que les deux phrases donnent au mot, puisque toutes deux parlent de
+  /// règles qui n'avaient jamais rien **signalé**.
+  ///
+  /// Et la même phrase de la garde désignait la mauvaise règle par son rang :
+  /// le refus de ce rang est celui de l'`await` dans une autoclosure, alors que
+  /// la phrase nomme celui du saut de ligne final, qui est le **premier**. Un
+  /// lecteur qui suit l'ordinal ouvre une autre règle que celle annoncée.
+  ///
+  /// **Il y avait une troisième copie, et c'est elle qui explique les deux
+  /// autres.** `docs/ROADMAP.md` porte la même phrase avec « six » et « la
+  /// sixième » : à la tranche qui a écrit ce relevé, le script portait bien six
+  /// refus et celui du saut de ligne final était le dernier d'entre eux —
+  /// mesuré, `git show` le donne. #313 a porté le compte à huit et remonté
+  /// cette règle en tête, puis a recopié la phrase en corrigeant le nombre et
+  /// pas le rang. Le relevé n'est donc pas lu ici, et l'exclusion porte : la
+  /// soumettre à ce contrôle interdirait au dépôt de dire ce qui était vrai,
+  /// comme pour `docs/JOURNAL.md` en #317.
+  ///
+  /// Un nombre écrit en lettres dans un commentaire n'a aucune garde : c'est la
+  /// leçon de #317, et elle vaut pour les commentaires d'un script autant que
+  /// pour les pages du site. Celle-ci la tient en trois temps — compter les
+  /// refus, exiger que chaque phrase annonce ce compte, exiger que l'ordinal
+  /// tombe sur la règle qu'il nomme.
+  test("le plancher annonce le nombre de refus qu'il porte, et son rang désigne la bonne règle", () => {
+    const script = readFileSync(guard, "utf8");
+    const self = readFileSync(join(import.meta.dir, "whitespace-guard.test.ts"), "utf8");
+
+    /// Un `report(` par refus : c'est ce que la garde sait dire, et le reste du
+    /// fichier n'en contient aucun autre — la fonction est définie une fois,
+    /// sous le nom `sub report`, que ce motif ne voit pas.
+    const refusals = Array.from(script.matchAll(/\breport\("([^"]*)/g), (m) => m[1]);
+    /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+    expect(refusals.length, "aucun refus trouvé dans la garde").toBeGreaterThan(5);
+
+    const NOMBRES: Record<string, number> = {
+      cinq: 5,
+      six: 6,
+      sept: 7,
+      huit: 8,
+      neuf: 9,
+      dix: 10,
+      onze: 11,
+      five: 5,
+      seven: 7,
+      eight: 8,
+      nine: 9,
+      ten: 10,
+      eleven: 11,
+    };
+
+    /// Les trois phrases qui annoncent le compte, chacune dans son fichier. La
+    /// forme est tenue autant que le nombre : si l'une est réécrite, le
+    /// contrôle le dit au lieu de passer sur une phrase qu'il ne lit plus.
+    const annonces: [string, string, RegExp][] = [
+      ["scripts/check-whitespace.sh", script, /none of the (\p{L}+) rules below/u],
+      ["scripts/check-whitespace.sh", script, /Sept des (\p{L}+) règles sont lignes à lignes/u],
+      [
+        "site/tests/whitespace-guard.test.ts",
+        self,
+        /had ever reported anything — five at the time, (\p{L}+) now\./u,
+      ],
+    ];
+    for (const [ou, texte, motif] of annonces) {
+      const trouve = texte.match(motif);
+      expect(trouve, `${ou} : la phrase qui annonce le compte a changé de forme — ${motif}`)
+        .not.toBeNull();
+      const dit = NOMBRES[trouve![1].toLowerCase()];
+      expect(dit, `${ou} : « ${trouve![1]} » n'est pas un nombre que je sais lire`)
+        .not.toBeUndefined();
+      expect(dit, `${ou} annonce « ${trouve![1]} » règles, la garde porte ${refusals.length} refus`)
+        .toBe(refusals.length);
+    }
+
+    /// L'ordinal ne compte rien : il **désigne**. Donc on le suit, et on lit le
+    /// refus qui tombe à ce rang.
+    const ORDINAUX: Record<string, number> = {
+      première: 1,
+      deuxième: 2,
+      troisième: 3,
+      quatrième: 4,
+      cinquième: 5,
+      sixième: 6,
+      septième: 7,
+      huitième: 8,
+    };
+    const designe = script.match(/La (\p{L}+) — exactement un saut de ligne à la fin/u);
+    expect(designe, "la phrase qui désigne la règle du saut de ligne final a changé de forme")
+      .not.toBeNull();
+    const rang = ORDINAUX[designe![1].toLowerCase()];
+    expect(rang, `« ${designe![1]} » n'est pas un ordinal que je sais lire`).not.toBeUndefined();
+    expect(rang, `l'ordinal « ${designe![1]} » sort des ${refusals.length} refus`)
+      .toBeLessThanOrEqual(refusals.length);
+    /// **Le nom de la règle SwiftLint ne suffit pas à désigner un refus.**
+    /// Deux refus portent `trailing_newline` — le saut de ligne manquant et
+    /// les sauts de ligne en trop —, et un seul des deux demande de voir le
+    /// dernier octet, qui est ce dont la phrase parle. Exiger le nom laissait
+    /// donc passer l'autre rang : un contrôle qui ne voit qu'une partie de ce
+    /// qu'il contrôle ne garde pas le reste. Mesuré, pas supposé : le sabotage
+    /// qui déplaçait l'ordinal d'un cran a survécu à la première forme.
+    const dernierOctet = refusals.findIndex((m) => m.includes("pas de saut de ligne final"));
+    expect(dernierOctet, "aucun refus ne parle du saut de ligne final").toBeGreaterThanOrEqual(0);
+    expect(
+      rang - 1,
+      `l'ordinal « ${designe![1]} » désigne le refus n°${rang} (${refusals[rang - 1]}), `
+        + `et celui qui demande le dernier octet est le n°${dernierOctet + 1}`,
+    ).toBe(dernierOctet);
   });
 
   test("this repository, with no root given, is clean", () => {
