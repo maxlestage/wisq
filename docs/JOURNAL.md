@@ -20887,6 +20887,12 @@ liste et se vérifient toutes seules (« Trois clients […] VNC, SPICE et RDP �
 « trois protocoles de console » suivis des trois), ou décrivent au lieu de
 dénombrer (« quatorze octets », « seize registres »).
 
+> **Vérifiée en #320, et juste** : quatre bras de route dans `service.rs`,
+> quatre appels dans `AgentClient.swift`, quatre `h3` par langue, et le jeton
+> contrôlé avant toute répartition. Un test les compte tous désormais — parce
+> que vérifier une fois ne vaut rien, comme « neuf corpus matériels » l'a montré
+> onze heures avant l'arrivée du dixième.
+
 **Une seule reste sans garde et sans liste : « Quatre routes derrière un jeton
 porteur », sur la page du protocole.** Je ne l'ai pas vérifiée — compter les
 routes du démon demande de lire son routeur, et ce n'est pas la tranche. Elle
@@ -21150,3 +21156,84 @@ opcodes en #318, dans la même tranche que le branchement du corpus, rien
 n'aurait distingué « le corpus ne les jugeait pas » de « le corpus les juge
 maintenant, et ils sont justes ». Le plancher à 580 était la preuve que la
 garde voyait le trou ; le plancher à 630 est la preuve qu'il est bouché.
+
+## #320 — la dernière quantité en lettres du site : juste, et désormais tenue
+
+#317 a trouvé qu'un nombre écrit **en lettres** échappe à toutes les gardes de
+ce dépôt — `claims.test.ts` compte les chiffres —, et il a relevé toutes celles
+des pages. La plupart portent leur propre liste et se vérifient seules. **Une
+restait sans garde et sans liste** : « Quatre routes derrière un jeton
+porteur », sur la page du protocole. Je l'ai nommée plutôt que vérifiée, et je
+l'ai renommée en #318 et en #319 sans la vérifier davantage.
+
+### Elle est juste, et c'est mesuré
+
+| ce qui compte | ce qu'il porte |
+| --- | --- |
+| `crates/wisq-agent/src/service.rs` | quatre bras de route : `("GET", 2)`, `("GET", 3)`, `("POST", 4)` × 2 |
+| `Sources/WisqRemote/Agent/AgentClient.swift` | quatre appels `send(path: "vms…")` |
+| `site/src/pages/protocol.ts` | quatre `h3` par langue, et le mot « Quatre » / « Four » |
+| le jeton | `if !self.authorized(&request)` **avant** toute répartition |
+
+Quatre partout. Trois tranches à répéter « je ne l'ai pas vérifiée » pour un
+`grep` et deux lectures.
+
+### Donc la tranche n'est pas la vérification, c'est la garde
+
+Vérifier une fois ne vaut rien : c'est exactement ce que #317 a démontré sur
+« neuf corpus matériels », juste onze heures avant que le dixième n'arrive. Le
+test tient donc la **phrase entière** :
+
+- le compte des routes du démon, lu dans son `match` ;
+- le compte des appels du client Swift, qui doit être **le même** — c'est ce que
+  « implémenté deux fois pour ne pas pouvoir diverger » veut dire, et rien ne le
+  tenait ;
+- les deux énumérations de la page, une par langue ;
+- le mot de chaque chapeau ;
+- et **« derrière un jeton »** : que le contrôle du jeton précède la
+  répartition, de sorte qu'aucune route ne puisse être ajoutée devant lui.
+
+### Le survivant, et c'est la sixième fois qu'il nomme une garde absente
+
+Le premier compte écrit ici ne cherchait que `("GET"` et `("POST"`. Un sabotage
+qui ajoutait un bras `("DELETE", 3)` au démon a **survécu** : une route servie,
+annoncée nulle part, et le compte ne la voyait pas. **Un compte qui ne voit
+qu'une partie de ce qu'il compte ne garde pas le reste.** Le motif accepte
+maintenant n'importe quelle méthode — `\("[A-Z]+", \d+\)` —, et les deux bras
+de secours restent dehors parce qu'ils portent `_` là où une route porte un
+chiffre.
+
+### Et deux sabotages qui ne se sont pas appliqués
+
+Deux fois de suite, une mutation a « passé » sans avoir eu lieu : l'ancre
+n'existait pas. La première cherchait un bloc de trois lignes qui n'était nulle
+part ; la seconde supposait **deux** occurrences de
+`{ kind: "h3", text: "GET /v1/vms" },` alors que la moitié anglaise l'écrit sur
+plusieurs lignes et qu'il n'y en a qu'**une**.
+
+La règle était déjà écrite — « un SURVÉCU peut être une mutation qui ne s'est
+pas appliquée : vérifier l'ancre » — et elle a servi deux fois en une tranche.
+Les deux sabotages refaits vérifient leur ancre **dans le script du sabotage**
+(`assert s.count(old) == 1`, puis que le voisinage est bien la section
+française), et ils tombent tous les deux.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| la page annonce « Cinq » | « la moitié fr annonce « Cinq » et le démon sert 4 routes » |
+| une cinquième route `DELETE` dans le démon | « le démon sert 5 routes et le client en appelle 4 » |
+| le jeton contrôlé **après** la répartition | « le contrôle du jeton doit venir avant le premier bras de route » |
+| le client Swift n'appelle plus que trois routes | la même ligne, dans l'autre sens |
+| la moitié française perd une route de son énumération | « la page énumère 7 routes pour 4 servies, dans deux langues » |
+
+### Le signe à retenir
+
+**Le compte de tests n'a pas bougé, et c'est juste.** J'ai porté 2618 à 2619
+dans les quatre copies, et la garde des chiffres a refusé : `testCount()` compte
+les tests **Swift et Rust**, pas ceux de `bun test`. La phrase du README le dit
+mot pour mot — « 2618 tests across Swift and Rust » — et je l'avais lue sans la
+lire. Remis à 2618.
+
+C'est la forme la plus bête de l'erreur que ce dépôt traque : **le texte portait
+sa propre définition, et j'ai compté autre chose.**
