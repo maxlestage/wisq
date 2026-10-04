@@ -18,9 +18,10 @@
 /// test runs in the `Build site` job — so a stray blank line turns CI red
 /// through `bun test` as well, not only through SwiftLint.
 ///
-/// Three of the seven guard scripts are named in no workflow, and this is the
-/// only one of those three that a site test nonetheless runs against the real
-/// tree.
+/// Three of the seven guard scripts are named in no workflow, and a site test
+/// runs each of those three against the real tree — `guard-scripts.test.ts`
+/// does it itself, in the `Build site` job, rather than asserting that someone
+/// else does.
 ///
 /// **What the measurement found is not mild.** The scope was three pathspecs —
 /// `Sources/**/*.swift`, `Tests/**/*.swift`, `App/**/*.swift` — and the third
