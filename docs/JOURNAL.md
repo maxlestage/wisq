@@ -21057,3 +21057,96 @@ reste le filet.
 
 Reste donc, après celle-ci, **une** tranche nommée et mesurée : les quatre
 opcodes du décodeur, avec sa garde déjà en place.
+
+## #319 — les quatre opcodes que #318 avait nommés, et la garde était déjà là
+
+#318 a fini en nommant un défaut plutôt qu'en le corrigeant, et l'ordre était
+voulu : **la garde avant le correctif**. Cette tranche-ci encaisse cette
+avance, et elle est courte pour cette seule raison.
+
+### Ce qui manquait, et ce que ça coûtait
+
+`decode` (`crates/wisq-vm/src/x86.rs`) avait une branche pour `0xe2` — `loop`,
+avec son commentaire — et **aucune** pour les trois opcodes voisins ni pour
+`ret imm16` :
+
+| octet | forme | état avant |
+| --- | --- | --- |
+| `0xe0` | `loopne` | non décodé |
+| `0xe1` | `loope` | non décodé |
+| `0xe2` | `loop` | décodé, traduit, juste |
+| `0xe3` | `jrcxz` | non décodé |
+| `0xc2` | `ret imm16` | non décodé |
+
+Et ce n'était pas un refus propre : le module rendait la main **sur**
+l'instruction, l'hôte demandait une région qui commence là, l'émetteur refusait
+— et la machine restait là. Un cul-de-sac, pas un rendu de main.
+
+### Ce que la garde a dit, dans l'ordre
+
+Les deux planchers ont été levés de 580 à **630 avant d'écrire une ligne de
+correctif**, et ils sont tombés en nommant les cinq formes. Puis, le correctif
+écrit, les deux cœurs jugent **630 cas sur 630, zéro écart, zéro refus** — le
+relevé des formes refusées est vide des deux côtés.
+
+Donc, et c'est tout ce que je peux en dire d'honnête : **les quatre formes sont
+justes du premier coup contre le silicium**, aux dix états de drapeaux du
+corpus.
+
+### Ce que le silicium impose, et qui se serait deviné de travers
+
+- **La décrémentation de `loop` a lieu dans les trois cas**, prise ou non. La
+  mettre sous la condition laisse RCX d'un cran trop haut quand le saut tombe à
+  côté — un sabotage le montre, vingt cas.
+- **Aucune des trois ne pose de drapeau.** Les confondre avec `dec` puis `jnz`
+  écraserait cinq drapeaux que le processeur préserve ; le commentaire était
+  déjà là pour `loop`, il vaut pour les trois.
+- **`jrcxz` ne touche pas RCX.** C'est toute sa différence avec ses voisins, et
+  c'est pourquoi il a son propre opérateur : **sa condition est un registre, pas
+  un drapeau**, donc `Op::Jump(Some(Condition))` ne pouvait pas la porter —
+  `Condition` ne sait lire que RFLAGS.
+- **`ret imm16` dépile d'abord, jette ensuite.** L'ordre inverse lirait
+  l'adresse de retour au-dessus du sommet.
+
+### Les deux formes que porte le code, et pourquoi
+
+**`Op::LoopWhile { zero: Option<bool> }`**, sur le modèle de
+`Op::Jump(Option<Condition>)` : `None` est `loop`, `Some(true)` est `loope`,
+`Some(false)` est `loopne`. Les trois se décident ensemble parce que le silicium
+les décide ensemble, et le cœur Swift aussi — ses `case 0xE0, 0xE1, 0xE2` ne
+font qu'un.
+
+**L'immédiat de `ret` est ce qu'il jette**, comme l'immédiat d'un saut est son
+déplacement. Ça tient par un détail qu'il faut nommer : `0xc3` passe par
+`Decoded::nothing`, dont l'immédiat est **zéro**, donc un `ret` nu ajoute zéro
+au pointeur de pile et **les deux formes empruntent la même ligne**. Un seul
+chemin plutôt que deux, et c'est le corpus qui le tient : ses formes `call et
+ret` tomberaient sur RSP si l'immédiat d'un `ret` nu n'était pas nul.
+
+### Le sabordage
+
+Six mutations, et le décodeur étant **partagé**, les deux premières sont jugées
+par les deux cœurs.
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| `loope` et `loopne` échangés (décodeur) | 20 écarts chez l'interpréteur, **20 chez l'émetteur** |
+| `ret imm16` ne retient pas son immédiat (décodeur) | 10 écarts |
+| la décrémentation n'a lieu que si le saut est pris (interpréteur) | 20 écarts |
+| `jrcxz` touche RCX (interpréteur) | 20 écarts |
+| la condition ignore le drapeau zéro — les trois `loop` deviennent le même (émetteur) | 10 écarts |
+| le retour ne jette pas ses arguments (émetteur) | 10 écarts |
+
+### Le signe à retenir
+
+**Une garde écrite une tranche en avance rend la correction suivante presque
+gratuite.** Celle-ci n'a demandé ni harnais, ni corpus, ni pilote : le plancher
+existait, il a dit non, puis il a dit oui. Les quatre formes étaient justes du
+premier coup — et c'est **mesuré** et non supposé, parce que la mesure
+attendait déjà.
+
+**Et l'inverse se lit dans la même ligne** : si j'avais corrigé ces quatre
+opcodes en #318, dans la même tranche que le branchement du corpus, rien
+n'aurait distingué « le corpus ne les jugeait pas » de « le corpus les juge
+maintenant, et ils sont justes ». Le plancher à 580 était la preuve que la
+garde voyait le trou ; le plancher à 630 est la preuve qu'il est bouché.

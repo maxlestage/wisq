@@ -4036,7 +4036,7 @@ const BRANCH_WINDOW_BYTES: usize = 64;
 /// exister avant le correctif : ce plancher passera de 580 à 630 le jour où les
 /// quatre arriveront, et chacune de leurs dix formes sera jugée contre le
 /// silicium dès la première ligne écrite.
-const BRANCH_CASES_FLOOR: usize = 580;
+const BRANCH_CASES_FLOOR: usize = 630;
 
 fn read_branch_oracle() -> BranchOracle {
     let text =

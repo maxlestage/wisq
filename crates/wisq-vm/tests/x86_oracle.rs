@@ -266,7 +266,10 @@ fn decodes_everywhere(bytes: &[u8]) -> bool {
                     }
                     at = after;
                 }
-                Op::LoopWhile => {
+                // Les trois `loop` et `jrcxz` : une cible relative connue à la
+                // lecture, et le chemin qui tombe à côté continue — comme un
+                // saut conditionnel.
+                Op::LoopWhile { .. } | Op::JumpIfCountZero => {
                     let target = after as i64 + step.imm as i64;
                     if (0..bytes.len() as i64).contains(&target) {
                         queue.push(target as usize);
@@ -1058,7 +1061,7 @@ const BRANCH_WINDOW_AT: u64 = 0x3000_1000;
 /// est décodé — un des quatre opcodes d'une même famille implémenté et trois
 /// oubliés. Le cœur Swift les porte tous. Le relevé les nomme quand ce plancher
 /// tombe, et il passera à 630 le jour où les quatre arriveront.
-const BRANCH_CASES_FLOOR: usize = 580;
+const BRANCH_CASES_FLOOR: usize = 630;
 
 fn read_branch_oracle() -> BranchOracle {
     let path = oracle_path()
