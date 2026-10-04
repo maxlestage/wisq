@@ -21539,3 +21539,84 @@ regarde.
 **Une garde compte ce qu'elle compte ; la phrase à côté d'elle peut dire plus.**
 Le seul remède est de faire lire la phrase par la garde — ou mieux, de faire à
 la garde ce que la phrase décrit.
+
+## #324 — brancher le bureau : ce que ça coûte, mesuré, et la forme laissée à Maxime
+
+« Continue à faire tout. » La chose la plus utile qui restait est celle que la
+feuille de route appelle « une seule décision » : rien dans l'application
+n'appelle `LocalDesktop`. J'ai commencé par la mesurer, et la mesure a corrigé
+deux choses que j'avais dites.
+
+**Première correction : « l'interface n'est pas branchée » était faux.**
+L'application a un chemin VM local complet — `LocalVMView`, `LocalVMModel`,
+`LocalMachine` — et il tourne sur le cœur **Swift**. Elle a aussi un
+`WebKitBenchView` avec son propre `WKWebView`, qui répond à « WebKit a-t-il le
+droit de compiler sur un vrai appareil ». Ce qui manque n'est pas l'interface,
+c'est **le bureau dans l'interface**.
+
+**Deuxième correction, et elle m'a arrêté net.** J'ai d'abord cru qu'aucun test
+hébergé n'utilisait `bootsAKernel:` — mon premier `grep` ne couvrait pas les
+bonnes lignes. Il y en a **trois**, dont deux avec un initramfs, et la suite
+hébergée juge dans un vrai WebKit la page zéro à `0x9000`, le cadre, la racine
+initramfs, une racine illisible refusée, la reprise, et la console série qui
+arrive à l'application. La règle de #261 a servi **avant** la tranche cette
+fois, pas après.
+
+### Pourquoi ce n'est pas un branchement, et pourquoi je ne l'ai pas écrit
+
+Les deux cœurs n'ont pas le même modèle d'exécution. `LocalMachine` est
+synchrone, sur un fil de fond, avec `instructionBudget: .max`, et porte
+instantané et disque. `LocalDesktop` est `async`, sur le fil principal avec son
+`WKWebView`, **borné** en tours et en blocs, rend un `Stopped`, et n'a ni
+instantané ni disque. Le chemin de démarrage de `LocalVMModel` valide en plus la
+taille contre le modèle **rv32** et branche sur `core == .x86_64`.
+
+Un écran qui héberge les deux doit donc choisir **ce qu'il perd**. C'est une
+décision, pas un câblage — et c'est exactement ce que la feuille de route disait.
+
+**Et le coût de l'écrire est structurel.** Mesuré : `swiftc -typecheck` sur
+`import SwiftUI` rend « no such module 'SwiftUI' » ; ni SwiftUI ni WebKit
+n'existent sur une chaîne Swift Linux. Ce conteneur ne peut typer **aucune
+ligne** de ce branchement, et `verify.sh` passerait sans rien en dire — « son
+code ment », en plus fort. Le seul verdict est « App iOS », quinze minutes par
+tour. C'est faisable, les dix-sept tests hébergés ont été écrits comme ça ; ça
+n'autorise pas à l'écrire en aveugle dans une méthode de cent lignes qui gère
+instantanés et disques, parce que le résultat le plus probable serait un bouchon
+qui ne refuse rien.
+
+### Ce que cette tranche livre
+
+`docs/ROADMAP.md` porte les **trois formes** avec leurs coûts, comme #309 l'avait
+fait pour la traduction périmée : un choix de cœur dans l'écran VM locale, un
+écran « Bureau » à part, ou le bureau à la place du cœur Swift. Avec ce qui n'est
+pas en jeu — l'image, la ligne de commande et l'initramfs sont déjà lus par
+l'application, rien à embarquer, aucune question de licence — et le classement
+qui dépend du but : la forme 2 d'abord si on commence tout de suite, la forme 1
+d'abord si comparer les deux cœurs est le but.
+
+### Et le chiffrage est gardé, parce qu'un relevé rouille
+
+Deux nombres portent la décision : **17** tests hébergés, dont **3** démarrent
+un noyau. `site/tests/claims.test.ts` les compte dans
+`Tests/WisqHostedTests/LocalDesktopTests.swift` et exige que la feuille de route
+les annonce juste. C'est la leçon de #322 et #323 appliquée **en avant** pour la
+première fois : une phrase vraie devient fausse sans que personne n'y touche, et
+un chiffrage qui dérive fait trancher une décision sur un chiffre périmé.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le relevé : 17 → 18 | « la feuille de route dit 18 tests hébergés, il y en a 17 » |
+| le relevé : dont 3 → dont 4 | « dit 4 démarrages, il y en a 3 » |
+| un test hébergé de plus | « dit 17 tests hébergés, il y en a 18 » |
+| un `bootsAKernel: true` retourné | « dit 3 démarrages, il y en a 2 » |
+| tous les `func test` renommés | « aucun test hébergé trouvé » — témoin |
+| tous les démarrages retournés | « aucun test hébergé ne démarre un noyau » — témoin |
+
+### Le signe à retenir
+
+**Une tranche peut livrer une décision au lieu d'un correctif, à condition que
+la décision soit chiffrée et que les chiffres soient tenus.** Ce qui reste à
+Maxime n'est plus « brancher l'interface », formule vague que j'ai répétée trois
+fois : c'est choisir entre trois formes dont les coûts sont écrits.
