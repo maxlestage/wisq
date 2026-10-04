@@ -21237,3 +21237,99 @@ lire. Remis à 2618.
 
 C'est la forme la plus bête de l'erreur que ce dépôt traque : **le texte portait
 sa propre définition, et j'ai compté autre chose.**
+
+## #321 — le plancher de mise en forme ne savait pas combien de refus il porte
+
+Rien n'était en vol, aucun défaut n'était nommé. Donc un comptage, et pas une
+relecture : **deux nombres qui devraient s'accorder.**
+
+`scripts/check-whitespace.sh` dit de lui-même « none of the **eight** rules
+below had ever reported anything ». `site/tests/whitespace-guard.test.ts`, qui
+est le test de ce script, dit « none of its rules had ever reported anything —
+five at the time, **seven** now ». Huit et sept, sur la même chose, et — c'est
+le détail qui rend l'erreur intéressante — **écrits dans le même commit**,
+`fb8550c` (#313).
+
+Le compte se lit : le programme porte **huit** `report(`, un par refus qu'il
+sait émettre, et c'est exactement le sens que les deux phrases donnent au mot,
+puisque toutes deux parlent de règles qui n'avaient jamais rien *signalé*.
+L'en-tête du test était donc faux.
+
+### Le second défaut était dans la même phrase
+
+« Sept des huit règles sont lignes à lignes et `awk` les ferait. **La sixième**
+— exactement un saut de ligne à la fin — demande de voir le dernier octet. »
+
+Le sixième refus du programme est l'`await` dans l'autoclosure d'une assertion
+XCTest. Celui du saut de ligne final est le **premier**. Un lecteur qui suit
+l'ordinal ouvre une autre règle que celle qu'on lui annonce.
+
+### La troisième copie, et c'est elle qui explique tout
+
+La règle de #261 — avant de conclure d'une absence, chercher la même absence là
+où on sait que la chose est présente — appliquée cette fois à mon propre
+correctif, comme en #317. Et elle a rendu : `docs/ROADMAP.md` porte la **même
+phrase**, avec « Cinq des **six** règles » et « La sixième ».
+
+Et ce relevé-là est **juste**. Mesuré, pas supposé : `git show
+30f1675:scripts/check-whitespace.sh | grep -c 'report("'` rend **6**. À la
+tranche qui a réécrit la garde en perl, il y avait six refus et celui du saut de
+ligne final était le sixième, c'est-à-dire le dernier.
+
+Ce qui s'est passé ensuite se lit comme une seule faute : #313 a ajouté deux
+refus, **remonté** la règle du saut de ligne final en tête du programme, puis
+recopié la phrase du relevé dans l'en-tête du script en corrigeant « six » en
+« huit » et « Cinq » en « Sept » — et pas « la sixième ». Le compte a suivi le
+déménagement, le rang non.
+
+Trois endroits, trois nombres, un seul relevé vrai. Le relevé reste tel quel :
+une garde qui lui interdirait de dire ce qui était vrai lui interdirait d'être
+un relevé — c'est l'exclusion de `docs/JOURNAL.md` de #317, et elle porte ici
+pour la même raison. Il porte désormais la correction en blockquote.
+
+### Ce que la garde tient
+
+Dans `site/tests/whitespace-guard.test.ts`, un contrôle en trois temps :
+
+1. il compte les `report(` du script — un par refus — avec le témoin qui
+   refuse un lecteur qui ne lit rien (`> 5`) ;
+2. il exige que les **trois** phrases qui annoncent le compte — deux dans le
+   script, une dans l'en-tête du test — annoncent ce compte, forme tenue autant
+   que nombre : une phrase réécrite fait tomber le contrôle au lieu de le faire
+   passer sur un texte qu'il ne lit plus ;
+3. il suit l'ordinal et exige qu'il tombe sur le refus qu'il nomme.
+
+### Le survivant, et c'est la septième fois qu'il nomme une garde absente
+
+La première forme du troisième temps exigeait que le refus désigné **contienne
+`trailing_newline`**. Le sabotage qui déplaçait l'ordinal de « première » à
+« deuxième » a **survécu** : deux refus portent ce nom — le saut de ligne
+manquant et les sauts de ligne en trop —, et un seul des deux demande de voir le
+dernier octet.
+
+Encore un contrôle qui ne voyait qu'une partie de ce qu'il contrôle, trois
+tranches après celui de #320. La forme retenue ne nomme plus une famille mais
+**le** refus : l'index du premier qui dit « pas de saut de ligne final », et
+l'ordinal doit tomber dessus. « deuxième » et « cinquième » tombent tous les
+deux.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| « eight rules » → « nine rules » dans le script | « annonce « nine » règles, la garde porte 8 refus » |
+| « Sept des huit règles » → « des neuf » | la même ligne, en français |
+| « eight now » → « nine now » dans l'en-tête du test | la même ligne, troisième phrase |
+| l'ordinal « première » → « deuxième » | « désigne le refus n°2 (plusieurs sauts de ligne finaux) » |
+| l'ordinal « première » → « cinquième » | « désigne le refus n°5 (la garde de plateforme) » |
+| un neuvième `report(` ajouté au programme | « annonce « eight » règles, la garde porte 9 refus » |
+| le refus `vertical_whitespace` retiré | « … porte 7 refus » |
+| une des trois phrases réécrite | « la phrase qui annonce le compte a changé de forme » |
+| `report(` renommé partout | « aucun refus trouvé dans la garde » — le témoin |
+
+### Le signe à retenir
+
+**Une phrase qu'on recopie emporte ses nombres et pas leur sens.** Le compte a
+été corrigé au moment du copier-coller, le rang est resté, et le même commit a
+écrit un troisième nombre dans un troisième fichier. Trois endroits où rien ne
+comptait, et le seul qui disait vrai était le plus vieux.

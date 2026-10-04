@@ -6984,6 +6984,20 @@ exactement un saut de ligne à la fin — demande de voir le **dernier octet**, 
 d'un qui ne l'est pas. C'est la règle qui coûtait trois sous-processus à elle
 seule.
 
+> **Le compte et le rang de cette phrase ont bougé, et pas ensemble (#321).**
+> Ce relevé est juste pour son moment : le script portait alors six refus et
+> celui du saut de ligne final était bien le sixième, c'est-à-dire le dernier.
+> La tranche qui l'a réécrit en perl ailleurs — #313 — en a porté le nombre à
+> **huit**, a remonté cette règle **en tête** du programme, puis a recopié la
+> phrase dans l'en-tête du script en corrigeant « six » en « huit » et en
+> laissant « la sixième », qui désigne depuis l'`await` dans une autoclosure.
+> Le même commit écrivait « sept » dans l'en-tête du test. Trois endroits,
+> trois nombres, dont un seul relevé vrai : celui-ci. #321 corrige les deux
+> autres et les tient — `site/tests/whitespace-guard.test.ts` compte les
+> `report(` du script et exige que chaque phrase annonce ce compte et que
+> l'ordinal tombe sur la règle qu'il nomme. Ce relevé-ci n'est pas lu par la
+> garde, et c'est voulu : il dit ce qui était vrai, comme le journal.
+
 **La preuve est différentielle, pas une relecture.** 707 arbres — quarante
 fichiers réels du dépôt × dix-sept mutations, plus sept cas dégénérés et vingt
 arbres multi-fichiers — jugés par les deux versions, verdict et message
