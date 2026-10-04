@@ -170,6 +170,72 @@ describe("les scripts de garde du dépôt sont tous tenus", () => {
     }
   });
 
+  /// **La propriété que #322 a cru tenir, et ne tenait pas.**
+  ///
+  /// #322 comptait les gardes absentes des workflows — trois — et l'en-tête de
+  /// `whitespace-guard.test.ts` ajoutait que celle de la mise en forme était
+  /// « la seule des trois qu'un test du site lance néanmoins sur l'arbre
+  /// réel ». C'était **faux** : `project-sources.test.ts` et
+  /// `generated-project.test.ts` portent chacun un test « le dépôt tel qu'il
+  /// est passe » qui lance sa garde sur `repoRoot` et exige zéro. Les trois
+  /// étaient couvertes. J'avais conclu d'une absence — aucun workflow ne les
+  /// nomme — sans chercher la même présence là où je savais qu'elle était, ce
+  /// qui est la règle de #261 appliquée contre moi pour la troisième fois.
+  ///
+  /// La leçon porte sur la garde, pas sur la phrase : **une affirmation en
+  /// prose plus forte que ce que la garde vérifie est exactement ce que la
+  /// garde existe pour empêcher.** #322 comptait ; il n'établissait pas la
+  /// couverture, et la prose, elle, la proclamait.
+  ///
+  /// Donc ce contrôle ne cherche pas un motif dans un fichier de test : il
+  /// **fait l'acte**. Chaque garde qu'aucun workflow ne nomme est lancée ici,
+  /// sur ce dépôt, et doit rendre zéro — et comme ce fichier tourne sous
+  /// `bun test`, donc dans le job `Build site`, la propriété est **tenue** par
+  /// la CI au lieu d'être affirmée. Mesuré : `check-project-sources.sh` 56 ms,
+  /// `check-generated-project.sh` 29 ms, aucune ne demande XcodeGen.
+  test("les gardes qu'aucun workflow ne nomme sont lancées sur ce dépôt, ici", () => {
+    const workflows = readdirSync(join(repoRoot, ".github", "workflows"))
+      .filter((entry) => entry.endsWith(".yml"))
+      .map((entry) => readFileSync(join(repoRoot, ".github/workflows", entry), "utf8"))
+      .join("\n");
+    const absent = guards.filter((guard) => !workflows.includes(guard));
+
+    /// Un contrôle qui ne lance rien ressemble à un contrôle qui passe.
+    expect(absent.length, "aucune garde hors des workflows : ce contrôle ne lancerait rien")
+      .toBeGreaterThan(0);
+
+    /// Et la phrase de l'en-tête annonce ce même compte : si une garde entre
+    /// dans un workflow ou en sort, les deux doivent bouger ensemble.
+    const NOMBRES: Record<string, number> = {
+      one: 1,
+      two: 2,
+      three: 3,
+      four: 4,
+      five: 5,
+      six: 6,
+      seven: 7,
+    };
+    const header = readFileSync(join(repoRoot, "site/tests/whitespace-guard.test.ts"), "utf8");
+    const claim = header.match(/runs each of those (\p{L}+) against the real tree/u);
+    expect(claim, "la phrase qui annonce la couverture a changé de forme").not.toBeNull();
+    expect(
+      NOMBRES[claim![1].toLowerCase()],
+      `la phrase dit « ${claim![1]} » gardes couvertes ici, il y en a ${absent.length}`,
+    ).toBe(absent.length);
+
+    for (const guard of absent) {
+      const run = Bun.spawnSync([join(repoRoot, "scripts", guard), repoRoot], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const said = new TextDecoder().decode(run.stdout) + new TextDecoder().decode(run.stderr);
+      expect(
+        run.exitCode,
+        `${guard} refuse ce dépôt, et aucun workflow ne le lance :\n${said}`,
+      ).toBe(0);
+    }
+  });
+
   test("chaque garde prend une racine en argument", () => {
     expect(guards.length).toBeGreaterThan(3);
     for (const guard of guards) {
