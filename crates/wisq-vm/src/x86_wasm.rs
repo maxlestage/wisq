@@ -1700,7 +1700,8 @@ impl Module {
                 if matches!(
                     step.op,
                     Op::Jump(_)
-                        | Op::LoopWhile
+                        | Op::LoopWhile { .. }
+                        | Op::JumpIfCountZero
                         | Op::JumpIndirect
                         | Op::Call
                         | Op::CallIndirect
@@ -1862,7 +1863,8 @@ impl Module {
                     matches!(
                         op,
                         Op::Jump(_)
-                            | Op::LoopWhile
+                            | Op::LoopWhile { .. }
+                            | Op::JumpIfCountZero
                             | Op::JumpIndirect
                             | Op::Call
                             | Op::CallIndirect
@@ -1875,7 +1877,7 @@ impl Module {
                     )
                 });
                 let target = match ends {
-                    Some(Op::Jump(_) | Op::LoopWhile | Op::Call) => {
+                    Some(Op::Jump(_) | Op::LoopWhile { .. } | Op::JumpIfCountZero | Op::Call) => {
                         Some(after as i64 + last.map_or(0, |step| step.imm as i64))
                     }
                     _ => None,
@@ -1983,7 +1985,8 @@ impl Module {
                 let ends = matches!(
                     step.op,
                     Op::Jump(_)
-                        | Op::LoopWhile
+                        | Op::LoopWhile { .. }
+                        | Op::JumpIfCountZero
                         | Op::JumpIndirect
                         | Op::Call
                         | Op::CallIndirect
@@ -2128,21 +2131,55 @@ impl Module {
                     Self::condition(condition, b);
                 });
             }
-            Op::LoopWhile => {
-                // `loop` décrémente RCX **sans poser de drapeau**, et saute
-                // tant qu'il n'est pas nul. Le confondre avec `dec` puis `jnz`
-                // écraserait cinq drapeaux que le processeur préserve.
+            Op::LoopWhile { zero } => {
+                // Les trois `loop` décrémentent RCX **sans poser de drapeau**,
+                // et sautent tant qu'il n'est pas nul — `loope` et `loopne`
+                // demandant en plus que le drapeau zéro dise ce qu'elles
+                // veulent. Le confondre avec `dec` puis `jnz` écraserait cinq
+                // drapeaux que le processeur préserve.
+                //
+                // **La décrémentation est hors de la condition**, et elle a lieu
+                // même quand le saut n'est pas pris : c'est ce que le silicium
+                // fait, et le corpus matériel le juge aux dix états de drapeaux.
                 body.store(Self::slot(1), |b| {
                     b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
                 });
+                // Rendue deux fois — pour l'adresse et pour l'indice de bloc —
+                // donc écrite une fois.
+                let again = move |b: &mut Body| {
+                    b.load(Self::slot(1)).constant(0).op(code::I64_NE);
+                    if let Some(want) = zero {
+                        b.load(RFLAGS_SLOT).constant(ZF).op(code::I64_AND);
+                        if want {
+                            b.constant(0).op(code::I64_NE);
+                        } else {
+                            b.op(code::I64_EQZ);
+                        }
+                        b.op(code::I32_AND);
+                    }
+                };
                 body.store(RIP_SLOT, |b| {
                     b.constant(base.wrapping_add(target as u64));
                     b.constant(base.wrapping_add(after as u64));
-                    b.load(Self::slot(1)).constant(0).op(code::I64_NE);
+                    again(b);
                     b.op(code::SELECT);
                 });
                 Self::choose(body, target, after as i64, index, shape, |b| {
-                    b.load(Self::slot(1)).constant(0).op(code::I64_NE);
+                    again(b);
+                    b.op(code::I64_EXTEND_I32_U);
+                });
+            }
+            Op::JumpIfCountZero => {
+                // RCX n'est **pas** touché, et c'est toute la différence avec
+                // les trois `loop` au-dessus.
+                body.store(RIP_SLOT, |b| {
+                    b.constant(base.wrapping_add(target as u64));
+                    b.constant(base.wrapping_add(after as u64));
+                    b.load(Self::slot(1)).op(code::I64_EQZ);
+                    b.op(code::SELECT);
+                });
+                Self::choose(body, target, after as i64, index, shape, |b| {
+                    b.load(Self::slot(1)).op(code::I64_EQZ);
                     b.op(code::I64_EXTEND_I32_U);
                 });
             }
@@ -2211,7 +2248,12 @@ impl Module {
                     b.bytes.push(0);
                 });
                 body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                    // **Huit octets de retour, plus ce que `ret imm16` jette.**
+                    // L'immédiat vaut zéro pour un `ret` nu, donc les deux
+                    // formes passent par la même ligne.
+                    b.load(Self::slot(4))
+                        .constant(8 + (step.imm & 0xffff))
+                        .op(code::I64_ADD);
                 });
                 Self::resolve(starts, body, shape);
             }
@@ -3231,7 +3273,8 @@ impl Module {
         if matches!(
             step.op,
             Op::Jump(_)
-                | Op::LoopWhile
+                | Op::LoopWhile { .. }
+                | Op::JumpIfCountZero
                 | Op::JumpIndirect
                 | Op::CallIndirect
                 | Op::FarReturn
@@ -4299,7 +4342,10 @@ impl Module {
                 Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
                     unreachable!("les bits sortent avant")
                 }
-                Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
+                Op::Jump(_)
+                | Op::LoopWhile { .. }
+                | Op::JumpIfCountZero
+                | Op::JumpIndirect => {
                     unreachable!("les sauts sortent avant")
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
@@ -4753,7 +4799,8 @@ impl Module {
             | Op::Popcount
             | Op::ByteSwap
             | Op::Jump(_)
-            | Op::LoopWhile
+            | Op::LoopWhile { .. }
+            | Op::JumpIfCountZero
             | Op::JumpIndirect
             | Op::Nop
             | Op::Undefined

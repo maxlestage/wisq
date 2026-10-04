@@ -3360,17 +3360,21 @@ porte sur le **cœur**, pas sur l'affichage.
    > pas une correction, et le noyau d'Alpine atteint l'espace utilisateur sans
    > elles.
    >
-   > **Celui que le branchement a trouvé, lui, est à corriger (#318).** Des 630
-   > cas, 50 sortent du jugement : `loope`, `loopne`, les deux `jrcxz` et `ret`
-   > qui jette ses arguments. Le décodeur partagé a une branche pour `0xe2`
-   > (`loop`) et **aucune** pour `0xe0`, `0xe1`, `0xe3` et `0xc2` — un des
-   > quatre opcodes d'une même famille implémenté et trois oubliés, là où le
-   > cœur Swift les porte tous. Et ce n'est pas un rendu de main : le module
-   > rend la main à l'adresse de l'instruction, l'hôte demande une région qui
-   > commence là, l'émetteur refuse, et **la machine s'arrête**. Les deux
-   > planchers passeront de 580 à 630 quand les quatre arriveront ; la garde
-   > existe déjà, c'est ce qui rend cette correction vérifiable dès sa première
-   > ligne.
+   > **Celui que le branchement a trouvé est corrigé (#318 l'a nommé, #319 l'a
+   > bouché).** Des 630 cas, 50 sortaient du jugement : `loope`, `loopne`, les
+   > deux `jrcxz` et `ret` qui jette ses arguments. Le décodeur partagé avait
+   > une branche pour `0xe2` (`loop`) et **aucune** pour `0xe0`, `0xe1`, `0xe3`
+   > et `0xc2` — un des quatre opcodes d'une même famille implémenté et trois
+   > oubliés, là où le cœur Swift les porte tous. Et ce n'était pas un rendu de
+   > main : le module rendait la main à l'adresse de l'instruction, l'hôte
+   > demandait une région qui commence là, l'émetteur refusait, et **la machine
+   > s'arrêtait**.
+   >
+   > Les deux planchers ont été levés de 580 à **630 avant la première ligne de
+   > correctif**, ils sont tombés en nommant les cinq formes, et depuis les deux
+   > cœurs jugent **630 cas sur 630, zéro écart, zéro refus**. Les quatre formes
+   > étaient justes du premier coup contre le silicium, et c'est mesuré parce que
+   > la mesure attendait déjà.
 3. Un tampon d'affichage pour l'invité (`virtio-gpu` ou une VGA linéaire) et sa
    vue. Sans lui, il n'y a pas de bureau à montrer, quelle que soit la vitesse.
 4. La bascule : le cœur WebAssembly quand le `WKWebView` compile, l'interpréteur

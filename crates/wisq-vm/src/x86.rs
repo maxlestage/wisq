@@ -702,7 +702,24 @@ pub enum Op {
     Jump(Option<Condition>),
     /// `loop` : décrémenter RCX et sauter tant qu'il n'est pas nul. Il ne
     /// touche à aucun drapeau, ce qui le distingue d'un `dec` suivi d'un `jnz`.
-    LoopWhile,
+    /// `loop`, `loope`, `loopne` : RCX décroît, puis on saute tant qu'il n'est
+    /// pas nul — et, pour les deux formes conditionnelles, tant que le drapeau
+    /// zéro dit ce qu'elles demandent. `None` est `loop`, qui ne lit aucun
+    /// drapeau ; `Some(true)` est `loope`, `Some(false)` est `loopne`.
+    ///
+    /// Les trois se décident ensemble parce que le silicium les décide
+    /// ensemble : **la décrémentation a lieu dans les trois cas**, prise ou
+    /// non, et aucune ne pose de drapeau.
+    LoopWhile {
+        zero: Option<bool>,
+    },
+    /// `jrcxz` : saute **si RCX est nul**, et ne le touche pas.
+    ///
+    /// Ce n'est pas un saut conditionnel ordinaire, et c'est pour ça qu'il a son
+    /// propre opérateur : sa condition est un **registre**, pas un drapeau, donc
+    /// `Op::Jump(Some(Condition))` ne peut pas la porter — `Condition` ne sait
+    /// lire que RFLAGS.
+    JumpIfCountZero,
     /// Un saut dont la cible est dans un registre. Le module ne peut pas savoir
     /// à quel bloc elle correspond : il rend la main.
     JumpIndirect,
@@ -1608,6 +1625,9 @@ impl Cpu {
             }
             Op::Return => {
                 let Some(value) = self.pop() else { return };
+                // **L'ordre du silicium** : dépiler l'adresse, *puis* jeter les
+                // arguments. `imm` vaut zéro pour un `ret` nu.
+                self.regs[4] = self.regs[4].wrapping_add(instruction.imm & 0xffff);
                 self.rip = value;
                 self.jumped = true;
             }
@@ -2389,10 +2409,26 @@ impl Cpu {
                 self.jumped = true;
                 return;
             }
-            Op::LoopWhile => {
+            Op::JumpIfCountZero => {
+                // RCX n'est **pas** touché : c'est toute la différence avec les
+                // trois `loop` juste en dessous.
+                self.rip = if self.regs[1] == 0 {
+                    after.wrapping_add(instruction.imm)
+                } else {
+                    after
+                };
+                self.jumped = true;
+                return;
+            }
+            Op::LoopWhile { zero } => {
+                // **La décrémentation a lieu dans les trois cas**, prise ou non,
+                // et aucune ne pose de drapeau : confondre `loop` avec `dec`
+                // puis `jnz` écraserait cinq drapeaux que le processeur préserve.
                 let count = self.regs[1].wrapping_sub(1);
                 self.regs[1] = count;
-                self.rip = if count != 0 {
+                let zf = self.flags.read() & ZF != 0;
+                let again = count != 0 && zero.is_none_or(|want| want == zf);
+                self.rip = if again {
                     after.wrapping_add(instruction.imm)
                 } else {
                     after
@@ -2542,7 +2578,7 @@ impl Cpu {
             Op::Bit(_) | Op::BitScan { .. } | Op::Popcount | Op::ByteSwap => {
                 unreachable!("les bits sortent avant")
             }
-            Op::Jump(_) | Op::LoopWhile | Op::JumpIndirect => {
+            Op::Jump(_) | Op::LoopWhile { .. } | Op::JumpIfCountZero | Op::JumpIndirect => {
                 unreachable!("les sauts sortent avant")
             }
             Op::SystemCall | Op::SystemReturn => {
@@ -3612,6 +3648,22 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`ret imm16` : dépiler, puis jeter des arguments.** Ce qu'il jette
+        // voyage dans `imm`, comme le déplacement d'un saut y voyage : c'est
+        // l'idiome de ce décodeur, et il tient parce que `0xc3` passe par
+        // `Decoded::nothing`, dont l'immédiat est **zéro**. Un `ret` nu ajoute
+        // donc zéro au pointeur de pile, et le chemin est le même pour les deux.
+        0xc2 => {
+            let low = *bytes.get(at)?;
+            let high = *bytes.get(at + 1)?;
+            at += 2;
+            Some(Decoded {
+                op: Op::Return,
+                imm: u64::from(u16::from_le_bytes([low, high])),
+                length: at,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
         // **Le retour lointain**, avec ou sans `REX.W`. Le noyau écrit
         // `48 cb` ; `cb` seul existe aussi, et le décoder coûte cette ligne.
         0xcb => Some(Decoded {
@@ -3921,13 +3973,26 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 ..Decoded::nothing(prefixes.width(false))
             })
         }
-        // `loop` : le compte est **toujours** RCX entier, quelle que soit la
-        // largeur des préfixes, et il ne pose aucun drapeau.
-        0xe2 => {
+        // **Les trois `loop` et `jrcxz`.** Le compte est **toujours** RCX
+        // entier, quelle que soit la largeur des préfixes, et aucune des quatre
+        // formes ne pose de drapeau.
+        //
+        // **Pourquoi les quatre d'un coup.** Ce décodeur n'a longtemps porté que
+        // `0xe2`, et le corpus matériel de branchement a mesuré ce que les trois
+        // autres coûtaient : cinquante cas sur six cent trente où la machine
+        // **s'arrête net** — le module rend la main sur l'instruction, l'hôte
+        // demande une région qui commence là, et il n'y a rien à traduire. Le
+        // cœur Swift les décidait déjà, dans ces mêmes `case`.
+        0xe0..=0xe3 => {
             let displacement = i64::from(*bytes.get(at)? as i8);
             at += 1;
             Some(Decoded {
-                op: Op::LoopWhile,
+                op: match opcode {
+                    0xe0 => Op::LoopWhile { zero: Some(false) },
+                    0xe1 => Op::LoopWhile { zero: Some(true) },
+                    0xe2 => Op::LoopWhile { zero: None },
+                    _ => Op::JumpIfCountZero,
+                },
                 imm: displacement as u64,
                 length: at,
                 ..Decoded::nothing(prefixes.width(false))
