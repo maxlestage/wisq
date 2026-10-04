@@ -208,3 +208,94 @@ test("la réserve sur le clair nomme le chiffrement que l'application propose", 
     ).toBe(true);
   }
 });
+
+/// **« Quatre routes derrière un jeton porteur », et personne ne comptait.**
+///
+/// #317 a relevé les quantités écrites **en lettres** dans les pages du site —
+/// un nombre en mots échappe au compteur de `claims.test.ts`, qui compte les
+/// chiffres — et il en restait une sans garde et sans liste : celle-ci. Elle a
+/// été nommée dans le journal plutôt que vérifiée, deux tranches de suite.
+///
+/// **Elle est juste.** Mesuré : `service.rs` porte quatre bras de route,
+/// `AgentClient.swift` quatre appels, et la page énumère les quatre dans les
+/// deux langues. Ce test existe pour que ça reste vrai sans que personne n'ait
+/// à le recompter — et pour que la phrase cesse d'être une affirmation que le
+/// dépôt porte sans la tenir.
+///
+/// **Ce qu'il tient, et c'est la phrase entière :**
+/// - le **compte** des routes du démon, lu dans son `match` ;
+/// - le **compte** des appels du client Swift, qui doit être le même — c'est ce
+///   que « implémenté deux fois pour ne pas pouvoir diverger » veut dire ;
+/// - les **énumérations** de la page, une par langue ;
+/// - le **mot** de chaque chapeau, dans les deux langues ;
+/// - et **« derrière un jeton »** : que le contrôle du jeton précède la
+///   répartition, de sorte qu'aucune route ne puisse être ajoutée devant lui.
+///
+/// **Ce qu'il ne tient pas** : ce que chaque route *fait*. Qu'un identifiant
+/// invalide soit refusé avant d'atteindre un sous-processus, que `stop` lise
+/// `force` dans le corps — aucun comptage ne voit ça. Ce sont les tests du
+/// démon qui le portent.
+const ROUTE_WORDS_FR = ["zéro", "une", "deux", "trois", "quatre", "cinq", "six", "sept", "huit"];
+const ROUTE_WORDS_EN = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"];
+
+test("les quatre routes du protocole sont comptées là où elles sont écrites", () => {
+  const daemon = readFileSync(
+    join(repoRoot, "crates/wisq-agent/src/service.rs"),
+    "utf8",
+  );
+  // Les bras de route portent une **longueur de chemin chiffrée** —
+  // `("GET", 2)`, `("POST", 4)` — là où les deux bras de secours portent `_`.
+  // C'est ce qui les distingue sans avoir à lire la suite de chaque bras.
+  //
+  // **Et la méthode n'est pas énumérée, elle est quelconque.** Le premier
+  // lecteur écrit ici ne comptait que `GET` et `POST` : un sabotage qui ajoutait
+  // un bras `("DELETE", 3)` au démon a **survécu**, servi et annoncé nulle part.
+  // Un compte qui ne voit qu'une partie de ce qu'il compte ne garde pas le
+  // reste — c'est la sixième fois qu'un survivant nomme une garde absente
+  // plutôt qu'une garde fausse.
+  const served = [...daemon.matchAll(/\("[A-Z]+", \d+\)/g)];
+  expect(served.length, "aucun bras de route trouvé dans service.rs").toBeGreaterThan(1);
+
+  // **Le jeton d'abord.** La phrase dit « derrière un jeton porteur » : le
+  // contrôle doit précéder la répartition, sinon une route ajoutée devant lui
+  // serait ouverte à tous et la page mentirait sans qu'un compte bouge.
+  const guardAt = daemon.indexOf("if !self.authorized(");
+  expect(guardAt, "service.rs ne contrôle plus le jeton par `authorized`").toBeGreaterThan(-1);
+  expect(
+    guardAt,
+    "le contrôle du jeton doit venir avant le premier bras de route",
+  ).toBeLessThan(daemon.search(/\("[A-Z]+", \d+\)/));
+
+  const client = readFileSync(
+    join(repoRoot, "Sources/WisqRemote/Agent/AgentClient.swift"),
+    "utf8",
+  );
+  const called = [...client.matchAll(/send\(path: "vms/g)];
+  expect(
+    called.length,
+    `le démon sert ${served.length} routes et le client en appelle ${called.length} : ` +
+      "« implémenté deux fois pour ne pas pouvoir diverger » ne tient plus",
+  ).toBe(served.length);
+
+  const page = readFileSync(join(import.meta.dir, "..", "src", "pages", "protocol.ts"), "utf8");
+  // Une énumération par langue : la page est écrite deux fois, et c'est
+  // justement la moitié qui dérive quand personne ne compte.
+  const listed = [...page.matchAll(/text: "[A-Z]+ \/v1\/vms/g)];
+  expect(
+    listed.length,
+    `la page énumère ${listed.length} routes pour ${served.length} servies, ` +
+      "dans deux langues",
+  ).toBe(served.length * 2);
+
+  for (const [words, pattern, language] of [
+    [ROUTE_WORDS_FR, /([\p{L}]+) routes derrière un jeton porteur/u, "fr"],
+    [ROUTE_WORDS_EN, /([\p{L}]+) routes behind a bearer token/iu, "en"],
+  ] as const) {
+    const found = page.match(pattern);
+    expect(found, `la moitié ${language} n'annonce plus le nombre de routes`).not.toBeNull();
+    expect(
+      found![1].toLowerCase(),
+      `la moitié ${language} annonce « ${found![1]} » et le démon sert ${served.length} routes`,
+    ).toBe(words[served.length]);
+  }
+});
