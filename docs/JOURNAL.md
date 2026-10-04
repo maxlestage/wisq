@@ -9856,6 +9856,16 @@ fautifs, et chacune a ses contre-cas. Deux des trois portaient un vrai trou de
 couverture — le champ `license` de npm, et `App/` — et aucun des deux ne se
 voyait, parce qu'un arbre propre ne fait rien dire à une garde.
 
+> **Il y en a sept depuis, et c'est #322 qui les tient toutes.** Ce tableau est
+> juste pour son moment : trois `check-*.sh` existaient, et celui de la mise en
+> forme était le dernier. Quatre sont arrivés ailleurs, chacun avec son test et
+> chacun vu refuser — mais rien ne l'exigeait, et un huitième pouvait arriver
+> nu sans que rien ne le dise, puisqu'un arbre propre ne fait rien dire à une
+> garde. `site/tests/guard-scripts.test.ts` exige désormais, pour chaque
+> `scripts/check-*.sh`, qu'un test du site le nomme **en construisant un arbre
+> temporaire** et qu'il accepte une racine en argument. Les trois phrases qui
+> comptent les gardes sont tenues avec.
+
 ## Sept endroits énoncent la version ; un seul était tenu
 
 `0.3.0` est écrit dans le CHANGELOG, dans les deux manifestes Cargo, dans le
@@ -21333,3 +21343,107 @@ deux.
 été corrigé au moment du copier-coller, le rang est resté, et le même commit a
 écrit un troisième nombre dans un troisième fichier. Trois endroits où rien ne
 comptait, et le seul qui disait vrai était le plus vieux.
+
+## #322 — « le troisième et dernier » : il y en a sept, et rien ne le tenait
+
+Rien en vol, aucun défaut nommé. Donc un comptage, et il était dans l'en-tête
+du fichier que #321 venait de corriger — ce qui est en soi une leçon : j'ai lu
+ces lignes deux fois sans lire leur première phrase.
+
+`site/tests/whitespace-guard.test.ts` annonçait que `check-whitespace.sh` est
+« the **third and last** of this repository's guard scripts, and it had the same
+hole as the other **two** ». Il y a **sept** `scripts/check-*.sh`.
+
+Et la phrase était **vraie** quand elle a été écrite. Mesuré : `git ls-tree
+66429c0 scripts/` rend exactement trois `check-*.sh`, et la tranche s'appelait
+« Le troisième script de garde ». Quatre sont arrivés depuis. La place, elle,
+n'a pas bougé : `check-whitespace.sh` est toujours le dernier dans l'ordre — ce
+qui a changé est le rang, pas la place.
+
+### Ce que le comptage a trouvé en chemin, et qui valait plus que la phrase
+
+La série des « trois gardes » existait pour une raison : **un script qui ne
+tourne que contre cet arbre-ci, où tout va bien, n'a jamais rien refusé.** Elle
+a clos ce piège pour trois scripts. Les quatre suivants ont chacun leur test, et
+chacun y est vu refuser — vérifié un par un cette tranche, `release-matrix.sh`
+compris, dont le test construit bien des arbres fautifs. Mais **rien ne
+l'exigeait.** Un huitième pouvait arriver nu, et par construction personne ne
+l'aurait vu : un arbre propre ne fait rien dire à une garde.
+
+### Et deux choses mesurées sur la CI, dont une qui rendait la phrase fausse
+
+**Trois des sept ne sont nommées dans aucun workflow** :
+`check-generated-project.sh`, `check-project-sources.sh`, `check-whitespace.sh`.
+
+L'en-tête en tirait « CI does not run it… a lost trip, not a lost defect ».
+C'est faux, et le fichier le contredisait tout seul vingt lignes plus bas : son
+dernier test lance la garde **sur ce dépôt** et exige zéro, et ce test tourne
+dans `Build site`. Une ligne blanche en trop fait donc rougir la CI par
+`bun test` autant que par SwiftLint.
+
+Pour les deux autres, la question est posée et **non tranchée** : la CI tient la
+propriété de `check-generated-project.sh` **en ligne** — elle régénère puis
+`git diff --exit-code` sur `project.pbxproj` et `Info.plist` — donc rien n'y
+manque. Pour `check-project-sources.sh`, je n'ai **pas établi** que la CI tienne
+sa propriété autrement. Ce n'est pas un défaut nommé, c'est une question
+ouverte, et elle appartient à Maxime : lui donner le test « ce dépôt est
+propre » que `check-whitespace.sh` a, ou l'ajouter à un job.
+
+### Ce que la garde tient
+
+`site/tests/guard-scripts.test.ts`, quatre propriétés toutes mécaniques :
+
+1. **Le rang et la place.** L'ordinal de la phrase doit égaler le nombre de
+   `check-*.sh`, et le script qu'elle dit dernier doit l'être dans l'ordre.
+2. **Le compte des autres**, un de moins.
+3. **Le compte des gardes absentes des workflows**, et le total de cette
+   phrase-là.
+4. **Chaque garde est mise devant un autre arbre par un test du site**, et
+   **chaque garde prend une racine en argument** — `${1:-`, la condition qui
+   rend cette mise en place *possible*, en amont de l'existence d'un test.
+
+Ce que le fichier ne prouve pas est écrit dedans : il ne prouve pas qu'un refus
+observé dans un test donné soit celui de ce script-là.
+
+### Le survivant, et c'est la huitième fois qu'il nomme une garde absente
+
+La première forme du quatrième temps demandait seulement qu'un test du site
+**cite** la garde. Le sabotage qui retirait la citation du test dédié a
+**survécu** — parce que `site/tests/claims.test.ts` cite les sept scripts pour
+une raison qui n'a rien à voir (il vérifie des chiffres annoncés), et
+`verify-covers-ci.test.ts` en cite trois pour comparer `verify.sh` à la CI. La
+propriété était satisfaite **par un autre chemin que celui qui compte**.
+
+C'est, mot pour mot, la leçon déjà écrite : *mesurer l'acte, pas son empreinte*.
+L'acte, ici, est de **construire un autre arbre** — `mkdtempSync` —, et aucun
+des deux citeurs de passage ne le fait. La forme retenue exige les deux dans le
+même fichier.
+
+### Et un faux survivant, qui redit la même chose à l'envers
+
+Le sabotage qui retirait l'arbre temporaire remplaçait `mkdtempSync` par
+`mkdtempSynced` : il a « survécu » parce que la chaîne cherchée est **contenue**
+dans celle qui l'a remplacée. Une mutation peut donc s'appliquer au texte sans
+s'appliquer au sens. Refaite en `mktempdirSync`, elle tombe.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le rang : « seventh » → « sixth » | « la phrase dit « sixth », il y a 7 scripts de garde » |
+| les autres : « six » → « five » | « la phrase dit « five » autres pour 7 gardes » |
+| hors workflow : « Three » → « Two » | « il y en a 3 : generated-project, project-sources, whitespace » |
+| le total de cette phrase : « seven » → « six » | « il y en a 7 » |
+| la citation retirée du test dédié | « aucun test du site ne le nomme en construisant un arbre temporaire » |
+| l'arbre temporaire retiré du test dédié | la même ligne |
+| une garde qui n'accepte plus de racine | « n'utilise pas `${1}` : muet par construction » |
+| une huitième garde, nue | trois lignes à la fois, dont la quatrième propriété |
+| trois gardes seulement (quatre déplacées) | « aucun script de garde trouvé » — le témoin |
+
+### Le signe à retenir
+
+**Une phrase vraie peut devenir fausse sans que personne n'y touche.** Celle-ci
+n'a pas été mal écrite : elle a été dépassée par quatre fichiers arrivés
+ailleurs. C'est la forme que les chiffres miroirs ont déjà prise sept fois dans
+ce dépôt, et la seule défense est de faire compter la phrase par ce qu'elle
+décrit.
