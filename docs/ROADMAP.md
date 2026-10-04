@@ -13343,3 +13343,71 @@ endroit, et c'est le bon choix : ce qui embarque est le cœur Rust.
 existe dans le code, et un motif par langue qui prouve que chaque README la
 nomme. Rien de plus — elle ne compare pas les tableaux, ne compte pas les lignes
 et ne juge pas la granularité, trois choses qui diffèrent à dessein.
+
+## Brancher le bureau dans l'application : les trois formes, et leur coût
+
+**Ce qui est mesuré, pas supposé.** Toutes les lignes de cette section ont été
+vérifiées dans l'arbre, et les deux chiffres qu'elle avance sont tenus par
+`site/tests/claims.test.ts` — un relevé qui rouille est ce que #322 et #323 ont
+coûté.
+
+| fait | mesure |
+| --- | --- |
+| `WisqUI` dépend déjà de `WisqVMRust` | `Package.swift`, et `LocalVMModel.swift` l'importe déjà |
+| l'application n'embarque aucun noyau | aucun `*.bin` sous `App/` ni `Sources/` ; `LocalVMModel` lit l'image que l'utilisateur importe |
+| héberger un `WKWebView` dans l'app est déjà fait | `WebKitBenchView` + `BenchHost` |
+| le bureau est jugé dans un vrai WebKit | **17** tests hébergés, dont **3** démarrent avec `bootsAKernel: true` |
+| ce qui n'a jamais eu lieu | un **vrai noyau Linux** démarré par `LocalDesktop` sous WebKit, nulle part |
+
+**Ce qui fait de ça une décision et pas un branchement.** Les deux cœurs n'ont
+pas le même modèle d'exécution, et c'est structurel :
+
+| | `LocalMachine` (cœur Swift) | `LocalDesktop` (bureau) |
+| --- | --- | --- |
+| appel | synchrone, sur un fil de fond | `async`, sur le fil principal, via son `WKWebView` |
+| budget | `instructionBudget: .max` | borné en **tours** et en **blocs**, rend un `Stopped` |
+| instantané | `restore` / `save` | aucun |
+| disque | `attachDisk`, lu sur place | aucun |
+| console | `ConsoleSink` sur le fil d'émulation | `console()`, `octets` + `perdus`, demandée |
+
+Un écran qui héberge les deux doit donc choisir **ce qu'il perd** : la reprise
+et le disque d'un côté, ou la vitesse de l'émetteur de l'autre.
+
+### Les trois formes
+
+1. **Un choix de cœur dans l'écran VM locale.** La même image importée, la même
+   ligne de commande, le même initramfs, et un sélecteur. *Pour* : rien à
+   importer de plus, et les deux cœurs deviennent comparables sur la même
+   entrée — la seule forme de mesure qui ait jamais rien trouvé ici. *Contre* :
+   le chemin de démarrage de `LocalVMModel` valide la taille contre le modèle
+   **rv32**, branche sur `core == .x86_64`, attache un disque et restaure un
+   instantané ; y insérer un troisième cœur qui n'a ni disque ni instantané
+   demande de dire, dans cette méthode, ce que le bureau refuse — et un refus
+   sans objet est un défaut.
+2. **Un écran « Bureau » à part**, voisin du banc WebKit, qui prend l'image et
+   la fait tourner bornée en affichant la console. *Pour* : rayon d'explosion
+   d'un fichier, aucun chemin existant touché, et le banc en est déjà le patron.
+   *Contre* : deux écrans qui démarrent une machine, et l'utilisateur doit
+   savoir lequel.
+3. **Le bureau remplace le cœur Swift** dans cet écran. *Pour* : une seule
+   histoire. *Contre* : on perd la reprise et le disque, qui marchent.
+
+**Ce qui n'est pas en jeu** : l'image, la ligne de commande et l'initramfs sont
+déjà lus par l'application ; rien à embarquer, aucune question de licence.
+
+### Le coût de l'écrire, et il est réel
+
+Ni `SwiftUI` ni `WebKit` n'existent sur une chaîne Swift Linux — mesuré, `swiftc
+-typecheck` rend « no such module 'SwiftUI' ». Le conteneur de développement ne
+peut donc **pas typer une seule ligne** de ce branchement, et `verify.sh` y
+passerait sans rien en dire. Le seul verdict est le job « App iOS », environ
+quinze minutes par tour, qui est aussi le seul à lancer les tests hébergés.
+
+C'est faisable — les dix-sept tests hébergés ont été écrits dans cette même
+condition — mais ça impose la forme : un diff petit, calqué sur ce qui existe,
+dans le moins de fichiers possible. C'est ce qui range la **forme 2** devant la
+**1** si la décision est de commencer tout de suite, et la **1** devant la **2**
+si la comparaison des deux cœurs est le but.
+
+**La forme reste à trancher par Maxime.** Les trois sont écrites ici pour qu'elle
+se tranche sur des coûts et pas sur une impression.

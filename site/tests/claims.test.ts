@@ -1104,3 +1104,50 @@ describe("le guide annonce le nombre de secrets que le workflow exige", () => {
     for (const secret of required()) expect(secret).toMatch(/^[A-Z0-9_]+$/);
   });
 });
+
+/// **La feuille de route chiffre une décision, et ses chiffres se rouillent.**
+///
+/// « Brancher le bureau dans l'application : les trois formes, et leur coût »
+/// avance deux nombres sur la suite hébergée — combien de tests elle porte, et
+/// combien démarrent un noyau. Ce sont les deux qui décident si le bureau est
+/// jugé sous un vrai WebKit, donc les deux sur lesquels la décision s'appuie.
+///
+/// Ils sont tenus ici pour une raison qui a coûté deux tranches : #322 a écrit
+/// « the third and last of this repository's guard scripts » quand c'était
+/// vrai, et quatre scripts arrivés ailleurs l'ont rendu faux sans que personne
+/// n'y touche ; #323 a trouvé que la phrase d'à côté affirmait plus que sa
+/// garde ne vérifiait. **Un relevé qu'aucune garde ne lit dérive**, et un
+/// chiffrage qui dérive fait trancher une décision sur un chiffre périmé.
+describe("le chiffrage du bureau annonce la vraie suite hébergée", () => {
+  const hosted = readFileSync(
+    join(repoRoot, "Tests/WisqHostedTests/LocalDesktopTests.swift"),
+    "utf8",
+  );
+  const roadmap = readFileSync(join(repoRoot, "docs/ROADMAP.md"), "utf8");
+
+  /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+  const cases = hosted.match(/\bfunc test\w+/g) ?? [];
+  const booting = hosted.match(/bootsAKernel: true/g) ?? [];
+
+  test("le nombre de tests hébergés est celui que la feuille de route écrit", () => {
+    expect(cases.length, "aucun test hébergé trouvé").toBeGreaterThan(5);
+    const said = roadmap.match(/\*\*(\d+)\*\* tests hébergés, dont \*\*(\d+)\*\*/);
+    expect(said, "la ligne qui chiffre la suite hébergée a changé de forme").not.toBeNull();
+    expect(
+      Number(said![1]),
+      `la feuille de route dit ${said![1]} tests hébergés, il y en a ${cases.length}`,
+    ).toBe(cases.length);
+  });
+
+  test("le nombre de ceux qui démarrent un noyau l'est aussi", () => {
+    /// Le témoin : si le motif ne trouvait rien, « zéro contre zéro »
+    /// satisferait l'égalité sans avoir rien lu.
+    expect(booting.length, "aucun test hébergé ne démarre un noyau").toBeGreaterThan(0);
+    const said = roadmap.match(/\*\*(\d+)\*\* tests hébergés, dont \*\*(\d+)\*\*/);
+    expect(said).not.toBeNull();
+    expect(
+      Number(said![2]),
+      `la feuille de route dit ${said![2]} démarrages, il y en a ${booting.length}`,
+    ).toBe(booting.length);
+  });
+});
