@@ -1,16 +1,26 @@
 /// The formatting floor, run against files that break it.
 ///
-/// `scripts/check-whitespace.sh` is the third and last of this repository's
-/// guard scripts, and it had the same hole as the other two: `verify.sh` runs
+/// `scripts/check-whitespace.sh` is the seventh and last of this repository's
+/// guard scripts, and like the other six it answers a hole native to all of
+/// them. `verify.sh` runs
 /// it before every push, always against a tree where nothing is wrong, so none
 /// of its rules had ever reported anything — five at the time, eight now.
 ///
-/// It is the mildest of the three and that is worth saying plainly. CI does not
-/// run it — CI runs `swiftlint --strict`, which covers the same rules — so a
-/// broken version does not let a defect through, it lets a pull request go red
-/// ten minutes later. That round trip is the entire reason the script exists,
-/// on a Linux box where SwiftLint's Homebrew formula is not available. A lost
-/// trip, not a lost defect.
+/// It is the mildest of them, and that is worth saying plainly: its rules are
+/// SwiftLint's own, and CI runs `swiftlint --strict` over the same scope, so a
+/// broken version here does not let a defect through — it costs a round trip.
+/// That trip is the entire reason the script exists, on a Linux box where
+/// SwiftLint's Homebrew formula is not available. A lost trip, not a lost
+/// defect.
+///
+/// **What is not true is that CI never runs it.** The last test in this file
+/// puts the guard in front of this repository and requires exit 0, and that
+/// test runs in the `Build site` job — so a stray blank line turns CI red
+/// through `bun test` as well, not only through SwiftLint.
+///
+/// Three of the seven guard scripts are named in no workflow, and this is the
+/// only one of those three that a site test nonetheless runs against the real
+/// tree.
 ///
 /// **What the measurement found is not mild.** The scope was three pathspecs —
 /// `Sources/**/*.swift`, `Tests/**/*.swift`, `App/**/*.swift` — and the third
