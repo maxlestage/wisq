@@ -21389,6 +21389,15 @@ sa propriété autrement. Ce n'est pas un défaut nommé, c'est une question
 ouverte, et elle appartient à Maxime : lui donner le test « ce dépôt est
 propre » que `check-whitespace.sh` a, ou l'ajouter à un job.
 
+> **La question n'en était pas une, et la phrase était fausse (#323).** Les
+> **trois** gardes absentes des workflows sont déjà lancées sur ce dépôt par
+> leur propre test — `project-sources.test.ts` et `generated-project.test.ts`
+> portent chacun « le dépôt tel qu'il est passe », qui appelle la garde avec
+> `repoRoot` et exige zéro, sous `bun test` donc dans `Build site`. J'avais
+> conclu d'une absence sans chercher la même présence ailleurs, pour la
+> troisième fois. #323 corrige la phrase et, surtout, fait l'acte au lieu de
+> l'affirmer : `guard-scripts.test.ts` lance lui-même ces gardes sur ce dépôt.
+
 ### Ce que la garde tient
 
 `site/tests/guard-scripts.test.ts`, quatre propriétés toutes mécaniques :
@@ -21447,3 +21456,86 @@ n'a pas été mal écrite : elle a été dépassée par quatre fichiers arrivés
 ailleurs. C'est la forme que les chiffres miroirs ont déjà prise sept fois dans
 ce dépôt, et la seule défense est de faire compter la phrase par ce qu'elle
 décrit.
+
+## #323 — la phrase que #322 a écrite était plus forte que sa garde
+
+Maxime a dit « Continue à faire tout ». La première chose à faire était de
+reprendre la question que #322 avait laissée ouverte — et la question n'en était
+pas une : **ma phrase était fausse.**
+
+#322 a compté les gardes absentes des workflows — trois — et son en-tête de
+`site/tests/whitespace-guard.test.ts` ajoutait que celle de la mise en forme
+était « the only one of those three that a site test nonetheless runs against
+the real tree ». C'est faux. `site/tests/project-sources.test.ts` et
+`site/tests/generated-project.test.ts` portent chacun un test **« le dépôt tel
+qu'il est passe »** qui lance sa garde sur `repoRoot` et exige zéro, et ces
+tests tournent sous `bun test`, donc dans le job `Build site`. Les **trois**
+étaient couvertes.
+
+J'avais conclu d'une **absence** — aucun workflow ne les nomme — sans chercher
+la même présence là où je savais qu'elle était : le test « ce dépôt est propre »
+que je venais de lire dans `whitespace-guard.test.ts`. C'est la règle de #261,
+et c'est la **troisième** fois qu'elle me reprend sur mon propre travail, après
+#317 et #321.
+
+### La leçon porte sur la garde, pas sur la phrase
+
+**Une affirmation en prose plus forte que ce que la garde vérifie est exactement
+ce que la garde existe pour empêcher.** La garde de #322 comptait : elle
+n'établissait rien sur la couverture. La prose, elle, la proclamait — et comme
+rien ne la lisait, elle pouvait dire n'importe quoi.
+
+Le remède n'est donc pas de corriger la phrase et de la laisser seule. C'est de
+**faire l'acte** là où la phrase se contentait de l'affirmer : le nouveau
+contrôle de `site/tests/guard-scripts.test.ts` lance lui-même, sur ce dépôt,
+chaque garde qu'aucun workflow ne nomme, et exige zéro. La propriété est
+désormais **tenue** par la CI — ce fichier tourne dans `Build site` — au lieu
+d'être déduite d'un motif trouvé dans un autre fichier.
+
+Et les deux comptes sont liés : la phrase annonce « runs each of those **three**
+against the real tree », et ce nombre doit égaler celui des gardes hors des
+workflows, qui est lui-même mesuré. Une garde qui entre dans un workflow ou en
+sort fait bouger les deux ensemble, ou fait tomber le contrôle.
+
+### Mesuré, parce que « ça ne demande pas XcodeGen » est une affirmation
+
+| garde | sur ce dépôt | durée |
+| --- | --- | --- |
+| `check-project-sources.sh` | 0 — « 13 fichiers déclarés, tous référencés » | 56 ms |
+| `check-generated-project.sh` | 0 — « 3 workflow(s) régénèrent et comparent » | 29 ms |
+
+Aucune des deux ne demande XcodeGen ; leur absence des workflows était une
+omission, pas une impossibilité. Et `check-generated-project.sh` tient quelque
+chose que la CI **ne tient pas autrement** : un quatrième workflow qui
+régénérerait sans comparer ne serait dit par personne. Ce n'est pas un aller-
+retour économisé, c'est un défaut que rien d'autre ne verrait.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| la phrase : « three » → « two » | « la phrase dit « two » gardes couvertes ici, il y en a 3 » |
+| `check-whitespace.sh` nommée dans un workflow | deux lignes : le compte hors workflow **et** celui de la couverture |
+| les trois nommées dans un workflow | « aucune garde hors des workflows : ce contrôle ne lancerait rien » — le témoin |
+| un `.swift` déclaré non référencé | « check-project-sources.sh refuse ce dépôt, et aucun workflow ne le lance » |
+
+### Le faux survivant, troisième variété
+
+Le dernier sabordage a d'abord **survécu** : j'avais posé le fichier dans
+`Sources/WisqCore`, qui n'est pas un chemin déclaré par `project.yml` — la spec
+ne déclare que `App`, `Tests/WisqUITests` et `Tests/WisqHostedTests`, treize
+fichiers en tout. Le fichier n'était donc pas « déclaré », et la garde avait
+raison de se taire.
+
+Trois façons, maintenant, qu'un « SURVÉCU » ne soit pas un survivant :
+l'ancre n'existe pas (#320), la mutation ne s'applique pas **au sens**
+(`mkdtempSynced` contient `mkdtempSync`, #322), et la mutation est **hors du
+sujet de la garde** — celle-ci. Les trois se vérifient avant de conclure, et la
+troisième demande de savoir ce que la garde regarde, pas seulement où elle
+regarde.
+
+### Le signe à retenir
+
+**Une garde compte ce qu'elle compte ; la phrase à côté d'elle peut dire plus.**
+Le seul remède est de faire lire la phrase par la garde — ou mieux, de faire à
+la garde ce que la phrase décrit.
