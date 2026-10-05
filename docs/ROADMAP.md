@@ -1046,7 +1046,7 @@ n'est que du LZ4 » :
   `LZ4_stream_t` par image, donc une correspondance du quatrième bloc désigne
   couramment des octets produits par le premier. Décoder chaque bloc isolément
   donne une image plate exactement juste et une vraie image fausse par bandes —
-  sept des onze gabarits le prouvent, et ils le prouvent parce que le décodeur
+  huit des onze gabarits le prouvent, et ils le prouvent parce que le décodeur
   de référence a été relancé avec le dictionnaire remis à zéro entre les blocs ;
 * **le second octet est un `bitmap_fmt`**, et c'est lui qui fixe la longueur des
   lignes dont tout le reste dépend.

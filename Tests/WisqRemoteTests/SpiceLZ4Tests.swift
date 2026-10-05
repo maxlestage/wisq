@@ -75,10 +75,10 @@ final class SpiceLZ4Tests: XCTestCase {
     /// one decoded. This reproduces the mistake — every block decoded on its
     /// own, into its own buffer — and asserts the result is not the picture.
     ///
-    /// Seven of the eleven fixtures are wrong that way. Four are not, and they
-    /// are named rather than filtered out by a predicate: `independent` has no
-    /// cross-block match in it, `oneBlock` has only one block, and
-    /// `incompressible` is all literals. Testing only against the seven would
+    /// Eight of the eleven fixtures are wrong that way. Three are not, and
+    /// they are named rather than filtered out by a predicate: `independent`
+    /// has no cross-block match in it, `oneBlock` has only one block, and
+    /// `incompressible` is all literals. Testing only against the eight would
     /// pass just as well with a decoder that never shared anything.
     func testDecodingEachBlockOnItsOwnGetsItWrong() throws {
         let sharing = Set([

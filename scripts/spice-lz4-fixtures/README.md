@@ -17,7 +17,7 @@ and a real one wrong in bands.
 
 That is measured here rather than argued. `l4dec.c` was rebuilt with
 `LZ4_setStreamDecode(stream, NULL, 0)` inserted before every block, and the
-column below records which fixtures then came out wrong. Seven of eleven did.
+column below records which fixtures then came out wrong. Eight of eleven did.
 
 ## Every fixture, and the command that rebuilds it
 
@@ -57,7 +57,7 @@ live in the test file rather than here.
 | `noise` | an LCG | all literals, and a payload larger than the image |
 
 A third reading of the block format, written separately in Python, decodes all
-eleven and agrees with lz4 byte for byte. It also counts what each one reaches:
+eleven and agrees with lz4 byte for byte. It also counts, for six of them, what each reaches:
 
 | | blocks | sequences | literal ext. | match ext. | offset < 8 | match into an earlier block |
 | --- | --- | --- | --- | --- | --- | --- |

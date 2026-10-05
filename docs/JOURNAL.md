@@ -21620,3 +21620,104 @@ un chiffrage qui dérive fait trancher une décision sur un chiffre périmé.
 la décision soit chiffrée et que les chiffres soient tenus.** Ce qui reste à
 Maxime n'est plus « brancher l'interface », formule vague que j'ai répétée trois
 fois : c'est choisir entre trois formes dont les coûts sont écrits.
+
+## #325 — « sept des onze » : la mesure en comptait huit, dans quatre fichiers
+
+Chasse au comptage, menée sur les gabarits LZ4 de SPICE. Ce qui en est sorti
+n'est pas une phrase périmée mais une phrase **qui n'a jamais été vraie**, et
+elle était recopiée en deux langues.
+
+### Le défaut
+
+`Tests/WisqRemoteTests/SpiceLZ4Tests.swift` porte le test qui compte vraiment :
+`testDecodingEachBlockOnItsOwnGetsItWrong` décode chaque bloc isolément et
+exige, pour **chacun** des onze gabarits, que se tromper soit exactement
+l'appartenance à un ensemble nommé `sharing`. Cet ensemble porte **huit** noms.
+C'est la mesure, et elle est à double sens : les trois absents doivent décoder
+juste, les huit présents doivent décoder faux.
+
+Quatre fichiers la relatent, en six phrases, et toutes se trompaient :
+
+| où | ce qui était écrit |
+| --- | --- |
+| `SpiceLZ4Fixtures.swift`, l'en-tête | « **Seven of the eleven** do not decode correctly » |
+| `SpiceLZ4Fixtures.swift`, plus bas | « those **seven** came out wrong » |
+| `SpiceLZ4Tests.swift`, le commentaire | « **Seven** of the eleven … **Four** are not » |
+| `SpiceLZ4Tests.swift`, plus bas | « Testing only against the **seven** » |
+| `scripts/spice-lz4-fixtures/README.md` | « **Seven of eleven** did. » |
+| `docs/ROADMAP.md` | « **sept des onze** gabarits le prouvent » |
+
+Le commentaire du test allait plus loin que faux : il annonçait **quatre**
+exceptions, puis en nommait **trois** — `independent`, `oneBlock`,
+`incompressible`. Trois est le bon chiffre.
+
+Et la table du README se contredisait elle-même quelques lignes plus bas :
+la phrase disait sept, la colonne « shared dictionary » juste en dessous porte
+**huit** `**required**`.
+
+### La mesure, vérifiée avant d'y toucher
+
+Croire l'ensemble sur parole aurait été croire une décoration. Il a donc été
+sabordé : `"bottomUp"` retiré de `sharing`, puis
+`swift test --filter SpiceLZ4Tests/testDecodingEachBlockOnItsOwnGetsItWrong`.
+
+```
+SpiceLZ4Tests.swift:112: error: XCTAssertEqual failed: ("true") is not equal to
+("false") - bottomUp : le partage du dictionnaire entre blocs n'est pas ce qui
+était attendu
+```
+
+`bottomUp` a réellement besoin du dictionnaire partagé. Huit, pas sept.
+
+### Ce que la garde tient
+
+`site/tests/claims.test.ts` lit les quatre fichiers et compare **des noms**, pas
+seulement des nombres : les gabarits déclarés et les lignes de la table du
+générateur doivent se nommer les uns les autres, la colonne `**required**` doit
+être l'ensemble `sharing`, et les exceptions nommées dans le commentaire doivent
+être exactement le complément. Puis chaque phrase doit annoncer le nombre mesuré,
+en toutes lettres, **dans sa langue**.
+
+Un sixième compte est tombé dans la même lecture : la troisième table du README,
+celle de la relecture Python, n'en relève que six sur onze alors que la phrase
+disait « It also counts what **each one** reaches ». Corrigée en « for six of
+them », et tenue par le nombre de lignes de cette table.
+
+### Le sabordage
+
+Vingt sabordages, aucun survivant.
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| une fixture renommée | « la table du générateur nomme les mêmes fixtures » |
+| une ligne `**required**` → `not needed` | « la colonne … est l'ensemble que le test mesure » |
+| chacune des six phrases, huit → autre chose | « … annonce « x », la mesure en compte 8 » |
+| chacune des cinq phrases, onze → douze | « … annonce « douze » fixtures, il y en a 11 » |
+| une exception nommée remplacée par une qui partage | « les exceptions nommées sont exactement … » |
+| le relevé Python, six → sept | « le README annonce « seven » relevés, la table en porte 6 » |
+| chaque phrase reformulée | « … : la phrase a changé de forme » |
+| TÉMOIN : plus une seule `= Case(` | « aucune fixture déclarée » |
+| TÉMOIN : `sharing` illisible | « l'ensemble `sharing` n'a pas été lu » |
+| TÉMOIN : en-tête de table cassé | « aucune ligne de table lue » |
+
+### Deux fautes à moi, trouvées en route
+
+**La première extraction ramassait seize noms pour onze.** Le README porte
+**trois** tables et deux d'entre elles nomment des fixtures ; lire « toute ligne
+qui commence par un nom entre accents graves » prend les trois. Chaque table est
+maintenant prise par son en-tête. Le test a échoué sur ma propre faute avant
+d'échouer sur le défaut, ce qui est le bon ordre.
+
+**Le premier relevé cherchait « seven » et a manqué « sept ».** La cinquième
+copie est dans `docs/ROADMAP.md`, en français. Une chasse au comptage sur ce
+dépôt doit chercher **dans les deux langues**, sinon elle rend une liste courte
+avec l'air d'être complète — et la garde qui en sort laisse dehors ce qu'elle
+n'a pas vu. La table de mots du test porte donc les deux.
+
+### Le signe à retenir
+
+**Un relevé recopié est un relevé qui dérive, et un relevé recopié en deux
+langues dérive deux fois plus discrètement.** #321 avait trouvé deux nombres nés
+du même commit qui se contredisaient ; ici les six phrases s'accordaient
+parfaitement entre elles et se trompaient toutes ensemble. L'accord entre les
+textes ne prouve rien : seule la confrontation au test qui s'exécute le fait.
