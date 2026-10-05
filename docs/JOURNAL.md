@@ -21721,3 +21721,107 @@ langues dérive deux fois plus discrètement.** #321 avait trouvé deux nombres 
 du même commit qui se contredisaient ; ici les six phrases s'accordaient
 parfaitement entre elles et se trompaient toutes ensemble. L'accord entre les
 textes ne prouve rien : seule la confrontation au test qui s'exécute le fait.
+
+## #326 — l'exclusion était de lieu, et l'en-tête disait qu'elle était de forme
+
+Chasse au comptage, menée dans les deux langues cette fois — la leçon de #325.
+Elle n'a pas trouvé un nombre faux : elle a trouvé une **garde qui affirmait
+plus que son périmètre ne permet**, soit exactement la forme de #323, et cette
+fois dans une garde que j'avais écrite moi-même.
+
+### Le défaut
+
+`site/tests/claims.test.ts` tient depuis #317 le nombre de corpus matériels
+écrit en lettres, dans sept copies, dans les deux langues. Son en-tête écartait
+deux phrases voisines — « assez rare pour survivre à neuf corpus » — et
+expliquait pourquoi :
+
+> Elles ne sont pas exclues par une liste mais par leur forme : elles ne disent
+> pas « corpus matériels ».
+
+C'est vrai de ces deux phrases, et **faux de ce qui définit le périmètre**. Le
+périmètre est une liste de dossiers : `site/src`, `docs` hors journal,
+`CHANGELOG.md` et les deux READMEs. Six constats écrivent la phrase exacte et
+n'étaient dehors que par leur **place** :
+
+| fichier | ce qu'il écrit |
+| --- | --- |
+| `Sources/WisqVM/X86ProcessStartWatch.swift` | « Cinq corpus matériels ont épuisé le jeu d'instructions » |
+| `Sources/WisqVM/X86ReturnWatch.swift` | idem |
+| `Sources/WisqVM/X86IndirectCallWatch.swift` | idem, **« Cinq » et « corpus matériels » sur deux lignes** |
+| `Tests/WisqVMTests/X86ProcessStartTests.swift` | idem |
+| `Tests/WisqVMTests/X86ReturnWatchTests.swift` | idem |
+| `Tests/WisqVMTests/X86IndirectCallTests.swift` | idem |
+
+Les six sont de bons constats **datés** — cinq corpus avaient épuisé le jeu
+d'instructions au moment où le témoin a été écrit — et aucun n'est faux. Ce qui
+était faux est la phrase qui prétendait que leur forme suffisait à les écarter.
+**Un inventaire qui dériverait dans `Sources/` serait resté invisible**, et
+l'en-tête disait le contraire.
+
+### Ce que la garde fait maintenant, au lieu de l'affirmer
+
+Le remède de #323, appliqué à nouveau : **faire l'acte**. Un second describe
+balaie l'arbre entier — 653 fichiers, 10,5 Mio — et classe chaque copie. Trois
+issues, et rien d'autre ne passe : dans le périmètre d'inventaire, un constat
+daté, ou une mention qui n'annonce aucun nombre. Le compte trouvé dans le
+périmètre par ce balayage doit égaler celui que l'autre lecteur voit — deux
+lecteurs du même fait, l'un partant de la racine, l'autre d'une liste.
+
+Les listes de nombres en lettres sont hissées au module : deux gardes les
+lisent, et recopier une liste de nombres dans le fichier qui garde des nombres
+recopiés aurait été une plaisanterie coûteuse.
+
+### Deux mesures qu'il a fallu faire
+
+**La normalisation n'est pas un détail.** Mon premier balayage cherchait « un
+mot, puis la phrase » et a rendu **cinq** fichiers. Le sixième écrit « Cinq » en
+fin de ligne et « corpus matériels » au début de la suivante. Les marqueurs de
+commentaire sont retirés et les blancs écrasés **avant** de chercher, et le
+sabordage le prouve : la normalisation retirée, le cas replié devient
+inclassable et le test tombe.
+
+**Le corps d'un module n'est pas soumis au délai des tests.** Le balayage coûte
+2,2 s à chaud, et `claims.test.ts` documente déjà qu'une lecture à froid de ce
+dépôt coûte ~40 ms par fichier. Sonde écrite exprès : 6,25 s brûlées au niveau
+module, **la suite passe**. Le balayage vit donc dans le corps du describe, hors
+du plafond de cinq secondes, et pas dans un test.
+
+### Une exclusion à moi qui ne portait rien
+
+J'avais écrit deux exclusions avec leur raison. Levée, celle du journal fait
+passer le balayage de sept à **dix-neuf** copies : elle porte. Levée, celle du
+fichier de garde lui-même — « parce qu'il porte ses propres motifs » — **rien
+ne tombait** : ses occurrences n'annoncent aucun nombre, donc la branche des
+mentions les acceptait déjà. Une exclusion qui ne porte rien, avec une raison
+écrite à côté, est une affirmation fausse de plus. Elle est retirée, et la garde
+se lit elle-même.
+
+### Le sabordage, et une faute du harnais
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| une copie d'inventaire privée de son nombre | les deux tests, en nommant `content.ts` |
+| un constat daté changé en inventaire (une ligne) | « … hors du périmètre sans être un constat daté » |
+| un constat daté changé en inventaire (**replié**) | idem — la normalisation porte |
+| la liste du périmètre amputée de `site/src` | les deux tests, en nommant les six copies du site |
+| TÉMOIN : le journal plus exclu | « le balayage voit 19 copie(s) chiffrée(s) » |
+| TÉMOIN : la chaîne du constat daté cassée | « aucun constat daté trouvé hors du périmètre » |
+| TÉMOIN : normalisation des blancs retirée | le cas replié devient inclassable |
+
+**Et le harnais a appliqué une mutation sans copie de restauration.** Un
+fichier figurait dans la liste des cas sans figurer dans celle des copies : la
+mutation est passée, la restauration a levé `FileNotFoundError`, et le fichier
+est resté sabordé dans l'arbre. Rattrapé par `git checkout --` puis vérifié par
+`git diff origin/master` — zéro ligne. Le harnais **refuse** désormais
+d'appliquer une mutation dont la source de restauration n'existe pas. La règle
+« restaurer depuis une copie prise avant » suppose que la copie existe ; c'est
+une supposition, donc elle se vérifie.
+
+### Le signe à retenir
+
+**Une garde qui écrit pourquoi elle laisse quelque chose dehors vient d'énoncer
+une propriété, et cette propriété se vérifie comme les autres.** #323 l'avait
+appris sur la prose d'à côté ; ici c'est l'en-tête de la garde elle-même. Et le
+corollaire, qui est neuf : **une exclusion doit être montrée portante, sinon
+elle doit disparaître** — en écrire la raison ne la rend pas vraie.
