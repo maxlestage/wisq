@@ -1151,3 +1151,169 @@ describe("le chiffrage du bureau annonce la vraie suite hébergée", () => {
     ).toBe(booting.length);
   });
 });
+
+describe("le relevé LZ4 : trois phrases et une table pour une seule mesure", () => {
+  const fixtures = readFileSync(
+    join(repoRoot, "Tests/WisqRemoteTests/SpiceLZ4Fixtures.swift"),
+    "utf8",
+  );
+  const suite = readFileSync(
+    join(repoRoot, "Tests/WisqRemoteTests/SpiceLZ4Tests.swift"),
+    "utf8",
+  );
+  const readme = readFileSync(
+    join(repoRoot, "scripts/spice-lz4-fixtures/README.md"),
+    "utf8",
+  );
+  const roadmap = readFileSync(join(repoRoot, "docs/ROADMAP.md"), "utf8");
+
+  /// Une seule de ces lectures est exécutée : `sharing`, que
+  /// `testDecodingEachBlockOnItsOwnGetsItWrong` confronte au décodage réel en
+  /// exigeant, pour chaque gabarit, que se tromper soit exactement
+  /// l'appartenance à l'ensemble. Tout le reste est du texte — des
+  /// commentaires, une phrase de README, une ligne de feuille de route — et
+  /// du texte ne se trompe jamais tout seul. C'est pour ça qu'il dérive.
+  const declared = [...fixtures.matchAll(/static let (\w+) = Case\(/g)].map((m) => m[1]);
+  const sharing = (
+    suite.match(/let sharing = Set\(\[([\s\S]*?)\]\)/)?.[1].match(/"(\w+)"/g) ?? []
+  ).map((quoted) => quoted.slice(1, -1));
+  /// Le README porte **trois** tables, et deux d'entre elles nomment des
+  /// fixtures. Lire « toute ligne qui commence par un nom entre accents
+  /// graves » en ramasse seize pour onze — c'est ce que ce test a fait
+  /// d'abord. Chaque table est donc prise par son en-tête.
+  const tableUnder = (header: RegExp) =>
+    readme.match(new RegExp(`^\\|${header.source}$([\\s\\S]*?)\\n\\n`, "m"))?.[1] ?? "";
+  const rows = [...tableUnder(/ fixture \|.*shared dictionary.*\|/).matchAll(/^\| `(\w+)` \|(.*)$/gm)];
+  const tabled = rows.map((row) => row[1]);
+  const required = rows.filter((row) => row[2].includes("**required**")).map((row) => row[1]);
+  const reached = [
+    ...tableUnder(/ \| blocks \|.*match into an earlier block \|/).matchAll(/^\| `(\w+)` \|/gm),
+  ].map((row) => row[1]);
+
+  /// Le relevé est écrit dans les deux langues : les commentaires de la suite
+  /// et le README du générateur sont en anglais, la feuille de route est en
+  /// français. Ne chercher que l'anglais laisse la cinquième copie dehors —
+  /// c'est ce que le premier relevé de cette tranche a fait.
+  const words = [
+    ["zero", "zéro"], ["one", "un"], ["two", "deux"], ["three", "trois"],
+    ["four", "quatre"], ["five", "cinq"], ["six", "six"], ["seven", "sept"],
+    ["eight", "huit"], ["nine", "neuf"], ["ten", "dix"], ["eleven", "onze"],
+    ["twelve", "douze"],
+  ];
+  const counted = (word: string) =>
+    words.findIndex((pair) => pair.includes(word.toLowerCase()));
+
+  test("la table du générateur nomme les mêmes fixtures que le fichier qui les porte", () => {
+    expect(declared.length, "aucune fixture déclarée").toBeGreaterThan(5);
+    expect(tabled.length, "aucune ligne de table lue").toBeGreaterThan(5);
+    expect([...tabled].sort()).toEqual([...declared].sort());
+  });
+
+  test("la colonne « shared dictionary » de la table est l'ensemble que le test mesure", () => {
+    expect(sharing.length, "l'ensemble `sharing` n'a pas été lu").toBeGreaterThan(0);
+    expect(required.length, "aucune ligne marquée **required**").toBeGreaterThan(0);
+    expect([...required].sort()).toEqual([...sharing].sort());
+  });
+
+  /// Le relevé est aussi écrit en toutes lettres, et aucune de ces phrases
+  /// n'est lue par quoi que ce soit. Elles disaient « sept », et la phrase du
+  /// commentaire allait plus loin : elle annonçait « quatre » exceptions puis
+  /// en nommait trois. La mesure, elle, en comptait huit et trois.
+  test("les trois phrases annoncent le nombre que le test mesure", () => {
+    const sentences: Array<[string, RegExpMatchArray | null]> = [
+      [
+        "SpiceLZ4Fixtures.swift, l'en-tête",
+        fixtures.match(/\*\*(\w+) of the (\w+) do not decode correctly/),
+      ],
+      [
+        "SpiceLZ4Fixtures.swift, « those … came out wrong »",
+        fixtures.match(/those (\w+) came out wrong/),
+      ],
+      [
+        "SpiceLZ4Tests.swift, le commentaire du test",
+        suite.match(/(\w+) of the (\w+) fixtures are wrong that way/),
+      ],
+      [
+        "SpiceLZ4Tests.swift, « testing only against the … »",
+        suite.match(/Testing only against the (\w+) would/),
+      ],
+      ["README du générateur", readme.match(/(\w+) of (\w+) did\./)],
+      [
+        "docs/ROADMAP.md, la liste des pièges LZ4",
+        roadmap.match(/(\w+) des (\w+) gabarits le prouvent/),
+      ],
+    ];
+    for (const [where, said] of sentences) {
+      expect(said, `${where} : la phrase a changé de forme`).not.toBeNull();
+      expect(
+        counted(said![1]),
+        `${where} annonce « ${said![1]} », la mesure en compte ${sharing.length}`,
+      ).toBe(sharing.length);
+    }
+  });
+
+  test("là où le total est écrit à côté, c'est le nombre de fixtures", () => {
+    const totals: Array<[string, RegExpMatchArray | null]> = [
+      [
+        "SpiceLZ4Fixtures.swift, l'en-tête",
+        fixtures.match(/\*\*\w+ of the (\w+) do not decode correctly/),
+      ],
+      [
+        "SpiceLZ4Tests.swift, le commentaire du test",
+        suite.match(/\w+ of the (\w+) fixtures are wrong that way/),
+      ],
+      ["README du générateur", readme.match(/\w+ of (\w+) did\./)],
+      [
+        "docs/ROADMAP.md, la liste des pièges LZ4",
+        roadmap.match(/\w+ des (\w+) gabarits le prouvent/),
+      ],
+      [
+        "SpiceLZ4Tests.swift, l'en-tête du fichier",
+        suite.match(/the whole argument here: (\w+) payloads/),
+      ],
+    ];
+    for (const [where, said] of totals) {
+      expect(said, `${where} : la phrase a changé de forme`).not.toBeNull();
+      expect(
+        counted(said![1]),
+        `${where} annonce « ${said![1]} » fixtures, il y en a ${declared.length}`,
+      ).toBe(declared.length);
+    }
+  });
+
+  /// La troisième table du README — ce que la relecture Python compte pour
+  /// chaque fixture — n'en relève que six sur onze. La phrase qui l'introduit
+  /// disait « what each one reaches », ce que la table en dessous ne fait pas.
+  test("la table des chemins atteints dit combien de fixtures elle relève", () => {
+    expect(reached.length, "aucune ligne de la table des chemins atteints").toBeGreaterThan(0);
+    expect(reached.length, "elle les relèverait toutes").toBeLessThan(declared.length);
+    const said = readme.match(/It also counts, for (\w+) of them/);
+    expect(said, "la phrase qui introduit la table a changé de forme").not.toBeNull();
+    expect(
+      counted(said![1]),
+      `le README annonce « ${said![1]} » relevés, la table en porte ${reached.length}`,
+    ).toBe(reached.length);
+  });
+
+  /// Celles qui n'ont pas besoin du dictionnaire partagé sont **nommées** dans
+  /// le commentaire plutôt que filtrées par un prédicat, et c'est délibéré :
+  /// c'est ce qui empêche de ne tester que celles qui partagent. Une liste
+  /// nommée à la main est précisément ce qui se désaccorde en silence.
+  test("les exceptions nommées sont exactement celles que la mesure laisse de côté", () => {
+    const paragraph = suite.match(
+      /are named rather than filtered out by a predicate:([\s\S]*?)Testing only against/,
+    )?.[1];
+    expect(paragraph, "le commentaire qui nomme les exceptions a changé de forme").toBeDefined();
+    const named = [...(paragraph ?? "").matchAll(/`(\w+)`/g)].map((m) => m[1]);
+    expect(named.length, "aucune exception nommée").toBeGreaterThan(0);
+    const left = declared.filter((name) => !sharing.includes(name));
+    expect([...named].sort()).toEqual([...left].sort());
+
+    const said = suite.match(/fixtures are wrong that way\. (\w+) are not/);
+    expect(said, "la phrase qui compte les exceptions a changé de forme").not.toBeNull();
+    expect(
+      counted(said![1]),
+      `le commentaire annonce « ${said![1]} » exceptions, il y en a ${left.length}`,
+    ).toBe(left.length);
+  });
+});
