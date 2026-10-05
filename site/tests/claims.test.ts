@@ -53,6 +53,20 @@ function claimedValue(label: RegExp): number {
   return Number(item.value);
 }
 
+/// Les nombres écrits en lettres, dans les deux langues. Hissés au module
+/// parce que deux gardes les lisent : le compteur d'inventaire des corpus
+/// matériels, et le balayage qui vérifie ce qui vit hors de son périmètre.
+/// Recopier une liste de nombres dans un fichier qui garde des nombres
+/// recopiés serait une plaisanterie coûteuse.
+const FRENCH_NUMBERS = [
+  "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
+  "neuf", "dix", "onze", "douze", "treize", "quatorze",
+];
+const ENGLISH_NUMBERS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+];
+
 describe("advertised claims match the repository", () => {
   test("the test count is the real one", () => {
     expect(claimedValue(/tests/)).toBe(testCount());
@@ -185,17 +199,18 @@ describe("advertised claims match the repository", () => {
   /// **Ce que cette garde ne tient pas, et pourquoi.** La même note dit
   /// « assez rare pour survivre à neuf corpus », et « survive nine corpora » :
   /// celles-là **datent un défaut** au lieu d'inventorier les corpus — neuf
-  /// était le compte le jour où ce défaut a survécu. Elles ne sont pas exclues
-  /// par une liste mais par leur forme : elles ne disent pas « corpus
-  /// matériels ».
-  const FRENCH_NUMBERS = [
-    "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
-    "neuf", "dix", "onze", "douze", "treize", "quatorze",
-  ];
-  const ENGLISH_NUMBERS = [
-    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
-  ];
+  /// était le compte le jour où ce défaut a survécu. Pour celles-là, c'est bien
+  /// leur forme qui les écarte : elles ne disent pas « corpus matériels ».
+  ///
+  /// **Mais la forme n'est pas ce qui définit ce périmètre, et l'écrire était
+  /// faux.** Ce qui le définit est la liste de dossiers construite plus bas.
+  /// Six constats de `Sources/WisqVM` et de leurs suites écrivent « Cinq
+  /// corpus matériels ont épuisé le jeu d'instructions » — la phrase exacte —
+  /// et n'étaient dehors que par leur **place**. Un inventaire qui dériverait
+  /// là serait resté invisible. Le describe « la phrase des corpus matériels
+  /// ne dérive pas là où la garde ne regardait pas » balaie l'arbre entier et
+  /// exige de chaque copie hors périmètre qu'elle soit un constat daté, ou
+  /// qu'elle n'annonce aucun nombre.
 
   /// Les oracles matériels, comptés par le répertoire et non par la mémoire.
   ///
@@ -1315,5 +1330,118 @@ describe("le relevé LZ4 : trois phrases et une table pour une seule mesure", ()
       counted(said![1]),
       `le commentaire annonce « ${said![1]} » exceptions, il y en a ${left.length}`,
     ).toBe(left.length);
+  });
+});
+
+describe("la phrase des corpus matériels ne dérive pas là où la garde ne regardait pas", () => {
+  /// Le compteur d'inventaire plus haut ne lit que `site/src`, `docs` hors
+  /// journal, `CHANGELOG.md` et les deux READMEs, et son en-tête affirmait que
+  /// les phrases laissées dehors le sont **par leur forme** — qu'elles ne
+  /// disent pas « corpus matériels ». **Six le disent** : trois témoins de
+  /// `Sources/WisqVM` et leurs trois suites, chacun ouvrant par « Cinq corpus
+  /// matériels ont épuisé le jeu d'instructions ». Elles étaient dehors par
+  /// leur **place**, pas par leur forme, et un inventaire qui dériverait là y
+  /// serait resté invisible — alors que l'en-tête disait le contraire.
+  ///
+  /// Ce test balaie l'arbre et exige de chaque copie qu'elle soit l'une des
+  /// trois : dans le périmètre d'inventaire, un **constat daté**, ou une
+  /// mention sans nombre devant. Rien d'autre ne passe.
+  ///
+  /// **La normalisation n'est pas un détail.** Une des six écrit « Cinq » en
+  /// fin de ligne et « corpus matériels » au début de la suivante : un balayage
+  /// qui lit ligne par ligne en voit cinq et croit avoir tout vu. C'est ce que
+  /// le premier relevé de cette tranche a fait. Les marqueurs de commentaire
+  /// sont retirés et les blancs écrasés **avant** de chercher.
+  const INVENTORY = [
+    "site/src/",
+    "docs/",
+    "CHANGELOG.md",
+    "README.md",
+    "README.fr.md",
+  ];
+  /// **Une seule exclusion, et elle porte.** `docs/JOURNAL.md` **cite** les
+  /// phrases fausses dans le tableau de la tranche qui les a corrigées : une
+  /// garde qui le lui refuserait lui interdirait de tenir le registre. Levée,
+  /// le balayage voit dix-neuf copies au lieu de sept.
+  ///
+  /// Ce fichier-ci en avait une deuxième — lui-même, « parce qu'il porte ses
+  /// propres motifs ». Levée, **rien ne tombait** : ses occurrences n'annoncent
+  /// aucun nombre, donc la branche des mentions les accepte déjà. Une exclusion
+  /// qui ne porte rien, avec une raison écrite à côté, est une affirmation
+  /// fausse de plus. Elle est retirée, et cette garde se lit elle-même.
+  const EXCLUDED = ["docs/JOURNAL.md"];
+  const SKIP = new Set([
+    ".git", "node_modules", "dist", "target", ".build", ".heroku-bun", "Fixtures",
+  ]);
+  const DATED = "ont épuisé le jeu d'instructions";
+
+  const NUMBERS = new Set([...FRENCH_NUMBERS, ...ENGLISH_NUMBERS]);
+
+  function sweep(): Array<{ path: string; word: string; tail: string }> {
+    const hits: Array<{ path: string; word: string; tail: string }> = [];
+    const walk = (dir: string, prefix: string) => {
+      for (const entry of readdirSync(dir)) {
+        if (SKIP.has(entry)) continue;
+        const path = join(dir, entry);
+        const shown = prefix ? `${prefix}/${entry}` : entry;
+        if (statSync(path).isDirectory()) {
+          walk(path, shown);
+          continue;
+        }
+        if (EXCLUDED.includes(shown)) continue;
+        let text: string;
+        try {
+          text = readFileSync(path, "utf8");
+        } catch {
+          continue;
+        }
+        if (!/corpus matériels|hardware corpora/i.test(text)) continue;
+        const flat = text.replace(/^[ \t]*(\/\/\/?|\*|#)[ \t]?/gm, "").replace(/\s+/g, " ");
+        for (const found of flat.matchAll(/(\S+)\s+(corpus matériels|hardware corpora)/giu)) {
+          hits.push({
+            path: shown,
+            word: found[1].replace(/[^\p{L}]/gu, "").toLowerCase(),
+            tail: flat.slice(found.index! + found[0].length).trimStart().slice(0, 60),
+          });
+        }
+      }
+    };
+    walk(repoRoot, "");
+    return hits;
+  }
+
+  const hits = sweep();
+  const inside = hits.filter((hit) => INVENTORY.some((scope) => hit.path.startsWith(scope)));
+  const outside = hits.filter((hit) => !INVENTORY.some((scope) => hit.path.startsWith(scope)));
+
+  test("le balayage de l'arbre trouve le même inventaire que le compteur", () => {
+    expect(hits.length, "la phrase a disparu de l'arbre").toBeGreaterThan(5);
+    /// Deux lecteurs du même fait, et c'est tout l'intérêt : celui-ci part de
+    /// la racine, l'autre d'une liste de dossiers. Ils doivent tomber sur le
+    /// même compte.
+    const counted = inside.filter((hit) => NUMBERS.has(hit.word));
+    expect(
+      counted.length,
+      `le balayage voit ${counted.length} copie(s) chiffrée(s) dans le périmètre ` +
+        `d'inventaire (${inside.length} occurrences en tout) : ` +
+        `${counted.map((hit) => `${hit.path} « ${hit.word} »`).join(", ")}`,
+    ).toBe(7);
+  });
+
+  test("chaque copie hors du périmètre est un constat daté, ou n'annonce aucun nombre", () => {
+    expect(outside.length, "plus aucune copie hors du périmètre : le test ne garde rien")
+      .toBeGreaterThan(0);
+    const dated = outside.filter((hit) => hit.tail.startsWith(DATED));
+    expect(dated.length, "aucun constat daté trouvé hors du périmètre").toBeGreaterThan(0);
+    for (const hit of outside) {
+      if (hit.tail.startsWith(DATED)) continue;
+      expect(
+        NUMBERS.has(hit.word),
+        `${hit.path} écrit « ${hit.word} corpus matériels » hors du périmètre ` +
+          `d'inventaire sans être un constat daté : soit la phrase annonce un ` +
+          `inventaire et le fichier doit entrer dans le périmètre, soit elle date ` +
+          `un constat et doit le dire`,
+      ).toBe(false);
+    }
   });
 });
