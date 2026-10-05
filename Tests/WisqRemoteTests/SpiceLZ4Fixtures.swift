@@ -13,10 +13,10 @@
 /// `canvas_get_lz4` drives it, and a third parse of the block format written
 /// separately in Python. `rows` is what all three produce.
 ///
-/// **Seven of the eleven do not decode correctly if the dictionary is reset
+/// **Eight of the eleven do not decode correctly if the dictionary is reset
 /// between blocks**, and that is measured rather than argued: the reference
 /// decoder was rerun with `LZ4_setStreamDecode(stream, NULL, 0)` inserted
-/// before each block, and those seven came out wrong. The table in the script
+/// before each block, and those eight came out wrong. The table in the script
 /// directory's README says which.
 enum SpiceLZ4Fixtures {
     struct Case {
