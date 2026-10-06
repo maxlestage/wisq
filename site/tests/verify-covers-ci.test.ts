@@ -15,7 +15,9 @@
 /// chaque fois réparée à la main. Rien ne comparait les deux listes.
 ///
 /// **Mesuré**, en comptant les occurrences dans `verify.sh` et les scripts
-/// qu'il appelle, contre les deux workflows :
+/// qu'il appelle, contre les deux workflows qui tournent sur une pull
+/// request — le dépôt en porte quatre, les deux autres partent sur une
+/// étiquette ou à la main :
 ///
 /// | ce que la CI lance | verify.sh |
 /// |---|---|
@@ -44,13 +46,21 @@
 /// lancer localement. Une étape ajoutée à la CI et classée par personne fait
 /// rougir ce test. C'est précisément ce qui manquait les trois fois.
 ///
+/// **Et cette promesse était plus large que sa garde.** Elle ne valait que pour
+/// les deux fichiers que l'inventaire nomme ; un workflow **nouveau**,
+/// déclenché par une pull request, serait entré dans la CI avec toutes ses
+/// étapes non classées sans rien faire rougir. Le dernier describe ferme ça :
+/// il lit `.github/workflows/`, dérive le périmètre du bloc `on:` de chaque
+/// fichier, et exige que l'inventaire soit exactement ce qui tourne sur une
+/// pull request.
+///
 /// Et l'autre bord : la garde ne doit pas exiger l'impossible. Xcode, un
 /// simulateur d'iPhone et Homebrew ne sont pas sur une machine Linux, et
 /// réclamer ces étapes-là rendrait `verify.sh` inutilisable là où il sert le
 /// plus. D'où la seconde colonne, qui doit porter une vraie raison.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..", "..");
@@ -272,7 +282,7 @@ describe("le lecteur peut échouer", () => {
   /// satisfait toutes les assertions ci-dessus : zéro étape non classée, zéro
   /// entrée périmée. Ce fichier existe à cause de gardes qui ne pouvaient pas
   /// échouer, et il ne va pas en devenir une.
-  test("les deux workflows rendent des étapes, et en nombre plausible", () => {
+  test("les workflows de l'inventaire rendent des étapes, et en nombre plausible", () => {
     for (const path of WORKFLOWS) {
       expect(workflowSteps(path).length, `${path} ne rend plus aucune étape`).toBeGreaterThan(4);
     }
@@ -292,5 +302,69 @@ describe("le lecteur peut échouer", () => {
   test("les scripts locaux sont lus, et ne sont pas vides", () => {
     expect(LOCAL.length).toBeGreaterThan(4000);
     expect(LOCAL).toContain("Everything CI would run, in one command");
+  });
+});
+
+describe("le périmètre est celui que les workflows déclarent, pas une liste écrite à la main", () => {
+  /// **L'affirmation qui manquait sa garde.** L'en-tête de ce fichier promet
+  /// qu'« une étape ajoutée à la CI et classée par personne fait rougir ce
+  /// test ». C'était vrai pour les deux fichiers de `WORKFLOWS` et faux pour
+  /// tout le reste : le dépôt porte **quatre** workflows, l'inventaire en lit
+  /// deux, et un cinquième fichier déclenché par une pull request serait entré
+  /// dans la CI sans que rien ici ne bouge. C'est la faute dont ce fichier est
+  /// né — « rien ne comparait les deux listes » — à un cran au-dessus : rien ne
+  /// comparait les *fichiers*.
+  ///
+  /// **Mesuré, et c'est ce qui rend le périmètre dérivable.** `ci.yml` et
+  /// `site.yml` portent `pull_request:` dans leur bloc `on:`. `release.yml`
+  /// part sur une étiquette `v*` ou à la main, `testflight.yml` à la main
+  /// seulement. Le périmètre n'est donc pas un choix : c'est « ce qui tourne
+  /// sur une pull request », et les deux tests ci-dessous le dérivent du
+  /// déclencheur au lieu de le croire.
+  const directory = join(repoRoot, ".github", "workflows");
+  const all = readdirSync(directory)
+    .filter((entry) => entry.endsWith(".yml") || entry.endsWith(".yaml"))
+    .sort();
+
+  /// Le bloc `on:` seul. Un `pull_request` écrit ailleurs — dans un `if:`, dans
+  /// un commentaire, dans le nom d'une étape — ne déclenche rien, et le
+  /// chercher dans tout le fichier compterait un workflow qui ne tourne pas.
+  function triggers(entry: string): string {
+    const text = readFileSync(join(directory, entry), "utf8");
+    return text.match(/^on:\n((?:[ \t].*\n|\n)*)/m)?.[1] ?? "";
+  }
+
+  const started = (entry: string) => /^\s+pull_request:/m.test(triggers(entry));
+
+  test("tout workflow déclenché par une pull request est dans l'inventaire", () => {
+    expect(all.length, "aucun workflow lu").toBeGreaterThan(2);
+    /// Le témoin : si le lecteur du bloc `on:` cessait de correspondre, la
+    /// liste serait vide et l'égalité ne dirait plus rien.
+    expect(
+      all.filter(started).length,
+      "aucun workflow ne se déclenche sur une pull request : le lecteur du bloc « on: » ne lit plus",
+    ).toBeGreaterThan(0);
+    expect(all.filter(started).map((entry) => `.github/workflows/${entry}`)).toEqual(
+      [...WORKFLOWS].sort(),
+    );
+  });
+
+  test("et ceux que l'inventaire ne lit pas ne tournent pas sur une pull request", () => {
+    const outside = all.filter((entry) => !WORKFLOWS.includes(`.github/workflows/${entry}`));
+    /// L'autre témoin : si tous les workflows entraient dans l'inventaire, le
+    /// discriminateur ne serait jamais exercé et ce test passerait sur une
+    /// boucle vide.
+    expect(
+      outside.length,
+      "plus aucun workflow hors de l'inventaire : le discriminateur n'est pas exercé",
+    ).toBeGreaterThan(0);
+    for (const entry of outside) {
+      expect(
+        started(entry),
+        `${entry} tourne sur une pull request sans figurer dans l'inventaire de ce ` +
+          `fichier : ses étapes ne sont classées par personne, ce qui est exactement ` +
+          `la faute que ce fichier existe pour empêcher`,
+      ).toBe(false);
+    }
   });
 });
