@@ -21924,3 +21924,89 @@ de ce dépôt » et n'en couvrait que les deux tiers. Quand une garde nomme ce
 qu'elle protège — *les instruments* —, le balayage doit aller chercher **tout ce
 qui porte ce nom**, pas ce qui se trouve être écrit dans les deux langages
 auxquels on pensait ce jour-là.
+
+## #328 — « rien ne comparait les deux listes », et rien ne comparait les fichiers
+
+Quatrième tranche d'affilée sur la même forme, et cette fois dans le fichier
+dont c'est littéralement le sujet. `site/tests/verify-covers-ci.test.ts` existe
+parce que `scripts/verify.sh` a trois fois promis « everything CI would run »
+sans le faire, chaque fois trouvé par une pull request rouge. Son en-tête le
+dit : **« Rien ne comparait les deux listes. »**
+
+### L'affirmation plus large que sa garde
+
+L'en-tête promet aussi ceci :
+
+> Une étape ajoutée à la CI et classée par personne fait rougir ce test. C'est
+> précisément ce qui manquait les trois fois.
+
+Vrai pour les deux fichiers que l'inventaire nomme :
+
+```ts
+const WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/site.yml"];
+```
+
+Le dépôt en porte **quatre**. Un workflow **nouveau**, déclenché par une pull
+request, serait entré dans la CI avec toutes ses étapes non classées sans rien
+faire rougir ici. La faute dont ce fichier est né, d'un cran au-dessus : rien ne
+comparait les **fichiers**.
+
+### Ce qui rend le périmètre dérivable, mesuré
+
+| workflow | bloc `on:` | dans l'inventaire |
+| --- | --- | --- |
+| `ci.yml` | `push: [master]`, **`pull_request`** | oui |
+| `site.yml` | `push: [master]`, **`pull_request`** | oui |
+| `release.yml` | `push: tags: ["v*"]`, `workflow_dispatch` | non |
+| `testflight.yml` | `workflow_dispatch` | non |
+
+Le périmètre n'était donc pas un choix discutable : c'est exactement « ce qui
+tourne sur une pull request ». Il n'avait simplement jamais été **dérivé**. Le
+nouveau describe lit `.github/workflows/`, extrait le bloc `on:` de chaque
+fichier — et pas le fichier entier, parce qu'un `pull_request` écrit dans un
+`if:` ou un commentaire ne déclenche rien — et exige l'égalité dans les deux
+sens.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| **un workflow nouveau déclenché par une pull request** | « zz-docs.yml tourne sur une pull request sans figurer dans l'inventaire » |
+| `testflight.yml` se met à tourner sur les pull requests | idem, en le nommant |
+| `site.yml` retiré de l'inventaire | cinq tests, dont les deux nouveaux |
+| TÉMOIN : le lecteur du bloc `on:` ne lit plus | « aucun workflow ne se déclenche sur une pull request » |
+| TÉMOIN : les quatre workflows entrés dans l'inventaire | « des étapes de la CI que personne n'a classées » |
+
+Le premier est le seul qui compte : l'ancienne garde **ne pouvait pas** le voir.
+Le dernier témoin est le plus instructif — élargir l'inventaire à tort réveille
+la garde d'origine, qui réclame un verdict pour chaque étape de `release.yml` et
+de `testflight.yml`. Les deux moitiés se tiennent l'une l'autre.
+
+### Un piège de lecture, mesuré en route
+
+`readdirSync` n'était pas importé dans ce fichier, donc le corps de mon describe
+a **levé** — et `bun test` a annoncé :
+
+```
+ 42 pass
+ 0 fail
+ 1 error
+```
+
+Mes deux tests n'avaient pas tourné, et la ligne de verdict disait « 0 fail ».
+Le **code de sortie**, lui, vaut **1** : la CI serait rouge, pas verte. C'est la
+règle du dépôt sur les codes de sortie, appliquée à `bun` : **« 0 fail » n'est
+pas le verdict, le code de sortie l'est.** Ça compte d'autant plus depuis #326,
+qui a mis un balayage de 653 fichiers dans un corps de describe — s'il levait,
+la suite perdrait ses tests, et elle le dirait par son code et non par sa
+dernière ligne.
+
+### Le signe à retenir
+
+**Quatre tranches, une seule forme.** #325 : un relevé recopié six fois,
+faux partout. #326 : un périmètre écrit, et faux. #327 : un périmètre non
+écrit, et incomplet. #328 : un périmètre juste, non dérivé, dans le fichier
+dont le sujet est qu'on ne comparait pas les listes. La généralisation tient :
+**dès qu'une garde choisit où regarder, ce choix est une affirmation, et il se
+dérive de ce qu'il décrit plutôt que de s'écrire à la main.** Ici le
+déclencheur `pull_request` était la dérivation disponible depuis le début.
