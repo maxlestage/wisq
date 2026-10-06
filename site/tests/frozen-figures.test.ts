@@ -25,15 +25,22 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..", "..");
-const roots = ["Sources", "crates", "Tests"];
+const roots = ["Sources", "crates", "Tests", "scripts", "web"];
+const extensions = [".swift", ".rs", ".ts", ".js", ".mjs", ".py", ".sh"];
 
-/// Une ligne qui sort du programme, pas un commentaire.
-const printed = /\b(print|println!|eprintln!|write!|writeln!)\(/;
+/// Une ligne qui sort du programme, pas un commentaire — dans les cinq
+/// langages où ce dépôt écrit des instruments.
+const printed = /\b(print|println!|eprintln!|write!|writeln!|console\.log)\(|^\s*echo\b/;
 
 /// Un nombre collé à une unité de mesure. Les formats (`%.1f MIPS`,
 /// `{mips:.1} MIPS`) ne correspondent pas : ce qui précède l'unité y est une
 /// lettre ou une accolade, pas un chiffre.
 const frozen = /[0-9][0-9   ,.]*\s*(MIPS|ms|ns|Mio|Mo|MB|Ko|KB)\b/;
+
+/// Un rapport n'a pas d'unité, donc le motif ci-dessus ne le voit pas.
+/// Diviser ou multiplier par un littéral **fractionnaire**, dans une ligne
+/// imprimée, c'est publier une mesure d'un autre jour sous forme dérivée.
+const derived = /[/*]\s*[0-9]+[.,][0-9]/;
 
 type Hit = { file: string; line: number; text: string };
 
@@ -45,11 +52,11 @@ function scan(): { hits: Hit[]; files: number } {
       const path = join(directory, entry);
       if (statSync(path).isDirectory()) {
         walk(path);
-      } else if (entry.endsWith(".swift") || entry.endsWith(".rs")) {
+      } else if (extensions.some((suffix) => entry.endsWith(suffix))) {
         files += 1;
         const lines = readFileSync(path, "utf8").split("\n");
         lines.forEach((text, index) => {
-          if (printed.test(text) && frozen.test(text)) {
+          if (printed.test(text) && (frozen.test(text) || derived.test(text))) {
             hits.push({
               file: path.slice(repoRoot.length + 1),
               line: index + 1,

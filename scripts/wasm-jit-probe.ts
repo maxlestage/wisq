@@ -2,8 +2,10 @@
 //
 // **Le fait de départ.** iOS n'autorise aucune page à la fois inscriptible et
 // exécutable pour une application de l'App Store : pas de JIT, donc un
-// interpréteur, donc 10,6 MIPS mesurés pour le cœur x86 de wisq. Un bureau
-// complet, à ce rythme, demande plus d'une heure de démarrage.
+// interpréteur, donc une dizaine de millions d'instructions par seconde pour
+// le cœur x86 de wisq. Ce chiffre-là, c'est le banc qui le mesure —
+// `swift run -c release wisq-bench`, section « x86-64 » — et pas ce programme.
+// Un bureau complet, à ce rythme, demande plus d'une heure de démarrage.
 //
 // **Le contournement.** WebKit, lui, a le droit de compiler : c'est la seule
 // exception d'iOS, et une application peut héberger un WKWebView. Du
@@ -17,9 +19,51 @@
 // par le même moteur que WKWebView — Bun embarque JavaScriptCore. Un vrai
 // recompilateur paierait en plus la répartition entre blocs, la traduction
 // d'adresses et les drapeaux complets ; ce chiffre-ci est donc une borne
-// supérieure, à comparer aux 10,6 MIPS de l'interpréteur.
+// supérieure, à comparer au débit que le banc mesure pour l'interpréteur.
+//
+// **Le rapport n'est imprimé que si on donne le comparateur**, parce que ce
+// programme ne mesure pas l'interpréteur. Il l'a longtemps gravé — « 10,6 MIPS
+// mesurés », une ligne sous un débit vrai, dans la même unité et la même
+// colonne — et divisait deux fois par lui. C'est le mode que
+// `site/tests/frozen-figures.test.ts` refuse, dans le seul fichier qu'il ne
+// lisait pas.
 //
 //     bun scripts/wasm-jit-probe.ts
+//     WISQ_INTERP_MIPS=$(swift run -c release wisq-bench | …) bun scripts/wasm-jit-probe.ts
+
+/// Le débit de l'interpréteur, s'il est donné. `undefined` veut dire « rien à
+/// comparer », et le programme le dit plutôt que d'inventer un rapport.
+///
+/// **Le refus porte sur un objet.** Une valeur posée mais illisible n'est pas
+/// un silence : c'est une erreur de la personne qui lance la sonde, et la
+/// laisser glisser vers « pas de comparateur » cacherait sa faute.
+function comparator(): number | undefined {
+  const given = process.env.WISQ_INTERP_MIPS;
+  if (given === undefined || given.trim() === "") return undefined;
+  const value = Number(given.replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(
+      `WISQ_INTERP_MIPS vaut « ${given} », qui n'est pas un débit utilisable. ` +
+        `Attendu : le nombre de MIPS que « swift run -c release wisq-bench » ` +
+        `imprime dans sa section x86-64.`,
+    );
+    process.exit(2);
+  }
+  return value;
+}
+
+const interpreter = comparator();
+
+/// La ligne du rapport, ou la raison de son absence. Les deux moitiés de la
+/// sonde l'impriment, et aucune ne fabrique le comparateur.
+function ratio(measured: number): string {
+  if (interpreter === undefined) {
+    return "  rapport       : pas de comparateur — poser WISQ_INTERP_MIPS " +
+      "avec le débit x86-64 de « swift run -c release wisq-bench »";
+  }
+  return `  rapport       : ×${(measured / interpreter).toFixed(0)} ` +
+    `sur ${interpreter.toFixed(1)} MIPS donnés`;
+}
 
 const SECTION = { type: 1, func: 3, memory: 5, export: 7, code: 10 } as const;
 
@@ -125,8 +169,7 @@ console.log(`  compilation   : ${compileMs.toFixed(2)} ms pour ${module.length} 
 console.log(`  instructions  : ${(Number(executed) / 1_000_000).toFixed(1)} M`);
 console.log(`  durée         : ${seconds.toFixed(3)} s`);
 console.log(`  débit         : ${mips.toFixed(1)} MIPS`);
-console.log(`  interpréteur  : 10,6 MIPS mesurés (cœur x86 en Swift)`);
-console.log(`  rapport       : ×${(mips / 10.6).toFixed(0)}`);
+console.log(ratio(mips));
 
 // ---------------------------------------------------------------------------
 // La même chose, mais en payant ce qu'un vrai recompilateur paie
@@ -348,7 +391,7 @@ console.log(`  compilation   : ${realCompileMs.toFixed(2)} ms pour ${realistic.l
 console.log(`  instructions  : ${(Number(done) / 1_000_000).toFixed(1)} M`);
 console.log(`  durée         : ${realSeconds.toFixed(3)} s`);
 console.log(`  débit         : ${realMips.toFixed(1)} MIPS`);
-console.log(`  rapport à l'interpréteur : ×${(realMips / 10.6).toFixed(0)}`);
+console.log(ratio(realMips));
 
 // `--module` écrit le module réaliste en base64 et s'arrête là. C'est ce que
 // la sonde `WebKitJITProbeTests` embarque : elle mesure le même module, mais
