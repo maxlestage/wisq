@@ -1866,6 +1866,12 @@ navigateur, et c'est légal dans le bac à sable d'Apple.
 `bun`. La boucle du banc x86, recompilée en WebAssembly, exécutée par
 JavaScriptCore, qui est le moteur exact de `WKWebView` (Bun l'embarque) :
 
+> La sonde n'imprime plus la colonne « rapport » toute seule. Elle gravait
+> « 10,6 MIPS mesurés » une ligne sous un débit vrai et divisait par lui ;
+> depuis, le comparateur se donne — `WISQ_INTERP_MIPS=<débit>` — et sans lui
+> elle dit qu'elle n'en a pas. Le débit de l'interpréteur se mesure avec
+> `swift run -c release wisq-bench`, section « x86-64 ».
+
 | Forme | Débit | Rapport |
 | --- | --- | --- |
 | Interpréteur Swift | 10,6 MIPS | ×1 |

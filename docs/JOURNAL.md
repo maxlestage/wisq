@@ -21825,3 +21825,102 @@ une propriété, et cette propriété se vérifie comme les autres.** #323 l'ava
 appris sur la prose d'à côté ; ici c'est l'en-tête de la garde elle-même. Et le
 corollaire, qui est neuf : **une exclusion doit être montrée portante, sinon
 elle doit disparaître** — en écrire la raison ne la rend pas vraie.
+
+## #327 — la sonde gravait sa propre référence, dans le seul fichier que la garde ne lisait pas
+
+Généralisation de #326 : une garde dont le périmètre est une liste écrite à la
+main. Cette fois `site/tests/frozen-figures.test.ts`, dont la ligne
+
+```ts
+const roots = ["Sources", "crates", "Tests"];
+```
+
+n'est annoncée nulle part dans son en-tête, lequel dit soigneusement ce que la
+garde ne tient pas — « les unités listées, et rien d'autre » — sans dire **où**
+elle regarde.
+
+### Ce qui vivait dehors
+
+`scripts/wasm-jit-probe.ts` mesure un débit WebAssembly sous JavaScriptCore, et
+l'imprime. Une ligne en dessous, dans la même colonne et la même unité :
+
+```
+  débit         : 10504.6 MIPS      ← mesuré à l'instant
+  interpréteur  : 10,6 MIPS mesurés (cœur x86 en Swift)   ← gravé
+  rapport       : ×991                                     ← dérivé du gravé
+```
+
+C'est **mot pour mot** le mode que cette garde existe pour tuer, tel que le
+JOURNAL l'avait nommé : « un banc qui mesure deux termes et en grave un
+troisième publie un nombre dont personne ne vérifiera jamais la provenance : il
+sort de la même ligne que les vrais, dans la même unité, avec la même
+autorité. » Et le mot « mesurés » est dans la ligne.
+
+Le banc, lui, **le mesure vraiment** : `swift run -c release wisq-bench`,
+section x86-64, a rendu **10.4 MIPS** sur cette exécution. Le gravé n'était pas
+scandaleusement faux — il était **non vérifiable**, ce qui est le défaut.
+
+### Le chiffre gelé se propage, et le dérivé n'a pas d'unité
+
+Deux lignes divisaient par `10.6` pour imprimer un rapport. `×${(mips / 10.6)}`
+ne porte aucune unité, donc le motif de la garde ne pouvait pas le voir même
+dans un fichier qu'elle aurait lu. Une seconde règle refuse désormais une ligne
+imprimée qui divise ou multiplie par un littéral **fractionnaire**.
+
+Mesuré avant de l'écrire, sur tout l'arbre : les seuls littéraux divisant dans
+une ligne imprimée sont `1_000_000`, `1_048_576`, `16` (conversions d'unité),
+`8 * 5`…`8 * 2` (décalages de pile dans du JS embarqué) — tous **entiers** — et
+`10.6`, deux fois. Zéro faux positif.
+
+### Le correctif : la sonde ne fabrique plus son comparateur
+
+Elle ne mesure pas l'interpréteur, donc elle ne l'annonce plus. Le comparateur
+se donne par `WISQ_INTERP_MIPS`, et sans lui la sonde imprime pourquoi il n'y a
+pas de rapport, en nommant la commande qui produit le chiffre. **Le refus porte
+sur un objet** : une valeur posée mais illisible n'est pas un silence, c'est une
+faute de qui lance la sonde, et elle sort en 2 plutôt que de glisser vers
+« pas de comparateur ».
+
+Vérifié sur les trois chemins :
+
+| ce qu'on donne | ce que la sonde imprime |
+| --- | --- |
+| rien | « pas de comparateur — poser WISQ_INTERP_MIPS … » |
+| `10.4` | « ×1068 sur 10.4 MIPS donnés » |
+| `beaucoup` | une erreur nommant la commande attendue, code **2** |
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| une mesure gelée dans un `.ts` de `scripts/` | « imprime un chiffre gelé » |
+| un diviseur fractionnaire dans une ligne imprimée | idem |
+| une mesure gelée dans `web/*.js` | idem |
+| une mesure gelée dans un script shell (`echo`) | idem |
+| **la même, racines ramenées aux trois d'avant** | **SURVIT** — c'est la preuve |
+| TÉMOIN : le motif d'impression cassé | « la ligne n'est plus imprimée nulle part » |
+| TÉMOIN : plus une seule extension lue | idem, et le compte de fichiers |
+
+La cinquième ligne est la seule qui compte vraiment : elle montre que l'ancienne
+garde **ne pouvait pas** voir ce défaut, et que c'est l'élargissement qui
+l'attrape, pas une coïncidence de motif.
+
+### Ce qui n'est pas un défaut, et pourquoi
+
+Six autres fichiers citent « 10,6 MIPS » : des commentaires d'en-tête, et trois
+tables de `docs/ROADMAP.md`. Les commentaires sont légitimes et l'en-tête de la
+garde le dit — c'est comme ça qu'un banc explique pourquoi il existe. Les tables
+sont des **relevés**, dont l'une écrit elle-même « chiffre du dépôt, non
+remesuré ». La règle du dépôt tient : un relevé reste tel quel et porte sa
+correction en blockquote, ce que la feuille de route fait maintenant pour la
+façon de lancer la sonde.
+
+### Le signe à retenir
+
+**Le périmètre d'une garde est une affirmation muette.** #326 a corrigé une
+garde qui écrivait un périmètre faux ; celle-ci n'en écrivait aucun, ce qui n'est
+pas mieux : la liste `["Sources", "crates", "Tests"]` disait « les instruments
+de ce dépôt » et n'en couvrait que les deux tiers. Quand une garde nomme ce
+qu'elle protège — *les instruments* —, le balayage doit aller chercher **tout ce
+qui porte ce nom**, pas ce qui se trouve être écrit dans les deux langages
+auxquels on pensait ce jour-là.
