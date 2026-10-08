@@ -101,6 +101,23 @@ function announcedIn(root: string): Map<string, string> {
   return found;
 }
 
+/// Le chiffre publié, et les phrases qui le portent, **lus** plutôt qu'écrits.
+///
+/// Les quatre sabordages plus bas les écrivaient à la main — `copy(1_778_384)`,
+/// `"it is now 1.8 MB"`, `"il en fait 1,8 Mo"` — pendant que les deux premiers
+/// tests du même fichier dérivaient déjà de `announcedIn`. La chaîne Rust du
+/// coureur a bougé, le démon a maigri de 1,8 à 1,7 Mo, les huit textes l'ont
+/// appris et ces quatre tests sont tombés : ils gardaient leur propre copie
+/// d'une mesure qui n'est pas la leur.
+///
+/// Le second chiffre est voisin d'un dixième, pas constant : il doit seulement
+/// **différer** de celui qui est publié, et une valeur en dur redeviendrait
+/// égale le jour où le démon atteindrait cette taille-là.
+const PUBLIÉ = [...announcedIn(repoRoot).values()][0]!;
+const OCTETS = Math.round(Number(PUBLIÉ) * 1_000_000);
+const VOISIN = (Number(PUBLIÉ) + 0.1).toFixed(1);
+const DÉCIMALE = (figure: string) => figure.replace(".", ",");
+
 /// **Hermétique exprès.** Le job « Build site » ne construit pas le démon, donc
 /// la suite du site ne peut pas exiger le binaire — c'est `verify.sh` et le job
 /// Rust qui confrontent les textes à sa taille réelle, là où il vient d'être
@@ -142,8 +159,8 @@ test("un démon qui grossit d'un dixième de mégaoctet fait rougir les huit tex
 });
 
 test("un seul texte périmé suffit à faire rougir, et lui seul est nommé", () => {
-  const root = copy(1_778_384);
-  rewrite(root, "Package.swift", "it is now 1.8 MB", "it is now 1.7 MB");
+  const root = copy(OCTETS);
+  rewrite(root, "Package.swift", `it is now ${PUBLIÉ} MB`, `it is now ${VOISIN} MB`);
   const { code, err } = run(root);
   expect(code).toBe(1);
   expect(err).toContain("le manifeste du paquet");
@@ -151,8 +168,13 @@ test("un seul texte périmé suffit à faire rougir, et lui seul est nommé", ()
 });
 
 test("les deux langues de la même page sont lues séparément", () => {
-  const root = copy(1_778_384);
-  rewrite(root, "site/src/pages/protocol.ts", "il en fait 1,8 Mo", "il en fait 1,6 Mo");
+  const root = copy(OCTETS);
+  rewrite(
+    root,
+    "site/src/pages/protocol.ts",
+    `il en fait ${DÉCIMALE(PUBLIÉ)} Mo`,
+    `il en fait ${DÉCIMALE(VOISIN)} Mo`,
+  );
   const { code, err } = run(root);
   expect(code).toBe(1);
   expect(err).toContain("le site, en français");
@@ -164,20 +186,25 @@ test("les deux langues de la même page sont lues séparément", () => {
 /// lecteur qui lit la bonne chose se ressemblent tant que les deux côtés de la
 /// comparaison sont vides.
 test("une phrase qui change de forme est refusée, pas ignorée", () => {
-  const root = copy(1_778_384);
-  rewrite(root, "docs/AGENT-PROTOCOL.md", "il en fait aujourd'hui **1,8 Mo**", "il pèse **1,8 Mo**");
+  const root = copy(OCTETS);
+  rewrite(
+    root,
+    "docs/AGENT-PROTOCOL.md",
+    `il en fait aujourd'hui **${DÉCIMALE(PUBLIÉ)} Mo**`,
+    `il pèse **${DÉCIMALE(PUBLIÉ)} Mo**`,
+  );
   const { code, err } = run(root);
   expect(code).toBe(1);
   expect(err).toContain("le motif trouve 0 occurrence(s)");
 });
 
 test("une deuxième occurrence du motif est refusée aussi : la comparaison deviendrait ambiguë", () => {
-  const root = copy(1_778_384);
+  const root = copy(OCTETS);
   rewrite(
     root,
     "Package.swift",
-    "// routes, and it is now 1.8 MB.",
-    "// routes, and it is now 1.8 MB. Ailleurs it is now 1.8 MB.",
+    `// routes, and it is now ${PUBLIÉ} MB.`,
+    `// routes, and it is now ${PUBLIÉ} MB. Ailleurs it is now ${PUBLIÉ} MB.`,
   );
   const { code, err } = run(root);
   expect(code).toBe(1);

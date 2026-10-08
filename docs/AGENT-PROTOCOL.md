@@ -216,7 +216,7 @@ Le démon est en **Rust** (`crates/wisq-agent`), le client en **Swift** — ils
 n'ont pas les mêmes contraintes. Le démon s'installe sur un NAS ou un portable
 et n'a ni interface ni framework de plateforme : rien qui justifie d'embarquer
 un runtime de langage. Statiquement lié au runtime Swift il pesait 58 Mo pour
-servir quatre routes ; il en fait aujourd'hui **1,8 Mo** en un seul fichier
+servir quatre routes ; il en fait aujourd'hui **1,7 Mo** en un seul fichier
 statique (musl) qui tourne sur n'importe quel Linux, Alpine compris — mesuré
 sur le binaire que la release publie, TLS et appairage compris. Ce paragraphe
 a longtemps dit « moins de 600 Ko » : c'était vrai avant que le démon

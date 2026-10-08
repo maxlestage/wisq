@@ -2,22 +2,59 @@
    breakpoints below only ever add space and columns. Nothing is designed at
    desktop width and squeezed down. */
 
+/* Archivo, variable on its *width* axis — which is the point. The headings
+   below set `wdth` between 62 and 110, and that single axis does most of the
+   typographic work: condensed for big numerals, slightly narrowed for titles,
+   wide for small uppercase. A static font cannot do it, and faking it with a
+   transform would skew the strokes.
+
+   90 104 octets pour le sous-ensemble latin, mesuré — le latin-ext en fait
+   86 240 de plus et n'apporte rien que les accents français n'aient déjà. C'est
+   le coût réel de ce dessin et le plus gros actif que le site expédie. `swap`
+   pour que la première peinture ne l'attende pas, et la pile de repli est une
+   sans système, donc un refus de cette police rend le site dans une autre et
+   non dans rien. Les auteurs et la licence sont dans le fichier d'à côté.
+
+   **Et c'est le premier binaire que ce dépôt suive** : `git ls-files` n'en
+   rendait aucun avant celui-ci — ni image, ni archive, ni fonte. Le site dessine
+   ses icônes et sa marque en SVG précisément pour n'en avoir pas. Une fonte
+   variable ne se dessine pas, donc l'exception est inévitable si on veut cet
+   axe ; elle reste une exception, et elle est écrite ici pour qu'on puisse la
+   refuser. */
+@font-face {
+  font-family: "Archivo Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url("./archivo-variable-latin.woff2") format("woff2-variations");
+}
+
 :root {
-  --bg: #ffffff;
-  --bg-soft: #f4f6f8;
-  --bg-code: #0e1116;
-  --fg: #10151b;
-  --fg-soft: #55606d;
-  --fg-code: #e6edf3;
-  --line: #dfe4ea;
-  --accent: #4f46e5;
-  --accent-soft: #eef0ff;
-  --accent-fg: #ffffff;
-  --radius: 14px;
-  --pad: 20px;
-  --max: 1080px;
+  --bg: #f2ede3;
+  --bg-soft: #e9e2d5;
+  --bg-code: #161513;
+  --fg: #161513;
+  --fg-soft: #6f685d;
+  --fg-code: #f2ede3;
+  --line: #1615131f;
+  /* **Deux oranges, et c'est mesuré.** Le signal #e8501a rend 5,17 contre le
+     fond nuit et seulement 3,22 contre le crème : il passe en sombre et échoue
+     en clair. #bf3a0b rend 4,71 sur crème. Un site sombre uniquement n'a qu'un
+     orange ; celui-ci porte un thème clair, donc il en faut deux. */
+  --accent: #bf3a0b;
+  --accent-soft: #bf3a0b14;
+  --accent-fg: #f2ede3;
+  --radius: 4px;
+  --pad: clamp(20px, 4.2vw, 56px);
+  --max: 1180px;
+  /* La courbe du site de référence : elle part vite et s'arrête long, ce qui
+     donne à une apparition l'air d'être arrivée plutôt que d'avoir glissé.
+     `ease-out` faisait l'inverse de ce dessin. */
+  --ease: cubic-bezier(0.2, 0.7, 0.1, 1);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  --sans: "Archivo Variable", Archivo, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Inter, Roboto, sans-serif;
 }
 
 /* Dark, defined once and applied from two places: the system setting, and an
@@ -29,30 +66,30 @@
    in one direction and silently fail in the other. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0b0d10;
-    --bg-soft: #12161c;
-    --bg-code: #05070a;
-    --fg: #e8edf3;
-    --fg-soft: #99a5b4;
-    --fg-code: #e6edf3;
-    --line: #232a33;
-    --accent: #8b83ff;
-    --accent-soft: #191a2e;
-    --accent-fg: #0b0d10;
+    --bg: #0e0d0c;
+    --bg-soft: #161513;
+    --bg-code: #050504;
+    --fg: #f2ede3;
+    --fg-soft: #bdb6aa;
+    --fg-code: #f2ede3;
+    --line: #f2ede31f;
+    --accent: #e8501a;
+    --accent-soft: #e8501a1f;
+    --accent-fg: #0e0d0c;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #0b0d10;
-  --bg-soft: #12161c;
-  --bg-code: #05070a;
-  --fg: #e8edf3;
-  --fg-soft: #99a5b4;
-  --fg-code: #e6edf3;
-  --line: #232a33;
-  --accent: #8b83ff;
-  --accent-soft: #191a2e;
-  --accent-fg: #0b0d10;
+  --bg: #0e0d0c;
+  --bg-soft: #161513;
+  --bg-code: #050504;
+  --fg: #f2ede3;
+  --fg-soft: #bdb6aa;
+  --fg-code: #f2ede3;
+  --line: #f2ede31f;
+  --accent: #e8501a;
+  --accent-soft: #e8501a1f;
+  --accent-fg: #0e0d0c;
 }
 
 * { box-sizing: border-box; }
@@ -65,8 +102,74 @@ body {
   color: var(--fg);
   font-family: var(--sans);
   font-size: 17px;
-  line-height: 1.6;
+  line-height: 1.55;
+  /* Le texte courant se tient à la largeur nominale. Tout ce qui s'en écarte
+     plus bas le dit explicitement, axe par axe, plutôt que d'hériter d'une
+     valeur posée ailleurs : `font-variation-settings` ne se compose pas, une
+     déclaration remplace la précédente en entier. */
+  font-variation-settings: "wdth" 100;
   -webkit-font-smoothing: antialiased;
+}
+
+/* La sélection prend la couleur du signal plutôt que le bleu du système : c'est
+   la seule surface colorée que le lecteur fabrique lui-même. */
+::selection { background: var(--accent); color: var(--bg); }
+
+/* ---------- le grain ----------
+ *
+ * Une page de crème parfaitement plate n'a pas de matière, et c'est la seule
+ * chose que le site de référence fait que ni la couleur ni la typographie ne
+ * peuvent rendre. Le bruit est dessiné par le navigateur — `feTurbulence`, pas
+ * une image —, donc il ne coûte aucune requête et ne pèse que ses 300 octets de
+ * déclaration.
+ *
+ * `position: fixed` : un élément fixe ne participe pas au débordement, donc
+ * `inset: -50%` n'ajoute pas un pixel de défilement horizontal. C'est ce qui
+ * dispense d'un `overflow-x: clip` sur `html`, et une règle dont rien n'a
+ * besoin est une règle qu'on n'écrit pas.
+ *
+ * 0,055 d'opacité, et le chiffre vient d'une mesure qui a corrigé ce que
+ * j'avais écrit d'abord. Le voile est posé **au-dessus** du texte, donc il le
+ * trame ; mais `feTurbulence` est un bruit de moyenne nulle, donc la
+ * luminance **moyenne** du texte et celle du fond ne bougent pas, et le
+ * contraste au sens de WCAG — qui se calcule sur deux couleurs, pas sur des
+ * pixels — reste celui de la palette. Ce que l'opacité achète, c'est
+ * l'amplitude de l'écart d'un pixel isolé.
+ *
+ * Relevé, sur le pire pixel de `--fg-soft` contre `--bg` en thème clair, le cas
+ * le plus serré des deux thèmes (4,72 en clair contre 9,65 en sombre) :
+ *
+ *   sans grain  4,72 — 0,055 → 3,71 — 0,07 → 3,47 — 0,10 → 3,04
+ *
+ * Aucune opacité visible ne tient le pire pixel au-dessus de 4,5 : la poursuivre
+ * n'a pas de sens. 0,055 plutôt que les 0,07 du site de référence, c'est un
+ * cinquième d'amplitude en moins — 1,01 point d'écart au lieu de 1,25 — là où le
+ * thème clair n'a que 0,22 de marge au-dessus du seuil. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: -50%;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* Le grain immobile est une texture ; le grain qui bouge est une animation, et
+   elle vit donc là où vivent les animations de ce site — sous `[data-motion]`,
+   un attribut que le script refuse de poser quand on a demandé le calme. Sans
+   lui le grain reste, simplement tranquille. */
+[data-motion] body::after { animation: wisq-grain 0.9s steps(6, end) infinite; }
+
+/* Six positions, jamais la même deux images de suite : c'est ce qui fait
+   bouger le bruit sans avoir à en redessiner un autre. */
+@keyframes wisq-grain {
+  0% { transform: translate(0, 0); }
+  16% { transform: translate(-3%, -4%); }
+  33% { transform: translate(-6%, 2%); }
+  50% { transform: translate(3%, -5%); }
+  66% { transform: translate(-2%, 5%); }
+  83% { transform: translate(5%, 1%); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -86,10 +189,31 @@ a { color: var(--accent); }
 }
 :focus:not(:focus-visible) { outline: none; }
 
-h1, h2, h3 { line-height: 1.18; letter-spacing: -0.02em; margin: 0; }
-h1 { font-size: 2rem; }
-h2 { font-size: 1.5rem; }
-h3 { font-size: 1.05rem; }
+/* L'échelle tient dans l'axe de largeur, pas seulement dans le corps.
+   Archivo va de 62 % à 125 % de largeur, et c'est cet axe qui porte le
+   caractère : resserré sous les grands nombres, à peine étroit sous les
+   titres, large sous les petites capitales. Les corps sont fluides — un
+   `clamp` par niveau — donc aucune des ruptures plus bas n'a à les reposer, et
+   la hiérarchie ne saute plus de 1,5 rem à 2 rem en traversant 640 px. */
+h1, h2, h3 { letter-spacing: -0.02em; margin: 0; }
+h1 {
+  font-size: clamp(2.1rem, 5.4vw, 4.5rem);
+  font-weight: 800;
+  line-height: 1;
+  font-variation-settings: "wdth" 88;
+}
+h2 {
+  font-size: clamp(1.6rem, 3.3vw, 2.9rem);
+  font-weight: 700;
+  line-height: 1.04;
+  font-variation-settings: "wdth" 88;
+}
+h3 {
+  font-size: clamp(1.18rem, 1.6vw, 1.5rem);
+  font-weight: 700;
+  line-height: 1.2;
+  font-variation-settings: "wdth" 96;
+}
 
 p { margin: 0; }
 
@@ -108,10 +232,18 @@ p { margin: 0; }
   }
 }
 
-section { padding-block: 56px; }
+/* Le rythme vertical est une respiration, pas une marge : les sections du site
+   de référence s'éloignent beaucoup plus que ne le ferait une valeur fixe, et
+   le filet qui les sépare reste un cheveu. */
+section { padding-block: clamp(56px, 9vw, 120px); }
 section + section { border-top: 1px solid var(--line); }
 
-.lede { color: var(--fg-soft); margin-top: 14px; }
+.lede {
+  color: var(--fg-soft);
+  margin-top: 16px;
+  font-size: clamp(1.08rem, 2.1vw, 1.45rem);
+  line-height: 1.35;
+}
 
 /* ---------- header ---------- */
 
@@ -244,7 +376,7 @@ section + section { border-top: 1px solid var(--line); }
 
 /* ---------- hero ---------- */
 
-.hero { padding-block: 48px 56px; }
+.hero { padding-block: clamp(40px, 7vw, 96px) clamp(48px, 8vw, 112px); }
 
 /* The full mark leads on a phone, the way an app's own screen would, and moves
    beside the text once there is a second column to put it in. It is sized in
@@ -283,23 +415,37 @@ section + section { border-top: 1px solid var(--line); }
      SVG draws — 54 of 240 — or the glow has squarer corners than the logo. */
   border-radius: 22.5%;
   box-shadow:
-    0 1px 2px rgb(16 21 27 / 0.16),
-    0 12px 30px -12px rgb(79 70 229 / 0.45);
+    0 1px 2px rgb(14 13 12 / 0.18),
+    0 12px 30px -12px rgb(232 80 26 / 0.45);
 }
 
+/* Petites capitales élargies : à 11 px, l'axe de largeur rend la ligne lisible
+   là où une graisse de plus l'aurait seulement épaissie. */
 .badge {
   display: inline-block;
-  font-family: var(--mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-variation-settings: "wdth" 112;
   color: var(--fg-soft);
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 4px 12px;
+  padding: 5px 13px;
   margin-bottom: 20px;
 }
 
-.hero h1 { font-size: 2.1rem; max-width: 16ch; }
-.hero .lede { font-size: 1.05rem; max-width: 46ch; }
+/* Le titre d'accueil est le seul endroit du site où la typographie prend toute
+   la place qu'elle peut. 7,2vw et non 10,5 comme la référence : là-bas le titre
+   occupe la pleine largeur, ici il partage la ligne avec la plaque dès 60em, et
+   un titre calculé sur la fenêtre plutôt que sur sa colonne débordait. */
+.hero h1 {
+  font-size: clamp(2.4rem, 7.2vw, 5.5rem);
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  max-width: 16ch;
+}
+.hero .lede { font-size: clamp(1.15rem, 2.4vw, 1.7rem); max-width: 38ch; }
 
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
 
@@ -309,11 +455,16 @@ section + section { border-top: 1px solid var(--line); }
   justify-content: center;
   /* 48px is the smallest comfortable thumb target; every tappable thing here
      clears it. */
-  min-height: 48px;
-  padding: 0 22px;
-  border-radius: var(--radius);
-  font-weight: 600;
-  font-size: 0.98rem;
+  min-height: 52px;
+  padding: 0 30px;
+  /* La pastille est la seule forme ronde du dessin, et c'est ce qui la désigne
+     comme une action : les cartes, les champs de code et les tableaux gardent
+     l'angle de 4 px de `--radius`. Mettre 999 px dans le jeton aurait fait des
+     stades de tout. */
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 1rem;
+  font-variation-settings: "wdth" 105;
   text-decoration: none;
   border: 1px solid transparent;
   cursor: pointer;
@@ -379,7 +530,13 @@ section + section { border-top: 1px solid var(--line); }
 }
 table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 0.9rem; }
 th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
-thead th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-soft); }
+thead th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-variation-settings: "wdth" 112;
+  color: var(--fg-soft);
+}
 tbody tr:last-child td { border-bottom: 0; }
 td:first-child { font-weight: 600; white-space: nowrap; }
 td:last-child { color: var(--fg); }
@@ -459,22 +616,31 @@ pre code { white-space: pre; }
 .steps { display: grid; gap: 16px; margin-top: 24px; counter-reset: step; }
 .step {
   display: grid;
-  grid-template-columns: 34px 1fr;
-  gap: 14px;
+  /* `auto` et non une largeur fixe : le chiffre est désormais typographique et
+     sa largeur suit son corps, qui suit la fenêtre. */
+  grid-template-columns: auto 1fr;
+  gap: clamp(14px, 2vw, 24px);
   align-items: start;
 }
+/* Le chiffre détouré, resserré à 62 % de largeur — l'usage le plus expressif de
+   l'axe, et celui qu'aucune fonte statique ne peut rendre. */
 .step-num {
   counter-increment: step;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--accent-soft);
+  font-size: clamp(2.6rem, 6vw, 4.4rem);
+  font-weight: 800;
+  line-height: 0.9;
+  font-variation-settings: "wdth" 62;
+  font-variant-numeric: tabular-nums;
   color: var(--accent);
-  font-family: var(--mono);
-  font-weight: 700;
-  font-size: 0.85rem;
+}
+/* Le détourage est une amélioration, pas le dessin : `color: transparent` sans
+   `-webkit-text-stroke` effacerait le chiffre. Posé sous `@supports`, il n'y a
+   pas de navigateur où le numéro disparaisse. */
+@supports (-webkit-text-stroke: 1px currentColor) {
+  .step-num {
+    color: transparent;
+    -webkit-text-stroke: 1px var(--accent);
+  }
 }
 .step-num::before { content: counter(step); }
 .step h3 { margin-bottom: 4px; }
@@ -489,7 +655,19 @@ pre code { white-space: pre; }
   padding: 18px 16px;
   background: var(--bg-soft);
 }
-.fact .value { font-family: var(--mono); font-size: 1.7rem; font-weight: 700; color: var(--accent); line-height: 1; }
+/* Les nombres quittent la fonte à chasse fixe pour l'axe resserré : c'est là
+   que la référence met son poids typographique. `tabular-nums` garde les
+   colonnes alignées pendant que le script fait monter la valeur, sinon le
+   cartouche s'élargit à chaque image. */
+.fact .value {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  font-variation-settings: "wdth" 70;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
 .fact .label { margin-top: 8px; font-size: 0.8rem; color: var(--fg-soft); line-height: 1.4; }
 
 /* ---------- footer ---------- */
@@ -547,8 +725,10 @@ pre code { white-space: pre; }
 .footer-groups h2 {
   font-size: 0.74rem;
   font-weight: 700;
-  letter-spacing: 0.09em;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
+  font-variation-settings: "wdth" 112;
   color: var(--fg-soft);
 }
 .footer-groups ul { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; }
@@ -585,14 +765,13 @@ pre code { white-space: pre; }
 
 /* ---------- breakpoints: only add room ---------- */
 
+/* Ces ruptures n'ajoutent plus que de la place. Elles reposaient six corps de
+   texte — `h2` passait de 1,5 rem à 2 rem en franchissant 640 px —, et chacune
+   de ces lignes écrasait désormais le `clamp` qui la rendait fluide : un
+   `clamp` suivi d'une valeur fixe dans une requête média, c'est la valeur fixe
+   qui gagne, et la fluidité ne servait plus à rien au-delà du seuil. */
 @media (min-width: 40em) {
-  body { font-size: 18px; }
   .footer-groups { grid-template-columns: repeat(3, 1fr); }
-  section { padding-block: 76px; }
-  .hero { padding-block: 76px 84px; }
-  .hero h1 { font-size: 3rem; }
-  .hero .lede { font-size: 1.15rem; }
-  h2 { font-size: 2rem; }
   .cards { grid-template-columns: 1fr 1fr; gap: 22px; }
   .facts { grid-template-columns: repeat(4, 1fr); }
   .card { padding: 26px; }
@@ -614,9 +793,7 @@ pre code { white-space: pre; }
 }
 
 @media (min-width: 64em) {
-  :root { --pad: 32px; }
   .nav-links { display: flex; }
-  .hero h1 { font-size: 3.5rem; }
   .steps { grid-template-columns: repeat(3, 1fr); gap: 28px; }
 }
 
@@ -626,8 +803,8 @@ pre code { white-space: pre; }
 .doc { padding-block: 32px 56px; }
 
 .doc-head { margin-bottom: 30px; }
-.doc-head h1 { font-size: 1.9rem; max-width: 20ch; }
-.doc-head .lede { font-size: 1.03rem; max-width: 54ch; }
+.doc-head h1 { max-width: 20ch; }
+.doc-head .lede { max-width: 48ch; }
 
 /* Measure before decoration: a documentation page is read, and a line that
    runs the width of a laptop is a line people lose their place in. */
@@ -746,6 +923,9 @@ pre code { white-space: pre; }
   .install-banner,
   .skip-link { display: none !important; }
 
+  /* Le grain est une texture d'écran : à l'impression c'est une page grise. */
+  body::after { display: none; }
+
   body { font-size: 11pt; background: #fff; color: #000; }
   .doc > .wrap > * { max-width: none; }
   .doc h2, .doc h3 { break-after: avoid; }
@@ -780,7 +960,7 @@ pre code { white-space: pre; }
 [data-motion] [data-reveal] {
   opacity: 0;
   transform: translateY(var(--rise, 0.6rem));
-  transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+  transition: opacity 0.5s var(--ease), transform 0.5s var(--ease);
 }
 
 [data-motion] [data-reveal][data-revealed] {
@@ -790,11 +970,11 @@ pre code { white-space: pre; }
 
 /* L'en-tête se détache du contenu dès qu'on a quitté le haut de la page. */
 [data-motion] .site-header {
-  transition: box-shadow 0.25s ease-out, background-color 0.25s ease-out;
+  transition: box-shadow 0.25s var(--ease), background-color 0.25s var(--ease);
 }
 
 [data-motion][data-scrolled] .site-header {
-  box-shadow: 0 1px 0 var(--rule), 0 6px 24px -18px rgb(0 0 0 / 55%);
+  box-shadow: 0 1px 0 var(--line), 0 6px 24px -18px rgb(0 0 0 / 55%);
 }
 
 /* **À l'impression, tout est là.** Une page imprimée n'a pas de défilement :
@@ -815,7 +995,7 @@ pre code { white-space: pre; }
   inset: 0;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.3s ease-out;
+  transition: opacity 0.3s var(--ease);
   background: radial-gradient(
     18rem circle at var(--mx, 50%) var(--my, 50%),
     color-mix(in srgb, var(--accent) 14%, transparent),

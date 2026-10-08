@@ -10,10 +10,17 @@
 export const THEME_KEY = "wisq.theme";
 export type Theme = "light" | "dark" | "auto";
 
-/// Kept beside the palette in `styles.css`: these are the two `--bg` values,
-/// and they are what the browser paints around the page — the status bar on
-/// iOS, the tab strip elsewhere.
-const BAR: Record<"light" | "dark", string> = { light: "#ffffff", dark: "#0b0d10" };
+/// Les deux `--bg` de `styles.css`, et ce que le navigateur peint autour de la
+/// page : la barre d'état sur iOS, le bandeau d'onglet ailleurs.
+///
+/// Exporté parce que le reste du site les lisait de mémoire. Ces deux couleurs
+/// étaient écrites à la main en cinq endroits — ici, les deux métas de
+/// `src/index.html`, les deux métas de chaque document, le script en ligne du
+/// thème et les deux clés du manifeste — et rien ne les comparait. La bascule
+/// du bleu nuit vers le noir d'encre en a trouvé quatre sur cinq. Il y a
+/// maintenant une source, et un test qui la confronte à la feuille de style
+/// construite plutôt qu'à une copie.
+export const BAR: Record<"light" | "dark", string> = { light: "#f2ede3", dark: "#0e0d0c" };
 
 /// Anything that is not an explicit choice is `auto`, including a browser that
 /// refuses storage outright.
