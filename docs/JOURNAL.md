@@ -22268,3 +22268,99 @@ s'accordent exactement ; l'écart appartenait aux deux versions de rustc. La
 décimale reste la bonne granularité, et la règle pratique qui en découle est
 écrite dans l'en-tête — si cette garde rougit près d'une frontière, comparer les
 chaînes avant de soupçonner la garde.
+
+## #330 — la police était adressée par son contenu, et partait en « no-cache »
+
+Deux défauts dans la tranche d'avant, trouvés par la seule question honnête
+qu'elle laissait ouverte : **un fichier adressé par son contenu doit être servi
+comme tel — le script et la feuille de style le sont, la police aussi ?**
+
+Mesuré au `curl` sur le serveur réel, pas déduit du code :
+
+```
+/archivo-variable-latin-<hash>.woff2   no-cache    application/octet-stream
+/chunk-<hash>.css                      immutable   text/css
+/chunk-<hash>.js                       immutable   text/javascript
+```
+
+Le plus gros actif du site — 90 104 octets, le seul binaire du dépôt —
+revalidait à chaque navigation pendant que le `.css` haché posé juste à côté
+partait pour un an.
+
+### Les deux moitiés ont la même forme, et c'est la forme de #325 à #329
+
+L'en-tête de `cacheControl` énonce une **propriété** :
+
+> **Hashed assets.** `chunk-<hash>.js` and `chunk-<hash>.css` are named after
+> their content, so the name changes whenever the bytes do. There is no such
+> thing as a stale one, which is exactly what `immutable` asserts.
+
+La règle, elle, implémentait une **orthographe** :
+`/\/chunk-[a-z0-9]+\.(js|css)$/`. La police variable a exactement la propriété
+et aucune de l'orthographe.
+
+L'en-tête de `TYPES` fait pareil : « **Every one of them currently coincides
+with what Bun infers on its own** — checked ». C'est vrai des entrées
+présentes, et la police n'en avait aucune. Bun n'infère pas `font/woff2` : il
+rend `application/octet-stream`, mesuré. Une police n'est pas bloquée sur son
+type comme l'est un script, donc elle s'affichait quand même — c'est pour ça que
+l'erreur a tenu une tranche entière sans se signaler. C'est précisément la panne
+que cet en-tête dit vouloir éviter, deux lignes plus haut : « a service worker
+that arrives without a JavaScript content type is refused, and that is a failure
+worth not leaving to a dependency's inference table ».
+
+### La construction sait, et elle le dit maintenant
+
+`build.tsx` est le seul à connaître la liste : c'est lui qui prend `chunk-<hash>`
+de Bun et lui qui compose le nom de la police. Il écrit donc
+`dist/immutable.txt`, et `serve.ts` le lit. Plus d'expression rationnelle : un
+actif adressé par contenu de plus entre dans la politique en entrant dans un
+tableau.
+
+**Et l'absence de la liste est un refus, pas un repli.** Servir tout en
+`no-cache` faute de la trouver serait la panne qu'on vient de corriger, revenue
+en silence — un aller-retour de plus par actif et par navigation, que rien ne
+signale. `immutableNames` lève, donc le module ne s'importe même pas sans elle
+et le serveur ne démarre pas.
+
+### Le tableau de la règle portait la prémisse du défaut
+
+```ts
+["/chunk-abc123.js", "public, max-age=31536000, immutable"],
+```
+
+Un chemin qui ne figure nulle part dans `dist` achetait un an de cache parce
+qu'il en avait l'orthographe, et le commentaire au-dessus l'assumait : « so a
+path that never appears in `dist` today is still classified the way the comment
+in `serve.ts` says it is ». C'est exactement ce qu'il ne faut plus. Le même
+chemin y est resté, en attendant `no-cache` : un nom ne peut plus acheter un an
+de cache en ayant l'air du bon, ce qui est strictement plus fort que ce que ce
+tableau tenait.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| la règle redevient un motif de nom | la police, la liste, **et** le nouveau cas du tableau |
+| `.woff2` retiré de la table des types | la police, et « aucun fichier construit ne part en flux d'octets » |
+| la construction omet la police de la liste | la police, et la liste |
+| TÉMOIN : la liste porte un nom de trop | la liste |
+| l'absence de la liste devient un repli | « sans la liste, le serveur refuse au lieu de deviner » |
+
+Le témoin compte autant que les autres : il prouve que la liste est comparée
+**dans les deux sens**, et pas seulement vérifiée comme contenant ce qu'il faut.
+
+### Le signe à retenir
+
+**Sixième tranche d'affilée sur la même forme, et la première trouvée en
+vérifiant ma propre livraison.** La question n'était pas une relecture de code :
+c'étaient deux choses qui devaient s'accorder — trois fichiers hachés, deux
+servis en `immutable` — et un `curl` a tranché. #329 avait ajouté le troisième
+actif adressé par contenu de l'histoire du dépôt ; rien n'avait regardé si la
+politique qui en parlait au pluriel savait le voir.
+
+Et le corollaire de #329 se renverse en instrument : si changer la peau d'un
+site est un révélateur, **y ajouter une sorte d'actif qui n'existait pas l'est
+aussi.** La bonne question après une tranche n'est pas « ai-je bien écrit ce que
+j'ai écrit », c'est « qu'est-ce qui, ailleurs, parlait déjà de cette chose au
+pluriel ».

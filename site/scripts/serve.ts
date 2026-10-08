@@ -20,7 +20,8 @@
 /// without opening a port. A preview server that claims to serve the site "the
 /// way a real host would" is making a checkable claim, and it should be checked.
 
-import { join, extname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
 
 import { REQUEST_ORIGIN } from "../src/site-url";
 
@@ -43,6 +44,11 @@ const TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".png": "image/png",
+  // Bun n'infère pas celui-ci : mesuré, il rend `application/octet-stream`.
+  // Une police n'est pas bloquée sur son type comme l'est un script, donc elle
+  // s'affichait quand même — c'est bien pour ça que l'erreur a tenu une tranche
+  // entière sans se signaler.
+  ".woff2": "font/woff2",
   ".svg": "image/svg+xml",
   ".xml": "application/xml; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
@@ -81,6 +87,45 @@ const TYPES: Record<string, string> = {
 /// nothing had to be configured, because the day had been written for. What
 /// changed is the weight: these three lines are production, and the service
 /// worker is no longer carrying the caching alone.
+/// Les noms que la construction a tirés d'une empreinte de leur contenu.
+///
+/// **C'est la construction qui sait, et elle le dit maintenant.** La règle plus
+/// bas reconnaissait `/chunk-<hash>.(js|css)` — une orthographe — alors que
+/// l'en-tête juste au-dessus énonce une propriété : « named after their
+/// content, so the name changes whenever the bytes do ». La police variable a
+/// exactement cette propriété et aucune de cette orthographe, donc le plus gros
+/// actif du site, 90 104 octets, repartait en `no-cache` à chaque navigation
+/// pendant que le `.css` haché d'à côté partait en `immutable`. Mesuré au
+/// `curl`, pas déduit.
+///
+/// `build.tsx` écrit la liste parce qu'il est le seul à la connaître : c'est lui
+/// qui choisit `chunk-<hash>`, et lui qui compose le nom de la police. Un actif
+/// adressé par contenu de plus entre dans la politique sans que personne ne
+/// touche à une expression rationnelle.
+///
+/// **Et l'absence de la liste est un refus, pas un repli.** Servir tout en
+/// `no-cache` faute de la trouver serait la panne qu'on vient de corriger,
+/// revenue en silence — un aller-retour de plus par actif et par navigation,
+/// que rien ne signale. Elle lève, donc ce module ne s'importe même pas sans
+/// elle, et le serveur ne démarre pas.
+export function immutableNames(from: string): string[] {
+  const manifest = join(from, "immutable.txt");
+  if (!existsSync(manifest)) {
+    throw new Error(
+      `immutable.txt introuvable dans ${from} : lancez \`bun run build\`. ` +
+        "Sans cette liste, chaque actif adressé par son contenu serait revalidé " +
+        "à chaque navigation, et rien ne le dirait.",
+    );
+  }
+  return readFileSync(manifest, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+export const IMMUTABLE: readonly string[] = immutableNames(root);
+const IMMUTABLE_SET = new Set(IMMUTABLE);
+
 export function cacheControl(path: string): string {
   // This line returns what the fallback below already returns, so deleting it
   // changes nothing today and no test can see it go. It earns its place the
@@ -90,7 +135,7 @@ export function cacheControl(path: string): string {
   // slow. A guard that duplicates the default it guards against cannot be
   // tested by removing it, only by changing the default.
   if (path.endsWith("sw.js")) return "no-cache";
-  if (/\/chunk-[a-z0-9]+\.(js|css)$/.test(path)) return "public, max-age=31536000, immutable";
+  if (IMMUTABLE_SET.has(basename(path))) return "public, max-age=31536000, immutable";
   return "no-cache";
 }
 
