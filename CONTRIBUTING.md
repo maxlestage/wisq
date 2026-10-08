@@ -6,7 +6,7 @@ Swift holds the app, the UI and the remote desktop client: work built on
 Network.framework that belongs on the platform it targets. Rust holds the
 host daemon and the rv32ima interpreter — a program with no interface and a
 loop over a byte array, neither of which has a reason to carry a language
-runtime. That split is what took the daemon's download from 58 MB to 1.8 MB.
+runtime. That split is what took the daemon's download from 58 MB to 1.7 MB.
 
 If you are adding something, the question is which of those two it looks
 like, not which language you would rather write.

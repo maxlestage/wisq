@@ -5,6 +5,7 @@ import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
 import { PAGES } from "../src/pages";
 import { AUTHOR, copy } from "../src/content";
 import { siteURL } from "../src/site-url";
+import { BAR } from "../src/theme";
 
 /// The built artefact, not the source. `bun run build` must run before this;
 /// CI does exactly that.
@@ -23,6 +24,21 @@ function styleFile(): string {
   const name = readdirSync(dist).find((entry) => entry.endsWith(".css"));
   if (!name) throw new Error("aucune feuille de style dans dist");
   return name;
+}
+
+/// Les jetons d'un bloc de la feuille construite, lus par le début de son
+/// sélecteur. Minifiée, la feuille écrit `:root{`, `:root:not([data-theme=light]){`
+/// et `:root[data-theme=dark]{` — trois préfixes distincts, donc trois blocs
+/// qu'on peut lire séparément et comparer.
+function tokensOf(css: string, selector: string): Record<string, string> {
+  const at = css.indexOf(selector);
+  expect(at, `bloc « ${selector} » absent de la feuille de style`).toBeGreaterThan(-1);
+  const body = css.slice(at + selector.length, css.indexOf("}", at));
+  const tokens = Object.fromEntries(
+    [...body.matchAll(/(--[a-z-]+):([^;]+)/g)].map((match) => [match[1]!, match[2]!.trim()]),
+  );
+  expect(Object.keys(tokens).length, `aucun jeton dans « ${selector} »`).toBeGreaterThan(0);
+  return tokens;
 }
 
 /// The script's name is hashed too, for the same reason.
@@ -110,6 +126,45 @@ describe("built output", () => {
     // today's figures — room for ordinary work, none for React.
     expect(bytes.byteLength, "script brut").toBeLessThan(8_000);
     expect(gzipped, "script gzippé").toBeLessThan(3_000);
+  });
+
+  /// **La police variable voyage comme fichier, et ça tient à une
+  /// substitution plutôt qu'à un réglage.**
+  ///
+  /// Bun 1.3.11 intègre tout `url()` d'une feuille de style en data URI base64,
+  /// et `loader: { ".woff2": "file" }` n'y change rien — essayé, mesuré, le
+  /// data URI est revenu. Pour le serveur de développement c'est le bon
+  /// comportement. Pour le site publié non : la feuille de style est un `link`
+  /// bloquant dans la tête, donc l'intégration mettait 90 Kio de police sur le
+  /// chemin critique — styles.css passait de 27 à 135 Kio — et vidait
+  /// `font-display: swap` de son sens, puisqu'il n'y a rien à échanger quand la
+  /// police arrive dans ce qui bloque la peinture.
+  ///
+  /// Le plafond de la feuille de style est là pour ça : il n'y en avait aucun,
+  /// et c'est précisément l'absence de plafond qui laissait une régression de
+  /// 108 Kio passer sans bruit.
+  test("la police est un fichier à part, et son poids est dit", () => {
+    const style = readFileSync(join(dist, styleFile()));
+    const css = style.toString("utf8");
+    expect(css, "la police est repassée en ligne dans la feuille de style").not.toContain(
+      "data:font",
+    );
+    expect(style.byteLength, "feuille de style").toBeLessThan(24_000);
+
+    const face = css.slice(css.indexOf("@font-face"));
+    const src = face.match(/url\(\.\/([^)]+\.woff2)\)/);
+    expect(src, "la déclaration @font-face ne pointe sur aucun fichier").not.toBeNull();
+
+    const font = readFileSync(join(dist, src![1]!));
+    expect(font.subarray(0, 4).toString("latin1"), "ce n'est pas un woff2").toBe("wOF2");
+    // 90 104 octets mesurés pour le sous-ensemble latin — accents français
+    // compris, c'est ce qui a écarté le latin-ext. C'est le plus gros actif du
+    // site, et le plafond est là pour que ça reste une décision.
+    expect(font.byteLength, "la police").toBeLessThan(100_000);
+
+    // Hors ligne, une police absente ne casse rien : elle change le dessin,
+    // ce qui est pire, parce que personne ne le signale.
+    expect(read("sw.js"), "la police doit être précachée").toContain(`"./${src![1]!}"`);
   });
 
   /// The point of moving the documents into the pages: the shared script is the
@@ -366,9 +421,77 @@ describe("theme", () => {
     expect(css, "le choix sombre doit exister hors requête média").toMatch(
       /:root\[data-theme=["']?dark["']?\]/,
     );
-    // ...and the dark tokens must really be in both places, not just selected.
+    // ...et les jetons sombres doivent vraiment être aux deux endroits, pas
+    // seulement sélectionnés aux deux endroits.
+    //
+    // **Cette ligne portait `--bg:#0b0d10` en clair, et c'était la mauvaise
+    // affirmation.** Elle gravait une couleur, donc elle tombait au premier
+    // changement de palette — et surtout elle ne disait rien du seul défaut
+    // qu'elle prétendait couvrir : si la requête média était tenue à jour et
+    // le bloc explicite laissé en arrière, les deux portaient des couleurs
+    // sombres et le test passait, pendant qu'un choix explicite ramenait
+    // l'ancienne palette. Ce qu'il faut comparer, ce sont les deux blocs entre
+    // eux, et il n'y a plus de figure à maintenir.
     const media = css.slice(css.indexOf("prefers-color-scheme:dark"));
-    expect(media, "la requête média doit porter les couleurs sombres").toContain("--bg:#0b0d10");
+    expect(
+      tokensOf(media, ":root:not([data-theme=light]){"),
+      "les deux blocs sombres ont dérivé l'un de l'autre",
+    ).toEqual(tokensOf(css, ":root[data-theme=dark]{"));
+  });
+
+  /// **Les deux couleurs de barre étaient écrites à la main en cinq endroits.**
+  ///
+  /// Ce sont les deux `--bg`, et le navigateur les peint autour de la page : la
+  /// barre d'état sur iOS, le bandeau d'onglet ailleurs. Elles vivaient dans
+  /// `src/theme.ts`, dans les deux métas de `src/index.html`, dans les deux
+  /// métas de chaque document construit, dans le script en ligne du thème et
+  /// dans les deux clés du manifeste. Un commentaire disait « kept beside the
+  /// palette in styles.css » ; rien ne le vérifiait, et le changement de
+  /// palette en a trouvé quatre sur cinq encore au bleu.
+  ///
+  /// Il y a maintenant une source — `BAR` — et c'est la feuille de style
+  /// construite qui l'arbitre, pas une sixième copie écrite dans ce test.
+  test("la couleur de la barre vient de la palette, partout", () => {
+    const css = readFileSync(join(dist, styleFile()), "utf8");
+    const light = tokensOf(css, ":root{")["--bg"];
+    const dark = tokensOf(css, ":root[data-theme=dark]{")["--bg"];
+    expect(light, "la feuille de style n'a pas de fond clair").toBeDefined();
+    expect(dark, "la feuille de style n'a pas de fond sombre").toBeDefined();
+    expect(BAR.light, "BAR.light contre --bg clair").toBe(light!);
+    expect(BAR.dark, "BAR.dark contre --bg sombre").toBe(dark!);
+
+    for (const { file } of BUILT) {
+      const html = read(file);
+      const metas = [
+        ...html.matchAll(
+          /<meta name="theme-color" content="([^"]+)" media="\(prefers-color-scheme: (dark|light)\)"/g,
+        ),
+      ];
+      expect(metas.length, `${file} : il faut les deux métas theme-color`).toBe(2);
+      for (const meta of metas) {
+        expect(meta[1], `${file} : méta ${meta[2]}`).toBe(meta[2] === "dark" ? dark! : light!);
+      }
+      // Le script en ligne choisit entre les deux quand le lecteur a tranché :
+      // sur `auto` les métas suffisent, sur un choix explicite c'est lui.
+      expect(html, `${file} : le script de thème doit porter les deux couleurs`).toContain(
+        `"${dark}":"${light}"`,
+      );
+    }
+
+    const manifest = JSON.parse(read("manifest.webmanifest"));
+    expect(manifest.theme_color, "manifeste : theme_color").toBe(dark!);
+    expect(manifest.background_color, "manifeste : background_color").toBe(dark!);
+
+    // Et la page du serveur de développement, qui n'est pas construite et que
+    // rien ne regardait : c'est la copie qui était restée le plus longtemps
+    // fausse, parce qu'on ne la voit qu'en lançant `bun run dev`.
+    const dev = readFileSync(join(import.meta.dir, "..", "src", "index.html"), "utf8");
+    expect(dev, "src/index.html : méta sombre").toContain(
+      `content="${dark}" media="(prefers-color-scheme: dark)"`,
+    );
+    expect(dev, "src/index.html : méta claire").toContain(
+      `content="${light}" media="(prefers-color-scheme: light)"`,
+    );
   });
 
   /// An effect runs after the page has painted, so the theme cannot come from

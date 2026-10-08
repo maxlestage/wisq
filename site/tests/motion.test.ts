@@ -491,4 +491,41 @@ describe("la feuille de style", () => {
     expect(css, "une barre sans valeur est vide, pas pleine").toContain("scaleX(var(--read, 0))");
     expect(css, "une carte sans rang n'attend pas").toContain("var(--step, 0)");
   });
+
+  /// **Un jeton appelé sans être déclaré ne colore rien, et ne se voit pas.**
+  ///
+  /// `var(--absent)` sans repli rend la déclaration entière invalide au calcul :
+  /// la propriété n'est pas « noire par défaut », elle n'existe pas. Le filet de
+  /// l'en-tête au défilement appelait `var(--rule)`, un jeton déclaré nulle
+  /// part — la palette n'a jamais eu que `--line` —, donc son `box-shadow`
+  /// était tombé en entier. Rien ne le disait : un filet manquant ressemble
+  /// exactement à un filet qu'on n'a pas dessiné.
+  ///
+  /// Les deux sens comptent, et chacun a trouvé quelque chose au premier jet :
+  /// `--rule` appelé sans être déclaré, `--ease` déclaré sans être appelé. Un
+  /// jeton que personne n'emploie est du dessin qui n'arrive pas.
+  ///
+  /// Un appel *avec* repli est hors du premier sens, et c'est voulu :
+  /// `var(--read, 0)` et `var(--step, 0)` sont posés par le script à
+  /// l'exécution, leur absence de la feuille est l'état normal, et le repli est
+  /// précisément ce qui le rend sûr.
+  test("aucun jeton n'est appelé sans être déclaré, ni déclaré sans être appelé", () => {
+    const declared = new Set([...css.matchAll(/^\s*(--[a-z-]+):/gm)].map((match) => match[1]!));
+    const bare = new Set<string>();
+    const called = new Set<string>();
+    for (const match of css.matchAll(/var\((--[a-z-]+)\s*(,?)/g)) {
+      called.add(match[1]!);
+      if (!match[2]) bare.add(match[1]!);
+    }
+
+    expect(declared.size, "la palette doit exister, sinon ce test est creux").toBeGreaterThan(5);
+    expect(bare.size, "des appels sans repli doivent exister").toBeGreaterThan(5);
+
+    for (const name of bare) {
+      expect(declared.has(name), `${name} est appelé sans repli et déclaré nulle part`).toBe(true);
+    }
+    for (const name of declared) {
+      expect(called.has(name), `${name} est déclaré et personne ne l'emploie`).toBe(true);
+    }
+  });
 });

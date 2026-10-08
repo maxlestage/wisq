@@ -32,6 +32,16 @@
 # comparaison porte donc sur le chiffre publié, à la décimale, qui est aussi ce
 # qu'un lecteur du site peut vérifier.
 #
+# **Et l'écart vient de la chaîne, pas de la machine.** Le 8 octobre 2026 ce
+# conteneur et le coureur ont rendu **1 749 840 octets tous les deux**, au
+# même octet, l'un et l'autre sous rustc 1.99.0 — et 1 749 840 est à 160 octets
+# d'une frontière d'arrondi, donc le moindre écart se serait vu. Les 8 192
+# octets ci-dessus séparaient deux versions de rustc, pas deux machines. La
+# conséquence est utile le jour où cette garde rougit près d'une frontière :
+# avant de soupçonner sa résolution, comparer les chaînes. Si elles
+# s'accordent, le chiffre est le même partout et c'est bien le texte qui a
+# vieilli.
+#
 # **Il prend une racine**, comme ses voisins, et c'est ce qui le rend éprouvable :
 # `site/tests/agent-size.test.ts` le regarde refuser sur des arbres fabriqués,
 # avec un binaire de taille choisie. Une garde qui n'a jamais refusé est une

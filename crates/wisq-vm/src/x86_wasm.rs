@@ -2092,7 +2092,7 @@ impl Module {
             body.store(RIP_SLOT, |b| {
                 b.constant(base.wrapping_add(offset as u64));
             });
-            Self::aim(body, usize::try_from(offset).ok().and_then(&index), shape);
+            Self::aim(body, usize::try_from(offset).ok().and_then(index), shape);
         };
 
         let Some(step) = last else {
