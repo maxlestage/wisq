@@ -130,6 +130,27 @@ if (!Buffer.from(inlinedFonts[0]![1]!, "base64").equals(Buffer.from(fontBytes)))
 await writeFile(stylePath, styleSource.replace(inlinedFonts[0]![0]!, `url(./${fontName})`));
 await writeFile(join(outdir, fontName), fontBytes);
 
+// Les noms que cette construction a tirés d'une empreinte de contenu, écrits
+// pour l'hôte.
+//
+// `scripts/serve.ts` reconnaissait `chunk-<hash>.(js|css)` par une expression
+// rationnelle, alors que l'en-tête de sa politique de cache énonce une
+// propriété et non une orthographe. La police ci-dessus a la propriété et pas
+// l'orthographe, donc 90 Kio repartaient en `no-cache` à chaque navigation.
+// C'est ici qu'on sait lesquels sont adressés par leur contenu — c'est ici que
+// les noms sont composés —, donc c'est ici que la liste s'écrit. Un actif de
+// plus entre dans la politique en entrant dans ce tableau.
+//
+// Hors du précache : le service worker n'en a aucun usage, c'est une question
+// d'en-têtes HTTP, et le serveur le lit sur le disque.
+const immutable = [scriptName, styleName, fontName];
+await writeFile(
+  join(outdir, "immutable.txt"),
+  `# Les actifs que cette construction a nommés d'après leur contenu.\n` +
+    `# Lu par scripts/serve.ts, qui les sert en « immutable ».\n` +
+    `${immutable.join("\n")}\n`,
+);
+
 // Assets that every page references, plus the ones only the browser asks for.
 const ICONS = [
   { file: "icon-192.png", size: 192, maskable: false },
