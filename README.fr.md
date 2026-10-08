@@ -133,7 +133,7 @@ tient l'application, l'interface et le client de bureau distant — du travail
 de forme Apple, sur Network.framework. Rust tient ce qui n'est ni l'un ni
 l'autre : un démon sans interface, et un interpréteur qui n'est que du calcul
 sur un tableau d'octets. Ni l'un ni l'autre n'a de raison d'embarquer un
-runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,8 Mo
+runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,7 Mo
 en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour

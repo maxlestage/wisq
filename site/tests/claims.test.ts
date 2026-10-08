@@ -614,15 +614,19 @@ const accounted = new Map<string, Map<string, string>>([
           "est daté, consigné au CHANGELOG, et il est publié comme un avant.",
       ],
       [
-        "1.8",
+        "1.7",
         "tenu, pas seulement mesuré : `scripts/check-agent-size.sh` compare " +
           "cette phrase au binaire que la CI construit déjà dans son job Rust " +
           "(`cargo build --release --target x86_64-unknown-linux-musl " +
-          "-p wisq-agent`), avec les quatre autres textes qui annoncent la même " +
-          "taille. 1 778 384 octets le 28 septembre 2026, soit 1,8 Mo décimaux.",
+          "-p wisq-agent`), avec les sept autres textes qui annoncent la même " +
+          "taille. 1 749 840 octets le 8 octobre 2026 sous rustc 1.99, soit " +
+          "1,7 Mo décimaux ; 1 778 384 octets le 28 septembre 2026 sous la " +
+          "chaîne d'alors, soit 1,8. Le démon maigrit et grossit avec son " +
+          "compilateur sans que personne ne commette rien, et c'est justement " +
+          "pour ça que la phrase est tenue plutôt que datée.",
       ],
       [
-        "1,8",
+        "1,7",
         "le même nombre dans l'autre langue : la page est écrite deux fois, et " +
           "la virgule décimale en fait un jeton distinct. Tenu par la même " +
           "garde, qui lit les deux phrases séparément.",
