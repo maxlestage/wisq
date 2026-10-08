@@ -22010,3 +22010,163 @@ dont le sujet est qu'on ne comparait pas les listes. La généralisation tient :
 **dès qu'une garde choisit où regarder, ce choix est une affirmation, et il se
 dérive de ce qu'il décrit plutôt que de s'écrire à la main.** Ici le
 déclencheur `pull_request` était la dérivation disponible depuis le début.
+
+## #329 — le site prend la peau de la référence, et cinq copies de sa couleur l'apprennent
+
+Première tranche sur demande depuis longtemps : « Tu peux adapter le site de
+Wisq à ce site », avec l'adresse de **zamocorp.com**. J'ai extrait son système —
+`assets/index-Bxb3klvC.css`, 43 526 octets — avant d'écrire une ligne, parce
+qu'« adapter » sans relevé veut dire « inventer quelque chose qui y ressemble ».
+
+### Deux choses de la référence sont hors de portée, et c'est le dépôt qui le dit
+
+| ce que fait la référence | pourquoi le site ne peut pas |
+| --- | --- |
+| sombre uniquement | `tests/build.test.ts` exige les **trois** états du thème |
+| Lenis (défilement lissé) | le plafond du script est **8 000** octets bruts |
+| un écran de chargement animé | idem, et il faudrait du JavaScript bloquant |
+
+Le thème à trois états n'est pas une préférence : la garde réclame
+`:root:not([data-theme=light])` **dans** la requête média et
+`:root[data-theme=dark]` **hors** d'elle. Un site sombre uniquement n'a qu'un
+orange à régler ; celui-ci porte un thème clair, donc il lui en faut deux. Donc
+la tranche est un **rhabillage**, pas une réécriture : le balisage ne bouge pas
+d'une classe.
+
+### Deux oranges, mesurés
+
+| couleur | sur nuit `#0e0d0c` | sur crème `#f2ede3` |
+| --- | --- | --- |
+| signal `#e8501a` (la référence) | **5,17** | 3,22 |
+| `#bf3a0b` | 3,54 | **4,71** |
+
+L'orange de la référence échoue en clair et le mien échoue en sombre : d'où deux
+jetons `--accent`, un par thème, et non un seul « accent de la marque ».
+
+### Le grain, et une affirmation de moi corrigée par sa propre mesure
+
+J'avais écrit en commentaire qu'« au-delà de 0,08 le texte gris perd son
+contraste ». C'était une phrase qui avait l'air d'une mesure. Relevé, sur le
+pire pixel de `--fg-soft` contre `--bg` en thème clair :
+
+| opacité du grain | sans | 0,055 | 0,07 | 0,10 |
+| --- | --- | --- | --- | --- |
+| pire pixel | 4,72 | **3,71** | 3,47 | 3,04 |
+
+**Aucune opacité visible ne tient le pire pixel au-dessus de 4,5**, donc le seuil
+que j'annonçais n'existe pas. Ce qui tient, c'est autre chose : `feTurbulence`
+est un bruit de **moyenne nulle**, donc la luminance moyenne du texte et celle du
+fond ne bougent pas, et le contraste WCAG — qui se calcule sur deux couleurs —
+reste celui de la palette. L'opacité n'achète que l'amplitude de l'écart d'un
+pixel isolé. 0,055 au lieu des 0,07 de la référence, c'est un cinquième
+d'amplitude en moins. Le commentaire dit maintenant le relevé.
+
+### Trois défauts nommés, trouvés en rhabillant
+
+**1. `var(--rule)` ne désignait rien.** Le filet de l'en-tête au défilement
+écrivait `box-shadow: 0 1px 0 var(--rule), …` ; la palette n'a jamais eu que
+`--line`. Un `var()` non déclaré **sans repli** rend la déclaration entière
+invalide au calcul : le `box-shadow` tombait en entier, les deux ombres avec. Et
+rien ne pouvait le signaler — un filet absent ressemble exactement à un filet
+qu'on n'a pas dessiné.
+
+**2. `--ease` était déclaré et n'était appelé par personne.** Je l'avais posé
+dans les jetons au début de la tranche ; les trois transitions du site
+employaient encore `ease-out`. Du dessin qui n'arrive pas.
+
+**3. Les deux couleurs de barre étaient écrites à la main en cinq endroits.**
+`src/theme.ts`, les deux métas de `src/index.html`, les deux métas de chaque
+document construit, le script en ligne du thème dans `build.tsx`, et les deux
+clés du manifeste. Un commentaire disait « kept beside the palette in
+`styles.css` » ; rien ne le vérifiait. La bascule du bleu nuit vers le noir
+d'encre en a trouvé **quatre sur cinq** encore au bleu.
+
+Les deux premiers sont les deux sens d'une même garde, et chacun a trouvé son
+défaut au premier jet : **tout jeton appelé sans repli doit être déclaré, et
+tout jeton déclaré doit être appelé.** Le repli est ce qui met `var(--read, 0)`
+et `var(--step, 0)` hors du premier sens, à juste titre : le script les pose à
+l'exécution.
+
+### La police, et pourquoi un réglage ne suffisait pas
+
+L'axe de largeur d'Archivo — `wdth` de 62 % à 125 % — est ce qui fait le
+caractère de la référence, et aucune fonte statique ne le rend. 90 104 octets
+pour le sous-ensemble **latin** ; le latin-ext (86 240) n'apporte rien que les
+accents français n'aient déjà. C'est le plus gros actif du site.
+
+Et le faire voyager comme fichier a demandé une substitution, pas un drapeau :
+
+| tentative | résultat |
+| --- | --- |
+| `url()` dans la feuille de style | data URI base64 : styles.css **27 → 135 Kio** |
+| `loader: { ".woff2": "file" }` | **aucun effet**, le data URI revient |
+| entrée CSS directe, hors pipeline HTML | data URI aussi |
+
+Bun 1.3.11 intègre, point. Pour `bun --hot src/index.html` c'est le bon
+comportement et il n'y a rien à faire. Pour le site publié non : la feuille de
+style est un `link` **bloquant** dans la tête, donc l'intégration mettait 90 Kio
+sur le chemin critique et vidait `font-display: swap` de son sens — il n'y a
+rien à échanger quand la police arrive dans ce qui bloque la peinture. Le build
+ressort donc l'unique data URI dans un fichier adressé par contenu et repointe
+le `url()`, en **refusant** si l'intégration n'est pas unique ou si ses octets ne
+sont pas la police du disque. Résultat : feuille de style **16 660** octets,
+police **90 104**, précachée par le service worker — hors ligne, une police
+absente ne casse rien, elle change le dessin, ce qui est pire.
+
+**Il n'y avait aucun plafond sur la feuille de style.** C'est précisément ce qui
+laissait passer 108 Kio sans bruit. Il y en a un.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le bloc sombre explicite dérive d'un ton | « les deux blocs sombres ont dérivé l'un de l'autre » |
+| `BAR.dark` ne suit plus la palette | « BAR.dark contre --bg sombre » |
+| la méta de `src/index.html` reste au bleu | « src/index.html : méta sombre » |
+| le build ne ressort plus le data URI | « la police est repassée en ligne » **et** le plafond |
+| `var(--line)` redevient `var(--rule)` | « --rule est appelé sans repli et déclaré nulle part » |
+| un jeton `--grille` que personne n'emploie | « --grille est déclaré et personne ne l'emploie » |
+| le `@font-face` retiré des sources | **le build refuse**, code 1, « 0 police en ligne » |
+
+Le quatrième est le plus instructif : l'ancienne garde du thème portait
+`--bg:#0b0d10` **en clair**, donc elle tombait au premier changement de palette
+— et surtout elle ne disait rien du défaut qu'elle prétendait couvrir. Si la
+requête média avait été tenue à jour et le bloc explicite laissé en arrière, les
+deux portaient bien « des couleurs sombres » et le test passait, pendant qu'un
+choix explicite ramenait l'ancienne palette. Ce qui se compare, ce sont les
+**deux blocs entre eux**, et il n'y a plus de figure à maintenir.
+
+### Le signe à retenir
+
+**Cinquième tranche d'affilée sur la même forme**, et pour la première fois
+arrivée par une demande de dessin plutôt que par une chasse. #325 un relevé
+recopié six fois ; #326 un périmètre écrit et faux ; #327 un périmètre non
+écrit ; #328 un périmètre juste mais non dérivé ; #329 une **couleur** recopiée
+cinq fois, et une garde qui en gravait une sixième au lieu de comparer les deux
+sources. La forme ne change pas : **dès qu'une garde écrit la valeur qu'elle
+devrait aller chercher, elle garde sa propre copie.**
+
+Et un corollaire neuf : **changer la peau d'un site est un révélateur.** Rien ne
+force à visiter toutes les copies d'une couleur comme le fait de la changer.
+Trois défauts sont tombés en une tranche sans qu'aucun soit cherché.
+
+### Le premier binaire du dépôt
+
+Fait mesuré en route, et il n'est pas petit : avant cette tranche, `git ls-files`
+ne rendait **aucun** fichier binaire — ni image, ni archive, ni fonte. Le site
+dessine ses icônes, sa marque et sa carte sociale en SVG ou les génère au build,
+et un commentaire de `build.test.ts` dit pourquoi : un `<img>` serait « une
+requête de plus avant que le héros ne peigne, et un binaire que personne ne peut
+differ ».
+
+La police est donc le premier, et l'exception est réelle : une fonte variable ne
+se dessine pas. Les deux moitiés du reproche d'origine ne s'appliquent pas de la
+même façon — la requête est **hors** du chemin critique, par construction, et
+c'est tout l'objet de la substitution ci-dessus ; l'indiffabilité, elle,
+s'applique pleinement. 90 104 octets que personne ne relira.
+
+C'est donc une **direction**, pas un correctif, et elle revient à Maxime : si la
+police est refusée, la pile de repli rend le site dans une sans système — le
+dessin perd son axe de largeur, pas sa lisibilité — et le retrait est contenu
+(les deux fichiers, le `@font-face`, le bloc d'extraction de `build.tsx`, son
+test).

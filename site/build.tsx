@@ -28,6 +28,7 @@ import {
 import type { Lang } from "./src/content";
 import { appIcon, socialCard } from "./scripts/icons";
 import { siteURL } from "./src/site-url";
+import { BAR } from "./src/theme";
 
 const outdir = "dist";
 const SITE_URL = siteURL();
@@ -88,6 +89,47 @@ if (found.length > 0) {
   process.exit(1);
 }
 
+// The variable font travels as its own file, and getting it there takes a
+// substitution rather than a flag.
+//
+// Bun 1.3.11 turns every `url()` in a stylesheet into a base64 data URI, and
+// `loader: { ".woff2": "file" }` does not change that — tried, measured, the
+// data URI came back. For the dev server that is the right behaviour and
+// nothing has to be done. For the published site it is not: the stylesheet is
+// a render-blocking `<link>` in the head, so inlining moved 90 KB of font onto
+// the critical path — styles.css went from 27 KB to 135 KB — and made
+// `font-display: swap` meaningless, because there is nothing to swap when the
+// font arrives inside the thing that blocks the paint.
+//
+// So the one data URI is lifted back out into a content-addressed file, and the
+// `url()` is pointed at it. The `url()` is relative to the stylesheet rather
+// than to the document, and both sit at the root of the build, so one spelling
+// serves every page whatever its depth.
+//
+// Both halves of that are checked rather than assumed: exactly one font data
+// URI must be there, and its bytes must be the font on disk. If Bun ever stops
+// inlining — or starts inlining something else — this refuses instead of
+// quietly shipping a stylesheet with no font in it and no face to fall back on.
+const FONT_SOURCE = "src/archivo-variable-latin.woff2";
+const fontBytes = await Bun.file(FONT_SOURCE).bytes();
+const fontName = `archivo-variable-latin-${Bun.hash(fontBytes).toString(16)}.woff2`;
+const stylePath = join(outdir, styleName);
+const styleSource = await Bun.file(stylePath).text();
+const inlinedFonts = [...styleSource.matchAll(/url\(data:font\/woff2;base64,([^)]+)\)/g)];
+if (inlinedFonts.length !== 1) {
+  console.error(
+    `la feuille de style porte ${inlinedFonts.length} police en ligne, il en faut exactement une : ` +
+      "si Bun a cessé de les intégrer, cette substitution n'a plus d'objet et doit être retirée",
+  );
+  process.exit(1);
+}
+if (!Buffer.from(inlinedFonts[0]![1]!, "base64").equals(Buffer.from(fontBytes))) {
+  console.error(`la police en ligne n'est pas ${FONT_SOURCE}`);
+  process.exit(1);
+}
+await writeFile(stylePath, styleSource.replace(inlinedFonts[0]![0]!, `url(./${fontName})`));
+await writeFile(join(outdir, fontName), fontBytes);
+
 // Assets that every page references, plus the ones only the browser asks for.
 const ICONS = [
   { file: "icon-192.png", size: 192, maskable: false },
@@ -111,8 +153,10 @@ const MANIFEST = {
   scope: "./",
   display: "standalone",
   orientation: "any",
-  background_color: "#0b0d10",
-  theme_color: "#0b0d10",
+  // La couleur de l'écran de lancement et celle de la barre : celle du thème
+  // sombre, parce que c'est elle que l'icône porte.
+  background_color: BAR.dark,
+  theme_color: BAR.dark,
   lang: "en",
   categories: ["developer", "utilities"],
   icons: [
@@ -146,7 +190,7 @@ function escapeHTML(text: string): string {
 /// Kept deliberately dumb — no bundler, no module, no dependency on anything
 /// that could fail to load. If it throws, the page is simply on the system
 /// theme, which is where it was before this feature existed.
-const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("wisq.theme");if(t!=="light"&&t!=="dark")return;document.documentElement.setAttribute("data-theme",t);var c=t==="dark"?"#0b0d10":"#ffffff";var m=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<m.length;i++){m[i].content=c;}}catch(e){}})();</script>`;
+const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("wisq.theme");if(t!=="light"&&t!=="dark")return;document.documentElement.setAttribute("data-theme",t);var c=t==="dark"?"${BAR.dark}":"${BAR.light}";var m=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<m.length;i++){m[i].content=c;}}catch(e){}})();</script>`;
 
 const HOME_TITLE: Record<Lang, string> = {
   en: "wisq — virtual machines on your iPhone",
@@ -212,8 +256,8 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     <meta name="description" content="${escapeHTML(description)}" />
     <meta name="author" content="${escapeHTML(AUTHOR)}" />
     <link rel="canonical" href="${canonical}" />${alternates}
-    <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="${BAR.dark}" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="${BAR.light}" media="(prefers-color-scheme: light)" />
     <meta property="og:title" content="${escapeHTML(title)}" />
     <meta property="og:description" content="${escapeHTML(description)}" />
     <meta property="og:type" content="website" />
@@ -259,6 +303,10 @@ const precache = [
   ),
   `./${scriptName}`,
   `./${styleName}`,
+  // The font is in the list for the same reason the stylesheet is: a reader
+  // offline would otherwise get the page in the fallback sans, which is a
+  // different design.
+  `./${fontName}`,
   "./manifest.webmanifest",
   ...ICONS.map((icon) => `./${icon.file}`),
 ];
