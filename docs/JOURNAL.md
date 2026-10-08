@@ -22170,3 +22170,85 @@ police est refusée, la pile de repli rend le site dans une sans système — le
 dessin perd son axe de largeur, pas sa lisibilité — et le retrait est contenu
 (les deux fichiers, le `@font-face`, le bloc d'extraction de `build.tsx`, son
 test).
+
+### Un rouge qui n'était pas le mien : la chaîne Rust flotte
+
+`verify.sh` avait rendu **0** sur cette tranche, et `Rust (agent + cœur VM)` est
+tombé en dix-neuf secondes :
+
+```
+error: the borrowed expression implements the required traits
+  --> crates/wisq-vm/src/x86_wasm.rs:2095:67
+  = note: `-D clippy::needless-borrows-for-generic-args` implied by `-D warnings`
+  = help: … rust-clippy/rust-1.99.0/index.html#needless_borrows_for_generic_args
+```
+
+Un fichier que cette tranche ne touche pas, et une lint que mon clippy ne
+connaissait pas : **0.1.94 ici contre 0.1.99 sur le runner**. `ci.yml` fait
+`rustup component add rustfmt clippy` sans épingler de version, donc la CI prend
+toujours la dernière stable — et une lint nouvelle fait rougir le dépôt **sans
+que personne n'ait rien commis**. C'est « une phrase vraie peut devenir fausse
+sans que personne n'y touche » (#322), appliqué à l'outil au lieu de la prose.
+
+Le remède immédiat n'est pas le correctif, c'est la méthode : plutôt que
+d'apprendre les lints une par tour de CI à quinze minutes le tour, `rustup
+update stable` dans le conteneur pour prendre exactement la chaîne du runner,
+puis la commande de la CI mot pour mot. Mesuré ensuite, avec 1.99.0 :
+`cargo clippy --all-targets --all-features -- -D warnings` → 0,
+`cargo fmt --all --check` → 0, `cargo test --release` → **452 tests, 0 échec**.
+Une seule lint dans tout l'arbre, et clippy s'arrêtait à elle — c'est pourquoi
+il fallait la corriger avant de pouvoir affirmer qu'il n'y en avait pas d'autre.
+
+Le correctif est `and_then(&index)` → `and_then(index)`, où `index` est déjà un
+`&impl Fn(usize) -> Option<usize>`, donc `Copy` : aucun changement de
+comportement, et la fermeture reste appelable plusieurs fois. Il n'appartient pas
+au sujet de cette tranche et il est dit ici comme tel — mais sans lui aucune
+pull request du dépôt ne peut devenir verte.
+
+### …et la même cause a fait maigrir le démon
+
+Le même `rustup update` a produit un second rouge, celui-là trouvé par une garde
+qui fait son travail. `check-agent-size.sh` — qui tourne en CI dans le job Rust,
+**après** l'étape de clippy, donc qu'aucun tour n'avait encore atteint :
+
+```
+le site, en anglais annonce 1.8, le binaire fait 1749840 octets, soit 1.7 Mo
+… les huit textes, un par un …
+Le démon a changé de taille et les textes ne l'ont pas appris.
+```
+
+1 778 384 octets sous la chaîne de septembre, **1 749 840** sous rustc 1.99 :
+le démon a maigri de 28 544 octets, et les huit textes au présent annonçaient
+encore 1,8 Mo. Personne n'avait rien commis ; le compilateur a changé. C'est
+exactement ce que cette garde existe pour attraper, et c'est la première fois
+qu'elle attrape une dérive dont le dépôt n'est pas l'auteur.
+
+**Le chiffre est à 160 octets de la frontière d'arrondi**, et l'en-tête de la
+garde a mesuré 8 192 octets d'écart entre ce conteneur et le coureur. Deviner
+1,7 ou 1,8 n'était donc pas une méthode : j'ai posé ma mesure, et c'est la CI
+qui dira la sienne. Si elle arrondit dans l'autre sens, le défaut ne sera pas le
+chiffre mais la garde — sa résolution réelle est l'écart entre machines, pas la
+décimale, et son propre en-tête le dit sans en tirer la conséquence.
+
+### Et deux copies de plus, dans les tests qui gardent ce chiffre
+
+La mise à jour des huit textes a fait tomber six tests du site, et pour la
+raison qui traverse les cinq dernières tranches. `tests/agent-size.test.ts`
+porte un lecteur, `announcedIn(repoRoot)`, dont ses **deux premiers** tests
+dérivent correctement. Ses **quatre sabordages** écrivaient le chiffre à la
+main — `copy(1_778_384)`, `"it is now 1.8 MB"`, `"il en fait 1,8 Mo"` — dans le
+fichier même qui contient le lecteur. Ils gardaient leur propre copie d'une
+mesure qui n'est pas la leur.
+
+Ils dérivent maintenant, et le second chiffre du sabordage est le voisin d'un
+dixième calculé plutôt qu'écrit : une valeur en dur redeviendrait égale au
+publié le jour où le démon atteindrait cette taille, et le sabordage passerait à
+vide. Témoin posé pour le vérifier — `VOISIN = PUBLIÉ` fait tomber les deux
+tests qui l'emploient, et seulement eux.
+
+La sixième copie était dans `claims.test.ts`, la liste de provenance des nombres
+publiés : le jeton `"1.8"` et son jumeau `"1,8"`. Sa justification disait aussi
+« avec les **quatre** autres textes » quand la garde en lit huit. Elle dit
+maintenant sept autres, les deux relevés avec leur chaîne, et la raison pour
+laquelle cette phrase est **tenue** plutôt que datée : le démon maigrit et
+grossit avec son compilateur sans que personne ne commette rien.
