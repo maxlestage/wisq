@@ -22252,3 +22252,19 @@ publiés : le jeton `"1.8"` et son jumeau `"1,8"`. Sa justification disait aussi
 maintenant sept autres, les deux relevés avec leur chaîne, et la raison pour
 laquelle cette phrase est **tenue** plutôt que datée : le démon maigrit et
 grossit avec son compilateur sans que personne ne commette rien.
+
+### La frontière n'était pas un danger, et la mesure dit pourquoi
+
+Le tour de CI a répondu : le coureur a rendu **1 749 840 octets**, au même octet
+que ce conteneur, l'un et l'autre sous rustc 1.99.0. Le chiffre était à 160
+octets d'une frontière d'arrondi, donc le moindre écart se serait vu — il n'y en
+a eu aucun.
+
+Ce qui corrige l'en-tête de la garde, pas sa résolution. Il attribuait les
+8 192 octets d'écart qu'il avait mesurés aux « versions de rustc **et des
+dépendances** » et, par là, laissait croire que deux machines ne s'accordent
+jamais à l'octet. Mesuré maintenant dans les deux sens : à chaîne égale elles
+s'accordent exactement ; l'écart appartenait aux deux versions de rustc. La
+décimale reste la bonne granularité, et la règle pratique qui en découle est
+écrite dans l'en-tête — si cette garde rougit près d'une frontière, comparer les
+chaînes avant de soupçonner la garde.
