@@ -5,7 +5,8 @@
 #                      app, and the benchmark that measures it
 #   crates/wisq-agent  the host daemon for Mac and Linux
 #   crates/wisq-site   the site's front end: Yew components, pre-rendered at
-#                      build time and hydrated in WebAssembly
+#                      build time, two islands hydrated and the motion run in
+#                      WebAssembly
 #
 # The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
 # desktop client built on Network.framework.

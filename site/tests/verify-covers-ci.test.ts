@@ -226,7 +226,7 @@ const GATES: Record<string, Verdict> = {
   // Même classement que « Install SwiftLint » et « Install XcodeGen », et pour
   // la même raison : l'étape installe un outil, et verify.sh dit comment
   // l'obtenir plutôt que de le télécharger sous les pieds d'un développeur.
-  // Ici c'est `build.tsx` qui le dit, en refusant avec les trois commandes.
+  // Ici c'est `build.ts` qui le dit, en refusant avec le script qui l'installe.
   "build › Install the WebAssembly toolchain": {
     absent: "installe la chaîne wasm ; la construction du site dit comment l'obtenir",
   },

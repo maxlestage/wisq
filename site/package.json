@@ -4,21 +4,15 @@
   "author": "Maxime Nathan Lestage (https://github.com/maxlestage)",
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/index.html",
-    "build": "bun run build.tsx",
+    "dev": "bun run build.ts && bun run scripts/serve.ts",
+    "build": "bun run build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "preview": "bun run scripts/serve.ts"
   },
-  "dependencies": {
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
-  },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.11.6",
     "@types/bun": "^1.4.0",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
     "binaryen": "^132.0.0",
     "typescript": "^7.0.2"
   }
