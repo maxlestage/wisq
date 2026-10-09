@@ -23509,3 +23509,91 @@ construite : `theme.rs` et la page de développement l'écrivent donc sous cette
 forme. La garde « la couleur de la barre vient de la palette, partout » l'a
 vérifié sans qu'on ait à le lui dire.
 
+
+## #339 — « mesuré » ne dit pas sur quelle machine, et mon témoin n'en était pas un
+
+Trouvé par la recherche que ce dépôt prescrit quand rien n'est en vol : **deux
+nombres qui devraient s'accorder.** Le poids du front est annoncé ; une
+reconstruction du même source n'a pas rendu le même nombre.
+
+| source | wasm brut | wasm gzip | colle brute | colle gzip |
+| --- | --- | --- | --- | --- |
+| `a6ce835`, le coureur de la CI | 261 548 | — | — | — |
+| `a6ce835`, ce conteneur (rustc 1.99.0) | 261 240 | 110 947 | 56 272 | 9 494 |
+| `3914022`, le coureur de la CI | 276 907 | — | — | — |
+| `3914022`, ce conteneur | 276 599 | 117 213 | 58 869 | 9 763 |
+
+**L'écart du module est de 308 octets exactement aux deux commits**, sur deux
+modules que quinze kilooctets séparent. Un écart **constant**, donc pas
+proportionnel au code : ce n'est pas « la compilation diffère », c'est quelque
+chose de taille fixe.
+
+Et le module porte bien l'identité de sa chaîne, **montré et non supposé** : il
+embarque le hash de commit de rustc dans les chemins de la bibliothèque standard
+que ses messages de panique citent, `/rustc/b940084d7eb…/library/core/src/…`,
+qui est le hash de `rustc 1.99.0`. Même famille de cause que l'en-tête de
+`check-agent-size.sh` pour le démon. Les 308 eux-mêmes **ne sont pas
+expliqués** : le module du coureur n'est pas récupérable d'ici, donc pas de
+confrontation octet par octet. C'est une mesure reproductible, pas une cause.
+
+### Et le témoin que j'ai failli livrer n'en était pas un
+
+Le premier jet de cette tranche concluait que **la colle était identique à
+l'octet** des deux côtés, et en tirait que l'écart venait de la génération de
+code Rust et de rien d'autre. Beau raisonnement, faux deux fois :
+
+1. Le « 56 272 des deux côtés » comparait **ma** mesure à un chiffre de prose
+   dont la machine est inconnue — pas deux mesures à moi.
+2. Quand la fusion a amené deux tranches de plus, j'ai voulu vérifier par les
+   **noms** : ils sont adressés par contenu, donc des noms différents devaient
+   dire des contenus différents. Sauf que la construction **substitue le nom du
+   `.wasm` dans la colle** avant de la nommer. Deux colles identiques portent
+   donc des noms différents dès que le module diffère. Le nom ne mesure pas la
+   colle.
+
+Ce qui est donc écrit maintenant, à la place : **la taille de la colle n'a jamais
+été mesurée sur le coureur**, parce que la construction n'imprime que celle du
+module. Rien n'est établi sur sa dépendance à la machine, et le dire vaut mieux
+que l'inverse.
+
+### Trois choses de plus, dont une qui inquiète
+
+**Le gzip bouge cinq fois plus que le brut**, mesuré deux fois : 1 489 contre 308
+à `a6ce835`, 1 505 contre 308 à `3914022`. La compression amplifie un remaniement
+que le brut dissimule — donc c'est le chiffre gzip qu'il faut regarder le jour où
+un plafond rougit, l'inverse de l'intuition.
+
+**Le chiffre de la colle avait deux vagues de retard** : le commentaire annonçait
+56 272 / 9 635 quand l'artefact en pesait 58 869 / 9 763. Rien ne le tenait, et
+le code avait bougé sans lui. Corrigé, avec sa machine.
+
+**Et les deux bornes de la colle sont sous l'écart du module** : 1 131 et 1 237
+octets de marge contre 1 505. Si la colle bouge d'une chaîne à l'autre autant que
+le module, elles peuvent basculer sans que personne touche au code. On ne sait pas
+si elle bouge — elle n'est mesurée que d'un côté. **C'est nommé plutôt que
+corrigé** : relever une borne est une décision de budget, et la prendre sans la
+mesure serait deviner.
+
+### Ce qui n'est pas touché
+
+Les quatre places qui annoncent le poids au présent ailleurs
+(`crates/wisq-site/src/shell.rs`, `src/lib.rs`, `CHANGELOG.md`,
+`site/README.md`) restent telles quelles : les corriger demande de choisir **ce
+que le dépôt publie** — un chiffre par machine, ou une granularité qui survive à
+l'écart —, et c'est une décision de voix, pas un correctif. Les tableaux datés du
+journal et de la feuille de route restent aussi : ils étaient vrais pour leur
+moment.
+
+### Le signe à retenir
+
+**« Mesuré » est une affirmation incomplète : elle doit dire où.** Un nombre
+reproductible et un nombre qui dépend de la chaîne se ressemblent exactement sur
+la page, et c'est le second qui vieillit tout seul.
+
+Et le signe plus cher, parce qu'il s'est payé sur moi : **un identifiant adressé
+par contenu ne mesure que ce qu'on y a mis.** Le nom de la colle ressemblait à une
+empreinte de la colle ; il est l'empreinte de *la colle plus le nom du module*.
+Un témoin qui passe par un intermédiaire témoigne de l'intermédiaire. La seule
+façon de le voir a été de chercher **ce que la construction fait au fichier entre
+la mesure et le nom** — c'est-à-dire de relire le producteur du chiffre, pas le
+chiffre.
