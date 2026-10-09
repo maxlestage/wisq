@@ -22582,6 +22582,14 @@ instructif, parce que **chaque obstacle a été relevé, pas deviné** :
 | le thème mémorise sans poser `data-theme` | `document instanceof Document` → **faux**, alors que `documentElement instanceof Element` → vrai | reconnaître le document |
 | le clic n'arrive pas | le Rust pose et **relit** `Some("light")`, le test lit `null` | relire les nœuds du DOM après l'hydratation |
 
+> **Corrigé en #334 : la quatrième ligne attribuait le symptôme au mauvais
+> voisin.** Reconstitué, l'hydratation reprend **les mêmes objets** — trois sur
+> trois encore attachés, identiques un à un — et un clic dispatché sur un nœud
+> capturé avant le démarrage du module pose `data-theme` et mémorise le choix.
+> La cause était la troisième ligne, `document instanceof Document` à faux.
+> Les deux ayant été corrigées dans le même tour, le mérite est allé au
+> mauvais. Le relevé reste tel quel ; la mesure est en #334.
+
 `web_sys::window()` n'est pas « lire `globalThis.window` » : wasm-bindgen
 l'implémente par `js_sys::global().dyn_into::<Window>()`, donc un `instanceof`
 sur l'objet global lui-même. Dans un navigateur c'est la même chose,
@@ -22609,6 +22617,13 @@ reconnaissances et sur rien d'autre.
    sonde a montré de la façon la plus nette — le Rust posait l'attribut et le
    relisait `Some("light")` sur la balise `HTML`, pendant que le test lisait
    `null`.
+
+   > **Faux, corrigé en #334.** Ce quatrième point n'était pas un défaut : sur
+   > cette page, un clic sur un nœud capturé avant le démarrage du module
+   > fonctionne, et les nœuds sont les mêmes objets. Le symptôme décrit ici est
+   > celui du point 3. La relecture des nœuds reste dans le test, mais pour une
+   > raison plus faible et désormais écrite : elle ne coûte rien et elle est la
+   > seule forme qui survive à un décalage de **structure**.
 
 ### Le sabordage
 
@@ -22818,3 +22833,91 @@ prendre la **page** comme unité, et de laisser la propriété se déplacer dess
 sans que la mesure bouge. C'est la même famille que la leçon de #464 — dès
 qu'une garde écrit ce qu'elle devrait aller chercher, elle garde sa propre
 copie — appliquée non plus à une valeur, mais à une frontière.
+
+## #334 — la coquille se souvient de la langue, et #332 avait crédité la mauvaise correction
+
+Deuxième comportement porté, et la garde de #333 fait exactement ce pour quoi
+elle a été écrite : elle ne change pas.
+
+### Le portage
+
+La mémoire du choix de langue passe de `src/main.ts` à
+`crates/wisq-site/src/shell.rs` — c'est la coquille qui rend ces liens, donc
+c'est elle qui se souvient. Le clic ne fait **rien d'autre** que mémoriser : pas
+de `prevent_default`, pas de navigation provoquée. Un lecteur dont le wasm
+n'arrive jamais garde un lien qui marche, ce qui est la règle du site.
+
+Au passage, `crates/wisq-site/src/stockage.rs` : trois comportements mémorisent
+quelque chose, chacun a besoin des trois mêmes gestes et de la **même chaîne de
+refus** — pas de fenêtre, pas de stockage, un navigateur qui le refuse. Elle
+était déjà écrite en double dans le seul comportement porté. Elle l'est
+maintenant une fois.
+
+**Ce que ça coûte, mesuré** : le wasm passe de 253 863 à **254 112 octets**
+(+249), soit **106 605 gzippés** contre un plafond de 112 000.
+
+### Le transfert se lit en sabordant les deux moitiés
+
+| sabordage | l'accueil (React) | la page portée (Yew) |
+| --- | --- | --- |
+| le script ne mémorise plus la langue | **tombe** | vert |
+| la coquille ne mémorise plus la langue | vert | **tombe** |
+
+C'est la forme d'un transfert, et elle n'est lisible que parce que la garde de
+#333 mesure la **page** sans demander qui porte quoi. Deux autres sabordages sur
+`stockage.rs` : sans écriture, le thème **et** la langue tombent ; sans lecture,
+le thème tombe. Le module partagé est donc porteur pour les deux, et pas
+seulement présent.
+
+Six sabordages, aucun survivant.
+
+### Les deux reculs de `main.ts` ne sont gardés par rien, et c'est mesuré
+
+Retirer l'un ou l'autre `if` — rendre la propriété **double** sur une page
+portée — laisse **417 tests sur 417 au vert**.
+
+Ce n'est pas un trou à boucher : pour la langue, les deux moitiés écrivent la
+même clé avec la même valeur, donc la double propriété n'est pas observable. Le
+recul n'est pas une garde, c'est une **économie** : il dit quelles lignes
+mourront quand la dernière page sera portée. La seule chose qui le rendra
+vérifiable est sa disparition.
+
+### Et c'est en cherchant à le garder que #332 s'est fait prendre
+
+J'allais écrire la garde. Le raisonnement semblait solide : sans le recul,
+`main.ts` pose `aria-pressed` **avant** que Yew n'hydrate, le premier rendu du
+client dit `auto`, donc décalage d'hydratation, donc Yew remplace le sous-arbre
+— un mécanisme observable, qu'il suffirait de mesurer en capturant les nœuds
+avant le démarrage du module.
+
+Mesuré d'abord. **Trois nœuds capturés, trois encore attachés**, identiques un à
+un, avec et sans le recul. Et le coup de grâce : un clic dispatché sur un nœud
+capturé **avant** l'hydratation pose `data-theme=light` et mémorise `"light"`.
+
+Donc le mécanisme n'existe pas sur cette page — et le quatrième « défaut » de
+#332, « des nœuds capturés trop tôt », n'en était pas un. Le symptôme qu'il
+décrit (« le Rust relit `Some("light")`, le test lit `null` ») est celui du
+troisième, `document instanceof Document` à faux, qui faisait sortir `appliquer`
+en silence. Les deux ont été corrigés dans le **même tour**, et le mérite est
+allé au mauvais. Le relevé de #332 porte la correction en blockquote ; le
+commentaire du test aussi, et la relecture des nœuds reste, pour ce qu'elle vaut
+réellement : elle ne coûte rien et c'est la seule forme qui survive à un
+décalage de **structure**, ce qui n'est pas ce qui a été mesuré.
+
+Une verrue de moins, aussi, et notée parce qu'elle était écrite : `cargo build
+--release` n'avertit plus que le bouchon `appliquer` n'est jamais utilisé. Le
+passage par `stockage` l'a fait disparaître. Le mécanisme exact n'a pas été
+établi, et c'est dit plutôt qu'inventé.
+
+### Le signe à retenir
+
+**Corriger deux choses d'un coup, c'est perdre l'attribution.** Le symptôme
+disparaît, les deux corrections sont dans le même commit, et rien ne dit
+laquelle a agi — sauf à remettre l'une des deux et regarder. C'est la règle de
+ce dépôt dite à l'envers : une mesure par changement, sinon la conclusion est
+une coïncidence bien racontée.
+
+Et son corollaire, qui a sauvé cette tranche d'une garde inutile : **avant
+d'écrire une garde pour un mécanisme, vérifier que le mécanisme existe.** La
+garde aurait été verte, elle aurait eu l'air de tenir quelque chose, et elle
+n'aurait gardé qu'une histoire.

@@ -27,10 +27,6 @@
 
 use yew::prelude::*;
 
-/// La clé du stockage local. La même que celle du script de la tête : deux
-/// lecteurs du même fait, et c'est pour ça qu'elle est nommée une seule fois.
-pub const THEME_KEY: &str = "wisq.theme";
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Theme {
     Light,
@@ -151,36 +147,34 @@ fn icone_auto() -> Html {
     }
 }
 
-// Les trois fonctions qui touchent le navigateur, et le seul endroit du crate
-// où `web-sys` apparaisse. Sous `ssr` elles n'existent pas : le pré-rendu n'a
-// ni document ni stockage, et un bouchon qui rendrait `None` en silence serait
-// un bouchon complaisant.
+// Le choix mémorisé passe par `crate::stockage`, qui porte la chaîne de refus
+// une seule fois pour les trois comportements qui mémorisent. Ne reste ici que
+// ce qui est propre au thème : qu'un `auto` stocké n'est pas un choix, et que
+// l'attribut se pose sur la racine du document.
 
-#[cfg(feature = "hydrate")]
 fn lire_choix() -> Option<Theme> {
-    let stockage = web_sys::window()?.local_storage().ok()??;
-    let valeur = stockage.get_item(THEME_KEY).ok()??;
-    // Un `auto` stocké n'est pas un choix : c'est l'absence de choix, et le
-    // distinguer éviterait d'écrire une valeur que `retenir` retire.
-    match valeur.as_str() {
+    // Un `auto` stocké n'est pas un choix : c'est l'absence de choix, et les
+    // confondre empêcherait de distinguer « suis le système » de « on n'a rien
+    // lu encore ». `retenir` l'efface donc, et cette lecture le refuse.
+    match crate::stockage::lire(crate::stockage::THEME)?.as_str() {
         "light" => Some(Theme::Light),
         "dark" => Some(Theme::Dark),
         _ => None,
     }
 }
 
-#[cfg(feature = "hydrate")]
 fn retenir(theme: Theme) {
-    let Some(stockage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
-        // Le choix tient pour cette page et ne lui survit simplement pas.
-        return;
-    };
-    let _ = match theme {
-        Theme::Auto => stockage.remove_item(THEME_KEY),
-        other => stockage.set_item(THEME_KEY, other.slug()),
-    };
+    match theme {
+        Theme::Auto => crate::stockage::effacer(crate::stockage::THEME),
+        other => crate::stockage::ecrire(crate::stockage::THEME, other.slug()),
+    }
 }
 
+/// Poser l'attribut, qui est la seule chose qu'un lecteur voie tout de suite.
+///
+/// Sous `ssr` il n'y a pas de document, et le bouchon du bas ne fait rien —
+/// ce qui est juste : le pré-rendu part de `auto`, et c'est le script bloquant
+/// de la tête qui applique les couleurs avant la première peinture.
 #[cfg(feature = "hydrate")]
 fn appliquer(theme: Theme) {
     let Some(racine) = web_sys::window()
@@ -198,14 +192,6 @@ fn appliquer(theme: Theme) {
         }
     }
 }
-
-#[cfg(not(feature = "hydrate"))]
-fn lire_choix() -> Option<Theme> {
-    None
-}
-
-#[cfg(not(feature = "hydrate"))]
-fn retenir(_: Theme) {}
 
 #[cfg(not(feature = "hydrate"))]
 fn appliquer(_: Theme) {}
