@@ -195,15 +195,24 @@ afterAll(async () => {
 });
 
 test("le module hydraté tient la bascule de thème", async () => {
-  // **Les nœuds sont relus à chaque fois, et c'est la correction d'un défaut.**
+  // **Les nœuds sont relus à chaque fois — et la raison écrite ici d'abord
+  // était fausse.**
   //
-  // Le premier jet capturait la liste des boutons au début du test, c'est-à-dire
-  // avant que l'hydratation n'ait eu lieu, et cliquait ensuite sur ces nœuds-là.
-  // L'hydratation de Yew réutilise le balisage quand il correspond et le
-  // remplace sinon : une liste prise trop tôt peut donc tenir des nœuds
-  // détachés, sur lesquels un clic ne remonte nulle part. Mesuré — le module
-  // posait bien `data-theme`, relu `Some("light")` depuis le Rust, pendant que
-  // le test lisait `null` sur ses nœuds d'avant.
+  // Elle disait qu'une liste prise avant l'hydratation peut tenir des nœuds
+  // détachés, et que c'était la cause mesurée d'un clic qui n'arrivait pas.
+  // Reconstitué depuis : sur cette page, l'hydratation de Yew reprend **les
+  // mêmes objets** — trois sur trois encore attachés, identiques un à un — et un
+  // clic dispatché sur un nœud capturé avant le démarrage du module pose
+  // `data-theme` et mémorise le choix. Le symptôme venait du voisin,
+  // `document instanceof Document` à faux, qui faisait sortir `appliquer` en
+  // silence ; les deux ayant été corrigés dans le même tour, le mérite est allé
+  // au mauvais.
+  //
+  // La relecture reste, pour ce qu'elle vaut réellement : l'hydratation ne
+  // garantit la réutilisation que là où la **structure** correspond, et elle
+  // remplace le sous-arbre sinon. Relire ne coûte rien et c'est la seule forme
+  // qui survive à ce cas-là — mais ce n'est pas ce qui a été mesuré ici, et le
+  // dire autrement serait affirmer plus que la mesure.
   const boutons = () => [...document.querySelectorAll("[data-theme-choice]")] as HTMLButtonElement[];
   expect(boutons().length, `${page} : aucun bouton de thème`).toBe(3);
 

@@ -51,12 +51,26 @@ pub fn Shell(props: &ShellProps) -> Html {
                     // Des liens, pas des boutons : chacun est une vraie adresse,
                     // donc il s'ouvre dans un nouvel onglet, se met en favori, et
                     // se suit sans aucun JavaScript.
+                    //
+                    // **Le clic ne fait rien d'autre que se souvenir.** Il
+                    // n'empêche pas la navigation, il ne la provoque pas : le
+                    // navigateur suit le lien comme il l'aurait fait, et la seule
+                    // chose ajoutée est la mémoire d'avoir choisi — qui ne nourrit
+                    // qu'une décision, la redirection depuis l'accueil anglais.
+                    // C'est pour ça qu'aucun `prevent_default` n'apparaît ici : un
+                    // lecteur dont le wasm n'arrive jamais garde un lien qui marche.
                     <nav class="lang-switch" aria-label={copy.language}>
-                        { for Lang::ALL.into_iter().map(|code| html! {
-                            <a href={href(route, lang, route, code)} hreflang={code.code()}
-                               aria-current={(code == lang).then(|| AttrValue::from("true"))}>
-                                { code.code().to_uppercase() }
-                            </a>
+                        { for Lang::ALL.into_iter().map(|code| {
+                            let au_clic = Callback::from(move |_: MouseEvent| {
+                                crate::stockage::ecrire(crate::stockage::LANGUE, code.code());
+                            });
+                            html! {
+                                <a href={href(route, lang, route, code)} hreflang={code.code()}
+                                   aria-current={(code == lang).then(|| AttrValue::from("true"))}
+                                   onclick={au_clic}>
+                                    { code.code().to_uppercase() }
+                                </a>
+                            }
                         }) }
                     </nav>
                 </div>

@@ -37,11 +37,19 @@ const root = document.getElementById("root");
 // de la langue, et sans ses révélations au défilement. Trois comportements
 // morts, et rien pour le dire.
 //
-// Donc chaque section se demande qui la possède, et une seule le fait
-// aujourd'hui. Une route n'entre dans `PORTEES` que quand **tous** les
-// comportements qu'elle porte existent en Yew, et `tests/behaviour.test.ts`
-// l'exige page par page plutôt que de le croire.
+// Donc chaque section se demande qui la possède, et deux le font aujourd'hui.
+// Une route n'entre dans `PORTEES` que quand **tous** les comportements qu'elle
+// porte existent en Yew, et `tests/hydration.test.ts` exerce la page portée
+// **entière** — module et script ensemble, les quatre comportements, sans
+// jamais demander lequel des deux les porte. C'est cette garde-là qui rend un
+// transfert mesurable : si une moitié cède ce que l'autre n'a pas pris, elle
+// tombe.
+//
+// Les deux drapeaux lisent la même chose et s'écrivent séparément exprès : leur
+// nom dit **quel** comportement a déménagé, et le jour où il n'en restera
+// aucun, ce fichier n'aura plus de raison d'exister.
 const themeEnYew = root?.dataset.hydrate === "yew";
+const langueEnYew = root?.dataset.hydrate === "yew";
 
 const base = root?.dataset.base ?? "./";
 const route = root?.dataset.route ?? "home";
@@ -76,8 +84,15 @@ startMotion();
 //
 // The links are real addresses and work without any of this. All that is added
 // is the memory of having chosen, which feeds exactly one decision below.
-for (const link of document.querySelectorAll<HTMLAnchorElement>(".lang-switch a[hreflang]")) {
-  link.addEventListener("click", () => remember(LANG_KEY, link.hreflang));
+//
+// Porté dans `crates/wisq-site/src/shell.rs` : c'est la coquille qui rend ces
+// liens, donc c'est elle qui se souvient. La redirection juste en dessous, elle,
+// **lit** ce souvenir sans l'écrire — et elle n'est pas portée, parce qu'elle ne
+// concerne que l'accueil, qui ne l'est pas encore.
+if (!langueEnYew) {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>(".lang-switch a[hreflang]")) {
+    link.addEventListener("click", () => remember(LANG_KEY, link.hreflang));
+  }
 }
 
 /// Sends a French-speaking reader from the English home page to the French one.
