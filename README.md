@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (2621 tests across Swift and Rust) and
+Everything below is implemented, tested (2628 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -129,7 +129,8 @@ Sources/WisqVM       local Linux: rv32ima and x86-64 cores, UART, virtio-blk
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
 crates/wisq-vm       rv32ima interpreter (Rust) with a C ABI for the app
-site/                the project site: React 19 on Bun, pre-rendered, an installable PWA
+crates/wisq-site     the site's front end (Rust): Yew, pre-rendered, two islands in wasm
+site/                the site's build, server and stylesheet (Bun), an installable PWA
 docs/                architecture, agent wire protocol, roadmap
 ```
 
@@ -149,11 +150,20 @@ from the phone — with what was verified and what was not.
 
 ## The landing page
 
-`site/` holds the project page — React 19 on Bun, pre-rendered at build time so
-it paints before its JavaScript arrives, and mobile-first in the literal sense
-(every base rule targets a phone; breakpoints only add room).
+The project page is Rust end to end: `crates/wisq-site` holds every page as
+Yew components, rendered to HTML at build time so it paints before anything
+else arrives, and compiled to WebAssembly for what has to happen in a browser —
+two hydrated islands (the theme and language controls, the install prompt),
+and the motion, which follows zamocorp.com: a curtain, a pinned opening where
+the ▚ mark gathers out of dust as you scroll, a light sweep, a marquee,
+magnetic buttons and Lenis-style wheel smoothing. Every one of them stands down
+for a reader who asked for reduced motion, and the page is whole without the
+module. `site/` holds the build around it, the server and the stylesheet —
+mobile-first in the literal sense (every base rule targets a phone;
+breakpoints only add room).
 
 ```sh
+./scripts/install-wasm-toolchain.sh
 cd site && bun install && bun run dev
 ```
 

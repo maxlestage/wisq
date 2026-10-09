@@ -116,8 +116,8 @@ impl RouteId {
             RouteId::Releases => "releases",
             RouteId::Privacy => "privacy",
             RouteId::Offline => "offline",
-            // Le même nom que la clé de `content.ts`, pour que les deux côtés
-            // se nomment pareil tant qu'ils coexistent.
+            // Le nom que portait la clé de `content.ts`, gardé : c'est celui
+            // que le catalogue publie et que `data-route` écrit sur la page.
             RouteId::NotFound => "notFound",
         }
     }
@@ -155,13 +155,22 @@ pub fn route(id: RouteId) -> &'static Route {
         .unwrap_or_else(|| panic!("route absente de ROUTES : {}", id.slug()))
 }
 
-/// L'adresse d'une page, relative à la racine du site.
+/// L'adresse d'une page, relative à la racine du site : `""`, `"docs/"`,
+/// `"fr/"`, `"fr/docs/"`.
+///
+/// **`output` n'y entre pas, et c'est le garde de fidélité qui l'a dit.** La
+/// première version rendait `404.html` pour la page introuvable : le sélecteur
+/// de langue d'une 404 menait donc à la 404 de l'autre langue — une page qui
+/// dit « cette adresse n'existe pas » à propos d'une adresse qu'on vient de lui
+/// demander. React, et la règle d'origine, mènent à l'accueil de l'autre langue.
+/// Le fichier qu'une route écrit et l'adresse qu'on donne pour elle sont deux
+/// choses, et seule la première dépend de `output`.
 pub fn page_path(id: RouteId, lang: Lang) -> String {
     let r = route(id);
-    match r.output {
-        Some(file) => format!("{}{file}", lang.prefix()),
-        None if r.path.is_empty() => lang.prefix().to_string(),
-        None => format!("{}{}/", lang.prefix(), r.path),
+    if r.path.is_empty() {
+        lang.prefix().to_string()
+    } else {
+        format!("{}{}/", lang.prefix(), r.path)
     }
 }
 
@@ -177,11 +186,33 @@ pub fn output_path(id: RouteId, lang: Lang) -> String {
 
 /// De quoi remonter à la racine du site depuis une page donnée. Tout ce que le
 /// site écrit est relatif, pour qu'il reste déplaçable.
+///
+/// Compté sur le fichier écrit plutôt que sur l'adresse, parce que c'est lui
+/// que le navigateur résout : `fr/404.html` est à un niveau de profondeur alors
+/// que son adresse, `fr/`, l'est aussi — mais `404.html` est à la racine alors
+/// que rien dans son adresse ne le dirait si elle changeait.
 pub fn relative_base(id: RouteId, lang: Lang) -> String {
-    let depth = page_path(id, lang).matches('/').count();
+    let depth = output_path(id, lang).matches('/').count();
     if depth == 0 {
         "./".to_string()
     } else {
         "../".repeat(depth)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn les_adresses_suivent_la_regle_du_site() {
+        assert_eq!(page_path(RouteId::Home, Lang::En), "");
+        assert_eq!(page_path(RouteId::Docs, Lang::Fr), "fr/docs/");
+        // La 404 a son fichier, pas son adresse.
+        assert_eq!(page_path(RouteId::NotFound, Lang::Fr), "fr/");
+        assert_eq!(output_path(RouteId::NotFound, Lang::Fr), "fr/404.html");
+        assert_eq!(relative_base(RouteId::NotFound, Lang::En), "./");
+        assert_eq!(relative_base(RouteId::NotFound, Lang::Fr), "../");
+        assert_eq!(relative_base(RouteId::Docs, Lang::Fr), "../../");
     }
 }

@@ -1,6 +1,6 @@
 /// The site's public address, resolved in one place.
 ///
-/// `build.tsx` stamps it into every canonical link, the sitemap, `robots.txt`
+/// `build.ts` stamps it into every canonical link, the sitemap, `robots.txt`
 /// and the social card; `tests/build.test.ts` checks what was stamped. Both
 /// read it from here rather than each spelling out the same rule.
 ///

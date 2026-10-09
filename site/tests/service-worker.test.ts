@@ -6,7 +6,7 @@
 /// `toContain("response.ok")`, `toContain("offlineFor")`. That is a tripwire on
 /// the source, not a check of what the worker does.
 ///
-/// **Measured.** Nine behaviours were broken one at a time in `build.tsx`, each
+/// **Measured.** Nine behaviours were broken one at a time in `build.ts`, each
 /// sabotage chosen to leave every grepped string in place — `addAll(wanted)`
 /// became `addAll([])`, `if (response.ok)` became `if (response.ok || true)`,
 /// `offlineFor` kept its name and always answered English. The built `sw.js`
@@ -292,7 +292,9 @@ describe("what the service worker actually does", () => {
   /// is a round trip that can only answer "still the same".
   test("a hashed asset comes from the cache without touching the network", async () => {
     const { handlers, caches, network } = load();
-    const asset = PRECACHE.find((entry) => /chunk-[a-z0-9]+\.js$/.test(entry))!;
+    // La colle du front : le seul `.js` haché depuis que le site n'a plus de
+    // script à lui.
+    const asset = PRECACHE.find((entry) => /wisq-[0-9a-f]+\.js$/.test(entry))!;
     const cache = await caches.open(VERSION);
     await cache.put(key(asset), new Response("du cache"));
     network.asked = [];

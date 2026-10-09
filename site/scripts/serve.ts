@@ -87,7 +87,7 @@ const TYPES: Record<string, string> = {
 /// Pages none of it did — Pages sends its own headers and offers no way to set
 /// them — so this file was a promise about a host that never listened, and the
 /// caching that actually decided what a returning reader downloaded lived
-/// entirely in the service worker `build.tsx` generates.
+/// entirely in the service worker `build.ts` generates.
 ///
 /// The site is served by Heroku now, and the `Procfile` at the repository root
 /// runs *this file*. The comment above used to end "what to configure the day
@@ -106,7 +106,7 @@ const TYPES: Record<string, string> = {
 /// pendant que le `.css` haché d'à côté partait en `immutable`. Mesuré au
 /// `curl`, pas déduit.
 ///
-/// `build.tsx` écrit la liste parce qu'il est le seul à la connaître : c'est lui
+/// `build.ts` écrit la liste parce qu'il est le seul à la connaître : c'est lui
 /// qui choisit `chunk-<hash>`, et lui qui compose le nom de la police. Un actif
 /// adressé par contenu de plus entre dans la politique sans que personne ne
 /// touche à une expression rationnelle.

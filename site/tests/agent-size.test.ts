@@ -29,7 +29,7 @@ const guard = join(repoRoot, "scripts", "check-agent-size.sh");
 
 /// Les fichiers que la garde lit, et rien d'autre.
 const texts = [
-  "site/src/pages/protocol.ts",
+  "crates/wisq-site/src/pages/protocol.rs",
   "docs/AGENT-PROTOCOL.md",
   "Package.swift",
   ".github/workflows/release.yml",
@@ -73,8 +73,8 @@ function rewrite(root: string, path: string, from: string, to: string) {
 /// Les huit motifs, écrits une deuxième fois ici — dans l'autre langage, comme
 /// le débordement `largeur × hauteur × 4` qui est sorti de cette habitude-là.
 const patterns: [string, string, RegExp][] = [
-  ["le site, en anglais", "site/src/pages/protocol.ts", /it is now (\d+[.,]\d+) MB/g],
-  ["le site, en français", "site/src/pages/protocol.ts", /il en fait (\d+[.,]\d+) Mo/g],
+  ["le site, en anglais", "crates/wisq-site/src/pages/protocol.rs", /it is now (\d+[.,]\d+) MB/g],
+  ["le site, en français", "crates/wisq-site/src/pages/protocol.rs", /il en fait (\d+[.,]\d+) Mo/g],
   [
     "le document du protocole",
     "docs/AGENT-PROTOCOL.md",
@@ -171,7 +171,7 @@ test("les deux langues de la même page sont lues séparément", () => {
   const root = copy(OCTETS);
   rewrite(
     root,
-    "site/src/pages/protocol.ts",
+    "crates/wisq-site/src/pages/protocol.rs",
     `il en fait ${DÉCIMALE(PUBLIÉ)} Mo`,
     `il en fait ${DÉCIMALE(VOISIN)} Mo`,
   );

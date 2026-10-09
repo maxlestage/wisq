@@ -35,6 +35,21 @@ break APIs.
   Personne ne **montre** encore ce cadre : il est déclaré, routé, rempli par
   l'invité et lisible par l'hôte, et la vue reste à écrire.
 
+### Changed
+- **Le site est en Yew et en WebAssembly, de la première page à la dernière,
+  et il bouge comme zamocorp.com.** Les dix pages, dans les deux langues, sont
+  des composants de `crates/wisq-site` rendus en HTML à la construction ; React,
+  `src/main.ts`, `src/motion.ts` et toute la copie TypeScript sont partis. Le
+  navigateur n'hydrate que **deux îlots** — les réglages de l'en-tête et
+  l'invite d'installation —, et c'est une mesure : hydrater les pages entières
+  mettait la prose des dix pages dans le module, 351 822 octets au lieu de
+  261 252. Le mouvement est en Rust : un rideau une fois par session, une
+  ouverture épinglée où la marque ▚ se forme dans la poussière au défilement
+  puis prend la lumière, le titre qui monte mot par mot, une bande qui défile,
+  des boutons aimantés, le défilement lissé à la molette, et des transitions de
+  page là où le navigateur les connaît. Tout s'efface pour qui a demandé moins
+  d'animation, et la page est entière sans le module.
+
 ## [0.4.0] — 2026-09-05
 
 ### Added

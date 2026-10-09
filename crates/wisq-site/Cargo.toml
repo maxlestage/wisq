@@ -7,34 +7,66 @@ authors = ["Maxime Nathan Lestage"]
 # déclaré ici plutôt qu'au workspace : le cœur de la VM et le démon n'ont aucune
 # raison de monter leur plancher parce que le site a un framework.
 rust-version = "1.84"
-description = "Le front du site de wisq : composants Yew, pré-rendus à la construction et hydratés en WebAssembly"
+description = "Le front du site de wisq : composants Yew pré-rendus à la construction, deux îlots hydratés et le mouvement en WebAssembly"
 repository = "https://github.com/maxlestage/wisq"
 
 # Deux cibles pour un seul arbre de composants, et c'est tout l'intérêt.
 #
-#   `ssr`     — la construction rend les vingt pages en HTML, comme `renderToString`
-#               le faisait pour React. La première peinture ne dépend donc pas du
-#               wasm : mesuré, `ServerRenderer` produit bien le balisage.
-#   `hydrate` — le navigateur reprend cet HTML et y rattache les comportements.
+#   `ssr`     — la construction rend les vingt pages en HTML, là où
+#               `renderToString` le faisait pour React. La première peinture ne
+#               dépend donc pas du wasm : mesuré, `ServerRenderer` produit bien
+#               le balisage.
+#   `hydrate` — le navigateur reprend deux îlots de cet HTML, et le module
+#               anime le reste : le mouvement est en Rust, pas en script.
 #
 # `clippy --all-targets --all-features` de la CI les active **ensemble**, sur une
 # cible native. Vérifié avant d'écrire une ligne : ça compile.
 [features]
 default = ["ssr"]
 ssr = ["yew/ssr", "dep:tokio"]
-hydrate = ["yew/hydration", "dep:wasm-bindgen", "dep:web-sys"]
+hydrate = ["yew/hydration", "dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
 
 [dependencies]
 yew = { version = "0.23", default-features = false }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+# `js-sys` pour trois choses que `web-sys` ne nomme pas : `Reflect` (l'événement
+# `beforeinstallprompt` n'a pas de liaison, il n'est pas normalisé), `Math`
+# (le hasard de la poussière) et `Promise` (le retour du service worker).
+js-sys = { version = "0.3", optional = true }
+# Chaque fonction de `web-sys` est derrière un drapeau, et seules celles qu'on
+# appelle entrent dans le module : la liste est donc celle de ce que le front
+# touche réellement, pas une réserve.
 web-sys = { version = "0.3", optional = true, features = [
-  "Window",
-  "Storage",
+  "AddEventListenerOptions",
+  "CanvasRenderingContext2d",
+  "CssStyleDeclaration",
   "Document",
+  "DomRect",
+  "DomTokenList",
   "Element",
+  "Event",
+  "EventTarget",
+  "HtmlCanvasElement",
+  "HtmlCollection",
   "HtmlElement",
+  "IntersectionObserver",
+  "IntersectionObserverEntry",
+  "IntersectionObserverInit",
+  "Location",
   "MediaQueryList",
+  "MouseEvent",
+  "Navigator",
+  "NodeList",
+  "Performance",
+  "PointerEvent",
+  "ScrollBehavior",
+  "ScrollToOptions",
+  "ServiceWorkerContainer",
+  "Storage",
+  "Url",
+  "WheelEvent",
+  "Window",
 ] }
 
 [lib]

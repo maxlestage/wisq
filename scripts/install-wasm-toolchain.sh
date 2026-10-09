@@ -63,7 +63,13 @@ archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl"
 echo "==> Téléchargement de $archive"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/${version}/${archive}.tar.gz" \
+# **L'organisation `wasm-bindgen`, plus `rustwasm`.** Le projet a été transféré
+# quand l'organisation `rustwasm` a été mise en sommeil (annoncé sur le blog de
+# Rust en juillet 2025, archivage en septembre). L'ancienne adresse répond encore
+# par une redirection 301 — mesuré —, mais un téléchargement qui ne tient qu'à
+# une redirection d'une organisation archivée est un déploiement qui tient à la
+# bonne volonté de GitHub.
+curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/${archive}.tar.gz" \
   | tar xz -C "$tmp"
 mkdir -p "$HOME/.cargo/bin"
 install -m 0755 "$tmp/$archive/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"

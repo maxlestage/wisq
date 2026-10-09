@@ -96,9 +96,9 @@ announced() {
 }
 
 announced "le site, en anglais" \
-  "site/src/pages/protocol.ts" "it is now [0-9]+[.,][0-9]+ MB"
+  "crates/wisq-site/src/pages/protocol.rs" "it is now [0-9]+[.,][0-9]+ MB"
 announced "le site, en français" \
-  "site/src/pages/protocol.ts" "il en fait [0-9]+[.,][0-9]+ Mo"
+  "crates/wisq-site/src/pages/protocol.rs" "il en fait [0-9]+[.,][0-9]+ Mo"
 announced "le document du protocole" \
   "docs/AGENT-PROTOCOL.md" "il en fait aujourd'hui \*\*[0-9]+[.,][0-9]+ Mo\*\*"
 announced "le manifeste du paquet" \
