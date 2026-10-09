@@ -13,7 +13,7 @@ wisq se place face à UTM sur deux fronts à la fois :
 - **Local** : deux machines interprétées — un RISC-V rv32ima et un PC x86-64 —
   bootent un vrai noyau Linux **sur le téléphone**, sans réseau ni serveur ; la
   RISC-V en moins d'une seconde, shell compris. wisq lit le fichier qu'on lui
-  donne et choisit le cœur tout seul : vingt et une familles d'architectures
+  donne et choisit le cœur tout seul : vingt familles d'architectures
   reconnues, deux exécutées. Interprété, donc sans JIT : conforme aux règles
   d'iOS, là où UTM SE vit dans une zone grise.
 
@@ -90,7 +90,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2628 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2632 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

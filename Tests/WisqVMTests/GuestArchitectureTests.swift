@@ -8,7 +8,7 @@ import XCTest
 /// Maxime : « sur wisq il me faut toutes les architectures Linux qui peuvent
 /// exister et la bonne par rapport à l'image sera automatiquement
 /// sélectionnée ». Ces tests tiennent les deux moitiés séparément, parce que
-/// ce sont deux choses : **reconnaître** vingt et une familles, et en
+/// ce sont deux choses : **reconnaître** vingt familles, et en
 /// **exécuter** deux. Les confondre serait annoncer ce qui n'est pas tenu.
 final class GuestArchitectureTests: XCTestCase {
     // MARK: - Ce que les fichiers disent

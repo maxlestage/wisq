@@ -63,7 +63,7 @@ pub struct PageProps {
 #[function_component]
 pub fn Page(props: &PageProps) -> Html {
     let corps = match pages::doc(props.route, props.lang) {
-        Some(d) => html! { <DocPage doc={d.clone()} /> },
+        Some(d) => html! { <DocPage doc={d.clone()} lang={props.lang} /> },
         None => html! { <accueil::Accueil lang={props.lang} /> },
     };
     html! { <Shell route={props.route} lang={props.lang}>{ corps }</Shell> }
