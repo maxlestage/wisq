@@ -29,6 +29,7 @@ pub mod logo;
 pub mod pages;
 pub mod routes;
 pub mod shell;
+pub mod stockage;
 pub mod theme;
 
 use content::Lang;
