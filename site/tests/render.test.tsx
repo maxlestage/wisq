@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToString } from "react-dom/server";
 import { App } from "../src/App";
 import { copy, type Lang } from "../src/content";
 import { documentStrings } from "../src/doc";
 import { PAGES } from "../src/pages";
-import { ROUTES } from "../src/routes";
+import { ROUTES, outputPath, type RouteId } from "../src/routes";
 
 /// React escapes text as it renders, so a comparison against the source string
 /// has to undo that first — otherwise every assertion about a sentence with an
@@ -172,6 +174,113 @@ describe("content integrity", () => {
         const words = documentStrings(doc).join(" ").split(/\s+/).length;
         expect(words, `${lang}/${id} est trop court pour être une page`).toBeGreaterThan(200);
       }
+    }
+  });
+});
+
+/// **La garde de la migration vers Yew : les deux rendus doivent dire la même
+/// chose.**
+///
+/// Le front passe en Yew une famille de pages à la fois, donc pendant la
+/// migration chaque page portée existe deux fois — le composant React, encore
+/// là pour les routes qui attendent, et le composant Yew, qui produit ce que le
+/// site publie. Deux copies d'une même page sont exactement la faute que ce
+/// dépôt passe son temps à corriger ailleurs : il faut donc qu'une seule chose
+/// les tienne, et c'est ce test.
+///
+/// Il rend React ici, lit la page réellement construite, et exige l'égalité
+/// après avoir normalisé **trois** classes d'écart et rien d'autre. Chacune est
+/// une différence de sérialisation, pas de sens, et chacune est nommée pour
+/// qu'une quatrième ne puisse pas se glisser dans un `replace` trop large :
+///
+///   1. **L'ordre des attributs.** Yew écrit `class` en dernier. L'ordre n'est
+///      pas un contrat — aucun navigateur, aucun lecteur d'écran, aucun moteur
+///      de recherche ne le lit — donc les attributs sont triés des deux côtés.
+///   2. **`hrefLang` contre `hreflang`.** React sérialise le nom camelCase du
+///      JSX ; Yew écrit le nom HTML. Les deux fonctionnent, les noms
+///      d'attributs étant insensibles à la casse à l'analyse, et c'est Yew qui
+///      a raison.
+///   3. **Les attributs sans valeur.** `hidden=""`, `hidden="hidden"` et
+///      `data-install="true"` disent tous « présent ». Seuls les trois noms
+///      réellement concernés sont normalisés, pour qu'un changement de *valeur*
+///      ailleurs ne puisse pas disparaître dans la lessive.
+///   4. **L'échappement des entités.** React échappe l'apostrophe en `&#x27;`,
+///      ce dont le HTML n'a aucun besoin dans un nœud de texte ; Yew écrit le
+///      caractère. Le dé-échappeur employé est `text()`, en haut de ce fichier,
+///      écrit bien avant cette migration et pour la même raison — « React
+///      escapes text as it renders, so a comparison against the source string
+///      has to undo that first ». Il est appliqué **aux deux côtés**, donc un
+///      écart réel resterait visible même dans un texte qui contient un vrai
+///      chevron.
+///
+/// Les identifiants du logo diffèrent par construction — React les engendrait
+/// par `useId`, Yew les nomme — et ce sont les seules chaînes réécrites.
+///
+/// **Ce test disparaîtra avec React**, et c'est voulu : le jour où plus aucune
+/// route n'est rendue par React, il n'a plus deux lectures à confronter. Tant
+/// qu'il en a, il est la seule chose qui empêche la migration de dériver.
+describe("le portage en Yew rend la même page que React", () => {
+  const dist = join(import.meta.dir, "..", "dist");
+
+  /// Les routes que la construction a rendues avec Yew, lues sur l'artefact :
+  /// `crates/wisq-site/src/pages.rs` déclare ce qu'il sait rendre, et une
+  /// seconde liste ici serait la copie qu'on cherche à éviter.
+  function porteesConstruites(): { route: RouteId; lang: Lang; file: string }[] {
+    const trouvees: { route: RouteId; lang: Lang; file: string }[] = [];
+    for (const lang of ["en", "fr"] as const) {
+      for (const route of ROUTES) {
+        const file = outputPath(route, lang);
+        const chemin = join(dist, file);
+        if (!existsSync(chemin)) continue;
+        if (!readFileSync(chemin, "utf8").includes('data-hydrate="yew"')) continue;
+        trouvees.push({ route: route.id, lang, file });
+      }
+    }
+    return trouvees;
+  }
+
+  function corps(html: string): string {
+    const m = html.match(/<div id="root"[^>]*>([\s\S]*)<\/div>\s*<script/);
+    if (!m) throw new Error("aucun #root dans la page construite");
+    return m[1]!;
+  }
+
+  function normalise(markup: string): string {
+    // (4) l'échappement : le même dé-échappeur des deux côtés.
+    let out = text(markup)
+      // Les marqueurs d'hydratation de Yew, que React ne pose pas.
+      .replace(/<!--.*?-->/g, "")
+      // Les identifiants du logo : engendrés d'un côté, nommés de l'autre.
+      .replace(/wisq-(plate|mark|window)-[^)"\s]*/g, "wisq-$1")
+      // (2) le nom d'attribut camelCase de React.
+      .replace(/\bhrefLang=/g, "hreflang=");
+    // (3) les trois attributs sans valeur, nommés un par un.
+    for (const nom of ["hidden", "data-install", "data-install-accept", "data-install-dismiss"]) {
+      out = out.replace(new RegExp(`\\b${nom}="(?:|true|${nom})"`, "g"), `${nom}=""`);
+    }
+    // (1) l'ordre des attributs, trié balise par balise.
+    return out.replace(
+      /<([\w]+)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>/g,
+      (_all, nom: string, attrs: string, fin: string) => {
+        const paires = [...attrs.matchAll(/([\w:-]+)="([^"]*)"/g)]
+          .map((m) => `${m[1]}="${m[2]}"`)
+          .sort();
+        return `<${nom}${paires.map((p) => ` ${p}`).join("")}${fin}>`;
+      },
+    );
+  }
+
+  test("chaque page portée rend ce que React rendait", () => {
+    const portees = porteesConstruites();
+    expect(portees.length, "aucune page portée : ce test serait creux").toBeGreaterThan(0);
+
+    for (const { route, lang, file } of portees) {
+      const doc = route === "home" ? undefined : PAGES[lang][route as keyof (typeof PAGES)["en"]];
+      const attendu = normalise(renderToString(<App route={route} lang={lang} doc={doc} />));
+      const obtenu = normalise(corps(readFileSync(join(dist, file), "utf8")));
+      // Non creux : une page du site fait plusieurs kilooctets.
+      expect(attendu.length, `${file} : rendu React vide`).toBeGreaterThan(2000);
+      expect(obtenu, `${file} : le rendu Yew s'écarte de ce que React rendait`).toBe(attendu);
     }
   });
 });

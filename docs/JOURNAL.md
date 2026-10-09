@@ -22540,3 +22540,164 @@ quelques minutes, et les deux ont changé la forme du travail — la première a
 corrigé le chiffre sur lequel la décision reposait, la seconde a mis le crate
 dans le workspace, donc sous clippy. **Invoquer un framework est une
 affirmation, et elle se vérifie comme les autres.**
+
+## #332 — « le module wasm a tout » : il ne l'avait pas, et rien ne le disait
+
+Tranche de correction sur la mienne. #331 a porté la première page en Yew et a
+fait s'effacer `src/main.ts` dès qu'une page portait `data-hydrate="yew"`, sur
+le commentaire suivant :
+
+> Rien à faire : le module wasm a tout.
+
+Il ne l'avait pas. **Seule la bascule de thème était portée.** Les trois autres
+comportements et les animations vivaient encore dans `main.ts`, et la bascule
+est dans la **coquille**, donc sur toutes les pages. La page `offline` a été
+publiée sans son invite d'installation, sans la mémoire du choix de langue et
+sans ses révélations au défilement. Trois morts silencieuses, et sept tests qui
+sont passés au vert parce qu'ils regardaient l'accueil, que React rendait
+encore.
+
+### La propriété est par comportement, pas par page
+
+C'est la correction, et elle tient en une ligne de moins qu'avant : chaque
+section de `main.ts` se demande qui la possède, et une seule le fait aujourd'hui
+(`themeEnYew`). Une route n'entre dans `PORTEES` que quand **tous** les
+comportements qu'elle porte existent en Yew.
+
+### Et surtout : rien ne mesurait le module
+
+Tous les tests de #331 mesurent la **construction** — le module est émis, il
+pèse ce qu'il doit, il est précaché, la page l'importe, son balisage pré-rendu
+est le bon. Aucun ne disait qu'il **arrive**. C'est la première leçon de ce
+dépôt, et je l'ai enfreinte dans la tranche qui introduisait le framework.
+
+`site/tests/hydration.test.ts` charge donc le vrai module, dans la vraie page
+construite, et appuie sur les boutons. Ce qu'il a fallu pour y arriver est
+instructif, parce que **chaque obstacle a été relevé, pas deviné** :
+
+| obstacle | mesure | réponse |
+| --- | --- | --- |
+| la colle cherche son `.wasm` par `fetch` | « URL scheme "file" is not supported » | lui passer les octets |
+| `web_sys::window()` rend `None` | `globalThis instanceof Window` → **faux** | reconnaître le global comme fenêtre |
+| le thème mémorise sans poser `data-theme` | `document instanceof Document` → **faux**, alors que `documentElement instanceof Element` → vrai | reconnaître le document |
+| le clic n'arrive pas | le Rust pose et **relit** `Some("light")`, le test lit `null` | relire les nœuds du DOM après l'hydratation |
+
+`web_sys::window()` n'est pas « lire `globalThis.window` » : wasm-bindgen
+l'implémente par `js_sys::global().dyn_into::<Window>()`, donc un `instanceof`
+sur l'objet global lui-même. Dans un navigateur c'est la même chose,
+`globalThis === window`. Sous Bun, happy-dom pose ses propriétés **sur** le
+global : `window`, `document` et `#root` existent — mesuré — et les
+reconnaissances de classe échouent. **Les refus du module étaient justes ; c'est
+l'environnement qui était faux**, et l'adaptation porte sur ces deux
+reconnaissances et sur rien d'autre.
+
+### Quatre défauts de moi, dans mon propre test
+
+1. **L'effacement en bloc** — le sujet de la tranche.
+2. **Une course gagnée une fois.** Le premier jet soufflait deux tours de boucle
+   d'événements après le démarrage et un après chaque clic, et il est passé.
+   Puis il est tombé, sur des sources identiques. Un test qui gagne une course
+   n'a rien mesuré : on attend désormais que la chose soit **observable**, avec
+   une borne, et le dépassement nomme ce qu'on attendait.
+3. **Une condition d'attente satisfaite par le pré-rendu.** « Attendre qu'un
+   bouton soit pressé » est vrai du balisage pré-rendu, qui part avec `auto` :
+   l'attente rendait la main avant que l'effet n'ait tourné, et le test lisait
+   le pré-rendu en croyant lire le module. Elle attend le **changement**.
+4. **Des nœuds capturés trop tôt.** La liste des boutons était prise avant
+   l'hydratation. Yew réutilise le balisage quand il correspond et le remplace
+   sinon : un clic sur un nœud détaché ne remonte nulle part. C'est ce que la
+   sonde a montré de la façon la plus nette — le Rust posait l'attribut et le
+   relisait `Some("light")` sur la balise `HTML`, pendant que le test lisait
+   `null`.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| l'effet ne relit plus le choix mémorisé | le test |
+| le clic n'écrit plus dans le stockage | le test |
+| le clic ne pose plus `data-theme` | le test |
+| TÉMOIN : le module n'est pas démarré | le test |
+| TÉMOIN : l'adaptation du global est retirée | le test, avant même d'arriver au corps |
+| le clic n'est plus un vrai `MouseEvent` | le test |
+
+Six, aucun survivant. Les deux témoins comptent autant que les quatre autres :
+le premier prouve que c'est le module qui fait passer le test, le second que
+l'adaptation est nécessaire — donc qu'elle ne masque rien.
+
+### Ce qui est prêt et qui attend
+
+L'accueil est porté, mesuré, et **tenu de côté**. Son contenu a été engendré
+depuis le TypeScript plutôt que recopié, et une garde neuve dans
+`render.test.tsx` confronte les deux rendus : après normalisation de quatre
+classes de sérialisation nommées — l'ordre des attributs, `hrefLang` contre
+`hreflang`, les attributs sans valeur, l'échappement des entités — le rendu Yew
+de l'accueil est **identique** à celui de React, 13 265 octets de prose, de
+tableau, d'étapes et de logo compris.
+
+Il n'est pas livré parce que l'accueil porte les cinq comportements, et qu'un
+seul est porté. Le livrer aurait répété la faute de cette tranche, en plus gros.
+
+### Le signe à retenir
+
+**Le framework arrive avec ses propres façons de se mentir.** Les cinq
+mécanismes de doute de ce dépôt supposaient du code qui tourne quand on
+l'appelle. Un module hydraté n'a aucune de ces propriétés : il arrive après le
+balisage, il remplace peut-être les nœuds qu'on tient, ses effets ne sont pas
+synchrones, et ses refus sont muets par construction — parce qu'un site qui
+plante est pire qu'un site dont une bascule ne répond pas.
+
+D'où la règle que cette tranche ajoute : **mesurer l'arrivée demande d'attendre
+une condition et de relire le DOM**, jamais de compter les tours ni de garder une
+référence. Et le corollaire, qui vaut au-delà du front : **un refus silencieux
+bien écrit rend le défaut invisible exactement là où il protège**. `appliquer`
+sortait proprement faute de document, ce qui est juste dans un navigateur
+hostile et indiscernable d'un succès dans un test. Il a fallu instrumenter le
+Rust pour le voir.
+
+### Et il a trouvé quelque chose avant même d'être livré
+
+La première exécution complète de `./scripts/verify.sh` sur cette tranche est
+revenue **rouge**, et sur ce test-ci : « délai dépassé en attendant : que le clic
+pose `data-theme` ». La sonde a tout de suite écarté le soupçon évident — le
+clic **arrivait** (`aria-pressed` se déplaçait, `wisq.theme` passait à
+`"light"`), seul `appliquer` ne faisait rien. Puis l'espion sur
+`Element.prototype.setAttribute` a montré deux appels, tous deux de Yew sur des
+boutons, et **aucun** sur la balise `HTML`, alors qu'une pose directe depuis le
+test, au même instant, atterrissait parfaitement.
+
+Donc ce n'était pas l'environnement. La section d'imports du module le dit sans
+appel :
+
+```
+$ wasm-dis dist/wisq-d2062d0c9d67494a.wasm | grep -c documentElement
+0
+```
+
+**Le wasm publié n'importait pas `documentElement`.** `appliquer` ne pouvait pas
+appliquer le thème — ni dans ce test, ni dans un navigateur. Or une
+reconstruction du *même* source, à `HEAD`, importe bien
+`__wbg_documentElement_3f718a9a39a893d3` et pèse 356 octets de plus. L'artefact
+ne correspondait pas au source : `cargo` avait rendu « Finished in 0.07s » sur
+cette unité, et il a fallu toucher `lib.rs` pour qu'il la reconstruise. Le
+module reconstruit fait passer le test sans qu'une ligne du test change.
+
+Ce qui compte n'est pas l'anomalie de cache, c'est **ce qui l'a vue**. Sur cet
+artefact-là, *tous* les tests de forme de #331 étaient verts : le module était
+émis, il tenait son budget, il était précaché, la page l'importait, son balisage
+pré-rendu était le bon. Il avait la bonne taille, le bon nom, la bonne place —
+et il ne savait pas faire la seule chose pour laquelle il existe. Un test qui
+appuie sur le bouton était le seul mécanisme du dépôt capable de le dire.
+
+D'où le danger à noter, qui vaut pour tout artefact compilé que la suite charge
+plutôt que de construire : **un artefact mis en cache fait mesurer un module que
+le source ne produit plus.** Aucune garde de forme ne l'attrape, par
+construction — elles mesurent l'artefact, et l'artefact est cohérent avec
+lui-même. La CI construit à froid, donc elle n'y est pas exposée ; une machine
+de travail, si.
+
+Et une verrue repérée en passant, pas corrigée ici parce qu'elle n'est pas de
+cette tranche : sous `ssr`, `cargo build --release` avertit que le bouchon
+`fn appliquer(_: Theme) {}` n'est jamais utilisé — Yew laisse tomber les
+gestionnaires de clic au pré-rendu. L'avertissement est juste ; il lui manque un
+`#[allow(dead_code)]` et la phrase qui dit pourquoi.
