@@ -223,6 +223,13 @@ const GATES: Record<string, Verdict> = {
 
   // --- site.yml ---------------------------------------------------------------
   "build › Install": { verify: /bun install --frozen-lockfile/ },
+  // Même classement que « Install SwiftLint » et « Install XcodeGen », et pour
+  // la même raison : l'étape installe un outil, et verify.sh dit comment
+  // l'obtenir plutôt que de le télécharger sous les pieds d'un développeur.
+  // Ici c'est `build.tsx` qui le dit, en refusant avec les trois commandes.
+  "build › Install the WebAssembly toolchain": {
+    absent: "installe la chaîne wasm ; la construction du site dit comment l'obtenir",
+  },
   "build › Typecheck": { verify: /bun run typecheck/ },
   "build › Build": { verify: /bun run build/ },
   "build › Test": { verify: /bun test/ },

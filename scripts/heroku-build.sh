@@ -40,6 +40,17 @@ if [ -z "${SITE_URL:-}" ]; then
   echo "    SITE_URL = https://<nom-de-l-app>.herokuapp.com/"
 fi
 
+# La chaîne WebAssembly, pour la même raison que Bun juste en dessous : le front
+# du site est en Yew, donc le construire demande la cible wasm32, wasm-bindgen
+# et wasm-opt. Récupérée à chaque construction plutôt que mise en cache, comme
+# Bun — sur un déploiement que personne ne peut déboguer depuis un téléphone,
+# une chaîne reproductible vaut les quelques minutes qu'elle coûte. Le binaire de
+# wasm-bindgen est téléchargé préconstruit, pas compilé : trois secondes au lieu
+# de quatre minutes, mesuré.
+echo "==> Chaîne WebAssembly pour le front"
+./scripts/install-wasm-toolchain.sh
+export PATH="$HOME/.cargo/bin:$PATH"
+
 export BUN_INSTALL="$PWD/.heroku-bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 

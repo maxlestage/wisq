@@ -22364,3 +22364,179 @@ site est un révélateur, **y ajouter une sorte d'actif qui n'existait pas l'est
 aussi.** La bonne question après une tranche n'est pas « ai-je bien écrit ce que
 j'ai écrit », c'est « qu'est-ce qui, ailleurs, parlait déjà de cette chose au
 pluriel ».
+
+## #331 — le front passe en Yew : la chaîne, prouvée sur la plus petite page
+
+Demandé : « Tout reprendre pour la partie front et tout faire en yew et wasm en
+mettant tout à jour sur la base des résultats internets et faire des animations
+comme zamocorp ». Cette tranche livre **la chaîne**, pas encore les animations :
+elle est le véhicule, et c'est elle qui décidait de tout le reste.
+
+### La mesure d'abord, parce qu'elle revenait sur une décision du dépôt
+
+Le roadmap porte une section « Le site — l'hydratation retirée (fait) » : React
+hydratant coûtait **65 794 octets gzip** par page pour quatre comportements, le
+code DOM qui l'a remplacé en coûte **1 062**, et un test refuse que React
+reparaisse. Passer à Yew revient là-dessus. Le prix a donc été relevé avant
+d'écrire une ligne, sur un composant trivial et avec toute la chaîne
+d'optimisation (`opt-level = "z"`, LTO, `panic = "abort"`, strip, `wasm-opt -Oz`) :
+
+| | octets |
+| --- | --- |
+| cargo brut | 1 065 501 |
+| après wasm-bindgen | 210 334 |
+| après `wasm-opt -Oz` | 188 859 |
+| gzippé | **80 196** |
+| + colle wasm-bindgen | 30 231 brut / **6 163** gzip |
+
+**Et ce chiffre s'est révélé faux de 44 % une fois le vrai crate écrit** : la
+coquille complète, le SVG du logo, le rendu de document et `web-sys` donnent
+253 728 octets, soit **106 392 gzippés**, plus 6 745 de colle — **113 137 au
+total contre 1 062**. Maxime a tranché sur 86 359 ; le relevé corrigé est dans
+`tests/build.test.ts` avec son plafond, et il a été dit avant la fin de la
+tranche plutôt que découvert au déploiement.
+
+### Ce que la recherche a établi, et une chose qu'elle n'a pas pu
+
+Yew est à **0.23.0** (mars 2026), MSRV 1.84, sans vulnérabilité connue — donc la
+direction ne reposait pas sur un projet abandonné. `ServerRenderer` derrière le
+drapeau `ssr` produit bien le HTML, vérifié par une sonde avant toute décision :
+la première peinture ne dépend donc pas du wasm.
+
+Aucune source ne publiait de poids pour un bundle Yew, et le conseil des
+sources était celui de ce dépôt : le mesurer soi-même. C'est ce qui a été fait.
+
+### Trois questions de forme, trois mesures
+
+| question | réponse mesurée |
+| --- | --- |
+| `ssr` + `hydration` + `csr` ensemble, en natif ? | oui, ça compile — donc le crate entre dans le workspace et `clippy --all-features` le couvre |
+| `wasm-bindgen` préconstruit, téléchargeable ? | HTTP 200, 11,7 Mo — trois secondes au lieu de quatre minutes de `cargo install` |
+| `loader: { ".woff2": "file" }`… pardon, `opt-level` du workspace ? | `release` vise la vitesse pour l'interpréteur ; le wasm a son profil `wasm-release` à `"z"`, les profils ne se déclarant qu'à la racine |
+
+Le crate est donc dans le workspace, et **tout le front devient vérifiable dans
+ce conteneur** — ce qu'on ne peut pas dire de l'application, où ni SwiftUI ni
+WebKit n'existent sur la chaîne Linux.
+
+### La fidélité, à cinq octets
+
+Le portage devait rendre le même HTML. Mesuré sur la page `offline`, corps du
+`#root` :
+
+| | octets |
+| --- | --- |
+| React | 7 084 |
+| Yew | 7 250 |
+| Yew sans les marqueurs d'hydratation | **7 089** |
+
+Soit **+5 octets**, et les 161 octets de différence sont les quatorze marqueurs
+`<!--<[]>-->` que Yew pose pour retrouver ses composants — 2,2 % du corps. Les
+attributs du logo sont **identiques** une fois les identifiants normalisés : la
+version React les engendrait par `useId` (`wisq-plate-_R_15c_`), ici l'appelant
+nomme son instance (`wisq-plate-footer`), ce qui est déterministe et lisible.
+
+Trois écarts sont restés, tous dans le balisage et aucun dans le sens : Yew met
+`class` en dernier, écrit `hreflang` là où React écrivait `hrefLang`, et
+`hidden="hidden"` là où React écrivait `hidden=""`. Les deux derniers sont des
+corrections. Le premier fera tomber deux assertions de `build.test.ts` quand
+l'accueil sera porté — `toContain('<svg class="hero-logo"')` dépend de l'ordre
+des attributs, qui n'est pas un contrat — et ce sera à corriger là, pas ici.
+
+### 10 880 octets gagnés en cessant de formater des constantes
+
+Le logo écrivait ses coordonnées avec `.to_string()`. La géométrie est fixe :
+`UL + 13` est connu du compilateur, mais un attribut SVG est une chaîne, donc le
+wasm embarquait la conversion entier→décimal **et**, pour les trois pastilles du
+lien, tout le formatage des flottants — la plus grosse routine que `core::fmt`
+sache apporter. Pour un dessin qui ne change jamais.
+
+| | brut | gzip |
+| --- | --- | --- |
+| coordonnées calculées | 278 098 | 117 272 |
+| littéraux | **253 728** | **106 392** |
+
+9,3 % du poids livré. Les constantes restent parce qu'elles disent d'où viennent
+les nombres, et un test refait le calcul que le code ne fait plus — sinon elles
+seraient devenues de la décoration, et retoucher `UL` ne déplacerait plus rien.
+
+### Trois défauts, et ce sont les gardes qui les ont nommés
+
+**1. Le `.wasm` partait en flux d'octets.** La garde « aucun fichier construit ne
+part en flux d'octets », écrite en #330 avec la police, a nommé le nouveau type
+d'actif au premier `bun test`. C'est exactement ce pour quoi elle existait, une
+tranche plus tard, et sur une sorte d'actif que personne n'avait en tête en
+l'écrivant. Un module WebAssembly servi sans `application/wasm` est pire qu'une
+police mal typée : les navigateurs refusent `instantiateStreaming` et le repli
+coûte une recompilation complète.
+
+**2. Le front n'était pas dans le précache.** Les deux fichiers étaient entrés
+dans `immutable.txt` — la liste des en-têtes de cache — et pas dans la liste du
+service worker. Deux listes, deux objets, et il fallait les deux : hors ligne, une
+page portée se serait affichée depuis le cache puis n'aurait **jamais hydraté**,
+faute de pouvoir chercher son module. Trouvé par la garde de câblage écrite dix
+minutes plus tôt, dans la même tranche — la leçon « une garde écrite une tranche
+en avance rend la correction presque gratuite », appliquée à l'échelle de l'heure.
+
+**3. `scriptFile()` devenait ambigu.** Il cherchait « le premier `.js` qui n'est
+pas `sw.js` », et il y en avait un. La colle de wasm-bindgen en ajoute un
+second : le lecteur devenait dépendant de l'ordre du système de fichiers, et les
+six tests qui mesurent « le script » auraient pu mesurer un fichier de 33 Ko que
+le plafond de 8 000 octets aurait refusé — ou pire, un fichier où « React »
+n'apparaît pas pour une raison étrangère au sujet. Celui-ci a été vu en lisant,
+avant de mordre ; il exige maintenant `chunk-` et refuse deux candidats.
+
+### Et deux défauts de moi, attrapés par ce qu'il fallait
+
+Le test des ancres, écrit **avant** la fonction, a refusé mon premier jet :
+`slug("À propos")` rendait `propos`, parce que je repliais les accents puis
+appelais `to_ascii_lowercase`, qui ne touche pas le non-ASCII. Et clippy a nommé
+`LIEN_PAS`, une table que plus aucune ligne livrée ne lit depuis le passage aux
+littéraux : elle est devenue `#[cfg(test)]`, ce qu'elle est réellement — une
+spécification que la garde relit et que le wasm n'embarque pas.
+
+### Le déploiement, qui décidait aussi de la forme
+
+La CI et Heroku doivent savoir construire ce front, sinon le site cesse de se
+déployer — et ça se découvrirait au pire endroit. `scripts/install-wasm-toolchain.sh`
+le fait pour les deux, en un seul endroit, et **lit la version de wasm-bindgen
+dans `Cargo.lock`** au lieu de la recopier : l'outil et la bibliothèque doivent
+s'accorder, et une version écrite dans un workflow aurait été une seconde copie
+de la faute que ce dépôt corrige partout ailleurs. Le binaire est téléchargé
+préconstruit.
+
+Le test d'Heroku fabrique un arbre jetable, donc il reçoit un installateur
+postiche — mais **qui laisse une trace**, et un test exige qu'il ait été appelé.
+Un bouchon qui réussit en silence aurait effacé le seul fait qui tient le
+déploiement.
+
+### Le plafond serre, et il montera tranche par tranche
+
+Une seule page est portée ; les neuf autres apportent 97 Ko de prose. Un plafond
+large d'avance laisserait cette croissance invisible, alors que c'est exactement
+ce qu'il faut voir. Il tient donc à peu près la mesure du jour — 265 000 bruts,
+112 000 gzippés — et chaque tranche qui porte des pages le relèvera **avec son
+écart mesuré**. C'est la règle qui a servi quand le budget est descendu de
+240 000 à 8 000 : « le chiffre devait bouger avec le code ».
+
+### Ce que la tranche ne livre pas, et ce qu'elle rachète
+
+**Pas les animations.** Elles étaient dans la demande, et elles arrivent
+maintenant que ce qui les empêchait a disparu : en #329 Lenis et l'écran de
+chargement de zamocorp avaient été écartés par le plafond de 8 000 octets de
+JavaScript, et ce plafond n'est plus la contrainte.
+
+Ce que le passage rachète, en revanche, est ce que le roadmap actait comme une
+perte : « on n'ajoute plus un composant interactif en écrivant du JSX ». La
+bascule de thème portait en commentaire « **this component never runs in a
+browser** » et laissait `main.ts` lui rattacher le comportement de loin, par le
+nom d'un attribut. Elle se comporte désormais là où elle se dessine.
+
+### Le signe à retenir
+
+**Les deux mesures qui ont décidé de cette tranche sont celles que personne
+n'avait publiées.** Aucune source ne donnait le poids d'un bundle Yew ; aucune ne
+disait si `ssr` et `hydration` coexistent en natif. Les deux se relevaient en
+quelques minutes, et les deux ont changé la forme du travail — la première a
+corrigé le chiffre sur lequel la décision reposait, la seconde a mis le crate
+dans le workspace, donc sous clippy. **Invoquer un framework est une
+affirmation, et elle se vérifie comme les autres.**

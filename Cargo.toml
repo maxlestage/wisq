@@ -4,12 +4,14 @@
 #   crates/wisq-vm     the rv32ima interpreter — a static library for the iPhone
 #                      app, and the benchmark that measures it
 #   crates/wisq-agent  the host daemon for Mac and Linux
+#   crates/wisq-site   the site's front end: Yew components, pre-rendered at
+#                      build time and hydrated in WebAssembly
 #
 # The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
 # desktop client built on Network.framework.
 [workspace]
 resolver = "2"
-members = ["crates/wisq-vm", "crates/wisq-agent"]
+members = ["crates/wisq-vm", "crates/wisq-agent", "crates/wisq-site"]
 
 [profile.release]
 opt-level = 3
@@ -17,3 +19,16 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Le wasm du site se construit sous son propre profil, et la raison est mesurée.
+#
+# `opt-level = 3` optimise pour la vitesse : sur un interpréteur de VM c'est
+# exactement ce qu'on veut, et sur un bundle que chaque visiteur télécharge c'est
+# le mauvais arbitrage. `"z"` optimise pour la taille. Les profils ne se
+# déclarent qu'à la racine d'un workspace, donc un membre ne peut pas corriger
+# ça lui-même : d'où ce profil, et `--profile wasm-release` dans la construction
+# du site. Tout le reste est hérité, `panic = "abort"` compris, qui vaut autant
+# pour la taille que pour le reste.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
