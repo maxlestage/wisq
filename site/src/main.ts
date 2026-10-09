@@ -26,6 +26,21 @@ const LANG_KEY = "wisq.lang";
 const INSTALL_DISMISSED_KEY = "wisq.install.dismissed";
 
 const root = document.getElementById("root");
+
+// **Ce script s'efface là où Yew hydrate.**
+//
+// Le front du site passe à Yew une famille de pages à la fois, donc pendant la
+// migration les deux coexistent : les pages portées reçoivent leurs
+// comportements du module WebAssembly, les autres de ce fichier. Les deux
+// rattachant des gestionnaires au même balisage, une page qui aurait les deux
+// répondrait deux fois à un clic sur le thème.
+//
+// La marque est posée par la construction d'après ce que
+// `crates/wisq-site/src/pages.rs` déclare savoir rendre — ce fichier ne porte
+// donc aucune liste de routes, qui serait une copie de celle-là.
+if (root?.dataset.hydrate === "yew") {
+  // Rien à faire : le module wasm a tout.
+} else {
 const base = root?.dataset.base ?? "./";
 const route = root?.dataset.route ?? "home";
 const lang = root?.dataset.lang ?? "en";
@@ -176,4 +191,5 @@ if ("serviceWorker" in navigator) {
       // an ordinary website. Nothing here is load-bearing.
     });
   });
+}
 }

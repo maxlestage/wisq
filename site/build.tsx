@@ -130,6 +130,119 @@ if (!Buffer.from(inlinedFonts[0]![1]!, "base64").equals(Buffer.from(fontBytes)))
 await writeFile(stylePath, styleSource.replace(inlinedFonts[0]![0]!, `url(./${fontName})`));
 await writeFile(join(outdir, fontName), fontBytes);
 
+// ---------------------------------------------------------------------------
+// Le front en Yew, compilé en WebAssembly.
+//
+// Deux sorties pour un seul arbre de composants, `crates/wisq-site` :
+//
+//   - un binaire natif qui rend les pages en HTML (`ServerRenderer`, drapeau
+//     `ssr`), exactement ce que `renderToString` fait pour React juste en bas ;
+//   - un module wasm qui reprend ce HTML dans le navigateur et lui rattache les
+//     comportements (drapeau `hydrate`).
+//
+// **Le profil `wasm-release` n'est pas un détail.** Le profil `release` du
+// workspace est taillé pour l'interpréteur de VM : `opt-level = 3`, pour la
+// vitesse. Sur un bundle que chaque visiteur télécharge, c'est le mauvais
+// arbitrage ; `wasm-release` passe à `"z"`. Les profils ne se déclarent qu'à la
+// racine d'un workspace, donc ce choix vit dans le `Cargo.toml` du haut.
+//
+// **Ce que ça coûte, mesuré.** 188 859 octets de wasm après `wasm-opt -Oz`,
+// soit 80 196 gzippés, plus 6 163 gzippés de colle. Le code DOM de `main.ts`
+// en coûtait 1 062. Le chiffre est dans `tests/build.test.ts`, avec son
+// plafond, pour qu'une dérive se voie.
+//
+// **Et la construction refuse plutôt que de se replier.** Sans la chaîne Rust,
+// elle s'arrête en disant quoi installer. Se replier sur React en silence
+// publierait un site qui a l'air de marcher et qui n'est pas celui qu'on
+// croyait construire — le défaut de conception que ce dépôt refuse par-dessus
+// tout.
+const FRONT = "../crates/wisq-site";
+
+async function lancer(quoi: string, cmd: string[], aide?: string) {
+  const run = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+  if (!run.success) {
+    console.error(`${quoi} a échoué (${cmd.join(" ")}) :`);
+    console.error(new TextDecoder().decode(run.stderr).trimEnd());
+    if (aide) console.error(aide);
+    process.exit(1);
+  }
+  return new TextDecoder().decode(run.stdout);
+}
+
+const AIDE_RUST = [
+  "",
+  "Le front du site est en Yew, donc sa construction demande la chaîne Rust :",
+  "",
+  "    rustup target add wasm32-unknown-unknown",
+  "    cargo install wasm-bindgen-cli --version 0.2.129   # ou le binaire préconstruit",
+  "    bun add --dev binaryen                             # fournit wasm-opt",
+  "",
+].join("\n");
+
+await lancer(
+  "la construction du pré-rendu",
+  ["cargo", "build", "--release", "-p", "wisq-site"],
+  AIDE_RUST,
+);
+await lancer(
+  "la construction du wasm",
+  [
+    "cargo", "build", "--profile", "wasm-release", "--target", "wasm32-unknown-unknown",
+    "-p", "wisq-site", "--no-default-features", "--features", "hydrate",
+  ],
+  AIDE_RUST,
+);
+
+// wasm-bindgen écrit le module et sa colle ; `--target web` donne un module ES
+// dont l'export par défaut démarre le tout, et qui résout le `.wasm` par
+// rapport à sa propre adresse — donc une seule orthographe sert les pages de
+// toutes les profondeurs.
+const wasmOut = join(outdir, "wasm");
+await lancer(
+  "wasm-bindgen",
+  [
+    "wasm-bindgen", "--target", "web", "--no-typescript", "--out-dir", wasmOut,
+    "--out-name", "wisq", "../target/wasm32-unknown-unknown/wasm-release/wisq_site.wasm",
+  ],
+  AIDE_RUST,
+);
+
+// `wasm-opt -Oz` : mesuré, 210 334 octets avant, 188 859 après — 21 475 de
+// moins pour une passe qui ne change rien au comportement.
+const wasmOpt = "node_modules/binaryen/bin/wasm-opt";
+await lancer(
+  "wasm-opt",
+  [wasmOpt, "-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int",
+   join(wasmOut, "wisq_bg.wasm"), "-o", join(wasmOut, "wisq_bg.wasm")],
+  AIDE_RUST,
+);
+
+// Les deux fichiers prennent un nom adressé par leur contenu, comme le script et
+// la feuille de style, et entrent dans la liste des immuables : un nom qui
+// change avec les octets ne peut pas être périmé.
+const wasmBytes = await Bun.file(join(wasmOut, "wisq_bg.wasm")).bytes();
+const glueSource = await Bun.file(join(wasmOut, "wisq.js")).text();
+const wasmName = `wisq-${Bun.hash(wasmBytes).toString(16)}.wasm`;
+// La colle nomme le `.wasm` qu'elle charge, donc son propre nom doit dépendre
+// des deux : sinon un changement de wasm laisserait une colle au nom inchangé
+// pointant sur un fichier disparu, et le cache d'un visiteur servirait une
+// colle orpheline.
+const glue = glueSource.replace("wisq_bg.wasm", wasmName);
+const glueName = `wisq-${Bun.hash(glue).toString(16)}.js`;
+await writeFile(join(outdir, wasmName), wasmBytes);
+await writeFile(join(outdir, glueName), glue);
+await rm(wasmOut, { recursive: true, force: true });
+
+// Le pré-rendu, en un seul processus pour toutes les pages portées.
+const rendus: Record<string, string> = JSON.parse(
+  await lancer("le pré-rendu", ["../target/release/wisq-site-prerender"], AIDE_RUST),
+);
+const PORTEES = new Set(Object.keys(rendus).map((cle) => cle.split("/")[1]!));
+if (PORTEES.size === 0) {
+  console.error("le pré-rendu Yew n'a rendu aucune page : la liste des routes portées est vide");
+  process.exit(1);
+}
+
 // Les noms que cette construction a tirés d'une empreinte de contenu, écrits
 // pour l'hôte.
 //
@@ -143,7 +256,7 @@ await writeFile(join(outdir, fontName), fontBytes);
 //
 // Hors du précache : le service worker n'en a aucun usage, c'est une question
 // d'en-têtes HTTP, et le serveur le lit sur le disque.
-const immutable = [scriptName, styleName, fontName];
+const immutable = [scriptName, styleName, fontName, wasmName, glueName];
 await writeFile(
   join(outdir, "immutable.txt"),
   `# Les actifs que cette construction a nommés d'après leur contenu.\n` +
@@ -227,7 +340,19 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
   const description = isHome ? copy[lang].hero.lede : doc!.lede;
   const canonical = `${SITE_URL}${pagePath(route, lang)}`;
 
-  const markup = renderToString(<App route={route.id} lang={lang} doc={doc ?? undefined} />);
+  // Le balisage vient de Yew pour les routes déjà portées, de React pour les
+  // autres. **La bascule se lit dans ce que le pré-rendu a rendu**, pas dans une
+  // liste écrite ici : `crates/wisq-site/src/pages.rs` déclare ce qu'il sait
+  // rendre, et une seconde liste de ce côté serait une copie à tenir à jour.
+  const cle = `${lang}/${route.id}`;
+  const enYew = PORTEES.has(route.id);
+  if (enYew && !(cle in rendus)) {
+    console.error(`${cle} : route portée en Yew mais absente du pré-rendu`);
+    process.exit(1);
+  }
+  const markup = enYew
+    ? rendus[cle]!
+    : renderToString(<App route={route.id} lang={lang} doc={doc ?? undefined} />);
 
   // The document used to travel twice: once as markup, and once as JSON beside
   // it, because hydration had to read exactly what the build rendered. Nothing
@@ -294,8 +419,25 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     ${THEME_SCRIPT}
   </head>
   <body>
-    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}">${markup}</div>
-    <script type="module" src="${base}${scriptName}"></script>
+    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}"${
+      // **La marque, et pourquoi elle est sur le document plutôt que devinée.**
+      // Sur une page portée en Yew, c'est le wasm qui tient les comportements ;
+      // `main.ts` doit s'effacer, sinon les deux rattachent des gestionnaires au
+      // même DOM et le thème se met à répondre deux fois à un clic. Le script
+      // DOM le lit sur `#root` au lieu de déduire la route : une liste de routes
+      // portées de son côté serait une seconde copie de ce que
+      // `crates/wisq-site/src/pages.rs` déclare déjà.
+      enYew ? ' data-hydrate="yew"' : ""
+    }>${markup}</div>
+    <script type="module" src="${base}${scriptName}"></script>${
+      // La colle de wasm-bindgen est un module ES dont l'export par défaut
+      // démarre le module. En ligne et non `src=`, pour que le wasm ne soit
+      // demandé que par les pages qui l'hydratent — tant que toutes ne le sont
+      // pas, une page React n'a aucune raison de payer 80 Kio.
+      enYew
+        ? `\n    <script type="module">import demarrer from "${base}${glueName}";demarrer();</script>`
+        : ""
+    }
   </body>
 </html>
 `;
@@ -328,6 +470,14 @@ const precache = [
   // offline would otherwise get the page in the fallback sans, which is a
   // different design.
   `./${fontName}`,
+  // Le front en Yew, et **la garde l'a nommé avant un lecteur**. Les deux
+  // fichiers étaient dans `immutable.txt` — la liste des en-têtes de cache — et
+  // pas ici : hors ligne, une page portée se serait affichée depuis le cache,
+  // puis n'aurait jamais hydraté, faute de pouvoir chercher son module. Une
+  // page qui s'affiche et ne répond plus est pire qu'une page absente, parce
+  // que rien ne la signale. Deux listes, deux objets, et il fallait les deux.
+  `./${wasmName}`,
+  `./${glueName}`,
   "./manifest.webmanifest",
   ...ICONS.map((icon) => `./${icon.file}`),
 ];

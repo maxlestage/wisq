@@ -40,6 +40,12 @@ jobs:
       - name: Install
         working-directory: site
         run: bun install --frozen-lockfile
+      # Le front du site est en Yew, donc sa construction demande la cible
+      # wasm32, wasm-bindgen et wasm-opt. Le script est appelé plutôt que
+      # recopié ici : Heroku l'appelle aussi, et la version de wasm-bindgen se
+      # lit dans Cargo.lock au lieu d'être écrite deux fois.
+      - name: Install the WebAssembly toolchain
+        run: ./scripts/install-wasm-toolchain.sh
       - name: Typecheck
         working-directory: site
         run: bun run typecheck

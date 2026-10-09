@@ -44,6 +44,14 @@ const TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".png": "image/png",
+  // **Et celui-ci est arrivé une tranche plus tard, trouvé par la garde.**
+  // Le front du site est passé à Yew, donc la construction écrit désormais un
+  // `.wasm` ; le test « aucun fichier construit ne part en flux d'octets »,
+  // écrit avec la police, l'a nommé au premier `bun test`. Un module
+  // WebAssembly servi sans `application/wasm` est pire qu'une police : les
+  // navigateurs refusent `WebAssembly.instantiateStreaming` sur un autre type,
+  // et le repli silencieux coûte une recompilation complète.
+  ".wasm": "application/wasm",
   // Bun n'infère pas celui-ci : mesuré, il rend `application/octet-stream`.
   // Une police n'est pas bloquée sur son type comme l'est un script, donc elle
   // s'affichait quand même — c'est bien pour ça que l'erreur a tenu une tranche
