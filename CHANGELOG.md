@@ -51,8 +51,8 @@ break APIs.
   d'animation, et la page est entière sans le module.
 - **Le site reprend le violet du logo, dit bien plus, et bouge partout.** La
   palette crème et orange de 0.4.0 laisse la place à la famille de la marque —
-  #8b83ff en sombre, #5145d9 en clair, le dégradé des quadrants sur ce qui se
-  presse —, et une garde relit chaque couple texte-fond que la page peint : sur
+  #8b83ff en sombre, #5145d9 sur un fond blanc en clair, le dégradé des
+  quadrants sur ce qui se presse —, et une garde relit chaque couple texte-fond que la page peint : sur
   la palette crème, le texte des cartes rendait 4,27, sous le seuil de 4,5.
   Les sept pages écrites ont été réécrites depuis le dépôt, de quatre à neuf
   fois plus longues, et l'accueil gagne six sections : les trois protocoles et
