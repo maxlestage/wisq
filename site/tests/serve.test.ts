@@ -93,18 +93,27 @@ describe("what the preview server sends", () => {
   ///
   /// `build.tsx` est le seul qui sache quels noms il a tirés d'une empreinte de
   /// contenu : il en écrit la liste, et le serveur la lit. Ce test la relit par
-  /// un autre chemin — les extensions présentes dans `dist` — pour que deux
-  /// lecteurs du même fait aient à s'accorder.
+  /// un autre chemin — ce que `dist` contient — pour que deux lecteurs du même
+  /// fait aient à s'accorder.
+  ///
+  /// **La liste ci-dessous est écrite ici exprès, et c'est tout l'intérêt.**
+  /// Elle est le second lecteur : si la construction oublie d'inscrire une
+  /// famille d'actifs, ou si elle en inscrit une que ce test ne connaît pas,
+  /// les deux divergent et ce test le dit. Une dérivation partagée entre les
+  /// deux côtés ne garderait rien — elle se tromperait des deux façons à la
+  /// fois. Le wasm du front et sa colle sont entrés ainsi, une tranche après la
+  /// police.
   test("la liste des immuables est celle que la construction a écrite", () => {
     const files = builtFiles();
-    const attendus = new Set(
-      files.filter(
-        (name) =>
-          name.endsWith(".woff2") ||
-          (name.startsWith("chunk-") && (name.endsWith(".js") || name.endsWith(".css"))),
-      ),
-    );
-    expect(attendus.size, "ni police ni actif haché dans dist").toBeGreaterThan(2);
+    const adresseParContenu = (name: string) =>
+      // La police.
+      name.endsWith(".woff2") ||
+      // Le script et la feuille de style, nommés par le bundler.
+      (name.startsWith("chunk-") && (name.endsWith(".js") || name.endsWith(".css"))) ||
+      // Le module WebAssembly du front, et la colle qui le charge.
+      (name.startsWith("wisq-") && (name.endsWith(".wasm") || name.endsWith(".js")));
+    const attendus = new Set(files.filter(adresseParContenu));
+    expect(attendus.size, "ni police ni actif haché dans dist").toBeGreaterThan(4);
     expect(new Set(IMMUTABLE)).toEqual(attendus);
 
     // Et la conséquence, dans les deux sens, sur chaque fichier construit.

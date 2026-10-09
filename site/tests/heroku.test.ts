@@ -194,6 +194,22 @@ function buildTree(options: { builds: boolean }): string {
   mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(join(root, "scripts", "heroku-build.sh"), read("scripts/heroku-build.sh"));
   chmodSync(join(root, "scripts", "heroku-build.sh"), 0o755);
+
+  // **L'installateur de la chaîne wasm, postiche et témoin.**
+  //
+  // Depuis que le front est en Yew, `heroku-build.sh` appelle
+  // `scripts/install-wasm-toolchain.sh` : sans lui, le déploiement n'a ni
+  // wasm-bindgen ni cible wasm32 et la construction refuse. Le vrai
+  // installateur télécharge rustup, ce qui n'a rien à faire dans un test dont
+  // le sujet est la garde du slug — mais le remplacer par un script qui réussit
+  // en silence ferait disparaître le fait qu'il est appelé, et c'est
+  // précisément ce fait qui tient le déploiement. Il écrit donc une trace, et
+  // le test plus bas l'exige.
+  writeFileSync(
+    join(root, "scripts", "install-wasm-toolchain.sh"),
+    `#!/bin/sh\necho appelé > "${join(root, "chaine-appelee")}"\n`,
+  );
+  chmodSync(join(root, "scripts", "install-wasm-toolchain.sh"), 0o755);
   mkdirSync(join(root, "site"), { recursive: true });
   mkdirSync(join(root, ".heroku-bun", "bin"), { recursive: true });
   writeFileSync(
@@ -212,6 +228,27 @@ function buildTree(options: { builds: boolean }): string {
 }
 
 describe("heroku-build.sh refuse un slug qui aurait l'air de marcher", () => {
+  /// **Le déploiement installe la chaîne WebAssembly, et c'est mesuré.**
+  ///
+  /// Le front du site est compilé en wasm, donc un dyno sans wasm-bindgen ni
+  /// cible wasm32 ne construit rien. L'oubli serait invisible ici et visible
+  /// sur le déploiement suivant, c'est-à-dire au pire endroit : ce test regarde
+  /// la trace que l'installateur postiche laisse.
+  test("la chaîne wasm est installée avant la construction", () => {
+    const root = buildTree({ builds: true });
+    const run = Bun.spawnSync(["bash", join(root, "scripts", "heroku-build.sh")], {
+      cwd: root,
+      env: { ...process.env, SITE_URL: "https://wisq.example/" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(run.success, new TextDecoder().decode(run.stderr)).toBe(true);
+    expect(
+      existsSync(join(root, "chaine-appelee")),
+      "heroku-build.sh n'a pas installé la chaîne wasm : le dyno ne saura pas construire le front",
+    ).toBe(true);
+  });
+
   /// Un slug qui expédie un `dist` vide démarre, répond 404 à tout, et
   /// ressemble à un problème de routage. La garde existait ; rien ne l'avait
   /// jamais vue refuser.

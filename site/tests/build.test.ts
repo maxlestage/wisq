@@ -42,10 +42,35 @@ function tokensOf(css: string, selector: string): Record<string, string> {
 }
 
 /// The script's name is hashed too, for the same reason.
+///
+/// **`chunk-` est exigé, et ce n'est pas de la décoration.** Ce lecteur cherchait
+/// « le premier `.js` qui n'est pas `sw.js` », et il y en avait un. Depuis que le
+/// front passe à Yew, `dist` porte aussi la colle de wasm-bindgen,
+/// `wisq-<empreinte>.js` : le lecteur devenait dépendant de l'ordre du système
+/// de fichiers, et les six tests qui mesurent « le script » auraient pu mesurer
+/// la colle — un fichier de 33 Ko que le plafond de 8 000 octets aurait refusé,
+/// ou pire, un fichier où « React » n'apparaît pas pour une raison qui n'a rien
+/// à voir. Le nom du bundler est `chunk-`, donc il est nommé, et deux candidats
+/// sont un refus plutôt qu'un choix.
 function scriptFile(): string {
-  const name = readdirSync(dist).find((entry) => entry.endsWith(".js") && entry !== "sw.js");
-  if (!name) throw new Error("aucun script dans dist");
-  return name;
+  const candidats = readdirSync(dist).filter(
+    (entry) => entry.startsWith("chunk-") && entry.endsWith(".js"),
+  );
+  if (candidats.length !== 1) {
+    throw new Error(`${candidats.length} script(s) chunk-*.js dans dist, il en faut un`);
+  }
+  return candidats[0]!;
+}
+
+/// Les deux fichiers du front en Yew : le module et la colle qui le démarre.
+function frontFiles(): { wasm: string; glue: string } {
+  const noms = readdirSync(dist).filter((entry) => entry.startsWith("wisq-"));
+  const wasm = noms.filter((n) => n.endsWith(".wasm"));
+  const glue = noms.filter((n) => n.endsWith(".js"));
+  if (wasm.length !== 1 || glue.length !== 1) {
+    throw new Error(`front : ${wasm.length} wasm et ${glue.length} colle(s), il en faut un de chaque`);
+  }
+  return { wasm: wasm[0]!, glue: glue[0]! };
 }
 
 function pngSize(relative: string): { width: number; height: number } {
@@ -165,6 +190,91 @@ describe("built output", () => {
     // Hors ligne, une police absente ne casse rien : elle change le dessin,
     // ce qui est pire, parce que personne ne le signale.
     expect(read("sw.js"), "la police doit être précachée").toContain(`"./${src![1]!}"`);
+  });
+
+  /// **Le front en Yew a son plafond, et il monte tranche par tranche.**
+  ///
+  /// Le roadmap porte une section « Le site — l'hydratation retirée », où React
+  /// hydratant coûtait 65 794 octets gzip par page et où le code DOM qui l'a
+  /// remplacé en coûte 1 062. Passer à Yew revient sur cette décision, et le
+  /// prix est mesuré avant d'avoir été accepté :
+  ///
+  /// | | React hydratant | DOM | Yew (mesuré) |
+  /// | --- | --- | --- | --- |
+  /// | brut | 206 973 | 2 350 | 287 492 |
+  /// | gzip | 65 794 | 1 062 | 113 137 |
+  ///
+  /// Donc **113 137 octets gzip contre 1 062**, et au-dessus du React retiré.
+  /// Ce n'est pas un accident de la migration : c'est le coût d'un runtime de
+  /// framework compilé, et il est écrit ici pour qu'un lecteur du dépôt le
+  /// trouve sans fouiller le journal.
+  ///
+  /// **Le plafond serre, et c'est voulu.** Une seule page est portée ; les neuf
+  /// autres apportent 97 Ko de prose. Un plafond large d'avance laisserait cette
+  /// croissance invisible, alors que c'est précisément ce qu'il faut voir. Donc
+  /// il tient à peu près la mesure du jour, et **chaque tranche qui porte des
+  /// pages le relève avec son écart mesuré** — la même règle que lorsque le
+  /// budget est descendu de 240 000 à 8 000 : « le chiffre devait bouger avec le
+  /// code ».
+  test("le front en WebAssembly reste dans son budget", () => {
+    const { wasm, glue } = frontFiles();
+    const octets = (nom: string) => readFileSync(join(dist, nom));
+    const w = octets(wasm);
+    const g = octets(glue);
+    const wgz = Bun.gzipSync(w).byteLength;
+    const ggz = Bun.gzipSync(g).byteLength;
+
+    // Le module. Mesuré 253 728 / 106 392 après `wasm-opt -Oz`.
+    expect(w.byteLength, "wasm brut").toBeLessThan(265_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(112_000);
+    // La colle de wasm-bindgen. Mesurée 33 764 / 6 745, et elle ne bouge qu'avec
+    // la surface de `web-sys` que le front emploie.
+    expect(g.byteLength, "colle brute").toBeLessThan(40_000);
+    expect(ggz, "colle gzippée").toBeLessThan(8_000);
+
+    // **Et `wasm-opt` doit vraiment être passé.** Sans lui le module fait
+    // 278 098 octets, ce qui franchit le plafond ci-dessus — mais une chaîne de
+    // construction qui sauterait l'étape sans le dire mériterait d'être nommée
+    // plutôt que déduite d'un dépassement.
+    expect(w.byteLength, "le module n'a pas l'air optimisé").toBeLessThan(270_000);
+  });
+
+  /// **Le câblage de l'hydratation, mesuré sur l'artefact.**
+  ///
+  /// Un module qui pèse 106 Ko et que personne ne charge est pire qu'un module
+  /// absent : il passe tous les tests de taille. Ce test suit la chaîne de bout
+  /// en bout sur les pages réellement construites — la marque sur `#root`, le
+  /// module importé, la colle qui nomme le wasm, et les deux dans le précache.
+  test("une page portée en Yew charge vraiment son module", () => {
+    const { wasm, glue } = frontFiles();
+    const portees = BUILT.filter(({ file }) => read(file).includes('data-hydrate="yew"'));
+    expect(portees.length, "aucune page portée : ce test serait creux").toBeGreaterThan(0);
+
+    for (const { file } of portees) {
+      const html = read(file);
+      expect(html, `${file} : la colle n'est pas importée`).toContain(`${glue}";demarrer()`);
+      expect(html, `${file} : le script DOM doit rester présent et s'effacer seul`)
+        .toContain("chunk-");
+    }
+
+    // La colle nomme le module : sans ça elle chargerait un nom disparu.
+    expect(read(glue), "la colle ne nomme pas le wasm").toContain(wasm);
+
+    // Hors ligne, un front absent n'est pas une page dégradée : c'est une page
+    // qui ne répond plus.
+    const sw = read("sw.js");
+    for (const actif of [wasm, glue]) {
+      expect(sw, `${actif} doit être précaché`).toContain(`"./${actif}"`);
+    }
+
+    // Et les pages que React rend encore ne paient pas le module.
+    const react = BUILT.filter(({ file }) => !read(file).includes('data-hydrate="yew"'));
+    expect(react.length, "toutes les pages sont portées : la bascule n'a plus d'objet")
+      .toBeGreaterThan(0);
+    for (const { file } of react) {
+      expect(read(file), `${file} : une page React ne doit pas charger le wasm`)
+        .not.toContain(glue);
+    }
   });
 
   /// The point of moving the documents into the pages: the shared script is the
