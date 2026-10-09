@@ -1,0 +1,49 @@
+[package]
+name = "wisq-site"
+version = "0.4.0"
+edition = "2021"
+authors = ["Maxime Nathan Lestage"]
+# Yew 0.23 exige 1.84, là où les deux autres crates se tiennent à 1.82. C'est
+# déclaré ici plutôt qu'au workspace : le cœur de la VM et le démon n'ont aucune
+# raison de monter leur plancher parce que le site a un framework.
+rust-version = "1.84"
+description = "Le front du site de wisq : composants Yew, pré-rendus à la construction et hydratés en WebAssembly"
+repository = "https://github.com/maxlestage/wisq"
+
+# Deux cibles pour un seul arbre de composants, et c'est tout l'intérêt.
+#
+#   `ssr`     — la construction rend les vingt pages en HTML, comme `renderToString`
+#               le faisait pour React. La première peinture ne dépend donc pas du
+#               wasm : mesuré, `ServerRenderer` produit bien le balisage.
+#   `hydrate` — le navigateur reprend cet HTML et y rattache les comportements.
+#
+# `clippy --all-targets --all-features` de la CI les active **ensemble**, sur une
+# cible native. Vérifié avant d'écrire une ligne : ça compile.
+[features]
+default = ["ssr"]
+ssr = ["yew/ssr", "dep:tokio"]
+hydrate = ["yew/hydration", "dep:wasm-bindgen", "dep:web-sys"]
+
+[dependencies]
+yew = { version = "0.23", default-features = false }
+tokio = { version = "1", features = ["rt", "macros"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+  "Window",
+  "Storage",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "MediaQueryList",
+] }
+
+[lib]
+# cdylib pour le lien wasm, rlib pour le binaire de pré-rendu de ce workspace.
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "wisq-site-prerender"
+path = "src/bin/prerender.rs"
+# Sans ça, `--no-default-features --features hydrate` tenterait de construire un
+# binaire natif qui n'a ni tokio ni raison d'exister.
+required-features = ["ssr"]
