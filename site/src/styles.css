@@ -31,16 +31,18 @@
 }
 
 :root {
-  /* **Le violet du logo, et c'est mesuré.** Les trois teintes de la marque —
-     #a8a2ff, #8b83ff, #6f64ff — sont faites pour une plaque de nuit : sur un
-     fond clair, la plus sombre ne rend que 4,25 contre du blanc, sous le seuil
-     de 4,5 que WCAG demande pour du texte courant. Le thème clair prend donc un
-     violet plus profond de la même famille, #5145d9, qui rend 6,06 sur le fond
-     et 5,57 sur les cartes ; le sombre garde #8b83ff, la couleur exacte du
-     filet de la plaque, 6,36 sur la nuit. Chaque couple que la page peint est
-     relu par `tests/build.test.ts`, dans les deux thèmes, plutôt que cité. */
-  --bg: #f6f5ff;
-  --bg-soft: #ecebfb;
+  /* **Le violet du logo sur un fond blanc, et c'est mesuré.** Les trois
+     teintes de la marque — #a8a2ff, #8b83ff, #6f64ff — sont faites pour une
+     plaque de nuit : la plus sombre ne rend que 4,25 contre du blanc, sous le
+     seuil de 4,5 que WCAG demande pour du texte courant. Le thème clair prend
+     donc un violet plus profond de la même famille, #5145d9, qui rend 6,56 sur
+     le blanc et 6,01 sur les cartes ; le sombre garde #8b83ff, la couleur
+     exacte du filet de la plaque, 6,36 sur la nuit. Le fond est blanc pur,
+     comme avant #464, et les cartes n'en gardent qu'un soupçon de violet pour
+     se détacher. Chaque couple que la page peint est relu par
+     `tests/build.test.ts`, dans les deux thèmes, plutôt que cité. */
+  --bg: #ffffff;
+  --bg-soft: #f5f4fe;
   --bg-code: #15132b;
   --fg: #15132b;
   --fg-soft: #57537a;
@@ -48,10 +50,10 @@
   --line: #15132b1f;
   --accent: #5145d9;
   --accent-soft: #5145d914;
-  --accent-fg: #f6f5ff;
+  --accent-fg: #ffffff;
   /* Le dégradé des quadrants du logo, pour ce qui se presse. En clair, ses
-     deux arrêts sont descendus d'un cran pour que le texte posé dessus tienne
-     4,5 sur toute la longueur — 4,84 au plus clair. */
+     deux arrêts sont descendus d'un cran pour que le texte blanc posé dessus
+     tienne 4,5 sur toute la longueur — 5,23 au plus clair. */
   --degrade: linear-gradient(135deg, #6157e6, #4338c4);
   --radius: 4px;
   --pad: clamp(20px, 4.2vw, 56px);
@@ -153,11 +155,11 @@ body {
  * l'amplitude de l'écart d'un pixel isolé.
  *
  * Relevé, sur le pire pixel de `--fg-soft` contre `--bg` en thème clair, le cas
- * le plus serré des deux thèmes (6,64 en clair contre 8,85 en sombre) — le
- * texte éclairci au blanc, le fond assombri au noir, chacun de l'opacité du
+ * le plus serré des deux thèmes (7,18 sur le blanc contre 8,85 en sombre) —
+ * le texte éclairci au blanc, le fond assombri au noir, chacun de l'opacité du
  * voile :
  *
- *   sans grain  6,64 — 0,055 → 5,11 — 0,07 → 4,76 — 0,10 → 4,12
+ *   sans grain  7,18 — 0,055 → 5,52 — 0,07 → 5,14 — 0,10 → 4,44
  *
  * Sous la palette crème, le même relevé partait de 4,72 et tombait à 3,71 :
  * aucune opacité visible ne tenait le pire pixel au-dessus de 4,5. Le violet
