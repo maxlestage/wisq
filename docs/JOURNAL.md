@@ -23274,3 +23274,75 @@ pendant que je portais le troisième comportement. La PR a été fermée plutôt
 forcée — son contenu touchait `site/src/main.ts`, que #335 a supprimé. Ce qui
 survit d'une tranche remplacée, c'est ce qu'elle a **mesuré**, pas ce qu'elle a
 écrit.
+
+## #337 — « mesuré » ne disait pas sur quelle machine, et la colle est le témoin
+
+Trouvé par la recherche que ce dépôt prescrit quand rien n'est en vol : **deux
+nombres qui devraient s'accorder.** #335 annonce le poids du front, et une
+reconstruction du même source n'a pas rendu le même nombre.
+
+### Trois lectures d'un seul module
+
+| | wasm brut | wasm gzip | colle brute | colle gzip |
+| --- | --- | --- | --- | --- |
+| ce que le dépôt écrivait | 261 252 | 112 436 | 56 272 | 9 635 |
+| le coureur de la CI, sur `a76f52e` | **261 548** | — | — | — |
+| ce conteneur, deux fois, même hash | **261 240** | **110 947** | 56 272 | 9 494 |
+
+Le chiffre écrit ne correspond donc à **aucune** des deux machines : +296 contre
+le coureur qui publie le site, −12 contre ce conteneur.
+
+### Le témoin, et c'est lui qui rend la trouvaille utile
+
+**La colle brute est identique à l'octet** — 56 272 des deux côtés — alors que le
+module diffère. Ce n'est donc ni la chaîne de construction, ni `wasm-opt`, ni la
+façon de mesurer : tout cela est partagé et rend le même octet. C'est la
+génération de code de Rust, et `.github/workflows/site.yml` n'épingle aucune
+version.
+
+C'est exactement ce que l'en-tête de `check-agent-size.sh` avait établi pour le
+démon — « les 8 192 octets séparaient deux versions de rustc, pas deux machines »
+— et le même raisonnement vaut ici sans avoir à le refaire. Une mesure d'un côté
+du dépôt a servi de clé de l'autre côté.
+
+**Et le gzip bouge cinq fois plus que le brut** : 1 489 octets contre 308. La
+compression amplifie un remaniement que la taille brute dissimule. C'est donc le
+chiffre gzip qu'il faut regarder le jour où un plafond rougit — l'inverse de
+l'intuition.
+
+### Ce qui est corrigé, et ce qui ne l'est pas
+
+Le commentaire du budget disait « Mesuré 261 252 / 112 436 » : une affirmation
+plus forte que la mesure, puisqu'elle laissait croire à un nombre reproductible.
+Elle porte maintenant les trois lectures, leur machine, le témoin et la raison.
+Le tableau de #335 reste tel quel : c'était vrai pour son moment.
+
+**Aucune garde ne tient ces chiffres exactement, et c'est délibéré** : elle
+serait rouge sur une machine ou sur l'autre pour un module parfaitement sain —
+le même arbitrage que la garde du démon, qui compare « à la décimale ». Les
+quatre places qui annoncent encore le chiffre au présent ailleurs
+(`crates/wisq-site/src/shell.rs`, `src/lib.rs`, `CHANGELOG.md`,
+`site/README.md`) ne sont pas touchées : les corriger demande de choisir **ce
+que le dépôt publie** — un chiffre par machine, ou une granularité qui survive à
+l'écart —, et c'est une décision de voix, pas un correctif.
+
+### Et le contrôle qui ne rend rien, dit quand même
+
+J'ai cherché si une borne était en danger : une marge plus petite que l'écart
+basculerait d'une chaîne à l'autre sans que personne touche au code. Mesuré :
+**10 452, 4 564, 3 728 et 1 365 octets de marge contre 1 489 au pire**. Aucune
+n'en est là. C'est un négatif, et il est écrit parce qu'un contrôle qu'on refait
+est un contrôle qu'on paie deux fois.
+
+### Le signe à retenir
+
+**« Mesuré » est une affirmation incomplète : elle doit dire où.** Un nombre
+reproductible et un nombre qui dépend de la chaîne se ressemblent exactement sur
+la page, et c'est le second qui vieillit tout seul. La défense n'est pas de le
+tenir plus fort — il ne *peut* pas être tenu — mais de **nommer ce qui le fait
+bouger**, pour que le jour où il bouge, personne ne cherche un défaut.
+
+Corollaire, qui a fait la moitié du travail ici : **un écart s'explique en
+cherchant ce qui n'a PAS bougé.** La colle identique à l'octet a éliminé trois
+causes d'un coup. Chercher pourquoi le module diffère aurait pris bien plus
+longtemps que de constater que son voisin ne diffère pas.

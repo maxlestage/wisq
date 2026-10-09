@@ -187,6 +187,34 @@ describe("built output", () => {
   /// **Le plafond ne bouge donc plus avec le contenu**, seulement avec le code :
   /// une page de plus n'ajoute rien au module, et `le module ne porte la prose
   /// d'aucune page` le vérifie.
+  ///
+  /// **Et ces chiffres dépendent de la machine, ce que « mesuré » ne disait
+  /// pas.** Trois lectures du *même* source :
+  ///
+  /// | | wasm brut | wasm gzip | colle brute | colle gzip |
+  /// | --- | --- | --- | --- | --- |
+  /// | le tableau ci-dessus | 261 252 | 112 436 | 56 272 | 9 635 |
+  /// | le coureur de la CI (`a76f52e`) | **261 548** | — | — | — |
+  /// | un conteneur sous rustc 1.99.0 | **261 240** | **110 947** | 56 272 | 9 494 |
+  ///
+  /// **Et le témoin localise l'écart** : la colle brute est identique **à
+  /// l'octet** des deux côtés, alors que le module diffère. Ce n'est donc ni la
+  /// chaîne de construction, ni `wasm-opt`, ni la mesure — c'est la génération
+  /// de code de Rust, exactement ce que l'en-tête de `check-agent-size.sh` a
+  /// établi pour le démon : « les octets d'écart séparaient deux versions de
+  /// rustc, pas deux machines ». `.github/workflows/site.yml` n'épingle aucune
+  /// version, donc l'écart est attendu.
+  ///
+  /// **Le gzip bouge cinq fois plus que le brut** — 1 489 octets contre 308.
+  /// La compression amplifie un remaniement que le brut dissimule, donc c'est le
+  /// chiffre gzip qu'il faut regarder le jour où un plafond rougit.
+  ///
+  /// **Pourquoi aucune garde ne tient ces chiffres exactement.** Elle serait
+  /// rouge sur une machine ou sur l'autre pour un module parfaitement sain.
+  /// Ce qui *est* vérifié, et mesuré : les quatre bornes gardent toutes plus de
+  /// marge que l'écart — 10 452, 4 564, 3 728 et 1 365 octets contre 1 489 au
+  /// pire. Un plafond dont la marge tomberait sous l'écart basculerait d'une
+  /// chaîne à l'autre sans que personne touche au code ; aucun n'en est là.
   test("le front en WebAssembly reste dans son budget", () => {
     const { wasm, glue } = frontFiles();
     const octets = (nom: string) => readFileSync(join(dist, nom));
@@ -195,10 +223,14 @@ describe("built output", () => {
     const wgz = Bun.gzipSync(w).byteLength;
     const ggz = Bun.gzipSync(g).byteLength;
 
-    // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz`.
+    // Le module, après `wasm-opt -Oz` : 261 548 bruts sur le coureur de la CI,
+    // 261 240 / 110 947 dans un conteneur sous rustc 1.99.0. L'en-tête dit
+    // pourquoi les deux lectures diffèrent et pourquoi la borne est large.
     expect(w.byteLength, "wasm brut").toBeLessThan(272_000);
     expect(wgz, "wasm gzippé").toBeLessThan(117_000);
-    // La colle de wasm-bindgen. Mesurée 56 272 / 9 635 : elle ne bouge qu'avec
+    // La colle de wasm-bindgen. Mesurée 56 272 bruts — le même octet sur les
+    // deux machines, ce qui est le témoin de l'en-tête — et 9 494 à 9 635
+    // gzippés. Elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,
     // molette, pointeur, défilement.
