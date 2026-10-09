@@ -1,27 +1,42 @@
 # The wisq site
 
-React 19 on Bun, no framework and no CSS library: a project site should not
-need a build pipeline bigger than the thing it documents.
+The front end is Rust: the pages are Yew components in `crates/wisq-site`,
+rendered to HTML at build time by that crate's `wisq-site-prerender` binary,
+and everything that happens in a browser after the first paint runs in the
+WebAssembly module the same crate compiles. This directory is what is left
+around it — the build, the server, the stylesheet and its font, the icons, and
+the tests. No CSS library, and no JavaScript of the site's own beyond what
+cannot be anything else: two inline lines in the head that must run before the
+first paint (the stored theme, and whether to raise the curtain), the service
+worker, and the glue wasm-bindgen writes to start the module.
 
-**React never reaches a visitor.** It is the authoring language and the
-pre-renderer — `renderToString` at build time — and the browser gets HTML plus
-about a kilobyte of plain DOM code. It used to hydrate the pre-rendered pages
-for four behaviours (a redirect, a remembered language, the theme switch, the
-install banner), and that cost 65 794 bytes gzipped on every page. Those four
-live in `src/main.ts` now; `tests/build.test.ts` fails if React reappears in
-the bundle, and `tests/behaviour.test.ts` drives each of them in a DOM so that
-"small" cannot quietly become "does nothing".
+**Islands, not the page.** Only two places on a page have state: the theme and
+language controls in the header, and the install prompt. Those two are
+hydrated, each on its own root (`data-ilot`); the rest — the prose, the landing
+page, the footer — is HTML the module never takes over. That is a measured
+choice: hydrating whole pages put every page's prose, in both languages, into
+the module (351 822 bytes, 148 277 gzipped) so that it could be compared with
+text the page already had. Islands cost 261 252 bytes, 112 436 gzipped, motion
+included. The page is rendered without Yew's hydration markers and each island
+with them, so the boundary is visible in the published HTML.
 
-The trade: anything genuinely interactive added later belongs in `main.ts` as
-DOM code, or behind a dynamic import only the pages needing it pay for. It can
-no longer be added by writing JSX.
+**The motion follows zamocorp.com**, in Rust: a curtain once per session, an
+opening where the section pins and the ▚ mark gathers out of a cloud of dust as
+you scroll — computed from the logo's own geometry, not a pre-rendered image
+sequence —, a light sweep, the headline rising word by word, a marquee,
+magnetic buttons, and Lenis-style wheel smoothing for mice. Cross-document view
+transitions move between pages where the browser has them. **Nothing of it is
+load-bearing**: with reduced motion, without the module, or without
+`IntersectionObserver`, the page is whole and still, and
+`tests/mouvement.test.ts` holds each of those cases against the real module.
 
 ```sh
+../scripts/install-wasm-toolchain.sh   # the wasm32 target and wasm-bindgen
 bun install
-bun run dev      # writing the site, with hot reload
-bun run build    # dist/, every page pre-rendered, plus the PWA assets
+bun run dev      # build, then serve the result
+bun run build    # dist/: every page pre-rendered, the module, the PWA assets
 bun run preview  # serves dist/ the way a real host would — see below
-bun test         # rendering, content integrity, and the built artefact
+bun test         # the built artefact, the module in a DOM, and the repository's claims
 ```
 
 ## Where it is served, and how it gets there
@@ -76,7 +91,8 @@ deployment is a red check rather than a surprise on the next push.
 
 ## Multi-page, and every page is a real file
 
-`src/routes.ts` is the only place that knows what pages exist. The build
+`crates/wisq-site/src/routes.rs` is the only place that knows what pages
+exist. The build
 pre-renders each one into its own directory — `docs/index.html`,
 `protocol/index.html` — rather than shipping a client-side router. Three
 things follow, and all three matter: the page arrives readable in the first
@@ -84,8 +100,9 @@ response, a search engine sees a real URL, and the service worker can cache a
 document per address instead of one shell that has to boot before it knows
 what it is showing.
 
-Written pages are **data, not markup**. `src/doc.ts` defines a small block
-model and `src/pages/*.ts` fills it in both languages; `components/Doc.tsx` is
+Written pages are **data, not markup**. `crates/wisq-site/src/doc.rs` defines a
+small block model and `crates/wisq-site/src/pages/*.rs` fills it in both
+languages; its `DocPage` component is
 the single renderer. A missing translation is a type error, an empty one fails
 a test, and the two languages are checked block-for-block so a page cannot be
 richer in English than in French.
@@ -101,11 +118,12 @@ under `@media (prefers-color-scheme: dark)` guarded by
 `:root:not([data-theme="light"])`, once under `:root[data-theme="dark"]` — so a
 choice beats the system in *both* directions; without the guard, choosing light
 on a dark device silently does nothing. And the choice is applied by a small
-inline script in the document head rather than by the main script, because
-anything deferred runs after the page has painted: a reader who chose light on
-a dark system would otherwise see a flash of dark on every navigation. What
-`main.ts` does afterwards is the part nobody sees flash — the pressed state of
-the three buttons, and the buttons themselves.
+inline script in the document head rather than by the module, because the
+module arrives after the page has painted: a reader who chose light on a dark
+system would otherwise see a flash of dark on every navigation. What the
+`Reglages` island does afterwards is the part nobody sees flash — the pressed
+state of the three buttons, the buttons themselves, and the two `theme-color`
+metas, which an explicit choice has to override.
 
 Verified by driving a browser with the system set each way in turn, checking
 the computed background, the `theme-color` metas, that the attribute is already
@@ -121,7 +139,7 @@ twice and each one is pre-rendered in its own language, with its own
 This is not how the site started, and the reason it changed is worth keeping.
 The copy was bilingual from the first commit, but the *build* rendered every
 page in English and let the browser swap the language after hydration. That
-reads fine in `bun run dev` and is broken everywhere it matters: a French
+read fine in development and was broken everywhere it matters: a French
 reader's first paint was English, a shared link opened in the sender's
 language rather than the reader's, a reader with no JavaScript never saw
 French, and a search engine indexed half the site. A language a URL cannot
@@ -137,7 +155,7 @@ language explicitly ends it.
 
 Tests hold the French pages to the same standard as the English ones rather
 than exempting them: the footer check reads its expectations out of
-`content.ts` per language, titles and descriptions must be unique *within* a
+the pre-render's catalogue per language, titles and descriptions must be unique *within* a
 language (across languages they may legitimately collide — "Architecture" is
 the same word in French), and a French page whose title and description both
 match its English counterpart fails as untranslated.
@@ -170,7 +188,7 @@ from the cache first: documentation that is quietly a week stale is worse than
 a spinner, while a hashed asset name can never be stale. All pages are
 precached at install, so the whole site works on a plane after one visit.
 
-**Test the PWA with `bun run preview`, never with `bun run dev`.** The service
+**Test the PWA against the build, as `bun run preview` serves it.** The service
 worker and manifest only exist in the build, and a browser refuses to install a
 service worker that arrives without a JavaScript content type — a preview
 server that omits it reports a broken PWA when the deployed site is fine. That
@@ -190,7 +208,7 @@ is between them is the product.
 
 The Home Screen icon stays the simplified version — two quadrants, no detail —
 because at 60 px anything more becomes mush. That is a logo system rather than
-two drawings, so `scripts/icons.ts` and `src/components/Logo.tsx` share the
+two drawings, so `scripts/icons.ts` and `crates/wisq-site/src/logo.rs` share the
 same proportions and a test asserts the full mark appears on the landing page
 and on no other.
 

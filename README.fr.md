@@ -90,7 +90,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2621 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2628 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -123,7 +123,8 @@ Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœurs rv32ima et x86-64, UART, virtio-blk
 crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo
 crates/wisq-vm       interpréteur rv32ima (Rust) avec une ABI C pour l'application
-site/                le site du projet : React 19 sur Bun, pré-rendu, PWA installable
+crates/wisq-site     le front du site (Rust) : Yew, pré-rendu, deux îlots en wasm
+site/                la construction, le serveur et la feuille de style du site (Bun), PWA installable
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route
 ```

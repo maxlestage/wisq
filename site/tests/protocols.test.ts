@@ -80,13 +80,16 @@ function announcingParagraph(text: string, pattern: RegExp): string {
   return text.slice(opens, closes);
 }
 
-/// Les deux moitiés du guide. Le fichier porte `docsEn` puis `docsFr`, et une
+/// Le dossier des pages du site, depuis que le front est en Rust.
+const pages = join(repoRoot, "crates", "wisq-site", "src", "pages");
+
+/// Les deux moitiés du guide. Le fichier porte `DOCS_EN` puis `DOCS_FR`, et une
 /// correction faite dans une seule langue est le défaut le plus courant de ce
 /// dépôt.
 function halves(): { language: string; text: string }[] {
-  const page = readFileSync(join(repoRoot, "site", "src", "pages", "docs.ts"), "utf8");
-  const split = page.indexOf("export const docsFr");
-  expect(split, "docs.ts ne porte plus deux moitiés nommées").toBeGreaterThan(0);
+  const page = readFileSync(join(pages, "docs.rs"), "utf8");
+  const split = page.indexOf("pub static DOCS_FR");
+  expect(split, "docs.rs ne porte plus deux moitiés nommées").toBeGreaterThan(0);
   return [
     { language: "en", text: page.slice(0, split) },
     { language: "fr", text: page.slice(split) },
@@ -176,9 +179,9 @@ test("la réserve sur le clair nomme le chiffrement que l'application propose", 
   const encrypted = modes.filter((mode) => mode !== "none");
   if (encrypted.length === 0) return;
 
-  const page = readFileSync(join(repoRoot, "site", "src", "pages", "privacy.ts"), "utf8");
-  const split = page.indexOf("export const privacyFr");
-  expect(split, "privacy.ts ne porte plus deux moitiés nommées").toBeGreaterThan(0);
+  const page = readFileSync(join(pages, "privacy.rs"), "utf8");
+  const split = page.indexOf("pub static PRIVACY_FR");
+  expect(split, "privacy.rs ne porte plus deux moitiés nommées").toBeGreaterThan(0);
 
   // **Ce qui est mesuré est la phrase sur la machine, pas le paragraphe.** Un
   // premier sabordage a SURVÉCU : en retirant TLS de la partie « transport
@@ -277,10 +280,10 @@ test("les quatre routes du protocole sont comptées là où elles sont écrites"
       "« implémenté deux fois pour ne pas pouvoir diverger » ne tient plus",
   ).toBe(served.length);
 
-  const page = readFileSync(join(import.meta.dir, "..", "src", "pages", "protocol.ts"), "utf8");
+  const page = readFileSync(join(pages, "protocol.rs"), "utf8");
   // Une énumération par langue : la page est écrite deux fois, et c'est
   // justement la moitié qui dérive quand personne ne compte.
-  const listed = [...page.matchAll(/text: "[A-Z]+ \/v1\/vms/g)];
+  const listed = [...page.matchAll(/Block::H3\("[A-Z]+ \/v1\/vms/g)];
   expect(
     listed.length,
     `la page énumère ${listed.length} routes pour ${served.length} servies, ` +

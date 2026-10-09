@@ -23,9 +23,13 @@ function builtFiles(): string[] {
   return readdirSync(dist).filter((name) => statSync(join(dist, name)).isFile());
 }
 
+/// Un actif adressé par son contenu, d'une extension donnée : la feuille de
+/// style que nomme le bundler (`chunk-`), ou le front que nomme la construction
+/// (`wisq-`, le module et sa colle). Depuis que le front est en Rust, le seul
+/// `.js` haché est la colle.
 function hashedAsset(extension: string): string {
   const name = readdirSync(dist).find(
-    (file) => file.startsWith("chunk-") && file.endsWith(extension),
+    (file) => (file.startsWith("chunk-") || file.startsWith("wisq-")) && file.endsWith(extension),
   );
   if (!name) throw new Error(`aucun actif haché en ${extension} dans dist`);
   return name;
@@ -91,7 +95,7 @@ describe("what the preview server sends", () => {
 
   /// **L'immuabilité vient de la construction, pas d'un motif de nom.**
   ///
-  /// `build.tsx` est le seul qui sache quels noms il a tirés d'une empreinte de
+  /// `build.ts` est le seul qui sache quels noms il a tirés d'une empreinte de
   /// contenu : il en écrit la liste, et le serveur la lit. Ce test la relit par
   /// un autre chemin — ce que `dist` contient — pour que deux lecteurs du même
   /// fait aient à s'accorder.
@@ -108,12 +112,13 @@ describe("what the preview server sends", () => {
     const adresseParContenu = (name: string) =>
       // La police.
       name.endsWith(".woff2") ||
-      // Le script et la feuille de style, nommés par le bundler.
-      (name.startsWith("chunk-") && (name.endsWith(".js") || name.endsWith(".css"))) ||
+      // La feuille de style, nommée par le bundler. Il n'émet plus de script :
+      // le comportement du site est dans le module.
+      (name.startsWith("chunk-") && name.endsWith(".css")) ||
       // Le module WebAssembly du front, et la colle qui le charge.
       (name.startsWith("wisq-") && (name.endsWith(".wasm") || name.endsWith(".js")));
     const attendus = new Set(files.filter(adresseParContenu));
-    expect(attendus.size, "ni police ni actif haché dans dist").toBeGreaterThan(4);
+    expect(attendus.size, "ni police ni actif haché dans dist").toBe(4);
     expect(new Set(IMMUTABLE)).toEqual(attendus);
 
     // Et la conséquence, dans les deux sens, sur chaque fichier construit.
@@ -189,6 +194,7 @@ describe("the rule itself", () => {
   test.each([
     ["/sw.js", "no-cache"],
     [`/${hashedAsset(".js")}`, "public, max-age=31536000, immutable"],
+    [`/${hashedAsset(".wasm")}`, "public, max-age=31536000, immutable"],
     [`/${hashedAsset(".css")}`, "public, max-age=31536000, immutable"],
     ["/index.html", "no-cache"],
     ["/fr/docs/index.html", "no-cache"],

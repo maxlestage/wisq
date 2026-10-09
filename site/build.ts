@@ -1,59 +1,39 @@
-/// Builds the site: one bundle, one pre-rendered document per address, and
-/// everything a browser needs to install it.
+/// Builds the site: one pre-rendered document per address, the WebAssembly
+/// front that hydrates two islands of it and moves the rest, and everything a
+/// browser needs to install it.
 ///
-/// A landing page that needs 400 KB of JavaScript before showing a word is the
-/// opposite of mobile-first. Rendering at build time means the content paints
-/// on the first response; React then hydrates it for the language switch, the
-/// install tabs and the Home Screen prompt.
+/// **There is no React here any more, and no JavaScript of the site's own.**
+/// Every page is rendered by `crates/wisq-site` — Yew components, server-side
+/// rendered by its `wisq-site-prerender` binary — and every behaviour runs in
+/// the WebAssembly module the same crate compiles. What is left in this file is
+/// the plumbing around them: the stylesheet and its font, the Rust toolchain
+/// calls, content-addressed names, and the files a static host and a service
+/// worker need.
 ///
 /// Every path this emits is relative. That was written when the site was served
 /// from /wisq/ on GitHub Pages, against the day it moved to the root of a
 /// domain — an absolute /asset.js works in exactly one of those. The day came:
 /// it is served from the root on Heroku, and nothing had to be rewritten.
 
-import { renderToString } from "react-dom/server";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { App } from "./src/App";
-import { AUTHOR, AUTHOR_URL, copy } from "./src/content";
-import { PAGES } from "./src/pages";
-import {
-  LANGS,
-  ROUTES,
-  outputPath,
-  pagePath,
-  relativeBase,
-  type Route,
-} from "./src/routes";
-import type { Lang } from "./src/content";
 import { appIcon, socialCard } from "./scripts/icons";
 import { siteURL } from "./src/site-url";
-import { BAR } from "./src/theme";
 
 const outdir = "dist";
 const SITE_URL = siteURL();
 
 await rm(outdir, { recursive: true, force: true });
 
-// Step one: let Bun bundle and hash the script and stylesheet. The HTML it
-// emits is thrown away — what is wanted from it is the asset names.
-//
-// `NODE_ENV` is defined here rather than left to whoever runs the build, and
-// that is not a tidiness preference. React ships two builds behind one import:
-// the development one carries every warning, every key check and every hook
-// invariant, and it is the one you get unless something says otherwise. A
-// deploy job that runs `bun run build` with no environment set was publishing
-// it — 479 KB against 268 KB, 147 KB against 88 KB over the wire, and slower
-// on every render besides. A build that produces a different artefact
-// depending on the shell it was started from is a build with a bug, so the
-// value is written down here and `assertProductionBundle` below refuses to
-// ship anything that still smells of the development build.
+// Step one: let Bun bundle and hash the stylesheet. The HTML it emits is thrown
+// away — what is wanted from it is the asset's name. `src/index.html` is only
+// the entry point that tells Bun where the stylesheet is: it carries no script,
+// because the site's behaviour is the WebAssembly module, not a bundle.
 const result = await Bun.build({
   entrypoints: ["src/index.html"],
   outdir,
   minify: true,
   publicPath: "./",
-  define: { "process.env.NODE_ENV": JSON.stringify("production") },
 });
 
 if (!result.success) {
@@ -62,44 +42,38 @@ if (!result.success) {
 }
 
 const bundled = await Bun.file(join(outdir, "index.html")).text();
-const scriptName = bundled.match(/<script[^>]+src="\.\/([^"]+)"/)?.[1];
 const styleName = bundled.match(/<link[^>]+rel="stylesheet"[^>]+href="\.\/([^"]+)"/)?.[1];
-if (!scriptName || !styleName) {
-  console.error("le script ou la feuille de style est introuvable dans le HTML construit");
+if (!styleName) {
+  console.error("la feuille de style est introuvable dans le HTML construit");
   process.exit(1);
 }
-
-// A production React build has no warning text in it, because the branches that
-// would print it are compiled out. Two strings that only the development build
-// contains, checked against the bundle that is about to be published.
+// **Aucun script ne doit sortir du bundler**, et c'est une garde, pas un
+// constat. Le comportement du site est dans le module wasm ; du JavaScript émis
+// ici voudrait dire qu'un script a été rattaché à `src/index.html`, et qu'il
+// partirait chez chaque lecteur sans qu'aucune page ne le charge.
 //
-// This is here rather than only in the tests because it guards the artefact, not
-// the source: the mistake it catches is an environment producing a different
-// bundle from the same code, and by the time a test runs, the bundle is already
-// whatever it is. The tests check it too — belt and braces on the one thing that
-// silently doubles what every visitor downloads.
-const DEVELOPMENT_MARKERS = ["Each child in a list should have a unique", "captureOwnerStack"];
-const script = await Bun.file(join(outdir, scriptName)).text();
-const found = DEVELOPMENT_MARKERS.filter((marker) => script.includes(marker));
-if (found.length > 0) {
-  console.error(
-    `le bundle est celui de développement (${found.join(", ")}) : ` +
-      "React n'a pas été compilé en production",
-  );
-  process.exit(1);
+// Bun émet quand même un `chunk-<empreinte>.js` **vide** pour toute entrée HTML,
+// script ou pas — mesuré, 0 octet. Celui-là est retiré ; un seul octet de plus
+// est un refus.
+for (const output of result.outputs.filter((o) => o.path.endsWith(".js"))) {
+  if (output.size > 0) {
+    console.error(`le bundler a émis du JavaScript (${output.path}, ${output.size} octets) : rien ne le charge`);
+    process.exit(1);
+  }
+  await rm(output.path);
 }
 
 // The variable font travels as its own file, and getting it there takes a
 // substitution rather than a flag.
 //
-// Bun 1.3.11 turns every `url()` in a stylesheet into a base64 data URI, and
+// Bun turns every `url()` in a stylesheet into a base64 data URI, and
 // `loader: { ".woff2": "file" }` does not change that — tried, measured, the
-// data URI came back. For the dev server that is the right behaviour and
-// nothing has to be done. For the published site it is not: the stylesheet is
-// a render-blocking `<link>` in the head, so inlining moved 90 KB of font onto
-// the critical path — styles.css went from 27 KB to 135 KB — and made
-// `font-display: swap` meaningless, because there is nothing to swap when the
-// font arrives inside the thing that blocks the paint.
+// data URI came back. For a dev server that is the right behaviour. For the
+// published site it is not: the stylesheet is a render-blocking `<link>` in the
+// head, so inlining moved 90 KB of font onto the critical path — styles.css
+// went from 27 KB to 135 KB — and made `font-display: swap` meaningless,
+// because there is nothing to swap when the font arrives inside the thing that
+// blocks the paint.
 //
 // So the one data URI is lifted back out into a content-addressed file, and the
 // `url()` is pointed at it. The `url()` is relative to the stylesheet rather
@@ -131,33 +105,25 @@ await writeFile(stylePath, styleSource.replace(inlinedFonts[0]![0]!, `url(./${fo
 await writeFile(join(outdir, fontName), fontBytes);
 
 // ---------------------------------------------------------------------------
-// Le front en Yew, compilé en WebAssembly.
+// Le front en Yew, compilé deux fois.
 //
 // Deux sorties pour un seul arbre de composants, `crates/wisq-site` :
 //
-//   - un binaire natif qui rend les pages en HTML (`ServerRenderer`, drapeau
-//     `ssr`), exactement ce que `renderToString` fait pour React juste en bas ;
-//   - un module wasm qui reprend ce HTML dans le navigateur et lui rattache les
-//     comportements (drapeau `hydrate`).
+//   - un binaire natif qui rend toutes les pages en HTML (`ServerRenderer`,
+//     drapeau `ssr`) et les décrit dans un catalogue JSON ;
+//   - un module wasm qui hydrate deux îlots de ce HTML — les réglages de
+//     l'en-tête, l'invite d'installation — et anime le reste (drapeau
+//     `hydrate`).
 //
 // **Le profil `wasm-release` n'est pas un détail.** Le profil `release` du
 // workspace est taillé pour l'interpréteur de VM : `opt-level = 3`, pour la
-// vitesse. Sur un bundle que chaque visiteur télécharge, c'est le mauvais
+// vitesse. Sur un module que chaque visiteur télécharge, c'est le mauvais
 // arbitrage ; `wasm-release` passe à `"z"`. Les profils ne se déclarent qu'à la
 // racine d'un workspace, donc ce choix vit dans le `Cargo.toml` du haut.
 //
-// **Ce que ça coûte, mesuré.** 188 859 octets de wasm après `wasm-opt -Oz`,
-// soit 80 196 gzippés, plus 6 163 gzippés de colle. Le code DOM de `main.ts`
-// en coûtait 1 062. Le chiffre est dans `tests/build.test.ts`, avec son
-// plafond, pour qu'une dérive se voie.
-//
 // **Et la construction refuse plutôt que de se replier.** Sans la chaîne Rust,
-// elle s'arrête en disant quoi installer. Se replier sur React en silence
-// publierait un site qui a l'air de marcher et qui n'est pas celui qu'on
-// croyait construire — le défaut de conception que ce dépôt refuse par-dessus
-// tout.
-const FRONT = "../crates/wisq-site";
-
+// elle s'arrête en disant quoi installer : il n'y a plus d'autre rendu vers
+// lequel se replier, et c'est voulu.
 async function lancer(quoi: string, cmd: string[], aide?: string) {
   const run = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
   if (!run.success) {
@@ -173,9 +139,8 @@ const AIDE_RUST = [
   "",
   "Le front du site est en Yew, donc sa construction demande la chaîne Rust :",
   "",
-  "    rustup target add wasm32-unknown-unknown",
-  "    cargo install wasm-bindgen-cli --version 0.2.129   # ou le binaire préconstruit",
-  "    bun add --dev binaryen                             # fournit wasm-opt",
+  "    ./scripts/install-wasm-toolchain.sh   # la cible wasm32 et wasm-bindgen, à la version du verrou",
+  "    bun install                           # fournit wasm-opt, par binaryen",
   "",
 ].join("\n");
 
@@ -207,8 +172,8 @@ await lancer(
   AIDE_RUST,
 );
 
-// `wasm-opt -Oz` : mesuré, 210 334 octets avant, 188 859 après — 21 475 de
-// moins pour une passe qui ne change rien au comportement.
+// `wasm-opt -Oz` : mesuré, 210 334 octets avant, 188 859 après sur la première
+// sonde — une passe qui ne change rien au comportement.
 const wasmOpt = "node_modules/binaryen/bin/wasm-opt";
 await lancer(
   "wasm-opt",
@@ -217,9 +182,9 @@ await lancer(
   AIDE_RUST,
 );
 
-// Les deux fichiers prennent un nom adressé par leur contenu, comme le script et
-// la feuille de style, et entrent dans la liste des immuables : un nom qui
-// change avec les octets ne peut pas être périmé.
+// Les deux fichiers prennent un nom adressé par leur contenu, comme la feuille
+// de style, et entrent dans la liste des immuables : un nom qui change avec les
+// octets ne peut pas être périmé.
 const wasmBytes = await Bun.file(join(wasmOut, "wisq_bg.wasm")).bytes();
 const glueSource = await Bun.file(join(wasmOut, "wisq.js")).text();
 const wasmName = `wisq-${Bun.hash(wasmBytes).toString(16)}.wasm`;
@@ -233,30 +198,58 @@ await writeFile(join(outdir, wasmName), wasmBytes);
 await writeFile(join(outdir, glueName), glue);
 await rm(wasmOut, { recursive: true, force: true });
 
-// Le pré-rendu, en un seul processus pour toutes les pages portées.
-const rendus: Record<string, string> = JSON.parse(
+// ---------------------------------------------------------------------------
+// Le catalogue : toutes les pages, et tout ce qu'il faut savoir pour les
+// écrire, en un seul processus.
+//
+// Ce que ce fichier lisait autrefois dans `src/routes.ts`, `src/content.ts`,
+// `src/pages/*.ts` et `src/theme.ts` — la liste des routes, les titres, les
+// descriptions, les couleurs de barre, l'auteur — vient maintenant du crate qui
+// rend les pages. C'était déjà une copie de ce qu'il déclarait.
+interface Route {
+  id: string;
+  path: string;
+  listed: boolean;
+  output: string | null;
+}
+interface Rendered {
+  route: string;
+  lang: string;
+  file: string;
+  path: string;
+  base: string;
+  title: string;
+  description: string;
+  markup: string;
+}
+interface Catalogue {
+  langs: string[];
+  bar: { light: string; dark: string };
+  author: string;
+  authorUrl: string;
+  routes: Route[];
+  copy: Record<string, { hero: { lede: string } }>;
+  pages: Rendered[];
+}
+const catalogue: Catalogue = JSON.parse(
   await lancer("le pré-rendu", ["../target/release/wisq-site-prerender"], AIDE_RUST),
 );
-const PORTEES = new Set(Object.keys(rendus).map((cle) => cle.split("/")[1]!));
-if (PORTEES.size === 0) {
-  console.error("le pré-rendu Yew n'a rendu aucune page : la liste des routes portées est vide");
+const { langs: LANGS, bar: BAR, author: AUTHOR, authorUrl: AUTHOR_URL, routes: ROUTES } = catalogue;
+if (catalogue.pages.length !== ROUTES.length * LANGS.length) {
+  console.error(
+    `le pré-rendu a rendu ${catalogue.pages.length} pages pour ${ROUTES.length} routes ` +
+      `en ${LANGS.length} langues : il en manque`,
+  );
   process.exit(1);
 }
+const pathOf = (route: Route, lang: string) =>
+  catalogue.pages.find((p) => p.route === route.id && p.lang === lang)!.path;
 
 // Les noms que cette construction a tirés d'une empreinte de contenu, écrits
-// pour l'hôte.
-//
-// `scripts/serve.ts` reconnaissait `chunk-<hash>.(js|css)` par une expression
-// rationnelle, alors que l'en-tête de sa politique de cache énonce une
-// propriété et non une orthographe. La police ci-dessus a la propriété et pas
-// l'orthographe, donc 90 Kio repartaient en `no-cache` à chaque navigation.
-// C'est ici qu'on sait lesquels sont adressés par leur contenu — c'est ici que
-// les noms sont composés —, donc c'est ici que la liste s'écrit. Un actif de
-// plus entre dans la politique en entrant dans ce tableau.
-//
-// Hors du précache : le service worker n'en a aucun usage, c'est une question
-// d'en-têtes HTTP, et le serveur le lit sur le disque.
-const immutable = [scriptName, styleName, fontName, wasmName, glueName];
+// pour l'hôte. C'est ici qu'on sait lesquels le sont — c'est ici que les noms
+// sont composés —, donc c'est ici que la liste s'écrit, et `scripts/serve.ts`
+// la lit sur le disque.
+const immutable = [styleName, fontName, wasmName, glueName];
 await writeFile(
   join(outdir, "immutable.txt"),
   `# Les actifs que cette construction a nommés d'après leur contenu.\n` +
@@ -280,7 +273,7 @@ await writeFile(join(outdir, "social-card.png"), socialCard());
 const MANIFEST = {
   name: "wisq — virtual machines on your iPhone",
   short_name: "wisq",
-  description: copy.en.hero.lede,
+  description: catalogue.copy.en!.hero.lede,
   // Relative, and resolved against the manifest's own address, so the site
   // stays movable.
   start_url: "./",
@@ -316,50 +309,41 @@ function escapeHTML(text: string): string {
 
 /// Applies a stored theme before the first paint.
 ///
-/// This has to be an inline, blocking script in the head, and it has to be
-/// here rather than in the React bundle: an effect runs after the page has
-/// painted, so a reader who chose light on a dark system would see a flash of
-/// dark on every navigation. Twelve lines in the head buys that away.
+/// This has to be an inline, blocking script in the head: the module arrives
+/// after the page has painted, so a reader who chose light on a dark system
+/// would see a flash of dark on every navigation. Twelve lines in the head buy
+/// that away.
 ///
 /// Kept deliberately dumb — no bundler, no module, no dependency on anything
 /// that could fail to load. If it throws, the page is simply on the system
 /// theme, which is where it was before this feature existed.
 const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("wisq.theme");if(t!=="light"&&t!=="dark")return;document.documentElement.setAttribute("data-theme",t);var c=t==="dark"?"${BAR.dark}":"${BAR.light}";var m=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<m.length;i++){m[i].content=c;}}catch(e){}})();</script>`;
 
-const HOME_TITLE: Record<Lang, string> = {
-  en: "wisq — virtual machines on your iPhone",
-  fr: "wisq — des machines virtuelles sur votre iPhone",
-};
+/// **L'entrée et le rideau, décidés avant le premier pixel.**
+///
+/// Deux classes sur `<html>`, et c'est la seule chose que la page fasse avant
+/// que le module n'arrive :
+///
+///   - `entree` : le titre de l'accueil monte mot par mot, puis l'accroche. Ce
+///     sont des animations CSS qui **s'achèvent d'elles-mêmes** — un module qui
+///     n'arrive jamais ne laisse rien de caché —, donc elles peuvent partir dès
+///     la première peinture, ce que le module, qui arrive après elle, ne peut
+///     pas faire sans un éclair : le titre peint, puis masqué, puis rejoué.
+///   - `rideau` : une fois par session, la page s'ouvre derrière un rideau qui
+///     porte la marque, comme celle de la référence. Un pseudo-élément, pas un
+///     nœud : rien à ajouter au DOM. Décidé ici, parce qu'un rideau posé plus
+///     tard laisserait d'abord voir la page qu'il est censé cacher.
+///
+/// Ni l'une ni l'autre si la personne a demandé moins d'animation. Et comme le
+/// script du thème : un refus du stockage, une erreur, et la page est
+/// simplement immobile.
+const ENTREE_SCRIPT = `<script>(function(){try{if(matchMedia("(prefers-reduced-motion: reduce)").matches)return;var d=document.documentElement;d.classList.add("entree");if(!sessionStorage.getItem("wisq.rideau")){sessionStorage.setItem("wisq.rideau","1");d.classList.add("rideau");}}catch(e){}})();</script>`;
 
-function documentFor(route: Route, lang: Lang): { html: string; title: string } {
-  const base = relativeBase(route, lang);
-  const isHome = route.id === "home";
-  const doc = isHome ? null : PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
-
-  const title = isHome ? HOME_TITLE[lang] : `${doc!.title} — wisq`;
-  const description = isHome ? copy[lang].hero.lede : doc!.lede;
-  const canonical = `${SITE_URL}${pagePath(route, lang)}`;
-
-  // Le balisage vient de Yew pour les routes déjà portées, de React pour les
-  // autres. **La bascule se lit dans ce que le pré-rendu a rendu**, pas dans une
-  // liste écrite ici : `crates/wisq-site/src/pages.rs` déclare ce qu'il sait
-  // rendre, et une seconde liste de ce côté serait une copie à tenir à jour.
-  const cle = `${lang}/${route.id}`;
-  const enYew = PORTEES.has(route.id);
-  if (enYew && !(cle in rendus)) {
-    console.error(`${cle} : route portée en Yew mais absente du pré-rendu`);
-    process.exit(1);
-  }
-  const markup = enYew
-    ? rendus[cle]!
-    : renderToString(<App route={route.id} lang={lang} doc={doc ?? undefined} />);
-
-  // The document used to travel twice: once as markup, and once as JSON beside
-  // it, because hydration had to read exactly what the build rendered. Nothing
-  // hydrates any more, so the second copy has no reader and is gone. It was
-  // cheap over the wire — the two copies sat inside gzip's window, so the
-  // duplicate was mostly back-references — but a payload nobody parses is
-  // still bytes, and still something a reader of this file has to account for.
+function documentFor(page: Rendered): string {
+  const { base, lang } = page;
+  const isHome = page.route === "home";
+  const canonical = `${SITE_URL}${page.path}`;
+  const route = ROUTES.find((r) => r.id === page.route)!;
 
   // Every page says where its other language lives, and which one a reader
   // with no preference should get. Without this a search engine treats the two
@@ -367,9 +351,9 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
   const alternates = [
     ...LANGS.map(
       (code) =>
-        `\n    <link rel="alternate" hreflang="${code}" href="${SITE_URL}${pagePath(route, code)}" />`,
+        `\n    <link rel="alternate" hreflang="${code}" href="${SITE_URL}${pathOf(route, code)}" />`,
     ),
-    `\n    <link rel="alternate" hreflang="x-default" href="${SITE_URL}${pagePath(route, "en")}" />`,
+    `\n    <link rel="alternate" hreflang="x-default" href="${SITE_URL}${pathOf(route, "en")}" />`,
   ].join("");
 
   // Structured data on the landing pages only: repeating it on every document
@@ -381,7 +365,7 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
         name: "wisq",
         applicationCategory: "DeveloperApplication",
         operatingSystem: "iOS 17+",
-        description: copy[lang].hero.lede,
+        description: page.description,
         url: canonical,
         inLanguage: lang,
         author: { "@type": "Person", name: AUTHOR, url: AUTHOR_URL },
@@ -393,19 +377,25 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
       })}</script>`
     : "";
 
-  const html = `<!doctype html>
+  // **Le module est demandé tôt.** La colle et le wasm ont des noms adressés
+  // par leur contenu, donc la page peut les nommer dans sa tête : le
+  // navigateur les cherche pendant qu'il analyse le corps, au lieu d'attendre
+  // que la colle s'exécute pour découvrir le wasm. `crossorigin` sur le
+  // préchargement du wasm, parce que la colle le demande par `fetch` en mode
+  // `cors` ; sans lui, le navigateur jette le préchargement et recommence.
+  return `<!doctype html>
 <html lang="${lang}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>${escapeHTML(title)}</title>
-    <meta name="description" content="${escapeHTML(description)}" />
+    <title>${escapeHTML(page.title)}</title>
+    <meta name="description" content="${escapeHTML(page.description)}" />
     <meta name="author" content="${escapeHTML(AUTHOR)}" />
     <link rel="canonical" href="${canonical}" />${alternates}
     <meta name="theme-color" content="${BAR.dark}" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="${BAR.light}" media="(prefers-color-scheme: light)" />
-    <meta property="og:title" content="${escapeHTML(title)}" />
-    <meta property="og:description" content="${escapeHTML(description)}" />
+    <meta property="og:title" content="${escapeHTML(page.title)}" />
+    <meta property="og:description" content="${escapeHTML(page.description)}" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="${canonical}" />
     <meta property="og:image" content="${SITE_URL}social-card.png" />
@@ -415,44 +405,26 @@ function documentFor(route: Route, lang: Lang): { html: string; title: string } 
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="wisq" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▚</text></svg>" />
-    <link rel="stylesheet" href="${base}${styleName}" />${jsonLd}
+    <link rel="stylesheet" href="${base}${styleName}" />
+    <link rel="modulepreload" href="${base}${glueName}" />
+    <link rel="preload" href="${base}${wasmName}" as="fetch" type="application/wasm" crossorigin />${jsonLd}
     ${THEME_SCRIPT}
+    ${ENTREE_SCRIPT}
   </head>
   <body>
-    <div id="root" data-route="${route.id}" data-lang="${lang}" data-base="${base}"${
-      // **La marque, et pourquoi elle est sur le document plutôt que devinée.**
-      // Sur une page portée en Yew, c'est le wasm qui tient les comportements ;
-      // `main.ts` doit s'effacer, sinon les deux rattachent des gestionnaires au
-      // même DOM et le thème se met à répondre deux fois à un clic. Le script
-      // DOM le lit sur `#root` au lieu de déduire la route : une liste de routes
-      // portées de son côté serait une seconde copie de ce que
-      // `crates/wisq-site/src/pages.rs` déclare déjà.
-      enYew ? ' data-hydrate="yew"' : ""
-    }>${markup}</div>
-    <script type="module" src="${base}${scriptName}"></script>${
-      // La colle de wasm-bindgen est un module ES dont l'export par défaut
-      // démarre le module. En ligne et non `src=`, pour que le wasm ne soit
-      // demandé que par les pages qui l'hydratent — tant que toutes ne le sont
-      // pas, une page React n'a aucune raison de payer 80 Kio.
-      enYew
-        ? `\n    <script type="module">import demarrer from "${base}${glueName}";demarrer();</script>`
-        : ""
-    }
+    <div id="root" data-route="${page.route}" data-lang="${lang}" data-base="${base}">${page.markup}</div>
+    <script type="module">import demarrer from "${base}${glueName}";demarrer();</script>
   </body>
 </html>
 `;
-  return { html, title };
 }
 
 const written: string[] = [];
-for (const lang of LANGS) {
-  for (const route of ROUTES) {
-    const file = outputPath(route, lang);
-    const target = join(outdir, file);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, documentFor(route, lang).html);
-    written.push(file);
-  }
+for (const page of catalogue.pages) {
+  const target = join(outdir, page.file);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, documentFor(page));
+  written.push(page.file);
 }
 
 // The service worker precaches exactly what this build produced. Hashed asset
@@ -462,20 +434,18 @@ const precache = [
   // Both languages: a reader who installed the French site and lost the
   // network should get the French site back, not an English fallback.
   ...LANGS.flatMap((lang) =>
-    ROUTES.filter((route) => !route.output).map((route) => `./${pagePath(route, lang)}`),
+    ROUTES.filter((route) => !route.output).map((route) => `./${pathOf(route, lang)}`),
   ),
-  `./${scriptName}`,
   `./${styleName}`,
   // The font is in the list for the same reason the stylesheet is: a reader
   // offline would otherwise get the page in the fallback sans, which is a
   // different design.
   `./${fontName}`,
-  // Le front en Yew, et **la garde l'a nommé avant un lecteur**. Les deux
-  // fichiers étaient dans `immutable.txt` — la liste des en-têtes de cache — et
-  // pas ici : hors ligne, une page portée se serait affichée depuis le cache,
-  // puis n'aurait jamais hydraté, faute de pouvoir chercher son module. Une
-  // page qui s'affiche et ne répond plus est pire qu'une page absente, parce
-  // que rien ne la signale. Deux listes, deux objets, et il fallait les deux.
+  // Le front, et **la garde l'a nommé avant un lecteur** quand il est arrivé :
+  // hors ligne, une page se serait affichée depuis le cache, puis n'aurait
+  // jamais hydraté ses îlots, faute de pouvoir chercher son module. Une page
+  // qui s'affiche et ne répond plus est pire qu'une page absente, parce que
+  // rien ne la signale.
   `./${wasmName}`,
   `./${glueName}`,
   "./manifest.webmanifest",
@@ -483,15 +453,16 @@ const precache = [
 ];
 const version = Bun.hash(precache.join("|")).toString(16);
 
+const offline = ROUTES.find((r) => r.id === "offline")!;
 const serviceWorker = `/// Makes the site openable with no network, and launchable from a Home Screen.
 ///
 /// Two strategies, chosen by what the request is for. A navigation goes to the
 /// network first: documentation that is quietly a week stale is worse than a
-/// spinner. Everything else — the hashed script, the stylesheet, the icons —
+/// spinner. Everything else — the hashed module, the stylesheet, the icons —
 /// comes from the cache first, because a hashed name can never be stale.
 const VERSION = "wisq-${version}";
-const PRECACHE = ${JSON.stringify(precache, null, 2).replace(/\n/g, "\n")};
-const OFFLINE = { en: "./offline/", fr: "./fr/offline/" };
+const PRECACHE = ${JSON.stringify(precache, null, 2)};
+const OFFLINE = { en: "./${pathOf(offline, "en")}", fr: "./${pathOf(offline, "fr")}" };
 
 /// The offline page in the language of the address that failed, so a reader
 /// browsing in French does not fall out of French the moment the network goes.
@@ -572,10 +543,10 @@ const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 ${LANGS.flatMap((lang) =>
   listed.map(
     (route) =>
-      `  <url><loc>${SITE_URL}${pagePath(route, lang)}</loc>` +
+      `  <url><loc>${SITE_URL}${pathOf(route, lang)}</loc>` +
       LANGS.map(
         (other) =>
-          `<xhtml:link rel="alternate" hreflang="${other}" href="${SITE_URL}${pagePath(route, other)}"/>`,
+          `<xhtml:link rel="alternate" hreflang="${other}" href="${SITE_URL}${pathOf(route, other)}"/>`,
       ).join("") +
       `</url>`,
   ),
@@ -595,3 +566,4 @@ console.log(
 console.log(`  ${written.join(", ")}`);
 console.log(`  PWA : manifest, ${ICONS.length} icônes, service worker ${version}`);
 console.log(`  langues : ${LANGS.join(", ")} — ${written.length / LANGS.length} pages chacune`);
+console.log(`  front : ${wasmName} (${wasmBytes.byteLength} octets), ${glueName}`);

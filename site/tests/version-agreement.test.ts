@@ -91,14 +91,14 @@ const PLACES: [name: string, path: string, pattern: RegExp, consequence: string]
   ],
   [
     "SITE_VERSION",
-    "site/src/content.ts",
-    /export const SITE_VERSION = "(\d+\.\d+\.\d+)"/,
+    "crates/wisq-site/src/content.rs",
+    /pub const SITE_VERSION: &str = "(\d+\.\d+\.\d+)"/,
     "le pied de page du site",
   ],
   [
     "la page des versions",
-    "site/src/pages/releases.ts",
-    /export const RELEASED_VERSIONS = \["(\d+\.\d+\.\d+)"/,
+    "crates/wisq-site/src/pages/releases.rs",
+    /pub const RELEASED_VERSIONS: &\[&str\] = &\["(\d+\.\d+\.\d+)"/,
     "la première entrée de la page des versions",
   ],
   [
@@ -128,7 +128,7 @@ describe("every place that states the version states the same one", () => {
   /// what decides — including the order.
   test("the releases page lists exactly the dated changelog entries, newest first", () => {
     const listed = [
-      ...read("site/src/pages/releases.ts").matchAll(/"(\d+\.\d+\.\d+)"/g),
+      ...read("crates/wisq-site/src/pages/releases.rs").matchAll(/"(\d+\.\d+\.\d+)"/g),
     ].map((match) => match[1]!);
     const declared = listed.slice(0, releasedVersions().length);
     expect(declared).toEqual(releasedVersions());
