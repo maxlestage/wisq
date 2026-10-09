@@ -32,6 +32,8 @@
 
 pub mod accueil;
 pub mod content;
+#[cfg(test)]
+mod contenu_tests;
 pub mod doc;
 pub mod installation;
 pub mod logo;

@@ -23077,7 +23077,20 @@ refuse le moindre octet.
 **5. Les gardes du contenu ne pouvaient pas vivre à côté des pages.**
 `claims.test.ts` relit chaque fichier de `pages/` et exige une provenance pour
 chaque nombre ; un seuil de test — `200` mots — y aurait passé pour un chiffre
-publié. Elles sont dans `crates/wisq-site/tests/contenu.rs`.
+publié. Elles sont dans `crates/wisq-site/src/contenu_tests.rs`.
+
+**7. Et la CI a refusé leur premier emplacement.** Elles ont d'abord été un test
+d'intégration, `tests/contenu.rs`, vert dans ce conteneur. Le job Rust est
+tombé : « the crate `wisq_site` requires panic strategy `abort` which is
+incompatible with this crate's strategy of `unwind` », trente-neuf fois. Ce
+crate est un `cdylib`, donc cargo retire l'empreinte du nom de sa bibliothèque ;
+un test d'intégration la fait construire une seconde fois, en `unwind`, sous le
+même nom que la version `abort` du profil `release` — l'avertissement « output
+filename collision » de cargo#6313 le disait, et il se reproduit ici après un
+`cargo clean -p wisq-site`. Sur un arbre chaud, l'ordre de construction
+cachait l'erreur ; sur le coureur, à froid, il la montrait. Les gardes sont
+redevenues des tests unitaires, et la construction à froid ne signale plus de
+collision.
 
 **6. happy-dom fait hériter `WheelEvent` de `UIEvent`.** La spécification dit
 `MouseEvent`, donc `ctrlKey` et `shiftKey` ; là, ils valent `undefined`. Mon

@@ -503,7 +503,7 @@ describe("advertised claims match the repository", () => {
 /// `index.ts`. Le compteur lit le fichier entier, code compris ; les pages ne
 /// portent que des données, donc les seuls nombres qu'il y trouve sont ceux
 /// que le site publie — et c'est pourquoi les gardes du contenu vivent dans
-/// `crates/wisq-site/tests/` et non à côté des pages.
+/// `crates/wisq-site/src/contenu_tests.rs` et non à côté des pages.
 const pagesDirectory = join(repoRoot, "crates", "wisq-site", "src", "pages");
 
 /// Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à un

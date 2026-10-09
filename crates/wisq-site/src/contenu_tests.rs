@@ -5,15 +5,25 @@
 //! trois-ci attrapent l'autre moitié : une chaîne qui existe mais qui est vide,
 //! une langue plus riche que l'autre, une page qui n'en est pas une.
 //!
-//! **Ici et non à côté des pages, et c'est une garde qui l'a dit.**
+//! **Hors de `pages/`, et c'est une garde qui l'a dit.**
 //! `site/tests/claims.test.ts` relit chaque fichier de `src/pages/` et exige
 //! une provenance pour chaque nombre qu'il porte ; un seuil de test écrit là
 //! passerait pour un chiffre que le site publie.
+//!
+//! **Et pas en test d'intégration, et c'est la CI qui l'a dit.** Ce fichier a
+//! d'abord été `tests/contenu.rs`. Ce crate est un `cdylib`, donc cargo retire
+//! l'empreinte du nom de sa bibliothèque ; un test d'intégration la fait
+//! construire une seconde fois, en `unwind`, sous le même nom que la version
+//! `abort` du profil `release` — « output filename collision », cargo#6313 —,
+//! et sur une construction à froid le test se liait à la mauvaise : « requires
+//! panic strategy `abort` which is incompatible with this crate's strategy of
+//! `unwind` ». Un test unitaire n'a pas besoin de la bibliothèque construite à
+//! part.
 
-use wisq_site::content::Lang;
-use wisq_site::doc::{Block, Doc};
-use wisq_site::pages::doc;
-use wisq_site::routes::{RouteId, ROUTES};
+use crate::content::Lang;
+use crate::doc::{Block, Doc};
+use crate::pages::doc;
+use crate::routes::{RouteId, ROUTES};
 
 /// En dessous, une page écrite n'en est pas une : c'est un bouchon.
 const MOTS_MINIMUM: usize = 200;
