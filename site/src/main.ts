@@ -27,20 +27,22 @@ const INSTALL_DISMISSED_KEY = "wisq.install.dismissed";
 
 const root = document.getElementById("root");
 
-// **Ce script s'efface là où Yew hydrate.**
+// **Ce que Yew possède déjà, et ce que ce fichier possède encore.**
 //
-// Le front du site passe à Yew une famille de pages à la fois, donc pendant la
-// migration les deux coexistent : les pages portées reçoivent leurs
-// comportements du module WebAssembly, les autres de ce fichier. Les deux
-// rattachant des gestionnaires au même balisage, une page qui aurait les deux
-// répondrait deux fois à un clic sur le thème.
+// La propriété est **par comportement, pas par page**, et avoir cru le
+// contraire a coûté une régression. Le premier jet s'effaçait en bloc dès que
+// la page portait `data-hydrate="yew"` — sur la seule foi que « le module wasm
+// a tout ». Il ne l'avait pas : seule la bascule de thème était portée, donc la
+// page `offline` a été publiée sans son invite d'installation, sans la mémoire
+// de la langue, et sans ses révélations au défilement. Trois comportements
+// morts, et rien pour le dire.
 //
-// La marque est posée par la construction d'après ce que
-// `crates/wisq-site/src/pages.rs` déclare savoir rendre — ce fichier ne porte
-// donc aucune liste de routes, qui serait une copie de celle-là.
-if (root?.dataset.hydrate === "yew") {
-  // Rien à faire : le module wasm a tout.
-} else {
+// Donc chaque section se demande qui la possède, et une seule le fait
+// aujourd'hui. Une route n'entre dans `PORTEES` que quand **tous** les
+// comportements qu'elle porte existent en Yew, et `tests/behaviour.test.ts`
+// l'exige page par page plutôt que de le croire.
+const themeEnYew = root?.dataset.hydrate === "yew";
+
 const base = root?.dataset.base ?? "./";
 const route = root?.dataset.route ?? "home";
 const lang = root?.dataset.lang ?? "en";
@@ -103,7 +105,7 @@ function showTheme(theme: Theme) {
   }
 }
 
-if (themeButtons.length > 0) {
+if (themeButtons.length > 0 && !themeEnYew) {
   showTheme(storedTheme());
   for (const button of themeButtons) {
     button.addEventListener("click", () => {
@@ -191,5 +193,4 @@ if ("serviceWorker" in navigator) {
       // an ordinary website. Nothing here is load-bearing.
     });
   });
-}
 }
