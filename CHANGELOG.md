@@ -49,6 +49,39 @@ break APIs.
   des boutons aimantés, le défilement lissé à la molette, et des transitions de
   page là où le navigateur les connaît. Tout s'efface pour qui a demandé moins
   d'animation, et la page est entière sans le module.
+- **Le site reprend le violet du logo, dit bien plus, et bouge partout.** La
+  palette crème et orange de 0.4.0 laisse la place à la famille de la marque —
+  #8b83ff en sombre, #5145d9 en clair, le dégradé des quadrants sur ce qui se
+  presse —, et une garde relit chaque couple texte-fond que la page peint : sur
+  la palette crème, le texte des cartes rendait 4,27, sous le seuil de 4,5.
+  Les sept pages écrites ont été réécrites depuis le dépôt, de quatre à neuf
+  fois plus longues, et l'accueil gagne six sections : les trois protocoles et
+  leur réserve, les deux machines locales, le toucher, la sécurité, l'état du
+  projet, le plan des pages. Le mouvement gagne le reste du site : chaque page
+  écrite entre mot par mot sous une aurore, porte un sommaire qui suit la
+  lecture, tape ses blocs de code ligne à ligne ; les cartes s'inclinent sous
+  le pointeur, un anneau suit la souris, la bande prend l'élan du défilement et
+  revient au pied de chaque page sous le nom de la marque en très grand,
+  l'en-tête s'efface quand on descend.
+
+### Fixed
+- **« Vingt et une familles d'architectures » : l'énumération en déclare
+  vingt.** Les deux READMEs, l'accueil, la feuille de route et deux
+  commentaires portaient le compte ; `docs/ROADMAP.md` nommait les vingt dans
+  la phrase même qui en annonçait vingt et une. Une garde compte maintenant les
+  `case` de `GuestArchitecture.Family`.
+- **La page hors ligne disait que seules les pages déjà lues restaient
+  disponibles.** Le service worker les précharge toutes, dans les deux langues,
+  dès la première visite ; elle le dit, et dit pourquoi une page hors ligne
+  peut quand même apparaître.
+- **`SECURITY.md` annonçait un agent en HTTP clair**, avec TLS « sur la feuille
+  de route ». L'agent parle TLS par défaut depuis 0.3.0.
+- **Le site promettait un son SPICE que le téléphone ne joue pas, et un envoi
+  de fichiers que l'écran de session n'atteint pas.** Les deux sont écrits
+  jusqu'au protocole ; aucun code ne joue le son, et le bouton d'envoi cherche
+  une `SPICESession` là où l'application tient l'enveloppe de reconnexion qui
+  l'entoure, donc il échoue quoi que fasse l'invité. Les pages le disent
+  maintenant ; le défaut de l'application, lui, reste à corriger.
 
 ## [0.4.0] — 2026-09-05
 

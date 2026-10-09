@@ -430,7 +430,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
             name: "Remote",
             head: "The VM runs where the silicon is",
             body: "Three hand-written clients built for a phone — VNC, SPICE and RDP, no library between them and the wire: compressed encodings so it stays usable on cellular, a touch model that actually hits small buttons, and it opens the .vv and .rdp files your hypervisors hand out.",
-            points: &["VNC: ZRLE, Tight with JPEG, zlib — over session-lived streams", "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor, input, sound both ways, clipboard, file drop into the guest", "Reconnects through cell handoffs, never retries a bad password", "A host agent boots a powered-off VM when you tap it — and shuts it down, politely or hard, when you ask", "wisq-agent bureau builds the machine from an installation image: the qcow2 disk, the image booted first, a SPICE desktop with a generated password, the tablet, the sound and the guest agent channel — one command, then the desktop is on the phone"],
+            points: &["VNC: ZRLE, Tight with JPEG, zlib — over session-lived streams", "SPICE: the complete display channel — LZ, QUIC, GLZ, LZ4, JPEG — cursor and input; sound, clipboard and file drop spoken at the protocol level", "Reconnects through cell handoffs, never retries a bad password", "A host agent boots a powered-off VM when you tap it — and shuts it down, politely or hard, when you ask", "wisq-agent bureau builds the machine from an installation image: the qcow2 disk, the image booted first, a SPICE desktop with a generated password, the tablet, the sound and the guest agent channel — one command, then the desktop is on the phone"],
         },
         local: ModeCopy {
             name: "Local",
@@ -452,8 +452,8 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
             ProtocoleCopy {
                 name: "SPICE",
                 reach: "What libvirt and QEMU publish for a desktop guest — and what wisq-agent bureau sets up for you.",
-                points: &["Main, display, inputs and cursor channels, the pointer on a connection of its own so it keeps moving while the screen is busy", "LZ, GLZ with its window, QUIC, LZ4, JPEG and the palette forms; draw operations, video streams, three caches", "Sound both ways, the clipboard, and a file sent from the phone into the guest", ".vv connection files open straight into a machine"],
-                caveat: "The clipboard, file transfer and a screen that follows the phone's size need spice-vdagent running in the guest; without it, wisq says so rather than failing quietly.",
+                points: &["Main, display, inputs and cursor channels, the pointer on a connection of its own so it keeps moving while the screen is busy", "LZ, GLZ with its window, QUIC, LZ4, JPEG and the palette forms; draw operations, video streams, three caches", "Sound both ways, the clipboard and a file sent into the guest, spoken at the protocol level", ".vv connection files open straight into a machine"],
+                caveat: "The clipboard and file transfer need spice-vdagent in the guest, and neither has yet been seen working against a booted one. The sound is decoded, not yet played by the phone.",
             },
             ProtocoleCopy {
                 name: "RDP",
@@ -465,7 +465,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     machines: MachinesCopy {
         title: "Two machines in your pocket",
-        lede: "Both are interpreters — no JIT, no special entitlement — and both boot a real, unmodified Linux kernel on the phone, with no network and no host. wisq reads the file you hand it and picks the core itself: twenty-one architecture families recognised, two executed.",
+        lede: "Both are interpreters — no JIT, no special entitlement — and both boot a real, unmodified Linux kernel on the phone, with no network and no host. wisq reads the file you hand it and picks the core itself: twenty architecture families recognised, two executed.",
         columns: ["", "RISC-V", "x86-64"],
         rows: &[
             ["Processor", "rv32ima, one hart", "64-bit x86, with SSE2 and the x87 stack"],
@@ -514,15 +514,15 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Built to be trusted",
-        items: &[FactCopy { value: "2628", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
+        items: &[FactCopy { value: "2632", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
     },
     etat: EtatCopy {
         title: "Where it stands",
         lede: "Everything on the first list is implemented, tested and green in CI. The second is what is not — written down rather than left to be discovered.",
         done_label: "Done",
-        done: &["VNC: RFB 3.8, every common encoding, clipboard, desktop resize", "SPICE: display, input, cursor, sound both ways, clipboard, file transfer", "RDP: a session that negotiates, paints and takes input", "Reconnection through network changes, never on a refused password", "A configurable touch model, a key bar, hardware keyboards", "wisq-agent: boot and shut down, pairing link, QR, Bonjour, TLS", "wisq-agent bureau: a SPICE desktop from an installation image", "Local RISC-V: a real kernel, a disk, suspend and resume", "Local x86-64: an Alpine kernel and its initramfs, a disk, the keyboard", "A Rust VM core, compared with the Swift one in CI"],
+        done: &["VNC: RFB 3.8, every common encoding, clipboard, desktop resize", "SPICE: display, input and cursor, every image codec the display channel needs", "RDP: a session that negotiates, paints and takes input", "Reconnection through network changes, never on a refused password", "A configurable touch model, a key bar, hardware keyboards", "wisq-agent: boot and shut down, pairing link, QR, Bonjour, TLS", "wisq-agent bureau: a SPICE desktop from an installation image", "Local RISC-V: a real kernel, a disk, suspend and resume", "Local x86-64: an Alpine kernel and its initramfs, a disk, the keyboard", "A Rust VM core, compared with the Swift one in CI"],
         next_label: "Not yet",
-        next: &["RDP: NLA/CredSSP, virtual channels, the cursor, resizing mid-session", "Showing the x86-64 screen: the framebuffer is declared and filled by the guest, the view is still to write", "Recording a console's certificate fingerprint from the connection itself", "A licence: none is chosen, so the source is there to read, not to reuse"],
+        next: &["RDP: NLA/CredSSP, virtual channels, the cursor, resizing mid-session", "Showing the x86-64 screen: the framebuffer is declared and filled by the guest, the view is still to write", "SPICE on the phone: playing the sound, and taking the clipboard and file transfer from the protocol to a booted guest", "Recording a console's certificate fingerprint from the connection itself", "A licence: none is chosen, so the source is there to read, not to reuse"],
     },
     explorer: ExplorerCopy {
         title: "Go further",
@@ -556,7 +556,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
             name: "Distant",
             head: "La VM tourne là où il y a du silicium",
             body: "Trois clients écrits à la main pour un téléphone — VNC, SPICE et RDP, sans bibliothèque entre eux et le fil : des encodages compressés pour rester utilisable en 4G, un modèle tactile qui atteint vraiment les petits boutons, et l'ouverture des fichiers .vv et .rdp que vos hyperviseurs remettent.",
-            points: &["VNC : ZRLE, Tight avec JPEG, zlib — sur des flux persistants", "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur, entrées, son dans les deux sens, presse-papiers, dépôt de fichiers dans l'invité", "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé", "Un agent hôte démarre une VM éteinte quand vous la tapez — et l'éteint, poliment ou de force, quand vous le demandez", "wisq-agent bureau construit la machine autour d'une image d'installation : le disque qcow2, l'image amorcée en premier, un bureau SPICE avec mot de passe engendré, la tablette, le son et le canal de l'agent invité — une commande, et le bureau est sur le téléphone"],
+            points: &["VNC : ZRLE, Tight avec JPEG, zlib — sur des flux persistants", "SPICE : canal display complet — LZ, QUIC, GLZ, LZ4, JPEG — curseur et entrées ; son, presse-papiers et dépôt de fichiers parlés au niveau du protocole", "Reconnexion aux changements de réseau, jamais sur un mot de passe refusé", "Un agent hôte démarre une VM éteinte quand vous la tapez — et l'éteint, poliment ou de force, quand vous le demandez", "wisq-agent bureau construit la machine autour d'une image d'installation : le disque qcow2, l'image amorcée en premier, un bureau SPICE avec mot de passe engendré, la tablette, le son et le canal de l'agent invité — une commande, et le bureau est sur le téléphone"],
         },
         local: ModeCopy {
             name: "Local",
@@ -578,8 +578,8 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
             ProtocoleCopy {
                 name: "SPICE",
                 reach: "Ce que libvirt et QEMU publient pour un invité de bureau — et ce que wisq-agent bureau installe pour vous.",
-                points: &["Canaux principal, display, entrées et curseur, le pointeur sur une connexion à lui pour qu'il bouge encore quand l'écran est occupé", "LZ, GLZ et sa fenêtre, QUIC, LZ4, JPEG et les formes à palette ; opérations de dessin, flux vidéo, trois caches", "Le son dans les deux sens, le presse-papiers, et un fichier envoyé du téléphone vers l'invité", "Les fichiers de connexion .vv s'ouvrent directement en machine"],
-                caveat: "Le presse-papiers, l'envoi de fichiers et un écran qui suit la taille du téléphone demandent spice-vdagent dans l'invité ; sans lui, wisq le dit au lieu d'échouer en silence.",
+                points: &["Canaux principal, display, entrées et curseur, le pointeur sur une connexion à lui pour qu'il bouge encore quand l'écran est occupé", "LZ, GLZ et sa fenêtre, QUIC, LZ4, JPEG et les formes à palette ; opérations de dessin, flux vidéo, trois caches", "Le son dans les deux sens, le presse-papiers et un fichier envoyé vers l'invité, parlés au niveau du protocole", "Les fichiers de connexion .vv s'ouvrent directement en machine"],
+                caveat: "Le presse-papiers et l'envoi de fichiers demandent spice-vdagent dans l'invité, et aucun des deux n'a encore été vu marcher contre un invité démarré. Le son est décodé, pas encore joué par le téléphone.",
             },
             ProtocoleCopy {
                 name: "RDP",
@@ -591,7 +591,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
     },
     machines: MachinesCopy {
         title: "Deux machines dans la poche",
-        lede: "Toutes deux sont des interprètes — sans JIT, sans autorisation particulière — et toutes deux démarrent un vrai noyau Linux, non modifié, sur le téléphone, sans réseau ni hôte. wisq lit le fichier que vous lui donnez et choisit le cœur tout seul : vingt et une familles d'architectures reconnues, deux exécutées.",
+        lede: "Toutes deux sont des interprètes — sans JIT, sans autorisation particulière — et toutes deux démarrent un vrai noyau Linux, non modifié, sur le téléphone, sans réseau ni hôte. wisq lit le fichier que vous lui donnez et choisit le cœur tout seul : vingt familles d'architectures reconnues, deux exécutées.",
         columns: ["", "RISC-V", "x86-64"],
         rows: &[
             ["Processeur", "rv32ima, un seul hart", "x86 64 bits, avec SSE2 et la pile x87"],
@@ -640,15 +640,15 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Fait pour inspirer confiance",
-        items: &[FactCopy { value: "2628", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
+        items: &[FactCopy { value: "2632", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
     },
     etat: EtatCopy {
         title: "Où en est le projet",
         lede: "Tout ce qui est dans la première liste est implémenté, testé et vert en CI. La seconde dit ce qui ne l'est pas — écrit plutôt que laissé à découvrir.",
         done_label: "Fait",
-        done: &["VNC : RFB 3.8, tous les encodages courants, presse-papiers, redimensionnement", "SPICE : affichage, entrées, curseur, son dans les deux sens, presse-papiers, envoi de fichiers", "RDP : une session qui négocie, peint et prend les entrées", "La reconnexion aux changements de réseau, jamais sur un mot de passe refusé", "Un modèle tactile réglable, une barre de touches, les claviers matériels", "wisq-agent : démarrer et éteindre, lien d'appairage, QR, Bonjour, TLS", "wisq-agent bureau : un bureau SPICE à partir d'une image d'installation", "RISC-V local : un vrai noyau, un disque, la suspension et la reprise", "x86-64 local : un noyau Alpine et son initramfs, un disque, le clavier", "Un cœur de VM en Rust, comparé à celui en Swift en CI"],
+        done: &["VNC : RFB 3.8, tous les encodages courants, presse-papiers, redimensionnement", "SPICE : affichage, entrées et curseur, tous les codecs d'image du canal display", "RDP : une session qui négocie, peint et prend les entrées", "La reconnexion aux changements de réseau, jamais sur un mot de passe refusé", "Un modèle tactile réglable, une barre de touches, les claviers matériels", "wisq-agent : démarrer et éteindre, lien d'appairage, QR, Bonjour, TLS", "wisq-agent bureau : un bureau SPICE à partir d'une image d'installation", "RISC-V local : un vrai noyau, un disque, la suspension et la reprise", "x86-64 local : un noyau Alpine et son initramfs, un disque, le clavier", "Un cœur de VM en Rust, comparé à celui en Swift en CI"],
         next_label: "Pas encore",
-        next: &["RDP : NLA/CredSSP, les canaux virtuels, le curseur, le redimensionnement en cours de session", "Afficher l'écran du x86-64 : le cadre est déclaré et rempli par l'invité, la vue reste à écrire", "Relever l'empreinte du certificat d'une console depuis la connexion elle-même", "Une licence : aucune n'est choisie, donc le source est là pour être lu, pas réutilisé"],
+        next: &["RDP : NLA/CredSSP, les canaux virtuels, le curseur, le redimensionnement en cours de session", "Afficher l'écran du x86-64 : le cadre est déclaré et rempli par l'invité, la vue reste à écrire", "SPICE sur le téléphone : jouer le son, et mener presse-papiers et envoi de fichiers du protocole jusqu'à un invité démarré", "Relever l'empreinte du certificat d'une console depuis la connexion elle-même", "Une licence : aucune n'est choisie, donc le source est là pour être lu, pas réutilisé"],
     },
     explorer: ExplorerCopy {
         title: "Pour aller plus loin",

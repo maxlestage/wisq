@@ -143,7 +143,11 @@ describe("built output", () => {
     expect(css, "la police est repassée en ligne dans la feuille de style").not.toContain(
       "data:font",
     );
-    expect(style.byteLength, "feuille de style").toBeLessThan(24_000);
+    // 23 717 octets avec la palette violette et l'accueil enrichi ; 29 755 avec
+    // le mouvement de #337 — l'aurore, le code qui se tape, le sommaire, les
+    // cartes qui s'inclinent, le curseur, la bande pilotée, le nom géant du
+    // pied. Le plafond suit une décision mesurée, pas une dérive.
+    expect(style.byteLength, "feuille de style").toBeLessThan(32_000);
 
     const face = css.slice(css.indexOf("@font-face"));
     const src = face.match(/url\(\.\/([^)]+\.woff2)\)/);
@@ -195,9 +199,13 @@ describe("built output", () => {
     const wgz = Bun.gzipSync(w).byteLength;
     const ggz = Bun.gzipSync(g).byteLength;
 
-    // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz`.
-    expect(w.byteLength, "wasm brut").toBeLessThan(272_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(117_000);
+    // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz` ; 271 558 /
+    // 116 280 avec les cinq comportements de #337 — le sommaire qui suit la
+    // lecture, le curseur, la bande que le défilement pousse, l'inclinaison
+    // des cartes, l'en-tête qui s'efface. Du code, pas du contenu : la règle
+    // du paragraphe au-dessus tient.
+    expect(w.byteLength, "wasm brut").toBeLessThan(280_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(120_000);
     // La colle de wasm-bindgen. Mesurée 56 272 / 9 635 : elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,

@@ -887,6 +887,32 @@ pre code { white-space: pre; }
 .footer-legal a { color: var(--fg-soft); text-decoration: none; padding-block: 4px; }
 .footer-legal a:hover { color: var(--fg); text-decoration: underline; }
 
+/* La bande, au bord haut du pied plutôt que dans sa marge. */
+.site-footer > .bande { margin: -40px 0 40px; border-top: 0; }
+
+/* Le nom, en très grand, dans le dégradé de la marque — une lettre par boîte,
+   et chacune porte le dégradé : un dégradé posé sur le parent ne suivrait pas
+   une lettre qui bouge. */
+.pied-geant {
+  margin: 28px 0 0;
+  overflow: clip;
+  text-align: center;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: clamp(5rem, 26vw, 21rem);
+  line-height: 0.82;
+  letter-spacing: -0.04em;
+  user-select: none;
+}
+.pied-geant span {
+  display: inline-block;
+  background: var(--degrade);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 /* ---------- breakpoints: only add room ---------- */
 
 /* Ces ruptures n'ajoutent plus que de la place. Elles reposaient six corps de
@@ -1001,6 +1027,82 @@ pre code { white-space: pre; }
 .doc-dl dt { font-weight: 600; }
 .doc-dl dd { margin: 5px 0 0; color: var(--fg-soft); font-size: 0.95rem; }
 
+/* L'aurore : deux lueurs de la palette derrière l'en-tête d'un document et la
+   scène du héros. Immobile au repos ; le mouvement la fait dériver. `.doc`
+   coupe ce qui déborde sur les côtés — `clip` et non `hidden`, qui ferait de
+   la page un conteneur de défilement et décrocherait le sommaire. */
+.doc { overflow-x: clip; }
+.doc-head { position: relative; isolation: isolate; }
+.doc-head::before,
+.hero-scene::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -40px 0 -30px;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 60% at 18% 40%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(32% 55% at 78% 30%, color-mix(in srgb, #a8a2ff 16%, transparent), transparent 70%);
+}
+.hero-scene::before { z-index: 0; inset: 0; }
+
+/* Le trait sous un titre de section, dans le dégradé de la marque. */
+.doc h2::after {
+  content: "";
+  display: block;
+  width: 2.5rem;
+  height: 3px;
+  margin-top: 10px;
+  border-radius: 2px;
+  background: var(--degrade);
+  transform-origin: 0 50%;
+}
+
+/* Le sommaire : un encadré sous l'en-tête sur un téléphone, une colonne qui
+   colle sur un grand écran. */
+.sommaire {
+  margin-bottom: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  font-size: 0.88rem;
+}
+.sommaire-titre {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+.sommaire ol {
+  position: relative;
+  margin: 0;
+  padding-left: 12px;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  border-left: 1px solid var(--line);
+}
+.sommaire a { display: block; padding: 3px 0; color: var(--fg-soft); text-decoration: none; }
+.sommaire a:hover, .sommaire a[aria-current] { color: var(--accent); }
+@media (min-width: 72em) {
+  .doc > .wrap { position: relative; }
+  .sommaire {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: var(--pad);
+    width: 15rem;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  .sommaire-corps { position: sticky; top: calc(var(--entete, 6.375rem) + 32px); }
+}
+
 /* ---------- install banner ---------- */
 
 /* Anchored to the bottom, clear of the home indicator, and never covering the
@@ -1113,8 +1215,13 @@ pre code { white-space: pre; }
 
 /* L'en-tête se détache du contenu dès qu'on a quitté le haut de la page. */
 [data-motion] .site-header {
-  transition: box-shadow 0.25s var(--ease), background-color 0.25s var(--ease);
+  transition: box-shadow 0.25s var(--ease), background-color 0.25s var(--ease),
+    transform 0.45s var(--ease);
 }
+
+/* Et s'efface quand on descend, revient quand on remonte — jamais tant qu'il a
+   le focus : un lecteur au clavier ne tabule pas vers un en-tête invisible. */
+[data-motion][data-cache] .site-header:not(:focus-within) { transform: translateY(-100%); }
 
 [data-motion][data-scrolled] .site-header {
   box-shadow: 0 1px 0 var(--line), 0 6px 24px -18px rgb(0 0 0 / 55%);
@@ -1124,6 +1231,8 @@ pre code { white-space: pre; }
  * ce qui attend d'entrer dans la vue n'y entrerait jamais. */
 @media print {
   [data-motion] [data-reveal] { opacity: 1; transform: none; }
+  [data-motion] [data-reveal], [data-motion] [data-reveal] .ligne { clip-path: none; }
+  .curseur { display: none; }
 }
 
 /* La cascade : le rang posé par le script devient un retard. */
@@ -1222,14 +1331,14 @@ pre code { white-space: pre; }
    masque déborde un peu sous la ligne de base — `line-height: 0.9` couperait
    sinon les jambages de « p » et de « y » —, et la marge négative rend ce
    débord à la ligne suivante. */
-html.entree .hero-title .mot {
+html.entree :is(.hero-title, .doc-head h1) .mot {
   display: inline-block;
   overflow: clip;
   padding-bottom: 0.14em;
   margin-bottom: -0.14em;
   vertical-align: top;
 }
-html.entree .hero-title .mot > span {
+html.entree :is(.hero-title, .doc-head h1) .mot > span {
   display: inline-block;
   animation: wisq-mot 0.95s var(--ease) both;
   animation-delay: calc(0.12s + var(--i, 0) * 75ms);
@@ -1242,9 +1351,11 @@ html.entree .hero-title .mot > span {
 html.entree .hero .badge,
 html.entree .hero .lede,
 html.entree .hero .cta-row,
-html.entree .hero-lockup {
+html.entree .hero-lockup,
+html.entree .doc-head .lede {
   animation: wisq-monte 0.9s var(--ease) both;
 }
+html.entree .doc-head .lede { animation-delay: 0.45s; }
 html.entree .hero .badge { animation-delay: 0.05s; }
 html.entree .hero-lockup { animation-delay: 0.25s; }
 html.entree .hero .lede { animation-delay: 0.55s; }
@@ -1254,11 +1365,12 @@ html.entree .hero .cta-row { animation-delay: 0.7s; }
 }
 
 /* Derrière le rideau, tout attend qu'il se soit levé. */
-html.rideau .hero-title .mot > span { animation-delay: calc(1.15s + var(--i, 0) * 75ms); }
+html.rideau :is(.hero-title, .doc-head h1) .mot > span { animation-delay: calc(1.15s + var(--i, 0) * 75ms); }
 html.rideau .hero .badge { animation-delay: 1.05s; }
 html.rideau .hero-lockup { animation-delay: 1.25s; }
 html.rideau .hero .lede { animation-delay: 1.55s; }
 html.rideau .hero .cta-row { animation-delay: 1.7s; }
+html.rideau .doc-head .lede { animation-delay: 1.6s; }
 
 /* ---- l'ouverture épinglée ------------------------------------------------- *
  * Seulement sur un écran assez haut pour la tenir : plus petit, le texte
@@ -1345,21 +1457,20 @@ html.rideau .hero .cta-row { animation-delay: 1.7s; }
 
    **Sous `[data-motion]` et non sous `html.entree`, et c'est la garde du
    mouvement qui l'a dit.** Une animation sans fin n'est acceptable que là où
-   le module a vérifié qu'on n'a pas demandé le calme, et `motion.test` refuse
-   toute ligne `infinite` hors de cet attribut. Le premier jet la posait sous
-   `entree`, que le script de la tête pose aux mêmes conditions — vrai, mais
-   c'était une seconde porte pour la même promesse. La bande est sous le pli :
-   qu'elle se mette à défiler quand le module arrive ne se voit pas. */
+   le module a vérifié qu'on n'a pas demandé le calme. La bande est sous le
+   pli : qu'elle se mette à défiler quand le module arrive ne se voit pas.
+
+   **Et ce n'est plus une animation CSS** : sa vitesse suit le défilement,
+   dans son sens, ce qu'une animation écrite d'avance ne sait pas faire. Le
+   module pose le recul `--d` et la pente `--penche` (en dixièmes de degré) ;
+   sans lui, la piste ne bouge pas. */
 [data-motion] .bande-double { display: inline; }
 [data-motion] .bande-piste {
   flex-wrap: nowrap;
   justify-content: flex-start;
   width: max-content;
-  animation: wisq-bande 40s linear infinite;
-}
-[data-motion] .bande:hover .bande-piste { animation-play-state: paused; }
-@keyframes wisq-bande {
-  to { transform: translateX(-50%); }
+  transform: translate3d(var(--d, 0px), 0, 0) skewX(calc(var(--penche, 0) * -0.1deg));
+  will-change: transform;
 }
 
 /* ---- les cartes montent, les titres sortent de leur ligne ---------------- */
@@ -1424,15 +1535,172 @@ html.rideau body::before {
 @media (prefers-reduced-motion: no-preference) {
   @view-transition { navigation: auto; }
   .site-header { view-transition-name: entete; }
-  ::view-transition-old(root) { animation: wisq-vue-sortie 0.3s var(--ease) both; }
-  ::view-transition-new(root) { animation: wisq-vue-entree 0.55s var(--ease) both; }
+  ::view-transition-old(root) { animation: wisq-vue-sortie 0.5s var(--ease) both; }
+  ::view-transition-new(root) { animation: wisq-vue-entree 0.6s cubic-bezier(0.77, 0, 0.18, 1) both; }
 }
+/* La page qui part recule et s'assombrit ; celle qui arrive monte par-dessus,
+   découverte du bas vers le haut — le geste du rideau, en plus court. */
 @keyframes wisq-vue-sortie {
-  to { opacity: 0; transform: translateY(-1.25rem); }
+  to { opacity: 0.35; transform: scale(0.95); }
 }
 @keyframes wisq-vue-entree {
-  from { opacity: 0; transform: translateY(1.75rem); }
+  from { clip-path: inset(100% 0 0 0); }
 }
+
+/* ---- partout ailleurs ----------------------------------------------------- *
+ * Ce que la demande « bien plus d'animation sur tout le site » a ajouté, et
+ * chaque ligne passe par une porte : `[data-motion]`, que le module pose
+ * seulement si l'on n'a pas demandé le calme. */
+
+/* L'aurore dérive, lentement, et revient. */
+[data-motion] :is(.doc-head, .hero-scene)::before {
+  animation: wisq-aurore 16s ease-in-out infinite alternate;
+}
+@keyframes wisq-aurore {
+  to { transform: translate3d(5%, 6%, 0) scale(1.12) rotate(5deg); }
+}
+
+/* Le code se tape, ligne après ligne, et le curseur du terminal attend à la
+   fin. Au-delà de la quinzième ligne le retard cesse de croître. */
+[data-motion] .doc-code .ligne {
+  display: inline-block;
+  vertical-align: top;
+  transition: clip-path 0.45s steps(18, end) calc(0.2s + min(var(--l, 0), 14) * 90ms);
+}
+[data-motion] .doc-code[data-reveal]:not([data-revealed]) .ligne { clip-path: inset(0 100% 0 0); }
+[data-motion] .doc-code code::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: wisq-caret 1.1s steps(1) infinite;
+}
+
+/* Les titres d'un document sortent de leur ligne, puis leur trait se trace. */
+[data-motion] .doc h2[data-reveal] {
+  transition: opacity 0.5s var(--ease), transform 0.5s var(--ease), clip-path 0.8s var(--ease);
+}
+[data-motion] .doc h2[data-reveal]:not([data-revealed]) { clip-path: inset(0 0 100% 0); }
+[data-motion] .doc h2[data-reveal]:not([data-revealed])::after { transform: scaleX(0); }
+[data-motion] .doc h2::after { transition: transform 0.8s var(--ease) 0.3s; }
+
+/* Le trait du sommaire glisse jusqu'à la section lue. */
+[data-motion] .sommaire ol::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 2px;
+  height: var(--h, 0px);
+  transform: translateY(var(--y, 0px));
+  background: var(--accent);
+  transition: transform 0.4s var(--ease), height 0.4s var(--ease);
+}
+
+/* Les cartes s'inclinent sous le pointeur — le module pose l'axe et l'angle —
+   et un trait de lumière fait le tour de leur bord. La cascade garde son
+   retard ; l'inclinaison n'en a pas. */
+[data-motion] .cards { perspective: 1100px; }
+[data-motion] .cards > .card {
+  rotate: var(--ax, 0) var(--ay, 1) 0 calc(var(--aa, 0) * 0.1deg);
+  transition: opacity 0.5s var(--ease) calc(var(--step, 0) * 70ms),
+    transform 0.5s var(--ease) calc(var(--step, 0) * 70ms), rotate 0.5s var(--ease),
+    border-color 0.2s var(--ease);
+}
+@property --tour {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+[data-motion] .card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 1.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(from var(--tour, 0deg), transparent 0 60%, var(--accent) 80%, transparent 96%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+}
+[data-motion] .card:hover::before { opacity: 1; animation: wisq-tour 2.6s linear infinite; }
+@keyframes wisq-tour {
+  to { --tour: 360deg; }
+}
+
+/* Un reflet traverse le bouton principal au survol. */
+[data-motion] .btn-primary { position: relative; overflow: hidden; }
+[data-motion] .btn-primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 35%, rgb(255 255 255 / 0.45) 50%, transparent 65%);
+  transform: translateX(-120%);
+  transition: transform 0.7s var(--ease);
+}
+[data-motion] .btn-primary:hover::after { transform: translateX(120%); }
+
+/* Un trait se trace sous le lien survolé de la navigation, et reste sous la
+   page courante. */
+[data-motion] .site-nav a { position: relative; }
+[data-motion] .site-nav a::after {
+  content: "";
+  position: absolute;
+  inset: auto 12px 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  transition: transform 0.35s var(--ease);
+}
+[data-motion] .site-nav a:is(:hover, [aria-current="page"])::after { transform: none; }
+
+/* Le nom géant du pied monte lettre après lettre, et la marque du pied flotte. */
+[data-motion] .pied-geant > [data-reveal]:not([data-revealed]) { transform: translateY(70%); }
+[data-motion] .footer-logo { animation: wisq-flotte 5s ease-in-out infinite; }
+@keyframes wisq-flotte {
+  50% { transform: translateY(-4px) rotate(-3deg); }
+}
+
+/* Le curseur : un anneau que le module déplace, qui grossit au-dessus de ce
+   qu'on peut cliquer et se resserre quand on presse. Il n'existe que posé par
+   le module, et seulement à la souris. */
+.curseur { display: none; }
+[data-motion] .curseur {
+  display: block;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+}
+[data-motion] .curseur[data-visible] { opacity: 1; }
+[data-motion] .curseur::before {
+  content: "";
+  position: absolute;
+  left: -17px;
+  top: -17px;
+  width: 34px;
+  height: 34px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  transition: transform 0.3s var(--ease), background-color 0.3s var(--ease);
+}
+[data-motion] .curseur[data-lien]::before {
+  transform: scale(1.6);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+[data-motion] .curseur[data-presse]::before { transform: scale(0.7); }
 
 /* ---- moins de mouvement --------------------------------------------------- *
  * Le script de la tête ne pose ni `entree` ni `rideau`, et le module ne pose

@@ -16,9 +16,10 @@
 use yew::prelude::*;
 
 use crate::content::{ExplorerCopy, Lang, TraitCopy};
+use crate::doc::mots;
 use crate::logo::Logo;
 use crate::routes::RouteId;
-use crate::shell::href;
+use crate::shell::{bande, href};
 
 #[derive(Properties, PartialEq)]
 pub struct AccueilProps {
@@ -74,18 +75,9 @@ pub fn Accueil(props: &AccueilProps) -> Html {
                 </div>
             </section>
 
-            // **La bande.** Les mots-clés des sections du dessous, qui défilent.
-            // Deux fois la liste, parce qu'une piste qui défile de la moitié de
-            // sa largeur et recommence n'a pas de couture ; au repos, la
-            // seconde copie est masquée et la première va à la ligne.
-            <div class="bande" aria-hidden="true">
-                <div class="bande-piste">
-                    { for copy.bande.words.iter().map(|mot| html! { <span class="bande-mot">{ *mot }</span> }) }
-                    { for copy.bande.words.iter().map(|mot| html! {
-                        <span class="bande-mot bande-double">{ *mot }</span>
-                    }) }
-                </div>
-            </div>
+            // **La bande.** Les mots-clés des sections du dessous, qui défilent —
+            // et que le défilement de la page pousse, dans son sens.
+            { bande(copy.bande.words) }
 
             <section id="modes">
                 <div class="wrap">
@@ -237,7 +229,11 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 /// Un tableau dont la première ligne nomme les colonnes. `en_tete_de_ligne`
 /// fait de la première cellule de chaque ligne un en-tête : dans le tableau des
 /// machines, « Mémoire » est ce dont la ligne parle, pas une donnée.
-fn tableau(colonnes: &[&'static str; 3], lignes: &'static [[&'static str; 3]], en_tete_de_ligne: bool) -> Html {
+fn tableau(
+    colonnes: &[&'static str; 3],
+    lignes: &'static [[&'static str; 3]],
+    en_tete_de_ligne: bool,
+) -> Html {
     html! {
         <div class="table-scroll">
             <table>
@@ -287,24 +283,4 @@ fn pistes(e: &'static ExplorerCopy) -> [(RouteId, &'static str); 7] {
         (RouteId::Releases, e.releases),
         (RouteId::Privacy, e.privacy),
     ]
-}
-
-/// Le titre, mot par mot.
-///
-/// **Chaque mot est un masque et son contenu**, pour que l'entrée soit celle de
-/// la référence : le mot monte depuis sous sa ligne au lieu d'apparaître. Le
-/// rang part dans `--i`, dont la feuille de style fait un retard. Les espaces
-/// restent de vrais nœuds de texte entre les mots : un titre se lit, se
-/// sélectionne et se copie avec ses espaces, et un lecteur d'écran lit une
-/// suite de `span` en ligne comme la phrase qu'elle est.
-fn mots(phrase: &'static str) -> Html {
-    let total = phrase.split(' ').count();
-    html! {
-        { for phrase.split(' ').enumerate().map(|(i, mot)| html! {
-            <>
-                <span class="mot" style={format!("--i:{i}")}><span>{ mot }</span></span>
-                { if i + 1 < total { html! { " " } } else { html! {} } }
-            </>
-        }) }
-    }
 }

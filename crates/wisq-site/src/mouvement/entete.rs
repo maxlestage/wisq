@@ -1,20 +1,45 @@
-//! L'en-tête se pose sur la page dès qu'on a quitté le haut, et dit sa hauteur
-//! à l'ouverture.
+//! L'en-tête se pose sur la page dès qu'on a quitté le haut, s'efface quand on
+//! descend, revient dès qu'on remonte, et dit sa hauteur à l'ouverture.
+//!
+//! **S'effacer en descendant**, parce que sur un téléphone l'en-tête et sa
+//! bande de navigation prennent un sixième de l'écran à un lecteur qui lit vers
+//! le bas, et ne servent qu'à celui qui remonte chercher autre chose. La
+//! feuille de style le garde en place tant qu'il a le focus : un lecteur au
+//! clavier ne tabule jamais vers un en-tête invisible.
+
+use std::cell::Cell;
 
 use super::outils;
 use web_sys::{Document, Element, HtmlElement, Window};
+
+/// En dessous, l'en-tête ne s'efface jamais : le haut de la page est l'endroit
+/// où l'on cherche où aller.
+const SEUIL: f64 = 320.0;
+/// Le moindre défilement qui compte comme un sens : en dessous, une molette qui
+/// tremble ferait clignoter l'en-tête.
+const SENS: f64 = 6.0;
 
 pub fn demarrer(fenetre: &Window, document: &Document, racine: &HtmlElement) {
     let marquer = {
         let fenetre = fenetre.clone();
         let racine = racine.clone();
+        let precedent = Cell::new(fenetre.scroll_y().unwrap_or(0.0));
         move || {
-            let defile = fenetre.scroll_y().unwrap_or(0.0) > 8.0;
-            let _ = if defile {
+            let y = fenetre.scroll_y().unwrap_or(0.0);
+            let _ = if y > 8.0 {
                 racine.set_attribute("data-scrolled", "")
             } else {
                 racine.remove_attribute("data-scrolled")
             };
+            let dy = y - precedent.get();
+            if dy > SENS && y > SEUIL {
+                let _ = racine.set_attribute("data-cache", "");
+            } else if dy < -SENS || y <= SEUIL {
+                let _ = racine.remove_attribute("data-cache");
+            }
+            if dy.abs() > SENS {
+                precedent.set(y);
+            }
         }
     };
     marquer();
