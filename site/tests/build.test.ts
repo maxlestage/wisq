@@ -230,30 +230,46 @@ describe("built output", () => {
   /// premier jet de cette note concluait de deux noms que la colle était
   /// identique « à l'octet » : c'était un témoin qui n'en était pas.
   ///
-  /// **Le gzip bouge cinq fois plus que le brut**, et c'est mesuré deux fois :
-  /// 1 489 octets contre 308 à `a6ce835`, 1 505 contre 308 à `3914022`. La
-  /// compression amplifie un remaniement que le brut dissimule, donc c'est le
-  /// chiffre gzip qu'il faut regarder le jour où un plafond rougit — l'inverse de
-  /// l'intuition.
+  /// **Et le gzip dépend de l'outil, pas de la machine — #339 a conclu
+  /// l'inverse, et c'était faux.** Cette note a d'abord affirmé que « le gzip
+  /// bouge cinq fois plus que le brut », sur 1 489 puis 1 505 octets d'écart.
+  /// Les deux chiffres étaient une différence de **compresseur**, pas de
+  /// machine : les mesures locales sortaient du `gzip -9` du système, et les
+  /// chiffres annoncés du `Bun.gzipSync` que ce test emploie. Mesuré, sur un
+  /// seul fichier :
+  ///
+  /// | | wasm | colle |
+  /// | --- | --- | --- |
+  /// | `Bun.gzipSync`, Bun 1.4.2 — ce que la CI emploie | **118 716** | **9 909** |
+  /// | `Bun.gzipSync`, Bun 1.3.11 | 117 620 | 9 993 |
+  /// | `gzip -9` du système | 117 213 | 9 763 |
+  ///
+  /// Le même appel, le même octet d'entrée, **1 096 octets d'écart entre deux
+  /// versions de Bun** — et il ne va pas dans le même sens pour les deux
+  /// fichiers. Il y avait deux `bun` sur le PATH du conteneur, et ça n'a pas été
+  /// vu.
+  ///
+  /// **Le gzip est donc le chiffre le plus STABLE entre machines, pas le moins.**
+  /// À compresseur égal : 118 718 annoncé pour le coureur contre 118 716 ici,
+  /// soit **2 octets**, là où le brut en bouge 308. L'intuition de départ était
+  /// juste à l'envers.
   ///
   /// **Pourquoi aucune garde ne tient ces chiffres exactement.** Elle serait
   /// rouge sur une machine ou sur l'autre pour un module parfaitement sain.
-  /// Ce qui *est* vérifié : la marge de chaque borne, sur `3914022`, contre
-  /// l'écart de 1 505 au pire.
+  /// Ce qui *est* vérifié, à compresseur égal (Bun 1.4.2, celui de la CI) :
   ///
   /// | borne | marge | d'après |
   /// | --- | --- | --- |
-  /// | wasm brut, 285 000 | 8 093 | le coureur, qui est le plus gros des deux |
-  /// | wasm gzip, 123 000 | 5 787 | ce conteneur — le coureur ne l'imprime pas |
-  /// | colle brute, 60 000 | **1 131** | ce conteneur, seule mesure |
-  /// | colle gzip, 11 000 | 1 237 | ce conteneur, seule mesure |
+  /// | wasm brut, 285 000 | 8 093 | le coureur, le plus gros des deux |
+  /// | wasm gzip, 123 000 | 4 282 | le chiffre annoncé pour le coureur |
+  /// | colle brute, 60 000 | 1 131 | ce conteneur, seule mesure |
+  /// | colle gzip, 11 000 | **1 091** | ce conteneur, seule mesure |
   ///
-  /// **Les deux bornes de la colle sont donc sous l'écart du module**, et c'est
-  /// la seule chose inquiétante ici : si la colle bouge d'une chaîne à l'autre
-  /// autant que le module, elles peuvent basculer sans que personne touche au
-  /// code. On ne sait pas si elle bouge — voir ci-dessus, elle n'est mesurée que
-  /// d'un côté. C'est nommé plutôt que corrigé : relever une borne est une
-  /// décision de budget, et la prendre sans la mesure serait deviner.
+  /// Toutes gardent plus de marge que le plus grand écart observé entre machines
+  /// — 308 octets sur le brut, 2 sur le gzip. **Aucune n'est en danger**, et
+  /// l'alarme que #339 a sonnée là-dessus venait du même mélange de
+  /// compresseurs : elle comparait une marge de colle à un écart de module
+  /// mesuré à un autre outil.
   test("le front en WebAssembly reste dans son budget", () => {
     const { wasm, glue } = frontFiles();
     const octets = (nom: string) => readFileSync(join(dist, nom));

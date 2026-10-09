@@ -23523,6 +23523,12 @@ reconstruction du même source n'a pas rendu le même nombre.
 | `3914022`, le coureur de la CI | 276 907 | — | — | — |
 | `3914022`, ce conteneur | 276 599 | 117 213 | 58 869 | 9 763 |
 
+> **Corrigé en #340 : les deux colonnes gzip de ce tableau sortent du
+> `gzip -9` du système, alors que les chiffres annoncés et les bornes du budget
+> emploient `Bun.gzipSync`. Elles ne sont donc comparables à rien ici.** À
+> compresseur égal (Bun 1.4.2, celui de la CI), ce conteneur rend 118 716 pour
+> le module et 9 909 pour la colle.
+
 **L'écart du module est de 308 octets exactement aux deux commits**, sur deux
 modules que quinze kilooctets séparent. Un écart **constant**, donc pas
 proportionnel au code : ce n'est pas « la compilation diffère », c'est quelque
@@ -23563,6 +23569,13 @@ que l'inverse.
 que le brut dissimule — donc c'est le chiffre gzip qu'il faut regarder le jour où
 un plafond rougit, l'inverse de l'intuition.
 
+> **Faux, corrigé en #340, et à l'envers.** Les 1 489 et 1 505 sont un écart de
+> **compresseur**, pas de machine : `gzip -9` d'un côté, `Bun.gzipSync` de
+> l'autre. Le même fichier et le même appel `Bun.gzipSync` rendent 118 716 sous
+> Bun 1.4.2 et 117 620 sous 1.3.11 — il y avait deux `bun` sur le PATH. À
+> compresseur égal, le gzip est le chiffre **le plus stable** entre machines :
+> 2 octets d'écart, contre 308 sur le brut.
+
 **Le chiffre de la colle avait deux vagues de retard** : le commentaire annonçait
 56 272 / 9 635 quand l'artefact en pesait 58 869 / 9 763. Rien ne le tenait, et
 le code avait bougé sans lui. Corrigé, avec sa machine.
@@ -23573,6 +23586,11 @@ le module, elles peuvent basculer sans que personne touche au code. On ne sait p
 si elle bouge — elle n'est mesurée que d'un côté. **C'est nommé plutôt que
 corrigé** : relever une borne est une décision de budget, et la prendre sans la
 mesure serait deviner.
+
+> **Alarme infondée, corrigée en #340.** Elle comparait une marge de colle à un
+> écart de module mesuré à un autre compresseur. À compresseur égal, le plus
+> grand écart observé entre machines est de 308 octets sur le brut et de **2** sur
+> le gzip, et la plus petite marge est de 1 091. Aucune borne n'est en danger.
 
 ### Ce qui n'est pas touché
 
@@ -23597,3 +23615,79 @@ Un témoin qui passe par un intermédiaire témoigne de l'intermédiaire. La seu
 façon de le voir a été de chercher **ce que la construction fait au fichier entre
 la mesure et le nom** — c'est-à-dire de relire le producteur du chiffre, pas le
 chiffre.
+
+## #340 — deux `bun` sur un PATH, et trois affirmations de #339 à retirer
+
+#339 a été livrée il y a une heure. Trois de ses affirmations sont fausses, et
+elles ont toutes la même racine : **j'ai mesuré avec un outil, et comparé au
+chiffre d'un autre.**
+
+### La mesure
+
+Le même fichier, le même appel `Bun.gzipSync`, et le `gzip -9` du système pour
+situer :
+
+| | wasm | colle |
+| --- | --- | --- |
+| `Bun.gzipSync`, Bun **1.4.2** — celui de la CI | **118 716** | **9 909** |
+| `Bun.gzipSync`, Bun **1.3.11** | 117 620 | 9 993 |
+| `gzip -9` du système | 117 213 | 9 763 |
+
+**1 096 octets d'écart entre deux versions de Bun**, sur le même octet d'entrée,
+et l'écart ne va même pas dans le même sens pour les deux fichiers. Il y avait
+**deux `bun` sur le PATH du conteneur** — `$S/bin/bun` en 1.4.2 et
+`/root/.bun/bin/bun` en 1.3.11 — et selon la façon dont je composais le PATH, je
+n'invoquais pas le même programme. Je ne l'avais pas vu.
+
+### Ce que cela retire à #339
+
+1. **« Le gzip bouge cinq fois plus que le brut »** — faux, et à l'envers. Les
+   1 489 et 1 505 octets étaient l'écart `gzip -9` / `Bun.gzipSync`. À
+   compresseur égal, le gzip est le chiffre **le plus stable** entre machines :
+   118 718 annoncé pour le coureur contre 118 716 ici, soit **2 octets**, là où
+   le brut en bouge 308.
+2. **Les colonnes gzip du tableau de mesures** sortaient de `gzip -9` et ne sont
+   comparables ni aux chiffres annoncés ni aux bornes, qui emploient
+   `Bun.gzipSync`.
+3. **L'alarme sur les bornes de la colle** comparait une marge de colle à un
+   écart de module mesuré à un autre outil. À compresseur égal, la plus petite
+   marge est de 1 091 octets et le plus grand écart observé de 308 : aucune borne
+   n'est en danger.
+
+Ce qui **reste vrai** de #339 : les 308 octets d'écart du module entre le coureur
+et ce conteneur, identiques aux deux commits et mesurés au `stat` — une taille
+brute, qu'aucun compresseur ne touche. Et le module embarque bien le hash de
+commit de rustc.
+
+### Le correctif, et pourquoi c'est l'instrument qu'il fallait changer
+
+La construction connaissait les quatre chiffres et n'en imprimait qu'un. Elle
+imprime maintenant les quatre — **et la version de Bun avec**, parce que le
+chiffre gzip en dépend. Un chiffre gzip sans son outil n'est pas comparable à un
+autre chiffre gzip, et c'est très exactement l'erreur ci-dessus. L'instrument se
+nomme désormais assez pour qu'on ne puisse plus la refaire :
+
+```
+front : wisq-27c09838c2d61e9f.wasm (276599 octets, 118716 gzip),
+        wisq-ba1d922b489ebd83.js (58869 octets, 9909 gzip) — gzip de Bun 1.4.2
+```
+
+C'est aussi la onzième façon de se tromper du journal, prise par l'autre bout :
+un instrument qui connaît la réponse et la jette. Celui-ci la garde, et la
+prochaine exécution du coureur répondra d'elle-même à la question que #339 a
+laissée ouverte sur la colle.
+
+### Le signe à retenir
+
+**Deux outils du même nom ne sont pas le même outil, et une mesure doit nommer
+celui qui l'a prise.** « 117 213 » et « 118 716 » décrivent le même fichier ;
+l'un n'est pas plus vrai que l'autre, et les comparer est un non-sens que rien
+dans leur apparence ne signale.
+
+Et le signe qui revient pour la troisième fois en deux tranches, ce qui commence
+à faire une règle : **quand deux nombres qui devraient s'accorder ne s'accordent
+pas, suspecter d'abord le chemin par lequel chacun est arrivé** — le compresseur,
+le binaire invoqué, la substitution que la construction glisse entre la mesure et
+le nom. #339 a trouvé un vrai écart de 308 octets *et* s'est trompée trois fois
+sur le reste, parce qu'elle a cherché la cause dans l'objet mesuré plutôt que dans
+l'appareil de mesure.
