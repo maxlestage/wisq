@@ -216,6 +216,28 @@ describe("built output", () => {
   /// pages le relève avec son écart mesuré** — la même règle que lorsque le
   /// budget est descendu de 240 000 à 8 000 : « le chiffre devait bouger avec le
   /// code ».
+  ///
+  /// **Et il se relève à marge constante**, pas à l'estime : chacun des quatre
+  /// plafonds garde le rapport qu'il avait à sa mesure du jour — 1,045 et 1,052
+  /// pour le module, 1,18 et 1,19 pour la colle. Un plafond relevé
+  /// « généreusement » une fois cesse de mesurer quoi que ce soit les fois
+  /// suivantes.
+  ///
+  /// **Ce que les deux comportements portés ont coûté, mesuré :**
+  ///
+  /// | tranche | wasm brut | wasm gzip | colle brute |
+  /// | --- | --- | --- | --- |
+  /// | la bascule de thème seule | 253 863 | 106 391 | 33 764 |
+  /// | + la mémoire de la langue | 254 112 (+249) | 106 605 | 33 764 |
+  /// | + l'invite d'installation | 265 179 (+11 067) | 111 220 | 37 242 |
+  ///
+  /// Dans ce dernier écart, **attendre les deux promesses du navigateur coûte
+  /// 2 323 octets bruts et 869 gzippés** — isolé en remplaçant l'attente par un
+  /// appel sans suite, reconstruit, et remesuré sur le code livré. Le reste est
+  /// le composant, le type externe de `beforeinstallprompt`, les deux
+  /// détections, et la surface de `web-sys` qu'elles ouvrent (`Navigator`,
+  /// `EventTarget`, `Event`), qui est aussi ce qui fait grossir la colle de
+  /// 3 478 octets.
   test("le front en WebAssembly reste dans son budget", () => {
     const { wasm, glue } = frontFiles();
     const octets = (nom: string) => readFileSync(join(dist, nom));
@@ -224,13 +246,13 @@ describe("built output", () => {
     const wgz = Bun.gzipSync(w).byteLength;
     const ggz = Bun.gzipSync(g).byteLength;
 
-    // Le module. Mesuré 253 728 / 106 392 après `wasm-opt -Oz`.
-    expect(w.byteLength, "wasm brut").toBeLessThan(265_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(112_000);
-    // La colle de wasm-bindgen. Mesurée 33 764 / 6 745, et elle ne bouge qu'avec
+    // Le module. Mesuré 265 179 / 111 220 après `wasm-opt -Oz`.
+    expect(w.byteLength, "wasm brut").toBeLessThan(277_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(117_000);
+    // La colle de wasm-bindgen. Mesurée 37 242 / 7 136, et elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie.
-    expect(g.byteLength, "colle brute").toBeLessThan(40_000);
-    expect(ggz, "colle gzippée").toBeLessThan(8_000);
+    expect(g.byteLength, "colle brute").toBeLessThan(44_000);
+    expect(ggz, "colle gzippée").toBeLessThan(8_500);
 
     // **Et `wasm-opt` doit vraiment être passé.** Sans lui le module fait
     // 278 098 octets, ce qui franchit le plafond ci-dessus — mais une chaîne de

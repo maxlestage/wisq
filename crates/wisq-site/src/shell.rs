@@ -9,6 +9,7 @@
 use yew::prelude::*;
 
 use crate::content::{Lang, AUTHOR, AUTHOR_URL, SITE_VERSION};
+use crate::installation::InstallPrompt;
 use crate::logo::Logo;
 use crate::routes::{page_path, relative_base, RouteId, ROUTES};
 use crate::theme::ThemeSwitch;
@@ -186,53 +187,5 @@ fn Footer(props: &FooterProps) -> Html {
                 </div>
             </div>
         </footer>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct InstallProps {
-    lang: Lang,
-}
-
-/// Ce qui transforme le site en quelque chose sur l'écran d'accueil.
-///
-/// Deux plateformes, deux mécanismes, et celui qui intéresse ce projet est
-/// celui qui n'a pas d'API. Chromium émet `beforeinstallprompt` et confie une
-/// invite à appeler plus tard ; Safari sur iOS n'émet rien du tout et installe
-/// par la feuille de partage, donc la seule chose honnête à y proposer est les
-/// trois gestes qui marchent.
-///
-/// **Les deux formulations sont rendues, et les deux partent masquées.** Savoir
-/// laquelle s'applique est un fait sur le navigateur, donc impossible à la
-/// construction — mais l'alternative était pire : construire cette bannière
-/// dans le navigateur voudrait dire y expédier ses quatre chaînes, dans la
-/// langue de la page.
-#[function_component]
-fn InstallPrompt(props: &InstallProps) -> Html {
-    let copy = props.lang.copy();
-    html! {
-        <aside class="install-banner" role="complementary" hidden=true data-install="">
-            <div class="wrap install-banner-inner">
-                <div data-install-variant="prompt" hidden=true>
-                    <strong>{ copy.pwa.title }</strong>
-                    <p>{ copy.pwa.body }</p>
-                </div>
-                <div data-install-variant="ios" hidden=true>
-                    <strong>{ copy.pwa.ios_title }</strong>
-                    <p>{ copy.pwa.ios_body }</p>
-                </div>
-                <div class="install-banner-actions">
-                    // Seul le chemin de Chromium a un bouton qui puisse faire
-                    // quelque chose : sur iOS il n'y a aucune API à appeler, donc
-                    // la formulation est toute la fonctionnalité.
-                    <button type="button" class="btn btn-primary" data-install-accept="" hidden=true>
-                        { copy.pwa.action }
-                    </button>
-                    <button type="button" class="btn btn-quiet" data-install-dismiss="">
-                        { copy.pwa.dismiss }
-                    </button>
-                </div>
-            </div>
-        </aside>
     }
 }

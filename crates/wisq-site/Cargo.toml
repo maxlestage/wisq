@@ -22,17 +22,32 @@ repository = "https://github.com/maxlestage/wisq"
 [features]
 default = ["ssr"]
 ssr = ["yew/ssr", "dep:tokio"]
-hydrate = ["yew/hydration", "dep:wasm-bindgen", "dep:web-sys"]
+hydrate = [
+  "yew/hydration",
+  "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
+  "dep:js-sys",
+  "dep:web-sys",
+]
 
 [dependencies]
 yew = { version = "0.23", default-features = false }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+# L'invite d'installation attend deux promesses du navigateur, et lit une
+# propriété que `web-sys` ne déclare pas parce qu'elle n'est pas standard.
+# Les deux arrivent déjà par Yew : ce sont des dépendances directes pour
+# pouvoir les nommer, pas des arrivées dans le graphe.
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
   "Window",
   "Storage",
   "Document",
   "Element",
+  "Event",
+  "EventTarget",
+  "Navigator",
   "HtmlElement",
   "MediaQueryList",
 ] }

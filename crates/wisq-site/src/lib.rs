@@ -25,6 +25,7 @@
 
 pub mod content;
 pub mod doc;
+pub mod installation;
 pub mod logo;
 pub mod pages;
 pub mod routes;

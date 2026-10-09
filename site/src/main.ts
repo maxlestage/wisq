@@ -50,6 +50,7 @@ const root = document.getElementById("root");
 // aucun, ce fichier n'aura plus de raison d'exister.
 const themeEnYew = root?.dataset.hydrate === "yew";
 const langueEnYew = root?.dataset.hydrate === "yew";
+const installEnYew = root?.dataset.hydrate === "yew";
 
 const base = root?.dataset.base ?? "./";
 const route = root?.dataset.route ?? "home";
@@ -157,7 +158,11 @@ function isIOS(): boolean {
 
 const banner = document.querySelector<HTMLElement>("[data-install]");
 
-if (banner && !isStandalone() && stored(INSTALL_DISMISSED_KEY) !== "1") {
+// Portée dans `crates/wisq-site/src/installation.rs`, où la bannière est
+// redevenue un composant : les quatre chaînes, les deux formulations et la
+// décision de montrer vivent au même endroit, au lieu d'être séparées par un
+// nom d'attribut.
+if (!installEnYew && banner && !isStandalone() && stored(INSTALL_DISMISSED_KEY) !== "1") {
   const show = (variant: "prompt" | "ios") => {
     banner.querySelector<HTMLElement>(`[data-install-variant="${variant}"]`)?.removeAttribute(
       "hidden",

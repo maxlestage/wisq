@@ -1157,8 +1157,10 @@ dependencies = [
 name = "wisq-site"
 version = "0.4.0"
 dependencies = [
+ "js-sys",
  "tokio",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "yew",
 ]

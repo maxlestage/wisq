@@ -22921,3 +22921,113 @@ Et son corollaire, qui a sauvé cette tranche d'une garde inutile : **avant
 d'écrire une garde pour un mécanisme, vérifier que le mécanisme existe.** La
 garde aurait été verte, elle aurait eu l'air de tenir quelque chose, et elle
 n'aurait gardé qu'une histoire.
+
+## #335 — l'invite d'installation en Yew, et un `instanceof` sur un nom qui n'existe nulle part
+
+Troisième comportement porté, et le plus gros : la bannière qui fait de ce site
+quelque chose sur l'écran d'accueil. Elle vit maintenant dans
+`crates/wisq-site/src/installation.rs`, où les quatre chaînes, les deux
+formulations et la décision de montrer sont au même endroit — au lieu d'être
+séparées par un nom d'attribut, le composant d'un côté et son comportement de
+l'autre.
+
+Le pré-rendu est inchangé **octet pour octet** : l'état part de `Masquee`, qui
+est la seule valeur que le serveur puisse produire, et c'est aussi ce que
+l'hydratation exige — rien de ce qui décide ici n'est lisible au pré-rendu, ni le
+mode d'affichage, ni l'agent, ni le stockage, ni un événement qui n'est pas
+encore arrivé. La garde de migration de `render.test.tsx` le tient.
+
+### Le défaut que la tranche a produit, et qui aurait été livré mort
+
+Le premier jet reconnaissait l'événement de Chromium par sa classe :
+
+```rust
+if let Ok(garde) = brut.dyn_into::<retenue::Retenue>() { … }
+```
+
+Ça semblait la forme sûre. C'était la forme **impossible**. wasm-bindgen engendre
+pour un type externe un `instanceof` sur un identifiant **du même nom**, et la
+colle livrée portait littéralement :
+
+```js
+__wbg_instanceof_Retenue_e48387fb2781baa8: function(arg0) {
+    try { result = getObject(arg0) instanceof Retenue; } catch (_) { result = false; }
+```
+
+**Aucun navigateur ne définit `Retenue`.** Le `try/catch` de la colle rendait donc
+`false` à chaque appel, partout, Chromium compris : la bannière n'aurait **jamais
+pu apparaître**, et aucun test de forme ne l'aurait dit — le module était émis,
+il pesait ce qu'il devait, la page l'importait.
+
+C'est `site/tests/hydration.test.ts` qui l'a trouvé, en appuyant sur le bouton,
+deux tranches après avoir été écrit pour ça. Et le diagnostic n'a pas été
+deviné : `grep instanceof` sur la colle livrée l'a montré en une ligne.
+
+Nommer la classe réelle, `BeforeInstallPromptEvent`, n'aurait fait que déplacer
+la faute : elle n'est pas standardisée et n'existe que dans Chromium. La question
+honnête est donc **« cet événement porte-t-il les deux membres dont j'ai
+besoin ? »** — `prompt` une fonction, `userChoice` présent — et le refus a un
+objet : un événement qu'on ne peut pas rejouer ne doit pas faire apparaître un
+bouton « Installer » qui ne ferait rien.
+
+### Ce que ça coûte, mesuré, et le plafond relevé à marge constante
+
+| tranche | wasm brut | wasm gzip | colle brute |
+| --- | --- | --- | --- |
+| la bascule de thème seule | 253 863 | 106 391 | 33 764 |
+| + la mémoire de la langue | 254 112 (+249) | 106 605 | 33 764 |
+| + l'invite d'installation | 265 179 (+11 067) | 111 220 | 37 242 |
+
+L'ancien plafond brut était 265 000 : la tranche l'a dépassé de 179 octets, donc
+il monte. **À marge constante, pas à l'estime** : chacun des quatre plafonds
+garde le rapport qu'il avait à sa mesure du jour — 1,045 et 1,052 pour le module,
+1,18 et 1,19 pour la colle. Un plafond relevé « généreusement » une fois cesse de
+mesurer quoi que ce soit les fois suivantes.
+
+Et un chiffre isolé, réutilisable pour la suite du portage : **attendre les deux
+promesses du navigateur coûte 2 323 octets bruts et 869 gzippés**, mesuré en
+remplaçant l'attente par un appel sans suite, reconstruit, puis remesuré sur le
+code livré pour qu'aucun chiffre ne traîne d'une variante morte. Le reste de
+l'écart est le composant, le type externe, les deux détections, et la surface de
+`web-sys` qu'elles ouvrent.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| l'écouteur n'est jamais posé | l'invite |
+| la reconnaissance refuse tout | l'invite |
+| le renvoi ne mémorise plus | l'invite |
+| le renvoi ne masque plus | l'invite |
+| le site se croit déjà installé | l'invite |
+| le site se croit sur iOS | l'invite |
+
+Six, aucun survivant — et les deux derniers comptent autant que les quatre
+autres : ils montrent que les détections sont **consultées**, pas seulement
+écrites. Chacun a demandé une reconstruction du wasm ; c'est le prix d'un
+sabordage qui traverse un compilateur.
+
+### Et deuxième observation du rouge rare
+
+Le premier tour complet après une longue inactivité a de nouveau pris **65 s
+contre 9,8 s à chaud**, avec exactement un dépassement à 20 000 ms, puis zéro
+échec au tour suivant sur des sources identiques. C'est la deuxième fois
+aujourd'hui, même signature, et la description de `claims.test.ts` l'explique
+déjà : une marche de 146 fichiers à 5 798 ms à froid, sous un
+`setDefaultTimeout(20_000)` que neuf fichiers posent et qui vaut pour tout le
+processus. Le test n'a pas été nommé — la sortie n'était pas capturée — donc
+c'est noté comme une **corrélation reproductible dans ses circonstances**, pas
+comme une cause établie.
+
+### Le signe à retenir
+
+**Une question dont la réponse est toujours « non » n'est pas une garde, c'est un
+mur.** `instanceof Retenue` avait toute l'apparence de la prudence : un
+transtypage vérifié, un `if let`, un chemin d'échec propre. Il refusait tout, et
+le code en aval était inatteignable — du code mort déguisé en sûreté. La seule
+chose qui distingue un transtypage prudent d'un mur est de **le mettre devant la
+chose qu'il doit accepter**, et de regarder.
+
+Corollaire, qui vaut pour tout pont vers un langage qu'on ne compile pas : **ce
+que le générateur écrit est lisible, donc il se lit.** La colle était dans
+`site/dist`, en clair, et la réponse tenait en un `grep`.
