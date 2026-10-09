@@ -560,14 +560,33 @@ const accounted = new Map<string, Map<string, string>>([
           "Pas tenu par la CI — l'étape récupère l'image en best effort.",
       ],
       [
-        "17",
-        "les régions compilées portant un octet illisible, même commande, même " +
-          "relevé. Elles se comptent dans la même ligne que les 10 116.",
-      ],
-      [
         "9660",
         "ce n'est pas une mesure : c'est le numéro de la norme ISO des " +
           "systèmes de fichiers de disque optique.",
+      ],
+      [
+        "3.8",
+        "ce n'est pas une mesure : la version du protocole RFB que parle le client VNC — README.md, « RFB 3.8 client: handshake, DES auth… », et `docs/ROADMAP.md`, lot 1, « client VNC RFB 3.8 ».",
+      ],
+      [
+        "4.7",
+        "ce n'est pas une mesure : le numéro de la règle de l'App Store que README.md cite (« grey area, rule 4.7 ») et que `docs/ROADMAP.md` écarte dans « Contraintes à garder en tête ».",
+      ],
+      [
+        "16",
+        "ce n'est pas une mesure : le plafond de mémoire de la machine PC, 16 Gio — `Sources/WisqVM/GuestArchitecture.swift`, `case .x86_64: return 16 << 30`, le choix de l'auteur que #283 a posé dans `docs/ROADMAP.md`.",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : deux bornes de 2 Gio, toutes deux écrites dans le code — la limite d'adressage du rv32 (`LinuxMachine.maximumRAMSize = 2 * 1024 * 1024 * 1024`) et la part que l'application laisse à l'appareil (`KernelMemory.leftToTheDevice = 2 << 30`).",
+      ],
+      [
+        "32",
+        "ce n'est pas une mesure : la largeur de la machine rv32, la première des trois raisons du passage à x86-64 — `docs/ROADMAP.md`, lot 7, « la machine est en **32 bits** ».",
+      ],
+      [
+        "264",
+        "ce n'est pas une mesure : le nom du codec vidéo H.264, que `docs/ROADMAP.md` (lot 3, « Ce qui reste ») range avec RemoteFX parmi ce qui manque à RDP.",
       ],
     ]),
   ],
@@ -642,6 +661,170 @@ const accounted = new Map<string, Map<string, string>>([
           "la virgule décimale en fait un jeton distinct. Tenu par la même " +
           "garde, qui lit les deux phrases séparément.",
       ],
+      [
+        "0",
+        "ce n'est pas une mesure : le port que `--port 0` demande pour laisser le système choisir — `crates/wisq-agent/src/http.rs`, `Server::bind` (« pass 0 for an ephemeral one »), ce que `Tests/WisqAgentTests/RustAgentProcess.swift` passe.",
+      ],
+      [
+        "0.0",
+        "ce n'est pas une mesure : les deux moitiés de 0.0.0.0, que le découpage en nombres sépare — l'adresse de toutes les interfaces IPv4 où le démon écoute (`http.rs`, `TcpListener::bind((\"0.0.0.0\", port))`), et celle où `wisq-agent bureau` fait écouter SPICE par défaut (`main.rs`).",
+      ],
+      [
+        "0.3",
+        "ce n'est pas une mesure : la version qui a apporté TLS au démon — CHANGELOG, section [0.3.0], et l'aide de `wisq-agent --help` (« pour un client d'avant 0.3 », `crates/wisq-agent/src/main.rs`).",
+      ],
+      [
+        "0600",
+        "ce n'est pas une mesure : le mode des fichiers secrets, `.mode(0o600)` dans `write_owner_only` — `main.rs` pour le jeton, `tls.rs` pour le certificat et la clé.",
+      ],
+      [
+        "0644",
+        "ce n'est pas une mesure : le mode qu'avait le jeton avant la correction, sous l'umask habituel — commentaire de `resolve_stored_token`, `crates/wisq-agent/src/main.rs` (« 0644 under the usual umask … Measured: 644, then 600 »).",
+      ],
+      [
+        "0700",
+        "ce n'est pas une mesure : le mode du répertoire d'état, `Permissions::from_mode(0o700)` — `set_owner_only_directory` dans `main.rs`, `owner_only_directory` dans `tls.rs`.",
+      ],
+      [
+        "1",
+        "ce n'est pas une mesure : la borne basse des ports qu'accepte l'application, `(1...65535).contains(port)` dans `Validation.validatedPort` (`Sources/WisqCore/Validation.swift`).",
+      ],
+      [
+        "65535",
+        "ce n'est pas une mesure : la borne haute de la même plage, même fichier ; c'est aussi le plus grand `u16`, le type du port côté démon (« --port attend un nombre entre 1 et 65535 », `main.rs`).",
+      ],
+      [
+        "100",
+        "ce n'est pas une mesure : le nombre de tours du test qui observe l'écriture d'un secret, `for _ in 0..100` dans `a_secret_is_never_world_readable_even_for_an_instant` (`crates/wisq-agent/src/tls.rs`), celui sur lequel le relevé de 747 a été fait.",
+      ],
+      [
+        "747",
+        "historique, et non relançable tel quel : les observations d'un mode autre que 0600 en 100 tours contre l'ancienne forme « écrire puis restreindre », relevées avant la correction — commentaire de `a_secret_is_never_world_readable_even_for_an_instant` (`tls.rs`) et CHANGELOG, section 0.4.0. L'ancienne forme n'existe plus ; le test tourne à chaque `cargo test` et exige zéro.",
+      ],
+      [
+        "11",
+        "ce n'est pas une mesure : le `11` de « Windows 11 », la seconde VM du backend de démonstration — `crates/wisq-agent/src/backend.rs`, `Vm::new(\"win11\", \"Windows 11\", State::Stopped)`.",
+      ],
+      [
+        "120",
+        "relevé, pas une performance : la longueur en octets du corps JSON montré dans le même bloc, que le démon écrit dans `Content-Length`. Refaire : `cargo run -p wisq-agent -- --demo --no-tls --token t`, puis `curl -si -H 'Authorization: Bearer t' http://127.0.0.1:7442/v1/vms/debian-13`.",
+      ],
+      [
+        "92",
+        "relevé de la même façon : la longueur du corps de la réponse 426, le message écrit dans `handle_connection` (`crates/wisq-agent/src/http.rs`), le é de « ré-appairez » comptant deux octets. Refaire : `cargo run -p wisq-agent -- --demo` (TLS par défaut), puis `curl -si http://127.0.0.1:7442/v1/vms`.",
+      ],
+      [
+        "15",
+        "ce n'est pas une mesure : `request.timeoutInterval = 15` dans `AgentClient.send` (`Sources/WisqRemote/Agent/AgentClient.swift`).",
+      ],
+      [
+        "16",
+        "ce n'est pas une mesure : `MAX_HEADER_BYTES = 16 * 1024` dans `crates/wisq-agent/src/http.rs`.",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure : trois constantes du code — `MAX_BODY_BYTES = 64 * 1024` (`http.rs`), les 64 caractères hexadécimaux d'un SHA-256 (`assert_eq!(hex.len(), 64)` dans `tls.rs` et `pairing.rs`), et le disque par défaut de `wisq-agent bureau` (`let mut disk_gib: u32 = 64`, `main.rs`).",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : l'intervalle de sondage par défaut de l'application (`pollInterval: Duration = .seconds(2)` dans `AgentClient.waitUntilRunning`, `ConsoleResolver.resolve` et `VMPower.shutDown`), les 2 Gio de la VM Debian de démonstration (`backend.rs`), et le code de sortie de `fail` (`std::process::exit(2)`, `main.rs`).",
+      ],
+      [
+        "20",
+        "ce n'est pas une mesure : l'échéance des sockets, `Duration::from_secs(20)` dans `handle_connection` (`http.rs`), et la longueur du mot de passe SPICE de `wisq-agent bureau`, `[0u8; 20]` dans `generate_password` (`crates/wisq-agent/src/domain.rs`).",
+      ],
+      [
+        "200",
+        "ce n'est pas une mesure : le statut de succès, `Response::json(200, …)` dans `crates/wisq-agent/src/service.rs`.",
+      ],
+      [
+        "2097152",
+        "ce n'est pas une mesure : `2 * 1024 * 1024` Kio, la mémoire courante et maximale de la VM Debian de démonstration (`backend.rs`) ; c'est ce que `wisq-agent --demo` écrit, et `testTheMemoryFiguresCrossTheLanguageBoundary` le relit.",
+      ],
+      [
+        "4194304",
+        "ce n'est pas une mesure : `4 * 1024 * 1024` Kio, la mémoire courante de la VM Windows de démonstration — `backend.rs`.",
+      ],
+      [
+        "8388608",
+        "ce n'est pas une mesure : `8 * 1024 * 1024` Kio, le maximum de la même VM — `backend.rs`.",
+      ],
+      [
+        "4",
+        "ce n'est pas une mesure : les 4 Gio courants de la VM Windows de démonstration (`backend.rs`) et les 4 processeurs par défaut de `wisq-agent bureau` (`let mut cpus: u32 = 4`, `main.rs`).",
+      ],
+      [
+        "8",
+        "ce n'est pas une mesure : les 8 Gio de maximum de la VM Windows de démonstration — `backend.rs`.",
+      ],
+      [
+        "4096",
+        "ce n'est pas une mesure : la mémoire par défaut de `wisq-agent bureau`, `let mut memory_mib: u32 = 4096` (`main.rs`).",
+      ],
+      [
+        "255",
+        "ce n'est pas une mesure : la longueur maximale d'un identifiant de VM, `id.len() <= 255` dans `is_plausible_domain_name` (`service.rs`) et `id.utf8.count <= 255` dans `Validation.validatedVMIdentifier`.",
+      ],
+      [
+        "3",
+        "ce n'est pas une mesure : l'écran VNC de l'exemple `vnc://localhost:3`, relevé sur libvirt et repris du commentaire de `parse_domdisplay` (`backend.rs`) et du tableau de `docs/AGENT-PROTOCOL.md`.",
+      ],
+      [
+        "5903",
+        "ce n'est pas une mesure : le port que le démon déduit de cet écran, 5900 + 3 — même commentaire, et `a_vnc_domain_still_publishes_its_console_through_domdisplay` qui l'exige.",
+      ],
+      [
+        "5900",
+        "ce n'est pas une mesure : la base des ports VNC, `5900u16.checked_add(…)` dans `parse_display_uri` et `parse_vnc_display` (`backend.rs`).",
+      ],
+      [
+        "5907",
+        "ce n'est pas une mesure : le `tls-port=5907` de l'exemple d'un SPICE en TLS seul, relevé sur libvirt — commentaire de `parse_domdisplay` (`backend.rs`) et tableau de `docs/AGENT-PROTOCOL.md`.",
+      ],
+      [
+        "5902",
+        "ce n'est pas une mesure : le port de console de la VM Windows de démonstration, `running_port: 5902` dans `backend.rs`.",
+      ],
+      [
+        "32",
+        "ce n'est pas une mesure : la longueur du jeton généré (`[0u8; 32]` dans `generate_token`, `main.rs`) et celle d'une empreinte en octets (`AgentPairing.fingerprintByteCount = 32`, `Sources/WisqCore/AgentPairing.swift`).",
+      ],
+      [
+        "400",
+        "ce n'est pas une mesure : le statut d'une requête mal formée, `Response::error(400, …)` dans `read_request` (`crates/wisq-agent/src/http.rs`) — ligne de requête incomplète, Content-Length invalide ou répété.",
+      ],
+      [
+        "401",
+        "ce n'est pas une mesure : `Response::error(401, \"jeton manquant ou invalide\")`, première ligne de `Service::handle` (`service.rs`).",
+      ],
+      [
+        "405",
+        "ce n'est pas une mesure : `Response::error(405, …)`, le dernier bras de `Service::handle` (`service.rs`).",
+      ],
+      [
+        "413",
+        "ce n'est pas une mesure : `Response::error(413, …)` pour des en-têtes ou un corps trop volumineux — `read_request`, `http.rs`.",
+      ],
+      [
+        "500",
+        "ce n'est pas une mesure : `Response::error(500, &message)` quand `list` ou `get` du backend échoue — `service.rs`.",
+      ],
+      [
+        "501",
+        "ce n'est pas une mesure : `Response::error(501, \"Transfer-Encoding non pris en charge\")` dans `read_request` (`http.rs`), tenu par `a_chunked_request_is_refused_rather_than_silently_emptied`.",
+      ],
+      [
+        "90",
+        "ce n'est pas une mesure : la patience par défaut de l'application — `timeout: Duration = .seconds(90)` dans `AgentClient.waitUntilRunning` et `ConsoleResolver.resolve`, `patience: Duration = .seconds(90)` dans `VMPower.shutDown`.",
+      ],
+      [
+        "9112",
+        "ce n'est pas une mesure : le numéro de la RFC de HTTP/1.1 que citent les commentaires de `read_request` (`crates/wisq-agent/src/http.rs`, « RFC 9112 §6.3 »).",
+      ],
+      [
+        "9999",
+        "ce n'est pas une mesure : l'année d'expiration du certificat, `rcgen::date_time_ymd(9999, 1, 1)` dans `generate` (`crates/wisq-agent/src/tls.rs`).",
+      ],
     ]),
   ],
   [
@@ -690,12 +873,6 @@ const accounted = new Map<string, Map<string, string>>([
           "peut ouvrir, et non d'une mesure faite une fois.",
       ],
       [
-        "2",
-        "ce n'est pas une mesure : les deux gibioctets de " +
-          "`LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32 — sa RAM " +
-          "commence à 0x80000000 et son processeur adresse en 32 bits.",
-      ],
-      [
         "32",
         "ce n'est pas une mesure : les 32 bits de rv32ima, l'architecture de la " +
           "machine locale.",
@@ -709,6 +886,86 @@ const accounted = new Map<string, Map<string, string>>([
         "0.2",
         "ce n'est pas une mesure : le `2` de `omarchy-4.0.2.iso`, le nom de " +
           "fichier que la commande d'exemple montre.",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : deux lectures du même nombre de gibioctets — `LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32 (sa RAM commence à 0x80000000, son processeur adresse en 32 bits), et `KernelMemory.leftToTheDevice = 2 << 30` (`Sources/WisqVM/KernelMemory.swift`), ce que la machine laisse à l'appareil.",
+      ],
+      [
+        "17",
+        "ce n'est pas une mesure : la cible de déploiement de l'application — `project.yml`, `deploymentTarget: iOS: \"17.0\"` — et `platforms: [.iOS(.v17), .macOS(.v14)]` dans `Package.swift`.",
+      ],
+      [
+        "4.7",
+        "ce n'est pas une mesure : le numéro de la règle des directives de l'App Store dont dépend UTM SE, cité par le tableau de comparaison des deux READMEs (« grey area, rule 4.7 », « dépendante de la règle 4.7 »).",
+      ],
+      [
+        "1998",
+        "ce n'est pas une mesure : l'année où Microsoft a publié la clé qui signe les certificats de la sécurité historique de RDP — `Sources/WisqRemote/RDP/RDPSession.swift` et `RDPStandardSecurity.swift` le disent à côté du code, `docs/ROADMAP.md` (lot 3) aussi.",
+      ],
+      [
+        "90",
+        "ce n'est pas une mesure : la patience de l'arrêt poli, `patience: Duration = .seconds(90)` dans `VMPower.shutDown` (`Sources/WisqRemote/Agent/VMPower.swift`) ; `MachineListView` l'appelle sans la changer.",
+      ],
+      [
+        "5",
+        "ce n'est pas une mesure : `ReconnectPolicy.standard`, `maxAttempts: 5` (`Sources/WisqRemote/ReconnectingSession.swift`) — la politique par défaut de `ReconnectingSession`, que `SessionFactory` emploie pour les trois protocoles.",
+      ],
+      [
+        "1",
+        "ce n'est pas une mesure : `initialDelay: .seconds(1)` dans la même `ReconnectPolicy.standard`, doublé à chaque tentative (`multiplier: Double = 2`).",
+      ],
+      [
+        "30",
+        "ce n'est pas une mesure : `maxDelay: .seconds(30)`, le plafond du délai entre deux tentatives, même politique.",
+      ],
+      [
+        "10",
+        "ce n'est pas une mesure : `minimumUptimeToResetBudget: .seconds(10)`, ce qu'une connexion doit durer avant de remplir à nouveau le budget, même politique.",
+      ],
+      [
+        "50",
+        "deux lectures, aucune n'est une mesure : les « 50 ms » sont `InputTiming.pressReleaseGap = Duration.milliseconds(50)` (`Sources/WisqCore/Settings.swift`) ; les « 50 milliards » sont l'ordre de grandeur d'un bureau complet que donne `docs/ROADMAP.md` (lot 8, « de l'ordre de cinquante milliards d'instructions ») et que `wisq-bench` imprime en se qualifiant de « division, pas mesure » (`Sources/wisq-bench/main.swift`). La page le dit aussi.",
+      ],
+      [
+        "16",
+        "ce n'est pas une mesure : les deux bouts de `KernelMemory.choices`, `16 << 20` et `16 << 30` (`Sources/WisqVM/KernelMemory.swift`) ; le second est aussi le plafond de la machine PC, `case .x86_64: return 16 << 30` (`GuestArchitecture.swift`) — un choix, pas un fait d'adressage.",
+      ],
+      [
+        "256",
+        "ce n'est pas une mesure : `KernelMemory.roomForTheAppItself = 256 << 20`, ce que l'application garde pour elle à côté de la RAM invitée (`Sources/WisqVM/KernelMemory.swift`).",
+      ],
+      [
+        "128",
+        "ce n'est pas une mesure : `X86Machine.minimumRAMSize = 128 << 20` (`Sources/WisqVM/X86Machine.swift`), le plancher que `LocalVMModel` impose à une machine PC.",
+      ],
+      [
+        "35",
+        "ce n'est pas une mesure de wisq : la taille du noyau x86-64 décompressé que donne le refus de `LocalVMModel` (« son noyau décompressé en fait trente-cinq à lui seul », `Sources/WisqUI/ViewModels/LocalVMModel.swift`), reprise par `docs/ROADMAP.md` et `docs/DEMARRAGE.md`. L'image de référence relevée par `cargo run -p wisq-vm --release --example pointer-census -- <noyau>` fait 35 842 660 octets (DEMARRAGE.md, au 14 septembre 2026).",
+      ],
+      [
+        "4",
+        "relevé, et daté : le compte d'instructions jusqu'au shell de secours de l'initramfs d'Alpine, CHANGELOG 0.4.0 (« after 4 billion instructions »), le même que l'accueil porte (`content.rs`). La CI ne le refait pas : elle ne récupère aucun noyau Alpine.",
+      ],
+      [
+        "6.1",
+        "ce n'est pas une mesure : la version du noyau rv32 que la CI récupère et démarre, `linux-6.1.14-rv32nommu-cnl-1.zip` dans `.github/workflows/ci.yml`, publié par le projet mini-rv32ima.",
+      ],
+      [
+        "58",
+        "historique, et non relançable : le démon d'avant, lié statiquement au runtime Swift, pesait 58 Mo — CHANGELOG, README, CONTRIBUTING. Ce binaire n'existe plus ; la page le publie comme un avant et renvoie, pour le chiffre actuel, à la page du protocole, où `scripts/check-agent-size.sh` le tient.",
+      ],
+      [
+        "1103",
+        "daté : le débit d'un module WebAssembly engendré dans un `WKWebView` hébergé par l'application, sur le simulateur d'un coureur Apple — CHANGELOG 0.4.0. La sonde est `Tests/WisqHostedTests/WebKitJITProbeTests.swift`, que le job App iOS lance et dont il republie le relevé. C'est une mesure sur Mac, où macOS ne restreint pas le JIT, et la page le dit dans la même phrase. Écrit sans espace dans les deux langues, donc un seul jeton.",
+      ],
+      [
+        "10.6",
+        "daté : le terme de comparaison du CHANGELOG 0.4.0 (« contre 10,6 pour l'interpréteur x86 »), c'est-à-dire le débit du cœur x86-64 en Swift sur la boucle de `swift run -c release wisq-bench`, section « x86-64 », que la CI lance. Publié comme le terme de cette comparaison, pas comme un débit actuel.",
+      ],
+      [
+        "10,6",
+        "le même nombre dans l'autre langue.",
       ],
     ]),
   ],
@@ -754,16 +1011,6 @@ const accounted = new Map<string, Map<string, string>>([
           "512 octets chacun.",
       ],
       [
-        "64",
-        "ce n'est pas une mesure : `LinuxMachine.defaultRAMSize`, ce qu'un " +
-          "noyau reçoit quand personne n'a touché au curseur.",
-      ],
-      [
-        "2",
-        "ce n'est pas une mesure : les deux gibioctets de " +
-          "`LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32.",
-      ],
-      [
         "1998",
         "ce n'est pas une mesure : l'année où Microsoft a publié la clé qui " +
           "signe les certificats de la sécurité historique de RDP. C'est la " +
@@ -777,13 +1024,80 @@ const accounted = new Map<string, Map<string, string>>([
           "pas une propriété de wisq.",
       ],
       [
-        "1",
-        "ce n'est pas une mesure : l'écran `:1` de la même commande d'exemple.",
+        "0",
+        "ce n'est pas une mesure, et trois lectures : l'écran `:0` que `x11vnc -display :0` expose dans la seconde ligne de l'exemple ; le bas de l'échelle de qualité JPEG de Tight, 0…9 (`DisplaySettings.jpegQuality`, `Sources/WisqCore/Settings.swift`) ; et le `0` du canal `com.redhat.spice.0`, celui que `crates/wisq-agent/src/domain.rs` écrit dans le domaine et par lequel spice-vdagent parle.",
       ],
       [
-        "0",
-        "ce n'est pas une mesure : l'écran `:0` que `x11vnc -display :0` " +
-          "expose, dans la seconde ligne du même exemple.",
+        "1",
+        "ce n'est pas une mesure, et trois lectures : l'écran `:1` de la commande d'exemple ; le « 1:1 » de `DisplaySettings.Scaling.native`, dont c'est le `displayName` ; et la première attente de la reconnexion, `initialDelay: .seconds(1)` dans `ReconnectPolicy.standard` (`Sources/WisqRemote/ReconnectingSession.swift`).",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure, et trois lectures : les deux gibioctets de `LinuxMachine.maximumRAMSize`, plafond d'adressage du rv32 ; les deux gibioctets que `KernelMemory.leftToTheDevice` laisse au téléphone ; et l'intervalle de sondage de l'agent, `pollInterval: .seconds(2)` de `ConsoleResolver.resolve` et de `VMPower.shutDown`.",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure, et trois lectures : `LinuxMachine.defaultRAMSize`, ce qu'un noyau reçoit quand personne n'a touché au curseur ; le disque de `wisq-agent bureau`, `let mut disk_gib: u32 = 64` dans `crates/wisq-agent/src/main.rs` ; et la largeur du RISC-V 64 bits, que `GuestArchitecture.core` laisse sans cœur.",
+      ],
+      [
+        "3389",
+        "ce n'est pas une mesure : le port enregistré de RDP — `RemoteProtocol.defaultPort` pour `.rdp` (`Sources/WisqCore/RemoteProtocol.swift`), et `RemoteDesktopFile.defaultPort`, appliqué quand un fichier .rdp n'en nomme aucun.",
+      ],
+      [
+        "8",
+        "ce n'est pas une mesure : les huit premiers octets du mot de passe que l'authentification VNC historique lit — `VNCAuth.response`, `Array(raw.prefix(8))`, dans `Sources/WisqRemote/VNC/DES.swift`.",
+      ],
+      [
+        "50",
+        "ce n'est pas une mesure : `InputTiming.pressReleaseGap`, `Duration.milliseconds(50)` dans `Sources/WisqCore/Settings.swift`, avec la raison écrite à côté — un invité qui échantillonne les entrées sur un timer ne voit rien d'un clic plus court.",
+      ],
+      [
+        "9",
+        "ce n'est pas une mesure : le haut de l'échelle de qualité JPEG de Tight — `DisplaySettings.jpegQuality` borné par `min(max($0, 0), 9)` dans `Sources/WisqCore/Settings.swift`, et le curseur de l'éditeur `in: 0...9`.",
+      ],
+      [
+        "5",
+        "ce n'est pas une mesure : `ReconnectPolicy.standard`, `maxAttempts: 5`, dans `Sources/WisqRemote/ReconnectingSession.swift`.",
+      ],
+      [
+        "10",
+        "ce n'est pas une mesure : `minimumUptimeToResetBudget: .seconds(10)` de la même politique — ce qu'une connexion doit tenir pour regagner tout son crédit de tentatives.",
+      ],
+      [
+        "90",
+        "ce n'est pas une mesure : la patience de l'agent — `timeout: .seconds(90)` de `ConsoleResolver.resolve` et d'`AgentClient.waitUntilRunning` au démarrage, `patience: .seconds(90)` de `VMPower.shutDown` à l'arrêt.",
+      ],
+      [
+        "4096",
+        "ce n'est pas une mesure : la mémoire par défaut de `wisq-agent bureau`, `let mut memory_mib: u32 = 4096` dans `crates/wisq-agent/src/main.rs`.",
+      ],
+      [
+        "4",
+        "deux lectures. Ce n'est pas une mesure pour la première : les processeurs par défaut de `wisq-agent bureau`, `let mut cpus: u32 = 4`. La seconde est mesurée : les « 4 billion » / « 4 milliards » d'instructions au bout desquels l'init d'Alpine atteint son shell de secours, sous wisq comme sous QEMU — CHANGELOG 0.4.0, Fixed, entrée `XADD`/`POP`. Se refait par `WISQ_PC_KERNEL=<vmlinuz-lts> WISQ_PC_INITRD=<initramfs-lts> swift test --filter X86BootAttemptTests`, sauté sans ces variables, que ni la CI ni verify.sh ne fournissent.",
+      ],
+      [
+        "16",
+        "ce n'est pas une mesure : les deux bouts de `KernelMemory.choices`, de `16 << 20` à `16 << 30` — le plus petit palier du curseur, et le plafond que `GuestArchitecture.Core.maximumRAMSize` donne à la machine PC (ROADMAP #283).",
+      ],
+      [
+        "128",
+        "ce n'est pas une mesure : `X86Machine.minimumRAMSize`, `128 << 20`, que `LocalVMModel` impose en plancher à tout noyau de PC (`max(machineRAM, X86Machine.minimumRAMSize)`), avec la raison écrite à côté — en dessous, le noyau d'Alpine n'a plus la place de se décompresser.",
+      ],
+      [
+        "256",
+        "ce n'est pas une mesure : `KernelMemory.roomForTheAppItself`, `256 << 20`, ce que l'application garde pour elle à côté de la RAM de l'invité.",
+      ],
+      [
+        "40",
+        "ce n'est pas une mesure : `KernelImageKind.bytesNeeded`, `40 * 1024` — de quoi atteindre le descripteur de volume ISO 9660, au secteur seize.",
+      ],
+      [
+        "17",
+        "la place d'une machine RISC-V suspendue arrivée à l'invite de connexion — mesure consignée dans docs/ROADMAP.md, section « L'espace de stockage », sans date ni commande ; l'écran « Stockage » de l'application (`LocalStorage`) compte ce que pèse chaque machine sauvegardée, et c'est là qu'elle se refait. Le même chiffre est écrit dans `LocalVMView.swift`.",
+      ],
+      [
+        "32",
+        "ce n'est pas une mesure : les largeurs que nomme `GuestArchitecture` — le RISC-V 32 bits que wisq exécute, et le x86 32 bits qu'il reconnaît sans lui donner de cœur (`core` rend `nil` pour `bits == 32`).",
       ],
     ]),
   ],
@@ -799,12 +1113,6 @@ const accounted = new Map<string, Map<string, string>>([
           "banc, lui, existe toujours (`swift run -c release wisq-bench`).",
       ],
       ["2,7", "le même nombre dans l'autre langue."],
-      [
-        "8",
-        "deux lectures dans la même page, et les deux tiennent : le « +8 % » de " +
-          "l'extension de signe sans branchement (CHANGELOG 0.2.0), et le vert " +
-          "à 8 du format de pixel — `RFB.swift`, `greenShift: 8`.",
-      ],
       [
         "47",
         "« loads et stores font 47 % d'un boot Linux », CHANGELOG 0.2.0, dans " +
@@ -890,12 +1198,124 @@ const accounted = new Map<string, Map<string, string>>([
           "#314 : `wisq_kernel_loads`, le lecteur ELF que le montage de mesure " +
           "emploie depuis #304 et que rien n'exposait à l'application.",
       ],
+      [
+        "8",
+        "trois lectures dans la même page, et les trois tiennent : le « +8 % » de l'extension de signe sans branchement (CHANGELOG 0.2.0) ; le vert à 8 du format de pixel — `RFB.swift`, `greenShift: 8` ; et « environ 8 % » d'avance du cœur Rust sur un démarrage complet, la raison écrite en tête de `Package.swift` et dans « Building » du README pour en faire le défaut. Les deux bancs que la CI lance — `swift run -c release wisq-bench` et `cargo run --release --bin wisq-bench-rs` — en impriment les deux termes à chaque exécution, et le rapport suit la machine et sa charge.",
+      ],
+      [
+        "0.9",
+        "ce n'est pas une mesure : la version de xrdp, le serveur contre lequel toute la pile RDP a été écrite — docs/ROADMAP.md, « Lot 3 — RDP » : « xrdp 0.9 (serveur) et FreeRDP 2.11 … s'installent tous les deux ici ».",
+      ],
+      [
+        "2.11",
+        "ce n'est pas une mesure : la version de FreeRDP, client et bibliothèque de référence, même passage de docs/ROADMAP.md ; c'est aussi le juge du codec entrelacé — `Tests/WisqRemoteTests/RDPBitmapTests.swift`, « Le codec entrelacé, jugé par FreeRDP 2.11 ».",
+      ],
+      [
+        "1",
+        "ce n'est pas une mesure, et deux lectures : la valeur de `WISQ_SWIFT_CORE=1`, l'échappatoire vers le cœur Swift que `Package.swift` et ci.yml nomment ; et le délai initial de reconnexion, `initialDelay: .seconds(1)` dans `ReconnectPolicy.standard` (`Sources/WisqRemote/ReconnectingSession.swift`).",
+      ],
+      [
+        "5",
+        "ce n'est pas une mesure : `maxAttempts: 5` dans `ReconnectPolicy.standard`, `Sources/WisqRemote/ReconnectingSession.swift`.",
+      ],
+      [
+        "30",
+        "ce n'est pas une mesure : `maxDelay: .seconds(30)`, le plafond des délais de la même politique, même fichier.",
+      ],
+      [
+        "10",
+        "ce n'est pas une mesure : `minimumUptimeToResetBudget: .seconds(10)`, même politique — ce qu'une connexion doit tenir pour recharger le budget, avec la raison écrite à côté.",
+      ],
+      [
+        "15",
+        "ce n'est pas une mesure, et deux lectures dans le même réglage : `connectionTimeout: Int = 15` et `keepaliveInterval: Int = 15`, valeurs par défaut de `TransportTuning` (`Sources/WisqNet/TransportTuning.swift`).",
+      ],
+      [
+        "60",
+        "ce n'est pas une mesure : `keepaliveIdle: Int = 60`, le silence avant la première sonde, même fichier.",
+      ],
+      [
+        "4",
+        "ce n'est pas une mesure : `keepaliveCount: Int = 4`, les sondes sans réponse avant que le lien soit déclaré mort, même fichier.",
+      ],
+      [
+        "120",
+        "pas une mesure de wisq : la cadence que docs/ARCHITECTURE.md, « Le modèle tactile », donne au curseur virtuel dessiné dans un `CAShapeLayer` séparé des pixels — « il peut bouger à 120 Hz sans re-rastériser le bureau ».",
+      ],
+      [
+        "16550",
+        "ce n'est pas une mesure : le port série de la machine PC — en-tête de `Sources/WisqVM/X86Machine.swift`, « un port série 16550, un couple de 8259 et un 8253 ».",
+      ],
+      [
+        "8259",
+        "ce n'est pas une mesure : le contrôleur d'interruptions de la même machine, même en-tête.",
+      ],
+      [
+        "8250",
+        "ce n'est pas une mesure : l'UART de la machine rv32 — `Sources/WisqVMRust/RustLinuxMachine.swift` (« an 8250 UART, a CLINT timer and a syscon ») et docs/ARCHITECTURE.md, « Le Linux local ».",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure, et deux lectures : `LinuxMachine.defaultRAMSize`, ce qu'un noyau rv32 reçoit quand personne n'a touché au curseur ; et la largeur en bits des paramètres `base` et `entry` du traducteur de région, que le commentaire de `wisq_x86_emit_region` (`crates/wisq-vm/src/ffi.rs`) désigne comme la seule erreur que la relecture doit attraper.",
+      ],
+      [
+        "256",
+        "ce n'est pas une mesure : `X86Machine.defaultRAMSize = 256 << 20`, la RAM par défaut d'une machine PC — `Sources/WisqVM/X86Machine.swift`.",
+      ],
+      [
+        "22",
+        "mesuré une fois et consigné dans l'en-tête de `Sources/WisqVM/X86Machine.swift` : après un démarrage complet d'Alpine — trois milliards et demi d'instructions, jusqu'à `kernel_init` —, 14 471 pages sur 65 536 ne sont pas entièrement nulles, soit 22 %. Publié comme un relevé daté : la CI ne fournit aucun noyau PC (`WISQ_PC_KERNEL` n'est posé nulle part dans .github/).",
+      ],
+      [
+        "1998",
+        "ce n'est pas une mesure : l'année où Microsoft a publié la clé qui signe les certificats de la sécurité d'origine de RDP — `Sources/WisqRemote/RDP/RDPSession.swift` et `RDPStandardSecurity.swift` le disent au-dessus du code qui la parle, et c'est pourquoi cette sécurité n'authentifie pas le serveur.",
+      ],
+      [
+        "224",
+        "ce n'est pas une mesure : le numéro de la recommandation X.224 (classe 0 de l'ISO 8073), l'une des deux enveloppes de toute session RDP — `Sources/WisqRemote/RDP/RDPWire.swift`.",
+      ],
+      [
+        "264",
+        "ce n'est pas une mesure : le codec vidéo H.264, que wisq ne décode ni dans les flux SPICE (`SpiceDisplayDecoder.swift`, « Only MJPEG. VP8, VP9, H.264 and H.265 would each need a real video decoder ») ni en RDP (docs/ROADMAP.md, Lot 3, « RemoteFX et H.264 »).",
+      ],
+      [
+        "265",
+        "ce n'est pas une mesure : H.265, même phrase de `SpiceDisplayDecoder.swift`, et `case h265 = 5` dans `SpiceDisplayWire.swift`.",
+      ],
+      [
+        "40",
+        "ce n'est pas une mesure : `KernelImageKind.bytesNeeded = 40 * 1024`, ce que wisq lit d'un fichier pour en reconnaître la nature — `Sources/WisqVM/KernelImageKind.swift`.",
+      ],
+      [
+        "647 965",
+        "mesuré et daté : le différentiel du décodeur x86 contre `objdump` 2.42, « 647 965 accords, zéro désaccord », consigné dans docs/ROADMAP.md, Lot 7, tranche 2. Le dépôt n'en garde que l'extrait distillé (`Tests/Fixtures/x86-corpus.tsv`, refabriqué par `scripts/build-x86-corpus.py`, rejoué par `X86CorpusTests`) : le compte complet dépend des binaires de la machine où on le relance, et la CI ne le refait pas.",
+      ],
+      [
+        "351 822",
+        "mesuré avant d'être refusé, et consigné deux fois : CHANGELOG [Unreleased], « Le site est en Yew… », et docs/JOURNAL.md #335 — le module wasm brut quand les pages étaient hydratées entières. Cette forme n'existe plus : nombre daté, non relançable.",
+      ],
+      [
+        "261 252",
+        "même relevé, même tableau : le module brut avec deux îlots et tout le mouvement, au moment de la décision. Le module a bougé depuis ; ce qui tient, c'est l'invariant qui en est sorti — `site/tests/build.test.ts`, « le module ne porte la prose d'aucune page ».",
+      ],
     ]),
   ],
   // La réserve sur le transport ne porte plus « version 1 » : elle disait le
   // clair comme une fatalité alors que c'est un défaut, et le numéro de
   // version n'ajoutait rien qu'un chiffre à tenir.
-  ["privacy.rs", new Map()],
+  [
+    "privacy.rs",
+    provenanceOf([
+      [
+        "32",
+        "ce n'est pas une mesure : la longueur du jeton porteur que le démon génère au premier lancement — `crates/wisq-agent/src/main.rs`, « 32 characters from the OS random source », lus dans /dev/urandom par `let mut buffer = [0u8; 32];`.",
+      ],
+      [
+        "7442",
+        "ce n'est pas une mesure : le port par défaut du démon — `crates/wisq-agent/src/main.rs`, `let mut port: u16 = 7442` ; `docs/AGENT-PROTOCOL.md`, « port 7442 par défaut » ; et `AgentPairing.Payload`, `port: Int = 7442`, côté application.",
+      ],
+    ]),
+  ],
   ["mod.rs", new Map()],
   ["offline.rs", new Map()],
 ]);
@@ -1065,6 +1485,62 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
 /// l'envoi refuse** : les secrets que l'étape « Refuser tôt » déclare
 /// manquants. Le reste est facultatif et le workflow le dit lui-même, dans le
 /// résumé d'exécution. Le nombre est donc lu là, chez celui qui refuse.
+/// **« Vingt et une familles », et l'énumération en déclare vingt.**
+///
+/// Les deux READMEs, l'accueil, la feuille de route et deux commentaires
+/// annonçaient que wisq reconnaît « vingt et une » familles d'architectures.
+/// `GuestArchitecture.Family` en déclare vingt — et `docs/ROADMAP.md` les
+/// **nomme**, vingt, dans la phrase même qui en annonçait vingt et une. Le
+/// compte avait été écrit à la main et recopié, et rien ne le relisait. Trouvé
+/// en enrichissant le guide, qui a refusé de recopier un nombre qu'il ne
+/// pouvait pas recompter.
+///
+/// La garde compte les `case` de l'énumération et lit chaque phrase qui
+/// publie le compte. Les mots sont ceux du domaine — de dix-neuf à vingt-deux
+/// —, pas une table générale : une famille de plus ou de moins doit la faire
+/// tomber, et c'est tout ce qu'elle a à savoir.
+describe("le nombre de familles d'architectures reconnues est celui de l'énumération", () => {
+  const MOTS: Record<number, { en: string; fr: string }> = {
+    19: { en: "nineteen", fr: "dix-neuf" },
+    20: { en: "twenty", fr: "vingt" },
+    21: { en: "twenty-one", fr: "vingt et une" },
+    22: { en: "twenty-two", fr: "vingt-deux" },
+  };
+
+  function familles(): number {
+    const source = readFileSync(join(repoRoot, "Sources/WisqVM/GuestArchitecture.swift"), "utf8");
+    const corps = source.slice(source.indexOf("enum Family"));
+    const declarations = corps.slice(0, corps.indexOf("public var") > 0 ? corps.indexOf("public var") : undefined);
+    const cas = [...declarations.matchAll(/^\s*case ([a-z0-9, ]+)$/gm)].flatMap((m) =>
+      m[1]!.split(",").map((nom) => nom.trim()).filter(Boolean),
+    );
+    return cas.length;
+  }
+
+  test("l'énumération se compte", () => {
+    // Une lecture qui ne trouverait rien rendrait toutes les phrases fausses
+    // pour une raison qui n'est pas la leur.
+    expect(familles()).toBeGreaterThan(10);
+  });
+
+  test.each([
+    ["README.md", /—\s+(\S+(?: et une)?)\s+architecture\s+families\s+recognised/, "en"],
+    ["README.fr.md", /:\s+(\S+(?: et une)?)\s+familles\s+d'architectures/, "fr"],
+    ["crates/wisq-site/src/content.rs", /core itself: (\S+) architecture families recognised/, "en"],
+    ["crates/wisq-site/src/content.rs", /cœur tout seul : (\S+(?: et une)?) familles d'architectures/, "fr"],
+    ["docs/ROADMAP.md", /nomme les \*\*(\S+(?: et une)?) familles\*\*/, "fr"],
+  ] as const)("%s annonce le vrai compte (%#)", (fichier, motif, langue) => {
+    const texte = readFileSync(join(repoRoot, fichier), "utf8").replace(/\s*\n\s*/g, " ");
+    const trouve = texte.match(motif);
+    expect(trouve, `${fichier} n'annonce plus le nombre de familles`).not.toBeNull();
+    const attendu = MOTS[familles()];
+    expect(attendu, `aucun mot pour ${familles()} familles`).toBeDefined();
+    expect(trouve![1], `${fichier} : l'énumération déclare ${familles()} familles`).toBe(
+      attendu![langue],
+    );
+  });
+});
+
 describe("le guide annonce le nombre de secrets que le workflow exige", () => {
   const NUMBERS = [
     "zéro", "un", "deux", "trois", "quatre", "cinq",

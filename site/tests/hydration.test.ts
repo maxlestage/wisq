@@ -73,6 +73,55 @@ describe("les réglages de l'en-tête, un îlot", () => {
     expect(metas()).toEqual([bar.dark, bar.dark]);
   });
 
+  /// **Avec du mouvement, le thème s'ouvre en cercle.** La transition de vue
+  /// est prêtée par le test — happy-dom n'en a pas — et elle fait ce qu'un
+  /// navigateur fait : elle appelle le rappel, qui applique le thème, et rend
+  /// une promesse de fin. Le module pose le centre du bouton et la classe qui
+  /// choisit l'animation, puis la retire à la fin.
+  test("avec du mouvement, le thème passe par une transition de vue, puis la referme", async () => {
+    const vues: string[] = [];
+    await ouvrir("offline/index.html", {
+      avant: () => {
+        (document as unknown as Record<string, unknown>).startViewTransition = (rappel: () => void) => {
+          vues.push(document.documentElement.className);
+          rappel();
+          return { finished: Promise.resolve() };
+        };
+      },
+    });
+    await jusqua(() => document.documentElement.dataset.motion === "on", "que le mouvement démarre");
+    cliquer(document.querySelector('[data-theme-choice="light"]')!);
+    await jusqua(() => presse()[0] === "light", "que le clic déplace l'état pressé");
+    expect(vues.length, "une transition par clic").toBe(1);
+    expect(vues[0], "la classe est posée avant la photographie").toContain("bascule");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(document.documentElement.style.getPropertyValue("--bx"), "le centre du bouton").not.toBe("");
+    await jusqua(
+      () => !document.documentElement.classList.contains("bascule"),
+      "que la classe parte avec la fin de la transition",
+    );
+  });
+
+  /// **Au calme, pas de cercle** : la transition existe dans ce navigateur, et
+  /// le thème s'applique quand même d'un coup.
+  test("au calme, le thème s'applique d'un coup, sans transition", async () => {
+    let vues = 0;
+    await ouvrir("offline/index.html", {
+      calme: true,
+      avant: () => {
+        (document as unknown as Record<string, unknown>).startViewTransition = (rappel: () => void) => {
+          vues += 1;
+          rappel();
+          return { finished: Promise.resolve() };
+        };
+      },
+    });
+    cliquer(document.querySelector('[data-theme-choice="dark"]')!);
+    await jusqua(() => presse()[0] === "dark", "que le clic déplace l'état pressé");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(vues, "aucune transition demandée").toBe(0);
+  });
+
   /// `auto` est l'absence de choix, pas une troisième valeur stockée : sinon un
   /// lecteur revenu à `auto` resterait épinglé au thème du jour où il l'a fait.
   test("« automatique » retire la valeur au lieu de stocker « auto »", async () => {

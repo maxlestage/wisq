@@ -11,6 +11,8 @@
 
 use yew::prelude::*;
 
+use crate::content::Lang;
+
 #[derive(Clone, PartialEq)]
 pub enum Tone {
     Info,
@@ -116,7 +118,7 @@ fn rendre(bloc: &Block) -> Html {
             let id = slug(texte);
             html! {
                 <h2 id={id.clone()}>
-                    <a class="anchor" href={format!("#{id}")} aria-label={*texte}>{ *texte }</a>
+                    <a class="anchor" href={format!("#{id}")} aria-label={*texte}>{ mots(texte) }</a>
                 </h2>
             }
         }
@@ -135,10 +137,15 @@ fn rendre(bloc: &Block) -> Html {
             </ol>
         },
 
+        // Le code arrive ligne par ligne, comme dans un terminal : chaque ligne
+        // est sa propre boîte, avec son rang. Les fins de ligne restent de
+        // vrais nœuds de texte **entre** les boîtes, donc ce qu'on sélectionne
+        // et copie est le texte exact, et sans le module le bloc est le même
+        // `pre` qu'avant.
         Block::Code { code, caption } => html! {
             <figure class="doc-code">
                 { caption.map(|c| html! { <figcaption>{ c }</figcaption> }).unwrap_or_default() }
-                <pre><code>{ *code }</code></pre>
+                <pre><code>{ lignes(code) }</code></pre>
             </figure>
         },
 
@@ -175,9 +182,84 @@ fn rendre(bloc: &Block) -> Html {
     }
 }
 
+/// Les lignes d'un bloc de code, chacune dans sa boîte.
+fn lignes(code: &'static str) -> Html {
+    let total = code.split('\n').count();
+    html! {
+        { for code.split('\n').enumerate().map(|(i, ligne)| html! {
+            <>
+                <span class="ligne" style={format!("--l:{i}")}>{ ligne }</span>
+                { if i + 1 < total { html! { "\n" } } else { html! {} } }
+            </>
+        }) }
+    }
+}
+
+/// Une phrase, mot par mot : le titre du héros et celui de chaque page écrite.
+///
+/// **Chaque mot est un masque et son contenu**, pour que l'entrée soit celle de
+/// la référence : le mot monte depuis sous sa ligne au lieu d'apparaître. Le
+/// rang part dans `--i`, dont la feuille de style fait un retard. Les espaces
+/// restent de vrais nœuds de texte entre les mots : un titre se lit, se
+/// sélectionne et se copie avec ses espaces, et un lecteur d'écran lit une
+/// suite de `span` en ligne comme la phrase qu'elle est.
+pub(crate) fn mots(phrase: &'static str) -> Html {
+    let total = phrase.split(' ').count();
+    html! {
+        { for phrase.split(' ').enumerate().map(|(i, mot)| html! {
+            <>
+                <span class="mot" style={format!("--i:{i}")}><span>{ mot }</span></span>
+                { if i + 1 < total { html! { " " } } else { html! {} } }
+            </>
+        }) }
+    }
+}
+
+/// À partir de combien de sections une page a un sommaire. En dessous, la page
+/// tient sur un écran ou deux, et un sommaire de deux lignes serait plus long à
+/// lire que ce qu'il résume.
+const SECTIONS_MIN: usize = 3;
+
+/// Le sommaire d'une page écrite : ses `h2`, dans l'ordre, chacun vers son
+/// ancre. Rendu à la construction comme le reste, donc il marche sans le
+/// module ; le module ne fait que suivre la section lue.
+fn sommaire(doc: &Doc, lang: Lang) -> Html {
+    let titres: Vec<&'static str> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::H2(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+    if titres.len() < SECTIONS_MIN {
+        return html! {};
+    }
+    let nom = match lang {
+        Lang::En => "On this page",
+        Lang::Fr => "Sur cette page",
+    };
+    html! {
+        // Le corps est une boîte à part pour pouvoir coller : sur un grand
+        // écran, le sommaire est une colonne aussi haute que la page, et c'est
+        // son contenu qui reste sous l'en-tête pendant qu'on lit.
+        <nav class="sommaire" aria-label={nom}>
+            <div class="sommaire-corps">
+                <p class="sommaire-titre">{ nom }</p>
+                <ol>
+                    { for titres.into_iter().map(|t| html! {
+                        <li><a href={format!("#{}", slug(t))}>{ t }</a></li>
+                    }) }
+                </ol>
+            </div>
+        </nav>
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct DocPageProps {
     pub doc: Doc,
+    pub lang: Lang,
 }
 
 #[function_component]
@@ -186,9 +268,10 @@ pub fn DocPage(props: &DocPageProps) -> Html {
         <article class="doc">
             <div class="wrap">
                 <header class="doc-head">
-                    <h1>{ props.doc.title }</h1>
+                    <h1>{ mots(props.doc.title) }</h1>
                     <p class="lede">{ props.doc.lede }</p>
                 </header>
+                { sommaire(&props.doc, props.lang) }
                 { for props.doc.blocks.iter().map(rendre) }
             </div>
         </article>
